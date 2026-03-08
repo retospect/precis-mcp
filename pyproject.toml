@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "MCP server for compressed structured context on .docx and .tex documents"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
+authors = [{name = "Reto Stamm", email = "reto@retostamm.com"}]
 readme = "README.md"
 keywords = ["mcp", "docx", "latex", "llm", "document", "precis", "keyword-extraction"]
 classifiers = [
