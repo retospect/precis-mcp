@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for compressed structured context on .docx and .tex documents"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
@@ -60,7 +60,7 @@ line-length = 88
 line-length = 88
 
 [tool.bumpversion]
-current_version = "0.1.0"
+current_version = "0.2.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"
