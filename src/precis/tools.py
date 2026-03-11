@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from precis.citations import BIB_DEF_RE, CITE_RE
 from precis.config import PrecisConfig
 from precis.grep import parse_grep
 from precis.nodes import Node
@@ -16,6 +17,33 @@ from precis.parser import get_parser
 from precis.rake import telegram_precis
 
 log = logging.getLogger(__name__)
+
+
+def _citation_hints(file_path: str) -> str:
+    """Scan document for undefined [@key] citations and return hint text."""
+    nodes = _load_nodes(file_path)
+    inline_keys: set[str] = set()
+    defined_keys: set[str] = set()
+    for node in nodes:
+        text = node.text or ""
+        # Inline citations from text (survives DOCX round-trip via hyperlink→[@key])
+        for m in CITE_RE.finditer(text):
+            inline_keys.add(m.group(1))
+        # Bib definitions: b-type nodes have label=key from ref_ bookmark
+        if node.node_type == "b" and node.label:
+            defined_keys.add(node.label)
+        # Also check raw text for [@key]: pattern (LaTeX, new docs)
+        for m in BIB_DEF_RE.finditer(text):
+            defined_keys.add(m.group(1))
+    undefined = sorted(inline_keys - defined_keys)
+    if not undefined:
+        return ""
+    cite_list = " ".join(f"[@{k}]" for k in undefined)
+    example_key = undefined[0]
+    return (
+        f"\n⚠ Undefined citations: {cite_list}\n"
+        f"Add to References: put(text='[@{example_key}]: Author, Title, Journal, Year.', mode='append')"
+    )
 
 
 class Session:
@@ -76,8 +104,18 @@ def _resolve_id(id_str: str, index: dict[str, Node]) -> Node:
     """Resolve a single id (slug, path, or label) to a Node."""
     node = index.get(id_str)
     if node is None:
+        # Detect common LLM mistake: passing heading text instead of slug
+        if id_str.startswith("#") or len(id_str) > 10 or " " in id_str:
+            slugs = [k for k in index if not k.startswith("H") and "." not in k]
+            slug_list = ", ".join(slugs[:8])
+            raise PrecisError(
+                f"'{id_str}' is not a valid SLUG.\n"
+                "The id parameter must be a short SLUG from toc(), not heading text.\n"
+                f"Available slugs: {slug_list}\n"
+                "Run toc() to see all slugs. For append mode, use text= not id=."
+            )
         raise PrecisError(
-            f"slug {id_str} not found\n"
+            f"slug '{id_str}' not found\n"
             "The document may have changed since you last read it.\n"
             "Run toc() to refresh node slugs."
         )
@@ -92,8 +130,9 @@ def _resolve_ids(id_str: str, index: dict[str, Node]) -> list[Node]:
 
 def _heading_level_from_text(text: str) -> int:
     """Detect # prefix for heading level."""
+    stripped = text.lstrip()
     level = 0
-    for ch in text:
+    for ch in stripped:
         if ch == "#":
             level += 1
         else:
@@ -171,7 +210,8 @@ async def toc(session: Session, scope: str = "", grep: str = "") -> str:
 
     # Normal toc
     header = f"📄 {path.name}"
-    lines = [header, ""]
+    legend = "  PATH  SLUG  [source]  #|heading or |precis   — use SLUG as id in put()"
+    lines = [header, legend, ""]
     for node in nodes:
         lines.append(node.toc_line())
     return "\n".join(lines)
@@ -207,6 +247,93 @@ async def get(session: Session, id: str) -> str:
     return "\n".join(output_lines)
 
 
+async def _put_multi(
+    session: Session,
+    id: str,
+    paragraphs: list[str],
+    mode: str,
+    tracked: bool,
+) -> str:
+    """Apply multiple paragraphs sequentially, chaining by slug."""
+    file_path = session.require_active()
+    path = Path(file_path)
+    results = []
+    cursor_slug = id  # tracks where to insert next
+
+    for i, para in enumerate(paragraphs):
+        heading_level = _heading_level_from_text(para)
+        clean = para.lstrip("#").strip() if heading_level else para
+
+        parser = get_parser(file_path)
+        nodes = _load_nodes(file_path)
+
+        if mode == "append" or (mode in ("after", "before") and i > 0):
+            # First paragraph uses original mode; rest always append after previous
+            if i == 0 and mode == "before":
+                index = _build_index(nodes)
+                node = _resolve_id(cursor_slug, index)
+                parser.insert_before(path, node, clean, heading_level)
+            elif i == 0 and mode == "after":
+                index = _build_index(nodes)
+                node = _resolve_id(cursor_slug, index)
+                parser.insert_after(path, node, clean, heading_level)
+            elif i > 0 and cursor_slug and mode != "append":
+                index = _build_index(nodes)
+                node = _resolve_id(cursor_slug, index)
+                parser.insert_after(path, node, clean, heading_level)
+            else:
+                parser.append_node(path, clean, heading_level)
+        elif mode == "replace" and i == 0:
+            index = _build_index(nodes)
+            node = _resolve_id(cursor_slug, index)
+            if tracked and file_path.endswith(".docx"):
+                from precis.parser.docx import DocxParser
+
+                if isinstance(parser, DocxParser):
+                    parser.write_tracked(path, node, clean, session.config.author)
+                else:
+                    parser.write_node(path, node, clean)
+            else:
+                parser.write_node(path, node, clean)
+        elif mode == "replace" and i > 0:
+            # After replacing first, insert remaining after it
+            index = _build_index(nodes)
+            node = _resolve_id(cursor_slug, index)
+            parser.insert_after(path, node, clean, heading_level)
+        else:
+            parser.append_node(path, clean, heading_level)
+
+        # Find the newly created node to chain from
+        new_nodes = _load_nodes(file_path)
+        old_slugs = {n.slug for n in nodes}
+        new_node = None
+        if mode == "replace" and i == 0:
+            # For replace, find the node at the same path
+            for nn in new_nodes:
+                if str(nn.path) == str(node.path):
+                    new_node = nn
+                    break
+        else:
+            for nn in new_nodes:
+                if nn.slug not in old_slugs:
+                    new_node = nn
+                    break
+
+        if new_node:
+            cursor_slug = new_node.slug
+            preview = (new_node.precis or clean)[:60]
+            results.append(f"+ {new_node.slug}  {new_node.path}  {preview}")
+        else:
+            results.append(f"+ ???  {clean[:40]}")
+
+    summary = f"Auto-split: {len(paragraphs)} paragraphs written\n"
+    summary += "\n".join(results)
+    if cursor_slug:
+        summary += f"\nHint: put(id='{cursor_slug}', text='...', mode='after') to write more"
+    summary += _citation_hints(file_path)
+    return summary
+
+
 async def put(
     session: Session,
     id: str = "",
@@ -218,18 +345,30 @@ async def put(
     file_path = session.require_active()
     path = Path(file_path)
 
-    # Validate single paragraph
-    if text and "\n\n" in text:
-        raise PrecisError(
-            "text contains multiple paragraphs\n"
-            "put() accepts one paragraph at a time. Split your text and\n"
-            "call put() once per paragraph."
-        )
+    # Strip leading/trailing whitespace (LLMs often prefix with \n)
+    text = text.strip()
 
     valid_modes = {"replace", "after", "before", "delete", "append"}
     if mode not in valid_modes:
         raise PrecisError(
             f"invalid mode: {mode}\nValid modes: {', '.join(valid_modes)}"
+        )
+
+    # Auto-split: if text contains newlines, split into paragraphs and apply each
+    if text and "\n" in text:
+        paragraphs = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        if len(paragraphs) > 1:
+            return await _put_multi(session, id, paragraphs, mode, tracked)
+
+    if mode == "append" and not text:
+        hint = ""
+        if id:
+            hint = (
+                f"\nIt looks like you put the content in id= instead of text=.\n"
+                f"Use: put(text='{id}', mode='append')"
+            )
+        raise PrecisError(
+            f"text required for mode=append{hint}"
         )
 
     if mode != "append" and not id:
@@ -248,14 +387,18 @@ async def put(
         new_node = new_nodes[-1] if new_nodes else None
         if new_node:
             precis_display = new_node.precis or clean_text
-            return f"+ {new_node.slug}  {new_node.path}  {precis_display}"
+            return (
+                f"+ {new_node.slug}  {new_node.path}  {precis_display}\n"
+                f"Hint: put(id='{new_node.slug}', text='...', mode='after') to write more"
+                + _citation_hints(file_path)
+            )
         return "+ appended"
 
     node = _resolve_id(id, index)
 
     if mode == "delete":
         parser.delete_node(path, node)
-        return f"- {node.slug}  {node.path}  deleted"
+        return f"- {node.slug}  {node.path}  deleted\nHint: toc() to see updated structure"
 
     if mode == "replace":
         if not text:
@@ -281,7 +424,12 @@ async def put(
         if new_node:
             tracked_label = "tracked" if tracked and file_path.endswith(".docx") else ""
             precis_display = new_node.precis or clean_text
-            return f"{node.slug} → {new_node.slug}  {node.path}  {tracked_label}  replace\n{precis_display}"
+            return (
+                f"{node.slug} → {new_node.slug}  {node.path}  {tracked_label}  replace\n"
+                f"{precis_display}\n"
+                f"Hint: use slug '{new_node.slug}' to reference this node"
+                + _citation_hints(file_path)
+            )
 
         return f"{node.slug} → ???  {node.path}  replace"
 
@@ -305,7 +453,12 @@ async def put(
         if new_node:
             tracked_label = "tracked" if tracked and file_path.endswith(".docx") else ""
             precis_display = new_node.precis or clean_text
-            return f"+ {new_node.slug}  {new_node.path}  {mode} {node.slug}  {tracked_label}\n{precis_display}"
+            return (
+                f"+ {new_node.slug}  {new_node.path}  {mode} {node.slug}  {tracked_label}\n"
+                f"{precis_display}\n"
+                f"Hint: put(text='...', mode='after', id='{new_node.slug}') to write more after this node"
+                + _citation_hints(file_path)
+            )
 
         return f"+ ???  {mode} {node.slug}"
 

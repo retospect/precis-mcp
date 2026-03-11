@@ -21,18 +21,19 @@ classifiers = [
     "Topic :: Text Processing :: Markup",
 ]
 
-[project.urls]
-Homepage = "https://github.com/acatome/precis-mcp"
-Repository = "https://github.com/acatome/precis-mcp"
-Issues = "https://github.com/acatome/precis-mcp/issues"
-
 dependencies = [
     "mcp[cli]>=1.0",
     "python-docx>=1.1",
     "lxml>=5.0",
     "platformdirs>=4.0",
+    "precis-summary>=0.1.0",
     "tomli>=2.0; python_version < '3.11'",
 ]
+
+[project.urls]
+Homepage = "https://github.com/acatome/precis-mcp"
+Repository = "https://github.com/acatome/precis-mcp"
+Issues = "https://github.com/acatome/precis-mcp/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -57,3 +58,19 @@ line-length = 88
 
 [tool.ruff]
 line-length = 88
+
+[tool.bumpversion]
+current_version = "0.1.0"
+commit = true
+tag = true
+tag_name = "v{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+[[tool.bumpversion.files]]
+filename = "src/precis/__init__.py"
+search = '__version__ = "{current_version}"'
+replace = '__version__ = "{new_version}"'

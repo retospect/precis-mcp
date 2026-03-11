@@ -73,14 +73,25 @@ async def tool_put(
     For DOCX, tracked=true writes Word track-changes markup.
     Use # prefix in text to create headings.
 
+    Multiple paragraphs separated by newlines are auto-split into
+    separate nodes. One put() call can write many paragraphs at once.
+
+    Examples:
+      put(text='# Introduction', mode='append')         — append heading
+      put(text='First paragraph here.', mode='append')   — append paragraph
+      put(id='PLXDX', text='Revised text.', mode='replace') — edit node
+      put(id='PLXDX', text='New para.', mode='after')   — insert after node
+
     Args:
-        id: Target node slug/path (required except for append)
-        text: New content (single paragraph). Use # for headings.
+        id: Target node SLUG from toc() (required except for append).
+            This is NOT the heading text — it is the 5-char slug like PLXDX.
+        text: New content (one or more paragraphs). Use # for headings.
+            Never number headings (no "1.", "2."). Word auto-numbers.
         mode: replace / after / before / delete / append
         tracked: DOCX: write as track-changes (default true). LaTeX: ignored.
     """
     try:
-        return await put(session, id=id, text=text, mode=mode, tracked=tracked)
+        return await put(session, id=id or "", text=text or "", mode=mode, tracked=tracked)
     except PrecisError as e:
         return _error(e)
 

@@ -245,10 +245,34 @@ class TestPut:
         assert "+" in result
 
     @pytest.mark.asyncio
-    async def test_multi_paragraph_rejected(self, session, tmp_docx):
+    async def test_multi_paragraph_auto_split(self, session, tmp_docx):
         await activate(session, str(tmp_docx))
-        with pytest.raises(PrecisError, match="multiple paragraphs"):
-            await put(session, text="Para one.\n\nPara two.", mode="append")
+        result = await put(session, text="Para one.\n\nPara two.", mode="append")
+        assert "Auto-split: 2 paragraphs" in result
+
+    @pytest.mark.asyncio
+    async def test_citation_hints_on_undefined(self, session, tmp_docx):
+        await activate(session, str(tmp_docx))
+        result = await put(
+            session,
+            text="MOFs show high uptake [@sumida2012] and selectivity [@jones2020].",
+            mode="append",
+        )
+        assert "Undefined citations" in result
+        assert "[@sumida2012]" in result
+        assert "[@jones2020]" in result
+        assert "mode='append'" in result  # hint shows how to define
+
+    @pytest.mark.asyncio
+    async def test_citation_hints_none_when_defined(self, session, tmp_docx):
+        await activate(session, str(tmp_docx))
+        await put(session, text="Great uptake [@foo2020].", mode="append")
+        result = await put(
+            session,
+            text="[@foo2020]: Foo et al., Title, J. Chem., 2020.",
+            mode="append",
+        )
+        assert "Undefined citations" not in result
 
     @pytest.mark.asyncio
     async def test_invalid_mode(self, session, tmp_docx):
