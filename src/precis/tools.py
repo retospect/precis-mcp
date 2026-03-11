@@ -39,11 +39,14 @@ def _citation_hints(file_path: str) -> str:
     if not undefined:
         return ""
     cite_list = " ".join(f"[@{k}]" for k in undefined)
-    example_key = undefined[0]
-    return (
-        f"\n⚠ Undefined citations: {cite_list}\n"
-        f"Add to References: put(text='[@{example_key}]: Author, Title, Journal, Year.', mode='append')"
-    )
+    lines = [
+        f"\n⚠ {len(undefined)} undefined citation(s): {cite_list}",
+        "You MUST define each one before finishing. Steps:",
+        "  1. Look up each slug: paper(id='slug:<key>/meta') to get author, title, journal, year",
+        "  2. Append a References heading (if not already present): put(text='## References', mode='append')",
+        "  3. Append each entry: put(text='[@key]: Author, A. B. (Year). Title. *Journal*, vol, pages.', mode='append')",
+    ]
+    return "\n".join(lines)
 
 
 class Session:

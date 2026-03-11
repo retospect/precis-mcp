@@ -458,7 +458,7 @@ class TestPut:
             text="MOFs show high uptake [@sumida2012] and selectivity [@jones2020].",
             mode="append",
         )
-        assert "Undefined citations" in result
+        assert "undefined citation" in result
         assert "[@sumida2012]" in result
         assert "[@jones2020]" in result
         assert "mode='append'" in result  # hint shows how to define
