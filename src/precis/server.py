@@ -32,15 +32,18 @@ async def tool_activate(file: str) -> str:
 
 
 @mcp.tool()
-async def tool_toc(scope: str = "", grep: str = "") -> str:
+async def tool_toc(scope: str = "", grep: str = "", depth: int = 0) -> str:
     """Navigate and search the active document. One line per node, truncated at ~120 chars.
 
     Args:
         scope: Path prefix to limit tree, e.g. "H2.1"
         grep: Filter nodes — plain text, /regex/, or /regex/i
+        depth: Heading depth filter. 0=everything (default), 1=H1 only,
+               2=H1+H2, 3=H1-H3, 4=all headings no content.
+               Large docs (>100 nodes) auto-truncate to headings-only.
     """
     try:
-        return await toc(session, scope=scope, grep=grep)
+        return await toc(session, scope=scope, grep=grep, depth=depth)
     except PrecisError as e:
         return _error(e)
 

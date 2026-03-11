@@ -177,18 +177,35 @@ async def activate(session: Session, file: str, progress_cb=None) -> str:
         file_names = [f.name for f in files]
         header += f"  [{len(files)} files: {', '.join(file_names)}]"
 
-    lines = [header, ""]
+    lines = [header]
+
+    # LaTeX label hint
+    if file.endswith(".tex"):
+        labels = [n.label for n in nodes if n.label]
+        if labels:
+            example = labels[0]
+            lines.append(
+                f"Hint: \\label{{}} values work as IDs in get/put (e.g. '{example}')"
+            )
+
+    lines.append("")
     for node in nodes:
         lines.append(node.toc_line())
 
     return "\n".join(lines)
 
 
-async def toc(session: Session, scope: str = "", grep: str = "") -> str:
+_LARGE_DOC_THRESHOLD = 100
+
+
+async def toc(
+    session: Session, scope: str = "", grep: str = "", depth: int = 0
+) -> str:
     """Navigate and search the active document."""
     file_path = session.require_active()
     path = Path(file_path)
     nodes = _load_nodes(file_path)
+    total_nodes = len(nodes)
 
     # Filter by scope
     if scope:
@@ -208,12 +225,46 @@ async def toc(session: Session, scope: str = "", grep: str = "") -> str:
             lines.append(h.grep_line())
         return "\n".join(lines)
 
+    # Auto-adaptive: large docs default to headings-only
+    auto_truncated = False
+    effective_depth = depth
+    if depth == 0 and len(nodes) > _LARGE_DOC_THRESHOLD and not scope:
+        effective_depth = 4  # all headings, no content
+        auto_truncated = True
+
+    # Apply depth filter
+    if effective_depth > 0:
+        nodes = [
+            n
+            for n in nodes
+            if n.node_type == "h" and n.heading_level() <= effective_depth
+        ]
+
     # Normal toc
     header = f"📄 {path.name}"
+    if scope:
+        header += f"  scope: {scope}"
+    if effective_depth > 0:
+        header += f"  depth: {effective_depth}"
+    header += f"  ({len(nodes)} nodes"
+    if len(nodes) != total_nodes:
+        header += f" / {total_nodes} total"
+    header += ")"
     legend = "  PATH  SLUG  [source]  #|heading or |precis   — use SLUG as id in put()"
     lines = [header, legend, ""]
     for node in nodes:
         lines.append(node.toc_line())
+
+    if auto_truncated:
+        lines.append("")
+        lines.append(
+            f"⚠ Large document ({total_nodes} nodes) — showing headings only."
+        )
+        lines.append(
+            "Drill in: toc(scope='H3.2') for full section, "
+            "toc(depth=2) for outline, toc(depth=0, scope='H3') for all detail in §3."
+        )
+
     return "\n".join(lines)
 
 

@@ -16,8 +16,9 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
-      - run: uv sync --dev
-      - run: uv run pytest
+      - run: uv venv
+      - run: uv pip install -e ".[dev]"
+      - run: uv run --no-sync pytest
 
   publish:
     needs: test

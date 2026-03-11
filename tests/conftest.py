@@ -96,6 +96,24 @@ def tmp_tex(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def large_docx(tmp_path: Path) -> Path:
+    """Create a large DOCX with >100 nodes for auto-adaptive toc tests."""
+    doc = Document()
+    for section in range(1, 6):
+        doc.add_heading(f"Section {section}", level=1)
+        for sub in range(1, 5):
+            doc.add_heading(f"Subsection {section}.{sub}", level=2)
+            for para in range(1, 8):
+                doc.add_paragraph(
+                    f"Content paragraph {para} in subsection {section}.{sub} "
+                    f"discussing important topics and findings."
+                )
+    p = tmp_path / "large.docx"
+    doc.save(str(p))
+    return p
+
+
+@pytest.fixture
 def empty_tex(tmp_path: Path) -> Path:
     """Create an empty LaTeX file."""
     p = tmp_path / "empty.tex"

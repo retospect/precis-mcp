@@ -134,6 +134,206 @@ class TestToc:
         # At least one line should have a .tex filename
         assert any(".tex:" in line for line in result.split("\n"))
 
+    # ─── Depth filtering ────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_depth_0_shows_everything(self, session, tmp_docx):
+        """depth=0 (default) returns headings AND content nodes."""
+        await activate(session, str(tmp_docx))
+        result = await toc(session, depth=0)
+        # Should have both heading lines (#|) and content lines (|)
+        lines = result.strip().split("\n")
+        heading_lines = [l for l in lines if "#|" in l]
+        content_lines = [l for l in lines if "|" in l and "#|" not in l
+                         and not l.startswith("📄") and "PATH" not in l]
+        assert len(heading_lines) >= 2
+        assert len(content_lines) >= 1
+
+    @pytest.mark.asyncio
+    async def test_depth_1_h1_only(self, session, tmp_docx):
+        """depth=1 shows only H1 headings."""
+        await activate(session, str(tmp_docx))
+        result = await toc(session, depth=1)
+        lines = [l for l in result.strip().split("\n")
+                 if l.strip() and not l.startswith("📄") and "PATH" not in l]
+        # Should have Introduction (H1) but NOT Methods (H2)
+        assert any("#| Introduction" in l for l in lines)
+        assert not any("##|" in l for l in lines)
+        # No content nodes
+        content_lines = [l for l in lines if "|" in l and "#|" not in l]
+        assert len(content_lines) == 0
+
+    @pytest.mark.asyncio
+    async def test_depth_2_h1_and_h2(self, session, tmp_docx):
+        """depth=2 shows H1 and H2 headings, no content."""
+        await activate(session, str(tmp_docx))
+        result = await toc(session, depth=2)
+        lines = [l for l in result.strip().split("\n")
+                 if l.strip() and not l.startswith("📄") and "PATH" not in l]
+        assert any("#| Introduction" in l for l in lines)
+        assert any("##| Methods" in l for l in lines)
+        # No content nodes
+        content_lines = [l for l in lines if "|" in l and "#|" not in l]
+        assert len(content_lines) == 0
+
+    @pytest.mark.asyncio
+    async def test_depth_4_all_headings_no_content(self, session, tmp_docx):
+        """depth=4 shows all heading levels but no content nodes."""
+        await activate(session, str(tmp_docx))
+        result = await toc(session, depth=4)
+        lines = [l for l in result.strip().split("\n")
+                 if l.strip() and not l.startswith("📄") and "PATH" not in l]
+        # Only heading lines
+        for line in lines:
+            assert "#|" in line, f"Non-heading line at depth=4: {line}"
+
+    @pytest.mark.asyncio
+    async def test_depth_with_scope(self, session, tmp_docx):
+        """depth + scope compose: filter section then by heading level."""
+        await activate(session, str(tmp_docx))
+        # Scope to section with Methods (H2), but depth=1 should exclude H2
+        full = await toc(session, scope="H1")
+        assert "Methods" in full  # H2 under H1 is visible by default
+        filtered = await toc(session, scope="H1", depth=1)
+        assert "Methods" not in filtered  # depth=1 excludes H2
+
+    # ─── Scope shorthand ────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_scope_shorthand_h1(self, session, tmp_docx):
+        """scope='H1' matches H1.x.x.x paths (shorthand works via startswith)."""
+        await activate(session, str(tmp_docx))
+        result = await toc(session, scope="H1")
+        lines = [l for l in result.strip().split("\n")
+                 if l.strip() and not l.startswith("📄") and "PATH" not in l]
+        # All data lines should be in section H1.*
+        for line in lines:
+            assert "H1." in line, f"Non-H1 line in scope='H1': {line}"
+        assert len(lines) > 0
+
+    @pytest.mark.asyncio
+    async def test_scope_shorthand_h1_dot_1(self, session, tmp_docx):
+        """scope='H1.1' narrows to subsection 1.1."""
+        await activate(session, str(tmp_docx))
+        result = await toc(session, scope="H1.1")
+        lines = [l for l in result.strip().split("\n")
+                 if l.strip() and not l.startswith("📄") and "PATH" not in l]
+        for line in lines:
+            assert "H1.1." in line, f"Non-H1.1 line: {line}"
+
+    # ─── Auto-adaptive large docs ───────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_large_doc_auto_truncates(self, session, large_docx):
+        """Large documents auto-truncate to headings-only with hint."""
+        await activate(session, str(large_docx))
+        result = await toc(session)
+        assert "⚠ Large document" in result
+        assert "showing headings only" in result
+        # Should not have content lines (auto depth=4)
+        lines = [l for l in result.strip().split("\n")
+                 if "|" in l and "#|" not in l
+                 and not l.startswith("📄") and "PATH" not in l
+                 and "⚠" not in l and "Drill" not in l]
+        assert len(lines) == 0
+
+    @pytest.mark.asyncio
+    async def test_large_doc_scoped_shows_all(self, session, large_docx):
+        """Scoped toc on large doc shows full detail (no auto-truncation)."""
+        await activate(session, str(large_docx))
+        result = await toc(session, scope="H1.1")
+        # Should NOT auto-truncate when scope is set
+        assert "⚠ Large document" not in result
+        # Should have content lines
+        lines = [l for l in result.strip().split("\n")
+                 if "|" in l and "#|" not in l
+                 and not l.startswith("📄") and "PATH" not in l]
+        assert len(lines) > 0
+
+    @pytest.mark.asyncio
+    async def test_large_doc_explicit_depth_0(self, session, large_docx):
+        """Explicit depth=0 on large doc — auto-truncate still fires (depth=0 is default)."""
+        await activate(session, str(large_docx))
+        result = await toc(session, depth=0)
+        assert "⚠ Large document" in result
+
+    @pytest.mark.asyncio
+    async def test_large_doc_explicit_depth_1(self, session, large_docx):
+        """Explicit depth=1 on large doc — no auto hint, just depth filter."""
+        await activate(session, str(large_docx))
+        result = await toc(session, depth=1)
+        assert "⚠ Large document" not in result
+        # Only H1 lines
+        lines = [l for l in result.strip().split("\n")
+                 if l.strip() and "#|" in l]
+        for line in lines:
+            assert "##|" not in line  # no H2+
+
+    @pytest.mark.asyncio
+    async def test_header_shows_node_counts(self, session, tmp_docx):
+        """Header shows filtered/total counts when they differ."""
+        await activate(session, str(tmp_docx))
+        result = await toc(session, depth=1)
+        assert "/ " in result  # "N nodes / M total"
+
+
+    # ─── LaTeX depth / scope / label hint ──────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_latex_activate_label_hint(self, session, tmp_tex):
+        """LaTeX activate shows label hint with example."""
+        result = await activate(session, str(tmp_tex))
+        assert "\\label{}" in result
+        assert "sec:methods" in result
+
+    @pytest.mark.asyncio
+    async def test_latex_depth_1(self, session, tmp_tex):
+        """depth=1 on LaTeX shows only \\section headings."""
+        await activate(session, str(tmp_tex))
+        result = await toc(session, depth=1)
+        lines = [l for l in result.strip().split("\n")
+                 if l.strip() and "#|" in l]
+        assert len(lines) >= 2  # Introduction + Methods
+        # No content nodes
+        content_lines = [l for l in result.strip().split("\n")
+                         if "|" in l and "#|" not in l
+                         and not l.startswith("📄") and "PATH" not in l]
+        assert len(content_lines) == 0
+
+    @pytest.mark.asyncio
+    async def test_latex_depth_0_shows_content(self, session, tmp_tex):
+        """depth=0 on LaTeX shows headings + content with source locations."""
+        await activate(session, str(tmp_tex))
+        result = await toc(session, depth=0)
+        assert ".tex:" in result  # source file locations visible
+
+    @pytest.mark.asyncio
+    async def test_latex_scope_shorthand(self, session, tmp_tex):
+        """scope='H2' narrows to Methods section in LaTeX."""
+        await activate(session, str(tmp_tex))
+        result = await toc(session, scope="H2")
+        assert "Methods" in result
+        assert "Introduction" not in result
+
+    @pytest.mark.asyncio
+    async def test_latex_scope_with_depth(self, session, tmp_tex):
+        """scope + depth compose for LaTeX."""
+        await activate(session, str(tmp_tex))
+        # Full detail in Methods section
+        full = await toc(session, scope="H2")
+        # Headings only in Methods
+        headings_only = await toc(session, scope="H2", depth=1)
+        # Full should have more lines
+        full_lines = [l for l in full.strip().split("\n") if l.strip()]
+        head_lines = [l for l in headings_only.strip().split("\n") if l.strip()]
+        assert len(full_lines) > len(head_lines)
+
+    @pytest.mark.asyncio
+    async def test_docx_no_label_hint(self, session, tmp_docx):
+        """DOCX activate does NOT show label hint."""
+        result = await activate(session, str(tmp_docx))
+        assert "\\label" not in result
+
 
 # ─── Get ─────────────────────────────────────────────────────────────
 
