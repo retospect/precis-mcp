@@ -377,7 +377,7 @@ class TestGet:
     @pytest.mark.asyncio
     async def test_by_path(self, session, tmp_docx):
         await activate(session, str(tmp_docx))
-        result = await get(session, id="S1p1")
+        result = await get(session, id="S1¶1")
         assert ">>" in result
 
     @pytest.mark.asyncio
@@ -782,11 +782,11 @@ class TestCompactPaths:
 
     @pytest.mark.asyncio
     async def test_toc_shows_compact_content_paths(self, session, tmp_docx):
-        """Content paths compact too: S1p1 not S1.0.0.0p1."""
+        """Content paths compact too: S1¶1 not S1.0.0.0¶1."""
         await activate(session, str(tmp_docx))
         result = await toc(session)
-        assert "S1p1" in result
-        assert "S1.0.0.0p1" not in result
+        assert "S1¶1" in result
+        assert "S1.0.0.0¶1" not in result
 
     @pytest.mark.asyncio
     async def test_get_by_compact_path(self, session, tmp_docx):

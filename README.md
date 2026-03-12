@@ -5,9 +5,10 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 ## Features
 
 - **5 tools** — `activate`, `toc`, `get`, `put`, `move`
-- **Dual addressing** — 5-char content-hash slugs + positional heading paths
+- **Dual addressing** — 5-char content-hash slugs + positional heading paths (S1.2 = heading, S1.2¶3 = paragraph)
 - **RAKE keyword extraction** — stateless, zero-dependency precis generation (<5ms)
 - **DOCX citations** — `[@key]` round-trip with styled hyperlinks and bibliography entries
+- **Heading safety** — `# | Title` pipe separator + auto-strip of LLM-inserted section numbers
 - **Track changes** — `put()` writes Word revision markup by default
 - **LaTeX support** — `\input`/`\include` resolution, `\label{}` aliases, `.bib` parsing
 - **Atomic I/O** — every call reads fresh from disk, no stale state

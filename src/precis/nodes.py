@@ -12,7 +12,11 @@ SLUG_CHARS = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 SLUG_LEN = 5
 
 # Path regex: S{h1}[.{h2}[.{h3}[.{h4}]]][{type}{n}]
-PATH_RE = re.compile(r"^S(\d+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(?:([ptfeb])(\d+))?$")
+PATH_RE = re.compile(r"^S(\d+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(?:([ptfeb¶])(\d+))?$")
+
+# Display mapping: internal node_type char → display char
+_TYPE_DISPLAY = {"p": "¶"}
+_TYPE_INTERNAL = {"¶": "p"}  # inverse for parsing
 
 
 def make_slug(text: str) -> str:
@@ -59,7 +63,8 @@ class Path:
             parts.append(str(self.h4))
         base = "S" + ".".join(parts)
         if self.node_type:
-            return f"{base}{self.node_type}{self.index}"
+            display = _TYPE_DISPLAY.get(self.node_type, self.node_type)
+            return f"{base}{display}{self.index}"
         return base
 
     @classmethod
@@ -72,7 +77,7 @@ class Path:
         h2 = int(m[2]) if m[2] is not None else 0
         h3 = int(m[3]) if m[3] is not None else 0
         h4 = int(m[4]) if m[4] is not None else 0
-        node_type = m[5] or ""
+        node_type = _TYPE_INTERNAL.get(m[5], m[5]) if m[5] else ""
         index = int(m[6]) if m[6] else 0
         return cls(h1=h1, h2=h2, h3=h3, h4=h4, node_type=node_type, index=index)
 

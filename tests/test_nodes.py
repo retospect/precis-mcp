@@ -74,8 +74,8 @@ class TestPath:
     def test_roundtrip(self):
         cases = [
             "S1",
-            "S3.2.1p4",
-            "S0p1",
+            "S3.2.1¶4",
+            "S0¶1",
             "S2.1t1",
             "S2.1e1",
         ]
@@ -85,8 +85,8 @@ class TestPath:
     def test_roundtrip_full_form(self):
         """Full form (trailing .0s) parses correctly and compacts on output."""
         assert str(NodePath.parse("S1.0.0.0")) == "S1"
-        assert str(NodePath.parse("S3.2.1.0p4")) == "S3.2.1p4"
-        assert str(NodePath.parse("S0.0.0.0p1")) == "S0p1"
+        assert str(NodePath.parse("S3.2.1.0p4")) == "S3.2.1¶4"
+        assert str(NodePath.parse("S0.0.0.0p1")) == "S0¶1"
         assert str(NodePath.parse("S2.1.0.0t1")) == "S2.1t1"
 
     def test_invalid(self):
@@ -128,21 +128,21 @@ class TestPathCounter:
         c = PathCounter()
         c.next_heading(1)
         p1 = c.next_child("p")
-        assert str(p1) == "S1p1"
+        assert str(p1) == "S1¶1"
         p2 = c.next_child("p")
-        assert str(p2) == "S1p2"
+        assert str(p2) == "S1¶2"
         t1 = c.next_child("t")
         assert str(t1) == "S1t1"
 
     def test_heading_resets_children(self):
         c = PathCounter()
         c.next_heading(1)
-        c.next_child("p")  # S1p1
+        c.next_child("p")  # S1¶1
         c.next_heading(2)  # S1.1
         p = c.next_child("p")
-        assert str(p) == "S1.1p1"
+        assert str(p) == "S1.1¶1"
 
     def test_preamble(self):
         c = PathCounter()
         p = c.next_child("p")
-        assert str(p) == "S0p1"
+        assert str(p) == "S0¶1"

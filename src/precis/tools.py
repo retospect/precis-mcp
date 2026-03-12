@@ -259,6 +259,24 @@ def _heading_level_from_text(text: str) -> int:
     return min(level, 4)
 
 
+_SECTION_NUM_RE = re.compile(r"^[\d]+(?:\.[\d]+)*\.?\s+")
+
+
+def _strip_heading_numbering(text: str) -> str:
+    """Strip leading section numbers from heading text.
+
+    Two mechanisms:
+      1. Explicit ``|`` separator: ``## 3.3 | Foo`` → ``Foo``
+      2. Regex fallback: ``## 3.3 Foo`` → ``Foo``
+
+    LLMs often include numbering despite instructions not to.
+    Word auto-numbers headings, so these must be removed.
+    """
+    if "|" in text:
+        return text.split("|", 1)[1].strip()
+    return _SECTION_NUM_RE.sub("", text)
+
+
 # ─── Tool implementations ───────────────────────────────────────────
 
 
@@ -340,9 +358,11 @@ async def toc(session: Session, scope: str = "", grep: str = "", depth: int = 0)
     nodes = _load_nodes(file_path)
     total_nodes = len(nodes)
 
-    # Filter by scope
-    if scope:
+    # Filter by scope (ignore if LLM passed the filename itself)
+    if scope and scope.lower() != path.name.lower():
         nodes = [n for n in nodes if str(n.path).startswith(scope)]
+    else:
+        scope = ""  # clear so header doesn't show it
 
     # Grep mode
     if grep:
@@ -383,6 +403,15 @@ async def toc(session: Session, scope: str = "", grep: str = "", depth: int = 0)
     if len(nodes) != total_nodes:
         header += f" / {total_nodes} total"
     header += ")"
+
+    if not nodes and total_nodes == 0:
+        return (
+            f"{header}\n\n"
+            "The document is empty.\n"
+            "Start writing with put(text='# | Introduction', mode='append') to add a heading,\n"
+            "or put(text='First paragraph.', mode='append') to add body text."
+        )
+
     legend = "  PATH  SLUG  [source]  #|heading or |precis   — use SLUG as id in put()"
     lines = [header, legend, ""]
     for node in nodes:
@@ -402,6 +431,11 @@ async def toc(session: Session, scope: str = "", grep: str = "", depth: int = 0)
 async def get(session: Session, id: str) -> str:
     """Read full content by id."""
     file_path = session.require_active()
+
+    # Redirect common LLM mistakes: 'file.docx#toc', '#toc', 'toc'
+    id_lower = id.strip().lower()
+    if id_lower.endswith("#toc") or id_lower == "toc":
+        return await toc(session)
 
     # Raw file access: file.tex:start..end
     raw = _parse_raw_file_id(id)
@@ -456,6 +490,8 @@ async def _put_multi(
     for i, para in enumerate(paragraphs):
         heading_level = _heading_level_from_text(para)
         clean = para.lstrip("#").strip() if heading_level else para
+        if heading_level:
+            clean = _strip_heading_numbering(clean)
 
         parser = get_parser(file_path)
         nodes = _load_nodes(file_path)
@@ -605,6 +641,8 @@ async def put(
 
     heading_level = _heading_level_from_text(text) if text else 0
     clean_text = text.lstrip("#").strip() if heading_level else text
+    if heading_level:
+        clean_text = _strip_heading_numbering(clean_text)
 
     if mode == "append":
         parser.append_node(path, clean_text, heading_level)

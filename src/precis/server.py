@@ -41,6 +41,8 @@ async def tool_toc(scope: str = "", grep: str = "", depth: int = 0) -> str:
         depth: Heading depth filter. 0=everything (default), 1=S1 only,
                2=S1+S2, 3=S1-S3, 4=all headings no content.
                Large docs (>100 nodes) auto-truncate to headings-only.
+    Path format: S{h1}[.{h2}...] for headings, S{h1}¶{n} for paragraphs,
+                 t=table, f=figure, e=equation.
     """
     try:
         return await toc(session, scope=scope, grep=grep, depth=depth)
@@ -55,7 +57,7 @@ async def tool_get(id: str) -> str:
     Lines starting with >> are metadata. Everything else is content.
 
     Args:
-        id: Slug, path, label, or comma-separated list
+        id: Slug, path (e.g. S2.1, S2.1¶3), label, or comma-separated list.
             For raw file access: 'file.tex:1..50' or 'sec/methods.tex'
     """
     try:
@@ -71,17 +73,18 @@ async def tool_put(
     mode: str = "replace",
     tracked: bool = True,
 ) -> str:
-    """Mutate the active document. One paragraph per call.
+    """Mutate the active document. One or more paragraphs per call.
 
     Modes: replace, after, before, delete, append, comment.
     For DOCX, tracked=true writes Word track-changes markup.
-    Use # prefix in text to create headings.
+    Use # prefix in text to create headings. Use | after # to separate:
+    '## | Methods' or '# | Introduction'. Numbers before | are stripped.
 
     Multiple paragraphs separated by newlines are auto-split into
     separate nodes. One put() call can write many paragraphs at once.
 
     Examples:
-      put(text='# Introduction', mode='append')         — append heading
+      put(text='# | Introduction', mode='append')       — append heading
       put(text='First paragraph here.', mode='append')   — append paragraph
       put(id='PLXDX', text='Revised text.', mode='replace') — edit node
       put(id='PLXDX', text='New para.', mode='after')   — insert after node
@@ -94,7 +97,7 @@ async def tool_put(
             This is NOT the heading text — it is the 5-char slug like PLXDX.
             For raw file edits: 'file.tex:start..end' or 'file.tex:$' (append).
         text: New content (one or more paragraphs). Use # for headings.
-            Never number headings (no "1.", "2."). Word auto-numbers.
+            Prefer '## | Title' format. Never number headings. Word auto-numbers.
         mode: replace / after / before / delete / append / comment
         tracked: DOCX: write as track-changes (default true). LaTeX: ignored.
     """

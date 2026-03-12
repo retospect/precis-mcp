@@ -33,9 +33,9 @@ class TestDocxParse:
         parser = DocxParser()
         nodes = parser.parse(tmp_docx)
         paras = [n for n in nodes if n.node_type == "p"]
-        assert str(paras[0].path) == "S1p1"
-        assert str(paras[1].path) == "S1p2"
-        assert str(paras[2].path) == "S1.1p1"
+        assert str(paras[0].path) == "S1¶1"
+        assert str(paras[1].path) == "S1¶2"
+        assert str(paras[2].path) == "S1.1¶1"
 
     def test_table_detection(self, tmp_docx: Path):
         parser = DocxParser()
