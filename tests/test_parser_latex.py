@@ -70,8 +70,8 @@ class TestLatexParse:
         parser = LatexParser()
         nodes = parser.parse(tmp_tex)
         headings = [n for n in nodes if n.node_type == "h"]
-        assert str(headings[0].path) == "H1.0.0.0"
-        assert str(headings[1].path) == "H2.0.0.0"
+        assert str(headings[0].path) == "S1"
+        assert str(headings[1].path) == "S2"
 
     def test_empty_tex(self, empty_tex: Path):
         parser = LatexParser()

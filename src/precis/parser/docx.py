@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 
 from docx import Document
+from docx.opc.packuri import PackURI
+from docx.opc.part import Part
 from docx.oxml.ns import qn
 from lxml import etree
 
@@ -29,6 +31,7 @@ class DocxParser:
     def parse(self, path: Path) -> list[Node]:
         """Parse a DOCX file into a list of Nodes."""
         doc = Document(str(path))
+        comments_map = _parse_comments(doc)
         counter = PathCounter()
         nodes: list[Node] = []
         slug_counts: dict[str, int] = {}
@@ -65,6 +68,7 @@ class DocxParser:
                             text=text,
                             precis=text,
                             style=style_name,
+                            comments=_collect_para_comments(element, comments_map),
                         )
                     )
                 elif style_name == BIB_ENTRY_STYLE:
@@ -83,6 +87,7 @@ class DocxParser:
                             precis=_bib_precis(label, text),
                             style=style_name,
                             label=label,
+                            comments=_collect_para_comments(element, comments_map),
                         )
                     )
                 else:
@@ -97,6 +102,7 @@ class DocxParser:
                             node_type="p",
                             text=md_text,
                             style=style_name,
+                            comments=_collect_para_comments(element, comments_map),
                         )
                     )
 
@@ -224,6 +230,19 @@ class DocxParser:
             _inject_tracked_replace(para, new_text, author)
 
         self._atomic_save(doc, path)
+
+    def write_comment(
+        self, path: Path, node: Node, text: str, author: str = "precis"
+    ) -> int:
+        """Add a Word comment (margin annotation) on a node. Returns comment ID."""
+        doc = Document(str(path))
+        element = self._find_element(doc, node)
+        if element is None:
+            raise ValueError(f"Node not found: {node.slug}")
+
+        comment_id = _inject_comment(doc, element, text, author)
+        self._atomic_save(doc, path)
+        return comment_id
 
     def _find_element(self, doc: Document, node: Node):
         """Find the XML element matching a node by reparsing and matching."""
@@ -494,6 +513,170 @@ def _inject_tracked_replace(para, new_text: str, author: str) -> None:
             if fr.subscript:
                 vertAlign = etree.SubElement(rpr, qn("w:vertAlign"))
                 vertAlign.set(qn("w:val"), "subscript")
+
+
+# ---------------------------------------------------------------------------
+# Word comments (margin annotations)
+# ---------------------------------------------------------------------------
+
+_COMMENTS_URI = PackURI("/word/comments.xml")
+_RT_COMMENTS = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+)
+_COMMENTS_CT = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
+)
+
+
+def _get_comments_part(doc):
+    """Get existing comments part, or None."""
+    for rel in doc.part.rels.values():
+        if rel.reltype == _RT_COMMENTS:
+            return rel.target_part
+    return None
+
+
+def _get_or_create_comments_part(doc):
+    """Get or create the comments.xml part."""
+    part = _get_comments_part(doc)
+    if part is not None:
+        return part
+    nsmap = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    root = etree.Element(qn("w:comments"), nsmap=nsmap)
+    blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+    part = Part(_COMMENTS_URI, _COMMENTS_CT, blob, doc.part.package)
+    doc.part.relate_to(part, _RT_COMMENTS)
+    return part
+
+
+def _parse_comments(doc) -> dict[int, dict]:
+    """Parse comments part → {id: {author, text}}."""
+    part = _get_comments_part(doc)
+    if part is None:
+        return {}
+    root = etree.fromstring(part.blob)
+    result = {}
+    for comment_el in root.findall(qn("w:comment")):
+        try:
+            cid = int(comment_el.get(qn("w:id"), "0"))
+        except ValueError:
+            continue
+        author = comment_el.get(qn("w:author"), "")
+        texts = []
+        for p_el in comment_el.findall(qn("w:p")):
+            for r_el in p_el.findall(qn("w:r")):
+                for t_el in r_el.findall(qn("w:t")):
+                    if t_el.text:
+                        texts.append(t_el.text)
+        result[cid] = {"author": author, "text": " ".join(texts)}
+    return result
+
+
+def _next_comment_id(doc) -> int:
+    """Find next available comment ID."""
+    part = _get_comments_part(doc)
+    if part is None:
+        return 1
+    root = etree.fromstring(part.blob)
+    max_id = 0
+    for comment_el in root.findall(qn("w:comment")):
+        try:
+            cid = int(comment_el.get(qn("w:id"), "0"))
+            if cid > max_id:
+                max_id = cid
+        except ValueError:
+            pass
+    return max_id + 1
+
+
+def _collect_para_comments(element, comments_map: dict) -> list[dict]:
+    """Collect comments attached to a paragraph element."""
+    comments = []
+    seen_ids: set[int] = set()
+    # commentRangeStart as direct child
+    for el in element.findall(qn("w:commentRangeStart")):
+        try:
+            cid = int(el.get(qn("w:id"), "0"))
+        except ValueError:
+            continue
+        if cid in comments_map and cid not in seen_ids:
+            seen_ids.add(cid)
+            cm = comments_map[cid]
+            comments.append({"id": cid, "author": cm["author"], "text": cm["text"]})
+    # commentReference in runs (fallback for Word-created comments)
+    for r_el in element.findall(qn("w:r")):
+        for ref_el in r_el.findall(qn("w:commentReference")):
+            try:
+                cid = int(ref_el.get(qn("w:id"), "0"))
+            except ValueError:
+                continue
+            if cid in comments_map and cid not in seen_ids:
+                seen_ids.add(cid)
+                cm = comments_map[cid]
+                comments.append({"id": cid, "author": cm["author"], "text": cm["text"]})
+    return comments
+
+
+def _inject_comment(doc, para_element, text: str, author: str = "precis") -> int:
+    """Add a Word comment on a paragraph. Returns the comment ID."""
+    from datetime import datetime, timezone
+
+    comment_id = _next_comment_id(doc)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cid_str = str(comment_id)
+
+    # Add comment to comments part
+    comments_part = _get_or_create_comments_part(doc)
+
+    # XmlPart (loaded from file) stores _element; regular Part uses _blob.
+    # XmlPart.blob serializes from _element, ignoring _blob — so we must
+    # modify _element in-place when it exists.
+    if hasattr(comments_part, "_element") and comments_part._element is not None:
+        root = comments_part._element
+    else:
+        root = etree.fromstring(comments_part.blob)
+
+    comment_el = etree.SubElement(root, qn("w:comment"))
+    comment_el.set(qn("w:id"), cid_str)
+    comment_el.set(qn("w:author"), author)
+    comment_el.set(qn("w:date"), now)
+    comment_el.set(qn("w:initials"), author[:2].upper())
+
+    p_el = etree.SubElement(comment_el, qn("w:p"))
+    r_el = etree.SubElement(p_el, qn("w:r"))
+    t_el = etree.SubElement(r_el, qn("w:t"))
+    t_el.text = text
+    t_el.set(qn("xml:space"), "preserve")
+
+    # Write back only for regular Part (XmlPart auto-serializes from _element)
+    if not hasattr(comments_part, "_element") or comments_part._element is None:
+        comments_part._blob = etree.tostring(
+            root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+
+    # Add range markers to paragraph
+    range_start = etree.Element(qn("w:commentRangeStart"))
+    range_start.set(qn("w:id"), cid_str)
+
+    ppr = para_element.find(qn("w:pPr"))
+    first_run = para_element.find(qn("w:r"))
+    if first_run is not None:
+        first_run.addprevious(range_start)
+    elif ppr is not None:
+        ppr.addnext(range_start)
+    else:
+        para_element.insert(0, range_start)
+
+    # commentRangeEnd after last content
+    range_end = etree.SubElement(para_element, qn("w:commentRangeEnd"))
+    range_end.set(qn("w:id"), cid_str)
+
+    # Comment reference run
+    ref_run = etree.SubElement(para_element, qn("w:r"))
+    ref_el = etree.SubElement(ref_run, qn("w:commentReference"))
+    ref_el.set(qn("w:id"), cid_str)
+
+    return comment_id
 
 
 # ---------------------------------------------------------------------------

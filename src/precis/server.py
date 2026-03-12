@@ -36,10 +36,10 @@ async def tool_toc(scope: str = "", grep: str = "", depth: int = 0) -> str:
     """Navigate and search the active document. One line per node, truncated at ~120 chars.
 
     Args:
-        scope: Path prefix to limit tree, e.g. "H2.1"
+        scope: Path prefix to limit tree, e.g. "S2.1"
         grep: Filter nodes — plain text, /regex/, or /regex/i
-        depth: Heading depth filter. 0=everything (default), 1=H1 only,
-               2=H1+H2, 3=H1-H3, 4=all headings no content.
+        depth: Heading depth filter. 0=everything (default), 1=S1 only,
+               2=S1+S2, 3=S1-S3, 4=all headings no content.
                Large docs (>100 nodes) auto-truncate to headings-only.
     """
     try:
@@ -56,6 +56,7 @@ async def tool_get(id: str) -> str:
 
     Args:
         id: Slug, path, label, or comma-separated list
+            For raw file access: 'file.tex:1..50' or 'sec/methods.tex'
     """
     try:
         return await get(session, id=id)
@@ -72,7 +73,7 @@ async def tool_put(
 ) -> str:
     """Mutate the active document. One paragraph per call.
 
-    Modes: replace, after, before, delete, append.
+    Modes: replace, after, before, delete, append, comment.
     For DOCX, tracked=true writes Word track-changes markup.
     Use # prefix in text to create headings.
 
@@ -84,17 +85,23 @@ async def tool_put(
       put(text='First paragraph here.', mode='append')   — append paragraph
       put(id='PLXDX', text='Revised text.', mode='replace') — edit node
       put(id='PLXDX', text='New para.', mode='after')   — insert after node
+      put(id='PLXDX', text='Needs citation.', mode='comment') — margin comment
+      put(id='methods.tex:10..20', text='new lines')    — replace raw lines
+      put(id='refs.bib:$', text='@article{...}')        — append to file
 
     Args:
         id: Target node SLUG from toc() (required except for append).
             This is NOT the heading text — it is the 5-char slug like PLXDX.
+            For raw file edits: 'file.tex:start..end' or 'file.tex:$' (append).
         text: New content (one or more paragraphs). Use # for headings.
             Never number headings (no "1.", "2."). Word auto-numbers.
-        mode: replace / after / before / delete / append
+        mode: replace / after / before / delete / append / comment
         tracked: DOCX: write as track-changes (default true). LaTeX: ignored.
     """
     try:
-        return await put(session, id=id or "", text=text or "", mode=mode, tracked=tracked)
+        return await put(
+            session, id=id or "", text=text or "", mode=mode, tracked=tracked
+        )
     except PrecisError as e:
         return _error(e)
 

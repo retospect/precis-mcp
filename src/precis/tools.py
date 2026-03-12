@@ -7,6 +7,7 @@ Every call parses fresh from disk and generates precis inline.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from precis.citations import BIB_DEF_RE, CITE_RE
@@ -17,6 +18,121 @@ from precis.parser import get_parser
 from precis.rake import telegram_precis
 
 log = logging.getLogger(__name__)
+
+# ─── Raw file access ─────────────────────────────────────────────────
+
+ALLOWED_EXT = {
+    ".tex",
+    ".bib",
+    ".sty",
+    ".cls",
+    ".bst",
+    ".txt",
+    ".md",
+    ".csv",
+    ".tikz",
+    ".pgf",
+}
+
+# Match: path/to/file.ext or path/to/file.ext:start or path/to/file.ext:start..end
+_RAW_FILE_RE = re.compile(r"^([\w./ \-]+\.[a-zA-Z]+)(?::(\d+|\$)(?:\.\.(\d+)?)?)?$")
+
+
+def _parse_raw_file_id(id_str: str) -> tuple[str, int | None, int | None, bool] | None:
+    """Parse a raw file reference. Returns (rel_path, start, end, is_append) or None."""
+    m = _RAW_FILE_RE.match(id_str)
+    if not m:
+        return None
+    rel_path = m.group(1)
+    ext = Path(rel_path).suffix.lower()
+    if ext not in ALLOWED_EXT:
+        return None
+    raw_start = m.group(2)
+    raw_end = m.group(3)
+    is_append = raw_start == "$"
+    start = int(raw_start) if raw_start and raw_start != "$" else None
+    end = int(raw_end) if raw_end else None
+    return (rel_path, start, end, is_append)
+
+
+def _project_root(session_file: str) -> Path:
+    """Get project root directory from active file path."""
+    return Path(session_file).parent
+
+
+def _resolve_raw_path(session_file: str, rel_path: str) -> Path:
+    """Resolve a relative path within the project, with sandbox check."""
+    root = _project_root(session_file)
+    resolved = (root / rel_path).resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise PrecisError(
+            f"path '{rel_path}' escapes project directory\n"
+            f"All file paths must be within {root}"
+        )
+    return resolved
+
+
+def _raw_read(
+    session_file: str, rel_path: str, start: int | None, end: int | None
+) -> str:
+    """Read raw lines from a file, with optional range."""
+    full_path = _resolve_raw_path(session_file, rel_path)
+    if not full_path.exists():
+        raise PrecisError(f"file not found: {rel_path}")
+    lines = full_path.read_text(encoding="utf-8").splitlines()
+    total = len(lines)
+    if start is not None:
+        s = max(1, start) - 1  # 1-indexed → 0-indexed
+        e = min(total, end) if end is not None else total
+        selected = lines[s:e]
+        header = f">> {rel_path}:{start}..{end or total}  ({e - s} of {total} lines)"
+    else:
+        selected = lines
+        header = f">> {rel_path}  ({total} lines)"
+    numbered = [f"{i + (start or 1):4d}: {line}" for i, line in enumerate(selected)]
+    return header + "\n" + "\n".join(numbered)
+
+
+def _raw_write(
+    session_file: str,
+    rel_path: str,
+    text: str,
+    start: int | None,
+    end: int | None,
+    is_append: bool,
+) -> str:
+    """Write raw lines to a file (replace range or append)."""
+    full_path = _resolve_raw_path(session_file, rel_path)
+    new_lines = text.splitlines(keepends=True)
+    # Ensure final newline
+    if new_lines and not new_lines[-1].endswith("\n"):
+        new_lines[-1] += "\n"
+
+    if is_append:
+        if not full_path.exists():
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text("", encoding="utf-8")
+        with open(full_path, "a", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        total = len(full_path.read_text(encoding="utf-8").splitlines())
+        return f"+ {rel_path}  appended {len(new_lines)} lines (now {total} total)"
+
+    if not full_path.exists():
+        raise PrecisError(f"file not found: {rel_path}")
+
+    existing = full_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    if start is not None:
+        s = max(1, start) - 1
+        e = min(len(existing), end) if end is not None else len(existing)
+        existing[s:e] = new_lines
+    else:
+        existing = new_lines  # replace whole file
+
+    full_path.write_text("".join(existing), encoding="utf-8")
+    total = len(full_path.read_text(encoding="utf-8").splitlines())
+    if start is not None:
+        return f"{rel_path}:{start}..{end or ''}  replaced → {len(new_lines)} lines (now {total} total)"
+    return f"{rel_path}  replaced whole file → {total} lines"
 
 
 def _citation_hints(file_path: str) -> str:
@@ -109,7 +225,7 @@ def _resolve_id(id_str: str, index: dict[str, Node]) -> Node:
     if node is None:
         # Detect common LLM mistake: passing heading text instead of slug
         if id_str.startswith("#") or len(id_str) > 10 or " " in id_str:
-            slugs = [k for k in index if not k.startswith("H") and "." not in k]
+            slugs = [k for k in index if not k.startswith("S") and "." not in k]
             slug_list = ", ".join(slugs[:8])
             raise PrecisError(
                 f"'{id_str}' is not a valid SLUG.\n"
@@ -174,22 +290,38 @@ async def activate(session: Session, file: str, progress_cb=None) -> str:
 
     # Format toc output
     header = f"📄 {path.name}  ({len(nodes)} nodes)"
-    if file.endswith(".tex"):
-        parser = get_parser(file)
-        files = parser.source_files(path)
-        file_names = [f.name for f in files]
-        header += f"  [{len(files)} files: {', '.join(file_names)}]"
-
     lines = [header]
 
-    # LaTeX label hint
+    # LaTeX: show file listing with line counts
     if file.endswith(".tex"):
+        parser = get_parser(file)
+        source_files = parser.source_files(path)
+        lines.append(f"  📁 {path.parent.name}/  ({len(source_files)} files)")
+        for sf in source_files:
+            try:
+                lc = len(sf.read_text(encoding="utf-8").splitlines())
+            except Exception:
+                lc = 0
+            tag = "  [root]" if sf.name == path.name else ""
+            rel = (
+                sf.relative_to(path.parent)
+                if sf.is_relative_to(path.parent)
+                else sf.name
+            )
+            lines.append(f"    {rel}{tag}  {lc} lines")
+
+        # Label hint
         labels = [n.label for n in nodes if n.label]
         if labels:
             example = labels[0]
             lines.append(
                 f"Hint: \\label{{}} values work as IDs in get/put (e.g. '{example}')"
             )
+        # Raw file hint
+        lines.append(
+            "Hint: get(id='file.tex:1..50') for raw source, "
+            "put(id='file.tex:10..20', text='...') to edit"
+        )
 
     lines.append("")
     for node in nodes:
@@ -201,9 +333,7 @@ async def activate(session: Session, file: str, progress_cb=None) -> str:
 _LARGE_DOC_THRESHOLD = 100
 
 
-async def toc(
-    session: Session, scope: str = "", grep: str = "", depth: int = 0
-) -> str:
+async def toc(session: Session, scope: str = "", grep: str = "", depth: int = 0) -> str:
     """Navigate and search the active document."""
     file_path = session.require_active()
     path = Path(file_path)
@@ -260,12 +390,10 @@ async def toc(
 
     if auto_truncated:
         lines.append("")
+        lines.append(f"⚠ Large document ({total_nodes} nodes) — showing headings only.")
         lines.append(
-            f"⚠ Large document ({total_nodes} nodes) — showing headings only."
-        )
-        lines.append(
-            "Drill in: toc(scope='H3.2') for full section, "
-            "toc(depth=2) for outline, toc(depth=0, scope='H3') for all detail in §3."
+            "Drill in: toc(scope='S3.2') for full section, "
+            "toc(depth=2) for outline, toc(depth=0, scope='S3') for all detail in §3."
         )
 
     return "\n".join(lines)
@@ -274,6 +402,13 @@ async def toc(
 async def get(session: Session, id: str) -> str:
     """Read full content by id."""
     file_path = session.require_active()
+
+    # Raw file access: file.tex:start..end
+    raw = _parse_raw_file_id(id)
+    if raw is not None:
+        rel_path, start, end, _is_append = raw
+        return _raw_read(file_path, rel_path, start, end)
+
     nodes = _load_nodes(file_path)
     index = _build_index(nodes)
 
@@ -294,9 +429,13 @@ async def get(session: Session, id: str) -> str:
                 output_lines.append(n.meta_line())
                 if n.node_type != "h":
                     output_lines.append(n.text)
+                for c in n.comments:
+                    output_lines.append(f"  💬 [{c['author']}] {c['text']}")
         else:
             output_lines.append(node.meta_line())
             output_lines.append(node.text)
+            for c in node.comments:
+                output_lines.append(f"  💬 [{c['author']}] {c['text']}")
 
     return "\n".join(output_lines)
 
@@ -383,7 +522,9 @@ async def _put_multi(
     summary = f"Auto-split: {len(paragraphs)} paragraphs written\n"
     summary += "\n".join(results)
     if cursor_slug:
-        summary += f"\nHint: put(id='{cursor_slug}', text='...', mode='after') to write more"
+        summary += (
+            f"\nHint: put(id='{cursor_slug}', text='...', mode='after') to write more"
+        )
     summary += _citation_hints(file_path)
     return summary
 
@@ -402,11 +543,42 @@ async def put(
     # Strip leading/trailing whitespace (LLMs often prefix with \n)
     text = text.strip()
 
-    valid_modes = {"replace", "after", "before", "delete", "append"}
+    # Raw file write: file.tex:start..end or file.tex:$
+    if id:
+        raw = _parse_raw_file_id(id)
+        if raw is not None:
+            if not text:
+                raise PrecisError("text required for raw file write")
+            rel_path, start, end, is_append = raw
+            return _raw_write(file_path, rel_path, text, start, end, is_append)
+
+    valid_modes = {"replace", "after", "before", "delete", "append", "comment"}
     if mode not in valid_modes:
         raise PrecisError(
             f"invalid mode: {mode}\nValid modes: {', '.join(valid_modes)}"
         )
+
+    # Comment mode — DOCX only, no multi-paragraph
+    if mode == "comment":
+        if not text:
+            raise PrecisError("text required for comment mode")
+        if not id:
+            raise PrecisError("id required for comment mode")
+        if not file_path.endswith(".docx"):
+            raise PrecisError("comments only supported for .docx files")
+
+        parser = get_parser(file_path)
+        nodes = _load_nodes(file_path)
+        index = _build_index(nodes)
+        node = _resolve_id(id, index)
+
+        from precis.parser.docx import DocxParser
+
+        if not isinstance(parser, DocxParser):
+            raise PrecisError("comments only supported for .docx files")
+
+        comment_id = parser.write_comment(path, node, text, session.config.author)
+        return f"💬 {node.slug}  {node.path}  comment #{comment_id}\n" f"{text}"
 
     # Auto-split: if text contains newlines, split into paragraphs and apply each
     if text and "\n" in text:
@@ -421,9 +593,7 @@ async def put(
                 f"\nIt looks like you put the content in id= instead of text=.\n"
                 f"Use: put(text='{id}', mode='append')"
             )
-        raise PrecisError(
-            f"text required for mode=append{hint}"
-        )
+        raise PrecisError(f"text required for mode=append{hint}")
 
     if mode != "append" and not id:
         raise PrecisError(f"id required for mode={mode}")
@@ -452,7 +622,9 @@ async def put(
 
     if mode == "delete":
         parser.delete_node(path, node)
-        return f"- {node.slug}  {node.path}  deleted\nHint: toc() to see updated structure"
+        return (
+            f"- {node.slug}  {node.path}  deleted\nHint: toc() to see updated structure"
+        )
 
     if mode == "replace":
         if not text:

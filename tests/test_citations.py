@@ -236,7 +236,7 @@ class TestDocxCitationRead:
         parser = DocxParser()
         nodes = parser.parse(cite_docx)
         bibs = [n for n in nodes if n.node_type == "b"]
-        # Should be under the References heading (H2.0.0.0)
+        # Should be under the References heading (S2.0.0.0)
         assert "b" in str(bibs[0].path)
 
     def test_orphaned_citation_detected(self, orphan_docx: Path):

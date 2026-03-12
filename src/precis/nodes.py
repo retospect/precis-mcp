@@ -11,8 +11,8 @@ from typing import Optional
 SLUG_CHARS = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 SLUG_LEN = 5
 
-# Path regex: H{h1}.{h2}.{h3}.{h4}[{type}{n}]
-PATH_RE = re.compile(r"^H(\d+)\.(\d+)\.(\d+)\.(\d+)(?:([ptfeb])(\d+))?$")
+# Path regex: S{h1}[.{h2}[.{h3}[.{h4}]]][{type}{n}]
+PATH_RE = re.compile(r"^S(\d+)(?:\.(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?(?:([ptfeb])(\d+))?$")
 
 
 def make_slug(text: str) -> str:
@@ -50,18 +50,28 @@ class Path:
     index: int = 0  # 1-indexed within parent section
 
     def __str__(self) -> str:
-        base = f"H{self.h1}.{self.h2}.{self.h3}.{self.h4}"
+        parts = [str(self.h1)]
+        if self.h2 or self.h3 or self.h4:
+            parts.append(str(self.h2))
+        if self.h3 or self.h4:
+            parts.append(str(self.h3))
+        if self.h4:
+            parts.append(str(self.h4))
+        base = "S" + ".".join(parts)
         if self.node_type:
             return f"{base}{self.node_type}{self.index}"
         return base
 
     @classmethod
     def parse(cls, s: str) -> Path:
-        """Parse a path string like H1.2.0.0p3."""
+        """Parse a path string like S1.2p3 or S1.2.0.0p3."""
         m = PATH_RE.match(s)
         if not m:
             raise ValueError(f"Invalid path: {s!r}")
-        h1, h2, h3, h4 = int(m[1]), int(m[2]), int(m[3]), int(m[4])
+        h1 = int(m[1])
+        h2 = int(m[2]) if m[2] is not None else 0
+        h3 = int(m[3]) if m[3] is not None else 0
+        h4 = int(m[4]) if m[4] is not None else 0
         node_type = m[5] or ""
         index = int(m[6]) if m[6] else 0
         return cls(h1=h1, h2=h2, h3=h3, h4=h4, node_type=node_type, index=index)
@@ -99,9 +109,9 @@ class Path:
 
 
 def _source_loc(source_file: str, start: int, end: int) -> str:
-    """Format source location as file:start-end or file:start."""
+    """Format source location as file:start..end or file:start."""
     if end > start:
-        return f"{source_file}:{start}-{end}"
+        return f"{source_file}:{start}..{end}"
     return f"{source_file}:{start}"
 
 
@@ -119,6 +129,7 @@ class Node:
     source_line_start: int = 0  # LaTeX: start line
     source_line_end: int = 0  # LaTeX: end line
     label: str = ""  # LaTeX: \label{} value
+    comments: list[dict] = field(default_factory=list)  # [{id, author, text}]
 
     def heading_level(self) -> int:
         return self.path.heading_level()
@@ -126,23 +137,30 @@ class Node:
     def toc_line(self, max_width: int = 120) -> str:
         """Format as a single toc line.
 
-        Headings:  H1.0.0.0  KR8M2  #| Introduction
-        Content:   H1.0.0.0p1  HU73F  file:3-18  |  phrase; phrase; phrase
+        Headings:  S1    KR8M2  methods.tex:24..99  #| Introduction
+        Content:   S1p1  HU73F  methods.tex:30..45  |  phrase; phrase; phrase
         """
         path_str = str(self.path)
+        ctag = f" 💬{len(self.comments)}" if self.comments else ""
         if self.node_type == "h":
             level = self.heading_level()
             hashes = "#" * level if level else ""
-            line = f"{path_str}  {self.slug}  {hashes}| {self.text}"
+            if self.source_file:
+                loc = _source_loc(
+                    self.source_file, self.source_line_start, self.source_line_end
+                )
+                line = f"{path_str}  {self.slug}{ctag}  {loc}  {hashes}| {self.text}"
+            else:
+                line = f"{path_str}  {self.slug}{ctag}  {hashes}| {self.text}"
         else:
             display = self.precis or self.text
             if self.source_file:
                 loc = _source_loc(
                     self.source_file, self.source_line_start, self.source_line_end
                 )
-                line = f"{path_str}  {self.slug}  {loc}  |  {display}"
+                line = f"{path_str}  {self.slug}{ctag}  {loc}  |  {display}"
             else:
-                line = f"{path_str}  {self.slug}  |  {display}"
+                line = f"{path_str}  {self.slug}{ctag}  |  {display}"
 
         if len(line) > max_width:
             line = line[: max_width - 1] + "…"
@@ -155,7 +173,7 @@ class Node:
         if self.source_file:
             loc = f"{self.source_file}:{self.source_line_start}"
             if self.source_line_end > self.source_line_start:
-                loc = f"{self.source_file}:{self.source_line_start}-{self.source_line_end}"
+                loc = f"{self.source_file}:{self.source_line_start}..{self.source_line_end}"
             parts.append(loc)
         if self.node_type == "h":
             parts.append(self.text)

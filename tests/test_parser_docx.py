@@ -33,9 +33,9 @@ class TestDocxParse:
         parser = DocxParser()
         nodes = parser.parse(tmp_docx)
         paras = [n for n in nodes if n.node_type == "p"]
-        assert str(paras[0].path) == "H1.0.0.0p1"
-        assert str(paras[1].path) == "H1.0.0.0p2"
-        assert str(paras[2].path) == "H1.1.0.0p1"
+        assert str(paras[0].path) == "S1p1"
+        assert str(paras[1].path) == "S1p2"
+        assert str(paras[2].path) == "S1.1p1"
 
     def test_table_detection(self, tmp_docx: Path):
         parser = DocxParser()
@@ -161,3 +161,92 @@ class TestDocxTrackChanges:
         # File should still be valid DOCX
         new_nodes = parser.parse(tmp_docx)
         assert len(new_nodes) >= len(nodes) - 1  # may differ due to track changes
+
+
+class TestDocxComments:
+    def test_write_comment(self, tmp_docx: Path):
+        parser = DocxParser()
+        nodes = parser.parse(tmp_docx)
+        para = [n for n in nodes if n.node_type == "p"][0]
+
+        comment_id = parser.write_comment(tmp_docx, para, "Needs citation.")
+        assert comment_id >= 1
+
+        # File should still be valid DOCX
+        new_nodes = parser.parse(tmp_docx)
+        assert len(new_nodes) == len(nodes)
+
+    def test_comment_round_trip(self, tmp_docx: Path):
+        parser = DocxParser()
+        nodes = parser.parse(tmp_docx)
+        para = [n for n in nodes if n.node_type == "p"][0]
+
+        parser.write_comment(tmp_docx, para, "This claim needs a source.")
+
+        new_nodes = parser.parse(tmp_docx)
+        commented = [n for n in new_nodes if n.comments]
+        assert len(commented) == 1
+        assert commented[0].comments[0]["text"] == "This claim needs a source."
+        assert commented[0].comments[0]["author"] == "precis"
+
+    def test_multiple_comments_same_para(self, tmp_docx: Path):
+        parser = DocxParser()
+        nodes = parser.parse(tmp_docx)
+        para = [n for n in nodes if n.node_type == "p"][0]
+
+        id1 = parser.write_comment(tmp_docx, para, "First comment.")
+        # Re-parse to get updated node (slug may change due to comment ref run)
+        nodes = parser.parse(tmp_docx)
+        para = [n for n in nodes if n.node_type == "p"][0]
+        id2 = parser.write_comment(tmp_docx, para, "Second comment.")
+        assert id2 > id1
+
+        new_nodes = parser.parse(tmp_docx)
+        commented = [n for n in new_nodes if n.node_type == "p"][0]
+        assert len(commented.comments) == 2
+        texts = {c["text"] for c in commented.comments}
+        assert "First comment." in texts
+        assert "Second comment." in texts
+
+    def test_comments_on_different_paras(self, tmp_docx: Path):
+        parser = DocxParser()
+        nodes = parser.parse(tmp_docx)
+        paras = [n for n in nodes if n.node_type == "p"]
+
+        parser.write_comment(tmp_docx, paras[0], "Comment on first.")
+        nodes = parser.parse(tmp_docx)
+        paras = [n for n in nodes if n.node_type == "p"]
+        parser.write_comment(tmp_docx, paras[1], "Comment on second.")
+
+        new_nodes = parser.parse(tmp_docx)
+        commented = [n for n in new_nodes if n.comments]
+        assert len(commented) == 2
+
+    def test_no_comments_by_default(self, tmp_docx: Path):
+        parser = DocxParser()
+        nodes = parser.parse(tmp_docx)
+        for n in nodes:
+            assert n.comments == []
+
+    def test_comment_in_toc_line(self, tmp_docx: Path):
+        parser = DocxParser()
+        nodes = parser.parse(tmp_docx)
+        para = [n for n in nodes if n.node_type == "p"][0]
+
+        parser.write_comment(tmp_docx, para, "Review note.")
+
+        new_nodes = parser.parse(tmp_docx)
+        commented = [n for n in new_nodes if n.comments][0]
+        toc = commented.toc_line()
+        assert "💬1" in toc
+
+    def test_comment_author(self, tmp_docx: Path):
+        parser = DocxParser()
+        nodes = parser.parse(tmp_docx)
+        para = [n for n in nodes if n.node_type == "p"][0]
+
+        parser.write_comment(tmp_docx, para, "Custom author.", author="reviewer")
+
+        new_nodes = parser.parse(tmp_docx)
+        commented = [n for n in new_nodes if n.comments][0]
+        assert commented.comments[0]["author"] == "reviewer"
