@@ -1,3 +1,3 @@
 """Precis MCP — compressed structured context for .docx and .tex documents."""
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
