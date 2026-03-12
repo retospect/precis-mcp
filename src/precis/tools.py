@@ -580,8 +580,9 @@ async def put(
         comment_id = parser.write_comment(path, node, text, session.config.author)
         return f"💬 {node.slug}  {node.path}  comment #{comment_id}\n" f"{text}"
 
-    # Auto-split: if text contains newlines, split into paragraphs and apply each
-    if text and "\n" in text:
+    # Auto-split: DOCX only. LaTeX handles newlines natively.
+    is_docx = file_path.endswith(".docx")
+    if is_docx and text and "\n" in text:
         paragraphs = [ln.strip() for ln in text.split("\n") if ln.strip()]
         if len(paragraphs) > 1:
             return await _put_multi(session, id, paragraphs, mode, tracked)

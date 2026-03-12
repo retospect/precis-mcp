@@ -550,6 +550,30 @@ class TestPut:
             await put(session, text="note", mode="comment")
 
     @pytest.mark.asyncio
+    async def test_latex_multiline_no_split(self, session, tmp_tex):
+        """LaTeX multi-line text is NOT auto-split — written verbatim."""
+        await activate(session, str(tmp_tex))
+        preamble = "\\usepackage{amsmath}\n\\usepackage{graphicx}\n\\newcommand{\\R}{\\mathbb{R}}"
+        result = await put(session, text=preamble, mode="append")
+        assert "Auto-split" not in result
+        assert "+" in result
+        # append_node writes to last \input'd file (methods.tex)
+        methods = tmp_tex.parent / "methods.tex"
+        content = methods.read_text()
+        assert "\\usepackage{amsmath}" in content
+        assert "\\usepackage{graphicx}" in content
+        assert "\\newcommand" in content
+
+    @pytest.mark.asyncio
+    async def test_docx_multiline_still_splits(self, session, tmp_docx):
+        """DOCX multi-line text IS auto-split into paragraphs."""
+        await activate(session, str(tmp_docx))
+        result = await put(
+            session, text="Line one.\nLine two.\nLine three.", mode="append"
+        )
+        assert "Auto-split: 3 paragraphs" in result
+
+    @pytest.mark.asyncio
     async def test_comment_docx_only(self, session, tmp_tex):
         await activate(session, str(tmp_tex))
         nodes = _load_nodes(str(tmp_tex))
