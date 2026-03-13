@@ -322,7 +322,7 @@ async def activate(session: Session, file: str, progress_cb=None) -> str:
                 lc = 0
             tag = "  [root]" if sf.name == path.name else ""
             rel = (
-                sf.relative_to(path.parent)
+                sf.relative_to(path.parent).as_posix()
                 if sf.is_relative_to(path.parent)
                 else sf.name
             )
