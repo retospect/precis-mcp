@@ -452,8 +452,9 @@ class FileHandlerBase(Handler):
 
         new_nodes = self._load_nodes(file_path)
         new_node = None
+        # Match by index (position), not path — path changes when headings change
         for nn in new_nodes:
-            if str(nn.path) == str(node.path):
+            if nn.index == node.index:
                 new_node = nn
                 break
 
