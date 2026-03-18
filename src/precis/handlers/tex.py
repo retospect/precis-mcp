@@ -557,11 +557,12 @@ class TexHandler(FileHandlerBase):
 
 
 def _level_to_command(level: int) -> str:
+    # # → \section* (title), ## → \section, ### → \subsection, #### → \subsubsection
     return {
-        1: r"\section",
-        2: r"\subsection",
-        3: r"\subsubsection",
-        4: r"\paragraph",
+        1: r"\section*",
+        2: r"\section",
+        3: r"\subsection",
+        4: r"\subsubsection",
     }.get(level, r"\section")
 
 

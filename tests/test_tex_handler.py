@@ -309,7 +309,7 @@ class TestPut:
 
     def test_put_append_heading(self, handler, sample_tex):
         result = handler.put(
-            str(sample_tex), None, "# | Discussion", "append"
+            str(sample_tex), None, "## | Discussion", "append"
         )
         assert "+" in result
         content = sample_tex.read_text(encoding="utf-8")
