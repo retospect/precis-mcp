@@ -151,10 +151,10 @@ def put(
     tracked: DOCX track-changes (default true). LaTeX: ignored.
 
     Headings: start line with # markers. Never number them.
-      # Document Title    (H1 — one per document)
-      ## Section           (H2)
-      ### Subsection       (H3)
-      #### Sub-subsection  (H4, max depth)
+      # Document Title    (Title style — one per document)
+      ## Section           (Heading 1)
+      ### Subsection       (Heading 2)
+      #### Sub-subsection  (Heading 3, max depth)
 
     NEW content → mode='append' (creates file if needed):
       put(id='report.docx', text='## Methods', mode='append')

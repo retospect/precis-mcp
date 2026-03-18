@@ -357,10 +357,15 @@ def _atomic_save(doc: Document, path: Path) -> None:
 
 
 def _heading_level(style_name: str) -> int:
-    """Extract heading level from style name, or 0."""
+    """Extract heading level from style name, or 0.
+
+    Title → 1, Heading 1 → 1, Heading 2 → 2, Heading 3 → 3, Heading 4 → 4.
+    """
     if not style_name:
         return 0
     s = style_name.lower()
+    if s == "title":
+        return 1
     if s.startswith("heading"):
         rest = s[7:].strip()
         if rest.isdigit():
@@ -602,7 +607,11 @@ def _make_paragraph(doc, text: str, heading_level: int = 0):
 
     if heading_level:
         para = doc.add_paragraph(text)
-        para.style = doc.styles[f"Heading {heading_level}"]
+        # # → Title, ## → Heading 1, ### → Heading 2, #### → Heading 3
+        if heading_level == 1:
+            para.style = doc.styles["Title"]
+        else:
+            para.style = doc.styles[f"Heading {heading_level - 1}"]
     else:
         para = doc.add_paragraph()
         formatted_runs = markdown_to_runs(text)
