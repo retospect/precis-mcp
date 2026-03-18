@@ -419,9 +419,12 @@ class FileHandlerBase(Handler):
             lines.append(f"+ {nn.slug}  {nn.path}  {precis}")
 
         result = "\n".join(lines) if lines else "+ appended"
+        fname = Path(file_path).name
         if new_nodes:
             last = new_nodes[-1]
-            result += f"\n\nNext:\n  put(id='{Path(file_path).name}#{last.slug}', text='...', mode='after')"
+            result += f"\n\nNext:\n  put(id='{fname}#{last.slug}', text='...', mode='after')"
+        if len(new_nodes) > 3:
+            result += f"\n  get(id='{fname}', depth=2)  — review outline"
         result += self._citation_hints(file_path)
         return result
 

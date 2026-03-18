@@ -146,9 +146,15 @@ def put(
     """Write, annotate, or delete content.
 
     id: target identifier (file#slug for docs, paper slug for notes)
-    text: content to write. Headings: '## Title' (never number them).
+    text: content to write.
     mode: append / replace / after / before / delete / comment / note
     tracked: DOCX track-changes (default true). LaTeX: ignored.
+
+    Headings: start line with # markers. Never number them.
+      # Document Title    (H1 — one per document)
+      ## Section           (H2)
+      ### Subsection       (H3)
+      #### Sub-subsection  (H4, max depth)
 
     NEW content → mode='append' (creates file if needed):
       put(id='report.docx', text='## Methods', mode='append')
