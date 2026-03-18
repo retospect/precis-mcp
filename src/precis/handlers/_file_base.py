@@ -12,7 +12,7 @@ import re
 from abc import abstractmethod
 from pathlib import Path
 
-from precis.citations import BIB_DEF_RE, CITE_RE
+from precis.citations import BIB_DEF_RE, CITE_RE, MALFORMED_CHUNK_RE, MALFORMED_NO_AT_RE
 from precis.config import PrecisConfig
 from precis.formatting import group_paragraphs
 from precis.grep import parse_grep
@@ -547,10 +547,11 @@ class FileHandlerBase(Handler):
         return f"💬 {node.slug}  {node.path}  comment #{comment_id}\n{ANNOTATION} {text}"
 
     def _citation_hints(self, file_path: str) -> str:
-        """Scan for undefined citations and return hint text."""
+        """Scan for undefined/malformed citations and return hint text."""
         nodes = self._load_nodes(file_path)
         inline_keys: set[str] = set()
         defined_keys: set[str] = set()
+        malformed: list[tuple[str, str, str]] = []  # (bad, slug, fix)
         for node in nodes:
             text = node.text or ""
             for m in CITE_RE.finditer(text):
@@ -559,18 +560,39 @@ class FileHandlerBase(Handler):
                 defined_keys.add(node.label)
             for m in BIB_DEF_RE.finditer(text):
                 defined_keys.add(m.group(1))
-        undefined = sorted(inline_keys - defined_keys)
-        if not undefined:
-            return ""
+            # Detect malformed citations
+            for m in MALFORMED_CHUNK_RE.finditer(text):
+                slug = m.group(1)
+                malformed.append((m.group(0), slug, f"[@{slug}]"))
+            for m in MALFORMED_NO_AT_RE.finditer(text):
+                slug = m.group(1)
+                malformed.append((m.group(0), slug, f"[@{slug}]"))
+
+        parts: list[str] = []
         fname = Path(file_path).name
-        lines = [f"\n\n⚠ {len(undefined)} undefined citation(s):"]
-        for key in undefined:
-            lines.append(
-                f"  put(id='{fname}', text='[@{key}]: <full reference>', mode='append')"
-            )
-        first = undefined[0]
-        lines.append(f"Tip: get(id='{first}/cite') to look up citation text")
-        return "\n".join(lines)
+
+        if malformed:
+            seen: set[str] = set()
+            unique = []
+            for bad, slug, fix in malformed:
+                if bad not in seen:
+                    seen.add(bad)
+                    unique.append((bad, slug, fix))
+            parts.append(f"\n\n⚠ {len(unique)} malformed citation(s) — use [@slug], never [slug] or [slug#N]:")
+            for bad, slug, fix in unique:
+                parts.append(f"  {bad} → {fix}")
+
+        undefined = sorted(inline_keys - defined_keys)
+        if undefined:
+            parts.append(f"\n\n⚠ {len(undefined)} undefined citation(s):")
+            for key in undefined:
+                parts.append(
+                    f"  put(id='{fname}', text='[@{key}]: <full reference>', mode='append')"
+                )
+            first = undefined[0]
+            parts.append(f"Tip: get(id='{first}/cite') to look up citation text")
+
+        return "\n".join(parts) if parts else ""
 
     def _resolve_path(self, path: str) -> str:
         """Resolve and validate the file path."""

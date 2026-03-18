@@ -227,6 +227,7 @@ class PaperHandler(Handler):
         lines.append(f"  get(id='{slug}#0..10')  — first 10 chunks")
         lines.append(f"  get(id='{slug}/cite/bib')  — BibTeX citation")
         lines.append(f"  get(id='{slug}/summary')  — paper summary")
+        lines.append(f"  Cite in docs: [@{slug}]")
         return "\n".join(lines)
 
     def _read_abstract(self, store, paper: dict) -> str:
@@ -541,9 +542,10 @@ class PaperHandler(Handler):
             lines.append(text)
             lines.append("")
 
-        # Pagination hint
+        # Hints
         if end - start >= 10:
             lines.append(f"Next: get(id='{slug}#{end}..') for more")
+        lines.append(f"Cite in docs: [@{slug}]")
         return "\n".join(lines)
 
     def _read_figures(self, store, paper: dict) -> str:
@@ -622,6 +624,15 @@ class PaperHandler(Handler):
                 batch = ",".join(f"{s}#{b}" for s, b in seen)
                 lines.append(f"  get(id='{batch}')  — batch read")
             lines.append(f"  get(id='{s0}/toc')  — paper structure")
+        # Cite hints for all unique slugs in results
+        cite_slugs = list(dict.fromkeys(
+            hit.get("paper", {}).get("slug", hit.get("metadata", {}).get("slug", ""))
+            for hit in hits
+        ))
+        cite_slugs = [s for s in cite_slugs if s]
+        if cite_slugs:
+            cites = ", ".join(f"[@{s}]" for s in cite_slugs[:5])
+            lines.append(f"  Cite in docs: {cites}")
         return "\n".join(lines)
 
     def _write_note(

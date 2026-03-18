@@ -161,9 +161,10 @@ def put(
       put(id='report.docx#PLXDX', text='Fix this.', mode='comment')
 
     Citations (DOCX):
-      Cite: use [@key] in text.
-      Define: put(id='report.docx', text='[@key]: Author, Title, 2024.', mode='append')
-      Undefined [@key] references are flagged after each write.
+      Cite: [@slug] in text — slug is the paper name, NEVER include #chunk.
+      ✓ [@piscopo2020strategies]  ✗ [piscopo2020strategies#54]  ✗ [piscopo2020strategies]
+      Define: put(id='report.docx', text='[@slug]: Author, Title, 2024.', mode='append')
+      Undefined [@slug] references are flagged after each write.
 
     Paper notes:
       put(id='wang2020state', text='Key finding', mode='note')
