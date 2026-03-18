@@ -442,13 +442,20 @@ class FileHandlerBase(Handler):
         index = self._build_index(nodes)
         node = self._resolve_node(selector, index)
 
-        heading_level = _heading_level_from_text(text)
-        clean = _clean_heading(text) if heading_level else text
+        chunks = group_paragraphs(text)
+
+        # First chunk replaces the target node
+        first = chunks[0]
+        heading_level = _heading_level_from_text(first)
+        clean = _clean_heading(first) if heading_level else first
 
         if tracked:
             self.write_tracked(fpath, node, clean, self.config.author)
         else:
             self.write_node(fpath, node, clean)
+
+        # Insert remaining chunks after the replaced node
+        self._insert_chunks_after(file_path, node.index, chunks[1:])
 
         new_nodes = self._load_nodes(file_path)
         new_node = None
@@ -461,11 +468,16 @@ class FileHandlerBase(Handler):
         if new_node:
             tracked_label = " tracked" if tracked else ""
             precis = new_node.precis or clean
-            return (
-                f"{node.slug} → {new_node.slug}  {node.path}{tracked_label}  replace\n"
-                f"{DERIVED}  {precis}"
-                + self._citation_hints(file_path)
-            )
+            lines = [
+                f"{node.slug} → {new_node.slug}  {node.path}{tracked_label}  replace",
+                f"{DERIVED}  {precis}",
+            ]
+            for i in range(1, len(chunks)):
+                idx = node.index + i
+                if idx < len(new_nodes):
+                    en = new_nodes[idx]
+                    lines.append(f"+ {en.slug}  {en.path}")
+            return "\n".join(lines) + self._citation_hints(file_path)
         return f"{node.slug} → ???  {node.path}  replace"
 
     def _put_insert(
@@ -479,30 +491,52 @@ class FileHandlerBase(Handler):
         index = self._build_index(nodes)
         node = self._resolve_node(selector, index)
 
-        heading_level = _heading_level_from_text(text)
-        clean = _clean_heading(text) if heading_level else text
+        chunks = group_paragraphs(text)
+
+        # First chunk: insert before or after anchor
+        first = chunks[0]
+        hl = _heading_level_from_text(first)
+        clean = _clean_heading(first) if hl else first
 
         if mode == "after":
-            self.insert_after(fpath, node, clean, heading_level)
+            self.insert_after(fpath, node, clean, hl)
+            # New node lands right after anchor
+            first_new_idx = node.index + 1
         else:
-            self.insert_before(fpath, node, clean, heading_level)
+            self.insert_before(fpath, node, clean, hl)
+            # New node takes the anchor's old position
+            first_new_idx = node.index
+
+        # Insert remaining chunks after the first inserted one
+        self._insert_chunks_after(file_path, first_new_idx, chunks[1:])
 
         new_nodes = self._load_nodes(file_path)
         old_slugs = {n.slug for n in nodes}
-        new_node = None
-        for nn in new_nodes:
-            if nn.slug not in old_slugs:
-                new_node = nn
-                break
+        new_added = [nn for nn in new_nodes if nn.slug not in old_slugs]
 
-        if new_node:
-            precis = new_node.precis or clean
-            return (
-                f"+ {new_node.slug}  {new_node.path}  {mode} {node.slug}\n"
-                f"{DERIVED}  {precis}"
-                + self._citation_hints(file_path)
-            )
+        if new_added:
+            lines = []
+            for nn in new_added:
+                precis = nn.precis or (nn.text[:60] if nn.text else "")
+                lines.append(f"+ {nn.slug}  {nn.path}  {mode} {node.slug}")
+            lines.append(f"{DERIVED}  {new_added[0].precis or clean}")
+            return "\n".join(lines) + self._citation_hints(file_path)
         return f"+ ???  {mode} {node.slug}"
+
+    def _insert_chunks_after(
+        self, file_path: str, anchor_idx: int, chunks: list[str]
+    ) -> None:
+        """Insert chunks sequentially, each after the previous one."""
+        fpath = Path(file_path)
+        for chunk in chunks:
+            current_nodes = self._load_nodes(file_path)
+            if anchor_idx >= len(current_nodes):
+                break
+            anchor = current_nodes[anchor_idx]
+            hl = _heading_level_from_text(chunk)
+            c = _clean_heading(chunk) if hl else chunk
+            self.insert_after(fpath, anchor, c, hl)
+            anchor_idx += 1
 
     def _put_move(self, file_path: str, selector: str | None, target_slug: str) -> str:
         if not selector:
