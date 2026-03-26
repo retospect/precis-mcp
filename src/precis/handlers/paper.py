@@ -669,6 +669,7 @@ class PaperHandler(Handler):
                 block_node_id=block_node_id,
                 title=title or None,
                 tags=tags or None,
+                origin="bot",
             )
             return f"📝 Note #{note_id} on {slug}#{block_idx}\n{text}"
         else:
@@ -678,5 +679,6 @@ class PaperHandler(Handler):
                 ref_id=ref_id,
                 title=title or None,
                 tags=tags or None,
+                origin="bot",
             )
             return f"📝 Note #{note_id} on {slug}\n{text}"
