@@ -43,7 +43,7 @@ def _to_uri(id: str) -> str:
     # Strip accidental scheme prefixes the LLM might copy
     for prefix in ("slug:", "s2:", "ref:"):
         if id.startswith(prefix):
-            id = id[len(prefix):]
+            id = id[len(prefix) :]
             break
     # Auto-detect bare DOI (10.NNNN/...)
     bare = id.split("~")[0]
@@ -58,6 +58,7 @@ def _to_uri(id: str) -> str:
 
 
 # ── Tools ────────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 def search(
@@ -151,7 +152,7 @@ def get(
             parts.append(result)
             # Check budget after adding (always include at least 1 result)
             if total > _MULTI_ID_BUDGET and i < len(ids) - 1:
-                remaining = ids[i + 1:]
+                remaining = ids[i + 1 :]
                 parts.append(
                     f"\n[{i + 1} of {len(ids)} IDs shown. "
                     f"Remaining: get(id='{','.join(remaining)}')]"
@@ -217,7 +218,9 @@ def put(
     Multiple paragraphs separated by newlines are auto-split.
     """
     uri = _to_uri(id)
-    return tools.put(uri=uri, text=text, mode=mode, tracked=tracked, note=note, link=link)
+    return tools.put(
+        uri=uri, text=text, mode=mode, tracked=tracked, note=note, link=link
+    )
 
 
 @mcp.tool()

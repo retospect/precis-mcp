@@ -48,7 +48,16 @@ _BIB_ENTRY_START_RE = re.compile(r"@(\w+)\{([^,\s]+)\s*,")
 
 # Allowed extensions for raw file access
 _RAW_ALLOWED_EXT = {
-    ".tex", ".bib", ".sty", ".cls", ".bst", ".txt", ".md", ".csv", ".tikz", ".pgf",
+    ".tex",
+    ".bib",
+    ".sty",
+    ".cls",
+    ".bst",
+    ".txt",
+    ".md",
+    ".csv",
+    ".tikz",
+    ".pgf",
 }
 _RAW_FILE_RE = re.compile(r"^([\w./ \-]+\.[a-zA-Z]+)(?::(\d+|\$)(?:\.\.(\d+)?)?)?$")
 
@@ -226,7 +235,9 @@ class TexHandler(FileHandlerBase):
                 return _raw_read(file_path, rel_path, start, end)
 
         # Delegate to base implementation
-        return super().read(path, selector, view, subview, query, summarize, depth, page)
+        return super().read(
+            path, selector, view, subview, query, summarize, depth, page
+        )
 
     def put(
         self,
@@ -354,7 +365,9 @@ class TexHandler(FileHandlerBase):
 
                 if env_name in TABLE_ENVS:
                     start_line = i + 1
-                    env_content, end_line = self._collect_environment(lines, i, env_name)
+                    env_content, end_line = self._collect_environment(
+                        lines, i, env_name
+                    )
                     label = ""
                     label_m = LABEL_RE.search(env_content)
                     if label_m:
@@ -383,7 +396,9 @@ class TexHandler(FileHandlerBase):
 
                 elif env_name in FIGURE_ENVS:
                     start_line = i + 1
-                    env_content, end_line = self._collect_environment(lines, i, env_name)
+                    env_content, end_line = self._collect_environment(
+                        lines, i, env_name
+                    )
                     label = ""
                     label_m = LABEL_RE.search(env_content)
                     if label_m:
@@ -415,7 +430,9 @@ class TexHandler(FileHandlerBase):
 
                 elif env_name in EQUATION_ENVS:
                     start_line = i + 1
-                    env_content, end_line = self._collect_environment(lines, i, env_name)
+                    env_content, end_line = self._collect_environment(
+                        lines, i, env_name
+                    )
                     label = ""
                     label_m = LABEL_RE.search(env_content)
                     if label_m:
@@ -443,7 +460,9 @@ class TexHandler(FileHandlerBase):
 
                 elif env_name in LIST_ENVS:
                     start_line = i + 1
-                    env_content, end_line = self._collect_environment(lines, i, env_name)
+                    env_content, end_line = self._collect_environment(
+                        lines, i, env_name
+                    )
                     md_text = _list_env_to_markdown(env_content, env_name)
 
                     node_path = counter.next_child("p")
@@ -568,8 +587,15 @@ def _level_to_command(level: int) -> str:
 
 def _is_content_command(line: str) -> bool:
     content_prefixes = (
-        r"\textbf", r"\textit", r"\emph", r"\cite", r"\ref",
-        r"\eqref", r"\footnote", r"\url", r"\href",
+        r"\textbf",
+        r"\textit",
+        r"\emph",
+        r"\cite",
+        r"\ref",
+        r"\eqref",
+        r"\footnote",
+        r"\url",
+        r"\href",
     )
     for prefix in content_prefixes:
         if line.startswith(prefix):
@@ -600,7 +626,11 @@ def _list_env_to_markdown(content: str, env_name: str) -> str:
             rest = m.group(1).strip()
             if rest:
                 current.append(rest)
-        elif stripped and not stripped.startswith(r"\begin") and not stripped.startswith(r"\end"):
+        elif (
+            stripped
+            and not stripped.startswith(r"\begin")
+            and not stripped.startswith(r"\end")
+        ):
             if current is not None:
                 current.append(stripped)
 
@@ -676,7 +706,13 @@ def _parse_bib_entries(content: str) -> list[tuple[str, str, str, int, int]]:
                     break
             else:
                 entries.append(
-                    (entry_type, key, "\n".join(collected), start + 1, i + len(collected))
+                    (
+                        entry_type,
+                        key,
+                        "\n".join(collected),
+                        start + 1,
+                        i + len(collected),
+                    )
                 )
                 i += len(collected)
         else:
@@ -780,9 +816,7 @@ def _parse_raw_file_id(id_str: str) -> tuple[str, int | None, int | None, bool] 
     return (rel_path, start, end, is_append)
 
 
-def _raw_read(
-    file_path: str, rel_path: str, start: int | None, end: int | None
-) -> str:
+def _raw_read(file_path: str, rel_path: str, start: int | None, end: int | None) -> str:
     root = Path(file_path).parent
     full_path = (root / rel_path).resolve()
     if not full_path.is_relative_to(root.resolve()):

@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
 
-from precis.handlers._ref_base import RefHandler, _get_store, _truncate
+from precis.handlers._ref_base import RefHandler, _truncate
 from precis.protocol import PrecisError
 
 log = logging.getLogger(__name__)
@@ -26,7 +25,17 @@ class PaperHandler(RefHandler):
     scheme = "paper"
     writable = False
     corpus_id = "papers"
-    views = {"meta", "abstract", "summary", "toc", "chunk", "page", "fig", "cite", "links"}
+    views = {
+        "meta",
+        "abstract",
+        "summary",
+        "toc",
+        "chunk",
+        "page",
+        "fig",
+        "cite",
+        "links",
+    }
     extensions: set[str] = set()
 
     _ref_noun = "paper"
@@ -35,7 +44,11 @@ class PaperHandler(RefHandler):
     # ── Subclass hooks ───────────────────────────────────────────────
 
     def _dispatch_view(
-        self, store, ref: dict, view: str | None, subview: str | None,
+        self,
+        store,
+        ref: dict,
+        view: str | None,
+        subview: str | None,
         selector: str | None,
     ) -> str | None:
         if view == "abstract":
@@ -97,8 +110,17 @@ class PaperHandler(RefHandler):
 
     def _read_meta(self, ref: dict) -> str:
         lines = []
-        for key in ("slug", "title", "authors", "year", "journal", "doi",
-                     "volume", "pages", "issn"):
+        for key in (
+            "slug",
+            "title",
+            "authors",
+            "year",
+            "journal",
+            "doi",
+            "volume",
+            "pages",
+            "issn",
+        ):
             val = ref.get(key, "")
             if val:
                 lines.append(f"  {key}: {val}")
@@ -278,6 +300,7 @@ class PaperHandler(RefHandler):
                 f"Try: get(id='{slug}/fig') to list available figures."
             )
         import base64
+
         b64 = base64.b64encode(result["image_bytes"]).decode("ascii")
         mime = "image/png" if result["image_ext"] == ".png" else "image/jpeg"
         lines = [
@@ -337,4 +360,3 @@ class PaperHandler(RefHandler):
             lines.append(text)
             lines.append("")
         return "\n".join(lines)
-

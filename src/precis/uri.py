@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 # Schemes where / is part of the identifier (not a view separator)
 _OPAQUE_PATH_SCHEMES = {"doi", "arxiv", "usc", "irs", "ie"}
@@ -79,10 +78,10 @@ class ParsedURI:
     # Parsed selector details (populated by resolve_selector)
     selector_type: str = ""  # "slug", "index", "path", "label", ""
     anchor: str | None = None  # resolved anchor (slug, index str, path str)
-    range_start: Optional[int] = None  # absolute range start
-    range_end: Optional[int] = None  # absolute range end (None = open)
-    context_before: Optional[int] = None  # -N in context window
-    context_after: Optional[int] = None  # +M in context window
+    range_start: int | None = None  # absolute range start
+    range_end: int | None = None  # absolute range end (None = open)
+    context_before: int | None = None  # -N in context window
+    context_after: int | None = None  # +M in context window
 
     @property
     def is_bare(self) -> bool:
@@ -115,13 +114,13 @@ def parse(uri: str) -> ParsedURI:
         raise ValueError(f"Invalid URI (no scheme): {uri!r}")
 
     scheme = raw[:colon].lower()
-    rest = raw[colon + 1:]
+    rest = raw[colon + 1 :]
 
     # Split off ~selector
     selector = None
     tilde_pos = rest.find("~")
     if tilde_pos >= 0:
-        selector = rest[tilde_pos + 1:]
+        selector = rest[tilde_pos + 1 :]
         rest = rest[:tilde_pos]
         # Selector might contain /view — split at first / after the selector core
         # But only if / comes after range syntax is done

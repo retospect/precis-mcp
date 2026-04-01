@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import pytest
 from docx import Document
 
@@ -99,17 +96,13 @@ class TestParse:
 
 class TestRead:
     def test_read_toc(self, handler, sample_docx):
-        result = handler.read(
-            str(sample_docx), None, None, None, "", False, 0, 1
-        )
+        result = handler.read(str(sample_docx), None, None, None, "", False, 0, 1)
         assert "test.docx" in result
         assert "Introduction" in result
         assert "Methods" in result
 
     def test_read_toc_depth(self, handler, sample_docx):
-        result = handler.read(
-            str(sample_docx), None, None, None, "", False, 1, 1
-        )
+        result = handler.read(str(sample_docx), None, None, None, "", False, 1, 1)
         # depth=1 should show only level-1 headings
         assert "Introduction" in result
         assert "Subsection A" not in result
@@ -117,9 +110,7 @@ class TestRead:
     def test_read_selector_heading(self, handler, sample_docx):
         nodes = handler.parse(sample_docx)
         intro = [n for n in nodes if n.text == "Introduction"][0]
-        result = handler.read(
-            str(sample_docx), intro.slug, None, None, "", False, 0, 1
-        )
+        result = handler.read(str(sample_docx), intro.slug, None, None, "", False, 0, 1)
         assert "Introduction" in result
         # Children shown as precis lines (multi-node section)
         para_slugs = [n.slug for n in nodes if n.node_type == "p" and n.path.h1 == 1]
@@ -129,16 +120,16 @@ class TestRead:
     def test_read_selector_paragraph(self, handler, sample_docx):
         nodes = handler.parse(sample_docx)
         para = [n for n in nodes if n.node_type == "p"][0]
-        result = handler.read(
-            str(sample_docx), para.slug, None, None, "", False, 0, 1
-        )
+        result = handler.read(str(sample_docx), para.slug, None, None, "", False, 0, 1)
         assert para.text in result
 
     def test_read_query(self, handler, sample_docx):
         result = handler.read(
             str(sample_docx), None, None, None, "novel approach", False, 0, 1
         )
-        assert "novel approach" in result.lower() or "1 hits" in result or "hit" in result
+        assert (
+            "novel approach" in result.lower() or "1 hits" in result or "hit" in result
+        )
 
     def test_read_query_no_match(self, handler, sample_docx):
         result = handler.read(
@@ -147,16 +138,12 @@ class TestRead:
         assert "No matches" in result or "0 hits" in result
 
     def test_read_meta(self, handler, sample_docx):
-        result = handler.read(
-            str(sample_docx), None, "meta", None, "", False, 0, 1
-        )
+        result = handler.read(str(sample_docx), None, "meta", None, "", False, 0, 1)
         assert "nodes:" in result
         assert "headings:" in result
 
     def test_read_empty_doc(self, handler, empty_docx):
-        result = handler.read(
-            str(empty_docx), None, None, None, "", False, 0, 1
-        )
+        result = handler.read(str(empty_docx), None, None, None, "", False, 0, 1)
         assert "empty" in result.lower() or "0 nodes" in result
 
 
@@ -165,9 +152,7 @@ class TestRead:
 
 class TestPut:
     def test_put_append(self, handler, sample_docx):
-        result = handler.put(
-            str(sample_docx), None, "A new paragraph.", "append"
-        )
+        result = handler.put(str(sample_docx), None, "A new paragraph.", "append")
         assert "+" in result
         # Verify it was written
         nodes = handler.parse(sample_docx)
@@ -175,9 +160,7 @@ class TestPut:
         assert "A new paragraph." in texts
 
     def test_put_append_heading(self, handler, sample_docx):
-        result = handler.put(
-            str(sample_docx), None, "# | Discussion", "append"
-        )
+        result = handler.put(str(sample_docx), None, "# | Discussion", "append")
         assert "+" in result
         nodes = handler.parse(sample_docx)
         headings = [n for n in nodes if n.node_type == "h"]
@@ -187,7 +170,10 @@ class TestPut:
         nodes = handler.parse(sample_docx)
         para = [n for n in nodes if n.node_type == "p"][0]
         result = handler.put(
-            str(sample_docx), para.slug, "Replaced text here.", "replace",
+            str(sample_docx),
+            para.slug,
+            "Replaced text here.",
+            "replace",
             tracked=False,
         )
         assert "replace" in result.lower()
@@ -206,9 +192,7 @@ class TestPut:
     def test_put_insert_after(self, handler, sample_docx):
         nodes = handler.parse(sample_docx)
         para = [n for n in nodes if n.node_type == "p"][0]
-        result = handler.put(
-            str(sample_docx), para.slug, "Inserted after.", "after"
-        )
+        result = handler.put(str(sample_docx), para.slug, "Inserted after.", "after")
         assert "+" in result
         new_nodes = handler.parse(sample_docx)
         texts = [n.text for n in new_nodes]
@@ -217,9 +201,7 @@ class TestPut:
     def test_put_insert_before(self, handler, sample_docx):
         nodes = handler.parse(sample_docx)
         para = [n for n in nodes if n.node_type == "p"][0]
-        result = handler.put(
-            str(sample_docx), para.slug, "Inserted before.", "before"
-        )
+        result = handler.put(str(sample_docx), para.slug, "Inserted before.", "before")
         assert "+" in result
         new_nodes = handler.parse(sample_docx)
         texts = [n.text for n in new_nodes]
@@ -248,7 +230,10 @@ class TestTrackedChanges:
         nodes = handler.parse(sample_docx)
         para = [n for n in nodes if n.node_type == "p"][0]
         result = handler.put(
-            str(sample_docx), para.slug, "Tracked replacement.", "replace",
+            str(sample_docx),
+            para.slug,
+            "Tracked replacement.",
+            "replace",
             tracked=True,
         )
         assert "tracked" in result.lower() or "replace" in result.lower()
@@ -271,16 +256,12 @@ class TestComments:
         new_nodes = handler.parse(sample_docx)
         commented = [n for n in new_nodes if n.comments]
         assert len(commented) >= 1
-        assert any(
-            c["text"] == "Test comment" for n in commented for c in n.comments
-        )
+        assert any(c["text"] == "Test comment" for n in commented for c in n.comments)
 
     def test_put_note_mode(self, handler, sample_docx):
         nodes = handler.parse(sample_docx)
         para = [n for n in nodes if n.node_type == "p"][0]
-        result = handler.put(
-            str(sample_docx), para.slug, "Note via put", "note"
-        )
+        result = handler.put(str(sample_docx), para.slug, "Note via put", "note")
         assert "comment" in result.lower() or "💬" in result
 
 
@@ -318,9 +299,7 @@ class TestMove:
         assert len(paras) >= 2
 
         # Move second paragraph after the first
-        result = handler.put(
-            str(sample_docx), paras[1].slug, paras[0].slug, "move"
-        )
+        result = handler.put(str(sample_docx), paras[1].slug, paras[0].slug, "move")
         assert "moved" in result.lower()
 
 
@@ -363,7 +342,8 @@ class TestLists:
     def test_append_bullet_list(self, handler, sample_docx):
         """Appending '- item' text should create list-styled paragraphs."""
         result = handler.put(
-            str(sample_docx), None,
+            str(sample_docx),
+            None,
             "- Alpha\n- Beta\n- Gamma",
             "append",
         )
@@ -375,7 +355,8 @@ class TestLists:
     def test_append_numbered_list(self, handler, sample_docx):
         """Appending '1. item' text should create numbered list paragraphs."""
         result = handler.put(
-            str(sample_docx), None,
+            str(sample_docx),
+            None,
             "1. First\n2. Second",
             "append",
         )

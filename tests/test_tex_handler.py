@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from precis.handlers.tex import TexHandler
@@ -260,9 +258,7 @@ class TestBib:
 
 class TestRead:
     def test_read_toc(self, handler, sample_tex):
-        result = handler.read(
-            str(sample_tex), None, None, None, "", False, 0, 1
-        )
+        result = handler.read(str(sample_tex), None, None, None, "", False, 0, 1)
         assert "main.tex" in result
         assert "Introduction" in result
         assert "Methods" in result
@@ -270,9 +266,7 @@ class TestRead:
     def test_read_selector(self, handler, sample_tex):
         nodes = handler.parse(sample_tex)
         intro = [n for n in nodes if n.text == "Introduction"][0]
-        result = handler.read(
-            str(sample_tex), intro.slug, None, None, "", False, 0, 1
-        )
+        result = handler.read(str(sample_tex), intro.slug, None, None, "", False, 0, 1)
         assert "Introduction" in result
 
     def test_read_query(self, handler, sample_tex):
@@ -282,9 +276,7 @@ class TestRead:
         assert "significant" in result.lower() or "hit" in result.lower()
 
     def test_read_meta(self, handler, sample_tex):
-        result = handler.read(
-            str(sample_tex), None, "meta", None, "", False, 0, 1
-        )
+        result = handler.read(str(sample_tex), None, "meta", None, "", False, 0, 1)
         assert "nodes:" in result
 
     def test_read_raw_file(self, handler, sample_tex):
@@ -300,17 +292,13 @@ class TestRead:
 
 class TestPut:
     def test_put_append(self, handler, sample_tex):
-        result = handler.put(
-            str(sample_tex), None, "A concluding remark.", "append"
-        )
+        result = handler.put(str(sample_tex), None, "A concluding remark.", "append")
         assert "+" in result
         content = sample_tex.read_text(encoding="utf-8")
         assert "A concluding remark." in content
 
     def test_put_append_heading(self, handler, sample_tex):
-        result = handler.put(
-            str(sample_tex), None, "## | Discussion", "append"
-        )
+        result = handler.put(str(sample_tex), None, "## | Discussion", "append")
         assert "+" in result
         content = sample_tex.read_text(encoding="utf-8")
         assert r"\section{Discussion}" in content
@@ -321,7 +309,10 @@ class TestPut:
         assert len(paras) > 0
         para = paras[0]
         result = handler.put(
-            str(sample_tex), para.slug, "Completely new text.", "replace",
+            str(sample_tex),
+            para.slug,
+            "Completely new text.",
+            "replace",
             tracked=False,
         )
         assert "replace" in result.lower()
@@ -370,9 +361,7 @@ class TestRawAccess:
         assert "% appended comment" in content
 
     def test_raw_read_whole_file(self, handler, sample_tex):
-        result = handler.read(
-            str(sample_tex), "main.tex", None, None, "", False, 0, 1
-        )
+        result = handler.read(str(sample_tex), "main.tex", None, None, "", False, 0, 1)
         assert "lines" in result
 
     def test_raw_path_escape(self, handler, sample_tex):
@@ -472,7 +461,8 @@ class TestLists:
 class TestBibWrite:
     def test_append_bib_entry(self, handler, tex_with_bib):
         result = handler.put(
-            str(tex_with_bib), None,
+            str(tex_with_bib),
+            None,
             "[@doe2025]: Doe, J. A great paper. 2025.",
             "append",
         )

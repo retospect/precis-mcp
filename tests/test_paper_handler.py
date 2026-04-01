@@ -1,8 +1,6 @@
 """Tests for paper handler date/tag/filter features."""
 
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from precis.handlers._ref_base import (
     _parse_date_value,
@@ -15,14 +13,14 @@ from precis.handlers._ref_base import (
 class TestParseDateValue:
     def test_today(self):
         result = _parse_date_value("today")
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         assert result is not None
         assert result.hour == 0 and result.minute == 0
         assert result.date() == now.date()
 
     def test_yesterday(self):
         result = _parse_date_value("yesterday")
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         assert result is not None
         assert result.date() == (now - timedelta(days=1)).date()
 
@@ -105,7 +103,7 @@ class TestParseFilters:
 
 class TestRelativeDate:
     def _utcnow(self):
-        return datetime.now(timezone.utc).replace(tzinfo=None)
+        return datetime.now(UTC).replace(tzinfo=None)
 
     def test_today(self):
         assert _relative_date(self._utcnow()) == "today"

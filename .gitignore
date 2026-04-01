@@ -1,6 +1,9 @@
 __pycache__/
-*.pyc
-dist/
+*.py[cod]
 *.egg-info/
-.eggs/
-uv.lock
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.venv/

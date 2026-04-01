@@ -9,11 +9,11 @@ import re
 
 import pytest
 
-from precis.server import _to_uri, get, put, search, move
+from precis.server import _to_uri, get, move, put, search
 from precis.uri import parse
 
-
 # ── Extract every example URI from tool docstrings ─────────────────
+
 
 def _extract_ids(docstring: str) -> list[str]:
     """Pull id='...' and scope='...' values from a docstring."""
@@ -50,6 +50,7 @@ class TestDocstringExamplesParse:
 
 
 # ── _to_uri dispatch: does the LLM's raw input land correctly? ─────
+
 
 class TestToUriDispatch:
     """_to_uri must route common LLM inputs to the right scheme."""
@@ -105,6 +106,7 @@ class TestToUriDispatch:
 
 # ── Tilde is the selector separator ────────────────────────────────
 
+
 class TestTildeSeparator:
     """~ must work as selector separator throughout the parse chain."""
 
@@ -144,6 +146,7 @@ class TestTildeSeparator:
 
 # ── Hash is NOT a separator (clean break) ──────────────────────────
 
+
 class TestHashRejected:
     """# must NOT be treated as a selector separator."""
 
@@ -161,6 +164,7 @@ class TestHashRejected:
 
 
 # ── View paths stay with / ─────────────────────────────────────────
+
 
 class TestViewPaths:
     """/ separates views — these are NOT selectors."""
@@ -199,6 +203,7 @@ class TestViewPaths:
 
 
 # ── Description conciseness ────────────────────────────────────────
+
 
 # Approximate token count: ~4 chars per token for English
 def _approx_tokens(text: str) -> int:

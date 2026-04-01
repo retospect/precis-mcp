@@ -2,8 +2,7 @@
 
 import pytest
 
-from precis.uri import ParsedURI, parse
-
+from precis.uri import parse
 
 # ─── Basic scheme + path ────────────────────────────────────────────
 

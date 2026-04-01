@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from precis.handlers.markdown import MarkdownHandler
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def handler():
@@ -106,6 +104,7 @@ def list_md(tmp_path):
 # Parse tests
 # ---------------------------------------------------------------------------
 
+
 class TestParse:
     def test_parse_returns_nodes(self, handler, sample_md):
         nodes = handler.parse(sample_md)
@@ -190,11 +189,18 @@ class TestParse:
 # Read tests
 # ---------------------------------------------------------------------------
 
+
 class TestRead:
     def test_read_toc(self, handler, sample_md):
         result = handler.read(
-            path=str(sample_md), selector=None, view=None, subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(sample_md),
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "test.md" in result
         assert "Document Title" in result
@@ -202,8 +208,14 @@ class TestRead:
 
     def test_read_toc_depth(self, handler, sample_md):
         result = handler.read(
-            path=str(sample_md), selector=None, view=None, subview=None,
-            query="", summarize=False, depth=2, page=1,
+            path=str(sample_md),
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=2,
+            page=1,
         )
         assert "Introduction" in result
         # depth=2 → h1 + h2, but not h3
@@ -213,8 +225,14 @@ class TestRead:
         nodes = handler.parse(sample_md)
         intro = [n for n in nodes if n.text == "Introduction"][0]
         result = handler.read(
-            path=str(sample_md), selector=intro.slug, view=None, subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(sample_md),
+            selector=intro.slug,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "Introduction" in result
 
@@ -222,29 +240,53 @@ class TestRead:
         nodes = handler.parse(sample_md)
         paras = [n for n in nodes if n.node_type == "p"]
         result = handler.read(
-            path=str(sample_md), selector=paras[0].slug, view=None, subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(sample_md),
+            selector=paras[0].slug,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert paras[0].text[:20] in result
 
     def test_read_query(self, handler, sample_md):
         result = handler.read(
-            path=str(sample_md), selector=None, view=None, subview=None,
-            query="introduction", summarize=False, depth=0, page=1,
+            path=str(sample_md),
+            selector=None,
+            view=None,
+            subview=None,
+            query="introduction",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "introduction" in result.lower()
 
     def test_read_query_no_match(self, handler, sample_md):
         result = handler.read(
-            path=str(sample_md), selector=None, view=None, subview=None,
-            query="nonexistent_term_xyz", summarize=False, depth=0, page=1,
+            path=str(sample_md),
+            selector=None,
+            view=None,
+            subview=None,
+            query="nonexistent_term_xyz",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "No matches" in result
 
     def test_read_meta(self, handler, sample_md):
         result = handler.read(
-            path=str(sample_md), selector=None, view="meta", subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(sample_md),
+            selector=None,
+            view="meta",
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "test.md" in result
         assert "headings:" in result
@@ -254,8 +296,14 @@ class TestRead:
         p = tmp_path / "empty.md"
         p.write_text("", encoding="utf-8")
         result = handler.read(
-            path=str(p), selector=None, view=None, subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(p),
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "empty" in result.lower()
 
@@ -264,11 +312,14 @@ class TestRead:
 # Put tests
 # ---------------------------------------------------------------------------
 
+
 class TestPut:
     def test_put_append(self, handler, sample_md):
         result = handler.put(
-            path=str(sample_md), selector=None,
-            text="A new paragraph at the end.", mode="append",
+            path=str(sample_md),
+            selector=None,
+            text="A new paragraph at the end.",
+            mode="append",
         )
         assert "+" in result
         content = sample_md.read_text(encoding="utf-8")
@@ -276,8 +327,10 @@ class TestPut:
 
     def test_put_append_heading(self, handler, sample_md):
         result = handler.put(
-            path=str(sample_md), selector=None,
-            text="## New Section", mode="append",
+            path=str(sample_md),
+            selector=None,
+            text="## New Section",
+            mode="append",
         )
         assert "+" in result
         content = sample_md.read_text(encoding="utf-8")
@@ -285,12 +338,16 @@ class TestPut:
 
     def test_put_replace(self, handler, sample_md):
         nodes = handler.parse(sample_md)
-        paras = [n for n in nodes if n.node_type == "p" and "introduction" in n.text.lower()]
+        paras = [
+            n for n in nodes if n.node_type == "p" and "introduction" in n.text.lower()
+        ]
         assert paras
         slug = paras[0].slug
         result = handler.put(
-            path=str(sample_md), selector=slug,
-            text="Replaced paragraph text.", mode="replace",
+            path=str(sample_md),
+            selector=slug,
+            text="Replaced paragraph text.",
+            mode="replace",
         )
         assert "replace" in result
         content = sample_md.read_text(encoding="utf-8")
@@ -302,8 +359,10 @@ class TestPut:
         slug = paras[0].slug
         old_text = paras[0].text
         result = handler.put(
-            path=str(sample_md), selector=slug,
-            text="", mode="delete",
+            path=str(sample_md),
+            selector=slug,
+            text="",
+            mode="delete",
         )
         assert "deleted" in result
         content = sample_md.read_text(encoding="utf-8")
@@ -313,8 +372,10 @@ class TestPut:
         nodes = handler.parse(sample_md)
         intro_h = [n for n in nodes if n.text == "Introduction"][0]
         result = handler.put(
-            path=str(sample_md), selector=intro_h.slug,
-            text="Inserted after heading.", mode="after",
+            path=str(sample_md),
+            selector=intro_h.slug,
+            text="Inserted after heading.",
+            mode="after",
         )
         assert "+" in result
         content = sample_md.read_text(encoding="utf-8")
@@ -324,8 +385,10 @@ class TestPut:
         nodes = handler.parse(sample_md)
         methods_h = [n for n in nodes if n.text == "Methods"][0]
         result = handler.put(
-            path=str(sample_md), selector=methods_h.slug,
-            text="Inserted before methods.", mode="before",
+            path=str(sample_md),
+            selector=methods_h.slug,
+            text="Inserted before methods.",
+            mode="before",
         )
         assert "+" in result
         content = sample_md.read_text(encoding="utf-8")
@@ -333,34 +396,44 @@ class TestPut:
 
     def test_put_invalid_mode(self, handler, sample_md):
         from precis.protocol import PrecisError
+
         with pytest.raises(PrecisError, match="invalid mode"):
             handler.put(
-                path=str(sample_md), selector=None,
-                text="foo", mode="explode",
+                path=str(sample_md),
+                selector=None,
+                text="foo",
+                mode="explode",
             )
 
     def test_put_replace_no_text(self, handler, sample_md):
         from precis.protocol import PrecisError
+
         nodes = handler.parse(sample_md)
         paras = [n for n in nodes if n.node_type == "p"]
         with pytest.raises(PrecisError, match="text required"):
             handler.put(
-                path=str(sample_md), selector=paras[0].slug,
-                text="", mode="replace",
+                path=str(sample_md),
+                selector=paras[0].slug,
+                text="",
+                mode="replace",
             )
 
     def test_put_append_no_text(self, handler, sample_md):
         from precis.protocol import PrecisError
+
         with pytest.raises(PrecisError, match="text required"):
             handler.put(
-                path=str(sample_md), selector=None,
-                text="", mode="append",
+                path=str(sample_md),
+                selector=None,
+                text="",
+                mode="append",
             )
 
 
 # ---------------------------------------------------------------------------
 # Move test
 # ---------------------------------------------------------------------------
+
 
 class TestMove:
     def test_move_node(self, handler, sample_md):
@@ -369,8 +442,10 @@ class TestMove:
         conclusion = [n for n in nodes if n.text == "Conclusion"][0]
         results = [n for n in nodes if n.text == "Results"][0]
         result = handler.put(
-            path=str(sample_md), selector=conclusion.slug,
-            text=results.slug, mode="move",
+            path=str(sample_md),
+            selector=conclusion.slug,
+            text=results.slug,
+            mode="move",
         )
         assert "moved" in result
 
@@ -379,13 +454,20 @@ class TestMove:
 # Auto-create test
 # ---------------------------------------------------------------------------
 
+
 class TestAutoCreate:
     def test_auto_create_md(self, handler, tmp_path):
         p = tmp_path / "new.md"
         assert not p.exists()
         result = handler.read(
-            path=str(p), selector=None, view=None, subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(p),
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert p.exists()
         assert "empty" in result.lower()

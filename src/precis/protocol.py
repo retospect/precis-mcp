@@ -10,8 +10,6 @@ import abc
 import hashlib
 import re
 from dataclasses import dataclass, field
-from typing import Optional
-
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -238,7 +236,7 @@ class Plugin:
     handler_cls: type[Handler]
     schemes: list[str] = field(default_factory=list)
     file_types: list[str] = field(default_factory=list)
-    corpus_id: Optional[str] = None
+    corpus_id: str | None = None
     write_policy: str = "ingestion"
     block_type_seeds: list[tuple] = field(default_factory=list)
     link_type_seeds: list[tuple] = field(default_factory=list)

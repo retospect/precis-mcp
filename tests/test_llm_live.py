@@ -10,13 +10,13 @@ Run:  uv run pytest tests/test_llm_live.py -v
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import httpx
 import pytest
 
-from precis.server import mcp as precis_mcp, get, put, search, move
+from precis.server import get, move, put, search
+from precis.server import mcp as precis_mcp
 from precis.uri import parse as uri_parse
 
 OLLAMA_URL = "http://localhost:11434"
@@ -25,19 +25,22 @@ MODEL = "qwen3.5:9b"
 
 # ── Extract real tool schemas from FastMCP ─────────────────────────
 
+
 def _get_mcp_tool_schemas() -> list[dict]:
     """Get ollama-format tool schemas from the live MCP server object."""
     tools_list = precis_mcp._tool_manager.list_tools()
     ollama_tools = []
     for t in tools_list:
-        ollama_tools.append({
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description or "",
-                "parameters": t.parameters or {"type": "object"},
-            },
-        })
+        ollama_tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description or "",
+                    "parameters": t.parameters or {"type": "object"},
+                },
+            }
+        )
     return ollama_tools
 
 
@@ -45,6 +48,7 @@ TOOLS = _get_mcp_tool_schemas()
 
 
 # ── Helpers ────────────────────────────────────────────────────────
+
 
 def _ollama_call(prompt: str) -> list[dict]:
     """Send prompt to ollama, return raw tool_calls."""
@@ -71,22 +75,49 @@ class CallCapture:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def read(self, *, uri: str, query: str = "", page: int = 1,
-             top_k: int = 5, depth: int = 0) -> str:
+    def read(
+        self,
+        *,
+        uri: str,
+        query: str = "",
+        page: int = 1,
+        top_k: int = 5,
+        depth: int = 0,
+    ) -> str:
         parsed = uri_parse(uri)
-        self.calls.append({
-            "fn": "read", "uri": uri, "parsed": parsed,
-            "query": query, "depth": depth,
-        })
+        self.calls.append(
+            {
+                "fn": "read",
+                "uri": uri,
+                "parsed": parsed,
+                "query": query,
+                "depth": depth,
+            }
+        )
         return f"[mock read: {uri}]"
 
-    def put(self, *, uri: str, text: str = "", mode: str = "replace",
-            tracked: bool = True, note: str = "", link: str = "") -> str:
+    def put(
+        self,
+        *,
+        uri: str,
+        text: str = "",
+        mode: str = "replace",
+        tracked: bool = True,
+        note: str = "",
+        link: str = "",
+    ) -> str:
         parsed = uri_parse(uri)
-        self.calls.append({
-            "fn": "put", "uri": uri, "parsed": parsed,
-            "text": text, "mode": mode, "note": note, "link": link,
-        })
+        self.calls.append(
+            {
+                "fn": "put",
+                "uri": uri,
+                "parsed": parsed,
+                "text": text,
+                "mode": mode,
+                "note": note,
+                "link": link,
+            }
+        )
         return f"[mock put: {uri}]"
 
 
@@ -121,6 +152,7 @@ def run_llm_call(prompt: str) -> tuple[list[dict], CallCapture]:
 
 # ── Fixtures ───────────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="module", autouse=True)
 def check_ollama():
     """Skip all if ollama not running or model not available."""
@@ -134,6 +166,7 @@ def check_ollama():
 
 
 # ── Test scenarios ─────────────────────────────────────────────────
+
 
 class TestGetPaper:
     def test_read_paper_overview(self):
@@ -198,7 +231,9 @@ class TestGetDocument:
 
 class TestSearch:
     def test_search_papers(self):
-        raw, cap = run_llm_call("Search for papers about CO2 capture in metal-organic frameworks")
+        raw, cap = run_llm_call(
+            "Search for papers about CO2 capture in metal-organic frameworks"
+        )
         assert raw[0]["function"]["name"] == "search"
         args = raw[0]["function"]["arguments"]
         assert "query" in args
@@ -213,9 +248,7 @@ class TestSearch:
 
 class TestPut:
     def test_append_to_docx(self):
-        raw, cap = run_llm_call(
-            "Append a new section called Methods to report.docx"
-        )
+        raw, cap = run_llm_call("Append a new section called Methods to report.docx")
         assert raw[0]["function"]["name"] == "put"
         p = cap.calls[0]["parsed"]
         assert p.scheme == "file"
@@ -247,8 +280,9 @@ class TestSeparatorSyntax:
         raw, _ = run_llm_call("Read chunk 38 of wang2020state")
         id_arg = raw[0]["function"]["arguments"].get("id", "")
         assert "#" not in id_arg, f"LLM used # instead of ~: {id_arg!r}"
-        assert "~" in id_arg or id_arg == "wang2020state", \
+        assert "~" in id_arg or id_arg == "wang2020state", (
             f"Expected ~ in chunk ref: {id_arg!r}"
+        )
 
     def test_tilde_not_hash_in_node(self):
         raw, _ = run_llm_call("Read node PLXDX in report.docx")

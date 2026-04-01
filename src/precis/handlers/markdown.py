@@ -12,7 +12,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from precis.formatting import LIST_ITEM_RE, list_prefix, parse_list_prefix
+from precis.formatting import parse_list_prefix
 from precis.handlers._file_base import FileHandlerBase
 from precis.protocol import Node, PathCounter, PrecisError, make_slug, resolve_slug
 
@@ -92,14 +92,22 @@ class MarkdownHandler(FileHandlerBase):
                 while i < len(lines):
                     code_lines.append(lines[i])
                     cl = lines[i].strip()
-                    if cl.startswith(fence_ch * fence_len) and len(cl) >= fence_len and cl == fence_ch * len(cl):
+                    if (
+                        cl.startswith(fence_ch * fence_len)
+                        and len(cl) >= fence_len
+                        and cl == fence_ch * len(cl)
+                    ):
                         i += 1
                         break
                     i += 1
                 end_line = start_line + len(code_lines) - 1
                 text = "\n".join(code_lines)
                 # Extract language hint from opening fence
-                lang_hint = stripped[fence_len:].strip().split()[0] if stripped[fence_len:].strip() else ""
+                lang_hint = (
+                    stripped[fence_len:].strip().split()[0]
+                    if stripped[fence_len:].strip()
+                    else ""
+                )
                 precis_text = f"[code{': ' + lang_hint if lang_hint else ''}]"
 
                 node_path = counter.next_child("p")
@@ -159,7 +167,9 @@ class MarkdownHandler(FileHandlerBase):
                     if not ln:
                         break
                     # Still a list item or continuation indent
-                    if parse_list_prefix(ln) or (list_lines and ln and not _HEADING_RE.match(ln)):
+                    if parse_list_prefix(ln) or (
+                        list_lines and ln and not _HEADING_RE.match(ln)
+                    ):
                         list_lines.append(lines[i])
                         i += 1
                     else:

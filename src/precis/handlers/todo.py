@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from precis.handlers._ref_base import RefHandler, _get_store, _truncate
 from precis.protocol import PrecisError
@@ -28,11 +27,11 @@ STATES = {"pending", "in_progress", "done", "blocked", "cancelled"}
 
 # Valid transitions: from_state → {allowed next states}
 TRANSITIONS: dict[str, set[str]] = {
-    "pending":     {"in_progress", "blocked", "cancelled"},
+    "pending": {"in_progress", "blocked", "cancelled"},
     "in_progress": {"done", "blocked", "pending", "cancelled"},
-    "blocked":     {"pending", "in_progress", "cancelled"},
-    "done":        {"pending"},  # reopen
-    "cancelled":   {"pending"},  # reopen
+    "blocked": {"pending", "in_progress", "cancelled"},
+    "done": {"pending"},  # reopen
+    "cancelled": {"pending"},  # reopen
 }
 
 STATE_EMOJI = {
@@ -84,7 +83,11 @@ class TodoHandler(RefHandler):
     # ── Subclass hooks ───────────────────────────────────────────────
 
     def _dispatch_view(
-        self, store, ref: dict, view: str | None, subview: str | None,
+        self,
+        store,
+        ref: dict,
+        view: str | None,
+        subview: str | None,
         selector: str | None,
     ) -> str | None:
         if view == "state":
@@ -97,6 +100,7 @@ class TodoHandler(RefHandler):
         meta = ref.get("meta") or ref.get("metadata") or {}
         if isinstance(meta, str):
             import json
+
             try:
                 meta = json.loads(meta)
             except (ValueError, TypeError):
@@ -146,6 +150,7 @@ class TodoHandler(RefHandler):
         meta = ref.get("meta") or ref.get("metadata") or {}
         if isinstance(meta, str):
             import json
+
             try:
                 meta = json.loads(meta)
             except (ValueError, TypeError):
@@ -176,6 +181,7 @@ class TodoHandler(RefHandler):
         meta = ref.get("meta") or ref.get("metadata") or {}
         if isinstance(meta, str):
             import json
+
             try:
                 meta = json.loads(meta)
             except (ValueError, TypeError):
@@ -198,6 +204,7 @@ class TodoHandler(RefHandler):
         meta = ref.get("meta") or ref.get("metadata") or {}
         if isinstance(meta, str):
             import json
+
             try:
                 meta = json.loads(meta)
             except (ValueError, TypeError):
@@ -270,7 +277,7 @@ class TodoHandler(RefHandler):
         if not slug:
             raise PrecisError("Cannot generate slug from title")
 
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         meta = {
             "state": DEFAULT_STATE,
             "priority": priority,
@@ -312,8 +319,7 @@ class TodoHandler(RefHandler):
         new_state = new_state.strip().lower()
         if new_state not in STATES:
             raise PrecisError(
-                f"Unknown state: {new_state}\n"
-                f"Valid states: {', '.join(sorted(STATES))}"
+                f"Unknown state: {new_state}\nValid states: {', '.join(sorted(STATES))}"
             )
 
         ref = self._resolve_ref(store, path)
@@ -321,6 +327,7 @@ class TodoHandler(RefHandler):
         meta = ref.get("meta") or ref.get("metadata") or {}
         if isinstance(meta, str):
             import json
+
             try:
                 meta = json.loads(meta)
             except (ValueError, TypeError):

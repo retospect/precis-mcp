@@ -32,7 +32,9 @@ def _check_write_policy(scheme: str, mode: str) -> None:
     """
     if scheme == "file":
         return  # file handlers are always writable
-    plugin = get_corpus_plugin(scheme) if scheme != "paper" else get_corpus_plugin("papers")
+    plugin = (
+        get_corpus_plugin(scheme) if scheme != "paper" else get_corpus_plugin("papers")
+    )
     if not plugin:
         return  # no plugin found — let the handler decide
     if mode in _ANNOTATION_ACTIONS:
@@ -133,7 +135,9 @@ def put(
 
         # Handle note= parameter (annotation, always allowed)
         if note:
-            return _create_note(parsed.scheme, parsed.path, parsed.selector, note, **kwargs)
+            return _create_note(
+                parsed.scheme, parsed.path, parsed.selector, note, **kwargs
+            )
 
         # Handle link= parameter (link creation, always allowed)
         if link:
@@ -177,8 +181,7 @@ def _create_note(
     ref = store.get(slug)
     if not ref:
         raise PrecisError(
-            f"Ref not found: '{slug}'\n"
-            f"Hint: use search(query='...') to find documents."
+            f"Ref not found: '{slug}'\nHint: use search(query='...') to find documents."
         )
     ref_id = ref.get("ref_id") or ref.get("id")
 
@@ -253,7 +256,9 @@ def _create_link(
 
     try:
         link = store.create_link(
-            src_slug, dst_slug, relation,
+            src_slug,
+            dst_slug,
+            relation,
             src_node_id=src_node_id,
         )
     except ValueError as e:

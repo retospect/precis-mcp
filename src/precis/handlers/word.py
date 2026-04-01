@@ -7,8 +7,8 @@ Requires the ``word`` extra: ``pip install precis[word]``.
 from __future__ import annotations
 
 import os
-import re
 import tempfile
+from datetime import UTC
 from pathlib import Path
 
 from docx import Document
@@ -22,7 +22,6 @@ from precis.citations import (
     BIB_ENTRY_STYLE,
     CITATION_REF_STYLE,
     ORPHAN_PREFIX,
-    CitationIndex,
     parse_ref_bookmark,
     ref_bookmark_name,
 )
@@ -33,7 +32,6 @@ from precis.formatting import (
     markdown_to_runs,
     parse_list_prefix,
     runs_to_markdown,
-    strip_list_prefix,
 )
 from precis.handlers._file_base import FileHandlerBase
 from precis.protocol import Node, PathCounter, PrecisError, make_slug, resolve_slug
@@ -431,7 +429,9 @@ def _get_list_info(
                 if nid != "0":
                     has_numPr = True
                     ilvl_el = numPr.find(qn("w:ilvl"))
-                    ilvl = int(ilvl_el.get(qn("w:val"), "0")) if ilvl_el is not None else 0
+                    ilvl = (
+                        int(ilvl_el.get(qn("w:val"), "0")) if ilvl_el is not None else 0
+                    )
 
                     # Try numbering definition first
                     fmt = num_map.get((nid, ilvl))
@@ -620,9 +620,7 @@ def _make_paragraph(doc, text: str, heading_level: int = 0):
     return para
 
 
-def _make_list_paragraph(
-    doc, text: str, list_type: str, indent_level: int = 0
-):
+def _make_list_paragraph(doc, text: str, list_type: str, indent_level: int = 0):
     """Create a paragraph with a Word list style."""
     if list_type == "number":
         styles = _LIST_NUMBER_STYLES
@@ -685,9 +683,9 @@ def _bib_precis(label: str, text: str) -> str:
 
 
 def _inject_tracked_replace(para, new_text: str, author: str) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for run_el in list(para._element.findall(qn("w:r"))):
         del_el = etree.SubElement(para._element, qn("w:del"))
@@ -821,10 +819,10 @@ def _collect_para_comments(element, comments_map: dict) -> list[dict]:
 
 
 def _inject_comment(doc, para_element, text: str, author: str = "precis") -> int:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     comment_id = _next_comment_id(doc)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     cid_str = str(comment_id)
 
     comments_part = _get_or_create_comments_part(doc)

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.grep import parse_grep
@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 def _get_store():
     """Lazy-load acatome_store to avoid hard dependency at import time."""
     from precis._store import get_store
+
     return get_store()
 
 
@@ -43,7 +44,9 @@ def _parse_section(raw: str) -> str:
     except (ValueError, TypeError):
         sp = []
     heading = sp[0] if sp else ""
-    heading = heading.replace("\u2212", "-").replace("\u2013", "-").replace("\u2014", "-")
+    heading = (
+        heading.replace("\u2212", "-").replace("\u2013", "-").replace("\u2014", "-")
+    )
     return heading
 
 
@@ -54,11 +57,13 @@ def _parse_date_value(value: str) -> datetime | None:
     Returns None if the value isn't recognized as a date.
     """
     v = value.strip().lower()
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     if v == "today":
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
     if v == "yesterday":
-        return (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return (now - timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
     if v == "this-week":
         monday = now - timedelta(days=now.weekday())
         return monday.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -125,7 +130,7 @@ def _relative_date(dt: datetime | None) -> str:
     """Format a datetime as a relative string (today, yesterday, 3d ago, etc.)."""
     if dt is None:
         return ""
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     delta = now - dt
     days = delta.days
     if days == 0:
@@ -163,7 +168,7 @@ class RefHandler(Handler):
     corpus_id: str = ""
 
     # Subclass display config
-    _ref_noun: str = "ref"     # "paper", "todo", "wiki page"
+    _ref_noun: str = "ref"  # "paper", "todo", "wiki page"
     _ref_emoji: str = "📄"
     _max_list: int = 20
 
@@ -207,8 +212,7 @@ class RefHandler(Handler):
         # Resolve ref
         if not path:
             raise PrecisError(
-                f"{self._ref_noun} identifier required "
-                f"(e.g. get(id='<slug>'))"
+                f"{self._ref_noun} identifier required (e.g. get(id='<slug>'))"
             )
 
         ref = self._resolve_ref(store, path)
@@ -235,8 +239,7 @@ class RefHandler(Handler):
         # Unknown view
         if view:
             raise PrecisError(
-                f"Unknown view: /{view}\n"
-                f"Available: {', '.join(sorted(self.views))}"
+                f"Unknown view: /{view}\nAvailable: {', '.join(sorted(self.views))}"
             )
 
         # Selector without view: specific chunk(s)
@@ -264,7 +267,11 @@ class RefHandler(Handler):
     # ── Subclass hooks ───────────────────────────────────────────────
 
     def _dispatch_view(
-        self, store, ref: dict, view: str | None, subview: str | None,
+        self,
+        store,
+        ref: dict,
+        view: str | None,
+        subview: str | None,
         selector: str | None,
     ) -> str | None:
         """Override in subclass to handle custom views.
@@ -354,12 +361,14 @@ class RefHandler(Handler):
             pattern = parse_grep(grep)
 
             def _matches(p: dict) -> bool:
-                blob = " ".join([
-                    p.get("slug", ""),
-                    p.get("title", ""),
-                    str(p.get("authors", "")),
-                    str(p.get("year", "")),
-                ])
+                blob = " ".join(
+                    [
+                        p.get("slug", ""),
+                        p.get("title", ""),
+                        str(p.get("authors", "")),
+                        str(p.get("year", "")),
+                    ]
+                )
                 return pattern.matches(blob)
 
             papers = [p for p in papers if _matches(p)]
@@ -371,7 +380,7 @@ class RefHandler(Handler):
 
         lines = [self._list_header(len(papers), grep), ""]
 
-        shown = papers[:self._max_list]
+        shown = papers[: self._max_list]
         for p in shown:
             lines.append(self._list_entry(p))
 
@@ -387,8 +396,7 @@ class RefHandler(Handler):
             lines.append("  get(grep='...')      — filter by title/slug")
             lines.append("")
         lines.append(
-            "Next: get(id='<slug>') for overview, "
-            "get(id='<slug>/toc') for structure"
+            "Next: get(id='<slug>') for overview, get(id='<slug>/toc') for structure"
         )
         return "\n".join(lines)
 
@@ -432,7 +440,8 @@ class RefHandler(Handler):
                 current = {
                     "heading": heading,
                     "headings": [heading] if heading else [],
-                    "start": idx, "end": idx,
+                    "start": idx,
+                    "end": idx,
                     "previews": [],
                 }
                 raw_groups.append(current)
@@ -460,10 +469,11 @@ class RefHandler(Handler):
             if size <= self._MAX_SECTION_BLOCKS:
                 final_groups.append(g)
             else:
-                sub_entries = [e for e in toc
-                               if g["start"] <= e.get("block_index", 0) <= g["end"]]
+                sub_entries = [
+                    e for e in toc if g["start"] <= e.get("block_index", 0) <= g["end"]
+                ]
                 for i in range(0, len(sub_entries), self._MAX_SECTION_BLOCKS):
-                    chunk = sub_entries[i:i + self._MAX_SECTION_BLOCKS]
+                    chunk = sub_entries[i : i + self._MAX_SECTION_BLOCKS]
                     s_idx = chunk[0].get("block_index", 0)
                     e_idx = chunk[-1].get("block_index", 0)
                     previews = [
@@ -471,13 +481,15 @@ class RefHandler(Handler):
                         for e in chunk
                         if e.get("summary") or e.get("preview", "")
                     ]
-                    final_groups.append({
-                        "heading": g["heading"],
-                        "headings": g.get("headings", []),
-                        "start": s_idx,
-                        "end": e_idx,
-                        "previews": previews,
-                    })
+                    final_groups.append(
+                        {
+                            "heading": g["heading"],
+                            "headings": g.get("headings", []),
+                            "start": s_idx,
+                            "end": e_idx,
+                            "previews": previews,
+                        }
+                    )
 
         lines = [
             f"{self._ref_emoji} {slug}  "
@@ -500,7 +512,7 @@ class RefHandler(Handler):
 
         lines.append("")
         lines.append(
-            f"Next: get(id='{slug}~0..{min(60, len(toc)-1)}/toc') "
+            f"Next: get(id='{slug}~0..{min(60, len(toc) - 1)}/toc') "
             f"to drill into a range"
         )
         return "\n".join(lines)
@@ -518,8 +530,7 @@ class RefHandler(Handler):
         except ValueError:
             raise PrecisError(f"Invalid range: {selector}\nUse ~N..M/toc")
 
-        filtered = [e for e in toc
-                    if start <= e.get("block_index", 0) <= end]
+        filtered = [e for e in toc if start <= e.get("block_index", 0) <= end]
         if not filtered:
             return f"No blocks in ~{start}..{end} for {slug}"
 
@@ -531,14 +542,12 @@ class RefHandler(Handler):
         if last_idx < max_idx:
             next_start = last_idx + 1
             result += (
-                f"\nNext: get(id='{slug}~{next_start}..{min(next_start+60, max_idx)}/toc') "
+                f"\nNext: get(id='{slug}~{next_start}..{min(next_start + 60, max_idx)}/toc') "
                 f"for next section"
             )
         return result
 
-    def _format_grouped_toc(
-        self, slug: str, entries: list[dict], header: str
-    ) -> str:
+    def _format_grouped_toc(self, slug: str, entries: list[dict], header: str) -> str:
         """Format TOC entries grouped by section heading."""
         lines = [header, ""]
         current_section = None
@@ -589,8 +598,7 @@ class RefHandler(Handler):
             )
 
         all_blocks = store.get_blocks(slug, block_type="text")
-        blocks = [b for b in all_blocks
-                  if start <= (b.get("block_index", 0)) < end]
+        blocks = [b for b in all_blocks if start <= (b.get("block_index", 0)) < end]
 
         if not blocks:
             return f"No blocks in range ~{start}..{end} for {slug}"

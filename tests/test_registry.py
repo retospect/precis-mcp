@@ -11,7 +11,6 @@ from precis.registry import (
     resolve,
 )
 
-
 # ─── Dummy handlers for testing ─────────────────────────────────────
 
 

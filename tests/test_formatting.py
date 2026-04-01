@@ -55,12 +55,6 @@ class TestGroupParagraphs:
 
     def test_five_bibs_one_line(self):
         """Real-world case: five bib entries crammed onto one line."""
-        text = (
-            "[@a]: A ref. "
-            "[@b]: B ref. "
-            "[@c]: C ref. "
-            "[@d]: D ref. "
-            "[@e]: E ref."
-        )
+        text = "[@a]: A ref. [@b]: B ref. [@c]: C ref. [@d]: D ref. [@e]: E ref."
         result = group_paragraphs(text)
         assert len(result) == 5

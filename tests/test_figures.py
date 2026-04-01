@@ -5,12 +5,10 @@ from __future__ import annotations
 import base64
 import gzip
 import json
-import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from acatome_store.store import Store
 
 # Skip entire module if store doesn't have figure methods (unreleased)
@@ -23,6 +21,7 @@ pytestmark = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_bundle(tmp_path: Path, slug: str, figures: list[dict]) -> Path:
     """Create a minimal .acatome bundle with figure blocks."""
@@ -39,9 +38,7 @@ def _make_bundle(tmp_path: Path, slug: str, figures: list[dict]) -> Path:
             "summaries": {},
         }
         if fig.get("image_bytes"):
-            block["image_base64"] = base64.b64encode(
-                fig["image_bytes"]
-            ).decode("ascii")
+            block["image_base64"] = base64.b64encode(fig["image_bytes"]).decode("ascii")
             block["image_mime"] = fig.get("mime", "image/png")
         blocks.append(block)
 
@@ -73,6 +70,7 @@ def _make_bundle(tmp_path: Path, slug: str, figures: list[dict]) -> Path:
 def store(tmp_path):
     """Create a SQLite store for testing."""
     from acatome_store.config import StoreConfig
+
     cfg = StoreConfig(store_path=tmp_path / "store")
     return Store(config=cfg)
 
@@ -80,28 +78,32 @@ def store(tmp_path):
 @pytest.fixture
 def store_with_figures(store, tmp_path):
     """Store with a paper that has labelled figures + images."""
-    bundle = _make_bundle(tmp_path, "smith2024figs", [
-        {
-            "caption": "Figure 1. Schematic of the reaction mechanism.",
-            "page": 1,
-            "image_bytes": b"\x89PNG fake image 1",
-        },
-        {
-            "caption": "Fig. 2: XRD patterns of the catalyst.",
-            "page": 2,
-            "image_bytes": b"\x89PNG fake image 2",
-        },
-        {
-            "caption": "Scheme 3. Proposed catalytic cycle.",
-            "page": 3,
-            "image_bytes": b"\x89PNG fake image 3",
-        },
-        {
-            "caption": "",  # No caption
-            "page": 4,
-            "image_bytes": b"\x89PNG unlabelled image",
-        },
-    ])
+    bundle = _make_bundle(
+        tmp_path,
+        "smith2024figs",
+        [
+            {
+                "caption": "Figure 1. Schematic of the reaction mechanism.",
+                "page": 1,
+                "image_bytes": b"\x89PNG fake image 1",
+            },
+            {
+                "caption": "Fig. 2: XRD patterns of the catalyst.",
+                "page": 2,
+                "image_bytes": b"\x89PNG fake image 2",
+            },
+            {
+                "caption": "Scheme 3. Proposed catalytic cycle.",
+                "page": 3,
+                "image_bytes": b"\x89PNG fake image 3",
+            },
+            {
+                "caption": "",  # No caption
+                "page": 4,
+                "image_bytes": b"\x89PNG unlabelled image",
+            },
+        ],
+    )
     store.ingest(bundle)
     return store
 
@@ -109,6 +111,7 @@ def store_with_figures(store, tmp_path):
 # ---------------------------------------------------------------------------
 # Store.get_figures
 # ---------------------------------------------------------------------------
+
 
 class TestGetFigures:
     def test_figure_numbers_from_captions(self, store_with_figures):
@@ -134,12 +137,15 @@ class TestGetFigures:
 
     def test_auto_numbering_skips_used(self, store, tmp_path):
         """Auto-numbering should skip numbers already used by labelled figs."""
-        bundle = _make_bundle(tmp_path, "autonums2024x", [
-            {"caption": "Figure 2. Something.", "page": 0,
-             "image_bytes": b"img"},
-            {"caption": "", "page": 1, "image_bytes": b"img"},
-            {"caption": "", "page": 2, "image_bytes": b"img"},
-        ])
+        bundle = _make_bundle(
+            tmp_path,
+            "autonums2024x",
+            [
+                {"caption": "Figure 2. Something.", "page": 0, "image_bytes": b"img"},
+                {"caption": "", "page": 1, "image_bytes": b"img"},
+                {"caption": "", "page": 2, "image_bytes": b"img"},
+            ],
+        )
         store.ingest(bundle)
         figs = store.get_figures("autonums2024x")
         nums = [f["fig_num"] for f in figs]
@@ -150,6 +156,7 @@ class TestGetFigures:
 # ---------------------------------------------------------------------------
 # Store.get_figure_image
 # ---------------------------------------------------------------------------
+
 
 class TestGetFigureImage:
     def test_returns_image_bytes(self, store_with_figures):
@@ -177,11 +184,13 @@ class TestGetFigureImage:
 # Paper handler figure dispatch
 # ---------------------------------------------------------------------------
 
+
 class TestPaperHandlerFigures:
     """Test the precis paper handler figure views (mocked store)."""
 
     def _make_handler(self):
         from precis.handlers.paper import PaperHandler
+
         return PaperHandler()
 
     def _mock_store(self, figures=None, image_result=None):
@@ -197,17 +206,34 @@ class TestPaperHandlerFigures:
 
     def test_list_figures(self):
         handler = self._make_handler()
-        store = self._mock_store(figures=[
-            {"fig_num": 1, "caption": "Figure 1. Foo", "page": 1,
-             "block_index": 0, "node_id": "n1"},
-            {"fig_num": 2, "caption": "Fig. 2: Bar", "page": 3,
-             "block_index": 5, "node_id": "n2"},
-        ])
+        store = self._mock_store(
+            figures=[
+                {
+                    "fig_num": 1,
+                    "caption": "Figure 1. Foo",
+                    "page": 1,
+                    "block_index": 0,
+                    "node_id": "n1",
+                },
+                {
+                    "fig_num": 2,
+                    "caption": "Fig. 2: Bar",
+                    "page": 3,
+                    "block_index": 5,
+                    "node_id": "n2",
+                },
+            ]
+        )
         with patch("precis.handlers._ref_base._get_store", return_value=store):
             result = handler.read(
-                path="test2024paper", selector=None,
-                view="fig", subview=None,
-                query="", summarize=False, depth=0, page=1,
+                path="test2024paper",
+                selector=None,
+                view="fig",
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "2 figure(s)" in result
         assert "fig 1" in result
@@ -215,15 +241,27 @@ class TestPaperHandlerFigures:
 
     def test_figure_overview(self):
         handler = self._make_handler()
-        store = self._mock_store(figures=[
-            {"fig_num": 3, "caption": "Figure 3. Important result",
-             "page": 5, "block_index": 10, "node_id": "n3"},
-        ])
+        store = self._mock_store(
+            figures=[
+                {
+                    "fig_num": 3,
+                    "caption": "Figure 3. Important result",
+                    "page": 5,
+                    "block_index": 10,
+                    "node_id": "n3",
+                },
+            ]
+        )
         with patch("precis.handlers._ref_base._get_store", return_value=store):
             result = handler.read(
-                path="test2024paper", selector=None,
-                view="fig", subview="3",
-                query="", summarize=False, depth=0, page=1,
+                path="test2024paper",
+                selector=None,
+                view="fig",
+                subview="3",
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "fig 3" in result
         assert "Important result" in result
@@ -231,33 +269,52 @@ class TestPaperHandlerFigures:
 
     def test_figure_legend(self):
         handler = self._make_handler()
-        store = self._mock_store(figures=[
-            {"fig_num": 1, "caption": "Figure 1. The catalyst structure",
-             "page": 1, "block_index": 0, "node_id": "n1"},
-        ])
+        store = self._mock_store(
+            figures=[
+                {
+                    "fig_num": 1,
+                    "caption": "Figure 1. The catalyst structure",
+                    "page": 1,
+                    "block_index": 0,
+                    "node_id": "n1",
+                },
+            ]
+        )
         with patch("precis.handlers._ref_base._get_store", return_value=store):
             result = handler.read(
-                path="test2024paper", selector=None,
-                view="fig", subview="1/legend",
-                query="", summarize=False, depth=0, page=1,
+                path="test2024paper",
+                selector=None,
+                view="fig",
+                subview="1/legend",
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "catalyst structure" in result
 
     def test_figure_image(self):
         handler = self._make_handler()
         fake_bytes = b"\x89PNG test"
-        store = self._mock_store(image_result={
-            "fig_num": 1,
-            "caption": "Fig 1.",
-            "page": 1,
-            "image_bytes": fake_bytes,
-            "image_ext": ".png",
-        })
+        store = self._mock_store(
+            image_result={
+                "fig_num": 1,
+                "caption": "Fig 1.",
+                "page": 1,
+                "image_bytes": fake_bytes,
+                "image_ext": ".png",
+            }
+        )
         with patch("precis.handlers._ref_base._get_store", return_value=store):
             result = handler.read(
-                path="test2024paper", selector=None,
-                view="fig", subview="1/image",
-                query="", summarize=False, depth=0, page=1,
+                path="test2024paper",
+                selector=None,
+                view="fig",
+                subview="1/image",
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "data:image/png;base64," in result
         assert str(len(fake_bytes)) in result
@@ -266,18 +323,25 @@ class TestPaperHandlerFigures:
         handler = self._make_handler()
         handler._FIGURES_DIR = str(tmp_path / "figures")
         fake_bytes = b"\x89PNG export test"
-        store = self._mock_store(image_result={
-            "fig_num": 2,
-            "caption": "Fig 2. Exported",
-            "page": 2,
-            "image_bytes": fake_bytes,
-            "image_ext": ".png",
-        })
+        store = self._mock_store(
+            image_result={
+                "fig_num": 2,
+                "caption": "Fig 2. Exported",
+                "page": 2,
+                "image_bytes": fake_bytes,
+                "image_ext": ".png",
+            }
+        )
         with patch("precis.handlers._ref_base._get_store", return_value=store):
             result = handler.read(
-                path="test2024paper", selector=None,
-                view="fig", subview="2/image/export",
-                query="", summarize=False, depth=0, page=1,
+                path="test2024paper",
+                selector=None,
+                view="fig",
+                subview="2/image/export",
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "✓ Exported" in result
         out_file = Path(handler._FIGURES_DIR) / "test2024paper_fig2.png"
@@ -286,15 +350,27 @@ class TestPaperHandlerFigures:
 
     def test_figure_not_found(self):
         handler = self._make_handler()
-        store = self._mock_store(figures=[
-            {"fig_num": 1, "caption": "Fig 1.", "page": 1,
-             "block_index": 0, "node_id": "n1"},
-        ])
+        store = self._mock_store(
+            figures=[
+                {
+                    "fig_num": 1,
+                    "caption": "Fig 1.",
+                    "page": 1,
+                    "block_index": 0,
+                    "node_id": "n1",
+                },
+            ]
+        )
         with patch("precis.handlers._ref_base._get_store", return_value=store):
             result = handler.read(
-                path="test2024paper", selector=None,
-                view="fig", subview="99",
-                query="", summarize=False, depth=0, page=1,
+                path="test2024paper",
+                selector=None,
+                view="fig",
+                subview="99",
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "not found" in result
         assert "Available: 1" in result
@@ -304,33 +380,39 @@ class TestPaperHandlerFigures:
 # URI parser: deep subview
 # ---------------------------------------------------------------------------
 
+
 class TestURIDeepSubview:
     def test_fig_image_export(self):
         from precis.uri import parse
+
         p = parse("paper:slug/fig/3/image/export")
         assert p.view == "fig"
         assert p.subview == "3/image/export"
 
     def test_fig_legend(self):
         from precis.uri import parse
+
         p = parse("paper:slug/fig/1/legend")
         assert p.view == "fig"
         assert p.subview == "1/legend"
 
     def test_fig_image(self):
         from precis.uri import parse
+
         p = parse("paper:slug/fig/5/image")
         assert p.view == "fig"
         assert p.subview == "5/image"
 
     def test_fig_number_only(self):
         from precis.uri import parse
+
         p = parse("paper:slug/fig/3")
         assert p.view == "fig"
         assert p.subview == "3"
 
     def test_two_level_subview_unchanged(self):
         from precis.uri import parse
+
         p = parse("paper:slug/cite/bib")
         assert p.view == "cite"
         assert p.subview == "bib"

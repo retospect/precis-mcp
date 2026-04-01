@@ -25,7 +25,9 @@ ORPHAN_PREFIX = "?:"
 # [slug~N] or [slug#N] — chunk reference used as citation
 MALFORMED_CHUNK_RE = re.compile(r"\[([a-z][a-z0-9_]*(?:19|20)\d{2}[a-z]+)[~#](\d+)\]")
 # [slug] without @ — looks like a paper slug (word+year+word) but missing @
-MALFORMED_NO_AT_RE = re.compile(r"(?<!\[)\[([a-z][a-z0-9_]*(?:19|20)\d{2}[a-z]+)\](?![\]:(])")
+MALFORMED_NO_AT_RE = re.compile(
+    r"(?<!\[)\[([a-z][a-z0-9_]*(?:19|20)\d{2}[a-z]+)\](?![\]:(])"
+)
 
 
 def is_orphan_key(key: str) -> bool:

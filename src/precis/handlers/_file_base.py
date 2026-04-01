@@ -12,6 +12,8 @@ import re
 from abc import abstractmethod
 from pathlib import Path
 
+from precis_summary.rake import telegram_precis
+
 from precis.citations import BIB_DEF_RE, CITE_RE, MALFORMED_CHUNK_RE, MALFORMED_NO_AT_RE
 from precis.config import PrecisConfig
 from precis.formatting import group_paragraphs
@@ -19,14 +21,11 @@ from precis.grep import parse_grep
 from precis.output import (
     ANNOTATION,
     DERIVED,
-    VERBATIM,
     format_hints,
     format_node_full,
     format_node_precis,
-    truncate,
 )
 from precis.protocol import Handler, Node, PrecisError
-from precis_summary.rake import telegram_precis
 
 log = logging.getLogger(__name__)
 
@@ -67,26 +66,23 @@ class FileHandlerBase(Handler):
     @abstractmethod
     def insert_after(
         self, path: Path, anchor: Node, new_text: str, heading_level: int = 0
-    ) -> None:
-        ...
+    ) -> None: ...
 
     @abstractmethod
     def insert_before(
         self, path: Path, anchor: Node, new_text: str, heading_level: int = 0
-    ) -> None:
-        ...
+    ) -> None: ...
 
     @abstractmethod
-    def delete_node(self, path: Path, node: Node) -> None:
-        ...
+    def delete_node(self, path: Path, node: Node) -> None: ...
 
     @abstractmethod
-    def append_node(self, path: Path, new_text: str, heading_level: int = 0) -> None:
-        ...
+    def append_node(
+        self, path: Path, new_text: str, heading_level: int = 0
+    ) -> None: ...
 
     @abstractmethod
-    def move_nodes(self, path: Path, nodes: list[Node], after: Node) -> None:
-        ...
+    def move_nodes(self, path: Path, nodes: list[Node], after: Node) -> None: ...
 
     # ── Optional overrides ──────────────────────────────────────────
 
@@ -180,7 +176,9 @@ class FileHandlerBase(Handler):
 
         # Selector: specific node(s)
         if selector:
-            return self._read_selector(file_path, selector, depth=depth, summarize=summarize)
+            return self._read_selector(
+                file_path, selector, depth=depth, summarize=summarize
+            )
 
         # Fallback: toc
         return self._read_toc(file_path, depth=depth, summarize=summarize)
@@ -232,12 +230,16 @@ class FileHandlerBase(Handler):
         lines = [header, ""]
         for node in nodes:
             lines.append(
-                format_node_precis(node, show_slug=True, show_source=bool(node.source_file))
+                format_node_precis(
+                    node, show_slug=True, show_source=bool(node.source_file)
+                )
             )
 
         if auto_truncated:
             lines.append("")
-            lines.append(f"⚠ Large document ({total_nodes} nodes) — showing headings only.")
+            lines.append(
+                f"⚠ Large document ({total_nodes} nodes) — showing headings only."
+            )
             lines.append(
                 f"Drill in: get(id='{path.name}~S3.2') for section detail, "
                 f"get(id='{path.name}', depth=2) for outline."
@@ -283,7 +285,11 @@ class FileHandlerBase(Handler):
         return "\n".join(lines)
 
     def _read_query(
-        self, file_path: str, query: str, scope: str | None = None, summarize: bool = False
+        self,
+        file_path: str,
+        query: str,
+        scope: str | None = None,
+        summarize: bool = False,
     ) -> str:
         path = Path(file_path)
         nodes = self._load_nodes(file_path)
@@ -292,7 +298,9 @@ class FileHandlerBase(Handler):
             nodes = [n for n in nodes if str(n.path).startswith(scope)]
 
         pattern = parse_grep(query)
-        hits = [n for n in nodes if pattern.matches(n.text) or pattern.matches(n.precis)]
+        hits = [
+            n for n in nodes if pattern.matches(n.text) or pattern.matches(n.precis)
+        ]
 
         header = f"📄 {path.name}  query: {query}  ({len(hits)} hits)"
         lines = [header, ""]
@@ -303,7 +311,9 @@ class FileHandlerBase(Handler):
 
         if not hits:
             lines.append("No matches.")
-            lines.append(f"Try: get(id='{path.name}', grep='...') with different keywords")
+            lines.append(
+                f"Try: get(id='{path.name}', grep='...') with different keywords"
+            )
 
         return "\n".join(lines)
 
@@ -316,7 +326,9 @@ class FileHandlerBase(Handler):
 
         # Path-based scope: #S1.2 → show scoped toc
         if selector.startswith("S") and selector not in index:
-            return self._read_toc(file_path, depth=depth, summarize=summarize, scope=selector)
+            return self._read_toc(
+                file_path, depth=depth, summarize=summarize, scope=selector
+            )
 
         # Comma-separated: multi-node get
         parts = [p.strip() for p in selector.split(",") if p.strip()]
@@ -335,16 +347,22 @@ class FileHandlerBase(Handler):
                 for n in section_nodes:
                     if summarize or len(section_nodes) > 1:
                         output_lines.append(
-                            format_node_precis(n, show_slug=True, show_source=bool(n.source_file))
+                            format_node_precis(
+                                n, show_slug=True, show_source=bool(n.source_file)
+                            )
                         )
                     else:
                         output_lines.append(
-                            format_node_full(n, show_slug=True, show_source=bool(n.source_file))
+                            format_node_full(
+                                n, show_slug=True, show_source=bool(n.source_file)
+                            )
                         )
             else:
                 # Single content node: full text
                 output_lines.append(
-                    format_node_full(node, show_slug=True, show_source=bool(node.source_file))
+                    format_node_full(
+                        node, show_slug=True, show_source=bool(node.source_file)
+                    )
                 )
 
         return "\n".join(output_lines)
@@ -422,7 +440,9 @@ class FileHandlerBase(Handler):
         fname = Path(file_path).name
         if new_nodes:
             last = new_nodes[-1]
-            result += f"\n\nNext:\n  put(id='{fname}~{last.slug}', text='...', mode='after')"
+            result += (
+                f"\n\nNext:\n  put(id='{fname}~{last.slug}', text='...', mode='after')"
+            )
         if len(new_nodes) > 3:
             result += f"\n  get(id='{fname}', depth=2)  — review outline"
         result += self._citation_hints(file_path)
@@ -436,7 +456,9 @@ class FileHandlerBase(Handler):
         self.delete_node(fpath, node)
         return f"- {node.slug}  {node.path}  deleted"
 
-    def _put_replace(self, file_path: str, selector: str, text: str, tracked: bool) -> str:
+    def _put_replace(
+        self, file_path: str, selector: str, text: str, tracked: bool
+    ) -> str:
         if not text:
             raise PrecisError("text required for replace mode")
 
@@ -581,7 +603,9 @@ class FileHandlerBase(Handler):
         node = self._resolve_node(selector, index)
 
         comment_id = self.write_comment(fpath, node, text, self.config.author)
-        return f"💬 {node.slug}  {node.path}  comment #{comment_id}\n{ANNOTATION} {text}"
+        return (
+            f"💬 {node.slug}  {node.path}  comment #{comment_id}\n{ANNOTATION} {text}"
+        )
 
     def _citation_hints(self, file_path: str) -> str:
         """Scan for undefined/malformed citations and return hint text."""
@@ -615,7 +639,9 @@ class FileHandlerBase(Handler):
                 if bad not in seen:
                     seen.add(bad)
                     unique.append((bad, slug, fix))
-            parts.append(f"\n\n⚠ {len(unique)} malformed citation(s) — use [@slug], never [slug] or [slug~N]:")
+            parts.append(
+                f"\n\n⚠ {len(unique)} malformed citation(s) — use [@slug], never [slug] or [slug~N]:"
+            )
             for bad, slug, fix in unique:
                 parts.append(f"  {bad} → {fix}")
 
@@ -640,6 +666,7 @@ class FileHandlerBase(Handler):
             if path.endswith(".docx"):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 from docx import Document
+
                 doc = Document()
                 doc.save(str(p))
             elif path.endswith(".tex"):
@@ -648,10 +675,12 @@ class FileHandlerBase(Handler):
                     "\\documentclass{article}\n\\begin{document}\n\n\\end{document}\n",
                     encoding="utf-8",
                 )
-            elif path.endswith(".md") or path.endswith(".markdown"):
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text("", encoding="utf-8")
-            elif path.endswith(".txt") or path.endswith(".text"):
+            elif (
+                path.endswith(".md")
+                or path.endswith(".markdown")
+                or path.endswith(".txt")
+                or path.endswith(".text")
+            ):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("", encoding="utf-8")
             else:

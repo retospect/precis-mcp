@@ -7,9 +7,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from precis.handlers.todo import (
-    DEFAULT_PRIORITY,
-    DEFAULT_STATE,
-    PRIORITIES,
     STATES,
     TRANSITIONS,
     TodoHandler,
@@ -26,6 +23,7 @@ _PATCH_STORE_TODO = "precis.handlers.todo._get_store"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_handler():
     return TodoHandler()
@@ -76,13 +74,18 @@ def _todo_ref(
         "title": title,
         "ref_id": ref_id,
         "id": ref_id,
-        "meta": {"state": state, "priority": priority, "created": "2026-03-30T12:00:00Z"},
+        "meta": {
+            "state": state,
+            "priority": priority,
+            "created": "2026-03-30T12:00:00Z",
+        },
     }
 
 
 # ---------------------------------------------------------------------------
 # Slugify
 # ---------------------------------------------------------------------------
+
 
 class TestSlugify:
     def test_basic(self):
@@ -106,6 +109,7 @@ class TestSlugify:
 # ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
+
 
 class TestStateMachine:
     def test_all_states_have_transitions(self):
@@ -134,6 +138,7 @@ class TestStateMachine:
 # Read operations
 # ---------------------------------------------------------------------------
 
+
 class TestRead:
     def test_overview(self):
         handler = _make_handler()
@@ -141,8 +146,14 @@ class TestRead:
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE, return_value=store):
             result = handler.read(
-                path="todo:fix-bug", selector=None, view=None, subview=None,
-                query="", summarize=False, depth=0, page=1,
+                path="todo:fix-bug",
+                selector=None,
+                view=None,
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "fix-bug" in result
         assert "Fix the bug" in result
@@ -154,8 +165,14 @@ class TestRead:
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE, return_value=store):
             result = handler.read(
-                path="todo:fix-bug", selector=None, view="state", subview=None,
-                query="", summarize=False, depth=0, page=1,
+                path="todo:fix-bug",
+                selector=None,
+                view="state",
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "in_progress" in result
         assert "done" in result  # valid transition
@@ -166,8 +183,14 @@ class TestRead:
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE, return_value=store):
             result = handler.read(
-                path="todo:fix-bug", selector=None, view="meta", subview=None,
-                query="", summarize=False, depth=0, page=1,
+                path="todo:fix-bug",
+                selector=None,
+                view="meta",
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "high" in result
         assert "fix-bug" in result
@@ -181,8 +204,14 @@ class TestRead:
         store = _mock_store(refs=refs)
         with patch(_PATCH_STORE, return_value=store):
             result = handler.read(
-                path="", selector=None, view=None, subview=None,
-                query="", summarize=False, depth=0, page=1,
+                path="",
+                selector=None,
+                view=None,
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
             )
         assert "2 todos" in result
         assert "fix-bug" in result
@@ -194,8 +223,14 @@ class TestRead:
         with patch(_PATCH_STORE, return_value=store):
             with pytest.raises(PrecisError, match="not found"):
                 handler.read(
-                    path="todo:nonexistent", selector=None, view=None, subview=None,
-                    query="", summarize=False, depth=0, page=1,
+                    path="todo:nonexistent",
+                    selector=None,
+                    view=None,
+                    subview=None,
+                    query="",
+                    summarize=False,
+                    depth=0,
+                    page=1,
                 )
 
 
@@ -203,13 +238,15 @@ class TestRead:
 # Write operations
 # ---------------------------------------------------------------------------
 
+
 class TestCreate:
     def test_create_todo(self):
         handler = _make_handler()
         store = _mock_store()
         with patch(_PATCH_STORE_TODO, return_value=store):
             result = handler.put(
-                path="", selector=None,
+                path="",
+                selector=None,
                 text="Fix the critical bug in parser",
                 mode="append",
             )
@@ -237,7 +274,8 @@ class TestCreate:
         ]
         with patch(_PATCH_STORE_TODO, return_value=store):
             result = handler.put(
-                path="", selector=None,
+                path="",
+                selector=None,
                 text="Fix bug",
                 mode="append",
             )
@@ -252,8 +290,10 @@ class TestStateTransition:
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE_TODO, return_value=store):
             result = handler.put(
-                path="todo:fix-bug", selector=None,
-                text="in_progress", mode="state",
+                path="todo:fix-bug",
+                selector=None,
+                text="in_progress",
+                mode="state",
             )
         assert "pending" in result
         assert "in_progress" in result
@@ -268,8 +308,10 @@ class TestStateTransition:
         with patch(_PATCH_STORE_TODO, return_value=store):
             with pytest.raises(PrecisError, match="Cannot transition"):
                 handler.put(
-                    path="todo:fix-bug", selector=None,
-                    text="done", mode="state",
+                    path="todo:fix-bug",
+                    selector=None,
+                    text="done",
+                    mode="state",
                 )
 
     def test_unknown_state(self):
@@ -279,8 +321,10 @@ class TestStateTransition:
         with patch(_PATCH_STORE_TODO, return_value=store):
             with pytest.raises(PrecisError, match="Unknown state"):
                 handler.put(
-                    path="todo:fix-bug", selector=None,
-                    text="gibberish", mode="state",
+                    path="todo:fix-bug",
+                    selector=None,
+                    text="gibberish",
+                    mode="state",
                 )
 
     def test_done_to_pending_reopen(self):
@@ -289,8 +333,10 @@ class TestStateTransition:
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE_TODO, return_value=store):
             result = handler.put(
-                path="todo:fix-bug", selector=None,
-                text="pending", mode="state",
+                path="todo:fix-bug",
+                selector=None,
+                text="pending",
+                mode="state",
             )
         assert "done" in result
         assert "pending" in result
@@ -304,8 +350,10 @@ class TestStateTransition:
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE_TODO, return_value=store):
             result = handler.put(
-                path="todo:fix-bug", selector=None,
-                text="in_progress", mode="state",
+                path="todo:fix-bug",
+                selector=None,
+                text="in_progress",
+                mode="state",
             )
         assert "in_progress" in result
 
@@ -314,8 +362,10 @@ class TestStateTransition:
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE_TODO, return_value=store):
             result = handler.put(
-                path="todo:fix-bug", selector=None,
-                text="done", mode="state",
+                path="todo:fix-bug",
+                selector=None,
+                text="done",
+                mode="state",
             )
         assert "done" in result
 
@@ -324,13 +374,21 @@ class TestUpdateBody:
     def test_replace_body(self):
         handler = _make_handler()
         ref = _todo_ref()
-        blocks = [{"node_id": "todo:fix-bug-b0000", "text": "old text",
-                    "block_type": "text", "block_index": 0}]
+        blocks = [
+            {
+                "node_id": "todo:fix-bug-b0000",
+                "text": "old text",
+                "block_type": "text",
+                "block_index": 0,
+            }
+        ]
         store = _mock_store(refs=[ref], blocks=blocks)
         with patch(_PATCH_STORE_TODO, return_value=store):
             result = handler.put(
-                path="todo:fix-bug", selector=None,
-                text="Updated description", mode="replace",
+                path="todo:fix-bug",
+                selector=None,
+                text="Updated description",
+                mode="replace",
             )
         assert "Updated" in result
         store.update_block_text.assert_called_once()
@@ -342,8 +400,10 @@ class TestUpdateBody:
         with patch(_PATCH_STORE_TODO, return_value=store):
             with pytest.raises(PrecisError, match="text required"):
                 handler.put(
-                    path="todo:fix-bug", selector=None,
-                    text="", mode="replace",
+                    path="todo:fix-bug",
+                    selector=None,
+                    text="",
+                    mode="replace",
                 )
 
     def test_unsupported_mode(self):
@@ -353,8 +413,10 @@ class TestUpdateBody:
         with patch(_PATCH_STORE_TODO, return_value=store):
             with pytest.raises(PrecisError, match="Unsupported mode"):
                 handler.put(
-                    path="todo:fix-bug", selector=None,
-                    text="foo", mode="before",
+                    path="todo:fix-bug",
+                    selector=None,
+                    text="foo",
+                    mode="before",
                 )
 
 
@@ -362,15 +424,18 @@ class TestUpdateBody:
 # URI integration
 # ---------------------------------------------------------------------------
 
+
 class TestURI:
     def test_todo_uri_parse(self):
         from precis.uri import parse
+
         parsed = parse("todo:fix-the-bug")
         assert parsed.scheme == "todo"
         assert parsed.path == "fix-the-bug"
 
     def test_todo_uri_with_view(self):
         from precis.uri import parse
+
         parsed = parse("todo:fix-the-bug/state")
         assert parsed.scheme == "todo"
         assert "fix-the-bug" in parsed.path
@@ -378,4 +443,5 @@ class TestURI:
 
     def test_server_to_uri(self):
         from precis.server import _to_uri
+
         assert _to_uri("todo:fix-bug") == "todo:fix-bug"

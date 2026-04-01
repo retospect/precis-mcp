@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from precis.handlers.plaintext import PlainTextHandler
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def handler():
@@ -54,6 +52,7 @@ Line three.
 # ---------------------------------------------------------------------------
 # Parse tests
 # ---------------------------------------------------------------------------
+
 
 class TestParse:
     def test_parse_returns_nodes(self, handler, sample_txt):
@@ -118,11 +117,18 @@ class TestParse:
 # Read tests
 # ---------------------------------------------------------------------------
 
+
 class TestRead:
     def test_read_toc(self, handler, sample_txt):
         result = handler.read(
-            path=str(sample_txt), selector=None, view=None, subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(sample_txt),
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "notes.txt" in result
         assert "4 nodes" in result
@@ -130,29 +136,53 @@ class TestRead:
     def test_read_selector(self, handler, sample_txt):
         nodes = handler.parse(sample_txt)
         result = handler.read(
-            path=str(sample_txt), selector=nodes[1].slug, view=None, subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(sample_txt),
+            selector=nodes[1].slug,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "second paragraph" in result
 
     def test_read_query(self, handler, sample_txt):
         result = handler.read(
-            path=str(sample_txt), selector=None, view=None, subview=None,
-            query="third", summarize=False, depth=0, page=1,
+            path=str(sample_txt),
+            selector=None,
+            view=None,
+            subview=None,
+            query="third",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "third" in result.lower()
 
     def test_read_query_no_match(self, handler, sample_txt):
         result = handler.read(
-            path=str(sample_txt), selector=None, view=None, subview=None,
-            query="nonexistent_xyz", summarize=False, depth=0, page=1,
+            path=str(sample_txt),
+            selector=None,
+            view=None,
+            subview=None,
+            query="nonexistent_xyz",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "No matches" in result
 
     def test_read_meta(self, handler, sample_txt):
         result = handler.read(
-            path=str(sample_txt), selector=None, view="meta", subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(sample_txt),
+            selector=None,
+            view="meta",
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "notes.txt" in result
         assert "words:" in result
@@ -161,8 +191,14 @@ class TestRead:
         p = tmp_path / "empty.txt"
         p.write_text("", encoding="utf-8")
         result = handler.read(
-            path=str(p), selector=None, view=None, subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(p),
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert "empty" in result.lower()
 
@@ -171,11 +207,14 @@ class TestRead:
 # Put tests
 # ---------------------------------------------------------------------------
 
+
 class TestPut:
     def test_put_append(self, handler, sample_txt):
         result = handler.put(
-            path=str(sample_txt), selector=None,
-            text="A brand new paragraph.", mode="append",
+            path=str(sample_txt),
+            selector=None,
+            text="A brand new paragraph.",
+            mode="append",
         )
         assert "+" in result
         content = sample_txt.read_text(encoding="utf-8")
@@ -185,8 +224,10 @@ class TestPut:
         nodes = handler.parse(sample_txt)
         slug = nodes[1].slug
         result = handler.put(
-            path=str(sample_txt), selector=slug,
-            text="Replaced content.", mode="replace",
+            path=str(sample_txt),
+            selector=slug,
+            text="Replaced content.",
+            mode="replace",
         )
         assert "replace" in result
         content = sample_txt.read_text(encoding="utf-8")
@@ -198,8 +239,10 @@ class TestPut:
         slug = nodes[0].slug
         old_text = nodes[0].text
         result = handler.put(
-            path=str(sample_txt), selector=slug,
-            text="", mode="delete",
+            path=str(sample_txt),
+            selector=slug,
+            text="",
+            mode="delete",
         )
         assert "deleted" in result
         content = sample_txt.read_text(encoding="utf-8")
@@ -209,8 +252,10 @@ class TestPut:
         nodes = handler.parse(sample_txt)
         slug = nodes[0].slug
         result = handler.put(
-            path=str(sample_txt), selector=slug,
-            text="Inserted after first.", mode="after",
+            path=str(sample_txt),
+            selector=slug,
+            text="Inserted after first.",
+            mode="after",
         )
         assert "+" in result
         content = sample_txt.read_text(encoding="utf-8")
@@ -220,8 +265,10 @@ class TestPut:
         nodes = handler.parse(sample_txt)
         slug = nodes[1].slug
         result = handler.put(
-            path=str(sample_txt), selector=slug,
-            text="Inserted before second.", mode="before",
+            path=str(sample_txt),
+            selector=slug,
+            text="Inserted before second.",
+            mode="before",
         )
         assert "+" in result
         content = sample_txt.read_text(encoding="utf-8")
@@ -229,33 +276,43 @@ class TestPut:
 
     def test_put_invalid_mode(self, handler, sample_txt):
         from precis.protocol import PrecisError
+
         with pytest.raises(PrecisError, match="invalid mode"):
             handler.put(
-                path=str(sample_txt), selector=None,
-                text="foo", mode="explode",
+                path=str(sample_txt),
+                selector=None,
+                text="foo",
+                mode="explode",
             )
 
     def test_put_replace_no_text(self, handler, sample_txt):
         from precis.protocol import PrecisError
+
         nodes = handler.parse(sample_txt)
         with pytest.raises(PrecisError, match="text required"):
             handler.put(
-                path=str(sample_txt), selector=nodes[0].slug,
-                text="", mode="replace",
+                path=str(sample_txt),
+                selector=nodes[0].slug,
+                text="",
+                mode="replace",
             )
 
     def test_put_append_no_text(self, handler, sample_txt):
         from precis.protocol import PrecisError
+
         with pytest.raises(PrecisError, match="text required"):
             handler.put(
-                path=str(sample_txt), selector=None,
-                text="", mode="append",
+                path=str(sample_txt),
+                selector=None,
+                text="",
+                mode="append",
             )
 
 
 # ---------------------------------------------------------------------------
 # Move test
 # ---------------------------------------------------------------------------
+
 
 class TestMove:
     def test_move_node(self, handler, sample_txt):
@@ -264,8 +321,10 @@ class TestMove:
         first = nodes[0]
         third = nodes[2]
         result = handler.put(
-            path=str(sample_txt), selector=first.slug,
-            text=third.slug, mode="move",
+            path=str(sample_txt),
+            selector=first.slug,
+            text=third.slug,
+            mode="move",
         )
         assert "moved" in result
 
@@ -274,13 +333,20 @@ class TestMove:
 # Auto-create test
 # ---------------------------------------------------------------------------
 
+
 class TestAutoCreate:
     def test_auto_create_txt(self, handler, tmp_path):
         p = tmp_path / "new.txt"
         assert not p.exists()
         result = handler.read(
-            path=str(p), selector=None, view=None, subview=None,
-            query="", summarize=False, depth=0, page=1,
+            path=str(p),
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
         )
         assert p.exists()
         assert "empty" in result.lower()

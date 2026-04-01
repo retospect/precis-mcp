@@ -18,6 +18,7 @@ def get_store():
         return _store_singleton
     try:
         from acatome_store.store import Store
+
         _store_singleton = Store()
         return _store_singleton
     except ImportError:

@@ -51,7 +51,10 @@ def _register_plugin(plugin: Plugin) -> None:
         CORPUS_PLUGINS[plugin.corpus_id] = plugin
     log.debug(
         "Registered plugin '%s': schemes=%s file_types=%s corpus=%s",
-        plugin.name, plugin.schemes, plugin.file_types, plugin.corpus_id,
+        plugin.name,
+        plugin.schemes,
+        plugin.file_types,
+        plugin.corpus_id,
     )
 
 
@@ -59,59 +62,83 @@ def _register_builtins() -> None:
     """Register built-in handlers as Plugin objects."""
     try:
         from precis.handlers.word import WordHandler
-        _register_plugin(Plugin(
-            name="word", handler_cls=WordHandler, file_types=[".docx"],
-        ))
+
+        _register_plugin(
+            Plugin(
+                name="word",
+                handler_cls=WordHandler,
+                file_types=[".docx"],
+            )
+        )
     except ImportError:
         log.debug("WordHandler not available (missing python-docx?)")
 
     try:
         from precis.handlers.tex import TexHandler
-        _register_plugin(Plugin(
-            name="tex", handler_cls=TexHandler, file_types=[".tex"],
-        ))
+
+        _register_plugin(
+            Plugin(
+                name="tex",
+                handler_cls=TexHandler,
+                file_types=[".tex"],
+            )
+        )
     except ImportError:
         log.debug("TexHandler not available")
 
     try:
         from precis.handlers.markdown import MarkdownHandler
-        _register_plugin(Plugin(
-            name="markdown", handler_cls=MarkdownHandler,
-            file_types=[".md", ".markdown"],
-        ))
+
+        _register_plugin(
+            Plugin(
+                name="markdown",
+                handler_cls=MarkdownHandler,
+                file_types=[".md", ".markdown"],
+            )
+        )
     except ImportError:
         log.debug("MarkdownHandler not available")
 
     try:
         from precis.handlers.plaintext import PlainTextHandler
-        _register_plugin(Plugin(
-            name="plaintext", handler_cls=PlainTextHandler,
-            file_types=[".txt", ".text"],
-        ))
+
+        _register_plugin(
+            Plugin(
+                name="plaintext",
+                handler_cls=PlainTextHandler,
+                file_types=[".txt", ".text"],
+            )
+        )
     except ImportError:
         log.debug("PlainTextHandler not available")
 
     try:
         from precis.handlers.paper import PaperHandler
-        _register_plugin(Plugin(
-            name="papers",
-            handler_cls=PaperHandler,
-            schemes=["paper", "doi", "arxiv"],
-            corpus_id="papers",
-            write_policy="ingestion",
-        ))
+
+        _register_plugin(
+            Plugin(
+                name="papers",
+                handler_cls=PaperHandler,
+                schemes=["paper", "doi", "arxiv"],
+                corpus_id="papers",
+                write_policy="ingestion",
+            )
+        )
     except ImportError:
         log.debug("PaperHandler not available (missing acatome-store?)")
 
     try:
         from precis.handlers.todo import TodoHandler
-        _register_plugin(Plugin(
-            name="todos",
-            handler_cls=TodoHandler,
-            schemes=["todo"],
-            corpus_id="todos",
-            write_policy="direct",
-        ))
+
+        _register_plugin(
+            Plugin(
+                name="todos",
+                handler_cls=TodoHandler,
+                schemes=["todo"],
+                corpus_id="todos",
+                write_policy="direct",
+            )
+        )
     except ImportError:
         log.debug("TodoHandler not available (missing acatome-store?)")
 
@@ -142,9 +169,7 @@ def _discover() -> None:
             # Entry point can be a Plugin instance, a Plugin class, or a callable
             if isinstance(obj, Plugin):
                 plugin = obj
-            elif isinstance(obj, type) and issubclass(obj, Plugin):
-                plugin = obj()
-            elif callable(obj):
+            elif (isinstance(obj, type) and issubclass(obj, Plugin)) or callable(obj):
                 plugin = obj()
             else:
                 raise TypeError(
@@ -159,7 +184,9 @@ def _discover() -> None:
             _register_plugin(plugin)
         except Exception:
             log.warning(
-                "Failed to load plugin '%s'", ep.name, exc_info=True,
+                "Failed to load plugin '%s'",
+                ep.name,
+                exc_info=True,
             )
 
     # Legacy entry points (backward compat)
@@ -179,7 +206,9 @@ def _discover() -> None:
                 FILE_TYPES[ep.name] = cls
                 log.debug("Legacy file type %s → %s", ep.name, cls.__name__)
             except Exception:
-                log.warning("Failed to load file_type plugin: %s", ep.name, exc_info=True)
+                log.warning(
+                    "Failed to load file_type plugin: %s", ep.name, exc_info=True
+                )
 
 
 def register_scheme(name: str, handler_cls: type[Handler]) -> None:
@@ -232,8 +261,7 @@ def resolve(scheme: str, path: str) -> Handler:
         if not handler_cls:
             supported = ", ".join(sorted(FILE_TYPES.keys())) or "(none)"
             raise PrecisError(
-                f"No handler for {ext} files.\n"
-                f"Supported extensions: {supported}"
+                f"No handler for {ext} files.\nSupported extensions: {supported}"
             )
         return handler_cls()
 
@@ -241,7 +269,6 @@ def resolve(scheme: str, path: str) -> Handler:
     if not handler_cls:
         supported = ", ".join(sorted(SCHEMES.keys())) or "(none)"
         raise PrecisError(
-            f"Unknown scheme: {scheme}:\n"
-            f"Supported schemes: file, {supported}"
+            f"Unknown scheme: {scheme}:\nSupported schemes: file, {supported}"
         )
     return handler_cls()
