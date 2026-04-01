@@ -1,0 +1,43 @@
+# How to work in this project
+
+This project uses uv, ruff, and hatchling. All commands go through `uv run`.
+
+## Common tasks
+
+Run tests:           uv run pytest
+Lint:                uv run ruff check .
+Auto-fix lint:       uv run ruff check --fix .
+Format code:         uv run ruff format .
+Type check:          uv run mypy src tests
+Run a script:        uv run python script.py
+Full check:          uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run pytest
+
+## Dependencies
+
+Add a dependency:    uv add <pkg>
+Add a dev dep:       uv add --group dev <pkg>
+Remove a dep:        uv remove <pkg>
+Update lockfile:     uv lock
+
+## Versioning
+
+Set version:         uv version X.Y.Z
+Version lives only in pyproject.toml. __init__.py reads it via importlib.metadata.
+
+## Releasing
+
+uv version X.Y.Z
+git commit -am "release X.Y.Z"
+git tag vX.Y.Z
+git push && git push --tags
+Then create a GitHub Release from the tag. CI publishes to PyPI automatically.
+
+## Rules
+
+- Always use `uv run` to run tools. Never use bare `pip`, `python -m pip`, or `python -m pytest`.
+- Never use black, isort, or flake8. Ruff replaces all of them.
+- Source lives in src/<package>/. Tests live in tests/.
+- All tool config goes in pyproject.toml. No .cfg, .ini, or separate .toml files.
+- GitHub Actions must be pinned by commit SHA.
+- Never commit secrets.
+- Always use ssh to git pull/push
