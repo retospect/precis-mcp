@@ -1,4 +1,8 @@
-# Precis v2
+# Precis
+
+[![PyPI](https://img.shields.io/pypi/v/precis-mcp)](https://pypi.org/project/precis-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/precis-mcp)](https://pypi.org/project/precis-mcp/)
+[![License](https://img.shields.io/pypi/l/precis-mcp)](LICENSE)
 
 Unified document MCP — read, write, search, and annotate any structured document.
 
@@ -19,8 +23,9 @@ scheme:path[~selector][/view[/subview]]
 
 ### Schemes
 
-- `file:` — on-disk files, extension determines handler (`.docx`, `.tex`)
+- `file:` — on-disk files, extension determines handler (`.docx`, `.tex`, `.md`, `.txt`)
 - `paper:` — acatome paper store (pre-ingested PDFs)
+- `todo:` — task management with state machine
 
 ### Examples
 
@@ -46,9 +51,10 @@ put('file:planning.docx~KR8M2', text='Revised text.', mode='replace')
 ## Installation
 
 ```bash
-pip install precis[all]       # everything
-pip install precis[word]      # DOCX support only
-pip install precis[paper]     # paper store support only
+pip install precis-mcp            # core + markdown + plaintext + latex
+pip install precis-mcp[word]       # + DOCX support
+pip install precis-mcp[paper]      # + paper store support
+pip install precis-mcp[all]        # everything
 ```
 
 ## Plugin system
