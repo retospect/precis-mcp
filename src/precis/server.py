@@ -7,6 +7,7 @@ Dispatch: id contains .docx/.tex/.md → file handler, else → paper handler.
 from __future__ import annotations
 
 import os.path
+import re
 
 from mcp.server.fastmcp import FastMCP
 
@@ -20,22 +21,36 @@ _FILE_EXTENSIONS = {".docx", ".tex", ".md", ".markdown", ".rst", ".txt"}
 # Max chars for multi-ID results before paginating
 _MULTI_ID_BUDGET = 6000
 
+# DOI pattern: 10.NNNN/suffix (registrant code is 4+ digits)
+_DOI_RE = re.compile(r"^10\.\d{4,}/.")
+
 
 def _to_uri(id: str) -> str:
     """Convert a user-facing id to an internal URI.
 
-    - Contains a known file extension → ``file:path[#selector]``
-    - Otherwise → ``paper:path[#selector][/view]``
+    Resolution order:
+    1. Known scheme prefix (doi:, arxiv:, usc:, irs:, ie:) → keep as-is
+    2. File extension (.docx, .tex, etc.) → file: scheme
+    3. Bare DOI pattern (10.NNNN/...) → doi: scheme
+    4. Otherwise → paper: scheme (slug lookup)
     """
     if not id:
         return "paper:"
+    # Known scheme prefixes — keep their scheme intact
+    for scheme in ("doi:", "arxiv:", "usc:", "irs:", "ie:", "todo:"):
+        if id.startswith(scheme):
+            return id  # already a valid URI
     # Strip accidental scheme prefixes the LLM might copy
-    for prefix in ("slug:", "doi:", "arxiv:", "s2:", "ref:"):
+    for prefix in ("slug:", "s2:", "ref:"):
         if id.startswith(prefix):
             id = id[len(prefix):]
             break
-    # Split at # to check base path for extension
-    base = id.split("#")[0].split("/")[0]
+    # Auto-detect bare DOI (10.NNNN/...)
+    bare = id.split("~")[0]
+    if _DOI_RE.match(bare):
+        return f"doi:{id}"
+    # Split at ~ to check base path for extension
+    base = bare.split("/")[0]
     _, ext = os.path.splitext(base)
     if ext.lower() in _FILE_EXTENSIONS:
         return f"file:{id}"
@@ -63,7 +78,7 @@ def search(
 
     Without scope, searches across the entire paper library.
     Returns ranked results with snippets.
-    Use get(id='wang2020state#N') to read full chunk text.
+    Use get(id='wang2020state~N') to read full chunk text.
     """
     if not query.strip():
         return "ERROR: query is required. Example: search(query='CO2 capture MOF')"
@@ -88,18 +103,29 @@ def get(
       get(id='wang2020state/toc')          — chunk index
       get(id='wang2020state/abstract')     — abstract text
       get(id='wang2020state/summary')      — enrichment summary
-      get(id='wang2020state#38')           — chunk 38 full text
-      get(id='wang2020state#38..42')       — chunks 38–42
-      get(id='wang2020state#38/summary')   — chunk summary
+      get(id='wang2020state~38')           — chunk 38 full text
+      get(id='wang2020state~38..42')       — chunks 38–42
+      get(id='wang2020state~38/summary')   — chunk summary
       get(id='wang2020state/cite/bib')     — BibTeX citation
       get(id='wang2020state/fig')          — list figures
+      get(id='wang2020state/fig/3')        — figure 3 overview + caption
+      get(id='wang2020state/fig/3/legend') — caption text only
+      get(id='wang2020state/fig/3/image')  — encoded image data
+      get(id='wang2020state/fig/3/image/export') — save to ./figures/
+      get(id='doi:10.1021/jacs.2c01234')   — lookup by DOI
+      get(id='10.1021/jacs.2c01234')       — bare DOI (auto-detected)
+      get(id='arxiv:2301.12345')           — lookup by arXiv ID
       get(grep='MOF')                  — filter paper list by keyword
+      get(grep='ingested:today')       — papers added today
+      get(grep='ingested:this-week')   — papers added this week
+      get(grep='year:2020-2024')       — published 2020–2024
+      get(grep='tag:review')           — filter by tag
 
     Documents:
       get(id='doc.docx')               — table of contents
-      get(id='doc.docx#PLXDX')        — paragraph by slug
-      get(id='doc.docx#S2.1')         — section scope
-      get(id='doc.docx#PLXDX,ABCDE')  — multiple nodes
+      get(id='doc.docx~PLXDX')        — paragraph by slug
+      get(id='doc.docx~S2.1')         — section scope
+      get(id='doc.docx~PLXDX,ABCDE')  — multiple nodes
       get(id='doc.docx', grep='methods') — grep document
       get(id='doc.docx', depth=2)      — outline only
     """
@@ -107,9 +133,9 @@ def get(
         return (
             "ERROR: id or grep is required. Do not call get() with empty parameters.\n"
             "  get(id='wang2020state')      — paper overview\n"
-            "  get(id='wang2020state#5')    — read chunk 5\n"
+            "  get(id='wang2020state~5')    — read chunk 5\n"
             "  get(id='wang2020state/toc')  — table of contents\n"
-            "  get(id='slug1#4,slug2#9')   — multiple chunks at once\n"
+            "  get(id='slug1~4,slug2~9')   — multiple chunks at once\n"
             "  get(id='report.docx')        — document toc\n"
             "  get(grep='MOF')              — filter paper list"
         )
@@ -142,13 +168,17 @@ def put(
     text: str = "",
     mode: str = "replace",
     tracked: bool = True,
+    note: str = "",
+    link: str = "",
 ) -> str:
     """Write, annotate, or delete content.
 
-    id: target identifier (file#slug for docs, paper slug for notes)
+    id: target identifier (file~slug for docs, paper slug for notes)
     text: content to write.
     mode: append / replace / after / before / delete / comment / note
     tracked: DOCX track-changes (default true). LaTeX: ignored.
+    note: annotation text — creates a note on the target ref or block.
+    link: link spec as 'target_slug:relation' — creates a typed link.
 
     Headings: start line with # markers. Never number them.
       # Document Title    (Title style — one per document)
@@ -160,26 +190,34 @@ def put(
       put(id='report.docx', text='## Methods', mode='append')
       put(id='report.docx', text='First paragraph.', mode='append')
 
-    EDIT existing content → mode='replace' (requires #SLUG in id):
-      put(id='report.docx#PLXDX', text='Revised.', mode='replace')
-      put(id='report.docx#PLXDX', text='New para.', mode='after')
-      put(id='report.docx#PLXDX', mode='delete')
-      put(id='report.docx#PLXDX', text='Fix this.', mode='comment')
+    EDIT existing content → mode='replace' (requires ~SLUG in id):
+      put(id='report.docx~PLXDX', text='Revised.', mode='replace')
+      put(id='report.docx~PLXDX', text='New para.', mode='after')
+      put(id='report.docx~PLXDX', mode='delete')
+      put(id='report.docx~PLXDX', text='Fix this.', mode='comment')
 
     Citations (DOCX):
-      Cite: [@slug] in text — slug is the paper name, NEVER include #chunk.
-      ✓ [@piscopo2020strategies]  ✗ [piscopo2020strategies#54]  ✗ [piscopo2020strategies]
+      Cite: [@slug] in text — slug is the paper name, NEVER include ~chunk.
+      ✓ [@piscopo2020strategies]  ✗ [piscopo2020strategies~54]  ✗ [piscopo2020strategies]
       Define: put(id='report.docx', text='[@slug]: Author, Title, 2024.', mode='append')
       Undefined [@slug] references are flagged after each write.
 
-    Paper notes:
+    Notes (on any ref or block):
+      put(id='wang2020state', note='Key finding about MOFs')
+      put(id='wang2020state~38', note='Important result here')
+
+    Links (between refs or blocks):
+      put(id='wang2020state', link='jones2023surface:cites')
+      put(id='wang2020state~38', link='jones2023surface:discusses')
+      put(id='wang2020state', link='jones2023surface')  — defaults to 'references'
+
+    Paper notes (legacy, still works):
       put(id='wang2020state', text='Key finding', mode='note')
-      put(id='wang2020state#38', text='Important result', mode='note')
 
     Multiple paragraphs separated by newlines are auto-split.
     """
     uri = _to_uri(id)
-    return tools.put(uri=uri, text=text, mode=mode, tracked=tracked)
+    return tools.put(uri=uri, text=text, mode=mode, tracked=tracked, note=note, link=link)
 
 
 @mcp.tool()
@@ -189,14 +227,17 @@ def move(
 ) -> str:
     """Reorder nodes within a document.
 
-    id: doc.docx#SLUG or doc.docx#SLUG1,SLUG2 to move
-    after: doc.docx#SLUG — moved nodes placed after this node
+    id: doc.docx~SLUG or doc.docx~SLUG1,SLUG2 to move
+    after: doc.docx~SLUG — moved nodes placed after this node
 
     Slugs don't change. Paths are recomputed.
     """
     uri = _to_uri(id)
     # Extract the 'after' slug from id format (strip file part if present)
-    after_sel = after.split("#", 1)[-1] if "#" in after else after
+    if "~" in after:
+        after_sel = after.split("~", 1)[-1]
+    else:
+        after_sel = after
     return tools.put(uri=uri, text=after_sel, mode="move")
 
 

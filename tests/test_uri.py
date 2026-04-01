@@ -47,8 +47,41 @@ class TestBasicParsing:
         assert p.scheme == "paper"
 
     def test_raw_preserved(self):
-        p = parse("paper:miller2023foo#38/toc")
-        assert p.raw == "paper:miller2023foo#38/toc"
+        p = parse("paper:miller2023foo~38/toc")
+        assert p.raw == "paper:miller2023foo~38/toc"
+
+
+# ─── DOI / opaque-path schemes ────────────────────────────────────
+
+
+class TestDOI:
+    def test_doi_simple(self):
+        p = parse("doi:10.1021/jacs.2c01234")
+        assert p.scheme == "doi"
+        assert p.path == "10.1021/jacs.2c01234"
+        assert p.view is None
+
+    def test_doi_slash_not_split(self):
+        """Slashes in DOI must not be treated as view separators."""
+        p = parse("doi:10.1016/j.electacta.2024.145123")
+        assert p.path == "10.1016/j.electacta.2024.145123"
+        assert p.view is None
+
+    def test_doi_with_selector(self):
+        p = parse("doi:10.1021/jacs.2c01234~38")
+        assert p.path == "10.1021/jacs.2c01234"
+        assert p.selector == "38"
+        assert p.range_start == 38
+
+    def test_arxiv_simple(self):
+        p = parse("arxiv:2301.12345")
+        assert p.scheme == "arxiv"
+        assert p.path == "2301.12345"
+
+    def test_arxiv_old_format(self):
+        p = parse("arxiv:hep-ph/9905221")
+        assert p.path == "hep-ph/9905221"
+        assert p.view is None
 
 
 # ─── Views ──────────────────────────────────────────────────────────
@@ -101,18 +134,18 @@ class TestViews:
 
 class TestSelectors:
     def test_slug(self):
-        p = parse("file:planning.docx#KR8M2")
+        p = parse("file:planning.docx~KR8M2")
         assert p.selector == "KR8M2"
         assert p.selector_type == "slug"
         assert p.anchor == "KR8M2"
 
     def test_slug_with_collision_suffix(self):
-        p = parse("file:planning.docx#KR8M2.2")
+        p = parse("file:planning.docx~KR8M2.2")
         assert p.selector_type == "slug"
         assert p.anchor == "KR8M2.2"
 
     def test_index(self):
-        p = parse("paper:miller2023foo#38")
+        p = parse("paper:miller2023foo~38")
         assert p.selector == "38"
         assert p.selector_type == "index"
         assert p.anchor == "38"
@@ -120,17 +153,17 @@ class TestSelectors:
         assert p.range_end == 38
 
     def test_path_selector(self):
-        p = parse("file:planning.docx#S1.2")
+        p = parse("file:planning.docx~S1.2")
         assert p.selector_type == "path"
         assert p.anchor == "S1.2"
 
     def test_path_with_child(self):
-        p = parse("file:planning.docx#S1.2¶3")
+        p = parse("file:planning.docx~S1.2¶3")
         assert p.selector_type == "path"
         assert p.anchor == "S1.2¶3"
 
     def test_label(self):
-        p = parse("file:main.tex#sec:methods")
+        p = parse("file:main.tex~sec:methods")
         assert p.selector_type == "label"
         assert p.anchor == "sec:methods"
 
@@ -140,20 +173,20 @@ class TestSelectors:
 
 class TestRanges:
     def test_absolute_range(self):
-        p = parse("paper:miller2023foo#38..42")
+        p = parse("paper:miller2023foo~38..42")
         assert p.range_start == 38
         assert p.range_end == 42
         assert not p.is_open_range
 
     def test_open_range(self):
-        p = parse("paper:miller2023foo#38..")
+        p = parse("paper:miller2023foo~38..")
         assert p.range_start == 38
         assert p.range_end is None
         assert p.is_open_range
 
     def test_single_index_is_range(self):
-        """Single index #38 sets range_start == range_end == 38."""
-        p = parse("paper:miller2023foo#38")
+        """Single index ~38 sets range_start == range_end == 38."""
+        p = parse("paper:miller2023foo~38")
         assert p.range_start == 38
         assert p.range_end == 38
 
@@ -163,27 +196,27 @@ class TestRanges:
 
 class TestContextWindows:
     def test_slug_context_symmetric(self):
-        p = parse("paper:miller2023foo#KR8M2-3..+3")
+        p = parse("paper:miller2023foo~KR8M2-3..+3")
         assert p.selector_type == "slug"
         assert p.anchor == "KR8M2"
         assert p.context_before == 3
         assert p.context_after == 3
 
     def test_slug_context_after_only(self):
-        p = parse("paper:miller2023foo#KR8M2..+5")
+        p = parse("paper:miller2023foo~KR8M2..+5")
         assert p.anchor == "KR8M2"
         assert p.context_before is None
         assert p.context_after == 5
 
     def test_slug_context_before_only(self):
-        p = parse("paper:miller2023foo#KR8M2-2..")
+        p = parse("paper:miller2023foo~KR8M2-2..")
         assert p.anchor == "KR8M2"
         assert p.context_before == 2
         assert p.context_after is None
 
     def test_index_context(self):
-        """Index-based context window: #38-2..+2."""
-        p = parse("paper:miller2023foo#38-2..+2")
+        """Index-based context window: ~38-2..+2."""
+        p = parse("paper:miller2023foo~38-2..+2")
         assert p.anchor == "38"
         assert p.selector_type == "index"
         assert p.context_before == 2
@@ -195,17 +228,17 @@ class TestContextWindows:
 
 class TestSelectorAndView:
     def test_selector_then_view(self):
-        p = parse("paper:miller2023foo#38/toc")
+        p = parse("paper:miller2023foo~38/toc")
         assert p.selector == "38"
         assert p.view == "toc"
 
     def test_slug_then_view(self):
-        p = parse("file:planning.docx#KR8M2/meta")
+        p = parse("file:planning.docx~KR8M2/meta")
         assert p.selector == "KR8M2"
         assert p.view == "meta"
 
     def test_range_then_view(self):
-        p = parse("paper:miller2023foo#38..42/toc")
+        p = parse("paper:miller2023foo~38..42/toc")
         assert p.selector == "38..42"
         assert p.range_start == 38
         assert p.range_end == 42

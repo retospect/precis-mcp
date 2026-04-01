@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "2.2.1"
+version = "3.0.0"
 description = "Unified document MCP — read, write, search, annotate any structured document"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
 authors = [{name = "Reto Stamm", email = "reto@retostamm.com"}]
 readme = "README.md"
-keywords = ["mcp", "docx", "latex", "pdf", "llm", "document", "precis"]
+keywords = ["mcp", "docx", "latex", "markdown", "pdf", "llm", "document", "precis"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -40,8 +40,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/acatome/precis-mcp"
-Repository = "https://github.com/acatome/precis-mcp"
+Homepage = "https://github.com/retospect/precis-mcp"
+Repository = "https://github.com/retospect/precis-mcp"
 
 [project.scripts]
 precis = "precis.server:main"
@@ -49,9 +49,14 @@ precis = "precis.server:main"
 [project.entry-points."precis.file_types"]
 ".docx" = "precis.handlers.word:WordHandler"
 ".tex" = "precis.handlers.tex:TexHandler"
+".md" = "precis.handlers.markdown:MarkdownHandler"
+".markdown" = "precis.handlers.markdown:MarkdownHandler"
+".txt" = "precis.handlers.plaintext:PlainTextHandler"
+".text" = "precis.handlers.plaintext:PlainTextHandler"
 
 [project.entry-points."precis.schemes"]
 paper = "precis.handlers.paper:PaperHandler"
+todo = "precis.handlers.todo:TodoHandler"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/precis"]

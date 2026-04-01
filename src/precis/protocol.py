@@ -211,6 +211,39 @@ class Node:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class Plugin:
+    """A precis plugin — declares corpus metadata + handler behavior.
+
+    Plugins are the unit of packaging and discovery.  Each pip-installable
+    precis extension (precis-papers, precis-todos, …) exposes one or more
+    Plugin instances via the ``precis.plugins`` entry point group.
+
+    File-based handlers (WordHandler, TexHandler) use ``file_types`` and
+    leave ``corpus_id`` as None.  Corpus-based plugins (papers, todos, …)
+    use ``schemes`` and set ``corpus_id``.
+
+    Attributes:
+        name: Plugin name used for logging and disable-list matching.
+        handler_cls: The Handler subclass this plugin provides.
+        schemes: URI schemes to register (e.g. ["paper", "doi", "arxiv"]).
+        file_types: File extensions to register (e.g. [".docx"]).
+        corpus_id: Corpus this plugin manages, or None for file handlers.
+        write_policy: "ingestion" | "direct" | "system" — enforced by MCP.
+        block_type_seeds: Extra (name, provenance, description) tuples.
+        link_type_seeds: Extra (name, inverse, description) tuples.
+    """
+
+    name: str
+    handler_cls: type[Handler]
+    schemes: list[str] = field(default_factory=list)
+    file_types: list[str] = field(default_factory=list)
+    corpus_id: Optional[str] = None
+    write_policy: str = "ingestion"
+    block_type_seeds: list[tuple] = field(default_factory=list)
+    link_type_seeds: list[tuple] = field(default_factory=list)
+
+
 class Handler(abc.ABC):
     """Base class for document type handlers.
 

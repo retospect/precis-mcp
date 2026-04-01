@@ -239,7 +239,7 @@ class FileHandlerBase(Handler):
             lines.append("")
             lines.append(f"⚠ Large document ({total_nodes} nodes) — showing headings only.")
             lines.append(
-                f"Drill in: get(id='{path.name}#S3.2') for section detail, "
+                f"Drill in: get(id='{path.name}~S3.2') for section detail, "
                 f"get(id='{path.name}', depth=2) for outline."
             )
 
@@ -247,7 +247,7 @@ class FileHandlerBase(Handler):
         hints = []
         if nodes:
             first_slug = nodes[0].slug
-            hints.append(f"get(id='{path.name}#{first_slug}')")
+            hints.append(f"get(id='{path.name}~{first_slug}')")
         if total_nodes > 0:
             hints.append(f"get(id='{path.name}', grep='...')")
         hints.append(f"put(id='{path.name}', text='...', mode='append')")
@@ -382,7 +382,7 @@ class FileHandlerBase(Handler):
             raise PrecisError(
                 f"selector required for mode={mode}. "
                 "To write new content, use mode='append'. "
-                "To edit existing content, add #SLUG to the id."
+                "To edit existing content, add ~SLUG to the id."
             )
 
         if mode == "delete":
@@ -422,7 +422,7 @@ class FileHandlerBase(Handler):
         fname = Path(file_path).name
         if new_nodes:
             last = new_nodes[-1]
-            result += f"\n\nNext:\n  put(id='{fname}#{last.slug}', text='...', mode='after')"
+            result += f"\n\nNext:\n  put(id='{fname}~{last.slug}', text='...', mode='after')"
         if len(new_nodes) > 3:
             result += f"\n  get(id='{fname}', depth=2)  — review outline"
         result += self._citation_hints(file_path)
@@ -615,7 +615,7 @@ class FileHandlerBase(Handler):
                 if bad not in seen:
                     seen.add(bad)
                     unique.append((bad, slug, fix))
-            parts.append(f"\n\n⚠ {len(unique)} malformed citation(s) — use [@slug], never [slug] or [slug#N]:")
+            parts.append(f"\n\n⚠ {len(unique)} malformed citation(s) — use [@slug], never [slug] or [slug~N]:")
             for bad, slug, fix in unique:
                 parts.append(f"  {bad} → {fix}")
 
@@ -648,6 +648,12 @@ class FileHandlerBase(Handler):
                     "\\documentclass{article}\n\\begin{document}\n\n\\end{document}\n",
                     encoding="utf-8",
                 )
+            elif path.endswith(".md") or path.endswith(".markdown"):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("", encoding="utf-8")
+            elif path.endswith(".txt") or path.endswith(".text"):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("", encoding="utf-8")
             else:
                 raise PrecisError(f"File not found: {path}")
         return str(p)
