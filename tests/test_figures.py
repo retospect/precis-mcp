@@ -13,6 +13,12 @@ import pytest
 
 from acatome_store.store import Store
 
+# Skip entire module if store doesn't have figure methods (unreleased)
+pytestmark = pytest.mark.skipif(
+    not hasattr(Store, "get_figures"),
+    reason="acatome-store does not yet have figure methods",
+)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
