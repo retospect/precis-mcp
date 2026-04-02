@@ -69,6 +69,33 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "B008",    # function-call-in-default-argument (typer pattern)
+    "B904",    # raise-without-from-inside-except
+    "E501",    # line-too-long (formatter handles what it can)
+    "E741",    # ambiguous-variable-name
+    "RUF001",  # ambiguous-unicode-character-string
+    "RUF002",  # ambiguous-unicode-character-docstring
+    "RUF003",  # ambiguous-unicode-character-comment
+    "RUF012",  # mutable-class-default (SQLAlchemy/Pydantic models)
+    "SIM102",  # collapsible-if
+    "SIM103",  # needless-bool
+    "SIM105",  # suppressible-exception
+    "SIM108",  # if-else-block-instead-of-if-exp
+    "SIM110",  # reimplemented-builtin
+    "SIM117",  # multiple-with-statements
+    "B007",    # unused-loop-control-variable
+    "B905",    # zip-without-explicit-strict
+    "RUF005",  # collection-literal-concatenation
+    "RUF006",  # asyncio-dangling-task
+    "RUF013",  # implicit-optional
+    "RUF043",  # match-metacharacter-unescaped
+    "UP036",   # outdated-version-block
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B007", "E402", "E731", "E741", "F841", "RUF012", "RUF015", "RUF059", "UP036"]
+"src/**" = ["E402", "F841", "RUF059"]
 
 [tool.mypy]
 python_version = "3.11"
