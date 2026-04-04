@@ -34,6 +34,8 @@ class PaperHandler(RefHandler):
         "page",
         "fig",
         "cite",
+        "cites",
+        "cited-by",
         "links",
     }
     extensions: set[str] = set()
@@ -55,6 +57,10 @@ class PaperHandler(RefHandler):
             return self._read_abstract(store, ref)
         elif view == "cite":
             return self._read_citation(ref, subview or "bib")
+        elif view == "cites":
+            return self._read_s2_graph(ref, direction="references")
+        elif view == "cited-by":
+            return self._read_s2_graph(ref, direction="cited_by")
         elif view == "fig":
             return self._read_figures(store, ref, subview)
         elif view == "page":
@@ -105,6 +111,8 @@ class PaperHandler(RefHandler):
         lines.append(f"  get(id='{slug}/cite/bib')  — BibTeX citation")
         lines.append(f"  get(id='{slug}/summary')  — paper summary")
         lines.append(f"  get(id='{slug}/links')  — links graph")
+        lines.append(f"  get(id='{slug}/cites')  — outgoing references (S2)")
+        lines.append(f"  get(id='{slug}/cited-by')  — incoming citations (S2)")
         lines.append(f"  Cite in docs: [@{slug}]")
         return "\n".join(lines)
 
@@ -135,7 +143,7 @@ class PaperHandler(RefHandler):
     def _list_header(self, count: int, grep: str = "") -> str:
         if grep:
             return f"📚 {count} papers matching '{grep}'"
-        return f"� {count} papers in library"
+        return f"📚 {count} papers in library"
 
     def _list_entry(self, ref: dict) -> str:
         slug = ref.get("slug", "???")
@@ -338,6 +346,75 @@ class PaperHandler(RefHandler):
             f"Available: {available or 'none'}\n"
             f"Use: get(id='{slug}/fig') to list figures."
         )
+
+    # ── Semantic Scholar graph ────────────────────────────────────
+
+    @staticmethod
+    def _get_s2_identifier(ref: dict) -> str | None:
+        """Return the best S2-compatible identifier for a ref."""
+        doi = ref.get("doi")
+        if doi:
+            return f"DOI:{doi}"
+        s2_id = ref.get("s2_id")
+        if s2_id:
+            return s2_id
+        arxiv_id = ref.get("arxiv_id")
+        if arxiv_id:
+            return f"ARXIV:{arxiv_id}"
+        return None
+
+    def _read_s2_graph(self, ref: dict, direction: str) -> str:
+        """Fetch cites or cited-by from Semantic Scholar on demand."""
+        slug = ref.get("slug", "???")
+        s2_id = self._get_s2_identifier(ref)
+        if not s2_id:
+            return (
+                f"No DOI, S2 ID, or arXiv ID for {slug} — cannot query Semantic Scholar.\n"
+                f"Hint: get(id='{slug}/meta') to check available identifiers."
+            )
+
+        try:
+            from acatome_meta.citations import citations
+        except ImportError:
+            return (
+                "acatome-meta is not installed.\n"
+                'Install with: pip install "precis-mcp[paper]"'
+            )
+
+        try:
+            result = citations(s2_id)
+        except Exception as e:
+            return f"Semantic Scholar lookup failed for {slug}: {e}"
+
+        papers = result.get(direction, [])
+        label = "references" if direction == "references" else "citing papers"
+        emoji = "📖" if direction == "references" else "📣"
+
+        if not papers:
+            other = "cited-by" if direction == "references" else "cites"
+            return (
+                f"{emoji} {slug} — 0 {label} found on Semantic Scholar.\n"
+                f"\nNext:\n"
+                f"  get(id='{slug}/{other}')  — try the other direction"
+            )
+
+        lines = [f"{emoji} {slug} — {len(papers)} {label} (via Semantic Scholar)", ""]
+        for p in papers:
+            title = _truncate(p.get("title", ""), 80)
+            year = p.get("year", "")
+            doi = p.get("doi", "")
+            s2 = p.get("s2_id", "")
+            id_str = f"doi:{doi}" if doi else (f"s2:{s2}" if s2 else "")
+            lines.append(f"  {year or '?'}  {title}")
+            if id_str:
+                lines.append(f"        {id_str}")
+
+        other = "cited-by" if direction == "references" else "cites"
+        lines.append("")
+        lines.append("Next:")
+        lines.append(f"  get(id='{slug}/{other}')  — {('incoming citations' if direction == 'references' else 'outgoing references')}")
+        lines.append(f"  search(query='<keyword>')  — find related papers in library")
+        return "\n".join(lines)
 
     def _read_page(self, store, ref: dict, selector: str | None) -> str:
         slug = ref.get("slug", "???")
