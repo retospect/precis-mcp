@@ -12,6 +12,7 @@ import re
 from mcp.server.fastmcp import FastMCP
 
 from precis import tools
+from precis.uri import _SEP_CHARS, SEP
 
 mcp = FastMCP("precis")
 
@@ -23,6 +24,13 @@ _MULTI_ID_BUDGET = 6000
 
 # DOI pattern: 10.NNNN/suffix (registrant code is 4+ digits)
 _DOI_RE = re.compile(r"^10\.\d{4,}/.")
+
+
+def _split_sep(text: str) -> list[str]:
+    """Split text at the first selector separator (› or ~)."""
+    import re as _re
+
+    return _re.split(r"[" + _re.escape(_SEP_CHARS) + r"]", text, maxsplit=1)
 
 
 def _to_uri(id: str) -> str:
@@ -46,10 +54,10 @@ def _to_uri(id: str) -> str:
             id = id[len(prefix) :]
             break
     # Auto-detect bare DOI (10.NNNN/...)
-    bare = id.split("~")[0]
+    bare = _split_sep(id)[0]
     if _DOI_RE.match(bare):
         return f"doi:{id}"
-    # Split at ~ to check base path for extension
+    # Split at SEP to check base path for extension
     base = bare.split("/")[0]
     _, ext = os.path.splitext(base)
     if ext.lower() in _FILE_EXTENSIONS:
@@ -79,7 +87,7 @@ def search(
 
     Without scope, searches across the entire paper library.
     Returns ranked results with snippets.
-    Use get(id='wang2020state~N') to read full chunk text.
+    Use get(id='wang2020state›N') to read full chunk text.
     """
     if not query.strip():
         return "ERROR: query is required. Example: search(query='CO2 capture MOF')"
@@ -104,9 +112,9 @@ def get(
       get(id='wang2020state/toc')          — chunk index
       get(id='wang2020state/abstract')     — abstract text
       get(id='wang2020state/summary')      — enrichment summary
-      get(id='wang2020state~38')           — chunk 38 full text
-      get(id='wang2020state~38..42')       — chunks 38–42
-      get(id='wang2020state~38/summary')   — chunk summary
+      get(id='wang2020state›38')           — chunk 38 full text
+      get(id='wang2020state›38..42')       — chunks 38–42
+      get(id='wang2020state›38/summary')   — chunk summary
       get(id='wang2020state/cite/bib')     — BibTeX citation
       get(id='wang2020state/fig')          — list figures
       get(id='wang2020state/fig/3')        — figure 3 overview + caption
@@ -124,9 +132,9 @@ def get(
 
     Documents:
       get(id='doc.docx')               — table of contents
-      get(id='doc.docx~PLXDX')        — paragraph by slug
-      get(id='doc.docx~S2.1')         — section scope
-      get(id='doc.docx~PLXDX,ABCDE')  — multiple nodes
+      get(id='doc.docx›PLXDX')        — paragraph by slug
+      get(id='doc.docx›S2.1')         — section scope
+      get(id='doc.docx›PLXDX,ABCDE')  — multiple nodes
       get(id='doc.docx', grep='methods') — grep document
       get(id='doc.docx', depth=2)      — outline only
     """
@@ -134,9 +142,9 @@ def get(
         return (
             "ERROR: id or grep is required. Do not call get() with empty parameters.\n"
             "  get(id='wang2020state')      — paper overview\n"
-            "  get(id='wang2020state~5')    — read chunk 5\n"
+            f"  get(id='wang2020state{SEP}5')    — read chunk 5\n"
             "  get(id='wang2020state/toc')  — table of contents\n"
-            "  get(id='slug1~4,slug2~9')   — multiple chunks at once\n"
+            f"  get(id='slug1{SEP}4,slug2{SEP}9')   — multiple chunks at once\n"
             "  get(id='report.docx')        — document toc\n"
             "  get(grep='MOF')              — filter paper list"
         )
@@ -174,7 +182,7 @@ def put(
 ) -> str:
     """Write, annotate, or delete content.
 
-    id: target identifier (file~slug for docs, paper slug for notes)
+    id: target identifier (file›slug for docs, paper slug for notes)
     text: content to write.
     mode: append / replace / after / before / delete / comment / note
     tracked: DOCX track-changes (default true). LaTeX: ignored.
@@ -191,25 +199,25 @@ def put(
       put(id='report.docx', text='## Methods', mode='append')
       put(id='report.docx', text='First paragraph.', mode='append')
 
-    EDIT existing content → mode='replace' (requires ~SLUG in id):
-      put(id='report.docx~PLXDX', text='Revised.', mode='replace')
-      put(id='report.docx~PLXDX', text='New para.', mode='after')
-      put(id='report.docx~PLXDX', mode='delete')
-      put(id='report.docx~PLXDX', text='Fix this.', mode='comment')
+    EDIT existing content → mode='replace' (requires ›SLUG in id):
+      put(id='report.docx›PLXDX', text='Revised.', mode='replace')
+      put(id='report.docx›PLXDX', text='New para.', mode='after')
+      put(id='report.docx›PLXDX', mode='delete')
+      put(id='report.docx›PLXDX', text='Fix this.', mode='comment')
 
     Citations (DOCX):
-      Cite: [@slug] in text — slug is the paper name, NEVER include ~chunk.
-      ✓ [@piscopo2020strategies]  ✗ [piscopo2020strategies~54]  ✗ [piscopo2020strategies]
+      Cite: [@slug] in text — slug is the paper name, NEVER include ›chunk.
+      ✓ [@piscopo2020strategies]  ✗ [piscopo2020strategies›54]  ✗ [piscopo2020strategies]
       Define: put(id='report.docx', text='[@slug]: Author, Title, 2024.', mode='append')
       Undefined [@slug] references are flagged after each write.
 
     Notes (on any ref or block):
       put(id='wang2020state', note='Key finding about MOFs')
-      put(id='wang2020state~38', note='Important result here')
+      put(id='wang2020state›38', note='Important result here')
 
     Links (between refs or blocks):
       put(id='wang2020state', link='jones2023surface:cites')
-      put(id='wang2020state~38', link='jones2023surface:discusses')
+      put(id='wang2020state›38', link='jones2023surface:discusses')
       put(id='wang2020state', link='jones2023surface')  — defaults to 'references'
 
     Paper notes (legacy, still works):
@@ -230,17 +238,14 @@ def move(
 ) -> str:
     """Reorder nodes within a document.
 
-    id: doc.docx~SLUG or doc.docx~SLUG1,SLUG2 to move
-    after: doc.docx~SLUG — moved nodes placed after this node
+    id: doc.docx›SLUG or doc.docx›SLUG1,SLUG2 to move
+    after: doc.docx›SLUG — moved nodes placed after this node
 
     Slugs don't change. Paths are recomputed.
     """
     uri = _to_uri(id)
     # Extract the 'after' slug from id format (strip file part if present)
-    if "~" in after:
-        after_sel = after.split("~", 1)[-1]
-    else:
-        after_sel = after
+    after_sel = _split_sep(after)[-1] if any(c in after for c in _SEP_CHARS) else after
     return tools.put(uri=uri, text=after_sel, mode="move")
 
 

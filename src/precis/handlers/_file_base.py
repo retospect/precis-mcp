@@ -26,6 +26,7 @@ from precis.output import (
     format_node_precis,
 )
 from precis.protocol import Handler, Node, PrecisError
+from precis.uri import SEP
 
 log = logging.getLogger(__name__)
 
@@ -241,7 +242,7 @@ class FileHandlerBase(Handler):
                 f"⚠ Large document ({total_nodes} nodes) — showing headings only."
             )
             lines.append(
-                f"Drill in: get(id='{path.name}~S3.2') for section detail, "
+                f"Drill in: get(id='{path.name}{SEP}S3.2') for section detail, "
                 f"get(id='{path.name}', depth=2) for outline."
             )
 
@@ -249,7 +250,7 @@ class FileHandlerBase(Handler):
         hints = []
         if nodes:
             first_slug = nodes[0].slug
-            hints.append(f"get(id='{path.name}~{first_slug}')")
+            hints.append(f"get(id='{path.name}{SEP}{first_slug}')")
         if total_nodes > 0:
             hints.append(f"get(id='{path.name}', grep='...')")
         hints.append(f"put(id='{path.name}', text='...', mode='append')")
@@ -280,7 +281,7 @@ class FileHandlerBase(Handler):
 
         # Word count
         total_words = sum(len(n.text.split()) for n in nodes)
-        lines.append(f"  words: ~{total_words}")
+        lines.append(f"  words: ≈{total_words}")
 
         return "\n".join(lines)
 
@@ -400,7 +401,7 @@ class FileHandlerBase(Handler):
             raise PrecisError(
                 f"selector required for mode={mode}. "
                 "To write new content, use mode='append'. "
-                "To edit existing content, add ~SLUG to the id."
+                f"To edit existing content, add {SEP}SLUG to the id."
             )
 
         if mode == "delete":
@@ -440,9 +441,7 @@ class FileHandlerBase(Handler):
         fname = Path(file_path).name
         if new_nodes:
             last = new_nodes[-1]
-            result += (
-                f"\n\nNext:\n  put(id='{fname}~{last.slug}', text='...', mode='after')"
-            )
+            result += f"\n\nNext:\n  put(id='{fname}{SEP}{last.slug}', text='...', mode='after')"
         if len(new_nodes) > 3:
             result += f"\n  get(id='{fname}', depth=2)  — review outline"
         result += self._citation_hints(file_path)
@@ -640,7 +639,7 @@ class FileHandlerBase(Handler):
                     seen.add(bad)
                     unique.append((bad, slug, fix))
             parts.append(
-                f"\n\n⚠ {len(unique)} malformed citation(s) — use [@slug], never [slug] or [slug~N]:"
+                f"\n\n⚠ {len(unique)} malformed citation(s) — use [@slug], never [slug] or [slug{SEP}N]:"
             )
             for bad, slug, fix in unique:
                 parts.append(f"  {bad} → {fix}")

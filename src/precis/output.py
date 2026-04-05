@@ -10,6 +10,7 @@ Markers::
 from __future__ import annotations
 
 from precis.protocol import Node
+from precis.uri import SEP
 
 # Marker constants
 VERBATIM = "="
@@ -49,7 +50,7 @@ def format_node_header(
     parts = []
 
     if show_index and node.index is not None:
-        parts.append(f"~{node.index}")
+        parts.append(f"{SEP}{node.index}")
 
     if show_slug:
         parts.append(node.slug)

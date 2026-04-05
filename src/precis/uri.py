@@ -2,47 +2,52 @@
 
 Grammar::
 
-    uri       := scheme ":" path [ "~" selector ] [ "/" view [ "/" subview ] ]
+    uri       := scheme ":" path [ SEP selector ] [ "/" view [ "/" subview ] ]
     scheme    := "file" | "paper" | ...
     path      := identifier (slug, filename, etc.)
     selector  := slug | index | path_ref | range | context_window
     view      := "toc" | "meta" | "abstract" | "cite" | "cites" | "cited-by" | ...
     subview   := "bib" | "acs" | "apa" | "ris" | ...
 
-Selector separator is ``~`` (tilde).
+Selector separator is ``›`` (U+203A, single right-pointing angle quotation mark).
+The parser also accepts ``~`` (tilde) on input for backward compatibility.
 
 Selector patterns (disambiguated by regex)::
 
-    [A-Z0-9]{5}             content slug        ~KR8M2
-    S\\d+[.\\d+]*[¶\\d+]?   hierarchical path   ~S1.2¶3
-    \\d+                     block index         ~38
+    [A-Z0-9]{5}             content slug        ›KR8M2
+    S\\d+[.\\d+]*[¶\\d+]?   hierarchical path   ›S1.2¶3
+    \\d+                     block index         ›38
 
 Ranges::
 
-    ~38..42                 absolute range
-    ~38..                   open range (paginated)
-    ~SLUG-3..+3             relative context window
+    ›38..42                 absolute range
+    ›38..                   open range (paginated)
+    ›SLUG-3..+3             relative context window
 
 Examples::
 
     paper:                              list library
     paper:miller2023foo                 overview
     paper:miller2023foo/toc             table of contents
-    paper:miller2023foo~38              chunk 38
-    paper:miller2023foo~38..42          chunks 38-42
-    paper:miller2023foo~KR8M2-3..+3     context around slug
+    paper:miller2023foo›38              chunk 38
+    paper:miller2023foo›38..42          chunks 38-42
+    paper:miller2023foo›KR8M2-3..+3     context around slug
     paper:miller2023foo/cite/bib        BibTeX citation
     paper:miller2023foo/cites           outgoing references
     file:planning.docx                  toc
-    file:planning.docx~ABCDE           node by slug
-    file:planning.docx~S1.2            section by path
-    file:main.tex~sec:methods          node by LaTeX label
+    file:planning.docx›ABCDE           node by slug
+    file:planning.docx›S1.2            section by path
+    file:main.tex›sec:methods          node by LaTeX label
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+# ── Selector separator (single source of truth) ──────────────────────────
+SEP = "\u203a"  # › — right-pointing single angle quotation mark
+_SEP_CHARS = SEP + "~"  # accept both › and legacy ~ on input
 
 # Schemes where / is part of the identifier (not a view separator)
 _OPAQUE_PATH_SCHEMES = {"doi", "arxiv", "usc", "irs", "ie"}
@@ -70,7 +75,7 @@ class ParsedURI:
 
     scheme: str  # "file", "paper", etc.
     path: str  # document identifier (filename, slug, empty for bare scheme)
-    selector: str | None = None  # raw selector string (after ~)
+    selector: str | None = None  # raw selector string (after SEP)
     view: str | None = None  # /view
     subview: str | None = None  # /view/subview
     raw: str = ""  # original URI string
@@ -116,12 +121,12 @@ def parse(uri: str) -> ParsedURI:
     scheme = raw[:colon].lower()
     rest = raw[colon + 1 :]
 
-    # Split off ~selector
+    # Split off SEP selector (accept both › and legacy ~)
     selector = None
-    tilde_pos = rest.find("~")
-    if tilde_pos >= 0:
-        selector = rest[tilde_pos + 1 :]
-        rest = rest[:tilde_pos]
+    sep_pos = _find_first_sep(rest)
+    if sep_pos >= 0:
+        selector = rest[sep_pos + 1 :]
+        rest = rest[:sep_pos]
         # Selector might contain /view — split at first / after the selector core
         # But only if / comes after range syntax is done
         sel_slash = _find_view_slash_in_selector(selector)
@@ -160,6 +165,12 @@ def parse(uri: str) -> ParsedURI:
         _resolve_selector(parsed, selector)
 
     return parsed
+
+
+def _find_first_sep(text: str) -> int:
+    """Find the first selector separator (› or legacy ~) in *text*."""
+    positions = [text.find(c) for c in _SEP_CHARS if text.find(c) >= 0]
+    return min(positions) if positions else -1
 
 
 def _find_view_slash_in_selector(selector: str) -> int:

@@ -51,7 +51,7 @@ DEFAULT_PRIORITY = "medium"
 def _slugify(title: str) -> str:
     """Turn a title into a todo slug: todo:fix-the-bug.
 
-    The ``~`` character is reserved as the URI selector separator and
+    The selector separator character is reserved as the URI selector separator and
     is stripped along with other non-alphanumeric characters.
     """
     slug = title.lower().strip()

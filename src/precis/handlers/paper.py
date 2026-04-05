@@ -6,13 +6,39 @@ Requires the ``paper`` extra: ``pip install precis-mcp[paper]``.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 from precis.handlers._ref_base import RefHandler, _truncate
 from precis.protocol import PrecisError
+from precis.uri import SEP
 
 log = logging.getLogger(__name__)
+
+
+def _first_surname(authors_raw: str) -> str:
+    """Extract the first author's surname from a JSON authors string."""
+    if not authors_raw:
+        return ""
+    try:
+        authors = (
+            json.loads(authors_raw) if isinstance(authors_raw, str) else authors_raw
+        )
+        if authors and isinstance(authors, list):
+            name = (
+                authors[0].get("name", "")
+                if isinstance(authors[0], dict)
+                else str(authors[0])
+            )
+            # "Zou, Jiawen" → "Zou" ; "Jiawen Zou" → "Zou"
+            if "," in name:
+                return name.split(",")[0].strip()
+            parts = name.split()
+            return parts[-1] if parts else ""
+    except (json.JSONDecodeError, TypeError, IndexError):
+        pass
+    return ""
 
 
 class PaperHandler(RefHandler):
@@ -107,7 +133,7 @@ class PaperHandler(RefHandler):
         lines.append("")
         lines.append("Next:")
         lines.append(f"  get(id='{slug}/toc')  — structure")
-        lines.append(f"  get(id='{slug}~0..10')  — first 10 chunks")
+        lines.append(f"  get(id='{slug}{SEP}0..10')  — first 10 chunks")
         lines.append(f"  get(id='{slug}/cite/bib')  — BibTeX citation")
         lines.append(f"  get(id='{slug}/summary')  — paper summary")
         lines.append(f"  get(id='{slug}/links')  — links graph")
@@ -149,7 +175,16 @@ class PaperHandler(RefHandler):
         slug = ref.get("slug", "???")
         title = _truncate(ref.get("title", ""), 80)
         year = ref.get("year", "")
-        return f"  {slug}  {year}  {title}"
+        doi = ref.get("doi", "")
+        first_author = _first_surname(ref.get("authors", ""))
+        parts = [f"  {slug}  {year}"]
+        if first_author:
+            parts.append(first_author)
+        parts.append(title)
+        line = "  ".join(parts)
+        if doi:
+            line += f"  doi:{doi}"
+        return line
 
     def _overview_hints(self, slug: str, ref: dict) -> list[str]:
         return [
@@ -412,14 +447,16 @@ class PaperHandler(RefHandler):
         other = "cited-by" if direction == "references" else "cites"
         lines.append("")
         lines.append("Next:")
-        lines.append(f"  get(id='{slug}/{other}')  — {('incoming citations' if direction == 'references' else 'outgoing references')}")
-        lines.append(f"  search(query='<keyword>')  — find related papers in library")
+        lines.append(
+            f"  get(id='{slug}/{other}')  — {('incoming citations' if direction == 'references' else 'outgoing references')}"
+        )
+        lines.append("  search(query='<keyword>')  — find related papers in library")
         return "\n".join(lines)
 
     def _read_page(self, store, ref: dict, selector: str | None) -> str:
         slug = ref.get("slug", "???")
         if not selector:
-            raise PrecisError(f"Page number required: get(id='{slug}~3/page')")
+            raise PrecisError(f"Page number required: get(id='{slug}{SEP}3/page')")
         try:
             page_num = int(selector)
         except ValueError:
@@ -433,7 +470,7 @@ class PaperHandler(RefHandler):
             idx = block.get("block_index", "?")
             kind = block.get("block_type", "text")
             text = block.get("text", "")
-            lines.append(f">> {slug} ~{idx}  [{kind}]")
+            lines.append(f">> {slug} {SEP}{idx}  [{kind}]")
             lines.append(text)
             lines.append("")
         return "\n".join(lines)

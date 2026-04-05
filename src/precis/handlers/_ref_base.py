@@ -22,6 +22,7 @@ from typing import Any
 
 from precis.grep import parse_grep
 from precis.protocol import Handler, PrecisError
+from precis.uri import SEP
 
 log = logging.getLogger(__name__)
 
@@ -304,7 +305,7 @@ class RefHandler(Handler):
         lines.append("")
         lines.append("Next:")
         lines.append(f"  get(id='{slug}/toc')     — structure")
-        lines.append(f"  get(id='{slug}~0..10')   — first 10 chunks")
+        lines.append(f"  get(id='{slug}{SEP}0..10')   — first 10 chunks")
         lines.append(f"  get(id='{slug}/links')   — links graph")
         for hint in self._overview_hints(slug, ref):
             lines.append(f"  {hint}")
@@ -353,7 +354,7 @@ class RefHandler(Handler):
     # ── List ─────────────────────────────────────────────────────────
 
     def _list_refs(self, store, grep: str = "") -> str:
-        papers = store.list_papers()
+        papers = store.list_papers(limit=10000)
         if not papers:
             return f"No {self._ref_noun}s in library."
 
@@ -367,6 +368,7 @@ class RefHandler(Handler):
                         p.get("title", ""),
                         str(p.get("authors", "")),
                         str(p.get("year", "")),
+                        p.get("doi", ""),
                     ]
                 )
                 return pattern.matches(blob)
@@ -380,16 +382,14 @@ class RefHandler(Handler):
 
         lines = [self._list_header(len(papers), grep), ""]
 
-        shown = papers[: self._max_list]
+        cap = len(papers) if grep else self._max_list
+        shown = papers[:cap]
         for p in shown:
             lines.append(self._list_entry(p))
 
         lines.append("")
-        if len(papers) > self._max_list:
-            lines.append(
-                f"  ... and {len(papers) - self._max_list} more "
-                f"(showing first {self._max_list})"
-            )
+        if len(papers) > cap:
+            lines.append(f"  ... and {len(papers) - cap} more (showing first {cap})")
             lines.append("")
             lines.append("To find specific items:")
             lines.append("  search(query='...')  — semantic search")
@@ -505,14 +505,16 @@ class RefHandler(Handler):
                 if p.lower().strip() != heading_lower.strip():
                     snippet = _truncate(p, 80)
                     break
-            line = f"  ~{g['start']}..{g['end']}  ({size})  {_truncate(heading, 60)}"
+            line = (
+                f"  {SEP}{g['start']}..{g['end']}  ({size})  {_truncate(heading, 60)}"
+            )
             if snippet:
                 line += f"  — {snippet}"
             lines.append(line)
 
         lines.append("")
         lines.append(
-            f"Next: get(id='{slug}~0..{min(60, len(toc) - 1)}/toc') "
+            f"Next: get(id='{slug}{SEP}0..{min(60, len(toc) - 1)}/toc') "
             f"to drill into a range"
         )
         return "\n".join(lines)
@@ -528,13 +530,15 @@ class RefHandler(Handler):
                 start = int(selector)
                 end = start + 60
         except ValueError:
-            raise PrecisError(f"Invalid range: {selector}\nUse ~N..M/toc")
+            raise PrecisError(f"Invalid range: {selector}\nUse {SEP}N..M/toc")
 
         filtered = [e for e in toc if start <= e.get("block_index", 0) <= end]
         if not filtered:
-            return f"No blocks in ~{start}..{end} for {slug}"
+            return f"No blocks in {SEP}{start}..{end} for {slug}"
 
-        header = f"{self._ref_emoji} {slug}  ~{start}..{end}  ({len(filtered)} blocks)"
+        header = (
+            f"{self._ref_emoji} {slug}  {SEP}{start}..{end}  ({len(filtered)} blocks)"
+        )
         result = self._format_grouped_toc(slug, filtered, header)
 
         last_idx = filtered[-1].get("block_index", end)
@@ -542,7 +546,7 @@ class RefHandler(Handler):
         if last_idx < max_idx:
             next_start = last_idx + 1
             result += (
-                f"\nNext: get(id='{slug}~{next_start}..{min(next_start + 60, max_idx)}/toc') "
+                f"\nNext: get(id='{slug}{SEP}{next_start}..{min(next_start + 60, max_idx)}/toc') "
                 f"for next section"
             )
         return result
@@ -565,19 +569,19 @@ class RefHandler(Handler):
             if section != current_section:
                 current_section = section
                 if section:
-                    lines.append(f"  ~{idx}  §{section}")
+                    lines.append(f"  {SEP}{idx}  §{section}")
                     if kind == "section_header":
                         continue
 
             mark = "✦" if has_summary else " "
             type_tag = f"  [{kind}]" if kind != "text" else ""
             snippet = f"  {_truncate(preview, 80)}" if preview else ""
-            lines.append(f"    ~{idx}{mark}{type_tag}{snippet}")
+            lines.append(f"    {SEP}{idx}{mark}{type_tag}{snippet}")
 
         lines.append("")
-        lines.append(f"Read: get(id='{slug}~N') for full chunk text")
+        lines.append(f"Read: get(id='{slug}{SEP}N') for full chunk text")
         if has_summaries:
-            lines.append(f"✦ = summary available: get(id='{slug}~N/summary')")
+            lines.append(f"✦ = summary available: get(id='{slug}{SEP}N/summary')")
         return "\n".join(lines)
 
     # ── Chunks ───────────────────────────────────────────────────────
@@ -594,14 +598,14 @@ class RefHandler(Handler):
                 end = start + 1
         except ValueError:
             raise PrecisError(
-                f"Invalid chunk selector: {selector}\nUse ~N, ~N..M, or ~N.."
+                f"Invalid chunk selector: {selector}\nUse {SEP}N, {SEP}N..M, or {SEP}N.."
             )
 
         all_blocks = store.get_blocks(slug, block_type="text")
         blocks = [b for b in all_blocks if start <= (b.get("block_index", 0)) < end]
 
         if not blocks:
-            return f"No blocks in range ~{start}..{end} for {slug}"
+            return f"No blocks in range {SEP}{start}..{end} for {slug}"
 
         lines = []
         for block in blocks:
@@ -609,12 +613,12 @@ class RefHandler(Handler):
             kind = block.get("block_type", "text")
             text = block.get("text", "")
             page = block.get("page", "")
-            lines.append(f">> {slug} ~{idx}  p{page}")
+            lines.append(f">> {slug} {SEP}{idx}  p{page}")
             lines.append(text)
             lines.append("")
 
         if end - start >= 10:
-            lines.append(f"Next: get(id='{slug}~{end}..') for more")
+            lines.append(f"Next: get(id='{slug}{SEP}{end}..') for more")
         return "\n".join(lines)
 
     # ── Summary ──────────────────────────────────────────────────────
@@ -629,9 +633,9 @@ class RefHandler(Handler):
             blocks = store.get_blocks(slug, block_type="text")
             target = [b for b in blocks if b.get("block_index") == idx]
             if not target:
-                raise PrecisError(f"Block ~{idx} not found in {slug}")
+                raise PrecisError(f"Block {SEP}{idx} not found in {slug}")
             summary = target[0].get("summary", "")
-            return summary or f"No enrichment summary for block ~{idx}"
+            return summary or f"No enrichment summary for block {SEP}{idx}"
         blocks = store.get_blocks(slug, block_type="document_summary")
         if not blocks:
             blocks = store.get_blocks(slug, block_type="paper_summary")
@@ -652,12 +656,12 @@ class RefHandler(Handler):
             blocks = store.get_blocks(slug, block_type="text")
             target = [b for b in blocks if b.get("block_index") == block_idx]
             if not target:
-                raise PrecisError(f"Block ~{block_idx} not found in {slug}")
+                raise PrecisError(f"Block {SEP}{block_idx} not found in {slug}")
             node_id = target[0].get("node_id")
 
         links = store.get_links(slug, node_id=node_id)
         if not links:
-            anchor = f"~{selector}" if selector else ""
+            anchor = f"{SEP}{selector}" if selector else ""
             return (
                 f"No links for {slug}{anchor}\n"
                 f"Next:\n"
@@ -666,7 +670,7 @@ class RefHandler(Handler):
 
         lines = [
             f"Links for {slug}"
-            + (f"~{selector}" if selector else "")
+            + (f"{SEP}{selector}" if selector else "")
             + f"  ({len(links)} total)"
         ]
         lines.append("")
@@ -714,7 +718,7 @@ class RefHandler(Handler):
             block_idx = meta.get("block_index", "?")
             summary = hit.get("summary", "")
             snippet = summary or _truncate(text, 100)
-            lines.append(f"  {slug}~{block_idx}  ({distance:.2f})  {snippet}")
+            lines.append(f"  {slug}{SEP}{block_idx}  ({distance:.2f})  {snippet}")
         lines.append("")
         seen = []
         for hit in hits[:3]:
@@ -726,9 +730,9 @@ class RefHandler(Handler):
         lines.append("Next:")
         if seen:
             s0, b0 = seen[0]
-            lines.append(f"  get(id='{s0}~{b0}')  — read this chunk")
+            lines.append(f"  get(id='{s0}{SEP}{b0}')  — read this chunk")
             if len(seen) > 1:
-                batch = ",".join(f"{s}~{b}" for s, b in seen)
+                batch = ",".join(f"{s}{SEP}{b}" for s, b in seen)
                 lines.append(f"  get(id='{batch}')  — batch read")
             lines.append(f"  get(id='{s0}/toc')  — structure")
         return "\n".join(lines)
@@ -760,7 +764,7 @@ class RefHandler(Handler):
             blocks = store.get_blocks(slug, block_type="text")
             target = [b for b in blocks if b.get("block_index") == block_idx]
             if not target:
-                raise PrecisError(f"Block ~{block_idx} not found in {slug}")
+                raise PrecisError(f"Block {SEP}{block_idx} not found in {slug}")
             block_node_id = target[0].get("node_id")
             note_id = store.add_note(
                 text,
@@ -770,7 +774,7 @@ class RefHandler(Handler):
                 tags=tags or None,
                 origin="bot",
             )
-            return f"📝 Note #{note_id} on {slug}~{block_idx}\n{text}"
+            return f"📝 Note #{note_id} on {slug}{SEP}{block_idx}\n{text}"
         else:
             note_id = store.add_note(
                 text,

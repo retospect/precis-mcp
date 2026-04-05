@@ -274,23 +274,25 @@ class TestPut:
 
 
 class TestSeparatorSyntax:
-    """The LLM must use ~ for selectors, not # or anything else."""
+    """The LLM must use \u203a (or legacy ~) for selectors, not # or anything else."""
 
-    def test_tilde_not_hash_in_chunk(self):
+    def test_sep_not_hash_in_chunk(self):
         raw, _ = run_llm_call("Read chunk 38 of wang2020state")
         id_arg = raw[0]["function"]["arguments"].get("id", "")
-        assert "#" not in id_arg, f"LLM used # instead of ~: {id_arg!r}"
-        assert "~" in id_arg or id_arg == "wang2020state", (
-            f"Expected ~ in chunk ref: {id_arg!r}"
+        assert "#" not in id_arg, f"LLM used # instead of separator: {id_arg!r}"
+        assert "\u203a" in id_arg or "~" in id_arg or id_arg == "wang2020state", (
+            f"Expected selector separator in chunk ref: {id_arg!r}"
         )
 
-    def test_tilde_not_hash_in_node(self):
+    def test_sep_not_hash_in_node(self):
         raw, _ = run_llm_call("Read node PLXDX in report.docx")
         id_arg = raw[0]["function"]["arguments"].get("id", "")
-        assert "#" not in id_arg, f"LLM used # instead of ~: {id_arg!r}"
+        assert "#" not in id_arg, f"LLM used # instead of separator: {id_arg!r}"
 
     def test_slash_for_views(self):
         raw, _ = run_llm_call("Show the table of contents for wang2020state")
         id_arg = raw[0]["function"]["arguments"].get("id", "")
         assert "/" in id_arg, f"Expected / for view path: {id_arg!r}"
-        assert "~" not in id_arg, f"View should use / not ~: {id_arg!r}"
+        assert "\u203a" not in id_arg and "~" not in id_arg, (
+            f"View should use / not selector separator: {id_arg!r}"
+        )

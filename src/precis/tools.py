@@ -10,7 +10,7 @@ import logging
 
 from precis.protocol import PrecisError
 from precis.registry import get_corpus_plugin, resolve
-from precis.uri import parse
+from precis.uri import SEP, parse
 
 log = logging.getLogger(__name__)
 
@@ -63,12 +63,12 @@ def read(
     """Navigate, browse, search, or read any document.
 
     Args:
-        uri: ``scheme:path[~selector][/view]``
+        uri: ``scheme:path[›selector][/view]``
             Schemes: ``file:`` (on disk), ``paper:`` (library).
             ``file:`` extension determines format (.docx, .tex, …).
         query: Filter or search within the addressed scope.
             Papers: semantic search. Files: grep (or semantic if configured).
-        summarize: Show derived summaries (~) instead of full text (=).
+        summarize: Show derived summaries (≈) instead of full text (=).
             Only affects multi-node output. Single-node always returns full text.
         depth: Heading-level filter. 0 = everything (default), 1 = H1 only,
             2 = H1+H2, 3 = H1-H3, 4 = all headings no content.
@@ -77,7 +77,7 @@ def read(
     Output markers::
 
         =  verbatim (safe to quote)
-        ~  derived (keywords/summary — not quotable)
+        ≈  derived (keywords/summary — not quotable)
         %  annotation (user note/comment)
     """
     try:
@@ -112,7 +112,7 @@ def put(
     """Write to or annotate a document.
 
     Args:
-        uri: ``scheme:path[~selector]`` — target document and node.
+        uri: ``scheme:path[›selector]`` — target document and node.
         text: Content to write. For ``mode='move'``, this is the target slug.
         mode: One of: ``replace``, ``after``, ``before``, ``delete``,
             ``append``, ``move``, ``note``.
@@ -194,7 +194,7 @@ def _create_note(
         blocks = store.get_blocks(slug, block_type="text")
         target = [b for b in blocks if b.get("block_index") == block_idx]
         if not target:
-            raise PrecisError(f"Block ~{block_idx} not found in {slug}")
+            raise PrecisError(f"Block {SEP}{block_idx} not found in {slug}")
         block_node_id = target[0].get("node_id")
         note_id = store.add_note(
             note_text,
@@ -203,7 +203,7 @@ def _create_note(
             tags=kwargs.get("tags") or None,
             origin=kwargs.get("origin", "bot"),
         )
-        return f"📝 Note #{note_id} on {slug}~{block_idx}\n{note_text}"
+        return f"📝 Note #{note_id} on {slug}{SEP}{block_idx}\n{note_text}"
     else:
         # Ref-level note
         note_id = store.add_note(
@@ -251,7 +251,7 @@ def _create_link(
         blocks = store.get_blocks(src_slug, block_type="text")
         target = [b for b in blocks if b.get("block_index") == block_idx]
         if not target:
-            raise PrecisError(f"Block ~{block_idx} not found in {src_slug}")
+            raise PrecisError(f"Block {SEP}{block_idx} not found in {src_slug}")
         src_node_id = target[0].get("node_id")
 
     try:
@@ -264,7 +264,7 @@ def _create_link(
     except ValueError as e:
         raise PrecisError(str(e))
 
-    anchor = f"~{selector}" if selector else ""
+    anchor = f"{SEP}{selector}" if selector else ""
     return (
         f"🔗 Link created: {src_slug}{anchor} —[{relation}]→ {dst_slug}\n"
         f"Next:\n"

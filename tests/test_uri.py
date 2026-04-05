@@ -2,7 +2,7 @@
 
 import pytest
 
-from precis.uri import parse
+from precis.uri import SEP, parse
 
 # ─── Basic scheme + path ────────────────────────────────────────────
 
@@ -242,3 +242,55 @@ class TestSelectorAndView:
         assert p.range_start == 38
         assert p.range_end == 42
         assert p.view == "toc"
+
+
+# ─── SEP (›) separator ────────────────────────────────────────────
+
+
+class TestSEPSeparator:
+    """Verify that the › separator works identically to legacy ~."""
+
+    def test_sep_is_rsaquo(self):
+        assert SEP == "\u203a"
+
+    def test_index(self):
+        p = parse(f"paper:miller2023foo{SEP}38")
+        assert p.selector == "38"
+        assert p.selector_type == "index"
+        assert p.range_start == 38
+
+    def test_slug(self):
+        p = parse(f"file:planning.docx{SEP}KR8M2")
+        assert p.selector == "KR8M2"
+        assert p.selector_type == "slug"
+
+    def test_range(self):
+        p = parse(f"paper:miller2023foo{SEP}38..42")
+        assert p.range_start == 38
+        assert p.range_end == 42
+
+    def test_open_range(self):
+        p = parse(f"paper:miller2023foo{SEP}38..")
+        assert p.range_start == 38
+        assert p.is_open_range
+
+    def test_context_window(self):
+        p = parse(f"paper:miller2023foo{SEP}KR8M2-3..+3")
+        assert p.anchor == "KR8M2"
+        assert p.context_before == 3
+        assert p.context_after == 3
+
+    def test_selector_then_view(self):
+        p = parse(f"paper:miller2023foo{SEP}38/toc")
+        assert p.selector == "38"
+        assert p.view == "toc"
+
+    def test_path_selector(self):
+        p = parse(f"file:planning.docx{SEP}S1.2")
+        assert p.selector_type == "path"
+        assert p.anchor == "S1.2"
+
+    def test_doi_with_sep(self):
+        p = parse(f"doi:10.1021/jacs.2c01234{SEP}38")
+        assert p.path == "10.1021/jacs.2c01234"
+        assert p.selector == "38"
