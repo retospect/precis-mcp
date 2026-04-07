@@ -4,20 +4,44 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "3.0.1"
-description = "Unified document MCP — read, write, search, annotate any structured document"
+version = "3.0.2"
+description = "MCP server for structured document access — read, write, search, and annotate DOCX, LaTeX, Markdown, and scientific papers with minimal token usage"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
 authors = [{ name = "Reto Stamm", email = "reto@retostamm.com" }]
-keywords = ["mcp", "docx", "latex", "markdown", "pdf", "llm", "document", "precis"]
+keywords = [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "llm",
+    "ai-agent",
+    "context-management",
+    "token-optimization",
+    "document",
+    "docx",
+    "latex",
+    "markdown",
+    "pdf",
+    "scientific-papers",
+    "track-changes",
+    "semantic-search",
+    "claude",
+    "cursor",
+    "windsurf",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "Topic :: Text Processing :: Markup",
+    "Topic :: Text Processing :: Markup :: LaTeX",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 dependencies = [
