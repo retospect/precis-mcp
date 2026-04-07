@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "3.0.2"
+version = "3.0.3"
 description = "MCP server for structured document access — read, write, search, and annotate DOCX, LaTeX, Markdown, and scientific papers with minimal token usage"
 readme = "README.md"
 license = "GPL-3.0-or-later"
