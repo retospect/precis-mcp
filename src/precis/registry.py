@@ -142,6 +142,21 @@ def _register_builtins() -> None:
     except ImportError:
         log.debug("TodoHandler not available (missing acatome-store?)")
 
+    try:
+        from precis.handlers.flashcard import FlashcardHandler
+
+        _register_plugin(
+            Plugin(
+                name="flashcards",
+                handler_cls=FlashcardHandler,
+                schemes=["fc"],
+                corpus_id="flashcards",
+                write_policy="direct",
+            )
+        )
+    except ImportError:
+        log.debug("FlashcardHandler not available (missing acatome-store?)")
+
 
 def _discover() -> None:
     """Load built-in handlers and entry-point plugins (once).

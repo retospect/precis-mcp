@@ -48,6 +48,10 @@ dependencies = [
     "mcp[cli]>=1.0",
     "precis-summary>=0.1.0",
     "platformdirs>=4.0",
+    "python-docx>=1.1",
+    "lxml>=5.0",
+    "acatome-store[embeddings]>=0.1.0",
+    "acatome-meta>=0.1.0",
 ]
 
 [project.urls]
@@ -58,7 +62,8 @@ Repository = "https://github.com/retospect/precis-mcp"
 word = ["python-docx>=1.1", "lxml>=5.0"]
 tex = ["lxml>=5.0"]
 paper = ["acatome-store[embeddings]>=0.1.0", "acatome-meta>=0.1.0"]
-all = ["precis-mcp[word,tex,paper]"]
+flashcards = ["acatome-store>=0.1.0"]
+all = ["precis-mcp[word,tex,paper,flashcards]"]
 
 [project.scripts]
 precis = "precis.server:main"
@@ -74,6 +79,7 @@ precis = "precis.server:main"
 [project.entry-points."precis.schemes"]
 paper = "precis.handlers.paper:PaperHandler"
 todo = "precis.handlers.todo:TodoHandler"
+fc = "precis.handlers.flashcard:FlashcardHandler"
 
 [dependency-groups]
 dev = [
