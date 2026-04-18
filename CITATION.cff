@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "precis-mcp: Model Context Protocol server for structured document and paper corpus access"
+abstract: >-
+  precis-mcp is a Model Context Protocol (MCP) server that provides AI
+  agents with structured, token-efficient access to documents and scientific
+  paper corpora. It supports reading, writing, searching, and annotating
+  DOCX, LaTeX, Markdown, and PDF files, and exposes a per-chunk semantic
+  search interface over ingested papers backed by PostgreSQL + pgvector.
+authors:
+  - family-names: Stamm
+    given-names: Reto
+    email: reto@retostamm.com
+    orcid: "https://orcid.org/0000-0002-1427-020X"
+repository-code: "https://github.com/retospect/precis-mcp"
+url: "https://github.com/retospect/precis-mcp"
+license: GPL-3.0-or-later
+version: 3.1.1
+type: software
+keywords:
+  - model-context-protocol
+  - mcp
+  - llm
+  - ai-agent
+  - semantic-search
+  - scientific-papers
+  - latex
+  - docx
+  - pgvector
