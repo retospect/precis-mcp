@@ -6,39 +6,16 @@ Requires the ``paper`` extra: ``pip install precis-mcp[paper]``.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
+
+from acatome_meta.literature import first_author_surname
 
 from precis.handlers._ref_base import RefHandler, _truncate
 from precis.protocol import PrecisError
 from precis.uri import SEP
 
 log = logging.getLogger(__name__)
-
-
-def _first_surname(authors_raw: str) -> str:
-    """Extract the first author's surname from a JSON authors string."""
-    if not authors_raw:
-        return ""
-    try:
-        authors = (
-            json.loads(authors_raw) if isinstance(authors_raw, str) else authors_raw
-        )
-        if authors and isinstance(authors, list):
-            name = (
-                authors[0].get("name", "")
-                if isinstance(authors[0], dict)
-                else str(authors[0])
-            )
-            # "Zou, Jiawen" → "Zou" ; "Jiawen Zou" → "Zou"
-            if "," in name:
-                return name.split(",")[0].strip()
-            parts = name.split()
-            return parts[-1] if parts else ""
-    except (json.JSONDecodeError, TypeError, IndexError):
-        pass
-    return ""
 
 
 class PaperHandler(RefHandler):
@@ -176,7 +153,7 @@ class PaperHandler(RefHandler):
         title = _truncate(ref.get("title", ""), 80)
         year = ref.get("year", "")
         doi = ref.get("doi", "")
-        first_author = _first_surname(ref.get("authors", ""))
+        first_author = first_author_surname(ref.get("authors", ""))
         parts = [f"  {slug}  {year}"]
         if first_author:
             parts.append(first_author)
@@ -241,7 +218,7 @@ class PaperHandler(RefHandler):
         else:
             # ACS-style inline
             if authors and year:
-                first_author = authors.split(",")[0].split(";")[0].strip()
+                first_author = first_author_surname(authors)
                 return f"{first_author} et al., {journal} {year}"
             return slug
 
