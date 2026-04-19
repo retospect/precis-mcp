@@ -36,6 +36,25 @@ from precis.formatting import (
 from precis.handlers._file_base import FileHandlerBase
 from precis.protocol import Node, PathCounter, PrecisError, make_slug, resolve_slug
 
+# Hardened XML parser for reading .docx XML parts.  Disables external
+# entity resolution, DTD loading, and network access so a crafted .docx
+# cannot trigger XXE, billion-laughs, or SSRF attacks even if the file
+# comes from an untrusted source.  Applies only to parsing; element
+# creation (etree.Element / etree.SubElement) is intrinsically safe.
+_SAFE_XML_PARSER = etree.XMLParser(
+    resolve_entities=False,
+    no_network=True,
+    dtd_validation=False,
+    load_dtd=False,
+    huge_tree=False,
+)
+
+
+def _parse_xml(blob: bytes):
+    """Parse a DOCX-internal XML blob with the hardened parser."""
+    return etree.fromstring(blob, parser=_SAFE_XML_PARSER)
+
+
 # ─── DOCX list constants ──────────────────────────────────────────
 
 _RT_NUMBERING = (
@@ -385,7 +404,7 @@ def _build_numbering_map(doc) -> dict[tuple[str, int], str]:
         if npart is None:
             return result
 
-        root = etree.fromstring(npart.blob)
+        root = _parse_xml(npart.blob)
 
         # abstractNumId → {ilvl: format}
         abs_map: dict[str, dict[int, str]] = {}
@@ -759,7 +778,7 @@ def _parse_comments(doc) -> dict[int, dict]:
     part = _get_comments_part(doc)
     if part is None:
         return {}
-    root = etree.fromstring(part.blob)
+    root = _parse_xml(part.blob)
     result = {}
     for comment_el in root.findall(qn("w:comment")):
         try:
@@ -781,7 +800,7 @@ def _next_comment_id(doc) -> int:
     part = _get_comments_part(doc)
     if part is None:
         return 1
-    root = etree.fromstring(part.blob)
+    root = _parse_xml(part.blob)
     max_id = 0
     for comment_el in root.findall(qn("w:comment")):
         try:
@@ -830,7 +849,7 @@ def _inject_comment(doc, para_element, text: str, author: str = "precis") -> int
     if hasattr(comments_part, "_element") and comments_part._element is not None:
         root = comments_part._element
     else:
-        root = etree.fromstring(comments_part.blob)
+        root = _parse_xml(comments_part.blob)
 
     comment_el = etree.SubElement(root, qn("w:comment"))
     comment_el.set(qn("w:id"), cid_str)
