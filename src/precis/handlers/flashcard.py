@@ -39,11 +39,23 @@ MAX_NEARBY = 5  # cap on nearby/almost-due
 
 
 def _slugify(text: str) -> str:
-    """Turn a knowledge statement into a flashcard slug."""
+    """Turn a knowledge statement into a flashcard slug.
+
+    Extracts ASCII alphanumeric parts.  If the input is non-empty but
+    contains no ASCII alphanumerics (e.g. pure kanji or emoji), falls
+    back to a short SHA-256 hash for a stable, deterministic slug.
+    Empty input returns an empty string (no slug).
+    """
+    if not text or not text.strip():
+        return ""
     slug = text.lower().strip()
     slug = re.sub(r"[^a-z0-9]+", "-", slug)
     slug = slug.strip("-")[:60]
-    return f"fc:{slug}" if slug else ""
+    if not slug:
+        import hashlib
+
+        slug = hashlib.sha256(text.encode()).hexdigest()[:12]
+    return f"fc:{slug}"
 
 
 def _now() -> datetime:
@@ -452,8 +464,11 @@ class FlashcardHandler(RefHandler):
     ) -> str:
         store = _get_store()
 
-        if mode == "append" and not path:
-            return self._create_item(store, text, **kwargs)
+        if mode in ("append", "add"):
+            # Allow path in id (e.g. fc:kanji) — use text for content,
+            # fall back to path as text if text is empty
+            effective_text = text or path or ""
+            return self._create_item(store, effective_text, **kwargs)
 
         if mode == "review":
             if not path:
@@ -480,7 +495,7 @@ class FlashcardHandler(RefHandler):
 
         raise PrecisError(
             f"Unsupported mode '{mode}' for flashcard.\n"
-            "Use: mode='append' (create), mode='review' (record recall),\n"
+            "Use: mode='append' or 'add' (create), mode='review' (record recall),\n"
             "     mode='replace' (edit), mode='after' (add context),\n"
             "     mode='note' (annotate), mode='delete' (remove)."
         )

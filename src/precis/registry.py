@@ -34,10 +34,28 @@ CORPUS_PLUGINS: dict[str, Plugin] = {}
 _discovered = False
 
 
-def _disabled_plugins() -> set[str]:
-    """Return set of plugin names to skip (from env var)."""
-    raw = os.environ.get("PRECIS_DISABLE_PLUGINS", "")
-    return {s.strip() for s in raw.split(",") if s.strip()}
+def _is_allowed(name: str) -> bool:
+    """Check if a plugin name passes the allow/deny filter.
+
+    PRECIS_PLUGINS (allowlist, preferred):
+        Comma-separated plugin names. Only these are loaded.
+        Unset or empty = no allowlist filtering.
+
+    PRECIS_DISABLE_PLUGINS (denylist, legacy):
+        Ignored when PRECIS_PLUGINS is set.
+        Comma-separated names to skip.
+
+    Neither set = allow all.
+    """
+    allow_raw = os.environ.get("PRECIS_PLUGINS", "")
+    if allow_raw.strip():
+        allowed = {s.strip() for s in allow_raw.split(",") if s.strip()}
+        return name in allowed
+    deny_raw = os.environ.get("PRECIS_DISABLE_PLUGINS", "")
+    if deny_raw.strip():
+        denied = {s.strip() for s in deny_raw.split(",") if s.strip()}
+        return name not in denied
+    return True  # no filtering
 
 
 def _register_plugin(plugin: Plugin) -> None:
@@ -59,103 +77,115 @@ def _register_plugin(plugin: Plugin) -> None:
 
 
 def _register_builtins() -> None:
-    """Register built-in handlers as Plugin objects."""
-    try:
-        from precis.handlers.word import WordHandler
+    """Register built-in handlers as Plugin objects.
 
-        _register_plugin(
-            Plugin(
-                name="word",
-                handler_cls=WordHandler,
-                file_types=[".docx"],
+    Each builtin is gated by ``_is_allowed(name)`` so that
+    ``PRECIS_PLUGINS`` and ``PRECIS_DISABLE_PLUGINS`` apply
+    to builtins too, not just entry-point plugins.
+    """
+    if _is_allowed("word"):
+        try:
+            from precis.handlers.word import WordHandler
+
+            _register_plugin(
+                Plugin(
+                    name="word",
+                    handler_cls=WordHandler,
+                    file_types=[".docx"],
+                )
             )
-        )
-    except ImportError:
-        log.debug("WordHandler not available (missing python-docx?)")
+        except ImportError:
+            log.debug("WordHandler not available (missing python-docx?)")
 
-    try:
-        from precis.handlers.tex import TexHandler
+    if _is_allowed("tex"):
+        try:
+            from precis.handlers.tex import TexHandler
 
-        _register_plugin(
-            Plugin(
-                name="tex",
-                handler_cls=TexHandler,
-                file_types=[".tex"],
+            _register_plugin(
+                Plugin(
+                    name="tex",
+                    handler_cls=TexHandler,
+                    file_types=[".tex"],
+                )
             )
-        )
-    except ImportError:
-        log.debug("TexHandler not available")
+        except ImportError:
+            log.debug("TexHandler not available")
 
-    try:
-        from precis.handlers.markdown import MarkdownHandler
+    if _is_allowed("markdown"):
+        try:
+            from precis.handlers.markdown import MarkdownHandler
 
-        _register_plugin(
-            Plugin(
-                name="markdown",
-                handler_cls=MarkdownHandler,
-                file_types=[".md", ".markdown"],
+            _register_plugin(
+                Plugin(
+                    name="markdown",
+                    handler_cls=MarkdownHandler,
+                    file_types=[".md", ".markdown"],
+                )
             )
-        )
-    except ImportError:
-        log.debug("MarkdownHandler not available")
+        except ImportError:
+            log.debug("MarkdownHandler not available")
 
-    try:
-        from precis.handlers.plaintext import PlainTextHandler
+    if _is_allowed("plaintext"):
+        try:
+            from precis.handlers.plaintext import PlainTextHandler
 
-        _register_plugin(
-            Plugin(
-                name="plaintext",
-                handler_cls=PlainTextHandler,
-                file_types=[".txt", ".text"],
+            _register_plugin(
+                Plugin(
+                    name="plaintext",
+                    handler_cls=PlainTextHandler,
+                    file_types=[".txt", ".text"],
+                )
             )
-        )
-    except ImportError:
-        log.debug("PlainTextHandler not available")
+        except ImportError:
+            log.debug("PlainTextHandler not available")
 
-    try:
-        from precis.handlers.paper import PaperHandler
+    if _is_allowed("papers"):
+        try:
+            from precis.handlers.paper import PaperHandler
 
-        _register_plugin(
-            Plugin(
-                name="papers",
-                handler_cls=PaperHandler,
-                schemes=["paper", "doi", "arxiv"],
-                corpus_id="papers",
-                write_policy="ingestion",
+            _register_plugin(
+                Plugin(
+                    name="papers",
+                    handler_cls=PaperHandler,
+                    schemes=["paper", "doi", "arxiv"],
+                    corpus_id="papers",
+                    write_policy="ingestion",
+                )
             )
-        )
-    except ImportError:
-        log.debug("PaperHandler not available (missing acatome-store?)")
+        except ImportError:
+            log.debug("PaperHandler not available (missing acatome-store?)")
 
-    try:
-        from precis.handlers.todo import TodoHandler
+    if _is_allowed("todos"):
+        try:
+            from precis.handlers.todo import TodoHandler
 
-        _register_plugin(
-            Plugin(
-                name="todos",
-                handler_cls=TodoHandler,
-                schemes=["todo"],
-                corpus_id="todos",
-                write_policy="direct",
+            _register_plugin(
+                Plugin(
+                    name="todos",
+                    handler_cls=TodoHandler,
+                    schemes=["todo"],
+                    corpus_id="todos",
+                    write_policy="direct",
+                )
             )
-        )
-    except ImportError:
-        log.debug("TodoHandler not available (missing acatome-store?)")
+        except ImportError:
+            log.debug("TodoHandler not available (missing acatome-store?)")
 
-    try:
-        from precis.handlers.flashcard import FlashcardHandler
+    if _is_allowed("flashcards"):
+        try:
+            from precis.handlers.flashcard import FlashcardHandler
 
-        _register_plugin(
-            Plugin(
-                name="flashcards",
-                handler_cls=FlashcardHandler,
-                schemes=["fc"],
-                corpus_id="flashcards",
-                write_policy="direct",
+            _register_plugin(
+                Plugin(
+                    name="flashcards",
+                    handler_cls=FlashcardHandler,
+                    schemes=["fc"],
+                    corpus_id="flashcards",
+                    write_policy="direct",
+                )
             )
-        )
-    except ImportError:
-        log.debug("FlashcardHandler not available (missing acatome-store?)")
+        except ImportError:
+            log.debug("FlashcardHandler not available (missing acatome-store?)")
 
 
 def _discover() -> None:
@@ -171,13 +201,12 @@ def _discover() -> None:
         return
     _discovered = True
 
-    disabled = _disabled_plugins()
     _register_builtins()
 
     # New plugin entry points
     for ep in entry_points(group="precis.plugins"):
-        if ep.name in disabled:
-            log.info("Plugin '%s' disabled via PRECIS_DISABLE_PLUGINS", ep.name)
+        if not _is_allowed(ep.name):
+            log.info("Plugin '%s' filtered by PRECIS_PLUGINS / PRECIS_DISABLE_PLUGINS", ep.name)
             continue
         try:
             obj = ep.load()

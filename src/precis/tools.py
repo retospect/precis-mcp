@@ -80,24 +80,19 @@ def read(
         ≈  derived (keywords/summary — not quotable)
         %  annotation (user note/comment)
     """
-    try:
-        parsed = parse(uri)
-        handler = resolve(parsed.scheme, parsed.path)
-        return handler.read(
-            path=parsed.path,
-            selector=parsed.selector,
-            view=parsed.view,
-            subview=parsed.subview,
-            query=query,
-            summarize=summarize,
-            depth=depth,
-            page=page,
-            **kwargs,
-        )
-    except PrecisError as e:
-        return e.format()
-    except ValueError as e:
-        return f"!! ERROR {e}"
+    parsed = parse(uri)
+    handler = resolve(parsed.scheme, parsed.path)
+    return handler.read(
+        path=parsed.path,
+        selector=parsed.selector,
+        view=parsed.view,
+        subview=parsed.subview,
+        query=query,
+        summarize=summarize,
+        depth=depth,
+        page=page,
+        **kwargs,
+    )
 
 
 def put(
@@ -130,35 +125,30 @@ def put(
         - paper → DB note in acatome-store
         - read-only types → the one writable operation
     """
-    try:
-        parsed = parse(uri)
+    parsed = parse(uri)
 
-        # Handle note= parameter (annotation, always allowed)
-        if note:
-            return _create_note(
-                parsed.scheme, parsed.path, parsed.selector, note, **kwargs
-            )
-
-        # Handle link= parameter (link creation, always allowed)
-        if link:
-            return _create_link(parsed.scheme, parsed.path, parsed.selector, link)
-
-        # Normal write — enforce write_policy
-        _check_write_policy(parsed.scheme, mode)
-
-        handler = resolve(parsed.scheme, parsed.path)
-        return handler.put(
-            path=parsed.path,
-            selector=parsed.selector,
-            text=text,
-            mode=mode,
-            tracked=tracked,
-            **kwargs,
+    # Handle note= parameter (annotation, always allowed)
+    if note:
+        return _create_note(
+            parsed.scheme, parsed.path, parsed.selector, note, **kwargs
         )
-    except PrecisError as e:
-        return e.format()
-    except ValueError as e:
-        return f"!! ERROR {e}"
+
+    # Handle link= parameter (link creation, always allowed)
+    if link:
+        return _create_link(parsed.scheme, parsed.path, parsed.selector, link)
+
+    # Normal write — enforce write_policy
+    _check_write_policy(parsed.scheme, mode)
+
+    handler = resolve(parsed.scheme, parsed.path)
+    return handler.put(
+        path=parsed.path,
+        selector=parsed.selector,
+        text=text,
+        mode=mode,
+        tracked=tracked,
+        **kwargs,
+    )
 
 
 def _create_note(

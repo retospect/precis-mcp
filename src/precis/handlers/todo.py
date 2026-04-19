@@ -170,6 +170,56 @@ class TodoHandler(RefHandler):
             lines.append(f"  ref_id: {ref_id}")
         return "\n".join(lines)
 
+    # ── List (override — query refs by corpus, not papers table) ─────
+
+    def _query_corpus_refs(self, store) -> list[dict]:
+        """Query all todo refs from the store.
+
+        Uses the public ``Store.list_refs_by_corpus`` API so tests can
+        mock cleanly and the handler does not reach into private store
+        internals.
+        """
+        return store.list_refs_by_corpus("todos")
+
+    def _list_refs(self, store, grep: str = "") -> str:
+        """List todo refs (overrides RefHandler to query by corpus)."""
+        refs = self._query_corpus_refs(store)
+        if not refs:
+            return (
+                "☐ No todos yet.\n\n"
+                "Create one:\n"
+                "  put(id='todo:', text='Buy milk', mode='append')"
+            )
+
+        if grep:
+            from precis.grep import parse_grep
+
+            pattern = parse_grep(grep)
+
+            def _matches(r: dict) -> bool:
+                blob = " ".join([
+                    r.get("slug", ""),
+                    r.get("title", ""),
+                ])
+                return pattern.matches(blob)
+
+            refs = [r for r in refs if _matches(r)]
+            if not refs:
+                return f"No todos matching '{grep}'."
+
+        lines = [self._list_header(len(refs), grep), ""]
+        for r in refs[: self._max_list]:
+            lines.append(self._list_entry(r))
+
+        if len(refs) > self._max_list:
+            lines.append(f"\n  ... and {len(refs) - self._max_list} more")
+        lines.append("")
+        lines.append(
+            "Next: get(id='<slug>') for details, "
+            "put(id='<slug>', text='done', mode='state') to complete"
+        )
+        return "\n".join(lines)
+
     def _list_header(self, count: int, grep: str = "") -> str:
         if grep:
             return f"☐ {count} todos matching '{grep}'"

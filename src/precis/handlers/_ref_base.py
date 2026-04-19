@@ -607,13 +607,30 @@ class RefHandler(Handler):
         if not blocks:
             return f"No blocks in range {SEP}{start}..{end} for {slug}"
 
+        # Pre-fetch link counts for all blocks in range
+        block_link_counts: dict[str, int] = {}
+        try:
+            all_links = store.get_links(slug)
+            for lnk in all_links:
+                for nid_key in ("src_node_id", "dst_node_id"):
+                    nid = lnk.get(nid_key)
+                    if nid:
+                        block_link_counts[nid] = block_link_counts.get(nid, 0) + 1
+        except Exception:
+            pass
+
         lines = []
         for block in blocks:
             idx = block.get("block_index", "?")
             kind = block.get("block_type", "text")
             text = block.get("text", "")
             page = block.get("page", "")
-            lines.append(f">> {slug} {SEP}{idx}  p{page}")
+            header = f">> {slug} {SEP}{idx}  p{page}"
+            node_id = block.get("node_id")
+            n_links = block_link_counts.get(node_id, 0) if node_id else 0
+            if n_links:
+                header += f"  [{n_links} link{'s' if n_links != 1 else ''}]"
+            lines.append(header)
             lines.append(text)
             lines.append("")
 

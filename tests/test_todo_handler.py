@@ -50,6 +50,7 @@ def _mock_store(
 
     store.get.side_effect = _get
     store.list_papers.return_value = refs or []
+    store.list_refs_by_corpus.return_value = refs or []
     store.get_blocks.return_value = blocks or []
     store.get_toc.return_value = []
     store.get_links.return_value = []

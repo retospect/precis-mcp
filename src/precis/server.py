@@ -12,6 +12,7 @@ import re
 from mcp.server.fastmcp import FastMCP
 
 from precis import tools
+from precis.registry import SCHEMES, _discover
 from precis.uri import _SEP_CHARS, SEP
 
 mcp = FastMCP("precis")
@@ -44,9 +45,12 @@ def _to_uri(id: str) -> str:
     """
     if not id:
         return "paper:"
+    # Ensure plugin/builtin schemes are loaded
+    _discover()
     # Known scheme prefixes — keep their scheme intact
-    for scheme in ("doi:", "arxiv:", "usc:", "irs:", "ie:", "todo:"):
-        if id.startswith(scheme):
+    for scheme in SCHEMES:
+        prefix = scheme + ":"
+        if id.startswith(prefix):
             return id  # already a valid URI
     # Strip accidental scheme prefixes the LLM might copy
     for prefix in ("slug:", "s2:", "ref:"):
