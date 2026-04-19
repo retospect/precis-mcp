@@ -8,7 +8,6 @@ import pytest
 
 from precis.handlers.sm2 import DEFAULT_EASINESS, MIN_EASINESS, SM2Result, update
 
-
 NOW = datetime(2026, 4, 8, 12, 0, 0)
 
 

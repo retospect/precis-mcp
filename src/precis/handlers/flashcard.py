@@ -25,7 +25,8 @@ import re
 from datetime import UTC, datetime
 
 from precis.handlers._ref_base import RefHandler, _get_store, _truncate
-from precis.handlers.sm2 import DEFAULT_EASINESS, update as sm2_update
+from precis.handlers.sm2 import DEFAULT_EASINESS
+from precis.handlers.sm2 import update as sm2_update
 from precis.protocol import PrecisError
 
 log = logging.getLogger(__name__)

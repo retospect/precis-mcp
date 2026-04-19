@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch, PropertyMock
+from datetime import timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from precis.handlers.flashcard import (
     FlashcardHandler,
-    _slugify,
-    _parse_meta,
-    _relative_due,
     _last_review_note,
     _now,
-    HARD_THRESHOLD,
+    _parse_meta,
+    _relative_due,
+    _slugify,
 )
 from precis.handlers.sm2 import DEFAULT_EASINESS
 from precis.protocol import PrecisError
-
 
 _PATCH_STORE_REF = "precis.handlers._ref_base._get_store"
 _PATCH_STORE_FC = "precis.handlers.flashcard._get_store"
