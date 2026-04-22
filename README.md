@@ -13,7 +13,7 @@ Instead of dumping a 100k-token PDF into your context window, Precis lets your a
 - **Slash context bloat** — Navigate by heading, grep for keywords, or read specific paragraphs by slug. No more feeding entire documents into the context window.
 - **Write back, not just read** — Edit DOCX with tracked changes, insert LaTeX sections, append Markdown — all through the same `put()` tool. Your agent becomes a true co-author.
 - **Semantic search over papers** — Vector search across thousands of ingested PDFs. Get the relevant chunk, not the whole paper.
-- **One server, every format** — DOCX, LaTeX, Markdown, plaintext, papers, plus stateful kinds (todo, skill, memory, conversation, flashcard, quest) and external data (web, research, think, math, youtube). No format-specific plugins to juggle.
+- **One server, every format** — DOCX, LaTeX, Markdown, plaintext, papers, plus stateful kinds (todo, skill, memory, conversation, flashcard, quest), compute (calc, math), and external data (web, research, think, youtube). No format-specific plugins to juggle.
 - **Token-aware output** — Automatic RAKE keyword summaries for large documents. Depth filtering, pagination, and adaptive truncation keep responses lean.
 - **Cost-aware by default** — Every response ends with a `[cost: …]` footer and every failure uses the same `ERROR [<code>]:` envelope. Paid external calls (Perplexity, Wolfram) report per-call costs; free kinds say `free`.
 - **Plugin architecture** — Add custom document types, URI schemes, or entire new kinds via Python entry points. Plugin protocol v2 with `KindSpec`, cost hints, and lifecycle hooks.
@@ -25,10 +25,11 @@ Claude Desktop · Cursor · Windsurf · Cline · any MCP-compatible client
 ## Quick start
 
 ```bash
-pip install precis-mcp          # core: Markdown, plaintext, LaTeX
+pip install precis-mcp           # core: Markdown, plaintext, LaTeX
 pip install precis-mcp[word]     # + Word DOCX support
 pip install precis-mcp[paper]    # + scientific paper library
-pip install precis-mcp[all]      # everything
+pip install 'precis-mcp[calc]'   # + local SymPy calculator (offline)
+pip install 'precis-mcp[all]'    # everything
 ```
 
 Add to your MCP client config:
@@ -86,6 +87,13 @@ get(id='isbn:9780262533058')             # ISBN-13 with checksum validation
 get(type='paper', grep='year:2020-2024') # papers 2020–2024
 get(type='paper', grep='tag:review')     # by tag
 
+# Compute — calc is free local SymPy; math is paid Wolfram Alpha
+get(type='calc', id='2+3*4')                    # exact arithmetic
+get(type='calc', id='integrate(sin(x), x)')     # symbolic calculus
+get(type='calc', id='0xff')                     # base conversion
+get(type='math', id='population of Ireland')    # world-data lookups
+get(type='math', id='orbital period of Jupiter')
+
 # Other kinds
 get(type='todo', id='/recent')           # recent todos
 get(type='skill', id='find-paper')       # read a skill body
@@ -123,10 +131,13 @@ search(query='thermal stability', scope='chapter3.tex')         # search within 
 search(type='paper', query='membrane', grep='tag:review')
 search(type='paper', query='catalysis', grep='year:2020-2024')
 
+# Compute
+search(type='calc', query='integrate sin(x)*cos(x) dx')         # free, offline
+search(type='math', query='speed of light in km/h')             # Wolfram Alpha
+
 # External data
 search(type='web', query='latest on perovskite solar cells')    # Perplexity Sonar
 search(type='research', query='mechanistic review of …')        # deep research
-search(type='math', query='integrate x^2 sin(x)')               # Wolfram Alpha
 
 # Other stateful kinds
 search(type='skill', query='acquire paper')                     # find-paper skill
@@ -136,7 +147,7 @@ search(type='memory', query='design decision')
 
 ## Supported kinds
 
-Precis 4.0 ships 17 built-in kinds across three families.  Add the
+Precis 4.1 ships 18 built-in kinds across four families.  Add the
 `type=` kwarg to disambiguate when the identifier alone doesn't imply a
 kind.
 
@@ -161,6 +172,19 @@ kind.
 | **flashcard** | SM-2 spaced-repetition cards | `/due`, `/new`, `/learning` |
 | **quest** | Paper-request lifecycle (Postgres-backed) | `/recent`, `/queued`, `/needs-user`, `/failed`, `/agent/<id>` |
 
+### Compute kinds
+
+| Kind | Upstream | Cost hint | Env |
+|------|----------|-----------|-----|
+| **calc** | Local SymPy — exact arithmetic, calculus, linear algebra, units | free | — |
+| **math** | Wolfram Alpha — natural-language math, world-data, fuzzy queries | `~$0.0001/call` | `WOLFRAM_APP_ID` |
+
+`calc` is the default for pure computation (arithmetic, symbolic
+algebra, calculus, base conversions, matrix ops, unit conversions).
+It's free, offline, and deterministic.  Reach for `math` when the
+query needs real-world data lookup or when `calc`'s parser can't
+handle natural-language phrasing.
+
 ### External-data kinds (live APIs)
 
 | Kind | Upstream | Cost hint | Env |
@@ -168,7 +192,6 @@ kind.
 | **web** | Perplexity Sonar web search | `~$0.005/call` | `PERPLEXITY_API_KEY` |
 | **research** | Perplexity Sonar deep-research | `~$0.04/call` | `PERPLEXITY_API_KEY` |
 | **think** | Perplexity Sonar reasoning | `~$0.02/call` | `PERPLEXITY_API_KEY` |
-| **math** | Wolfram Alpha | `~$0.0001/call` | `WOLFRAM_APP_ID` |
 | **youtube** | YouTube transcripts | free | — |
 
 ## URI grammar
@@ -182,7 +205,7 @@ Precis classifies the identifier in this order:
 1. **Explicit scheme prefix** (`paper:`, `doi:`, `arxiv:`, `pmcid:`,
    `isbn:`, `issn:`, `todo:`, `skill:`, `quest:`, `memory:`,
    `conversation:`, `flashcard:`, `web:`, `research:`, `think:`,
-   `math:`, `youtube:`).
+   `math:`, `calc:`, `youtube:`).
 2. **File extension** (`.docx`, `.tex`, `.md`, `.txt`) — routes to the
    matching file handler.
 3. **Structured identifier patterns** — bare DOI (`10.1234/…`), arXiv

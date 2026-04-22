@@ -3,10 +3,15 @@
 Math uses a mocked wolframalpha client; YouTube uses a mocked
 youtube-transcript-api.  Both paths exercise the handler → registry →
 server dispatch chain.  No network calls.
+
+Live smoke test for Wolfram Alpha is at the bottom of this file; it's
+gated on ``PRECIS_TEST_WOLFRAM_LIVE=1`` and spends one real API call,
+so it stays off in CI.
 """
 
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -578,3 +583,108 @@ class TestYouTubeAttribution:
         )
         assert "English" in out
         assert "youtube.com/watch?v=79-bApI3GIU" in out
+
+
+# ---------------------------------------------------------------------------
+# Live Wolfram Alpha smoke test (opt-in).
+#
+# Run with:
+#     PRECIS_TEST_WOLFRAM_LIVE=1 WOLFRAM_APP_ID=<your-app-id> \
+#         uv run pytest tests/test_phase4_external.py::TestWolframLive -v
+#
+# Skipped by default in CI so we don't burn Wolfram's free-tier quota
+# (2000/month) on every merge.  The suite is worth running locally
+# after:
+#   - bumping ``wolframalpha`` pin in pyproject.toml
+#   - changing anything in ``precis/handlers/math.py`` that touches
+#     the response-shape parsing (``_format_result``)
+#   - renewing the Wolfram App ID (smoke-test the new credential)
+# ---------------------------------------------------------------------------
+
+
+_LIVE_WOLFRAM = os.environ.get("PRECIS_TEST_WOLFRAM_LIVE") == "1"
+_WOLFRAM_KEY_SET = bool(os.environ.get("WOLFRAM_APP_ID", "").strip())
+
+
+@pytest.mark.skipif(
+    not _LIVE_WOLFRAM,
+    reason="PRECIS_TEST_WOLFRAM_LIVE=1 not set — live API test opt-in",
+)
+@pytest.mark.skipif(
+    not _WOLFRAM_KEY_SET,
+    reason="WOLFRAM_APP_ID not set — live API test needs a real key",
+)
+class TestWolframLive:
+    """Live smoke tests against the real Wolfram Alpha API.
+
+    Each test costs one API call.  Keep the test count low and the
+    queries cheap / uncacheable-by-us (Wolfram caches on their side so
+    re-running is usually free to them).
+    """
+
+    def setup_method(self):
+        try:
+            import wolframalpha  # noqa: F401
+        except ImportError:
+            pytest.skip("wolframalpha package not installed")
+        self.h = MathHandler()
+
+    def test_live_arithmetic_returns_four(self):
+        """``2+2`` must return a result containing ``4``.
+
+        This is the canary test.  If the ``wolframalpha`` client or
+        the Wolfram API response shape changes, ``_format_result`` will
+        either fail or return an empty body — we want to see both.
+        """
+        out = self.h.read(
+            path="2+2",
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
+        )
+        assert "4" in out, f"expected '4' in live Wolfram result:\n{out}"
+
+    def test_live_response_carries_attribution_footer(self):
+        """Every live response must include the mandatory Wolfram
+        footer so downstream agents have the deep-link URL + copyright
+        marker required by Wolfram's ToU.
+        """
+        out = self.h.read(
+            path="speed of light",
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
+        )
+        assert "wolframalpha.com" in out, (
+            f"live response missing attribution link:\n{out}"
+        )
+        assert "Wolfram|Alpha" in out or "Wolfram Alpha" in out
+
+    def test_live_nonsense_query_does_not_crash(self):
+        """An unparseable query should return a clean empty / did-you-
+        mean path, never a stack trace or unhandled exception.
+
+        Both paths in ``_format_result`` are exercised: failed-result
+        (``res.success == False``) and empty-pods (``res.pods == []``).
+        Either one is acceptable here; the goal is "doesn't crash".
+        """
+        out = self.h.read(
+            path="asdfasdfqwertyzxcvbnm",
+            selector=None,
+            view=None,
+            subview=None,
+            query="",
+            summarize=False,
+            depth=0,
+            page=1,
+        )
+        # Footer always present regardless of success/failure branch.
+        assert "wolframalpha.com" in out

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "4.0.1"
+version = "4.1.0"
 description = "MCP server for structured document access — read, write, search, and annotate DOCX, LaTeX, Markdown, and scientific papers with minimal token usage"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -79,7 +79,11 @@ external = [
     "youtube-transcript-api>=1.0",
     "httpx>=0.27",
 ]
-all = ["precis-mcp[word,tex,paper,flashcards,quest,external]"]
+# Phase 5: local calculator (free, offline).  SymPy handles arithmetic,
+# exact fractions, roots, calculus, linear algebra, symbolic manipulation,
+# and unit conversion.  Separate extra because it's ~30 MB on disk.
+calc = ["sympy>=1.12"]
+all = ["precis-mcp[word,tex,paper,flashcards,quest,external,calc]"]
 
 [project.scripts]
 precis = "precis.server:main"

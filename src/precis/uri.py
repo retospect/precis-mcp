@@ -49,8 +49,12 @@ from dataclasses import dataclass
 SEP = "\u203a"  # › — right-pointing single angle quotation mark
 _SEP_CHARS = SEP + "~"  # accept both › and legacy ~ on input
 
-# Schemes where / is part of the identifier (not a view separator)
-_OPAQUE_PATH_SCHEMES = {"doi", "arxiv", "usc", "irs", "ie"}
+# Schemes where / is part of the identifier (not a view separator).
+# ``calc`` is opaque because math expressions routinely contain ``/`` as
+# division — ``calc:1/2`` must mean ``Rational(1, 2)``, not ``path=1,
+# view=2``.  The calc handler parses its own trailing ``/view`` suffix
+# (``/help``, ``/pretty``, ``/latex``, ``/numeric``) from the raw path.
+_OPAQUE_PATH_SCHEMES = {"doi", "arxiv", "usc", "irs", "ie", "calc"}
 
 # Selector patterns
 _SLUG_RE = re.compile(r"^[A-Z0-9]{5}(?:\.\d+)?$")

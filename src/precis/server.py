@@ -316,27 +316,39 @@ def search(
     type: str = "",
     grep: str = "",
 ) -> str:
-    """Semantic search over stored papers.
+    """Semantic search or external query — dispatches by type=.
 
-    query: natural language search query (REQUIRED)
+    query: search query or compute expression (REQUIRED)
     top_k: number of results (default 5)
-    scope: slug or filename to restrict search (omit to search ALL papers)
-    type:  optional kind name (e.g. 'paper', 'memory').  Aliases accepted.
-    grep:  metadata pre-filter applied before the vector search
-           (title/author/tag substring, or ``tag:review`` / ``year:2020-`` /
-           ``ingested:today`` selectors).  Combines with ``query``: the
-           vector search runs over the grep-filtered subset of papers.
+    scope: slug / filename to restrict search (omit for full corpus)
+    type:  kind — REQUIRED unless scope= is set.  Accepted: paper,
+           memory, conversation, todo, skill, flashcard, quest (stateful);
+           web, research, think (Perplexity); math (Wolfram, paid);
+           calc (local SymPy, free); youtube.
+    grep:  metadata pre-filter (title/author/tag, tag:review,
+           year:2020-, ingested:today).  Runs before the vector search.
 
     Examples:
-      search(query='CO2 capture metal-organic frameworks')
+      # Paper / document semantic search
+      search(query='CO2 capture MOFs', type='paper')
       search(query='selectivity', scope='wang2020state')
-      search(query='methods', scope='planning.docx')
-      search(query='CO2 capture', type='paper')
       search(query='membrane', type='paper', grep='tag:review')
 
-    Without scope, searches across the entire paper library.
-    Returns ranked results with snippets.
-    Use get(id='wang2020state›N') to read full chunk text.
+      # Compute — calc (free, offline)
+      search(query='2+3*4', type='calc')
+      search(query='integrate sin(x)*cos(x) dx', type='calc')
+
+      # Compute — math (Wolfram Alpha, paid)
+      search(query='population of Ireland', type='math')
+      search(query='orbital period of Jupiter', type='math')
+
+      # External data
+      search(query='latest perovskite results', type='web')
+      search(query='mechanistic review of X', type='research')
+
+      # Stateful
+      search(query='design decision', type='memory')
+      search(query='acquire paper', type='skill')
     """
     if not query.strip():
         return "ERROR: query is required. Example: search(query='CO2 capture MOF')"
@@ -378,44 +390,52 @@ def get(
     depth: int = 0,
     type: str = "",
 ) -> str:
-    """Read content by identifier. What you get depends on the id.
+    """Read content by identifier.
 
-    id: identifier — dispatches by file extension vs paper slug
-    grep: filter nodes — plain text, /regex/, or /regex/i
-    depth: heading depth. 0=all, 1=H1, 2=H1+H2, 4=headings only
-    type: kind name (e.g. 'paper', 'todo', 'memory') — required when
-          ``id`` is a bare slug with no scheme prefix and no identifier
-          hint (DOI / arXiv / file extension / etc.).  See examples.
+    id:    identifier (selector ›N, view /V, subview /V/S)
+    grep:  filter — plain text, /regex/, /regex/i
+    depth: heading depth (0=all, 1=H1, 2=H1+H2)
+    type:  kind name — REQUIRED for bare slugs.  Accepted: paper,
+           todo, skill, memory, conversation, flashcard, quest,
+           web, research, think, math, calc, youtube.
 
-    Papers (``type='paper'`` required for bare slugs; scheme prefixes
-    and bare DOIs / arXiv ids don't need ``type=``):
+    Papers (bare slugs need type='paper' or scheme prefix):
       get(type='paper', id='wang2020state')          — overview
+      get(type='paper', id='wang2020state›38')       — chunk 38
+      get(type='paper', id='wang2020state›38..42')   — chunk range
       get(type='paper', id='wang2020state/toc')      — chunk index
-      get(type='paper', id='wang2020state/abstract') — abstract text
-      get(type='paper', id='wang2020state/summary')  — enrichment summary
-      get(type='paper', id='wang2020state›38')       — chunk 38 full text
-      get(type='paper', id='wang2020state›38..42')   — chunks 38–42
-      get(type='paper', id='wang2020state›38/summary') — chunk summary
-      get(type='paper', id='wang2020state/cite/bib') — BibTeX citation
-      get(type='paper', id='wang2020state/fig')      — list figures
-      get(type='paper', id='wang2020state/fig/3')    — figure 3 overview
-      get(type='paper', id='wang2020state/fig/3/legend') — caption only
-      get(type='paper', id='wang2020state/fig/3/image')  — image data
-      get(id='paper:wang2020state')        — scheme prefix works standalone
-      get(id='doi:10.1021/jacs.2c01234')   — DOI prefix works standalone
-      get(id='10.1021/jacs.2c01234')       — bare DOI auto-detected
-      get(id='arxiv:2301.12345')           — arXiv prefix works standalone
-      get(type='paper', grep='MOF')        — filter paper list by keyword
-      get(type='paper', grep='year:2020-2024') — published 2020–2024
-      get(type='paper', grep='tag:review') — filter by tag
+      get(type='paper', id='wang2020state/abstract') — abstract
+      get(type='paper', id='wang2020state/cite/bib') — BibTeX
+      get(type='paper', id='wang2020state/fig/3')    — figure 3
+      get(id='paper:wang2020state')                  — scheme prefix
+      get(id='doi:10.1021/jacs.2c01234')             — DOI
+      get(id='arxiv:2301.12345')                     — arXiv
+      get(type='paper', grep='tag:review')           — filter list
 
-    Documents (file extensions auto-classify — no type= needed):
-      get(id='doc.docx')               — table of contents
-      get(id='doc.docx›PLXDX')         — paragraph by slug
-      get(id='doc.docx›S2.1')          — section scope
-      get(id='doc.docx›PLXDX,ABCDE')   — multiple nodes
-      get(id='doc.docx', grep='methods') — grep document
-      get(id='doc.docx', depth=2)      — outline only
+    Files (extension auto-classifies — no type= needed):
+      get(id='report.docx')                 — DOCX TOC
+      get(id='report.docx›PLXDX')           — paragraph by slug
+      get(id='report.docx', grep='methods') — grep
+      get(id='report.docx', depth=2)        — outline only
+
+    Compute (query goes in id=):
+      get(type='calc', id='2+3*4')                   — exact arithmetic
+      get(type='calc', id='integrate(sin(x), x)')    — calculus
+      get(type='calc', id='0xff')                    — base conversion
+      get(type='calc', id='Matrix([[1,2],[3,4]]).det()') — linalg
+      get(type='math', id='population of Ireland')   — Wolfram (paid)
+      get(type='math', id='orbital period of Jupiter') — world data
+
+    External data:
+      get(type='web',     id='latest perovskite results') — Perplexity
+      get(type='research', id='mechanistic review of X')  — deep research
+      get(type='youtube', id='dQw4w9WgXcQ')               — transcript
+
+    Stateful kinds:
+      get(type='todo',   id='/recent')     — recent todos
+      get(type='skill',  id='find-paper')  — render skill
+      get(type='memory', id='/recent')     — recent memories
+      get(type='quest',  id='/recent')     — request queue
     """
     if not id and not grep:
         return (

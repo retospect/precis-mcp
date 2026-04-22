@@ -1,5 +1,92 @@
 # Changelog
 
+## 4.1.0 — 2026-04-22
+
+New `calc` kind (free local SymPy calculator), expanded tool-schema
+discoverability for every kind, and a gated live-Wolfram integration
+test.  All additive; nothing breaks the 4.0 API.
+
+### Added
+
+- **`calc` kind** — local SymPy-backed calculator.  No network, no
+  env vars, no cost.  Handles exact arithmetic, symbolic roots,
+  fractions, calculus (integrate / diff / limit / series),
+  equation-solving, linear algebra (matrices / determinants /
+  eigenvalues), base conversion (hex / bin / oct), and unit
+  conversion.  Views: `/pretty`, `/latex`, `/numeric`, `/help`.
+  Scheme: `calc:`.  Two seed skills ship with it:
+  `skill:calc-basics` (arithmetic) and `skill:calc-advanced`
+  (calculus + linear algebra + units).
+- **`[calc]` optional-dep group** in `pyproject.toml` — pulls in
+  `sympy>=1.12` (~30 MB).  `[all]` includes it automatically.
+- **Compute section in the `get()` / `search()` tool docstrings** —
+  every kind (`calc`, `math`, `web`, `research`, `think`, `youtube`,
+  plus all stateful kinds) now appears with a concrete example in
+  the agent-facing tool schema.  Previously the LLM only saw the
+  document / paper kinds and had to guess the rest; qwen3.5:9b could
+  not reliably discover `math` or `calc` before this change.  Both
+  docstrings stay inside the 600-token / 2000-token budget enforced
+  by `tests/test_llm_tool_use.py::TestDescriptionBudget`.
+- **`TestCalc` and `TestMath` in `tests/test_llm_live.py`** — five
+  live LLM-routing tests (3 calc, 2 math) exercising the real
+  ollama qwen3.5:9b inference loop against the published MCP tool
+  schemas.  Verifies the LLM routes arithmetic to `type='calc'`
+  and world-data queries to `type='math'`.  Skip gracefully when
+  the LLM answers directly without calling a tool (same
+  fail-soft pattern as `_require_dispatched_paper_uri`).
+- **`TestWolframLive` in `tests/test_phase4_external.py`** —
+  opt-in live smoke test gated on `PRECIS_TEST_WOLFRAM_LIVE=1` +
+  `WOLFRAM_APP_ID`.  Three tests (~3 Wolfram API calls): basic
+  arithmetic returns `4`, attribution footer present on live
+  responses, nonsense queries don't crash.  Skipped by default in
+  CI so we don't burn Wolfram's free-tier 2000/month quota on
+  every merge; run locally after bumping the `wolframalpha` pin or
+  touching `_format_result`.
+- **Comprehensive `calc` unit tests** — 46 tests in
+  `tests/test_calc_handler.py` across
+  `TestParsePath`, `TestCalcIsOpaque`, `TestSanitize`,
+  `TestCalcBasics`, `TestCalcBaseConversion`, `TestCalcCalculus`,
+  `TestCalcLinearAlgebra`, `TestCalcUnits`, `TestCalcViews`,
+  `TestCalcSafety`, `TestCalcAttribution`, and
+  `TestCalcRegistration`.  Covers parse-path disambiguation,
+  opaque-scheme handling, dangerous-input rejection, and every
+  view.
+
+### Changed
+
+- **`get()` tool docstring** — compressed the Papers section
+  (dropped redundant figure variants and explicit-prefix duplicates)
+  to make room for new Compute / External / Stateful example
+  blocks.  Still fits the 600-token budget.  The `Documents`
+  section header became `Files` with the example filename changed
+  from `doc.docx` to `report.docx` — the LLM was copying `doc.docx`
+  literally on unrelated prompts and routing to an unregistered
+  `doc:` scheme.
+- **`search()` tool docstring** — trimmed narrative prose, added
+  compact example blocks for every supported kind including both
+  compute kinds and the full stateful family.  Under the per-tool
+  budget.
+- **`[all]` optional-dep group** — now pulls in `[calc]` alongside
+  `[word, tex, paper, flashcards, quest, external]`.
+
+### Tests
+
+- **1,046 unit tests passing** (up from 978 at 4.0.1 — a
+  68-test expansion covering calc + LLM routing + Wolfram live).
+- **21 LLM-live tests passing** when ollama + qwen3.5:9b are
+  available (including the five new TestCalc + TestMath tests).
+  Gracefully skip when ollama isn't running.
+- **Full suite runs in ~24 s** excluding the live-LLM and
+  live-Wolfram suites.  `ruff check` + `mypy` clean.
+
+### Docs
+
+- README updated to document the `calc` kind alongside `math`, add
+  Compute examples to the `get()` / `search()` sections, list
+  `calc:` in the URI grammar's scheme-prefix set, and clarify the
+  cost trade-off (`calc` is free/offline, `math` is paid/online).
+- Install command table adds `pip install 'precis-mcp[calc]'`.
+
 ## 4.0.1 — 2026-04-22
 
 Packaging fix only — no behaviour change.  The 4.0.0 wheel was

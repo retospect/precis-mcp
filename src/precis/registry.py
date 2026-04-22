@@ -766,9 +766,12 @@ def _register_builtins() -> None:
                         KindSpec(
                             name="math",
                             description=(
-                                "Wolfram Alpha compute — math, science "
-                                "facts, unit conversions, data lookups. "
-                                "Requires WOLFRAM_APP_ID."
+                                "PAID (~$0.0001/call): Wolfram Alpha "
+                                "compute — natural-language math, "
+                                "science facts, unit conversions, "
+                                "real-world data lookups. Requires "
+                                "WOLFRAM_APP_ID. For pure-computation "
+                                "use the free local 'calc' kind instead."
                             ),
                             requires=["WOLFRAM_APP_ID"],
                             cost_hint="~$0.0001/call",
@@ -782,6 +785,51 @@ def _register_builtins() -> None:
             )
         except ImportError:
             log.debug("MathHandler not available (missing wolframalpha?)")
+
+    # ── Phase 5: local calculator — free, SymPy-based ───────────────
+    # No env requirement, no network.  Advertised as the default for
+    # pure-computation math; complements the paid Wolfram-based 'math'
+    # kind which is better for fuzzy natural-language queries.
+
+    if _is_allowed("calc"):
+        try:
+            from precis.handlers.calc import CalcHandler
+
+            _register_plugin(
+                Plugin(
+                    name="calc",
+                    handler_cls=CalcHandler,
+                    schemes=["calc"],
+                    kinds=[
+                        KindSpec(
+                            name="calc",
+                            description=(
+                                "FREE (local, offline): SymPy-based "
+                                "calculator — arithmetic, exact "
+                                "fractions, roots, trig, hex/bin/oct "
+                                "conversion (basics); plus calculus "
+                                "(integrate, diff, limit), equation "
+                                "solving, matrix/linear algebra, and "
+                                "unit conversion (advanced). Views: "
+                                "/pretty /latex /numeric /help. See "
+                                "skill:calc-basics and skill:calc-advanced."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "get(id='calc:2+3*4')",
+                                "get(id='calc:sqrt(2)')",
+                                "get(id='calc:0xff')",
+                                "get(id='calc:integrate(sin(x)*cos(x), x)')",
+                                "get(id='calc:Matrix([[1,2],[3,4]]).det()')",
+                                "get(id='calc:convert_to(5*foot, meter)')",
+                                "get(id='calc:/help')",
+                            ],
+                        )
+                    ],
+                )
+            )
+        except ImportError:
+            log.debug("CalcHandler not available (missing sympy?)")
 
     if _is_allowed("youtube"):
         try:
@@ -835,10 +883,11 @@ def _register_builtins() -> None:
                         KindSpec(
                             name="web",
                             description=(
-                                "Perplexity Sonar web search — fast factual "
-                                "answers with inline citations (2–5 s). Use "
-                                "for definitions, current events, quick "
-                                "lookups.  Requires PERPLEXITY_API_KEY."
+                                "PAID (~$0.001/call): Perplexity Sonar "
+                                "web search — fast factual answers with "
+                                "inline citations (2–5 s). Use for "
+                                "definitions, current events, quick "
+                                "lookups. Requires PERPLEXITY_API_KEY."
                             ),
                             cost_hint="~$0.001/call",
                             examples=[
@@ -866,10 +915,11 @@ def _register_builtins() -> None:
                         KindSpec(
                             name="think",
                             description=(
-                                "Perplexity Sonar Reasoning Pro — detailed "
-                                "analysis with explicit reasoning (5–30 s). "
-                                "Use for comparisons, nuanced questions, "
-                                "multi-source synthesis.  Requires "
+                                "PAID (~$0.005/call): Perplexity Sonar "
+                                "Reasoning Pro — detailed analysis with "
+                                "explicit reasoning (5–30 s). Use for "
+                                "comparisons, nuanced questions, "
+                                "multi-source synthesis. Requires "
                                 "PERPLEXITY_API_KEY."
                             ),
                             cost_hint="~$0.005/call",
@@ -897,11 +947,11 @@ def _register_builtins() -> None:
                         KindSpec(
                             name="research",
                             description=(
-                                "Perplexity Sonar Deep Research — multi-step "
-                                "investigation, 2–10 MIN per call, ~$0.50 "
-                                "each.  Use only when the question justifies "
-                                "the wait and spend.  Requires "
-                                "PERPLEXITY_API_KEY."
+                                "PAID (~$0.50/call): Perplexity Sonar "
+                                "Deep Research — multi-step investigation, "
+                                "2–10 MIN per call. Use only when the "
+                                "question justifies the wait and spend. "
+                                "Requires PERPLEXITY_API_KEY."
                             ),
                             cost_hint="~$0.50/call",
                             examples=[
