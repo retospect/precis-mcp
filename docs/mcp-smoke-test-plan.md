@@ -241,6 +241,46 @@ Pick a unique slug per run to avoid collision.
 Requires `DATABASE_URL` + Postgres + `papers` schema (from `acatome-quest-mcp`
 migrations).
 
+### 4.0 — First-time bootstrap  (run once per DB)
+
+Skip if the DB already has the schema and at least one request.  Verify
+with `psql "$DATABASE_URL" -c '\dt papers.*'` — if `papers.requests`
+shows up, skip to §4.1.
+
+**Migrate the schema**:  every `acatome-quest` subcommand calls
+``db.migrate()`` at startup, so any harmless command bootstraps.
+
+```bash
+/Users/bots/Documents/openclaw-cluster/pips/.venv/bin/acatome-quest status --count
+```
+
+Expected: creates `papers.requests` (+ related tables), prints zero
+counts.  Check with the `\dt papers.*` call above.
+
+**Seed a real paper**:  submits one row so the read views have
+something to show.  Pick any DOI / arXiv id you have handy; the
+current runner may or may not be up, so the request lands in
+`queued` (fine for read-surface testing).
+
+```bash
+# by DOI (preferred — resolver has the highest confidence path)
+/Users/bots/Documents/openclaw-cluster/pips/.venv/bin/acatome-quest submit 10.1021/jacs.2c01234
+
+# OR by arXiv id
+/Users/bots/Documents/openclaw-cluster/pips/.venv/bin/acatome-quest submit arxiv:2301.12345
+
+# OR by free-form title  (likely lands in needs_user with candidates)
+/Users/bots/Documents/openclaw-cluster/pips/.venv/bin/acatome-quest submit --title "Metal-organic frameworks for carbon capture"
+```
+
+Record the returned UUID in the session log — §4.3 needs it.
+
+**Cleanup afterwards**  (when test data gets distracting):
+
+```bash
+psql "$DATABASE_URL" -c "truncate papers.requests cascade;"
+```
+
 ### 4.1 — Startup surface
 
 - [ ] `mcp5_stats()` — confirm `quest` appears in `kinds by verb`
@@ -666,21 +706,11 @@ test matrix until re-fixed.
   covers this; live check: any observable "warm" state (e.g. SkillHandler's
   `_index`) survives across calls.
 
-- [ ] **`skill:/kind/<name>` via MCP surface (fix: 2026-04-22)** —
-  `get(type='skill', id='/kind/quest')` used to return
-  `PARAM_INVALID: unexpected kwarg(s) on skill/kind: slug`.  Root
-  cause: `precis.uri.parse` splits the leading `/` into
-  `(path='', view='kind', subview='quest')`; `SkillHandler.read()`
-  then fell through to the per-skill branch and passed `slug=''` to
-  `_read_kind_view`, which rejected the unexpected kwarg.  Regression
-  tests in
-  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase12b_skill.py`
-  (`test_kind_view_via_parsed_uri_shape`,
-   `test_topic_view_via_parsed_uri_shape`,
-   `test_recent_view_via_parsed_uri_shape`) exercise the parsed-URI
-  shape the live surface produces.  Live check: §3.1 step
-  `get(type='skill', id='/kind/quest')` must return a skill list
-  without error.
+<!-- Retired regression entries (fix verified + unit test in place,
+     re-check not required on every smoke run):
+     - 2026-04-22  skill:/kind/<name> parsed-URI slug-leak bug.
+       Unit tests in test_phase12b_skill.py cover it; the live
+       §3.1 `skill:/kind/quest` step already exercises the same path. -->
 
 ---
 
