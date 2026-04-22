@@ -281,16 +281,24 @@ class SkillHandler(Handler):
                 return self._search(query)
             return self._list_all()
 
-        # Root-level views: skill:/recent, skill:/kind/quest, skill:/topic/papers.
+        # Raw-path collection-view form used by direct handler tests
+        # (``path="/kind/quest"`` without pre-parsing).  Live MCP traffic
+        # never arrives in this shape — :func:`precis.uri.parse` already
+        # splits the leading ``/`` into the view/subview triplet below.
         if path.startswith("/"):
             parts = path.lstrip("/").split("/", 1)
             v = parts[0]
             sub = parts[1] if len(parts) > 1 else None
             return self._dispatch_view(v, sub, **kwargs)
 
-        # Per-skill view: skill:find-paper/meta
+        # View dispatch.  Per-skill views carry the slug in ``path``
+        # (``skill:find-paper/meta``); collection-level views arrive with
+        # ``path=''`` because ``precis.uri.parse`` consumes the leading
+        # ``/`` in ``skill:/kind/quest`` into the path/view split.
         if view:
-            return self._dispatch_view(view, subview, slug=path, **kwargs)
+            if path:
+                return self._dispatch_view(view, subview, slug=path, **kwargs)
+            return self._dispatch_view(view, subview, **kwargs)
 
         # Default: render the skill body
         return self._render_skill(path)

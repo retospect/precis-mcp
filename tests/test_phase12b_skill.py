@@ -296,6 +296,28 @@ class TestReadSurface:
         assert "skill:find-paper" in out  # applies-to: [quest, paper]
         assert "skill:todo-triage" not in out  # applies-to: [todo]
 
+    def test_kind_view_via_parsed_uri_shape(self, handler_with_skills):
+        """Regression: ``skill:/kind/quest`` runs through
+        :func:`precis.uri.parse`, which splits the leading ``/`` into
+        ``(path='', view='kind', subview='quest')``.  The view-dispatch
+        branch must NOT pass ``slug=path`` (``=''``) to
+        ``_read_kind_view`` — that leaked through as
+        ``PARAM_INVALID: unexpected kwarg(s) on skill/kind: slug``
+        in live MCP traffic.  See commit introducing this test."""
+        out = _read(handler_with_skills, path="", view="kind", subview="quest")
+        assert "skill:find-paper" in out
+        assert "skill:todo-triage" not in out
+
+    def test_topic_view_via_parsed_uri_shape(self, handler_with_skills):
+        """Companion regression for the ``/topic/`` path."""
+        out = _read(handler_with_skills, path="", view="topic", subview="papers")
+        assert "skill:find-paper" in out
+
+    def test_recent_view_via_parsed_uri_shape(self, handler_with_skills):
+        """Companion regression for the ``/recent`` path."""
+        out = _read(handler_with_skills, path="", view="recent")
+        assert "Recent skills" in out
+
     def test_kind_view_empty_match_returns_friendly_message(self, handler_with_skills):
         out = _read(handler_with_skills, path="/kind/bogus")
         assert "No skills apply to kind 'bogus'" in out
