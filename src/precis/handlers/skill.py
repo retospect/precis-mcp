@@ -413,13 +413,26 @@ class SkillHandler(Handler):
         return self._format_listing(skills, header=f"📋 Skills ({len(skills)})")
 
     def _search(self, query: str) -> str:
-        """Simple grep over name + description (v1; pgvector in v1.2)."""
-        needle = query.lower()
-        matches = [
-            s
-            for s in self._index.values()
-            if needle in s.name.lower() or needle in s.description.lower()
-        ]
+        """Grep over name + description with AND-across-tokens (v1;
+        pgvector in v1.2).
+
+        BUG-G regression — the previous implementation did a single
+        ``needle in haystack`` check, so multi-word queries like
+        ``'acquire paper'`` returned zero hits even when both words
+        appeared in the same skill.  Tokenising on whitespace and
+        requiring every token to appear somewhere in the
+        ``name + description`` blob matches what the agent expects from
+        a search verb.  Empty-token splits are dropped so
+        ``query='  paper  '`` behaves like ``'paper'``.
+        """
+        tokens = [t.lower() for t in query.split() if t.strip()]
+        if not tokens:
+            return f"No skills match '{query}'."
+        matches = []
+        for s in self._index.values():
+            blob = f"{s.name.lower()} {s.description.lower()}"
+            if all(t in blob for t in tokens):
+                matches.append(s)
         if not matches:
             return f"No skills match '{query}'."
         matches.sort(key=lambda s: s.slug)

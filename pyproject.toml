@@ -95,7 +95,11 @@ precis = "precis.server:main"
 [project.entry-points."precis.schemes"]
 paper = "precis.handlers.paper:PaperHandler"
 todo = "precis.handlers.todo:TodoHandler"
-fc = "precis.handlers.flashcard:FlashcardHandler"
+# ``fc`` was retired 2026-04-22 — canonical scheme is ``flashcard``.
+# Do NOT re-add: the legacy entry-point loader registers scheme keys
+# that aren't already claimed by a built-in plugin, so ``fc`` here
+# would leak into SCHEMES as an orphan (BUG-B regression).
+flashcard = "precis.handlers.flashcard:FlashcardHandler"
 skill = "precis.handlers.skill:SkillHandler"
 quest = "precis.handlers.quest:QuestHandler"
 

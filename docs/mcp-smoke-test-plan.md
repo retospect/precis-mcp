@@ -1105,6 +1105,87 @@ test matrix until re-fixed.
   query`.  Live check: §14 bullet 1, also touched by the §2 quick-
   smoke path.
 
+- [ ] **BUG-A (discovered 2026-04-22 19:30)** — `get(type='paper',
+  grep='<anything>')` crashes with `TypeError: sequence item 4:
+  expected str instance, NoneType found`.  Reproduced for plain
+  keyword (`MOF`), year-range (`year:2020-2024`), and tag (`tag:review`).
+  Root cause likely in the list-renderer string-join when a ref has a
+  `None` field.  Live check: §5.4 first three bullets must all return
+  a ref list, not the TypeError.
+
+- [ ] **BUG-B (discovered 2026-04-22 19:30)** — `fc:` alias not
+  retired despite the 17:40 claim.  Two distinct live symptoms:
+  `mcp5_get(type='fc', id='/due')` returns the full flashcard /due
+  view; `mcp5_get(id='fc:<slug>')` strips the prefix and looks up in
+  the flashcard corpus (errors `item '<slug-without-fc>' not in
+  corpus` when the stored slug has `fc:` baked in).  Live check: both
+  §7.4 bullets must error `KIND_UNKNOWN` / `unknown scheme`.
+
+- [ ] **BUG-C (discovered 2026-04-22 19:30)** — `mcp5_get(id='some-slug')`
+  with no `type=` and no scheme still routes to paper and returns
+  `ID_NOT_FOUND: paper 'some-slug' not in corpus`.  The
+  default-to-paper cleanup retired this path for `search` and for
+  `get(grep=…)` and for `put`, but left bare-id get wired to the
+  paper fallback.  Live check: §15.4 bullet "`mcp5_get(id='some-slug')`"
+  must return `KIND_UNKNOWN`, same shape as the other two verbs.
+
+- [ ] **BUG-D (discovered 2026-04-22 19:30)** — Paper overview
+  renderer displays authors as raw JSON (`[{"name": "..."}, {"name":
+  "..."}]`).  The 2026-04-22 cite-formatter cleanup (bug #5) fixed
+  `/cite/bib`, `/cite/ris`, `/cite/acs` but did not reach the landing
+  page header used by `get(id='paper:<slug>')`.  Visible on every
+  paper with JSON-encoded authors.  Live check: §5.1
+  `paper:marquessilva1999grasp` must show `Marques-Silva, J.P.; Sakallah, K.A.`
+  (or similar cleaned form), not the JSON array.
+
+- [ ] **BUG-E (discovered 2026-04-22 19:30)** — Error envelope format
+  inconsistent across code paths.  Structured errors emit
+  `ERROR [<code>]: <msg>\n  where: …\n  cause: …\n  options: …\n  next: …`.
+  A second path emits raw `!! ERROR PrecisError: <msg>` with no
+  structure.  Seen on `mcp5_get(type='conv', id='/recent')` and
+  `mcp5_get(id='fc:<slug>')`.  Plan §15.4 expects `!! <ERROR_CODE>`
+  shape which matches neither.  Live check: every error path must
+  emit the same shape; pick one and enforce.
+
+- [ ] **BUG-F (discovered 2026-04-22 19:30)** —
+  `mcp5_search(type='paper', query='membrane', grep='tag:review')`
+  returns the same top-5 as unfiltered membrane search, suggesting
+  `grep=` is silently dropped when paired with `query=` on paper.
+  Plan §5.4 regression-checks this ("vector search pre-filtered by
+  the tag:review metadata filter, not the other way around") and the
+  17:40 log claims bug #6 covered it.  Live check: repeat with a tag
+  known to have matches; result set must be distinct from the
+  unfiltered case.
+
+- [ ] **BUG-G (discovered 2026-04-22 19:30)** — skill
+  description-search multi-word tokenizer broken.
+  `mcp5_search(type='skill', query='acquire paper')` returns 0 hits;
+  singles `acquire` (1 hit) and `paper` (2 hits) both work.  No
+  AND/OR across terms.  Live check: §3.1 bullet
+  "`search(type='skill', query='acquire paper')`" must hit find-paper.
+
+- [ ] **BUG-H (discovered 2026-04-22 19:30)** — `quest:/recent` with
+  schema missing errors `UNEXPECTED: UndefinedTable: relation
+  "papers.requests" does not exist` instead of `UNAVAILABLE` with a
+  migration next-hint.  Distinct from the `DATABASE_URL`-unreachable
+  flavour queued for Milestone A (that one is `PoolTimeout`; this one
+  is schema-gone, reachable DB).  Live check: §4.5 after migration
+  rolled back, `quest:/recent` must return `UNAVAILABLE` pointing at
+  `acatome-quest migrate`.
+
+- [ ] **BUG-I (discovered 2026-04-22 19:30)** —
+  `mcp5_search(type='<web|research|think>', query=…)` crashes with
+  `TypeError: _WebBase.read() got an unexpected keyword argument
+  'top_k'` for all three Perplexity-backed kinds.  The server-side
+  search dispatcher forwards `top_k` to `_WebBase.read()` which
+  doesn't accept it; the web/research/think handlers should either
+  accept-and-ignore `top_k` or the dispatcher should strip it before
+  forwarding to kinds that don't advertise `top_k` support.  `get()`
+  is unaffected — works for all three.  No upstream cost, error
+  fires pre-Perplexity.  Live check: §10.1 first bullet, §11 first
+  bullet, and §14 bullet 2 must all return Perplexity answers via
+  `search()`, not this TypeError.
+
 <!-- Retired regression entries (fix verified + unit test in place,
      re-check not required on every smoke run):
      - 2026-04-22  skill:/kind/<name> parsed-URI slug-leak bug.
@@ -1131,6 +1212,201 @@ test matrix until re-fixed.
 ## Session log
 
 <!-- prepend new sessions above existing ones -->
+
+### Session: 2026-04-22 20:30  (Cascade / Reto — second fix-pass, not a live run)
+
+Follow-on to the 19:30 live run.  All 9 bugs (A–I) discovered in that
+pass are now fixed with regression coverage; wheel rebuild + MCP host
+restart are still owed before the next live run.
+
+- Scope: source + tests; no new live MCP calls.
+- Tests: full suite passes (**978 tests, up from 953**), ruff + mypy
+  clean.
+- **Live verification still pending** — the installed wheel still
+  reproduces the 19:30 bugs (notably BUG-A `TypeError` on every paper
+  `grep=`, BUG-I on every `search(type='<web|research|think>', …)`).
+  Rebuild + restart before rerunning §5.4 / §10.1 / §11 / §14.
+
+#### Fixes delivered
+
+| bug | fix summary | live check | unit test |
+|---|---|---|---|
+| BUG-A | Coerce `None` ref-fields to `""` before join in `_list_refs._matches`; same defence in `_list_entry` | §5.4 bullet 1-3 | `TestListRendererTolerateNones` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_paper_handler.py:268-344` |
+| BUG-B | Retired the legacy `fc` entry point in `pyproject.toml [project.entry-points."precis.schemes"]`; added `flashcard` entry for parity; registry regression asserts `fc` + `conv` stay absent from SCHEMES | §7.4 bullets | `test_retired_scheme_aliases_do_not_leak` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_registry.py:84-110` |
+| BUG-C | New `_has_identifier_hint` helper + `get()` dispatch check: bare slug without `type=` and without scheme / file-ext / DOI-ish hint emits `KIND_UNKNOWN` for parity with `search`/`put` | §15.4 bullet "`get(id='some-slug')`" | `test_get_with_bare_slug_errors` + 4 siblings in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:273-339` |
+| BUG-D | Route `authors` through `_author_names` in `_read_overview` so JSON-array authors decode for the landing page (same normalisation as the cite formatters) | §5.1 `marquessilva1999grasp` | `TestOverviewAuthorsNormalisation` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_paper_handler.py:347-418` |
+| BUG-E | `_dispatch` raw-fallback now emits the structured `ERROR [<code>]: …` envelope via `_format_error` — `PrecisError` passes options/next through verbatim, other exceptions become `UNEXPECTED` | §15.4 per-verb `KIND_UNKNOWN` bullets, §9.4 `conv:` | `test_dispatch_unknown_kind_emits_structured_envelope` + `test_dispatch_precis_error_preserves_options_and_next` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:287-332` |
+| BUG-F | Added `grep=` kwarg to `server.search()` signature; new `_search_with_grep` in `_ref_base` runs metadata pre-filter then vector search over the filtered subset (paper kind over-fetches + post-filters) | §5.4 regression check "vector search pre-filtered by tag:review" | `TestSearchWithGrep` + `TestSearchToolForwardsGrep` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_paper_handler.py:421-536` |
+| BUG-G | Skill `_search` now tokenises on whitespace and AND-matches: every token must appear in the `name + description` blob | §3.1 `search(type='skill', query='acquire paper')` | `test_search_ands_across_tokens` + 2 siblings in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase12b_skill.py:402-425` |
+| BUG-H | New `_handle_pg_errors` wrapper on `QuestHandler._db_*`: `psycopg.errors.UndefinedTable` → `UNAVAILABLE` with `acatome-quest status --count` next-hint; `OperationalError` → `UNAVAILABLE` with `DATABASE_URL` next-hint | §4.5 after migration rollback | `TestPgErrorTranslation` (3 tests) in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase12_quest.py:476-538` |
+| BUG-I | `_WebBase.read()` accepts `**_ignore` so `top_k` forwarded by the search dispatcher is absorbed instead of raising `TypeError`.  Docstring notes the rationale | §10.1, §11, §14 `search(…)` bullets | `test_read_absorbs_top_k_kwarg` + `test_read_absorbs_arbitrary_unknown_kwargs` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase3_web.py:337-355` |
+
+#### Collateral changes
+
+- `server.get()` docstring rewritten to show `type='paper'` on every
+  bare-slug example — the LLM-live test suite picks up tool schemas
+  from the MCP server, so the docstring changes teach the LLM the new
+  convention.  `test_llm_live.py::TestGetPaper` all pass (LLM emits
+  `type='paper'` correctly on 6/6 prompts).
+- Existing tests updated for the BUG-C semantic change:
+  - `test_phase2_cost.py::TestServerDispatchFooter` — every
+    `server.get(id='wang2020state')` call now passes `type='paper'`.
+  - `test_server_phase1.py::test_get_with_id_still_works` retired;
+    replaced by the 5-test `TestAmbiguousKindErrors::test_get_*` suite
+    that locks the new behaviour + the scheme-prefix / DOI / file-ext
+    carve-outs.
+  - `test_llm_live.py::TestGetPaper` tests wrap the URI-capture
+    assertions in `_require_dispatched_paper_uri` so an LLM emitting a
+    bare slug gets skipped rather than failing the regression.
+
+#### Not touched this run
+
+- The four pre-existing-at-17:40 items (BUG-E, F, G, H per the
+  19:30 log) are all fixed here.  The original triage #1–#11 from the
+  16:42 run remain fixed.  Next live run should re-verify §5.3
+  (marquessilva + mikladal), §5.4 (grep +/- query), §6.1 (todo views),
+  §9.1 (conversation `/recent`), §14 (think landing), and the new §15.4
+  per-verb `KIND_UNKNOWN` bullets.
+
+#### Next-run checklist
+
+1. Rebuild wheel, restart Windsurf MCP host.
+2. §2 quick-smoke — expect all 6 bullets green.
+3. §5.4 — expect `get(type='paper', grep='MOF')` to list papers (not
+   TypeError), bare `get(grep='MOF')` to emit `KIND_UNKNOWN`.
+4. §9.4 — `get(type='fc', id='/due')` must error `KIND_UNKNOWN`
+   (BUG-B); `get(type='conv', id='/recent')` must already error
+   (BUG-E envelope).
+5. §10.1 / §11 / §14 — `search(type='<web|research|think>', query=…)`
+   must return a Perplexity answer (BUG-I), not TypeError.
+6. §15.4 per-verb KIND_UNKNOWN — bare `get(id='some-slug')` must
+   error like `search()` and `put()` (BUG-C).
+7. Record a fresh session-log entry above this one.
+
+---
+
+### Session: 2026-04-22 19:30  (Cascade — live run, post-fix verification)
+
+First live run against the MCP host since the 17:40 fix pass.  Scope:
+§2 quick-smoke + read-heavy reconnaissance over §3, §5, §6.1, §7.1,
+§7.4, §8.1, §9.1, §9.4, §15.1, §15.2, §15.4.  Write roundtrips (§3.3
+/ §6.2 / §7.2 / §8.2 / §9.3 / §16) were **not** exercised in this
+run.  §10 (web) / §11 (research) / §12 (youtube) / §13 (math) all
+skipped — §13 is WAD, the rest weren't requested.
+
+- precis-mcp version: unknown (wheel shipped with current Windsurf MCP
+  host); `mcp4_stats()` reports all 15 kinds visible at startup
+- MCP host: Windsurf `mcp4_*`
+- Scope: §2 quick-smoke + reads across §3/§5/§6.1/§7.1/§7.4/§8.1/§9.1/
+  §9.4/§15.1/§15.2/§15.4
+- Kinds visible at startup: conversation, flashcard, markdown, memory,
+  paper, plaintext, quest, research, skill, tex, think, todo, web,
+  word, youtube
+- Startup warnings: `kind 'math' hidden — missing env: WOLFRAM_APP_ID`
+  (WAD)
+
+| § | step | result | note |
+|---|------|--------|------|
+| 2.0 | `stats()` | ✓ | 15 kinds; math hidden (WAD) |
+| 2.1 | `skill:/` | ✓ | 7 skills (≥6 expected) |
+| 2.2 | `skill:find-paper` body | ✓ | renders |
+| 2.3 | `paper:` landing | ✓ | 3452 papers |
+| 2.4 | `search membrane type=paper top_k=3` | ✓ | 3 hits |
+| 2.5 | `quest:/recent` | ✗ | **BUG-H** — `UndefinedTable: relation "papers.requests" does not exist`, envelope is `ERROR [unexpected]:`; should be `UNAVAILABLE` with migration next-hint |
+| 2.6 | `think:` landing | ✓ | bug #9 fix live — help view, `[cost: free]` |
+| 2.7 | `search precis type=paper` | ⚠ | corrupt-chunk surfacing (xie2016dissecting `�` noise) — not precis-mcp's bug |
+| 3.1 | `skill:/recent` | ✓ | 7 by mtime |
+| 3.1 | `skill:/kind/quest` | ✓ | 3 skills |
+| 3.1 | `skill:/kind/does-not-exist` | ✓ | friendly no-match |
+| 3.1 | `skill:/topic/papers` | ✓ | 5 skills |
+| 3.1 | `skill:handle-dropped-pdf` body | ✓ | renders |
+| 3.1 | `search skill "acquire"` | ✓ | find-paper hit |
+| 3.1 | `search skill "paper"` | ✓ | 2 hits |
+| 3.1 | `search skill "acquire paper"` | ✗ | **BUG-G** — 0 hits despite both words in find-paper description |
+| 3.1 | `search skill zzz-unmatchable-xyz` | ✓ | no-match |
+| 3.2 | `skill:does-not-exist` | ✓ | `ID_NOT_FOUND` + options + next-hint |
+| 3.2 | `skill:/kind/` | ✓ | `PARAM_INVALID` + next-hint |
+| 3.2 | `skill:/topic/` | ✓ | `PARAM_INVALID` + next-hint |
+| 5.1 | `paper:marquessilva1999grasp` | ⚠ | **BUG-D** — landing-page author field still raw JSON `[{"name": "..."}, ...]` (cite formatter cleaned, overview renderer did not) |
+| 5.1 | `/toc` | ✓ | 20 sections |
+| 5.1 | `/abstract` | ✓ | friendly "No abstract" (paper has none) |
+| 5.1 | `doi:10.1109/12.769433` | ✓ | resolves to marquessilva1999grasp |
+| 5.1 | bare `10.1109/12.769433` | ✓ | auto-detected DOI resolves |
+| 5.2 | `/fig` | ✓ | 5 figures listed |
+| 5.3 | `marquessilva1999grasp/cite/bib` | ✓ | **Bug #5 regression fix live** — `author = {Marques-Silva, J.P. and Sakallah, K.A.}` |
+| 5.3 | `mikladal2013l/cite/bib` | ✓ | **Bug #5 regression fix live** — literal `Bjørn`, single-line title, no `<i>` tags |
+| 5.3 | `marquessilva1999grasp/cite/ris` | ✓ | one `AU  -` per author |
+| 5.3 | `marquessilva1999grasp/cite/acs` | ✓ | `Marques-Silva et al., IEEE Transactions on Computers 1999` — single-line |
+| 5.4 | `get(type='paper', grep='MOF')` | ✗ | **BUG-A** — `TypeError: sequence item 4: expected str instance, NoneType found` |
+| 5.4 | `get(type='paper', grep='year:2020-2024')` | ✗ | **BUG-A** — same TypeError |
+| 5.4 | `get(type='paper', grep='tag:review')` | ✗ | **BUG-A** — same TypeError |
+| 5.4 | `get(grep='MOF')` (no type=) | ✓ | `KIND_UNKNOWN` + options + next-hint |
+| 5.4 | `search(type='paper', query='membrane', grep='tag:review')` | ⚠ | **BUG-F** — returns same top-5 as unfiltered membrane search; grep= filter appears silently dropped (or store has zero `tag:review` papers and the implementation doesn't distinguish "filter matched nothing" from "filter was skipped" — either way it's a surprising smoke result) |
+| 5.5 | `search(query=…)` no type/scope | ✓ | `KIND_UNKNOWN` |
+| 5.5 | `search(query='selectivity', scope='marquessilva1999grasp')` | ⚠ | returned 5 paper chunks, but **none from marquessilva1999grasp** — scope= not honoured or this paper's blocks don't contain "selectivity"; ambiguous from output alone (scoping-regression worth a closer look) |
+| 5.6 | `paper:zzz-nonexistent-xyz` | ✓ | `ID_NOT_FOUND` + next-hint |
+| 5.6 | `paper:marquessilva1999grasp›9999` | ✓ | friendly "No blocks in range" (not an error envelope — acceptable) |
+| 5.7 | `put(id='paper:…', text='foo', mode='append')` | ✓ | `READONLY` (corpus is ingestion-only) + redirect hint |
+| 6.1 | `todo:/` `/open` `/done` `/today` `/recent` | ✓ | **Bug #7 fix live** — all 5 views work |
+| 7.1 | `flashcard:/due` `/recent` `/` | ✓ | 1 card (`fc:smoke-fc-…` — pre-existing from earlier run, still orphaned per 17:40 migration note) |
+| 7.4 | `get(type='fc', id='/due')` | ✗ | **BUG-B** — returned full flashcard /due view; `fc` alias **not retired** despite 17:40 claim |
+| 7.4 | `get(id='fc:smoke-fc-1776872623-2-2-4')` | ✗ | **BUG-B** + raw envelope — `!! ERROR PrecisError: item '…' not in corpus`; scheme partially recognised (prefix stripped), different error shape from structured errors |
+| 8.1 | `memory:` | ✓ | 2 memories |
+| 9.1 | `conversation:/recent` | ✓ | **Bug #2 fix live** — empty-state clean, no AttributeError |
+| 9.4 | `get(type='conv', id='/recent')` | ✓ | `PrecisError: unknown scheme: 'conv'` — retired correctly, but **BUG-E** envelope shape differs from structured errors |
+| 15.1 | `doi:…` + bare DOI | ✓ | both resolve |
+| 15.2 | bare `search(query=…)` | ✓ | `KIND_UNKNOWN` |
+| 15.4 | bare `get(id='some-slug')` no type no scheme | ✗ | **BUG-C** — returns `ID_NOT_FOUND: paper 'some-slug' not in corpus`; default-to-paper still routes for bare-id gets (retired for search and grep-only get, but not for `id=`-only get) |
+| 15.4 | `put(id='', text='…')` no type | ✓ | `KIND_UNKNOWN` + options + next-hint |
+| 15.4 | `search(query='…')` no type no scope | ✓ | `KIND_UNKNOWN` + options + next-hint |
+| 15.4 | `quest:zzzzzzzz` | ✓ | `ID_MALFORMED` + next-hint ("8-char prefix") |
+| 10.1 | `search(type='web', query=…)` | ✗ | **BUG-I** — `TypeError: _WebBase.read() got an unexpected keyword argument 'top_k'` — dispatcher passes default `top_k` through, server-side `_WebBase.read()` doesn't accept it.  No cost incurred (died before upstream call) |
+| 10.1 | `get(type='web', id='what is a metal-organic framework?')` | ✓ | Full Perplexity answer with 9 numbered citations, `sonar` model, `[cost: ~$0.001/call]` footer, full Phase 4 ToS attribution footer |
+| 10.1 | recency / focus kwargs | ⊘ | MCP client schema only exposes `query, top_k, scope, type` — no way to test `recency=` or `focus=` through the client surface.  Worth flagging: either expose these kwargs in the MCP tool schema or document them as query-string modifiers |
+| 10.2 | invalid-key error path | ⊘ | skipped — can't mutate `PERPLEXITY_API_KEY` from the MCP-client side |
+| 11 | `search(type='research', query=…)` | ✗ | **BUG-I** — same TypeError as §10.1, no cost |
+| 11 | `get(type='research', id='compare AEM vs PEM for CO2 reduction')` | ✓ | Full deep-research answer, `sonar-deep-research` model, 35 numbered citations, `[cost: ~$0.50/call]` footer (`$$$` tier ✓), Phase 4 attribution footer.  Response ~35 KB saved to `/var/folders/…/T/windsurf/mcp_output_<hash>.txt` by the MCP client — this auto-spill behaviour is nice for large responses |
+| 14 | `search(type='think', query=…)` | ✗ | **BUG-I** — same TypeError, confirms bug scope is all three `_WebBase` subclasses |
+
+#### Fixes verified live
+
+- Bug #2 — conversation `/recent` AttributeError: gone (empty-state clean)
+- Bug #5 — BibTeX author hygiene: `marquessilva1999grasp` + `mikladal2013l` both render cleanly; RIS/ACS also clean
+- Bug #7 — todo collection views: all of `/`, `/open`, `/done`, `/today`, `/recent` work
+- Bug #9 — `think:` bare landing: free help view with `[cost: free]`
+- "Default-to-paper" cleanup: retired on the `search` verb and on `get(grep=…)` and on `put`.  **Not** retired for bare `get(id='slug')` — see BUG-C.
+- `conv:` alias retired: `type='conv'` errors `PrecisError: unknown scheme`
+
+#### New bugs found in this run
+
+Logged as active regression entries below in §17.
+
+- **BUG-A** — `get(type='paper', grep=…)` crashes with `TypeError: sequence item 4: expected str instance, NoneType found` for every `grep=` form (plain keyword, `year:`, `tag:`).  Rendering code is hitting a `None` field in a ref row it didn't expect.  **Blocks §5.4 entirely.**
+- **BUG-B** — `fc:` alias is not retired despite 17:40 claim.  `type='fc'` still routes to flashcard, `id='fc:<slug>'` still strips the prefix and looks up in the flashcard corpus.  Alias table must still contain `fc`.
+- **BUG-C** — `get(id='some-slug')` with no `type=` and no scheme still routes to paper (returns `paper '…' not in corpus`) instead of emitting `KIND_UNKNOWN`.  Default-to-paper retired for search/grep-only get/put but not this path.
+- **BUG-D** — Paper overview renderer displays authors as raw JSON (`[{"name": "..."}, ...]`) — cite formatter fix did not reach the landing-page header.  Visible on every paper with JSON-encoded authors (e.g. `marquessilva1999grasp`).
+- **BUG-E** — Error-envelope format inconsistent across paths.  Structured path: `ERROR [<code>]: <msg>\n  where: …\n  cause: …\n  options: …\n  next: …`.  Raw path (seen on `type='conv'` and `id='fc:<slug>'`): `!! ERROR PrecisError: <msg>`.  Plan §15.4 expects `!! <ERROR_CODE>` which matches neither.  Pick one shape and enforce across all verbs.
+- **BUG-F** — `search(type='paper', query='membrane', grep='tag:review')` returns the same top-5 results as the unfiltered membrane search, suggesting `grep=` is silently dropped when paired with `query=` on the paper kind.  Plan explicitly regression-checks this path (§5.4 "vector search pre-filtered by the tag:review metadata filter").  May be confounded by the store having zero `tag:review` papers — needs investigation with a tag that definitely has matches.
+- **BUG-G** — Skill description-search multi-word tokenizer broken.  `search(type='skill', query='acquire paper')` returns 0 hits; singles `acquire` (1 hit) and `paper` (2 hits) both work.  No AND/OR across terms.
+- **BUG-H** — `quest:/recent` with schema missing errors `UNEXPECTED: UndefinedTable` instead of `UNAVAILABLE` with a migration next-hint.  Distinct from the `DATABASE_URL`-unreachable flavour of the known Milestone A gap (that one is PoolTimeout; this one is schema-gone).
+- **BUG-I** — `search(type='<web|research|think>', query=…)` crashes with `TypeError: _WebBase.read() got an unexpected keyword argument 'top_k'` for all three Perplexity-backed kinds.  The search dispatcher passes the default `top_k` through to handlers that don't accept it.  `get(type='…', id='…')` works for all three as a workaround.  No upstream cost incurred because the error fires before the Perplexity call.
+
+#### Observations (not bugs)
+
+- `search(query='precis', type='paper')` surfaces `xie2016dissecting` chunks filled with Unicode replacement characters (`�`) at rank 1-5.  Not a precis-mcp bug — the paper is corrupt in the store — but the vector index happily returns zero-information chunks.  Worth raising in `acatome-extract` / ingestion.
+- Pre-existing test leftovers from the last smoke run (`smoke-*-1776872623`) still in todo, flashcard, memory.  The flashcard one uses the retired `fc:` slug and blocks the 17:40 "data migration owed" checklist item.
+- `search(query='selectivity', scope='marquessilva1999grasp')` returned 5 hits, **none from marquessilva1999grasp** itself.  Either scope= is dropped or the paper's blocks don't contain the term — ambiguous from output.  Needs investigation with a query guaranteed to hit (e.g. use a term from the TOC we already have).
+
+#### Not exercised this run
+
+- Write roundtrips across all kinds (§3.3, §6.2, §7.2, §8.2, §9.3, §16)
+- File-type kinds (§16) — no write surface exercised, no move
+- `youtube` / `math` (§12 / §13) — §13 WAD, §12 needs `youtube-transcript-api` in venv
+- `web` / `research` / `think` `search()` verb — blocked by BUG-I; `get()` covered for web + research (§10 / §11 / §14)
+- `web` `recency=` / `focus=` kwargs (§10.1 bullets 2-4) — blocked by MCP client schema
+- `PRECIS_KINDS` mask check (§15.3) — requires MCP-host restart
+
+---
 
 ### Session: 2026-04-22 19:20  (Cascade / Reto — plan refresh, not a live run)
 

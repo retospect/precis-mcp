@@ -577,11 +577,73 @@ class QuestHandler(Handler):
             self._db = db
         return self._db
 
+    def _handle_pg_errors(self, fn, /, *args, **kwargs):
+        """Run ``fn(*args, **kwargs)`` translating common Postgres-side
+        failures into structured ``UNAVAILABLE`` PrecisErrors.
+
+        BUG-H regression — a reachable DB with the ``papers.requests``
+        table missing used to bubble ``UndefinedTable`` up as
+        ``UNEXPECTED``, obscuring the fact that it's a setup problem
+        (the runner's migrations haven't been applied) rather than a
+        handler crash.  Pool-timeout / DNS-unreachable cases similarly
+        benefit from a gripe-hint code.
+
+        Caller sees a single ``PrecisError`` with a ``next=`` pointing
+        at the ``acatome-quest migrate`` command (schema case) or at
+        the ``DATABASE_URL`` env var (connectivity case).
+        """
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            # Import lazily so tests that don't touch psycopg still
+            # import cleanly.  ``psycopg.errors`` is cheap — already
+            # imported transitively by acatome-quest-mcp.db when the
+            # handler is actually used.
+            try:
+                import psycopg.errors as _pgerr  # type: ignore[import-not-found]
+            except ImportError:  # pragma: no cover — quest handler loaded means psycopg available
+                raise exc from None
+
+            # Schema missing — the single most common first-run failure.
+            if isinstance(exc, _pgerr.UndefinedTable):
+                schema = os.environ.get("QUEST_SCHEMA", "papers")
+                raise PrecisError(
+                    ErrorCode.UNAVAILABLE,
+                    cause=(
+                        f"quest schema missing — the {schema}.* tables "
+                        "haven't been created yet.  acatome-quest-mcp "
+                        "migrations bootstrap them on any invocation."
+                    ),
+                    next=(
+                        "run ``acatome-quest status --count`` to "
+                        "trigger ``db.migrate()``, then retry the "
+                        "quest call"
+                    ),
+                ) from exc
+
+            # Connectivity — DSN unreachable, pool timeout, auth failed.
+            if isinstance(
+                exc,
+                (_pgerr.OperationalError, _pgerr.InterfaceError),
+            ):
+                raise PrecisError(
+                    ErrorCode.UNAVAILABLE,
+                    cause=f"quest DB unreachable: {type(exc).__name__}: {exc}",
+                    next=(
+                        "check DATABASE_URL points at a reachable "
+                        "Postgres with the quest schema migrated"
+                    ),
+                ) from exc
+
+            # Anything else — rethrow unchanged so invoke_handler can
+            # format it as UNEXPECTED with its default trace logging.
+            raise
+
     def _db_get(self, uid: UUID) -> PaperRequest | None:
-        return self._get_db().get(uid)
+        return self._handle_pg_errors(self._get_db().get, uid)
 
     def _db_find(self, **kwargs: Any) -> list[PaperRequest]:
-        return self._get_db().find(**kwargs)
+        return self._handle_pg_errors(self._get_db().find, **kwargs)
 
     def _db_find_by_prefix(self, prefix: str) -> list[PaperRequest]:
         """Find requests whose UUID starts with ``prefix``.
@@ -590,17 +652,27 @@ class QuestHandler(Handler):
         against the pool.  Kept narrow — we only need it for short-id
         resolution.
         """
-        db = self._get_db()
-        assert db.pool is not None
-        with db.pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"SELECT * FROM {db.schema}.requests "
-                f"WHERE id::text LIKE %s "
-                f"ORDER BY created_at DESC LIMIT 10",
-                (f"{prefix}%",),
-            )
-            cols = [d.name for d in cur.description or []]
-            rows = [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
-        from acatome_quest_mcp.db import _row_to_request
 
-        return [r for r in (_row_to_request(row) for row in rows) if r is not None]
+        def _do_query() -> list[PaperRequest]:
+            db = self._get_db()
+            assert db.pool is not None
+            with db.pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT * FROM {db.schema}.requests "
+                    f"WHERE id::text LIKE %s "
+                    f"ORDER BY created_at DESC LIMIT 10",
+                    (f"{prefix}%",),
+                )
+                cols = [d.name for d in cur.description or []]
+                rows = [
+                    dict(zip(cols, r, strict=True)) for r in cur.fetchall()
+                ]
+            from acatome_quest_mcp.db import _row_to_request
+
+            return [
+                r
+                for r in (_row_to_request(row) for row in rows)
+                if r is not None
+            ]
+
+        return self._handle_pg_errors(_do_query)

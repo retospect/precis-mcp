@@ -334,6 +334,26 @@ class TestRead:
         assert "research:" in out
         assert "sonar-deep-research" in out
 
+    def test_read_absorbs_top_k_kwarg(self, read_kwargs):
+        # BUG-I regression — the server-side ``search()`` dispatcher
+        # routes Perplexity-backed kinds through ``tools.read`` which
+        # forwards ``top_k`` as kwargs.  ``_WebBase.read`` must accept
+        # (and ignore) the argument rather than raising TypeError.
+        # Guard the landing path so no HTTP call is made.
+        h = WebHandler()
+        out = h.read(path="", top_k=5, **read_kwargs)
+        assert "Usage:" in out  # landing view, not an error
+
+    def test_read_absorbs_arbitrary_unknown_kwargs(self, read_kwargs):
+        # Defensive: future dispatcher kwargs shouldn't break _WebBase
+        # either.  Covers research + think alongside web to confirm
+        # the absorption is in the shared base.
+        for cls in (WebHandler, ThinkHandler, ResearchHandler):
+            out = cls().read(
+                path="", top_k=10, some_future_kwarg="x", **read_kwargs
+            )
+            assert "Usage:" in out
+
     def test_landing_cost_of_is_free(self):
         # cost_of must report free for a bare call so agents don't
         # think the landing cost them anything.

@@ -263,3 +263,274 @@ class TestCitation:
         }
         out = self._handler()._read_citation(ref, "acs")
         assert out == "Smith et al., Nature 2024"
+
+
+# ---------------------------------------------------------------------------
+# List rendering — grep= filter + _list_entry (BUG-A regression)
+# ---------------------------------------------------------------------------
+
+
+class TestListRendererTolerateNones:
+    """Regression coverage for BUG-A (discovered 2026-04-22 19:30 live
+    smoke run): ``get(type='paper', grep=...)`` crashed with
+    ``TypeError: sequence item 4: expected str instance, NoneType
+    found`` because ``p.get(key, "")`` returns ``None`` when the key
+    exists with a ``None`` value (common for partially-ingested refs
+    missing DOI / year / title).
+    """
+
+    def _handler_with_papers(self, papers: list[dict]):
+        from precis.handlers.paper import PaperHandler
+
+        class FakeStore:
+            def list_papers(self, limit: int = 10000):
+                return papers
+
+        h = PaperHandler()
+        return h, FakeStore()
+
+    def test_list_refs_grep_tolerates_none_doi(self):
+        papers = [
+            {
+                "slug": "partial2024",
+                "title": "A Partial Paper",
+                "authors": "Author, A.",
+                "year": 2024,
+                "doi": None,  # ← the BUG-A trigger
+            },
+        ]
+        h, store = self._handler_with_papers(papers)
+        out = h._list_refs(store, grep="Partial")
+        assert "partial2024" in out
+
+    def test_list_refs_grep_tolerates_all_fields_none(self):
+        papers = [
+            {
+                "slug": "minimal",
+                "title": None,
+                "authors": None,
+                "year": None,
+                "doi": None,
+            },
+            {
+                "slug": "has-MOF-keyword",
+                "title": "MOF paper",
+                "authors": None,
+                "year": None,
+                "doi": None,
+            },
+        ]
+        h, store = self._handler_with_papers(papers)
+        out = h._list_refs(store, grep="MOF")
+        assert "has-MOF-keyword" in out
+        assert "minimal" not in out
+
+    def test_list_entry_tolerates_none_fields(self):
+        # Post-BUG-A, _list_entry is called on refs that may still have
+        # None values; it must not crash on _truncate(None) or
+        # first_author_surname(None).
+        from precis.handlers.paper import PaperHandler
+
+        ref = {
+            "slug": "partial",
+            "title": None,
+            "authors": None,
+            "year": None,
+            "doi": None,
+        }
+        out = PaperHandler()._list_entry(ref)
+        assert "partial" in out
+        # No "None" literal should leak into the rendered line.
+        assert "None" not in out
+
+
+# ---------------------------------------------------------------------------
+# Overview renderer — authors field (BUG-D regression)
+# ---------------------------------------------------------------------------
+
+
+class TestOverviewAuthorsNormalisation:
+    """Regression coverage for BUG-D (discovered 2026-04-22 19:30 live
+    smoke run): the paper landing page (``get(id='paper:<slug>')``)
+    displayed the raw ``authors`` column verbatim, so papers with
+    JSON-encoded author arrays rendered a literal
+    ``[{"name": "Marques-Silva, J.P."}, …]`` in the header.  The cite
+    formatters were already clean (bug #5 fix); this test ensures the
+    overview renderer shares that normalisation.
+    """
+
+    def _handler(self):
+        from precis.handlers.paper import PaperHandler
+
+        return PaperHandler()
+
+    class _FakeStore:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def get_blocks(self, slug, block_type=None):
+            self.calls.append(slug)
+            return []
+
+        def get_link_count(self, slug):
+            return {}
+
+    def test_overview_decodes_json_array_authors(self):
+        ref = {
+            "slug": "marquessilva1999grasp",
+            "title": "GRASP: a search algorithm",
+            "authors": (
+                '[{"name": "Marques-Silva, J.P."}, {"name": "Sakallah, K.A."}]'
+            ),
+            "year": 1999,
+            "journal": "IEEE Trans. Computers",
+            "doi": "10.1109/12.769433",
+        }
+        out = self._handler()._read_overview(self._FakeStore(), ref)
+        assert "Marques-Silva, J.P." in out
+        assert "Sakallah, K.A." in out
+        # The raw JSON markers must not leak into the header.
+        for junk in ('[{"name":', '"}]', '{"name":'):
+            assert junk not in out
+
+    def test_overview_handles_plain_author_string(self):
+        ref = {
+            "slug": "plain",
+            "title": "Plain authors test",
+            "authors": "Smith, J.; Jones, K.",
+            "year": 2020,
+        }
+        out = self._handler()._read_overview(self._FakeStore(), ref)
+        assert "Smith, J." in out
+        assert "Jones, K." in out
+
+    def test_overview_handles_none_authors(self):
+        ref = {
+            "slug": "noauthors",
+            "title": "No authors listed",
+            "authors": None,
+            "year": 2020,
+        }
+        out = self._handler()._read_overview(self._FakeStore(), ref)
+        # Renderer must not crash; author line simply absent.
+        assert "noauthors" in out
+        # No raw "None" should leak.
+        assert "None" not in out
+
+
+# ---------------------------------------------------------------------------
+# Search + grep interaction — BUG-F regression
+# ---------------------------------------------------------------------------
+
+
+class TestSearchWithGrep:
+    """BUG-F regression — ``search(type='paper', query='…', grep='…')``
+    used to silently drop the ``grep`` kwarg at the MCP tool boundary
+    (``server.search`` signature had no ``grep`` param) and returned the
+    same unfiltered top-k as the vanilla ``query`` call.  The fix adds
+    ``grep`` to the tool signature and teaches ``_ref_base`` to combine
+    the two: metadata pre-filter, then vector search over the filtered
+    subset.
+    """
+
+    def _handler(self):
+        from precis.handlers.paper import PaperHandler
+
+        return PaperHandler()
+
+    class _FakeStore:
+        def __init__(self, papers, hits):
+            self._papers = papers
+            self._hits = hits
+
+        def list_papers(self, limit=10000):
+            return self._papers
+
+        def search_text(self, query, top_k=5):
+            return self._hits
+
+    def _hit(self, slug, block_idx=3, snippet="snippet"):
+        return {
+            "text": snippet,
+            "distance": 0.5,
+            "paper": {"slug": slug},
+            "metadata": {"slug": slug, "block_index": block_idx},
+        }
+
+    def test_grep_pre_filters_paper_set(self):
+        # Two papers with different tags; grep should keep only "alpha"
+        # and the vector-search hits outside that set must be dropped.
+        papers = [
+            {"slug": "alpha", "title": "Paper A", "authors": "X", "year": 2020},
+            {"slug": "beta", "title": "Paper B", "authors": "Y", "year": 2021},
+        ]
+        hits = [
+            self._hit("alpha", snippet="membrane chemistry"),
+            self._hit("beta", snippet="membrane physics"),
+        ]
+        store = self._FakeStore(papers, hits)
+        out = self._handler()._search_with_grep(
+            store, query="membrane", grep="alpha", top_k=5
+        )
+        assert "alpha" in out
+        assert "beta" not in out
+        # The header must note that grep was applied so the agent
+        # knows the filter landed (vs being silently dropped).
+        assert "grep='alpha'" in out
+
+    def test_empty_filter_set_surfaces_actionable_error(self):
+        # grep eliminates every paper → return a friendly error that
+        # explains the filter was the limiter, not the query.
+        papers = [
+            {"slug": "alpha", "title": "Paper A", "authors": "X", "year": 2020},
+        ]
+        hits = [self._hit("alpha")]
+        store = self._FakeStore(papers, hits)
+        out = self._handler()._search_with_grep(
+            store, query="membrane", grep="no-match-tag", top_k=5
+        )
+        assert "No papers matching grep='no-match-tag'" in out
+        # Must be actionable — the agent needs to know to broaden grep.
+        assert "broader grep" in out or "drop it" in out
+
+    def test_empty_hit_set_after_filter_surfaces_actionable_error(self):
+        # grep keeps some papers but none of the vector hits land on
+        # those — tell the agent which knob to widen.
+        papers = [
+            {"slug": "alpha", "title": "Paper A", "authors": "X", "year": 2020},
+            {"slug": "beta", "title": "Paper B", "authors": "Y", "year": 2021},
+        ]
+        # Hits only on beta; grep keeps only alpha.
+        hits = [self._hit("beta", snippet="no match")]
+        store = self._FakeStore(papers, hits)
+        out = self._handler()._search_with_grep(
+            store, query="membrane", grep="alpha", top_k=5
+        )
+        assert "No results for query='membrane'" in out
+        assert "grep='alpha'" in out
+
+
+class TestSearchToolForwardsGrep:
+    """Locks in that ``server.search(type='paper', query='…', grep='…')``
+    actually reaches ``tools.read`` with the ``grep`` kwarg populated —
+    BUG-F root cause was that the tool signature didn't expose it.
+    """
+
+    def test_search_tool_forwards_grep_kwarg(self, monkeypatch):
+        from precis import server
+
+        captured: dict[str, object] = {}
+
+        def fake_read(uri, **kwargs):
+            captured["uri"] = uri
+            captured.update(kwargs)
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.search(
+            query="membrane", type="paper", grep="tag:review", top_k=3
+        )
+        assert "ERROR [" not in out
+        assert captured.get("grep") == "tag:review"
+        assert captured.get("query") == "membrane"
+        assert captured.get("top_k") == 3

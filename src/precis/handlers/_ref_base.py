@@ -245,12 +245,15 @@ class RefHandler(Handler):
         grep = str(kwargs.get("grep") or "").strip()
 
         # Bare call: list all refs (optionally filtered by grep or
-        # semantic-search-via-query).  ``grep`` wins when both are
-        # supplied because it's a metadata filter (fast, deterministic)
-        # whereas ``query`` triggers a vector lookup that may be
-        # expensive or noisy — agents that passed both probably meant
-        # the filter.
+        # semantic-search-via-query).  When both are supplied, ``grep``
+        # is a metadata pre-filter and ``query`` is the vector search
+        # over the filtered subset — the two compose.  BUG-F fix:
+        # previously grep won outright and query was ignored.
         if not path and not selector and not view:
+            if query and grep:
+                return self._search_with_grep(
+                    store, query=query, grep=grep, top_k=top_k
+                )
             if grep:
                 return self._list_refs(store, grep=grep)
             if query:
@@ -495,14 +498,14 @@ class RefHandler(Handler):
             pattern = parse_grep(grep)
 
             def _matches(p: dict) -> bool:
+                # ``p.get(key, "")`` still returns ``None`` when the
+                # key is present with a ``None`` value (common for
+                # partially-ingested refs: missing DOI, year, etc.).
+                # Coerce every field defensively so the join never
+                # sees a non-str element.
                 blob = " ".join(
-                    [
-                        p.get("slug", ""),
-                        p.get("title", ""),
-                        str(p.get("authors", "")),
-                        str(p.get("year", "")),
-                        p.get("doi", ""),
-                    ]
+                    str(p.get(key) or "")
+                    for key in ("slug", "title", "authors", "year", "doi")
                 )
                 return pattern.matches(blob)
 
@@ -911,6 +914,103 @@ class RefHandler(Handler):
         except (ImportError, ModuleNotFoundError):
             log.info("Semantic search unavailable, falling back to keyword grep")
             return self._list_refs(store, grep=query)
+
+    def _search_with_grep(
+        self, store, query: str, grep: str, top_k: int = 10
+    ) -> str:
+        """Vector search pre-filtered by grep metadata.  BUG-F path.
+
+        ``grep`` restricts the paper set first (fast metadata filter);
+        the vector search then runs with over-fetch so enough hits
+        survive the post-filter to fill ``top_k``.  Non-paper corpora
+        don't have a vector index so they fall back to the
+        ``grep``-plus-``query`` combined substring match on the ref
+        list (deterministic, fast).
+        """
+        # Non-paper corpora: combine query into grep as a second
+        # substring filter.  ``parse_grep`` supports AND by combining
+        # keywords; we approximate by concatenating the two.
+        if self.corpus_id and self.corpus_id != "papers":
+            return self._list_refs(store, grep=f"{grep} {query}")
+
+        # Paper path: compute the set of slugs that pass the grep
+        # pre-filter, then vector-search with over-fetch and drop hits
+        # whose paper isn't in the filtered set.
+        papers = store.list_papers(limit=10000)
+        pattern = parse_grep(grep)
+        filtered_slugs: set[str] = set()
+        for p in papers:
+            blob = " ".join(
+                str(p.get(key) or "")
+                for key in ("slug", "title", "authors", "year", "doi")
+            )
+            if pattern.matches(blob):
+                slug = p.get("slug")
+                if slug:
+                    filtered_slugs.add(slug)
+
+        if not filtered_slugs:
+            return (
+                f"No papers matching grep='{grep}' — the filter "
+                f"eliminated every candidate before the vector search "
+                f"for query='{query}' could run.\n"
+                "Try a broader grep=, or drop it to search the full corpus."
+            )
+
+        # Over-fetch so enough hits survive the post-filter.  5× is
+        # empirical — agents usually ask top_k=5, so 25 candidates
+        # leaves room for a tag-filter that keeps ~20% of the corpus.
+        try:
+            hits = store.search_text(query, top_k=max(top_k * 5, 25))
+        except (ImportError, ModuleNotFoundError):
+            log.info("Semantic search unavailable, falling back to grep-only")
+            return self._list_refs(store, grep=grep)
+
+        filtered_hits = [
+            h
+            for h in hits
+            if (
+                h.get("paper", {}).get("slug")
+                or h.get("metadata", {}).get("slug")
+            )
+            in filtered_slugs
+        ][:top_k]
+
+        if not filtered_hits:
+            return (
+                f"No results for query='{query}' within the "
+                f"grep='{grep}'-filtered subset "
+                f"({len(filtered_slugs)} papers).\n"
+                "Try broader terms for either filter."
+            )
+
+        lines = [
+            f"🔍 {len(filtered_hits)} results for: {query} "
+            f"(filtered by grep='{grep}')",
+            "",
+        ]
+        for hit in filtered_hits:
+            text = hit.get("text", "")
+            distance = hit.get("distance", 0)
+            meta = hit.get("metadata", {})
+            paper_info = hit.get("paper", {})
+            slug = paper_info.get("slug", meta.get("slug", "???"))
+            block_idx = meta.get("block_index", "?")
+            summary = hit.get("summary", "")
+            snippet = summary or _truncate(text, 100)
+            lines.append(
+                f"  {slug}{SEP}{block_idx}  ({distance:.2f})  {snippet}"
+            )
+        lines.append("")
+        lines.append("Next:")
+        first = filtered_hits[0]
+        fslug = first.get("paper", {}).get("slug") or first.get(
+            "metadata", {}
+        ).get("slug", "???")
+        fblock = first.get("metadata", {}).get("block_index", "?")
+        lines.append(f"  get(id='{fslug}{SEP}{fblock}')  — read this chunk")
+        lines.append(f"  get(id='{fslug}/toc')  — structure")
+        return "\n".join(lines)
 
     def _search(self, store, query: str, top_k: int = 10) -> str:
         hits = store.search_text(query, top_k=top_k)

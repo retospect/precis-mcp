@@ -81,6 +81,34 @@ class TestResolve:
         with pytest.raises(PrecisError, match="no handler"):
             resolve("file", "test.xyz")
 
+    def test_retired_scheme_aliases_do_not_leak(self):
+        # BUG-B regression — the legacy ``[project.entry-points
+        # ."precis.schemes"]`` block in ``pyproject.toml`` used to
+        # register ``fc`` as a scheme alias for FlashcardHandler.  After
+        # the 2026-04-22 rename to the canonical ``flashcard:`` scheme,
+        # that entry point must stay removed; otherwise the entry-point
+        # loader at ``registry._discover`` re-adds it as an orphan (it
+        # sees ``fc`` isn't claimed by the built-in plugin, which now
+        # registers ``flashcard``, and back-fills SCHEMES).
+        #
+        # ``conv`` is also checked as a belt-and-braces guard against
+        # anyone re-introducing the abbreviated alias in either the
+        # entry points or the plugin registration.
+        from precis.registry import SCHEMES, _discover
+
+        _discover()
+        assert "fc" not in SCHEMES, (
+            "Legacy 'fc' scheme re-appeared in SCHEMES — check "
+            "pyproject.toml [project.entry-points.'precis.schemes'] for "
+            "an 'fc = …' line that survived the rename."
+        )
+        assert "conv" not in SCHEMES
+        # Positive assertion — the canonical names must be present so
+        # a misconfigured pyproject doesn't silently pass this test by
+        # dropping both.
+        assert "flashcard" in SCHEMES
+        assert "conversation" in SCHEMES
+
     def test_resolve_returns_cached_instance(self):
         """Handlers are memoised per scheme so warm resources (pools, caches,
         parsed indexes) are reused across calls.  See the ``_SCHEME_INSTANCES``

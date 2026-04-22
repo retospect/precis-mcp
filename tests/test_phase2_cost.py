@@ -198,29 +198,33 @@ class TestServerDispatchFooter:
         assert "[cost: free]" in out
 
     def test_get_response_carries_cost_footer(self, paper_mock):
-        out = server.get(id="wang2020state")
+        # ``type='paper'`` required after BUG-C — bare slug + no
+        # ``type=`` now errors KIND_UNKNOWN.
+        out = server.get(id="wang2020state", type="paper")
         assert "[paper body" in out
         assert "[cost: free]" in out
 
     def test_put_response_carries_cost_footer(self, paper_mock):
         # put() dispatches through _dispatch too.
-        out = server.put(id="wang2020state", text="a note", mode="note")
+        out = server.put(
+            id="wang2020state", type="paper", text="a note", mode="note"
+        )
         assert "[wrote to" in out
         assert "[cost: free]" in out
 
     def test_move_response_carries_cost_footer(self, paper_mock):
-        out = server.move(id="wang2020state", after="foo")
+        out = server.move(id="wang2020state", after="foo", type="paper")
         # Papers don't actually support move, but the underlying tools.put
         # is mocked so _dispatch sees a successful callable.
         assert "[cost: free]" in out
 
     def test_session_stats_accumulate_across_calls(self, paper_mock):
         assert get_session_stats() == {}
-        server.get(id="wang2020state")
-        server.get(id="smith2021fwd")
-        # ``search`` now requires explicit ``type=`` when no scope is
-        # given — the old silent paper-default was removed because it
-        # caused silent cross-kind leaks (see smoke-test §6.3 / §15.2).
+        # All three calls carry ``type='paper'`` after BUG-C — bare
+        # slugs + no type= now error KIND_UNKNOWN; ``search`` already
+        # required type= / scope= from the Apr 2026 cleanup.
+        server.get(id="wang2020state", type="paper")
+        server.get(id="smith2021fwd", type="paper")
         server.search(query="MOF", type="paper")
         stats = get_session_stats()
         # Three calls on 'paper' kind — canonical for all three.

@@ -193,6 +193,7 @@ class _WebBase(Handler):
         summarize: bool,
         depth: int,
         page: int,
+        **_ignore,
     ) -> str:
         """Query Perplexity and return the answer + citations + attribution.
 
@@ -200,7 +201,11 @@ class _WebBase(Handler):
         question.  ``query`` (the ``search``-style filter parameter) is
         accepted as a fallback when the caller used the search tool
         with an empty id.  Other handler params are ignored — a Sonar
-        answer is atomic.
+        answer is atomic, so ``top_k`` and similar kwargs forwarded by
+        the ``search()`` dispatcher are absorbed by ``**_ignore`` rather
+        than raising ``TypeError``.  This matters for ``search(type=
+        '<web|research|think>', query=…)`` which routes through
+        ``tools.read`` and always carries ``top_k``.
 
         A bare call (``get(id='<scheme>:')`` with no query) returns a
         landing view describing the kind — no API call is made and the

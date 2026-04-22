@@ -58,6 +58,51 @@ def _split_sep(text: str) -> list[str]:
     return _re.split(r"[" + _re.escape(_SEP_CHARS) + r"]", text, maxsplit=1)
 
 
+def _has_identifier_hint(id: str) -> bool:
+    """True if ``id`` carries an unambiguous routing signal.
+
+    Signals that qualify as a hint:
+
+    - Scheme prefix (``paper:``, ``doi:``, ``memory:``, …).
+    - Utility prefix (``slug:``, ``s2:``, ``ref:``) we routinely strip.
+    - Known file extension (``.docx``, ``.tex``, ``.md``, …).
+    - Bare pattern that classifies as DOI / arXiv / PMCID / ISBN / ISSN.
+
+    A bare alphanumeric slug like ``wang2020state`` carries **no** hint
+    and falls through to ``classify_paper_id``'s final "paper" fallback
+    (``value == input``).  That case was silently routed to ``paper:``
+    before the 2026-04-22 default-to-paper cleanup; now it triggers
+    ``KIND_UNKNOWN`` so the caller is forced to say ``type='paper'`` or
+    an explicit scheme prefix — same treatment as bare ``search`` and
+    ``put`` calls.  BUG-C regression.
+    """
+    _discover()
+    # Explicit scheme prefix — matches the SCHEMES loop in _to_uri.
+    for scheme in SCHEMES:
+        if id.startswith(scheme + ":"):
+            return True
+    # Utility prefixes we strip in _to_uri.
+    for prefix in ("slug:", "s2:", "ref:"):
+        if id.startswith(prefix):
+            return True
+    # File extension — matches the _FILE_EXTENSIONS check in _to_uri.
+    bare = _split_sep(id)[0]
+    base = bare.split("/")[0]
+    _, ext = os.path.splitext(base)
+    if ext.lower() in _FILE_EXTENSIONS:
+        return True
+    # Confident paper-id classification — DOI / arXiv / PMCID / ISBN /
+    # ISSN all mutate ``value`` during normalisation, so a value that
+    # still equals the input means the classifier fell through to the
+    # "Everything else → slug" branch (paper_id.py line 419).
+    classified = classify_paper_id(bare)
+    if classified.scheme != "paper":
+        return True
+    if classified.value != bare:
+        return True
+    return False
+
+
 def _to_uri(id: str, kind: str = "") -> str:
     """Convert a user-facing id to an internal URI.
 
@@ -228,11 +273,33 @@ def _dispatch(
     """
     registered = KINDS.get(kind)
     if registered is None:
-        # Unknown canonical kind — raw call-through (legacy path).
+        # Unknown canonical kind — no KindSpec to drive the full Result
+        # pipeline, but we still emit the same structured envelope as
+        # invoke_handler.  BUG-E fix: the old path emitted a bespoke
+        # ``!! ERROR <ExcType>: <msg>`` shape that the agents had to
+        # parse as a special case; now every error carries the standard
+        # ``ERROR [<code>]: …`` envelope with cause / options / next.
+        from precis.protocol import PrecisError
+
+        ctx = CallContext(
+            kind=kind, verb=verb, args=dict(args) if args else {}
+        )
         try:
             return call()
-        except Exception as exc:  # pragma: no cover — pre-Phase-2 behaviour
-            return f"!! ERROR {type(exc).__name__}: {exc}"
+        except PrecisError as exc:
+            return _format_error(
+                exc.code,
+                ctx,
+                cause=exc.cause or str(exc),
+                options=list(exc.options) if exc.options else None,
+                next_hint=exc.next,
+            )
+        except Exception as exc:
+            return _format_error(
+                ErrorCode.UNEXPECTED,
+                ctx,
+                cause=f"{type(exc).__name__}: {exc}",
+            )
     handler = registered.handler_cls()
     result = invoke_handler(kind, verb, handler, call, args=args)
     return result.render()
@@ -247,6 +314,7 @@ def search(
     top_k: int = 5,
     scope: str = "",
     type: str = "",
+    grep: str = "",
 ) -> str:
     """Semantic search over stored papers.
 
@@ -254,12 +322,17 @@ def search(
     top_k: number of results (default 5)
     scope: slug or filename to restrict search (omit to search ALL papers)
     type:  optional kind name (e.g. 'paper', 'memory').  Aliases accepted.
+    grep:  metadata pre-filter applied before the vector search
+           (title/author/tag substring, or ``tag:review`` / ``year:2020-`` /
+           ``ingested:today`` selectors).  Combines with ``query``: the
+           vector search runs over the grep-filtered subset of papers.
 
     Examples:
       search(query='CO2 capture metal-organic frameworks')
       search(query='selectivity', scope='wang2020state')
       search(query='methods', scope='planning.docx')
       search(query='CO2 capture', type='paper')
+      search(query='membrane', type='paper', grep='tag:review')
 
     Without scope, searches across the entire paper library.
     Returns ranked results with snippets.
@@ -281,14 +354,20 @@ def search(
                 "search() requires an explicit type= when no scope is given — "
                 "otherwise the call is ambiguous across kinds"
             ),
-            args={"query": query, "top_k": top_k},
+            args={"query": query, "top_k": top_k, "grep": grep},
         )
     kind = _kind_from_uri(uri)
+    # BUG-F fix — forward ``grep`` to the handler so it can apply the
+    # metadata pre-filter on top of the vector search.  The kwarg was
+    # declared only on ``get()`` before, so any MCP client that passed
+    # ``grep=`` to ``search()`` had it silently dropped at the tool
+    # boundary and got an unfiltered search back.
+    extra = {"grep": grep} if grep else {}
     return _dispatch(
         kind,
         "search",
-        lambda: tools.read(uri=uri, query=query, page=1, top_k=top_k),
-        args={"id": scope, "query": query, "top_k": top_k},
+        lambda: tools.read(uri=uri, query=query, page=1, top_k=top_k, **extra),
+        args={"id": scope, "query": query, "top_k": top_k, "grep": grep},
     )
 
 
@@ -304,35 +383,37 @@ def get(
     id: identifier — dispatches by file extension vs paper slug
     grep: filter nodes — plain text, /regex/, or /regex/i
     depth: heading depth. 0=all, 1=H1, 2=H1+H2, 4=headings only
+    type: kind name (e.g. 'paper', 'todo', 'memory') — required when
+          ``id`` is a bare slug with no scheme prefix and no identifier
+          hint (DOI / arXiv / file extension / etc.).  See examples.
 
-    Papers:
-      get(id='wang2020state')              — overview (title, abstract, hints)
-      get(id='wang2020state/toc')          — chunk index
-      get(id='wang2020state/abstract')     — abstract text
-      get(id='wang2020state/summary')      — enrichment summary
-      get(id='wang2020state›38')           — chunk 38 full text
-      get(id='wang2020state›38..42')       — chunks 38–42
-      get(id='wang2020state›38/summary')   — chunk summary
-      get(id='wang2020state/cite/bib')     — BibTeX citation
-      get(id='wang2020state/fig')          — list figures
-      get(id='wang2020state/fig/3')        — figure 3 overview + caption
-      get(id='wang2020state/fig/3/legend') — caption text only
-      get(id='wang2020state/fig/3/image')  — encoded image data
-      get(id='wang2020state/fig/3/image/export') — save to ./figures/
-      get(id='doi:10.1021/jacs.2c01234')   — lookup by DOI
-      get(id='10.1021/jacs.2c01234')       — bare DOI (auto-detected)
-      get(id='arxiv:2301.12345')           — lookup by arXiv ID
-      get(grep='MOF')                  — filter paper list by keyword
-      get(grep='ingested:today')       — papers added today
-      get(grep='ingested:this-week')   — papers added this week
-      get(grep='year:2020-2024')       — published 2020–2024
-      get(grep='tag:review')           — filter by tag
+    Papers (``type='paper'`` required for bare slugs; scheme prefixes
+    and bare DOIs / arXiv ids don't need ``type=``):
+      get(type='paper', id='wang2020state')          — overview
+      get(type='paper', id='wang2020state/toc')      — chunk index
+      get(type='paper', id='wang2020state/abstract') — abstract text
+      get(type='paper', id='wang2020state/summary')  — enrichment summary
+      get(type='paper', id='wang2020state›38')       — chunk 38 full text
+      get(type='paper', id='wang2020state›38..42')   — chunks 38–42
+      get(type='paper', id='wang2020state›38/summary') — chunk summary
+      get(type='paper', id='wang2020state/cite/bib') — BibTeX citation
+      get(type='paper', id='wang2020state/fig')      — list figures
+      get(type='paper', id='wang2020state/fig/3')    — figure 3 overview
+      get(type='paper', id='wang2020state/fig/3/legend') — caption only
+      get(type='paper', id='wang2020state/fig/3/image')  — image data
+      get(id='paper:wang2020state')        — scheme prefix works standalone
+      get(id='doi:10.1021/jacs.2c01234')   — DOI prefix works standalone
+      get(id='10.1021/jacs.2c01234')       — bare DOI auto-detected
+      get(id='arxiv:2301.12345')           — arXiv prefix works standalone
+      get(type='paper', grep='MOF')        — filter paper list by keyword
+      get(type='paper', grep='year:2020-2024') — published 2020–2024
+      get(type='paper', grep='tag:review') — filter by tag
 
-    Documents:
+    Documents (file extensions auto-classify — no type= needed):
       get(id='doc.docx')               — table of contents
-      get(id='doc.docx›PLXDX')        — paragraph by slug
-      get(id='doc.docx›S2.1')         — section scope
-      get(id='doc.docx›PLXDX,ABCDE')  — multiple nodes
+      get(id='doc.docx›PLXDX')         — paragraph by slug
+      get(id='doc.docx›S2.1')          — section scope
+      get(id='doc.docx›PLXDX,ABCDE')   — multiple nodes
       get(id='doc.docx', grep='methods') — grep document
       get(id='doc.docx', depth=2)      — outline only
     """
@@ -352,6 +433,21 @@ def get(
         parts: list[str] = []
         total = 0
         for i, single_id in enumerate(ids):
+            # Same BUG-C check as the single-id path — bare slug with
+            # no type= and no identifier hint errors out.
+            if not type and not _has_identifier_hint(single_id):
+                result = _ambiguous_kind_error(
+                    "get",
+                    cause=(
+                        f"get(id={single_id!r}) is ambiguous — no scheme "
+                        "prefix and doesn't match any known identifier "
+                        "pattern (DOI / arXiv / PMCID / ISBN / file ext)."
+                    ),
+                    args={"id": single_id, "grep": grep, "depth": depth},
+                )
+                total += len(result)
+                parts.append(result)
+                continue
             uri = _to_uri(single_id, kind=type)
             kind = _kind_from_uri(uri)
             extra = {"grep": grep} if grep else {}
@@ -375,6 +471,20 @@ def get(
                 break
         return "\n---\n".join(parts)
     if id:
+        # BUG-C — bare slug with no type= and no identifier hint used to
+        # silently route to paper.  Now rejected for parity with the
+        # ``search`` and ``put`` no-type paths: force the caller to
+        # disambiguate with type= or an explicit scheme prefix.
+        if not type and not _has_identifier_hint(id):
+            return _ambiguous_kind_error(
+                "get",
+                cause=(
+                    f"get(id={id!r}) is ambiguous — {id!r} has no scheme "
+                    "prefix and doesn't match any known identifier "
+                    "pattern (DOI / arXiv / PMCID / ISBN / file ext)."
+                ),
+                args={"id": id, "grep": grep, "depth": depth},
+            )
         uri = _to_uri(id, kind=type)
     elif type:
         uri = _to_uri("", kind=type)

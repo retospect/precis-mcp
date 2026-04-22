@@ -466,3 +466,73 @@ class TestRegistration:
         sh._ensure_fresh()
         assert "find-paper" in sh._index
         assert "quest" in sh._index["find-paper"].applies_to
+
+
+# ---------------------------------------------------------------------------
+# PG-error translation — BUG-H regression
+# ---------------------------------------------------------------------------
+
+
+class TestPgErrorTranslation:
+    """BUG-H regression — when the quest schema is missing (fresh DB,
+    migrations not yet applied) or the DSN is unreachable, the handler
+    used to bubble psycopg's ``UndefinedTable`` / ``OperationalError``
+    as ``UNEXPECTED`` which looks like a crash.  The fix translates
+    those to structured ``UNAVAILABLE`` PrecisErrors with an actionable
+    ``next:`` hint pointing at ``acatome-quest status --count``
+    (migration) or ``DATABASE_URL`` (connectivity).
+    """
+
+    def _handler_with_raising_db(self, exc):
+        """Build a QuestHandler whose DB raises ``exc`` from ``find()``."""
+
+        class RaisingDB:
+            def find(self, **kwargs):
+                raise exc
+
+            def get(self, uid):
+                raise exc
+
+        return QuestHandler(db=RaisingDB())
+
+    def test_undefined_table_becomes_unavailable(self):
+        # Simulate the ``papers.requests`` table not yet existing.
+        psycopg_errors = pytest.importorskip("psycopg.errors")
+        # Construct an UndefinedTable exception — psycopg normally
+        # raises this from the server; here we build one by hand so
+        # the test is DB-less.
+        exc = psycopg_errors.UndefinedTable(
+            'relation "papers.requests" does not exist'
+        )
+        h = self._handler_with_raising_db(exc)
+        with pytest.raises(PrecisError) as exc_info:
+            h._db_find(limit=5)
+        assert exc_info.value.code is ErrorCode.UNAVAILABLE
+        cause = exc_info.value.cause or ""
+        assert "schema" in cause.lower() or "tables" in cause.lower()
+        # The next-hint must name a concrete command the agent / user
+        # can run to recover.
+        assert "acatome-quest" in exc_info.value.next
+
+    def test_operational_error_becomes_unavailable(self):
+        # Simulate the DSN being unreachable (wrong host, auth fail, …).
+        psycopg_errors = pytest.importorskip("psycopg.errors")
+        exc = psycopg_errors.OperationalError(
+            'could not connect to server: Connection refused'
+        )
+        h = self._handler_with_raising_db(exc)
+        with pytest.raises(PrecisError) as exc_info:
+            h._db_find(limit=5)
+        assert exc_info.value.code is ErrorCode.UNAVAILABLE
+        assert "unreachable" in (exc_info.value.cause or "").lower()
+        assert "DATABASE_URL" in exc_info.value.next
+
+    def test_unknown_exception_bubbles_unchanged(self):
+        # Non-psycopg exceptions pass through untouched so
+        # invoke_handler's default UNEXPECTED path applies.
+        class CustomError(RuntimeError):
+            pass
+
+        h = self._handler_with_raising_db(CustomError("kaboom"))
+        with pytest.raises(CustomError):
+            h._db_find(limit=5)

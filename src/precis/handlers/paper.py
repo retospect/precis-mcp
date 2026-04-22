@@ -177,12 +177,18 @@ class PaperHandler(RefHandler):
         return self._read_page(store, ref, selector)
 
     def _read_overview(self, store, ref: dict) -> str:
-        slug = ref.get("slug", "???")
-        title = ref.get("title", "")
-        authors = ref.get("authors", "")
-        year = ref.get("year", "")
-        journal = ref.get("journal", "")
-        doi = ref.get("doi", "")
+        slug = ref.get("slug") or "???"
+        title = ref.get("title") or ""
+        # BUG-D fix — route ``authors`` through ``_author_names`` so the
+        # landing-page header stays in sync with the cite formatters.
+        # Without this, papers with JSON-encoded author arrays (e.g.
+        # ``marquessilva1999grasp``) render a literal
+        # ``[{"name": "Marques-Silva, J.P."}, …]`` in the header.
+        authors_list = _author_names(ref.get("authors"))
+        authors = "; ".join(authors_list)
+        year = ref.get("year") or ""
+        journal = ref.get("journal") or ""
+        doi = ref.get("doi") or ""
 
         abstract_blocks = store.get_blocks(slug, block_type="abstract")
         abstract = abstract_blocks[0]["text"] if abstract_blocks else ""
@@ -255,11 +261,14 @@ class PaperHandler(RefHandler):
         return f"📚 {count} papers in library"
 
     def _list_entry(self, ref: dict) -> str:
-        slug = ref.get("slug", "???")
-        title = _truncate(ref.get("title", ""), 80)
-        year = ref.get("year", "")
-        doi = ref.get("doi", "")
-        first_author = first_author_surname(ref.get("authors", ""))
+        # Every field coerced via ``or ""`` — partially-ingested refs
+        # may carry None values even for declared keys.  See BUG-A
+        # regression coverage in ``test_phase6_journal.py``.
+        slug = ref.get("slug") or "???"
+        title = _truncate(ref.get("title") or "", 80)
+        year = ref.get("year") or ""
+        doi = ref.get("doi") or ""
+        first_author = first_author_surname(ref.get("authors") or "")
         parts = [f"  {slug}  {year}"]
         if first_author:
             parts.append(first_author)

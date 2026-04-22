@@ -270,8 +270,70 @@ class TestAmbiguousKindErrors:
         assert "grep=" in out
         assert "options:" in out
 
-    def test_get_with_id_still_works(self, monkeypatch):
-        # A bare slug remains unambiguous — the slug classifier routes it.
+    def test_get_with_bare_slug_errors(self):
+        # BUG-C regression — a bare alphanumeric slug with no ``type=``
+        # and no scheme prefix used to silently auto-route to ``paper:``.
+        # That default was retired for parity with ``search()`` and
+        # ``put()``.  Caller must now say ``type='paper'`` or use an
+        # explicit prefix (``paper:…``, ``doi:…``, etc.).
+        out = server.get(id="wang2020state")
+        assert "ERROR [kind_unknown]" in out
+        assert "options:" in out
+        # The error must name a kind the caller could re-issue with.
+        assert "paper" in out
+        # And it must tell them exactly what to do next.
+        assert "type=" in out or "scheme" in out
+
+    def test_dispatch_unknown_kind_emits_structured_envelope(self):
+        # BUG-E regression — the legacy ``_dispatch`` raw-fallback path
+        # (taken when the kind isn't in KINDS, e.g. the retired ``conv``
+        # alias) used to emit ``!! ERROR PrecisError: …`` which doesn't
+        # match the structured ``ERROR [<code>]:`` envelope every other
+        # path uses.  Now both paths share the same shape so agents
+        # have a single error format to parse.
+        out = server.get(id="/recent", type="conv")
+        # Must be the structured envelope, not the legacy raw form.
+        assert "ERROR [" in out
+        assert "!! ERROR PrecisError" not in out
+        # The cause line carries the original exception info so the
+        # diagnostic content is preserved.
+        assert "cause:" in out
+
+    def test_dispatch_precis_error_preserves_options_and_next(self, monkeypatch):
+        # A handler raising PrecisError with options= / next= must have
+        # those preserved when the raw-fallback path catches them.
+        from precis.protocol import ErrorCode as _EC
+        from precis.protocol import PrecisError as _PE
+
+        def exploding_read(uri, **kwargs):
+            raise _PE(
+                _EC.ID_NOT_FOUND,
+                cause="nope",
+                options=["a", "b"],
+                next="try get(id='a')",
+            )
+
+        monkeypatch.setattr(server.tools, "read", exploding_read)
+        # Force the raw-fallback path by targeting a scheme that
+        # registers (so dispatch attempts it) but whose handler raises.
+        # ``paper:wang2020state`` with a mocked read that raises reaches
+        # the Result-pipeline path; to hit the raw-fallback we need the
+        # kind to be missing from KINDS.  Simulate by popping it.
+        from precis.registry import KINDS
+
+        saved = KINDS.pop("paper", None)
+        try:
+            out = server.get(id="paper:wang2020state")
+        finally:
+            if saved is not None:
+                KINDS["paper"] = saved
+        assert "ERROR [id_not_found]" in out
+        assert "nope" in out
+        assert "a, b" in out  # options rendered as comma-separated
+        assert "try get(id='a')" in out
+
+    def test_get_with_type_paper_still_works(self, monkeypatch):
+        # Explicit ``type='paper'`` disambiguates the bare slug.
         captured: dict[str, str] = {}
 
         def fake_read(uri: str, **kwargs):
@@ -279,9 +341,50 @@ class TestAmbiguousKindErrors:
             return "ok"
 
         monkeypatch.setattr(server.tools, "read", fake_read)
-        out = server.get(id="wang2020state")
+        out = server.get(id="wang2020state", type="paper")
         assert "ERROR [kind_unknown]" not in out
         assert captured["uri"].startswith("paper:")
+
+    def test_get_with_scheme_prefix_still_works(self, monkeypatch):
+        # ``paper:wang2020state`` carries its own routing hint — no
+        # KIND_UNKNOWN, no ``type=`` required.
+        captured: dict[str, str] = {}
+
+        def fake_read(uri: str, **kwargs):
+            captured["uri"] = uri
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.get(id="paper:wang2020state")
+        assert "ERROR [kind_unknown]" not in out
+        assert captured["uri"] == "paper:wang2020state"
+
+    def test_get_with_bare_doi_still_works(self, monkeypatch):
+        # Bare DOI classifies confidently — no type= needed.
+        captured: dict[str, str] = {}
+
+        def fake_read(uri: str, **kwargs):
+            captured["uri"] = uri
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.get(id="10.1021/jacs.2c01234")
+        assert "ERROR [kind_unknown]" not in out
+        assert captured["uri"].startswith("doi:")
+
+    def test_get_with_file_extension_still_works(self, monkeypatch):
+        # File-extension ids classify to the ``file:`` scheme — no
+        # type= needed, no KIND_UNKNOWN.
+        captured: dict[str, str] = {}
+
+        def fake_read(uri: str, **kwargs):
+            captured["uri"] = uri
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.get(id="report.docx")
+        assert "ERROR [kind_unknown]" not in out
+        assert captured["uri"].startswith("file:")
 
     def test_put_without_id_or_type_errors(self):
         out = server.put(id="", text="foo", mode="append")

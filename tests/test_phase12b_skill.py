@@ -399,6 +399,31 @@ class TestSearch:
         out = _read(handler_with_skills, query="zzzzzz-nope")
         assert "No skills match" in out
 
+    def test_search_ands_across_tokens(self, handler_with_skills):
+        # BUG-G regression — ``find-paper`` has both "acquire" and
+        # "paper" in its description.  Multi-word queries used to fail
+        # because the matcher did a single substring lookup (``'acquire
+        # paper' in blob``); now it AND-tokenises on whitespace so each
+        # token must appear somewhere in the blob.
+        out = _read(handler_with_skills, query="acquire paper")
+        assert "skill:find-paper" in out
+        # A skill missing either token must not match.
+        assert "skill:todo-triage" not in out
+
+    def test_search_multi_token_rejects_partial_match(
+        self, handler_with_skills
+    ):
+        # Single-token "paper" matches find-paper.  Pairing it with a
+        # token that doesn't appear in any skill must fail the AND.
+        out = _read(handler_with_skills, query="paper zzzzzz-nope")
+        assert "No skills match" in out
+
+    def test_search_whitespace_collapses(self, handler_with_skills):
+        # Extra whitespace / leading+trailing spaces must not change the
+        # result — the tokenizer drops empty splits.
+        out = _read(handler_with_skills, query="  acquire   paper  ")
+        assert "skill:find-paper" in out
+
 
 # ---------------------------------------------------------------------------
 # Write surface
