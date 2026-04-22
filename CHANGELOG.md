@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.0.1 — 2026-04-22
+
+Packaging fix only — no behaviour change.  The 4.0.0 wheel was
+rejected by PyPI with
+`400 Invalid distribution file. ZIP archive not accepted: Duplicate
+filename in local headers.`  Every `SKILL.md` was present twice in
+the wheel because hatchling's `packages = ["src/precis"]` discovery
+was already including them and the separate
+`[tool.hatch.build.targets.wheel.force-include]` block re-added the
+same tree.  Older PyPI validators tolerated this silently; the
+current one rejects it.
+
+### Fixed
+
+- Dropped the redundant
+  `[tool.hatch.build.targets.wheel.force-include]` entry in
+  `pyproject.toml`.  Each `SKILL.md` now appears exactly once in the
+  wheel.  No change to installed-file layout: the skills still land
+  at `precis/skills/<name>/SKILL.md`.
+
 ## 4.0.0 — 2026-04-22
 
 Major revamp.  Twelve new kinds, plugin protocol v2, unified error
