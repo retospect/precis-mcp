@@ -208,17 +208,17 @@ class TestPut:
         assert "Inserted before." in texts
 
     def test_put_invalid_mode(self, handler, sample_docx):
-        with pytest.raises(PrecisError, match="invalid mode"):
+        with pytest.raises(PrecisError, match="not recognised"):
             handler.put(str(sample_docx), None, "text", "badmode")
 
     def test_put_replace_no_text(self, handler, sample_docx):
         nodes = handler.parse(sample_docx)
         para = [n for n in nodes if n.node_type == "p"][0]
-        with pytest.raises(PrecisError, match="text required"):
+        with pytest.raises(PrecisError, match="text= required"):
             handler.put(str(sample_docx), para.slug, "", "replace")
 
     def test_put_append_no_text(self, handler, sample_docx):
-        with pytest.raises(PrecisError, match="text required"):
+        with pytest.raises(PrecisError, match="text= required"):
             handler.put(str(sample_docx), None, "", "append")
 
 

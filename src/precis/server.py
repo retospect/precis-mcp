@@ -1,18 +1,43 @@
 """FastMCP server — unified tools for papers and documents.
 
-4 tools: search(), get(), put(), move()
-Dispatch: id contains .docx/.tex/.md → file handler, else → paper handler.
+4 tools: search(), get(), put(), move(), plus a read-only stats().
+
+**Plugin protocol v2 (Phase 1) additions**:
+
+- Tools accept an optional ``type=`` argument naming the kind. Aliases are
+  resolved to canonical names at URI parse. Bare-id dispatch still works
+  (back-compat) via :func:`_to_uri`'s auto-detection.
+- ``PRECIS_KINDS`` (see §13 of docs/plugin-architecture.md) is parsed at
+  startup in :func:`_load_kinds_mask` and stored in the registry.  Fatal
+  config errors (alias in config, unknown verb, empty brackets, duplicate
+  kind) print a single line to stderr and exit with code 2.
+- :func:`stats` surfaces the list of enabled kinds per verb and any
+  accumulated startup warnings.
 """
 
 from __future__ import annotations
 
 import os.path
-import re
+import sys
 
 from mcp.server.fastmcp import FastMCP
 
 from precis import tools
-from precis.registry import SCHEMES, _discover
+from precis.kinds_config import ConfigError, load_from_env
+from precis.paper_id import classify_paper_id
+from precis.registry import (
+    ALIASES,
+    KINDS,
+    SCHEMES,
+    STARTUP_WARNINGS,
+    RegistryError,
+    _discover,
+    add_startup_warning,
+    invoke_handler,
+    resolve_alias,
+    set_kinds_mask,
+    visible_kinds,
+)
 from precis.uri import _SEP_CHARS, SEP
 
 mcp = FastMCP("precis")
@@ -23,9 +48,6 @@ _FILE_EXTENSIONS = {".docx", ".tex", ".md", ".markdown", ".rst", ".txt"}
 # Max chars for multi-ID results before paginating
 _MULTI_ID_BUDGET = 6000
 
-# DOI pattern: 10.NNNN/suffix (registrant code is 4+ digits)
-_DOI_RE = re.compile(r"^10\.\d{4,}/.")
-
 
 def _split_sep(text: str) -> list[str]:
     """Split text at the first selector separator (› or ~)."""
@@ -34,19 +56,45 @@ def _split_sep(text: str) -> list[str]:
     return _re.split(r"[" + _re.escape(_SEP_CHARS) + r"]", text, maxsplit=1)
 
 
-def _to_uri(id: str) -> str:
+def _to_uri(id: str, kind: str = "") -> str:
     """Convert a user-facing id to an internal URI.
 
-    Resolution order:
-    1. Known scheme prefix (doi:, arxiv:, usc:, irs:, ie:) → keep as-is
-    2. File extension (.docx, .tex, etc.) → file: scheme
-    3. Bare DOI pattern (10.NNNN/...) → doi: scheme
-    4. Otherwise → paper: scheme (slug lookup)
+    Phase 1: when ``kind`` is provided, the scheme is taken from
+    ``kind`` (after alias resolution) and prepended to ``id`` unless
+    ``id`` already carries a scheme prefix.  Alias hop::
+
+        _to_uri("foo", kind="perplexity")  # → "web:foo" when 'perplexity'
+                                           #   is an alias of 'web'
+
+    When ``kind`` is empty, falls through to the legacy auto-detection:
+
+    1. Known scheme prefix (``doi:``, ``arxiv:``, …) → keep as-is
+    2. File extension (``.docx``, ``.tex``, …) → ``file:`` scheme
+    3. Bare DOI pattern (``10.NNNN/...``) → ``doi:`` scheme
+    4. Otherwise → ``paper:`` scheme (slug lookup)
     """
+    _discover()  # ensure SCHEMES / ALIASES are populated
+
+    # Phase 1: explicit kind hint — resolve alias, stamp scheme, done.
+    # Phase 5 refinement: when the user-supplied kind also exists as a
+    # registered scheme (e.g. ``pmid``, ``doi``, ``arxiv`` are aliases of
+    # the ``paper`` kind but also schemes on the PaperHandler), emit the
+    # kind name as the URI scheme so the handler can branch on identifier
+    # type.  Fall back to canonical-kind-as-scheme otherwise.
+    if kind:
+        # If id already carries a scheme prefix, keep it — respect the
+        # caller's specificity.
+        for scheme in SCHEMES:
+            if id.startswith(scheme + ":"):
+                return id
+        scheme_name = kind if kind in SCHEMES else resolve_alias(kind)
+        return f"{scheme_name}:{id}" if id else f"{scheme_name}:"
+
+    # Legacy path (no kind hint) — Phase 5: delegate to classify_paper_id
+    # for paper-ish ids after stripping accidental prefixes and handling
+    # the file-extension short-circuit.
     if not id:
         return "paper:"
-    # Ensure plugin/builtin schemes are loaded
-    _discover()
     # Known scheme prefixes — keep their scheme intact
     for scheme in SCHEMES:
         prefix = scheme + ":"
@@ -57,16 +105,103 @@ def _to_uri(id: str) -> str:
         if id.startswith(prefix):
             id = id[len(prefix) :]
             break
-    # Auto-detect bare DOI (10.NNNN/...)
+    # File-extension short-circuit — .docx/.tex/.md/... go to file:
+    # scheme, which the paper-id classifier doesn't (and shouldn't) know
+    # about.  Check this BEFORE classification so documents don't get
+    # misrouted as slugs.
     bare = _split_sep(id)[0]
-    if _DOI_RE.match(bare):
-        return f"doi:{id}"
-    # Split at SEP to check base path for extension
     base = bare.split("/")[0]
     _, ext = os.path.splitext(base)
     if ext.lower() in _FILE_EXTENSIONS:
         return f"file:{id}"
-    return f"paper:{id}"
+    # Phase 5: classify DOI / arXiv / PMCID / ISBN / ISSN / slug.
+    # Selector suffix (``›chunk``, ``/view``) must ride along; strip for
+    # classification, re-attach for the final URI.
+    suffix = id[len(bare) :]
+    classified = classify_paper_id(bare)
+    return f"{classified.scheme}:{classified.value}{suffix}"
+
+
+# ── PRECIS_KINDS startup wiring (§13) ───────────────────────────────
+
+
+def _load_kinds_mask(*, env: dict[str, str] | None = None) -> None:
+    """Parse ``PRECIS_KINDS`` and install the mask.
+
+    Fatal config errors (``ConfigError``) print to stderr and exit(2).
+    Non-fatal warnings (unknown kinds) are funnelled into
+    ``STARTUP_WARNINGS`` via :func:`add_startup_warning`.  No-ops when the
+    env var is empty or unset; the server then exposes every registered
+    kind with every verb.
+    """
+    _discover()  # so KINDS / ALIASES are populated for known_kinds check
+    warnings: list[str] = []
+    try:
+        mask = load_from_env(
+            env=env,
+            aliases=ALIASES,
+            known_kinds=KINDS,
+            warnings_out=warnings,
+        )
+    except ConfigError as exc:
+        print(f"precis-mcp: {exc}", file=sys.stderr)
+        sys.exit(2)
+    for w in warnings:
+        add_startup_warning(w)
+    set_kinds_mask(mask)
+
+
+# ── Dispatch helper (Phase 2) ────────────────────────────────────────
+
+
+def _kind_from_uri(uri: str) -> str:
+    """Return the canonical kind name for a URI's scheme.
+
+    Runs through :func:`resolve_alias` so that ``"arxiv:..."`` and
+    ``"doi:..."`` both resolve to ``"paper"``.
+    """
+    scheme = uri.split(":", 1)[0] if ":" in uri else uri
+    return resolve_alias(scheme)
+
+
+def _dispatch(
+    kind: str,
+    verb: str,
+    call,  # type: ignore[no-untyped-def]  # Callable[[], str]
+    args: dict[str, object] | None = None,
+) -> str:
+    """Wrap a handler call in :func:`invoke_handler` and render the Result.
+
+    Phase 2: every tool response flows through here, so every response
+    carries a cost footer (default ``[cost: free]``) and session stats
+    accumulate for the ``stats()`` tool.
+
+    Parameters:
+        kind: Canonical kind name, already alias-resolved.
+        verb: One of ``"search" | "get" | "put" | "move"``.
+        call: Zero-arg callable that does the actual work (usually a
+            closure over ``tools.read`` / ``tools.put``).
+        args: Optional call-argument dict, passed to the wrapper for
+            error formatting (``CallContext.args`` populates the
+            ``where:`` line in error messages).
+
+    Returns the rendered response string (``Result.render()``).  If the
+    kind is not in ``KINDS`` (e.g. orphan scheme from a legacy plugin
+    that skipped ``KindSpec``), falls back to calling ``call()`` raw so
+    behaviour stays identical to the pre-wrapping path.  This keeps the
+    server forgiving for third-party plugins that haven't migrated to
+    plugin protocol v2 yet.
+    """
+    registered = KINDS.get(kind)
+    if registered is None:
+        # Unknown canonical kind — raw call-through (legacy path).
+        try:
+            return call()
+        except Exception as exc:  # pragma: no cover — pre-Phase-2 behaviour
+            return f"!! ERROR {type(exc).__name__}: {exc}"
+    handler = registered.handler_cls()
+    result = invoke_handler(kind, verb, handler, call, args=args)
+    return result.render()
 
 
 # ── Tools ────────────────────────────────────────────────────────────
@@ -77,17 +212,20 @@ def search(
     query: str = "",
     top_k: int = 5,
     scope: str = "",
+    type: str = "",
 ) -> str:
     """Semantic search over stored papers.
 
     query: natural language search query (REQUIRED)
     top_k: number of results (default 5)
     scope: slug or filename to restrict search (omit to search ALL papers)
+    type:  optional kind name (e.g. 'paper', 'memory').  Aliases accepted.
 
     Examples:
       search(query='CO2 capture metal-organic frameworks')
       search(query='selectivity', scope='wang2020state')
       search(query='methods', scope='planning.docx')
+      search(query='CO2 capture', type='paper')
 
     Without scope, searches across the entire paper library.
     Returns ranked results with snippets.
@@ -95,8 +233,19 @@ def search(
     """
     if not query.strip():
         return "ERROR: query is required. Example: search(query='CO2 capture MOF')"
-    uri = _to_uri(scope) if scope else "paper:"
-    return tools.read(uri=uri, query=query, page=1, top_k=top_k)
+    if scope:
+        uri = _to_uri(scope, kind=type)
+    elif type:
+        uri = _to_uri("", kind=type)
+    else:
+        uri = "paper:"
+    kind = _kind_from_uri(uri)
+    return _dispatch(
+        kind,
+        "search",
+        lambda: tools.read(uri=uri, query=query, page=1, top_k=top_k),
+        args={"id": scope, "query": query, "top_k": top_k},
+    )
 
 
 @mcp.tool()
@@ -104,6 +253,7 @@ def get(
     id: str = "",
     grep: str = "",
     depth: int = 0,
+    type: str = "",
 ) -> str:
     """Read content by identifier. What you get depends on the id.
 
@@ -158,8 +308,14 @@ def get(
         parts: list[str] = []
         total = 0
         for i, single_id in enumerate(ids):
-            uri = _to_uri(single_id)
-            result = tools.read(uri=uri, query=grep, depth=depth)
+            uri = _to_uri(single_id, kind=type)
+            kind = _kind_from_uri(uri)
+            result = _dispatch(
+                kind,
+                "get",
+                lambda uri=uri: tools.read(uri=uri, query=grep, depth=depth),
+                args={"id": single_id, "grep": grep, "depth": depth},
+            )
             total += len(result)
             parts.append(result)
             # Check budget after adding (always include at least 1 result)
@@ -171,8 +327,19 @@ def get(
                 )
                 break
         return "\n---\n".join(parts)
-    uri = _to_uri(id) if id else "paper:"
-    return tools.read(uri=uri, query=grep, depth=depth)
+    if id:
+        uri = _to_uri(id, kind=type)
+    elif type:
+        uri = _to_uri("", kind=type)
+    else:
+        uri = "paper:"
+    kind = _kind_from_uri(uri)
+    return _dispatch(
+        kind,
+        "get",
+        lambda: tools.read(uri=uri, query=grep, depth=depth),
+        args={"id": id, "grep": grep, "depth": depth},
+    )
 
 
 @mcp.tool()
@@ -183,6 +350,7 @@ def put(
     tracked: bool = True,
     note: str = "",
     link: str = "",
+    type: str = "",
 ) -> str:
     """Write, annotate, or delete content.
 
@@ -229,9 +397,15 @@ def put(
 
     Multiple paragraphs separated by newlines are auto-split.
     """
-    uri = _to_uri(id)
-    return tools.put(
-        uri=uri, text=text, mode=mode, tracked=tracked, note=note, link=link
+    uri = _to_uri(id, kind=type)
+    kind = _kind_from_uri(uri)
+    return _dispatch(
+        kind,
+        "put",
+        lambda: tools.put(
+            uri=uri, text=text, mode=mode, tracked=tracked, note=note, link=link
+        ),
+        args={"id": id, "mode": mode},
     )
 
 
@@ -239,20 +413,105 @@ def put(
 def move(
     id: str,
     after: str,
+    type: str = "",
 ) -> str:
     """Reorder nodes within a document.
 
     id: doc.docx›SLUG or doc.docx›SLUG1,SLUG2 to move
     after: doc.docx›SLUG — moved nodes placed after this node
+    type: optional kind name (aliases accepted).
 
     Slugs don't change. Paths are recomputed.
     """
-    uri = _to_uri(id)
+    uri = _to_uri(id, kind=type)
     # Extract the 'after' slug from id format (strip file part if present)
     after_sel = _split_sep(after)[-1] if any(c in after for c in _SEP_CHARS) else after
-    return tools.put(uri=uri, text=after_sel, mode="move")
+    kind = _kind_from_uri(uri)
+    return _dispatch(
+        kind,
+        "move",
+        lambda: tools.put(uri=uri, text=after_sel, mode="move"),
+        args={"id": id, "after": after},
+    )
 
 
-def main():
-    """Run the MCP server."""
+@mcp.tool()
+def stats() -> str:
+    """Read-only server introspection — §8, §10.2.
+
+    Lists what the server is currently exposing: enabled kinds per verb,
+    active ``PRECIS_KINDS`` mask (if any), session call counts + last
+    cost per kind, and accumulated startup warnings.  No secrets.
+    Always public — there is no hidden admin mode (§18 non-goal).
+
+    Example output::
+
+        service: precis-mcp
+        mask: PRECIS_KINDS set
+        kinds by verb:
+          search paper, memory
+          get    paper, memory, doc
+          put    memory
+          move   (none)
+        session:
+          paper   calls=12  errors=0  last_cost=free
+          web     calls=3   errors=1  last_cost=~$0.002/call
+        startup warnings:
+          - kind 'news' hidden — missing env: PG_DATABASE_URL
+    """
+    from precis.registry import get_kinds_mask, get_session_stats
+
+    _discover()
+    lines: list[str] = ["service: precis-mcp"]
+    mask = get_kinds_mask()
+    lines.append(
+        f"mask: {'PRECIS_KINDS set' if mask is not None else 'unset (expose all)'}"
+    )
+    lines.append("kinds by verb:")
+    for verb in ("search", "get", "put", "move"):
+        kinds = [k.spec.name for k in visible_kinds(verb)]
+        shown = ", ".join(kinds) if kinds else "(none)"
+        lines.append(f"  {verb:<6} {shown}")
+    session = get_session_stats()
+    if session:
+        lines.append("session:")
+        # Sort by kind name so output is stable across runs.
+        for name in sorted(session):
+            s = session[name]
+            lines.append(
+                f"  {name:<8} calls={s.calls}  errors={s.errors}  "
+                f"last_cost={s.last_cost}"
+            )
+    else:
+        lines.append("session: (no calls yet)")
+    if STARTUP_WARNINGS:
+        lines.append("startup warnings:")
+        for w in STARTUP_WARNINGS:
+            lines.append(f"  - {w}")
+    else:
+        lines.append("startup warnings: none")
+    return "\n".join(lines)
+
+
+def main() -> None:
+    """Run the MCP server.
+
+    Startup order (§10.1):
+
+    1. Discover plugins via :func:`precis.registry._discover`.  A kind-name
+       collision raises :class:`RegistryError` here.
+    2. Parse ``PRECIS_KINDS`` and install the mask.  Grammar / alias /
+       verb errors raise :class:`ConfigError` here.
+    3. Hand off to FastMCP's stdio loop.
+
+    Any fatal error in steps 1 or 2 prints one line to stderr and exits
+    with code 2.  The agent-side MCP client then sees a clean launch
+    failure it can surface to the operator.
+    """
+    try:
+        _load_kinds_mask()
+    except RegistryError as exc:
+        # _discover() inside _load_kinds_mask could fail on kind collisions.
+        print(f"precis-mcp: {exc}", file=sys.stderr)
+        sys.exit(2)
     mcp.run()

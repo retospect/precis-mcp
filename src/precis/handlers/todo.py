@@ -16,7 +16,7 @@ import re
 from datetime import UTC, datetime
 
 from precis.handlers._ref_base import RefHandler, _get_store, _truncate
-from precis.protocol import PrecisError
+from precis.protocol import ErrorCode, PrecisError, extract_kwargs
 
 log = logging.getLogger(__name__)
 
@@ -74,25 +74,22 @@ class TodoHandler(RefHandler):
     scheme = "todo"
     writable = True
     corpus_id = "todos"
-    views = {"meta", "summary", "toc", "chunk", "links", "state"}
+    onboarding_skill = "todo-triage"
+    views = {
+        **RefHandler.views,
+        "state": "_read_state_view",
+    }
+    allowed_modes = {"append", "state", "replace", "note"}
     extensions: set[str] = set()
 
     _ref_noun = "todo"
     _ref_emoji = "☐"
 
-    # ── Subclass hooks ───────────────────────────────────────────────
+    # ── View dispatchers ─────────────────────────────────────────────
 
-    def _dispatch_view(
-        self,
-        store,
-        ref: dict,
-        view: str | None,
-        subview: str | None,
-        selector: str | None,
-    ) -> str | None:
-        if view == "state":
-            return self._read_state(ref)
-        return None
+    def _read_state_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="todo/state")
+        return self._read_state(ref)
 
     def _read_overview(self, store, ref: dict) -> str:
         slug = ref.get("slug", "???")
@@ -197,10 +194,12 @@ class TodoHandler(RefHandler):
             pattern = parse_grep(grep)
 
             def _matches(r: dict) -> bool:
-                blob = " ".join([
-                    r.get("slug", ""),
-                    r.get("title", ""),
-                ])
+                blob = " ".join(
+                    [
+                        r.get("slug", ""),
+                        r.get("title", ""),
+                    ]
+                )
                 return pattern.matches(blob)
 
             refs = [r for r in refs if _matches(r)]
@@ -291,41 +290,54 @@ class TodoHandler(RefHandler):
             return self._create_todo(store, text, **kwargs)
 
         if mode == "state":
-            # State transition
             if not path:
-                raise PrecisError("todo slug required for state transition")
+                raise PrecisError(
+                    ErrorCode.PARAM_INVALID,
+                    cause="id= required for mode='state' (which todo to transition)",
+                    next="get(type='todo', id='/today') to find the slug",
+                )
             return self._transition_state(store, path, text)
 
         if mode == "replace":
-            # Update todo body text
             if not path:
-                raise PrecisError("todo slug required for replace")
+                raise PrecisError(
+                    ErrorCode.PARAM_INVALID,
+                    cause="id= required for mode='replace'",
+                )
             return self._update_body(store, path, text)
 
         if mode == "note":
             return self._write_note(path, selector, text, **kwargs)
 
         raise PrecisError(
-            f"Unsupported mode '{mode}' for todo.\n"
-            "Use: mode='append' (create), mode='state' (transition), "
-            "mode='replace' (update text), mode='note' (annotate)."
+            ErrorCode.MODE_UNSUPPORTED,
+            cause=f"mode {mode!r} not supported on todo",
         )
 
     def _create_todo(self, store, text: str, **kwargs) -> str:
         """Create a new todo item."""
         if not text:
-            raise PrecisError("text required — provide the todo title/description")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="text= required \u2014 provide the todo title/description",
+                next="put(type='todo', text='your task', mode='append')",
+            )
 
         title = kwargs.get("title", "") or text.split("\n")[0][:120]
         priority = kwargs.get("priority", DEFAULT_PRIORITY)
         if priority not in PRIORITIES:
             raise PrecisError(
-                f"Invalid priority: {priority}. Use: {', '.join(sorted(PRIORITIES))}"
+                ErrorCode.PARAM_INVALID,
+                cause=f"priority must be one of the standard values; got {priority!r}",
+                options=sorted(PRIORITIES),
             )
 
         slug = _slugify(title)
         if not slug:
-            raise PrecisError("Cannot generate slug from title")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="cannot generate slug from title (title has no alphanumerics)",
+            )
 
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         meta = {
@@ -369,7 +381,9 @@ class TodoHandler(RefHandler):
         new_state = new_state.strip().lower()
         if new_state not in STATES:
             raise PrecisError(
-                f"Unknown state: {new_state}\nValid states: {', '.join(sorted(STATES))}"
+                ErrorCode.PARAM_INVALID,
+                cause=f"unknown state: {new_state!r}",
+                options=sorted(STATES),
             )
 
         ref = self._resolve_ref(store, path)
@@ -387,8 +401,9 @@ class TodoHandler(RefHandler):
         allowed = TRANSITIONS.get(current, set())
         if new_state not in allowed:
             raise PrecisError(
-                f"Cannot transition {slug} from '{current}' to '{new_state}'.\n"
-                f"Valid transitions from '{current}': {', '.join(sorted(allowed))}"
+                ErrorCode.PARAM_INVALID,
+                cause=f"cannot transition {slug} from {current!r} to {new_state!r}",
+                options=sorted(allowed),
             )
 
         # Update metadata
@@ -405,7 +420,10 @@ class TodoHandler(RefHandler):
     def _update_body(self, store, path: str, text: str) -> str:
         """Replace the body text of a todo."""
         if not text:
-            raise PrecisError("text required for replace")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="text= required for mode='replace'",
+            )
         ref = self._resolve_ref(store, path)
         slug = ref.get("slug", "???")
         ref_id = ref.get("ref_id") or ref.get("id")
@@ -419,4 +437,7 @@ class TodoHandler(RefHandler):
                 return f"✓ Updated {slug}\n{_truncate(text, 200)}"
 
         # No existing block — shouldn't happen but handle gracefully
-        raise PrecisError(f"No text block found in {slug} to update")
+        raise PrecisError(
+            ErrorCode.UNEXPECTED,
+            cause=f"no text block found in {slug} to update",
+        )

@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from precis.handlers._ref_base import RefHandler, _get_store, _truncate
 from precis.handlers.sm2 import DEFAULT_EASINESS
 from precis.handlers.sm2 import update as sm2_update
-from precis.protocol import PrecisError
+from precis.protocol import ErrorCode, PrecisError, extract_kwargs
 
 log = logging.getLogger(__name__)
 
@@ -118,28 +118,36 @@ class FlashcardHandler(RefHandler):
     scheme = "fc"
     writable = True
     corpus_id = "flashcards"
-    views = {"meta", "summary", "toc", "chunk", "links", "due", "stats"}
+    onboarding_skill = "sm2-basics"
+    views = {
+        **RefHandler.views,
+        "due": "_read_due_view",
+        "stats": "_read_stats_view",
+    }
+    allowed_modes = {
+        "append",
+        "add",
+        "review",
+        "replace",
+        "after",
+        "note",
+        "delete",
+    }
     extensions: set[str] = set()
 
     _ref_noun = "item"
     _ref_emoji = "\U0001f9e0"  # 🧠
     _max_list = 20
 
-    # ── Subclass hooks ───────────────────────────────────────────────
+    # ── View dispatchers ─────────────────────────────────────────────
 
-    def _dispatch_view(
-        self,
-        store,
-        ref: dict,
-        view: str | None,
-        subview: str | None,
-        selector: str | None,
-    ) -> str | None:
-        if view == "due":
-            return self._read_due(store)
-        if view == "stats":
-            return self._read_stats(store)
-        return None
+    def _read_due_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="fc/due")
+        return self._read_due(store)
+
+    def _read_stats_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="fc/stats")
+        return self._read_stats(store)
 
     def read(
         self,
@@ -196,7 +204,7 @@ class FlashcardHandler(RefHandler):
         if body and body != title:
             lines.append(f"  {_truncate(body, 200)}")
         if note:
-            lines.append(f"  \u26a1 Last review: \"{note}\"")
+            lines.append(f'  \u26a1 Last review: "{note}"')
 
         lines.append("")
         lines.append("Next:")
@@ -245,11 +253,22 @@ class FlashcardHandler(RefHandler):
         total = len(refs)
         now = _now()
         due = [r for r in refs if self._is_due(r, now)]
-        hard = [r for r in refs if _parse_meta(r).get("easiness", DEFAULT_EASINESS) < HARD_THRESHOLD]
+        hard = [
+            r
+            for r in refs
+            if _parse_meta(r).get("easiness", DEFAULT_EASINESS) < HARD_THRESHOLD
+        ]
 
         lines = [f"\U0001f9e0 {total} flashcard items", ""]
         if due:
-            lines.append(f"  {len(due)} due now" + (f" ({sum(1 for d in due if self._overdue_days(d, now) > 0)} overdue)" if any(self._overdue_days(d, now) > 0 for d in due) else ""))
+            lines.append(
+                f"  {len(due)} due now"
+                + (
+                    f" ({sum(1 for d in due if self._overdue_days(d, now) > 0)} overdue)"
+                    if any(self._overdue_days(d, now) > 0 for d in due)
+                    else ""
+                )
+            )
         else:
             lines.append("  None due right now")
         if hard:
@@ -258,7 +277,9 @@ class FlashcardHandler(RefHandler):
         lines.append("")
         lines.append("Next:")
         lines.append("  get(id='fc:/due')                \u2014 items to review now")
-        lines.append("  get(id='fc:/stats')              \u2014 review statistics & struggle spots")
+        lines.append(
+            "  get(id='fc:/stats')              \u2014 review statistics & struggle spots"
+        )
         lines.append("  search(query='...', scope='fc:') \u2014 find items by topic")
         lines.append(
             "  put(id='fc:', text='Paris is the capital of France', mode='append') \u2014 create item"
@@ -277,14 +298,17 @@ class FlashcardHandler(RefHandler):
 
         if grep:
             from precis.grep import parse_grep
+
             pattern = parse_grep(grep)
 
             def _matches(r: dict) -> bool:
-                blob = " ".join([
-                    r.get("slug", ""),
-                    r.get("title", ""),
-                    str(r.get("tags", "")),
-                ])
+                blob = " ".join(
+                    [
+                        r.get("slug", ""),
+                        r.get("title", ""),
+                        str(r.get("tags", "")),
+                    ]
+                )
                 return pattern.matches(blob)
 
             refs = [r for r in refs if _matches(r)]
@@ -341,7 +365,7 @@ class FlashcardHandler(RefHandler):
             lines.append(f"  {slug}  {due_str}  ease={ease:.1f}  reps={reps}")
             lines.append(f"    {title}")
             if note:
-                lines.append(f"    \u26a1 \"{note}\"")
+                lines.append(f'    \u26a1 "{note}"')
 
         if len(due) > MAX_DUE:
             lines.append(f"\n  ... +{len(due) - MAX_DUE} more")
@@ -349,13 +373,14 @@ class FlashcardHandler(RefHandler):
         # Nearby & almost due
         not_due = [r for r in refs if not self._is_due(r, now)]
         almost = [
-            r for r in not_due
-            if 0 < self._days_until_due(r, now) <= NEARBY_DUE_DAYS
+            r for r in not_due if 0 < self._days_until_due(r, now) <= NEARBY_DUE_DAYS
         ]
         if almost:
             almost.sort(key=lambda r: self._days_until_due(r, now))
             lines.append("")
-            lines.append("\u2500\u2500 Nearby & almost due \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+            lines.append(
+                "\u2500\u2500 Nearby & almost due \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            )
             for r in almost[:MAX_NEARBY]:
                 slug = r.get("slug", "???")
                 title = _truncate(r.get("title", ""), 50)
@@ -365,8 +390,12 @@ class FlashcardHandler(RefHandler):
         # Review tips — embedded in the output, not the system prompt
         lines.append("")
         lines.append("Review tips:")
-        lines.append("  \u2022 Quiz the user \u2014 don't read cards. Vary: cloze, reverse, \"explain why\", compare.")
-        lines.append("  \u2022 \u26a1 lines show past mistakes. Target those confusions.")
+        lines.append(
+            '  \u2022 Quiz the user \u2014 don\'t read cards. Vary: cloze, reverse, "explain why", compare.'
+        )
+        lines.append(
+            "  \u2022 \u26a1 lines show past mistakes. Target those confusions."
+        )
         lines.append("  \u2022 Combine nearby items into compound questions.")
         lines.append("  \u2022 After each answer, judge 0-5 and note what happened:")
         lines.append("")
@@ -427,12 +456,20 @@ class FlashcardHandler(RefHandler):
             f"  Due now:        {len(due):>4}"
             + (f" ({len(overdue)} overdue)" if overdue else "")
         )
-        lines.append(f"  Avg easiness:  {avg_e:>5.1f}  (range {min_e:.1f} \u2013 {max_e:.1f})")
         lines.append(
-            f"  Mature (\u226521d): {mature:>4}  ({mature * 100 // total}%)" if total else ""
+            f"  Avg easiness:  {avg_e:>5.1f}  (range {min_e:.1f} \u2013 {max_e:.1f})"
         )
-        lines.append(f"  Young (<21d):  {young:>4}  ({young * 100 // total}%)" if total else "")
-        lines.append(f"  New (0 reps):  {new:>4}  ({new * 100 // total}%)" if total else "")
+        lines.append(
+            f"  Mature (\u226521d): {mature:>4}  ({mature * 100 // total}%)"
+            if total
+            else ""
+        )
+        lines.append(
+            f"  Young (<21d):  {young:>4}  ({young * 100 // total}%)" if total else ""
+        )
+        lines.append(
+            f"  New (0 reps):  {new:>4}  ({new * 100 // total}%)" if total else ""
+        )
 
         if hard:
             hard.sort(key=lambda x: x[1])
@@ -444,7 +481,7 @@ class FlashcardHandler(RefHandler):
             for slug, e, note in hard[:10]:
                 line = f"  {slug}  ease={e:.1f}"
                 if note:
-                    line += f"  \"{_truncate(note, 60)}\""
+                    line += f'  "{_truncate(note, 60)}"'
                 lines.append(line)
 
         lines.append("")
@@ -473,17 +510,27 @@ class FlashcardHandler(RefHandler):
 
         if mode == "review":
             if not path:
-                raise PrecisError("item slug required for review")
+                raise PrecisError(
+                    ErrorCode.PARAM_INVALID,
+                    cause="id= required for mode='review' (which item to review)",
+                    next="get(id='fc:/due') to find the item",
+                )
             return self._record_review(store, path, text, **kwargs)
 
         if mode == "replace":
             if not path:
-                raise PrecisError("item slug required for replace")
+                raise PrecisError(
+                    ErrorCode.PARAM_INVALID,
+                    cause="id= required for mode='replace'",
+                )
             return self._update_body(store, path, text)
 
         if mode == "after":
             if not path:
-                raise PrecisError("item slug required for adding context")
+                raise PrecisError(
+                    ErrorCode.PARAM_INVALID,
+                    cause="id= required for mode='after' (which item to annotate)",
+                )
             return self._add_context_block(store, path, text)
 
         if mode == "note":
@@ -491,22 +538,24 @@ class FlashcardHandler(RefHandler):
 
         if mode == "delete":
             if not path:
-                raise PrecisError("item slug required for delete")
+                raise PrecisError(
+                    ErrorCode.PARAM_INVALID,
+                    cause="id= required for mode='delete'",
+                )
             return self._delete_item(store, path)
 
         raise PrecisError(
-            f"Unsupported mode '{mode}' for flashcard.\n"
-            "Use: mode='append' or 'add' (create), mode='review' (record recall),\n"
-            "     mode='replace' (edit), mode='after' (add context),\n"
-            "     mode='note' (annotate), mode='delete' (remove)."
+            ErrorCode.MODE_UNSUPPORTED,
+            cause=f"mode {mode!r} not supported on flashcard",
         )
 
     def _create_item(self, store, text: str, **kwargs) -> str:
         """Create a new knowledge item."""
         if not text:
             raise PrecisError(
-                "text required \u2014 provide the knowledge statement.\n"
-                "Example: put(id='fc:', text='Paris is the capital of France', mode='append')"
+                ErrorCode.PARAM_INVALID,
+                cause="text= required \u2014 provide the knowledge statement",
+                next="put(type='fc', text='Paris is the capital of France', mode='append')",
             )
 
         title = text.split("\n")[0][:120]
@@ -514,7 +563,10 @@ class FlashcardHandler(RefHandler):
 
         slug = _slugify(title)
         if not slug:
-            raise PrecisError("Cannot generate slug from text")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="cannot generate slug from text",
+            )
 
         now = _now()
         meta = {
@@ -561,14 +613,22 @@ class FlashcardHandler(RefHandler):
         """Record a review: update SM-2 schedule and append to review log."""
         try:
             quality = int(text.strip())
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as exc:
             raise PrecisError(
-                f"Review quality must be 0-5, got: {text!r}\n"
-                "  5=perfect  4=correct,hesitant  3=correct,hard  "
-                "2=wrong,close  1=wrong,recognised  0=blank"
-            )
+                ErrorCode.PARAM_INVALID,
+                cause=f"review quality must be an int 0-5; got {text!r}",
+                options=["0", "1", "2", "3", "4", "5"],
+                next=(
+                    "5=perfect 4=correct-hesitant 3=correct-hard "
+                    "2=wrong-close 1=wrong-recognised 0=blank"
+                ),
+            ) from exc
         if not 0 <= quality <= 5:
-            raise PrecisError("Review quality must be 0-5")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause=f"review quality out of range 0-5; got {quality}",
+                options=["0", "1", "2", "3", "4", "5"],
+            )
 
         ref = self._resolve_ref(store, path)
         slug = ref.get("slug", "???")
@@ -619,7 +679,9 @@ class FlashcardHandler(RefHandler):
 
         # Streak from recent log
         recent = review_log[-5:]
-        streak = "".join("\u2713" if e.get("quality", 0) >= 3 else "\u2717" for e in recent)
+        streak = "".join(
+            "\u2713" if e.get("quality", 0) >= 3 else "\u2717" for e in recent
+        )
         correct = sum(1 for e in recent if e.get("quality", 0) >= 3)
         lines.append(f"  Streak: {streak} ({correct} of {len(recent)} correct)")
 
@@ -631,7 +693,10 @@ class FlashcardHandler(RefHandler):
     def _update_body(self, store, path: str, text: str) -> str:
         """Replace the body text of an item."""
         if not text:
-            raise PrecisError("text required for replace")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="text= required for mode='replace'",
+            )
         ref = self._resolve_ref(store, path)
         slug = ref.get("slug", "???")
 
@@ -642,12 +707,18 @@ class FlashcardHandler(RefHandler):
                 store.update_block_text(slug, node_id, text)
                 return f"\u2713 Updated {slug}\n  {_truncate(text, 200)}"
 
-        raise PrecisError(f"No text block found in {slug} to update")
+        raise PrecisError(
+            ErrorCode.UNEXPECTED,
+            cause=f"no text block found in {slug} to update",
+        )
 
     def _add_context_block(self, store, path: str, text: str) -> str:
         """Add a context block to an item (mode='after')."""
         if not text:
-            raise PrecisError("text required for context block")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="text= required for mode='after' (context block)",
+            )
         ref = self._resolve_ref(store, path)
         slug = ref.get("slug", "???")
 
@@ -659,11 +730,15 @@ class FlashcardHandler(RefHandler):
         # Insert block via store session
         try:
             from acatome_store.models import Block
+
             session_factory = store._Session
             with session_factory() as session:
                 paper = store.get(slug)
                 if not paper:
-                    raise PrecisError(f"Item not found: {slug}")
+                    raise PrecisError(
+                        ErrorCode.ID_NOT_FOUND,
+                        cause=f"item {slug!r} not in corpus",
+                    )
                 ref_id = paper["ref_id"]
                 block = Block(
                     node_id=node_id,
@@ -677,8 +752,11 @@ class FlashcardHandler(RefHandler):
                 )
                 session.add(block)
                 session.commit()
-        except ImportError:
-            raise PrecisError("acatome-store required for flashcard context blocks")
+        except ImportError as exc:
+            raise PrecisError(
+                ErrorCode.KIND_UNAVAILABLE,
+                cause="acatome-store required for flashcard context blocks",
+            ) from exc
 
         return (
             f"\u2713 Added context to {slug}\n"
@@ -700,6 +778,7 @@ class FlashcardHandler(RefHandler):
         try:
             from acatome_store.models import Ref
             from sqlalchemy import select
+
             session_factory = store._Session
             with session_factory() as session:
                 stmt = (
@@ -729,7 +808,9 @@ class FlashcardHandler(RefHandler):
         if not raw:
             return True  # new item, never reviewed
         try:
-            due = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+            due = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(
+                tzinfo=None
+            )
         except (ValueError, TypeError):
             return True
         return due <= now
@@ -741,7 +822,9 @@ class FlashcardHandler(RefHandler):
         if not raw:
             return 0
         try:
-            due = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+            due = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(
+                tzinfo=None
+            )
         except (ValueError, TypeError):
             return 0
         delta = (now - due).total_seconds() / 86400
@@ -754,7 +837,9 @@ class FlashcardHandler(RefHandler):
         if not raw:
             return 0
         try:
-            due = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+            due = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(
+                tzinfo=None
+            )
         except (ValueError, TypeError):
             return 0
         return (due - now).total_seconds() / 86400

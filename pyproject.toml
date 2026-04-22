@@ -52,6 +52,7 @@ dependencies = [
     "lxml>=5.0",
     "acatome-store[embeddings]>=0.1.0",
     "acatome-meta>=0.1.0",
+    "pyyaml>=6.0",
 ]
 
 [project.urls]
@@ -63,7 +64,22 @@ word = ["python-docx>=1.1", "lxml>=5.0"]
 tex = ["lxml>=5.0"]
 paper = ["acatome-store[embeddings]>=0.1.0", "acatome-meta>=0.1.0"]
 flashcards = ["acatome-store>=0.1.0"]
-all = ["precis-mcp[word,tex,paper,flashcards]"]
+# Phase 12a: quest kind (paper-request lifecycle).  Pulls in the runner
+# package for its DB + models; precis only uses the read path in 12a.
+# The runner itself is renamed to ``acatome-quest-runner`` in Phase 12c
+# — the dep name will follow.
+quest = ["acatome-quest-mcp>=0.1.0"]
+# Phase 4 external stateless handlers.  Each handler is ImportError-gated
+# so the core install stays lean; install ``[external]`` to enable all of
+# them, or pin individual deps.  Handlers with ``requires`` env vars
+# (e.g. ``WOLFRAM_APP_ID``) also auto-hide from the tool enum when the
+# env is unset (§6.2 / §13).
+external = [
+    "wolframalpha>=5.0",
+    "youtube-transcript-api>=1.0",
+    "httpx>=0.27",
+]
+all = ["precis-mcp[word,tex,paper,flashcards,quest,external]"]
 
 [project.scripts]
 precis = "precis.server:main"
@@ -80,6 +96,8 @@ precis = "precis.server:main"
 paper = "precis.handlers.paper:PaperHandler"
 todo = "precis.handlers.todo:TodoHandler"
 fc = "precis.handlers.flashcard:FlashcardHandler"
+skill = "precis.handlers.skill:SkillHandler"
+quest = "precis.handlers.quest:QuestHandler"
 
 [dependency-groups]
 dev = [
@@ -92,6 +110,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/precis"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/precis/skills" = "precis/skills"
 
 [tool.ruff]
 target-version = "py311"

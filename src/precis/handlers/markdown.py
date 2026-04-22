@@ -14,7 +14,14 @@ from pathlib import Path
 
 from precis.formatting import parse_list_prefix
 from precis.handlers._file_base import FileHandlerBase
-from precis.protocol import Node, PathCounter, PrecisError, make_slug, resolve_slug
+from precis.protocol import (
+    ErrorCode,
+    Node,
+    PathCounter,
+    PrecisError,
+    make_slug,
+    resolve_slug,
+)
 
 # ── Regex helpers ────────────────────────────────────────────────────
 
@@ -305,7 +312,10 @@ class MarkdownHandler(FileHandlerBase):
                 fresh_after = fn
                 break
         if fresh_after is None:
-            raise PrecisError(f"Anchor not found after deletion: {after.slug}")
+            raise PrecisError(
+                ErrorCode.UNEXPECTED,
+                cause=f"anchor {after.slug!r} not found after deletion",
+            )
 
         # Insert collected texts after anchor
         lines = _read_lines(path)

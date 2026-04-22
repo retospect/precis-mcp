@@ -222,7 +222,7 @@ class TestRead:
         handler = _make_handler()
         store = _mock_store()
         with patch(_PATCH_STORE, return_value=store):
-            with pytest.raises(PrecisError, match="not found"):
+            with pytest.raises(PrecisError, match="not in corpus"):
                 handler.read(
                     path="todo:nonexistent",
                     selector=None,
@@ -262,7 +262,7 @@ class TestCreate:
         handler = _make_handler()
         store = _mock_store()
         with patch(_PATCH_STORE_TODO, return_value=store):
-            with pytest.raises(PrecisError, match="text required"):
+            with pytest.raises(PrecisError, match="text= required"):
                 handler.put(path="", selector=None, text="", mode="append")
 
     def test_create_slug_collision_disambiguates(self):
@@ -307,7 +307,7 @@ class TestStateTransition:
         ref = _todo_ref(state="pending")
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE_TODO, return_value=store):
-            with pytest.raises(PrecisError, match="Cannot transition"):
+            with pytest.raises(PrecisError, match="cannot transition"):
                 handler.put(
                     path="todo:fix-bug",
                     selector=None,
@@ -320,7 +320,7 @@ class TestStateTransition:
         ref = _todo_ref()
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE_TODO, return_value=store):
-            with pytest.raises(PrecisError, match="Unknown state"):
+            with pytest.raises(PrecisError, match="unknown state"):
                 handler.put(
                     path="todo:fix-bug",
                     selector=None,
@@ -399,7 +399,7 @@ class TestUpdateBody:
         ref = _todo_ref()
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE_TODO, return_value=store):
-            with pytest.raises(PrecisError, match="text required"):
+            with pytest.raises(PrecisError, match="text= required"):
                 handler.put(
                     path="todo:fix-bug",
                     selector=None,
@@ -412,7 +412,7 @@ class TestUpdateBody:
         ref = _todo_ref()
         store = _mock_store(refs=[ref])
         with patch(_PATCH_STORE_TODO, return_value=store):
-            with pytest.raises(PrecisError, match="Unsupported mode"):
+            with pytest.raises(PrecisError, match="not supported on todo"):
                 handler.put(
                     path="todo:fix-bug",
                     selector=None,

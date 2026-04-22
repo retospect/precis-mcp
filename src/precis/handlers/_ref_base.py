@@ -5,7 +5,7 @@ list, notes) that work for any corpus type.  Subclasses override:
 
   * ``_read_overview()`` — corpus-specific overview formatting
   * ``_read_meta()``     — corpus-specific metadata display
-  * ``_dispatch_view()`` — hook for custom views (e.g. /cite, /fig, /state)
+  * ``views`` dict       — view name → dispatch method name
   * ``_overview_hints()``— extra Next: lines in overview
   * ``_list_header()``   — header line for list output
   * ``_list_entry()``    — format a single list entry
@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.grep import parse_grep
-from precis.protocol import Handler, PrecisError
+from precis.protocol import ErrorCode, Handler, PrecisError, extract_kwargs
 from precis.uri import SEP
 
 log = logging.getLogger(__name__)
@@ -160,8 +160,20 @@ class RefHandler(Handler):
     Subclasses must set ``scheme`` and typically override:
       - ``_read_overview()``
       - ``_read_meta()``
-      - ``_dispatch_view()`` for custom views
       - ``_overview_hints()`` for extra Next: lines
+
+    Custom views are added by merging into the ``views`` dict::
+
+        class PaperHandler(RefHandler):
+            views = {
+                **RefHandler.views,
+                "abstract": "_read_abstract_view",
+                "cite":     "_read_cite_view",
+            }
+
+    Each dispatch method has the uniform signature
+    ``(self, store, ref, selector, subview, **kwargs) -> str`` and
+    should validate its custom kwargs with :func:`extract_kwargs`.
     """
 
     scheme: str = ""
@@ -173,8 +185,24 @@ class RefHandler(Handler):
     _ref_emoji: str = "📄"
     _max_list: int = 20
 
-    # Base views provided by RefHandler
-    _views_base: set[str] = {"meta", "summary", "toc", "chunk", "links"}
+    # View registry: view-name → dispatch-method-name on self.  Subclasses
+    # extend via ``views = {**RefHandler.views, ...}``.  All dispatch
+    # methods share the signature
+    #   (self, store, ref, selector, subview, **kwargs) -> str
+    views = {
+        "meta": "_read_meta_view",
+        "summary": "_read_summary_view",
+        "toc": "_read_toc_view",
+        "chunk": "_read_chunk_view",
+        "links": "_read_links_view",
+        "links-in": "_read_links_inbound_view",
+        "help": "_read_help_view",
+    }
+
+    # Base write vocabulary provided by RefHandler.put() — only 'note'.
+    # Writable subclasses (todo, flashcard, memory, conversation) extend
+    # this set so that MODE_UNSUPPORTED errors auto-fill options=.
+    allowed_modes = {"note"}
 
     # Max blocks before switching to overview TOC
     _TOC_OVERVIEW_THRESHOLD = 50
@@ -213,35 +241,25 @@ class RefHandler(Handler):
         # Resolve ref
         if not path:
             raise PrecisError(
-                f"{self._ref_noun} identifier required (e.g. get(id='<slug>'))"
+                ErrorCode.PARAM_INVALID,
+                cause=f"{self._ref_noun} identifier required",
+                next=f"get(id='<{self._ref_noun}-slug>')",
             )
 
         ref = self._resolve_ref(store, path)
 
-        # Base view dispatch
-        if view == "toc":
-            return self._read_toc(store, ref, selector)
-        elif view == "summary":
-            return self._read_summary(store, ref, selector)
-        elif view == "links":
-            return self._read_links(store, ref, selector)
-        elif view == "meta":
-            return self._read_meta(ref)
-        elif view == "chunk":
-            if selector:
-                return self._read_chunks(store, ref, selector)
-            return self._read_toc(store, ref)
-
-        # Subclass view dispatch
-        result = self._dispatch_view(store, ref, view, subview, selector)
-        if result is not None:
-            return result
-
-        # Unknown view
+        # View dispatch via the views registry — subclass extends by
+        # dict-merging into ``views``.  Unknown view → VIEW_UNKNOWN with
+        # options auto-filled from the registry keys.
         if view:
-            raise PrecisError(
-                f"Unknown view: /{view}\nAvailable: {', '.join(sorted(self.views))}"
-            )
+            method_name = self.views.get(view)
+            if method_name is None:
+                raise PrecisError(
+                    ErrorCode.VIEW_UNKNOWN,
+                    cause=f"view '/{view}' not supported on {self.scheme}",
+                    options=sorted(self.views.keys()),
+                )
+            return getattr(self, method_name)(store, ref, selector, subview, **kwargs)
 
         # Selector without view: specific chunk(s)
         if selector:
@@ -260,26 +278,78 @@ class RefHandler(Handler):
     ) -> str:
         if mode != "note":
             raise PrecisError(
-                f"{self.scheme}: scheme is read-only (mode '{mode}' not allowed).\n"
-                f"Use put(mode='note') to annotate, or put(note=...) / put(link=...)."
+                ErrorCode.MODE_UNSUPPORTED,
+                cause=f"mode '{mode}' not allowed on read-only {self.scheme}",
+                next="put(id='<slug>', mode='note', text='...') to annotate",
             )
         return self._write_note(path, selector, text, **kwargs)
 
+    # ── View dispatchers (uniform signature) ─────────────────────────
+    #
+    # Each dispatcher is thin: validate kwargs, delegate to the real
+    # worker.  Subclasses override a dispatcher when they want a
+    # scheme-specific variant (e.g. PaperHandler._read_meta_view), or
+    # add new dispatchers for their own views.
+
+    def _read_meta_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context=f"{self.scheme}/meta")
+        return self._read_meta(ref)
+
+    def _read_summary_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context=f"{self.scheme}/summary")
+        return self._read_summary(store, ref, selector)
+
+    def _read_toc_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context=f"{self.scheme}/toc")
+        return self._read_toc(store, ref, selector)
+
+    def _read_chunk_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context=f"{self.scheme}/chunk")
+        if selector:
+            return self._read_chunks(store, ref, selector)
+        return self._read_toc(store, ref)
+
+    def _read_links_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context=f"{self.scheme}/links")
+        return self._read_links(store, ref, selector)
+
+    def _read_links_inbound_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context=f"{self.scheme}/links-in")
+        return self._read_links(store, ref, selector, direction="inbound")
+
+    def _read_help_view(self, store, ref, selector, subview, **kwargs) -> str:
+        """Inline the onboarding skill body for this kind (Phase 12b v1.1)."""
+        extract_kwargs(kwargs, (), context=f"{self.scheme}/help")
+        if not self.onboarding_skill:
+            raise PrecisError(
+                ErrorCode.VIEW_UNKNOWN,
+                cause=f"{self.scheme} has no onboarding skill declared",
+                next="search(type='skill', query='…') to find relevant skills",
+            )
+        # Delegate to SkillHandler.  Filesystem-native; always available.
+        from precis.handlers.skill import SkillHandler
+
+        sh = SkillHandler()
+        sh._ensure_fresh()
+        try:
+            return sh._render_skill(self.onboarding_skill)
+        except PrecisError as exc:
+            if exc.code is ErrorCode.ID_NOT_FOUND:
+                raise PrecisError(
+                    ErrorCode.ID_NOT_FOUND,
+                    cause=(
+                        f"{self.scheme} declares onboarding_skill="
+                        f"{self.onboarding_skill!r} but no SKILL.md for "
+                        f"it is installed"
+                    ),
+                    next=(
+                        f"create skill:{self.onboarding_skill} in "
+                        f"~/.precis/skills/ or search(type='skill')"
+                    ),
+                ) from exc
+            raise
+
     # ── Subclass hooks ───────────────────────────────────────────────
-
-    def _dispatch_view(
-        self,
-        store,
-        ref: dict,
-        view: str | None,
-        subview: str | None,
-        selector: str | None,
-    ) -> str | None:
-        """Override in subclass to handle custom views.
-
-        Return a string to handle the view, or None to fall through.
-        """
-        return None
 
     def _read_overview(self, store, ref: dict) -> str:
         """Override in subclass for corpus-specific overview formatting."""
@@ -346,8 +416,8 @@ class RefHandler(Handler):
         ref = store.get(ident)
         if ref is None:
             raise PrecisError(
-                f"{self._ref_noun.title()} not found: {ident}\n"
-                f"Try: get(grep='...') to filter, or search(query='...') to search."
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"{self._ref_noun} '{ident}' not in corpus",
             )
         return ref
 
@@ -529,8 +599,12 @@ class RefHandler(Handler):
             else:
                 start = int(selector)
                 end = start + 60
-        except ValueError:
-            raise PrecisError(f"Invalid range: {selector}\nUse {SEP}N..M/toc")
+        except ValueError as exc:
+            raise PrecisError(
+                ErrorCode.ID_MALFORMED,
+                cause=f"invalid block range: {selector!r}",
+                next=f"use id='<slug>{SEP}N..M/toc'",
+            ) from exc
 
         filtered = [e for e in toc if start <= e.get("block_index", 0) <= end]
         if not filtered:
@@ -596,10 +670,12 @@ class RefHandler(Handler):
             else:
                 start = int(selector)
                 end = start + 1
-        except ValueError:
+        except ValueError as exc:
             raise PrecisError(
-                f"Invalid chunk selector: {selector}\nUse {SEP}N, {SEP}N..M, or {SEP}N.."
-            )
+                ErrorCode.ID_MALFORMED,
+                cause=f"invalid chunk selector: {selector!r}",
+                next=f"use id='<slug>{SEP}N', '{SEP}N..M', or '{SEP}N..'",
+            ) from exc
 
         all_blocks = store.get_blocks(slug, block_type="text")
         blocks = [b for b in all_blocks if start <= (b.get("block_index", 0)) < end]
@@ -645,12 +721,18 @@ class RefHandler(Handler):
         if selector:
             try:
                 idx = int(selector)
-            except ValueError:
-                raise PrecisError(f"Invalid chunk index: {selector}")
+            except ValueError as exc:
+                raise PrecisError(
+                    ErrorCode.ID_MALFORMED,
+                    cause=f"invalid chunk index: {selector!r}",
+                ) from exc
             blocks = store.get_blocks(slug, block_type="text")
             target = [b for b in blocks if b.get("block_index") == idx]
             if not target:
-                raise PrecisError(f"Block {SEP}{idx} not found in {slug}")
+                raise PrecisError(
+                    ErrorCode.ID_NOT_FOUND,
+                    cause=f"block {SEP}{idx} not found in {slug}",
+                )
             summary = target[0].get("summary", "")
             return summary or f"No enrichment summary for block {SEP}{idx}"
         blocks = store.get_blocks(slug, block_type="document_summary")
@@ -662,39 +744,70 @@ class RefHandler(Handler):
 
     # ── Links ────────────────────────────────────────────────────────
 
-    def _read_links(self, store, ref: dict, selector: str | None) -> str:
+    def _read_links(
+        self,
+        store,
+        ref: dict,
+        selector: str | None,
+        *,
+        direction: str = "both",
+    ) -> str:
+        """Render the link graph centred on ``ref``.
+
+        ``direction``:
+
+        - ``"both"`` (default, used by ``/links``) — outbound + inbound.
+        - ``"outbound"`` — only links this ref points at.
+        - ``"inbound"`` (used by ``/links-in``) — only links that point
+          at this ref.  Useful for "what cites me" / "what references
+          this memory" queries.
+        """
         slug = ref.get("slug", "???")
         node_id = None
         if selector:
             try:
                 block_idx = int(selector)
-            except ValueError:
-                raise PrecisError(f"Invalid block index: {selector}")
+            except ValueError as exc:
+                raise PrecisError(
+                    ErrorCode.ID_MALFORMED,
+                    cause=f"invalid block index: {selector!r}",
+                ) from exc
             blocks = store.get_blocks(slug, block_type="text")
             target = [b for b in blocks if b.get("block_index") == block_idx]
             if not target:
-                raise PrecisError(f"Block {SEP}{block_idx} not found in {slug}")
+                raise PrecisError(
+                    ErrorCode.ID_NOT_FOUND,
+                    cause=f"block {SEP}{block_idx} not found in {slug}",
+                )
             node_id = target[0].get("node_id")
 
-        links = store.get_links(slug, node_id=node_id)
+        links = store.get_links(slug, node_id=node_id, direction=direction)
+        label_map = {
+            "both": "Links",
+            "outbound": "Outbound links",
+            "inbound": "Inbound links",
+        }
+        label = label_map.get(direction, "Links")
+
         if not links:
             anchor = f"{SEP}{selector}" if selector else ""
-            return (
-                f"No links for {slug}{anchor}\n"
-                f"Next:\n"
-                f"  put(id='{slug}', link='other_slug:cites')  — create a link"
-            )
+            empty_hint = (
+                "  put(id='{slug}', link='other_slug:cites')  — create a link"
+                if direction != "inbound"
+                else "  (no inbound links — nothing references this ref yet)"
+            ).format(slug=slug)
+            return f"No {label.lower()} for {slug}{anchor}\nNext:\n{empty_hint}"
 
         lines = [
-            f"Links for {slug}"
+            f"{label} for {slug}"
             + (f"{SEP}{selector}" if selector else "")
             + f"  ({len(links)} total)"
         ]
         lines.append("")
         for link in links:
-            direction = link.get("direction", "?")
+            ldir = link.get("direction", "?")
             rel = link.get("display_relation", link.get("relation", "?"))
-            if direction == "outbound":
+            if ldir == "outbound":
                 other = link.get("dst_slug", "?")
                 arrow = f"  → [{rel}] → {other}"
                 if link.get("dst_node_id"):
@@ -708,7 +821,12 @@ class RefHandler(Handler):
 
         lines.append("")
         lines.append("Next:")
-        lines.append(f"  put(id='{slug}', link='other_slug:cites')  — add link")
+        if direction != "outbound":
+            lines.append(f"  get(id='{slug}/links')     — all directions")
+        if direction != "inbound":
+            lines.append(f"  get(id='{slug}/links-in')  — inbound-only")
+        lines.append(f"  put(id='{slug}', link='other_slug:cites')   — add link")
+        lines.append(f"  put(id='{slug}', unlink='other_slug')       — remove links")
         lines.append(f"  get(id='{slug}')  — overview")
         return "\n".join(lines)
 
@@ -764,7 +882,11 @@ class RefHandler(Handler):
         **kwargs,
     ) -> str:
         if not text:
-            raise PrecisError("text required for note")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="text= required for note",
+                next="put(id='<slug>', note='your annotation')",
+            )
         store = _get_store()
         ref = self._resolve_ref(store, path)
         slug = ref.get("slug", "???")
@@ -776,12 +898,18 @@ class RefHandler(Handler):
         if selector:
             try:
                 block_idx = int(selector)
-            except ValueError:
-                raise PrecisError(f"Invalid block index for note: {selector}")
+            except ValueError as exc:
+                raise PrecisError(
+                    ErrorCode.ID_MALFORMED,
+                    cause=f"invalid block index for note: {selector!r}",
+                ) from exc
             blocks = store.get_blocks(slug, block_type="text")
             target = [b for b in blocks if b.get("block_index") == block_idx]
             if not target:
-                raise PrecisError(f"Block {SEP}{block_idx} not found in {slug}")
+                raise PrecisError(
+                    ErrorCode.ID_NOT_FOUND,
+                    cause=f"block {SEP}{block_idx} not found in {slug}",
+                )
             block_node_id = target[0].get("node_id")
             note_id = store.add_note(
                 text,

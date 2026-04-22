@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from precis.protocol import PrecisError
+from precis.protocol import ErrorCode, PrecisError
 
 _store_singleton = None
 
@@ -21,8 +21,9 @@ def get_store():
 
         _store_singleton = Store()
         return _store_singleton
-    except ImportError:
+    except ImportError as exc:
         raise PrecisError(
-            "Store operations require acatome-store.\n"
-            "Install with: pip install precis-mcp[paper]"
-        )
+            ErrorCode.KIND_UNAVAILABLE,
+            cause="store operations require acatome-store",
+            next="install with: pip install precis-mcp[paper]",
+        ) from exc

@@ -12,7 +12,7 @@ from pathlib import Path
 from acatome_meta.literature import first_author_surname
 
 from precis.handlers._ref_base import RefHandler, _truncate
-from precis.protocol import PrecisError
+from precis.protocol import ErrorCode, PrecisError, extract_kwargs
 from precis.uri import SEP
 
 log = logging.getLogger(__name__)
@@ -29,46 +29,44 @@ class PaperHandler(RefHandler):
     writable = False
     corpus_id = "papers"
     views = {
-        "meta",
-        "abstract",
-        "summary",
-        "toc",
-        "chunk",
-        "page",
-        "fig",
-        "cite",
-        "cites",
-        "cited-by",
-        "links",
+        **RefHandler.views,
+        "abstract": "_read_abstract_view",
+        "cite": "_read_cite_view",
+        "cites": "_read_cites_view",
+        "cited-by": "_read_cited_by_view",
+        "fig": "_read_fig_view",
+        "page": "_read_page_view",
     }
     extensions: set[str] = set()
 
     _ref_noun = "paper"
     _ref_emoji = "📄"
 
-    # ── Subclass hooks ───────────────────────────────────────────────
+    # ── View dispatchers ─────────────────────────────────────────────
 
-    def _dispatch_view(
-        self,
-        store,
-        ref: dict,
-        view: str | None,
-        subview: str | None,
-        selector: str | None,
-    ) -> str | None:
-        if view == "abstract":
-            return self._read_abstract(store, ref)
-        elif view == "cite":
-            return self._read_citation(ref, subview or "bib")
-        elif view == "cites":
-            return self._read_s2_graph(ref, direction="references")
-        elif view == "cited-by":
-            return self._read_s2_graph(ref, direction="cited_by")
-        elif view == "fig":
-            return self._read_figures(store, ref, subview)
-        elif view == "page":
-            return self._read_page(store, ref, selector)
-        return None
+    def _read_abstract_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="paper/abstract")
+        return self._read_abstract(store, ref)
+
+    def _read_cite_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="paper/cite")
+        return self._read_citation(ref, subview or "bib")
+
+    def _read_cites_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="paper/cites")
+        return self._read_s2_graph(ref, direction="references")
+
+    def _read_cited_by_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="paper/cited-by")
+        return self._read_s2_graph(ref, direction="cited_by")
+
+    def _read_fig_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="paper/fig")
+        return self._read_figures(store, ref, subview)
+
+    def _read_page_view(self, store, ref, selector, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="paper/page")
+        return self._read_page(store, ref, selector)
 
     def _read_overview(self, store, ref: dict) -> str:
         slug = ref.get("slug", "???")
@@ -244,11 +242,12 @@ class PaperHandler(RefHandler):
         parts = subview.split("/")
         try:
             fig_num = int(parts[0])
-        except ValueError:
+        except ValueError as exc:
             raise PrecisError(
-                f"Invalid figure number: {parts[0]}\n"
-                f"Use: get(id='{slug}/fig') to list figures"
-            )
+                ErrorCode.ID_MALFORMED,
+                cause=f"invalid figure number: {parts[0]!r}",
+                next=f"get(id='{slug}/fig') to list figures",
+            ) from exc
 
         aspect = "/".join(parts[1:]) if len(parts) > 1 else ""
 
@@ -262,8 +261,14 @@ class PaperHandler(RefHandler):
             return self._figure_export(store, slug, fig_num)
         else:
             raise PrecisError(
-                f"Unknown figure aspect: {aspect}\n"
-                f"Use: /fig/N, /fig/N/legend, /fig/N/image, /fig/N/image/export"
+                ErrorCode.VIEW_UNKNOWN,
+                cause=f"unknown figure aspect: {aspect!r}",
+                options=[
+                    "/fig/N",
+                    "/fig/N/legend",
+                    "/fig/N/image",
+                    "/fig/N/image/export",
+                ],
             )
 
     def _list_figures(self, store, slug: str) -> str:
@@ -433,11 +438,18 @@ class PaperHandler(RefHandler):
     def _read_page(self, store, ref: dict, selector: str | None) -> str:
         slug = ref.get("slug", "???")
         if not selector:
-            raise PrecisError(f"Page number required: get(id='{slug}{SEP}3/page')")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="page number required",
+                next=f"get(id='{slug}{SEP}3/page')",
+            )
         try:
             page_num = int(selector)
-        except ValueError:
-            raise PrecisError(f"Invalid page number: {selector}")
+        except ValueError as exc:
+            raise PrecisError(
+                ErrorCode.ID_MALFORMED,
+                cause=f"invalid page number: {selector!r}",
+            ) from exc
         all_blocks = store.get_blocks(slug)
         page_blocks = [b for b in all_blocks if b.get("page") == page_num]
         if not page_blocks:

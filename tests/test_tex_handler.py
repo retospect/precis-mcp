@@ -338,7 +338,7 @@ class TestPut:
         assert "+" in result
 
     def test_put_invalid_mode(self, handler, sample_tex):
-        with pytest.raises(PrecisError, match="invalid mode"):
+        with pytest.raises(PrecisError, match="not recognised"):
             handler.put(str(sample_tex), None, "text", "badmode")
 
 
@@ -367,7 +367,7 @@ class TestRawAccess:
     def test_raw_path_escape(self, handler, sample_tex):
         # ../../../etc/passwd doesn't match raw file regex, so falls through
         # to slug resolution which rejects it as invalid
-        with pytest.raises(PrecisError, match="not a valid SLUG"):
+        with pytest.raises(PrecisError, match="not a 5-char slug"):
             handler.read(
                 str(sample_tex), "../../../etc/passwd", None, None, "", False, 0, 1
             )

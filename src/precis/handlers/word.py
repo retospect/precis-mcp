@@ -34,7 +34,14 @@ from precis.formatting import (
     runs_to_markdown,
 )
 from precis.handlers._file_base import FileHandlerBase
-from precis.protocol import Node, PathCounter, PrecisError, make_slug, resolve_slug
+from precis.protocol import (
+    ErrorCode,
+    Node,
+    PathCounter,
+    PrecisError,
+    make_slug,
+    resolve_slug,
+)
 
 # Hardened XML parser for reading .docx XML parts.  Disables external
 # entity resolution, DTD loading, and network access so a crafted .docx
@@ -187,12 +194,18 @@ class WordHandler(FileHandlerBase):
         doc = Document(str(path))
         element = self._find_element(doc, node)
         if element is None:
-            raise PrecisError(f"Node not found in document: {node.slug}")
+            raise PrecisError(
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"node {node.slug!r} not found in document",
+            )
 
         if node.node_type in ("p", "h"):
             para = _element_to_para(doc, element)
             if para is None:
-                raise PrecisError(f"Paragraph not found: {node.slug}")
+                raise PrecisError(
+                    ErrorCode.ID_NOT_FOUND,
+                    cause=f"paragraph {node.slug!r} not found",
+                )
             _set_para_text(para, new_text, node.node_type == "h")
 
         _atomic_save(doc, path)
@@ -203,7 +216,10 @@ class WordHandler(FileHandlerBase):
         doc = Document(str(path))
         element = self._find_element(doc, anchor)
         if element is None:
-            raise PrecisError(f"Anchor not found: {anchor.slug}")
+            raise PrecisError(
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"anchor {anchor.slug!r} not found",
+            )
 
         new_para = _make_paragraph(doc, new_text, heading_level)
         element.addnext(new_para._element)
@@ -215,7 +231,10 @@ class WordHandler(FileHandlerBase):
         doc = Document(str(path))
         element = self._find_element(doc, anchor)
         if element is None:
-            raise PrecisError(f"Anchor not found: {anchor.slug}")
+            raise PrecisError(
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"anchor {anchor.slug!r} not found",
+            )
 
         new_para = _make_paragraph(doc, new_text, heading_level)
         element.addprevious(new_para._element)
@@ -225,7 +244,10 @@ class WordHandler(FileHandlerBase):
         doc = Document(str(path))
         element = self._find_element(doc, node)
         if element is None:
-            raise PrecisError(f"Node not found: {node.slug}")
+            raise PrecisError(
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"node {node.slug!r} not found",
+            )
         element.getparent().remove(element)
         _atomic_save(doc, path)
 
@@ -246,7 +268,10 @@ class WordHandler(FileHandlerBase):
         doc = Document(str(path))
         after_el = self._find_element(doc, after)
         if after_el is None:
-            raise PrecisError(f"Target not found: {after.slug}")
+            raise PrecisError(
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"target {after.slug!r} not found",
+            )
 
         elements = []
         for n in nodes:
@@ -271,12 +296,18 @@ class WordHandler(FileHandlerBase):
         doc = Document(str(path))
         element = self._find_element(doc, node)
         if element is None:
-            raise PrecisError(f"Node not found: {node.slug}")
+            raise PrecisError(
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"node {node.slug!r} not found",
+            )
 
         if node.node_type in ("p", "h"):
             para = _element_to_para(doc, element)
             if para is None:
-                raise PrecisError(f"Paragraph not found: {node.slug}")
+                raise PrecisError(
+                    ErrorCode.ID_NOT_FOUND,
+                    cause=f"paragraph {node.slug!r} not found",
+                )
             _inject_tracked_replace(para, new_text, author)
 
         _atomic_save(doc, path)
@@ -288,7 +319,10 @@ class WordHandler(FileHandlerBase):
         doc = Document(str(path))
         element = self._find_element(doc, node)
         if element is None:
-            raise PrecisError(f"Node not found: {node.slug}")
+            raise PrecisError(
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"node {node.slug!r} not found",
+            )
 
         comment_id = _inject_comment(doc, element, text, author)
         _atomic_save(doc, path)

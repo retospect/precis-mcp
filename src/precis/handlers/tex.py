@@ -13,7 +13,14 @@ from pathlib import Path
 from precis.citations import BIB_DEF_RE
 from precis.formatting import LIST_ITEM_RE, list_prefix, parse_list_prefix
 from precis.handlers._file_base import FileHandlerBase
-from precis.protocol import Node, PathCounter, PrecisError, make_slug, resolve_slug
+from precis.protocol import (
+    ErrorCode,
+    Node,
+    PathCounter,
+    PrecisError,
+    make_slug,
+    resolve_slug,
+)
 
 # Sectioning commands → heading level
 SECTION_COMMANDS = {
@@ -66,6 +73,7 @@ class TexHandler(FileHandlerBase):
     """Handler for .tex files."""
 
     extensions = {".tex"}
+    onboarding_skill = "tex-workflow"
 
     # ── Parser implementation ───────────────────────────────────────
 
@@ -159,8 +167,12 @@ class TexHandler(FileHandlerBase):
             bib_path = self._find_bib_file(path)
             if bib_path is None:
                 raise PrecisError(
-                    "No .bib file found. Add \\bibliography{name} or "
-                    "\\addbibresource{name.bib} to your .tex source first."
+                    ErrorCode.PARAM_INVALID,
+                    cause="no .bib file declared in the project",
+                    next=(
+                        "add \\bibliography{name} or "
+                        "\\addbibresource{name.bib} to your .tex source"
+                    ),
                 )
             _append_bib_entry(bib_path, key, ref_text)
             return
@@ -203,7 +215,10 @@ class TexHandler(FileHandlerBase):
                 fresh_after = fn
                 break
         if fresh_after is None:
-            raise PrecisError(f"Anchor not found after deletion: {after.slug}")
+            raise PrecisError(
+                ErrorCode.UNEXPECTED,
+                cause=f"anchor {after.slug!r} not found after deletion",
+            )
 
         tex_file = path.parent / fresh_after.source_file
         content = tex_file.read_text(encoding="utf-8")
@@ -253,7 +268,10 @@ class TexHandler(FileHandlerBase):
             if raw is not None:
                 file_path = self._resolve_path(path)
                 if not text:
-                    raise PrecisError("text required for raw file write")
+                    raise PrecisError(
+                        ErrorCode.PARAM_INVALID,
+                        cause="text= required for raw file write",
+                    )
                 rel_path, start, end, is_append = raw
                 return _raw_write(file_path, rel_path, text, start, end, is_append)
 
@@ -820,9 +838,15 @@ def _raw_read(file_path: str, rel_path: str, start: int | None, end: int | None)
     root = Path(file_path).parent
     full_path = (root / rel_path).resolve()
     if not full_path.is_relative_to(root.resolve()):
-        raise PrecisError(f"path '{rel_path}' escapes project directory")
+        raise PrecisError(
+            ErrorCode.DENIED,
+            cause=f"path {rel_path!r} escapes project directory",
+        )
     if not full_path.exists():
-        raise PrecisError(f"file not found: {rel_path}")
+        raise PrecisError(
+            ErrorCode.ID_NOT_FOUND,
+            cause=f"file not found: {rel_path}",
+        )
     lines = full_path.read_text(encoding="utf-8").splitlines()
     total = len(lines)
     if start is not None:
@@ -848,7 +872,10 @@ def _raw_write(
     root = Path(file_path).parent
     full_path = (root / rel_path).resolve()
     if not full_path.is_relative_to(root.resolve()):
-        raise PrecisError(f"path '{rel_path}' escapes project directory")
+        raise PrecisError(
+            ErrorCode.DENIED,
+            cause=f"path {rel_path!r} escapes project directory",
+        )
     new_lines = text.splitlines(keepends=True)
     if new_lines and not new_lines[-1].endswith("\n"):
         new_lines[-1] += "\n"
@@ -863,7 +890,10 @@ def _raw_write(
         return f"+ {rel_path}  appended {len(new_lines)} lines (now {total} total)"
 
     if not full_path.exists():
-        raise PrecisError(f"file not found: {rel_path}")
+        raise PrecisError(
+            ErrorCode.ID_NOT_FOUND,
+            cause=f"file not found: {rel_path}",
+        )
 
     existing = full_path.read_text(encoding="utf-8").splitlines(keepends=True)
     if start is not None:

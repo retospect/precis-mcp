@@ -2,6 +2,22 @@
 
 This module defines the abstract base class that every document handler must
 implement, plus the Node/Path data structures shared across all handlers.
+
+**Plugin protocol v2** (Phase 0 additions — see docs/plugin-architecture.md):
+
+- ``PLUGIN_PROTOCOL_VERSION`` — bump when protocol changes in breaking ways.
+- ``KindSpec`` — agent-facing capability declaration (name, description,
+  aliases, required env vars, cost hint, examples).
+- ``CallContext``, ``HintContext``, ``NotificationContext`` — per-call and
+  per-session context passed to handler hooks.
+- ``ErrorCode`` — frozen enum of the 16 standard error codes.
+- ``PrecisError`` — now carries structured ``(code, cause, options, next)``
+  fields for unified error formatting. Backward-compatible with
+  ``PrecisError("just a message")`` callers (defaults to ``code=UNEXPECTED``).
+
+These types are additive. Existing handlers keep working unchanged; new code
+paths (``invoke_handler()`` wrapper, tool-schema generator, startup probes)
+consume the new types as they land.
 """
 
 from __future__ import annotations
@@ -9,18 +25,334 @@ from __future__ import annotations
 import abc
 import hashlib
 import re
+import time
 from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any, ClassVar
+
+# ---------------------------------------------------------------------------
+# Protocol version
+# ---------------------------------------------------------------------------
+
+#: Bumped when the plugin contract changes in a breaking way.  Plugins declare
+#: the range of protocol versions they are compatible with; precis refuses to
+#: load incompatible majors with a clean error.
+PLUGIN_PROTOCOL_VERSION = "1"
+
+
+#: The four agent-facing verbs — frozen.  Phase 1 consumers: the
+#: ``PRECIS_KINDS`` parser (validates bracket verbs), the registry
+#: (``visible_kinds(verb)``), and the server's tool wrappers.  Anything
+#: emitted to the agent as a verb name must be one of these.
+VERBS: frozenset[str] = frozenset({"search", "get", "put", "move"})
+
 
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
 
+class ErrorCode(StrEnum):
+    """Frozen catalogue of standard error codes.
+
+    See docs/plugin-architecture.md §11.3 for the full catalogue and the
+    agent-facing shape of each code.
+    """
+
+    KIND_UNKNOWN = "kind_unknown"
+    KIND_UNAVAILABLE = "kind_unavailable"
+    VERB_UNSUPPORTED = "verb_unsupported"
+    VIEW_UNKNOWN = "view_unknown"
+    MODE_UNSUPPORTED = "mode_unsupported"
+    ID_NOT_FOUND = "id_not_found"
+    ID_AMBIGUOUS = "id_ambiguous"
+    ID_MALFORMED = "id_malformed"
+    PARAM_INVALID = "param_invalid"
+    READONLY = "readonly"
+    DENIED = "denied"
+    TIMEOUT = "timeout"
+    RATE_LIMITED = "rate_limited"
+    UPSTREAM_ERROR = "upstream_error"
+    UNAVAILABLE = "unavailable"
+    UNEXPECTED = "unexpected"
+
+
+#: Codes that should surface a "gripe about it" next-hint when they fire
+#: (i.e. errors that aren't the agent's fault).  See §11.2.
+GRIPE_HINT_CODES: frozenset[ErrorCode] = frozenset(
+    {
+        ErrorCode.UNEXPECTED,
+        ErrorCode.TIMEOUT,
+        ErrorCode.UNAVAILABLE,
+        ErrorCode.RATE_LIMITED,
+        ErrorCode.UPSTREAM_ERROR,
+    }
+)
+
+
 class PrecisError(Exception):
-    """Error that formats as !! ERROR for the LLM."""
+    """Structured error carrying code + cause + options + next hint.
+
+    Every raise site supplies an :class:`ErrorCode` first.  ``cause``
+    is the concrete one-sentence reason (lowercase, no period); the
+    framework auto-fills ``options=`` and ``next=`` from the handler's
+    declared vocabulary (``views``, ``allowed_modes``, ``writable``)
+    via :func:`precis.registry._enrich_error`, so a typical raise site
+    is just::
+
+        raise PrecisError(
+            ErrorCode.ID_NOT_FOUND,
+            cause="paper 'wang2020state' not in corpus",
+        )
+
+    Pass ``options=`` / ``next=`` explicitly only when the default
+    enrichment isn't good enough (e.g. priority enums that aren't on
+    the handler vocabulary).  Handler values always win over
+    auto-fill.
+
+    The unified multi-line rendering (§11.2) is produced by
+    :func:`precis.registry._format_error`.
+    """
+
+    def __init__(
+        self,
+        code: ErrorCode,
+        cause: str = "",
+        *,
+        options: list[str] | None = None,
+        next: str = "",
+    ):
+        if not isinstance(code, ErrorCode):
+            raise TypeError(
+                "PrecisError first argument must be an ErrorCode; "
+                f"got {type(code).__name__}: {code!r}.  "
+                "Use e.g. ErrorCode.ID_NOT_FOUND, ErrorCode.PARAM_INVALID, "
+                "or ErrorCode.UNEXPECTED for unclassified failures."
+            )
+        self.code = code
+        self.cause = cause
+        self.options: list[str] = list(options) if options else []
+        self.next: str = next
+        super().__init__(self.cause or self.code.value)
 
     def format(self) -> str:
-        return f"!! ERROR {self}"
+        """Legacy single-line error format: ``!! ERROR <cause>``."""
+        return f"!! ERROR {self.cause or self.code.value}"
+
+
+def extract_kwargs(
+    kwargs: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    required: tuple[str, ...] = (),
+    context: str = "",
+) -> tuple[Any, ...]:
+    """Validate and extract kwargs for a handler view/mode method.
+
+    Given the variadic ``**kwargs`` a dispatch method receives, check that
+    only declared keys were passed, that required ones are present, and
+    return the values in ``keys`` order for tuple-unpacking at the call
+    site.  Typical use at the top of a view method::
+
+        def _read_wibble_view(self, store, ref, sel, sub, **kwargs):
+            wibble, size = extract_kwargs(
+                kwargs,
+                ("wibble", "size"),
+                required=("wibble",),
+                context="wibble view",
+            )
+
+    Unknown kwargs raise :class:`PrecisError` with ``PARAM_INVALID`` and
+    the allowed list in ``options=``.  Missing required kwargs raise the
+    same code with the missing list in ``options=``.  Missing optional
+    kwargs return ``None`` in the output tuple.
+    """
+    extra = set(kwargs) - set(keys)
+    if extra:
+        where = f" on {context}" if context else ""
+        raise PrecisError(
+            ErrorCode.PARAM_INVALID,
+            cause=f"unexpected kwarg(s){where}: {', '.join(sorted(extra))}",
+            options=list(keys),
+        )
+    missing = set(required) - set(kwargs)
+    if missing:
+        where = f" on {context}" if context else ""
+        raise PrecisError(
+            ErrorCode.PARAM_INVALID,
+            cause=f"required kwarg(s) missing{where}: {', '.join(sorted(missing))}",
+            options=list(required),
+        )
+    return tuple(kwargs.get(k) for k in keys)
+
+
+# ---------------------------------------------------------------------------
+# Call / hint / notification context
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CallContext:
+    """Per-invocation context threaded through the handler wrapper.
+
+    Populated by ``invoke_handler()`` at the start of every call; passed to
+    hooks that need to reason about what the agent just asked for.
+    """
+
+    kind: str = ""
+    verb: str = ""  # 'get' | 'search' | 'put' | 'move'
+    args: dict[str, Any] = field(default_factory=dict)
+    started: float = field(default_factory=time.monotonic)
+
+    @property
+    def elapsed_s(self) -> float:
+        """Seconds since the call started."""
+        return time.monotonic() - self.started
+
+
+@dataclass
+class HintContext:
+    """Derived context for ``Handler.hints()`` — result-count-driven heuristics.
+
+    Built from the raw result + CallContext by ``invoke_handler()``; handlers
+    use it to decide whether to emit context-aware hints (§5.3).
+    """
+
+    call: CallContext = field(default_factory=CallContext)
+    result_count: int | None = None  # None when not meaningful (non-list results)
+
+    @classmethod
+    def from_result(cls, result: Any, call: CallContext) -> HintContext:
+        """Derive a HintContext from a handler result and the CallContext."""
+        count: int | None = None
+        if isinstance(result, (list, tuple)):
+            count = len(result)
+        elif isinstance(result, dict):
+            # Common shapes: {'items': [...]}, {'results': [...]}
+            for key in ("items", "results", "hits"):
+                if isinstance(result.get(key), (list, tuple)):
+                    count = len(result[key])
+                    break
+        return cls(call=call, result_count=count)
+
+
+@dataclass
+class NotificationContext:
+    """Session-start context for ``Handler.notifications()`` (§5.5).
+
+    Carries agent-identifying data so handlers can filter — e.g. gripe
+    notifications suppress themselves for non-admin agents.
+    """
+
+    agent_id: str = ""
+    kinds_mask: frozenset[str] = frozenset()  # active kinds from PRECIS_KINDS
+
+
+# ---------------------------------------------------------------------------
+# Capability declaration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class KindSpec:
+    """Agent-facing capability declaration for a single kind.
+
+    Plugins declare one ``KindSpec`` per kind they expose.  Plugins that
+    don't declare ``kinds`` get a default spec synthesised per scheme by the
+    registry (see §16 Phase 0 and ``registry._synthesise_kind_spec``).
+
+    Fields:
+        name: Canonical enum value used in ``type='paper'`` etc.
+        description: One-liner shown in the tool-schema enum docs.
+        aliases: Legacy scheme names accepted at URI parse (hidden from the
+            enum). E.g. ``['perplexity']`` redirects to ``'web'``.
+        requires: Env vars that must be set for this kind to be available.
+            Missing env → kind hidden from the enum with a startup warning.
+        cost_hint: Freeform string, e.g. ``"~$0.002/call"`` or ``"free"`` or
+            ``None`` to omit the cost line in the response footer.
+        examples: Reserved for future per-kind example snippets in the tool
+            description.  Currently unused.
+    """
+
+    name: str
+    description: str
+    aliases: list[str] = field(default_factory=list)
+    requires: list[str] = field(default_factory=list)
+    cost_hint: str | None = None
+    examples: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Result — unified response envelope from invoke_handler()
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Result:
+    """Wrapper around either a successful handler result or a formatted error.
+
+    Produced by ``registry.invoke_handler()``.  Carries the raw handler
+    output plus response-footer data (cost, hints) on success, or a
+    pre-formatted multi-line error string on failure.
+
+    Use ``render()`` to flatten into the final string the MCP server
+    returns to the agent.
+    """
+
+    success: bool
+    data: Any = None
+    kind: str = ""
+    cost: str | None = None
+    hints: list[str] = field(default_factory=list)
+    error: str = ""
+
+    @classmethod
+    def ok(
+        cls,
+        data: Any,
+        *,
+        kind: str = "",
+        cost: str | None = None,
+        hints: list[str] | None = None,
+    ) -> Result:
+        """Construct a success result with optional cost footer and hints."""
+        return cls(
+            success=True,
+            data=data,
+            kind=kind,
+            cost=cost,
+            hints=list(hints) if hints else [],
+        )
+
+    @classmethod
+    def err(cls, error: str) -> Result:
+        """Construct an error result carrying a pre-formatted error string."""
+        return cls(success=False, error=error)
+
+    def render(self) -> str:
+        """Flatten to the final agent-visible string.
+
+        On failure: just the error string.  On success: the handler's
+        result, followed by a ``Hints:`` block if any, then a cost footer
+        if non-empty.  Matches the response-footer format in §11.
+        """
+        if not self.success:
+            return self.error
+        parts: list[str] = []
+        # Handler data — already a string for v1 handlers; pass through.
+        if isinstance(self.data, str):
+            parts.append(self.data)
+        elif self.data is not None:
+            parts.append(str(self.data))
+        if self.hints:
+            parts.append("")
+            parts.append("Hints:")
+            for h in self.hints:
+                parts.append(f"  - {h}")
+        if self.cost:
+            parts.append("")
+            parts.append(f"[cost: {self.cost}]")
+        return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +562,13 @@ class Plugin:
         write_policy: "ingestion" | "direct" | "system" — enforced by MCP.
         block_type_seeds: Extra (name, provenance, description) tuples.
         link_type_seeds: Extra (name, inverse, description) tuples.
+        kinds: Agent-facing ``KindSpec`` declarations (plugin protocol v2).
+            Plugins that omit this get a default spec synthesised per scheme
+            by the registry.  File-type-only plugins (word, tex, markdown)
+            don't declare kinds since they share the pseudo-kind ``doc``.
+        protocol_version: Plugin-side declaration of which protocol
+            major the plugin was written against.  Registry refuses to
+            load plugins with a mismatching major version.
     """
 
     name: str
@@ -240,6 +579,9 @@ class Plugin:
     write_policy: str = "ingestion"
     block_type_seeds: list[tuple] = field(default_factory=list)
     link_type_seeds: list[tuple] = field(default_factory=list)
+    # Plugin protocol v2 additions — optional, empty defaults keep v1 plugins working.
+    kinds: list[KindSpec] = field(default_factory=list)
+    protocol_version: str = PLUGIN_PROTOCOL_VERSION
 
 
 class Handler(abc.ABC):
@@ -248,11 +590,41 @@ class Handler(abc.ABC):
     Subclass this to add support for a new document type (scheme or file
     extension). Implement ``read`` at minimum; override ``put`` to enable
     writing, and ``_write_note`` to enable annotations.
+
+    **Plugin protocol v2 optional hooks** — override any of these to
+    participate in the unified response footer / hint channel / boot-time
+    notifications (see docs/plugin-architecture.md §5). Defaults are safe
+    no-ops; existing handlers need no changes.
     """
 
     scheme: str = ""  # e.g. "file", "paper"
     writable: bool = False
-    views: set[str] = set()  # supported /view names
+    #: Supported ``/view`` names.  Two shapes are accepted:
+    #:
+    #: *  ``set[str]`` — stateless handlers (web, math, youtube) that
+    #:    inline their dispatch in ``read()``.  The framework only uses
+    #:    the set for ``VIEW_UNKNOWN`` options-enrichment.
+    #: *  ``dict[str, str]`` — ``RefHandler`` subclasses map each view
+    #:    to the name of a dispatch method.  ``read()`` does
+    #:    ``getattr(self, views[view])(store, ref, sel, sub, **kwargs)``.
+    #:
+    #: The framework iterates keys in either case.
+    views: ClassVar[set[str] | dict[str, str]] = set()
+    #: Modes accepted by ``put()``.  Used by ``_enrich_error`` to
+    #: auto-fill ``options=`` on ``MODE_UNSUPPORTED`` errors so the agent
+    #: sees the valid alternatives without the handler having to repeat
+    #: the list in every raise site.  Default empty means "override me
+    #: in writable handlers".
+    allowed_modes: ClassVar[set[str]] = set()
+
+    #: Optional slug of the onboarding skill for this kind (Phase 12b).
+    #: When set, the handler automatically exposes a ``/help`` view that
+    #: inlines the full ``skill:<slug>`` body, and ``_enrich_error``
+    #: appends a ``see get(id='skill:<slug>')`` pointer to the ``next=``
+    #: slot on agent-confusion errors (``PARAM_INVALID`` /
+    #: ``MODE_UNSUPPORTED`` / ``VIEW_UNKNOWN``).  Kinds with obvious
+    #: semantics (todo, memory) can leave this unset.
+    onboarding_skill: ClassVar[str | None] = None
 
     @abc.abstractmethod
     def read(
@@ -281,8 +653,9 @@ class Handler(abc.ABC):
         if mode == "note":
             return self._write_note(path, selector, text, **kwargs)
         raise PrecisError(
-            f"{self.scheme}: documents are read-only.\n"
-            f"Supported: put(mode='note') to annotate."
+            ErrorCode.MODE_UNSUPPORTED,
+            cause=f"{self.scheme}: kind is read-only",
+            next="put(mode='note') to annotate",
         )
 
     def _write_note(
@@ -293,4 +666,40 @@ class Handler(abc.ABC):
         **kwargs,
     ) -> str:
         """Attach an annotation. Override per handler."""
-        raise PrecisError(f"Annotations not supported for {self.scheme}:")
+        raise PrecisError(
+            ErrorCode.MODE_UNSUPPORTED,
+            cause=f"annotations not supported for {self.scheme}",
+        )
+
+    # ---- Plugin protocol v2 optional hooks ---------------------------------
+
+    def cost_of(self, ctx: CallContext) -> str | None:
+        """Return a ``cost_hint`` string for the just-completed call, or None.
+
+        Called after ``read``/``put`` to compute the cost line of the response
+        footer.  Override in handlers that touch paid APIs; default returns
+        ``None`` (free / omit cost line).
+        """
+        return None
+
+    def hints(self, result: Any, ctx: HintContext) -> list[str]:
+        """Return contextual hints appended to successful responses (§5.3).
+
+        Invoked by the ``invoke_handler()`` wrapper only on success.  Hints
+        are per-kind suggestions driven by the result shape.  Default
+        returns ``[]`` (no hints).  See docs §5.3 for hint-worthy scenarios.
+        """
+        return []
+
+    def notifications(self, ctx: NotificationContext) -> list[str]:
+        """Return boot-time "current business" lines for this kind (§5.5).
+
+        Called once at tool-description build.  Each line should convey a
+        count + a call-to-fetch, e.g.::
+
+            "20 todos due today → get(type='todo', id='/today')"
+
+        Return ``[]`` when there's nothing to report (typical default).
+        Stateless kinds never notify; state-backed kinds may.
+        """
+        return []

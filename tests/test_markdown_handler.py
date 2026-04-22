@@ -397,7 +397,7 @@ class TestPut:
     def test_put_invalid_mode(self, handler, sample_md):
         from precis.protocol import PrecisError
 
-        with pytest.raises(PrecisError, match="invalid mode"):
+        with pytest.raises(PrecisError, match="not recognised"):
             handler.put(
                 path=str(sample_md),
                 selector=None,
@@ -410,7 +410,7 @@ class TestPut:
 
         nodes = handler.parse(sample_md)
         paras = [n for n in nodes if n.node_type == "p"]
-        with pytest.raises(PrecisError, match="text required"):
+        with pytest.raises(PrecisError, match="text= required"):
             handler.put(
                 path=str(sample_md),
                 selector=paras[0].slug,
@@ -421,7 +421,7 @@ class TestPut:
     def test_put_append_no_text(self, handler, sample_md):
         from precis.protocol import PrecisError
 
-        with pytest.raises(PrecisError, match="text required"):
+        with pytest.raises(PrecisError, match="text= required"):
             handler.put(
                 path=str(sample_md),
                 selector=None,

@@ -25,7 +25,7 @@ from precis.output import (
     format_node_full,
     format_node_precis,
 )
-from precis.protocol import Handler, Node, PrecisError
+from precis.protocol import ErrorCode, Handler, Node, PrecisError
 from precis.uri import SEP
 
 log = logging.getLogger(__name__)
@@ -42,7 +42,16 @@ class FileHandlerBase(Handler):
 
     scheme = "file"
     writable = True
-    views = {"toc", "meta"}
+    views = {"toc", "meta", "help"}
+    allowed_modes = {
+        "append",
+        "replace",
+        "after",
+        "before",
+        "delete",
+        "move",
+        "note",
+    }
 
     def __init__(self):
         self.config = PrecisConfig.load()
@@ -97,7 +106,10 @@ class FileHandlerBase(Handler):
         self, path: Path, node: Node, text: str, author: str = "precis"
     ) -> int:
         """Add a margin comment. Default: not supported."""
-        raise PrecisError("Comments not supported for this file type")
+        raise PrecisError(
+            ErrorCode.MODE_UNSUPPORTED,
+            cause=f"margin comments not supported for {type(self).__name__}",
+        )
 
     # ── Shared helpers ──────────────────────────────────────────────
 
@@ -135,15 +147,16 @@ class FileHandlerBase(Handler):
         if node is None:
             if selector.startswith("#") or len(selector) > 10 or " " in selector:
                 slugs = [k for k in index if not k.startswith("S") and "." not in k]
-                slug_list = ", ".join(slugs[:8])
                 raise PrecisError(
-                    f"'{selector}' is not a valid SLUG.\n"
-                    "Use a 5-char slug from toc output, not heading text.\n"
-                    f"Available slugs: {slug_list}"
+                    ErrorCode.ID_MALFORMED,
+                    cause=f"{selector!r} is not a 5-char slug",
+                    options=slugs[:8],
+                    next="read toc first to get valid slugs",
                 )
             raise PrecisError(
-                f"slug '{selector}' not found\n"
-                "The document may have changed. Re-read to refresh slugs."
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"slug {selector!r} not found in document",
+                next="re-read the toc \u2014 slugs may have changed",
             )
         return node
 
@@ -169,6 +182,36 @@ class FileHandlerBase(Handler):
         # View: meta
         if view == "meta":
             return self._read_meta(file_path)
+
+        # View: help — inline the onboarding skill body (Phase 12b v1.1).
+        if view == "help":
+            if not self.onboarding_skill:
+                raise PrecisError(
+                    ErrorCode.VIEW_UNKNOWN,
+                    cause=f"{type(self).__name__} has no onboarding skill declared",
+                    next="search(type='skill', query='…') to find relevant skills",
+                )
+            from precis.handlers.skill import SkillHandler
+
+            sh = SkillHandler()
+            sh._ensure_fresh()
+            try:
+                return sh._render_skill(self.onboarding_skill)
+            except PrecisError as exc:
+                if exc.code is ErrorCode.ID_NOT_FOUND:
+                    raise PrecisError(
+                        ErrorCode.ID_NOT_FOUND,
+                        cause=(
+                            f"{type(self).__name__} declares "
+                            f"onboarding_skill={self.onboarding_skill!r} "
+                            f"but no SKILL.md for it is installed"
+                        ),
+                        next=(
+                            f"create skill:{self.onboarding_skill} in "
+                            f"~/.precis/skills/ or search(type='skill')"
+                        ),
+                    ) from exc
+                raise
 
         # Query: grep/search
         if query:
@@ -385,7 +428,8 @@ class FileHandlerBase(Handler):
         valid_modes = {"replace", "after", "before", "delete", "append", "move", "note"}
         if mode not in valid_modes:
             raise PrecisError(
-                f"invalid mode: {mode}\nValid modes: {', '.join(sorted(valid_modes))}"
+                ErrorCode.MODE_UNSUPPORTED,
+                cause=f"mode {mode!r} not recognised",
             )
 
         if mode == "note":
@@ -399,9 +443,12 @@ class FileHandlerBase(Handler):
 
         if not selector:
             raise PrecisError(
-                f"selector required for mode={mode}. "
-                "To write new content, use mode='append'. "
-                f"To edit existing content, add {SEP}SLUG to the id."
+                ErrorCode.PARAM_INVALID,
+                cause=f"selector required for mode={mode}",
+                next=(
+                    "to write new content use mode='append'; "
+                    f"to edit, add {SEP}SLUG to the id"
+                ),
             )
 
         if mode == "delete":
@@ -413,11 +460,17 @@ class FileHandlerBase(Handler):
         if mode in ("after", "before"):
             return self._put_insert(file_path, selector, text, mode, tracked)
 
-        raise PrecisError(f"unhandled mode: {mode}")
+        raise PrecisError(
+            ErrorCode.MODE_UNSUPPORTED,
+            cause=f"mode {mode!r} reached unhandled branch",
+        )
 
     def _put_append(self, file_path: str, text: str, tracked: bool) -> str:
         if not text:
-            raise PrecisError("text required for mode=append")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="text= required for mode='append'",
+            )
 
         fpath = Path(file_path)
         nodes_before = self._load_nodes(file_path)
@@ -459,7 +512,10 @@ class FileHandlerBase(Handler):
         self, file_path: str, selector: str, text: str, tracked: bool
     ) -> str:
         if not text:
-            raise PrecisError("text required for replace mode")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="text= required for mode='replace'",
+            )
 
         fpath = Path(file_path)
         nodes = self._load_nodes(file_path)
@@ -508,7 +564,10 @@ class FileHandlerBase(Handler):
         self, file_path: str, selector: str, text: str, mode: str, tracked: bool
     ) -> str:
         if not text:
-            raise PrecisError(f"text required for {mode} mode")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause=f"text= required for mode={mode!r}",
+            )
 
         fpath = Path(file_path)
         nodes = self._load_nodes(file_path)
@@ -564,9 +623,15 @@ class FileHandlerBase(Handler):
 
     def _put_move(self, file_path: str, selector: str | None, target_slug: str) -> str:
         if not selector:
-            raise PrecisError("selector required for move mode (node to move)")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="selector required for mode='move' (node to move)",
+            )
         if not target_slug:
-            raise PrecisError("text required for move mode (target slug to move after)")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="text= required for mode='move' (target slug to move after)",
+            )
 
         fpath = Path(file_path)
         nodes = self._load_nodes(file_path)
@@ -592,9 +657,15 @@ class FileHandlerBase(Handler):
     def _put_note(self, file_path: str, selector: str | None, text: str) -> str:
         """Add a margin comment / annotation."""
         if not text:
-            raise PrecisError("text required for note mode")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="text= required for mode='note'",
+            )
         if not selector:
-            raise PrecisError("selector required for note mode")
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause="selector required for mode='note'",
+            )
 
         fpath = Path(file_path)
         nodes = self._load_nodes(file_path)
@@ -683,7 +754,10 @@ class FileHandlerBase(Handler):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("", encoding="utf-8")
             else:
-                raise PrecisError(f"File not found: {path}")
+                raise PrecisError(
+                    ErrorCode.ID_NOT_FOUND,
+                    cause=f"file not found: {path}",
+                )
         return str(p)
 
 

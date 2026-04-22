@@ -82,7 +82,9 @@ def _fc_ref(
             "interval": interval,
             "reps": reps,
             "next_review": (next_review or now).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "last_reviewed": (last_reviewed or now).strftime("%Y-%m-%dT%H:%M:%SZ") if last_reviewed else None,
+            "last_reviewed": (last_reviewed or now).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if last_reviewed
+            else None,
             "review_log": review_log or [],
         },
     }
@@ -148,7 +150,9 @@ class TestMetaHelpers:
         assert _parse_meta(ref)["easiness"] == 1.8
 
     def test_relative_due_overdue(self):
-        meta = {"next_review": (_now() - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        meta = {
+            "next_review": (_now() - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
         result = _relative_due(meta)
         assert "overdue" in result
 
@@ -158,15 +162,19 @@ class TestMetaHelpers:
         assert "today" in result
 
     def test_relative_due_future(self):
-        meta = {"next_review": (_now() + timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        meta = {
+            "next_review": (_now() + timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
         result = _relative_due(meta)
         assert "due in" in result
 
     def test_last_review_note(self):
-        meta = {"review_log": [
-            {"date": "2026-04-01", "quality": 4, "note": "first"},
-            {"date": "2026-04-08", "quality": 2, "note": "confused with Lyon"},
-        ]}
+        meta = {
+            "review_log": [
+                {"date": "2026-04-01", "quality": 4, "note": "first"},
+                {"date": "2026-04-08", "quality": 2, "note": "confused with Lyon"},
+            ]
+        }
         assert _last_review_note(meta) == "confused with Lyon"
 
     def test_last_review_note_empty(self):
@@ -207,7 +215,7 @@ class TestCreate:
         mock_fc_store.return_value = store
 
         h = _make_handler()
-        with pytest.raises(PrecisError, match="text required"):
+        with pytest.raises(PrecisError, match="text= required"):
             h.put("", None, "", "append")
 
     @patch(_PATCH_STORE_FC)
@@ -281,7 +289,9 @@ class TestReview:
         mock_fc_store.return_value = store
 
         h = _make_handler()
-        with pytest.raises(PrecisError, match="quality must be 0-5"):
+        with pytest.raises(
+            PrecisError, match="quality must be an int 0-5|quality out of range 0-5"
+        ):
             h.put("fc:paris-capital", None, "7", "review")
 
     @patch(_PATCH_STORE_FC)
@@ -293,7 +303,9 @@ class TestReview:
         mock_fc_store.return_value = store
 
         h = _make_handler()
-        with pytest.raises(PrecisError, match="quality must be 0-5"):
+        with pytest.raises(
+            PrecisError, match="quality must be an int 0-5|quality out of range 0-5"
+        ):
             h.put("fc:paris-capital", None, "great", "review")
 
     @patch(_PATCH_STORE_FC)
@@ -324,7 +336,7 @@ class TestReview:
         mock_fc_store.return_value = store
 
         h = _make_handler()
-        with pytest.raises(PrecisError, match="slug required"):
+        with pytest.raises(PrecisError, match="id= required"):
             h.put("", None, "4", "review")
 
 
@@ -374,7 +386,9 @@ class TestDueView:
 
         h = _make_handler()
         item = _due_ref(
-            review_log=[{"date": "2026-04-06", "quality": 2, "note": "confused with Lyon"}]
+            review_log=[
+                {"date": "2026-04-06", "quality": 2, "note": "confused with Lyon"}
+            ]
         )
         h._query_corpus_refs = MagicMock(return_value=[item])
 
@@ -502,7 +516,9 @@ class TestOverview:
         ref = _fc_ref(
             review_log=[{"date": "2026-04-08", "quality": 2, "note": "said Lyon"}]
         )
-        store = _mock_store(refs=[ref], blocks=[{"text": "Paris is the capital of France"}])
+        store = _mock_store(
+            refs=[ref], blocks=[{"text": "Paris is the capital of France"}]
+        )
         mock_ref_store.return_value = store
         mock_fc_store.return_value = store
 
@@ -527,5 +543,5 @@ class TestUnsupportedMode:
         mock_fc_store.return_value = store
 
         h = _make_handler()
-        with pytest.raises(PrecisError, match="Unsupported mode"):
+        with pytest.raises(PrecisError, match="not supported on flashcard"):
             h.put("", None, "test", "badmode")
