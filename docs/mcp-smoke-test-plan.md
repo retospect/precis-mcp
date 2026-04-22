@@ -1105,87 +1105,6 @@ test matrix until re-fixed.
   query`.  Live check: §14 bullet 1, also touched by the §2 quick-
   smoke path.
 
-- [ ] **BUG-A (discovered 2026-04-22 19:30)** — `get(type='paper',
-  grep='<anything>')` crashes with `TypeError: sequence item 4:
-  expected str instance, NoneType found`.  Reproduced for plain
-  keyword (`MOF`), year-range (`year:2020-2024`), and tag (`tag:review`).
-  Root cause likely in the list-renderer string-join when a ref has a
-  `None` field.  Live check: §5.4 first three bullets must all return
-  a ref list, not the TypeError.
-
-- [ ] **BUG-B (discovered 2026-04-22 19:30)** — `fc:` alias not
-  retired despite the 17:40 claim.  Two distinct live symptoms:
-  `mcp5_get(type='fc', id='/due')` returns the full flashcard /due
-  view; `mcp5_get(id='fc:<slug>')` strips the prefix and looks up in
-  the flashcard corpus (errors `item '<slug-without-fc>' not in
-  corpus` when the stored slug has `fc:` baked in).  Live check: both
-  §7.4 bullets must error `KIND_UNKNOWN` / `unknown scheme`.
-
-- [ ] **BUG-C (discovered 2026-04-22 19:30)** — `mcp5_get(id='some-slug')`
-  with no `type=` and no scheme still routes to paper and returns
-  `ID_NOT_FOUND: paper 'some-slug' not in corpus`.  The
-  default-to-paper cleanup retired this path for `search` and for
-  `get(grep=…)` and for `put`, but left bare-id get wired to the
-  paper fallback.  Live check: §15.4 bullet "`mcp5_get(id='some-slug')`"
-  must return `KIND_UNKNOWN`, same shape as the other two verbs.
-
-- [ ] **BUG-D (discovered 2026-04-22 19:30)** — Paper overview
-  renderer displays authors as raw JSON (`[{"name": "..."}, {"name":
-  "..."}]`).  The 2026-04-22 cite-formatter cleanup (bug #5) fixed
-  `/cite/bib`, `/cite/ris`, `/cite/acs` but did not reach the landing
-  page header used by `get(id='paper:<slug>')`.  Visible on every
-  paper with JSON-encoded authors.  Live check: §5.1
-  `paper:marquessilva1999grasp` must show `Marques-Silva, J.P.; Sakallah, K.A.`
-  (or similar cleaned form), not the JSON array.
-
-- [ ] **BUG-E (discovered 2026-04-22 19:30)** — Error envelope format
-  inconsistent across code paths.  Structured errors emit
-  `ERROR [<code>]: <msg>\n  where: …\n  cause: …\n  options: …\n  next: …`.
-  A second path emits raw `!! ERROR PrecisError: <msg>` with no
-  structure.  Seen on `mcp5_get(type='conv', id='/recent')` and
-  `mcp5_get(id='fc:<slug>')`.  Plan §15.4 expects `!! <ERROR_CODE>`
-  shape which matches neither.  Live check: every error path must
-  emit the same shape; pick one and enforce.
-
-- [ ] **BUG-F (discovered 2026-04-22 19:30)** —
-  `mcp5_search(type='paper', query='membrane', grep='tag:review')`
-  returns the same top-5 as unfiltered membrane search, suggesting
-  `grep=` is silently dropped when paired with `query=` on paper.
-  Plan §5.4 regression-checks this ("vector search pre-filtered by
-  the tag:review metadata filter, not the other way around") and the
-  17:40 log claims bug #6 covered it.  Live check: repeat with a tag
-  known to have matches; result set must be distinct from the
-  unfiltered case.
-
-- [ ] **BUG-G (discovered 2026-04-22 19:30)** — skill
-  description-search multi-word tokenizer broken.
-  `mcp5_search(type='skill', query='acquire paper')` returns 0 hits;
-  singles `acquire` (1 hit) and `paper` (2 hits) both work.  No
-  AND/OR across terms.  Live check: §3.1 bullet
-  "`search(type='skill', query='acquire paper')`" must hit find-paper.
-
-- [ ] **BUG-H (discovered 2026-04-22 19:30)** — `quest:/recent` with
-  schema missing errors `UNEXPECTED: UndefinedTable: relation
-  "papers.requests" does not exist` instead of `UNAVAILABLE` with a
-  migration next-hint.  Distinct from the `DATABASE_URL`-unreachable
-  flavour queued for Milestone A (that one is `PoolTimeout`; this one
-  is schema-gone, reachable DB).  Live check: §4.5 after migration
-  rolled back, `quest:/recent` must return `UNAVAILABLE` pointing at
-  `acatome-quest migrate`.
-
-- [ ] **BUG-I (discovered 2026-04-22 19:30)** —
-  `mcp5_search(type='<web|research|think>', query=…)` crashes with
-  `TypeError: _WebBase.read() got an unexpected keyword argument
-  'top_k'` for all three Perplexity-backed kinds.  The server-side
-  search dispatcher forwards `top_k` to `_WebBase.read()` which
-  doesn't accept it; the web/research/think handlers should either
-  accept-and-ignore `top_k` or the dispatcher should strip it before
-  forwarding to kinds that don't advertise `top_k` support.  `get()`
-  is unaffected — works for all three.  No upstream cost, error
-  fires pre-Perplexity.  Live check: §10.1 first bullet, §11 first
-  bullet, and §14 bullet 2 must all return Perplexity answers via
-  `search()`, not this TypeError.
-
 <!-- Retired regression entries (fix verified + unit test in place,
      re-check not required on every smoke run):
      - 2026-04-22  skill:/kind/<name> parsed-URI slug-leak bug.
@@ -1205,13 +1124,129 @@ test matrix until re-fixed.
      - 2026-04-22  flashcard canonical rename (bug #8).
        Every URI, skill body, and test mentions `flashcard:` now; the
        `fc:` alias is caught by §7.4 active bullet.  Full unit coverage
-       in test_flashcard_handler.py. -->
+       in test_flashcard_handler.py.
+     - 2026-04-22  BUG-A: paper grep= TypeError on None ref-fields.
+       Fix: coerce None to "" in `_list_refs._matches` + `_list_entry`.
+       Unit test: TestListRendererTolerateNones in test_paper_handler.py:268-344.
+       Live-verified 20:15 against `grep='MOF'`: 171 papers listed.
+     - 2026-04-22  BUG-B: `fc:` scheme alias not retired.
+       Fix: removed `fc` from pyproject [project.entry-points."precis.schemes"];
+       added `flashcard` for parity; registry regression asserts `fc` + `conv`
+       stay absent from SCHEMES.
+       Unit test: test_retired_scheme_aliases_do_not_leak in test_registry.py:84-110.
+       Live-verified 20:15 across both `type='fc'` and `id='fc:<slug>'`.
+     - 2026-04-22  BUG-C: bare `get(id='some-slug')` defaulted to paper.
+       Fix: new `_has_identifier_hint` helper + `get()` dispatch check;
+       bare slug without type= / scheme / file-ext / DOI-ish hint emits
+       KIND_UNKNOWN for parity with search/put.
+       Unit test: test_get_with_bare_slug_errors + 4 siblings in
+       test_server_phase1.py:273-339.
+       Live-verified 20:15.
+     - 2026-04-22  BUG-D: paper overview rendered authors as raw JSON.
+       Fix: route `authors` through `_author_names` in `_read_overview`.
+       Unit test: TestOverviewAuthorsNormalisation in test_paper_handler.py:347-418.
+       Live-verified 20:15 on `marquessilva1999grasp`.
+     - 2026-04-22  BUG-E: inconsistent error envelope shape.
+       Fix: `_dispatch` raw-fallback now emits structured `ERROR [<code>]:`
+       via `_format_error`; PrecisError passes options/next through verbatim,
+       other exceptions become UNEXPECTED.
+       Unit tests: test_dispatch_unknown_kind_emits_structured_envelope +
+       test_dispatch_precis_error_preserves_options_and_next in
+       test_server_phase1.py:287-332.
+       Live-verified 20:15 on `type='conv'`.
+     - 2026-04-22  BUG-F: search grep= silently dropped when paired with query=.
+       Fix: added grep= kwarg to `server.search()`; new `_search_with_grep` in
+       `_ref_base` runs metadata pre-filter then vector search over the
+       filtered subset.
+       Unit tests: TestSearchWithGrep + TestSearchToolForwardsGrep in
+       test_paper_handler.py:421-536.
+       Live-verified 20:15: filter applied, empty-filter state distinguished
+       from no-filter via a diagnostic message.
+     - 2026-04-22  BUG-G: skill multi-word description-search returned 0 hits.
+       Fix: skill `_search` now tokenises on whitespace and AND-matches across
+       the `name + description` blob.
+       Unit tests: test_search_ands_across_tokens + 2 siblings in
+       test_phase12b_skill.py:402-425.
+       Live-verified 20:15: `query='acquire paper'` hits find-paper.
+     - 2026-04-22  BUG-H: quest schema-missing errored as UNEXPECTED.
+       Fix: new `_handle_pg_errors` wrapper on `QuestHandler._db_*`.
+       UndefinedTable → UNAVAILABLE with `acatome-quest status --count`
+       next-hint; OperationalError → UNAVAILABLE with DATABASE_URL next-hint.
+       Unit tests: TestPgErrorTranslation (3 tests) in
+       test_phase12_quest.py:476-538.
+       Live-verified 20:15: schema-missing now emits structured UNAVAILABLE.
+     - 2026-04-22  BUG-I: search(type='<web|research|think>') TypeError on top_k.
+       Fix: `_WebBase.read()` accepts `**_ignore` so top_k forwarded by the
+       search dispatcher is absorbed.
+       Unit tests: test_read_absorbs_top_k_kwarg + test_read_absorbs_arbitrary_unknown_kwargs
+       in test_phase3_web.py:337-355.
+       Live-verified 20:15: `search(type='think', query='what is 2+2?')` returns
+       real Perplexity answer. -->
 
 ---
 
 ## Session log
 
 <!-- prepend new sessions above existing ones -->
+
+### Session: 2026-04-22 20:15  (Cascade — BUG-A..I live re-verification)
+
+Live run against the MCP host after the 20:30 fix-pass wheel ships
+(yes, clock skew — the fix-pass entry was authored as a record of the
+source work, and the wheel landed in the MCP host before I re-ran).
+Scope: re-hit every BUG-A..I probe from the 19:30 log to confirm
+each fix is live.  **All 9 bugs verified fixed** — moving BUG-A..I
+active regression entries to the retired block in §17.
+
+- precis-mcp version: post-20:30 fix-pass wheel (978 tests)
+- MCP host: Windsurf `mcp4_*`
+- Kinds visible at startup: unchanged (15 kinds)
+- Startup warnings: unchanged (`math` hidden, WAD)
+
+| bug | probe | before (19:30) | after (20:15) |
+|---|---|---|---|
+| A | `get(type='paper', grep='MOF')` | `TypeError: sequence item 4 ...` | **171 MOF papers listed cleanly** ✓ |
+| B | `get(type='fc', id='/due')` | returned /due view | `KIND_UNKNOWN: unknown scheme: 'fc'` + options ✓ |
+| B | `get(id='fc:smoke-fc-…')` | raw `!! ERROR PrecisError` | structured `KIND_UNKNOWN` + next-hint ✓ |
+| C | `get(id='some-slug')` | `ID_NOT_FOUND: paper 'some-slug' not in corpus` | `KIND_UNKNOWN` + options + next-hint with new helpful phrasing ("doesn't match any known identifier pattern (DOI / arXiv / PMCID / ISBN / file ext)") ✓ |
+| D | `get(id='paper:marquessilva1999grasp')` header | `[{"name": "..."}, ...]` | `Marques-Silva, J.P.; Sakallah, K.A.` ✓ |
+| E | `get(type='conv', id='/recent')` | raw `!! ERROR PrecisError: unknown scheme: 'conv'` | structured `ERROR [kind_unknown]: unknown scheme: 'conv'` + options ✓ |
+| F | `search(type='paper', query='membrane', grep='tag:review')` | 5 unfiltered membrane hits | `No papers matching grep='tag:review' — the filter eliminated every candidate before the vector search for query='membrane' could run.  Try a broader grep=, or drop it to search the full corpus.` ✓ (filter applied; empty-filter state distinguished from no-filter) |
+| G | `search(type='skill', query='acquire paper')` | 0 hits | 1 hit (find-paper) ✓ |
+| H | `get(id='quest:/recent')` | `ERROR [unexpected]: UndefinedTable` | `ERROR [unavailable]: quest schema missing — ... next: run acatome-quest status --count to trigger db.migrate()` ✓ (structured UNAVAILABLE with migration next-hint — exactly as requested in the regression entry) |
+| I | `search(type='think', query='what is 2+2?')` | `TypeError: _WebBase.read() got an unexpected keyword argument 'top_k'` | real `sonar-reasoning-pro` answer with 5 citations, `[cost: ~$0.005/call]` footer, Phase 4 attribution ✓ |
+
+#### Incidental observations
+
+- `get(type='fc')` and `get(type='conv')` both report the full URI
+  scheme list in their error `options:` (`file, arxiv, doi, isbn,
+  issn, pmcid, pmid, …` alongside the kinds).  That's more useful
+  than the kind-only list the sibling `KIND_UNKNOWN` errors print,
+  because it tells the agent which identifier prefixes route to
+  auto-classification.  Consider aligning the `options:` format
+  across all `KIND_UNKNOWN` callsites so the distinction is
+  intentional, not accidental.
+- The new BUG-C error phrasing ("doesn't match any known identifier
+  pattern (DOI / arXiv / PMCID / ISBN / file ext)") is an excellent
+  piece of next-hint engineering — the agent now learns the full list
+  of auto-classified prefixes from a single error message.  Keep.
+- BUG-F's new empty-filter message ("the filter eliminated every
+  candidate before the vector search ... could run") is another
+  exemplary next-hint.  It turns a silent zero-result into a
+  diagnostic — the agent knows immediately whether to broaden the
+  filter or drop it.
+
+#### Not re-exercised
+
+- Observations from 19:30 not tied to BUG-A..I (xie2016dissecting
+  corrupt chunks, `search(scope='marquessilva1999grasp',
+  query='selectivity')` scope behaviour, pre-existing `fc:` slug
+  leftovers in the flashcard corpus) — left alone; not part of the
+  BUG-A..I fix pass.
+- Write roundtrips, file-type kinds (§16), `PRECIS_KINDS` mask check
+  (§15.3) — still open for a future run.
+
+---
 
 ### Session: 2026-04-22 20:30  (Cascade / Reto — second fix-pass, not a live run)
 

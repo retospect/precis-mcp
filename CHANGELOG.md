@@ -1,5 +1,265 @@
 # Changelog
 
+## 4.0.0 — 2026-04-22
+
+Major revamp.  Twelve new kinds, plugin protocol v2, unified error
+envelope, cost reporting, skills as a first-class kind, Perplexity
+Sonar integration, external stateless handlers (Wolfram Alpha,
+YouTube), journal kinds (memory, conversation), paper ID
+auto-detection (DOI / arXiv / PMCID / ISBN / ISSN), cross-kind link
+graph, tracked-change writes, `type=` kwarg on every tool, and a
+three-verb smoke-test plan.  Every handler was rewritten on top of
+the new `RefHandler` base + view-registry dispatch.
+
+Full phase-by-phase development log below under
+_"4.0.0 pre-release dev log"_.
+
+### Breaking
+
+- **Bare-slug `get(id='wang2020state')` no longer auto-routes to the
+  `paper` kind.**  Without a scheme prefix (`paper:` / `doi:` / …), a
+  file extension, or a DOI / arXiv / PMCID / ISBN / ISSN pattern, the
+  server now emits `KIND_UNKNOWN` with `type='paper'` listed as the
+  first option.  Same parity rule as `search()` and `put()`.  Use
+  `get(type='paper', id='wang2020state')` or
+  `get(id='paper:wang2020state')`.
+- **URI selector separator changed from `#` to `~` and then to `›`**
+  over the 3.x series; `›` (U+203A SINGLE RIGHT-POINTING ANGLE
+  QUOTATION MARK) is the 4.0 canonical.  `~` still works as a legacy
+  alias in selectors; `#` is hard-rejected.
+- **`fc:` scheme alias retired.**  The flashcard kind is now
+  registered only under its canonical `flashcard:` scheme.  URIs
+  starting with `fc:` emit `KIND_UNKNOWN`.  Data migration for
+  legacy `fc:…` slugs in stored content is the caller's responsibility.
+- **`conv:` scheme alias retired.**  Conversations are now
+  `conversation:` only.  Same KIND_UNKNOWN envelope on legacy
+  `conv:…` URIs.
+- **Plugin protocol v1 plugins without a `KindSpec` are refused at
+  registration time.**  Plugins must bump their `protocol_version` to
+  `"1"` and declare a `KindSpec` per kind.  The registry synthesises
+  a minimal spec from the plugin's schemes + docstring when one isn't
+  declared, but third-party plugins are expected to declare explicit
+  specs for agent-visible metadata.
+- **Kind-name collisions across plugins are now fatal.**  Previously
+  a warning.  Raises `RegistryError`; the second plugin leaves no
+  trace in `PLUGINS` / `SCHEMES` / `KINDS`.
+- **Legacy `PrecisError(bare_string)` form removed.**  Every raise
+  site must now supply a structured `ErrorCode`.  Constructing an
+  error without one raises `TypeError` at call time.
+- **`Handler._dispatch_view()` subclass hook removed.**  Replaced by
+  the `views: dict[str, str]` class attribute + view-registry
+  dispatch in `RefHandler`.
+
+### Added
+
+- **Twelve new kinds** layered on top of the original paper / docx /
+  tex / markdown / plaintext / todo surface:
+  - `skill` — filesystem-backed SKILL.md index with
+    `/kind/<name>`, `/topic/<tag>`, `/recent`, `/help` views.
+    Ships three seed skills (find-paper, todo-triage, sm2-basics).
+    Writes confined to `~/.precis/skills/`; ecosystem-supplied
+    skills (`~/.claude/skills/`, `.opencode/skills/`) read-only.
+  - `quest` — `acatome-quest-mcp` paper-request lifecycle folded in.
+    Backed by `papers.requests` in Postgres via `psycopg3` +
+    `psycopg_pool` (fully sync, no asyncio bridge).
+    `/recent` / `/queued` / `/needs-user` / `/failed` / `/agent/<id>`
+    / `<uuid>/candidates` / `<uuid>/misconceptions` views.
+    Schema-missing / DB-unreachable surface `UNAVAILABLE` with an
+    actionable `next:` hint.
+  - `memory` — long-term verbatim agent-memory drawers.  Read, grep,
+    put, note, link.  ImportError-gated on `acatome-store`.
+  - `conversation` — conversation recording + replay.  Same plumbing
+    as memory; shares the acatome-store corpus seeds.
+  - `web` — Perplexity Sonar synchronous web search.  Attribution
+    footer per Perplexity ToS.
+  - `research` — Perplexity Sonar deep-research (long-form,
+    citation-heavy).  Paid; `cost_hint="~$0.04/call"`.
+  - `think` — Perplexity Sonar reasoning model with the `think`
+    budget.  `cost_hint="~$0.02/call"`.
+  - `math` — Wolfram Alpha wrapper.  Requires `WOLFRAM_APP_ID`.
+    Mandatory Wolfram attribution footer + academic-citation
+    template per [Wolfram ToS](https://www.wolframalpha.com/termsofuse).
+  - `youtube` — transcript fetcher via `youtube-transcript-api`.
+    `/languages` view lists available transcript languages.
+    Mandatory uploader-attribution footer.
+  - `flashcard` — SM-2 spaced-repetition flashcards (corpus-backed,
+    `/due` / `/new` / `/learning` views).  Canonical scheme is
+    `flashcard:`; the legacy `fc:` alias was retired in this release.
+- **Plugin protocol v2** — `KindSpec` dataclass declaring each kind's
+  name, description, aliases, required env, cost hint, and examples;
+  `CallContext` / `HintContext` / `NotificationContext`; unified
+  `Result` envelope with `.ok()` / `.err()` constructors and a
+  `.render()` producing the final agent-visible string; optional
+  `Handler.cost_of()` / `Handler.hints()` / `Handler.notifications()`
+  hooks with safe no-op defaults.  Spec in `docs/plugin-architecture.md`.
+- **Unified error envelope** — every failure renders as
+  `ERROR [<code>]: <summary>\n  where: …\n  cause: …\n  options: …\n  next: …`.
+  `ErrorCode` enum catalogues 16 standard codes.  Non-agent-fault
+  codes (`UNEXPECTED` / `TIMEOUT` / `UPSTREAM_ERROR` / `RATE_LIMITED`
+  / `UNAVAILABLE`) auto-append a gripe-next-hint.
+- **Cost reporting** — every tool response carries `[cost: …]` as a
+  footer.  `stats()` tool exposes per-kind session stats (calls,
+  errors, last-cost) and startup warnings.  Three-level cost fallback:
+  per-call `cost_of()` → static `KindSpec.cost_hint` → `"free"`.
+- **`type=` kwarg on every tool** (`search` / `get` / `put` / `move`).
+  Alias-aware: `type='pmid'` routes to the paper kind but preserves
+  the `pmid:` scheme in the dispatched URI.
+- **Paper ID auto-detection** — new `precis.paper_id` module with
+  `classify_paper_id()` and normalisers for DOI, arXiv (new + old
+  forms), PMCID, ISBN-10/13 (full checksum validation), ISSN (mod-11
+  checksum).  Bare identifiers route to the right scheme without
+  `type=` for DOIs / arXiv ids / PMCIDs / ISBNs / ISSNs.
+- **Cross-kind links** — `put(id=…, link='dst:relation')` and
+  `unlink='dst[:relation]'` on every state-backed kind.  Links are a
+  first-class primitive, not paper-specific.  Directional query via
+  `/links/<direction>`.
+- **Tracked-change writes** — DOCX `put(mode='replace' | 'after' |
+  'before' | 'delete')` emits tracked changes by default.
+  `tracked=False` suppresses them.  Margin comments via
+  `mode='comment'`.
+- **`PRECIS_KINDS` env var** — per-agent kind masking with a bracket
+  grammar (e.g. `PRECIS_KINDS='paper,todo[search,get]'`).
+  Alias-in-config, unknown-verb, duplicate-kind, and stray-bracket
+  issues are fatal `ConfigError`s; unknown kinds are dropped with a
+  warning so the server still starts.
+- **`grep=` on `search()`** (new in this release, post-3.2 triage) —
+  metadata pre-filter applied before the vector search; paper kind
+  over-fetches hits and post-filters by filtered slug set.
+- **Skill-surfacing hooks** — `Handler.onboarding_skill: str | None`
+  (auto-appended to help views) and `_enrich_error` pointer
+  (appends `see skill:<slug>` on agent-confusion codes).
+- **View registry** — `views: dict[str, str]` class attribute on
+  every `RefHandler` subclass; dispatch via the shared
+  `_dispatch_view()` helper instead of stacked if/elif ladders.
+- **`_reset_instance_cache()`** test hook for resetting memoised
+  handler instances between tests.
+- **`.precis/` user config directory** — scanned at startup for
+  user-defined skills and handler overrides.
+- **Figure handling** — `get(id='slug/fig')`, `get(id='slug/fig/3')`,
+  `/legend` / `/image` / `/image/export` subviews.
+- **Multi-ID batch reads** — `get(id='slug1›4,slug2›9')` returns
+  both chunks in one call.
+- **Handler-instance memoisation** — `resolve()` now caches one
+  instance per scheme / file extension in `_SCHEME_INSTANCES` /
+  `_FILE_TYPE_INSTANCES` guarded by `threading.Lock`.  Warm DB
+  pools, HTTP clients, and scanned on-disk indexes survive across
+  tool calls.
+- **Structured error envelope on the `_dispatch` raw-fallback path**
+  (BUG-E) — unknown kinds that raise now render via `_format_error`
+  with preserved `options=` / `next=` from any `PrecisError` they
+  threw.
+- **psycopg error translation on the quest DB adapters** (BUG-H) —
+  `UndefinedTable` → `UNAVAILABLE` with an
+  `acatome-quest status --count` migration hint;
+  `OperationalError` / `InterfaceError` → `UNAVAILABLE` with a
+  `DATABASE_URL` pointer.
+
+### Changed
+
+- **`_dispatch` wraps every tool call** — all four tool entry points
+  (`search` / `get` / `put` / `move`) route through `_dispatch` →
+  `invoke_handler`, giving every response the `[cost: …]` footer and
+  a unified exception path.
+- **View dispatch refactor** — `_ref_base.py` replaced its if/elif
+  ladder in `read()` with a view-registry lookup.  Subclasses declare
+  their views via `views: dict[str, str]` class attr; the base class
+  resolves + invokes.
+- **`_to_uri` routes through `classify_paper_id()`** instead of the
+  legacy DOI-only regex.  File-extension routing still runs first so
+  `report.docx` stays a file.
+- **List-renderer hardened against `None` ref fields** (BUG-A) — every
+  metadata field (`doi`, `year`, `authors`, `title`) is coerced to
+  `""` before join so a partially-ingested paper doesn't TypeError
+  the entire ref list.
+- **Paper overview renderer routes `authors` through `_author_names`**
+  (BUG-D) so JSON-encoded author arrays decode on the landing page,
+  matching the cite formatter behaviour.
+- **Skill `_search` tokenises on whitespace and AND-matches across
+  tokens** (BUG-G) — multi-word queries (e.g. `'acquire paper'`) now
+  hit skills where every word appears anywhere in the combined
+  `name + description` blob.
+- **`_WebBase.read` absorbs unknown kwargs** (BUG-I) — `search()`
+  dispatcher forwards `top_k` but the Perplexity handlers don't use
+  it; no more `TypeError` pre-flight on
+  `search(type='<web|research|think>', query=…)`.
+- **Every tool response ends with the cost footer** — even free-tier
+  kinds.  Removes ambiguity about whether a call was billable.
+- **`QuestHandler` is fully sync** — dropped `_DB_INSTANCE`,
+  `_get_db()`, `_set_db_for_testing()`, `asyncio.run()` bridge.
+  Instance state, lazy pool construction, `db=` kwarg for tests.
+- **`get()` docstring now shows `type='paper'`** on every bare-slug
+  example so LLMs reading the MCP tool schema learn the 4.0
+  convention.
+
+### Fixed
+
+- BUG-A through BUG-I from the 2026-04-22 19:30 smoke-test session —
+  see `docs/mcp-smoke-test-plan.md` "Session log" for the live-check
+  mapping.  Every fix has a regression test.
+- 2026-04-22 17:40 triage #1–#11 — covered by the earlier
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/docs/mcp-smoke-test-plan.md`
+  sessions.  Highlights: BibTeX formatter, `skill:/kind` parsed-URI
+  slug leak, grep + query plumbing, flashcard canonical rename.
+- Thread-safety race in `resolve()` where two concurrent MCP tool
+  calls could both observe an empty cache and both instantiate a
+  handler, leaking one.  Now guarded by a registry-level
+  `threading.Lock`.
+- ~134 raise sites across the handler tree converted from
+  bare-string `PrecisError` to structured `(code, cause, options,
+  next)` form so every error path carries the unified envelope.
+- DOCX XML parsing hardened against XXE / billion-laughs attacks
+  (imported from the 3.2 security release, retained here).
+
+### Removed
+
+- **`precis.handlers.quest._DB_INSTANCE`** and friends (see Changed).
+- **`Handler._dispatch_view()`** class method and every subclass
+  override of it (see view-registry change above).
+- **Legacy `PrecisError(bare_string)`** constructor (see Breaking).
+- **`fc` and `conv` scheme aliases** (see Breaking).
+- **Auto-route-to-paper on bare slug** via `get()` (see Breaking).
+
+### Tests
+
+- **978 tests passing** (up from 414 at 3.0.0 — a 2.4× expansion).
+- New test modules landed in 4.0 dev cycles:
+  `test_phase2_cost.py`, `test_phase3_web.py`, `test_phase4_external.py`,
+  `test_phase5_paper_id.py` (→ `test_paper_id.py`),
+  `test_phase6_journal.py`, `test_phase7_links.py`,
+  `test_phase8_errors.py`, `test_phase12_quest.py`,
+  `test_phase12b_skill.py`, `test_kinds_config.py`,
+  `test_visibility.py`, `test_server_phase1.py`,
+  `test_invoke_handler.py`, `test_protocol_v2.py`,
+  `test_llm_live.py` (live qwen3.5:9b tool-call verification).
+- Regression tests for every bug fixed in the 17:40 + 19:30 smoke
+  runs: `TestListRendererTolerateNones`,
+  `TestOverviewAuthorsNormalisation`, `TestSearchWithGrep`,
+  `TestSearchToolForwardsGrep`, `TestAmbiguousKindErrors`,
+  `TestPgErrorTranslation`, and more.
+- ruff + mypy clean.  Full suite runs in ~100s (~25s excluding the
+  live-LLM suite).
+
+### Docs
+
+- `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/docs/plugin-architecture.md`
+  — 1,879-line spec of the v2 plugin protocol (kinds, verbs, errors,
+  cost, views, hints).
+- `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/docs/mcp-smoke-test-plan.md`
+  — 1,500-line three-verb smoke-test plan.  Drives the live-run
+  session logs; every bug discovered links back to a §N.M bullet.
+- README rewritten for the 4.0 surface — `type=` on every example,
+  new kinds listed, URI grammar updated for the classifier-based
+  routing.
+
+---
+
+## 4.0.0 pre-release dev log
+
+_The sections below are the per-phase development log that accumulated
+between the 3.0.0 release (2026-04-01) and the 4.0.0 cut.  They are
+preserved verbatim for historical reference; the consolidated 4.0.0
+notes above supersede them for agent-visible behaviour._
+
 ## Unreleased — Phase 12a consolidation (sync stack + handler caching)
 
 Pre-12b cleanup pass on top of the 12a read-surface.  Flips the whole
