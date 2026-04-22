@@ -217,8 +217,10 @@ state mutated, no files written.
 - [ ] `mcp5_get(id='paper:')` — bare paper landing (may be empty/help)
 - [ ] `mcp5_search(query='membrane', type='paper', top_k=3)` — paper search
 - [ ] `mcp5_get(id='quest:/recent')` — quest recent view (read-only)
-- [ ] `mcp5_get(id='think:')` — stateless think landing
-- [ ] `mcp5_search(query='precis')` — global search across all kinds
+- [ ] `mcp5_get(id='think:')` — think landing (Perplexity-backed; bare
+  call is free, shows model + usage)
+- [ ] `mcp5_search(query='precis', type='paper')` — paper-corpus search
+  (global-no-type search is rejected by design; see §15.1)
 
 If every one returns a response that isn't `!! UNEXPECTED`, the server
 is alive and wire-protocol-correct.  Move on to targeted sections.
@@ -271,11 +273,17 @@ section.
 in quick-smoke.  Pick a unique slug per run using the session timestamp
 (``SLUG=smoke-skill-$(date +%s)``) so re-runs don't collide.
 
-Follow the write-roundtrip protocol from the preamble:
+Follow the write-roundtrip protocol from the preamble.  With `id=''`
+the handler reads the destination slug from the frontmatter: it prefers
+`name:` (the canonical Agent Skills field, interops with Claude Code +
+Cursor) and falls back to `slug:` (this plan's historical convention).
+Either works; use `name:` for new authoring.
 
 1. **Write**
-    - [ ] `mcp5_put(type='skill', id='', text='---\nslug: <SLUG>\ndescription: Smoke test skill — delete me\n---\n# body', mode='append')`
+    - [ ] `mcp5_put(type='skill', id='', text='---\nname: <SLUG>\ndescription: Smoke test skill — delete me\n---\n# body', mode='append')`
         - expect: success + next-hint pointing at `get(type='skill', id='<SLUG>')`
+    - [ ] optional: also verify the `slug:` fallback with a second
+      unique slug: `text='---\nslug: <SLUG2>\ndescription: ...\n---\n# body'`
 2. **Read back**
     - [ ] `mcp5_get(type='skill', id='<SLUG>')`
         - expect: full body rendered; description line present
@@ -424,6 +432,11 @@ Requires `acatome-store` and a non-empty store.
 
 ### 5.1 — Read by slug / DOI / arXiv
 
+Bare slugs (e.g. `mcp5_get(id='wang2020state')` without `type=` or a
+scheme prefix) are **no longer auto-routed to paper** — that fallback
+was retired in the Apr 2026 default-to-paper cleanup.  Always use
+`type='paper'` or an explicit `paper:` / `doi:` / `arxiv:` prefix.
+
 - [ ] `mcp5_get(id='paper:wang2020state')`  (or any known slug)
     - expect: paper overview — title, abstract (if present), hints
 - [ ] `mcp5_get(id='paper:wang2020state/toc')`
@@ -452,22 +465,55 @@ Requires `acatome-store` and a non-empty store.
 
 ### 5.3 — Citations
 
-- [ ] `mcp5_get(id='paper:wang2020state/cite/bib')` — BibTeX
+The citation formatter was rewritten in Apr 2026 to handle the three
+regressions found on a fresh store: JSON-array authors, Unicode
+escapes, and inline HTML/JATS tags.  The bullets below exercise each.
+
+- [ ] `mcp5_get(id='paper:wang2020state/cite/bib')` — BibTeX smoke
 - [ ] `mcp5_get(id='paper:wang2020state/summary')` — enrichment summary
+- [ ] `mcp5_get(id='paper:marquessilva1999grasp/cite/bib')`
+    - regression check: author field must read
+      `author = {Marques-Silva, J.P. and Sakallah, K.A.}` (joined by
+      ``and``, not a raw JSON list like `[{"name":"..."}]`)
+- [ ] `mcp5_get(id='paper:mikladal2013l/cite/bib')`
+    - regression check: title must be a **single line** with no `<i>`
+      / `</i>` markup and no multi-line indentation; the author field
+      must contain `Bjørn` (literal ø), not a `\u00f8` escape sequence
+- [ ] `mcp5_get(id='paper:<any>/cite/ris')` — RIS style
+    - check: one `AU  -` line per author; titles tag-stripped; no
+      BibTeX backslash-escapes leaking in
+- [ ] `mcp5_get(id='paper:<any>/cite/acs')` — inline ACS style
+    - check: `FirstSurname et al., Journal YYYY` with whitespace
+      collapsed (no multi-line journal strings)
 
 ### 5.4 — Listing + filtering
 
-- [ ] `mcp5_get(grep='MOF')` — paper list filtered by keyword
-- [ ] `mcp5_get(grep='ingested:today')` — recent ingest filter
-- [ ] `mcp5_get(grep='year:2020-2024')` — year-range filter
-- [ ] `mcp5_get(grep='tag:review')` — tag filter
+`type='paper'` is **required** — bare `grep=` calls without a kind
+return `KIND_UNKNOWN` since the default-to-paper fallback was
+retired.  `grep=` is a metadata filter (title/author/tag substring),
+not a semantic vector search; pair with `query=` for both.
+
+- [ ] `mcp5_get(type='paper', grep='MOF')` — paper list filtered by keyword
+- [ ] `mcp5_get(type='paper', grep='ingested:today')` — recent ingest filter
+- [ ] `mcp5_get(type='paper', grep='year:2020-2024')` — year-range filter
+- [ ] `mcp5_get(type='paper', grep='tag:review')` — tag filter
+- [ ] regression check: `mcp5_get(grep='MOF')` (no `type=`)
+    - expect: `KIND_UNKNOWN` with `options:` listing visible kinds
+- [ ] regression check: `mcp5_search(type='paper', query='membrane', grep='tag:review')`
+    - expect: vector search **pre-filtered** by the `tag:review`
+      metadata filter, not the other way around
 
 ### 5.5 — Search
 
-- [ ] `mcp5_search(query='anion exchange membrane')`
-    - expect: ranked results across all papers (global)
+Bare `mcp5_search(query='...')` with no `type=` and no `scope=` is
+rejected by design (see §15.2) — pass one of them explicitly.
+
+- [ ] `mcp5_search(query='anion exchange membrane')`  (no `type=`, no `scope=`)
+    - expect: `KIND_UNKNOWN` with `options:` listing visible kinds
+- [ ] `mcp5_search(query='anion exchange membrane', type='paper')`
+    - expect: ranked results across the paper corpus
 - [ ] `mcp5_search(query='selectivity', scope='wang2020state')`
-    - expect: results scoped to one paper
+    - expect: results scoped to one paper (scope= implies paper kind)
 - [ ] `mcp5_search(query='CO2 capture', type='paper', top_k=5)`
     - expect: 5 hits max, all `type='paper'`
 
@@ -496,10 +542,15 @@ should refuse.
 
 ### 6.1 — Read
 
+Collection views added in Apr 2026 — before the fix these all
+returned `PARAM_INVALID: missing slug`.
+
 - [ ] `mcp5_get(id='todo:/')` — all todos
 - [ ] `mcp5_get(id='todo:/open')` — open todos
 - [ ] `mcp5_get(id='todo:/done')` — closed todos
+- [ ] `mcp5_get(id='todo:/today')` — todos due today (state-agnostic)
 - [ ] `mcp5_get(id='todo:/recent')` — recently modified
+- [ ] `mcp5_get(id='todo:/cancelled')` — any other state string also works
 
 ### 6.2 — Write surface (roundtrip)
 
@@ -534,46 +585,73 @@ in your session log — call it ``<N>`` below.
 - [ ] `mcp5_search(type='todo', query='<TAG>')`
     - expect: empty result (we deleted in §6.2) or matches any
       leftovers from earlier runs
+    - regression check: this must hit **only** todo refs, not bleed
+      into paper chunks.  Before the bug #4 fix, `type=` was ignored
+      and non-paper searches used the shared vector index.
 - [ ] run §6.2 through step 2 only (leave a todo in place), then:
     - [ ] `mcp5_search(type='todo', query='<TAG>')` must hit
     - [ ] clean up with `mcp5_put(type='todo', id='<N>', mode='delete')`
 
+### 6.4 — Slug-prefix retry (regression — bug #1)
+
+Todos are stored with slug `todo:<N>` in the corpus.  Callers pass
+the bare int (`id='<N>'`); the handler retries with the `todo:` prefix
+automatically.
+
+- [ ] write a todo (§6.2 step 1), then `mcp5_get(type='todo', id='<N>')`
+  must succeed — no `ID_NOT_FOUND` even though the stored slug is
+  actually `todo:<N>`
+- [ ] same for `mcp5_put(type='todo', id='<N>', mode='done')` — mutate
+  by bare id, not the prefixed form
+
 ---
 
-## 7.  flashcard (`fc`)
+## 7.  flashcard
 
-Aliased kind — `fc:` and `flashcard:` should both work.
+Single canonical scheme: `flashcard:`.  The short `fc` alias has been
+retired — every URI and `type=` lookup uses the long form.
 
 ### 7.1 — Read
 
-- [ ] `mcp5_get(id='fc:/due')` — cards due for review
-- [ ] `mcp5_get(id='fc:/recent')` — recently created
-- [ ] `mcp5_get(id='flashcard:/')` — alias works the same as `fc:/`
+- [ ] `mcp5_get(id='flashcard:/due')` — cards due for review
+- [ ] `mcp5_get(id='flashcard:/recent')` — recently created
+- [ ] `mcp5_get(id='flashcard:/')` — bare list / overview
 
 ### 7.2 — Write surface (roundtrip)
 
 1. **Write**
-    - [ ] `mcp5_put(type='fc', id='', text='Q: Smoke <TAG> 2+2?\nA: 4', mode='append')`
-        - expect: success + next `get(type='fc', id='<N>')`
+    - [ ] `mcp5_put(type='flashcard', id='', text='Q: Smoke <TAG> 2+2?\nA: 4', mode='append')`
+        - expect: success + next `get(type='flashcard', id='<N>')`
 2. **Read back**
-    - [ ] `mcp5_get(type='fc', id='<N>')`
+    - [ ] `mcp5_get(type='flashcard', id='<N>')`
         - expect: Q/A rendered; SM-2 state shows as "new / not yet due"
 3. **Mutation** (SM-2 rate)
-    - [ ] `mcp5_put(type='fc', id='<N>', mode='rate', grade=4)`
+    - [ ] `mcp5_put(type='flashcard', id='<N>', mode='rate', grade=4)`
         - expect: success
-    - [ ] `mcp5_get(type='fc', id='<N>')`
+    - [ ] `mcp5_get(type='flashcard', id='<N>')`
         - expect: interval advanced, next-review date in the future
 4. **Delete**
-    - [ ] `mcp5_put(type='fc', id='<N>', mode='delete')`
+    - [ ] `mcp5_put(type='flashcard', id='<N>', mode='delete')`
         - expect: success
 5. **Read-gone**
-    - [ ] `mcp5_get(type='fc', id='<N>')`
+    - [ ] `mcp5_get(type='flashcard', id='<N>')`
         - expect: `ID_NOT_FOUND`
 
 ### 7.3 — Search
 
 - [ ] As in §6.3: write a card with a unique `<TAG>`, confirm
-  `mcp5_search(type='fc', query='<TAG>')` finds it, then clean up.
+  `mcp5_search(type='flashcard', query='<TAG>')` finds it, then clean up.
+
+### 7.4 — Slug-prefix retry (regression — bug #1 + bug #8)
+
+Flashcards are stored with slug `flashcard:<N>`.  Bare int ids must
+resolve via the handler's `_slug_prefix` retry.
+
+- [ ] write then bare-id read: `mcp5_get(type='flashcard', id='<N>')`
+  succeeds without `ID_NOT_FOUND`
+- [ ] confirm the old `fc:` scheme is **gone**: `mcp5_get(id='fc:<N>')`
+  must error — the canonical scheme was renamed to `flashcard:` and
+  `fc` was retired.  If this succeeds, the old alias table leaked.
 
 ---
 
@@ -609,7 +687,15 @@ run: ``SLUG=smoke-memory-$(date +%s)``.
     - [ ] `mcp5_get(type='memory', id='<SLUG>')`
         - expect: `ID_NOT_FOUND`
 
-### 8.3 — Links
+### 8.3 — Slug-prefix retry (regression — bug #1)
+
+Memories are stored with slug `memory:<SLUG>`.  The handler retries
+with the `memory:` prefix when the caller passes a bare slug.
+
+- [ ] after §8.2 step 1, read back with `mcp5_get(type='memory', id='<SLUG>')`
+  — must succeed on the bare slug, no need to pre-prefix
+
+### 8.4 — Links
 
 These are annotations on existing refs; non-destructive to the refs
 themselves.  If a paper slug is available from §5, use it here;
@@ -626,11 +712,15 @@ otherwise create a memory in §8.2 first and link to that.
 
 ## 9.  conversation
 
-Chat turn history.  Block-structured, slug-keyed.
+Chat turn history.  Block-structured, slug-keyed.  Canonical scheme
+is `conversation:` — the short `conv:` alias was retired; `conv:`
+lookups now error `KIND_UNKNOWN` by design.
 
 ### 9.1 — Read
 
 - [ ] `mcp5_get(id='conversation:/recent')` — recent conversations
+    - regression check: before the bug #2 fix this threw
+      `AttributeError: type object 'Block' has no attribute 'id'`
 - [ ] `mcp5_get(id='conversation:<slug>')` — one conversation
 - [ ] `mcp5_search(query='<term>', type='conversation')`
 
@@ -638,6 +728,40 @@ Chat turn history.  Block-structured, slug-keyed.
 
 - [ ] `mcp5_search(query='membrane', scope='conversation:<slug>')`
     - expect: results only from that conversation
+
+### 9.3 — Write surface (roundtrip)
+
+Conversation slugs are string-valued (not integers).  Use a date-
+stamped slug per run: ``SLUG=2026-04-22-smoke-$(date +%s)``.  The
+handler normalises bare slugs by prefixing `conversation:` on write.
+
+1. **Write**
+    - [ ] `mcp5_put(type='conversation', id='<SLUG>', text='First turn.', mode='append')`
+        - expect: success + next-hint pointing at `get(type='conversation', id='<SLUG>')`
+        - confirm the stored slug is `conversation:<SLUG>` (verify via
+          DB if in doubt; the response footer cites the canonical id)
+2. **Read back**
+    - [ ] `mcp5_get(type='conversation', id='<SLUG>')`
+        - expect: the single turn rendered with speaker + timestamp
+          block structure
+3. **Mutation** (append a second turn)
+    - [ ] `mcp5_put(type='conversation', id='<SLUG>', text='Second turn.', mode='append')`
+    - [ ] `mcp5_get(type='conversation', id='<SLUG>')`
+        - expect: two turns now present
+4. **Delete**
+    - [ ] `mcp5_put(type='conversation', id='<SLUG>', mode='delete')`
+        - expect: success (soft-delete: `meta.deleted` flag)
+5. **Read-gone**
+    - [ ] `mcp5_get(type='conversation', id='<SLUG>')`
+        - expect: `ID_NOT_FOUND` or the soft-deleted render, depending
+          on handler policy — record which it is
+
+### 9.4 — Slug-prefix retry + retired alias (regression — bugs #1, alias cleanup)
+
+- [ ] bare-slug read after §9.3 step 1: `mcp5_get(type='conversation', id='<SLUG>')`
+  must succeed without manual `conversation:` prefixing
+- [ ] `mcp5_get(type='conv', id='/recent')` — expect `KIND_UNKNOWN`
+  (alias was retired; no fallback)
 
 ---
 
@@ -695,35 +819,76 @@ Requires `WOLFRAM_APP_ID`.  Hidden at startup when unset.
 
 ---
 
-## 14.  think  (stateless reflection)
+## 14.  think  (Perplexity Sonar Reasoning Pro)
 
-No deps, no API, pure function.
+Requires `PERPLEXITY_API_KEY`.  Same provider as §10 (web) and §11
+(research) — `ThinkHandler` lives in
+`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/handlers/web.py`
+alongside them and wraps the `sonar-reasoning-pro` model (5-30 s
+latency, ~$0.005/call).  Use think for detailed analysis with
+reasoning traces; the faster `web` tier suits factual lookups, and the
+slower `research` tier is for multi-step synthesis.
 
-- [ ] `mcp5_get(id='think:')` — landing / help
-- [ ] other interactions per the handler's declared surface
+- [ ] `mcp5_get(id='think:')` — landing: no API call, `[cost: free]`,
+  lists the model + usage examples (fixed in Apr 2026; previously
+  errored `PARAM_INVALID: empty Perplexity query`).
+- [ ] `mcp5_get(id='think:compare Postgres SKIP LOCKED vs SELECT FOR UPDATE')` —
+  real query.  Expect a reasoning answer with citations; cost footer
+  reflects the Perplexity tier.
+- [ ] negative: with `PERPLEXITY_API_KEY=invalid`, retry a query →
+  `DENIED` (HTTP 401) with the upstream body truncated for diagnosis.
 
 ---
 
 ## 15.  Cross-kind features
 
-### 15.1 — Aliases
+### 15.1 — Paper identifier schemes
 
-- [ ] `mcp5_get(id='doi:10...')` → resolves same as `paper:10...`
-- [ ] `mcp5_get(id='fc:/due')` → resolves same as `flashcard:/due`
-- [ ] record any alias that doesn't resolve
+Paper kind accepts alternative identifier URIs that route to the same
+handler via its scheme list.  These are not `type=` aliases (the
+LLM-facing shortcut aliases were removed on purpose) — they are real
+URI forms for the different identifier formats.
 
-### 15.2 — Global search
+- [ ] `mcp5_get(id='doi:10.1021/jacs.2c01234')` → resolves same as
+  `paper:10.1021/jacs.2c01234`
+- [ ] `mcp5_get(id='arxiv:2301.12345')` → resolves same as
+  `paper:arxiv:2301.12345`
+- [ ] `mcp5_get(id='10.1021/jacs.2c01234')` (bare DOI, auto-detected)
+  → resolves same as `paper:10.1021/jacs.2c01234`
+- [ ] record any identifier-scheme that doesn't resolve
+
+Other kinds **do not** have aliases — `type='fc'`, `type='conv'`
+must both fail with `KIND_UNKNOWN`.  Exercise both:
+
+- [ ] `mcp5_get(type='fc', id='/due')` → `KIND_UNKNOWN`
+- [ ] `mcp5_get(type='conv', id='/recent')` → `KIND_UNKNOWN`
+
+### 15.2 — Kind-scoped search
 
 - [ ] `mcp5_search(query='membrane', top_k=10)` (no `type=`)
-    - expect: ranked hits across all searchable kinds
-    - check: each hit shows which kind it came from
+    - expect: `KIND_UNKNOWN` listing the visible kinds (bare-search
+      was retired alongside the default-to-paper routing)
+- [ ] `mcp5_search(query='membrane', type='paper', top_k=10)`
+    - expect: ranked paper hits; each line prefixed with its slug
+- [ ] `mcp5_search(query='<TAG>', type='todo')` (after writing a
+  tagged todo in §6.3)
+    - expect: the single match, no paper chunks bleeding in
 
 ### 15.3 — Visibility / PRECIS_KINDS mask
+
+File-type kinds (`word`, `tex`, `markdown`, `plaintext`) now appear
+in `stats()` as independent kinds — there is no longer a single
+catch-all `file` kind.  Update mask strings accordingly.
 
 - [ ] set `PRECIS_KINDS=paper,skill`, restart, `mcp5_stats()`
     - expect: `kinds by verb` shows ONLY paper + skill
 - [ ] `mcp5_get(id='quest:/recent')`
-    - expect: `KIND_UNKNOWN` with `options=['file', 'paper', 'skill']`
+    - expect: `KIND_UNKNOWN` with `options` containing at least
+      `paper` and `skill` (may also include any file-type kinds that
+      are always-on regardless of mask — record the exact shape)
+- [ ] with the full mask unset, `mcp5_stats()`
+    - expect: `kinds by verb` contains word, tex, markdown, plaintext
+      alongside the DB-backed kinds
 
 ### 15.4 — Error envelope consistency
 
@@ -741,6 +906,18 @@ Check:
 - [ ] an `ID_NOT_FOUND` error has `options:` with up to 10 similar ids
 - [ ] an `ID_AMBIGUOUS` error lists the candidate matches
 - [ ] an `UPSTREAM_ERROR` error has a gripe-next-hint
+
+`KIND_UNKNOWN` must fire across all three verbs (regression — the
+default-to-paper fallback was retired in Apr 2026, so every verb's
+no-type path returns the same structured error):
+
+- [ ] `mcp5_get(id='some-slug')` — no `type=`, no scheme prefix
+    - expect: `KIND_UNKNOWN` with `options:` + next-hint suggesting
+      `type='paper'` or a scheme prefix
+- [ ] `mcp5_search(query='membrane')` — no `type=`, no `scope=`
+    - expect: `KIND_UNKNOWN` (same envelope)
+- [ ] `mcp5_put(text='some text')` — no `type=`, no `id=`
+    - expect: `KIND_UNKNOWN` (same envelope)
 
 ### 15.5 — Response footer cost line
 
@@ -763,23 +940,39 @@ pathological latency variations.
 
 ---
 
-## 16.  File-type kinds  (`docx`, `tex`, `md`, `txt`)
+## 16.  File-type kinds  (`word`, `tex`, `markdown`, `plaintext`)
 
-File-based kinds dispatch by extension.  Need a writable working dir.
+Canonical kind names mirror the handler: `word` (.docx), `tex` (.tex),
+`markdown` (.md/.markdown), `plaintext` (.txt/.text).  Each is both a
+scheme and a kind — you can dispatch two ways:
+
+1. **auto-classification**: pass a raw path with an extension; the
+   server stamps the `file:` scheme and routes via FILE_TYPES.
+   ``mcp5_put(id='/tmp/foo.md', text=...)``
+2. **explicit kind**: pass `type=<kind>`; the server stamps the
+   matching scheme directly.
+   ``mcp5_put(type='markdown', id='/tmp/foo.md', text=...)``
+
+Both routes hit the same handler instance.  The LLM-facing discovery
+surface (`mcp5_stats()`, ambiguous-kind error options) lists each
+kind explicitly.
 
 Use `FILE=/tmp/precis-smoke-$(date +%s).<ext>` for unique paths per
 run.  After each section, remove the file: ``rm "$FILE"``.
 
 ### 16.1 — Markdown (roundtrip)
 
-1. **Write**
+Exercise both dispatch routes — step 1 via auto-classification, step 3
+via explicit `type=` — so both entry points stay covered.
+
+1. **Write** (auto-classified by `.md` extension)
     - [ ] `mcp5_put(id='<FILE>.md', text='# Title\n\nFirst para.', mode='append')`
 2. **Read back**
     - [ ] `mcp5_get(id='<FILE>.md')` — TOC shows Title + the para slug
     - [ ] `mcp5_get(id='<FILE>.md', depth=1)` — H1 only
-3. **Mutations**
-    - [ ] `mcp5_put(id='<FILE>.md', text='## Section', mode='append')`
-    - [ ] `mcp5_get(id='<FILE>.md')` — Section H2 now present
+3. **Mutations** (explicit `type=` this time)
+    - [ ] `mcp5_put(type='markdown', id='<FILE>.md', text='## Section', mode='append')`
+    - [ ] `mcp5_get(type='markdown', id='<FILE>.md')` — Section H2 now present
     - [ ] `mcp5_put(id='<FILE>.md›<slug>', text='Revised para.', mode='replace')`
     - [ ] `mcp5_get(id='<FILE>.md›<slug>')` — text is `Revised para.`
 4. **Delete** (node-level)
@@ -791,8 +984,8 @@ run.  After each section, remove the file: ``rm "$FILE"``.
 
 ### 16.2 — Plaintext (roundtrip)
 
-1. **Write**
-    - [ ] `mcp5_put(id='<FILE>.txt', text='line 1\nline 2', mode='append')`
+1. **Write** (explicit `type='plaintext'`)
+    - [ ] `mcp5_put(type='plaintext', id='<FILE>.txt', text='line 1\nline 2', mode='append')`
 2. **Read back**
     - [ ] `mcp5_get(id='<FILE>.txt')`
         - expect: both lines present
@@ -808,8 +1001,8 @@ run.  After each section, remove the file: ``rm "$FILE"``.
 
 ### 16.3 — LaTeX (roundtrip)
 
-1. **Write**
-    - [ ] `mcp5_put(id='<FILE>.tex', text='\\section{Foo}\n\nPara.', mode='append')`
+1. **Write** (explicit `type='tex'`)
+    - [ ] `mcp5_put(type='tex', id='<FILE>.tex', text='\\section{Foo}\n\nPara.', mode='append')`
 2. **Read back**
     - [ ] `mcp5_get(id='<FILE>.tex')` — section outline, para slug visible
 3. **Mutation**
@@ -821,11 +1014,13 @@ run.  After each section, remove the file: ``rm "$FILE"``.
     - [ ] `mcp5_get(id='<FILE>.tex›<slug>')`
         - expect: `ID_NOT_FOUND`
 
-### 16.4 — DOCX
+### 16.4 — Word / DOCX
 
-Requires an existing .docx file (create one manually or use a fixture).
+Canonical kind name is `word`.  Requires an existing .docx file
+(create one manually or use a fixture).
 
-- [ ] `mcp5_get(id='<path>.docx')` — TOC
+- [ ] `mcp5_get(id='<path>.docx')` — TOC (auto-classified)
+- [ ] `mcp5_get(type='word', id='<path>.docx', depth=2)` — explicit route
 - [ ] `mcp5_put(id='<path>.docx', text='New para.', mode='append')`
 - [ ] `mcp5_put(id='<path>.docx›<slug>', text='Edited.', mode='replace', tracked=True)`
     - expect: tracked change inserted
@@ -857,14 +1052,179 @@ test matrix until re-fixed.
   covers this; live check: any observable "warm" state (e.g. SkillHandler's
   `_index`) survives across calls.
 
+- [ ] **Slug-prefix retry across acatome-store kinds (fix: 2026-04-22,
+  bug #1)** — callers pass bare ids (`id='42'`, `id='my-note'`) but
+  refs are stored with a kind prefix (`todo:42`, `memory:my-note`).
+  Live checks: §6.4, §7.4, §8.3, §9.4 (all four "slug-prefix retry"
+  subsections).  If any regresses, the `_slug_prefix` class attribute
+  on the affected `RefHandler` subclass is missing.
+
+- [ ] **Bare search/get/put returns `KIND_UNKNOWN` (fix: 2026-04-22,
+  default-to-paper cleanup)** — see §15.4 per-verb checklist.  The
+  silent fallback to `paper` was retired; any no-type call must now
+  surface a structured error with the visible-kinds list.
+
+- [ ] **BibTeX citation hygiene (fix: 2026-04-22, bug #5)** — see §5.3.
+  Three concrete regression cases: `marquessilva1999grasp` (JSON
+  authors), `mikladal2013l` (Unicode escapes + `<i>` tags), plus the
+  backslash-escape sanity check via any paper with `&` / `%` / `_` in
+  the title.  Unit coverage:
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_paper_handler.py:138-265`.
+
+- [ ] **Todo collection views (fix: 2026-04-22, bug #7)** — §6.1
+  exercises `/open /done /today /recent /<state>`.  Before the fix,
+  these errored `PARAM_INVALID: missing slug`.
+
+- [ ] **`type=` filter honoured in search (fix: 2026-04-22, bug #4)**
+  — see §6.3 regression-check bullet.  Non-paper `type=` calls must
+  use corpus-scoped grep, not the shared paper vector index.
+
+- [ ] **Conversation `/recent` no AttributeError (fix: 2026-04-22,
+  bug #2)** — see §9.1.  Before the fix the view errored
+  `AttributeError: type object 'Block' has no attribute 'id'`.
+
+- [ ] **Retired kind aliases stay retired (fix: 2026-04-22, alias
+  cleanup)** — see §7.4 (`fc:`) and §9.4 (`conv:`) bullets.  If either
+  resolves, the old `KindSpec.aliases` wiring has regressed.
+
+- [ ] **File-type kinds discoverable via `stats()` (fix: 2026-04-22,
+  bug #10)** — `mcp5_stats()` lists `word`, `tex`, `markdown`,
+  `plaintext` as independent kinds.  Live check: §15.3 bullet 3
+  ("with the full mask unset").  Explicit `type=<kind>` dispatch
+  exercised via §16.1 / §16.2 / §16.3 / §16.4.
+
+- [ ] **Skill `id=''` + frontmatter convention (fix: 2026-04-22, bug
+  #11)** — §3.3 step 1 creates a skill with `id=''` and the slug
+  carried in either `name:` (canonical) or `slug:` (historical) of the
+  posted frontmatter.  Unit coverage:
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase12b_skill.py:430-475`.
+
+- [ ] **`think:` bare landing is free (fix: 2026-04-22, bug #9)** —
+  `mcp5_get(id='think:')` returns a help view with `[cost: free]`
+  footer.  Before the fix it errored `PARAM_INVALID: empty Perplexity
+  query`.  Live check: §14 bullet 1, also touched by the §2 quick-
+  smoke path.
+
 <!-- Retired regression entries (fix verified + unit test in place,
      re-check not required on every smoke run):
      - 2026-04-22  skill:/kind/<name> parsed-URI slug-leak bug.
        Unit tests in test_phase12b_skill.py cover it; the live
-       §3.1 `skill:/kind/quest` step already exercises the same path. -->
+       §3.1 `skill:/kind/quest` step already exercises the same path.
+     - 2026-04-22  skill frontmatter parsing too strict (bug #3).
+       `_parse_skill_md` now falls back to directory-name for `name:`
+       and first body line for `description:`; broken-YAML skills
+       index rather than disappearing.  Unit tests in
+       test_phase12b_skill.py lock the leniency contract.
+     - 2026-04-22  grep= vs query= plumbing on paper list (bug #6).
+       Handled as distinct kwargs in `_ref_base.py`; `_list_refs`
+       prefers metadata filtering when both are supplied.  Covered by
+       §5.4 active bullet "vector search pre-filtered by the
+       tag:review metadata filter" — leave as active smoke check for
+       one run, retire after first green verification.
+     - 2026-04-22  flashcard canonical rename (bug #8).
+       Every URI, skill body, and test mentions `flashcard:` now; the
+       `fc:` alias is caught by §7.4 active bullet.  Full unit coverage
+       in test_flashcard_handler.py. -->
 
 ---
 
 ## Session log
 
 <!-- prepend new sessions above existing ones -->
+
+### Session: 2026-04-22 19:20  (Cascade / Reto — plan refresh, not a live run)
+
+Follow-on to the 17:40 post-fix sweep.  Audited the plan against the
+new source surface and applied a full refresh so the next live run
+can be executed verbatim without guessing which steps are stale.
+
+- Scope: plan edits only; no source changes.
+- Sections touched: §3.3, §5.1, §5.3, §5.4, §5.5, §6.1, §6.3, §6.4 (new),
+  §7.4 (new), §8.3 (renamed + new content), §8.4 (renumbered Links),
+  §9 (rewritten header + §9.1 regression note + §9.3 write roundtrip
+  new + §9.4 new), §15.3, §15.4, §16 header + §16.1-4 explicit `type=`
+  bullets, §17 regression log (10 new active entries + 4 retired in
+  the hidden block).
+- Every new regression entry in §17 cross-links the live-check
+  section, the unit-test file+line range, and the source fix where
+  relevant, so a future reader can reach the coverage without
+  rediscovering it.
+- **Do not mistake this for live verification**: the listed unit
+  tests pass (953 total), but nothing in this session exercised the
+  running MCP host.  The §17 active entries remain active.
+
+---
+
+### Session: 2026-04-22 17:40  (Cascade / Reto — post-fix sweep, not a live run)
+
+This is not an MCP-live session.  It records the source-side work done
+between the 16:42 discovery run and the next MCP-host restart, so the
+next live run has a clear baseline to verify against.
+
+- precis-mcp version: source tree after the 2026-04-22 bug pass (pre-
+  release, wheel not yet rebuilt).
+- Scope: fix-pass for every entry in the 16:42 log's triage list plus
+  the "default-to-paper" and "alias fluff" redesigns the human added
+  mid-session.
+- Tests: full suite passes (953 tests, up from 934), ruff + mypy clean.
+- **Live verification still pending**: the MCP host must be restarted
+  against the new wheel before the next smoke run; the installed wheel
+  still reproduces the 16:42 bugs (e.g. `marquessilva1999grasp/cite/bib`
+  still returns the JSON-array author field until reload).
+
+#### Source-side fixes delivered
+
+| triage # | area | implementation |
+|---|---|---|
+| 1 | slug-keyed get/put across acatome-store kinds | `_slug_prefix` class attr on RefHandler + prefixed retry in `_resolve_ref`; subclass prefixes set for todo/flashcard/memory/conversation |
+| 2 | `conversation:/recent` AttributeError | `func.count(Block.node_id)` in place of the nonexistent `Block.id` |
+| 3 | skill write-then-read mismatch (misdiagnosed as cache invalidation) | lenient `_parse_skill_md`: name falls back to directory, description to first body line; broken-YAML skills now index rather than disappear |
+| 4 | search `type=` filter ignored for non-paper corpora | `_search_or_grep` routes non-paper kinds through corpus-scoped grep instead of the shared vector index |
+| 5 | BibTeX author field raw JSON | `_author_names()` decodes JSON-encoded arrays and joins with " and " (BibTeX) / one `AU  -` per author (RIS) |
+| — | BibTeX beyond the author field | `_clean_title` strips inline HTML tags, decodes entities, collapses multi-line whitespace, escapes reserved chars; applied to title/journal/DOI/year; RIS mirrors the cleanup with its own field rules |
+| — | default-to-paper removed | `search(query=)` / `get(grep=)` / `put(text=)` now return `KIND_UNKNOWN` listing visible kinds when no `type=` and no disambiguating id/scope are given |
+| 6 | `grep=` on paper list vector-search instead of corpus filter | plumbed as a distinct kwarg from `query`; bare-list calls prefer `_list_refs(grep=...)` over vector search when both are supplied |
+| 7 | todo path views (`/open /done /today /recent /<state>`) rejected | `collection_views` registry on RefHandler + per-state / per-date methods on TodoHandler |
+| 8 | `flashcard:` scheme missing (after alias cleanup) | renamed canonical from `fc` → `flashcard`: scheme, `_slug_prefix`, `_slugify`, bundled SKILL.md, every user-facing string |
+| — | alias fluff retired | removed every `KindSpec.aliases` entry (`fc`, `conv`, `doi`/`arxiv`/`pmid`/`pmcid`/`isbn`/`issn`); identifier-type URI schemes on PaperHandler kept as real schemes, not alias shortcuts |
+| 9 | plan §14 think docs wrong | rewrote §14 and the quick-smoke bullet to reflect Perplexity-backed reality; landing fix in `_WebBase` also shipped so the bare call no longer errors |
+| 10 | file-type kinds missing from `stats()` | word/tex/markdown/plaintext each get a KindSpec + matching scheme; URI auto-classification via extension still works as before |
+| 11 | `id=''` convention for skill writes | skill-append now falls back to frontmatter `name:` / `slug:` when neither `id=` nor `title=` carries a slug |
+| — | `think:` bare landing | `_WebBase.read` returns a help view on empty query; `cost_of` reports `free` for the landing path so the footer doesn't lie about cost |
+
+#### Regression coverage added
+
+- `TestAmbiguousKindErrors` in
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:220-298` —
+  7 tests locking the `KIND_UNKNOWN` response shape across search/get/put.
+- `TestCitation` in
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_paper_handler.py:138-266` —
+  7 tests for the BibTeX/RIS/ACS cleanup (covers the
+  `marquessilva1999grasp` JSON-array, `mikladal2013l` Unicode/tag
+  regressions, reserved-char escaping, missing-authors fallback).
+- Landing-page tests for `web`, `think`, `research` in
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase3_web.py:302-357`.
+- Skill-append frontmatter-slug fallback + strict error path in
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase12b_skill.py:430-475`.
+
+#### Data migration owed
+
+- Existing `fc:*` flashcard slugs in the store become orphaned — the
+  handler's new `_slug_prefix` retry only looks for `flashcard:*`.
+  Reingest or `UPDATE flashcards SET slug = REPLACE(slug, 'fc:', 'flashcard:')`
+  before the next smoke run exercises pre-existing cards.
+- Same for `conv:*` conversation slugs.
+- `papers.requests` schema still not applied on this host (unchanged
+  from the 16:42 run); quest writes will error until the migration
+  lands.
+
+#### Next run checklist
+
+1. Rebuild + install the wheel, restart Windsurf's MCP host.
+2. Re-run §2 quick-smoke — `think:` bare, `search(query='…', type='paper')`,
+   and the rest must all succeed.
+3. Drill into §3.3 (skill write roundtrip), §5.3 (cite/bib on
+   `marquessilva1999grasp` and `mikladal2013l`), §6 / §7 / §8 / §9
+   (slug-keyed write/read roundtrips on todo/flashcard/memory/
+   conversation) to verify the fixes live.
+4. Record a fresh session-log entry above this one.

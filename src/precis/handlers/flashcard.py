@@ -8,7 +8,7 @@ Extends RefHandler with:
   - ``mode='replace'``: edit item text
 
 Knowledge items are stored as refs in the ``flashcards`` corpus.
-The ``fc:`` URI scheme is used for addressing.
+The ``flashcard:`` URI scheme is used for addressing.
 
 SM-2 scheduling state lives in ref metadata (JSON):
   easiness, interval, reps, next_review, last_reviewed, review_log[]
@@ -56,7 +56,7 @@ def _slugify(text: str) -> str:
         import hashlib
 
         slug = hashlib.sha256(text.encode()).hexdigest()[:12]
-    return f"fc:{slug}"
+    return f"flashcard:{slug}"
 
 
 def _now() -> datetime:
@@ -113,9 +113,9 @@ def _last_review_note(meta: dict) -> str | None:
 
 
 class FlashcardHandler(RefHandler):
-    """Handler for fc: scheme — knowledge items with spaced repetition."""
+    """Handler for flashcard: scheme — knowledge items with spaced repetition."""
 
-    scheme = "fc"
+    scheme = "flashcard"
     writable = True
     corpus_id = "flashcards"
     onboarding_skill = "sm2-basics"
@@ -138,15 +138,16 @@ class FlashcardHandler(RefHandler):
     _ref_noun = "item"
     _ref_emoji = "\U0001f9e0"  # 🧠
     _max_list = 20
+    _slug_prefix = "flashcard"
 
     # ── View dispatchers ─────────────────────────────────────────────
 
     def _read_due_view(self, store, ref, selector, subview, **kwargs) -> str:
-        extract_kwargs(kwargs, (), context="fc/due")
+        extract_kwargs(kwargs, (), context="flashcard/due")
         return self._read_due(store)
 
     def _read_stats_view(self, store, ref, selector, subview, **kwargs) -> str:
-        extract_kwargs(kwargs, (), context="fc/stats")
+        extract_kwargs(kwargs, (), context="flashcard/stats")
         return self._read_stats(store)
 
     def read(
@@ -163,7 +164,7 @@ class FlashcardHandler(RefHandler):
     ) -> str:
         store = _get_store()
 
-        # Bare call: fc: with no path
+        # Bare call: flashcard: with no path
         if not path and not selector:
             if view == "due":
                 return self._read_due(store)
@@ -248,7 +249,7 @@ class FlashcardHandler(RefHandler):
     # ── List (override — query refs by corpus, not papers table) ─────
 
     def _list_overview(self, store) -> str:
-        """Top-level fc: overview with counts and entry points."""
+        """Top-level flashcard: overview with counts and entry points."""
         refs = self._query_corpus_refs(store)
         total = len(refs)
         now = _now()
@@ -276,13 +277,17 @@ class FlashcardHandler(RefHandler):
 
         lines.append("")
         lines.append("Next:")
-        lines.append("  get(id='fc:/due')                \u2014 items to review now")
         lines.append(
-            "  get(id='fc:/stats')              \u2014 review statistics & struggle spots"
+            "  get(id='flashcard:/due')                \u2014 items to review now"
         )
-        lines.append("  search(query='...', scope='fc:') \u2014 find items by topic")
         lines.append(
-            "  put(id='fc:', text='Paris is the capital of France', mode='append') \u2014 create item"
+            "  get(id='flashcard:/stats')              \u2014 review statistics & struggle spots"
+        )
+        lines.append(
+            "  search(query='...', scope='flashcard:') \u2014 find items by topic"
+        )
+        lines.append(
+            "  put(id='flashcard:', text='Paris is the capital of France', mode='append') \u2014 create item"
         )
         return "\n".join(lines)
 
@@ -293,7 +298,7 @@ class FlashcardHandler(RefHandler):
             return (
                 "\U0001f9e0 No flashcard items yet.\n\n"
                 "Create one:\n"
-                "  put(id='fc:', text='Paris is the capital of France', mode='append')"
+                "  put(id='flashcard:', text='Paris is the capital of France', mode='append')"
             )
 
         if grep:
@@ -322,7 +327,9 @@ class FlashcardHandler(RefHandler):
         if len(refs) > self._max_list:
             lines.append(f"\n  ... and {len(refs) - self._max_list} more")
         lines.append("")
-        lines.append("Next: get(id='<slug>') for details, get(id='fc:/due') for review")
+        lines.append(
+            "Next: get(id='<slug>') for details, get(id='flashcard:/due') for review"
+        )
         return "\n".join(lines)
 
     # ── /due view ────────────────────────────────────────────────────
@@ -342,7 +349,7 @@ class FlashcardHandler(RefHandler):
             else:
                 lines.append("  No items yet. Create one:")
                 lines.append(
-                    "  put(id='fc:', text='knowledge statement', mode='append')"
+                    "  put(id='flashcard:', text='knowledge statement', mode='append')"
                 )
             return "\n".join(lines)
 
@@ -400,7 +407,7 @@ class FlashcardHandler(RefHandler):
         lines.append("  \u2022 After each answer, judge 0-5 and note what happened:")
         lines.append("")
         if due:
-            first = due[0].get("slug", "fc:...")
+            first = due[0].get("slug", "flashcard:...")
             lines.append(
                 f"  put(id='{first}', text='4', mode='review',\n"
                 f"      note='what the user got right/wrong')"
@@ -419,7 +426,7 @@ class FlashcardHandler(RefHandler):
             return (
                 "\U0001f9e0 No flashcard items yet.\n\n"
                 "Create one:\n"
-                "  put(id='fc:', text='knowledge statement', mode='append')"
+                "  put(id='flashcard:', text='knowledge statement', mode='append')"
             )
 
         due = [r for r in refs if self._is_due(r, now)]
@@ -486,8 +493,10 @@ class FlashcardHandler(RefHandler):
 
         lines.append("")
         lines.append("Next:")
-        lines.append("  get(id='fc:/due') \u2014 start reviewing")
-        lines.append("  search(query='...', scope='fc:') \u2014 find items by topic")
+        lines.append("  get(id='flashcard:/due') \u2014 start reviewing")
+        lines.append(
+            "  search(query='...', scope='flashcard:') \u2014 find items by topic"
+        )
         return "\n".join(lines)
 
     # ── Write operations ─────────────────────────────────────────────
@@ -503,7 +512,7 @@ class FlashcardHandler(RefHandler):
         store = _get_store()
 
         if mode in ("append", "add"):
-            # Allow path in id (e.g. fc:kanji) — use text for content,
+            # Allow path in id (e.g. flashcard:kanji) — use text for content,
             # fall back to path as text if text is empty
             effective_text = text or path or ""
             return self._create_item(store, effective_text, **kwargs)
@@ -513,7 +522,7 @@ class FlashcardHandler(RefHandler):
                 raise PrecisError(
                     ErrorCode.PARAM_INVALID,
                     cause="id= required for mode='review' (which item to review)",
-                    next="get(id='fc:/due') to find the item",
+                    next="get(id='flashcard:/due') to find the item",
                 )
             return self._record_review(store, path, text, **kwargs)
 
@@ -687,7 +696,7 @@ class FlashcardHandler(RefHandler):
 
         lines.append("")
         lines.append("Next:")
-        lines.append("  get(id='fc:/due') \u2014 refresh due list")
+        lines.append("  get(id='flashcard:/due') \u2014 refresh due list")
         return "\n".join(lines)
 
     def _update_body(self, store, path: str, text: str) -> str:

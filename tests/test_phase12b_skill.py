@@ -166,9 +166,39 @@ class TestFrontmatterParsing:
         assert skill.tags == ["papers", "research"]
         assert "## When to Use" in skill.body
 
-    def test_parse_skill_md_missing_name_returns_none(self, tmp_path):
+    def test_parse_skill_md_missing_name_falls_back_to_slug(self, tmp_path):
+        # Lenient parsing: a skill without frontmatter 'name' still
+        # indexes — the directory name is authoritative and becomes the
+        # display name.  This keeps agent-authored skills discoverable
+        # when the frontmatter is minimal (see mcp-smoke-test-plan §3.3).
         path = _write_skill(tmp_path, "broken", _MISSING_NAME)
-        assert _parse_skill_md(path) is None
+        skill = _parse_skill_md(path)
+        assert skill is not None
+        assert skill.slug == "broken"
+        assert skill.name == "broken"
+        # description from frontmatter is still preserved when present.
+        assert skill.description == "skill without a name"
+
+    def test_parse_skill_md_missing_description_uses_body_first_line(
+        self, tmp_path
+    ):
+        # Description falls back to the first non-blank, non-heading
+        # body line so listings render something meaningful.
+        text = "---\nname: foo\n---\n# ignore me\n\nFirst body line.\nSecond.\n"
+        path = _write_skill(tmp_path, "foo", text)
+        skill = _parse_skill_md(path)
+        assert skill is not None
+        assert skill.description == "First body line."
+
+    def test_parse_skill_md_empty_frontmatter_still_indexes(self, tmp_path):
+        # Absolute minimum: a SKILL.md with no frontmatter at all still
+        # indexes under the directory name, with the body used for both
+        # the body field and the description fallback.
+        path = _write_skill(tmp_path, "bareskill", "Just a body line.\n")
+        skill = _parse_skill_md(path)
+        assert skill is not None
+        assert skill.slug == "bareskill"
+        assert skill.name == "bareskill"
 
     def test_parse_skill_md_treats_string_list_fields_as_single_item(self, tmp_path):
         text = (
@@ -234,9 +264,14 @@ class TestScan:
         _write_skill(scan_dir, "ok", _TODO_TRIAGE)
         handler = SkillHandler(scan_paths=[scan_dir])
         handler._ensure_fresh()
-        # The valid one still indexes.
+        # The valid one indexes with its full frontmatter.
         assert "ok" in handler._index
-        assert "broken" not in handler._index
+        # Lenient parsing: the broken-YAML skill still indexes via the
+        # directory-name fallback, so the user can at least see + edit
+        # it rather than having it silently disappear.  The key guarantee
+        # here is that the scan does not abort on one bad file.
+        assert "broken" in handler._index
+        assert handler._index["broken"].name == "broken"
 
     def test_missing_scan_path_is_tolerated(self, tmp_path, isolated_home):
         missing = tmp_path / "does-not-exist"
@@ -391,6 +426,53 @@ class TestWriteSurface:
         with pytest.raises(PrecisError) as exc_info:
             handler.put(path="dup", selector=None, text=body, mode="append")
         assert exc_info.value.code is ErrorCode.ID_AMBIGUOUS
+
+    def test_append_derives_slug_from_frontmatter_name(
+        self, tmp_path, isolated_home
+    ):
+        # smoke-test plan §3.3 convention: id='' with the slug living
+        # inside the frontmatter.  ``name:`` (canonical Agent Skills
+        # field) drives the destination directory.
+        handler = SkillHandler(scan_paths=[])
+        out = handler.put(
+            path="",
+            selector=None,
+            text="---\nname: fm-name-skill\ndescription: x\n---\nbody\n",
+            mode="append",
+        )
+        assert "skill:fm-name-skill" in out
+        assert "fm-name-skill" in handler._index
+
+    def test_append_derives_slug_from_frontmatter_slug_field(
+        self, tmp_path, isolated_home
+    ):
+        # Backward-compat for the plan's earlier ``slug:`` authoring
+        # convention.  Either field works; ``name:`` wins if both are
+        # present (tested implicitly via ``_parse_skill_md`` precedence).
+        handler = SkillHandler(scan_paths=[])
+        out = handler.put(
+            path="",
+            selector=None,
+            text="---\nslug: fm-slug-skill\ndescription: x\n---\nbody\n",
+            mode="append",
+        )
+        assert "skill:fm-slug-skill" in out
+        assert "fm-slug-skill" in handler._index
+
+    def test_append_errors_when_no_slug_anywhere(
+        self, tmp_path, isolated_home
+    ):
+        # Still strict when none of id/title/frontmatter provides a slug.
+        handler = SkillHandler(scan_paths=[])
+        with pytest.raises(PrecisError) as exc_info:
+            handler.put(
+                path="",
+                selector=None,
+                text="just a body, no frontmatter",
+                mode="append",
+            )
+        assert exc_info.value.code is ErrorCode.PARAM_INVALID
+        assert "slug" in exc_info.value.cause.lower()
 
     def test_replace_overwrites_writable_skill(self, tmp_path, isolated_home):
         handler = SkillHandler(scan_paths=[])
@@ -549,7 +631,10 @@ class TestBundledSeedSkills:
     def test_seed_skill_has_onboarding_marker(self):
         handler = SkillHandler()
         handler._ensure_fresh()
-        assert handler._index["sm2-basics"].kind_onboarding == "fc"
+        # The bundled sm2-basics skill's kind-onboarding frontmatter
+        # names the canonical ``flashcard`` kind (the short ``fc`` alias
+        # was retired — see Apr 2026 registry cleanup).
+        assert handler._index["sm2-basics"].kind_onboarding == "flashcard"
 
     def test_seed_skill_applies_to_matches_kind(self):
         handler = SkillHandler()

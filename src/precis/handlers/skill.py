@@ -137,9 +137,14 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 def _parse_skill_md(path: Path) -> Skill | None:
     """Parse a single SKILL.md file into a :class:`Skill`.
 
-    Returns ``None`` when required fields are missing — the caller logs
-    and skips.  The directory name is used as the slug (not frontmatter
-    ``name``) so slug uniqueness matches directory uniqueness.
+    Returns ``None`` only when the file cannot be read at all.  The
+    directory name is authoritative for the slug; frontmatter ``name``
+    and ``description`` are best-effort — the former falls back to the
+    slug (so a minimal SKILL.md with just a body is still indexable)
+    and the latter falls back to the empty string (with a log warning
+    so agents know to add one).  Lenient parsing keeps agent-authored
+    skills discoverable; strict validation at write-time belongs in
+    :meth:`SkillHandler._put_write`, not here.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -148,16 +153,23 @@ def _parse_skill_md(path: Path) -> Skill | None:
         return None
     fm, body = _split_frontmatter(text)
 
-    name = str(fm.get("name") or "").strip()
+    slug = path.parent.name  # directory name — authoritative
+    name = str(fm.get("name") or "").strip() or slug
     description = str(fm.get("description") or "").strip()
-    if not name or not description:
-        log.warning(
-            "skill: %s missing required frontmatter field(s) name/description",
+    if not description:
+        log.info(
+            "skill: %s has no frontmatter 'description' — listing will "
+            "show the body's first line instead",
             path,
         )
-        return None
+        # Fall back to the first non-blank body line, truncated, so
+        # listings render something useful rather than an empty slot.
+        for ln in body.splitlines():
+            stripped = ln.strip()
+            if stripped and not stripped.startswith("#"):
+                description = stripped[:200]
+                break
 
-    slug = path.parent.name  # directory name
     try:
         mtime = path.stat().st_mtime
     except OSError:
@@ -494,11 +506,23 @@ class SkillHandler(Handler):
 
         if mode == "append":
             slug = path or (title if isinstance(title, str) else "") or ""
+            if not slug:
+                # Last-resort fallback: look in the posted frontmatter
+                # for ``name:`` (canonical Agent Skills field) or
+                # ``slug:`` (the convention the smoke-test plan uses).
+                # Keeps the strict "some slug must be present somewhere"
+                # guarantee while accepting both authoring conventions.
+                fm, _body = _split_frontmatter(text)
+                slug = str(fm.get("name") or fm.get("slug") or "")
             slug = slug.strip().lower().replace(" ", "-")
             if not slug:
                 raise PrecisError(
                     ErrorCode.PARAM_INVALID,
-                    cause="id= (or title=) required for mode='append' (new skill slug)",
+                    cause=(
+                        "skill slug required — pass id='skill:<slug>', "
+                        "title='<slug>', or include 'name:' or 'slug:' "
+                        "in the text's frontmatter"
+                    ),
                 )
             dest_dir = self._writable_root() / slug
             if dest_dir.exists():

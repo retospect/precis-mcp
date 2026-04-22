@@ -6,7 +6,10 @@ Requires the ``paper`` extra: ``pip install precis-mcp[paper]``.
 
 from __future__ import annotations
 
+import html
+import json
 import logging
+import re
 from pathlib import Path
 
 from acatome_meta.literature import first_author_surname
@@ -16,6 +19,111 @@ from precis.protocol import ErrorCode, PrecisError, extract_kwargs
 from precis.uri import SEP
 
 log = logging.getLogger(__name__)
+
+
+# HTML/JATS tags embedded in titles by the CrossRef / JATS ingestion
+# pipeline.  A plain strip leaves the inner text intact; we deliberately
+# do not translate ``<i>`` → ``\textit{}`` because downstream templates
+# vary (biblatex/natbib/plain bibtex all differ on the right spelling),
+# and leaving the text unformatted is safer than guessing.
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+# BibTeX reserved characters that must be escaped with a backslash when
+# they appear literally inside a braced field value.  ``~`` and ``^``
+# require ``\textasciitilde{}`` / ``\textasciicircum{}`` which is more
+# invasive than we want here — they're left alone and the bib file
+# compiler will complain if they slip through.
+_BIBTEX_ESCAPE = str.maketrans(
+    {
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+    }
+)
+
+# Collapses any run of whitespace (incl. newlines, tabs) down to a
+# single ASCII space.  Titles arrive multi-line from sources that pretty-
+# print the source XML.
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _clean_title(raw: object) -> str:
+    """Sanitise a title for inclusion in a citation field.
+
+    Steps, in order:
+
+    1. Coerce to ``str`` and strip outer whitespace.
+    2. Decode HTML entities (``&amp;`` → ``&``, ``&mdash;`` → ``—``).
+    3. Strip inline HTML/JATS tags verbatim.
+    4. Collapse all internal whitespace runs to a single space.
+    5. Escape BibTeX reserved characters (``&`` ``%`` ``$`` ``#`` ``_``).
+
+    Safe on empty/``None`` input — returns ``""``.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    text = html.unescape(text)
+    text = _HTML_TAG_RE.sub("", text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    return text.translate(_BIBTEX_ESCAPE)
+
+
+def _bibtex_escape(raw: object) -> str:
+    """Minimal escaping for non-title string fields (journal, author…).
+
+    Runs HTML-entity decode + whitespace collapse + BibTeX-special
+    escape.  Does not strip HTML tags — none of the non-title fields
+    have been seen to carry them, and stripping proactively would be a
+    data-loss footgun on surname strings like ``<van> der Waals``.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    text = html.unescape(text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    return text.translate(_BIBTEX_ESCAPE)
+
+
+def _author_names(raw: object) -> list[str]:
+    """Normalise the ``authors`` column into a flat list of name strings.
+
+    Accepts the shapes that actually show up in the store:
+
+    * ``list[dict]``    e.g. ``[{"name": "Smith, John"}, {"name": "Li, X."}]``
+    * ``list[str]``     e.g. ``["Smith, John", "Li, X."]``
+    * ``str`` (JSON)    e.g. ``'[{"name": "Smith, John"}, …]'`` — decoded
+    * ``str`` (plain)   e.g. ``"Smith, John; Li, X."`` — split on ``;``
+    * ``None`` / other — empty list
+
+    Returns a list of cleaned display names with empty entries stripped.
+    Pure — never raises.
+    """
+    # Decode JSON-encoded strings first so the downstream branching
+    # only has to deal with the structured case.
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped.startswith("["):
+            try:
+                raw = json.loads(stripped)
+            except (ValueError, TypeError):
+                # Fall through: treat as plain semicolon string.
+                pass
+    if isinstance(raw, list):
+        out: list[str] = []
+        for item in raw:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+            else:
+                name = str(item).strip()
+            if name:
+                out.append(name)
+        return out
+    if isinstance(raw, str) and raw.strip():
+        return [a.strip() for a in raw.split(";") if a.strip()]
+    return []
 
 
 class PaperHandler(RefHandler):
@@ -178,18 +286,36 @@ class PaperHandler(RefHandler):
 
     def _read_citation(self, ref: dict, style: str) -> str:
         slug = ref.get("slug", "???")
-        title = ref.get("title", "")
-        authors = ref.get("authors", "")
-        year = ref.get("year", "")
-        journal = ref.get("journal", "")
-        doi = ref.get("doi", "")
+        raw_title = ref.get("title", "")
+        raw_authors = ref.get("authors", "")
+        raw_journal = ref.get("journal", "")
+        raw_doi = ref.get("doi", "")
+        raw_year = ref.get("year", "")
+
+        # Normalised author list for both BibTeX ("X and Y") and RIS
+        # (one ``AU  -`` line per author).  Empty list if no authors.
+        authors = _author_names(raw_authors)
 
         if style == "bib":
+            # Apply the full title sanitiser (HTML strip + whitespace
+            # collapse + BibTeX escape) and the lighter escaper to
+            # every other string field so backslash-reserved chars don't
+            # break the emitted ``.bib``.
+            title = _clean_title(raw_title)
+            journal = _bibtex_escape(raw_journal)
+            doi = _bibtex_escape(raw_doi)
+            year = _bibtex_escape(raw_year)
+            bib_authors = " and ".join(_bibtex_escape(n) for n in authors)
+
             entry = f"@article{{{slug},\n"
             if title:
                 entry += f"  title = {{{title}}},\n"
-            if authors:
-                entry += f"  author = {{{authors}}},\n"
+            if bib_authors:
+                # BibTeX authors: joined with " and ".  Each name keeps
+                # its original ``Last, First`` ordering (when present)
+                # so BibTeX's name-parsing grammar recovers the
+                # surname/givenname split unambiguously.
+                entry += f"  author = {{{bib_authors}}},\n"
             if year:
                 entry += f"  year = {{{year}}},\n"
             if journal:
@@ -199,25 +325,43 @@ class PaperHandler(RefHandler):
             entry += "}\n"
             return entry
         elif style == "ris":
+            # RIS fields are plain UTF-8 text with no backslash-escape
+            # dialect — skip the BibTeX-specific translation but still
+            # HTML-decode, tag-strip (for titles) and whitespace-collapse
+            # to keep the output machine-parseable.
+            def _ris_clean(raw: object, *, strip_tags: bool) -> str:
+                text = str(raw or "").strip()
+                if not text:
+                    return ""
+                text = html.unescape(text)
+                if strip_tags:
+                    text = _HTML_TAG_RE.sub("", text)
+                return _WHITESPACE_RE.sub(" ", text).strip()
+
             lines = ["TY  - JOUR"]
+            title = _ris_clean(raw_title, strip_tags=True)
             if title:
                 lines.append(f"TI  - {title}")
-            if authors:
-                for a in authors.split(";"):
-                    lines.append(f"AU  - {a.strip()}")
-            if year:
-                lines.append(f"PY  - {year}")
+            for name in authors:
+                cleaned = _ris_clean(name, strip_tags=False)
+                if cleaned:
+                    lines.append(f"AU  - {cleaned}")
+            if raw_year:
+                lines.append(f"PY  - {raw_year}")
+            journal = _ris_clean(raw_journal, strip_tags=False)
             if journal:
                 lines.append(f"JO  - {journal}")
-            if doi:
-                lines.append(f"DO  - {doi}")
+            if raw_doi:
+                lines.append(f"DO  - {raw_doi}")
             lines.append("ER  - ")
             return "\n".join(lines)
         else:
-            # ACS-style inline
-            if authors and year:
-                first_author = first_author_surname(authors)
-                return f"{first_author} et al., {journal} {year}"
+            # ACS-style inline — whitespace-collapse the journal so a
+            # multi-line source doesn't spill into the output.
+            if authors and raw_year:
+                first_author = first_author_surname(raw_authors)
+                journal = _WHITESPACE_RE.sub(" ", str(raw_journal or "")).strip()
+                return f"{first_author} et al., {journal} {raw_year}".strip()
             return slug
 
     # ── Figures ───────────────────────────────────────────────────────

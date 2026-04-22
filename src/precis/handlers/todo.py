@@ -11,12 +11,33 @@ in ref metadata.  The ``todo:`` URI scheme is used for addressing.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import UTC, datetime
+from typing import Any
 
 from precis.handlers._ref_base import RefHandler, _get_store, _truncate
 from precis.protocol import ErrorCode, PrecisError, extract_kwargs
+
+
+def _parse_meta(ref: dict[str, Any]) -> dict[str, Any]:
+    """Return the parsed metadata dict for a ref, defensively.
+
+    The store exposes ``meta`` either as a plain dict (acatome-store v2+)
+    or as a JSON string (older shape).  This helper normalises both and
+    returns an empty dict on any parse error so callers can ``.get()``
+    without guarding.
+    """
+    raw = ref.get("meta") or ref.get("metadata") or {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +67,15 @@ PRIORITIES = {"low", "medium", "high"}
 
 DEFAULT_STATE = "pending"
 DEFAULT_PRIORITY = "medium"
+
+#: States that count as "still open" in the ``/open`` view.  Mirrors
+#: the todo-triage skill's mental model: anything not finished yet.
+OPEN_STATES: frozenset[str] = frozenset({"pending", "in_progress", "blocked"})
+
+#: States that count as "closed" in the ``/done`` view.  Cancelled
+#: belongs here too — the user explicitly stopped caring, which is a
+#: terminal state for triage purposes.
+DONE_STATES: frozenset[str] = frozenset({"done", "cancelled"})
 
 
 def _slugify(title: str) -> str:
@@ -79,17 +109,145 @@ class TodoHandler(RefHandler):
         **RefHandler.views,
         "state": "_read_state_view",
     }
+    #: Collection-level views — dispatch with no ref slug.  ``/recent``
+    #: mirrors the other ref kinds' recency list; ``/today`` is the
+    #: today-centric digest agents want first thing in the morning; each
+    #: state name appears as its own view so ``todo:/open`` and
+    #: ``todo:/done`` work without passing a state selector.
+    collection_views: dict[str, str] = {
+        "recent": "_read_recent_view",
+        "today": "_read_today_view",
+        "open": "_read_open_view",
+        "done": "_read_done_view",
+        "pending": "_read_pending_view",
+        "in_progress": "_read_in_progress_view",
+        "blocked": "_read_blocked_view",
+        "cancelled": "_read_cancelled_view",
+    }
     allowed_modes = {"append", "state", "replace", "note"}
     extensions: set[str] = set()
 
     _ref_noun = "todo"
     _ref_emoji = "☐"
+    _slug_prefix = "todo"
 
     # ── View dispatchers ─────────────────────────────────────────────
 
     def _read_state_view(self, store, ref, selector, subview, **kwargs) -> str:
         extract_kwargs(kwargs, (), context="todo/state")
         return self._read_state(ref)
+
+    # ── Collection-level views ──────────────────────────────────────
+    # All of these share shape: filter :meth:`_query_corpus_refs` by
+    # ref.metadata['state'] (or a date predicate for ``/today``) and
+    # delegate to :meth:`_render_state_filtered` for a single rendering.
+
+    def _read_recent_view(self, store, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, ("top_k",), context="todo/recent")
+        refs = self._query_corpus_refs(store)
+        return self._render_state_filtered(
+            refs, header_noun="recent todos", limit=kwargs.get("top_k") or 20
+        )
+
+    def _read_today_view(self, store, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="todo/today")
+        today = datetime.now(UTC).date().isoformat()
+        refs = self._query_corpus_refs(store)
+
+        def _is_today(r: dict) -> bool:
+            meta = _parse_meta(r)
+            for key in ("due", "created"):
+                raw = str(meta.get(key) or "")
+                if raw.startswith(today):
+                    return True
+            return False
+
+        today_refs = [r for r in refs if _is_today(r)]
+        return self._render_state_filtered(
+            today_refs, header_noun=f"todos due/created today ({today})"
+        )
+
+    def _read_open_view(self, store, subview, **kwargs) -> str:
+        return self._view_by_states(store, OPEN_STATES, "open todos", **kwargs)
+
+    def _read_done_view(self, store, subview, **kwargs) -> str:
+        return self._view_by_states(store, DONE_STATES, "closed todos", **kwargs)
+
+    def _read_pending_view(self, store, subview, **kwargs) -> str:
+        return self._view_by_states(
+            store, frozenset({"pending"}), "pending todos", **kwargs
+        )
+
+    def _read_in_progress_view(self, store, subview, **kwargs) -> str:
+        return self._view_by_states(
+            store,
+            frozenset({"in_progress"}),
+            "in-progress todos",
+            **kwargs,
+        )
+
+    def _read_blocked_view(self, store, subview, **kwargs) -> str:
+        return self._view_by_states(
+            store, frozenset({"blocked"}), "blocked todos", **kwargs
+        )
+
+    def _read_cancelled_view(self, store, subview, **kwargs) -> str:
+        return self._view_by_states(
+            store, frozenset({"cancelled"}), "cancelled todos", **kwargs
+        )
+
+    def _view_by_states(
+        self,
+        store,
+        wanted: frozenset[str],
+        header_noun: str,
+        **kwargs,
+    ) -> str:
+        extract_kwargs(
+            kwargs, ("top_k",), context=f"todo/{'|'.join(sorted(wanted))}"
+        )
+        refs = self._query_corpus_refs(store)
+        refs = [r for r in refs if _parse_meta(r).get("state") in wanted]
+        return self._render_state_filtered(
+            refs,
+            header_noun=header_noun,
+            limit=kwargs.get("top_k") or self._max_list,
+        )
+
+    def _render_state_filtered(
+        self,
+        refs: list[dict],
+        *,
+        header_noun: str,
+        limit: int | None = None,
+    ) -> str:
+        """Shared rendering for the state-filtered collection views.
+
+        Reuses :meth:`_list_entry` so the formatting matches the bare
+        ``todo:`` list; the header names the filter so agents can tell
+        at a glance which slice they're looking at.
+        """
+        if not refs:
+            return (
+                f"☐ No {header_noun}.\n\n"
+                "Next:\n"
+                "  get(id='todo:')          — full list\n"
+                "  get(id='todo:/recent')   — recent activity"
+            )
+        cap = limit or self._max_list
+        lines = [f"☐ {len(refs)} {header_noun}", ""]
+        for r in refs[:cap]:
+            lines.append(self._list_entry(r))
+        if len(refs) > cap:
+            lines.append(f"\n  ... and {len(refs) - cap} more")
+        lines.append("")
+        lines.append(
+            "Next:\n"
+            "  get(id='<slug>')                               — details\n"
+            "  put(id='<slug>', text='done', mode='state')    — complete\n"
+            "  put(id='<slug>', text='cancelled', mode='state') — cancel"
+        )
+        return "\n".join(lines)
 
     def _read_overview(self, store, ref: dict) -> str:
         slug = ref.get("slug", "???")

@@ -108,6 +108,7 @@ class MemoryHandler(RefHandler):
 
     _ref_noun = "memory"
     _ref_emoji = "🧠"
+    _slug_prefix = "memory"
 
     # ── Subclass hooks ───────────────────────────────────────────────
 

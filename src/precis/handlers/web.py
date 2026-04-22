@@ -32,7 +32,7 @@ import logging
 import os
 from typing import Any, ClassVar
 
-from precis.protocol import ErrorCode, Handler, PrecisError
+from precis.protocol import CallContext, ErrorCode, Handler, PrecisError
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +85,16 @@ class _WebBase(Handler):
 
     #: HTTP timeout in seconds.  Subclasses override per SLA.
     _TIMEOUT: ClassVar[int] = 60
+
+    #: One-line human-readable tagline for the landing view.  Subclasses
+    #: override to describe their Sonar mode.
+    _TAGLINE: ClassVar[str] = "Perplexity-backed query."
+
+    #: Emoji prefix for the landing header.  Subclasses override.
+    _EMOJI: ClassVar[str] = "🌐"
+
+    #: Example invocations listed in the landing view.  Subclasses override.
+    _EXAMPLES: ClassVar[tuple[str, ...]] = ()
 
     writable = False
     views = set()
@@ -191,15 +201,69 @@ class _WebBase(Handler):
         accepted as a fallback when the caller used the search tool
         with an empty id.  Other handler params are ignored — a Sonar
         answer is atomic.
+
+        A bare call (``get(id='<scheme>:')`` with no query) returns a
+        landing view describing the kind — no API call is made and the
+        response is free (see :meth:`cost_of`).
         """
         question = (path or query or "").strip()
         if not question:
-            raise PrecisError(
-                ErrorCode.PARAM_INVALID,
-                "empty Perplexity query",
-            )
+            return self._landing()
         data = self._call_sonar(question)
         return _format_response(data, self._MODEL)
+
+    # ---- Landing / cost hooks --------------------------------------
+
+    def _landing(self) -> str:
+        """Render the help/landing view shown on a bare call.
+
+        Purely informational — no Perplexity API call, no key required.
+        Pairs with :meth:`cost_of` to report ``free`` for this path so
+        agents aren't misled by the kind-level ``cost_hint``.
+        """
+        lines = [
+            f"{self._EMOJI} {self.scheme}: — {self._TAGLINE}",
+            "",
+            (
+                f"Model: `{self._MODEL}` · timeout: {self._TIMEOUT}s · "
+                f"requires `PERPLEXITY_API_KEY`"
+            ),
+            "",
+            "Usage:",
+            f"  get(type='{self.scheme}', id='<question>')",
+            f"  search(type='{self.scheme}', query='<question>')",
+        ]
+        if self._EXAMPLES:
+            lines.append("")
+            lines.append("Examples:")
+            for ex in self._EXAMPLES:
+                lines.append(f"  {ex}")
+        lines.append("")
+        lines.append(
+            "Answers include numbered source citations; verify sources "
+            "before citing in publications — Perplexity is not a primary "
+            "source."
+        )
+        return "\n".join(lines)
+
+    def cost_of(self, ctx: CallContext) -> str | None:
+        """Report ``free`` for bare-landing calls, else fall back to spec.
+
+        A bare call never hits the Perplexity API; the kind-level
+        ``cost_hint`` (``~$0.001/call`` etc.) would be misleading on
+        the landing response.  Returning ``None`` for non-landing calls
+        lets the registry's three-level fallback emit the per-kind hint.
+        """
+        raw_id = str(ctx.args.get("id", "")).strip()
+        grep = str(ctx.args.get("grep", "")).strip()
+        query = str(ctx.args.get("query", "")).strip()
+        # Strip the scheme prefix if present so "web:" and "web" both count.
+        prefix = f"{self.scheme}:"
+        if raw_id.startswith(prefix):
+            raw_id = raw_id[len(prefix) :].strip()
+        if not raw_id and not grep and not query:
+            return "free"
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +323,12 @@ class WebHandler(_WebBase):
     scheme = "web"
     _MODEL: ClassVar[str] = "sonar"
     _TIMEOUT: ClassVar[int] = 30
+    _TAGLINE: ClassVar[str] = "Perplexity Sonar — fast factual web search"
+    _EMOJI: ClassVar[str] = "🌐"
+    _EXAMPLES: ClassVar[tuple[str, ...]] = (
+        "get(type='web', id='current CEO of Anthropic')",
+        "search(type='web', query='Perseverance rover findings 2025')",
+    )
 
 
 class ThinkHandler(_WebBase):
@@ -272,6 +342,14 @@ class ThinkHandler(_WebBase):
     scheme = "think"
     _MODEL: ClassVar[str] = "sonar-reasoning-pro"
     _TIMEOUT: ClassVar[int] = 120
+    _TAGLINE: ClassVar[str] = (
+        "Perplexity Sonar Reasoning Pro — detailed analysis with reasoning traces"
+    )
+    _EMOJI: ClassVar[str] = "🧠"
+    _EXAMPLES: ClassVar[tuple[str, ...]] = (
+        "get(type='think', id='compare GPT-4o and Claude 4 on code review')",
+        "get(type='think', id='why does Postgres SKIP LOCKED help here?')",
+    )
 
 
 class ResearchHandler(_WebBase):
@@ -288,3 +366,11 @@ class ResearchHandler(_WebBase):
     scheme = "research"
     _MODEL: ClassVar[str] = "sonar-deep-research"
     _TIMEOUT: ClassVar[int] = 600
+    _TAGLINE: ClassVar[str] = (
+        "Perplexity Sonar Deep Research — multi-step research (minutes, ~$0.50/call)"
+    )
+    _EMOJI: ClassVar[str] = "🔬"
+    _EXAMPLES: ClassVar[tuple[str, ...]] = (
+        "get(type='research', id='landscape of post-quantum signature schemes')",
+        "get(type='research', id='compare AEM vs PEM for CO2 reduction')",
+    )

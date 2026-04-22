@@ -111,11 +111,14 @@ def _future_ref(slug="fc:future-item", title="A future item", days_ahead=5, **kw
 
 class TestSlugify:
     def test_basic(self):
-        assert _slugify("Paris is the capital") == "fc:paris-is-the-capital"
+        assert (
+            _slugify("Paris is the capital")
+            == "flashcard:paris-is-the-capital"
+        )
 
     def test_special_chars(self):
         result = _slugify("Bragg's law: nλ = 2d sin θ")
-        assert result.startswith("fc:")
+        assert result.startswith("flashcard:")
         assert " " not in result
 
     def test_empty(self):
@@ -124,8 +127,8 @@ class TestSlugify:
     def test_truncation(self):
         long = "a" * 100
         result = _slugify(long)
-        # fc: prefix + 60 chars max
-        assert len(result) <= 63
+        # ``flashcard:`` prefix (10 chars) + 60-char body cap
+        assert len(result) <= len("flashcard:") + 60
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +202,7 @@ class TestCreate:
         result = h.put("", None, "Paris is the capital of France", "append")
 
         assert "Created" in result
-        assert "fc:" in result
+        assert "flashcard:" in result
         store.create_ref.assert_called_once()
         call_kwargs = store.create_ref.call_args
         assert call_kwargs.kwargs["corpus_id"] == "flashcards"
@@ -506,8 +509,8 @@ class TestOverview:
         h._query_corpus_refs = MagicMock(return_value=[_fc_ref()])
 
         result = h.read("", None, None, None, "", False, 0, 0)
-        assert "fc:/due" in result
-        assert "fc:/stats" in result
+        assert "flashcard:/due" in result
+        assert "flashcard:/stats" in result
         assert "mode='append'" in result
 
     @patch(_PATCH_STORE_FC)

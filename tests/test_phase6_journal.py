@@ -464,7 +464,10 @@ class TestConversationWrite:
                 mode="append",
             )
         kwargs = store.create_ref.call_args.kwargs
-        assert kwargs["slug"] == "conv:2026-04-21-asa"
+        # Bare slugs are normalised with the canonical ``conversation:``
+        # prefix (the short ``conv:`` form was retired — see registry
+        # cleanup, Apr 2026)
+        assert kwargs["slug"] == "conversation:2026-04-21-asa"
 
     def test_delete_marks_meta(self):
         ref = _conv_ref()
@@ -496,10 +499,12 @@ class TestConversationRegistration:
         assert "conversation" in KINDS
         assert "conversation" in SCHEMES
 
-    def test_conv_alias_resolves(self):
+    def test_no_conv_alias_registered(self):
+        # The short ``conv`` alias was removed so agents get a single
+        # canonical kind name.  Confirm it does not resolve to any kind.
         from precis.registry import ALIASES
 
-        assert ALIASES.get("conv") == "conversation"
+        assert "conv" not in ALIASES
 
 
 # ---------------------------------------------------------------------------
@@ -512,13 +517,12 @@ class TestURIDispatch:
         assert server._to_uri("my-slug", kind="memory") == "memory:my-slug"
 
     def test_type_conversation_builds_conversation_uri(self):
-        # conv: scheme isn't registered (only `conversation:` is); the
-        # alias still routes through resolve_alias for enum purposes.
         out = server._to_uri("2026-04-21-x", kind="conversation")
         assert out == "conversation:2026-04-21-x"
 
     def test_bare_conv_slug_needs_prefix(self):
-        # Without `conv:` prefix the classifier falls back to paper.
-        # This is the same rule that applies to every slug-based kind.
+        # Without a ``conversation:`` prefix the classifier falls back
+        # to paper.  This is the same rule that applies to every
+        # slug-based kind.
         out = server._to_uri("2026-04-21-asa", kind="")
         assert out.startswith("paper:")

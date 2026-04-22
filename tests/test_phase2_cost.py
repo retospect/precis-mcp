@@ -218,7 +218,10 @@ class TestServerDispatchFooter:
         assert get_session_stats() == {}
         server.get(id="wang2020state")
         server.get(id="smith2021fwd")
-        server.search(query="MOF")
+        # ``search`` now requires explicit ``type=`` when no scope is
+        # given — the old silent paper-default was removed because it
+        # caused silent cross-kind leaks (see smoke-test §6.3 / §15.2).
+        server.search(query="MOF", type="paper")
         stats = get_session_stats()
         # Three calls on 'paper' kind — canonical for all three.
         assert stats["paper"].calls == 3

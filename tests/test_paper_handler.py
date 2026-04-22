@@ -128,3 +128,138 @@ class TestRelativeDate:
 
     def test_none(self):
         assert _relative_date(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# Citation formatting — BibTeX / RIS / ACS
+# ---------------------------------------------------------------------------
+
+
+class TestCitation:
+    """Exercise :meth:`PaperHandler._read_citation` against the shapes of
+    raw ``authors``/``title`` data that actually show up in the store.
+    These cases are the regressions found on ``marquessilva1999grasp``
+    and ``mikladal2013l`` — JSON-array authors, ``\\u00f8`` Unicode
+    escapes, and inline HTML/JATS tags + multi-line whitespace in the
+    title column.
+    """
+
+    def _handler(self):
+        from precis.handlers.paper import PaperHandler
+
+        return PaperHandler()
+
+    def test_bib_joins_json_array_authors_with_and(self):
+        ref = {
+            "slug": "marquessilva1999grasp",
+            "title": "GRASP: a search algorithm",
+            "authors": '[{"name": "Marques-Silva, J.P."}, '
+            '{"name": "Sakallah, K.A."}]',
+            "year": 1999,
+            "journal": "IEEE Transactions on Computers",
+            "doi": "10.1109/12.769433",
+        }
+        out = self._handler()._read_citation(ref, "bib")
+        assert "Marques-Silva, J.P." in out
+        assert "Sakallah, K.A." in out
+        # Joined with " and ", not a raw Python list repr.
+        assert (
+            "author = {Marques-Silva, J.P. and Sakallah, K.A.}" in out
+        )
+        # No stray JSON punctuation.
+        for junk in ("[{", "}]", "\"name\":"):
+            assert junk not in out
+
+    def test_bib_decodes_unicode_escapes_in_authors(self):
+        # ``\u00f8`` in the stored JSON string should land as a literal
+        # ``ø`` in the emitted BibTeX, not as a 6-character escape.
+        ref = {
+            "slug": "mikladal2013l",
+            "title": "Flexible Transparent Conductors",
+            "authors": '[{"name": "Mikladal, Bj\\u00f8rn F."}, '
+            '{"name": "Anisimov, Anton S."}]',
+            "year": 2013,
+        }
+        out = self._handler()._read_citation(ref, "bib")
+        assert "Mikladal, Bjørn F." in out
+        assert "\\u00f8" not in out
+
+    def test_bib_title_strips_html_tags_and_collapses_whitespace(self):
+        # JATS-derived multi-line title with inline <i> tag — should
+        # emit a single-line plain-text field with the tag stripped.
+        raw_title = (
+            "57.5L:\n                    <i>Late\u2010News Paper</i>\n"
+            "                    : Flexible Transparent Conductors"
+        )
+        ref = {
+            "slug": "mikladal2013l",
+            "title": raw_title,
+            "authors": '[{"name": "Mikladal, Bjørn F."}]',
+            "year": 2013,
+        }
+        out = self._handler()._read_citation(ref, "bib")
+        assert "<i>" not in out
+        assert "</i>" not in out
+        # Whitespace collapsed to a single space (no newlines / indent).
+        title_line = next(
+            line for line in out.splitlines() if line.startswith("  title = ")
+        )
+        assert "\n" not in title_line
+        assert "  " not in title_line.split("title = {", 1)[1]
+        # Actual text preserved without tag markers.
+        assert "Late" in title_line and "News Paper" in title_line
+        assert "Flexible Transparent Conductors" in title_line
+
+    def test_bib_escapes_reserved_chars(self):
+        ref = {
+            "slug": "x2024",
+            "title": "A & B in 50% of cases (S&P_500 index)",
+            "authors": '[{"name": "Foo & Bar"}]',
+            "year": 2024,
+            "journal": "J. & K.",
+        }
+        out = self._handler()._read_citation(ref, "bib")
+        assert "\\&" in out
+        assert "\\%" in out
+        assert "\\_" in out
+
+    def test_bib_handles_missing_authors_gracefully(self):
+        ref = {"slug": "foo", "title": "Just a Title", "year": 2024}
+        out = self._handler()._read_citation(ref, "bib")
+        # No author line when the list is empty.
+        assert "author =" not in out
+        assert "title = {Just a Title}" in out
+
+    def test_ris_one_au_line_per_author(self):
+        ref = {
+            "slug": "x",
+            "title": "A <i>Paper</i>",
+            "authors": [
+                {"name": "Smith, J."},
+                {"name": "Jones, K."},
+                {"name": "Lee, P."},
+            ],
+            "year": 2024,
+            "journal": "Nature",
+            "doi": "10.1/x",
+        }
+        out = self._handler()._read_citation(ref, "ris")
+        au_lines = [line for line in out.splitlines() if line.startswith("AU  - ")]
+        assert au_lines == [
+            "AU  - Smith, J.",
+            "AU  - Jones, K.",
+            "AU  - Lee, P.",
+        ]
+        # Title stripped of tags, no backslash-escapes (RIS has none).
+        assert "TI  - A Paper" in out
+
+    def test_acs_inline_uses_first_author_surname(self):
+        ref = {
+            "slug": "x2024",
+            "title": "...",
+            "authors": '[{"name": "Smith, J."}, {"name": "Jones, K."}]',
+            "year": 2024,
+            "journal": "Nature",
+        }
+        out = self._handler()._read_citation(ref, "acs")
+        assert out == "Smith et al., Nature 2024"

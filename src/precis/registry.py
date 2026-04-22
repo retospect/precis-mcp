@@ -389,7 +389,24 @@ def _register_builtins() -> None:
                 Plugin(
                     name="word",
                     handler_cls=WordHandler,
+                    schemes=["word"],
                     file_types=[".docx"],
+                    kinds=[
+                        KindSpec(
+                            name="word",
+                            description=(
+                                "Microsoft Word documents (.docx) — "
+                                "node-structured read/write with tracked "
+                                "changes, comments, and ref-style citations."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "get(id='report.docx')",
+                                "get(id='report.docx', depth=2)",
+                                "put(id='report.docx', text='## Methods', mode='append')",
+                            ],
+                        )
+                    ],
                 )
             )
         except ImportError:
@@ -403,7 +420,24 @@ def _register_builtins() -> None:
                 Plugin(
                     name="tex",
                     handler_cls=TexHandler,
+                    schemes=["tex"],
                     file_types=[".tex"],
+                    kinds=[
+                        KindSpec(
+                            name="tex",
+                            description=(
+                                "LaTeX documents (.tex) — node-structured "
+                                "read/write, .bib handling, figure/label "
+                                "management; see skill:tex-workflow."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "get(id='paper.tex')",
+                                "get(id='paper.tex›S2.1')",
+                                "put(id='paper.tex', text='\\\\section{Methods}', mode='append')",
+                            ],
+                        )
+                    ],
                 )
             )
         except ImportError:
@@ -417,7 +451,24 @@ def _register_builtins() -> None:
                 Plugin(
                     name="markdown",
                     handler_cls=MarkdownHandler,
+                    schemes=["markdown"],
                     file_types=[".md", ".markdown"],
+                    kinds=[
+                        KindSpec(
+                            name="markdown",
+                            description=(
+                                "Markdown documents (.md / .markdown) — "
+                                "heading-scoped node read/write, slug-based "
+                                "selectors, append/replace/delete modes."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "get(id='notes.md')",
+                                "get(id='notes.md', depth=2)",
+                                "put(id='notes.md', text='## Section', mode='append')",
+                            ],
+                        )
+                    ],
                 )
             )
         except ImportError:
@@ -431,7 +482,23 @@ def _register_builtins() -> None:
                 Plugin(
                     name="plaintext",
                     handler_cls=PlainTextHandler,
+                    schemes=["plaintext"],
                     file_types=[".txt", ".text"],
+                    kinds=[
+                        KindSpec(
+                            name="plaintext",
+                            description=(
+                                "Plain text files (.txt / .text) — "
+                                "line-level read/write; no structure beyond "
+                                "newline-delimited content."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "get(id='log.txt')",
+                                "put(id='log.txt', text='new line', mode='append')",
+                            ],
+                        )
+                    ],
                 )
             )
         except ImportError:
@@ -455,16 +522,11 @@ def _register_builtins() -> None:
                                 "Immutable academic corpus — chunks, figures, "
                                 "citations.  Identified by slug, DOI, arXiv id, "
                                 "PubMed id, PMCID, ISBN, or ISSN (see §13.5 / "
-                                "Phase 5)."
+                                "Phase 5).  URIs can also use the identifier-"
+                                "specific schemes ``doi:``, ``arxiv:``, "
+                                "``pmid:``, ``pmcid:``, ``isbn:``, ``issn:`` — "
+                                "all route to this kind."
                             ),
-                            aliases=[
-                                "doi",
-                                "arxiv",
-                                "pmid",
-                                "pmcid",
-                                "isbn",
-                                "issn",
-                            ],
                             cost_hint="free",
                             examples=[
                                 "get(id='paper:wang2020state')",
@@ -520,7 +582,7 @@ def _register_builtins() -> None:
                 Plugin(
                     name="flashcards",
                     handler_cls=FlashcardHandler,
-                    schemes=["fc"],
+                    schemes=["flashcard"],
                     corpus_id="flashcards",
                     write_policy="direct",
                     kinds=[
@@ -530,13 +592,12 @@ def _register_builtins() -> None:
                                 "Spaced-repetition deck — Q/A pairs with "
                                 "SM-2 scheduling. Integer ids."
                             ),
-                            aliases=["fc"],
                             cost_hint="free",
                             examples=[
-                                "get(id='fc:/due')",
-                                "get(id='fc:/recent')",
-                                "put(id='fc:', text='Q: …\\nA: …', mode='append')",
-                                "put(id='fc:17', mode='rate', grade=4)",
+                                "get(id='flashcard:/due')",
+                                "get(id='flashcard:/recent')",
+                                "put(id='flashcard:', text='Q: …\\nA: …', mode='append')",
+                                "put(id='flashcard:17', mode='rate', grade=4)",
                             ],
                         )
                     ],
@@ -674,12 +735,11 @@ def _register_builtins() -> None:
                                 "streamable via put(mode='append'). /recent "
                                 "and /session views."
                             ),
-                            aliases=["conv"],
                             cost_hint="free",
                             examples=[
                                 "get(type='conversation', id='/recent')",
-                                "put(id='conv:2026-04-21-asa', text='…', mode='append')",
-                                "get(id='conv:2026-04-21-asa/session')",
+                                "put(id='conversation:2026-04-21-asa', text='…', mode='append')",
+                                "get(id='conversation:2026-04-21-asa/session')",
                             ],
                         )
                     ],

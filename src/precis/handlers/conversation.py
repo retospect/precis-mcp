@@ -2,13 +2,14 @@
 
 Phase 6 journal kind.  Each conversation is a ref in the
 ``conversations`` corpus; each turn is a block.  Supports streamed
-``put(mode='append', id='conv:<session>')`` to add turns as they
-happen, plus batch ingestion of full transcripts.
+``put(mode='append', id='conversation:<session>')`` to add turns as
+they happen, plus batch ingestion of full transcripts.
 
 Design (§13 Phase 6):
 
-- **Id format** — ISO date + short label (``conv:2026-04-21-asa-session``)
-  or UUID.  The handler accepts either form; slug comes from the agent.
+- **Id format** — ISO date + short label
+  (``conversation:2026-04-21-asa-session``) or UUID.  The handler
+  accepts either form; slug comes from the agent.
 - **Turn-per-block** — each block is one speaker turn.  ``section_path``
   carries ``[speaker, timestamp]`` for downstream filtering.
 - **Views** — standard RefHandler surface (toc, chunk, links, meta,
@@ -22,16 +23,17 @@ URI scheme: ``conversation:``.  Corpus: ``conversations``.
 Agent usage::
 
     # Start a new session
-    put(type='conversation', id='conv:2026-04-21-asa',
+    put(type='conversation', id='conversation:2026-04-21-asa',
         text='user: Hello\\nasa: Hi there')
 
     # Append a turn
-    put(id='conv:2026-04-21-asa', text='user: how do I X?', mode='append')
+    put(id='conversation:2026-04-21-asa',
+        text='user: how do I X?', mode='append')
 
     # Read
     get(type='conversation', id='/recent')
-    get(id='conv:2026-04-21-asa')                  # overview
-    get(id='conv:2026-04-21-asa/session')          # full transcript
+    get(id='conversation:2026-04-21-asa')              # overview
+    get(id='conversation:2026-04-21-asa/session')      # full transcript
 """
 
 from __future__ import annotations
@@ -86,6 +88,11 @@ class ConversationHandler(RefHandler):
 
     _ref_noun = "conversation"
     _ref_emoji = "💬"
+    # Stored slugs carry the canonical ``conversation:`` prefix.  (An
+    # earlier iteration used the short ``conv:`` form; the resolver
+    # still follows that retry path transparently for agents that mix
+    # the two, but all new writes use the long form.)
+    _slug_prefix = "conversation"
 
     # ── Read surface ─────────────────────────────────────────────────
 
@@ -174,7 +181,7 @@ class ConversationHandler(RefHandler):
             return (
                 "💬 No conversations yet.\n\n"
                 "Create one:\n"
-                "  put(id='conv:<session>', text='…', mode='append')\n"
+                "  put(id='conversation:<session>', text='…', mode='append')\n"
             )
 
         lines = [f"💬 {len(refs)} conversations"]
@@ -289,9 +296,9 @@ class ConversationHandler(RefHandler):
         if not path:
             raise PrecisError(
                 ErrorCode.PARAM_INVALID,
-                "conversation: id= required (e.g. id='conv:2026-04-21-session-name')",
+                "conversation: id= required (e.g. id='conversation:2026-04-21-session-name')",
             )
-        slug = path if ":" in path else f"conv:{path}"
+        slug = path if ":" in path else f"conversation:{path}"
 
         speaker = (kwargs.get("speaker") or "").strip()
         ts = kwargs.get("timestamp") or _now().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -385,7 +392,7 @@ class ConversationHandler(RefHandler):
                 ErrorCode.PARAM_INVALID,
                 "conversation: id= required for delete",
             )
-        slug = path if ":" in path else f"conv:{path}"
+        slug = path if ":" in path else f"conversation:{path}"
         ref = store.get(slug)
         if ref is None:
             raise PrecisError(
@@ -410,7 +417,7 @@ class ConversationHandler(RefHandler):
                 stmt = (
                     select(
                         Ref,
-                        func.count(Block.id).label("turn_count"),
+                        func.count(Block.node_id).label("turn_count"),
                     )
                     .outerjoin(Block, Block.ref_id == Ref.id)
                     .where(Ref.corpus_id == self.corpus_id)

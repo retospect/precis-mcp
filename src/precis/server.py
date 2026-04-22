@@ -25,6 +25,7 @@ from mcp.server.fastmcp import FastMCP
 from precis import tools
 from precis.kinds_config import ConfigError, load_from_env
 from precis.paper_id import classify_paper_id
+from precis.protocol import CallContext, ErrorCode
 from precis.registry import (
     ALIASES,
     KINDS,
@@ -32,6 +33,7 @@ from precis.registry import (
     STARTUP_WARNINGS,
     RegistryError,
     _discover,
+    _format_error,
     add_startup_warning,
     invoke_handler,
     resolve_alias,
@@ -164,6 +166,38 @@ def _kind_from_uri(uri: str) -> str:
     return resolve_alias(scheme)
 
 
+def _ambiguous_kind_error(
+    verb: str,
+    *,
+    cause: str,
+    args: dict[str, object] | None = None,
+) -> str:
+    """Render a ``KIND_UNKNOWN`` error for an ambiguous no-type call.
+
+    The previous behaviour was to silently default to ``paper:`` whenever
+    a caller omitted both ``type=`` and any disambiguating id/scope.
+    That made it easy to, e.g. search todos but get paper results back
+    because the agent forgot a keyword.  The strict form instead lists
+    the visible kinds and tells the caller to re-issue with ``type=``.
+
+    Ordering mirrors :func:`visible_kinds` output (alphabetical), so the
+    agent always sees a stable enum.
+    """
+    kinds = [k.spec.name for k in visible_kinds(verb)]
+    ctx = CallContext(kind="", verb=verb, args=dict(args) if args else {})
+    return _format_error(
+        ErrorCode.KIND_UNKNOWN,
+        ctx,
+        cause=cause,
+        options=kinds or None,
+        next_hint=(
+            "re-issue with an explicit type=, e.g. "
+            f"{verb}(type='paper', ...) — "
+            "stats() lists every kind currently available"
+        ),
+    )
+
+
 def _dispatch(
     kind: str,
     verb: str,
@@ -238,7 +272,17 @@ def search(
     elif type:
         uri = _to_uri("", kind=type)
     else:
-        uri = "paper:"
+        # No type, no scope — don't silently default to the paper corpus.
+        # Silent defaults caused silent cross-kind leaks in agent flows
+        # (e.g. an intended todo search returning paper chunks).
+        return _ambiguous_kind_error(
+            "search",
+            cause=(
+                "search() requires an explicit type= when no scope is given — "
+                "otherwise the call is ambiguous across kinds"
+            ),
+            args={"query": query, "top_k": top_k},
+        )
     kind = _kind_from_uri(uri)
     return _dispatch(
         kind,
@@ -310,10 +354,13 @@ def get(
         for i, single_id in enumerate(ids):
             uri = _to_uri(single_id, kind=type)
             kind = _kind_from_uri(uri)
+            extra = {"grep": grep} if grep else {}
             result = _dispatch(
                 kind,
                 "get",
-                lambda uri=uri: tools.read(uri=uri, query=grep, depth=depth),
+                lambda uri=uri, extra=extra: tools.read(
+                    uri=uri, query="", depth=depth, **extra
+                ),
                 args={"id": single_id, "grep": grep, "depth": depth},
             )
             total += len(result)
@@ -332,12 +379,23 @@ def get(
     elif type:
         uri = _to_uri("", kind=type)
     else:
-        uri = "paper:"
+        # Only grep= provided — was previously a silent paper-list filter.
+        # Make the caller commit to a kind so agents that meant
+        # get(type='todo', grep='foo') don't accidentally browse papers.
+        return _ambiguous_kind_error(
+            "get",
+            cause=(
+                "get() with only grep= is ambiguous — specify type= so the "
+                "filter runs over the intended corpus"
+            ),
+            args={"grep": grep, "depth": depth},
+        )
     kind = _kind_from_uri(uri)
+    extra = {"grep": grep} if grep else {}
     return _dispatch(
         kind,
         "get",
-        lambda: tools.read(uri=uri, query=grep, depth=depth),
+        lambda: tools.read(uri=uri, query="", depth=depth, **extra),
         args={"id": id, "grep": grep, "depth": depth},
     )
 
@@ -397,6 +455,19 @@ def put(
 
     Multiple paragraphs separated by newlines are auto-split.
     """
+    if not id and not type:
+        # Previously fell through to ``paper:`` which then returned a
+        # readonly error — confusing the agent about whether ``put`` was
+        # wrong or the kind was wrong.  Be explicit: list the writable
+        # kinds and tell the caller to re-issue with type=.
+        return _ambiguous_kind_error(
+            "put",
+            cause=(
+                "put() requires either an id with a scheme prefix or an "
+                "explicit type= — neither was provided"
+            ),
+            args={"mode": mode},
+        )
     uri = _to_uri(id, kind=type)
     kind = _kind_from_uri(uri)
     return _dispatch(

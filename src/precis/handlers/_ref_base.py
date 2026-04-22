@@ -185,6 +185,14 @@ class RefHandler(Handler):
     _ref_emoji: str = "📄"
     _max_list: int = 20
 
+    #: Prefix under which subclass slugs are stored in Ref.slug (e.g.
+    #: ``todo`` → stored slug ``todo:fix-the-bug``; ``fc``, ``memory``,
+    #: ``conv`` similarly).  Papers store slugs without a prefix so the
+    #: default is empty.  When set, :meth:`_resolve_ref` retries a
+    #: ``<prefix>:<ident>`` lookup so agents can pass either the bare
+    #: slug body or the full stored slug.
+    _slug_prefix: str = ""
+
     # View registry: view-name → dispatch-method-name on self.  Subclasses
     # extend via ``views = {**RefHandler.views, ...}``.  All dispatch
     # methods share the signature
@@ -198,6 +206,13 @@ class RefHandler(Handler):
         "links-in": "_read_links_inbound_view",
         "help": "_read_help_view",
     }
+
+    # Collection-level view registry — dispatched when the caller passes
+    # ``<scheme>:/<view>`` with no ref identifier.  Methods have the
+    # signature ``(self, store, subview, **kwargs) -> str`` and must
+    # tolerate ``subview=None``.  Subclasses extend via
+    # ``collection_views = {**RefHandler.collection_views, ...}``.
+    collection_views: dict[str, str] = {}
 
     # Base write vocabulary provided by RefHandler.put() — only 'note'.
     # Writable subclasses (todo, flashcard, memory, conversation) extend
@@ -227,23 +242,55 @@ class RefHandler(Handler):
     ) -> str:
         store = _get_store()
         top_k = kwargs.get("top_k", 5)
+        grep = str(kwargs.get("grep") or "").strip()
 
-        # Bare call: list all refs or grep
+        # Bare call: list all refs (optionally filtered by grep or
+        # semantic-search-via-query).  ``grep`` wins when both are
+        # supplied because it's a metadata filter (fast, deterministic)
+        # whereas ``query`` triggers a vector lookup that may be
+        # expensive or noisy — agents that passed both probably meant
+        # the filter.
         if not path and not selector and not view:
+            if grep:
+                return self._list_refs(store, grep=grep)
             if query:
                 return self._search_or_grep(store, query, top_k=top_k)
             return self._list_refs(store)
 
-        # Search mode (scoped to a ref)
-        if query:
-            return self._search_or_grep(store, query, top_k=top_k)
+        # Search mode (scoped to a ref).  ``grep`` inside a single ref
+        # falls back to ``_search_or_grep`` — for paper that means
+        # vector search scoped by the ref context; for other kinds the
+        # grep path returns corpus-wide matches, which is still useful
+        # for discovery and less surprising than silent vector hits.
+        if query or grep:
+            return self._search_or_grep(store, query or grep, top_k=top_k)
+
+        # Collection-level views (``<scheme>:/<view>`` with no ref id).
+        # Declared per-subclass via :attr:`collection_views`.  Dispatch
+        # here before the "id required" guard so e.g. ``todo:/open``
+        # doesn't fall into the per-ref error path.  Unknown views fall
+        # through to the VIEW_UNKNOWN branch below (after ref resolve)
+        # so the error lists the full set of per-ref views the caller
+        # can try instead.
+        if view and not path and view in self.collection_views:
+            method_name = self.collection_views[view]
+            return getattr(self, method_name)(store, subview, **kwargs)
 
         # Resolve ref
         if not path:
+            # No id, no collection view — give the caller the full menu.
+            collection_opts = sorted(self.collection_views.keys())
+            next_hint = f"get(id='<{self._ref_noun}-slug>')"
+            if collection_opts:
+                opts = ", ".join(f"/{v}" for v in collection_opts)
+                next_hint = (
+                    f"{next_hint} — or pick a view: {opts} "
+                    f"(e.g. {self.scheme}:/{collection_opts[0]})"
+                )
             raise PrecisError(
                 ErrorCode.PARAM_INVALID,
                 cause=f"{self._ref_noun} identifier required",
-                next=f"get(id='<{self._ref_noun}-slug>')",
+                next=next_hint,
             )
 
         ref = self._resolve_ref(store, path)
@@ -412,8 +459,24 @@ class RefHandler(Handler):
     # ── Resolve ──────────────────────────────────────────────────────
 
     def _resolve_ref(self, store, ident: str) -> dict[str, Any]:
-        """Resolve identifier (slug, DOI, or ref_id) to a ref dict."""
+        """Resolve identifier (slug, DOI, or ref_id) to a ref dict.
+
+        Tries the raw identifier first — matches papers' un-prefixed
+        slugs and any DOI / ref_id lookup.  If that misses and the
+        handler declares a ``_slug_prefix`` (e.g. ``todo``, ``fc``,
+        ``memory``, ``conv``), retries with ``<prefix>:<ident>`` so
+        agents can pass either the bare slug body (``fix-the-bug``)
+        or the full stored form (``todo:fix-the-bug``) — the URI
+        parser strips the scheme before the handler ever sees it,
+        so the raw form is what arrives here on every call.
+        """
         ref = store.get(ident)
+        if (
+            ref is None
+            and self._slug_prefix
+            and not ident.startswith(f"{self._slug_prefix}:")
+        ):
+            ref = store.get(f"{self._slug_prefix}:{ident}")
         if ref is None:
             raise PrecisError(
                 ErrorCode.ID_NOT_FOUND,
@@ -833,6 +896,16 @@ class RefHandler(Handler):
     # ── Search ───────────────────────────────────────────────────────
 
     def _search_or_grep(self, store, query: str, top_k: int = 10) -> str:
+        # Non-paper corpora (todos, flashcards, memories, conversations)
+        # live alongside papers in a shared vector index that has no
+        # ``corpus_id`` column — so ``_search`` would return paper hits
+        # mixed in and silently ignore the caller's ``type=``.  Route
+        # those kinds through corpus-aware keyword grep over the ref
+        # list, which :meth:`_list_refs` implements per-subclass.  The
+        # paper kind keeps the semantic-search path (vector search over
+        # block text is the whole point for long documents).
+        if self.corpus_id and self.corpus_id != "papers":
+            return self._list_refs(store, grep=query)
         try:
             return self._search(store, query, top_k=top_k)
         except (ImportError, ModuleNotFoundError):

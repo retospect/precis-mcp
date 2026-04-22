@@ -299,17 +299,62 @@ class TestRead:
             page=1,
         )
 
-    def test_empty_path_raises_param_invalid(self, read_kwargs):
+    def test_empty_path_returns_landing(self, read_kwargs):
         h = WebHandler()
-        with pytest.raises(PrecisError) as exc:
-            h.read(path="", **read_kwargs)
-        assert exc.value.code == ErrorCode.PARAM_INVALID
+        out = h.read(path="", **read_kwargs)
+        # Landing shape: scheme header, usage block, model name, no API call.
+        assert "web:" in out
+        assert "Usage:" in out
+        assert "sonar" in out
+        assert "<question>" in out
 
-    def test_whitespace_only_path_raises_param_invalid(self, read_kwargs):
+    def test_whitespace_only_path_returns_landing(self, read_kwargs):
         h = WebHandler()
-        with pytest.raises(PrecisError) as exc:
-            h.read(path="   \n  ", **read_kwargs)
-        assert exc.value.code == ErrorCode.PARAM_INVALID
+        out = h.read(path="   \n  ", **read_kwargs)
+        assert "Usage:" in out
+        assert "web:" in out
+
+    def test_landing_does_not_call_sonar(self, read_kwargs, monkeypatch):
+        # Guard: bare-landing must be free — no HTTP call, no key lookup.
+        h = WebHandler()
+        called: list[str] = []
+        monkeypatch.setattr(
+            h, "_call_sonar", lambda q: called.append(q) or {"choices": []}
+        )
+        h.read(path="", **read_kwargs)
+        assert called == []
+
+    def test_think_landing_mentions_its_model(self, read_kwargs):
+        out = ThinkHandler().read(path="", **read_kwargs)
+        assert "think:" in out
+        assert "sonar-reasoning-pro" in out
+
+    def test_research_landing_mentions_its_model(self, read_kwargs):
+        out = ResearchHandler().read(path="", **read_kwargs)
+        assert "research:" in out
+        assert "sonar-deep-research" in out
+
+    def test_landing_cost_of_is_free(self):
+        # cost_of must report free for a bare call so agents don't
+        # think the landing cost them anything.
+        from precis.protocol import CallContext
+
+        h = WebHandler()
+        for args in (
+            {"id": "web:"},
+            {"id": ""},
+            {"id": "web:", "grep": "", "query": ""},
+            {"id": "web:   "},
+        ):
+            ctx = CallContext(kind="web", verb="get", args=args)
+            assert h.cost_of(ctx) == "free", args
+
+    def test_cost_of_not_free_when_question_present(self):
+        from precis.protocol import CallContext
+
+        h = WebHandler()
+        ctx = CallContext(kind="web", verb="get", args={"id": "web:hello"})
+        assert h.cost_of(ctx) is None
 
     def test_query_fallback_when_path_empty(self, read_kwargs, monkeypatch):
         # When id='' and query='X', handler treats query as the question.

@@ -24,13 +24,14 @@ class TestToUriKindHint:
     def test_kind_hint_with_empty_id_returns_bare_scheme(self):
         assert server._to_uri("", kind="paper") == "paper:"
 
-    def test_alias_kind_that_is_also_a_scheme_preserves_scheme(self):
-        # Phase 5: 'doi' is both an alias of the 'paper' kind AND a
-        # registered scheme on PaperHandler (so the handler can dispatch
-        # on identifier type). When both apply, the scheme name wins at
-        # URI level; the alias still routes to the canonical kind for
-        # enum/masking purposes.
-        assert ALIASES.get("doi") == "paper"
+    def test_identifier_scheme_as_kind_routes_as_scheme(self):
+        # ``doi`` is registered as a URI scheme on PaperHandler (alongside
+        # ``paper``, ``arxiv``, ``pmid``, etc.) so agents can address a
+        # DOI as ``doi:10.x/y``.  The LLM-facing KindSpec.aliases entries
+        # were retired in Apr 2026 — ``doi`` is no longer a ``type=``
+        # synonym for ``paper``, but it is still a valid scheme.  Confirm
+        # the scheme side still works and that no alias slips back in.
+        assert "doi" not in ALIASES
         assert "doi" in __import__("precis.registry", fromlist=["SCHEMES"]).SCHEMES
         assert server._to_uri("10.1021/x", kind="doi") == "doi:10.1021/x"
 
@@ -93,14 +94,17 @@ class TestLoadKindsMask:
         assert got is not None
         assert "paper" in got
 
-    def test_fatal_alias_in_env_exits_two(self, capsys):
-        # 'doi' is an alias of 'paper'; putting it in config is fatal.
+    def test_fatal_alias_in_env_exits_two(self, capsys, monkeypatch):
+        # Every real KindSpec.aliases was retired — inject a synthetic
+        # alias so the fatal "alias in config" branch can still be
+        # exercised against any future regression that adds one back.
+        monkeypatch.setitem(ALIASES, "fakealias", "paper")
         with pytest.raises(SystemExit) as exc:
-            server._load_kinds_mask(env={"PRECIS_KINDS": "doi"})
+            server._load_kinds_mask(env={"PRECIS_KINDS": "fakealias"})
         assert exc.value.code == 2
         captured = capsys.readouterr()
         assert "alias" in captured.err.lower()
-        assert "doi" in captured.err
+        assert "fakealias" in captured.err
 
     def test_fatal_unknown_verb_exits_two(self, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -215,3 +219,84 @@ class TestToolSignatures:
 
         sig = inspect.signature(server.move)
         assert "type" in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# Strict no-type default — ambiguous calls error instead of silently routing
+# to the paper corpus.  Guards the §6.3 / §15.2 smoke-test regression.
+# ---------------------------------------------------------------------------
+
+
+class TestAmbiguousKindErrors:
+    def test_search_without_type_or_scope_errors(self):
+        out = server.search(query="MOF")
+        assert "ERROR [kind_unknown]" in out
+        assert "cause:" in out
+        assert "options:" in out
+        # The error must name a kind the caller could re-issue with.
+        assert "paper" in out
+        # And it must tell them exactly what to do next.
+        assert "type=" in out
+
+    def test_search_with_scope_still_works(self, monkeypatch):
+        # Scope disambiguates the call — no error expected.  Patch
+        # ``tools.read`` so the test doesn't need a real store.
+        captured: dict[str, str] = {}
+
+        def fake_read(uri: str, **kwargs):
+            captured["uri"] = uri
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.search(query="MOF", scope="wang2020state")
+        assert "ERROR [kind_unknown]" not in out
+        assert captured["uri"].startswith("paper:")
+
+    def test_search_with_explicit_type_still_works(self, monkeypatch):
+        captured: dict[str, str] = {}
+
+        def fake_read(uri: str, **kwargs):
+            captured["uri"] = uri
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.search(query="MOF", type="paper")
+        assert "ERROR [kind_unknown]" not in out
+        assert captured["uri"] == "paper:"
+
+    def test_get_with_only_grep_errors(self):
+        out = server.get(grep="MOF")
+        assert "ERROR [kind_unknown]" in out
+        assert "grep=" in out
+        assert "options:" in out
+
+    def test_get_with_id_still_works(self, monkeypatch):
+        # A bare slug remains unambiguous — the slug classifier routes it.
+        captured: dict[str, str] = {}
+
+        def fake_read(uri: str, **kwargs):
+            captured["uri"] = uri
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.get(id="wang2020state")
+        assert "ERROR [kind_unknown]" not in out
+        assert captured["uri"].startswith("paper:")
+
+    def test_put_without_id_or_type_errors(self):
+        out = server.put(id="", text="foo", mode="append")
+        assert "ERROR [kind_unknown]" in out
+        assert "options:" in out
+        assert "type=" in out
+
+    def test_put_with_explicit_type_still_works(self, monkeypatch):
+        captured: dict[str, str] = {}
+
+        def fake_put(uri: str, **kwargs):
+            captured["uri"] = uri
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "put", fake_put)
+        out = server.put(id="", type="memory", text="x", mode="append")
+        assert "ERROR [kind_unknown]" not in out
+        assert captured["uri"] == "memory:"
