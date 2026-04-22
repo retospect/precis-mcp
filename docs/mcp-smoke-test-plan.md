@@ -1,5 +1,16 @@
 # precis-mcp live smoke-test plan
 
+> **⚠ Keep track of odd behaviour and report on it.**
+>
+> Anything that surprises you — error messages that are too vague or
+> too verbose, successful responses that look empty, hint strings that
+> don't parse, surfaces that hang, docstrings that lie about what a
+> tool accepts, invocation patterns that "shouldn't work but do", cost
+> footers that disappear, next-hints that point at non-existent ids —
+> **record it in your session log**, even if you're not sure it's a
+> bug.  Patterns in the aggregate are more informative than any single
+> observation.  We'll triage on the way out.
+
 A Cascade-executable plan for exercising the precis-mcp surface via its
 MCP client tools (`mcp5_*`).  Reusable across sessions — the plan is
 stateless; results go in a per-run log at the bottom.
@@ -90,6 +101,41 @@ Quick-smoke takes ~2 minutes.  Full-regression (all sections) takes
 ~30-60 minutes.  If the human is waiting, do §2 first and report; then
 drill into sections they care about.  Don't do §10 (web) or §11
 (research) without asking — they cost real money.
+
+### Write-roundtrip protocol
+
+Every write-surface step in this plan follows a **four-step
+roundtrip** so you actually verify the side-effect instead of trusting
+the response string:
+
+1. **Write** — ``put(type='<kind>', id='<unique-test-id>', text='...', mode='append')``.
+   Use a unique id per run (e.g. ``smoke-<UNIX-TIMESTAMP>``) so the
+   test can be re-run without collisions.
+2. **Read back** — ``get(type='<kind>', id='<unique-test-id>')``.
+   Assert the content you wrote is present.  A successful-looking put
+   response that silently didn't persist is the bug pattern we're
+   hunting.
+3. **Delete** — ``put(type='<kind>', id='<unique-test-id>', mode='delete')``.
+4. **Read-gone** — ``get(type='<kind>', id='<unique-test-id>')``.
+   Assert ``ID_NOT_FOUND`` (or the kind's equivalent absent-state).  A
+   delete that reported success but left the row is also the bug
+   pattern we're hunting.
+
+If step 2 fails after step 1 reported success, that's a **write-path
+bug**: record verbatim, file a regression entry.  If step 4 fails
+after step 3 reported success, that's a **delete-path bug**: same
+treatment.  Either way, the "successful" response from step 1 or 3 is
+misleading and should be captured in the session log.
+
+For kinds with a replace / mode-change mutation (e.g. ``fc`` rate,
+``todo`` done, ``memory`` add-block-to-existing-ref), add a fifth step
+between 2 and 3:
+
+* **2a.** Apply the mutation; read back and assert the mutation
+  landed (not just that the row still exists).
+
+The quick-smoke path (§2) skips all of this — it's read-only by
+design.  Full-regression runs of write sections MUST do the roundtrip.
 
 ---
 
@@ -219,20 +265,41 @@ section.
 - [ ] `mcp5_get(id='skill:/topic/')`  (missing topic)
     - expect: `PARAM_INVALID` with clear cause
 
-### 3.3 — Write surface
+### 3.3 — Write surface (roundtrip)
 
-**⚠ destructive**: creates SKILL.md files on disk.  Skip in quick-smoke.
-Pick a unique slug per run to avoid collision.
+**⚠ destructive**: creates SKILL.md files in `~/.precis/skills/`.  Skip
+in quick-smoke.  Pick a unique slug per run using the session timestamp
+(``SLUG=smoke-skill-$(date +%s)``) so re-runs don't collide.
 
-- [ ] `mcp5_put(id='skill:', text='---\nslug: smoke-test-<TIMESTAMP>\ndescription: Smoke test skill\n---\n# body', mode='append')`
-    - expect: success + next-hint pointing at `get(id='skill:<slug>')`
-- [ ] verify: `mcp5_get(id='skill:smoke-test-<TIMESTAMP>')` returns body
-- [ ] `mcp5_put(id='skill:smoke-test-<TIMESTAMP>', text='updated body', mode='replace')`
-    - expect: success; next `get` shows new body
-- [ ] `mcp5_put(id='skill:smoke-test-<TIMESTAMP>', note='smoke test note')`
-    - expect: note attached (check via a subsequent `get`)
-- [ ] `mcp5_put(id='skill:smoke-test-<TIMESTAMP>', mode='delete')`
-    - expect: success; subsequent `get` returns `ID_NOT_FOUND`
+Follow the write-roundtrip protocol from the preamble:
+
+1. **Write**
+    - [ ] `mcp5_put(type='skill', id='', text='---\nslug: <SLUG>\ndescription: Smoke test skill — delete me\n---\n# body', mode='append')`
+        - expect: success + next-hint pointing at `get(type='skill', id='<SLUG>')`
+2. **Read back**
+    - [ ] `mcp5_get(type='skill', id='<SLUG>')`
+        - expect: full body rendered; description line present
+3. **Replace mutation** (skill-specific)
+    - [ ] `mcp5_put(type='skill', id='<SLUG>', text='---\nslug: <SLUG>\ndescription: UPDATED\n---\n# body v2', mode='replace')`
+        - expect: success
+    - [ ] `mcp5_get(type='skill', id='<SLUG>')`
+        - expect: description now contains `UPDATED` and body is v2
+4. **Delete**
+    - [ ] `mcp5_put(type='skill', id='<SLUG>', mode='delete')`
+        - expect: success
+5. **Read-gone**
+    - [ ] `mcp5_get(type='skill', id='<SLUG>')`
+        - expect: `ID_NOT_FOUND` with `options:` listing existing slugs
+
+### 3.4 — Write-surface negative paths
+
+- [ ] `mcp5_put(type='skill', id='find-paper', text='x', mode='replace')`
+  (find-paper is a bundled ecosystem skill, not writable)
+    - expect: `DENIED` — ecosystem skills live in the wheel, not
+      ``~/.precis/skills/``, and can't be overwritten through the MCP
+      surface
+- [ ] `mcp5_put(type='skill', id='<already-existing-slug>', text='...', mode='append')`
+    - expect: `ID_AMBIGUOUS` (collision)
 
 ---
 
@@ -434,26 +501,42 @@ should refuse.
 - [ ] `mcp5_get(id='todo:/done')` — closed todos
 - [ ] `mcp5_get(id='todo:/recent')` — recently modified
 
-### 6.2 — Write
+### 6.2 — Write surface (roundtrip)
 
-Use a unique test-prefix tag per run (e.g. `smoke-YYYYMMDDHHMM`) to
-isolate test data.
+Unique test-prefix tag per run (e.g. ``TAG=smoke-$(date +%s)``) to
+isolate test data.  Record the integer id returned by the write step
+in your session log — call it ``<N>`` below.
 
-- [ ] `mcp5_put(id='todo:', text='Smoke test [smoke-<TS>]', mode='append')`
-    - expect: success + `next: get(id='todo:<N>')` where N is the new id
-- [ ] `mcp5_get(id='todo:<N>')`
-    - expect: the just-created todo
-- [ ] `mcp5_put(id='todo:<N>', text='Updated [smoke-<TS>]', mode='replace')`
-    - expect: text updated
-- [ ] `mcp5_put(id='todo:<N>', mode='done')`  (or whatever the done mode is)
-    - expect: status flipped; shows up in `/done`
-- [ ] `mcp5_put(id='todo:<N>', mode='delete')`
-    - expect: removed; subsequent `get` returns `ID_NOT_FOUND`
+1. **Write**
+    - [ ] `mcp5_put(type='todo', id='', text='Smoke test [<TAG>]', mode='append')`
+        - expect: success + `next: get(type='todo', id='<N>')`
+2. **Read back**
+    - [ ] `mcp5_get(type='todo', id='<N>')`
+        - expect: just-created todo with status `open`
+3. **Mutations** (todo-specific)
+    - [ ] `mcp5_put(type='todo', id='<N>', text='Updated [<TAG>]', mode='replace')`
+        - expect: success
+    - [ ] `mcp5_get(type='todo', id='<N>')`
+        - expect: text is `Updated [<TAG>]`
+    - [ ] `mcp5_put(type='todo', id='<N>', mode='done')`
+        - expect: success
+    - [ ] `mcp5_get(type='todo', id='<N>')`
+        - expect: status is `done`; appears in `todo:/done` view
+4. **Delete**
+    - [ ] `mcp5_put(type='todo', id='<N>', mode='delete')`
+        - expect: success
+5. **Read-gone**
+    - [ ] `mcp5_get(type='todo', id='<N>')`
+        - expect: `ID_NOT_FOUND`
 
 ### 6.3 — Search
 
-- [ ] `mcp5_search(type='todo', query='smoke')`
-    - expect: match on current + recent test items
+- [ ] `mcp5_search(type='todo', query='<TAG>')`
+    - expect: empty result (we deleted in §6.2) or matches any
+      leftovers from earlier runs
+- [ ] run §6.2 through step 2 only (leave a todo in place), then:
+    - [ ] `mcp5_search(type='todo', query='<TAG>')` must hit
+    - [ ] clean up with `mcp5_put(type='todo', id='<N>', mode='delete')`
 
 ---
 
@@ -467,19 +550,30 @@ Aliased kind — `fc:` and `flashcard:` should both work.
 - [ ] `mcp5_get(id='fc:/recent')` — recently created
 - [ ] `mcp5_get(id='flashcard:/')` — alias works the same as `fc:/`
 
-### 7.2 — Write
+### 7.2 — Write surface (roundtrip)
 
-- [ ] `mcp5_put(id='fc:', text='Q: What is 2+2?\nA: 4', mode='append')`
-    - expect: success + next `get(id='fc:<N>')`
-- [ ] `mcp5_get(id='fc:<N>')` — confirm content
-- [ ] `mcp5_put(id='fc:<N>', mode='rate', grade=4)`  (SM-2 grade)
-    - expect: scheduled interval updated
-- [ ] `mcp5_put(id='fc:<N>', mode='delete')`
+1. **Write**
+    - [ ] `mcp5_put(type='fc', id='', text='Q: Smoke <TAG> 2+2?\nA: 4', mode='append')`
+        - expect: success + next `get(type='fc', id='<N>')`
+2. **Read back**
+    - [ ] `mcp5_get(type='fc', id='<N>')`
+        - expect: Q/A rendered; SM-2 state shows as "new / not yet due"
+3. **Mutation** (SM-2 rate)
+    - [ ] `mcp5_put(type='fc', id='<N>', mode='rate', grade=4)`
+        - expect: success
+    - [ ] `mcp5_get(type='fc', id='<N>')`
+        - expect: interval advanced, next-review date in the future
+4. **Delete**
+    - [ ] `mcp5_put(type='fc', id='<N>', mode='delete')`
+        - expect: success
+5. **Read-gone**
+    - [ ] `mcp5_get(type='fc', id='<N>')`
+        - expect: `ID_NOT_FOUND`
 
 ### 7.3 — Search
 
-- [ ] `mcp5_search(type='fc', query='2+2')`
-    - expect: hit on the just-created card
+- [ ] As in §6.3: write a card with a unique `<TAG>`, confirm
+  `mcp5_search(type='fc', query='<TAG>')` finds it, then clean up.
 
 ---
 
@@ -492,19 +586,41 @@ Long-lived agent notes.  Block-structured.
 - [ ] `mcp5_get(id='memory:')` — recent memories
 - [ ] `mcp5_search(query='precis', type='memory')`
 
-### 8.2 — Write
+### 8.2 — Write surface (roundtrip)
 
-- [ ] `mcp5_put(id='<paper-slug>', note='Smoke memory [smoke-<TS>]')`
-    - expect: memory attached to the paper slug
-    - alt: `mcp5_put(id='memory:', text='...', mode='append')` if memory
-      has its own scheme
-- [ ] `mcp5_search(query='smoke-<TS>', type='memory')`
-    - expect: hit on the just-created memory
+Memory refs have string slugs (not integer ids).  Use a unique slug per
+run: ``SLUG=smoke-memory-$(date +%s)``.
+
+1. **Write**
+    - [ ] `mcp5_put(type='memory', id='<SLUG>', text='Smoke memory — delete me [<TAG>]', mode='append', title='Smoke <TAG>')`
+        - expect: success + next `get(type='memory', id='<SLUG>')`
+2. **Read back**
+    - [ ] `mcp5_get(type='memory', id='<SLUG>')`
+        - expect: body text + title present; block structure shown
+3. **Mutation** (append a second block)
+    - [ ] `mcp5_put(type='memory', id='<SLUG>', text='second block', mode='append')`
+        - expect: success
+    - [ ] `mcp5_get(type='memory', id='<SLUG>')`
+        - expect: two blocks now present
+4. **Delete**
+    - [ ] `mcp5_put(type='memory', id='<SLUG>', mode='delete')`
+        - expect: success
+5. **Read-gone**
+    - [ ] `mcp5_get(type='memory', id='<SLUG>')`
+        - expect: `ID_NOT_FOUND`
 
 ### 8.3 — Links
 
-- [ ] `mcp5_put(id='<paper-slug>', link='<other-slug>:cites')`
-    - expect: link recorded; surfaces in response footer
+These are annotations on existing refs; non-destructive to the refs
+themselves.  If a paper slug is available from §5, use it here;
+otherwise create a memory in §8.2 first and link to that.
+
+- [ ] `mcp5_put(type='paper', id='<paper-slug>', link='<other-slug>:cites')`
+    - expect: link recorded; count surfaces in response footer
+- [ ] `mcp5_get(type='paper', id='<paper-slug>')` and confirm the link
+  shows up in the response (usually in a `Links:` footer)
+- [ ] `mcp5_put(type='paper', id='<paper-slug>', unlink='<other-slug>:cites')`
+    - expect: link removed; footer no longer shows it
 
 ---
 
@@ -651,24 +767,59 @@ pathological latency variations.
 
 File-based kinds dispatch by extension.  Need a writable working dir.
 
-### 16.1 — Markdown
+Use `FILE=/tmp/precis-smoke-$(date +%s).<ext>` for unique paths per
+run.  After each section, remove the file: ``rm "$FILE"``.
 
-- [ ] `mcp5_put(id='/tmp/precis-smoke.md', text='# Title\n\nPara one.', mode='append')`
-- [ ] `mcp5_get(id='/tmp/precis-smoke.md')` — TOC
-- [ ] `mcp5_get(id='/tmp/precis-smoke.md', depth=1)` — H1 only
-- [ ] `mcp5_put(id='/tmp/precis-smoke.md', text='## Section', mode='append')`
-- [ ] `mcp5_put(id='/tmp/precis-smoke.md›<slug>', text='New para.', mode='replace')`
-- [ ] `mcp5_put(id='/tmp/precis-smoke.md›<slug>', mode='delete')`
+### 16.1 — Markdown (roundtrip)
 
-### 16.2 — Plaintext
+1. **Write**
+    - [ ] `mcp5_put(id='<FILE>.md', text='# Title\n\nFirst para.', mode='append')`
+2. **Read back**
+    - [ ] `mcp5_get(id='<FILE>.md')` — TOC shows Title + the para slug
+    - [ ] `mcp5_get(id='<FILE>.md', depth=1)` — H1 only
+3. **Mutations**
+    - [ ] `mcp5_put(id='<FILE>.md', text='## Section', mode='append')`
+    - [ ] `mcp5_get(id='<FILE>.md')` — Section H2 now present
+    - [ ] `mcp5_put(id='<FILE>.md›<slug>', text='Revised para.', mode='replace')`
+    - [ ] `mcp5_get(id='<FILE>.md›<slug>')` — text is `Revised para.`
+4. **Delete** (node-level)
+    - [ ] `mcp5_put(id='<FILE>.md›<slug>', mode='delete')`
+5. **Read-gone**
+    - [ ] `mcp5_get(id='<FILE>.md›<slug>')`
+        - expect: `ID_NOT_FOUND`
+    - [ ] `mcp5_get(id='<FILE>.md')` — confirm slug absent from TOC
 
-- [ ] `mcp5_put(id='/tmp/precis-smoke.txt', text='line 1\nline 2', mode='append')`
-- [ ] `mcp5_get(id='/tmp/precis-smoke.txt')`
+### 16.2 — Plaintext (roundtrip)
 
-### 16.3 — LaTeX
+1. **Write**
+    - [ ] `mcp5_put(id='<FILE>.txt', text='line 1\nline 2', mode='append')`
+2. **Read back**
+    - [ ] `mcp5_get(id='<FILE>.txt')`
+        - expect: both lines present
+3. **Mutation**
+    - [ ] `mcp5_put(id='<FILE>.txt', text='line 3', mode='append')`
+    - [ ] `mcp5_get(id='<FILE>.txt')` — three lines
+4. **Delete** — plaintext: remove the file from disk
+    - [ ] ``rm '<FILE>.txt'``
+5. **Read-gone**
+    - [ ] `mcp5_get(id='<FILE>.txt')`
+        - expect: an error distinguishing "file does not exist" from
+          handler-level errors
 
-- [ ] `mcp5_put(id='/tmp/precis-smoke.tex', text='\\section{Foo}\n\nPara.', mode='append')`
-- [ ] `mcp5_get(id='/tmp/precis-smoke.tex')` — section outline
+### 16.3 — LaTeX (roundtrip)
+
+1. **Write**
+    - [ ] `mcp5_put(id='<FILE>.tex', text='\\section{Foo}\n\nPara.', mode='append')`
+2. **Read back**
+    - [ ] `mcp5_get(id='<FILE>.tex')` — section outline, para slug visible
+3. **Mutation**
+    - [ ] `mcp5_put(id='<FILE>.tex›<slug>', text='Revised para.', mode='replace')`
+    - [ ] `mcp5_get(id='<FILE>.tex›<slug>')`
+4. **Delete**
+    - [ ] `mcp5_put(id='<FILE>.tex›<slug>', mode='delete')`
+5. **Read-gone**
+    - [ ] `mcp5_get(id='<FILE>.tex›<slug>')`
+        - expect: `ID_NOT_FOUND`
 
 ### 16.4 — DOCX
 

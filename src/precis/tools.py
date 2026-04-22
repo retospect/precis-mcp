@@ -152,13 +152,22 @@ def put(
     _check_write_policy(parsed.scheme, mode)
 
     handler = resolve(parsed.scheme, parsed.path)
+
+    # ``tracked`` is a file-handler concept (DOCX track-changes, LaTeX
+    # equivalent).  Non-file kinds reject unexpected kwargs via
+    # ``extract_kwargs``, so only forward ``tracked`` when the target
+    # is a file handler.  See the docstring above: "Ignored by other
+    # handlers." — this enforces that contract.
+    put_kwargs: dict[str, object] = dict(kwargs)
+    if parsed.scheme == "file":
+        put_kwargs["tracked"] = tracked
+
     return handler.put(
         path=parsed.path,
         selector=parsed.selector,
         text=text,
         mode=mode,
-        tracked=tracked,
-        **kwargs,
+        **put_kwargs,
     )
 
 

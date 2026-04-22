@@ -443,6 +443,45 @@ class TestWriteSurface:
             )
         assert exc_info.value.code is ErrorCode.MODE_UNSUPPORTED
 
+    def test_tools_put_does_not_leak_tracked_to_skill(
+        self, tmp_path, isolated_home
+    ):
+        """Regression: the MCP ``put`` tool wrapper always sends
+        ``tracked=True`` (it's a schema default, not caller-supplied).
+        ``tools.put`` used to forward that unconditionally to every
+        handler; SkillHandler.put rejects unexpected kwargs via
+        ``extract_kwargs``, so every skill write through the MCP
+        surface errored:
+
+            PARAM_INVALID: unexpected kwarg(s) on skill put
+            mode='append': tracked
+
+        Fixed in ``precis.tools.put`` by only forwarding ``tracked``
+        when the target scheme is ``file:``.  This test exercises the
+        full ``tools.put`` → ``SkillHandler.put`` path with the
+        MCP-default ``tracked=True`` to guard against re-regression."""
+        from precis import registry, tools
+
+        # Route the scheme through a fresh handler instance pointed at
+        # tmp_path so we don't pollute real skill dirs.
+        handler = SkillHandler(scan_paths=[])
+        registry._reset_instance_cache()
+        registry._SCHEME_INSTANCES["skill"] = handler
+        try:
+            out = tools.put(
+                uri="skill:tracked-leak-regression",
+                text=(
+                    "---\nname: tracked-leak-regression\n"
+                    "description: regression fixture\n---\nbody\n"
+                ),
+                mode="append",
+                tracked=True,  # the schema default from server.py:put
+            )
+            assert "skill:tracked-leak-regression" in out
+            assert "tracked-leak-regression" in handler._index
+        finally:
+            registry._reset_instance_cache()
+
 
 # ---------------------------------------------------------------------------
 # Registration
