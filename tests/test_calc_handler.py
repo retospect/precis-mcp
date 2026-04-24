@@ -491,3 +491,114 @@ class TestCalcRegistration:
         assert spec.examples
         assert any("integrate" in e for e in spec.examples)
         assert any("Matrix" in e for e in spec.examples)
+
+
+# ---------------------------------------------------------------------------
+# Server-level — comma-split must skip calc; search() must not pass top_k
+# ---------------------------------------------------------------------------
+
+
+class TestCalcCommaNotSplit:
+    """Regression for the server-side comma-split bug.
+
+    ``get(id='integrate(sin(x), x)', type='calc')`` was being torn apart
+    at the comma into two ids: ``['integrate(sin(x)', 'x)']``.  The
+    first failed parsing as a calc expression; the second was sent to
+    the dispatcher as a separate call.  Symptoms: garbled multi-id
+    output instead of a clean integration result.
+
+    Fix: ``_supports_comma_batch`` returns False for compute / external
+    kinds (``calc``, ``math``, ``websearch``, …).
+    """
+
+    def test_calc_with_comma_argument_routes_as_single_call(self):
+        from precis import server
+
+        out = server.get(id="integrate(sin(x), x)", type="calc")
+        # Real result of the integration: -cos(x).  We don't pin the
+        # exact rendering (depends on view/pretty mode) — just assert
+        # the expression evaluated and we got a sensible cos-bearing
+        # output, NOT a multi-id error or split-fragment failure.
+        assert "cos(x)" in out, f"unexpected output: {out!r}"
+        # Multi-id batch would dispatch twice and produce two ``Exact:``
+        # blocks joined by the multi-id separator.  The single-id path
+        # produces exactly one.  ``\n---\n`` alone is too weak — calc's
+        # own footer uses it — so count the per-result marker instead.
+        assert out.count("Exact:") <= 1, (
+            f"calc was split into multi-id batch: {out!r}"
+        )
+        # And no error fragments from the failed-parse first half.
+        assert "ERROR [param_invalid]" not in out
+        assert "ERROR [id_malformed]" not in out
+
+    def test_math_with_comma_argument_routes_as_single_call(self, monkeypatch):
+        # math (Wolfram) handler may not be configured locally; mock
+        # tools.read so we can verify the URI handed to it.
+        from precis import server
+
+        captured: dict[str, object] = {}
+
+        def fake_read(uri, **kwargs):
+            captured["uri"] = uri
+            captured.update(kwargs)
+            return "OK"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.get(id="population of Ireland, in millions", type="math")
+        assert "ERROR [" not in out
+        # The whole opaque expression (with comma) reaches the handler.
+        assert captured["uri"] == "math:population of Ireland, in millions"
+
+    def test_paper_batch_still_works(self, monkeypatch):
+        """Sanity: comma-split must still fire for ref-backed kinds.
+
+        We're guarding against an over-broad fix where 'no commas
+        anywhere' would break the documented batch syntax for papers.
+        """
+        from precis import server
+
+        calls: list[str] = []
+
+        def fake_read(uri, **kwargs):
+            calls.append(uri)
+            return f"[stub for {uri}]"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.get(id="ni2024atomic,wang2020state", type="paper")
+        # Two separate dispatches happened.
+        assert len(calls) == 2, f"expected 2 dispatches, got {len(calls)}"
+        assert "paper:ni2024atomic" in calls
+        assert "paper:wang2020state" in calls
+        # Output stitches them together with the batch separator.
+        assert "\n---\n" in out
+
+
+class TestSearchCalcDoesNotCrashOnTopK:
+    """Regression for the TypeError when ``search(type='calc', query=…)``
+    forwarded ``top_k`` to ``CalcHandler.read`` whose signature did not
+    declare it.
+
+    Fix: the server's ``search`` router detects compute/external kinds
+    (in ``_SEARCH_INCOMPATIBLE_KINDS``) and dispatches without ``top_k``.
+    """
+
+    def test_search_calc_evaluates_query_as_expression(self):
+        from precis import server
+
+        out = server.search(query="2+3*4", type="calc", top_k=5)
+        # Whatever the rendering, the answer 14 must appear.
+        assert "14" in out, f"unexpected calc output: {out!r}"
+        # Must not surface the historical TypeError envelope.
+        assert "ERROR [unexpected]" not in out
+        assert "top_k" not in out
+
+    def test_search_calc_with_complex_expression_round_trips(self):
+        from precis import server
+
+        out = server.search(
+            query="integrate(sin(x)*cos(x), x)", type="calc", top_k=5
+        )
+        # The integral of sin(x)*cos(x) is sin(x)**2/2 (or equivalent).
+        # Either form is acceptable; both contain 'sin' and a '/2' or '**2'.
+        assert "sin" in out
+        assert "ERROR [unexpected]" not in out

@@ -212,6 +212,54 @@ def _kind_from_uri(uri: str) -> str:
     return resolve_alias(scheme)
 
 
+# Kinds whose ``id`` is an opaque expression or natural-language query.
+# For these, commas are part of the input syntax (``calc:integrate(sin(x), x)``,
+# ``websearch:foo, bar baz``) and MUST NOT be treated as a batch
+# separator.  Ref-backed kinds (paper/doi/arxiv/memory/todo/…) keep the
+# comma-batch behaviour so ``get(id='slug1›5,slug2›9')`` still works.
+_NO_COMMA_SPLIT_KINDS: frozenset[str] = frozenset({
+    "calc", "math", "plot",
+    "websearch", "research", "think",
+    "youtube",
+})
+
+# Kinds where ``search()`` doesn't apply: there is no corpus to vector-
+# search.  ``calc`` evaluates an expression, ``math`` queries Wolfram,
+# ``websearch`` calls Perplexity — all of these are ``get()`` operations
+# that happen to take a query as the id.  Routing them through
+# ``search()`` was a TypeError before because handler ``read()`` signatures
+# don't accept ``top_k``.  We now reject at the router with a hint.
+_SEARCH_INCOMPATIBLE_KINDS: frozenset[str] = frozenset({
+    "calc", "math", "plot",
+    "websearch", "research", "think",
+    "youtube",
+})
+
+
+def _supports_comma_batch(type_arg: str, id: str) -> bool:
+    """True when ``id`` should be split on commas as a ref batch.
+
+    The decision is layered: an explicit ``scheme:`` prefix on the id
+    wins (so ``get(id='calc:1+2,foo')`` is honoured even when ``type=``
+    is unset), then the user-supplied ``type=`` is consulted, then the
+    default is True (ref-backed kinds support batch).
+
+    This is the single check that prevents the comma-split crash for
+    ``get(type='calc', id='integrate(sin(x), x)')`` — the input was
+    being split into ``['integrate(sin(x)', 'x)']`` and dispatched as
+    two ids.
+    """
+    # Explicit scheme prefix on the id wins.
+    if ":" in id:
+        scheme = id.split(":", 1)[0]
+        if resolve_alias(scheme) in _NO_COMMA_SPLIT_KINDS:
+            return False
+    # Otherwise consult ``type=``.
+    if type_arg and resolve_alias(type_arg) in _NO_COMMA_SPLIT_KINDS:
+        return False
+    return True
+
+
 def _ambiguous_kind_error(
     verb: str,
     *,
@@ -415,6 +463,22 @@ def search(
             args={"query": query, "top_k": top_k, "grep": grep},
         )
     kind = _kind_from_uri(uri)
+
+    # Compute/external kinds (calc, math, websearch, …) accept the query
+    # as the expression itself — ``search(type='calc', query='2+3*4')``
+    # is semantically the same as ``get(type='calc', id='2+3*4')``.
+    # Their handler ``read()`` signatures do not declare ``top_k`` (and
+    # the concept of "top k results" is meaningless for a single-value
+    # evaluator), so forwarding it crashes with TypeError at the
+    # ``handler.read(**kwargs)`` boundary.  Drop it here at the router.
+    if kind in _SEARCH_INCOMPATIBLE_KINDS:
+        return _dispatch(
+            kind,
+            "search",
+            lambda: tools.read(uri=uri, query=query, page=1),
+            args={"id": scope, "query": query, "grep": grep},
+        )
+
     # BUG-F fix — forward ``grep`` to the handler so it can apply the
     # metadata pre-filter on top of the vector search.  The kwarg was
     # declared only on ``get()`` before, so any MCP client that passed
@@ -493,8 +557,16 @@ def get(
             "  get(id='report.docx')        — document toc\n"
             "  get(grep='MOF')              — filter paper list"
         )
-    # Comma-separated multi-ID: dispatch each, paginate if over budget
-    ids = [s.strip() for s in id.split(",") if s.strip()] if id else []
+    # Comma-separated multi-ID: dispatch each, paginate if over budget.
+    # Skipped for compute/external kinds (calc, math, websearch, …)
+    # where commas are part of the input syntax — see
+    # :func:`_supports_comma_batch`.  Without this guard,
+    # ``get(type='calc', id='integrate(sin(x), x)')`` was being split
+    # into two bogus ids and crashing the dispatcher.
+    if id and _supports_comma_batch(type, id):
+        ids = [s.strip() for s in id.split(",") if s.strip()]
+    else:
+        ids = []
     if len(ids) > 1:
         parts: list[str] = []
         total = 0
