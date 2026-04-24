@@ -1,4 +1,4 @@
-"""Phase 3 — Perplexity Sonar handlers (web, think, research).
+"""Phase 3 — Perplexity Sonar handlers (websearch, think, research).
 
 No network — every test mocks either the whole ``_call_sonar`` path
 (when we want to exercise the read() + formatter pipeline) or
@@ -12,13 +12,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from precis import server
-from precis.handlers.web import (
+from precis.handlers.websearch import (
     ResearchHandler,
     ThinkHandler,
-    WebHandler,
+    WebsearchHandler,
     _attribution,
     _format_response,
-    _WebBase,
+    _PerplexityBase,
 )
 from precis.protocol import ErrorCode, PrecisError
 from precis.registry import (
@@ -33,9 +33,9 @@ from precis.registry import (
 
 
 class TestModeAttributes:
-    def test_web_uses_sonar_model(self):
-        assert WebHandler._MODEL == "sonar"
-        assert WebHandler.scheme == "web"
+    def test_websearch_uses_sonar_model(self):
+        assert WebsearchHandler._MODEL == "sonar"
+        assert WebsearchHandler.scheme == "websearch"
 
     def test_think_uses_reasoning_pro(self):
         assert ThinkHandler._MODEL == "sonar-reasoning-pro"
@@ -47,11 +47,11 @@ class TestModeAttributes:
 
     def test_timeouts_ascend_by_mode(self):
         # Deeper analysis → longer allowed wait.
-        assert WebHandler._TIMEOUT < ThinkHandler._TIMEOUT
+        assert WebsearchHandler._TIMEOUT < ThinkHandler._TIMEOUT
         assert ThinkHandler._TIMEOUT < ResearchHandler._TIMEOUT
 
     def test_all_three_are_read_only(self):
-        for cls in (WebHandler, ThinkHandler, ResearchHandler):
+        for cls in (WebsearchHandler, ThinkHandler, ResearchHandler):
             assert cls.writable is False
             assert cls.views == set()
 
@@ -192,7 +192,7 @@ def _mock_sonar_response(content: str = "ok", citations=None) -> MagicMock:
 class TestCallSonar:
     def test_missing_env_raises_kind_unavailable(self, monkeypatch):
         monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
-        h = WebHandler()
+        h = WebsearchHandler()
         with pytest.raises(PrecisError) as exc:
             h._call_sonar("hi")
         assert exc.value.code == ErrorCode.KIND_UNAVAILABLE
@@ -214,7 +214,7 @@ class TestCallSonar:
         monkeypatch.setenv("PERPLEXITY_API_KEY", "test-key-abc")
         mock_resp = _mock_sonar_response()
         with patch("httpx.post", return_value=mock_resp) as post:
-            WebHandler()._call_sonar("q")
+            WebsearchHandler()._call_sonar("q")
         assert (
             post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key-abc"
         )
@@ -228,7 +228,7 @@ class TestCallSonar:
         mock_resp.raise_for_status = MagicMock(side_effect=err)
         with patch("httpx.post", return_value=mock_resp):
             with pytest.raises(PrecisError) as exc:
-                WebHandler()._call_sonar("q")
+                WebsearchHandler()._call_sonar("q")
         assert exc.value.code == ErrorCode.DENIED
 
     def test_http_429_raises_rate_limited(self, monkeypatch):
@@ -240,7 +240,7 @@ class TestCallSonar:
         mock_resp.raise_for_status = MagicMock(side_effect=err)
         with patch("httpx.post", return_value=mock_resp):
             with pytest.raises(PrecisError) as exc:
-                WebHandler()._call_sonar("q")
+                WebsearchHandler()._call_sonar("q")
         assert exc.value.code == ErrorCode.RATE_LIMITED
 
     def test_http_500_raises_upstream_error(self, monkeypatch):
@@ -252,7 +252,7 @@ class TestCallSonar:
         mock_resp.raise_for_status = MagicMock(side_effect=err)
         with patch("httpx.post", return_value=mock_resp):
             with pytest.raises(PrecisError) as exc:
-                WebHandler()._call_sonar("q")
+                WebsearchHandler()._call_sonar("q")
         assert exc.value.code == ErrorCode.UPSTREAM_ERROR
 
     def test_timeout_raises_timeout(self, monkeypatch):
@@ -261,7 +261,7 @@ class TestCallSonar:
         monkeypatch.setenv("PERPLEXITY_API_KEY", "k")
         with patch("httpx.post", side_effect=httpx.TimeoutException("slow")):
             with pytest.raises(PrecisError) as exc:
-                WebHandler()._call_sonar("q")
+                WebsearchHandler()._call_sonar("q")
         assert exc.value.code == ErrorCode.TIMEOUT
 
     def test_generic_transport_error_raises_upstream(self, monkeypatch):
@@ -270,7 +270,7 @@ class TestCallSonar:
         monkeypatch.setenv("PERPLEXITY_API_KEY", "k")
         with patch("httpx.post", side_effect=httpx.ConnectError("no net")):
             with pytest.raises(PrecisError) as exc:
-                WebHandler()._call_sonar("q")
+                WebsearchHandler()._call_sonar("q")
         assert exc.value.code == ErrorCode.UPSTREAM_ERROR
 
 
@@ -300,23 +300,23 @@ class TestRead:
         )
 
     def test_empty_path_returns_landing(self, read_kwargs):
-        h = WebHandler()
+        h = WebsearchHandler()
         out = h.read(path="", **read_kwargs)
         # Landing shape: scheme header, usage block, model name, no API call.
-        assert "web:" in out
+        assert "websearch:" in out
         assert "Usage:" in out
         assert "sonar" in out
         assert "<question>" in out
 
     def test_whitespace_only_path_returns_landing(self, read_kwargs):
-        h = WebHandler()
+        h = WebsearchHandler()
         out = h.read(path="   \n  ", **read_kwargs)
         assert "Usage:" in out
-        assert "web:" in out
+        assert "websearch:" in out
 
     def test_landing_does_not_call_sonar(self, read_kwargs, monkeypatch):
         # Guard: bare-landing must be free — no HTTP call, no key lookup.
-        h = WebHandler()
+        h = WebsearchHandler()
         called: list[str] = []
         monkeypatch.setattr(
             h, "_call_sonar", lambda q: called.append(q) or {"choices": []}
@@ -337,18 +337,18 @@ class TestRead:
     def test_read_absorbs_top_k_kwarg(self, read_kwargs):
         # BUG-I regression — the server-side ``search()`` dispatcher
         # routes Perplexity-backed kinds through ``tools.read`` which
-        # forwards ``top_k`` as kwargs.  ``_WebBase.read`` must accept
-        # (and ignore) the argument rather than raising TypeError.
+        # forwards ``top_k`` as kwargs.  ``_PerplexityBase.read`` must
+        # accept (and ignore) the argument rather than raising TypeError.
         # Guard the landing path so no HTTP call is made.
-        h = WebHandler()
+        h = WebsearchHandler()
         out = h.read(path="", top_k=5, **read_kwargs)
         assert "Usage:" in out  # landing view, not an error
 
     def test_read_absorbs_arbitrary_unknown_kwargs(self, read_kwargs):
-        # Defensive: future dispatcher kwargs shouldn't break _WebBase
-        # either.  Covers research + think alongside web to confirm
-        # the absorption is in the shared base.
-        for cls in (WebHandler, ThinkHandler, ResearchHandler):
+        # Defensive: future dispatcher kwargs shouldn't break
+        # _PerplexityBase either.  Covers research + think alongside
+        # websearch to confirm the absorption is in the shared base.
+        for cls in (WebsearchHandler, ThinkHandler, ResearchHandler):
             out = cls().read(
                 path="", top_k=10, some_future_kwarg="x", **read_kwargs
             )
@@ -359,26 +359,28 @@ class TestRead:
         # think the landing cost them anything.
         from precis.protocol import CallContext
 
-        h = WebHandler()
+        h = WebsearchHandler()
         for args in (
-            {"id": "web:"},
+            {"id": "websearch:"},
             {"id": ""},
-            {"id": "web:", "grep": "", "query": ""},
-            {"id": "web:   "},
+            {"id": "websearch:", "grep": "", "query": ""},
+            {"id": "websearch:   "},
         ):
-            ctx = CallContext(kind="web", verb="get", args=args)
+            ctx = CallContext(kind="websearch", verb="get", args=args)
             assert h.cost_of(ctx) == "free", args
 
     def test_cost_of_not_free_when_question_present(self):
         from precis.protocol import CallContext
 
-        h = WebHandler()
-        ctx = CallContext(kind="web", verb="get", args={"id": "web:hello"})
+        h = WebsearchHandler()
+        ctx = CallContext(
+            kind="websearch", verb="get", args={"id": "websearch:hello"}
+        )
         assert h.cost_of(ctx) is None
 
     def test_query_fallback_when_path_empty(self, read_kwargs, monkeypatch):
         # When id='' and query='X', handler treats query as the question.
-        h = WebHandler()
+        h = WebsearchHandler()
         monkeypatch.setattr(h, "_call_sonar", lambda q: self._stub_call(f"echo: {q}"))
         read_kwargs["query"] = "fallback question"
         out = h.read(path="", **read_kwargs)
@@ -387,7 +389,7 @@ class TestRead:
     def test_successful_call_includes_content_and_attribution(
         self, read_kwargs, monkeypatch
     ):
-        h = WebHandler()
+        h = WebsearchHandler()
         monkeypatch.setattr(
             h,
             "_call_sonar",
@@ -442,10 +444,10 @@ class TestRegistration:
 
     def test_all_three_kinds_registered(self):
         # httpx is in [external], which is installed in the test env.
-        assert "web" in KINDS
+        assert "websearch" in KINDS
         assert "think" in KINDS
         assert "research" in KINDS
-        assert "web" in SCHEMES
+        assert "websearch" in SCHEMES
         assert "think" in SCHEMES
         assert "research" in SCHEMES
 
@@ -453,33 +455,33 @@ class TestRegistration:
         import precis.registry as reg
 
         monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
-        for kind in ("web", "think", "research"):
+        for kind in ("websearch", "think", "research"):
             reg._ENV_WARNED.discard(kind)
         names = {k.spec.name for k in visible_kinds("get")}
-        assert "web" not in names
+        assert "websearch" not in names
         assert "think" not in names
         assert "research" not in names
 
     def test_all_three_visible_with_api_key(self, monkeypatch):
         monkeypatch.setenv("PERPLEXITY_API_KEY", "stub-for-visibility")
         names = {k.spec.name for k in visible_kinds("get")}
-        assert "web" in names
+        assert "websearch" in names
         assert "think" in names
         assert "research" in names
 
     def test_cost_hints_ordered_by_depth(self):
-        # web < think < research cost — lock in the relative ordering
-        # via the cost_hint strings.  The agent reads these to choose
-        # the cheapest mode that answers the question.
-        web_spec = KINDS["web"].spec
+        # websearch < think < research cost — lock in the relative
+        # ordering via the cost_hint strings.  The agent reads these to
+        # choose the cheapest mode that answers the question.
+        websearch_spec = KINDS["websearch"].spec
         think_spec = KINDS["think"].spec
         research_spec = KINDS["research"].spec
-        assert "0.001" in web_spec.cost_hint
+        assert "0.001" in websearch_spec.cost_hint
         assert "0.005" in think_spec.cost_hint
         assert "0.50" in research_spec.cost_hint
 
     def test_each_kind_declares_perplexity_env(self):
-        for kind in ("web", "think", "research"):
+        for kind in ("websearch", "think", "research"):
             assert "PERPLEXITY_API_KEY" in KINDS[kind].spec.requires
 
 
@@ -489,8 +491,10 @@ class TestRegistration:
 
 
 class TestServerDispatch:
-    def test_type_web_builds_web_uri(self):
-        assert server._to_uri("what is X", kind="web") == "web:what is X"
+    def test_type_websearch_builds_websearch_uri(self):
+        assert (
+            server._to_uri("what is X", kind="websearch") == "websearch:what is X"
+        )
 
     def test_type_think_builds_think_uri(self):
         assert server._to_uri("analyse Y", kind="think") == "think:analyse Y"
@@ -501,7 +505,7 @@ class TestServerDispatch:
         )
 
     def test_explicit_scheme_prefix_preserved(self):
-        assert server._to_uri("web:hello") == "web:hello"
+        assert server._to_uri("websearch:hello") == "websearch:hello"
         assert server._to_uri("think:hello") == "think:hello"
         assert server._to_uri("research:hello") == "research:hello"
 
@@ -513,7 +517,8 @@ class TestServerDispatch:
 
 class TestBaseContract:
     def test_base_has_empty_model_placeholder(self):
-        # _WebBase itself is abstract-ish; _MODEL defaults to empty
-        # string so accidentally registering _WebBase directly fails
-        # loudly rather than silently querying a non-existent model.
-        assert _WebBase._MODEL == ""
+        # _PerplexityBase itself is abstract-ish; _MODEL defaults to
+        # empty string so accidentally registering _PerplexityBase
+        # directly fails loudly rather than silently querying a
+        # non-existent model.
+        assert _PerplexityBase._MODEL == ""

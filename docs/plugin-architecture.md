@@ -2,7 +2,7 @@
 
 **Status:** draft, not yet implemented
 **Audience:** precis-mcp contributors; agent-infra maintainers
-**Scope:** refactor the handler/plugin model to support (a) external read-only services (web, math, research, etc.), (b) capability-named kinds, (c) per-agent masking with per-kind verb restriction, (d) cost reporting, (e) exception isolation. Caching, active health probes, budget guards, and dynamic schema reload are deferred — see §19 Future enhancements.
+**Scope:** refactor the handler/plugin model to support (a) external read-only services (websearch, math, research, etc.), (b) capability-named kinds, (c) per-agent masking with per-kind verb restriction, (d) cost reporting, (e) exception isolation. Caching, active health probes, budget guards, and dynamic schema reload are deferred — see §19 Future enhancements.
 
 ---
 
@@ -22,13 +22,13 @@ Gaps driving this refactor:
 2. **No cost reporting.** External services (perplexity, wolfram) need a way to report `$/call`.
 3. **No runtime isolation.** A plugin exception currently propagates to the tool response as an unstructured crash.
 4. **Per-kind verb masking not possible.** Current `PRECIS_PLUGINS` is all-or-nothing per plugin; can't restrict a kind to read-only.
-5. **Wrong built-in tier.** Storage-backed handlers (paper/todo/flashcard) are built-in but crash at import time when the store isn't available. External API handlers (web/math/wiki) aren't built in. The tiers should be reworked: stateless external-API handlers available unconditionally; storage handlers auto-hide when PG is unreachable rather than crashing at import time (§6.2).
+5. **Wrong built-in tier.** Storage-backed handlers (paper/todo/flashcard) are built-in but crash at import time when the store isn't available. External API handlers (websearch/math/wiki) aren't built in. The tiers should be reworked: stateless external-API handlers available unconditionally; storage handlers auto-hide when PG is unreachable rather than crashing at import time (§6.2).
 
 ---
 
 ## 2. Goals
 
-- **Capability naming.** The agent-facing enum is `{paper, memory, web, math, wiki, research, …}`, not vendor names or scheme strings.
+- **Capability naming.** The agent-facing enum is `{paper, memory, web, websearch, math, wiki, research, …}`, not vendor names or scheme strings.
 - **Minimal declaration.** Plugins declare the kind name, a one-line description, and required env keys. The standard verbs, params, views, and put modes (see §4) are universal. Extras are discovered via errors or hints, not declared upfront.
 - **Discovery via behaviour.** Non-availability of standard things → surfaced in error messages. Availability of extras (handler-specific filters, views, modes) → surfaced in result hints when they'd help.
 - **Per-agent masking.** `PRECIS_KINDS` with bracket syntax (`paper,memory,doc[get,search]`) narrows what each server exposes, per-kind verbs included.
@@ -36,10 +36,10 @@ Gaps driving this refactor:
 - **Exception isolation.** A handler crash must not take down the server or affect other kinds.
 - **Monolithic install.** `pip install precis-mcp` ships every kind precis owns. No capability-gating extras. Kind exposure per agent is controlled at runtime by `PRECIS_KINDS` (§13), not at install time.
 - **Two kind tiers by infrastructure requirement:**
-  - **Stateless kinds** — `wiki`, `url`, `youtube`, `code`, `math`, `web`, `think`, `research`. Pure API calls or local-file parsing. Present whenever required env vars are set. Zero PG.
+  - **Stateless kinds** — `wiki`, `url`, `youtube`, `code`, `math`, `websearch`, `think`, `research`. Pure API calls or local-file parsing. Present whenever required env vars are set. Zero PG.
   - **State-backed kinds** — `paper`, `memory`, `todo`, `flashcard`, `conversation`, `news`, `log`, `gripe`, `link`. All require Postgres reachable at startup; auto-hidden from the tool enum if PG is unreachable, with a stderr warning listing what's disabled.
 - **One DB, many schemas.** All state-backed kinds write to the same `cluster` database, each in its own schema (`acatome.*`, `journal.*`, `news.*`) plus top-level tables (`logs`, `links`, `gripes`). One backup, one PgBouncer, one admin surface. Per-schema roles control access.
-- **Stateless kinds always work without PG.** Laptops, CI, first-boot dev environments all get `url`, `wiki`, `web`, `think`, `research`, `youtube`, `code`, `math` out of the box. State-backed kinds auto-hide; no code crash, no broken imports.
+- **Stateless kinds always work without PG.** Laptops, CI, first-boot dev environments all get `url`, `wiki`, `websearch`, `think`, `research`, `youtube`, `code`, `math` out of the box. State-backed kinds auto-hide; no code crash, no broken imports.
 - **Non-breaking.** Existing handlers (word, tex, markdown, plaintext, paper, todo, flashcard) keep working. New capabilities are additive.
 
 ### 2.1 Vocabulary: `type` (agent-facing) vs `kind` (internal)
@@ -61,9 +61,9 @@ Nothing changes semantically; it's just vocabulary hygiene on the boundary.
 ```python
 @dataclass
 class KindSpec:
-    name: str                                  # canonical enum value: "web", "paper", ...
+    name: str                                  # canonical enum value: "websearch", "paper", ...
     description: str                           # one-liner for the tool-schema enum docs
-    aliases: list[str] = field(default_factory=list)    # e.g. ["perplexity"] → web
+    aliases: list[str] = field(default_factory=list)    # e.g. ["perplexity"] → websearch
     requires: list[str] = field(default_factory=list)   # env vars that must exist to enable
     cost_hint: str | None = None               # freeform: "~$0.002/call" | "free" | None
     examples: list[str] = field(default_factory=list)   # reserved for single-kind specialization
@@ -217,7 +217,7 @@ Hints: 162 total. Narrow with:
 Example — zero results:
 
 ```
-No web results for 'sky blue at low pressure'.
+No websearch results for 'sky blue at low pressure'.
 
 Hints:
   - try broader query: 'why is the sky blue'
@@ -266,7 +266,7 @@ class Handler(abc.ABC):
   ```
   ["2 unresolved gripes from the last 24h → get(type='gripe', id='/recent')"]
   ```
-- `WebHandler.notifications()` → `[]` (stateless; nothing to report).
+- `WebsearchHandler.notifications()` → `[]` (stateless; nothing to report).
 - `UrlHandler.notifications()` → `[]`.
 
 **Aggregation.** At tool-description build, precis calls `notifications()` on every registered handler, concatenates results, and if the combined list is non-empty prepends a block to the tool description:
@@ -294,7 +294,7 @@ If every handler returns `[]` (typical on a fresh system), the Notifications blo
 
 **Optional `NotificationContext`.** Carries agent-identifying data (agent_id, PRECIS_KINDS mask) so a handler can filter — e.g. gripe notifications suppress themselves for non-admin agents. Default: no filtering.
 
-**Stateless kinds never notify.** By convention, stateless kinds return `[]`. There's no state to catch up on for `url` / `wiki` / `web` / `think` / `research`.
+**Stateless kinds never notify.** By convention, stateless kinds return `[]`. There's no state to catch up on for `url` / `wiki` / `websearch` / `think` / `research`.
 
 ---
 
@@ -312,11 +312,13 @@ Two tiers by infrastructure requirement: **stateless** (works anywhere; pure API
 | `youtube` | — | free | Transcript by video id |
 | `code` | `GITHUB_TOKEN` (opt) | free | GitHub / Stack Overflow search |
 | `math` | `WOLFRAM_APP_ID` | $/tier | Wolfram Alpha |
-| `web` | `PERPLEXITY_API_KEY` | ~$0.002/call | Perplexity Sonar — quick web synthesis, ~2s |
+| `websearch` | `PERPLEXITY_API_KEY` | ~$0.002/call | Perplexity Sonar — quick web synthesis, ~2s |
 | `think` | `PERPLEXITY_API_KEY` | ~$0.01/call | Perplexity Sonar Reasoning Pro — multi-step reasoning, ~10–30s |
 | `research` | `PERPLEXITY_API_KEY` | ~$0.10+/call | Perplexity Sonar Deep Research — multi-source synthesis, 2–10min |
 
-The three Perplexity modes (`web`, `think`, `research`) are distinct kinds, not parameters on a single kind. Agents pick by intent: fast answer → `web`; complex reasoning → `think`; comprehensive synthesis → `research`. The `news` kind is not stateless — see §6.5.
+The three Perplexity modes (`websearch`, `think`, `research`) are distinct kinds, not parameters on a single kind. Agents pick by intent: fast answer → `websearch`; complex reasoning → `think`; comprehensive synthesis → `research`. The `news` kind is not stateless — see §6.5.
+
+**Note (v5.0):** `websearch` was renamed from `web` in v5.0. The scheme `web:` is now used for stored-bookmark refs (see `docs/websites-plan.md`); live Perplexity search lives under `websearch:`.
 
 **Long-running beyond research:** Tasks needing hours (full literature sweeps, deep-read agents) don't belong in precis. Dispatch via hermes and have the result delivered to memory as a drawer. Precis surfaces a hint when a `research` query looks like it would benefit:
 
@@ -333,7 +335,7 @@ All kinds below require Postgres reachable at startup. If PG is unavailable, the
 WARNING: Postgres not reachable at <DSN>.
   State-backed kinds disabled: paper, memory, todo, flashcard, conversation,
                                news, log, gripe, link.
-  Available: url, wiki, web, think, research, youtube, code, math.
+  Available: url, wiki, websearch, think, research, youtube, code, math.
 ```
 
 Stateless kinds continue to work normally. No crash, no broken imports. Once PG becomes reachable (after restart), state kinds reappear.
@@ -445,7 +447,7 @@ CREATE TABLE journal.conversation_chunks (
 
 ### 6.5 `news` — news aggregator
 
-`news` is store-backed only. Without PG, the kind is absent — agents wanting web news should use `web` with a "today" hint.
+`news` is store-backed only. Without PG, the kind is absent — agents wanting web news should use `websearch` with a "today" hint.
 
 | Kind | Req | Cost | Notes |
 |---|---|---|---|
@@ -587,7 +589,7 @@ CREATE TABLE gripes (
   host        text NOT NULL,
   agent_id    text,                          -- hermes-supplied when available
   trace_id    text,                          -- correlate with the bad call
-  context_ref text,                          -- URI the complaint is about ('web:last', 'paper:wang2020state', trace id)
+  context_ref text,                          -- URI the complaint is about ('websearch:last', 'paper:wang2020state', trace id)
   complaint   text NOT NULL,                 -- the gripe text
   error_code  text,                          -- matching error code from the triggering error (if any)
   payload     jsonb NOT NULL DEFAULT '{}'    -- additional structured context: last request, environment, recent events
@@ -612,7 +614,7 @@ CREATE INDEX gripes_payload_gin ON gripes USING gin (payload);
 Hidden from enum, accepted at URI parse (for legacy content). **Rejected in `PRECIS_KINDS` config** (§13).
 
 - `wolfram → math`
-- `perplexity → web`
+- `perplexity → websearch`
 
 Alias error format explicitly disclaims equivalence:
 
@@ -627,7 +629,7 @@ This kills "let me try the other one to see if it's different" reasoning.
 Two plugins declaring the same kind name is a **design error**, not a runtime condition to paper over. Startup fails with:
 
 ```
-ERROR: type name collision. Plugin 'precis-alt-web' declares type='web', already provided by 'precis-web'.
+ERROR: type name collision. Plugin 'precis-alt-web' declares type='websearch', already provided by 'precis-web'.
   Resolve by renaming one plugin's capability, or set PRECIS_PLUGINS to load only one.
 ```
 
@@ -719,10 +721,10 @@ Replaces the paper-specific `/cites` and `/cited-by` vocabulary. `/links` is uni
 
 | View | Applies to |
 |---|---|
-| `/sources` | web, news, think, research |
+| `/sources` | websearch, news, think, research |
 | `/steps`, `/pod/N`, `/image` | math |
 | `/chapters`, `/quote/TIMESTAMP` | youtube |
-| `/recency` | web, news |
+| `/recency` | websearch, news |
 
 **Memory-specific:**
 
@@ -755,7 +757,7 @@ Replaces the paper-specific `/cites` and `/cited-by` vocabulary. `/links` is uni
 | `paper`, `word`, `tex`, `markdown` | document page / chunk block |
 | search results (any kind) | next page of the result list beyond `top_k` |
 | `youtube` | N/A — single transcript |
-| `web`, `news`, `think`, `research` | N/A — single synthesis |
+| `websearch`, `news`, `think`, `research` | N/A — single synthesis |
 | `wiki`, `math` | N/A — single answer |
 
 When `page > 1` on a non-paginated kind:
@@ -764,7 +766,7 @@ When `page > 1` on a non-paginated kind:
 <empty>
 
 Hints:
-  - 'page' has no effect on type='web' — results are a single synthesis
+  - 'page' has no effect on type='websearch' — results are a single synthesis
   - for more breadth, use top_k= (currently 5) or try type='research'
 ```
 
@@ -971,12 +973,12 @@ ERROR [view_unknown]: paper view '/histogram' not recognized.
 For errors that **aren't the agent's fault** (handler crashes, upstream timeouts, unavailable backends), the `next` field carries a gripe hint so the agent can flag the issue:
 
 ```
-ERROR [unexpected]: web handler crashed: KeyError: 'choices'
-  where: type='web' verb='search' query='low-pressure argon optics'
+ERROR [unexpected]: websearch handler crashed: KeyError: 'choices'
+  where: type='websearch' verb='search' query='low-pressure argon optics'
   cause: perplexity response missing expected field
   trace_id: a3f9c1...
   next: retry once; if reproducible, gripe about it:
-        put(type='gripe', text='web handler crashes on some queries', id='a3f9c1...')
+        put(type='gripe', text='websearch handler crashes on some queries', id='a3f9c1...')
 ```
 
 The gripe hint is emitted by `_format_error()` for codes `unexpected`, `timeout`, `unavailable`, and `rate_limited`. Not for user-side errors (`type_unknown`, `view_unknown`, `id_not_found`) — those are the agent's cue to fix the call, not file a complaint.

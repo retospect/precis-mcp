@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os.path
 import sys
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -320,19 +321,32 @@ def search(
 
     query: search query or compute expression (REQUIRED)
     top_k: number of results (default 5)
-    scope: slug / filename to restrict search (omit for full corpus)
-    type:  kind — REQUIRED unless scope= is set.  Accepted: paper,
-           memory, conversation, todo, skill, flashcard, quest (stateful);
-           web, research, think (Perplexity); math (Wolfram, paid);
-           calc (local SymPy, free); youtube.
+    scope: slug / filename to restrict search (omit for full corpus;
+           incompatible with type='all' or comma lists)
+    type:  kind — REQUIRED unless scope= is set.  Accepted values:
+           - Single ref-backed kind: paper, memory, conversation,
+             todo, flashcard, web, book — semantic search within one
+             corpus.
+           - Cross-corpus: type='all' searches every ref-backed
+             corpus at once; type='paper,memory,web' searches the
+             listed kinds only.  Both return a unified ranking
+             grouped by kind in the output.
+           - External services: websearch, research, think (Perplexity);
+             math (Wolfram, paid); calc (local SymPy, free); youtube;
+             skill, quest (stateful).  These cannot appear in a
+             cross-corpus list.
     grep:  metadata pre-filter (title/author/tag, tag:review,
            year:2020-, ingested:today).  Runs before the vector search.
 
     Examples:
-      # Paper / document semantic search
+      # Single-kind semantic search
       search(query='CO2 capture MOFs', type='paper')
       search(query='selectivity', scope='wang2020state')
       search(query='membrane', type='paper', grep='tag:review')
+
+      # Cross-corpus — search everything at once
+      search(query='MOFs', type='all')
+      search(query='MOFs', type='paper,memory,web')
 
       # Compute — calc (free, offline)
       search(query='2+3*4', type='calc')
@@ -343,7 +357,7 @@ def search(
       search(query='orbital period of Jupiter', type='math')
 
       # External data
-      search(query='latest perovskite results', type='web')
+      search(query='latest perovskite results', type='websearch')
       search(query='mechanistic review of X', type='research')
 
       # Stateful
@@ -352,6 +366,35 @@ def search(
     """
     if not query.strip():
         return "ERROR: query is required. Example: search(query='CO2 capture MOF')"
+
+    # Cross-corpus dispatch — ``type='all'`` or a comma-separated list
+    # like ``type='paper,memory,web'`` routes to a single
+    # ``store.search_text(corpora=[...])`` call that returns a unified
+    # ranking and a grouped-by-kind rendering.  Must be checked BEFORE
+    # the per-kind ``_to_uri`` path below because "all" / "a,b" aren't
+    # valid kind names on their own.
+    from precis.cross_corpus import (
+        expand_type_to_corpora,
+        format_cross_corpus_error,
+        is_cross_corpus_request,
+        search_across_corpora,
+    )
+    from precis.protocol import PrecisError
+
+    if is_cross_corpus_request(type):
+        try:
+            corpora = expand_type_to_corpora(type)
+            return search_across_corpora(
+                query=query,
+                corpora=corpora,
+                top_k=top_k,
+                scope=scope,
+            )
+        except PrecisError as exc:
+            return format_cross_corpus_error(
+                exc, query=query, type_arg=type, top_k=top_k
+            )
+
     if scope:
         uri = _to_uri(scope, kind=type)
     elif type:
@@ -397,7 +440,7 @@ def get(
     depth: heading depth (0=all, 1=H1, 2=H1+H2)
     type:  kind name — REQUIRED for bare slugs.  Accepted: paper,
            todo, skill, memory, conversation, flashcard, quest,
-           web, research, think, math, calc, youtube.
+           websearch, research, think, math, calc, youtube.
 
     Papers (bare slugs need type='paper' or scheme prefix):
       get(type='paper', id='wang2020state')          — overview
@@ -427,9 +470,9 @@ def get(
       get(type='math', id='orbital period of Jupiter') — world data
 
     External data:
-      get(type='web',     id='latest perovskite results') — Perplexity
-      get(type='research', id='mechanistic review of X')  — deep research
-      get(type='youtube', id='dQw4w9WgXcQ')               — transcript
+      get(type='websearch', id='latest perovskite results') — Perplexity
+      get(type='research',  id='mechanistic review of X')   — deep research
+      get(type='youtube',   id='dQw4w9WgXcQ')                — transcript
 
     Stateful kinds:
       get(type='todo',   id='/recent')     — recent todos
@@ -539,6 +582,8 @@ def put(
     note: str = "",
     link: str = "",
     type: str = "",
+    tags: list[str] | None = None,
+    archive: bool | None = None,
 ) -> str:
     """Write, annotate, or delete content.
 
@@ -548,6 +593,8 @@ def put(
     tracked: DOCX track-changes (default true). LaTeX: ignored.
     note: annotation text — creates a note on the target ref or block.
     link: link spec as 'target_slug:relation' — creates a typed link.
+    tags: list[str] — ref kinds that accept it (todo, memory). Forwarded only when non-None.
+    archive: bool — web: kind, archive to web.archive.org on capture (default on; private URLs never archived).
 
     Headings: start line with # markers. Never number them.
       # Document Title    (Title style — one per document)
@@ -565,11 +612,9 @@ def put(
       put(id='report.docx›PLXDX', mode='delete')
       put(id='report.docx›PLXDX', text='Fix this.', mode='comment')
 
-    Citations (DOCX):
-      Cite: [@slug] in text — slug is the paper name, NEVER include ›chunk.
-      ✓ [@piscopo2020strategies]  ✗ [piscopo2020strategies›54]  ✗ [piscopo2020strategies]
+    Citations (DOCX): [@slug] in text — NEVER [slug›chunk].
+      ✓ [@piscopo2020strategies]  ✗ [piscopo2020strategies›54]
       Define: put(id='report.docx', text='[@slug]: Author, Title, 2024.', mode='append')
-      Undefined [@slug] references are flagged after each write.
 
     Notes (on any ref or block):
       put(id='wang2020state', note='Key finding about MOFs')
@@ -577,11 +622,11 @@ def put(
 
     Links (between refs or blocks):
       put(id='wang2020state', link='jones2023surface:cites')
-      put(id='wang2020state›38', link='jones2023surface:discusses')
       put(id='wang2020state', link='jones2023surface')  — defaults to 'references'
 
-    Paper notes (legacy, still works):
-      put(id='wang2020state', text='Key finding', mode='note')
+    Tags (todo, memory):
+      put(type='todo', text='Fix parser', tags=['urgent'], mode='append')
+      put(id='todo:fix-parser', text='urgent', mode='tag')    — also: mode='untag'
 
     Multiple paragraphs separated by newlines are auto-split.
     """
@@ -600,11 +645,28 @@ def put(
         )
     uri = _to_uri(id, kind=type)
     kind = _kind_from_uri(uri)
+
+    # Only forward ``tags`` / ``archive`` when the caller set them —
+    # handlers that don't accept the kwarg would otherwise reject
+    # ``tags=None`` via ``extract_kwargs``.  Same gating pattern as
+    # ``tracked`` inside ``tools.put()``.
+    extra: dict[str, Any] = {}
+    if tags is not None:
+        extra["tags"] = tags
+    if archive is not None:
+        extra["archive"] = archive
+
     return _dispatch(
         kind,
         "put",
         lambda: tools.put(
-            uri=uri, text=text, mode=mode, tracked=tracked, note=note, link=link
+            uri=uri,
+            text=text,
+            mode=mode,
+            tracked=tracked,
+            note=note,
+            link=link,
+            **extra,
         ),
         args={"id": id, "mode": mode},
     )

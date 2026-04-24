@@ -33,7 +33,7 @@ import logging
 import re
 from datetime import UTC, datetime
 
-from precis.handlers._ref_base import RefHandler, _get_store
+from precis.handlers._ref_base import RefHandler, _get_store, _parse_tags
 from precis.protocol import ErrorCode, PrecisError, extract_kwargs
 from precis.uri import SEP
 
@@ -164,7 +164,11 @@ class MemoryHandler(RefHandler):
         slug = ref.get("slug", "???")
         title = ref.get("title", "")
         meta = _parse_meta(ref)
-        tags = ref.get("tags") or []
+        # ``ref`` arrives from ``_resolve_ref`` → ``store.get()`` which
+        # returns ``Ref.to_dict()`` unmodified — ``tags`` is still the
+        # raw JSON string here.  Funnel through ``_parse_tags`` so the
+        # join below emits real tag names, not individual JSON chars.
+        tags = _parse_tags(ref)
 
         lines: list[str] = []
         lines.append(f"🧠 {slug}")
@@ -462,9 +466,13 @@ class MemoryHandler(RefHandler):
                     meta = _parse_meta(d)
                     if meta.get("deleted"):
                         continue
-                    # Enrich with tag list the same way acatome-store does
-                    # elsewhere — ``r.tags`` is a relationship.
-                    d["tags"] = [t.name for t in r.tags] if r.tags else []
+                    # ``Ref.tags`` is a JSON-string column, not an ORM
+                    # relationship — a prior version iterated ``r.tags``
+                    # directly and produced character-by-character output
+                    # (``tags: [, ", s, m, o, k, e, ...]``).  Funnel
+                    # through :func:`_parse_tags` so every ref kind
+                    # shares one decode path.
+                    d["tags"] = _parse_tags(d)
                     results.append(d)
                 return results
         except ImportError as exc:

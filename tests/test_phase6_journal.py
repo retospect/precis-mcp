@@ -222,6 +222,60 @@ class TestMemoryRead:
         assert "memory:deleted" not in out
 
 
+class TestTagHydration:
+    """Regression: ``Ref.tags`` is a JSON-string column, not an ORM
+    relationship.  A previous implementation iterated ``r.tags``
+    directly and produced character-by-character output
+    (``tags: [, ", s, m, o, k, e, ...]``).  These tests pin the
+    JSON-string decode path that the live store actually returns.
+    Fixture tags that look like real ``Ref.to_dict()`` output drive
+    the regression.
+    """
+
+    def test_overview_renders_json_string_tags_as_names(self):
+        # Mimic the raw shape ``Ref.to_dict()`` emits: tags as a JSON
+        # string, not a Python list.  Before the fix the join below
+        # would hit characters and render ``tags: [, ", u, r, g, ...]``.
+        ref = _memory_ref(slug="memory:demo", tags=[])
+        ref["tags"] = '["urgent", "smoke-test"]'
+        h = MemoryHandler()
+        store = _make_store(refs=[ref])
+        out = h._read_overview(store, ref)
+        assert "tags: urgent, smoke-test" in out
+        # Guard: the bug symptom must not be present.
+        assert "tags: [" not in out
+        assert "tags: , " not in out
+
+    def test_overview_handles_unparseable_tags_silently(self):
+        # A malformed tags column must not explode the overview — the
+        # defensive parse in ``_parse_tags`` returns ``[]`` so the
+        # ``if tags`` guard skips the line entirely.
+        ref = _memory_ref(slug="memory:broken", tags=[])
+        ref["tags"] = "not-json-at-all"
+        h = MemoryHandler()
+        store = _make_store(refs=[ref])
+        out = h._read_overview(store, ref)
+        assert "tags:" not in out  # no render, no crash
+
+    def test_overview_handles_none_tags(self):
+        # ``Ref.tags`` can be NULL when no tags have ever been set.
+        ref = _memory_ref(slug="memory:bare")
+        ref["tags"] = None
+        h = MemoryHandler()
+        store = _make_store(refs=[ref])
+        out = h._read_overview(store, ref)
+        assert "tags:" not in out
+
+    def test_overview_accepts_already_parsed_list(self):
+        # Test fixtures commonly pass tags as a plain list; both the
+        # live-store and the unit-test paths must render identically.
+        ref = _memory_ref(slug="memory:list", tags=["urgent", "smoke-test"])
+        h = MemoryHandler()
+        store = _make_store(refs=[ref])
+        out = h._read_overview(store, ref)
+        assert "tags: urgent, smoke-test" in out
+
+
 # ---------------------------------------------------------------------------
 # Memory — write surface
 # ---------------------------------------------------------------------------

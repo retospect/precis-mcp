@@ -403,3 +403,37 @@ class TestAmbiguousKindErrors:
         out = server.put(id="", type="memory", text="x", mode="append")
         assert "ERROR [kind_unknown]" not in out
         assert captured["uri"] == "memory:"
+
+    def test_put_forwards_tags_when_set(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        def fake_put(uri: str, **kwargs):
+            captured.update(kwargs)
+            captured["uri"] = uri
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "put", fake_put)
+        server.put(
+            id="",
+            type="todo",
+            text="buy milk",
+            mode="append",
+            tags=["shopping", "home"],
+        )
+        assert captured.get("tags") == ["shopping", "home"]
+
+    def test_put_omits_tags_when_not_set(self, monkeypatch):
+        # When the caller doesn't pass ``tags=``, the kwarg must not
+        # appear in the forwarded call — otherwise handlers that reject
+        # unknown kwargs via ``extract_kwargs`` would error on every
+        # put() call that didn't happen to mention tags.
+        captured: dict[str, object] = {}
+
+        def fake_put(uri: str, **kwargs):
+            captured.update(kwargs)
+            captured["uri"] = uri
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "put", fake_put)
+        server.put(id="", type="memory", text="x", mode="append")
+        assert "tags" not in captured

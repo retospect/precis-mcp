@@ -716,6 +716,87 @@ def _register_builtins() -> None:
         except ImportError:
             log.debug("MemoryHandler not available (missing acatome-store?)")
 
+    # ── Phase 1 bookmarks: web + book (stored kinds, acatome-backed) ──
+    # ``web:`` is the website-bookmark kind (v5.0+).  The legacy
+    # Perplexity-Sonar ``web:`` was renamed to ``websearch:`` in Phase 0
+    # to free the scheme.  ``book:`` is the book-notes kind; it also
+    # accepts ``isbn:`` as an id format (declared on
+    # ``BookHandler.schemes``) so ``get(id='isbn:9780201021158')`` works
+    # as a DOI-style lookup.
+
+    if _is_allowed("web"):
+        try:
+            from precis.handlers.web import WebHandler
+
+            _register_plugin(
+                Plugin(
+                    name="web",
+                    handler_cls=WebHandler,
+                    schemes=["web"],
+                    corpus_id="websites",
+                    write_policy="direct",
+                    kinds=[
+                        KindSpec(
+                            name="web",
+                            description=(
+                                "Stored website bookmarks — canonical URL "
+                                "dedupe, kind inference, tags, summary. "
+                                "Archives to web.archive.org on capture "
+                                "(opt out with archive=False or "
+                                "PRECIS_WEB_AUTO_ARCHIVE=0).  /recent, "
+                                "/tags, /kinds views."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "put(type='web', id='https://github.com/foo/bar', text='Great tool.', tags=['tool','dev'])",
+                                "get(id='web:/recent')",
+                                "get(id='web:/tags')",
+                                "search(query='…', type='web')",
+                            ],
+                        )
+                    ],
+                )
+            )
+        except ImportError:
+            log.debug("WebHandler not available (missing acatome-store?)")
+
+    if _is_allowed("book"):
+        try:
+            from precis.handlers.book import BookHandler
+
+            _register_plugin(
+                Plugin(
+                    name="book",
+                    handler_cls=BookHandler,
+                    schemes=["book", "isbn"],
+                    corpus_id="books",
+                    write_policy="direct",
+                    kinds=[
+                        KindSpec(
+                            name="book",
+                            description=(
+                                "Curated book notes — author, year, ISBN, "
+                                "status (to-read/reading/read).  ``isbn:`` "
+                                "is an accepted id format.  Large books "
+                                "ingested via paper: pipeline and cross-"
+                                "linked via meta.paper_slug.  /to-read, "
+                                "/reading, /read, /by-author, /by-year "
+                                "views."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "put(type='book', title='…', authors=['…'], year=YYYY, status='to-read')",
+                                "get(id='book:/reading')",
+                                "get(id='isbn:9780201021158')",
+                                "put(id='book:<slug>', text='reading', mode='status')",
+                            ],
+                        )
+                    ],
+                )
+            )
+        except ImportError:
+            log.debug("BookHandler not available (missing acatome-store?)")
+
     if _is_allowed("conversations"):
         try:
             from precis.handlers.conversation import ConversationHandler
@@ -831,6 +912,51 @@ def _register_builtins() -> None:
         except ImportError:
             log.debug("CalcHandler not available (missing sympy?)")
 
+    # ── Phase 5b: local plot renderer — free, matplotlib-based ──────
+    # Stateless compute kind: agent posts a JSON spec, handler returns
+    # an inline PNG/SVG data URL or writes a file to ./figures/.  No
+    # code execution — the spec is validated by pydantic and mapped to
+    # a fixed matplotlib vocabulary (line, scatter, bar, hist,
+    # errorbar).  Gated on matplotlib + pydantic being importable.
+
+    if _is_allowed("plot"):
+        try:
+            from precis.handlers.plot import PlotHandler
+
+            _register_plugin(
+                Plugin(
+                    name="plot",
+                    handler_cls=PlotHandler,
+                    schemes=["plot"],
+                    kinds=[
+                        KindSpec(
+                            name="plot",
+                            description=(
+                                "FREE (local, offline): declarative "
+                                "matplotlib renderer.  Post a JSON spec "
+                                "(line / scatter / bar / hist / errorbar) "
+                                "via put(mode='render'); get back an "
+                                "inline PNG / SVG / WebP or export to "
+                                "./figures/ as PNG / SVG / PDF / WebP / "
+                                "JPG.  Stateless — no persistence.  See "
+                                "skill:plot-basics."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "put(id='plot:', text='{\"type\":\"line\",\"x\":[1,2,3],\"y\":[1,4,9]}', mode='render')",
+                                "put(id='plot:/svg', text='<spec>', mode='render')",
+                                "put(id='plot:/export/chart.pdf', text='<spec>', mode='render')",
+                                "get(id='plot:/help')",
+                            ],
+                        )
+                    ],
+                )
+            )
+        except ImportError:
+            log.debug(
+                "PlotHandler not available (missing matplotlib or pydantic?)"
+            )
+
     if _is_allowed("youtube"):
         try:
             from precis.handlers.youtube import YouTubeHandler
@@ -861,27 +987,32 @@ def _register_builtins() -> None:
         except ImportError:
             log.debug("YouTubeHandler not available (missing youtube-transcript-api?)")
 
-    # ── Phase 3: Perplexity Sonar — web / think / research ──────────
-    # Three kinds sharing the _WebBase class family but with different
-    # models, timeouts, and cost hints.  All three require
+    # ── Phase 3: Perplexity Sonar — websearch / think / research ──────
+    # Three kinds sharing the _PerplexityBase class family but with
+    # different models, timeouts, and cost hints.  All three require
     # PERPLEXITY_API_KEY and httpx (from the [external] extra).
+    #
+    # Historical: ``web:`` was the Perplexity Sonar kind in v4.x.  v5.0
+    # renamed it to ``websearch:`` so ``web:`` could be repurposed as a
+    # stored-bookmark kind (see docs/websites-plan.md).  No alias is
+    # registered — ``web:`` now resolves to the bookmark handler.
 
     _PERPLEXITY_COMMON = {
         "requires": ["PERPLEXITY_API_KEY"],
     }
 
-    if _is_allowed("web"):
+    if _is_allowed("websearch"):
         try:
-            from precis.handlers.web import WebHandler
+            from precis.handlers.websearch import WebsearchHandler
 
             _register_plugin(
                 Plugin(
-                    name="web",
-                    handler_cls=WebHandler,
-                    schemes=["web"],
+                    name="websearch",
+                    handler_cls=WebsearchHandler,
+                    schemes=["websearch"],
                     kinds=[
                         KindSpec(
-                            name="web",
+                            name="websearch",
                             description=(
                                 "PAID (~$0.001/call): Perplexity Sonar "
                                 "web search — fast factual answers with "
@@ -891,8 +1022,8 @@ def _register_builtins() -> None:
                             ),
                             cost_hint="~$0.001/call",
                             examples=[
-                                "get(type='web', id='current CEO of Anthropic')",
-                                "search(query='Mars rover findings 2025', type='web')",
+                                "get(type='websearch', id='current CEO of Anthropic')",
+                                "search(query='Mars rover findings 2025', type='websearch')",
                             ],
                             **_PERPLEXITY_COMMON,
                         )
@@ -900,11 +1031,11 @@ def _register_builtins() -> None:
                 )
             )
         except ImportError:
-            log.debug("WebHandler not available (missing httpx?)")
+            log.debug("WebsearchHandler not available (missing httpx?)")
 
     if _is_allowed("think"):
         try:
-            from precis.handlers.web import ThinkHandler
+            from precis.handlers.websearch import ThinkHandler
 
             _register_plugin(
                 Plugin(
@@ -936,7 +1067,7 @@ def _register_builtins() -> None:
 
     if _is_allowed("research"):
         try:
-            from precis.handlers.web import ResearchHandler
+            from precis.handlers.websearch import ResearchHandler
 
             _register_plugin(
                 Plugin(

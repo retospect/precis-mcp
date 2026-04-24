@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/precis-mcp)](https://pypi.org/project/precis-mcp/)
 [![License](https://img.shields.io/pypi/l/precis-mcp)](LICENSE)
 
-**Stop burning tokens on raw documents.** Precis is an [MCP server](https://modelcontextprotocol.io/) that gives AI agents structured, token-efficient access to DOCX, LaTeX, Markdown, and scientific papers — read, write, search, and annotate through four simple tools.
+**Stop burning tokens on raw documents.** Precis is an [MCP server](https://modelcontextprotocol.io/) that gives AI agents structured, token-efficient access to DOCX, LaTeX, Markdown, scientific papers, a free local calculator (SymPy), and paid compute / web backends — read, write, search, and annotate through four simple tools.
 
 Instead of dumping a 100k-token PDF into your context window, Precis lets your agent navigate to exactly the section it needs, read just that chunk, and move on. **One MCP server replaces the PDF-in-context anti-pattern** that burns through Claude, ChatGPT, and Cursor usage limits in minutes.
 
@@ -136,7 +136,7 @@ search(type='calc', query='integrate sin(x)*cos(x) dx')         # free, offline
 search(type='math', query='speed of light in km/h')             # Wolfram Alpha
 
 # External data
-search(type='web', query='latest on perovskite solar cells')    # Perplexity Sonar
+search(type='websearch', query='latest on perovskite solar cells')    # Perplexity Sonar
 search(type='research', query='mechanistic review of …')        # deep research
 
 # Other stateful kinds
@@ -147,7 +147,7 @@ search(type='memory', query='design decision')
 
 ## Supported kinds
 
-Precis 4.1 ships 18 built-in kinds across four families.  Add the
+Precis 4.1 ships 17 built-in kinds across four families.  Add the
 `type=` kwarg to disambiguate when the identifier alone doesn't imply a
 kind.
 
@@ -204,7 +204,7 @@ Precis classifies the identifier in this order:
 
 1. **Explicit scheme prefix** (`paper:`, `doi:`, `arxiv:`, `pmcid:`,
    `isbn:`, `issn:`, `todo:`, `skill:`, `quest:`, `memory:`,
-   `conversation:`, `flashcard:`, `web:`, `research:`, `think:`,
+   `conversation:`, `flashcard:`, `websearch:`, `research:`, `think:`,
    `math:`, `calc:`, `youtube:`).
 2. **File extension** (`.docx`, `.tex`, `.md`, `.txt`) — routes to the
    matching file handler.

@@ -217,6 +217,7 @@ state mutated, no files written.
 - [ ] `mcp5_get(id='paper:')` — bare paper landing (may be empty/help)
 - [ ] `mcp5_search(query='membrane', type='paper', top_k=3)` — paper search
 - [ ] `mcp5_get(id='quest:/recent')` — quest recent view (read-only)
+- [ ] `mcp5_get(id='todo:/tags')` — todo tag histogram (empty-state or populated)
 - [ ] `mcp5_get(id='think:')` — think landing (Perplexity-backed; bare
   call is free, shows model + usage)
 - [ ] `mcp5_search(query='precis', type='paper')` — paper-corpus search
@@ -551,6 +552,12 @@ returned `PARAM_INVALID: missing slug`.
 - [ ] `mcp5_get(id='todo:/today')` — todos due today (state-agnostic)
 - [ ] `mcp5_get(id='todo:/recent')` — recently modified
 - [ ] `mcp5_get(id='todo:/cancelled')` — any other state string also works
+- [ ] `mcp5_get(id='todo:/tags')` — tag histogram (added Apr 2026)
+    - expect (empty store): `☐ No tagged todos yet.` with hint lines
+      showing both `mode='tag'` and `tags=[...]` creation forms
+    - expect (populated): header `☐ todo tags (N distinct)` followed
+      by two-column `  count  name` listing sorted by count desc, tie-
+      broken alphabetically
 
 ### 6.2 — Write surface (roundtrip)
 
@@ -603,6 +610,106 @@ automatically.
   actually `todo:<N>`
 - [ ] same for `mcp5_put(type='todo', id='<N>', mode='done')` — mutate
   by bare id, not the prefixed form
+
+### 6.5 — Tags (added Apr 2026)
+
+Tag surface on `todo:` parallels `memory:` — additive labels stored
+on `refs.tags` (JSON array column), multi-valued, orthogonal to
+`state` and `priority`.  The critical invariant for `mode='untag'`:
+it strips **only the tags column**; the underlying ref, its state,
+its body, and any other tags must survive.
+
+Use a unique slug for the test so re-runs don't collide.  The steps
+below assume `<SLUG>=todo:smoke-tag-<UNIX-TIMESTAMP>`.
+
+1. **Create a todo to tag** (we'll reuse this for the whole section)
+    - [ ] `mcp5_put(type='todo', id='', text='Smoke tags <TAG>', mode='append')`
+        - record the returned slug as `<SLUG>` for subsequent steps
+
+2. **Add tags via `mode='tag'`**
+    - [ ] `mcp5_put(id='<SLUG>', text='urgent,smoke-test', mode='tag')`
+        - expect: response body shows `Tagged <SLUG>`, `tag: urgent, smoke-test`,
+          `tags: smoke-test, urgent` (stored tag list sorted)
+    - [ ] `mcp5_get(id='<SLUG>')`
+        - expect overview shows `tags: smoke-test, urgent`
+
+3. **Histogram**
+    - [ ] `mcp5_get(id='todo:/tags')`
+        - expect: both `urgent` and `smoke-test` present with count ≥ 1
+
+4. **Grep filter by tag**
+    - [ ] `mcp5_get(id='todo:', grep='tag:urgent')`
+        - expect: `<SLUG>` present; list entry shows `#smoke-test #urgent`
+    - [ ] regression check: `mcp5_get(id='todo:', grep='urgent')`
+        - expect: hits the same row (bare-name fallback); before the
+          tag-in-grep-blob patch this only matched title text
+
+5. **Partial untag — other tags must survive**
+    - [ ] `mcp5_put(id='<SLUG>', text='urgent', mode='untag')`
+        - expect: response body shows `Untagged <SLUG>`, `untag: urgent`,
+          `tags: smoke-test`
+    - [ ] `mcp5_get(id='<SLUG>')`
+        - expect: overview shows `tags: smoke-test` (urgent gone, todo intact)
+        - regression check: state is still `pending` and the title /
+          body block are unchanged.  If state reverted or the todo
+          vanished, `untag` accidentally wrote through other fields
+          — that's the bug pattern
+
+6. **Full untag — todo itself must survive**
+    - [ ] `mcp5_put(id='<SLUG>', text='smoke-test', mode='untag')`
+        - expect: `tags: (none)` in the response
+    - [ ] `mcp5_get(id='<SLUG>')`
+        - expect: **no `tags:` line** in the overview, but the todo
+          is otherwise intact (slug, title, state, priority, created
+          all present)
+        - regression check: the todo must NOT be deleted.  A
+          delete-as-side-effect of untagging the last tag is the
+          nightmare bug the test guards against
+
+7. **Cleanup**
+    - [ ] `mcp5_put(id='<SLUG>', text='cancelled', mode='state')`
+
+### 6.6 — Tags negative path
+
+- [ ] `mcp5_put(id='<SLUG>', text='', mode='tag')`  (empty tag list)
+    - expect: `PARAM_INVALID` with cause `mode='tag' needs at least one tag`
+      and an example showing both `text='urgent,work'` and
+      `tags=['urgent','work']` input forms
+- [ ] `mcp5_put(id='<SLUG>', text='', mode='untag')`
+    - expect: same `PARAM_INVALID` shape, mode reported correctly
+- [ ] `mcp5_put(id='todo:does-not-exist-xyz', text='urgent', mode='tag')`
+    - expect: `ID_NOT_FOUND` — `_resolve_ref` fires before `add_tags`,
+      so the error should name the todo-kind lookup, not the tag API
+- [ ] `mcp5_put(text='urgent', mode='tag')`  (no id at all)
+    - expect: `PARAM_INVALID` with cause `id= required for mode='tag'`
+
+### 6.7 — Tags at creation time (MCP-tool-schema check)
+
+The MCP `put` tool surfaces `tags=` as of the 2026-04-22 22:45 wheel
+— before then, agents following `todo-triage` verbatim with a
+`tags=[…]` create call hit an unknown-kwarg error at the wire.  The
+schema fix + forwarding is in
+`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/server.py:534-634`;
+tests in
+`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:407-439`
+lock the two required behaviours (forward when set, omit when
+unset).  Live verification:
+
+- [ ] `mcp5_put(type='todo', id='', text='Smoke create-with-tags <TAG>', mode='append', tags=['urgent','smoke-test'])`
+    - expect: response includes `tags: urgent, smoke-test` (sorted),
+      read-back via `mcp5_get` confirms both stored on the new ref
+    - regression check: **must not** error `unknown kwarg 'tags'` at
+      the MCP boundary.  If it does, the wheel is pre-fix — ask the
+      human to restart the MCP host
+- [ ] `mcp5_put(type='memory', id='<SLUG>', text='…', mode='append', tags=['foo'])`
+    - expect: identical shape for `memory` kind (the handler supports
+      `tags=` symmetrically; this proves the schema-level forwarding
+      is cross-kind, not todo-specific)
+- [ ] regression check (omit-when-unset): `mcp5_put(type='memory', id='<SLUG2>', text='…', mode='append')`
+    - expect: success.  If this errors with `unknown kwarg 'tags'`,
+      the server is forwarding `tags=None` unconditionally — the
+      `if tags is not None` gate has regressed
+- cleanup: cancel the created todo, delete the memory
 
 ---
 
@@ -765,19 +872,19 @@ handler normalises bare slugs by prefixing `conversation:` on write.
 
 ---
 
-## 10.  web  (Perplexity Sonar)
+## 10.  websearch  (Perplexity Sonar)
 
 Requires `PERPLEXITY_API_KEY`.  Stateless; every call hits the API.
 
 ### 10.1 — Search
 
-- [ ] `mcp5_search(type='web', query='what is a metal-organic framework?')`
+- [ ] `mcp5_search(type='websearch', query='what is a metal-organic framework?')`
     - expect: Perplexity answer with citations; cost line in footer
-- [ ] `mcp5_search(type='web', query='<term>', recency='week')`
+- [ ] `mcp5_search(type='websearch', query='<term>', recency='week')`
     - expect: recency-filtered answer
-- [ ] `mcp5_search(type='web', query='<term>', focus='academic')`
+- [ ] `mcp5_search(type='websearch', query='<term>', focus='academic')`
     - expect: academic-sources-only answer
-- [ ] `mcp5_search(type='web', query='<term>', focus='finance')`
+- [ ] `mcp5_search(type='websearch', query='<term>', focus='finance')`
     - expect: SEC/filings-focused answer
 
 ### 10.2 — Error path
@@ -1105,6 +1212,49 @@ test matrix until re-fixed.
   query`.  Live check: §14 bullet 1, also touched by the §2 quick-
   smoke path.
 
+- [ ] **Todo tag surface (added 2026-04-22)** — `todo:/tags` histogram,
+  `mode='tag'` / `mode='untag'`, `tags=` at creation, tag-in-grep-blob
+  so `grep='tag:<name>'` and bare `grep='<name>'` both hit.  Unit
+  coverage:
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_todo_handler.py:460-754`
+  (TestTagHelpers + TestCreateWithTags + TestTagsView + TestListWithTags
+  + TestTagMutation, 24 tests).  Live check: §6.5 full roundtrip + §6.6
+  negative paths.  **Critical invariant**: `mode='untag'` must not
+  delete the todo or touch state/body.  If that regresses, the fast
+  tell is §6.5 step 6 (full-untag read-back): todo disappears or
+  changes state.
+
+- [ ] **MCP `put` tool surfaces `tags=` kwarg (fix: 2026-04-22
+  22:45)** — before the fix the FastMCP `put` tool signature didn't
+  accept `tags`, so the skill-documented `tags=[...]` form silently
+  failed at the wire.  The fix adds `tags: list[str] | None = None`
+  to the tool signature at
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/server.py:534-634`
+  and forwards it through `tools.put(**extra)` only when non-None
+  (same gating pattern as `tracked`).  Unit coverage:
+  `test_put_forwards_tags_when_set` and `test_put_omits_tags_when_not_set`
+  in
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:407-439`.
+  Live-verified 2026-04-23 21:13 via §6.7.1 (todo create-with-tags
+  works end-to-end on the wire).
+
+- [ ] **BUG-J — memory handler iterates `r.tags` as a relationship
+  (fix: 2026-04-23 21:13)** — pre-fix `_query_corpus_refs` had
+  `d["tags"] = [t.name for t in r.tags] if r.tags else []` with a
+  comment mis-describing the column as an ORM relationship.  It isn't;
+  `Ref.tags` is a JSON-string column, so iteration produced one-char-
+  per-entry output (`tags: [, ", s, m, o, k, e, ...]`).  Fix promoted
+  `_parse_tags` to
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/handlers/_ref_base.py:111-135`
+  and routed both `_query_corpus_refs` (line 471) and `_read_overview`
+  (line 171) through it.  Unit coverage: `TestTagHydration` (4 tests)
+  in
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase6_journal.py:225-276`.
+  Live-verified 2026-04-23 22:02: `mcp4_put(type='memory',
+  tags=['smoke-test','bug-j'], …)` then `mcp4_get(id='memory:<slug>')`
+  → overview shows `tags: bug-j, smoke-test` (sorted, no char-iter).
+  `memory:/tags` histogram shows both tags with count 1.
+
 <!-- Retired regression entries (fix verified + unit test in place,
      re-check not required on every smoke run):
      - 2026-04-22  skill:/kind/<name> parsed-URI slug-leak bug.
@@ -1188,6 +1338,183 @@ test matrix until re-fixed.
 ## Session log
 
 <!-- prepend new sessions above existing ones -->
+
+### Session: 2026-04-23 21:13  (Cascade — §6.7 re-run + BUG-J memory tag hydration)
+
+Live run after the 22:45 fix-pass wheel landed.  Scope: §6.7 tags-
+at-creation (previously ✗ expected), plus one fresh cross-kind check
+that surfaced a real live bug.
+
+- precis-mcp version: post-22:45 fix-pass wheel
+- MCP host: Windsurf (mcp4_* binding)
+- Kinds visible at startup: calc, conversation, flashcard, markdown,
+  math, memory, paper, plaintext, **plot**, quest, research, skill,
+  tex, think, todo, web, word, youtube  (plot kind is new since last
+  session)
+- Startup warnings: none
+
+| § | step | result | note |
+|---|------|--------|------|
+| 6.7.1 | `mcp4_put(type='todo', tags=['urgent','smoke-test'], mode='append', …)` | ✓ | response shows `tags: urgent, smoke-test` **on the freshly created ref** — one-call create-with-tags now works end-to-end through the MCP wire |
+| 6.7.1 | read-back via `mcp4_get` | ✓ | `tags: smoke-test, urgent` (sorted) renders in overview |
+| 6.7.2 | cross-kind `mcp4_put(type='memory', tags=['smoke-test'], …)` | ✓ (created) | ref created with tags on the wire; but read-back exposed **BUG-J** ↓ |
+| 6.7.2 | memory read-back shows `tags:` line | ✗ | rendered `tags: [, ", s, m, o, k, e, -, t, e, s, t, ", ]` — character-by-character iteration over the raw JSON string.  Memory handler's `_query_corpus_refs` (line 467) had `[t.name for t in r.tags]` with a comment claiming ``r.tags`` is an ORM relationship.  It isn't; it's a JSON-string column, same as todo.  Todo avoided the bug by JSON-parsing via `_parse_tags`; memory never had tagged data until today's live run, so the latent bug surfaced only now |
+| 6.7.3 | omit-when-unset: `mcp4_put(type='memory', …)` without `tags=` | ✓ | succeeds, no `tags:` line — the `if tags is not None` gate in `server.put` correctly keeps `None` off the wire |
+
+**Root cause of BUG-J**: acatome-store's `Ref.tags` is a JSON string
+(not an ORM relationship).  A prior version of
+`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/handlers/memory.py:467`
+iterated `r.tags` directly, producing one-character-per-entry output.
+The symptom was invisible until someone actually tagged a memory,
+which didn't happen before today (todos had tags earlier but went
+through a different code path that JSON-parsed).  Flagged as a
+latent risk during the todo tag-surface work on 2026-04-22 21:36
+(clarifying note to the user: "The memory handler's `[t.name for t
+in r.tags]` is a latent bug that only doesn't explode because no
+memories are tagged yet."); today it actually manifested.
+
+**Fix landed** (source only — wheel rebuild + MCP host restart
+required before this is live):
+
+1. Promoted `_parse_tags` from
+   `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/handlers/todo.py`
+   to
+   `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/handlers/_ref_base.py:111-135`
+   so every ref-kind handler funnels through one decode.  The
+   docstring now carries the bug lineage + the symptom string so
+   grep finds it.
+2. `memory.py` imports `_parse_tags` and replaces the broken
+   `[t.name for t in r.tags]` (line 467) + the direct
+   `ref.get("tags") or []` in `_read_overview` (line 167).
+3. Added `TestTagHydration` (4 tests) in
+   `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase6_journal.py:225-276`
+   pinning the JSON-string decode path, unparseable-tags tolerance,
+   None safety, and the already-parsed-list compatibility for
+   existing fixtures.
+
+**Tests**: `pytest packages/precis-mcp/tests` — 1164 pass, 3 skip,
+0 fail.  Ruff clean on handlers + tests.  Mypy: no new errors (2
+pre-existing on `_ref_base.py:332, 1058` remain).
+
+**Cleanup on the live store**: both smoke memories soft-deleted,
+todo cancelled.  `memory:/tags` and `todo:/tags` back to empty.
+
+**Pending**: wheel rebuild + MCP host restart to re-verify §6.7.2
+memory read-back live.  When that's green, move BUG-J from active
+§17 to retired.
+
+---
+
+### Session: 2026-04-23 22:02  (Cascade — BUG-J live re-verification)
+
+Short follow-on after human restarted the MCP host with the wheel
+containing the 21:13 source fix.  Confirmed `session: (no calls yet)`
+in `stats()` before starting.
+
+| § | step | result | note |
+|---|------|--------|------|
+| 6.7.2 | `mcp4_put(type='memory', id='smoke-bug-j-reverify-…', tags=['smoke-test','bug-j'], mode='append', …)` | ✓ | memory created, tags on the wire |
+| 6.7.2 | `mcp4_get(id='memory:<slug>')` read-back | ✓ | overview renders `tags: bug-j, smoke-test` (sorted, real tag names — no character-by-character symptom) |
+| 6.7.2 | `memory:/tags` histogram | ✓ | `2 distinct`, `1 bug-j` + `1 smoke-test` |
+| 6.7.2 | cleanup `mode='delete'` | ✓ | memory soft-deleted, histogram back to empty-state |
+
+BUG-J is now live-verified fixed.  §17 entry closed out with the
+verification date and cleanup evidence.  Still showing as active
+(unchecked box) per the plan's convention — entries move into the
+retired-comment block only once a full regression pass has run
+without them re-surfacing.  Any future run that catches
+`tags: [` in a memory overview is the tell that BUG-J has regressed.
+
+---
+
+### Session: 2026-04-22 21:36  (Cascade — todo tag surface live run)
+
+Live run against the MCP host to verify the new `todo:` tag surface
+(§6.5, §6.6, §6.7) landed in this afternoon's wheel.  Server restart
+confirmed by the human at 21:24.  Scope: every new bullet added to
+the plan in this session.
+
+- precis-mcp version: dev wheel built post-tag-surface commit
+- MCP host: Windsurf (mcp4_* binding this session)
+- Scope: §6.5 tag roundtrip + §6.6 negative + §6.7 schema boundary +
+  §2 and §6.1 additions
+- Kinds visible at startup: calc, conversation, flashcard, markdown,
+  math, memory, paper, plaintext, quest, research, skill, tex, think,
+  todo, web, word, youtube
+- Startup warnings: none
+
+| § | step | result | note |
+|---|------|--------|------|
+| 2   | `todo:/tags` empty-state | ✓ | two creation hints as documented |
+| 6.1 | `todo:/tags` in read-surface list | ✓ | populated + empty both render |
+| 6.5.1 | create base todo | ✓ | slug `todo:smoke-tag-second-run-2026-04-22t21-36` |
+| 6.5.2 | `mode='tag'` with `urgent,smoke-test` | ✓ | response shows sorted `tags: smoke-test, urgent` |
+| 6.5.2 | read-back shows `tags:` in overview | ✓ | rendered between priority and created |
+| 6.5.3 | histogram `2 distinct`, counts = 1 each | ✓ | alphabetical tie-break: smoke-test before urgent |
+| 6.5.4 | `grep='tag:urgent'` filters | ✓ | 1 hit, list entry shows `#smoke-test #urgent` |
+| 6.5.4 | bare `grep='urgent'` also hits (regression) | ✓ | tag-in-blob fallback holds |
+| 6.5.5 | partial untag (`urgent`) | ✓ | `tags: smoke-test`; state, priority, title, created unchanged |
+| 6.5.6 | full untag (`smoke-test`) | ✓ | response shows `tags: (none)` |
+| 6.5.6 | **todo survives full-untag** | ✓ | overview present; `tags:` line correctly absent; state still `pending` |
+| 6.5.7 | cleanup `mode='state'` → cancelled | ✓ | transition emoji shows `⬚→✗` |
+| 6.6.1 | empty `mode='tag'` | ✓ | `PARAM_INVALID` with both input-form hints |
+| 6.6.2 | empty `mode='untag'` | ✓ | same shape, mode name correct in cause |
+| 6.6.3 | `mode='tag'` on nonexistent id | ✓ | `ID_NOT_FOUND` from `_resolve_ref` before `add_tags` fires |
+| 6.6.4 | `mode='tag'` with no id at all | ✓ | `PARAM_INVALID: id= required for mode='tag'`; next-hint points at `todo:/open` |
+| 6.7   | `tags=` at creation via MCP | ✗ (expected) | **schema gap** — MCP `put` tool signature in `server.py:534` has no `tags=` param; caller can't pass it through the tool wire. Handler + unit tests cover the kwarg; the fix is to add `tags: list[str] \| None = None` to the MCP tool signature and forward to `tools.put()`. Triaged in §17 as new regression entry; workaround is two calls (`mode='append'` → `mode='tag'`) |
+
+**Final state**: `/tags` histogram returns to empty-state after
+cleanup.  No test data left in the `todos` corpus beyond the two
+cancelled rows from this and the prior verification run; both can
+be purged at leisure via `acatome-store` CLI.
+
+**Follow-up work queued**:
+- ~~MCP `put` tool schema needs `tags=` parameter~~ — **fixed** in the
+  22:45 follow-on session below; live re-verification still needed
+  once the wheel lands.
+- Skill body `todo-triage/SKILL.md` now matches the MCP surface once
+  the post-22:45 wheel is live — no softening needed.
+
+---
+
+### Session: 2026-04-22 22:45  (Cascade / Reto — schema-gap fix, not a live run)
+
+Source-side follow-up to close the 21:36 §6.7 gap.  Not an MCP-live
+session — the next live verification will run once the human restarts
+the MCP host with the new wheel.
+
+**Change summary**:
+
+1. **`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/server.py:534-634`**
+   — added `tags: list[str] | None = None` to the FastMCP `put` tool
+   signature and forward it through `tools.put(**extra)` when non-None.
+   Gating mirrors `tracked`: only builders that explicitly set `tags`
+   get it on the wire, so handlers with strict `extract_kwargs`
+   validation don't reject `tags=None` on every unrelated put.
+2. **`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/server.py:553, 586-588`**
+   — docstring advertises `tags` as an acceptable kwarg and shows
+   one create + one mutate example; trimmed two other lines to stay
+   under the 600-token description budget enforced by
+   `test_llm_tool_use.py::TestDescriptionBudget` (final: 590 tokens).
+3. **`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:407-439`**
+   — two new tests on `TestDispatchWritePaths` (same class as the
+   existing `test_put_with_explicit_type_still_works`):
+   `test_put_forwards_tags_when_set` asserts the kwarg reaches
+   `tools.put()`; `test_put_omits_tags_when_not_set` asserts the
+   gate keeps `None` off the wire.
+4. **`§6.7` plan text + `§17` regression entry** — updated to reflect
+   that the fix is in source; §6.7 now expects success (with a
+   regression-tell for the pre-fix failure mode); §17 entry moved
+   from "open gap" to "fix landed, awaiting live verification".
+
+**Tests**: `pytest packages/precis-mcp/tests` — 1094 pass, 3 skip,
+0 fail.  Ruff clean.  Mypy: no new errors (4 pre-existing on lines
+382 and 529 remain).
+
+**Pending live verification**: once the MCP host reloads, run §6.7
+as written.  On success, move the §17 entry into the retired block.
+
+---
 
 ### Session: 2026-04-22 20:15  (Cascade — BUG-A..I live re-verification)
 
@@ -1395,8 +1722,8 @@ skipped — §13 is WAD, the rest weren't requested.
 | 15.4 | `put(id='', text='…')` no type | ✓ | `KIND_UNKNOWN` + options + next-hint |
 | 15.4 | `search(query='…')` no type no scope | ✓ | `KIND_UNKNOWN` + options + next-hint |
 | 15.4 | `quest:zzzzzzzz` | ✓ | `ID_MALFORMED` + next-hint ("8-char prefix") |
-| 10.1 | `search(type='web', query=…)` | ✗ | **BUG-I** — `TypeError: _WebBase.read() got an unexpected keyword argument 'top_k'` — dispatcher passes default `top_k` through, server-side `_WebBase.read()` doesn't accept it.  No cost incurred (died before upstream call) |
-| 10.1 | `get(type='web', id='what is a metal-organic framework?')` | ✓ | Full Perplexity answer with 9 numbered citations, `sonar` model, `[cost: ~$0.001/call]` footer, full Phase 4 ToS attribution footer |
+| 10.1 | `search(type='websearch', query=…)` | ✗ | **BUG-I** — `TypeError: _WebBase.read() got an unexpected keyword argument 'top_k'` — dispatcher passes default `top_k` through, server-side `_WebBase.read()` doesn't accept it.  No cost incurred (died before upstream call) |
+| 10.1 | `get(type='websearch', id='what is a metal-organic framework?')` | ✓ | Full Perplexity answer with 9 numbered citations, `sonar` model, `[cost: ~$0.001/call]` footer, full Phase 4 ToS attribution footer |
 | 10.1 | recency / focus kwargs | ⊘ | MCP client schema only exposes `query, top_k, scope, type` — no way to test `recency=` or `focus=` through the client surface.  Worth flagging: either expose these kwargs in the MCP tool schema or document them as query-string modifiers |
 | 10.2 | invalid-key error path | ⊘ | skipped — can't mutate `PERPLEXITY_API_KEY` from the MCP-client side |
 | 11 | `search(type='research', query=…)` | ✗ | **BUG-I** — same TypeError as §10.1, no cost |

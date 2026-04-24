@@ -126,8 +126,8 @@ def test_precis_error_is_still_an_exception():
 
 
 def test_kindspec_minimum_fields():
-    spec = KindSpec(name="web", description="Quick web synthesis")
-    assert spec.name == "web"
+    spec = KindSpec(name="websearch", description="Quick web synthesis")
+    assert spec.name == "websearch"
     assert spec.description == "Quick web synthesis"
     assert spec.aliases == []
     assert spec.requires == []
@@ -136,7 +136,7 @@ def test_kindspec_minimum_fields():
 
 
 def test_kindspec_aliases_and_requires_are_independent_lists():
-    a = KindSpec(name="web", description="x")
+    a = KindSpec(name="websearch", description="x")
     b = KindSpec(name="think", description="y")
     a.aliases.append("perplexity")
     assert b.aliases == []  # not shared default
@@ -254,10 +254,12 @@ def test_handler_notifications_default_returns_empty_list():
 
 
 def test_result_ok_carries_data_and_optional_footer_fields():
-    r = Result.ok("hello", kind="web", cost="~$0.002/call", hints=["try type='think'"])
+    r = Result.ok(
+        "hello", kind="websearch", cost="~$0.002/call", hints=["try type='think'"]
+    )
     assert r.success is True
     assert r.data == "hello"
-    assert r.kind == "web"
+    assert r.kind == "websearch"
     assert r.cost == "~$0.002/call"
     assert r.hints == ["try type='think'"]
 

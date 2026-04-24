@@ -108,6 +108,33 @@ def _parse_year_value(value: str) -> tuple[int | None, int | None]:
 _FILTER_PREFIXES = {"ingested", "year", "tag"}
 
 
+def _parse_tags(ref: dict[str, Any]) -> list[str]:
+    """Return the tag list for a ref, defensively.
+
+    ``Ref.to_dict()`` exposes the ``tags`` column as a raw JSON-encoded
+    string (see :class:`acatome_store.models.Ref`) — it is **not** an
+    ORM relationship, despite the old ``[t.name for t in r.tags]``
+    pattern that appeared in early ref handlers.  Accept either the
+    raw string or an already-parsed list so this helper works against
+    both the real store and test mocks.
+
+    Promoted from ``handlers/todo.py`` in Apr 2026 after the memory
+    handler's iteration-over-string bug (``tags: [, ", s, m, o, ...]``)
+    was caught live — every ref kind that surfaces tags should funnel
+    through here instead of re-implementing the parse.
+    """
+    raw = ref.get("tags")
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(t) for t in raw]
+    try:
+        parsed = _json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return [str(t) for t in parsed] if isinstance(parsed, list) else []
+
+
 def _parse_filters(grep: str) -> dict[str, str]:
     """Parse structured prefix filters from a grep string.
 
@@ -899,16 +926,16 @@ class RefHandler(Handler):
     # ── Search ───────────────────────────────────────────────────────
 
     def _search_or_grep(self, store, query: str, top_k: int = 10) -> str:
-        # Non-paper corpora (todos, flashcards, memories, conversations)
-        # live alongside papers in a shared vector index that has no
-        # ``corpus_id`` column — so ``_search`` would return paper hits
-        # mixed in and silently ignore the caller's ``type=``.  Route
-        # those kinds through corpus-aware keyword grep over the ref
-        # list, which :meth:`_list_refs` implements per-subclass.  The
-        # paper kind keeps the semantic-search path (vector search over
-        # block text is the whole point for long documents).
-        if self.corpus_id and self.corpus_id != "papers":
-            return self._list_refs(store, grep=query)
+        # Every ref-backed kind now participates in semantic search.
+        # Historical note: before the corpus_id filter landed in the
+        # PgVectorIndex (see acatome-store v5.1), non-paper kinds fell
+        # back to keyword grep because ``search_text`` couldn't filter
+        # by corpus — cross-contamination was the only alternative.
+        # The filter now JOINs ``blocks → refs`` so ``corpora=[self.corpus_id]``
+        # returns exactly the current kind's blocks ranked by embedding
+        # distance.  We keep the grep fallback for missing embedder /
+        # ANN backend (e.g. Chroma without the right config) so the
+        # call still degrades gracefully to substring search.
         try:
             return self._search(store, query, top_k=top_k)
         except (ImportError, ModuleNotFoundError):
@@ -1013,7 +1040,15 @@ class RefHandler(Handler):
         return "\n".join(lines)
 
     def _search(self, store, query: str, top_k: int = 10) -> str:
-        hits = store.search_text(query, top_k=top_k)
+        # Scope the vector search to this handler's own corpus so
+        # e.g. ``search(type='memory')`` returns only memory blocks.
+        # Papers keep a None/explicit filter so an unscoped search
+        # on ``type='paper'`` behaves as before (only the papers
+        # corpus has block-level embeddings for every ref).
+        kwargs: dict[str, object] = {"top_k": top_k}
+        if self.corpus_id:
+            kwargs["corpora"] = [self.corpus_id]
+        hits = store.search_text(query, **kwargs)
         if not hits:
             return f"No results for: {query}"
         lines = [f"🔍 {len(hits)} results for: {query}", ""]

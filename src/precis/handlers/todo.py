@@ -17,7 +17,12 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from precis.handlers._ref_base import RefHandler, _get_store, _truncate
+from precis.handlers._ref_base import (
+    RefHandler,
+    _get_store,
+    _parse_tags,
+    _truncate,
+)
 from precis.protocol import ErrorCode, PrecisError, extract_kwargs
 
 
@@ -37,6 +42,30 @@ def _parse_meta(ref: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _coerce_tag_list(raw: Any) -> list[str]:
+    """Coerce a ``tags=`` kwarg or free-text blob to a clean list.
+
+    Accepts either:
+      - a Python list/tuple of strings
+      - a comma- or whitespace-separated string (e.g. ``"urgent, work"``)
+
+    Returns a de-duplicated, order-preserving list of non-empty tags.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        items = [str(t).strip() for t in raw]
+    else:
+        items = [t.strip() for t in re.split(r"[,\s]+", str(raw))]
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in items:
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
 
 
 log = logging.getLogger(__name__)
@@ -123,8 +152,9 @@ class TodoHandler(RefHandler):
         "in_progress": "_read_in_progress_view",
         "blocked": "_read_blocked_view",
         "cancelled": "_read_cancelled_view",
+        "tags": "_read_tags_view",
     }
-    allowed_modes = {"append", "state", "replace", "note"}
+    allowed_modes = {"append", "state", "replace", "note", "tag", "untag"}
     extensions: set[str] = set()
 
     _ref_noun = "todo"
@@ -196,6 +226,39 @@ class TodoHandler(RefHandler):
             store, frozenset({"cancelled"}), "cancelled todos", **kwargs
         )
 
+    def _read_tags_view(self, store, subview, **kwargs) -> str:
+        extract_kwargs(kwargs, (), context="todo/tags")
+        return self._read_tags(store)
+
+    def _read_tags(self, store) -> str:
+        """Histogram of tags across all todos.
+
+        Scans the todos corpus only — ``store.list_tags()`` would span
+        every ref kind, which is not what agents want here.
+        """
+        refs = self._query_corpus_refs(store)
+        counts: dict[str, int] = {}
+        for r in refs:
+            for t in _parse_tags(r):
+                counts[t] = counts.get(t, 0) + 1
+        if not counts:
+            return (
+                "☐ No tagged todos yet.\n\n"
+                "Tag a todo:\n"
+                "  put(id='todo:<slug>', text='urgent,work', mode='tag')\n"
+                "  put(type='todo', text='...', tags=['urgent'], mode='append')"
+            )
+        lines = [f"☐ todo tags ({len(counts)} distinct)", ""]
+        for tag, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            lines.append(f"  {n:>3}  {tag}")
+        lines.append("")
+        lines.append(
+            "Next:\n"
+            "  get(id='todo:', grep='tag:<name>')           — filter by tag\n"
+            "  put(id='todo:<slug>', text='<name>', mode='untag')  — remove tag only"
+        )
+        return "\n".join(lines)
+
     def _view_by_states(
         self,
         store,
@@ -264,11 +327,14 @@ class TodoHandler(RefHandler):
         state = meta.get("state", DEFAULT_STATE)
         priority = meta.get("priority", DEFAULT_PRIORITY)
         created = meta.get("created", "")
+        tags = _parse_tags(ref)
         emoji = STATE_EMOJI.get(state, "?")
 
         lines = [f"{emoji} {slug}"]
         lines.append(f"  {title}")
         lines.append(f"  state: {state}  priority: {priority}")
+        if tags:
+            lines.append(f"  tags: {', '.join(tags)}")
         if created:
             lines.append(f"  created: {created}")
 
@@ -352,10 +418,16 @@ class TodoHandler(RefHandler):
             pattern = parse_grep(grep)
 
             def _matches(r: dict) -> bool:
+                tags = _parse_tags(r)
+                # Include tags twice: as bare names (so grep='urgent' hits)
+                # and with the ``tag:`` prefix (so grep='tag:urgent' hits
+                # only tags, never titles that happen to contain the word).
                 blob = " ".join(
                     [
                         r.get("slug", ""),
                         r.get("title", ""),
+                        " ".join(tags),
+                        " ".join(f"tag:{t}" for t in tags),
                     ]
                 )
                 return pattern.matches(blob)
@@ -395,9 +467,11 @@ class TodoHandler(RefHandler):
                 meta = {}
         state = meta.get("state", DEFAULT_STATE)
         priority = meta.get("priority", DEFAULT_PRIORITY)
+        tags = _parse_tags(ref)
         emoji = STATE_EMOJI.get(state, "?")
         pri_tag = f" [{priority}]" if priority != "medium" else ""
-        return f"  {emoji} {slug}  {state}{pri_tag}  {title}"
+        tag_str = f"  #{' #'.join(tags)}" if tags else ""
+        return f"  {emoji} {slug}  {state}{pri_tag}  {title}{tag_str}"
 
     def _overview_hints(self, slug: str, ref: dict) -> list[str]:
         return [
@@ -467,6 +541,15 @@ class TodoHandler(RefHandler):
         if mode == "note":
             return self._write_note(path, selector, text, **kwargs)
 
+        if mode in ("tag", "untag"):
+            if not path:
+                raise PrecisError(
+                    ErrorCode.PARAM_INVALID,
+                    cause=f"id= required for mode={mode!r} (which todo to tag)",
+                    next="get(id='todo:/open') to find the slug",
+                )
+            return self._mutate_tags(store, path, text, mode=mode, **kwargs)
+
         raise PrecisError(
             ErrorCode.MODE_UNSUPPORTED,
             cause=f"mode {mode!r} not supported on todo",
@@ -489,6 +572,8 @@ class TodoHandler(RefHandler):
                 cause=f"priority must be one of the standard values; got {priority!r}",
                 options=sorted(PRIORITIES),
             )
+
+        tags = _coerce_tag_list(kwargs.get("tags"))
 
         slug = _slugify(title)
         if not slug:
@@ -514,6 +599,7 @@ class TodoHandler(RefHandler):
                     corpus_id="todos",
                     title=title,
                     metadata=meta,
+                    tags=tags if tags else None,
                     blocks=[{"text": text, "block_type": "text"}],
                 )
                 break
@@ -525,10 +611,12 @@ class TodoHandler(RefHandler):
                     raise
 
         emoji = STATE_EMOJI[DEFAULT_STATE]
+        tag_line = f"  tags: {', '.join(tags)}\n" if tags else ""
         return (
             f"{emoji} Created todo: {slug}\n"
             f"  {title}\n"
             f"  state: pending  priority: {priority}\n"
+            f"{tag_line}"
             f"\nNext:\n"
             f"  put(id='{slug}', text='in_progress', mode='state')  — start working\n"
             f"  get(id='{slug}')  — view details"
@@ -573,6 +661,66 @@ class TodoHandler(RefHandler):
             f"{old_emoji}→{new_emoji} {slug}: {current} → {new_state}\n"
             f"\nNext:\n"
             f"  get(id='{slug}')  — view todo"
+        )
+
+    def _mutate_tags(
+        self,
+        store,
+        path: str,
+        text: str,
+        *,
+        mode: str,
+        **kwargs,
+    ) -> str:
+        """Add or remove tags on a todo without touching the todo itself.
+
+        Accepts tags either as a ``tags=`` kwarg (list or comma-string)
+        or as the positional ``text`` (comma/space-separated).  Mode
+        ``'tag'`` unions; ``'untag'`` removes.  The underlying ref is
+        preserved — this only rewrites the ``refs.tags`` column via
+        :meth:`acatome_store.Store.add_tags` / ``remove_tags``.
+        """
+        ref = self._resolve_ref(store, path)
+        slug = ref.get("slug", path)
+
+        # Prefer explicit kwarg, fall back to text payload.
+        raw = kwargs.get("tags")
+        if raw is None and text:
+            raw = text
+        wanted = _coerce_tag_list(raw)
+        if not wanted:
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause=(
+                    f"mode={mode!r} needs at least one tag \u2014 pass via "
+                    "text='urgent,work' or tags=['urgent','work']"
+                ),
+            )
+
+        if mode == "tag":
+            ok = store.add_tags(slug, wanted)
+            verb = "Tagged"
+        else:
+            ok = store.remove_tags(slug, wanted)
+            verb = "Untagged"
+
+        if not ok:
+            raise PrecisError(
+                ErrorCode.ID_NOT_FOUND,
+                cause=f"could not update tags on {slug} (ref not found)",
+            )
+
+        # Re-read to show the resulting tag set.
+        refreshed = store.get(slug) or ref
+        current = _parse_tags(refreshed)
+        current_str = ", ".join(current) if current else "(none)"
+        return (
+            f"☐ {verb} {slug}\n"
+            f"  {mode}: {', '.join(wanted)}\n"
+            f"  tags: {current_str}\n"
+            f"\nNext:\n"
+            f"  get(id='{slug}')                 — view todo\n"
+            f"  get(id='todo:/tags')             — tag histogram"
         )
 
     def _update_body(self, store, path: str, text: str) -> str:

@@ -308,7 +308,7 @@ class TestFormatErrorShape:
     def test_gripe_code_appends_gripe_next_hint_when_empty(self):
         out = _format_error(
             ErrorCode.TIMEOUT,
-            CallContext(kind="web", verb="search"),
+            CallContext(kind="websearch", verb="search"),
             cause="upstream timed out",
         )
         assert "gripe" in out
@@ -325,7 +325,7 @@ class TestFormatErrorShape:
     def test_handler_next_suppresses_gripe_hint(self):
         out = _format_error(
             ErrorCode.TIMEOUT,
-            CallContext(kind="web", verb="search"),
+            CallContext(kind="websearch", verb="search"),
             cause="upstream timed out",
             next_hint="retry in 30s",
         )

@@ -34,14 +34,14 @@ class TestBareKinds:
         assert mask == {"paper": VERBS}
 
     def test_multiple_bare_kinds(self):
-        mask = parse_precis_kinds("paper,memory,web")
-        assert set(mask) == {"paper", "memory", "web"}
+        mask = parse_precis_kinds("paper,memory,websearch")
+        assert set(mask) == {"paper", "memory", "websearch"}
         for verbs in mask.values():
             assert verbs == VERBS
 
     def test_whitespace_around_kinds_is_tolerated(self):
-        mask = parse_precis_kinds("  paper  ,  memory  ,  web  ")
-        assert set(mask) == {"paper", "memory", "web"}
+        mask = parse_precis_kinds("  paper  ,  memory  ,  websearch  ")
+        assert set(mask) == {"paper", "memory", "websearch"}
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ class TestFatalPaths:
             parse_precis_kinds("paper[get],paper[search]")
 
     def test_alias_in_config_is_fatal(self):
-        aliases = {"wolfram": "math", "perplexity": "web"}
+        aliases = {"wolfram": "math", "perplexity": "websearch"}
         with pytest.raises(ConfigError, match="alias 'wolfram'"):
             parse_precis_kinds("paper,wolfram", aliases=aliases)
 

@@ -1,5 +1,163 @@
 # Changelog
 
+## 5.0.0 — unreleased
+
+**Breaking.** The Perplexity Sonar kind `web` has been renamed to
+`websearch`.  The scheme `web:` is freed for a forthcoming stored-bookmark
+kind (Phase 1 of `docs/websites-plan.md`).  No alias is retained — agents
+calling `type='web'` for live search must update to `type='websearch'`.
+
+### Changed
+
+- **`web:` → `websearch:`** — plugin, handler, scheme, and KindSpec all
+  renamed.  `WebHandler` → `WebsearchHandler`; module
+  `precis.handlers.web` → `precis.handlers.websearch`; plugin name
+  `"web"` → `"websearch"`.  `ThinkHandler` and `ResearchHandler` are
+  unchanged (they kept their literal names — only the cheapest Perplexity
+  mode was ambiguously named after the scheme).
+- **`_WebBase` → `_PerplexityBase`** — the shared base class for all
+  three Perplexity-Sonar handlers.  The old name referred to the (now
+  gone) `web` scheme; the new name reflects what the class actually is.
+- **Internal callers** — server docstring examples, registry examples,
+  plugin-architecture doc, smoke-test plan, and test kind-labels all
+  updated from `web` to `websearch`.
+
+### Migration
+
+Rename in your own config / prompts:
+
+| Before                               | After                                      |
+|--------------------------------------|--------------------------------------------|
+| `get(type='web', id='…')`            | `get(type='websearch', id='…')`            |
+| `search(query='…', type='web')`      | `search(query='…', type='websearch')`      |
+| `get(id='web:CEO of Anthropic')`     | `get(id='websearch:CEO of Anthropic')`     |
+| `PRECIS_KINDS=paper,web`             | `PRECIS_KINDS=paper,websearch`             |
+
+### Added — cross-corpus search
+
+- **`search(type='all')` — search every ref-backed corpus at once.**
+  Dispatches a single `store.search_text(corpora=[...])` call that
+  returns a unified ranking across all corpora (papers, memories,
+  websites, books, todos, flashcards, conversations), then renders
+  the hits grouped by kind with kind-specific badges.  One query,
+  one ranking pass, grouped output.
+- **`search(type='paper,memory,web')` — comma-separated kind lists.**
+  Resolves each kind to its corpus, dedupes, and dispatches
+  cross-corpus.  Whitespace around commas is tolerated.  Rejects
+  non-ref-backed kinds (`websearch`, `calc`, etc.) with a clear
+  structured error since they have no corpus to merge.
+- **Per-kind semantic search.**  Memory, web, book, todo, flashcard,
+  and conversation `search(type='X')` calls now actually hit the
+  vector index instead of falling back to keyword grep.  Before
+  this release the per-kind handlers `_search_or_grep` carved out
+  non-paper kinds to substring-only because the shared vector index
+  couldn't filter by corpus — that fallback is gone now that the
+  `corpora=[corpus_id]` filter scopes embeddings-backed search
+  cleanly.  Still falls back to grep if the embedder is missing at
+  runtime (ImportError), so `PRECIS_KINDS` mask users aren't broken.
+- **New `precis.cross_corpus` module.**  Pure helpers:
+  `is_cross_corpus_request(type_arg)`, `expand_type_to_corpora(type)`,
+  `kind_to_corpus_id(kind)` / `corpus_id_to_kind(corpus_id)`, and
+  the dispatcher `search_across_corpora(query, corpora, top_k)`
+  that both `server.search` and external callers can use.
+- **`archive: bool | None` kwarg on the MCP `put()` tool** —
+  forwarded to `web:` only when explicitly set.
+
+### Added — bookmarks + book notes (Phase 1)
+
+- **`web:` kind — website bookmarks** (Phase 1 of
+  `docs/websites-plan.md`).  Stored in the new `websites` corpus
+  (acatome-store seed bump).  Canonical-URL dedup on create, inferred
+  `kind` (tool / article / repo / db / video / paper / other), tag
+  histogram, shallow meta with `captured_at` + optional
+  `wayback_url`.  Views: `/recent`, `/tags`, `/kinds`.  URL
+  canonicalisation strips `utm_*`, `fbclid`, `gclid`, `mc_cid`,
+  `_ga`, `igshid`, `ref_src`, drops trailing slashes + default
+  ports, lowercases scheme/host, preserves fragment only for
+  declared SPA hosts (`arxiv.org`, `github.com`, `notion.so`).
+  Pure canonicaliser lives in the new `precis.url_canonical`
+  module for easy reuse.
+- **`web.archive.org` integration** — every `put(type='web', …)`
+  triggers a Save Page Now call by default.  Opt out per-call
+  with `archive=False` (new kwarg on `put()`), or globally via
+  `PRECIS_WEB_AUTO_ARCHIVE=0`.  Private URLs are **never**
+  archived regardless of the flag — loopback, RFC1918, Tailscale
+  CGNAT (`100.64/10`), and `.local` / `.internal` / `.lan` /
+  `.home.arpa` / `.test` / `.invalid` suffixes are all guarded
+  before the HTTP call.  Rate-limited to 10 saves / 60 s globally
+  (below archive.org's documented 15/min anonymous cap).  Failures
+  never block the bookmark write — the skip reason is recorded in
+  `meta.archive_skipped_reason` so agents can surface it.
+  Implementation in the new `precis.web_archive` module.
+- **`book:` kind — curated book notes** with optional ISBN (Phase 1).
+  Stored in the new `books` corpus.  Slug derived from
+  `<surname><year><title>` with graceful fallbacks for unknown
+  year / unknown author / ISBN-only.  `isbn:` is accepted as an
+  alternative id format (e.g. `get(id='isbn:9780201021158')`)
+  — mirrors the `doi:` / `arxiv:` family on `paper:`.  Read
+  status (`to-read` / `reading` / `read` / `abandoned`) tracked
+  in meta; `/to-read`, `/reading`, `/read`, `/by-author`,
+  `/by-year` views.  Cross-links to deep-ingested books via
+  `meta.paper_slug`.
+- **`archive: bool | None` kwarg on the MCP `put()` tool** —
+  forwarded to `web:` only when explicitly set.
+- **`docs/websites-plan.md`** — design doc, locked-in decisions
+  for Phase 1 (this release) and Phase 2 dynamic fetcher.
+
+## 4.2.0 — 2026-04-22
+
+New `plot` kind — declarative matplotlib renderer driven by a
+pydantic-validated JSON spec.  Additive; nothing breaks the 4.1 API.
+
+### Added
+
+- **`plot` kind** — local, stateless, matplotlib-backed plot
+  renderer.  No code execution: the caller posts a validated JSON
+  spec via `put(id='plot:', text='<spec>', mode='render')` and
+  receives either an inline PNG data URL (default), inline SVG /
+  WebP (via `/svg` or `/webp` suffix), or a file written under
+  `./figures/` (via `/export` or `/export/<filename>`).  Five plot
+  types ship: `line`, `scatter`, `bar`, `hist`, `errorbar`.  Line
+  and scatter support an optional `fit` overlay (`linear`, `log`,
+  `exp`, `arrhenius`) with a slope / intercept / R² report line
+  prepended to the output.  Scheme: `plot:` (opaque-path so export
+  filenames with `/` and `.` pass through to the handler intact).
+  Onboarding skill `skill:plot-basics` ships with the package.
+- **`[plot]` optional-dep group** in `pyproject.toml` — pulls in
+  `matplotlib>=3.7` and `pydantic>=2.0` (~70 MB on disk).  `[all]`
+  includes it automatically.
+- **`PlotHandler` entry point** — `plot = "precis.handlers.plot:PlotHandler"`
+  under `[project.entry-points."precis.schemes"]`.
+- **`plot-basics` onboarding skill** — full schema reference
+  (common fields, per-type data shape, fit kinds, export formats)
+  with Arrhenius-plot example, matching the `calc-basics` /
+  `todo-triage` shape agents already know.
+- **Comprehensive `plot` unit tests** — 66 tests in
+  `tests/test_plot_handler.py` across `TestParsePlotPath`,
+  `TestParseSpec`, `TestLinearRegression`, `TestInlineRendering`,
+  `TestExportRendering`, `TestModeAndMisc`, `TestPlotIsOpaque`, and
+  `TestPlotRegistration`.  Covers path parsing, spec validation,
+  each render format, every plot type, fit-overlay reports, export
+  to disk (PNG / SVG / PDF), security rejects (absolute paths,
+  `..` traversal, unknown extensions), mode enforcement, and the
+  opaque URI round-trip.
+
+### Changed
+
+- **`_OPAQUE_PATH_SCHEMES`** in `precis.uri` now includes `plot`
+  alongside `calc` / `doi` / `arxiv`.  The handler parses its own
+  `/svg`, `/webp`, `/help`, `/export`, and `/export/<file>`
+  suffixes so filenames like `/export/deep/chart.pdf` survive URI
+  parsing.
+- **`[all]` optional-dep group** — now pulls in `[plot]` alongside
+  `[word, tex, paper, flashcards, quest, external, calc]`.
+
+### Tests
+
+- **1,160 unit tests passing** (up from 1,094 at 4.1.x — a
+  66-test expansion for the new kind).  `ruff check` + `mypy`
+  clean.
+
 ## 4.1.0 — 2026-04-22
 
 New `calc` kind (free local SymPy calculator), expanded tool-schema

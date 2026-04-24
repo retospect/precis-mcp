@@ -10,6 +10,8 @@ from precis.handlers.todo import (
     STATES,
     TRANSITIONS,
     TodoHandler,
+    _coerce_tag_list,
+    _parse_tags,
     _slugify,
 )
 from precis.protocol import PrecisError
@@ -69,8 +71,9 @@ def _todo_ref(
     state="pending",
     priority="medium",
     ref_id=1,
+    tags=None,
 ):
-    return {
+    ref = {
         "slug": slug,
         "title": title,
         "ref_id": ref_id,
@@ -81,6 +84,12 @@ def _todo_ref(
             "created": "2026-03-30T12:00:00Z",
         },
     }
+    if tags is not None:
+        import json as _json
+
+        # Match acatome-store shape: tags column is a JSON-encoded string.
+        ref["tags"] = _json.dumps(tags)
+    return ref
 
 
 # ---------------------------------------------------------------------------
@@ -446,3 +455,299 @@ class TestURI:
         from precis.server import _to_uri
 
         assert _to_uri("todo:fix-bug") == "todo:fix-bug"
+
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+
+class TestTagHelpers:
+    def test_parse_tags_none(self):
+        assert _parse_tags({}) == []
+
+    def test_parse_tags_json_string(self):
+        assert _parse_tags({"tags": '["a", "b"]'}) == ["a", "b"]
+
+    def test_parse_tags_list(self):
+        assert _parse_tags({"tags": ["a", "b"]}) == ["a", "b"]
+
+    def test_parse_tags_malformed(self):
+        assert _parse_tags({"tags": "not-json"}) == []
+
+    def test_coerce_list(self):
+        assert _coerce_tag_list(["a", "b", "b"]) == ["a", "b"]
+
+    def test_coerce_comma_string(self):
+        assert _coerce_tag_list("urgent, work") == ["urgent", "work"]
+
+    def test_coerce_whitespace(self):
+        assert _coerce_tag_list("  a   b  c  ") == ["a", "b", "c"]
+
+    def test_coerce_none(self):
+        assert _coerce_tag_list(None) == []
+
+
+class TestCreateWithTags:
+    def test_create_passes_tags_list(self):
+        handler = _make_handler()
+        store = _mock_store()
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            handler.put(
+                path="",
+                selector=None,
+                text="Buy milk",
+                mode="append",
+                tags=["shopping", "home"],
+            )
+        kwargs = store.create_ref.call_args.kwargs
+        assert kwargs["tags"] == ["shopping", "home"]
+        assert kwargs["corpus_id"] == "todos"
+
+    def test_create_passes_tags_comma_string(self):
+        handler = _make_handler()
+        store = _mock_store()
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            handler.put(
+                path="",
+                selector=None,
+                text="Buy milk",
+                mode="append",
+                tags="shopping, home",
+            )
+        assert store.create_ref.call_args.kwargs["tags"] == ["shopping", "home"]
+
+    def test_create_without_tags_passes_none(self):
+        handler = _make_handler()
+        store = _mock_store()
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            handler.put(
+                path="", selector=None, text="Buy milk", mode="append"
+            )
+        assert store.create_ref.call_args.kwargs["tags"] is None
+
+    def test_create_output_shows_tags(self):
+        handler = _make_handler()
+        store = _mock_store()
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            out = handler.put(
+                path="",
+                selector=None,
+                text="Buy milk",
+                mode="append",
+                tags=["shopping"],
+            )
+        assert "shopping" in out
+
+
+class TestTagsView:
+    def test_empty_state(self):
+        handler = _make_handler()
+        store = _mock_store()
+        with patch(_PATCH_STORE, return_value=store):
+            result = handler.read(
+                path="",
+                selector=None,
+                view="tags",
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
+            )
+        assert "No tagged todos yet" in result
+        assert "mode='tag'" in result
+
+    def test_histogram(self):
+        handler = _make_handler()
+        refs = [
+            _todo_ref("todo:a", "A", tags=["urgent", "work"], ref_id=1),
+            _todo_ref("todo:b", "B", tags=["urgent"], ref_id=2),
+            _todo_ref("todo:c", "C", tags=["home"], ref_id=3),
+            _todo_ref("todo:d", "D", ref_id=4),  # no tags
+        ]
+        store = _mock_store(refs=refs)
+        with patch(_PATCH_STORE, return_value=store):
+            result = handler.read(
+                path="",
+                selector=None,
+                view="tags",
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
+            )
+        assert "3 distinct" in result
+        # Counts: urgent=2, work=1, home=1. urgent must come first.
+        urgent_idx = result.index("urgent")
+        work_idx = result.index("work")
+        assert urgent_idx < work_idx
+        assert "2" in result  # urgent count
+
+
+class TestListWithTags:
+    def test_list_entry_shows_tags(self):
+        handler = _make_handler()
+        refs = [_todo_ref(tags=["urgent", "build"])]
+        store = _mock_store(refs=refs)
+        with patch(_PATCH_STORE, return_value=store):
+            result = handler.read(
+                path="",
+                selector=None,
+                view=None,
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
+            )
+        assert "#urgent" in result
+        assert "#build" in result
+
+    def test_overview_shows_tags(self):
+        handler = _make_handler()
+        ref = _todo_ref(tags=["urgent", "build"])
+        store = _mock_store(refs=[ref])
+        with patch(_PATCH_STORE, return_value=store):
+            result = handler.read(
+                path="todo:fix-bug",
+                selector=None,
+                view=None,
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
+            )
+        assert "tags:" in result
+        assert "urgent" in result
+        assert "build" in result
+
+    def test_grep_filter_matches_tag(self):
+        handler = _make_handler()
+        refs = [
+            _todo_ref("todo:a", "Alpha", tags=["urgent"], ref_id=1),
+            _todo_ref("todo:b", "Bravo", tags=["home"], ref_id=2),
+        ]
+        store = _mock_store(refs=refs)
+        with patch(_PATCH_STORE, return_value=store):
+            result = handler.read(
+                path="",
+                selector=None,
+                view=None,
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
+                grep="tag:urgent",
+            )
+        assert "todo:a" in result
+        assert "todo:b" not in result
+
+
+class TestTagMutation:
+    def test_tag_adds_via_store(self):
+        handler = _make_handler()
+        ref = _todo_ref()
+        store = _mock_store(refs=[ref])
+        store.add_tags.return_value = True
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            result = handler.put(
+                path="todo:fix-bug",
+                selector=None,
+                text="urgent,build",
+                mode="tag",
+            )
+        store.add_tags.assert_called_once_with(
+            "todo:fix-bug", ["urgent", "build"]
+        )
+        # Critical: tag mode must NOT touch create_ref, update_ref_metadata,
+        # or update_block_text. Only the tags column changes.
+        store.create_ref.assert_not_called()
+        store.update_ref_metadata.assert_not_called()
+        store.update_block_text.assert_not_called()
+        store.remove_tags.assert_not_called()
+        assert "Tagged" in result
+
+    def test_tag_accepts_tags_kwarg(self):
+        handler = _make_handler()
+        ref = _todo_ref()
+        store = _mock_store(refs=[ref])
+        store.add_tags.return_value = True
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            handler.put(
+                path="todo:fix-bug",
+                selector=None,
+                text="",
+                mode="tag",
+                tags=["urgent"],
+            )
+        store.add_tags.assert_called_once_with("todo:fix-bug", ["urgent"])
+
+    def test_untag_removes_via_store(self):
+        handler = _make_handler()
+        ref = _todo_ref(tags=["urgent", "build"])
+        store = _mock_store(refs=[ref])
+        store.remove_tags.return_value = True
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            result = handler.put(
+                path="todo:fix-bug",
+                selector=None,
+                text="urgent",
+                mode="untag",
+            )
+        store.remove_tags.assert_called_once_with("todo:fix-bug", ["urgent"])
+        # Critical: removing tags MUST NOT delete the underlying todo or
+        # clear its state/metadata/body.
+        store.create_ref.assert_not_called()
+        store.update_ref_metadata.assert_not_called()
+        store.update_block_text.assert_not_called()
+        store.add_tags.assert_not_called()
+        assert "Untagged" in result
+
+    def test_tag_requires_id(self):
+        handler = _make_handler()
+        store = _mock_store()
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            with pytest.raises(PrecisError, match="id= required"):
+                handler.put(
+                    path="", selector=None, text="urgent", mode="tag"
+                )
+
+    def test_untag_requires_id(self):
+        handler = _make_handler()
+        store = _mock_store()
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            with pytest.raises(PrecisError, match="id= required"):
+                handler.put(
+                    path="", selector=None, text="urgent", mode="untag"
+                )
+
+    def test_tag_requires_at_least_one_tag(self):
+        handler = _make_handler()
+        ref = _todo_ref()
+        store = _mock_store(refs=[ref])
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            with pytest.raises(PrecisError, match="needs at least one tag"):
+                handler.put(
+                    path="todo:fix-bug",
+                    selector=None,
+                    text="",
+                    mode="tag",
+                )
+
+    def test_tag_store_reports_not_found(self):
+        handler = _make_handler()
+        ref = _todo_ref()
+        store = _mock_store(refs=[ref])
+        store.add_tags.return_value = False
+        with patch(_PATCH_STORE_TODO, return_value=store):
+            with pytest.raises(PrecisError, match="could not update tags"):
+                handler.put(
+                    path="todo:fix-bug",
+                    selector=None,
+                    text="urgent",
+                    mode="tag",
+                )

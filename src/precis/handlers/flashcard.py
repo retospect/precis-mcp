@@ -731,40 +731,16 @@ class FlashcardHandler(RefHandler):
         ref = self._resolve_ref(store, path)
         slug = ref.get("slug", "???")
 
-        # Count existing blocks to get next index
-        blocks = store.get_blocks(slug)
-        next_idx = len(blocks)
-        node_id = f"{slug}-b{next_idx:04d}"
-
-        # Insert block via store session
+        # Delegate block insertion + embedding to the store.  The
+        # public add_block() API owns node_id allocation, collision
+        # checks, and the best-effort embed-on-write step, keeping
+        # the handler free of acatome_store.models internals.
         try:
-            from acatome_store.models import Block
-
-            session_factory = store._Session
-            with session_factory() as session:
-                paper = store.get(slug)
-                if not paper:
-                    raise PrecisError(
-                        ErrorCode.ID_NOT_FOUND,
-                        cause=f"item {slug!r} not in corpus",
-                    )
-                ref_id = paper["ref_id"]
-                block = Block(
-                    node_id=node_id,
-                    profile="default",
-                    ref_id=ref_id,
-                    page=0,
-                    block_index=next_idx,
-                    block_type="text",
-                    text=text,
-                    section_path="[]",
-                )
-                session.add(block)
-                session.commit()
-        except ImportError as exc:
+            store.add_block(slug, text=text, block_type="text")
+        except ValueError as exc:
             raise PrecisError(
-                ErrorCode.KIND_UNAVAILABLE,
-                cause="acatome-store required for flashcard context blocks",
+                ErrorCode.ID_NOT_FOUND,
+                cause=str(exc),
             ) from exc
 
         return (

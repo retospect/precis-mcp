@@ -35,6 +35,17 @@ tags: [papers, research, workflow]
    get(type='paper', id='doi:10.x/y')
    ```
 
+   If `type='paper'` turns up nothing but the reference *could* be in
+   another corpus (a memory of an old paper summary, a web bookmark
+   of the abstract, a book section), widen the search before
+   submitting a quest:
+
+   ```
+   search(type='all', query='<authors> <year> <keyword>')
+   # or a targeted subset
+   search(type='paper,web,book', query='<authors> <year> <keyword>')
+   ```
+
    A hit means `status: ingested`, `found_in_store`, or an acatome slug you can cite directly.
 
 2. **If absent, submit a quest.** (Phase 12b; read-only in 12a — write submits go through the CLI for now: `acatome-quest submit --doi 10.x/y`.)

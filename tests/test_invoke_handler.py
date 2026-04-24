@@ -96,7 +96,7 @@ def test_format_error_skips_empty_options_line():
 
 
 def test_format_error_uses_explicit_next_hint_when_provided():
-    ctx = CallContext(kind="web", verb="search", args={"id": ""})
+    ctx = CallContext(kind="websearch", verb="search", args={"id": ""})
     out = _format_error(
         ErrorCode.RATE_LIMITED,
         ctx,
@@ -109,7 +109,7 @@ def test_format_error_uses_explicit_next_hint_when_provided():
 
 
 def test_format_error_auto_adds_gripe_next_hint_for_non_user_errors():
-    ctx = CallContext(kind="web", verb="search", args={"id": ""})
+    ctx = CallContext(kind="websearch", verb="search", args={"id": ""})
     out = _format_error(ErrorCode.UNEXPECTED, ctx, cause="KeyError: 'choices'")
     assert "  next:" in out
     assert "gripe about it" in out
@@ -240,7 +240,7 @@ def test_invoke_handler_legacy_string_precis_error_defaults_to_unexpected():
 def test_invoke_handler_unexpected_exception_becomes_unexpected_result():
     h = _StubHandler()
     r = invoke_handler(
-        "web",
+        "websearch",
         "search",
         h,
         lambda: (_ for _ in ()).throw(ValueError("bad json")),
@@ -268,7 +268,7 @@ def test_invoke_handler_cost_of_exception_does_not_break_success():
 
 def test_invoke_handler_hints_exception_does_not_break_success():
     h = _StubHandler(hints_raises=True, cost="$0.01")
-    r = invoke_handler("web", "search", h, lambda: ["r1", "r2"], args={})
+    r = invoke_handler("websearch", "search", h, lambda: ["r1", "r2"], args={})
     assert r.success
     assert r.data == ["r1", "r2"]
     assert r.hints == []
@@ -289,7 +289,7 @@ def test_invoke_handler_passes_kind_verb_to_error_where_line():
 
 def test_invoke_handler_result_renders_with_hints_block():
     h = _StubHandler(hints=["hint1", "hint2"], cost="~$0.002/call")
-    r = invoke_handler("web", "search", h, lambda: "result text", args={"id": ""})
+    r = invoke_handler("websearch", "search", h, lambda: "result text", args={"id": ""})
     out = r.render()
     assert out.startswith("result text")
     assert "Hints:" in out

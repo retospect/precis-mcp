@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "4.1.0"
+version = "5.0.0"
 description = "MCP server for structured document access — read, write, search, and annotate DOCX, LaTeX, Markdown, and scientific papers with minimal token usage"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -50,7 +50,7 @@ dependencies = [
     "platformdirs>=4.0",
     "python-docx>=1.1",
     "lxml>=5.0",
-    "acatome-store[embeddings]>=0.1.0",
+    "acatome-store[embeddings]>=1.0.0",
     "acatome-meta>=0.1.0",
     "pyyaml>=6.0",
 ]
@@ -62,8 +62,8 @@ Repository = "https://github.com/retospect/precis-mcp"
 [project.optional-dependencies]
 word = ["python-docx>=1.1", "lxml>=5.0"]
 tex = ["lxml>=5.0"]
-paper = ["acatome-store[embeddings]>=0.1.0", "acatome-meta>=0.1.0"]
-flashcards = ["acatome-store>=0.1.0"]
+paper = ["acatome-store[embeddings]>=1.0.0", "acatome-meta>=0.1.0"]
+flashcards = ["acatome-store>=1.0.0"]
 # Phase 12a: quest kind (paper-request lifecycle).  Pulls in the runner
 # package for its DB + models; precis only uses the read path in 12a.
 # The runner itself is renamed to ``acatome-quest-runner`` in Phase 12c
@@ -83,7 +83,11 @@ external = [
 # exact fractions, roots, calculus, linear algebra, symbolic manipulation,
 # and unit conversion.  Separate extra because it's ~30 MB on disk.
 calc = ["sympy>=1.12"]
-all = ["precis-mcp[word,tex,paper,flashcards,quest,external,calc]"]
+# Phase 5b: declarative matplotlib plot renderer (free, offline).  Post a
+# JSON spec, get a PNG/SVG/WebP/PDF back.  Separate extra because
+# matplotlib pulls in ~70 MB of wheels (numpy, pillow, fonts).
+plot = ["matplotlib>=3.7", "pydantic>=2.0"]
+all = ["precis-mcp[word,tex,paper,flashcards,quest,external,calc,plot]"]
 
 [project.scripts]
 precis = "precis.server:main"
@@ -106,6 +110,7 @@ todo = "precis.handlers.todo:TodoHandler"
 flashcard = "precis.handlers.flashcard:FlashcardHandler"
 skill = "precis.handlers.skill:SkillHandler"
 quest = "precis.handlers.quest:QuestHandler"
+plot = "precis.handlers.plot:PlotHandler"
 
 [dependency-groups]
 dev = [

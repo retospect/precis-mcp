@@ -54,7 +54,11 @@ _SEP_CHARS = SEP + "~"  # accept both › and legacy ~ on input
 # division — ``calc:1/2`` must mean ``Rational(1, 2)``, not ``path=1,
 # view=2``.  The calc handler parses its own trailing ``/view`` suffix
 # (``/help``, ``/pretty``, ``/latex``, ``/numeric``) from the raw path.
-_OPAQUE_PATH_SCHEMES = {"doi", "arxiv", "usc", "irs", "ie", "calc"}
+# ``plot`` is opaque so export filenames with ``/`` and ``.`` (e.g.
+# ``plot:/export/figures/chart.pdf``) reach the handler intact; the
+# handler parses its own ``/svg``, ``/webp``, ``/help``, ``/export``,
+# and ``/export/<filename>`` suffixes.
+_OPAQUE_PATH_SCHEMES = {"doi", "arxiv", "usc", "irs", "ie", "calc", "plot"}
 
 # Selector patterns
 _SLUG_RE = re.compile(r"^[A-Z0-9]{5}(?:\.\d+)?$")

@@ -97,9 +97,9 @@ class TestRecordCall:
         assert stats.errors == 1
 
     def test_last_cost_overwrites(self):
-        record_call("web", "~$0.002/call")
-        record_call("web", "~$0.003/call")
-        assert get_session_stats()["web"].last_cost == "~$0.003/call"
+        record_call("websearch", "~$0.002/call")
+        record_call("websearch", "~$0.003/call")
+        assert get_session_stats()["websearch"].last_cost == "~$0.003/call"
 
     def test_empty_cost_falls_back_to_free(self):
         record_call("paper", "")
@@ -255,12 +255,12 @@ class TestStatsSessionSection:
     def test_stats_lists_each_kind_that_was_called(self):
         record_call("paper", "free")
         record_call("paper", "free")
-        record_call("web", "~$0.002/call")
+        record_call("websearch", "~$0.002/call")
         out = server.stats()
         assert "session:" in out
         assert "paper" in out
         assert "calls=2" in out
-        assert "web" in out
+        assert "websearch" in out
         assert "last_cost=~$0.002/call" in out
 
     def test_stats_sorts_session_entries(self):
