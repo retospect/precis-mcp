@@ -574,6 +574,34 @@ class RefHandler(Handler):
         if not toc:
             return f"No blocks found for {slug}"
 
+        # Drop positionless blocks (``block_index IS NULL`` — abstract,
+        # document_summary, paper_summary).  ``store.get_toc`` returns
+        # every block_type for completeness; the TOC renderer needs
+        # ordered positional blocks so it can compute ranges and split
+        # oversized sections.  Without this filter the next step would
+        # crash with ``TypeError: unsupported operand for -: NoneType``
+        # when computing ``g["end"] - g["start"]``.
+        toc = [e for e in toc if e.get("block_index") is not None]
+        if not toc:
+            # Every block was positionless (rare — typically a stub ref
+            # with only an abstract).  Return a structured envelope with
+            # concrete recovery paths instead of crashing or showing an
+            # empty TOC.
+            raise PrecisError(
+                ErrorCode.UNAVAILABLE,
+                cause=(
+                    f"{slug!r} has no positional blocks — only metadata "
+                    "(abstract / summary).  TOC requires ordered text."
+                ),
+                next=(
+                    f"get(id='{slug}/abstract')  — read the abstract\n"
+                    f"  get(id='{slug}/summary')   — derived summary\n"
+                    f"  get(id='{slug}')           — overview + metadata\n"
+                    f"  put(type='gripe', text='{slug} has no body blocks — "
+                    "ingestion may have failed') if you expected text"
+                ),
+            )
+
         if selector:
             return self._read_toc_range(slug, toc, selector)
 

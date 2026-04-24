@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from precis.handlers._ref_base import (
     _parse_date_value,
     _parse_filters,
@@ -685,3 +687,145 @@ class TestScopeEndToEnd:
         assert captured["uri"] == "paper:sheka2011c"
         assert captured.get("query") == "nanobuds"
         assert captured.get("top_k") == 3
+
+
+# ---------------------------------------------------------------------------
+# /toc — positionless block crash regression
+# ---------------------------------------------------------------------------
+
+
+class TestTocPositionlessBlocks:
+    """Regression for the ``TypeError: NoneType - NoneType`` crash in
+    ``_read_toc_overview`` when a paper's blocks include positionless
+    types (abstract, document_summary, paper_summary) whose
+    ``block_index`` is NULL in the database.
+
+    ``store.get_toc`` returns every block_type for completeness, so the
+    renderer must filter to positional blocks before computing
+    ``end - start + 1`` ranges.  Without the filter, the first
+    positionless entry crashed the handler with an opaque ``unexpected``
+    error envelope.
+    """
+
+    def _handler(self):
+        from precis.handlers.paper import PaperHandler
+
+        return PaperHandler()
+
+    class _FakeStore:
+        def __init__(self, toc, ref=None):
+            self._toc = toc
+            self._ref = ref or {"slug": "stub2024", "title": "Stub", "ref_id": 1}
+
+        def get(self, slug):
+            return self._ref
+
+        def get_toc(self, slug):
+            return self._toc
+
+    @staticmethod
+    def _entry(idx, block_type="text", section="1. Intro", text="Body."):
+        return {
+            "node_id": f"n-{idx}",
+            "block_index": idx,
+            "page": 0,
+            "block_type": block_type,
+            "section_path": f'["{section}"]',
+            "preview": text,
+        }
+
+    @staticmethod
+    def _positionless(block_type="abstract", text="Abstract text"):
+        # ``block_index=None`` is exactly what postgres returns for
+        # abstract / document_summary blocks — they have no position
+        # in the page sequence.  This is the input that crashed before.
+        return {
+            "node_id": f"n-{block_type}",
+            "block_index": None,
+            "page": None,
+            "block_type": block_type,
+            "section_path": "",
+            "preview": text,
+        }
+
+    def test_toc_drops_positionless_blocks(self):
+        # Mix of positional text + an abstract + a document_summary,
+        # exactly mirroring what ni2024atomic looks like in the live
+        # store.  Renderer must succeed and render only the text.
+        toc = [
+            self._positionless("abstract", "We report…"),
+            self._positionless("document_summary", "Summary."),
+            *(self._entry(i) for i in range(120)),
+        ]
+        out = self._handler()._read_toc(self._FakeStore(toc), {"slug": "stub2024"})
+        # No crash, no error envelope.
+        assert "ERROR" not in out
+        # The 120 positional blocks are reflected in the count.
+        assert "120 blocks" in out, f"unexpected output: {out!r}"
+        # No abstract/summary noise leaked into the TOC body.
+        assert "abstract" not in out.lower() or "Abstract" not in out
+        assert "document_summary" not in out
+
+    def test_toc_with_only_positionless_blocks_returns_unavailable(self):
+        # Stub paper with metadata but no body — abstract only.  Must
+        # return a structured ERROR [unavailable] with actionable hints,
+        # NOT crash and NOT render an empty TOC.
+        from precis.protocol import PrecisError, ErrorCode
+
+        toc = [
+            self._positionless("abstract", "Just an abstract."),
+            self._positionless("document_summary", "And a summary."),
+        ]
+        with pytest.raises(PrecisError) as exc_info:
+            self._handler()._read_toc(
+                self._FakeStore(toc), {"slug": "stub2024"}
+            )
+        assert exc_info.value.code == ErrorCode.UNAVAILABLE
+        # Hint must point at the alternative views the agent can try.
+        assert "/abstract" in exc_info.value.next
+        assert "/summary" in exc_info.value.next
+        # And mention the slug so the next call can be copied verbatim.
+        assert "stub2024" in exc_info.value.next
+
+    def test_toc_with_no_blocks_at_all_returns_simple_message(self):
+        # Distinct case: ref exists but TOC fetch returned zero rows.
+        # Pre-existing behaviour was a friendly message, not an error.
+        out = self._handler()._read_toc(self._FakeStore([]), {"slug": "empty"})
+        assert "No blocks" in out
+        assert "empty" in out
+
+    def test_toc_normal_paper_unchanged(self):
+        # Sanity: a paper with no positionless blocks renders as before.
+        toc = [self._entry(i) for i in range(150)]
+        out = self._handler()._read_toc(self._FakeStore(toc), {"slug": "normal"})
+        assert "ERROR" not in out
+        assert "150 blocks" in out
+        # The section header from each entry's section_path appears.
+        assert "Intro" in out
+
+
+class TestPaperStructuralNavigationSkill:
+    """The new ``skill:paper-structural-navigation`` ships with the
+    package and renders correctly.  This guards against the file being
+    accidentally deleted from the wheel manifest.
+    """
+
+    def test_skill_resolves(self):
+        from precis import server
+
+        out = server.get(id="paper-structural-navigation", type="skill")
+        # The skill body legitimately contains ``ERROR [unavailable]``
+        # as documentation of the recovery path, so we can't use the
+        # error envelope substring as a failure signal.  Use positive
+        # structural markers instead: skill renders with its header and
+        # the standard ``[cost: free]`` footer when it succeeded.
+        assert "skill:paper-structural-navigation" in out, (
+            f"skill header missing — likely an error: {out[:200]!r}"
+        )
+        assert "[cost: free]" in out, (
+            f"cost footer missing — dispatch failed: {out[-200:]!r}"
+        )
+        # Hallmark phrases the skill body contains.
+        assert "Decision table" in out or "decision table" in out.lower()
+        assert "/toc" in out
+        assert "/abstract" in out
