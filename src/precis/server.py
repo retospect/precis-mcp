@@ -69,7 +69,7 @@ def _has_identifier_hint(id: str) -> bool:
     - Known file extension (``.docx``, ``.tex``, ``.md``, …).
     - Bare pattern that classifies as DOI / arXiv / PMCID / ISBN / ISSN.
 
-    A bare alphanumeric slug like ``wang2020state`` carries **no** hint
+    A bare alphanumeric slug like ``ni2024atomic`` carries **no** hint
     and falls through to ``classify_paper_id``'s final "paper" fallback
     (``value == input``).  That case was silently routed to ``paper:``
     before the 2026-04-22 default-to-paper cleanup; now it triggers
@@ -344,7 +344,7 @@ def search(
     Examples:
       # Single-kind semantic search
       search(query='CO2 capture MOFs', type='paper')
-      search(query='selectivity', scope='wang2020state')
+      search(query='selectivity', scope='ni2024atomic')
       search(query='membrane', type='paper', grep='tag:review')
 
       # Cross-corpus — search everything at once
@@ -446,16 +446,16 @@ def get(
            websearch, research, think, math, calc, youtube.
 
     Papers (bare slugs need type='paper' or scheme prefix):
-      get(type='paper', id='wang2020state')          — overview
-      get(type='paper', id='wang2020state›38')       — chunk 38
-      get(type='paper', id='wang2020state›38..42')   — chunk range
-      get(type='paper', id='wang2020state/toc')      — chunk index
-      get(type='paper', id='wang2020state/abstract') — abstract
-      get(type='paper', id='wang2020state/cite/bib') — BibTeX
-      get(type='paper', id='wang2020state/fig/3')    — figure 3
-      get(id='paper:wang2020state')                  — scheme prefix
-      get(id='doi:10.1021/jacs.2c01234')             — DOI
-      get(id='arxiv:2301.12345')                     — arXiv
+      get(type='paper', id='ni2024atomic')          — overview
+      get(type='paper', id='ni2024atomic›38')       — chunk 38
+      get(type='paper', id='ni2024atomic›38..42')   — chunk range
+      get(type='paper', id='ni2024atomic/toc')      — chunk index
+      get(type='paper', id='ni2024atomic/abstract') — abstract
+      get(type='paper', id='ni2024atomic/cite/bib') — BibTeX
+      get(type='paper', id='ni2024atomic/fig/3')    — figure 3
+      get(id='paper:ni2024atomic')                  — scheme prefix
+      get(id='doi:10.1002/aenm.202400065')             — DOI
+      get(id='arxiv:2207.09327')                     — arXiv
       get(type='paper', grep='tag:review')           — filter list
 
     Files (extension auto-classifies — no type= needed):
@@ -486,9 +486,9 @@ def get(
     if not id and not grep:
         return (
             "ERROR: id or grep is required. Do not call get() with empty parameters.\n"
-            "  get(id='wang2020state')      — paper overview\n"
-            f"  get(id='wang2020state{SEP}5')    — read chunk 5\n"
-            "  get(id='wang2020state/toc')  — table of contents\n"
+            "  get(id='ni2024atomic')      — paper overview\n"
+            f"  get(id='ni2024atomic{SEP}5')    — read chunk 5\n"
+            "  get(id='ni2024atomic/toc')  — table of contents\n"
             f"  get(id='slug1{SEP}4,slug2{SEP}9')   — multiple chunks at once\n"
             "  get(id='report.docx')        — document toc\n"
             "  get(grep='MOF')              — filter paper list"
@@ -620,12 +620,12 @@ def put(
       Define: put(id='report.docx', text='[@slug]: Author, Title, 2024.', mode='append')
 
     Notes (on any ref or block):
-      put(id='wang2020state', note='Key finding about MOFs')
-      put(id='wang2020state›38', note='Important result here')
+      put(id='ni2024atomic', note='Key finding about MOFs')
+      put(id='ni2024atomic›38', note='Important result here')
 
     Links (between refs or blocks):
-      put(id='wang2020state', link='jones2023surface:cites')
-      put(id='wang2020state', link='jones2023surface')  — defaults to 'references'
+      put(id='ni2024atomic', link='jones2023surface:cites')
+      put(id='ni2024atomic', link='jones2023surface')  — defaults to 'references'
 
     Tags (todo, memory):
       put(type='todo', text='Fix parser', tags=['urgent'], mode='append')
