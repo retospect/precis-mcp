@@ -1,6 +1,30 @@
 # Changelog
 
-## 5.0.0 — unreleased
+## 5.1.0
+
+Post-5.0 cleanup: naming consistency + stale doc-path fixes.  No
+behaviour changes; safe in-place upgrade from 5.0.0.
+
+### Changed
+
+- **`tests/test_web_handler.py` → `tests/test_web_bookmark_handler.py`.**
+  Disambiguates from `tests/test_phase3_websearch.py` (the Perplexity
+  `websearch` handler tests).  `WebHandler` was a handler name shared by
+  the old Perplexity kind (pre-5.0) and the new bookmark kind (5.0+);
+  the test-file name now says which handler is under test.  Internal
+  change — only visible if you collect/run tests by explicit path.
+
+### Fixed
+
+- **Docs: `grimoire/agents/quest-agent.md` → `quest.md` path refs.**
+  The cluster-side grimoire renamed agent prompt files to align with
+  hermes profile names (`coding-agent.md` → `coder.md`, `quest-agent.md`
+  → `quest.md`, etc.).  Two references in `docs/plugin-architecture.md`
+  (Phase 12 refinement-pass list, Phase 12b skill-kind example) pointed
+  at the old path; both updated so readers clicking the path land on
+  the real file.
+
+## 5.0.0
 
 **Breaking.** The Perplexity Sonar kind `web` has been renamed to
 `websearch`.  The scheme `web:` is freed for a forthcoming stored-bookmark
