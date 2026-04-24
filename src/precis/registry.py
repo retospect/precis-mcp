@@ -1096,6 +1096,44 @@ def _register_builtins() -> None:
         except ImportError:
             log.debug("ResearchHandler not available (missing httpx?)")
 
+    # ── Phase 5c: reMarkable tablet push (write-only cloud upload) ────
+    # Optional `[remarkable]` extra pulls in ``remarkable-mcp`` for the
+    # cloud-sync client.  Gated on ``REMARKABLE_TOKEN`` so the kind is
+    # invisible to the agent on hosts without a registered tablet.
+
+    if _is_allowed("remarkable"):
+        try:
+            from precis.handlers.rmk import RmkHandler
+
+            _register_plugin(
+                Plugin(
+                    name="remarkable",
+                    handler_cls=RmkHandler,
+                    schemes=["rmk"],
+                    write_policy="direct",
+                    kinds=[
+                        KindSpec(
+                            name="rmk",
+                            description=(
+                                "Push PDFs and EPUBs to a reMarkable "
+                                "e-ink reader tablet (rM1 / rM2 / rMPro) "
+                                "via the reMarkable Cloud API. "
+                                "Write-only: put(mode='push'). "
+                                "Requires REMARKABLE_TOKEN."
+                            ),
+                            requires=["REMARKABLE_TOKEN"],
+                            cost_hint="free (requires reMarkable Connect subscription)",
+                            examples=[
+                                "put(id='rmk:/path/to/paper.pdf', mode='push')",
+                                "put(id='rmk:/path/book.epub', text='Title', mode='push')",
+                            ],
+                        )
+                    ],
+                )
+            )
+        except ImportError:
+            log.debug("RmkHandler not available (missing remarkable-mcp?)")
+
 
 def _discover() -> None:
     """Load built-in handlers and entry-point plugins (once).

@@ -174,15 +174,17 @@ class TestStatsTool:
         assert "test warning" in out
 
     def test_stats_shows_no_warnings_when_empty(self, monkeypatch):
-        # Phase 3/4: env-gated kinds (math → WOLFRAM_APP_ID, web/think/
-        # research → PERPLEXITY_API_KEY) emit a one-shot warning when
-        # their env is unset.  Stub every env var that any registered
-        # kind depends on, then reset the dedup set so any prior
-        # warning from an earlier test run is cleared.
+        # Phase 3/4/5c: env-gated kinds emit a one-shot warning when
+        # their env is unset — math → WOLFRAM_APP_ID, web/think/
+        # research → PERPLEXITY_API_KEY, rmk → REMARKABLE_TOKEN.
+        # Stub every env var that any registered kind depends on, then
+        # reset the dedup set so any prior warning from an earlier test
+        # run is cleared.
         import precis.registry as reg
 
         monkeypatch.setenv("WOLFRAM_APP_ID", "test-stub")
         monkeypatch.setenv("PERPLEXITY_API_KEY", "test-stub")
+        monkeypatch.setenv("REMARKABLE_TOKEN", "test-stub")
         reg._ENV_WARNED.clear()
         clear_startup_warnings()
         out = server.stats()

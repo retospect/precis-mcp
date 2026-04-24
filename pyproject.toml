@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "5.1.0"
+version = "5.2.0"
 description = "MCP server for structured document access — read, write, search, and annotate DOCX, LaTeX, Markdown, and scientific papers with minimal token usage"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -87,6 +87,16 @@ calc = ["sympy>=1.12"]
 # JSON spec, get a PNG/SVG/WebP/PDF back.  Separate extra because
 # matplotlib pulls in ~70 MB of wheels (numpy, pillow, fonts).
 plot = ["matplotlib>=3.7", "pydantic>=2.0"]
+# Phase 5c: reMarkable tablet push (write-only cloud upload).  The
+# handler wraps ``remarkable-mcp`` for its cloud-sync client, but that
+# package is not on PyPI (installed from git in the cluster ansible
+# role), and PyPI rejects git-URL deps on upload.  The extra is kept
+# declared-but-empty so ``pip install precis-mcp[remarkable]`` is a
+# valid no-op; the user (or the cluster provisioning role) is
+# responsible for installing ``remarkable-mcp`` separately.  The
+# handler auto-hides the ``rmk`` kind when the package is missing or
+# ``REMARKABLE_TOKEN`` is not set.
+remarkable = []
 all = ["precis-mcp[word,tex,paper,flashcards,quest,external,calc,plot]"]
 
 [project.scripts]

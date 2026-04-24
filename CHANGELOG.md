@@ -1,5 +1,62 @@
 # Changelog
 
+## 5.2.0
+
+New kind `rmk:` — push PDFs and EPUBs to a reMarkable e-ink reader
+tablet (rM1 / rM2 / rMPro) via the reMarkable Cloud API.  Hidden
+from the agent tool-schema enum unless `REMARKABLE_TOKEN` is set, so
+the kind is invisible on hosts without a registered tablet.
+
+### Added
+
+- **`rmk:` scheme — write-only cloud upload.** Single verb
+  `put(id='rmk:/<absolute-path>', mode='push')` uploads a local
+  `.pdf` or `.epub` to the tablet's root folder.  Optional `text`
+  argument overrides the on-tablet display name (default: file
+  stem).  Response includes the tablet-side document ID so the agent
+  can link the tablet copy back to whatever source ref prompted the
+  push.  Internally wraps
+  `remarkable_mcp.sync.load_client_from_token` + `RemarkableClient
+  .upload` — the ``remarkable-mcp`` import is lazy, so precis still
+  imports cleanly on hosts where the package isn't installed.
+- **`[remarkable]` optional extra** (declared-but-empty).  The
+  ``remarkable-mcp`` package is not on PyPI and PyPI rejects
+  git-URL deps, so the extra is a stub that documents the intent;
+  operators install ``remarkable-mcp`` separately (the cluster
+  ansible role already does this — see
+  ``ansible/roles/mcps/tasks/main.yml``).
+
+### Gating
+
+- **`REMARKABLE_TOKEN`** env var — from
+  `remarkable-mcp --register <one-time-code>` after fetching a code
+  from https://my.remarkable.com/device/desktop/connect.
+  Unset → kind hidden from tool-schema enum, one-shot startup
+  warning emitted, direct URI calls raise `KIND_UNAVAILABLE`.
+- **`remarkable-mcp` importability** — gated inside
+  `RmkHandler._get_client`.  Missing package raises
+  `KIND_UNAVAILABLE` with a
+  `pip install 'precis-mcp[remarkable]'` hint (even though the
+  extra is a stub — the hint carries the correct canonical install
+  path).
+
+### Scope
+
+Read-side helpers (highlight extraction, handwriting OCR, tablet
+library listing) are deliberately out of scope for this release.
+The `remarkable-mcp` package covers them via `extract.py`; a future
+phase can wrap them as additional verbs or a sibling kind.
+
+### Tests
+
+36 new tests under `tests/test_rmk_handler.py` cover:
+class-attribute shape, client lazy-init + caching, both env-gating
+paths (missing package / missing token), pre-client validation
+(mode, path, extension, directory-vs-file), happy-path upload
+kwargs for PDF and EPUB, display-name override, whitespace
+fallback, case-insensitive extension matching, upstream-error
+wrapping, help text, and registry / visibility behaviour.
+
 ## 5.1.0
 
 Post-5.0 cleanup: naming consistency + stale doc-path fixes.  No
