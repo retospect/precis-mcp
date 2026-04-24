@@ -1519,7 +1519,7 @@ Writer library landed in Phase 0; this phase adds the shipper, the `cluster.logs
 - Paper-kind meta views (`/cites`, `/cited-by`, `/related`) — land in Phase 5 or here?
 - `submit_file` URL path security — the existing quest validates PDF magic bytes + rejects HTML; reconfirm that holds for arbitrary `put(mode='file', url=...)` from an agent.
 - Runner polling cadence + per-agent cap defaults — inherit from quest's today (`QUEST_POLL_INTERVAL=30`, `QUEST_MAX_OPEN_PER_AGENT=50`) or tune.
-- **Quest is really a tool surface + ≥3 skills + a policy layer.** The 4-verb queue (`submit` / `status` / `update` / `submit_file`) is atomic; the agent-facing value sits in three skills — *find-paper*, *triage-backlog*, *handle-dropped-pdf* — plus a cross-cutting rule layer (OA-only, retractions terminal, no fabrication). Today those skills live in `grimoire/agents/quest-agent.md` (an agent prompt) and `ansible/roles/feynman/templates/skills/cluster-library.md.j2` (a deploy-time skill file). Folding the tool layer into precis is cheap; the skill layer wants a first-class home — see Phase 12b below.
+- **Quest is really a tool surface + ≥3 skills + a policy layer.** The 4-verb queue (`submit` / `status` / `update` / `submit_file`) is atomic; the agent-facing value sits in three skills — *find-paper*, *triage-backlog*, *handle-dropped-pdf* — plus a cross-cutting rule layer (OA-only, retractions terminal, no fabrication). Today those skills live in `grimoire/agents/quest.md` (an agent prompt) and `ansible/roles/feynman/templates/skills/cluster-library.md.j2` (a deploy-time skill file). Folding the tool layer into precis is cheap; the skill layer wants a first-class home — see Phase 12b below.
 
 ### Phase 12b — `skill` kind + skill-surfacing hooks
 
@@ -1599,7 +1599,7 @@ kind-onboarding: quest          # precis extension — this skill is kind quest'
 3. `put(type='quest', text='<doi>')` to enqueue
 
 ## Output Format
-One-line outcome + detail + next action (see ../grimoire/agents/quest-agent.md)
+One-line outcome + detail + next action (see ../grimoire/agents/quest.md)
 ```
 
 Claude Code / Cursor / Gemini CLI ignore the precis-extension fields (`applies-to`, `state-trigger`, `kind-onboarding`) — they're additive, not breaking.
