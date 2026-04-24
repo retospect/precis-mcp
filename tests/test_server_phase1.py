@@ -190,6 +190,51 @@ class TestStatsTool:
         out = server.stats()
         assert "startup warnings: none" in out
 
+    def test_stats_surfaces_scheme_aliases(self):
+        # Phase 5 — without this section, an agent sees ``paper`` in
+        # the kinds-by-verb listing and has no way to discover that
+        # ``doi:``, ``arxiv:``, ``pmid:``, etc. resolve to the same
+        # handler.  The error envelope (``ERROR [kind_unknown]``) only
+        # lists canonical kinds, so stats() is the one place the full
+        # URI vocabulary becomes visible.
+        out = server.stats()
+        assert "scheme aliases:" in out
+        # Hard-coded check for the papers plugin's known aliases.
+        # If the papers plugin schemes change, this assertion needs to
+        # update — the test failure tells you exactly what changed.
+        assert "paper" in out
+        # All 6 alternate schemes registered for the papers plugin
+        # must appear in the body.
+        for alt in ("doi", "arxiv", "pmid", "pmcid", "issn"):
+            assert alt in out, f"expected scheme alias {alt!r} in stats"
+
+    def test_stats_alias_invariant_every_scheme_discoverable(self):
+        # Stronger invariant: every URI scheme served by a registered
+        # KIND must be discoverable from stats() — either as a canonical
+        # kind in ``kinds by verb`` or as an alias in ``scheme aliases``.
+        # An undiscoverable scheme is a documentation bug because the
+        # agent cannot learn it exists from running the server.
+        #
+        # We iterate over KINDS (not raw SCHEMES) so this test is
+        # immune to pollution from earlier tests that register fake
+        # plugins and don't perfectly tear down their scheme entries.
+        from precis.registry import KINDS, PLUGINS, _discover
+
+        _discover()
+        out = server.stats()
+        missing: list[tuple[str, str]] = []
+        for kind_name, kind in KINDS.items():
+            plugin = PLUGINS.get(kind.plugin_name)
+            if plugin is None:
+                continue
+            for scheme in plugin.schemes:
+                if scheme not in out:
+                    missing.append((kind_name, scheme))
+        assert not missing, (
+            f"kind/scheme pair(s) {missing!r} registered but absent "
+            "from stats() output — agents cannot discover them"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tool signatures — the `type=` kwarg is actually present on each tool

@@ -778,26 +778,30 @@ def stats() -> str:
     """Read-only server introspection — §8, §10.2.
 
     Lists what the server is currently exposing: enabled kinds per verb,
-    active ``PRECIS_KINDS`` mask (if any), session call counts + last
-    cost per kind, and accumulated startup warnings.  No secrets.
-    Always public — there is no hidden admin mode (§18 non-goal).
+    scheme aliases each kind responds to, active ``PRECIS_KINDS`` mask
+    (if any), session call counts + last cost per kind, and accumulated
+    startup warnings.  No secrets.  Always public — there is no hidden
+    admin mode (§18 non-goal).
 
     Example output::
 
         service: precis-mcp
-        mask: PRECIS_KINDS set
+        mask: unset (expose all)
         kinds by verb:
-          search paper, memory
-          get    paper, memory, doc
+          search paper, memory, web
+          get    paper, memory, web
           put    memory
           move   (none)
+        scheme aliases:
+          book   ← isbn
+          paper  ← doi, arxiv, pmid, pmcid, isbn, issn
         session:
           paper   calls=12  errors=0  last_cost=free
           web     calls=3   errors=1  last_cost=~$0.002/call
         startup warnings:
           - kind 'news' hidden — missing env: PG_DATABASE_URL
     """
-    from precis.registry import get_kinds_mask, get_session_stats
+    from precis.registry import KINDS, PLUGINS, get_kinds_mask, get_session_stats
 
     _discover()
     lines: list[str] = ["service: precis-mcp"]
@@ -810,6 +814,31 @@ def stats() -> str:
         kinds = [k.spec.name for k in visible_kinds(verb)]
         shown = ", ".join(kinds) if kinds else "(none)"
         lines.append(f"  {verb:<6} {shown}")
+
+    # Scheme aliases — surface the alternate URI prefixes each kind
+    # responds to.  Without this section, an agent sees ``paper`` in
+    # ``kinds by verb`` and has no way to learn that ``doi:10.x/y``,
+    # ``arxiv:2207.09327``, ``pmid:12345`` etc. all route to the same
+    # handler.  The ``ERROR [kind_unknown]`` envelope only lists
+    # canonical kinds, so this is the one place the full URI vocabulary
+    # is discoverable from the running server.
+    alias_rows: list[tuple[str, list[str]]] = []
+    for name in sorted(KINDS):
+        kind = KINDS[name]
+        plugin = PLUGINS.get(kind.plugin_name)
+        if plugin is None:
+            continue
+        alts = [s for s in plugin.schemes if s != name]
+        if alts:
+            alias_rows.append((name, alts))
+    if alias_rows:
+        lines.append("scheme aliases:")
+        # Pad to longest kind name so the arrows align — the agent
+        # scans this section by column.
+        width = max(len(name) for name, _ in alias_rows)
+        for name, alts in alias_rows:
+            lines.append(f"  {name:<{width}}  ← {', '.join(alts)}")
+
     session = get_session_stats()
     if session:
         lines.append("session:")
