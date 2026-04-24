@@ -319,24 +319,27 @@ def search(
 ) -> str:
     """Semantic search or external query — dispatches by type=.
 
-    query: search query or compute expression (REQUIRED)
-    top_k: number of results (default 5)
-    scope: slug / filename to restrict search (omit for full corpus;
-           incompatible with type='all' or comma lists)
-    type:  kind — REQUIRED unless scope= is set.  Accepted values:
-           - Single ref-backed kind: paper, memory, conversation,
-             todo, flashcard, web, book — semantic search within one
-             corpus.
-           - Cross-corpus: type='all' searches every ref-backed
-             corpus at once; type='paper,memory,web' searches the
-             listed kinds only.  Both return a unified ranking
-             grouped by kind in the output.
-           - External services: websearch, research, think (Perplexity);
-             math (Wolfram, paid); calc (local SymPy, free); youtube;
-             skill, quest (stateful).  These cannot appear in a
-             cross-corpus list.
-    grep:  metadata pre-filter (title/author/tag, tag:review,
-           year:2020-, ingested:today).  Runs before the vector search.
+    Three filter layers compose, applied in order:
+
+      type=  → which corpus(es) to search (paper, memory, …, or
+               'all' / 'a,b,c').  REQUIRED unless scope= is set.
+      grep=  → metadata predicate over many refs (tag:review,
+               year:2020-, author:wang).  Pre-filter before vectors.
+      scope= → exact slug or filename — restricts to ONE ref.
+               Hits from any other ref are dropped.  Cannot combine
+               with type='all' or comma-list types.
+      query= → semantic similarity over whatever survived the above.
+
+    top_k: number of results returned after filtering (default 5).
+
+    type accepted values:
+      - Single ref-backed: paper, memory, conversation, todo,
+        flashcard, web, book — vector search within one corpus.
+      - Cross-corpus: type='all' or 'paper,memory,web' — unified
+        ranking grouped by kind.
+      - External services: websearch, research, think (Perplexity);
+        math (Wolfram, paid); calc (local SymPy, free); youtube;
+        skill, quest (stateful).  Cannot appear in a comma-list.
 
     Examples:
       # Single-kind semantic search

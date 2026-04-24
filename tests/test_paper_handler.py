@@ -534,3 +534,154 @@ class TestSearchToolForwardsGrep:
         assert captured.get("grep") == "tag:review"
         assert captured.get("query") == "membrane"
         assert captured.get("top_k") == 3
+
+
+# ---------------------------------------------------------------------------
+# Search + scope interaction — silent-cross-paper-leak regression
+# ---------------------------------------------------------------------------
+
+
+class TestSearchWithScope:
+    """Regression for the CRITICAL bug where ``search(scope='X', query='Y')``
+    silently returned hits from any paper because the slug filter was
+    dropped between server and handler.  An LLM asked "find Y in paper X"
+    would receive top-ranked hits from unrelated papers and cite them as
+    if they came from X — a citation-integrity bug.
+
+    The fix threads ``path`` (the user-supplied ``scope=``) through
+    ``_search_or_grep → _search``, over-fetches by 5×, and post-filters
+    by slug so only the scoped paper's chunks survive.
+    """
+
+    def _handler(self):
+        from precis.handlers.paper import PaperHandler
+
+        return PaperHandler()
+
+    class _FakeStore:
+        def __init__(self, hits):
+            self._hits = hits
+            self.last_top_k: int | None = None
+
+        def get(self, slug):
+            return {"slug": slug, "title": "Stub", "ref_id": f"ref-{slug}"}
+
+        def list_papers(self, limit=10000):
+            return []
+
+        def search_text(self, query, top_k=5, **kwargs):
+            self.last_top_k = top_k
+            return self._hits
+
+    @staticmethod
+    def _hit(slug, block_idx=3, snippet="snippet"):
+        return {
+            "text": snippet,
+            "distance": 0.5,
+            "paper": {"slug": slug},
+            "metadata": {"slug": slug, "block_index": block_idx},
+        }
+
+    def test_scope_drops_hits_from_other_papers(self):
+        # Vector search returns hits from THREE papers; only the
+        # scoped one (sheka2011c) must survive.  Anything else is the
+        # bug we are guarding against.
+        store = self._FakeStore(
+            [
+                self._hit("bazaka2016sustainable", block_idx=328),
+                self._hit("sheka2011c", block_idx=12),
+                self._hit("mamaghani2024promises", block_idx=331),
+                self._hit("sheka2011c", block_idx=44),
+                self._hit("wu2008first", block_idx=0),
+            ]
+        )
+        out = self._handler()._search(
+            store, query="nanobuds", top_k=5, scope="sheka2011c"
+        )
+        assert "sheka2011c" in out
+        # The other slugs MUST NOT appear in the result body.
+        for foreign in (
+            "bazaka2016sustainable",
+            "mamaghani2024promises",
+            "wu2008first",
+        ):
+            assert foreign not in out, (
+                f"scope='sheka2011c' leaked a hit from {foreign!r} — "
+                "scope filter is broken"
+            )
+        # Header must note the scope so the caller knows the filter ran.
+        assert "scope='sheka2011c'" in out
+
+    def test_scope_over_fetches_to_fill_top_k(self):
+        # When scope is set, the handler over-fetches so a scoped
+        # paper deep in the ranking still yields top_k hits.  5× is
+        # the empirical multiplier (mirrors _search_with_grep).
+        store = self._FakeStore([self._hit("sheka2011c", block_idx=i) for i in range(5)])
+        self._handler()._search(store, query="X", top_k=5, scope="sheka2011c")
+        assert store.last_top_k == 25, (
+            f"expected over-fetch top_k=25 (5×5), got {store.last_top_k}"
+        )
+
+    def test_zero_match_emits_actionable_hint(self):
+        # Vector search returned plenty, but none from the scoped paper.
+        # The handler must NOT silently fall back to corpus-wide results
+        # — that would restore the original silent-leak bug.
+        store = self._FakeStore(
+            [
+                self._hit("other1", block_idx=1),
+                self._hit("other2", block_idx=2),
+            ]
+        )
+        out = self._handler()._search(
+            store, query="nanobuds", top_k=5, scope="sheka2011c"
+        )
+        # Must be an empty-with-explanation result, not a list of hits.
+        assert "No results" in out
+        assert "scope='sheka2011c'" in out
+        assert "sheka2011c" in out
+        # Hint must offer a concrete recovery path.
+        assert "search(query='nanobuds', type='paper')" in out
+        # And must NOT silently include the other papers' chunks.
+        for foreign in ("other1", "other2"):
+            assert foreign not in out
+
+    def test_unscoped_search_unchanged(self):
+        # Sanity: scope='' (or unset) behaves exactly as before — every
+        # hit is rendered without filtering.
+        store = self._FakeStore(
+            [
+                self._hit("alpha", block_idx=1),
+                self._hit("beta", block_idx=2),
+            ]
+        )
+        out = self._handler()._search(store, query="X", top_k=5)
+        assert "alpha" in out
+        assert "beta" in out
+        # No scope header noise on an unscoped search.
+        assert "scope=" not in out
+
+
+class TestScopeEndToEnd:
+    """The fix must reach the handler — guards against any future
+    reshuffling that drops `path` between server and ``_search_or_grep``.
+    """
+
+    def test_search_with_scope_invokes_handler_with_path(self, monkeypatch):
+        from precis import server
+
+        captured: dict[str, object] = {}
+
+        def fake_read(uri, **kwargs):
+            captured["uri"] = uri
+            captured.update(kwargs)
+            return "ok"
+
+        monkeypatch.setattr(server.tools, "read", fake_read)
+        out = server.search(
+            query="nanobuds", scope="sheka2011c", top_k=3
+        )
+        assert "ERROR [" not in out
+        # The URI carries the scope as the path component.
+        assert captured["uri"] == "paper:sheka2011c"
+        assert captured.get("query") == "nanobuds"
+        assert captured.get("top_k") == 3

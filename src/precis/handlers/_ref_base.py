@@ -287,13 +287,16 @@ class RefHandler(Handler):
                 return self._search_or_grep(store, query, top_k=top_k)
             return self._list_refs(store)
 
-        # Search mode (scoped to a ref).  ``grep`` inside a single ref
-        # falls back to ``_search_or_grep`` — for paper that means
-        # vector search scoped by the ref context; for other kinds the
-        # grep path returns corpus-wide matches, which is still useful
-        # for discovery and less surprising than silent vector hits.
+        # Search mode (scoped to a ref).  ``path`` here came from the
+        # caller's ``scope=`` and is the slug we must restrict the
+        # vector search to — passing it through fixes the silent
+        # cross-paper leak where ``search(scope='X', query='Y')`` was
+        # returning hits from any paper because the slug filter was
+        # dropped on the floor between server and handler.
         if query or grep:
-            return self._search_or_grep(store, query or grep, top_k=top_k)
+            return self._search_or_grep(
+                store, query or grep, top_k=top_k, scope=path
+            )
 
         # Collection-level views (``<scheme>:/<view>`` with no ref id).
         # Declared per-subclass via :attr:`collection_views`.  Dispatch
@@ -925,7 +928,13 @@ class RefHandler(Handler):
 
     # ── Search ───────────────────────────────────────────────────────
 
-    def _search_or_grep(self, store, query: str, top_k: int = 10) -> str:
+    def _search_or_grep(
+        self,
+        store,
+        query: str,
+        top_k: int = 10,
+        scope: str = "",
+    ) -> str:
         # Every ref-backed kind now participates in semantic search.
         # Historical note: before the corpus_id filter landed in the
         # PgVectorIndex (see acatome-store v5.1), non-paper kinds fell
@@ -936,10 +945,19 @@ class RefHandler(Handler):
         # distance.  We keep the grep fallback for missing embedder /
         # ANN backend (e.g. Chroma without the right config) so the
         # call still degrades gracefully to substring search.
+        #
+        # ``scope`` (April 2026 fix): when set, restrict semantic hits to
+        # blocks owned by that ref's slug.  Implemented as over-fetch +
+        # post-filter so it works on any backend that supports
+        # ``search_text`` regardless of whether it offers a slug index.
         try:
-            return self._search(store, query, top_k=top_k)
+            return self._search(store, query, top_k=top_k, scope=scope)
         except (ImportError, ModuleNotFoundError):
             log.info("Semantic search unavailable, falling back to keyword grep")
+            # Grep fallback: when scoped, restrict to that one ref's row
+            # in the list view; otherwise return the whole grep'd list.
+            if scope:
+                return self._list_refs(store, grep=scope)
             return self._list_refs(store, grep=query)
 
     def _search_with_grep(
@@ -1039,7 +1057,13 @@ class RefHandler(Handler):
         lines.append(f"  get(id='{fslug}/toc')  — structure")
         return "\n".join(lines)
 
-    def _search(self, store, query: str, top_k: int = 10) -> str:
+    def _search(
+        self,
+        store,
+        query: str,
+        top_k: int = 10,
+        scope: str = "",
+    ) -> str:
         # Scope the vector search to this handler's own corpus so
         # e.g. ``search(type='memory')`` returns only memory blocks.
         # Papers keep a None/explicit filter so an unscoped search
@@ -1048,10 +1072,56 @@ class RefHandler(Handler):
         kwargs: dict[str, object] = {"top_k": top_k}
         if self.corpus_id:
             kwargs["corpora"] = [self.corpus_id]
+
+        # When ``scope`` is set (came from the user's ``scope=`` arg,
+        # e.g. ``search(query='X', scope='wang2020state')``), over-fetch
+        # so enough hits survive the post-filter to fill ``top_k``.  5×
+        # is empirical, mirroring ``_search_with_grep``.  We can't push
+        # the slug filter down to ``search_text`` reliably across
+        # backends (pgvector index has it, Chroma does not), so the
+        # post-filter is the portable contract.
+        if scope:
+            kwargs["top_k"] = max(top_k * 5, 25)
+
         hits = store.search_text(query, **kwargs)
+
+        # Post-filter by scope.  ``hit['paper']['slug']`` is the
+        # canonical location; ``hit['metadata']['slug']`` is the
+        # fallback some backends populate.  Both must agree for a
+        # match because a stale/aliased slug would be confusing.
+        if scope:
+            hits = [
+                h
+                for h in hits
+                if (
+                    h.get("paper", {}).get("slug") == scope
+                    or h.get("metadata", {}).get("slug") == scope
+                )
+            ][:top_k]
+
         if not hits:
+            if scope:
+                # Specific zero-match: tell the caller exactly why and
+                # offer concrete recovery paths.  Do NOT fall back to a
+                # corpus-wide search — that would silently restore the
+                # old buggy behaviour.
+                return (
+                    f"No results for query={query!r} within "
+                    f"scope={scope!r}.\n"
+                    f"\nNext:\n"
+                    f"  get(id='{scope}')                    "
+                    f"— check the ref exists and read its overview\n"
+                    f"  search(query={query!r}, type='{self.scheme}') "
+                    f"— search the whole {self._ref_noun} corpus\n"
+                    f"  get(id='{scope}/toc')                "
+                    f"— browse the ref's structure"
+                )
             return f"No results for: {query}"
-        lines = [f"🔍 {len(hits)} results for: {query}", ""]
+
+        header = f"🔍 {len(hits)} results for: {query}"
+        if scope:
+            header += f"  (scope={scope!r})"
+        lines = [header, ""]
         for hit in hits:
             text = hit.get("text", "")
             distance = hit.get("distance", 0)
