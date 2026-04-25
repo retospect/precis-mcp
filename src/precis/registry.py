@@ -679,6 +679,44 @@ def _register_builtins() -> None:
             )
         )
 
+    # ── Phase 6d: gripe kind (filesystem-backed feedback log) ────────
+    # Always available (no DB, no API).  The point is that the gripe
+    # next-hint emitted on UNEXPECTED / TIMEOUT / UNAVAILABLE errors
+    # ("if this looks like a bug, gripe about it: put(type='gripe',
+    # text='…')") needs to ALWAYS resolve — anything less makes the
+    # error envelopes lie about what's available.
+
+    if _is_allowed("gripe"):
+        from precis.handlers.gripe import GripeHandler
+
+        _register_plugin(
+            Plugin(
+                name="gripe",
+                handler_cls=GripeHandler,
+                schemes=["gripe"],
+                write_policy="direct",
+                kinds=[
+                    KindSpec(
+                        name="gripe",
+                        description=(
+                            "Agent feedback log — append-only markdown "
+                            "at ~/.precis/gripes.md.  Use to record "
+                            "'this didn't work as advertised' or 'X "
+                            "would help here' notes when error envelopes "
+                            "suggest griping.  No DB, no API, no cost."
+                        ),
+                        cost_hint="free",
+                        examples=[
+                            "put(type='gripe', text='wang2020 has no body')",
+                            "put(type='gripe', text='…', tags=['ingestion'])",
+                            "get(type='gripe', id='/recent')  — last 20",
+                            "get(type='gripe', id='/all')     — every entry",
+                        ],
+                    )
+                ],
+            )
+        )
+
     # ── Phase 6: journal kinds (memory, conversation) ────────────────
     # Both are state-backed via acatome-store (corpus: memories /
     # conversations).  Gated on ImportError so a store-less install
