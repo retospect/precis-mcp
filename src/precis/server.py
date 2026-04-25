@@ -37,6 +37,7 @@ from precis.registry import (
     _format_error,
     add_startup_warning,
     invoke_handler,
+    resolve,
     resolve_alias,
     set_kinds_mask,
     visible_kinds,
@@ -53,7 +54,7 @@ _MULTI_ID_BUDGET = 6000
 
 
 def _split_sep(text: str) -> list[str]:
-    """Split text at the first selector separator (› or ~)."""
+    """Split text at the first selector separator (~ or legacy ›)."""
     import re as _re
 
     return _re.split(r"[" + _re.escape(_SEP_CHARS) + r"]", text, maxsplit=1)
@@ -163,7 +164,7 @@ def _to_uri(id: str, kind: str = "") -> str:
     if ext.lower() in _FILE_EXTENSIONS:
         return f"file:{id}"
     # Phase 5: classify DOI / arXiv / PMCID / ISBN / ISSN / slug.
-    # Selector suffix (``›chunk``, ``/view``) must ride along; strip for
+    # Selector suffix (``~chunk``, ``/view``) must ride along; strip for
     # classification, re-attach for the final URI.
     suffix = id[len(bare) :]
     classified = classify_paper_id(bare)
@@ -216,7 +217,7 @@ def _kind_from_uri(uri: str) -> str:
 # For these, commas are part of the input syntax (``calc:integrate(sin(x), x)``,
 # ``websearch:foo, bar baz``) and MUST NOT be treated as a batch
 # separator.  Ref-backed kinds (paper/doi/arxiv/memory/todo/…) keep the
-# comma-batch behaviour so ``get(id='slug1›5,slug2›9')`` still works.
+# comma-batch behaviour so ``get(id='slug1~5,slug2~9')`` still works.
 _NO_COMMA_SPLIT_KINDS: frozenset[str] = frozenset({
     "calc", "math", "plot",
     "websearch", "research", "think",
@@ -268,6 +269,11 @@ def _ambiguous_kind_error(
 ) -> str:
     """Render a ``KIND_UNKNOWN`` error for an ambiguous no-type call.
 
+    Appends ``[cost: free]`` so every error response in the server
+    carries a cost footer regardless of which path produced it — the
+    bare-call disambiguator bypasses ``Result.render()`` and would
+    otherwise drop the footer.
+
     The previous behaviour was to silently default to ``paper:`` whenever
     a caller omitted both ``type=`` and any disambiguating id/scope.
     That made it easy to, e.g. search todos but get paper results back
@@ -279,7 +285,7 @@ def _ambiguous_kind_error(
     """
     kinds = [k.spec.name for k in visible_kinds(verb)]
     ctx = CallContext(kind="", verb=verb, args=dict(args) if args else {})
-    return _format_error(
+    err = _format_error(
         ErrorCode.KIND_UNKNOWN,
         ctx,
         cause=cause,
@@ -290,6 +296,16 @@ def _ambiguous_kind_error(
             "stats() lists every kind currently available"
         ),
     )
+    # Phase 6c — record the call as an error in session stats so
+    # ``stats()`` reflects the true error rate.  Empty kind is
+    # intentional: this call never resolved to a concrete kind and
+    # charging it to a specific bucket would be misleading.
+    from precis.registry import record_call as _record_call
+
+    _record_call("", "free", errored=True)
+    # Cost-footer parity with every other error path (Phase 6b): no
+    # handler was dispatched, so cost is ``free``.
+    return f"{err}\n\n[cost: free]"
 
 
 def _dispatch(
@@ -333,23 +349,59 @@ def _dispatch(
         ctx = CallContext(
             kind=kind, verb=verb, args=dict(args) if args else {}
         )
+
+        from precis.registry import record_call as _record_call
+
+        def _finalise(err_str: str) -> str:
+            # The unknown-kind path bypasses ``Result.render()`` so we
+            # apply the same finalisation here: stamp the cost footer
+            # (Phase 6b) AND record the call as an error in session
+            # stats (Phase 6c).  Without these, agents lost both cost
+            # accounting and error-rate visibility for unknown-scheme
+            # calls.  The kind has no KindSpec so we use the
+            # conservative ``free`` default — no handler ran, no API
+            # was billed.
+            _record_call(kind, "free", errored=True)
+            return f"{err_str}\n\n[cost: free]"
+
         try:
             return call()
         except PrecisError as exc:
-            return _format_error(
-                exc.code,
-                ctx,
-                cause=exc.cause or str(exc),
-                options=list(exc.options) if exc.options else None,
-                next_hint=exc.next,
+            return _finalise(
+                _format_error(
+                    exc.code,
+                    ctx,
+                    cause=exc.cause or str(exc),
+                    options=list(exc.options) if exc.options else None,
+                    next_hint=exc.next,
+                )
             )
         except Exception as exc:
-            return _format_error(
-                ErrorCode.UNEXPECTED,
-                ctx,
-                cause=f"{type(exc).__name__}: {exc}",
+            return _finalise(
+                _format_error(
+                    ErrorCode.UNEXPECTED,
+                    ctx,
+                    cause=f"{type(exc).__name__}: {exc}",
+                )
             )
-    handler = registered.handler_cls()
+    # Resolve the SAME cached handler instance that ``tools.read`` /
+    # ``tools.put`` will use inside ``call``.  Constructing a fresh
+    # ``registered.handler_cls()`` here would defeat the per-process
+    # memoisation in ``_SCHEME_INSTANCES`` (warm DB pools, lazy HTTP
+    # clients, parsed indexes — see registry.py:62-77) and would split
+    # ``handler.hints()`` / ``handler.cost_of()`` invocations onto a
+    # different object than the one that actually ran the call.
+    #
+    # Strategy: every plugin registers its canonical kind name as one
+    # of its ``schemes`` (see ``_register_plugin``), so ``resolve(kind,
+    # "")`` is guaranteed to land on the cached handler for v2 plugins.
+    # The bare ``except`` falls back to a fresh instance for legacy
+    # plugins that bend the convention — better to lose the cache than
+    # crash the dispatch.
+    try:
+        handler = resolve(kind, "")
+    except Exception:
+        handler = registered.handler_cls()
     result = invoke_handler(kind, verb, handler, call, args=args)
     return result.render()
 
@@ -502,7 +554,7 @@ def get(
 ) -> str:
     """Read content by identifier.
 
-    id:    identifier (selector ›N, view /V, subview /V/S)
+    id:    identifier (selector ~N, view /V, subview /V/S)
     grep:  filter — plain text, /regex/, /regex/i
     depth: heading depth (0=all, 1=H1, 2=H1+H2)
     type:  kind name — REQUIRED for bare slugs.  Accepted: paper,
@@ -511,8 +563,8 @@ def get(
 
     Papers (bare slugs need type='paper' or scheme prefix):
       get(type='paper', id='ni2024atomic')          — overview
-      get(type='paper', id='ni2024atomic›38')       — chunk 38
-      get(type='paper', id='ni2024atomic›38..42')   — chunk range
+      get(type='paper', id='ni2024atomic~38')       — chunk 38
+      get(type='paper', id='ni2024atomic~38..42')   — chunk range
       get(type='paper', id='ni2024atomic/toc')      — chunk index
       get(type='paper', id='ni2024atomic/abstract') — abstract
       get(type='paper', id='ni2024atomic/cite/bib') — BibTeX
@@ -524,7 +576,7 @@ def get(
 
     Files (extension auto-classifies — no type= needed):
       get(id='report.docx')                 — DOCX TOC
-      get(id='report.docx›PLXDX')           — paragraph by slug
+      get(id='report.docx~PLXDX')           — paragraph by slug
       get(id='report.docx', grep='methods') — grep
       get(id='report.docx', depth=2)        — outline only
 
@@ -656,18 +708,22 @@ def put(
     tracked: bool = True,
     note: str = "",
     link: str = "",
+    unlink: str = "",
     type: str = "",
     tags: list[str] | None = None,
     archive: bool | None = None,
 ) -> str:
     """Write, annotate, or delete content.
 
-    id: target identifier (file›slug for docs, paper slug for notes)
+    id: target identifier (file~slug for docs, paper slug for notes)
     text: content to write.
     mode: append / replace / after / before / delete / comment / note
     tracked: DOCX track-changes (default true). LaTeX: ignored.
     note: annotation text — creates a note on the target ref or block.
     link: link spec as 'target_slug:relation' — creates a typed link.
+    unlink: link spec as 'target_slug[:relation]' — deletes outbound
+            links to that target (any relation when unspecified).  Dual
+            of link=; works on every state-backed kind.
     tags: list[str] — ref kinds that accept it (todo, memory). Forwarded only when non-None.
     archive: bool — web: kind, archive to web.archive.org on capture (default on; private URLs never archived).
 
@@ -681,19 +737,19 @@ def put(
       put(id='report.docx', text='## Methods', mode='append')
       put(id='report.docx', text='First paragraph.', mode='append')
 
-    EDIT existing content → mode='replace' (requires ›SLUG in id):
-      put(id='report.docx›PLXDX', text='Revised.', mode='replace')
-      put(id='report.docx›PLXDX', text='New para.', mode='after')
-      put(id='report.docx›PLXDX', mode='delete')
-      put(id='report.docx›PLXDX', text='Fix this.', mode='comment')
+    EDIT existing content → mode='replace' (requires ~SLUG in id):
+      put(id='report.docx~PLXDX', text='Revised.', mode='replace')
+      put(id='report.docx~PLXDX', text='New para.', mode='after')
+      put(id='report.docx~PLXDX', mode='delete')
+      put(id='report.docx~PLXDX', text='Fix this.', mode='comment')
 
-    Citations (DOCX): [@slug] in text — NEVER [slug›chunk].
-      ✓ [@piscopo2020strategies]  ✗ [piscopo2020strategies›54]
+    Citations (DOCX): [@slug] in text — NEVER [slug~chunk].
+      ✓ [@piscopo2020strategies]  ✗ [piscopo2020strategies~54]
       Define: put(id='report.docx', text='[@slug]: Author, Title, 2024.', mode='append')
 
     Notes (on any ref or block):
       put(id='ni2024atomic', note='Key finding about MOFs')
-      put(id='ni2024atomic›38', note='Important result here')
+      put(id='ni2024atomic~38', note='Important result here')
 
     Links (between refs or blocks):
       put(id='ni2024atomic', link='jones2023surface:cites')
@@ -741,6 +797,7 @@ def put(
             tracked=tracked,
             note=note,
             link=link,
+            unlink=unlink,
             **extra,
         ),
         args={"id": id, "mode": mode},
@@ -755,8 +812,8 @@ def move(
 ) -> str:
     """Reorder nodes within a document.
 
-    id: doc.docx›SLUG or doc.docx›SLUG1,SLUG2 to move
-    after: doc.docx›SLUG — moved nodes placed after this node
+    id: doc.docx~SLUG or doc.docx~SLUG1,SLUG2 to move
+    after: doc.docx~SLUG — moved nodes placed after this node
     type: optional kind name (aliases accepted).
 
     Slugs don't change. Paths are recomputed.
@@ -842,11 +899,15 @@ def stats() -> str:
     session = get_session_stats()
     if session:
         lines.append("session:")
-        # Sort by kind name so output is stable across runs.
+        # Sort by kind name so output is stable across runs.  The
+        # empty-kind bucket is reserved for bare-call ambiguous-kind
+        # errors that never resolved to a concrete handler — render it
+        # as ``(no-kind)`` rather than an ugly blank.
         for name in sorted(session):
             s = session[name]
+            display_name = name or "(no-kind)"
             lines.append(
-                f"  {name:<8} calls={s.calls}  errors={s.errors}  "
+                f"  {display_name:<10} calls={s.calls}  errors={s.errors}  "
                 f"last_cost={s.last_cost}"
             )
     else:

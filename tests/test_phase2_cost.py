@@ -164,6 +164,42 @@ class TestInvokeHandlerCostAndStats:
         rendered = result.render()
         assert rendered.rstrip().endswith("[cost: free]")
 
+    def test_render_always_emits_footer_on_unexpected_error(self):
+        # Phase 6b: error responses must carry the cost footer too.
+        # Without it, agents counting session cost from response strings
+        # silently dropped every failed call.  The bug was visible on
+        # every Wolfram / Perplexity error path — the API charged but
+        # the response had no ``[cost: …]`` line.
+        h = _EchoHandler()
+        result = invoke_handler(
+            "paper",
+            "get",
+            h,
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+            args={"id": "x"},
+        )
+        rendered = result.render()
+        # Must contain the error envelope AND a cost footer.
+        assert "ERROR [unexpected]" in rendered
+        assert rendered.rstrip().endswith("[cost: free]")
+
+    def test_render_always_emits_footer_on_precis_error(self):
+        from precis.protocol import PrecisError, ErrorCode
+
+        h = _EchoHandler()
+        result = invoke_handler(
+            "paper",
+            "get",
+            h,
+            lambda: (_ for _ in ()).throw(
+                PrecisError(ErrorCode.ID_NOT_FOUND, cause="missing")
+            ),
+            args={"id": "x"},
+        )
+        rendered = result.render()
+        assert "ERROR [id_not_found]" in rendered
+        assert rendered.rstrip().endswith("[cost: free]")
+
 
 # ---------------------------------------------------------------------------
 # Server tool dispatch — tools go through _dispatch, every response footed
@@ -230,6 +266,52 @@ class TestServerDispatchFooter:
         # Three calls on 'paper' kind — canonical for all three.
         assert stats["paper"].calls == 3
         assert stats["paper"].last_cost == "free"
+
+    def test_ambiguous_search_error_emits_cost_footer(self):
+        # Phase 6b: bare ``search()`` with no type/scope hits the
+        # ``_ambiguous_kind_error`` path which previously bypassed
+        # ``Result.render()`` and dropped the cost footer.
+        out = server.search(query="anything")
+        assert "ERROR [kind_unknown]" in out
+        assert "[cost: free]" in out
+
+    def test_ambiguous_get_error_emits_cost_footer(self):
+        out = server.get(id="bareslug")
+        assert "ERROR [kind_unknown]" in out
+        assert "[cost: free]" in out
+
+    def test_unknown_scheme_get_error_emits_cost_footer(self):
+        # ``banana:test`` has a scheme, but ``banana`` isn't a real kind.
+        # This goes through a different path than the ambiguous case.
+        out = server.get(id="banana:test")
+        assert "[cost: free]" in out
+
+    def test_ambiguous_kind_error_records_error_count(self):
+        # Phase 6c — the bare-call ambiguous-kind path bypasses
+        # ``invoke_handler`` and previously didn't increment the
+        # session error counter, hiding error-rate from ``stats()``.
+        clear_session_stats()
+        server.search(query="anything")
+        server.get(id="bareslug")
+        stats = get_session_stats()
+        # Errors land in the empty-kind bucket because the call never
+        # resolved to a concrete kind.
+        assert "" in stats, f"expected empty-kind bucket, got {list(stats)!r}"
+        assert stats[""].calls == 2
+        assert stats[""].errors == 2
+
+    def test_unknown_scheme_error_records_error_count(self):
+        # ``banana:test`` looks like a scheme-prefixed URI but ``banana``
+        # isn't a registered scheme, so ``_has_identifier_hint`` returns
+        # False and it routes to the same ambiguous-kind path as a bare
+        # slug.  Both flavours land in the empty-kind bucket; the point
+        # of this test is that the error counter is bumped (it wasn't
+        # before Phase 6c).
+        clear_session_stats()
+        server.get(id="banana:test")
+        stats = get_session_stats()
+        assert "" in stats
+        assert stats[""].errors == 1
 
 
 # ---------------------------------------------------------------------------

@@ -433,7 +433,7 @@ def _register_builtins() -> None:
                             cost_hint="free",
                             examples=[
                                 "get(id='paper.tex')",
-                                "get(id='paper.tex›S2.1')",
+                                "get(id='paper.tex~S2.1')",
                                 "put(id='paper.tex', text='\\\\section{Methods}', mode='append')",
                             ],
                         )
@@ -1496,7 +1496,7 @@ def _enrich_error(
         elif code == ErrorCode.ID_AMBIGUOUS:
             next_hint = "disambiguate with an exact slug or fully-qualified id"
         elif code == ErrorCode.ID_MALFORMED:
-            next_hint = "ids look like '<scheme>:<slug>' or '<scheme>:<slug>›<block>'"
+            next_hint = "ids look like '<scheme>:<slug>' or '<scheme>:<slug>~<block>'"
         elif code == ErrorCode.KIND_UNAVAILABLE:
             # If the handler declares an install_extra, suggest it.
             registered = KINDS.get(kind) if kind else None
@@ -1674,9 +1674,14 @@ def invoke_handler(
         Error calls still count toward session stats (so ``/stats`` shows
         error-rate alongside cost).  Cost uses the static-fallback path —
         we never asked the handler for a per-call cost because it crashed.
+        The same cost is forwarded to ``Result.err`` so the response
+        footer surfaces ``[cost: …]`` on errors too — without it, agents
+        counting session cost from response strings silently dropped
+        every failed call.
         """
-        record_call(kind, cost_hint_for(kind, None), errored=True)
-        return Result.err(err_str)
+        cost = cost_hint_for(kind, None)
+        record_call(kind, cost, errored=True)
+        return Result.err(err_str, kind=kind, cost=cost)
 
     try:
         raw = handler_fn()

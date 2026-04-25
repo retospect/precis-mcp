@@ -325,30 +325,57 @@ class Result:
         )
 
     @classmethod
-    def err(cls, error: str) -> Result:
-        """Construct an error result carrying a pre-formatted error string."""
-        return cls(success=False, error=error)
+    def err(
+        cls,
+        error: str,
+        *,
+        kind: str = "",
+        cost: str | None = None,
+    ) -> Result:
+        """Construct an error result carrying a pre-formatted error string.
+
+        ``cost`` is preserved through to ``render()`` so error responses
+        emit the same ``[cost: …]`` footer as success responses.  This
+        matters because:
+
+        - Paid backends (Wolfram, Perplexity) charge for failed calls
+          too — the agent still needs to see the cost line to keep
+          session accounting honest.
+        - Without the footer the agent has no signal that the call ran
+          at all; it can't distinguish "the kind isn't installed" from
+          "the kind ran but failed" by looking at the response shape.
+        """
+        return cls(success=False, error=error, kind=kind, cost=cost)
 
     def render(self) -> str:
         """Flatten to the final agent-visible string.
 
-        On failure: just the error string.  On success: the handler's
-        result, followed by a ``Hints:`` block if any, then a cost footer
-        if non-empty.  Matches the response-footer format in §11.
+        On both success and failure: handler data (or error string),
+        optional ``Hints:`` block (success only — error paths don't
+        produce hints), then a ``[cost: …]`` footer when ``cost`` is
+        set.  Matches the response-footer format in §11.
+
+        Cost on error matters: failed Wolfram / Perplexity calls still
+        charged the API.  Dropping the footer on errors silently
+        misled the session-cost counter for any agent counting cost
+        from response strings.
         """
-        if not self.success:
-            return self.error
         parts: list[str] = []
-        # Handler data — already a string for v1 handlers; pass through.
-        if isinstance(self.data, str):
-            parts.append(self.data)
-        elif self.data is not None:
-            parts.append(str(self.data))
-        if self.hints:
-            parts.append("")
-            parts.append("Hints:")
-            for h in self.hints:
-                parts.append(f"  - {h}")
+        if self.success:
+            # Handler data — already a string for v1 handlers; pass through.
+            if isinstance(self.data, str):
+                parts.append(self.data)
+            elif self.data is not None:
+                parts.append(str(self.data))
+            if self.hints:
+                parts.append("")
+                parts.append("Hints:")
+                for h in self.hints:
+                    parts.append(f"  - {h}")
+        else:
+            # Error path — the formatted multi-line ``ERROR [<code>]: …``
+            # envelope is already in ``self.error``.
+            parts.append(self.error)
         if self.cost:
             parts.append("")
             parts.append(f"[cost: {self.cost}]")
