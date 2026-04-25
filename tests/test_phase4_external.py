@@ -12,6 +12,7 @@ so it stays off in CI.
 from __future__ import annotations
 
 import os
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -270,6 +271,28 @@ class TestFormatResult:
         assert "## Junk" in out
         assert "real" in out
 
+    def test_single_subpod_as_dict_extracted(self):
+        """Regression: ``xmltodict`` collapses a one-element ``<subpod>``
+        list into a dict (not a one-element list).  The Wolfram API
+        returns this shape for the common ``2+2`` style answer where a
+        pod has exactly one subpod, so the formatter must coerce dict
+        → [dict] rather than iterating dict keys (which yielded
+        strings, all silently skipped, producing the empty
+        "no displayable text" output observed in production).
+        """
+        res = MagicMock()
+        res.success = True
+        res.pods = [
+            {
+                "@title": "Result",
+                "subpod": {"plaintext": "4"},  # dict, not list
+            }
+        ]
+        out = _format_result(res, "2+2")
+        assert "## Result" in out
+        assert "4" in out
+        assert "no displayable text" not in out
+
 
 class TestMathHandler:
     def test_missing_env_raises_kind_unavailable(self, monkeypatch):
@@ -308,17 +331,26 @@ class TestMathHandler:
             )
         assert exc.value.code == ErrorCode.PARAM_INVALID
 
-    def test_read_forwards_to_client_query(self, monkeypatch):
+    def test_read_forwards_to_run_query(self, monkeypatch):
         monkeypatch.setenv("WOLFRAM_APP_ID", "stub")
         h = MathHandler()
-        mock_client = MagicMock()
+        h._client = MagicMock()
+
         fake_res = MagicMock()
         fake_res.success = True
         fake_res.pods = [
             {"@title": "Result", "subpod": [{"plaintext": "4"}]},
         ]
-        mock_client.query.return_value = fake_res
-        h._client = mock_client
+        captured: dict[str, Any] = {}
+
+        def _fake_run_query(client, expression):
+            captured["client"] = client
+            captured["expression"] = expression
+            return fake_res
+
+        monkeypatch.setattr(
+            "precis.handlers.math._run_query", _fake_run_query
+        )
 
         out = h.read(
             path="2+2",
@@ -330,15 +362,21 @@ class TestMathHandler:
             depth=0,
             page=1,
         )
-        mock_client.query.assert_called_once_with("2+2")
+        assert captured["expression"] == "2+2"
+        assert captured["client"] is h._client
         assert "4" in out
 
     def test_upstream_exception_raised_as_upstream_error(self, monkeypatch):
         monkeypatch.setenv("WOLFRAM_APP_ID", "stub")
         h = MathHandler()
-        mock_client = MagicMock()
-        mock_client.query.side_effect = RuntimeError("network down")
-        h._client = mock_client
+        h._client = MagicMock()
+
+        def _boom(client, expression):
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(
+            "precis.handlers.math._run_query", _boom
+        )
 
         with pytest.raises(PrecisError) as exc:
             h.read(
@@ -352,6 +390,96 @@ class TestMathHandler:
                 page=1,
             )
         assert exc.value.code == ErrorCode.UPSTREAM_ERROR
+
+    def test_read_works_inside_running_event_loop(self, monkeypatch):
+        """Regression: ``wolframalpha.Client.query`` calls
+        :func:`asyncio.run` internally, which raises when invoked
+        inside an active loop (the MCP server's runtime).  We bypass
+        the broken upstream method entirely; this test asserts that
+        ``read`` succeeds while a loop is already running.
+        """
+        import asyncio
+
+        monkeypatch.setenv("WOLFRAM_APP_ID", "stub")
+
+        fake_res = MagicMock()
+        fake_res.success = True
+        fake_res.pods = [{"@title": "Result", "subpod": [{"plaintext": "4"}]}]
+        monkeypatch.setattr(
+            "precis.handlers.math._run_query",
+            lambda client, expr: fake_res,
+        )
+
+        h = MathHandler()
+        h._client = MagicMock()
+
+        async def _drive():
+            return h.read(
+                path="2+2",
+                selector=None,
+                view=None,
+                subview=None,
+                query="",
+                summarize=False,
+                depth=0,
+                page=1,
+            )
+
+        out = asyncio.run(_drive())
+        assert "4" in out
+        assert "wolframalpha.com" in out
+
+    def test_run_query_handles_real_world_content_type(self, monkeypatch):
+        """Regression: upstream ``aquery`` asserts the response
+        Content-Type matches ``'text/xml;charset=utf-8'`` (no space),
+        but the real Wolfram API returns ``'text/xml; charset=utf-8'``
+        (with a space).  Our ``_run_query`` must not impose that
+        assertion — it just parses the body.
+        """
+        from precis.handlers import math as math_handler
+
+        captured_url: dict[str, str] = {}
+
+        sample_xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<queryresult success="true" error="false" numpods="1">'
+            b'<pod title="Result"><subpod><plaintext>4</plaintext>'
+            b"</subpod></pod></queryresult>"
+        )
+
+        class _FakeResponse:
+            status_code = 200
+            content = sample_xml
+            text = sample_xml.decode()
+            headers = {"Content-Type": "text/xml; charset=utf-8"}
+
+        class _FakeHttpClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, params=None):
+                captured_url["url"] = url
+                captured_url["appid"] = dict(params).get("appid")
+                return _FakeResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "Client", _FakeHttpClient)
+
+        client = MagicMock()
+        client.app_id = "STUB-APPID"
+        client.url = "https://api.wolframalpha.com/v2/query"
+
+        res = math_handler._run_query(client, "2+2")
+        assert res.success is True
+        assert captured_url["url"] == "https://api.wolframalpha.com/v2/query"
+        assert captured_url["appid"] == "STUB-APPID"
 
 
 # ---------------------------------------------------------------------------

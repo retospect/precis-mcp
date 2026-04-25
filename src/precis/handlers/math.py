@@ -122,13 +122,60 @@ class MathHandler(Handler):
             )
         client = self._get_client()
         try:
-            res = client.query(expression)
+            res = _run_query(client, expression)
+        except PrecisError:
+            raise
         except Exception as exc:
             raise PrecisError(
                 ErrorCode.UPSTREAM_ERROR,
                 f"Wolfram Alpha API error: {exc}",
             ) from exc
         return _format_result(res, expression)
+
+
+def _run_query(client: Any, expression: str) -> Any:
+    """Fetch + parse a Wolfram Alpha query, bypassing ``Client.query``.
+
+    The upstream :pypi:`wolframalpha` client (v5.x) has two bugs that
+    prevent its ``query()`` method from working inside the precis MCP
+    server runtime:
+
+    1. ``Client.query`` wraps ``aquery`` with :func:`asyncio.run`, which
+       raises ``RuntimeError`` ("asyncio.run() cannot be called from a
+       running event loop") whenever the handler is dispatched from
+       inside FastMCP's active event loop.
+    2. ``aquery`` asserts ``resp.headers['Content-Type'] ==
+       'text/xml;charset=utf-8'`` (no space), but the real Wolfram API
+       returns ``'text/xml; charset=utf-8'`` (with a space), so even
+       absent (1) the call raises a bare :class:`AssertionError` with
+       no message.
+
+    We therefore make the HTTP request ourselves with a synchronous
+    :class:`httpx.Client` (no event loop, no asyncio dance) and reuse
+    only the library's XML postprocessor (``Document.make``) to keep
+    output parity with the original wolfravant-mcp formatter.
+
+    ``client`` is the :class:`wolframalpha.Client` instance only for
+    its ``app_id`` and ``url`` attributes; tests can substitute a
+    stub with the same two attributes.
+    """
+    import httpx
+    import multidict
+    import xmltodict
+    from wolframalpha import Document
+
+    app_id = client.app_id
+    url = client.url
+    params = multidict.MultiDict(appid=app_id, input=expression)
+    with httpx.Client(timeout=30.0) as http:
+        resp = http.get(url, params=params)
+    if resp.status_code != 200:
+        raise PrecisError(
+            ErrorCode.UPSTREAM_ERROR,
+            f"Wolfram Alpha HTTP {resp.status_code}: {resp.text[:200]}",
+        )
+    doc = xmltodict.parse(resp.content, postprocessor=Document.make)
+    return doc["queryresult"]
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +217,20 @@ def _format_result(res: Any, query: str) -> str:
 
     sections: list[str] = []
     for pod in res.pods:
-        title = pod.get("@title", "Result")
+        title = pod.get("@title") or pod.get("title") or "Result"
+        # ``xmltodict`` collapses single-child elements to a dict (not a
+        # one-element list), so ``pod['subpod']`` is a dict when the pod
+        # has exactly one subpod and a list when it has many.  Normalise
+        # to a list so the iteration below works in both shapes.
+        raw_subpods = pod.get("subpod", [])
+        if isinstance(raw_subpods, dict):
+            subpods: list[Any] = [raw_subpods]
+        elif isinstance(raw_subpods, list):
+            subpods = raw_subpods
+        else:
+            subpods = []
         texts: list[str] = []
-        for sub in pod.get("subpod", []):
+        for sub in subpods:
             if isinstance(sub, str):
                 continue
             plaintext = sub.get("plaintext")

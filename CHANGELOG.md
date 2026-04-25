@@ -1,5 +1,41 @@
 # Changelog
 
+## 5.2.3
+
+Bug-fix release for the `math:` Wolfram Alpha handler.  Three
+upstream + local bugs combined to make every live query fail.
+
+### Fixed
+
+- **`asyncio.run()` cannot be called from a running event loop.**
+  Upstream `wolframalpha.Client.query` (v5.x) wraps the async fetch
+  with `asyncio.run`, which raises inside FastMCP's event loop.  We
+  now bypass `Client.query` entirely and issue the HTTP GET via a
+  synchronous `httpx.Client` (no event loop needed).
+- **Empty `Wolfram Alpha API error:` from over-strict content-type
+  assert.** Upstream `aquery` asserts `Content-Type ==
+  'text/xml;charset=utf-8'` (no space) but the real Wolfram API
+  returns `'text/xml; charset=utf-8'` (with a space), raising a bare
+  `AssertionError` with no message.  Our direct fetch path simply
+  doesn't impose that assertion.
+- **Single-subpod pods silently dropped from output.** `xmltodict`
+  collapses a one-element `<subpod>` list to a dict, but the
+  formatter's `for sub in pod.get("subpod", [])` then iterated dict
+  keys (strings) and skipped them all, producing the empty
+  "Query succeeded but returned no displayable text" output for
+  basic queries like `2+2`.  The formatter now coerces single-dict
+  shapes to a one-element list.
+
+### Tests
+
+- Added regression tests for all three bugs in
+  `tests/test_phase4_external.py`:
+  `test_read_works_inside_running_event_loop`,
+  `test_run_query_handles_real_world_content_type`,
+  `test_single_subpod_as_dict_extracted`.
+- Live smoke tests (`PRECIS_TEST_WOLFRAM_LIVE=1`) all pass against
+  the real API.
+
 ## 5.2.0
 
 New kind `rmk:` — push PDFs and EPUBs to a reMarkable e-ink reader
