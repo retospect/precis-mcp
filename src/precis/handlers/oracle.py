@@ -29,8 +29,8 @@ Agent usage::
     get(id='oracle:')                    — list traditions in corpus
     get(id='oracle:iching')              — I-Ching tradition overview
     get(id='oracle:iching/toc')          — list all 64 hexagrams
-    get(id='oracle:iching/12')           — hexagram 12 (chunk 12)
-    get(id='oracle:iching/12..16')       — range
+    get(id='oracle:iching~12')           — hexagram 12 (chunk 12)
+    get(id='oracle:iching~12..16')       — range
     search(q='waiting', type='oracle')   — across all traditions
     search(q='waiting', type='oracle', tag='i-ching')
     random:?corpus=oracle&tag=stoic      — one stoic chunk
@@ -203,10 +203,10 @@ class OracleHandler(RefHandler):
 
         lines.append("Browse:")
         lines.append(f"  get(id='{slug}/toc')          — list every entry")
-        lines.append(f"  get(id='{slug}/0')            — read first entry")
+        lines.append(f"  get(id='{slug}~0')            — read first entry")
         if n_entries > 1:
             lines.append(
-                f"  get(id='{slug}/0..{min(n_entries - 1, 9)}') "
+                f"  get(id='{slug}~0..{min(n_entries - 1, 9)}') "
                 "         — range"
             )
         tradition_tag = next(
@@ -435,7 +435,7 @@ class OracleHandler(RefHandler):
             f"🔮 oracle: appended to {slug} as chunk ›{next_idx}\n"
             f"   {chunk_label}\n\n"
             f"Next:\n"
-            f"  get(id='{slug}/{next_idx}')         — read this entry\n"
+            f"  get(id='{slug}~{next_idx}')         — read this entry\n"
             f"  get(id='{slug}/toc')                — full tradition TOC"
         )
 

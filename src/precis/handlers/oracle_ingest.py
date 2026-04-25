@@ -54,12 +54,22 @@ log = logging.getLogger(__name__)
 def _bundled_oracle_dir() -> Path | None:
     """Return the path to the bundled ``data/oracle/`` directory.
 
-    Looked up relative to this module — works for both editable
-    installs (where ``data/`` sits next to ``src/``) and (in
-    principle) wheels that include the data files.
+    The canonical location is ``src/precis/data/oracle/`` (in-package),
+    which means it ships inside the wheel.  Resolved relative to this
+    module:
+
+    - Editable install: ``<repo>/src/precis/handlers/oracle_ingest.py``
+      → ``parents[1]`` is ``<repo>/src/precis/``
+    - Built wheel: ``<site-packages>/precis/handlers/oracle_ingest.py``
+      → ``parents[1]`` is ``<site-packages>/precis/``
+
+    Both paths resolve to ``parents[1] / "data" / "oracle"``.
     """
     here = Path(__file__).resolve()
     candidates = [
+        # Canonical: data/ inside the package tree (ships with wheel).
+        here.parents[1] / "data" / "oracle",
+        # Legacy: data/ at the repo root (pre-5.2.1 layout).
         here.parents[3] / "data" / "oracle",
         here.parents[2] / "data" / "oracle",
     ]

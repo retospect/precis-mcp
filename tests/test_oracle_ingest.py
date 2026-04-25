@@ -146,9 +146,10 @@ class TestDryRunIngest:
         d = _bundled_oracle_dir()
         agg = ingest_directory(d, dry_run=True)
         assert agg["errors"] == 0
-        assert agg["files"] == 8
-        # 64 + 12 + 6 + 6 + 3 + 4 + 6 + 2 + 3 = 100
-        assert agg["chunks"] == 100
+        assert agg["files"] == 9
+        # iching=64, buddhist=52, proverbs-euro=40, chengyu=29,
+        # engineering=21, zen=18, stoic=15, talmudic=14, irish=3 = 256
+        assert agg["chunks"] == 256
 
     def test_directory_dry_run_per_file(self):
         d = _bundled_oracle_dir()
@@ -156,7 +157,7 @@ class TestDryRunIngest:
         per = agg["per_file"]
         # File order is sorted alphabetically.
         assert per["iching.yaml"]["chunks"] == 64
-        assert per["chengyu.yaml"]["chunks"] == 12
+        assert per["chengyu.yaml"]["chunks"] == 29
 
     def test_custom_yaml(self, tmp_path):
         # Build a minimal custom paper and confirm it parses + writes.

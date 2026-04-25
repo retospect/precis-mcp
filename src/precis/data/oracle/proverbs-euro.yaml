@@ -1,0 +1,373 @@
+slug: proverbs-euro
+title: European Proverbs
+description: >-
+  European proverbs.  English and continental folk-wisdom — compounding,
+  prevention, signal-from-failure, and the cost of premature optimisation by
+  another name.
+tags:
+  - proverbs
+entries:
+  - title: A stitch in time saves nine
+    lang: en
+    body: >-
+      Small interventions early prevent disproportionate work later. The cost
+      curve of fixing things is steep — what's a stitch now is a re-tailoring
+      next week.  When you spot the early thread, pull it.
+
+  - title: Rome wasn't built in a day
+    lang: en
+    body: >-
+      Substantial things compound from many small contributions over time.
+      Plans that require everything to happen at once mostly don't ship.  Plan
+      for steady accretion, not heroic sprints — the latter only finish the
+      last 10%.
+
+  - title: Every cloud has a silver lining
+    lang: en
+    body: >-
+      Negative outcomes contain information that positive outcomes hide.  When
+      something fails, ask what it now lets you know that you didn't before.
+      The cost of the lesson is the price of the cloud; the lesson is the
+      silver.
+
+  - title: Actions speak louder than words
+    lang: en
+    body: >-
+      What people do reveals what they actually believe.  Stated values and
+      lived values often diverge — and when they do, the lived ones win.
+      Calibrate your read of others (and of yourself) on the actions, not the
+      press release.
+
+  - title: Don't judge a book by its cover
+    lang: en
+    body: >-
+      First impressions are noisy.  Slow your judgement when the cost of being
+      wrong is high — interview, sample, ask a second question.  When the cost
+      is low, snap judgement is fine; budget your scrutiny by stakes.
+
+  - title: Necessity is the mother of invention
+    lang: en
+    body: >-
+      Constraints generate ideas that abundance suppresses.  When you have
+      unlimited time, money, or computing, the obvious solution wins by default;
+      when you don't, you find the better one.  Self-impose constraints when
+      stuck.
+
+  - title: Prevention is better than cure
+    lang: en
+    note: >-
+      Traces to a Latin saying c. 1240; first English rendering in Thomas
+      Adams's Works (1630).
+    body: >-
+      The cost of stopping a problem before it starts is almost always lower
+      than the cost of repairing it after.  "An ounce of prevention is worth a
+      pound of cure" — the ratio embedded in the proverb is not metaphorical;
+      it is roughly accurate.  Invest in the firebreak, not the fire-engine.
+
+  - title: Slow and steady wins the race
+    lang: en
+    note: >-
+      From Aesop's fable of the Tortoise and the Hare; the proverb form was
+      standardised in English by the early 19th century.
+    body: >-
+      Consistent, moderate output beats high-variance sprints over any long
+      horizon.  The hare's mistake was not speed — it was treating a long race
+      as a short one.  Calibrate your pace to the distance, not the adrenaline
+      of the starting line.
+
+  - title: Don't count your chickens before they hatch
+    lang: en
+    body: >-
+      A probable outcome is not yet a real one.  Decisions made on anticipated
+      resources that haven't yet arrived compound badly when the resources
+      don't.  Keep options open until the egg is broken; until then, plan for
+      multiple scenarios.
+
+  - title: Haste makes waste
+    lang: en
+    body: >-
+      Speed achieved by skipping steps rarely saves time net — the rework cost
+      exceeds the shortcut's gain.  The optimum pace is rarely the maximum
+      pace.  The question to ask before accelerating is not "how fast can we
+      go?" but "what breaks if we go this fast?"
+
+  - title: A bird in the hand is worth two in the bush
+    lang: en
+    body: >-
+      Certain value held now is typically worth more than larger uncertain value
+      in prospect, especially when the cost of losing the certain value is high.
+      This is not risk-aversion for its own sake — it is correct accounting of
+      optionality.  Know what you'd have to give up to reach the bush.
+
+  - title: You can't make an omelette without breaking eggs
+    lang: en
+    body: >-
+      Transformation has entry costs that cannot be negotiated away.  The error
+      is not paying the cost — it is being surprised by it, or resenting it
+      mid-way through.  Decide before you crack the first egg whether the
+      omelette is worth making.
+
+  - title: "Petit à petit, l'oiseau fait son nid"
+    lang: fr
+    translation: Little by little, the bird builds its nest.
+    body: >-
+      Compounding is the correct mental model for almost every large outcome.
+      The nest is not built in a single session; it is built in many small
+      sessions that each seem trivially insufficient.  The failure mode is
+      stopping during the period when the work looks like nothing yet.
+
+  - title: "Rien ne sert de courir, il faut partir à point"
+    lang: fr
+    translation: There's no use in running — you just have to leave on time.
+    body: >-
+      The French formulation is sharper than "slow and steady": the problem is
+      not pace but scheduling.  Starting correctly — with preparation, at the
+      right moment — beats frantic catch-up.  Urgency is often a symptom of
+      late departure, not of a hard problem.
+
+  - title: Les petits ruisseaux font les grandes rivières
+    lang: fr
+    translation: Small streams make great rivers.
+    body: >-
+      Aggregation is the mechanism behind most large outcomes.  A river does
+      not arrive at the sea in a single gesture; it arrives as the accumulated
+      product of innumerable small tributaries.  Track contributions at the
+      stream level; measure results at the river level.
+
+  - title: "Il ne faut pas vendre la peau de l'ours avant de l'avoir tué"
+    lang: fr
+    translation: Don't sell the bear's hide before you've killed the bear.
+    body: >-
+      Committing to outcomes you haven't yet secured creates obligations on
+      futures you don't control.  The proverb is a liquidity warning as much
+      as a humility one — selling the hide means spending the proceeds;
+      spending the proceeds means owing them when the hunt fails.  Keep the
+      commitment structure of your plans lagged behind their execution.
+
+  - title: "On ne fait pas d'omelettes sans casser des œufs"
+    lang: fr
+    translation: You can't make omelettes without breaking eggs.
+    body: >-
+      The French version carries a slight edge over its English counterpart:
+      the eggs are broken in the process of making, not as a careless accident.
+      Damage that is instrumental to creation is categorically different from
+      damage caused by negligence.  Name it correctly and the accounting
+      changes.
+
+  - title: Übung macht den Meister
+    lang: de
+    translation: Practice makes the master.
+    body: >-
+      The German phrasing does not promise perfection — it promises mastery,
+      which is a different and more useful target.  Mastery is domain-bounded,
+      evidence-based, and reachable.  The mechanism is iteration; the input is
+      repetition under feedback; the shortcut is none.
+
+  - title: Ohne Fleiß kein Preis
+    lang: de
+    translation: Without diligence, no prize.
+    body: >-
+      Effort is not sufficient for success but it is necessary.  The proverb
+      does not say effort guarantees the prize — it says the prize will not
+      arrive without it.  The logical form is: no diligence implies no prize.
+      Diligence is the filter, not the engine.
+
+  - title: Der Anfang ist leicht, das Beharren eine Kunst
+    lang: de
+    translation: Starting is easy; persistence is an art.
+    body: >-
+      Beginning anything is cheap — the activation energy is low and the
+      novelty is motivating.  Continuation is the hard part, because
+      continuation requires motivation sourced from inside the work rather than
+      from the excitement of starting.  Build systems for persistence, not for
+      ignition.
+
+  - title: Wer rastet, der rostet
+    lang: de
+    translation: He who rests, rusts.
+    body: >-
+      Disuse is degradation, not preservation.  A skill not exercised does not
+      stay at its last level; it regresses.  Maintenance effort is not optional
+      overhead — it is the minimum investment required to hold a position.  The
+      corollary: budget explicitly for keeping things sharp.
+
+  - title: Krummes Holz gibt auch gerades Feuer
+    lang: de
+    translation: Crooked logs also make straight fires.
+    body: >-
+      Good outcomes do not require perfect inputs.  The search for ideal
+      conditions before starting is frequently the real obstacle.  What you
+      have is usually sufficient to begin; beginning with imperfect material is
+      not a compromise — it is often exactly correct.
+
+  - title: "Tra il dire e il fare c'è di mezzo il mare"
+    lang: it
+    translation: Between saying and doing, there is the sea.
+    body: >-
+      Intention and execution are separated by an ocean of implementation
+      detail.  Plans made at the level of words collapse when they meet
+      friction at the level of action.  The sea metaphor is precise: the
+      distance looks manageable from the shore, grows in mid-crossing, and is
+      only fully known on arrival.
+
+  - title: Il mattino ha l'oro in bocca
+    lang: it
+    translation: The morning has gold in its mouth.
+    body: >-
+      Early action captures value that late action cannot.  This is not merely
+      an exhortation to industriousness — it is an observation about option
+      decay.  Problems encountered early in the day (or the project) have more
+      room to be solved.  Gold in the mouth evaporates by afternoon.
+
+  - title: Meglio un uovo oggi che una gallina domani
+    lang: it
+    translation: Better an egg today than a hen tomorrow.
+    body: >-
+      Temporal discounting is real.  The hen is worth more than the egg in
+      expectation, but only if "tomorrow" actually arrives.  The implicit
+      variable in every "bigger later" decision is the probability that the
+      future state materialises.  Discount accordingly — the egg is not always
+      the conservative choice.
+
+  - title: A mali estremi, estremi rimedi
+    lang: it
+    translation: For extreme evils, extreme remedies.
+    body: >-
+      The appropriate intervention is calibrated to the problem, not to your
+      comfort with intervention.  Applying mild solutions to severe problems is
+      not moderation — it is mis-sizing.  The cost of an over-response to a
+      small problem is usually lower than the cost of an under-response to a
+      large one.
+
+  - title: Camarón que se duerme, se lo lleva la corriente
+    lang: es
+    translation: The shrimp that falls asleep is carried away by the current.
+    body: >-
+      Inaction in a moving environment is not neutral — it is movement in the
+      direction of the current.  Staying still is only a valid strategy in a
+      static world.  When the environment is changing, the cost of not deciding
+      is the same as the cost of deciding in the direction of drift.
+
+  - title: No hay mal que por bien no venga
+    lang: es
+    translation: There is no bad from which good does not come.
+    body: >-
+      The Spanish form of "every cloud has a silver lining" is structurally
+      stronger: it asserts not that the silver exists, but that good is entailed
+      by the bad — a causal, not merely correlational, claim.  Every forced
+      constraint carries a solution that would not have been found without it.
+
+  - title: A caballo regalado no le mires el diente
+    lang: es
+    translation: Don't look a gift horse in the mouth.
+    body: >-
+      The full cost of an asset includes scrutiny costs.  When the asset is
+      free, those scrutiny costs can exceed the asset's value.  The proverb is
+      an efficiency argument, not a courtesy argument: apply your evaluation
+      effort where the decision depends on it.
+
+  - title: Doe nooit uitstellen, wat je vandaag kunt doen
+    lang: nl
+    translation: Never put off until tomorrow what you can do today.
+    body: >-
+      Delay compounds negatively.  A deferred task does not stay the same size;
+      it grows with context-switching cost, deadline pressure, and the anxiety
+      of carrying it.  The Dutch formulation, like its English equivalent, is a
+      workflow principle: close loops as quickly as the loop permits.
+
+  - title: Voorzichtigheid is de moeder van de porseleinkast
+    lang: nl
+    translation: Caution is the mother of the china cabinet.
+    body: >-
+      Fragile systems demand higher margins of care than robust ones.  The
+      proverb identifies a class of problem — the china cabinet — where the
+      cost of an error is irreversible.  Identify your china cabinets and apply
+      asymmetric caution to them, regardless of how careful you are elsewhere.
+
+  - title: Kemst þó hægt fari
+    lang: is
+    translation: You will reach your destination even though you travel slowly.
+    body: >-
+      Progress is not invalidated by slowness.  The Icelandic form addresses
+      the discouragement of the middle of a long journey — the point where you
+      have left the start but cannot yet see the end.  The destination is still
+      there.  Slow arrival is arrival.
+
+  - title: Bara döda fiskar följer strömmen
+    lang: sv
+    translation: Only dead fish follow the stream.
+    body: >-
+      Passive drift is a sign of no agency, not of efficiency.  The live fish
+      holds its position against current, changes direction deliberately, and
+      moves with intention.  The dead one simply goes where the water takes it.
+      Before going with the flow, ask whether you chose the direction.
+
+  - title: Det som göms i snö, kommer fram vid tö
+    lang: sv
+    translation: What is hidden in snow is revealed at the thaw.
+    body: >-
+      Concealed problems do not disappear — they are deferred.  The snow
+      metaphor is exact: the object's visibility changes with temperature, not
+      with existence.  Every hidden liability is on the balance sheet; it is
+      just below the waterline until conditions change.  Do not confuse low
+      visibility with low risk.
+
+  - title: Festina lente
+    lang: la
+    translation: Make haste slowly.
+    note: >-
+      A favourite maxim of Augustus Caesar; rendered in Greek as σπεῦδε
+      βραδέως.
+    body: >-
+      The apparent paradox resolves on inspection: speed obtained by not
+      skipping steps is faster net than speed obtained by skipping them.  The
+      motto is a systems-thinking prescription — optimise the whole cycle, not
+      the current step.  Rushing a step that creates rework is locally fast and
+      globally slow.
+
+  - title: Errare humanum est, perseverare diabolicum
+    lang: la
+    translation: To err is human; to persist in error is diabolical.
+    body: >-
+      The first mistake is data.  The second, third, and fourth are choices.
+      The proverb does not counsel perfectionism — it counsels updating.  Error
+      is the normal cost of operating under uncertainty; refusing to update on
+      error is the abnormal cost of operating under ego.
+
+  - title: Dum differtur vita transcurrit
+    lang: la
+    translation: While we delay, life passes.
+    body: >-
+      Seneca's formulation puts optionality loss in its starkest frame: time is
+      the one resource that cannot be recovered.  Decisions deferred are not
+      preserved — they are made by default, in the direction of the status quo,
+      while the window in which they could have been made deliberately closes.
+
+  - title: Is fearr rith maith ná drochsheasamh
+    lang: ga
+    translation: A good run is better than a bad stand.
+    body: >-
+      Strategic retreat preserves resources for future decisions; bad
+      position-holding destroys them.  The Irish idiom carries no shame — a
+      good run is positively valued, not merely tolerated.  Knowing when to
+      disengage is a skill, and the skill's name is not cowardice.
+
+  - title: "Ná bris do loirgín ar stól nach bhfuil i do shlí"
+    lang: ga
+    translation: Don't break your shin on a stool that is not in your way.
+    body: >-
+      Intervention has a scope condition: apply it to problems that are
+      actually on your path.  Breaking your shin on a stool you walked towards
+      is a different error from tripping over one that was unavoidable.  Before
+      engaging with a problem, ask whether it is in your way or whether you
+      walked into its way.
+
+  - title: Ní thagann ciall roimh aois
+    lang: ga
+    translation: Sense does not come before age.
+    body: >-
+      Certain kinds of knowledge are not learnable by reading — they arrive
+      only through accumulated experience of feedback.  This is a humility
+      prescription for the young and a patience prescription for those teaching
+      them.  The error it guards against is mistaking articulate description of
+      wisdom for the wisdom itself.

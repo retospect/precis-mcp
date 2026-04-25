@@ -346,3 +346,26 @@ class TestTraditionOverview:
         # 64 entries → "Sample entries" + "and N more" footer.
         assert "Sample entries" in out
         assert "and 61 more" in out
+
+    def test_browse_block_uses_tilde_selector_for_chunks(self):
+        """Chunks/ranges advertise ~N (canonical), not /N (view).
+
+        The wider URI grammar reserves ``/V`` for named views (toc,
+        abstract, fig/3, …) and ``~N`` for selectors (chunk index,
+        range, slug).  Oracle was the only kind advertising ``/N``
+        for chunks, which actually returned ``view_unknown`` because
+        the routing correctly treated numeric path segments as view
+        names.  Lock the canonical advertisement in.
+        """
+        store = self._store_with_iching()
+        with _patch_store(store):
+            h = OracleHandler()
+            out = _read(h, "iching")
+        # Selector syntax for chunk + range.
+        assert "get(id='oracle:iching~0')" in out
+        assert "oracle:iching~0..9" in out
+        # /toc remains a view, so still /-prefixed.
+        assert "get(id='oracle:iching/toc')" in out
+        # Old broken syntax must not be advertised.
+        assert "get(id='oracle:iching/0')" not in out
+        assert "oracle:iching/0.." not in out
