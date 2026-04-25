@@ -710,6 +710,38 @@ class TestWolframAttribution:
         assert "WolframAlpha" in out
         assert "accessed" in out.lower()
 
+    def test_attribution_prefills_iso_date(self, monkeypatch):
+        """Regression: previously the citation template emitted the
+        literal placeholder ``(accessed [date])`` which forced human
+        copy-editors to fill it in.  We now prefill with today's UTC
+        ISO-8601 date so the citation is paste-ready.  Monkey-patch
+        the ``_today_iso`` seam to keep the test deterministic.
+        """
+        from precis.handlers import math as math_handler
+
+        monkeypatch.setattr(
+            math_handler, "_today_iso", lambda: "2026-04-25"
+        )
+        out = _math_attribution("2+2")
+        assert "(accessed 2026-04-25)" in out
+        assert "[date]" not in out  # placeholder must not leak
+
+    def test_today_iso_returns_yyyy_mm_dd(self):
+        """``_today_iso`` is the test seam for the access date — it
+        must produce ``YYYY-MM-DD`` (10 chars, two dashes) so the
+        citation field stays well-formed.
+        """
+        from precis.handlers.math import _today_iso
+
+        out = _today_iso()
+        assert len(out) == 10
+        assert out[4] == "-"
+        assert out[7] == "-"
+        # Year sanity-bounds: pre-2025 means stale, post-2100 means
+        # the wall clock has skipped — both warrant a noisy failure.
+        year = int(out[:4])
+        assert 2025 <= year <= 2099
+
     def test_successful_result_has_attribution(self):
         res = MagicMock()
         res.success = True

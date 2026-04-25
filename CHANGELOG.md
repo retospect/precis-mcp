@@ -1,5 +1,24 @@
 # Changelog
 
+## 5.2.6
+
+Polish for the `math:` Wolfram Alpha attribution footer.
+
+### Changed
+
+- **Prefill the academic-citation access date.** The footer used to
+  emit the literal placeholder ``(accessed [date])`` which forced
+  human copy-editors to fill it in.  We now substitute today's UTC
+  ISO-8601 date (e.g. ``(accessed 2026-04-25)``) so the citation is
+  paste-ready.  Date is computed via the ``_today_iso`` seam so
+  tests can monkey-patch a fixed date for determinism.
+
+### Tests
+
+- Added ``test_attribution_prefills_iso_date`` and
+  ``test_today_iso_returns_yyyy_mm_dd`` in
+  ``tests/test_phase4_external.py``.
+
 ## 5.2.5
 
 Quality-of-life bump for the `math:` Wolfram Alpha handler.

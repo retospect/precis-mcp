@@ -26,6 +26,7 @@ Dispatch:
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import os
 from typing import Any
@@ -41,12 +42,26 @@ log = logging.getLogger(__name__)
 # must carry a "Computed by Wolfram|Alpha" label and, for API users,
 # a link back to the specific query page.
 _WOLFRAM_QUERY_URL = "https://www.wolframalpha.com/input?i={q}"
+# Note: ``{accessed}`` is filled at footer-build time with today's
+# ISO-8601 date so the academic-citation template is paste-ready.
 _WOLFRAM_ATTRIBUTION = (
     "---\n"
     "_Computed by [Wolfram|Alpha]({url}). Results © Wolfram Alpha LLC; "
     "attribution is required under Wolfram's Terms of Use. For academic "
-    'citation: `Wolfram|Alpha, WolframAlpha["{query}"] (accessed [date]).`_'
+    'citation: `Wolfram|Alpha, WolframAlpha["{query}"] (accessed {accessed}).`_'
 )
+
+
+def _today_iso() -> str:
+    """Return today's date in ISO-8601 (UTC).
+
+    Wolfram's recommended academic citation form (per
+    https://support.wolfram.com/23498) wants an access date.  We use
+    UTC so multi-host log lines line up regardless of where the MCP
+    is running.  Factored out as a thin wrapper so tests can monkey-
+    patch this single seam instead of stubbing the whole stdlib.
+    """
+    return _dt.datetime.now(_dt.UTC).date().isoformat()
 
 
 class MathHandler(Handler):
@@ -203,7 +218,9 @@ def _attribution(query: str) -> str:
     https://products.wolframalpha.com/api/commercial-termsofuse.
     """
     url = _WOLFRAM_QUERY_URL.format(q=quote_plus(query))
-    return _WOLFRAM_ATTRIBUTION.format(url=url, query=query)
+    return _WOLFRAM_ATTRIBUTION.format(
+        url=url, query=query, accessed=_today_iso()
+    )
 
 
 def _format_result(res: Any, query: str) -> str:
