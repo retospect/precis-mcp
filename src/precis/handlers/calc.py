@@ -112,6 +112,18 @@ _BLOCKED_NODES: tuple[type[ast.AST], ...] = (
 )
 
 
+# A pure-letter (no digits, no underscores) Name of length >= 2 that
+# isn't in the namespace gets silently exploded by SymPy's
+# implicit_multiplication_application — ``potato`` becomes ``p*o*t*a*t*o``,
+# producing nonsense like ``a*o²*p*t² + 3`` when the user wrote
+# ``potato + 3``.  We catch these BEFORE parse_expr runs so the agent
+# gets a clear "unknown name" error with a suggestion instead of a
+# bogus answer.  Names with digits or underscores (``x1``, ``my_var``)
+# are left alone — they may be intentional symbol declarations or
+# round-trip through implicit multiplication harmlessly.
+_PURE_LETTER_RE = re.compile(r"^[A-Za-z]+$")
+
+
 def _sanitize(expr_str: str) -> None:
     """Pre-parse AST check — reject dangerous constructs.
 
@@ -144,6 +156,79 @@ def _sanitize(expr_str: str) -> None:
                     f"calc: names starting with underscore are blocked "
                     f"({node.id})",
                 )
+
+
+def _check_unknown_names(expr_str: str, allowed: set[str]) -> None:
+    """Reject pure-letter multi-letter Names not in ``allowed``.
+
+    Walks the Python AST of ``expr_str`` looking for ``ast.Name`` nodes
+    whose ``id`` is a pure-letter token of length >= 2 that is not in
+    the calc namespace (constants, functions, pre-allocated symbols,
+    units).  Raises :class:`PrecisError` (``PARAM_INVALID``) on the
+    first offender, with a difflib-suggested near match so a typo can
+    be fixed in one round-trip.
+
+    Why this matters — without this check::
+
+        calc:potato + 3      → a*o**2*p*t**2 + 3      (silent nonsense)
+        calc:diff(sni(x))    → diff(i*n*s*x)          (cryptic error)
+        calc:my_avg          → my_avg (free symbol)   (looks correct
+                                                       but isn't computed)
+
+    With the check::
+
+        calc:potato + 3      → ERROR [param_invalid]: unknown name
+                               'potato'.  Did you mean: pi?
+        calc:diff(sni(x))    → ERROR [param_invalid]: unknown name 'sni'.
+                               Did you mean: sin, asinh?
+
+    Single-letter Names (``x``, ``y``, …) stay allowed so the natural
+    ``2x + 3`` declaration-free style keeps working.  Names containing
+    digits or underscores (``x1``, ``my_var``) are also left alone —
+    they may be intentional symbol identifiers, and SymPy's parser
+    handles them sensibly.
+    """
+    try:
+        tree = ast.parse(expr_str, mode="eval")
+    except SyntaxError:
+        return  # defer to parse_expr's error reporting
+
+    seen: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name):
+            continue
+        name = node.id
+        if name in seen:
+            continue
+        seen.add(name)
+        if len(name) < 2:
+            continue
+        if not _PURE_LETTER_RE.match(name):
+            continue
+        if name in allowed:
+            continue
+        # Found an unknown multi-letter pure-letter Name — would be
+        # silently exploded by implicit_multiplication.  Reject early.
+        from difflib import get_close_matches
+
+        matches = get_close_matches(name, sorted(allowed), n=3, cutoff=0.6)
+        if matches:
+            hint = f" Did you mean: {', '.join(matches)}?"
+        else:
+            hint = ""
+        raise PrecisError(
+            ErrorCode.PARAM_INVALID,
+            cause=(
+                f"calc: unknown name {name!r} — would be silently "
+                "expanded into a product of free symbols by sympy's "
+                f"implicit-multiplication transform.{hint}"
+            ),
+            next=(
+                "use a known function/constant from the calc namespace, "
+                "or declare the symbol explicitly with "
+                f"Symbol({name!r}).  See get(id='skill:calc-basics')."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +705,13 @@ class CalcHandler(Handler):
                 "sympy package not installed. "
                 "Install with: pip install precis-mcp[calc]",
             ) from exc
+
+        # Reject unknown multi-letter Names BEFORE parse_expr — without
+        # this check, ``implicit_multiplication_application`` silently
+        # explodes ``potato`` into ``p*o*t*a*t*o`` and the agent gets a
+        # bogus answer rather than a clear typo error.  Allowed set is
+        # exactly what sympy will resolve against.
+        _check_unknown_names(expression, set(local_dict) | set(global_dict))
 
         from sympy.parsing.sympy_parser import parse_expr
 

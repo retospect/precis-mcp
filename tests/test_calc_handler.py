@@ -20,6 +20,7 @@ sympy = pytest.importorskip("sympy")
 
 from precis.handlers.calc import (
     CalcHandler,
+    _check_unknown_names,
     _parse_path,
     _sanitize,
 )
@@ -167,6 +168,150 @@ class TestSanitize:
         # Malformed input shouldn't blow up in the sanitiser — we let
         # parse_expr produce the better error message.
         _sanitize("2 ++ 3 ++")  # garbage, but _sanitize shouldn't raise
+
+
+# ---------------------------------------------------------------------------
+# Phase 6a — unknown-name check
+# ---------------------------------------------------------------------------
+
+
+class TestCheckUnknownNames:
+    """Regression for the silent-nonsense bug where typos in calc
+    expressions were exploded by ``implicit_multiplication_application``
+    into a product of free symbols.
+
+    Examples that used to silently succeed (with wrong answers)::
+
+        calc:potato + 3      → a*o**2*p*t**2 + 3   (should error)
+        calc:diff(sni(x))    → diff(s*n*i*x) ...   (should suggest sin)
+        calc:my_avg          → my_avg              (free symbol — looks
+                                                     correct but isn't
+                                                     computed)
+
+    The new ``_check_unknown_names`` rejects any pure-letter Name of
+    length >= 2 that isn't in the calc namespace.
+    """
+
+    @property
+    def _allowed(self) -> set[str]:
+        # Real namespace — exercises the full allow-list rather than a
+        # hand-rolled stub.  Avoids drift when sympy adds primitives.
+        from precis.handlers.calc import _build_namespace
+
+        local_dict, global_dict, _, _ = _build_namespace()
+        return set(local_dict) | set(global_dict)
+
+    def test_known_function_passes(self):
+        _check_unknown_names("integrate(sin(x)*cos(x), x)", self._allowed)
+
+    def test_known_constant_passes(self):
+        _check_unknown_names("pi + E*I", self._allowed)
+
+    def test_single_letter_symbols_pass(self):
+        # Single letters auto-promote to free Symbols even without
+        # being in the namespace — the existing ``2x + 3`` behaviour
+        # must keep working.
+        _check_unknown_names("2q + 3w", self._allowed)
+        _check_unknown_names("u*v", self._allowed)
+
+    def test_letters_with_digits_pass(self):
+        # Implicit multiplication handles ``x1`` as ``x*1``; we leave
+        # these alone so the user doesn't have to declare ``x1``.
+        _check_unknown_names("x1 + y2", self._allowed)
+
+    def test_underscored_name_passes(self):
+        # Underscored names are intentional symbol identifiers; the
+        # check skips them rather than rejecting valid declarations.
+        _check_unknown_names("my_var + 1", self._allowed)
+
+    def test_unknown_pure_letter_typo_rejected(self):
+        # The bug from the critic: ``potato + 3`` would otherwise
+        # return ``a*o**2*p*t**2 + 3``.
+        with pytest.raises(PrecisError) as exc:
+            _check_unknown_names("potato + 3", self._allowed)
+        assert exc.value.code == ErrorCode.PARAM_INVALID
+        assert "potato" in exc.value.cause
+        # The error names the offending symbol and explains why.
+        assert "implicit-multiplication" in exc.value.cause
+        # Recovery hint shows how to declare the symbol if intentional.
+        assert "Symbol(" in exc.value.next
+
+    def test_typo_with_suggestion(self):
+        # ``sni`` is a typo of ``sin``; difflib should surface it.
+        with pytest.raises(PrecisError) as exc:
+            _check_unknown_names("diff(sni(x))", self._allowed)
+        assert "sni" in exc.value.cause
+        assert "Did you mean:" in exc.value.cause
+        assert "sin" in exc.value.cause
+
+    def test_one_unknown_drives_message(self):
+        # When an expression has multiple unknowns we report exactly
+        # one — the agent fixes typos one at a time.  ast.walk visits
+        # in BFS order, so the *order* isn't left-to-right and we don't
+        # pin a specific suspect; we just assert one is named and the
+        # others don't leak into the message.
+        #
+        # Names chosen so they're NOT near-matches of each other —
+        # otherwise difflib would surface a sibling unknown in the
+        # suggestion list and confuse the assertion.
+        with pytest.raises(PrecisError) as exc:
+            _check_unknown_names(
+                "xylophone + qwertyplant + kazoo", self._allowed
+            )
+        names_in_cause = [
+            n for n in ("xylophone", "qwertyplant", "kazoo")
+            if n in exc.value.cause
+        ]
+        assert len(names_in_cause) == 1, (
+            f"expected exactly one unknown surfaced, got {names_in_cause!r}"
+        )
+
+    def test_syntax_error_deferred(self):
+        # Malformed input doesn't blow up the unknown-name check;
+        # parse_expr produces the better error.
+        _check_unknown_names("2 ++ 3", self._allowed)  # no raise
+
+
+class TestCalcUnknownNameIntegration:
+    """End-to-end through the handler — guards against any future
+    refactor that drops the ``_check_unknown_names`` call from the
+    dispatch flow.
+    """
+
+    def setup_method(self):
+        self.h = CalcHandler()
+
+    def test_typo_no_longer_silently_explodes(self):
+        # The previous bug returned ``a*o**2*p*t**2 + 3`` with no error
+        # at all.  The handler now raises ``PARAM_INVALID`` instead.
+        # ``handler.read`` propagates PrecisError directly; the
+        # ``ERROR […]`` envelope rendering happens further up the
+        # dispatch stack in ``invoke_handler``.
+        with pytest.raises(PrecisError) as exc:
+            _read(self.h, "potato + 3")
+        assert exc.value.code == ErrorCode.PARAM_INVALID
+        assert "potato" in exc.value.cause
+        # And critically, the bogus expansion does NOT appear anywhere.
+        assert "a*o" not in exc.value.cause
+        assert "p*t" not in exc.value.cause
+
+    def test_typo_with_close_match_suggests(self):
+        with pytest.raises(PrecisError) as exc:
+            _read(self.h, "diff(sni(x))")
+        assert exc.value.code == ErrorCode.PARAM_INVALID
+        assert "Did you mean" in exc.value.cause
+        assert "sin" in exc.value.cause
+
+    def test_implicit_multiplication_still_works(self):
+        # The fix must not break the documented ``2x + 3y`` syntax.
+        out = _read(self.h, "2x + 3y")
+        assert "ERROR" not in out
+        assert "2*x + 3*y" in out
+
+    def test_known_compound_expression_still_works(self):
+        out = _read(self.h, "integrate(sin(x)*cos(x), x)")
+        assert "ERROR" not in out
+        assert "sin(x)" in out
 
 
 # ---------------------------------------------------------------------------
