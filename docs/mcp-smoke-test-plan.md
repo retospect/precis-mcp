@@ -35,7 +35,7 @@ what you need to know before you start.
 Exercise the `precis-mcp` MCP server via the `mcp5_*` tools available
 in your tool list.  Record pass/fail for each step in the session log
 at the bottom of this file.  File bug tickets (as regression entries
-in §17 or as separate commits with tests) for anything that fails.
+in §18 or as separate commits with tests) for anything that fails.
 
 ### Invocation pattern — always use this form
 
@@ -77,20 +77,26 @@ after restart:
 
 ```
 kinds by verb:
-  search conversation, flashcard, memory, paper, quest, research,
-         skill, think, todo, web, youtube
+  search clock, conversation, flashcard, memory, oracle, paper,
+         quest, random, research, rng, skill, think, todo, web,
+         youtube
   [same for get, put, move]
 ```
+
+The four stochastic kinds (`clock`, `rng`, `random`, `oracle`) are
+covered in §17.  The retired `wisdom` and `iching` kinds **must not**
+appear in `kinds by verb` — both were folded into `oracle` in Phase F
+(see `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/docs/stochastic-kinds-plan.md`).
 
 ### How to record a failure
 
 Use this shape in your session log:
 
 ```
-| §4.2 | get quest:/recent | ✗ | PoolTimeout after 30s — DATABASE_URL issue, known, §17 |
+| §4.2 | get quest:/recent | ✗ | PoolTimeout after 30s — DATABASE_URL issue, known, §18 |
 ```
 
-For new bugs: add a regression entry at the bottom of §17 and (if you
+For new bugs: add a regression entry at the bottom of §18 and (if you
 have time + confidence) a unit test in
 `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests`
 that captures the failure shape.
@@ -222,6 +228,17 @@ state mutated, no files written.
   call is free, shows model + usage)
 - [ ] `mcp5_search(query='precis', type='paper')` — paper-corpus search
   (global-no-type search is rejected by design; see §15.1)
+- [ ] `mcp5_get(id='clock:')` — current ISO-8601 timestamp (cheapest
+  liveness probe; if this fails, the registry never woke up)
+- [ ] `mcp5_get(id='rng:int?lo=0&hi=10&seed=42')` — reproducible
+  pick (no DB hop)
+- [ ] `mcp5_get(id='oracle:')` — list seeded traditions
+    - expect: `🔮 Oracle — N traditions` with built-in/personal split,
+      OR the empty-state hint pointing at `precis-ingest-oracle` if
+      the operator hasn't run the live ingest yet — record which
+- [ ] `mcp5_get(id='random:?corpus=oracle&n=1')` — one oracle chunk
+    - expect: chunk-mode output (📜 marker, `mode=uniform-chunk` in
+      footer) when the corpus is populated; no-hits otherwise
 
 If every one returns a response that isn't `!! UNEXPECTED`, the server
 is alive and wire-protocol-correct.  Move on to targeted sections.
@@ -1141,7 +1158,329 @@ Canonical kind name is `word`.  Requires an existing .docx file
 
 ---
 
-## 17.  Regression log
+## 17.  Stochastic kinds — `clock`, `rng`, `random`, `oracle`
+
+Four kinds added in Phase A–F.  All read-mostly, all free.  The first
+two (`clock`, `rng`) are stateless primitives — no DB, no embeddings.
+The last two (`random`, `oracle`) are vector-space sampler + paper-
+shaped wisdom corpus and require `acatome-store` + a populated
+`oracle` corpus (run `precis-ingest-oracle` first if empty).
+
+Plan reference:
+`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/docs/stochastic-kinds-plan.md`.
+
+### 17.1 — `clock`  (stateless time primitive)
+
+No deps.  No DB.  Pure-`get` surface; rejects ambiguous date formats
+(DMY/MDY/YMD) by design — only ISO-8601 input is accepted.
+
+- [ ] `mcp5_get(id='clock:')` — current UTC ISO-8601 timestamp
+    - expect: `YYYY-MM-DDTHH:MM:SSZ` shape; cost line `[cost: free]`
+- [ ] `mcp5_get(id='clock:now')` — alias for bare
+- [ ] `mcp5_get(id='clock:today')` — date-only ISO form
+- [ ] `mcp5_get(id='clock:?tz=Europe/London')` — local-zone render
+    - expect: ISO timestamp with the IANA-zone offset suffix
+- [ ] `mcp5_get(id='clock:2026-04-25T17:30:00Z?in=Asia/Tokyo')`
+    - expect: ISO input rendered in target zone
+- [ ] `mcp5_get(id='clock:/help')` — usage card
+
+#### 17.1.1 — Negative path
+
+- [ ] `mcp5_get(id='clock:25/04/2026')` — DMY form
+    - expect: `PARAM_INVALID` naming the ambiguity ("DMY/MDY/YMD
+      cannot be disambiguated from `25/04/2026` alone — pass ISO
+      `2026-04-25`")
+- [ ] `mcp5_get(id='clock:?tz=NotAZone')`
+    - expect: `PARAM_INVALID` listing the IANA-zone requirement
+
+### 17.2 — `rng`  (stateless random primitive)
+
+No deps.  No DB.  Reproducible via `?seed=`, except the crypto-grade
+surfaces (`uuid`, `bytes`) — those reject `?seed=` by design.
+
+- [ ] `mcp5_get(id='rng:int?lo=0&hi=10')` — uniform int
+- [ ] `mcp5_get(id='rng:int?lo=0&hi=10&seed=42')` — same seed twice in a row
+    - expect: identical value — reproducibility check
+- [ ] `mcp5_get(id='rng:float?lo=0&hi=1&seed=42')` — uniform float
+- [ ] `mcp5_get(id='rng:choice?from=heads,tails&seed=42')`
+    - expect: one of the listed values
+- [ ] `mcp5_get(id='rng:choice?from=a,b,c&n=2&seed=42')` — multi-pick
+    - expect: 2 distinct items
+- [ ] `mcp5_get(id='rng:uuid')` — UUID4
+    - expect: standard 36-char UUID; cost free
+- [ ] `mcp5_get(id='rng:bytes?n=16')` — hex-encoded random bytes
+- [ ] `mcp5_get(id='rng:/help')` — usage card
+
+#### 17.2.1 — Negative path
+
+- [ ] `mcp5_get(id='rng:int?lo=10&hi=0')` (inverted range)
+    - expect: `PARAM_INVALID`
+- [ ] `mcp5_get(id='rng:int')` (no range at all)
+    - expect: `PARAM_INVALID` naming `lo=` + `hi=` requirement
+- [ ] `mcp5_get(id='rng:uuid?seed=42')`
+    - expect: `PARAM_INVALID` — `?seed=` is rejected for crypto-grade
+      surfaces (`uuid`, `bytes`); cause line names which surface
+- [ ] `mcp5_get(id='rng:bytes?seed=42')` — same shape
+
+### 17.3 — `random`  (vector-space sampler)
+
+Read-only; backed by `acatome-store`.  Two modes: **uniform pick**
+from a corpus (with optional tag filtering), and **blast radius**
+pick semantically near a seed string.  Sample granularity is driven
+by each corpus's `sample_unit` (`ref` or `chunk`); explicit
+`?from=refs` / `?from=chunks` overrides per call.
+
+#### 17.3.1 — Uniform mode
+
+- [ ] `mcp5_get(id='random:')` — one ref, any corpus
+    - expect: footer shows `mode=uniform-ref`, `seed=os`, picked
+      corpus + slug
+- [ ] `mcp5_get(id='random:?n=3')` — three refs
+    - expect: 3 ref blocks, one per `📚` marker
+- [ ] `mcp5_get(id='random:?seed=42')` and again
+    - expect: identical pick across calls (reproducibility)
+- [ ] `mcp5_get(id='random:?n=21')` — over the cap
+    - expect: `PARAM_INVALID` naming the `n` cap
+
+#### 17.3.2 — Corpus + tag filters
+
+- [ ] `mcp5_get(id='random:?corpus=papers')` — single-corpus filter
+    - expect: footer `corpora=[papers]`
+- [ ] `mcp5_get(id='random:?corpora=papers,memories&n=3')` — multi-corpus
+    - expect: footer `corpora=[papers,memories]`
+- [ ] `mcp5_get(id='random:?corpus=oracle&tag=stoic')`
+    - expect: a single oracle chunk; ref tagged `['oracle','stoic',…]`
+- [ ] `mcp5_get(id='random:?corpus=oracle&tag=stoic,koan&n=5')`
+    - expect: tag union — chunks from refs tagged stoic OR koan,
+      none from chengyu / iching / etc.
+- [ ] `mcp5_get(id='random:?corpus=oracle&not-tag=built-in&n=3')`
+    - expect: only personal entries (zero hits if `oracle:personal`
+      is empty — the no-hits message must name the filter:
+      `not-tag=[built-in]`)
+- [ ] `mcp5_get(id='random:?corpus=oracle&tag=does-not-exist')`
+    - expect: no-hits message naming `tag=[does-not-exist]`
+
+#### 17.3.3 — Chunk-mode override
+
+- [ ] `mcp5_get(id='random:?corpus=oracle&n=2')`
+    - expect: chunk mode (driven by `Corpus.sample_unit='chunk'`);
+      footer shows `mode=uniform-chunk`; output uses 📜 markers
+- [ ] `mcp5_get(id='random:?corpus=oracle&from=refs&n=1')`
+    - expect: ref mode override; footer `mode=uniform-ref`,
+      📚 markers (you'll see "I-Ching" the whole 64-chunk container,
+      not a single hexagram)
+- [ ] `mcp5_get(id='random:?corpus=papers&from=chunks&n=1')`
+    - expect: chunk mode override on a normally ref-shaped corpus —
+      one paper paragraph instead of a paper landing
+- [ ] `mcp5_get(id='random:?from=potato')`
+    - expect: `PARAM_INVALID` listing the valid values
+
+#### 17.3.4 — Blast-radius mode
+
+Vector ANN with a query seed.  `?radius=` caps cosine distance.
+
+- [ ] `mcp5_get(id='random:cascading failure?n=3')`
+    - expect: 3 hits semantically near the seed; footer
+      `mode=blast-radius`, lists the radius used
+- [ ] `mcp5_get(id='random:cascading failure?n=3&corpus=oracle')`
+    - expect: hits scoped to oracle corpus
+- [ ] `mcp5_get(id='random:cross-pollinate?corpora=papers,memories&n=5')`
+    - expect: hits multi-corpus; underlying SQL uses `$in` filter
+- [ ] `mcp5_get(id='random:refactor?radius=0.4&n=3')`
+    - expect: tighter radius drops far-out hits
+- [ ] `mcp5_get(id='random:zzz-unmatchable-seed?radius=0.05')`
+    - expect: no-hits message — bare `?radius=` failure with hint to
+      widen radius or drop corpus filter
+- [ ] regression check: blast-mode footer must NOT show `seed=os` or
+  `seed=42` (those are uniform-mode footers) — blast mode is
+  inherently non-reproducible (the embedder provides no `?seed=`
+  hook)
+
+#### 17.3.5 — Help + onboarding skill
+
+- [ ] `mcp5_get(id='random:/help')`
+    - expect: rendered help card listing both modes and all knobs;
+      examples must include `corpus=oracle`, `tag=stoic`,
+      `not-tag=built-in`
+- [ ] `mcp5_get(type='skill', id='random-basics')` resolves
+    - expect: onboarding skill body (referenced by the kind's spec)
+
+### 17.4 — `oracle`  (paper-shaped wisdom corpus)
+
+Read+write (write_policy = direct).  One ref per tradition (iching,
+chengyu, …); one chunk per entry.  Tags inherit via JOIN: every
+chunk inside a `built-in`-tagged ref is reachable by
+`?not-tag=built-in` exclusion at the random/search layer.
+
+**Pre-flight**: confirm the corpus is populated.  If
+`mcp5_get(id='oracle:')` shows the empty-state hint mentioning
+`precis-ingest-oracle`, run
+
+```bash
+/Users/bots/Documents/openclaw-cluster/pips/.venv/bin/precis-ingest-oracle --dry-run
+```
+
+first to confirm the bundled YAMLs parse, then drop `--dry-run` for
+the live ingest.  The bundled set is **8 traditions / 100 chunks**
+(iching=64, chengyu=12, engineering=6, proverbs-euro=6, stoic=4,
+proverbs-irish=3, zen=3, talmudic=2).
+
+#### 17.4.1 — Corpus-level navigation
+
+- [ ] `mcp5_get(id='oracle:')` — list traditions
+    - expect: header `🔮 Oracle — N traditions`; built-in vs
+      personal split; per-tradition entry counts
+- [ ] `mcp5_get(id='oracle:/by-tradition')` — alias for bare
+    - expect: identical render
+
+#### 17.4.2 — Tradition (ref) overview
+
+- [ ] `mcp5_get(id='oracle:iching')`
+    - expect: tradition title + description; entry count = 64;
+      "Sample entries" with 3 hexagrams + "and 61 more"; `Browse:`
+      block with `oracle:iching/toc`, `oracle:iching/0`,
+      `oracle:iching/0..9`; tradition tag in random hint
+      (`?tag=i-ching`); "tag=built-in" must NOT appear in hints
+- [ ] `mcp5_get(id='oracle:stoic')`
+    - expect: small tradition (4 entries) — full entry list rendered
+      inline (not "Sample" mode)
+- [ ] `mcp5_get(id='oracle:engineering')` / `oracle:chengyu` etc.
+    - expect: same shape, varying entry counts
+- [ ] `mcp5_get(id='oracle:does-not-exist')`
+    - expect: `ID_NOT_FOUND`; options list the existing traditions
+
+#### 17.4.3 — Chunk addressing (paper-shape)
+
+Chunks are 0-indexed.  `oracle:iching›0` is Hexagram 1 (the 1-based
+display title sits in the chunk's section_path, not its index).
+
+- [ ] `mcp5_get(id='oracle:iching/toc')`
+    - expect: 64 entries listed with `›N` block indices + section_path
+      labels (Hexagram name + cognitive-lens tag)
+- [ ] `mcp5_get(id='oracle:iching/0')`
+    - expect: chunk 0 (Hexagram 1 · Creative Force); body shows the
+      three-layer markdown (Heritage / Modern / Cognitive); tail
+      lines `_original_:`, `_lang_:`, `_trigrams_:`, `_binary_:`
+- [ ] `mcp5_get(id='oracle:iching›0')` — fancy separator
+    - expect: identical to `/0` (both forms parse)
+- [ ] `mcp5_get(id='oracle:iching/0..3')` — range
+    - expect: 4 hexagrams rendered in sequence
+- [ ] `mcp5_get(id='oracle:iching/63')` — last chunk
+    - expect: success
+- [ ] `mcp5_get(id='oracle:iching/64')` — out-of-range
+    - expect: `No blocks in range ›64..65 for oracle:iching` (or
+      `ID_NOT_FOUND`); record which
+- [ ] `mcp5_get(id='oracle:iching/-1')` — negative
+    - expect: `ID_MALFORMED` per the dense-0..N invariant
+
+#### 17.4.4 — Search
+
+- [ ] `mcp5_search(query='cascading failure', type='oracle')`
+    - expect: ranked chunk hits across all traditions
+- [ ] `mcp5_search(query='waiting for signal', type='oracle', tag='i-ching')`
+    - expect: hits restricted to oracle:iching only
+- [ ] `mcp5_search(query='premature commit', type='oracle', tag='engineering')`
+    - expect: should hit "Premature optimisation" or related Knuth/Hyrum entries
+- [ ] regression check: `mcp5_search(query='waiting', type='wisdom')`
+    - expect: `KIND_UNKNOWN` (wisdom retired in Phase F); options
+      should suggest `oracle`
+- [ ] regression check: `mcp5_search(query='cascading failure', type='iching')`
+    - expect: `KIND_UNKNOWN` (iching retired in Phase F); options
+      should suggest `oracle`
+
+#### 17.4.5 — Sample-via-random integration
+
+These are also exercised under §17.3 (random); duplicating the
+oracle-relevant subset here for one-stop scanning:
+
+- [ ] `mcp5_get(id='random:?corpus=oracle&n=1')` — one chunk, any
+  tradition
+- [ ] `mcp5_get(id='random:?corpus=oracle&tag=stoic&n=2')`
+- [ ] `mcp5_get(id='random:?corpus=oracle&not-tag=built-in&n=1')`
+    - expect: empty-state if `oracle:personal` is empty (filter named
+      in the no-hits message)
+- [ ] `mcp5_get(id='random:waiting?corpus=oracle&n=3&radius=0.5')` —
+  blast mode scoped to oracle
+
+#### 17.4.6 — Write surface (roundtrip)
+
+Oracle write surface is direct-write (no ingestion gate, unlike
+papers).  Use a unique slug per run:
+``SLUG=smoke-oracle-$(date +%s)`` — the chunk lands inside
+`oracle:personal` (the catch-all ref for user-written entries).
+
+1. **Write**
+    - [ ] `mcp5_put(type='oracle', id='', text='Knuth: premature optimisation is the root of all evil.', mode='append', tradition='personal', title='knuth-<TAG>')`
+        - expect: success; response `🔮 oracle: appended to oracle:personal as chunk ›N`
+        - record N for the rest of the section
+2. **Read back**
+    - [ ] `mcp5_get(type='oracle', id='personal')`
+        - expect: tradition overview shows N+1 entries; the new chunk
+          appears in TOC sample
+    - [ ] `mcp5_get(type='oracle', id='personal/<N>')`
+        - expect: chunk body + section_path label `knuth-<TAG>`;
+          tail lines if any meta keys (`source`, `lang`) were passed
+3. **Tag inheritance check**
+    - [ ] `mcp5_get(id='random:?corpus=oracle&not-tag=built-in&n=5')`
+        - expect: the freshly written chunk should be eligible —
+          appears in repeated calls (over enough samples)
+4. **Delete (tradition-level)**
+    - [ ] `mcp5_put(type='oracle', id='personal', mode='delete')`
+        - expect: success; soft-delete via `meta.deleted` flag
+    - [ ] `mcp5_get(type='oracle', id='personal')`
+        - expect: filtered out of `oracle:` list view; bare read
+          shows the soft-delete marker (record exact behaviour —
+          this is the tradition-wipe path, not per-chunk)
+5. **Per-chunk delete (deferred — v1.1)**
+    - [ ] `mcp5_put(type='oracle', id='personal/<N>', mode='delete')`
+        - expect today: hint message naming the v1.1 deferral, NOT a
+          silent success.  If the chunk actually disappears, the
+          handler grew the feature without the test catching up —
+          file a regression entry
+
+#### 17.4.7 — Write-surface negative paths
+
+- [ ] `mcp5_put(type='oracle', id='', mode='append')` (no text)
+    - expect: `PARAM_INVALID` naming `text=` requirement
+- [ ] `mcp5_put(type='oracle', id='iching', text='new entry', mode='append')`
+    - expect: succeeds AND lands the chunk in `oracle:iching` —
+      built-in traditions are writable (they're not write-policy
+      `ingestion`).  Clean up via §17.4.6 step 4 if so; or, if the
+      handler grew a built-in protection, record what it returned
+- [ ] `mcp5_put(type='oracle', id='oracle:zzz-no-such-thing', mode='delete')`
+    - expect: `ID_NOT_FOUND`
+
+#### 17.4.8 — Skill onboarding
+
+- [ ] `mcp5_get(type='skill', id='consult-oracle')`
+    - expect: full skill body; references `oracle:` URIs and tag
+      filters
+- [ ] `mcp5_get(type='skill', id='consult-iching')`
+    - expect: rewritten skill (Phase F) — references
+      `oracle:iching/*` chunks and three-layer reading; the legacy
+      `iching:` URIs must be absent
+- [ ] `mcp5_get(type='skill', id='/kind/oracle')`
+    - expect: at least the two consult-* skills appear; `applies_to:
+      [oracle]` frontmatter is honoured
+
+#### 17.4.9 — Retired-kind regression checks (Phase F cleanup)
+
+- [ ] `mcp5_get(id='wisdom:')` → `KIND_UNKNOWN`
+    - regression check: the `wisdom:` scheme + kind were retired in
+      Phase F.  If this resolves, an old plugin entry leaked
+- [ ] `mcp5_get(id='iching:')` → `KIND_UNKNOWN`
+    - regression check: same, for the bespoke `iching:` kind.  Its
+      I-Ching data is now reachable as `oracle:iching/*`
+- [ ] `mcp5_get(type='wisdom', id='/recent')` → `KIND_UNKNOWN`
+- [ ] `mcp5_get(type='iching', id='/cognitive')` → `KIND_UNKNOWN`
+- [ ] `mcp5_search(query='wisdom', type='wisdom')` → `KIND_UNKNOWN`
+- [ ] `mcp5_get(type='skill', id='iching-consult')` → `ID_NOT_FOUND`
+    - regression check: the old skill directory was removed; the
+      replacement is `consult-iching` (note the slug change)
+
+---
+
+## 18.  Regression log
 
 Bugs found + fixed.  Each entry is a test to re-run on every full
 regression pass.  If a bug re-appears, it goes back into the active
@@ -1254,6 +1593,43 @@ test matrix until re-fixed.
   tags=['smoke-test','bug-j'], …)` then `mcp4_get(id='memory:<slug>')`
   → overview shows `tags: bug-j, smoke-test` (sorted, no char-iter).
   `memory:/tags` histogram shows both tags with count 1.
+
+- [ ] **Phase F — `wisdom`/`iching` → `oracle` migration (2026-04-25)**
+  — the bespoke `wisdom:` and `iching:` kinds were retired and folded
+  into a single paper-shaped `oracle:` kind (one ref per tradition,
+  one chunk per entry).  Live checks:
+  - **§17.4.9 retired-kind probes**: `wisdom:`, `iching:`, both
+    `type='wisdom'` and `type='iching'` must all return
+    `KIND_UNKNOWN`.  If any resolves, an old plugin entry leaked.
+  - **§17.4.1–17.4.3 corpus + chunk navigation**: `oracle:` lists
+    8 traditions, `oracle:iching` shows 64 entries, `oracle:iching/12`
+    renders the three-layer hexagram body.
+  - **§17.3.2 + §17.3.3 random tag/chunk filters**: tags inherit via
+    JOIN — `random:?corpus=oracle&tag=stoic` must return only stoic
+    chunks; `?not-tag=built-in` must scope to user-written entries.
+    These are the new sampling primitives that replaced the old
+    bespoke handlers' `/cognitive`, `/recent`, `/by-tradition` views.
+  - **§17.4.6 write surface**: direct-write to `oracle:personal` must
+    create the ref on first call and append chunks on subsequent
+    calls.  Chunk indices are dense 0..N per ref.
+  - **§17.4.8 skills**: `consult-oracle` (new) and `consult-iching`
+    (rewritten) both indexed; the old `iching-consult` slug must
+    return `ID_NOT_FOUND`.
+  Unit coverage:
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_random_handler.py`
+  (47 tests including 11 new chunk/tag filter tests),
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_oracle_handler.py`
+  (19 tests),
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_oracle_ingest.py`
+  (22 tests).  Schema migration: `corpora.sample_unit` column added
+  with `'ref'` default; `oracle` corpus seed sets `'chunk'`; the
+  `_ensure_missing_columns` migration in
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/acatome-store/src/acatome_store/store.py:158-175`
+  back-fills the column on existing DBs.  **Pending live verification**:
+  the `precis-ingest-oracle` command needs to be run against the
+  cluster store before any of §17.4 will return populated state — the
+  handler + tests are green offline, but the live corpus is
+  empty until ingest fires.
 
 <!-- Retired regression entries (fix verified + unit test in place,
      re-check not required on every smoke run):

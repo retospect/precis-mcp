@@ -345,14 +345,17 @@ class RefHandler(Handler):
 
         # View dispatch via the views registry — subclass extends by
         # dict-merging into ``views``.  Unknown view → VIEW_UNKNOWN with
-        # options auto-filled from the registry keys.
+        # options listed in ``/view`` form to match the URI shape the
+        # caller writes.  The framework also auto-fills the same
+        # ``/``-prefixed form when a raise site omits options=, so
+        # both code paths now agree (mcp-critic finding M4 / C5).
         if view:
             method_name = self.views.get(view)
             if method_name is None:
                 raise PrecisError(
                     ErrorCode.VIEW_UNKNOWN,
                     cause=f"view '/{view}' not supported on {self.scheme}",
-                    options=sorted(self.views.keys()),
+                    options=sorted(f"/{v}" for v in self.views),
                 )
             return getattr(self, method_name)(store, ref, selector, subview, **kwargs)
 
@@ -371,13 +374,32 @@ class RefHandler(Handler):
         mode: str,
         **kwargs,
     ) -> str:
-        if mode != "note":
+        # Writable subclasses (memory, todo, flashcard, conversation,
+        # gripe, …) override ``put`` and only fall through to this base
+        # implementation for unknown modes.  When that happens we must
+        # *not* claim the kind is read-only \u2014 the caller can see other
+        # successful writes happening to the same kind.  Branch on
+        # ``self.writable`` so genuinely read-only kinds (paper, quest)
+        # keep the read-only wording while writable kinds get an honest
+        # "mode unknown" envelope.  ``_enrich_error`` auto-fills
+        # ``options=`` from ``self.allowed_modes`` so the agent sees
+        # the full mode vocabulary.  mcp-critic finding M3.
+        if mode == "note":
+            return self._write_note(path, selector, text, **kwargs)
+        if getattr(self, "writable", False):
             raise PrecisError(
                 ErrorCode.MODE_UNSUPPORTED,
-                cause=f"mode '{mode}' not allowed on read-only {self.scheme}",
-                next="put(id='<slug>', mode='note', text='...') to annotate",
+                cause=f"mode {mode!r} unknown for {self.scheme}",
+                next=(
+                    "see options above; put(id='<slug>', mode='note', "
+                    "text='...') always works to annotate"
+                ),
             )
-        return self._write_note(path, selector, text, **kwargs)
+        raise PrecisError(
+            ErrorCode.MODE_UNSUPPORTED,
+            cause=f"mode {mode!r} not allowed on read-only {self.scheme}",
+            next="put(id='<slug>', mode='note', text='...') to annotate",
+        )
 
     # ── View dispatchers (uniform signature) ─────────────────────────
     #
@@ -849,9 +871,31 @@ class RefHandler(Handler):
         all_blocks = [
             b for b in store.get_blocks(slug) if b.get("block_index") is not None
         ]
-        blocks = [b for b in all_blocks if start <= b["block_index"] < end]
+        # Clamp the requested range to the paper's actual block count so
+        # the trailer never invites the caller off the end of the paper.
+        # Review 2026-04-25 finding D5 — ``~38..200`` on an 87-block
+        # paper used to deliver blocks 38..85 then advertise a fake
+        # ``Next: ~200..`` hint, which paginated into an empty range.
+        max_idx = (
+            max(b["block_index"] for b in all_blocks) if all_blocks else -1
+        )
+        clamped_end = end
+        clamped = False
+        if all_blocks and end > max_idx + 1:
+            clamped_end = max_idx + 1
+            clamped = True
+        blocks = [
+            b for b in all_blocks if start <= b["block_index"] < clamped_end
+        ]
 
         if not blocks:
+            if all_blocks and start > max_idx:
+                return (
+                    f"No blocks in range {SEP}{start}..{end} for {slug} — "
+                    f"paper has {len(all_blocks)} blocks "
+                    f"({SEP}0..{max_idx}).  "
+                    f"Try get(id='{slug}/toc') for structure."
+                )
             return f"No blocks in range {SEP}{start}..{end} for {slug}"
 
         # Pre-fetch link counts for all blocks in range
@@ -867,6 +911,15 @@ class RefHandler(Handler):
             pass
 
         lines = []
+        if clamped:
+            # Tell the caller their range was wider than the paper so
+            # they don't think we silently dropped anything.  Single
+            # leading line keeps the chunk output uncluttered.
+            lines.append(
+                f"Range clamped to {SEP}{start}..{max_idx} "
+                f"(paper has {len(all_blocks)} blocks).\n"
+            )
+        last_idx_emitted = blocks[-1]["block_index"]
         for block in blocks:
             idx = block.get("block_index", "?")
             kind = block.get("block_type", "text")
@@ -887,8 +940,18 @@ class RefHandler(Handler):
             lines.append(text)
             lines.append("")
 
-        if end - start >= 10:
-            lines.append(f"Next: get(id='{slug}{SEP}{end}..') for more")
+        # Trailer (D5): suppress the off-the-end ``Next:`` hint when we
+        # already delivered the last block.  Always append a clear
+        # "End of paper" marker in that case so the caller doesn't
+        # paginate further.
+        at_end = last_idx_emitted >= max_idx
+        if at_end:
+            lines.append(
+                f"End of paper ({len(all_blocks)} blocks, last {SEP}{max_idx})."
+            )
+        elif end - start >= 10:
+            next_start = last_idx_emitted + 1
+            lines.append(f"Next: get(id='{slug}{SEP}{next_start}..') for more")
         return "\n".join(lines)
 
     # ── Summary ──────────────────────────────────────────────────────
@@ -1253,7 +1316,21 @@ class RefHandler(Handler):
                 )
             return f"No results for: {query}"
 
-        header = f"🔍 {_pluralise(len(hits), 'result')} for: {query}"
+        # Quality banner: when every returned hit has cosine distance
+        # > 0.4 the result set is dominated by noise — at that range
+        # the embedder is essentially saying "I have no idea what you
+        # mean".  Without a flag, an agent that doesn't track distance
+        # itself will trust the top hit.  Threshold and one-liner
+        # banner shape per mcp-critic finding N1.
+        distances = [h.get("distance", 0.0) for h in hits]
+        weak = bool(distances) and min(distances) > 0.4
+        if weak:
+            header = (
+                f"🔍 {_pluralise(len(hits), 'weak result')} for: {query}  "
+                f"(best d={min(distances):.2f} — consider rephrasing)"
+            )
+        else:
+            header = f"🔍 {_pluralise(len(hits), 'result')} for: {query}"
         if scope:
             header += f"  (scope={scope!r})"
         lines = [header, ""]

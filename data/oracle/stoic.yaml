@@ -1,0 +1,34 @@
+slug: stoic
+title: Stoic
+description: Stoic and classical aphorisms.  Marcus Aurelius, Epictetus, and the
+  Latin tradition — pithy frames for control, finitude, and equanimity.
+tags:
+- stoic
+entries:
+- title: Amor fati — love what is
+  body: Don't waste energy on the wish that the past, the situation, or the constraint
+    were different.  It isn't.  Move from there. The opposite is rumination, which
+    produces no signal and consumes attention.
+  original: Amor fati.
+  source: Marcus Aurelius / Nietzsche
+  lang: la
+- title: Memento mori — remember you will die
+  body: The deadline is real but unspecified.  When weighing whether to ship, to
+    confront, to apologise, ask whether you would do it if you knew today were the
+    last day.  Most times the answer reorders priorities cleanly.
+  original: Memento mori.
+  source: Roman triumphal tradition
+  lang: la
+- title: The dichotomy of control
+  body: Some things are within your control (your choices, your response, your effort)
+    and some are not (other people, outcomes, timing).  Allocate worry only to the
+    first set. Worrying about the second is a waste of finite cognition.
+  source: Epictetus, Discourses
+  lang: en
+- title: Festina lente — make haste slowly
+  body: Move with urgency; act with care.  Hurried but careless action loses ground;
+    deliberate but slow action loses time. The combination — quick decisions, careful
+    execution — is hard but is the actual goal.
+  original: Festina lente.
+  source: Augustus
+  lang: la

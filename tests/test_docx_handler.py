@@ -1,17 +1,17 @@
-"""Integration tests for WordHandler — parse, read, put."""
+"""Integration tests for DocxHandler — parse, read, put."""
 
 from __future__ import annotations
 
 import pytest
 from docx import Document
 
-from precis.handlers.word import WordHandler
+from precis.handlers.docx import DocxHandler
 from precis.protocol import PrecisError
 
 
 @pytest.fixture
 def handler():
-    return WordHandler()
+    return DocxHandler()
 
 
 @pytest.fixture

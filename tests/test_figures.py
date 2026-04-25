@@ -361,19 +361,32 @@ class TestPaperHandlerFigures:
                 },
             ]
         )
+        # Review 2026-04-25 finding B5/D4 — figure-not-found now
+        # surfaces as a structured PrecisError instead of the prose
+        # shape that previously diverged between numeric/non-numeric
+        # /out-of-range.  The dispatcher (``_dispatch`` →
+        # ``invoke_handler``) wraps it into the unified ``ERROR
+        # [<code>]: …`` envelope before reaching the MCP transport.
+        from precis.protocol import ErrorCode, PrecisError
+
         with patch("precis.handlers._ref_base._get_store", return_value=store):
-            result = handler.read(
-                path="test2024paper",
-                selector=None,
-                view="fig",
-                subview="99",
-                query="",
-                summarize=False,
-                depth=0,
-                page=1,
-            )
-        assert "not found" in result
-        assert "Available: 1" in result
+            try:
+                handler.read(
+                    path="test2024paper",
+                    selector=None,
+                    view="fig",
+                    subview="99",
+                    query="",
+                    summarize=False,
+                    depth=0,
+                    page=1,
+                )
+            except PrecisError as exc:
+                assert exc.code is ErrorCode.ID_NOT_FOUND
+                assert "available: 1" in exc.next
+                assert "test2024paper/fig" in exc.next
+            else:
+                raise AssertionError("expected PrecisError")
 
 
 # ---------------------------------------------------------------------------

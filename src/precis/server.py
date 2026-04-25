@@ -60,6 +60,60 @@ def _split_sep(text: str) -> list[str]:
     return _re.split(r"[" + _re.escape(_SEP_CHARS) + r"]", text, maxsplit=1)
 
 
+# Visually-similar characters that small models routinely substitute
+# for ASCII ``~`` when the canonical form is presented in unfamiliar
+# fonts.  Each one is rejected at the dispatcher boundary with a
+# structured error suggesting ``~`` as the canonical separator.
+# Review 2026-04-25 mcp-critic finding E3.
+#
+# ``›`` (U+203A, single right-pointing angle quotation mark) is
+# *not* in this list — it is the legacy canonical from v5.x and
+# remains accepted on input for back-compat (see
+# :data:`precis.uri._LEGACY_SEP` and ``test_review_2026_04_25``).
+_LOOKALIKE_SEPS: dict[str, str] = {
+    "\u2010": "U+2010 (Unicode hyphen)",
+    "\u2011": "U+2011 (non-breaking hyphen)",
+    "\u2013": "U+2013 (en-dash)",
+    "\u2014": "U+2014 (em-dash)",
+    "\u2212": "U+2212 (Unicode minus)",
+    "\u2500": "U+2500 (box drawing horizontal)",
+    "\uFE63": "U+FE63 (small hyphen-minus)",
+    "\uFF0D": "U+FF0D (full-width hyphen-minus)",
+}
+
+
+def _check_lookalike_sep(id: str) -> str | None:
+    """Return a structured-error string if ``id`` contains a non-ASCII
+    separator lookalike, else ``None``.
+
+    Catches the case where an agent (or a paste from rich text) writes
+    ``wu2008first–38`` instead of ``wu2008first~38``.  Without this,
+    such ids fall through to ``ID_NOT_FOUND`` with the unhelpful
+    cause ``paper 'wu2008first–38' not in corpus``.
+    """
+    for ch, desc in _LOOKALIKE_SEPS.items():
+        if ch in id:
+            fixed = id.replace(ch, SEP)
+            ctx = CallContext(
+                kind="", verb="", args={"id": id}
+            )
+            from precis.registry import record_call as _record_call
+
+            _record_call("", "free", errored=True)
+            err = _format_error(
+                ErrorCode.ID_MALFORMED,
+                ctx,
+                cause=(
+                    f"id contains {desc} which looks like a separator "
+                    "but isn't — the canonical chunk separator is "
+                    "ASCII ``~`` (U+007E)"
+                ),
+                next_hint=f"try get(id={fixed!r})",
+            )
+            return f"{err}\n\n[cost: free]"
+    return None
+
+
 def _has_identifier_hint(id: str) -> bool:
     """True if ``id`` carries an unambiguous routing signal.
 
@@ -206,11 +260,45 @@ def _load_kinds_mask(*, env: dict[str, str] | None = None) -> None:
 def _kind_from_uri(uri: str) -> str:
     """Return the canonical kind name for a URI's scheme.
 
-    Runs through :func:`resolve_alias` so that ``"arxiv:..."`` and
-    ``"doi:..."`` both resolve to ``"paper"``.
+    Resolution order:
+
+    1. :func:`resolve_alias` \u2014 explicit ``KindSpec.aliases`` entries.
+    2. Direct hit in :data:`KINDS` (kind name == scheme name, e.g.
+       ``paper:`` \u2192 ``paper``).
+    3. **Scheme \u2192 canonical-kind fallback** \u2014 when a scheme is
+       registered (via :data:`SCHEMES`) but isn't itself a kind and
+       isn't an alias, we walk :data:`PLUGINS` to find the plugin
+       that owns it and return that plugin's first KindSpec name.
+
+    Step (3) is what makes ``doi:10.x/y``, ``arxiv:2207.09327``,
+    ``pmid:12345``, etc. dispatch through the canonical ``paper``
+    kind's :data:`KindSpec` entry in :func:`_dispatch`, which in
+    turn means they go through ``Result.render()`` and pick up the
+    standard ``[cost: free]`` footer \u2014 the parity the previous
+    behaviour broke (mcp-critic finding D12).
+
+    Distinct from the alias path: the scheme \u2192 kind fallback only
+    fires when the kind name is *implicit* in the URI scheme, not
+    when the agent typed ``type='doi'``.  ``type='doi'`` still has
+    to go through ``ALIASES`` and is still explicitly rejected (per
+    Apr 2026 cleanup) \u2014 ``type=`` is the agent-facing kind enum
+    and only canonical kinds belong there.
     """
+    from precis.registry import PLUGINS
+
     scheme = uri.split(":", 1)[0] if ":" in uri else uri
-    return resolve_alias(scheme)
+    aliased = resolve_alias(scheme)
+    if aliased != scheme:
+        return aliased
+    if aliased in KINDS:
+        return aliased
+    # Scheme→canonical-kind fallback (D12).
+    handler_cls = SCHEMES.get(scheme)
+    if handler_cls is not None:
+        for plugin in PLUGINS.values():
+            if plugin.handler_cls is handler_cls and plugin.kinds:
+                return plugin.kinds[0].name
+    return aliased
 
 
 # Kinds whose ``id`` is an opaque expression or natural-language query.
@@ -218,10 +306,26 @@ def _kind_from_uri(uri: str) -> str:
 # ``websearch:foo, bar baz``) and MUST NOT be treated as a batch
 # separator.  Ref-backed kinds (paper/doi/arxiv/memory/todo/…) keep the
 # comma-batch behaviour so ``get(id='slug1~5,slug2~9')`` still works.
+#
+# Note: even kinds that *do* support batching get balanced-paren
+# protection from :func:`_split_top_level_commas` — a comma inside
+# parentheses is never a batch boundary regardless of kind.  This
+# list is the second line of defence: kinds whose entire id is
+# semantically opaque skip splitting altogether.
 _NO_COMMA_SPLIT_KINDS: frozenset[str] = frozenset({
     "calc", "math", "plot",
     "websearch", "research", "think",
     "youtube",
+    # Stateless primitives whose id may legitimately carry commas as
+    # *list* separators inside the URI itself: ``rng:choice/a,b,c``,
+    # ``rng:shuffle/a,b,c,d``, ``random:choice/x,y,z``.  Without this,
+    # the batch splitter silently dispatches the head element only
+    # ("a"), then yells about the rest as ambiguous bare slugs — the
+    # silent-success-then-spurious-errors failure mode mcp-critic
+    # M1 called out.  ``clock`` and ``oracle`` join for symmetry with
+    # the search-incompatible set above (their ids are also opaque).
+    "rng", "random",
+    "clock", "oracle",
 })
 
 # Kinds where ``search()`` doesn't apply: there is no corpus to vector-
@@ -234,6 +338,13 @@ _SEARCH_INCOMPATIBLE_KINDS: frozenset[str] = frozenset({
     "calc", "math", "plot",
     "websearch", "research", "think",
     "youtube",
+    # Stateless primitives that take a query as the id and have no
+    # meaningful ``top_k`` notion (single-value evaluators).
+    # ``random`` and ``oracle`` ARE compatible — random implements
+    # internal sample semantics, and oracle is paper-shaped (search
+    # against chunks via the ref join) — so they're absent from
+    # this set.
+    "clock", "rng",
 })
 
 
@@ -245,10 +356,12 @@ def _supports_comma_batch(type_arg: str, id: str) -> bool:
     is unset), then the user-supplied ``type=`` is consulted, then the
     default is True (ref-backed kinds support batch).
 
-    This is the single check that prevents the comma-split crash for
-    ``get(type='calc', id='integrate(sin(x), x)')`` — the input was
-    being split into ``['integrate(sin(x)', 'x)']`` and dispatched as
-    two ids.
+    This is the first line of defence against the comma-split crash
+    for ``get(type='calc', id='integrate(sin(x), x)')`` — the input
+    was being split into ``['integrate(sin(x)', 'x)']`` and dispatched
+    as two ids.  The second line of defence is
+    :func:`_split_top_level_commas`, which protects commas inside
+    parentheses on every kind regardless of this flag.
     """
     # Explicit scheme prefix on the id wins.
     if ":" in id:
@@ -259,6 +372,105 @@ def _supports_comma_batch(type_arg: str, id: str) -> bool:
     if type_arg and resolve_alias(type_arg) in _NO_COMMA_SPLIT_KINDS:
         return False
     return True
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    """Split ``text`` on commas that sit at parenthesis depth 0.
+
+    Commas inside ``()``, ``[]`` or ``{}`` are part of the inner
+    expression syntax (Python function calls, matrix literals, set
+    builders) and must never be treated as batch separators.  Without
+    this guard, ``rng:int(1,100)`` got chopped into ``rng:int(1`` and
+    ``100)`` and surfaced two confusing error envelopes per call.
+    Review 2026-04-25 mcp-critic finding C5/E3.
+
+    Behaviour:
+
+    - Same output as ``text.split(',')`` when no parens are present.
+    - Preserves nested-paren commas verbatim: ``a(b,c),d`` →
+      ``['a(b,c)', 'd']``.
+    - Whitespace is stripped from each part; empty strings are
+      dropped (mirrors the previous list-comprehension idiom in
+      ``server.get``).
+    - Treats unbalanced trailing parens as content (no exception);
+      the downstream URI parser will surface the malformed id with
+      its own structured error.
+    """
+    out: list[str] = []
+    current: list[str] = []
+    depth = 0
+    openers = "([{"
+    closers = ")]}"
+    for ch in text:
+        if ch in openers:
+            depth += 1
+            current.append(ch)
+        elif ch in closers:
+            if depth > 0:
+                depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            out.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        out.append("".join(current).strip())
+    return [part for part in out if part]
+
+
+def _strip_inner_cost_footers(parts: list[str]) -> str:
+    """Join multi-id batch parts with one trailing cost footer.
+
+    Each rendered ``Result`` carries its own ``[cost: <hint>]`` line on
+    a fresh line at the end of the body.  Concatenating N such bodies
+    repeats the footer N times \u2014 ~9 tokens of pure noise per chunk,
+    which adds up fast for large batches.  Review 2026-04-25 finding
+    D7.
+
+    Strategy:
+
+    - Find every ``[cost: \u2026]`` line embedded in the parts.
+    - Pick the **highest-cost** one as the surviving footer (so a
+      mixed paid/free batch never silently downgrades).
+    - Remove the cost line from every part body.
+    - Join with the existing ``\\n---\\n`` separator and append a single
+      trailing ``[cost: \u2026]`` line.
+
+    Cost ranking is naive (string sort with ``free`` as the floor)\u2014
+    accurate enough because the only batch shapes that actually mix\u2014
+    paid + free are rare and either footer is correct in those cases.\u2014
+    """
+    surviving_cost = ""
+
+    def _strip(part: str) -> str:
+        nonlocal surviving_cost
+        if not part:
+            return part
+        body_lines: list[str] = []
+        for line in part.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("[cost: ") and stripped.endswith("]"):
+                cost = stripped[len("[cost: "):-1]
+                # Prefer non-free over free (paid calls take priority
+                # in the surviving footer).  Otherwise keep the first.
+                if (
+                    not surviving_cost
+                    or (surviving_cost == "free" and cost != "free")
+                ):
+                    surviving_cost = cost
+                continue
+            body_lines.append(line)
+        # Drop trailing blank lines left by the stripped footer.
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
+        return "\n".join(body_lines)
+
+    cleaned = [_strip(p) for p in parts]
+    joined = "\n---\n".join(cleaned)
+    if surviving_cost:
+        joined = f"{joined}\n\n[cost: {surviving_cost}]"
+    return joined
 
 
 def _ambiguous_kind_error(
@@ -444,7 +656,7 @@ def search(
     Examples:
       # Single-kind semantic search
       search(query='CO2 capture MOFs', type='paper')
-      search(query='selectivity', scope='ni2024atomic')
+      search(query='nitrate', scope='ni2024atomic')
       search(query='membrane', type='paper', grep='tag:review')
 
       # Cross-corpus — search everything at once
@@ -600,23 +812,52 @@ def get(
       get(type='quest',  id='/recent')     — request queue
     """
     if not id and not grep:
+        # Every example below has been hand-verified to dispatch
+        # cleanly post-BUG-C (Apr 2026, bare-slug rejection): each
+        # one either has a ``type=`` qualifier, a scheme prefix, or
+        # a file extension — i.e. an identifier hint that
+        # :func:`_has_identifier_hint` accepts.  The previous
+        # version taught the pre-BUG-C behaviour and every example
+        # rejected, breaking onboarding for any agent that hit this
+        # recovery path.  Review 2026-04-25 finding C2.
+        #
+        # Footer parity: ``_dispatch`` appends ``[cost: free]`` on
+        # every other error path; this branch short-circuits before
+        # dispatch, so we add it inline.
+        examples: list[tuple[str, str]] = [
+            ("get(type='paper', id='ni2024atomic')",       "paper overview"),
+            (f"get(type='paper', id='ni2024atomic{SEP}5')", "read chunk 5"),
+            ("get(type='paper', id='ni2024atomic/toc')",  "table of contents"),
+            ("get(id='paper:ni2024atomic')",              "scheme prefix"),
+            ("get(id='report.docx')",                     "file extension auto-routes"),
+            ("get(type='memory', id='/recent')",          "recent memories"),
+            ("stats()",                                   "list every kind"),
+        ]
+        call_width = max(len(call) for call, _ in examples)
+        body_lines = [
+            f"  {call:<{call_width}}  — {desc}" for call, desc in examples
+        ]
         return (
             "ERROR: id or grep is required. Do not call get() with empty parameters.\n"
-            "  get(id='ni2024atomic')      — paper overview\n"
-            f"  get(id='ni2024atomic{SEP}5')    — read chunk 5\n"
-            "  get(id='ni2024atomic/toc')  — table of contents\n"
-            f"  get(id='slug1{SEP}4,slug2{SEP}9')   — multiple chunks at once\n"
-            "  get(id='report.docx')        — document toc\n"
-            "  get(grep='MOF')              — filter paper list"
+            + "\n".join(body_lines)
+            + "\n\n[cost: free]"
         )
+    # Reject visually-similar separators (en-dash, em-dash, U+2010
+    # hyphen, ...) before they fall through to ID_NOT_FOUND with a
+    # confusing cause line.  Keeps the recovery hint pointing at the
+    # canonical ASCII ``~``.  Review 2026-04-25 finding E3.
+    if id:
+        lookalike_err = _check_lookalike_sep(id)
+        if lookalike_err is not None:
+            return lookalike_err
     # Comma-separated multi-ID: dispatch each, paginate if over budget.
     # Skipped for compute/external kinds (calc, math, websearch, …)
-    # where commas are part of the input syntax — see
-    # :func:`_supports_comma_batch`.  Without this guard,
-    # ``get(type='calc', id='integrate(sin(x), x)')`` was being split
-    # into two bogus ids and crashing the dispatcher.
+    # where the *whole* id is opaque — see :func:`_supports_comma_batch`.
+    # On every kind that does support batching, the split is still
+    # paren-aware so commas inside ``int(1,100)`` / ``Matrix([[1,2]])``
+    # never become batch boundaries.  Review 2026-04-25 finding C5/E3.
     if id and _supports_comma_batch(type, id):
-        ids = [s.strip() for s in id.split(",") if s.strip()]
+        ids = _split_top_level_commas(id)
     else:
         ids = []
     if len(ids) > 1:
@@ -659,7 +900,16 @@ def get(
                     f"Remaining: get(id='{','.join(remaining)}')]"
                 )
                 break
-        return "\n---\n".join(parts)
+        # Dedupe per-chunk ``[cost: free]`` footers (D7).  Each
+        # ``_dispatch`` returned a fully rendered Result with its own
+        # cost line; for a 50-id batch that adds up to ~450 tokens of
+        # repetition.  Strip every embedded footer and append a single
+        # one at the end.  We keep the per-chunk cost on the trailing
+        # element so any non-free batch (mixed paid/free kinds) still
+        # surfaces the most expensive call rather than being silently
+        # downgraded to free.
+        joined = _strip_inner_cost_footers(parts)
+        return joined
     if id:
         # BUG-C — bare slug with no type= and no identifier hint used to
         # silently route to paper.  Now rejected for parity with the
@@ -867,10 +1117,16 @@ def stats() -> str:
         f"mask: {'PRECIS_KINDS set' if mask is not None else 'unset (expose all)'}"
     )
     lines.append("kinds by verb:")
-    for verb in ("search", "get", "put", "move"):
+    # Width tracks the longest verb name in :data:`VERBS` so adding a
+    # new verb won't silently misalign the column.  Alphabetical
+    # display order isn't great for scanning ("search" first reads
+    # oddly) — keep the canonical read-then-write order explicit.
+    verb_order = ("search", "get", "put", "move")
+    verb_width = max(len(v) for v in verb_order)
+    for verb in verb_order:
         kinds = [k.spec.name for k in visible_kinds(verb)]
         shown = ", ".join(kinds) if kinds else "(none)"
-        lines.append(f"  {verb:<6} {shown}")
+        lines.append(f"  {verb:<{verb_width}} {shown}")
 
     # Scheme aliases — surface the alternate URI prefixes each kind
     # responds to.  Without this section, an agent sees ``paper`` in
@@ -901,13 +1157,20 @@ def stats() -> str:
         lines.append("session:")
         # Sort by kind name so output is stable across runs.  The
         # empty-kind bucket is reserved for bare-call ambiguous-kind
-        # errors that never resolved to a concrete handler — render it
-        # as ``(no-kind)`` rather than an ugly blank.
-        for name in sorted(session):
-            s = session[name]
-            display_name = name or "(no-kind)"
+        # errors that never resolved to a concrete handler — render
+        # it as ``(no-kind, ambiguous)`` so the reader understands
+        # why the row always has calls == errors (mcp-critic finding
+        # N4).  Column width is computed from the actual labels (same
+        # pattern as the alias block above) so the bucket label can
+        # grow without dragging a magic number along with it.
+        rows = [
+            (name or "(no-kind, ambiguous)", session[name])
+            for name in sorted(session)
+        ]
+        width = max(len(label) for label, _ in rows)
+        for label, s in rows:
             lines.append(
-                f"  {display_name:<10} calls={s.calls}  errors={s.errors}  "
+                f"  {label:<{width}}  calls={s.calls}  errors={s.errors}  "
                 f"last_cost={s.last_cost}"
             )
     else:

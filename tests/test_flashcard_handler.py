@@ -418,7 +418,14 @@ class TestDueView:
 
     @patch(_PATCH_STORE_FC)
     @patch(_PATCH_STORE_REF)
-    def test_due_includes_review_tips(self, mock_ref_store, mock_fc_store):
+    def test_due_points_at_sm2_skill_not_inline_tips(
+        self, mock_ref_store, mock_fc_store
+    ):
+        # Review 2026-04-25 finding D7 — every poll of ``/due`` used to
+        # carry a ~120-token "Review tips:" block.  The pedagogy now
+        # lives in ``skill:sm2-basics`` and ``/due`` points the agent
+        # there with a one-line affordance plus one example
+        # ``mode='review'`` call.  This test guards the slim trailer.
         store = _mock_store()
         mock_ref_store.return_value = store
         mock_fc_store.return_value = store
@@ -427,7 +434,13 @@ class TestDueView:
         h._query_corpus_refs = MagicMock(return_value=[_due_ref()])
 
         result = h.read("", None, "due", None, "", False, 0, 0)
-        assert "Review tips:" in result
+        # New behaviour — the inline pedagogy block is gone
+        assert "Review tips:" not in result
+        assert "Quiz the user" not in result
+        # Slim trailer points at the skill body and shows one example
+        # of the review primitive (mode='review' is the affordance the
+        # agent must learn — leaving it on every /due is correct).
+        assert "skill:sm2-basics" in result
         assert "mode='review'" in result
 
 

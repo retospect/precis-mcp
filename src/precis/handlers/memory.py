@@ -104,6 +104,20 @@ class MemoryHandler(RefHandler):
         "recent": "_read_recent_view",
         "tags": "_read_tags_view",
     }
+    # Full write vocabulary; ``_enrich_error`` reads this to auto-fill
+    # ``options=`` on MODE_UNSUPPORTED.  Without this declaration the
+    # base RefHandler default (``{"note"}``) was the only thing the
+    # error envelope advertised, which made the agent think memory
+    # was read-only.  ``add`` and ``create`` are aliases for ``append``
+    # in the put() router.  Tag/untag are deliberately absent until
+    # MemoryHandler grows real tag mutation; listing them here would
+    # advertise behaviour that 404s.  mcp-critic finding M3.
+    allowed_modes = {
+        "append", "add", "create",
+        "replace",
+        "delete",
+        "note",
+    }
     extensions: set[str] = set()
 
     _ref_noun = "memory"

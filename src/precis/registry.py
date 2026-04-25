@@ -1,7 +1,7 @@
 """Handler registry — maps schemes and file extensions to handlers.
 
 Discovery order:
-  1. Built-in handlers (WordHandler, TexHandler, PaperHandler)
+  1. Built-in handlers (DocxHandler, TexHandler, PaperHandler)
   2. ``precis.plugins`` entry points (new — auto-discovers pip-installed plugins)
   3. ``precis.schemes`` / ``precis.file_types`` entry points (legacy compat)
 
@@ -102,7 +102,30 @@ class RegisteredKind:
 
     @property
     def description(self) -> str:
-        return self.spec.description
+        """Resolve the kind's description, evaluating callables lazily.
+
+        ``KindSpec.description`` may be either a literal string (the
+        common case) or a zero-argument callable that returns a string.
+        Callables are evaluated every time the tool schema is built so
+        kinds like ``clock:`` can surface live data (current time,
+        durations to standard milestones) directly in their enum entry.
+
+        If a callable raises, the failure is logged and a stable
+        fallback string is returned so a misbehaving description
+        callable can't break tool-schema generation.
+        """
+        d = self.spec.description
+        if callable(d):
+            try:
+                return d()
+            except Exception:
+                log.exception(
+                    "Description callable for kind %r raised; "
+                    "returning fallback",
+                    self.spec.name,
+                )
+                return f"{self.spec.name} (description unavailable)"
+        return d
 
 
 #: Canonical kind name → RegisteredKind.  Populated at discovery time.
@@ -381,23 +404,25 @@ def _register_builtins() -> None:
     ``PRECIS_PLUGINS`` and ``PRECIS_DISABLE_PLUGINS`` apply
     to builtins too, not just entry-point plugins.
     """
-    if _is_allowed("word"):
+    if _is_allowed("docx"):
         try:
-            from precis.handlers.word import WordHandler
+            from precis.handlers.docx import DocxHandler
 
             _register_plugin(
                 Plugin(
-                    name="word",
-                    handler_cls=WordHandler,
-                    schemes=["word"],
+                    name="docx",
+                    handler_cls=DocxHandler,
+                    schemes=["docx"],
                     file_types=[".docx"],
                     kinds=[
                         KindSpec(
-                            name="word",
+                            name="docx",
                             description=(
                                 "Microsoft Word documents (.docx) — "
                                 "node-structured read/write with tracked "
-                                "changes, comments, and ref-style citations."
+                                "changes, comments, and ref-style citations. "
+                                "Renamed from 'word' in 2026-04-25 to avoid "
+                                "confusion with dictionary-lookup queries."
                             ),
                             cost_hint="free",
                             examples=[
@@ -410,7 +435,7 @@ def _register_builtins() -> None:
                 )
             )
         except ImportError:
-            log.debug("WordHandler not available (missing python-docx?)")
+            log.debug("DocxHandler not available (missing python-docx?)")
 
     if _is_allowed("tex"):
         try:
@@ -754,6 +779,53 @@ def _register_builtins() -> None:
         except ImportError:
             log.debug("MemoryHandler not available (missing acatome-store?)")
 
+    if _is_allowed("oracle"):
+        try:
+            from precis.handlers.oracle import OracleHandler
+
+            _register_plugin(
+                Plugin(
+                    name="oracle",
+                    handler_cls=OracleHandler,
+                    schemes=["oracle"],
+                    corpus_id="oracle",
+                    write_policy="direct",
+                    kinds=[
+                        KindSpec(
+                            name="oracle",
+                            description=(
+                                "Wisdom traditions — paper-shaped (one "
+                                "ref per tradition, one chunk per "
+                                "entry).  Built-in: oracle:iching (64 "
+                                "hexagrams), oracle:chengyu, "
+                                "oracle:proverbs-euro, "
+                                "oracle:proverbs-irish, oracle:stoic, "
+                                "oracle:engineering, oracle:talmudic, "
+                                "oracle:zen.  Tags inherit via JOIN "
+                                "(tag-filter the parent ref to scope "
+                                "chunk-level random/search).  "
+                                "User-written entries → oracle:personal."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "get(id='oracle:')",
+                                "get(id='oracle:iching')",
+                                "get(id='oracle:iching/12')",
+                                "get(id='random:?corpus=oracle&tag=stoic')",
+                                "get(id='random:?corpus=oracle&"
+                                "not-tag=built-in')",
+                                "search(query='waiting', type='oracle')",
+                                "put(type='oracle', tradition='personal', "
+                                "title='knuth-on-optimisation', "
+                                "text='Premature optimisation …')",
+                            ],
+                        )
+                    ],
+                )
+            )
+        except ImportError:
+            log.debug("OracleHandler not available (missing acatome-store?)")
+
     # ── Phase 1 bookmarks: web + book (stored kinds, acatome-backed) ──
     # ``web:`` is the website-bookmark kind (v5.0+).  The legacy
     # Perplexity-Sonar ``web:`` was renamed to ``websearch:`` in Phase 0
@@ -909,6 +981,130 @@ def _register_builtins() -> None:
     # No env requirement, no network.  Advertised as the default for
     # pure-computation math; complements the paid Wolfram-based 'math'
     # kind which is better for fuzzy natural-language queries.
+
+    # ── Stateless primitives: clock, rng, random, iching ────────────
+    # Tiny, free, stdlib-or-data-file-only kinds that ground the agent
+    # (clock), inject controlled noise (rng, random, iching), and
+    # serve a wisdom corpus (random with corpus filter).  See
+    # docs/stochastic-kinds-plan.md.
+
+    if _is_allowed("clock"):
+        try:
+            from precis.handlers.clock import ClockHandler, _live_description
+
+            _register_plugin(
+                Plugin(
+                    name="clock",
+                    handler_cls=ClockHandler,
+                    schemes=["clock"],
+                    kinds=[
+                        KindSpec(
+                            name="clock",
+                            # Live description — re-evaluated on every
+                            # tool-schema build so the enum surfaces
+                            # current time + a few standard durations.
+                            description=_live_description,
+                            cost_hint="free",
+                            examples=[
+                                "get(id='clock:')",
+                                "get(id='clock:Europe/Dublin')",
+                                "get(id='clock:until/2027-01-01')",
+                                "get(id='clock:until/eoq')",
+                                "get(id='clock:since/2025-01-01')",
+                                "get(id='clock:between/2026-04-01/2026-12-31')",
+                                "get(id='clock:date')",
+                                "get(id='clock:unix')",
+                                "get(id='clock:/zones')",
+                                "get(id='clock:/help')",
+                            ],
+                        )
+                    ],
+                )
+            )
+        except ImportError:
+            log.debug("ClockHandler not available")
+
+    if _is_allowed("rng"):
+        try:
+            from precis.handlers.rng import RngHandler
+
+            _register_plugin(
+                Plugin(
+                    name="rng",
+                    handler_cls=RngHandler,
+                    schemes=["rng"],
+                    kinds=[
+                        KindSpec(
+                            name="rng",
+                            description=(
+                                "FREE (local, offline): random number "
+                                "generator — coin flip default, ints, "
+                                "ranges, dice (3d6), choice/shuffle, "
+                                "uuid, bytes.  Distinct from random: "
+                                "(content sampler) and calc: "
+                                "(deterministic math).  Seed via "
+                                "?seed=<n> for reproducibility."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "get(id='rng:')",
+                                "get(id='rng:1..6')",
+                                "get(id='rng:3d6')",
+                                "get(id='rng:choice/red,green,blue')",
+                                "get(id='rng:shuffle/a,b,c,d')",
+                                "get(id='rng:uuid')",
+                                "get(id='rng:?seed=42/3d6')",
+                                "get(id='rng:/help')",
+                            ],
+                        )
+                    ],
+                )
+            )
+        except ImportError:
+            log.debug("RngHandler not available")
+
+    if _is_allowed("random"):
+        try:
+            from precis.handlers.random_handler import RandomHandler
+
+            _register_plugin(
+                Plugin(
+                    name="random",
+                    handler_cls=RandomHandler,
+                    schemes=["random"],
+                    kinds=[
+                        KindSpec(
+                            name="random",
+                            description=(
+                                "FREE (local): vector-space sampler — "
+                                "uniform random ref from any corpus, or "
+                                "blast-radius pick semantically near a "
+                                "seed string.  Filter by corpus / tag.  "
+                                "Reuses acatome-store + pgvector; no "
+                                "new tables."
+                            ),
+                            cost_hint="free",
+                            examples=[
+                                "get(id='random:')",
+                                "get(id='random:?n=3')",
+                                "get(id='random:?corpus=papers')",
+                                "get(id='random:?corpus=wisdom&tradition=chengyu')",
+                                "get(id='random:cascading failure?n=3')",
+                                "get(id='random:my problem?corpus=wisdom&n=3')",
+                                "get(id='random:/help')",
+                            ],
+                        )
+                    ],
+                )
+            )
+        except ImportError:
+            log.debug("RandomHandler not available (missing acatome-store?)")
+
+    # Phase F retired the standalone ``iching:`` kind; the I-Ching now
+    # lives as ``oracle:iching`` (a paper-shaped ref in the oracle
+    # corpus) and reaches the agent via the same composition surface
+    # as every other oracle tradition.  Tag-filtered random + chunk
+    # addressing replace the bespoke iching: surface.
 
     if _is_allowed("calc"):
         try:
@@ -1303,6 +1499,45 @@ def resolve_alias(name: str) -> str:
     return ALIASES.get(name, name)
 
 
+def _handler_supports_verb(handler_cls: type[Handler], verb: str) -> bool:
+    """Conservative verb-capability probe used by :func:`visible_kinds`.
+
+    Read paths (``search`` / ``get``) are universal \u2014 every registered
+    kind supports them by definition (you can always at least try to
+    read a ref).  The write paths are filtered:
+
+    * ``put`` \u2014 requires ``Handler.writable == True``.  Read-only
+      kinds (``calc``, ``math``, ``websearch``, ``research``,
+      ``think``, ``youtube``, ``clock``, ``rng``, ``random``,
+      ``paper``) are hidden; their ``put`` always returns
+      ``MODE_UNSUPPORTED`` anyway, so listing them in the
+      capability map was actively misleading (mcp-critic M2).
+
+    * ``move`` \u2014 requires a *concrete* ``move_nodes`` somewhere in
+      the MRO.  ``_FileBase`` declares it abstract; only the
+      file-shape handlers (``docx``, ``tex``, ``markdown``,
+      ``plaintext``) override it with real reorder logic.  Ref-shape
+      handlers don't declare it at all and are filtered out.
+
+    The check is class-side (no instantiation), so filling out the
+    ``stats()`` capability table costs nothing.
+    """
+    if verb in ("search", "get"):
+        return True
+    if verb == "put":
+        return bool(getattr(handler_cls, "writable", False))
+    if verb == "move":
+        # Walk the MRO looking for a concrete move_nodes.  Stop at
+        # the first definition; abstract markers are honoured.
+        for base in handler_cls.__mro__:
+            method = base.__dict__.get("move_nodes")
+            if method is None:
+                continue
+            return not getattr(method, "__isabstractmethod__", False)
+        return False
+    return True
+
+
 def visible_kinds(verb: str) -> list[RegisteredKind]:
     """Return the kinds the agent should see for ``verb`` in tool schemas.
 
@@ -1319,7 +1554,13 @@ def visible_kinds(verb: str) -> list[RegisteredKind]:
        unset hide the kind entirely.  A warning is appended to
        :data:`STARTUP_WARNINGS` **once per kind per process** so ``/stats``
        can explain why.
-    4. Returned list is **sorted by kind name** so the agent always sees
+    4. **Verb-capability filter** \u2014 kinds whose handler doesn't
+       implement the verb (``put`` on read-only kinds, ``move`` on
+       non-file kinds) are hidden.  This is what makes ``stats()``
+       and the ``kind_unknown`` error options list reflect the real
+       capability matrix instead of the union of every kind times
+       every verb (mcp-critic M2).
+    5. Returned list is **sorted by kind name** so the agent always sees
        a stable enum ordering across runs.
 
     PG-reachability gating for state-backed kinds is separate (§6.2) and
@@ -1341,6 +1582,8 @@ def visible_kinds(verb: str) -> list[RegisteredKind]:
                 continue  # kind listed but verb not whitelisted
         if not _env_satisfied(kind.spec):
             continue  # requires-env unmet → hidden
+        if not _handler_supports_verb(kind.handler_cls, verb):
+            continue  # handler doesn't implement this verb → hidden
         out.append(kind)
     out.sort(key=lambda k: k.spec.name)
     return out

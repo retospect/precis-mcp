@@ -1,0 +1,92 @@
+slug: chengyu
+title: Chengyu
+description: Chinese four-character idioms.  Compact archetypes with deep embedded
+  narratives — each idiom names a recurring strategic situation.
+tags:
+- chengyu
+entries:
+- title: Morning three, evening four
+  body: Names and labels can change without the underlying quantity changing.  When
+    you reframe a deal so the parts seem more favourable, you've changed how it
+    feels, not what it is. Beware reframing that masquerades as concession.
+  original: 朝三暮四
+  pinyin: zhāo sān mù sì
+  lang: zh
+- title: Drawing legs on a snake
+  body: Adding superfluous detail beyond the point of usefulness ruins the work.  A
+    complete-enough thing is better than an "improved" version that no longer fits.  Stop
+    when you're done.
+  original: 畫蛇添足
+  pinyin: huà shé tiān zú
+  lang: zh
+- title: Lord Ye loves dragons
+  body: Professed love of a thing collapses on contact with the real thing.  When
+    you build for an imagined user (or self), check what happens when the actual
+    one shows up.  Stated preferences and revealed preferences diverge.
+  original: 葉公好龍
+  pinyin: yè gōng hào lóng
+  lang: zh
+- title: Watching the stump for the rabbit
+  body: One lucky outcome doesn't make a strategy.  If a rabbit ran into a stump
+    and broke its neck, sitting by the stump waiting for another rabbit is not a
+    plan.  Look for repeatable mechanisms, not single observations.
+  original: 守株待兔
+  pinyin: shǒu zhū dài tù
+  lang: zh
+- title: The fox borrows the tiger's might
+  body: Borrowed authority looks identical to real authority — until the lender
+    steps away.  When deference flows from your affiliation, treat it as a loan,
+    not an asset.  Plan for the day the affiliation ends.
+  original: 狐假虎威
+  pinyin: hú jiǎ hǔ wēi
+  lang: zh
+- title: Add eyes to the dragon
+  body: The last small detail is the one that makes the work alive. A presentation
+    with no opening hook, an essay with no closer, a product with no name — each
+    is technically complete and yet inert.  Find the missing eye.
+  original: 畫龍點睛
+  pinyin: huà lóng diǎn jīng
+  lang: zh
+- title: Snipe and clam fight; fisherman wins
+  body: Two opponents locked in a stalemate hand the prize to a third party who
+    shows up later.  When two of you are stuck refusing to concede, ask who benefits
+    from the prolonged fight.
+  original: 鷸蚌相爭
+  pinyin: yù bàng xiāng zhēng
+  lang: zh
+- title: Forced up Mount Liang
+  body: Sometimes the only path to a useful position is one nobody would willingly
+    choose.  When you find yourself committed to a course you didn't pick, look
+    for what becomes possible from this new vantage point — fighting the decision
+    is wasted.
+  original: 逼上梁山
+  pinyin: bī shàng liáng shān
+  lang: zh
+- title: The foolish old man moves the mountain
+  body: Multi-generational compounding effort beats one-generation heroics.  If
+    the work is large enough that you cannot finish it, set up something the next
+    person can continue, and don't pretend the project will be done in your lifetime.
+  original: 愚公移山
+  pinyin: yú gōng yí shān
+  lang: zh
+- title: Like a fish back in water
+  body: Some pairings — person and role, system and load — only make sense once
+    they're matched.  Before judging output, check the environment.  Performance
+    is a property of the fit, not just the actor.
+  original: 如魚得水
+  pinyin: rú yú dé shuǐ
+  lang: zh
+- title: Smash the pots and sink the boats
+  body: Burn the retreat.  When commitment matters more than option preservation,
+    removing the option to retreat focuses everyone on the only path forward.  Use
+    sparingly — most of the time, retaining options is the right move.
+  original: 破釜沉舟
+  pinyin: pò fǔ chén zhōu
+  lang: zh
+- title: Pulling up shoots to help them grow
+  body: Visible progress is not the same as actual progress.  Yanking seedlings
+    to make them taller faster kills them; pushing a team to ship before the work
+    is ready degrades the work and the team.  Patience is a yield function.
+  original: 拔苗助長
+  pinyin: bá miáo zhù zhǎng
+  lang: zh

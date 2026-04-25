@@ -1,7 +1,13 @@
 """DOCX handler — full read/write with tracked changes and comments.
 
 Integrates DocxParser from precis v1 with the v2 handler protocol.
-Requires the ``word`` extra: ``pip install precis[word]``.
+Requires the ``docx`` extra: ``pip install precis[docx]``.
+
+The canonical kind name is ``docx`` (renamed from ``word`` in the
+2026-04-25 mcp-critic review — small models routed dictionary-lookup
+queries to ``word`` thinking it was a definition kind).  No back-
+compat alias is registered: callers that hard-coded ``type='word'``
+must update to ``type='docx'``.
 """
 
 from __future__ import annotations
@@ -72,7 +78,7 @@ _LIST_BULLET_STYLES = ["List Bullet", "List Bullet 2", "List Bullet 3"]
 _LIST_NUMBER_STYLES = ["List Number", "List Number 2", "List Number 3"]
 
 
-class WordHandler(FileHandlerBase):
+class DocxHandler(FileHandlerBase):
     """Handler for .docx files."""
 
     extensions = {".docx"}

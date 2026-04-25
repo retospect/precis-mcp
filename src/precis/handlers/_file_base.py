@@ -729,9 +729,75 @@ class FileHandlerBase(Handler):
 
         return "\n".join(parts) if parts else ""
 
+    #: File extensions every file-base subclass collectively serves.
+    #: Used by :meth:`_resolve_path` to reject ids that clearly aren't
+    #: file paths before python-docx / lxml gets a chance to bury its
+    #: own ``FileNotFoundError`` (zip-member name leaks through to the
+    #: agent — review 2026-04-25 finding F1).
+    _KNOWN_FILE_EXTS = (
+        ".docx", ".tex", ".md", ".markdown", ".txt", ".text",
+    )
+
     def _resolve_path(self, path: str) -> str:
-        """Resolve and validate the file path."""
-        # For now: treat as-is (relative or absolute)
+        """Resolve and validate the file path.
+
+        File handlers are *file kinds* — the id is a path on disk.
+        Non-path inputs like ``/recent`` (which is a state-backed
+        kind's collection-view convention) used to slip through to
+        ``python-docx``/``lxml`` and surface a stack trace —
+        ``FileNotFoundError: [Errno 2] No such file or directory:
+        '/[Content_Types].xml'`` — leaking both the exception class
+        and a docx-zip member name to the agent.  Review 2026-04-25
+        finding F1.
+
+        Validation order:
+
+        1. Empty / ``.`` / non-string \u2192 ``PARAM_INVALID`` (caller forgot
+           the filename).
+        2. Looks like a ``/view`` (``/recent``, ``/help``, ...) on a
+           file kind \u2192 ``PARAM_INVALID`` with a hint pointing at
+           ``get(id='<filename>.<ext>')``.
+        3. Doesn't exist and has a known file extension \u2192 create an
+           empty stub (existing behaviour).
+        4. Doesn't exist and has no known extension \u2192 ``ID_NOT_FOUND``
+           with a hint listing the supported extensions.
+        """
+        if not path or path.strip() in {"", "."}:
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause=(
+                    f"{type(self).__name__} is a file kind \u2014 a filename "
+                    "is required"
+                ),
+                next=(
+                    "get(id='<filename>.docx') \u2014 supported extensions: "
+                    + ", ".join(self._KNOWN_FILE_EXTS)
+                ),
+            )
+        # ``/recent`` / ``/help`` / any leading-slash path that has no
+        # file extension is a collection-view convention from the
+        # state-backed kinds (memory, todo, ...).  File kinds don't
+        # implement those, and we'd rather bounce the caller cleanly
+        # than open a non-existent file.
+        last_segment = path.rsplit("/", 1)[-1]
+        if (
+            path.startswith("/")
+            and last_segment
+            and "." not in last_segment
+        ):
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause=(
+                    f"{path!r} is not a file path; "
+                    f"{type(self).__name__} is a file kind, not a "
+                    "state-backed kind with a /view convention"
+                ),
+                next=(
+                    "get(id='<filename>.docx') \u2014 file kinds need a "
+                    "filename with one of: "
+                    + ", ".join(self._KNOWN_FILE_EXTS)
+                ),
+            )
         p = Path(path)
         if not p.exists():
             # Try creating DOCX/TeX if missing
@@ -759,7 +825,25 @@ class FileHandlerBase(Handler):
                 raise PrecisError(
                     ErrorCode.ID_NOT_FOUND,
                     cause=f"file not found: {path}",
+                    next=(
+                        f"{type(self).__name__} reads "
+                        + ", ".join(self._KNOWN_FILE_EXTS)
+                        + " files \u2014 pass a filename with one of "
+                        "those extensions"
+                    ),
                 )
+        elif not p.is_file():
+            # ``Path('.').exists()`` is True (cwd), so an empty/`.`
+            # path that snuck past the early guards above would land
+            # here.  Reject before python-docx can try and fail.
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause=f"{path!r} is a directory, not a file",
+                next=(
+                    "get(id='<filename>.docx') \u2014 supported extensions: "
+                    + ", ".join(self._KNOWN_FILE_EXTS)
+                ),
+            )
         return str(p)
 
 

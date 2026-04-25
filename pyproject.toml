@@ -60,7 +60,7 @@ Homepage = "https://github.com/retospect/precis-mcp"
 Repository = "https://github.com/retospect/precis-mcp"
 
 [project.optional-dependencies]
-word = ["python-docx>=1.1", "lxml>=5.0"]
+docx = ["python-docx>=1.1", "lxml>=5.0"]
 tex = ["lxml>=5.0"]
 paper = ["acatome-store[embeddings]>=1.0.0", "acatome-meta>=0.1.0"]
 flashcards = ["acatome-store>=1.0.0"]
@@ -97,13 +97,14 @@ plot = ["matplotlib>=3.7", "pydantic>=2.0"]
 # handler auto-hides the ``rmk`` kind when the package is missing or
 # ``REMARKABLE_TOKEN`` is not set.
 remarkable = []
-all = ["precis-mcp[word,tex,paper,flashcards,quest,external,calc,plot]"]
+all = ["precis-mcp[docx,tex,paper,flashcards,quest,external,calc,plot]"]
 
 [project.scripts]
 precis = "precis.server:main"
+precis-ingest-oracle = "precis.handlers.oracle_ingest:_cli_main"
 
 [project.entry-points."precis.file_types"]
-".docx" = "precis.handlers.word:WordHandler"
+".docx" = "precis.handlers.docx:DocxHandler"
 ".tex" = "precis.handlers.tex:TexHandler"
 ".md" = "precis.handlers.markdown:MarkdownHandler"
 ".markdown" = "precis.handlers.markdown:MarkdownHandler"

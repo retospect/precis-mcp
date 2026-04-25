@@ -1,0 +1,1865 @@
+slug: iching
+title: I-Ching
+description: The Book of Changes.  64 archetypes for re-framing situations, each
+  with three layers (heritage Yi-Jing / modern systems / cognitive lens).  Use as
+  a re-framing prompt, not divination.
+tags:
+- i-ching
+- divination
+entries:
+- title: Hexagram  1 · 乾 Creative Force
+  body: '**Heritage**
+
+    Initiate boldly; act with clarity and purpose.
+
+    _Pure generative energy. Direction matters more than effort._
+
+
+    **Modern (systems): Execution Mode**
+
+    Act decisively when signal is strong.
+
+    _High-confidence environments favour action over analysis._
+
+
+    **Cognitive lens (heuristic): Action Bias**
+
+    Act to generate information.
+
+    _Execution produces feedback faster than planning._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Action Bias (heuristic)'
+  original: 乾
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Heaven over Heaven
+  binary: '111111'
+- title: Hexagram  2 · 坤 Receptive Ground
+  body: '**Heritage**
+
+    Support and adapt.
+
+    _Stability emerges through receptivity._
+
+
+    **Modern (systems): Observation Mode**
+
+    Delay action to gather signal.
+
+    _Low-information states benefit from patience._
+
+
+    **Cognitive lens (heuristic): Bayesian Updating**
+
+    Update beliefs with evidence.
+
+    _Wait for signal before committing._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Bayesian Updating (heuristic)'
+  original: 坤
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Earth over Earth
+  binary: '000000'
+- title: Hexagram  3 · 屯 Initial Difficulty
+  body: '**Heritage**
+
+    Organise early chaos.
+
+    _Structure emerges slowly from disorder._
+
+
+    **Modern (systems): Bootstrap Phase**
+
+    Stabilise before scaling.
+
+    _Early systems fail without minimal structure._
+
+
+    **Cognitive lens (heuristic): First Principles Thinking**
+
+    Reduce to fundamentals.
+
+    _Ignore noise; build from core truths._
+
+    '
+  extra_section_path:
+  - 'Cognitive: First Principles Thinking (heuristic)'
+  original: 屯
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Water over Thunder
+  binary: '010100'
+- title: Hexagram  4 · 蒙 Learning Curve
+  body: '**Heritage**
+
+    Learn before acting.
+
+    _Ignorance is a starting point, not a flaw._
+
+
+    **Modern (systems): Exploration Mode**
+
+    Prioritise learning.
+
+    _Understanding precedes optimisation._
+
+
+    **Cognitive lens (bias): Dunning-Kruger Effect**
+
+    Incompetence leads to overconfidence.
+
+    _Assume you know less than you think._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Dunning-Kruger Effect (bias)'
+  original: 蒙
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Mountain over Water
+  binary: '001010'
+- title: Hexagram  5 · 需 Waiting
+  body: '**Heritage**
+
+    Timing matters.
+
+    _Preparation enables decisive action later._
+
+
+    **Modern (systems): Strategic Delay**
+
+    Wait with intent.
+
+    _Delays are useful when they increase expected value._
+
+
+    **Cognitive lens (heuristic): Opportunity Cost**
+
+    Consider alternatives.
+
+    _Waiting is a choice with trade-offs._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Opportunity Cost (heuristic)'
+  original: 需
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Water over Heaven
+  binary: '010111'
+- title: Hexagram  6 · 訟 Conflict
+  body: '**Heritage**
+
+    Resolve disputes early.
+
+    _Conflict escalates if ignored._
+
+
+    **Modern (systems): Conflict Resolution**
+
+    Clarify disagreements.
+
+    _Misalignment compounds over time._
+
+
+    **Cognitive lens (heuristic): Steel Man**
+
+    Engage the strongest opposing view.
+
+    _Understanding reduces unnecessary conflict._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Steel Man (heuristic)'
+  original: 訟
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Heaven over Water
+  binary: '111010'
+- title: Hexagram  7 · 師 Collective Effort
+  body: '**Heritage**
+
+    Discipline and coordination win.
+
+    _Aligned groups outperform individuals._
+
+
+    **Modern (systems): Coordination Model**
+
+    Structure roles and responsibilities.
+
+    _Clear accountability removes friction._
+
+
+    **Cognitive lens (heuristic): Collective Intelligence**
+
+    Groups outperform individuals under structure.
+
+    _Distributed effort requires coordination._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Collective Intelligence (heuristic)'
+  original: 師
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Earth over Water
+  binary: '000010'
+- title: Hexagram  8 · 比 Alignment
+  body: '**Heritage**
+
+    Build alliances based on trust.
+
+    _Connection matters when grounded in integrity._
+
+
+    **Modern (systems): Network Formation**
+
+    Build trust-based coalitions.
+
+    _Reliability is the foundation of cooperation._
+
+
+    **Cognitive lens (principle): Reciprocity Norm**
+
+    Cooperation is self-reinforcing.
+
+    _Trust compounds over repeated interaction._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Reciprocity Norm (principle)'
+  original: 比
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Water over Earth
+  binary: '010000'
+- title: Hexagram  9 · 小畜 Small Gains
+  body: '**Heritage**
+
+    Incremental progress compounds.
+
+    _Tiny improvements accumulate into meaningful change._
+
+
+    **Modern (systems): Marginal Gains**
+
+    Focus on 1% improvements.
+
+    _Small consistent gains outperform erratic leaps._
+
+
+    **Cognitive lens (heuristic): Pareto Principle**
+
+    80% of results come from 20% of causes.
+
+    _Target high-leverage inputs._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Pareto Principle (heuristic)'
+  original: 小畜
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Wind over Heaven
+  binary: '011111'
+- title: Hexagram 10 · 履 Careful Conduct
+  body: '**Heritage**
+
+    Act with awareness in risky contexts.
+
+    _Precision and awareness reduce unintended consequences._
+
+
+    **Modern (systems): Risk-Aware Execution**
+
+    Proceed carefully in high-stakes environments.
+
+    _High capability without care leads to damage._
+
+
+    **Cognitive lens (heuristic): Hanlon''s Razor**
+
+    Do not attribute to malice what is explained by incompetence.
+
+    _Reduce misjudgement of intent._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Hanlon''s Razor (heuristic)'
+  original: 履
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Heaven over Lake
+  binary: '111110'
+- title: Hexagram 11 · 泰 Flow
+  body: '**Heritage**
+
+    Harmony enables progress.
+
+    _Opposites integrate into smooth operation._
+
+
+    **Modern (systems): Throughput Mode**
+
+    Exploit aligned systems.
+
+    _Friction is low; maximise throughput._
+
+
+    **Cognitive lens (heuristic): Pareto Principle**
+
+    Focus on high-impact inputs.
+
+    _Optimise the small set that drives results._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Pareto Principle (heuristic)'
+  original: 泰
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Earth over Heaven
+  binary: '000111'
+- title: Hexagram 12 · 否 Stagnation
+  body: '**Heritage**
+
+    Recognise blockages; withdraw strategically.
+
+    _Disconnected layers prevent flow._
+
+
+    **Modern (systems): Failure Mode**
+
+    Decouple and isolate.
+
+    _Separation prevents cascading failures._
+
+
+    **Cognitive lens (principle): Goodhart''s Law**
+
+    Metrics distort systems.
+
+    _Misaligned optimisation causes stagnation._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Goodhart''s Law (principle)'
+  original: 否
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Heaven over Earth
+  binary: '111000'
+- title: Hexagram 13 · 同人 Community
+  body: '**Heritage**
+
+    Shared purpose strengthens outcomes.
+
+    _When people align around meaning, coordination becomes effortless._
+
+
+    **Modern (systems): Shared Vision**
+
+    Unite around common goals.
+
+    _Purpose reduces coordination overhead._
+
+
+    **Cognitive lens (bias): Social Proof**
+
+    People follow others.
+
+    _Harness or resist as appropriate._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Social Proof (bias)'
+  original: 同人
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Heaven over Fire
+  binary: '111101'
+- title: Hexagram 14 · 大有 Abundance
+  body: '**Heritage**
+
+    Use success responsibly.
+
+    _Resources are available; stewardship determines sustainability._
+
+
+    **Modern (systems): Resource Allocation**
+
+    Invest surplus wisely.
+
+    _Abundance mismanaged becomes liability._
+
+
+    **Cognitive lens (bias): Endowment Effect**
+
+    Overvaluing what you own.
+
+    _Avoid hoarding surplus unproductively._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Endowment Effect (bias)'
+  original: 大有
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Fire over Heaven
+  binary: '101111'
+- title: Hexagram 15 · 謙 Modesty
+  body: '**Heritage**
+
+    Stay grounded; reduce ego.
+
+    _Humility creates stability and trust._
+
+
+    **Modern (systems): Ego Reduction**
+
+    Operate without self-promotion.
+
+    _Credibility grows where ego shrinks._
+
+
+    **Cognitive lens (heuristic): Dunning-Kruger (Inverse)**
+
+    High competence correlates with greater awareness of limits.
+
+    _Expertise breeds humility._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Dunning-Kruger (Inverse) (heuristic)'
+  original: 謙
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Earth over Mountain
+  binary: '000001'
+- title: Hexagram 16 · 豫 Momentum
+  body: '**Heritage**
+
+    Channel enthusiasm constructively.
+
+    _Energy is building; direct it wisely._
+
+
+    **Modern (systems): Activation Energy**
+
+    Leverage momentum while it exists.
+
+    _Timing an initiative at peak enthusiasm reduces effort._
+
+
+    **Cognitive lens (bias): Availability Heuristic**
+
+    Overweighting vivid information.
+
+    _Enthusiasm distorts probability estimates._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Availability Heuristic (bias)'
+  original: 豫
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Thunder over Earth
+  binary: '100000'
+- title: Hexagram 17 · 隨 Following
+  body: '**Heritage**
+
+    Adapt to what works.
+
+    _Flexibility is strength._
+
+
+    **Modern (systems): Adaptive Following**
+
+    Align with proven patterns.
+
+    _Efficiency comes from following validated paths._
+
+
+    **Cognitive lens (fallacy): Survivorship Bias**
+
+    Visible successes hide invisible failures.
+
+    _Validate before following trends._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Survivorship Bias (fallacy)'
+  original: 隨
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Lake over Thunder
+  binary: '110100'
+- title: Hexagram 18 · 蠱 Repair
+  body: '**Heritage**
+
+    Fix what has decayed.
+
+    _Neglect has consequences._
+
+
+    **Modern (systems): Technical Debt**
+
+    Address accumulated failures.
+
+    _Deferred maintenance compounds cost._
+
+
+    **Cognitive lens (fallacy): Sunk Cost Fallacy**
+
+    Past investment should not drive future decisions.
+
+    _Fix objectively or abandon._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Sunk Cost Fallacy (fallacy)'
+  original: 蠱
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Mountain over Wind
+  binary: '001011'
+- title: Hexagram 19 · 臨 Approach
+  body: '**Heritage**
+
+    Engage early with care.
+
+    _Early presence builds trust before action is needed._
+
+
+    **Modern (systems): Early Engagement**
+
+    Establish position before it is needed.
+
+    _Presence before pressure is more effective._
+
+
+    **Cognitive lens (bias): Anchoring Bias**
+
+    Initial values distort subsequent judgement.
+
+    _Frame early and carefully._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Anchoring Bias (bias)'
+  original: 臨
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Earth over Lake
+  binary: '000110'
+- title: Hexagram 20 · 觀 Observation
+  body: '**Heritage**
+
+    Step back; gain perspective.
+
+    _Clarity comes from distance._
+
+
+    **Modern (systems): System Monitoring**
+
+    Watch before intervening.
+
+    _Pattern recognition requires uninterrupted observation._
+
+
+    **Cognitive lens (bias): Framing Effect**
+
+    Presentation shapes decisions.
+
+    _Observe raw data before interpretation._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Framing Effect (bias)'
+  original: 觀
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Wind over Earth
+  binary: '011000'
+- title: Hexagram 21 · 噬嗑 Breakthrough
+  body: '**Heritage**
+
+    Confront obstacles decisively.
+
+    _Some barriers require forceful resolution._
+
+
+    **Modern (systems): Decisive Action**
+
+    Break through resistance.
+
+    _Prolonged avoidance increases cost._
+
+
+    **Cognitive lens (heuristic): Inversion**
+
+    Solve by avoiding failure.
+
+    _Ask what causes blockage, then remove it._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Inversion (heuristic)'
+  original: 噬嗑
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Fire over Thunder
+  binary: '101100'
+- title: Hexagram 22 · 賁 Presentation
+  body: '**Heritage**
+
+    Clarity in appearance matters.
+
+    _Form influences perception._
+
+
+    **Modern (systems): Communicability**
+
+    Present ideas cleanly.
+
+    _Ideas that cannot be communicated cannot be adopted._
+
+
+    **Cognitive lens (bias): Framing Effect**
+
+    How things are presented changes how they are received.
+
+    _Invest in presentation quality._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Framing Effect (bias)'
+  original: 賁
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Mountain over Fire
+  binary: '001101'
+- title: Hexagram 23 · 剝 Decline
+  body: '**Heritage**
+
+    Let go of what is failing.
+
+    _Decay is part of cycles._
+
+
+    **Modern (systems): Controlled Reduction**
+
+    Remove what no longer functions.
+
+    _Holding onto failing systems delays renewal._
+
+
+    **Cognitive lens (bias): Loss Aversion**
+
+    Losses feel larger than equivalent gains.
+
+    _Override emotional attachment to declining assets._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Loss Aversion (bias)'
+  original: 剝
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Mountain over Earth
+  binary: '001000'
+- title: Hexagram 24 · 復 Return
+  body: '**Heritage**
+
+    Reset and begin again.
+
+    _A fresh start is available._
+
+
+    **Modern (systems): System Reset**
+
+    Restart from a clean state.
+
+    _Accumulated cruft warrants periodic reset._
+
+
+    **Cognitive lens (heuristic): Regret Minimisation**
+
+    Choose paths that minimise long-term regret.
+
+    _Use fresh starts to course-correct._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Regret Minimisation (heuristic)'
+  original: 復
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Earth over Thunder
+  binary: '000100'
+- title: Hexagram 25 · 無妄 Integrity
+  body: '**Heritage**
+
+    Act without ulterior motives.
+
+    _Purity of intent simplifies decisions._
+
+
+    **Modern (systems): Alignment Check**
+
+    Ensure actions match stated values.
+
+    _Misalignment between intent and action creates fragility._
+
+
+    **Cognitive lens (bias): Confirmation Bias**
+
+    Seeking evidence that supports existing beliefs.
+
+    _Audit intent regularly._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Confirmation Bias (bias)'
+  original: 無妄
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Heaven over Thunder
+  binary: '111100'
+- title: Hexagram 26 · 大畜 Restraint
+  body: '**Heritage**
+
+    Hold power until needed.
+
+    _Strength is present but should be contained._
+
+
+    **Modern (systems): Stored Potential**
+
+    Build capacity before deploying.
+
+    _Premature action wastes accumulated advantage._
+
+
+    **Cognitive lens (principle): Parkinson''s Law**
+
+    Work expands to fill time.
+
+    _Constraints improve focus._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Parkinson''s Law (principle)'
+  original: 大畜
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Mountain over Heaven
+  binary: '001111'
+- title: Hexagram 27 · 頤 Nourishment
+  body: '**Heritage**
+
+    Feed what sustains you.
+
+    _Inputs shape outputs._
+
+
+    **Modern (systems): Resource Quality**
+
+    Optimise inputs, not just outputs.
+
+    _System quality reflects what sustains it._
+
+
+    **Cognitive lens (heuristic): Lindy Effect**
+
+    Durable things tend to persist.
+
+    _Invest in proven sustaining practices._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Lindy Effect (heuristic)'
+  original: 頤
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Mountain over Thunder
+  binary: '001100'
+- title: Hexagram 28 · 大過 Overload
+  body: '**Heritage**
+
+    Pressure requires structural change.
+
+    _Current systems are strained beyond capacity._
+
+
+    **Modern (systems): Capacity Planning**
+
+    Redesign before collapse.
+
+    _Systems under overload need structural, not incremental, fixes._
+
+
+    **Cognitive lens (heuristic): Black Swan Awareness**
+
+    Expect rare high-impact events.
+
+    _Overload often precedes systemic failure._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Black Swan Awareness (heuristic)'
+  original: 大過
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Lake over Wind
+  binary: '110011'
+- title: Hexagram 29 · 坎 Risk
+  body: '**Heritage**
+
+    Navigate danger with skill.
+
+    _Risk compounds without discipline._
+
+
+    **Modern (systems): Risk Management**
+
+    Operate with redundancy.
+
+    _Safeguards reduce fragility in uncertain environments._
+
+
+    **Cognitive lens (heuristic): Black Swan Awareness**
+
+    Expect rare high-impact events.
+
+    _Plan beyond normal distributions._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Black Swan Awareness (heuristic)'
+  original: 坎
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Water over Water
+  binary: '010010'
+- title: Hexagram 30 · 離 Clarity
+  body: '**Heritage**
+
+    Illuminate truth.
+
+    _Clarity spreads through the system._
+
+
+    **Modern (systems): Interpretability**
+
+    Make systems understandable.
+
+    _Transparent systems scale better._
+
+
+    **Cognitive lens (heuristic): Occam''s Razor**
+
+    Prefer simpler explanations.
+
+    _Complexity hides error._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Occam''s Razor (heuristic)'
+  original: 離
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Fire over Fire
+  binary: '101101'
+- title: Hexagram 31 · 咸 Influence
+  body: '**Heritage**
+
+    Subtle persuasion shapes outcomes.
+
+    _Small signals shift larger systems over time._
+
+
+    **Modern (systems): Soft Power**
+
+    Influence through consistency.
+
+    _Persistent subtle pressure changes direction more reliably than force._
+
+
+    **Cognitive lens (principle): Reciprocity Norm**
+
+    Giving creates obligation.
+
+    _Influence through contribution before asking._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Reciprocity Norm (principle)'
+  original: 咸
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Lake over Mountain
+  binary: '110001'
+- title: Hexagram 32 · 恆 Endurance
+  body: '**Heritage**
+
+    Consistency creates strength.
+
+    _Sustained effort outperforms intensity._
+
+
+    **Modern (systems): Compounding**
+
+    Small consistent actions accumulate.
+
+    _Reliability over time is more powerful than bursts._
+
+
+    **Cognitive lens (heuristic): Lindy Effect**
+
+    Longevity signals robustness.
+
+    _Durable practices outlast brilliant innovations._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Lindy Effect (heuristic)'
+  original: 恆
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Thunder over Wind
+  binary: '100011'
+- title: Hexagram 33 · 遯 Withdrawal
+  body: '**Heritage**
+
+    Retreat preserves energy.
+
+    _Strategic retreat protects long-term position._
+
+
+    **Modern (systems): Strategic Retreat**
+
+    Know when to disengage.
+
+    _Not all battles are worth winning._
+
+
+    **Cognitive lens (heuristic): Regret Minimisation**
+
+    Minimise long-term regret.
+
+    _Retreat now to preserve future options._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Regret Minimisation (heuristic)'
+  original: 遯
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Heaven over Mountain
+  binary: '111001'
+- title: Hexagram 34 · 大壯 Power
+  body: '**Heritage**
+
+    Use strength ethically.
+
+    _Capability must be balanced with responsibility._
+
+
+    **Modern (systems): Ethical Force**
+
+    Deploy strength with restraint.
+
+    _Unchecked power erodes legitimacy._
+
+
+    **Cognitive lens (bias): Loss Aversion**
+
+    Overweighting losses in risk decisions.
+
+    _Power misused creates long-tail costs._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Loss Aversion (bias)'
+  original: 大壯
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Thunder over Heaven
+  binary: '100111'
+- title: Hexagram 35 · 晉 Progress
+  body: '**Heritage**
+
+    Advance with visibility.
+
+    _Growth is happening; make it visible._
+
+
+    **Modern (systems): Transparent Progress**
+
+    Show work as it develops.
+
+    _Visible momentum attracts support._
+
+
+    **Cognitive lens (fallacy): Survivorship Bias**
+
+    Visible success hides failure.
+
+    _Document failures alongside wins._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Survivorship Bias (fallacy)'
+  original: 晉
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Fire over Earth
+  binary: '101000'
+- title: Hexagram 36 · 明夷 Concealment
+  body: '**Heritage**
+
+    Protect insight in hostile settings.
+
+    _Shield what matters until conditions improve._
+
+
+    **Modern (systems): Information Security**
+
+    Contain sensitive advantage.
+
+    _Premature disclosure destroys competitive position._
+
+
+    **Cognitive lens (heuristic): Hanlon''s Razor**
+
+    Do not assume hostile intent.
+
+    _Conceal without becoming paranoid._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Hanlon''s Razor (heuristic)'
+  original: 明夷
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Earth over Fire
+  binary: '000101'
+- title: Hexagram 37 · 家人 Structure
+  body: '**Heritage**
+
+    Order begins at home.
+
+    _Internal organisation reflects external outcomes._
+
+
+    **Modern (systems): Internal Systems**
+
+    Fix local before scaling globally.
+
+    _External complexity compounds internal disorder._
+
+
+    **Cognitive lens (heuristic): First Principles Thinking**
+
+    Reduce to core components.
+
+    _Rebuild internal structure from fundamentals._
+
+    '
+  extra_section_path:
+  - 'Cognitive: First Principles Thinking (heuristic)'
+  original: 家人
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Wind over Fire
+  binary: '011101'
+- title: Hexagram 38 · 睽 Divergence
+  body: '**Heritage**
+
+    Differences can be useful.
+
+    _Opposition is not always conflict._
+
+
+    **Modern (systems): Creative Tension**
+
+    Use disagreement productively.
+
+    _Divergent perspectives reveal blind spots._
+
+
+    **Cognitive lens (bias): Confirmation Bias**
+
+    Seeking confirming evidence.
+
+    _Divergence actively combats confirmation bias._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Confirmation Bias (bias)'
+  original: 睽
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Fire over Lake
+  binary: '101110'
+- title: Hexagram 39 · 蹇 Obstruction
+  body: '**Heritage**
+
+    Seek alternate paths.
+
+    _Direct progress is blocked._
+
+
+    **Modern (systems): Pathfinding**
+
+    Reroute when blocked.
+
+    _Persistence against a wall is inefficiency._
+
+
+    **Cognitive lens (heuristic): Inversion**
+
+    Solve by asking what causes the block.
+
+    _Identify and remove the constraint._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Inversion (heuristic)'
+  original: 蹇
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Water over Mountain
+  binary: '010001'
+- title: Hexagram 40 · 解 Release
+  body: '**Heritage**
+
+    Resolve tension and move on.
+
+    _Letting go restores movement._
+
+
+    **Modern (systems): Tension Release**
+
+    Clear backlogs and debts.
+
+    _Accumulated tension is a drag on throughput._
+
+
+    **Cognitive lens (fallacy): Sunk Cost Fallacy**
+
+    Past investment should not trap future decisions.
+
+    _Release is rational when costs are unrecoverable._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Sunk Cost Fallacy (fallacy)'
+  original: 解
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Thunder over Water
+  binary: '100010'
+- title: Hexagram 41 · 損 Reduction
+  body: '**Heritage**
+
+    Simplify to gain clarity.
+
+    _Less creates focus._
+
+
+    **Modern (systems): Simplification**
+
+    Remove to improve.
+
+    _Complexity reduces reliability._
+
+
+    **Cognitive lens (heuristic): Occam''s Razor**
+
+    Simpler explanations are more reliable.
+
+    _Remove assumptions until only essentials remain._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Occam''s Razor (heuristic)'
+  original: 損
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Mountain over Lake
+  binary: '001110'
+- title: Hexagram 42 · 益 Increase
+  body: '**Heritage**
+
+    Invest where returns grow.
+
+    _Expansion is possible._
+
+
+    **Modern (systems): Growth Investment**
+
+    Allocate to high-return areas.
+
+    _Compounding requires early and targeted investment._
+
+
+    **Cognitive lens (heuristic): Second-Order Thinking**
+
+    Think beyond immediate effects.
+
+    _Growth has downstream consequences._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Second-Order Thinking (heuristic)'
+  original: 益
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Wind over Thunder
+  binary: '011100'
+- title: Hexagram 43 · 夬 Resolution
+  body: '**Heritage**
+
+    Declare intent clearly.
+
+    _Ambiguity weakens action._
+
+
+    **Modern (systems): Commitment**
+
+    State position and follow through.
+
+    _Visible commitment signals reliability._
+
+
+    **Cognitive lens (bias): Anchoring Bias**
+
+    Initial framing distorts decisions.
+
+    _Resolve by anchoring to clear intent._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Anchoring Bias (bias)'
+  original: 夬
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Lake over Heaven
+  binary: '110111'
+- title: Hexagram 44 · 姤 Encounter
+  body: '**Heritage**
+
+    Be cautious of sudden influences.
+
+    _Unexpected forces are entering._
+
+
+    **Modern (systems): Boundary Checking**
+
+    Vet new inputs carefully.
+
+    _Unchecked influences corrupt system state._
+
+
+    **Cognitive lens (bias): Availability Heuristic**
+
+    Recent events are overweighted.
+
+    _New encounters distort probability estimates._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Availability Heuristic (bias)'
+  original: 姤
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Heaven over Wind
+  binary: '111011'
+- title: Hexagram 45 · 萃 Gathering
+  body: '**Heritage**
+
+    Unite around shared values.
+
+    _Collective focus amplifies effect._
+
+
+    **Modern (systems): Coalition Building**
+
+    Assemble aligned people.
+
+    _Small aligned groups outperform large misaligned ones._
+
+
+    **Cognitive lens (principle): Network Effects**
+
+    Value grows with connections.
+
+    _Gatherings create compounding returns._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Network Effects (principle)'
+  original: 萃
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Lake over Earth
+  binary: '110000'
+- title: Hexagram 46 · 升 Rising
+  body: '**Heritage**
+
+    Progress steadily upward.
+
+    _Growth is gradual but stable._
+
+
+    **Modern (systems): Incremental Growth**
+
+    Build layer by layer.
+
+    _Stable growth survives disruption better than rapid growth._
+
+
+    **Cognitive lens (principle): Compounding Returns**
+
+    Small gains accumulate exponentially.
+
+    _Consistency beats intensity over time._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Compounding Returns (principle)'
+  original: 升
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Earth over Wind
+  binary: '000011'
+- title: Hexagram 47 · 困 Constraint
+  body: '**Heritage**
+
+    Limits test resilience.
+
+    _Restrictions reveal strengths and weaknesses._
+
+
+    **Modern (systems): Constraint Exploitation**
+
+    Find advantage within limits.
+
+    _Constraints force creative solutions._
+
+
+    **Cognitive lens (heuristic): Antifragility**
+
+    Systems benefit from stress.
+
+    _Constraints build long-term robustness._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Antifragility (heuristic)'
+  original: 困
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Lake over Water
+  binary: '110010'
+- title: Hexagram 48 · 井 Source
+  body: '**Heritage**
+
+    Return to fundamentals.
+
+    _Core principles remain reliable._
+
+
+    **Modern (systems): Core Principles**
+
+    Revisit foundations regularly.
+
+    _Systems drift from first principles under pressure._
+
+
+    **Cognitive lens (heuristic): Circle of Competence**
+
+    Operate within known limits.
+
+    _Return to what you understand deeply._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Circle of Competence (heuristic)'
+  original: 井
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Water over Wind
+  binary: '010011'
+- title: Hexagram 49 · 革 Transformation
+  body: '**Heritage**
+
+    Change must be timely and justified.
+
+    _Reform requires both necessity and readiness._
+
+
+    **Modern (systems): Managed Change**
+
+    Time transformation carefully.
+
+    _Premature change fails; delayed change compounds damage._
+
+
+    **Cognitive lens (heuristic): Paradigm Shift**
+
+    Recognise when rules have changed.
+
+    _Transformation requires new mental models._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Paradigm Shift (heuristic)'
+  original: 革
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Lake over Fire
+  binary: '110101'
+- title: Hexagram 50 · 鼎 Stability
+  body: '**Heritage**
+
+    Build enduring systems.
+
+    _Longevity depends on structure._
+
+
+    **Modern (systems): System Architecture**
+
+    Design for continuity.
+
+    _Stable systems outlast high-performance fragile ones._
+
+
+    **Cognitive lens (heuristic): Lindy Effect**
+
+    Things that survive tend to keep surviving.
+
+    _Build systems that endure._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Lindy Effect (heuristic)'
+  original: 鼎
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Fire over Wind
+  binary: '101011'
+- title: Hexagram 51 · 震 Shock
+  body: '**Heritage**
+
+    Disruption awakens awareness.
+
+    _Sudden change resets perspective._
+
+
+    **Modern (systems): Disruption Response**
+
+    Use shocks as learning signals.
+
+    _Crises reveal hidden system properties._
+
+
+    **Cognitive lens (heuristic): Black Swan Awareness**
+
+    Rare events have outsized impact.
+
+    _Use shock to stress-test assumptions._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Black Swan Awareness (heuristic)'
+  original: 震
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Thunder over Thunder
+  binary: '100100'
+- title: Hexagram 52 · 艮 Stillness
+  body: '**Heritage**
+
+    Pause to regain control.
+
+    _Stopping is sometimes progress._
+
+
+    **Modern (systems): Deliberate Pause**
+
+    Stop to recalibrate.
+
+    _Action without reflection compounds error._
+
+
+    **Cognitive lens (heuristic): Meta-Cognition**
+
+    Think about your thinking.
+
+    _Stillness enables self-correction._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Meta-Cognition (heuristic)'
+  original: 艮
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Mountain over Mountain
+  binary: '001001'
+- title: Hexagram 53 · 漸 Gradual Growth
+  body: '**Heritage**
+
+    Develop step by step.
+
+    _Sustainable progress is slow._
+
+
+    **Modern (systems): Incremental Development**
+
+    Build in stages.
+
+    _Staged development reduces integration failures._
+
+
+    **Cognitive lens (principle): Law of Large Numbers**
+
+    Outcomes stabilise over many trials.
+
+    _Gradual growth produces reliable results._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Law of Large Numbers (principle)'
+  original: 漸
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Wind over Mountain
+  binary: '011001'
+- title: Hexagram 54 · 歸妹 Adaptation
+  body: '**Heritage**
+
+    Know your role in transitions.
+
+    _Position matters during change._
+
+
+    **Modern (systems): Role Flexibility**
+
+    Adjust behaviour to context.
+
+    _Rigid roles fail in dynamic environments._
+
+
+    **Cognitive lens (bias): Framing Effect**
+
+    Context changes interpretation.
+
+    _Adapt framing as conditions shift._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Framing Effect (bias)'
+  original: 歸妹
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Thunder over Lake
+  binary: '100110'
+- title: Hexagram 55 · 豐 Peak
+  body: '**Heritage**
+
+    Maximise opportunity at its height.
+
+    _Conditions are optimal but temporary._
+
+
+    **Modern (systems): Peak Exploitation**
+
+    Act at maximum advantage.
+
+    _Windows close; act decisively when open._
+
+
+    **Cognitive lens (heuristic): Regret Minimisation**
+
+    Choose paths that minimise long-term regret.
+
+    _Missed peaks are lasting regrets._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Regret Minimisation (heuristic)'
+  original: 豐
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Thunder over Fire
+  binary: '100101'
+- title: Hexagram 56 · 旅 Transition
+  body: '**Heritage**
+
+    Stay flexible in unfamiliar places.
+
+    _Adaptability ensures survival outside home context._
+
+
+    **Modern (systems): Context Switching**
+
+    Operate well in new environments.
+
+    _Rigid processes fail outside their design context._
+
+
+    **Cognitive lens (heuristic): Circle of Competence**
+
+    Know your limits.
+
+    _Transitions expose edges of competence._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Circle of Competence (heuristic)'
+  original: 旅
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Fire over Mountain
+  binary: '101001'
+- title: Hexagram 57 · 巽 Gentle Influence
+  body: '**Heritage**
+
+    Consistency persuades over time.
+
+    _Soft pressure accumulates._
+
+
+    **Modern (systems): Persistent Signalling**
+
+    Apply low-level continuous influence.
+
+    _Gentle consistent input reshapes systems._
+
+
+    **Cognitive lens (principle): Reciprocity Norm**
+
+    Consistent giving builds obligation.
+
+    _Influence through contribution, not force._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Reciprocity Norm (principle)'
+  original: 巽
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Wind over Wind
+  binary: '011011'
+- title: Hexagram 58 · 兌 Joy
+  body: '**Heritage**
+
+    Shared positivity builds trust.
+
+    _Morale matters._
+
+
+    **Modern (systems): Positive Culture**
+
+    Cultivate shared meaning.
+
+    _Psychological safety enables risk-taking._
+
+
+    **Cognitive lens (bias): Social Proof**
+
+    People follow positive signals.
+
+    _Joy signals safety and belonging._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Social Proof (bias)'
+  original: 兌
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Lake over Lake
+  binary: '110110'
+- title: Hexagram 59 · 渙 Dispersion
+  body: '**Heritage**
+
+    Break down barriers.
+
+    _Fragmentation limits flow._
+
+
+    **Modern (systems): Silo Breaking**
+
+    Dissolve unnecessary divisions.
+
+    _Communication across boundaries multiplies throughput._
+
+
+    **Cognitive lens (principle): Network Effects**
+
+    Value grows with connections.
+
+    _Dispersion increases surface area for collaboration._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Network Effects (principle)'
+  original: 渙
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Wind over Water
+  binary: '011010'
+- title: Hexagram 60 · 節 Limitation
+  body: '**Heritage**
+
+    Set boundaries wisely.
+
+    _Constraints define systems._
+
+
+    **Modern (systems): Deliberate Constraints**
+
+    Choose limits that enable function.
+
+    _Well-designed limits reduce noise._
+
+
+    **Cognitive lens (principle): Parkinson''s Law**
+
+    Work expands to fill available time.
+
+    _Explicit limits improve efficiency._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Parkinson''s Law (principle)'
+  original: 節
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Water over Lake
+  binary: '010110'
+- title: Hexagram 61 · 中孚 Inner Truth
+  body: '**Heritage**
+
+    Align actions with values.
+
+    _Authenticity creates coherence._
+
+
+    **Modern (systems): Value Alignment**
+
+    Ensure internal and external consistency.
+
+    _Misalignment between values and actions erodes trust._
+
+
+    **Cognitive lens (heuristic): Epistemic Humility**
+
+    Acknowledge uncertainty.
+
+    _Honest self-appraisal enables alignment._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Epistemic Humility (heuristic)'
+  original: 中孚
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Wind over Lake
+  binary: '011110'
+- title: Hexagram 62 · 小過 Attention to Detail
+  body: '**Heritage**
+
+    Small matters require care.
+
+    _Minor elements have major effects._
+
+
+    **Modern (systems): Precision Mode**
+
+    Attend to granular detail.
+
+    _Small errors in complex systems cascade._
+
+
+    **Cognitive lens (heuristic): Second-Order Thinking**
+
+    Consider consequences of consequences.
+
+    _Detail errors produce second-order failures._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Second-Order Thinking (heuristic)'
+  original: 小過
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Thunder over Mountain
+  binary: '100001'
+- title: Hexagram 63 · 既濟 Completion
+  body: '**Heritage**
+
+    Success requires vigilance.
+
+    _Equilibrium is fragile._
+
+
+    **Modern (systems): Steady State**
+
+    Monitor for drift.
+
+    _Stable systems deteriorate without maintenance._
+
+
+    **Cognitive lens (principle): Regression to the Mean**
+
+    Extremes normalise.
+
+    _Avoid overconfidence at completion._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Regression to the Mean (principle)'
+  original: 既濟
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Water over Fire
+  binary: '010101'
+- title: Hexagram 64 · 未濟 Unfinished
+  body: '**Heritage**
+
+    Remain adaptable; the cycle continues.
+
+    _Instability contains future order._
+
+
+    **Modern (systems): Continuous Iteration**
+
+    Never assume completion.
+
+    _All systems remain in flux._
+
+
+    **Cognitive lens (heuristic): Meta-Cognition**
+
+    Think about your thinking.
+
+    _Adapt reasoning as the cycle continues._
+
+    '
+  extra_section_path:
+  - 'Cognitive: Meta-Cognition (heuristic)'
+  original: 未濟
+  lang: zh
+  source: I-Ching, unified three-layer system
+  trigrams: Fire over Water
+  binary: '101010'

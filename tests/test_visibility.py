@@ -158,11 +158,28 @@ class TestVisibleKinds:
         assert "VIS_GAMMA_KEY" in matching[0]
 
     def test_mask_whitelists_bare_kind_with_all_verbs(self, three_kinds, monkeypatch):
+        # Layered semantics post-mcp-critic-M2:
+        #   1. mask: whitelist the kind for all four verbs
+        #   2. requires-env: VIS_GAMMA_KEY present (n/a for alpha)
+        #   3. **verb-capability filter**: hide for verbs the handler
+        #      can't actually do.  ``_VisHandler`` is read-only with
+        #      no ``move_nodes`` override, so even an explicit
+        #      ``alpha[put,move]`` mask cannot manufacture a write
+        #      surface that doesn't exist.  The mask grants
+        #      *visibility*; it does not grant *capability*.
         monkeypatch.setenv("VIS_GAMMA_KEY", "present")
         set_kinds_mask({"alpha": VERBS})
-        for verb in ("search", "get", "put", "move"):
+        for verb in ("search", "get"):
             names = {k.spec.name for k in visible_kinds(verb)}
-            assert names == {"alpha"}
+            assert names == {"alpha"}, (
+                f"{verb}: read verbs always universal for visible kinds"
+            )
+        for verb in ("put", "move"):
+            names = {k.spec.name for k in visible_kinds(verb)}
+            assert names == set(), (
+                f"{verb}: _VisHandler doesn't implement it; mask alone "
+                "cannot manufacture the capability"
+            )
 
     def test_mask_whitelists_verb_subset(self, three_kinds, monkeypatch):
         monkeypatch.setenv("VIS_GAMMA_KEY", "present")

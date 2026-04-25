@@ -11,10 +11,11 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import ClassVar
 
 from acatome_meta.literature import first_author_surname
 
-from precis.handlers._ref_base import RefHandler, _truncate
+from precis.handlers._ref_base import RefHandler, _pluralise, _truncate
 from precis.protocol import ErrorCode, PrecisError, extract_kwargs
 from precis.uri import SEP
 
@@ -27,6 +28,93 @@ log = logging.getLogger(__name__)
 # vary (biblatex/natbib/plain bibtex all differ on the right spelling),
 # and leaving the text unformatted is safer than guessing.
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+# JATS XML markers embedded in abstracts coming from CrossRef.  These
+# are NOT stripped by the existing title sanitiser because we want to
+# convert ``<jats:sub>2</jats:sub>`` to a Unicode subscript instead of
+# just deleting it.  Without this, ``/abstract`` returns prose like
+# ``reducing nitrate (NO<jats:sub>3</jats:sub><jats:sup>−</jats:sup>)``
+# verbatim — unusable in any downstream prompt or paper draft.
+# Review: 2026-04-25 mcp-critic finding B4.
+_JATS_SUB_RE = re.compile(r"<jats:sub>(.*?)</jats:sub>", re.IGNORECASE | re.DOTALL)
+_JATS_SUP_RE = re.compile(r"<jats:sup>(.*?)</jats:sup>", re.IGNORECASE | re.DOTALL)
+_JATS_TAG_RE = re.compile(r"</?jats:[A-Za-z\-]+(?:\s[^>]*)?\s*/?>", re.IGNORECASE)
+
+# Characters we can map verbatim to Unicode subscripts / superscripts.
+# Anything outside this set falls back to a markdown ``_x_`` / ``^x^``
+# wrapper so we never silently drop content.
+_SUB_TRANSLATE = str.maketrans(
+    "0123456789+-=()n\u2212",
+    "\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089\u208a\u208b\u208c\u208d\u208e\u2099\u208b",
+)
+_SUP_TRANSLATE = str.maketrans(
+    "0123456789+-=()n\u2212",
+    "\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079\u207a\u207b\u207c\u207d\u207e\u207f\u207b",
+)
+_SUB_OK = set("0123456789+-=()n\u2212")
+_SUP_OK = set("0123456789+-=()n\u2212")
+
+# Pattern to recognise an in-text figure / scheme / table caption when
+# the figure-extractor missed it (i.e. caption lives in a regular text
+# block instead of the figures table).  Matches ``Figure 3.``, ``Fig. 3``,
+# ``Scheme 2``, ``Table 1.``, etc.
+# Review: 2026-04-25 mcp-critic finding B7.
+_CAPTION_PATTERNS = {
+    "fig": re.compile(
+        r"^\s*(?:Figure|Fig\.?|Scheme)\s+(\d+)\b", re.IGNORECASE
+    ),
+}
+
+
+def _convert_jats_sub(match: re.Match[str]) -> str:
+    """Replace ``<jats:sub>x</jats:sub>`` with Unicode subscript or
+    markdown ``_x_`` fallback.
+    """
+    inner = match.group(1).strip()
+    if not inner:
+        return ""
+    if all(c in _SUB_OK for c in inner):
+        return inner.translate(_SUB_TRANSLATE)
+    return f"_{inner}_"
+
+
+def _convert_jats_sup(match: re.Match[str]) -> str:
+    """Replace ``<jats:sup>x</jats:sup>`` with Unicode superscript or
+    markdown ``^x^`` fallback.
+    """
+    inner = match.group(1).strip()
+    if not inner:
+        return ""
+    if all(c in _SUP_OK for c in inner):
+        return inner.translate(_SUP_TRANSLATE)
+    return f"^{inner}^"
+
+
+def _clean_jats(text: str) -> str:
+    """Strip JATS XML markup from CrossRef-style abstracts.
+
+    Conversion rules (applied in order):
+
+    1. ``<jats:sub>x</jats:sub>`` → Unicode subscript (e.g. ``₃⁴−``)
+       when ``x`` is digits/operators only, else markdown ``_x_``.
+    2. ``<jats:sup>x</jats:sup>`` → Unicode superscript, else ``^x^``.
+    3. Any remaining ``<jats:foo>`` / ``</jats:foo>`` opening or closing
+       tag (``<jats:title>``, ``<jats:p>``, ``<jats:italic>``, etc.)
+       is dropped verbatim.
+    4. HTML entities decoded.
+    5. Outer whitespace stripped.  Internal whitespace is left alone
+       so paragraph breaks survive.
+
+    Review: 2026-04-25 mcp-critic finding B4 — ``/abstract`` was
+    returning raw ``<jats:title>Abstract</jats:title>...`` markup.
+    """
+    if not text:
+        return text
+    text = _JATS_SUB_RE.sub(_convert_jats_sub, text)
+    text = _JATS_SUP_RE.sub(_convert_jats_sup, text)
+    text = _JATS_TAG_RE.sub("", text)
+    text = html.unescape(text)
+    return text.strip()
 
 # BibTeX reserved characters that must be escaped with a backslash when
 # they appear literally inside a braced field value.  ``~`` and ``^``
@@ -87,6 +175,32 @@ def _bibtex_escape(raw: object) -> str:
     return text.translate(_BIBTEX_ESCAPE)
 
 
+def _format_next_block(calls: list[tuple[str, str]]) -> list[str]:
+    """Render a "Next:" block of (call, description) pairs aligned.
+
+    The trailers we emit at the end of figure / overview responses are
+    visual tables: each row is a copy-pasteable ``get(...)`` call on
+    the left and a one-line gloss on the right, separated by a
+    long-dash.  When those rows were hand-aligned with literal
+    spaces, three things broke:
+
+    * Slugs vary in length (``ni2024atomic`` vs
+      ``marquessilva1999grasp``) — hand-counted spaces only worked
+      for the design-time fixture.
+    * Figure numbers grow past one digit on some papers — by ``fig
+      10`` the column was already off.
+    * Adding or renaming a row required re-counting every line.
+
+    This helper takes a list of ``(call, description)`` pairs and
+    pads every call to the longest one before the dash, so the
+    column stays straight regardless of input.
+    """
+    if not calls:
+        return []
+    width = max(len(call) for call, _ in calls)
+    return [f"  {call:<{width}}  — {desc}" for call, desc in calls]
+
+
 def _author_names(raw: object) -> list[str]:
     """Normalise the ``authors`` column into a flat list of name strings.
 
@@ -136,6 +250,15 @@ class PaperHandler(RefHandler):
     scheme = "paper"
     writable = False
     corpus_id = "papers"
+    # Paper has a real onboarding skill — wire it so ``paper:/help``
+    # serves the skill body instead of returning VIEW_UNKNOWN.  The
+    # skill already exists at ``src/precis/skills/paper-structural-
+    # navigation/SKILL.md``; the only thing missing was this attribute.
+    # Without the declaration, ``/help`` appeared in the
+    # ``options=`` list of every paper-view error but every probe of
+    # it 404'd \u2014 the recovery hint pointed at a dead view
+    # (mcp-critic finding M4).
+    onboarding_skill: ClassVar[str | None] = "paper-structural-navigation"
     views = {
         **RefHandler.views,
         "abstract": "_read_abstract_view",
@@ -144,6 +267,15 @@ class PaperHandler(RefHandler):
         "cited-by": "_read_cited_by_view",
         "fig": "_read_fig_view",
         "page": "_read_page_view",
+        # /notes — read back notes created via put(note='...').  The
+        # write path lived in :func:`precis.tools._create_note` since
+        # day one, but the read surface was missing entirely; agents
+        # could create notes that no one could find again from the
+        # MCP (mcp-critic finding N2).  Implementation pulls from
+        # ``store.get_notes(ref_id=...)``; rendering keeps the same
+        # shape as the create response so an agent's write\u2192read loop
+        # round-trips cleanly.
+        "notes": "_read_notes_view",
     }
     extensions: set[str] = set()
 
@@ -176,6 +308,93 @@ class PaperHandler(RefHandler):
         extract_kwargs(kwargs, (), context="paper/page")
         return self._read_page(store, ref, selector)
 
+    def _read_notes_view(self, store, ref, selector, subview, **kwargs) -> str:
+        """List notes attached to this paper (ref- and block-level).
+
+        Read-side counterpart to ``put(id='paper:<slug>',
+        note='...')``.  Pulls every note for the ref via
+        :meth:`store.get_notes` (ordered newest\u2192oldest), groups
+        ref-level notes first, then per-block, and emits a structured
+        listing with the create-time hint for round-trips.
+
+        Empty case is handled by the ID_NOT_FOUND-shaped trailer (no
+        notes is not an error \u2014 it's the default state for any new
+        paper).  mcp-critic finding N2.
+        """
+        extract_kwargs(kwargs, (), context="paper/notes")
+        slug = ref.get("slug") or "???"
+        ref_id = ref.get("ref_id") or ref.get("id")
+        notes = store.get_notes(ref_id=ref_id) if ref_id is not None else []
+        if not notes:
+            return (
+                f"📄 {slug} \u2014 no notes yet.\n\n"
+                "Create one:\n"
+                f"  put(id='paper:{slug}', note='...')              \u2014 ref-level\n"
+                f"  put(id='paper:{slug}{SEP}<block>', note='...')   \u2014 block-level"
+            )
+
+        ref_notes = [n for n in notes if not n.get("block_node_id")]
+        block_notes = [n for n in notes if n.get("block_node_id")]
+
+        lines = [f"📝 {slug} \u2014 {_pluralise(len(notes), 'note')}", ""]
+        if ref_notes:
+            lines.append(f"## Ref-level ({len(ref_notes)})")
+            lines.append("")
+            for n in ref_notes:
+                title = n.get("title") or ""
+                created = (n.get("created_at") or "")[:19]
+                origin = n.get("origin") or ""
+                head = f"#{n.get('id')}"
+                if title:
+                    head += f"  {title}"
+                if created:
+                    head += f"  ({created}"
+                    if origin:
+                        head += f", {origin}"
+                    head += ")"
+                lines.append(head)
+                content = (n.get("content") or "").strip()
+                if content:
+                    for cl in content.splitlines():
+                        lines.append(f"  {cl}")
+                tags = n.get("tags")
+                if tags:
+                    lines.append(f"  tags: {', '.join(tags) if isinstance(tags, list) else tags}")
+                lines.append("")
+
+        if block_notes:
+            lines.append(f"## Block-level ({len(block_notes)})")
+            lines.append("")
+            # Group by block_node_id so the agent can find related
+            # notes alongside their target chunk.
+            by_block: dict[str, list[dict]] = {}
+            for n in block_notes:
+                by_block.setdefault(n.get("block_node_id", ""), []).append(n)
+            for node_id, group in by_block.items():
+                lines.append(f"block {node_id}:")
+                for n in group:
+                    head = f"  #{n.get('id')}"
+                    created = (n.get("created_at") or "")[:19]
+                    if created:
+                        head += f"  ({created})"
+                    lines.append(head)
+                    content = (n.get("content") or "").strip()
+                    if content:
+                        for cl in content.splitlines():
+                            lines.append(f"    {cl}")
+                lines.append("")
+
+        lines.append("Next:")
+        lines.append(
+            f"  put(id='paper:{slug}', note='...')          "
+            "\u2014 add ref-level note"
+        )
+        lines.append(
+            f"  put(id='paper:{slug}{SEP}<block>', note='...') "
+            "\u2014 add block-level note"
+        )
+        return "\n".join(lines)
+
     def _read_overview(self, store, ref: dict) -> str:
         slug = ref.get("slug") or "???"
         title = ref.get("title") or ""
@@ -191,7 +410,12 @@ class PaperHandler(RefHandler):
         doi = ref.get("doi") or ""
 
         abstract_blocks = store.get_blocks(slug, block_type="abstract")
-        abstract = abstract_blocks[0]["text"] if abstract_blocks else ""
+        # Run abstract through _clean_jats so the overview's preview
+        # paragraph doesn't leak ``<jats:title>...<jats:p>`` markup into
+        # downstream prompts.  Review 2026-04-25 finding B4.
+        abstract = (
+            _clean_jats(abstract_blocks[0]["text"]) if abstract_blocks else ""
+        )
 
         all_blocks = store.get_blocks(slug)
         n_blocks = len(all_blocks)
@@ -291,7 +515,12 @@ class PaperHandler(RefHandler):
         blocks = store.get_blocks(slug, block_type="abstract")
         if not blocks:
             return f"No abstract available for {slug}"
-        return blocks[0].get("text", "")
+        # CrossRef abstracts ship with JATS XML markup (sub/sup tags,
+        # <jats:title>, <jats:p>, etc.).  Strip / convert before handing
+        # the text to the agent — otherwise paper drafts and prompts
+        # built off ``/abstract`` carry the markup verbatim.  Review
+        # 2026-04-25 finding B4.
+        return _clean_jats(blocks[0].get("text", ""))
 
     def _read_citation(self, ref: dict, style: str) -> str:
         slug = ref.get("slug", "???")
@@ -373,7 +602,7 @@ class PaperHandler(RefHandler):
                 return f"{first_author} et al., {journal} {raw_year}".strip()
             return slug
 
-    # ── Figures ───────────────────────────────────────────────────────
+    # ── Figures ──────────────────────────────────────────────────────────
 
     _FIGURES_DIR = "figures"
 
@@ -393,23 +622,40 @@ class PaperHandler(RefHandler):
             return self._list_figures(store, slug)
 
         parts = subview.split("/")
+        raw_num = parts[0]
+        # Figure number must be a non-negative integer.  Both ``abc``
+        # (non-numeric) and ``-1`` / ``0`` (out-of-range) used to take
+        # different code paths (one structured error, two prose lines)
+        # — review 2026-04-25 finding B5/D4.  All three now route
+        # through the same ``_figure_not_found`` helper which produces
+        # a consistent ``ERROR [<code>]`` envelope with the available
+        # list folded into the ``next:`` hint.
+        figs = store.get_figures(slug)
         try:
-            fig_num = int(parts[0])
-        except ValueError as exc:
-            raise PrecisError(
-                ErrorCode.ID_MALFORMED,
-                cause=f"invalid figure number: {parts[0]!r}",
-                next=f"get(id='{slug}/fig') to list figures",
-            ) from exc
+            fig_num = int(raw_num)
+        except ValueError:
+            raise self._figure_not_found(
+                slug=slug,
+                figs=figs,
+                requested=raw_num,
+                code=ErrorCode.ID_MALFORMED,
+            ) from None
+        if fig_num < 1:
+            raise self._figure_not_found(
+                slug=slug,
+                figs=figs,
+                requested=raw_num,
+                code=ErrorCode.ID_NOT_FOUND,
+            )
 
         aspect = "/".join(parts[1:]) if len(parts) > 1 else ""
 
         if aspect == "":
-            return self._figure_overview(store, slug, fig_num)
+            return self._figure_overview(store, slug, fig_num, figs=figs)
         elif aspect == "legend":
-            return self._figure_legend(store, slug, fig_num)
+            return self._figure_legend(store, slug, fig_num, figs=figs)
         elif aspect == "image":
-            return self._figure_image(store, slug, fig_num)
+            return self._figure_image(store, slug, fig_num, figs=figs)
         elif aspect == "image/export":
             return self._figure_export(store, slug, fig_num)
         else:
@@ -432,44 +678,93 @@ class PaperHandler(RefHandler):
         for fig in figs:
             n = fig["fig_num"]
             page = fig.get("page", "")
-            caption = _truncate(fig.get("caption", ""), 100)
-            lines.append(f"  fig {n}  p{page}  {caption}")
+            caption = fig.get("caption", "") or self._rescue_caption(
+                store, slug, n, fig.get("page")
+            )
+            lines.append(f"  fig {n}  p{page}  {_truncate(caption, 100)}")
         lines.append("")
         lines.append("Next:")
-        lines.append(f"  get(id='{slug}/fig/1')              — overview")
-        lines.append(f"  get(id='{slug}/fig/1/legend')       — caption text")
-        lines.append(f"  get(id='{slug}/fig/1/image')        — encoded image")
-        lines.append(f"  get(id='{slug}/fig/1/image/export') — save to ./figures/")
+        # Listing trailer can't promise a caption for an unknown figure
+        # — paper figure-extractors miss captions for ~5–10 % of figs.
+        # Hedge with "when present" so an agent doesn't trust a fixed
+        # promise and fabricate a description (mcp-critic finding M6).
+        # Build (call, description) tuples and pad programmatically so
+        # the column alignment stays correct regardless of slug length.
+        next_calls: list[tuple[str, str]] = [
+            (f"get(id='{slug}/fig/1')",              "overview + caption"),
+            (f"get(id='{slug}/fig/1/legend')",       "caption text"),
+            (f"get(id='{slug}/fig/1/image')",        "encoded image (+ caption when present)"),
+            (f"get(id='{slug}/fig/1/image/export')", "save to ./figures/"),
+        ]
+        lines.extend(_format_next_block(next_calls))
         return "\n".join(lines)
 
-    def _figure_overview(self, store, slug: str, fig_num: int) -> str:
-        figs = store.get_figures(slug)
+    def _figure_overview(
+        self, store, slug: str, fig_num: int, *, figs: list | None = None
+    ) -> str:
+        if figs is None:
+            figs = store.get_figures(slug)
         fig = next((f for f in figs if f["fig_num"] == fig_num), None)
         if not fig:
-            return self._fig_not_found(slug, fig_num, figs)
-        caption = fig.get("caption", "")
+            raise self._figure_not_found(
+                slug=slug, figs=figs, requested=str(fig_num),
+                code=ErrorCode.ID_NOT_FOUND,
+            )
+        # Caption pairing (B7): the figure-extractor sometimes leaves
+        # ``caption=''`` even though the literal "Figure N. ..." text
+        # is present as an adjacent text block.  Scan body blocks for
+        # a same-numbered caption when the metadata field is empty so
+        # ``/fig/N`` always carries the legend.
+        caption = fig.get("caption", "") or self._rescue_caption(
+            store, slug, fig_num, fig.get("page")
+        )
         page = fig.get("page", "")
+        # Trailer reflects actual caption resolution so a downstream
+        # agent reading only the trailer knows whether the /image view
+        # will carry the legend or just the bytes.  Without this, the
+        # static "+ caption" promise misled callers into fabricating
+        # descriptions for caption-less figures (mcp-critic finding M6).
+        image_desc = (
+            "encoded image + caption" if caption else "encoded image (caption: missing)"
+        )
+        next_calls: list[tuple[str, str]] = [
+            (f"get(id='{slug}/fig/{fig_num}/legend')",       "caption text"),
+            (f"get(id='{slug}/fig/{fig_num}/image')",        image_desc),
+            (f"get(id='{slug}/fig/{fig_num}/image/export')", "save to ./figures/"),
+        ]
         lines = [
             f"📊 {slug} fig {fig_num}  (page {page})",
             "",
-            caption or "[no caption]",
+            f"**Figure {fig_num}.** {caption}" if caption else "[no caption]",
             "",
             "Next:",
-            f"  get(id='{slug}/fig/{fig_num}/legend')       — caption text",
-            f"  get(id='{slug}/fig/{fig_num}/image')        — encoded image",
-            f"  get(id='{slug}/fig/{fig_num}/image/export') — save to ./figures/",
         ]
+        lines.extend(_format_next_block(next_calls))
         return "\n".join(lines)
 
-    def _figure_legend(self, store, slug: str, fig_num: int) -> str:
-        figs = store.get_figures(slug)
+    def _figure_legend(
+        self, store, slug: str, fig_num: int, *, figs: list | None = None
+    ) -> str:
+        if figs is None:
+            figs = store.get_figures(slug)
         fig = next((f for f in figs if f["fig_num"] == fig_num), None)
         if not fig:
-            return self._fig_not_found(slug, fig_num, figs)
-        caption = fig.get("caption", "")
+            raise self._figure_not_found(
+                slug=slug, figs=figs, requested=str(fig_num),
+                code=ErrorCode.ID_NOT_FOUND,
+            )
+        # B7 — if the figure-extractor missed the caption, scan body
+        # blocks for a ``Figure N.`` line and surface that instead of
+        # an unhelpful ``[no caption]`` placeholder.  See the same
+        # rescue path in ``_figure_overview`` and ``_figure_image``.
+        caption = fig.get("caption", "") or self._rescue_caption(
+            store, slug, fig_num, fig.get("page")
+        )
         return caption if caption else f"[no caption for {slug} fig {fig_num}]"
 
-    def _figure_image(self, store, slug: str, fig_num: int) -> str:
+    def _figure_image(
+        self, store, slug: str, fig_num: int, *, figs: list | None = None
+    ) -> str:
         result = store.get_figure_image(slug, fig_num)
         if not result:
             return (
@@ -479,15 +774,42 @@ class PaperHandler(RefHandler):
             )
         import base64
 
+        # B7 — caption hint above the base64 blob so an agent quoting
+        # the image alone has the legend right there.  Pulled from the
+        # figure metadata, falling back to the rescue scan when empty.
+        if figs is None:
+            figs = store.get_figures(slug)
+        meta = next((f for f in figs if f["fig_num"] == fig_num), None)
+        page_hint = meta.get("page") if meta else None
+        caption = result.get("caption", "") or (meta.get("caption", "") if meta else "")
+        if not caption:
+            caption = self._rescue_caption(store, slug, fig_num, page_hint)
+        caption_short = _truncate(caption, 200) if caption else ""
+
         b64 = base64.b64encode(result["image_bytes"]).decode("ascii")
         mime = "image/png" if result["image_ext"] == ".png" else "image/jpeg"
-        lines = [
-            f"📊 {slug} fig {fig_num}  ({len(result['image_bytes'])} bytes, {mime})",
-            "",
-            f"data:{mime};base64,{b64}",
-            "",
-            f"Next: get(id='{slug}/fig/{fig_num}/image/export') — save to file",
+        # Annotate the header line with caption-presence so an agent
+        # reading only the first line of the response still knows
+        # whether the legend ships with the bytes or has to be fetched
+        # separately (mcp-critic finding M6).
+        cap_status = "+ caption" if caption else "no caption"
+        lines: list[str] = [
+            f"📊 {slug} fig {fig_num}  ({len(result['image_bytes'])} bytes, {mime}, {cap_status})",
         ]
+        if caption_short:
+            lines.append("")
+            lines.append(f"**Figure {fig_num}.** {caption_short}")
+        lines.append("")
+        lines.append(f"data:{mime};base64,{b64}")
+        lines.append("")
+        lines.append(
+            f"Next: get(id='{slug}/fig/{fig_num}/image/export') — save to file"
+        )
+        if not caption:
+            lines.append(
+                f"      get(id='{slug}/fig/{fig_num}/legend')       — caption text "
+                "(may also be missing in the source PDF)"
+            )
         return "\n".join(lines)
 
     def _figure_export(self, store, slug: str, fig_num: int) -> str:
@@ -509,13 +831,79 @@ class PaperHandler(RefHandler):
         )
 
     @staticmethod
-    def _fig_not_found(slug: str, fig_num: int, figs: list) -> str:
-        available = ", ".join(str(f["fig_num"]) for f in figs)
-        return (
-            f"Figure {fig_num} not found for {slug}.\n"
-            f"Available: {available or 'none'}\n"
-            f"Use: get(id='{slug}/fig') to list figures."
+    def _rescue_caption(
+        store, slug: str, fig_num: int, page: int | None
+    ) -> str:
+        """Find a ``Figure N. …`` text block when the metadata caption is empty.
+
+        The figure extractor sometimes drops the legend (it lives in a
+        plain text block instead of being paired into the figures
+        table).  Walk the body blocks looking for one whose first line
+        matches ``Figure <N>`` / ``Fig. <N>`` / ``Scheme <N>``.  If a
+        ``page`` is known, prefer a hit on the same page; otherwise
+        return the first match.  Returns ``""`` when nothing matches.
+
+        Review: 2026-04-25 mcp-critic finding B7.
+        """
+        try:
+            blocks = store.get_blocks(slug)
+        except Exception:  # store can be flaky on partial ingests
+            return ""
+        candidates: list[dict] = []
+        for block in blocks:
+            text = (block.get("text") or "").lstrip()
+            if not text:
+                continue
+            match = _CAPTION_PATTERNS["fig"].match(text)
+            if not match:
+                continue
+            try:
+                if int(match.group(1)) != fig_num:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            candidates.append(block)
+        if not candidates:
+            return ""
+        if page is not None:
+            for block in candidates:
+                if block.get("page") == page:
+                    return (block.get("text") or "").strip()
+        return (candidates[0].get("text") or "").strip()
+
+    @staticmethod
+    def _figure_not_found(
+        *,
+        slug: str,
+        figs: list,
+        requested: str,
+        code: ErrorCode,
+    ) -> PrecisError:
+        """Build the unified figure-not-found / malformed envelope.
+
+        Review 2026-04-25 finding B5/D4 — ``fig/0``, ``fig/-1`` and
+        ``fig/abc`` used to produce three different error shapes (two
+        prose lines plus one structured envelope).  All three now
+        route through this helper which:
+
+        - Folds the available-figure list into ``next:`` so the
+          recovery hint survives in the structured envelope.
+        - Picks ``ID_MALFORMED`` for non-numeric input and
+          ``ID_NOT_FOUND`` for valid integers that don't match any
+          figure.
+        - Ensures the caller always sees ``ERROR [<code>]: … / next:
+          …`` rather than free-form prose.
+        """
+        available = ", ".join(str(f["fig_num"]) for f in figs) or "none"
+        if code is ErrorCode.ID_MALFORMED:
+            cause = f"invalid figure number: {requested!r}"
+        else:
+            cause = f"figure {requested} not found for {slug}"
+        next_hint = (
+            f"available: {available} — "
+            f"get(id='{slug}/fig') to list figures"
         )
+        return PrecisError(code, cause=cause, next=next_hint)
 
     # ── Semantic Scholar graph ────────────────────────────────────
 

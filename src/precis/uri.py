@@ -66,7 +66,23 @@ _SEP_CHARS = SEP + _LEGACY_SEP
 # ``plot:/export/figures/chart.pdf``) reach the handler intact; the
 # handler parses its own ``/svg``, ``/webp``, ``/help``, ``/export``,
 # and ``/export/<filename>`` suffixes.
-_OPAQUE_PATH_SCHEMES = {"doi", "arxiv", "usc", "irs", "ie", "calc", "plot"}
+_OPAQUE_PATH_SCHEMES = {
+    "doi",
+    "arxiv",
+    "usc",
+    "irs",
+    "ie",
+    "calc",
+    "plot",
+    # Stateless primitives — handlers parse their own ``/view`` and
+    # ``?key=value`` query strings out of the raw path.  Opaque so
+    # date separators, range syntax (``a..b``), seed strings, and
+    # cognitive-lens slugs survive parsing intact.
+    "clock",
+    "rng",
+    "random",
+    "iching",
+}
 
 # Selector patterns
 _SLUG_RE = re.compile(r"^[A-Z0-9]{5}(?:\.\d+)?$")

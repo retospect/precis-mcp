@@ -26,6 +26,7 @@ import abc
 import hashlib
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -263,7 +264,14 @@ class KindSpec:
 
     Fields:
         name: Canonical enum value used in ``type='paper'`` etc.
-        description: One-liner shown in the tool-schema enum docs.
+        description: One-liner shown in the tool-schema enum docs.  May be
+            either a literal string or a zero-argument callable that
+            returns a string; callables are evaluated lazily every time
+            the tool schema is built, so kinds like ``clock:`` can surface
+            live data (current time + durations) in their enum entry.  The
+            registry's ``RegisteredKind.description`` property handles
+            both shapes uniformly.  Callables MUST be cheap and side-effect
+            free — they run synchronously in the schema-build hot path.
         aliases: Legacy scheme names accepted at URI parse (hidden from the
             enum). E.g. ``['perplexity']`` redirects to ``'web'``.
         requires: Env vars that must be set for this kind to be available.
@@ -275,7 +283,7 @@ class KindSpec:
     """
 
     name: str
-    description: str
+    description: str | Callable[[], str]
     aliases: list[str] = field(default_factory=list)
     requires: list[str] = field(default_factory=list)
     cost_hint: str | None = None
@@ -576,7 +584,7 @@ class Plugin:
     precis extension (precis-papers, precis-todos, …) exposes one or more
     Plugin instances via the ``precis.plugins`` entry point group.
 
-    File-based handlers (WordHandler, TexHandler) use ``file_types`` and
+    File-based handlers (DocxHandler, TexHandler) use ``file_types`` and
     leave ``corpus_id`` as None.  Corpus-based plugins (papers, todos, …)
     use ``schemes`` and set ``corpus_id``.
 

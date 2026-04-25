@@ -394,23 +394,22 @@ class FlashcardHandler(RefHandler):
                 due_str = _relative_due(_parse_meta(r))
                 lines.append(f"  {slug}  {due_str}  {title}")
 
-        # Review tips — embedded in the output, not the system prompt
+        # Single-line trailer pointing at the SM-2 skill body.  The
+        # critic flagged the previous embedded "Review tips" block as
+        # ~120 tokens of static instructions emitted on every poll of
+        # ``/due`` (review 2026-04-25 finding D7).  The pedagogy lives
+        # in ``skill:sm2-basics`` where it belongs; the trailer here
+        # is just the affordance that points at it plus one example
+        # ``mode='review'`` call so the agent has a concrete next step.
         lines.append("")
-        lines.append("Review tips:")
         lines.append(
-            '  \u2022 Quiz the user \u2014 don\'t read cards. Vary: cloze, reverse, "explain why", compare.'
+            "\u2192 get(id='skill:sm2-basics') \u2014 review protocol & pedagogy"
         )
-        lines.append(
-            "  \u2022 \u26a1 lines show past mistakes. Target those confusions."
-        )
-        lines.append("  \u2022 Combine nearby items into compound questions.")
-        lines.append("  \u2022 After each answer, judge 0-5 and note what happened:")
-        lines.append("")
         if due:
             first = due[0].get("slug", "flashcard:...")
             lines.append(
-                f"  put(id='{first}', text='4', mode='review',\n"
-                f"      note='what the user got right/wrong')"
+                f"\u2192 put(id='{first}', text='4', mode='review', "
+                "note='what happened') \u2014 record a review"
             )
 
         return "\n".join(lines)
