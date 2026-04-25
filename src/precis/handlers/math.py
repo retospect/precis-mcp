@@ -203,7 +203,27 @@ def _format_result(res: Any, query: str) -> str:
     Every return path ends with the mandatory attribution footer (see
     :func:`_attribution`).
     """
-    if not res.success:
+    # Wolfram's internal solve-engine has a hard timeout (~20s).  When
+    # it expires, the API returns ``<queryresult timing="20.002"
+    # timedout="" numpods="0"/>`` with **no** ``success`` attribute,
+    # which makes the upstream ``Document.__getattr__`` raise
+    # ``AttributeError`` for ``res.success``.  Detect this shape and
+    # return a clean message instead of letting the AttributeError
+    # propagate up as ``ERROR [unexpected]``.
+    # ``Document.__getattr__`` already falls back to ``@<name>`` for
+    # XML attributes, so a single ``getattr`` covers both shapes.
+    timed_out = getattr(res, "timedout", None)
+    success = getattr(res, "success", None)
+    if success is None:
+        if timed_out is not None:
+            body = (
+                f"Wolfram Alpha timed out internally for: {query!r}.  "
+                "Try a more specific query."
+            )
+        else:
+            body = f"Wolfram Alpha returned no success status for: {query!r}."
+        return f"{body}\n\n{_attribution(query)}"
+    if not success:
         tips: list[str] = []
         dym = getattr(res, "didyoumeans", None)
         if dym:

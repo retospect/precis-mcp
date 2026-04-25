@@ -1,5 +1,28 @@
 # Changelog
 
+## 5.2.4
+
+Follow-up bug-fix for the `math:` Wolfram Alpha handler.
+
+### Fixed
+
+- **`AttributeError: success` on Wolfram internal timeouts.** When
+  Wolfram's solve-engine hits its ~20-second internal timeout, the
+  API returns ``<queryresult timing="20.002" timedout=""
+  numpods="0"/>`` with **no** ``success`` attribute at all.  The
+  upstream ``Document.__getattr__`` then raised ``AttributeError``
+  for ``res.success``, which bubbled up as
+  ``ERROR [unexpected]: AttributeError: success``.  ``_format_result``
+  now detects the missing attribute and returns a readable "Wolfram
+  Alpha timed out internally — try a more specific query" message
+  with the usual attribution footer.
+
+### Tests
+
+- Added ``test_internal_timeout_returns_clean_message`` covering
+  the real timed-out XML shape parsed via the same Document
+  postprocessor used in production.
+
 ## 5.2.3
 
 Bug-fix release for the `math:` Wolfram Alpha handler.  Three

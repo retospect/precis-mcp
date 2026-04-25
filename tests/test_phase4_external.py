@@ -271,6 +271,35 @@ class TestFormatResult:
         assert "## Junk" in out
         assert "real" in out
 
+    def test_internal_timeout_returns_clean_message(self):
+        """Regression: when Wolfram's solve-engine times out (~20s)
+        the API returns ``<queryresult timing="20.002" timedout=""
+        numpods="0"/>`` with **no** ``success`` attribute.  The
+        upstream ``Document.__getattr__`` then raises
+        ``AttributeError("success")`` for ``res.success``, which
+        bubbled up as ``ERROR [unexpected]: AttributeError: success``
+        in production.  ``_format_result`` must detect the missing
+        ``success`` attribute and return a readable timeout message.
+        """
+        from wolframalpha import Document
+
+        # Real shape from a timed-out query, parsed via the same
+        # postprocessor we use in ``_run_query``.
+        import xmltodict
+
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<queryresult timing="20.002" timedout="" '
+            b'timedoutpods="" numpods="0"></queryresult>'
+        )
+        doc = xmltodict.parse(xml, postprocessor=Document.make)
+        res = doc["queryresult"]
+
+        out = _format_result(res, "distance of the planets from the sun")
+        # The point is *not* to crash with AttributeError.
+        assert "timed out" in out.lower() or "no success" in out.lower()
+        assert "wolframalpha.com" in out  # attribution still present
+
     def test_single_subpod_as_dict_extracted(self):
         """Regression: ``xmltodict`` collapses a one-element ``<subpod>``
         list into a dict (not a one-element list).  The Wolfram API
