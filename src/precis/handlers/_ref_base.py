@@ -801,8 +801,22 @@ class RefHandler(Handler):
                 next=f"use id='<slug>{SEP}N', '{SEP}N..M', or '{SEP}N..'",
             ) from exc
 
-        all_blocks = store.get_blocks(slug, block_type="text")
-        blocks = [b for b in all_blocks if start <= (b.get("block_index", 0)) < end]
+        # Don't filter by block_type — search returns hits across every
+        # type that has an embedding (figure captions, section headers,
+        # lists), so a search hint at ``slug›N`` could refer to any of
+        # them.  Filtering to text-only here would make non-text hits
+        # silently unreachable ("No blocks in range" while search swore
+        # one was there).  The block_type is surfaced in the per-block
+        # header so the agent knows what they're reading.
+        #
+        # Drop positionless blocks (``block_index IS NULL`` — abstract,
+        # document_summary) up-front: they have no chunk number, can't
+        # be in a numeric range, and would crash the comparison below.
+        # See Phase 4 /toc fix for the same pattern.
+        all_blocks = [
+            b for b in store.get_blocks(slug) if b.get("block_index") is not None
+        ]
+        blocks = [b for b in all_blocks if start <= b["block_index"] < end]
 
         if not blocks:
             return f"No blocks in range {SEP}{start}..{end} for {slug}"
@@ -826,6 +840,12 @@ class RefHandler(Handler):
             text = block.get("text", "")
             page = block.get("page", "")
             header = f">> {slug} {SEP}{idx}  p{page}"
+            # Surface block_type when it isn't plain text so the agent
+            # immediately sees they're reading a figure caption / list /
+            # section header rather than body prose.  Keeps the common
+            # case (text) noise-free.
+            if kind and kind != "text":
+                header += f"  [{kind}]"
             node_id = block.get("node_id")
             n_links = block_link_counts.get(node_id, 0) if node_id else 0
             if n_links:
@@ -850,7 +870,12 @@ class RefHandler(Handler):
                     ErrorCode.ID_MALFORMED,
                     cause=f"invalid chunk index: {selector!r}",
                 ) from exc
-            blocks = store.get_blocks(slug, block_type="text")
+            # No block_type filter — see _read_chunks for rationale.
+            # Search hits land on any embedded block, so /summary on a
+            # non-text block (figure caption, etc.) must still resolve.
+            # Equality with ``idx`` (an int) implicitly drops any
+            # positionless block whose block_index is None.
+            blocks = store.get_blocks(slug)
             target = [b for b in blocks if b.get("block_index") == idx]
             if not target:
                 raise PrecisError(
@@ -896,7 +921,11 @@ class RefHandler(Handler):
                     ErrorCode.ID_MALFORMED,
                     cause=f"invalid block index: {selector!r}",
                 ) from exc
-            blocks = store.get_blocks(slug, block_type="text")
+            # No block_type filter — search hits can land on any embedded
+            # block, so /links on a figure or header block must resolve.
+            # Equality with ``block_idx`` (an int) implicitly drops any
+            # positionless block whose block_index is None.
+            blocks = store.get_blocks(slug)
             target = [b for b in blocks if b.get("block_index") == block_idx]
             if not target:
                 raise PrecisError(
@@ -1085,6 +1114,35 @@ class RefHandler(Handler):
         lines.append(f"  get(id='{fslug}/toc')  — structure")
         return "\n".join(lines)
 
+    def _format_search_hit_line(self, hit: dict) -> str:
+        """Render one search-hit line.
+
+        Stamps non-text ``block_type`` (figure / section_header / list
+        / etc.) into the output so the agent isn't surprised when
+        ``get(id='slug›N')`` returns a figure caption or header rather
+        than body prose.  Text hits stay clean — no ``[text]`` noise on
+        the common case.
+
+        The previous version of this code rendered every hit identically
+        regardless of type.  Combined with the chunk reader's
+        ``block_type='text'`` filter, that produced a "search points at
+        a chunk that doesn't exist" experience: the search said ``›0``
+        was relevant, but ``get(id='slug›0')`` returned ``"No blocks in
+        range"`` because ›0 was a section_header.  The type tag closes
+        the gap by making the kind of block visible at search time.
+        """
+        text = hit.get("text", "")
+        distance = hit.get("distance", 0)
+        meta = hit.get("metadata", {})
+        paper_info = hit.get("paper", {})
+        slug = paper_info.get("slug", meta.get("slug", "???"))
+        block_idx = meta.get("block_index", "?")
+        btype = meta.get("type") or meta.get("block_type", "text")
+        type_tag = f"  [{btype}]" if btype and btype != "text" else ""
+        summary = hit.get("summary", "")
+        snippet = summary or _truncate(text, 100)
+        return f"  {slug}{SEP}{block_idx}{type_tag}  ({distance:.2f})  {snippet}"
+
     def _search(
         self,
         store,
@@ -1151,15 +1209,7 @@ class RefHandler(Handler):
             header += f"  (scope={scope!r})"
         lines = [header, ""]
         for hit in hits:
-            text = hit.get("text", "")
-            distance = hit.get("distance", 0)
-            meta = hit.get("metadata", {})
-            paper_info = hit.get("paper", {})
-            slug = paper_info.get("slug", meta.get("slug", "???"))
-            block_idx = meta.get("block_index", "?")
-            summary = hit.get("summary", "")
-            snippet = summary or _truncate(text, 100)
-            lines.append(f"  {slug}{SEP}{block_idx}  ({distance:.2f})  {snippet}")
+            lines.append(self._format_search_hit_line(hit))
         lines.append("")
         seen = []
         for hit in hits[:3]:
@@ -1209,7 +1259,11 @@ class RefHandler(Handler):
                     ErrorCode.ID_MALFORMED,
                     cause=f"invalid block index for note: {selector!r}",
                 ) from exc
-            blocks = store.get_blocks(slug, block_type="text")
+            # No block_type filter — annotating a figure caption or
+            # section header is just as valid as annotating body text.
+            # Equality with ``block_idx`` (an int) implicitly drops any
+            # positionless block whose block_index is None.
+            blocks = store.get_blocks(slug)
             target = [b for b in blocks if b.get("block_index") == block_idx]
             if not target:
                 raise PrecisError(

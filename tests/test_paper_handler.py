@@ -804,6 +804,208 @@ class TestTocPositionlessBlocks:
         assert "Intro" in out
 
 
+class TestChunkReaderResolvesAllBlockTypes:
+    """Regression for the search-get inconsistency.
+
+    Previously, ``vector.search`` returned hits across every embedded
+    block type (text, figure, section_header, list) but the chunk
+    reader filtered to ``block_type='text'`` only.  A search hit at
+    ``slug›N`` where N pointed at a non-text block was unreachable —
+    ``get(id='slug›N')`` returned ``"No blocks in range"`` even though
+    the search said the block was there.
+
+    The fix drops the type filter at every chunk read site so the
+    search→get round-trip always lands on the same block.  Non-text
+    block_type is stamped into both the search hit output and the
+    chunk header so the agent knows whether they're reading body
+    text vs a figure caption.
+    """
+
+    def _handler(self):
+        from precis.handlers.paper import PaperHandler
+
+        return PaperHandler()
+
+    class _FakeStore:
+        def __init__(self, blocks, ref=None):
+            self._blocks = blocks
+            self._ref = ref or {"slug": "stub2024", "title": "Stub", "ref_id": 1}
+
+        def get(self, slug):
+            return self._ref
+
+        def get_blocks(self, slug, block_type=None, supplement=None):
+            if block_type:
+                return [b for b in self._blocks if b.get("block_type") == block_type]
+            return list(self._blocks)
+
+        def get_links(self, slug, node_id=None, direction="both"):
+            return []
+
+    @staticmethod
+    def _block(idx, block_type="text", text=None):
+        return {
+            "node_id": f"n-{idx}",
+            "block_index": idx,
+            "page": 0,
+            "block_type": block_type,
+            "section_path": "[]",
+            "text": text or f"{block_type} content {idx}",
+            "summary": None,
+        }
+
+    def test_chunk_reader_returns_section_header_block(self):
+        # The exact bug from ni2024atomic: search returned ›0 (a
+        # section_header) but get(›0) reported "No blocks in range".
+        blocks = [
+            self._block(0, "section_header", "**Title**"),
+            self._block(1, "text", "First paragraph."),
+            self._block(2, "text", "Second paragraph."),
+        ]
+        out = self._handler()._read_chunks(
+            self._FakeStore(blocks), {"slug": "stub2024"}, "0"
+        )
+        assert "No blocks in range" not in out
+        assert "**Title**" in out
+        # Block_type tagged in the chunk header so the agent isn't
+        # surprised they got a header back instead of body prose.
+        assert "[section_header]" in out
+
+    def test_chunk_reader_returns_figure_block(self):
+        blocks = [
+            self._block(0, "text", "Body."),
+            self._block(1, "figure", "Figure 1: caption."),
+        ]
+        out = self._handler()._read_chunks(
+            self._FakeStore(blocks), {"slug": "stub2024"}, "1"
+        )
+        assert "No blocks in range" not in out
+        assert "[figure]" in out
+
+    def test_chunk_range_includes_mixed_block_types(self):
+        # The agent asks for ›0..3.  All three blocks should appear
+        # regardless of type, in order.
+        blocks = [
+            self._block(0, "section_header", "**Title**"),
+            self._block(1, "text", "Para 1."),
+            self._block(2, "figure", "Caption."),
+            self._block(3, "text", "Para 2."),
+        ]
+        out = self._handler()._read_chunks(
+            self._FakeStore(blocks), {"slug": "stub2024"}, "0..3"
+        )
+        assert out.count(">> stub2024") == 3
+        assert "Title" in out
+        assert "Para 1" in out
+        assert "Caption" in out
+        # ›3 is exclusive end, so Para 2 is NOT included.
+        assert "Para 2" not in out
+
+    def test_chunk_reader_does_not_crash_on_positionless_blocks(self):
+        # The store returns abstract / document_summary blocks with
+        # block_index=None alongside positional blocks.  Without the
+        # positionless filter, the int comparison in the range check
+        # crashed with TypeError.
+        blocks = [
+            {
+                "node_id": "n-abstract",
+                "block_index": None,
+                "block_type": "abstract",
+                "text": "Abstract text.",
+                "page": None,
+                "section_path": "",
+                "summary": None,
+            },
+            self._block(0, "text", "First."),
+            self._block(1, "text", "Second."),
+        ]
+        out = self._handler()._read_chunks(
+            self._FakeStore(blocks), {"slug": "stub2024"}, "0..2"
+        )
+        assert "ERROR" not in out
+        assert "First" in out
+        assert "Second" in out
+        # Abstract block must not leak into chunk output.
+        assert "Abstract text" not in out
+
+    def test_summary_view_resolves_on_section_header(self):
+        blocks = [self._block(0, "section_header", "**Title**")]
+        blocks[0]["summary"] = "header summary"
+        out = self._handler()._read_summary(
+            self._FakeStore(blocks), {"slug": "stub2024"}, "0"
+        )
+        assert "ERROR" not in out
+        assert "header summary" in out
+
+    def test_links_view_resolves_on_figure_block(self):
+        blocks = [
+            self._block(0, "text", "Body."),
+            self._block(1, "figure", "Caption."),
+        ]
+        out = self._handler()._read_links(
+            self._FakeStore(blocks), {"slug": "stub2024"}, "1"
+        )
+        assert "ERROR" not in out
+        # No links registered, so the empty-state hint is shown.
+        # The point is the resolution doesn't fail with id_not_found.
+        assert "stub2024" in out
+
+
+class TestSearchHitTypeTag:
+    """Search output must surface non-text block_type so agents
+    don't get surprised when ``get(id='slug›N')`` returns a figure or
+    section header instead of body prose.
+    """
+
+    def _handler(self):
+        from precis.handlers.paper import PaperHandler
+
+        return PaperHandler()
+
+    @staticmethod
+    def _hit(slug, block_idx, block_type, text):
+        return {
+            "text": text,
+            "distance": 0.3,
+            "summary": "",
+            "metadata": {
+                "slug": slug,
+                "block_index": block_idx,
+                "type": block_type,
+                "block_type": block_type,
+                "node_id": f"n-{block_idx}",
+            },
+            "paper": {"slug": slug, "title": "Stub"},
+        }
+
+    def test_text_hit_has_no_type_tag(self):
+        line = self._handler()._format_search_hit_line(
+            self._hit("stub", 3, "text", "Body of paragraph.")
+        )
+        # Text hits stay clean — no [text] noise on the common case.
+        assert "[text]" not in line
+        assert "stub" in line and "3" in line
+
+    def test_section_header_hit_is_tagged(self):
+        line = self._handler()._format_search_hit_line(
+            self._hit("stub", 0, "section_header", "**Title**")
+        )
+        assert "[section_header]" in line
+        assert "stub" in line and "0" in line
+
+    def test_figure_hit_is_tagged(self):
+        line = self._handler()._format_search_hit_line(
+            self._hit("stub", 12, "figure", "Figure 1.")
+        )
+        assert "[figure]" in line
+
+    def test_list_hit_is_tagged(self):
+        line = self._handler()._format_search_hit_line(
+            self._hit("stub", 5, "list", "- bullet")
+        )
+        assert "[list]" in line
+
+
 class TestPaperStructuralNavigationSkill:
     """The new ``skill:paper-structural-navigation`` ships with the
     package and renders correctly.  This guards against the file being
