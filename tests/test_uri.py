@@ -244,14 +244,25 @@ class TestSelectorAndView:
         assert p.view == "toc"
 
 
-# ─── SEP (›) separator ────────────────────────────────────────────
+# ─── SEP (~) separator ────────────────────────────────────────────
 
 
 class TestSEPSeparator:
-    """Verify that the › separator works identically to legacy ~."""
+    """Verify that the canonical ~ and legacy › separators both parse."""
 
-    def test_sep_is_rsaquo(self):
-        assert SEP == "\u203a"
+    def test_sep_is_tilde(self):
+        # v5.3 flipped the canonical separator from U+203A to ASCII ``~``
+        # so small-model agents stop confusing the U+203A glyph with
+        # other angle-quote characters (mcp-critic rule E3).
+        assert SEP == "~"
+
+    def test_legacy_rsaquo_still_parses(self):
+        # The U+203A separator must continue to round-trip through the
+        # parser indefinitely so any URIs that pre-date the flip
+        # (notes, links, stored selectors) keep resolving.
+        p = parse("paper:miller2023foo\u203a38")
+        assert p.selector == "38"
+        assert p.range_start == 38
 
     def test_index(self):
         p = parse(f"paper:miller2023foo{SEP}38")

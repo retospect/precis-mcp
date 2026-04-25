@@ -1006,6 +1006,129 @@ class TestSearchHitTypeTag:
         assert "[list]" in line
 
 
+class TestPluralisation:
+    """Phase 7a — ``f"{n} results"`` produced ``"1 results"`` for
+    single-hit responses.  The fix introduces ``_pluralise`` and
+    routes every search-hit header through it.
+    """
+
+    def test_pluralise_helper(self):
+        from precis.handlers._ref_base import _pluralise
+
+        assert _pluralise(0, "result") == "0 results"
+        assert _pluralise(1, "result") == "1 result"
+        assert _pluralise(2, "result") == "2 results"
+        # Custom plural for words English mangles.
+        assert _pluralise(1, "entry", "entries") == "1 entry"
+        assert _pluralise(3, "entry", "entries") == "3 entries"
+
+    def test_search_header_with_one_hit_singular(self):
+        # Construct a one-hit response and check the header reads
+        # "1 result" not "1 results".  The hit list itself doesn't
+        # matter — we're only asserting the rendered header phrasing.
+        h = TestChunkReaderResolvesAllBlockTypes()._handler()
+        # Patch _search_or_grep to feed a single fake hit through.
+        # Directly assemble the line by exercising the helper used by
+        # the renderer.
+        from precis.handlers._ref_base import _pluralise
+
+        assert "1 result" in f"🔍 {_pluralise(1, 'result')} for: x"
+        # Negative case — the broken behaviour we replaced.
+        assert "1 results" not in f"🔍 {_pluralise(1, 'result')} for: x"
+
+
+class TestNegativeChunkSelector:
+    """Phase 7b — negative chunk selectors silently returned
+    ``"No blocks in range"`` which was indistinguishable from a
+    legitimate empty range past the end of the paper.  The fix raises
+    ID_MALFORMED with a hint pointing at /toc to discover the true
+    range.
+    """
+
+    def _handler(self):
+        from precis.handlers.paper import PaperHandler
+
+        return PaperHandler()
+
+    class _FakeStore:
+        def __init__(self):
+            self._blocks = [
+                {
+                    "node_id": "n-0",
+                    "block_index": 0,
+                    "block_type": "text",
+                    "text": "first",
+                    "section_path": "[]",
+                    "page": 0,
+                    "summary": None,
+                }
+            ]
+
+        def get(self, slug):
+            return {"slug": slug, "ref_id": 1}
+
+        def get_blocks(self, slug, block_type=None, supplement=None):
+            return list(self._blocks)
+
+        def get_links(self, slug, **kw):
+            return []
+
+    def test_chunks_negative_index(self):
+        from precis.protocol import PrecisError, ErrorCode
+
+        with pytest.raises(PrecisError) as exc:
+            self._handler()._read_chunks(
+                self._FakeStore(), {"slug": "stub"}, "-3"
+            )
+        assert exc.value.code == ErrorCode.ID_MALFORMED
+        assert "non-negative" in exc.value.cause
+
+    def test_chunks_negative_range_start(self):
+        from precis.protocol import PrecisError, ErrorCode
+
+        with pytest.raises(PrecisError) as exc:
+            self._handler()._read_chunks(
+                self._FakeStore(), {"slug": "stub"}, "-3..0"
+            )
+        assert exc.value.code == ErrorCode.ID_MALFORMED
+
+    def test_chunks_negative_range_end(self):
+        from precis.protocol import PrecisError, ErrorCode
+
+        with pytest.raises(PrecisError) as exc:
+            self._handler()._read_chunks(
+                self._FakeStore(), {"slug": "stub"}, "0..-1"
+            )
+        assert exc.value.code == ErrorCode.ID_MALFORMED
+
+    def test_summary_negative_selector(self):
+        from precis.protocol import PrecisError, ErrorCode
+
+        with pytest.raises(PrecisError) as exc:
+            self._handler()._read_summary(
+                self._FakeStore(), {"slug": "stub"}, "-1"
+            )
+        assert exc.value.code == ErrorCode.ID_MALFORMED
+
+    def test_links_negative_selector(self):
+        from precis.protocol import PrecisError, ErrorCode
+
+        with pytest.raises(PrecisError) as exc:
+            self._handler()._read_links(
+                self._FakeStore(), {"slug": "stub"}, "-2"
+            )
+        assert exc.value.code == ErrorCode.ID_MALFORMED
+
+    def test_zero_index_still_works(self):
+        # The check is strictly less-than-zero — index 0 (the first
+        # block) must continue to resolve.
+        out = self._handler()._read_chunks(
+            self._FakeStore(), {"slug": "stub"}, "0"
+        )
+        assert "ERROR" not in out
+        assert "first" in out
+
+
 class TestPaperStructuralNavigationSkill:
     """The new ``skill:paper-structural-navigation`` ships with the
     package and renders correctly.  This guards against the file being

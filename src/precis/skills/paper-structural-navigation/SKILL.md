@@ -21,7 +21,7 @@ tags: [papers, navigation, structure]
   context window — you need to pick a section.
 - You need a specific element (figure, equation, abstract, citation
   list) and want the cheapest path to it.
-- A search hit pointed at ``slug›N`` and you want to see what came
+- A search hit pointed at ``slug~N`` and you want to see what came
   before / after that chunk for context.
 
 ## Decision table — which entry to pick
@@ -31,9 +31,9 @@ tags: [papers, navigation, structure]
 |  Quick gist                      |  ``get(id='slug/abstract')``                |
 |  One-line takeaway               |  ``get(id='slug/summary')``                 |
 |  Map of sections                 |  ``get(id='slug/toc')``                     |
-|  Drill into one section          |  ``get(id='slug›N..M/toc')``                |
-|  Read a specific chunk           |  ``get(id='slug›N')``                       |
-|  Read a chunk range              |  ``get(id='slug›N..M')``                    |
+|  Drill into one section          |  ``get(id='slug~N..M/toc')``                |
+|  Read a specific chunk           |  ``get(id='slug~N')``                       |
+|  Read a chunk range              |  ``get(id='slug~N..M')``                    |
 |  See a figure caption + image    |  ``get(id='slug/fig/3')``                   |
 |  Get all figure captions         |  ``get(id='slug/fig')``                     |
 |  BibTeX                          |  ``get(id='slug/cite/bib')``                |
@@ -67,24 +67,24 @@ The fast path:
 
 ```
 get(id='slug/toc')                  # section overview
-get(id='slug›12..30/toc')           # drill into one section
-get(id='slug›18')                   # the specific paragraph
+get(id='slug~12..30/toc')           # drill into one section
+get(id='slug~18')                   # the specific paragraph
 ```
 
 The TOC at depth 1 shows section ranges with previews; the
-``slug›N..M/toc`` form expands the chosen range into a detailed list.
+``slug~N..M/toc`` form expands the chosen range into a detailed list.
 Three calls, ~600 tokens, instead of 1300 chunks at ~500k tokens.
 
 ## Search-anchored navigation
 
-When you searched and got a hit at ``slug›N`` but need surrounding
+When you searched and got a hit at ``slug~N`` but need surrounding
 context:
 
 ```
 search(query='...', scope='slug')   # in-paper search
-get(id='slug›N')                    # the hit chunk
-get(id='slug›N..N+5')               # a window after it
-get(id='slug›N-3..N')               # a window before it
+get(id='slug~N')                    # the hit chunk
+get(id='slug~N..N+5')               # a window after it
+get(id='slug~N-3..N')               # a window before it
 ```
 
 The ``scope=`` filter ensures search results stay within the one

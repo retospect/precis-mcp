@@ -328,7 +328,11 @@ def _render_cross_corpus_hits(
     ordered: list[str] = [c for c in corpora if c in buckets]
     ordered += [c for c in buckets if c not in ordered]
 
-    lines: list[str] = [f"{header} — {len(hits)} hits", ""]
+    n_hits = len(hits)
+    lines: list[str] = [
+        f"{header} — {n_hits} {'hit' if n_hits == 1 else 'hits'}",
+        "",
+    ]
     for corpus_id in ordered:
         bucket = buckets[corpus_id]
         kind = corpus_id_to_kind(corpus_id) or corpus_id

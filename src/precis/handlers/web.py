@@ -56,7 +56,7 @@ from precis.url_canonical import (
     is_http_url,
     slug_from_url,
 )
-from precis.web_archive import SkipReason, archive_url
+from precis.web_archive import archive_url
 
 log = logging.getLogger(__name__)
 
@@ -296,7 +296,7 @@ class WebHandler(RefHandler):
         # Summary preview (first text block).
         try:
             blocks = store.get_blocks(slug, block_type="text")
-        except Exception:  # noqa: BLE001 - store optional
+        except Exception:
             blocks = []
         if blocks:
             preview = (blocks[0].get("text") or "").strip()

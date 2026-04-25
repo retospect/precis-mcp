@@ -38,6 +38,21 @@ def _truncate(text: str, n: int = 100) -> str:
     return (text[:n] + "…") if len(text) > n else text
 
 
+def _pluralise(count: int, singular: str, plural: str | None = None) -> str:
+    """Return ``"1 result"`` / ``"3 results"`` etc.
+
+    Tiny helper because ``f"{n} results"`` produced ``"1 results"`` all
+    over the codebase — visible to every search call that returned a
+    single hit.  ``plural`` defaults to ``singular + "s"`` for the
+    common case; supply it explicitly when English would mangle the
+    naive append (``hit`` / ``hits`` works, ``entry`` / ``entries``
+    doesn't).
+    """
+    if count == 1:
+        return f"1 {singular}"
+    return f"{count} {plural or singular + 's'}"
+
+
 def _parse_section(raw: str) -> str:
     """Extract clean section heading from JSON section_path string."""
     try:
@@ -801,6 +816,24 @@ class RefHandler(Handler):
                 next=f"use id='<slug>{SEP}N', '{SEP}N..M', or '{SEP}N..'",
             ) from exc
 
+        # Phase 7b — reject negative indices.  Block indices are
+        # non-negative integers (dense 0..N per paper), so a negative
+        # selector is always a typo or an off-by-one bug.  Silently
+        # returning "No blocks in range" was indistinguishable from a
+        # valid empty range, hiding the agent's mistake.
+        if start < 0 or end < 0:
+            raise PrecisError(
+                ErrorCode.ID_MALFORMED,
+                cause=(
+                    f"invalid chunk selector: {selector!r} — block indices "
+                    "are non-negative (papers are numbered 0..N)"
+                ),
+                next=(
+                    f"use id='<slug>{SEP}0' for the first block, "
+                    f"or get(id='{slug}/toc') to see the available range"
+                ),
+            )
+
         # Don't filter by block_type — search returns hits across every
         # type that has an embedding (figure captions, section headers,
         # lists), so a search hint at ``slug›N`` could refer to any of
@@ -870,6 +903,14 @@ class RefHandler(Handler):
                     ErrorCode.ID_MALFORMED,
                     cause=f"invalid chunk index: {selector!r}",
                 ) from exc
+            if idx < 0:
+                raise PrecisError(
+                    ErrorCode.ID_MALFORMED,
+                    cause=(
+                        f"invalid chunk index: {selector!r} — block "
+                        "indices are non-negative (papers numbered 0..N)"
+                    ),
+                )
             # No block_type filter — see _read_chunks for rationale.
             # Search hits land on any embedded block, so /summary on a
             # non-text block (figure caption, etc.) must still resolve.
@@ -921,6 +962,14 @@ class RefHandler(Handler):
                     ErrorCode.ID_MALFORMED,
                     cause=f"invalid block index: {selector!r}",
                 ) from exc
+            if block_idx < 0:
+                raise PrecisError(
+                    ErrorCode.ID_MALFORMED,
+                    cause=(
+                        f"invalid block index: {selector!r} — indices are "
+                        "non-negative (papers numbered 0..N)"
+                    ),
+                )
             # No block_type filter — search hits can land on any embedded
             # block, so /links on a figure or header block must resolve.
             # Equality with ``block_idx`` (an int) implicitly drops any
@@ -1087,7 +1136,7 @@ class RefHandler(Handler):
             )
 
         lines = [
-            f"🔍 {len(filtered_hits)} results for: {query} "
+            f"🔍 {_pluralise(len(filtered_hits), 'result')} for: {query} "
             f"(filtered by grep='{grep}')",
             "",
         ]
@@ -1204,7 +1253,7 @@ class RefHandler(Handler):
                 )
             return f"No results for: {query}"
 
-        header = f"🔍 {len(hits)} results for: {query}"
+        header = f"🔍 {_pluralise(len(hits), 'result')} for: {query}"
         if scope:
             header += f"  (scope={scope!r})"
         lines = [header, ""]
@@ -1259,6 +1308,14 @@ class RefHandler(Handler):
                     ErrorCode.ID_MALFORMED,
                     cause=f"invalid block index for note: {selector!r}",
                 ) from exc
+            if block_idx < 0:
+                raise PrecisError(
+                    ErrorCode.ID_MALFORMED,
+                    cause=(
+                        f"invalid block index for note: {selector!r} — "
+                        "indices are non-negative (papers numbered 0..N)"
+                    ),
+                )
             # No block_type filter — annotating a figure caption or
             # section header is just as valid as annotating body text.
             # Equality with ``block_idx`` (an int) implicitly drops any

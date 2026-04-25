@@ -399,7 +399,7 @@ class BookHandler(RefHandler):
 
         try:
             blocks = store.get_blocks(slug, block_type="text")
-        except Exception:  # noqa: BLE001
+        except Exception:
             blocks = []
         if blocks:
             preview = (blocks[0].get("text") or "").strip()

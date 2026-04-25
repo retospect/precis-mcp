@@ -323,7 +323,7 @@ class QuestHandler(Handler):
 
         # Single-id path; may carry a sub-selector.
         if path:
-            # Selector passed via ``selector`` kwarg (›path) takes precedence.
+            # Selector passed via ``selector`` kwarg (~path) takes precedence.
             # Also accept trailing /candidates or /misconceptions for URL-ish
             # convenience (quest:<id>/candidates).
             sub = selector

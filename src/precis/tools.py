@@ -67,7 +67,7 @@ def read(
     """Navigate, browse, search, or read any document.
 
     Args:
-        uri: ``scheme:path[›selector][/view]``
+        uri: ``scheme:path[~selector][/view]``
             Schemes: ``file:`` (on disk), ``paper:`` (library).
             ``file:`` extension determines format (.docx, .tex, …).
         query: Filter or search within the addressed scope.
@@ -112,7 +112,7 @@ def put(
     """Write to or annotate a document.
 
     Args:
-        uri: ``scheme:path[›selector]`` — target document and node.
+        uri: ``scheme:path[~selector]`` — target document and node.
         text: Content to write. For ``mode='move'``, this is the target slug.
         mode: One of: ``replace``, ``after``, ``before``, ``delete``,
             ``append``, ``move``, ``note``.

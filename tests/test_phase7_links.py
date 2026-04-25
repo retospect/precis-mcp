@@ -160,11 +160,14 @@ class TestUnlinkDispatch:
             {"block_index": 5, "node_id": "wang2020state-b0005"},
             {"block_index": 10, "node_id": "wang2020state-b0010"},
         ]
+        # Mix legacy ›5 selector on input with the canonical ~5 in output
+        # — proves the parser accepts both but the rendered selector is
+        # always the canonical ASCII form (mcp-critic rule E3).
         with patch(self._PATCH_STORE2, return_value=store):
             out = tools.put(uri="paper:wang2020state\u203a5", unlink="memory:a")
         assert store.delete_link.call_count == 1
         assert store.delete_link.call_args.args[0] == 1  # only the block-5 link
-        assert "wang2020state\u203a5" in out
+        assert "wang2020state~5" in out
 
     def test_unlink_parameter_priority_over_mode(self):
         """unlink= short-circuits before mode-based write dispatch."""

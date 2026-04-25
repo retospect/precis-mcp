@@ -105,6 +105,7 @@ class CallCapture:
         tracked: bool = True,
         note: str = "",
         link: str = "",
+        unlink: str = "",
     ) -> str:
         parsed = uri_parse(uri)
         self.calls.append(
@@ -116,6 +117,7 @@ class CallCapture:
                 "mode": mode,
                 "note": note,
                 "link": link,
+                "unlink": unlink,
             }
         )
         return f"[mock put: {uri}]"

@@ -22,10 +22,10 @@ tags: [latex, editing, papers]
 
 ```
 file:paper.tex                    # table of contents
-file:paper.tex›SLUG               # node (section / paragraph / equation)
-file:paper.tex›S2.1               # section by hierarchical path
-file:paper.tex›sec:methods        # node by LaTeX label
-file:paper.tex›@main.tex:120..140 # RAW lines 120-140 of included file
+file:paper.tex~SLUG               # node (section / paragraph / equation)
+file:paper.tex~S2.1               # section by hierarchical path
+file:paper.tex~sec:methods        # node by LaTeX label
+file:paper.tex~@main.tex:120..140 # RAW lines 120-140 of included file
 file:paper.tex/meta               # document metadata
 ```
 
@@ -37,14 +37,14 @@ file:paper.tex/meta               # document metadata
 
 ```
 get(id='file:paper.tex')              # toc first, always
-get(id='file:paper.tex›S2.1')         # the section
-get(id='file:paper.tex›38..42')       # chunks 38 through 42
+get(id='file:paper.tex~S2.1')         # the section
+get(id='file:paper.tex~38..42')       # chunks 38 through 42
 ```
 
 ### Replace a node
 
 ```
-put(id='file:paper.tex›PLXDX', mode='replace', text='new paragraph text.')
+put(id='file:paper.tex~PLXDX', mode='replace', text='new paragraph text.')
 ```
 
 The handler re-parses and returns the new slug (which may differ from the old one if the content restructured significantly).
@@ -52,14 +52,14 @@ The handler re-parses and returns the new slug (which may differ from the old on
 ### Add content after / before a node
 
 ```
-put(id='file:paper.tex›PLXDX', mode='after', text='New paragraph goes here.')
-put(id='file:paper.tex›PLXDX', mode='before', text='Intro paragraph.')
+put(id='file:paper.tex~PLXDX', mode='after', text='New paragraph goes here.')
+put(id='file:paper.tex~PLXDX', mode='before', text='Intro paragraph.')
 ```
 
 ### Delete a node
 
 ```
-put(id='file:paper.tex›PLXDX', mode='delete')
+put(id='file:paper.tex~PLXDX', mode='delete')
 ```
 
 Surface the deleted slug in your reply so the user can undo.
@@ -81,7 +81,7 @@ If no `.bib` file is declared in the `.tex`, the handler raises `PARAM_INVALID` 
 Cite with `[@key]` inside any `mode='replace'` / `mode='after'` / `mode='append'` text:
 
 ```
-put(id='file:paper.tex›PLXDX', mode='replace',
+put(id='file:paper.tex~PLXDX', mode='replace',
     text='We follow the approach of [@smith2024jacs] with modifications.')
 ```
 
@@ -92,11 +92,11 @@ The tex handler maps `[@key]` to `\cite{key}` on write.
 When you need to edit macro definitions, preamble, or `\begin{document}` itself — things the parser doesn't treat as nodes — use the `@` prefix in the selector:
 
 ```
-get(id='file:paper.tex›@main.tex:120..140')   # read lines 120-140
-put(id='file:paper.tex›@main.tex:125',        # replace single line 125
+get(id='file:paper.tex~@main.tex:120..140')   # read lines 120-140
+put(id='file:paper.tex~@main.tex:125',        # replace single line 125
     text='\\newcommand{\\foo}{bar}',
     mode='replace')
-put(id='file:paper.tex›@main.tex:$',          # append to file
+put(id='file:paper.tex~@main.tex:$',          # append to file
     text='% trailing comment',
     mode='append')
 ```
@@ -108,8 +108,8 @@ Path security: raw paths must stay inside the project directory. `@../../../etc/
 LaTeX labels (`\label{fig:mof-synthesis}`) become slugs automatically.  Use them as selectors:
 
 ```
-get(id='file:paper.tex›fig:mof-synthesis')    # read the figure env
-put(id='file:paper.tex›fig:mof-synthesis',
+get(id='file:paper.tex~fig:mof-synthesis')    # read the figure env
+put(id='file:paper.tex~fig:mof-synthesis',
     mode='replace',
     text='\\begin{figure}...\\caption{Updated caption.}...\\end{figure}')
 ```

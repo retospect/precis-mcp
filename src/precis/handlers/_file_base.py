@@ -346,7 +346,9 @@ class FileHandlerBase(Handler):
             n for n in nodes if pattern.matches(n.text) or pattern.matches(n.precis)
         ]
 
-        header = f"📄 {path.name}  query: {query}  ({len(hits)} hits)"
+        n_hits = len(hits)
+        hits_label = "hit" if n_hits == 1 else "hits"
+        header = f"📄 {path.name}  query: {query}  ({n_hits} {hits_label})"
         lines = [header, ""]
         for h in hits:
             lines.append(
