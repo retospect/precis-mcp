@@ -1,5 +1,26 @@
 # Changelog
 
+## 5.2.5
+
+Quality-of-life bump for the `math:` Wolfram Alpha handler.
+
+### Changed
+
+- **Bumped Wolfram's per-query `totaltimeout` from the 20s default
+  to 55s** and the httpx read budget from 30s to 60s.  Broad queries
+  (e.g. "distance of the planets from the sun") routinely exceed
+  Wolfram's 20s default and come back as empty
+  `<queryresult timedout=""/>`; the new budget lets them complete
+  (~36s observed in practice).  The httpx budget is kept above the
+  server-side cap so a Wolfram-side timeout still surfaces as a
+  parsed `<queryresult>` (handled cleanly by `_format_result` per
+  5.2.4) rather than as a transport-level `ReadTimeout`.
+
+### Tests
+
+- Added `test_run_query_sets_totaltimeout` asserting the param is
+  sent and exceeds 20s, and that the httpx budget exceeds it.
+
 ## 5.2.4
 
 Follow-up bug-fix for the `math:` Wolfram Alpha handler.

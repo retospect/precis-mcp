@@ -281,11 +281,11 @@ class TestFormatResult:
         in production.  ``_format_result`` must detect the missing
         ``success`` attribute and return a readable timeout message.
         """
+        import xmltodict
         from wolframalpha import Document
 
         # Real shape from a timed-out query, parsed via the same
         # postprocessor we use in ``_run_query``.
-        import xmltodict
 
         xml = (
             b'<?xml version="1.0" encoding="UTF-8"?>'
@@ -464,10 +464,14 @@ class TestMathHandler:
         but the real Wolfram API returns ``'text/xml; charset=utf-8'``
         (with a space).  Our ``_run_query`` must not impose that
         assertion — it just parses the body.
+
+        Also pins the request shape: the ``totaltimeout`` knob must
+        be sent (else Wolfram defaults to 20s and broad queries fail
+        — see ``test_run_query_sets_totaltimeout``).
         """
         from precis.handlers import math as math_handler
 
-        captured_url: dict[str, str] = {}
+        captured: dict[str, Any] = {}
 
         sample_xml = (
             b'<?xml version="1.0" encoding="UTF-8"?>'
@@ -484,7 +488,7 @@ class TestMathHandler:
 
         class _FakeHttpClient:
             def __init__(self, *a, **kw):
-                pass
+                captured["client_kwargs"] = kw
 
             def __enter__(self):
                 return self
@@ -493,8 +497,8 @@ class TestMathHandler:
                 return False
 
             def get(self, url, params=None):
-                captured_url["url"] = url
-                captured_url["appid"] = dict(params).get("appid")
+                captured["url"] = url
+                captured["params"] = dict(params)
                 return _FakeResponse()
 
         import httpx
@@ -507,8 +511,69 @@ class TestMathHandler:
 
         res = math_handler._run_query(client, "2+2")
         assert res.success is True
-        assert captured_url["url"] == "https://api.wolframalpha.com/v2/query"
-        assert captured_url["appid"] == "STUB-APPID"
+        assert captured["url"] == "https://api.wolframalpha.com/v2/query"
+        assert captured["params"]["appid"] == "STUB-APPID"
+        assert captured["params"]["input"] == "2+2"
+
+    def test_run_query_sets_totaltimeout(self, monkeypatch):
+        """Regression: Wolfram's per-query ``totaltimeout`` defaults
+        to 20s; broader queries time out internally and return an
+        empty ``<queryresult timedout=""/>`` (which surfaces as
+        ``"Wolfram Alpha timed out internally"`` to the agent).  We
+        push the knob to ~55s and keep the httpx budget slightly
+        above so server-side timeouts still parse cleanly rather
+        than tripping a transport-level ``ReadTimeout``.
+        """
+        from precis.handlers import math as math_handler
+
+        captured: dict[str, Any] = {}
+
+        sample_xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<queryresult success="true" numpods="1">'
+            b'<pod title="Result"><subpod><plaintext>x</plaintext>'
+            b"</subpod></pod></queryresult>"
+        )
+
+        class _FakeResponse:
+            status_code = 200
+            content = sample_xml
+            text = sample_xml.decode()
+            headers = {"Content-Type": "text/xml; charset=utf-8"}
+
+        class _FakeHttpClient:
+            def __init__(self, *a, **kw):
+                captured["timeout"] = kw.get("timeout")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, params=None):
+                captured["params"] = dict(params)
+                return _FakeResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "Client", _FakeHttpClient)
+
+        client = MagicMock()
+        client.app_id = "STUB-APPID"
+        client.url = "https://api.wolframalpha.com/v2/query"
+
+        math_handler._run_query(client, "anything")
+
+        # totaltimeout must be sent and must exceed Wolfram's 20s default.
+        assert "totaltimeout" in captured["params"]
+        assert int(captured["params"]["totaltimeout"]) > 20
+        # httpx read budget must be >= the totaltimeout we asked for, or
+        # a server-side timeout would surface as a transport error
+        # instead of a parsed empty ``<queryresult>`` (which our
+        # formatter handles cleanly).
+        assert captured["timeout"] is not None
+        assert captured["timeout"] >= int(captured["params"]["totaltimeout"])
 
 
 # ---------------------------------------------------------------------------

@@ -166,8 +166,19 @@ def _run_query(client: Any, expression: str) -> Any:
 
     app_id = client.app_id
     url = client.url
-    params = multidict.MultiDict(appid=app_id, input=expression)
-    with httpx.Client(timeout=30.0) as http:
+    # Wolfram's per-query ``totaltimeout`` defaults to 20s; broader
+    # queries (e.g. "distance of the planets from the sun") routinely
+    # exceed that and come back as ``<queryresult timedout=""
+    # numpods="0"/>``.  Push it up to 55s so most agentic queries
+    # actually get answered, and keep the httpx read budget slightly
+    # above that so a server-side timeout still surfaces as a parsed
+    # ``<queryresult>`` rather than a transport-level ``ReadTimeout``.
+    params = multidict.MultiDict(
+        appid=app_id,
+        input=expression,
+        totaltimeout="55",
+    )
+    with httpx.Client(timeout=60.0) as http:
         resp = http.get(url, params=params)
     if resp.status_code != 200:
         raise PrecisError(
