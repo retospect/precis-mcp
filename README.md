@@ -13,7 +13,7 @@ Instead of dumping a 100k-token PDF into your context window, Precis lets your a
 - **Slash context bloat** — Navigate by heading, grep for keywords, or read specific paragraphs by slug. No more feeding entire documents into the context window.
 - **Write back, not just read** — Edit DOCX with tracked changes, insert LaTeX sections, append Markdown — all through the same `put()` tool. Your agent becomes a true co-author.
 - **Semantic search over papers** — Vector search across thousands of ingested PDFs. Get the relevant chunk, not the whole paper.
-- **One server, every format** — DOCX, LaTeX, Markdown, plaintext, papers, plus stateful kinds (todo, skill, memory, conversation, flashcard, quest), compute (calc, math), and external data (web, research, think, youtube). No format-specific plugins to juggle.
+- **One server, every format** — DOCX, LaTeX, Markdown, plaintext, papers, plus stateful kinds (todo, skill, memory, conversation, flashcard, quest, oracle, book, web bookmarks), compute (calc, math, plot), external data (websearch, research, think, youtube), and stochastic helpers (clock, rng, random). No format-specific plugins to juggle.
 - **Token-aware output** — Automatic RAKE keyword summaries for large documents. Depth filtering, pagination, and adaptive truncation keep responses lean.
 - **Cost-aware by default** — Every response ends with a `[cost: …]` footer and every failure uses the same `ERROR [<code>]:` envelope. Paid external calls (Perplexity, Wolfram) report per-call costs; free kinds say `free`.
 - **Plugin architecture** — Add custom document types, URI schemes, or entire new kinds via Python entry points. Plugin protocol v2 with `KindSpec`, cost hints, and lifecycle hooks.
@@ -26,7 +26,7 @@ Claude Desktop · Cursor · Windsurf · Cline · any MCP-compatible client
 
 ```bash
 pip install precis-mcp           # core: Markdown, plaintext, LaTeX
-pip install precis-mcp[word]     # + Word DOCX support
+pip install precis-mcp[docx]     # + Word DOCX support
 pip install precis-mcp[paper]    # + scientific paper library
 pip install 'precis-mcp[calc]'   # + local SymPy calculator (offline)
 pip install 'precis-mcp[all]'    # everything
@@ -64,15 +64,15 @@ DOI / arXiv id / PMCID / ISBN / ISSN that the classifier recognises.
 ```python
 # Documents — extension auto-classifies
 get(id='report.docx')                    # table of contents with slugs
-get(id='report.docx›PLXDX')              # read paragraph by slug
+get(id='report.docx~PLXDX')              # read paragraph by slug
 get(id='report.docx', grep='methods')    # grep within document
 get(id='report.docx', depth=2)           # outline: H1 + H2 only
 
 # Papers — bare slugs need a routing hint
 get(type='paper', id='wang2020state')            # overview + abstract
 get(id='paper:wang2020state')                    # scheme prefix works too
-get(type='paper', id='wang2020state›38')         # read chunk 38
-get(type='paper', id='wang2020state›38..42')     # chunk range
+get(type='paper', id='wang2020state~38')         # read chunk 38
+get(type='paper', id='wang2020state~38..42')     # chunk range
 get(type='paper', id='wang2020state/cite/bib')   # BibTeX citation
 get(type='paper', id='wang2020state/fig/3')      # figure 3 with caption
 
@@ -105,9 +105,9 @@ get(type='quest', id='/recent')          # paper-request backlog
 ```python
 # Document writes (tracked changes on DOCX by default)
 put(id='report.docx', text='## Methods\n\nWe used...', mode='append')
-put(id='report.docx›PLXDX', text='Revised paragraph.', mode='replace')
-put(id='report.docx›PLXDX', text='Needs citation.', mode='comment')
-put(id='report.docx›PLXDX', mode='delete')
+put(id='report.docx~PLXDX', text='Revised paragraph.', mode='replace')
+put(id='report.docx~PLXDX', text='Needs citation.', mode='comment')
+put(id='report.docx~PLXDX', mode='delete')
 
 # Paper annotations + cross-kind links
 put(type='paper', id='wang2020state', note='Key finding about selectivity')
@@ -147,7 +147,7 @@ search(type='memory', query='design decision')
 
 ## Supported kinds
 
-Precis 4.1 ships 17 built-in kinds across four families.  Add the
+Precis 5.2 ships 25 built-in kinds across six families.  Add the
 `type=` kwarg to disambiguate when the identifier alone doesn't imply a
 kind.
 
@@ -171,6 +171,9 @@ kind.
 | **conversation** | Recorded agent conversations | `/recent`, `/agent/<id>`, `/links` |
 | **flashcard** | SM-2 spaced-repetition cards | `/due`, `/new`, `/learning` |
 | **quest** | Paper-request lifecycle (Postgres-backed) | `/recent`, `/queued`, `/needs-user`, `/failed`, `/agent/<id>` |
+| **oracle** | Wisdom-tradition corpus (i-ching, stoic, zen, …) | `/toc`, `/by-tradition`, `/recent` |
+| **book** | Book notes with reading-status workflow | `/recent`, `/to-read`, `/reading`, `/read`, `/by-author`, `/by-year`, `/tags` |
+| **web** | Stored web bookmarks (separate from the live `websearch:` kind) | `/recent`, `/tags`, `/kinds` |
 
 ### Compute kinds
 
@@ -178,34 +181,68 @@ kind.
 |------|----------|-----------|-----|
 | **calc** | Local SymPy — exact arithmetic, calculus, linear algebra, units | free | — |
 | **math** | Wolfram Alpha — natural-language math, world-data, fuzzy queries | `~$0.0001/call` | `WOLFRAM_APP_ID` |
+| **plot** | Local matplotlib — declarative JSON spec → PNG/SVG/WebP/PDF | free | — |
 
 `calc` is the default for pure computation (arithmetic, symbolic
 algebra, calculus, base conversions, matrix ops, unit conversions).
 It's free, offline, and deterministic.  Reach for `math` when the
 query needs real-world data lookup or when `calc`'s parser can't
-handle natural-language phrasing.
+handle natural-language phrasing.  `plot` renders charts from a JSON
+spec via `put(type='plot', mode='render', text='{…}')` — no live
+plotting session required.
 
 ### External-data kinds (live APIs)
 
 | Kind | Upstream | Cost hint | Env |
 |------|----------|-----------|-----|
-| **web** | Perplexity Sonar web search | `~$0.005/call` | `PERPLEXITY_API_KEY` |
+| **websearch** | Perplexity Sonar web search (renamed from `web` in 5.0; the `web:` scheme now hosts stored bookmarks) | `~$0.005/call` | `PERPLEXITY_API_KEY` |
 | **research** | Perplexity Sonar deep-research | `~$0.04/call` | `PERPLEXITY_API_KEY` |
 | **think** | Perplexity Sonar reasoning | `~$0.02/call` | `PERPLEXITY_API_KEY` |
 | **youtube** | YouTube transcripts | free | — |
 
+### Stochastic kinds (deterministic-by-seed)
+
+| Kind | What it is | Views |
+|------|-----------|-------|
+| **clock** | Current time, timezone math, date arithmetic | `/now`, `/today`, `/utc`, `/in/<zone>`, `/help` |
+| **rng** | Random ints, dice rolls, weighted picks (seedable) | `/help` (params via querystring: `?seed=42/3d6`) |
+| **random** | Sample one or more chunks from any corpus, optionally tag-filtered | `/help` |
+
+All three accept a `?seed=<int>` query parameter for reproducibility
+— pass the same seed and you get the same draw.
+
+### Bundled oracle corpus
+
+Fresh installs ship 9 wisdom traditions (256 entries total) under
+`src/precis/data/oracle/`.  Seed the database once with:
+
+```bash
+precis-ingest-oracle
+```
+
+The CLI is idempotent — it skips refs that already exist.  Pass
+`--overwrite` to force a full re-ingest, or `--from <dir>` to load
+your own YAML traditions instead.  The bundled YAMLs under
+[`src/precis/data/oracle/`](src/precis/data/oracle/) double as the
+entry-schema example.
+
 ## URI grammar
 
 ```
-id = [scheme:]path[›selector[,selector...]][/view[/subview]]
+id = [scheme:]path[~selector[,selector...]][/view[/subview]]
 ```
+
+The selector separator is plain ASCII `~` (U+007E).  The legacy U+203A
+`›` glyph is still accepted on input for backwards compatibility, but
+all canonical output, examples, and documentation use `~`.
 
 Precis classifies the identifier in this order:
 
 1. **Explicit scheme prefix** (`paper:`, `doi:`, `arxiv:`, `pmcid:`,
    `isbn:`, `issn:`, `todo:`, `skill:`, `quest:`, `memory:`,
-   `conversation:`, `flashcard:`, `websearch:`, `research:`, `think:`,
-   `math:`, `calc:`, `youtube:`).
+   `conversation:`, `flashcard:`, `oracle:`, `book:`, `web:`,
+   `websearch:`, `research:`, `think:`, `math:`, `calc:`, `plot:`,
+   `clock:`, `rng:`, `random:`, `rmk:`, `youtube:`).
 2. **File extension** (`.docx`, `.tex`, `.md`, `.txt`) — routes to the
    matching file handler.
 3. **Structured identifier patterns** — bare DOI (`10.1234/…`), arXiv
