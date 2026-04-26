@@ -3,6 +3,53 @@
 All entries pre-1.0 are unreleased; v2 is in active development on the
 `v2` branch and not yet on PyPI.
 
+## Phase 4a — Cache-backed kinds (math, youtube, web)
+
+Three new kinds plus the shared infrastructure they need. 331 tests
+green, 1 skip.
+
+- Migration `0002_cache_providers.sql` adds the `web` provider row
+  (others ship in 0001).
+- `Store.get_cache_entry(provider, request_hash)` and
+  `Store.put_cache_entry(...)` — atomic ref + `cache_state` upsert,
+  hard-replaces existing refs with the same kind+slug so re-fetches
+  cleanly cascade away stale blocks.
+- `CacheBackedHandler` base in `handlers/_cache_base.py`. Shared
+  cache flow: hash → lookup → freshness check → fetch-on-miss →
+  attribution footer → cost trailer. Subclass contract is small:
+  `provider`, `ttl_seconds`, `attribution`, `corpus_slug`,
+  `_canonical_key`, `_fetch`. `FetchResult` dataclass wraps the
+  upstream result.
+- `MathHandler` (Wolfram Alpha): hand-rolled httpx GET to bypass two
+  upstream `wolframalpha` library bugs (asyncio.run-in-loop, strict
+  Content-Type assertion). Pod → markdown formatter ported from v1.
+  Per-query deep-link + paste-ready academic citation appended to
+  attribution. Cache pinned (results deterministic).
+- `YouTubeHandler`: cache key is the bare 11-char video id, so URL
+  variants (youtu.be / watch?v= / shorts / embed / live / mobile)
+  collapse onto one row. Language preferences are part of the key
+  (en/es cache separately). `view='languages'` side query lists
+  available tracks. 30-day TTL.
+- `WebHandler`: page-fetch mode. Canonical URL is the cache key
+  (drops tracking params, default ports, fragments on non-SPA hosts).
+  Article extracted with trafilatura → markdown body. 7-day TTL.
+  Phase 4a ships fetch-mode only; bookmark mode + Wayback deferred
+  to phase 4b.
+- `precis.utils.url` ports v1's URL canonicalization
+  (`canonical_url`, `slug_from_url`, `is_http_url`, `host_of`).
+- All three kinds wire into the registry behind a try/ImportError
+  guard: missing optional dep (`[external]` extra) silently hides
+  the kind without breaking server startup.
+- Skill drafts: `precis-math-help.md`, `precis-youtube-help.md`,
+  `precis-web-help.md`.
+
+## Phase 3.5 plan — Navigation parity
+
+Queued (after phase 4): hierarchical TOC, range-scoped drill-down
+(`~46..105/toc`), aligned "Next:" trailer block on every paper view.
+The user-facing navigation that made v1 distinctive — see
+`docs/phase3.5-plan.md`. ~150 LOC, ~20 tests.
+
 ## Phase 3 — Paper kind + bundle ingest
 
 End-to-end paper handling: ingest from `.acatome` bundles, hybrid block
