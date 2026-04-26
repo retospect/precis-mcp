@@ -67,6 +67,13 @@ def builtins(
         except ImportError:
             pass  # missing wolframalpha → kind not available
 
+        try:
+            from precis.handlers.youtube import YouTubeHandler
+
+            handlers.append(YouTubeHandler(store=store))
+        except ImportError:
+            pass  # missing youtube-transcript-api → kind not available
+
     return handlers
 
 
