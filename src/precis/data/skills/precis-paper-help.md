@@ -1,24 +1,32 @@
 ---
 id: precis-paper-help
-title: precis — find, read, cite, annotate papers
-status: draft
+title: precis — find, read, cite papers
+status: phase-3
 tier: 1
 floor: any
-applies-to: get/search (kind='paper'), put (kind='paper')
+applies-to: get/search (kind='paper')
 last-updated: 2026-04-26
 ---
 
-# precis-paper-help — find, read, cite, annotate papers
+# precis-paper-help — find, read, cite papers
+
+Papers are slug-addressed (`wang2020state`, `kim2024electrocatalytic`).
+Slugs are deterministic on author-surname + year + first content word
+of the title; collisions get a `-2`/`-3` suffix.
 
 ## Find
 
 ```python
-search(kind='paper', q='photocatalytic NOx reduction', limit=5)
-get(id='doi:10.1002/aenm.202400065')      # by DOI
-get(id='arxiv:2207.09327')                # by arXiv id
+search(kind='paper', q='photocatalytic NOx reduction')
+search(kind='paper', q='photocatalytic NOx reduction', top_k=20)
+get(kind='paper')                              # list all papers (limit 50)
 ```
 
-Restrict to one paper:
+Block-level hybrid search (lexical tsvector + semantic pgvector, RRF
+fused). Returns hits as `<slug>~<pos>` with the matching block excerpt
+and a fused score.
+
+Scope to one paper:
 
 ```python
 search(kind='paper', q='Z-scheme', scope='wang2020state')
@@ -27,15 +35,20 @@ search(kind='paper', q='Z-scheme', scope='wang2020state')
 ## Read
 
 ```python
-get(kind='paper', id='wang2020state', view='abstract')          # skim
-get(kind='paper', id='wang2020state', view='representatives')   # compressed
-get(kind='paper', id='wang2020state', view='toc')               # navigate
-get(kind='paper', id='wang2020state', view='methods')           # one section
-get(kind='paper', id='wang2020state~38..42')                    # chunk range
+get(kind='paper', id='wang2020state')                  # overview
+get(kind='paper', id='wang2020state', view='abstract') # abstract only
+get(kind='paper', id='wang2020state', view='toc')      # block index
+get(kind='paper', id='wang2020state~38')               # block 38
+get(kind='paper', id='wang2020state~38..42')           # block range
 ```
 
-Section views also work for `results`, `discussion`, `conclusions`,
-`figures`, `tables`.
+The id syntax also supports view paths:
+
+```python
+get(kind='paper', id='wang2020state/abstract')
+get(kind='paper', id='wang2020state/toc')
+get(kind='paper', id='wang2020state/cite/bib')
+```
 
 Slug pattern: `wang2020state` (whole), `wang2020state~38` (chunk),
 `wang2020state~38..42` (range).
@@ -48,21 +61,17 @@ get(kind='paper', id='wang2020state', view='ris')
 get(kind='paper', id='wang2020state', view='endnote')
 ```
 
-## Annotate
+## Coming in later phases
 
-```python
-put(kind='paper', id='wang2020state', tags=['topic:noxrr', 'star'])
-
-put(kind='memory',
-    text='Z-scheme idea from §3 looks transferable to NOxRR.',
-    tags=['kind:idea', 'topic:noxrr', 'CONFIDENCE:tentative'],
-    link='wang2020state~38')
-```
+- `put(kind='paper', ...)` — paper edits and tags. Phase 5+.
+- `get(id='doi:10.1002/...')` and `get(id='arxiv:2207.09327')` — URI
+  scheme prefixes. Phase 4 acatome-quest-mcp territory.
+- `view='representatives'`, `view='methods'`, etc. — semantic section
+  views. Phase 5+.
 
 ## See also
 
 - `precis-overview` — verbs and kinds
 - `precis-relations` — `related-to`, `contradicts` between papers
 - `precis-tags` — `topic:`, `SRC:`, `DENSITY:*`
-- `precis-density` — `representatives`, `echoes`, `coverage`
 - `precis-memory-help` — capturing thoughts from a paper

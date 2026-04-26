@@ -5,8 +5,9 @@
 > `retospect/precis-mcp` and locally at `../precis-mcp` (also wired as the
 > `v1-local` git remote here).
 >
-> Phases done: **1 (walking skeleton)**, **2 (DB backbone + memory)**.
-> Next: **3 (paper kind + bundle ingest)** — see `docs/phase3-plan.md`.
+> Phases done: **1 (walking skeleton)**, **2 (DB backbone + memory)**,
+> **3 (paper kind + bundle ingest)** — see `docs/v2-cutover.md`.
+> Next: **4 (cache-backed kinds: `web`, `youtube`, `math`)**.
 
 ## What v2 is
 
@@ -52,7 +53,7 @@ the schema.
 - [x] Paper ingest spec (`docs/paper_ingest.md`)
 - [x] Phase 1 — walking skeleton: four verbs + `calc` end-to-end (no DB)
 - [x] Phase 2 — DB backbone: migration runner + `memory` handler
-- [ ] Phase 3 — `paper` kind (transplant PDF/BibTeX, density, ingest from bundle) — *plan: `docs/phase3-plan.md`*
+- [x] Phase 3 — `paper` kind: get/search, RRF block search, bundle ingest, `precis migrate` + `precis jobs ingest-bundle(s)` (see `docs/v2-cutover.md`)
 - [ ] Phase 4 — cache-backed kinds (`web`, `youtube`, `math`)
 - [ ] Phase 5 — remaining state kinds (`todo`, `gripe`, `fc`, `conv`, `quest`, `oracle`, `skill`)
 - [ ] Phase 6 — file handlers (`docx`, `tex`, `markdown`, `book`, `plaintext`, `rmk`)
