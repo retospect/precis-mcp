@@ -53,6 +53,20 @@ def builtins(
         handlers.append(MemoryHandler(store=store))
         handlers.append(PaperHandler(store=store, embedder=eff_embedder))
 
+        # Cache-backed kinds. Each declares its env requirements via
+        # `KindSpec.requires_env`; the dispatcher hides them from the
+        # agent enum when the env vars aren't set, and the actual
+        # network call only fires inside ``_fetch`` (lazy, on cache miss).
+        # Optional deps (wolframalpha, httpx, etc.) are guarded by the
+        # `[external]` extra; if missing, importing the handler raises
+        # ImportError and the kind is skipped silently below.
+        try:
+            from precis.handlers.math import MathHandler
+
+            handlers.append(MathHandler(store=store))
+        except ImportError:
+            pass  # missing wolframalpha → kind not available
+
     return handlers
 
 
