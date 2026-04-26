@@ -21,11 +21,11 @@ def builtins(*, store: Store | None = None) -> list[Handler]:
     """Return handler instances for the active server configuration.
 
     Stateless handlers (e.g. `calc`) are always included. Ref-backed
-    handlers (e.g. `memory`) require a `store` and are skipped when
-    none is provided — this lets phase-1-style stateless setups keep
-    working without a database.
+    handlers (e.g. `memory`, `paper`) require a `store` and are skipped
+    when none is provided — this lets phase-1-style stateless setups
+    keep working without a database.
 
-    Lazy imports keep heavy deps (sympy, asyncpg, pgvector) off the
+    Lazy imports keep heavy deps (sympy, psycopg, pgvector) off the
     module-load critical path until they're actually needed.
     """
     from precis.handlers.calc import CalcHandler
@@ -33,9 +33,16 @@ def builtins(*, store: Store | None = None) -> list[Handler]:
     handlers: list[Handler] = [CalcHandler()]
 
     if store is not None:
+        from precis.embedder import MockEmbedder
         from precis.handlers.memory import MemoryHandler
+        from precis.handlers.paper import PaperHandler
 
         handlers.append(MemoryHandler(store=store))
+        # Default embedder: deterministic mock. Real BgeM3Embedder is
+        # opt-in via runtime construction (see `build_runtime`).
+        handlers.append(
+            PaperHandler(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
+        )
 
     return handlers
 
