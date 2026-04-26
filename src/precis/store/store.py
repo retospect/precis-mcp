@@ -22,7 +22,7 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput, NotFound
 from precis.store.pool import create_pool
-from precis.store.types import ActorSlug, Ref, Tag
+from precis.store.types import ActorSlug, Block, BlockInsert, Density, Ref, Tag
 
 log = logging.getLogger(__name__)
 
@@ -306,6 +306,169 @@ class Store:
             result.append((ref, float(r[10])))
         return result
 
+    # -- blocks --------------------------------------------------------------
+
+    def insert_blocks(
+        self,
+        ref_id: int,
+        blocks: list[BlockInsert],
+        *,
+        replace: bool = False,
+        conn: Connection | None = None,
+    ) -> list[Block]:
+        """Bulk-insert blocks for a ref.
+
+        If `replace=True`, deletes existing blocks for `ref_id` first
+        (re-ingest path). Caller owns `pos` numbering — we don't reorder.
+
+        Embedding dimension is enforced by the DB column type (`vector(N)`
+        where N = `system.embedding_dim`).
+        """
+        if not blocks:
+            return []
+
+        sql_insert = """
+            INSERT INTO blocks
+                (ref_id, pos, slug, text, token_count, embedding, density, meta)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, ref_id, pos, slug, text, token_count, embedding,
+                      density, meta, created_at, updated_at
+        """
+
+        def _do(c: Connection) -> list[Block]:
+            if replace:
+                c.execute("DELETE FROM blocks WHERE ref_id = %s", (ref_id,))
+            out: list[Block] = []
+            for b in blocks:
+                row = c.execute(
+                    sql_insert,
+                    (
+                        ref_id,
+                        b.pos,
+                        b.slug,
+                        b.text,
+                        b.token_count,
+                        b.embedding,
+                        b.density,
+                        Jsonb(b.meta or {}),
+                    ),
+                ).fetchone()
+                assert row is not None
+                out.append(_row_to_block(row))
+            return out
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def get_block(
+        self,
+        ref_id: int,
+        *,
+        pos: int | None = None,
+        slug: str | None = None,
+        with_embedding: bool = False,
+    ) -> Block | None:
+        """Look up a single block by (ref_id, pos) or (ref_id, slug)."""
+        if (pos is None) == (slug is None):
+            raise BadInput(
+                "get_block requires exactly one of pos= or slug=",
+                next="get_block(ref_id, pos=N)  or  get_block(ref_id, slug='PLXDX')",
+            )
+        emb_col = "embedding" if with_embedding else "NULL::vector"
+        if pos is not None:
+            sql = (
+                f"SELECT id, ref_id, pos, slug, text, token_count, {emb_col}, "
+                "       density, meta, created_at, updated_at "
+                "FROM blocks WHERE ref_id = %s AND pos = %s"
+            )
+            params: tuple[Any, ...] = (ref_id, pos)
+        else:
+            sql = (
+                f"SELECT id, ref_id, pos, slug, text, token_count, {emb_col}, "
+                "       density, meta, created_at, updated_at "
+                "FROM blocks WHERE ref_id = %s AND slug = %s"
+            )
+            params = (ref_id, slug)
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return _row_to_block(row) if row is not None else None
+
+    def list_blocks_for_ref(
+        self,
+        ref_id: int,
+        *,
+        pos_range: tuple[int, int] | None = None,
+        with_embedding: bool = False,
+    ) -> list[Block]:
+        """List blocks for a ref, ordered by pos ASC.
+
+        `pos_range=(lo, hi)` filters inclusively on both ends.
+        """
+        emb_col = "embedding" if with_embedding else "NULL::vector"
+        clauses = ["ref_id = %s"]
+        params: list[Any] = [ref_id]
+        if pos_range is not None:
+            params.extend([pos_range[0], pos_range[1]])
+            clauses.append("pos BETWEEN %s AND %s")
+        sql = (
+            f"SELECT id, ref_id, pos, slug, text, token_count, {emb_col}, "
+            "       density, meta, created_at, updated_at "
+            "FROM blocks WHERE " + " AND ".join(clauses) + " ORDER BY pos ASC"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_block(r) for r in rows]
+
+    def count_blocks(self, ref_id: int) -> int:
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM blocks WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def update_block_density(self, block_id: int, density: Density) -> None:
+        with self.pool.connection() as conn:
+            conn.execute(
+                "UPDATE blocks SET density = %s, updated_at = now() WHERE id = %s",
+                (density, block_id),
+            )
+
+    def update_block_embedding(self, block_id: int, embedding: list[float]) -> None:
+        with self.pool.connection() as conn:
+            conn.execute(
+                "UPDATE blocks SET embedding = %s, updated_at = now() WHERE id = %s",
+                (embedding, block_id),
+            )
+
+    def blocks_missing_embeddings(
+        self,
+        *,
+        kind: str | None = None,
+        limit: int = 100,
+    ) -> list[Block]:
+        """Fetch blocks where embedding IS NULL, optionally filtered by
+        ref kind. Used by background re-embed jobs."""
+        clauses = ["b.embedding IS NULL", "r.deleted_at IS NULL"]
+        params: list[Any] = []
+        if kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        params.append(limit)
+        sql = (
+            "SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count, "
+            "       NULL::vector, b.density, b.meta, "
+            "       b.created_at, b.updated_at "
+            "FROM blocks b JOIN refs r ON r.id = b.ref_id "
+            "WHERE " + " AND ".join(clauses) + " "
+            "ORDER BY b.id ASC LIMIT %s"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_block(r) for r in rows]
+
     # -- tags ----------------------------------------------------------------
 
     def add_tag(
@@ -458,6 +621,31 @@ class Store:
 # ---------------------------------------------------------------------------
 # Row mappers (psycopg row tuple -> dataclass)
 # ---------------------------------------------------------------------------
+
+
+def _row_to_block(row: tuple) -> Block:
+    """Map a blocks row tuple in the order:
+    (id, ref_id, pos, slug, text, token_count, embedding, density, meta,
+     created_at, updated_at)
+    """
+    embedding = row[6]
+    if embedding is not None and not isinstance(embedding, list):
+        # pgvector returns numpy.ndarray when registered; coerce for stable
+        # cross-version output.
+        embedding = list(map(float, embedding))
+    return Block(
+        id=row[0],
+        ref_id=row[1],
+        pos=row[2],
+        slug=row[3],
+        text=row[4],
+        token_count=row[5],
+        embedding=embedding,
+        density=row[7],
+        meta=row[8] or {},
+        created_at=row[9],
+        updated_at=row[10],
+    )
 
 
 def _row_to_ref(row: tuple) -> Ref:
