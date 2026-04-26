@@ -1,8 +1,7 @@
 """Sync postgres-backed store (psycopg 3). One instance per server.
 
-Phase 2 surface: corpus, ref CRUD, tag CRUD, system settings. Block /
-link / cache / search methods land in subsequent phases as their
-respective handlers come online.
+Phase 2 surface: corpus, ref CRUD, tag CRUD, system settings.
+Phase 3 adds: block CRUD, hybrid block search, paper bundle ingest.
 
 All methods sync. Each method acquires a connection from the pool for
 its work; callers needing multi-statement atomicity use `Store.tx()`.
@@ -14,7 +13,8 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Self
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Self
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -23,6 +23,10 @@ from psycopg_pool import ConnectionPool
 from precis.errors import BadInput, NotFound
 from precis.store.pool import create_pool
 from precis.store.types import ActorSlug, Block, BlockInsert, Density, Ref, Tag
+
+if TYPE_CHECKING:
+    from precis.embedder import Embedder
+    from precis.ingest import IngestResult
 
 log = logging.getLogger(__name__)
 
@@ -640,6 +644,123 @@ class Store:
                 "UPDATE blocks SET embedding = %s, updated_at = now() WHERE id = %s",
                 (embedding, block_id),
             )
+
+    # -- ingest --------------------------------------------------------------
+
+    def ingest_bundle(
+        self,
+        path: Path,
+        *,
+        embedder: Embedder,
+        corpus_slug: str = "default",
+    ) -> IngestResult:
+        """Read a `.acatome` bundle and write it into the v2 schema.
+
+        Idempotency: if a paper with the same DOI is already present
+        (kind='paper', meta->>'doi' = bundle.doi), the call is a
+        no-op — `IngestResult.inserted=False`. Re-extract is a separate
+        operation handled by a future `--force` flag.
+
+        Block embeddings:
+        - Bundle blocks carrying a vector matching the embedder's dim
+          are inserted as-is (no re-embed cost).
+        - Anything else gets re-embedded by `embedder`.
+
+        All work runs in one transaction.
+        """
+        from precis.ingest import (
+            IngestResult,
+            fill_embeddings,
+            mint_paper_slug,
+            parse_bundle,
+            read_bundle,
+        )
+
+        raw = read_bundle(Path(path))
+        parsed = parse_bundle(raw, embedding_dim=embedder.dim)
+
+        # DOI dedupe: short-circuit if we already have this paper. We
+        # could also dedupe on (provider, request_hash) for cache kinds
+        # but papers don't have a unique-per-content key beyond DOI.
+        if parsed.doi:
+            with self.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT id, slug FROM refs "
+                    "WHERE kind = 'paper' AND deleted_at IS NULL "
+                    "AND meta->>'doi' = %s "
+                    "LIMIT 1",
+                    (parsed.doi,),
+                ).fetchone()
+            if row is not None:
+                ref_id, slug = row[0], row[1]
+                return IngestResult(
+                    ref_id=ref_id,
+                    slug=slug,
+                    block_count=self.count_blocks(ref_id),
+                    inserted=False,
+                    embedding_dim=embedder.dim,
+                )
+
+        # Embed any block missing a usable vector.
+        blocks = fill_embeddings(parsed.blocks, embedder=embedder)
+
+        with self.tx() as conn:
+            cid = self.ensure_corpus(corpus_slug)
+
+            # Slug minting: probe via the same connection so the dedup
+            # sees this transaction's writes. We're inside `tx()`, so
+            # other concurrent ingests can't observe our partial state
+            # until commit — collisions resolve by suffixing.
+            def _slug_taken(s: str) -> bool:
+                row = conn.execute(
+                    "SELECT 1 FROM refs WHERE kind='paper' AND slug=%s",
+                    (s,),
+                ).fetchone()
+                return row is not None
+
+            slug = mint_paper_slug(parsed, _slug_taken)
+
+            ref = self.insert_ref(
+                corpus_id=cid,
+                kind="paper",
+                slug=slug,
+                title=parsed.title,
+                provider="manual",
+                meta=dict(parsed.raw_meta),
+                conn=conn,
+            )
+
+            # Block insert payloads. Slug minting per block is
+            # deferred — phase 3 doesn't need stable per-block citation
+            # handles for the agent surface to work; pos is enough.
+            inserts = [
+                BlockInsert(
+                    pos=i,
+                    text=b.text,
+                    embedding=b.embedding,
+                    density=b.density,
+                    token_count=len(b.text.split()),
+                )
+                for i, b in enumerate(blocks)
+            ]
+            self.insert_blocks(ref.id, inserts, conn=conn)
+
+            # Provenance + density tags. Closed-namespace SRC tag is
+            # writable by the system actor only.
+            conn.execute(
+                "INSERT INTO ref_closed_tags (ref_id, prefix, value, set_by) "
+                "VALUES (%s, 'SRC', 'bundle', 'system') "
+                "ON CONFLICT DO NOTHING",
+                (ref.id,),
+            )
+
+        return IngestResult(
+            ref_id=ref.id,
+            slug=slug,
+            block_count=len(blocks),
+            inserted=True,
+            embedding_dim=embedder.dim,
+        )
 
     def blocks_missing_embeddings(
         self,
