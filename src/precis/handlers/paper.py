@@ -7,12 +7,13 @@ CLI). ``put`` lands in a later phase when paper edits are scoped.
 Slug parsing supports the canonical slug-with-chunk syntax used across
 v2:
 
-    wang2020state           — overview
-    wang2020state~38        — block at pos=38
-    wang2020state~38..42    — block range pos∈[38,42]
-    wang2020state/cite/bib  — view shortcut path
-    wang2020state/abstract  — view shortcut path
-    wang2020state/toc       — view shortcut path
+    wang2020state              — overview
+    wang2020state~38           — block at pos=38
+    wang2020state~38..42       — block range pos∈[38,42]
+    wang2020state/cite/bib     — view shortcut path
+    wang2020state/abstract     — view shortcut path
+    wang2020state/toc          — view shortcut path
+    wang2020state~38..42/toc   — TOC scoped to a range (drill-down, phase 3.5)
 """
 
 from __future__ import annotations
@@ -22,9 +23,11 @@ from typing import Any, ClassVar
 
 from precis.embedder import Embedder
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers._paper_toc import build_toc, filter_toc_to_range, render_toc
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Ref, Store
+from precis.utils.next_block import render_next_section
 
 # ---------------------------------------------------------------------------
 # Public spec
@@ -84,13 +87,19 @@ class PaperHandler(Handler):
         # Path view (`slug/cite/bib`) takes precedence over kwarg `view`,
         # because the agent is being explicit in the id.
         effective_view = path_view or view
+
+        # Combined form: ``slug~A..B/toc`` → range-scoped TOC drill-down.
+        # Only ``view='toc'`` is valid with a chunk_spec; other views
+        # don't have a sensible "this range only" meaning yet.
+        if chunk_spec is not None and effective_view is not None:
+            if effective_view == "toc":
+                return self._render_toc(ref, scope=chunk_spec)
+            raise BadInput(
+                f"cannot combine chunk selector (~N..M) with view={effective_view!r}",
+                next=f"get(kind='paper', id={slug!r}~{chunk_spec[0]}..{chunk_spec[1]}/toc)",
+            )
+
         if chunk_spec is not None:
-            if effective_view is not None:
-                raise BadInput(
-                    "cannot combine chunk selector (~N) with a view",
-                    next=f"get(kind='paper', id={slug!r})  or  pick one of "
-                    + ", ".join(_SUPPORTED_VIEWS),
-                )
             return self._render_chunks(ref, chunk_spec)
 
         if effective_view is None:
@@ -178,13 +187,28 @@ class PaperHandler(Handler):
             lines.append("")
             lines.append(_excerpt(str(abstract), limit=500))
 
-        lines.append("")
-        lines.append("Next:")
-        lines.append(f"  get(kind='paper', id='{ref.slug}', view='toc')")
-        lines.append(f"  get(kind='paper', id='{ref.slug}~0..5')")
-        lines.append(f"  get(kind='paper', id='{ref.slug}', view='bibtex')")
-        lines.append(f"  search(kind='paper', q='...', scope='{ref.slug}')")
-        return Response(body="\n".join(lines))
+        body = "\n".join(lines)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='paper', id='{ref.slug}', view='toc')",
+                    "hierarchical table of contents",
+                ),
+                (
+                    f"get(kind='paper', id='{ref.slug}~0..5')",
+                    "read first chunks",
+                ),
+                (
+                    f"get(kind='paper', id='{ref.slug}', view='bibtex')",
+                    "BibTeX citation",
+                ),
+                (
+                    f"search(kind='paper', q='...', scope='{ref.slug}')",
+                    "search blocks within this paper",
+                ),
+            ]
+        )
+        return Response(body=body)
 
     def _render_view(self, ref: Ref, view: str) -> Response:
         if view == "abstract":
@@ -194,13 +218,7 @@ class PaperHandler(Handler):
             return Response(body=str(abstract))
 
         if view == "toc":
-            blocks = self.store.list_blocks_for_ref(ref.id)
-            if not blocks:
-                return Response(body=f"{ref.slug}: no blocks")
-            lines = [f"# {ref.slug} — TOC ({len(blocks)} blocks)"]
-            for b in blocks:
-                lines.append(f"  ~{b.pos:>4}  {_excerpt(b.text, limit=80)}")
-            return Response(body="\n".join(lines))
+            return self._render_toc(ref, scope=None)
 
         if view in ("bibtex", "ris", "endnote"):
             return Response(body=_format_citation(ref, style=view))
@@ -219,12 +237,87 @@ class PaperHandler(Handler):
                 f"no blocks in {ref.slug} for range ~{lo}..{hi}",
                 next=f"get(kind='paper', id='{ref.slug}', view='toc')",
             )
-        lines = []
+        lines: list[str] = []
         for b in blocks:
             lines.append(f"# {ref.slug}~{b.pos}")
             lines.append(b.text)
             lines.append("")
-        return Response(body="\n".join(lines).rstrip())
+
+        # Next: trailer — adjacent ranges + parent toc + citation.
+        # Use the actual block count so the hint never points off the end.
+        total = self.store.count_blocks(ref.id)
+        nav: list[tuple[str, str]] = []
+        if hi + 1 < total:
+            nxt_lo = hi + 1
+            nxt_hi = min(total - 1, hi + (hi - lo + 1))
+            nav.append(
+                (
+                    f"get(kind='paper', id='{ref.slug}~{nxt_lo}..{nxt_hi}')",
+                    "next chunk range",
+                )
+            )
+        if lo > 0:
+            prev_hi = lo - 1
+            prev_lo = max(0, lo - (hi - lo + 1))
+            nav.append(
+                (
+                    f"get(kind='paper', id='{ref.slug}~{prev_lo}..{prev_hi}')",
+                    "previous chunk range",
+                )
+            )
+        nav.append(
+            (
+                f"get(kind='paper', id='{ref.slug}', view='toc')",
+                "full TOC",
+            )
+        )
+        nav.append(
+            (
+                f"get(kind='paper', id='{ref.slug}~{lo}..{hi}/toc')",
+                "TOC of this range",
+            )
+        )
+        nav.append(
+            (
+                f"get(kind='paper', id='{ref.slug}', view='bibtex')",
+                "BibTeX citation",
+            )
+        )
+        body = "\n".join(lines).rstrip() + render_next_section(nav)
+        return Response(body=body)
+
+    def _render_toc(
+        self,
+        ref: Ref,
+        *,
+        scope: tuple[int, int] | None,
+    ) -> Response:
+        """Render the hierarchical TOC, optionally scoped to a block range.
+
+        ``scope=None`` renders the whole paper. ``scope=(lo, hi)`` clips
+        the TOC to the range — used by the ``slug~A..B/toc`` drill-down
+        form for recursive navigation.
+        """
+        # Pull every block (we need text to detect headings).
+        blocks = self.store.list_blocks_for_ref(ref.id)
+        if not blocks:
+            return Response(body=f"{ref.slug}: no blocks")
+
+        toc = build_toc(blocks)
+        range_label: str | None = None
+        if scope is not None:
+            lo, hi = scope
+            toc = filter_toc_to_range(toc, lo=lo, hi=hi)
+            range_label = f"~{lo}..{hi}"
+
+        body = render_toc(
+            slug=ref.slug or "???",
+            toc=toc,
+            total_blocks=len(blocks),
+            blocks_by_pos={b.pos: b for b in blocks},
+            range_label=range_label,
+        )
+        return Response(body=body)
 
     def _render_list_papers(self) -> Response:
         refs = self.store.list_refs(kind="paper", limit=50)
@@ -273,8 +366,11 @@ def _parse_paper_id(
 ) -> tuple[str, tuple[int, int] | None, str | None]:
     """Return (slug, chunk_range, view).
 
-    ``slug`` is mandatory. Exactly one of (chunk_range, view) is set if
-    the raw id carries a selector; both None for plain slugs.
+    ``slug`` is mandatory. Both ``chunk_range`` and ``view`` may be set
+    when the id carries both — e.g. ``slug~46..105/toc`` is the
+    drill-down form (TOC scoped to that block range). For plain chunk
+    selectors (``slug~38``) view is ``None``; for plain view paths
+    (``slug/cite/bib``) chunk_range is ``None``.
     """
     m = _SLUG_RE.match(raw)
     if not m:
@@ -287,8 +383,17 @@ def _parse_paper_id(
     if not rest:
         return slug, None, None
 
+    chunk_range: tuple[int, int] | None = None
     if rest.startswith("~"):
-        sel = rest[1:]
+        # Split selector from optional view path: ``~46..105/toc``.
+        sel_and_path = rest[1:]
+        if "/" in sel_and_path:
+            sel, _, path_part = sel_and_path.partition("/")
+            rest_after_sel = "/" + path_part
+        else:
+            sel = sel_and_path
+            rest_after_sel = ""
+
         rng = _RANGE_RE.match(sel)
         if rng:
             lo, hi = int(rng.group(1)), int(rng.group(2))
@@ -297,15 +402,21 @@ def _parse_paper_id(
                     f"empty chunk range: {raw!r}",
                     next="ranges run lo..hi inclusive (e.g. '~3..7')",
                 )
-            return slug, (lo, hi), None
-        single = _CHUNK_RE.match(sel)
-        if single:
-            n = int(single.group(1))
-            return slug, (n, n), None
-        raise BadInput(
-            f"unparseable chunk selector after ~: {sel!r}",
-            next="use '~N' for a single block or '~N..M' for a range",
-        )
+            chunk_range = (lo, hi)
+        else:
+            single = _CHUNK_RE.match(sel)
+            if single:
+                n = int(single.group(1))
+                chunk_range = (n, n)
+            else:
+                raise BadInput(
+                    f"unparseable chunk selector after ~: {sel!r}",
+                    next="use '~N' for a single block or '~N..M' for a range",
+                )
+
+        if not rest_after_sel:
+            return slug, chunk_range, None
+        rest = rest_after_sel
 
     if rest.startswith("/"):
         parts = tuple(rest[1:].split("/"))
@@ -316,11 +427,11 @@ def _parse_paper_id(
                 options=list(_SUPPORTED_VIEWS),
                 next="see precis-paper-help for the supported view paths",
             )
-        return slug, None, view
+        return slug, chunk_range, view
 
     raise BadInput(
         f"unparseable paper id: {raw!r}",
-        next="format: <slug> | <slug>~N | <slug>~N..M | <slug>/<view>",
+        next="format: <slug> | <slug>~N | <slug>~N..M | <slug>/<view> | <slug>~N..M/<view>",
     )
 
 

@@ -37,7 +37,7 @@ search(kind='paper', q='Z-scheme', scope='wang2020state')
 ```python
 get(kind='paper', id='wang2020state')                  # overview
 get(kind='paper', id='wang2020state', view='abstract') # abstract only
-get(kind='paper', id='wang2020state', view='toc')      # block index
+get(kind='paper', id='wang2020state', view='toc')      # hierarchical TOC
 get(kind='paper', id='wang2020state~38')               # block 38
 get(kind='paper', id='wang2020state~38..42')           # block range
 ```
@@ -52,6 +52,39 @@ get(kind='paper', id='wang2020state/cite/bib')
 
 Slug pattern: `wang2020state` (whole), `wang2020state~38` (chunk),
 `wang2020state~38..42` (range).
+
+## Navigate
+
+The `view='toc'` output is **hierarchical** — section/subsection
+ranges are detected from heading patterns and laid out as a jump
+table:
+
+```
+# acheson2026automated — TOC (177 blocks, 20 sections)
+
+  ~0..7     (8)   <untitled>  (preview from first block)
+  ~8..20    (13)  ■ INTRODUCTION
+  ~21..40   (20)  ■ THEORY
+  ~41..73   (33)  ■ METHODS
+    ~43..53   (11)  Physics-Informed Program Synthesis [PIPS]
+    ~54..58   (5)   Calculation Details
+    ~59..63   (5)   Heterodiatomic Molecules
+    ~64..73   (10)  Alkanes
+  ~74..116  (43)  ■ RESULTS & DISCUSSION
+    …
+```
+
+To **drill into a section**, use the combined chunk-range + view path
+form:
+
+```python
+get(kind='paper', id='wang2020state~74..116/toc')   # TOC of just this range
+get(kind='paper', id='wang2020state~74..116')       # read this range
+```
+
+Each response ends with a column-aligned "Next:" block that suggests
+the next likely call (next/previous range, parent TOC, citation, …)
+so the agent can keep navigating without re-reading the help.
 
 ## Cite
 

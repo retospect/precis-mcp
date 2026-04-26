@@ -7,9 +7,10 @@
 >
 > Phases done: **1 (walking skeleton)**, **2 (DB backbone + memory)**,
 > **3 (paper kind + bundle ingest)** — see `docs/v2-cutover.md`,
+> **3.5 (navigation parity: hierarchical TOC, drill-down, Next: trailers)**,
 > **4a (cache-backed kinds: `math`, `youtube`, `web` page-fetch)**.
-> Queued: **3.5 (navigation parity)**, **4b (Perplexity, web bookmarks,
-> Wayback)**. Next: **5 (todo, gripe, fc, conv, quest, oracle, skill)**.
+> Queued: **4b (Perplexity, web bookmarks, Wayback)**.
+> Next: **5 (todo, gripe, fc, conv, quest, oracle, skill)**.
 
 ## What v2 is
 
@@ -56,7 +57,7 @@ the schema.
 - [x] Phase 1 — walking skeleton: four verbs + `calc` end-to-end (no DB)
 - [x] Phase 2 — DB backbone: migration runner + `memory` handler
 - [x] Phase 3 — `paper` kind: get/search, RRF block search, bundle ingest, `precis migrate` + `precis jobs ingest-bundle(s)` (see `docs/v2-cutover.md`)
-- [ ] Phase 3.5 — navigation parity (hierarchical TOC, Next: trailers, range/toc drill-down) — *plan: `docs/phase3.5-plan.md`*
+- [x] Phase 3.5 — navigation parity: hierarchical TOC, range-scoped drill-down (`~A..B/toc`), column-aligned `Next:` trailers on overview/chunk/toc views — *plan: `docs/phase3.5-plan.md`*
 - [x] Phase 4a — cache-backed kinds: `math` (Wolfram), `youtube` (transcripts), `web` (page fetch + trafilatura). Shared `CacheBackedHandler` base, `cache_state` CRUD, attribution footers + cost trailers — *plan: `docs/phase4-plan.md`*
 - [ ] Phase 4b — Perplexity (`websearch`/`think`/`research`), `web` bookmark mode, Wayback archive
 - [ ] Phase 5 — remaining state kinds (`todo`, `gripe`, `fc`, `conv`, `quest`, `oracle`, `skill`)

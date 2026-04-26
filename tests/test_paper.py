@@ -44,6 +44,19 @@ class TestParsePaperId:
         _, _, view = _parse_paper_id("wang2020state/toc")
         assert view == "toc"
 
+    def test_range_with_view_combo(self) -> None:
+        """Phase 3.5: ``slug~A..B/toc`` is the drill-down form."""
+        slug, rng, view = _parse_paper_id("wang2020state~46..105/toc")
+        assert slug == "wang2020state"
+        assert rng == (46, 105)
+        assert view == "toc"
+
+    def test_single_chunk_with_view_combo(self) -> None:
+        """``slug~38/toc`` is also legal (TOC scoped to a single block)."""
+        slug, rng, view = _parse_paper_id("wang2020state~38/toc")
+        assert rng == (38, 38)
+        assert view == "toc"
+
     def test_invalid_chunk_selector(self) -> None:
         with pytest.raises(BadInput):
             _parse_paper_id("wang2020state~xyz")
@@ -168,13 +181,75 @@ class TestViews:
         _seed_paper(store, blocks=["Block A", "Block B", "Block C"])
         resp = handler.get(id="wang2020state", view="toc")
         body = resp.body
+        # Header counts blocks + sections.
         assert "TOC" in body
         assert "3 blocks" in body
-        assert "Block A" in body and "Block B" in body and "Block C" in body
-        # positional indicator
-        assert "~   0" in body
-        assert "~   1" in body
-        assert "~   2" in body
+        # No headings detected → single implicit section spanning all
+        # blocks. Range column shows ``~0..2`` and a preview of the
+        # first block surfaces in the row label.
+        assert "~0..2" in body
+        assert "Block A" in body  # preview from pos=0
+        assert "<untitled>" in body
+
+    def test_toc_with_headings_is_hierarchical(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Phase 3.5: blocks matching heading patterns produce sections."""
+        _seed_paper(
+            store,
+            blocks=[
+                "abstract text",
+                "■ **INTRODUCTION**",
+                "intro body",
+                "■ **METHODS**",
+                "**Materials**",
+                "materials body",
+                "■ **RESULTS**",
+                "results body",
+            ],
+        )
+        resp = handler.get(id="wang2020state", view="toc")
+        body = resp.body
+        # All three top-level sections appear with the ■ marker.
+        assert "■ INTRODUCTION" in body
+        assert "■ METHODS" in body
+        assert "■ RESULTS" in body
+        # Subsection appears with deeper indent (no ■ marker).
+        materials_line = next(
+            line
+            for line in body.splitlines()
+            if "Materials" in line and "■" not in line
+        )
+        methods_line = next(line for line in body.splitlines() if "■ METHODS" in line)
+        materials_indent = len(materials_line) - len(materials_line.lstrip())
+        methods_indent = len(methods_line) - len(methods_line.lstrip())
+        assert materials_indent > methods_indent
+        # Drill-down hint trailer present.
+        assert "Next:" in body
+        assert "drill into" in body
+
+    def test_toc_drilldown_via_id(self, store: Store, handler: PaperHandler) -> None:
+        """`get(id='slug~A..B/toc')` returns a TOC scoped to the range."""
+        _seed_paper(
+            store,
+            blocks=[
+                "■ **INTRO**",
+                "intro body",
+                "■ **METHODS**",
+                "method body 1",
+                "method body 2",
+                "■ **RESULTS**",
+                "result body",
+            ],
+        )
+        resp = handler.get(id="wang2020state~2..4/toc")
+        body = resp.body
+        # Range label appears in header.
+        assert "~2..4" in body
+        # Only METHODS overlaps the range.
+        assert "■ METHODS" in body
+        assert "■ INTRO" not in body
+        assert "■ RESULTS" not in body
 
     def test_bibtex(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store)
@@ -234,22 +309,34 @@ class TestChunks:
     def test_chunk_range(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, blocks=["a", "b", "c", "d"])
         resp = handler.get(id="wang2020state~1..2")
-        assert "wang2020state~1" in resp.body
-        assert "wang2020state~2" in resp.body
+        # Block 1 + 2 contents are rendered with their headings.
+        assert "# wang2020state~1" in resp.body
+        assert "# wang2020state~2" in resp.body
         assert "b" in resp.body and "c" in resp.body
-        assert "wang2020state~3" not in resp.body
+        # Block 3 is NOT rendered as a body chunk — only referenced in
+        # the Next: hint as the suggested next-range to read.
+        assert "# wang2020state~3" not in resp.body
+        # Phase 3.5: Next: trailer offers adjacent ranges + TOC.
+        assert "Next:" in resp.body
+        assert "next chunk range" in resp.body
+        assert "TOC of this range" in resp.body
 
     def test_chunk_out_of_range_404s(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, blocks=["a"])
         with pytest.raises(NotFound):
             handler.get(id="wang2020state~99")
 
-    def test_chunk_view_combo_rejected(
+    def test_chunk_view_combo_rejected_for_non_toc(
         self, store: Store, handler: PaperHandler
     ) -> None:
+        """Phase 3.5: ``~N..M`` may combine with ``view='toc'`` (drill-down)
+        but not with other views \u2014 there's no sensible meaning for a
+        range-scoped citation, abstract, or single-chunk view."""
         _seed_paper(store)
-        with pytest.raises(BadInput):
+        with pytest.raises(BadInput, match="cannot combine"):
             handler.get(id="wang2020state~0", view="bibtex")
+        with pytest.raises(BadInput, match="cannot combine"):
+            handler.get(id="wang2020state~0", view="abstract")
 
 
 # ---------------------------------------------------------------------------

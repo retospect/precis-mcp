@@ -43,12 +43,35 @@ green, 1 skip.
 - Skill drafts: `precis-math-help.md`, `precis-youtube-help.md`,
   `precis-web-help.md`.
 
-## Phase 3.5 plan — Navigation parity
+## Phase 3.5 — Navigation parity
 
-Queued (after phase 4): hierarchical TOC, range-scoped drill-down
-(`~46..105/toc`), aligned "Next:" trailer block on every paper view.
-The user-facing navigation that made v1 distinctive — see
-`docs/phase3.5-plan.md`. ~150 LOC, ~20 tests.
+The user-facing navigation that made v1 distinctive, restored. **373
+tests green, 1 skip.**
+
+- `precis.utils.next_block` — `format_next_block` and
+  `render_next_section` helpers. Column-aligned `(call, description)`
+  pairs with em-dash separators; the formatter is shared across all
+  handlers that emit `Next:` trailers.
+- `precis.handlers._paper_toc` — heading detection (acatome
+  `■ **NAME**` / `**Name**` / markdown `# Name` / `## Name`), section
+  grouping, range-scoped clipping for drill-down, hierarchical
+  rendering. Pure logic; no DB dependency.
+- `PaperHandler.get(view='toc')` now produces a structured jump table
+  with section/subsection ranges, block counts, indented children, and
+  a "Next:" trailer pointing at the largest section to drill into.
+  Replaces the flat "block 0 / block 1 / block 2 …" listing.
+- `PaperHandler` accepts the combined drill-down id form
+  `slug~A..B/toc` — TOC scoped to that range. Recursive: each child
+  section is itself addressable.
+- Aligned `Next:` trailers added to every PaperHandler view:
+  - **overview**: TOC, first chunks, BibTeX, scoped search
+  - **chunks**: next/previous range (sized to match the current
+    range), full TOC, range-scoped TOC, BibTeX
+  - **TOC**: drill into largest section, read largest section, BibTeX
+- Live verified against the real `acheson2026automated` paper (177
+  blocks → 20 detected sections; METHODS has 4 H2 children; RESULTS &
+  DISCUSSION has 2). Drill-down to `~74..116/toc` correctly clips to
+  just RESULTS & DISCUSSION + its children.
 
 ## Phase 3 — Paper kind + bundle ingest
 
