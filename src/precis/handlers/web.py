@@ -1,0 +1,206 @@
+"""``web`` kind — fetch and cache the readable content of a URL.
+
+Phase 4 ships **page-fetch mode only**: ``get(kind='web', id=URL)``
+fetches the URL, extracts the main content with `trafilatura`, and
+caches the markdown text. Bookmark mode (durable, user-curated refs)
+and Wayback-archive integration are deferred to phase 4b — they
+need `put` support (phase 5+) and a richer ref schema.
+
+Cache key: the canonical URL. Different URL forms of the same page
+(scheme case, default ports, tracking params, trailing slashes,
+fragments on non-SPA hosts) collapse onto a single cache row.
+
+Free (no auth, just bandwidth). 7-day TTL — pages mutate often enough
+that long-lived caching produces stale answers.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, ClassVar
+
+from precis.errors import BadInput, Upstream
+from precis.handlers._cache_base import CacheBackedHandler, FetchResult
+from precis.protocol import KindSpec
+from precis.response import Response
+from precis.store.types import BlockInsert
+from precis.utils.url import canonical_url, host_of, is_http_url, slug_from_url
+
+if TYPE_CHECKING:
+    from precis.store import Store
+
+log = logging.getLogger(__name__)
+
+
+_WEB_BASE_ATTRIBUTION = (
+    "Source: web page; content © its publisher. Fetched and extracted "
+    "with trafilatura. Verify quotes against the original; quote sparingly."
+)
+
+
+# Generous default UA so brittle anti-bot middleware doesn't 403 us.
+# Real users can override via `WEB_USER_AGENT` env var.
+_DEFAULT_UA = (
+    "Mozilla/5.0 (compatible; precis-mcp/2.0; +https://github.com/retospect/precis-mcp)"
+)
+
+
+class WebHandler(CacheBackedHandler):
+    """``web`` — fetch+extract a URL. Page-fetch mode only in phase 4."""
+
+    spec: ClassVar[KindSpec] = KindSpec(
+        kind="web",
+        title="Web (page fetch)",
+        description=(
+            "Fetch a web page and return its readable content as markdown. "
+            "Cached for 7 days; tracking params and fragments collapse "
+            "onto a single cache row."
+        ),
+        supports_get=True,
+        is_numeric=False,
+        id_required=True,
+    )
+
+    provider: ClassVar[str] = "web"
+    ttl_seconds: ClassVar[int | None] = 7 * 24 * 60 * 60  # 7 days
+    attribution: ClassVar[str] = _WEB_BASE_ATTRIBUTION
+    corpus_slug: ClassVar[str] = "default"
+
+    def __init__(self, *, store: Store) -> None:
+        super().__init__(store=store)
+
+    # ── canonicalization & cache key ──────────────────────────────────
+
+    def _canonical_key(self, query: str) -> str:
+        """The canonical URL is the cache key. Reject non-http(s) input."""
+        try:
+            url = canonical_url(query)
+        except ValueError as exc:
+            raise BadInput(
+                f"not a valid URL: {query!r}",
+                next="get(kind='web', id='https://example.com/article')",
+            ) from exc
+        if not is_http_url(url):
+            raise BadInput(
+                f"web kind requires http(s) URL; got: {query!r}",
+                next="get(kind='web', id='https://example.com/article')",
+            )
+        return url
+
+    def _slug_for(self, key: str) -> str:
+        """Use the readable slug derived from the canonical URL.
+
+        Two distinct pages on the same host with different paths get
+        distinct slugs deterministically — no hash suffix needed for
+        most cases. Truncated to 60 chars; collisions (rare for typical
+        bookmarks) cascade-replace the older entry per
+        ``put_cache_entry``'s upsert behaviour.
+        """
+        slug = slug_from_url(key)
+        return slug or "web-fetch"
+
+    # ── upstream fetch + extract ──────────────────────────────────────
+
+    def _fetch(self, key: str) -> FetchResult:
+        try:
+            import httpx
+        except ImportError as exc:  # pragma: no cover — guarded at registry
+            raise Upstream(
+                "httpx is not installed",
+                next="pip install 'precis-mcp[external]'",
+            ) from exc
+
+        try:
+            import trafilatura
+        except ImportError as exc:  # pragma: no cover — guarded at registry
+            raise Upstream(
+                "trafilatura is not installed",
+                next="pip install 'precis-mcp[external]'",
+            ) from exc
+
+        import os
+
+        ua = os.environ.get("WEB_USER_AGENT", _DEFAULT_UA)
+        headers = {"User-Agent": ua, "Accept": "text/html,*/*;q=0.8"}
+
+        try:
+            with httpx.Client(
+                timeout=30.0,
+                follow_redirects=True,
+                headers=headers,
+            ) as client:
+                resp = client.get(key)
+        except httpx.HTTPError as exc:
+            raise Upstream(
+                f"fetch failed for {key}: {exc}",
+                next="check the URL is reachable; retry later",
+            ) from exc
+
+        if resp.status_code >= 400:
+            raise Upstream(
+                f"HTTP {resp.status_code} for {key}",
+                next="check the URL or wait for the site to recover",
+            )
+
+        html = resp.text
+        # Trafilatura's `extract` returns markdown when configured; we
+        # prefer markdown so blocks read naturally and link-grep works.
+        extracted = trafilatura.extract(
+            html,
+            output_format="markdown",
+            include_links=True,
+            include_images=False,
+            favor_recall=False,
+        )
+
+        title = _extract_title(html) or host_of(key) or key
+
+        if not extracted or not extracted.strip():
+            # Trafilatura sometimes returns empty for low-text pages
+            # (login walls, JS shells). Fall back to a stub note rather
+            # than caching nothing.
+            body_text = (
+                f"(no readable content extracted from {key} — "
+                f"page may require JS, login, or have non-article shape)"
+            )
+        else:
+            body_text = extracted.strip()
+
+        return FetchResult(
+            title=title,
+            body_blocks=[BlockInsert(pos=0, text=body_text)],
+            cost_usd=None,  # bandwidth only
+            meta={
+                "url": key,
+                "host": host_of(key),
+                "status_code": resp.status_code,
+                "content_type": resp.headers.get("content-type", ""),
+                "extracted_chars": len(body_text),
+            },
+        )
+
+    # ── render: append source URL + fetched-at line ───────────────────
+
+    def _render(self, ref, cache, *, hit):  # type: ignore[no-untyped-def]
+        resp = super()._render(ref, cache, hit=hit)
+        url = (cache.meta or {}).get("url") or ""
+        fetched = cache.fetched_at.date().isoformat() if cache.fetched_at else "?"
+        deep_link = f"  Source: {url}\n  Fetched: {fetched}"
+        return Response(body=resp.body + "\n" + deep_link, cost=resp.cost)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_title(html: str) -> str | None:
+    """Cheap <title> grab. Trafilatura also exposes title metadata,
+    but a single regex avoids a second pass through the HTML."""
+    import re
+
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if not m:
+        return None
+    title = re.sub(r"\s+", " ", m.group(1)).strip()
+    return title or None

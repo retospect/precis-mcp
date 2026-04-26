@@ -74,6 +74,13 @@ def builtins(
         except ImportError:
             pass  # missing youtube-transcript-api → kind not available
 
+        try:
+            from precis.handlers.web import WebHandler
+
+            handlers.append(WebHandler(store=store))
+        except ImportError:
+            pass  # missing httpx/trafilatura → kind not available
+
     return handlers
 
 
