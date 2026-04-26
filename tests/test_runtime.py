@@ -86,3 +86,42 @@ def test_build_runtime_no_database() -> None:
     finally:
         if original is not None:
             os.environ["PRECIS_DATABASE_URL"] = original
+
+
+def test_build_runtime_honors_embedder_config(fresh_db: str) -> None:
+    """`PRECIS_EMBEDDER` selects the active embedder; mock is the default."""
+    import os
+
+    from precis.embedder import MockEmbedder
+    from precis.runtime import build_runtime
+    from precis.store import Migrator
+
+    Migrator(fresh_db, _migrations_dir()).apply_all()
+
+    original_db = os.environ.get("PRECIS_DATABASE_URL")
+    original_emb = os.environ.get("PRECIS_EMBEDDER")
+    os.environ["PRECIS_DATABASE_URL"] = fresh_db
+    os.environ["PRECIS_EMBEDDER"] = "mock"
+    try:
+        rt = build_runtime()
+        assert "paper" in rt.registry
+        paper = rt.registry.get("paper")
+        # Default: mock embedder. Real backend is opt-in via config.
+        assert isinstance(paper.embedder, MockEmbedder)  # type: ignore[attr-defined]
+        assert paper.embedder.dim == rt.store.embedding_dim()  # type: ignore[attr-defined,union-attr]
+        rt.store.close()  # type: ignore[union-attr]
+    finally:
+        if original_db is None:
+            os.environ.pop("PRECIS_DATABASE_URL", None)
+        else:
+            os.environ["PRECIS_DATABASE_URL"] = original_db
+        if original_emb is None:
+            os.environ.pop("PRECIS_EMBEDDER", None)
+        else:
+            os.environ["PRECIS_EMBEDDER"] = original_emb
+
+
+def _migrations_dir():
+    from pathlib import Path
+
+    return Path(__file__).parent.parent / "src" / "precis" / "migrations"

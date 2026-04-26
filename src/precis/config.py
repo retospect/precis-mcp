@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARN", "WARNING", "ERROR"]
+EmbedderName = Literal["mock", "bge-m3"]
 
 
 class PrecisConfig(BaseSettings):
@@ -27,6 +28,14 @@ class PrecisConfig(BaseSettings):
     log_level: LogLevel = "INFO"
     database_url: str | None = None  # required from phase 2 onward
     default_corpus: str = "default"
+    embedder: EmbedderName = "mock"
+    """Which `Embedder` implementation to load.
+
+    - ``"mock"`` (default): deterministic, no model load. Use for tests
+      and local smoke runs.
+    - ``"bge-m3"``: load `BAAI/bge-m3` via `sentence-transformers`
+      (heavy; requires the optional `paper` extra). Use for production.
+    """
 
 
 def load_config() -> PrecisConfig:

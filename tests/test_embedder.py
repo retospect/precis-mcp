@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from precis.embedder import Embedder, MockEmbedder
+from precis.embedder import Embedder, MockEmbedder, make_embedder
 
 
 class TestMockEmbedder:
@@ -52,6 +52,30 @@ class TestMockEmbedder:
     def test_empty_batch(self) -> None:
         e = MockEmbedder(dim=32)
         assert e.embed([]) == []
+
+
+class TestMakeEmbedder:
+    def test_mock_factory(self) -> None:
+        e = make_embedder("mock", dim=64)
+        assert isinstance(e, MockEmbedder)
+        assert e.dim == 64
+
+    def test_unknown_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown embedder"):
+            make_embedder("nonsense")  # type: ignore[arg-type]
+
+    def test_bge_m3_lazy_loads(self) -> None:
+        # The real backend isn't installed in CI; constructing it must
+        # raise ImportError with an actionable hint, *not* succeed
+        # silently or fail with a confusing AttributeError.
+        try:
+            import sentence_transformers  # noqa: F401
+
+            pytest.skip("sentence-transformers installed; lazy-load smoke test n/a")
+        except ImportError:
+            pass
+        with pytest.raises(ImportError, match="sentence-transformers"):
+            make_embedder("bge-m3")
 
 
 class TestProtocol:

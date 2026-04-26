@@ -725,7 +725,7 @@ class Store:
                 kind="paper",
                 slug=slug,
                 title=parsed.title,
-                provider="manual",
+                provider=parsed.provider,
                 meta=dict(parsed.raw_meta),
                 conn=conn,
             )

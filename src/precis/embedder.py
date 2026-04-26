@@ -136,4 +136,24 @@ class BgeM3Embedder:
         return self.embed([text])[0]
 
 
-__all__ = ["BgeM3Embedder", "Embedder", "MockEmbedder"]
+# ---------------------------------------------------------------------------
+# Factory — config-driven selection
+# ---------------------------------------------------------------------------
+
+
+def make_embedder(name: str, *, dim: int = 1024) -> Embedder:
+    """Return an `Embedder` for the given config name.
+
+    - ``"mock"``    → deterministic ``MockEmbedder(dim=dim)``
+    - ``"bge-m3"``  → real ``BgeM3Embedder()`` (loads the model)
+
+    Raises ``ValueError`` for unknown names.
+    """
+    if name == "mock":
+        return MockEmbedder(dim=dim)
+    if name == "bge-m3":
+        return BgeM3Embedder()
+    raise ValueError(f"unknown embedder name: {name!r} — expected 'mock' or 'bge-m3'")
+
+
+__all__ = ["BgeM3Embedder", "Embedder", "MockEmbedder", "make_embedder"]

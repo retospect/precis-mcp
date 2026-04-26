@@ -159,6 +159,61 @@ class TestParseBundle:
             parse_bundle({"header": "not a dict", "blocks": []}, embedding_dim=1024)
 
 
+class TestProviderMapping:
+    def test_embedded_maps_to_manual(self) -> None:
+        data = _bundle_dict()
+        data["header"]["source"] = "embedded"
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.provider == "manual"
+
+    def test_crossref_passes_through(self) -> None:
+        data = _bundle_dict()
+        data["header"]["source"] = "crossref"
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.provider == "crossref"
+
+    def test_arxiv_passes_through(self) -> None:
+        data = _bundle_dict()
+        data["header"]["source"] = "arxiv"
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.provider == "arxiv"
+
+    def test_s2_alias(self) -> None:
+        for src in ("s2", "semantic_scholar", "semantic-scholar"):
+            data = _bundle_dict()
+            data["header"]["source"] = src
+            parsed = parse_bundle(data, embedding_dim=1024)
+            assert parsed.provider == "s2", src
+
+    def test_unknown_falls_back_to_manual(self) -> None:
+        data = _bundle_dict()
+        data["header"]["source"] = "totally-made-up"
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.provider == "manual"
+
+    def test_missing_source(self) -> None:
+        data = _bundle_dict()
+        data["header"].pop("source", None)
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.provider == "manual"
+
+    def test_case_insensitive(self) -> None:
+        data = _bundle_dict()
+        data["header"]["source"] = "Crossref"
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.provider == "crossref"
+
+    def test_ingest_writes_mapped_provider(self, tmp_path: Path, store: Store) -> None:
+        data = _bundle_dict()
+        data["header"]["source"] = "crossref"
+        path = _write_bundle(tmp_path, data)
+        e = MockEmbedder(dim=1024)
+        result = store.ingest_bundle(path, embedder=e)
+        ref = store.get_ref(kind="paper", id=result.slug)
+        assert ref is not None
+        assert ref.provider == "crossref"
+
+
 class TestAuthorStrings:
     def test_dict_form(self) -> None:
         parsed = parse_bundle(

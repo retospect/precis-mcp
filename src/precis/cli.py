@@ -17,6 +17,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -147,7 +148,8 @@ def _run_jobs(args: argparse.Namespace) -> None:
 
 
 def _run_ingest_bundle(args: argparse.Namespace) -> None:
-    from precis.embedder import MockEmbedder
+    from precis.config import load_config
+    from precis.embedder import make_embedder
     from precis.store import Store
 
     path = Path(args.path)
@@ -155,19 +157,24 @@ def _run_ingest_bundle(args: argparse.Namespace) -> None:
         print(f"ingest-bundle: file not found: {path}", file=sys.stderr)
         sys.exit(2)
 
-    dsn = _resolve_dsn(args.database_url)
+    cfg = load_config()
+    dsn = _resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
-        embedder = MockEmbedder(dim=store.embedding_dim())
+        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
         result = store.ingest_bundle(path, embedder=embedder)
         verb = "inserted" if result.inserted else "skipped (already present)"
-        print(f"ingest-bundle: {verb} {result.slug} ({result.block_count} blocks)")
+        print(
+            f"ingest-bundle: {verb} {result.slug} "
+            f"({result.block_count} blocks) [embedder={cfg.embedder}]"
+        )
     finally:
         store.close()
 
 
 def _run_ingest_bundles(args: argparse.Namespace) -> None:
-    from precis.embedder import MockEmbedder
+    from precis.config import load_config
+    from precis.embedder import make_embedder
     from precis.errors import PrecisError
     from precis.ingest import parse_bundle, read_bundle
     from precis.store import Store
@@ -183,6 +190,8 @@ def _run_ingest_bundles(args: argparse.Namespace) -> None:
     if not bundles:
         print(f"ingest-bundles: no .acatome files under {base}")
         return
+
+    cfg = load_config()
 
     if args.dry_run:
         ok = bad = 0
@@ -202,10 +211,10 @@ def _run_ingest_bundles(args: argparse.Namespace) -> None:
             sys.exit(1)
         return
 
-    dsn = _resolve_dsn(args.database_url)
+    dsn = _resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
-        embedder = MockEmbedder(dim=store.embedding_dim())
+        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
         inserted = skipped = failed = 0
         for path in bundles:
             try:
@@ -227,7 +236,8 @@ def _run_ingest_bundles(args: argparse.Namespace) -> None:
                 skipped += 1
                 print(f"  skip  {result.slug}  (already present)")
         print(
-            f"ingest-bundles: inserted={inserted}  skipped={skipped}  failed={failed}"
+            f"ingest-bundles: inserted={inserted}  skipped={skipped}  "
+            f"failed={failed}  [embedder={cfg.embedder}]"
         )
         if failed:
             sys.exit(1)
@@ -235,13 +245,18 @@ def _run_ingest_bundles(args: argparse.Namespace) -> None:
         store.close()
 
 
-def _resolve_dsn(override: str | None) -> str:
-    """Pick the database DSN: CLI override > config > env."""
+def _resolve_dsn(override: str | None, *, cfg: Any = None) -> str:
+    """Pick the database DSN: CLI override > config > env.
+
+    `cfg` may be passed in by callers that already loaded it, to avoid
+    re-reading env / .env multiple times in one CLI invocation.
+    """
     if override:
         return override
-    from precis.config import load_config
+    if cfg is None:
+        from precis.config import load_config
 
-    cfg = load_config()
+        cfg = load_config()
     if cfg.database_url:
         return cfg.database_url
     print(

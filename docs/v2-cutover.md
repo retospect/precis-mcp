@@ -38,11 +38,13 @@ PRECIS_DATABASE_URL=postgresql://localhost/precis \
 - The `.acatome` bundle directory is on the same machine (or NFS-
   mounted) so ingest doesn't pay network round-trips per file.
 - Active embedding model is **BAAI/bge-m3** with **dim=1024**. Bundles
-  whose stored vectors don't match get re-embedded at ingest cost; if
-  the embedder's loaded weights are missing, `precis jobs
-  ingest-bundles` falls back to the `MockEmbedder` (deterministic, but
-  meaningless for semantic search — fine for smoke tests, **not** for
-  production cutover).
+  whose stored vectors don't match get re-embedded at ingest cost.
+- Set ``PRECIS_EMBEDDER=bge-m3`` (or pass it in your launchd / systemd
+  unit) **before** running ingest in production. The default is
+  ``mock`` — deterministic and dependency-free, suitable for smoke
+  tests and CI but **meaningless for semantic search**. The real
+  backend requires ``pip install 'precis-mcp[paper]'`` so
+  ``sentence-transformers`` is available.
 
 ## Step 1 — provision
 
@@ -79,8 +81,9 @@ bundles into the fresh v2 DB.
 precis jobs ingest-bundles ~/.acatome/papers/ --dry-run
 
 # Real ingest (~minutes for ~25 papers, ~hour for ~2500):
-precis jobs ingest-bundles ~/.acatome/papers/ \
-    --database-url postgresql://localhost/precis
+PRECIS_EMBEDDER=bge-m3 \
+PRECIS_DATABASE_URL=postgresql://localhost/precis \
+    precis jobs ingest-bundles ~/.acatome/papers/
 ```
 
 Output per file:
@@ -89,7 +92,7 @@ Output per file:
   ok    wang2020state  (47 blocks)
   skip  kim2024electrocatalytic  (already present)
   FAIL  borked.acatome  — bundle missing required `header` / `blocks` fields
-ingest-bundles: inserted=2412  skipped=0  failed=3
+ingest-bundles: inserted=2412  skipped=0  failed=3  [embedder=bge-m3]
 ```
 
 Failures are logged but don't abort the run. If any failed, the
@@ -114,6 +117,12 @@ search(kind='paper', q='nitrate reduction')    # block-level RRF search
 If the embedding model differs from what the bundles were built with,
 expect re-embedding to happen at first ingest. Subsequent reads are
 fast.
+
+> **Sanity check**: the trailing `[embedder=bge-m3]` line on the
+> ingest-bundles summary confirms the production model loaded. If it
+> reads `[embedder=mock]`, the env var didn't propagate — semantic
+> search will be deterministic but semantically meaningless. Stop
+> and fix before flipping the agent config.
 
 ## Step 5 — flip agent config
 

@@ -13,11 +13,16 @@ from typing import TYPE_CHECKING
 from precis.errors import NotFound
 
 if TYPE_CHECKING:
+    from precis.embedder import Embedder
     from precis.protocol import Handler
     from precis.store import Store
 
 
-def builtins(*, store: Store | None = None) -> list[Handler]:
+def builtins(
+    *,
+    store: Store | None = None,
+    embedder: Embedder | None = None,
+) -> list[Handler]:
     """Return handler instances for the active server configuration.
 
     Stateless handlers (e.g. `calc`) are always included. Ref-backed
@@ -25,8 +30,14 @@ def builtins(*, store: Store | None = None) -> list[Handler]:
     when none is provided — this lets phase-1-style stateless setups
     keep working without a database.
 
-    Lazy imports keep heavy deps (sympy, psycopg, pgvector) off the
-    module-load critical path until they're actually needed.
+    The `embedder` (if provided) is given to handlers that semantic-
+    search; otherwise we fall back to a deterministic ``MockEmbedder``
+    sized to the store's `system.embedding_dim`. Production setups
+    construct the real embedder in `build_runtime` from `config.embedder`.
+
+    Lazy imports keep heavy deps (sympy, psycopg, pgvector,
+    sentence-transformers) off the module-load critical path until
+    they're actually needed.
     """
     from precis.handlers.calc import CalcHandler
 
@@ -37,12 +48,10 @@ def builtins(*, store: Store | None = None) -> list[Handler]:
         from precis.handlers.memory import MemoryHandler
         from precis.handlers.paper import PaperHandler
 
+        eff_embedder: Embedder = embedder or MockEmbedder(dim=store.embedding_dim())
+
         handlers.append(MemoryHandler(store=store))
-        # Default embedder: deterministic mock. Real BgeM3Embedder is
-        # opt-in via runtime construction (see `build_runtime`).
-        handlers.append(
-            PaperHandler(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
-        )
+        handlers.append(PaperHandler(store=store, embedder=eff_embedder))
 
     return handlers
 

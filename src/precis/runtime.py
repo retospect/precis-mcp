@@ -120,10 +120,15 @@ def build_runtime(
     database_url, or rely on the default. Ref-backed handlers are
     skipped when there's no store.
 
+    The active embedder is selected by `config.embedder`:
+        ``"mock"``  → deterministic in-process (default; CI-safe)
+        ``"bge-m3"`` → real `BAAI/bge-m3` via sentence-transformers
+
     Caller owns the returned runtime; if it has a store, call
     `runtime.store.close()` before exit.
     """
     from precis.config import load_config
+    from precis.embedder import Embedder, make_embedder
     from precis.registry import builtins
     from precis.store import Store
 
@@ -131,10 +136,12 @@ def build_runtime(
         config = load_config()
 
     store: Store | None = None
+    embedder: Embedder | None = None
     if config.database_url:
         store = Store.connect(config.database_url)
+        embedder = make_embedder(config.embedder, dim=store.embedding_dim())
 
-    handlers = builtins(store=store)
+    handlers = builtins(store=store, embedder=embedder)
     return PrecisRuntime(
         config=config,
         registry=Registry(handlers),

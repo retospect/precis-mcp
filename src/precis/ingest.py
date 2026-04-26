@@ -63,6 +63,8 @@ class ParsedBundle:
     abstract: str | None
     bundle_slug: str | None  # may exist; we mint our own from authors+year+title
     pdf_hash: str | None
+    provider: str
+    """Mapped from `header.source` via `_map_provider()`."""
     blocks: list[ParsedBlock]
     raw_meta: dict[str, Any]
     """Full header so we can stash everything in refs.meta verbatim."""
@@ -134,9 +136,43 @@ def parse_bundle(
         abstract=_or_none(header.get("abstract")),
         bundle_slug=_or_none(header.get("slug")),
         pdf_hash=_or_none(header.get("pdf_hash")),
+        provider=_map_provider(header.get("source")),
         blocks=blocks,
         raw_meta=header,
     )
+
+
+# ---------------------------------------------------------------------------
+# Provider mapping (header.source -> refs.provider FK)
+# ---------------------------------------------------------------------------
+
+# Translation table per `docs/paper_ingest.md`: bundle `header.source`
+# values are mapped onto the closed `providers.slug` vocabulary in
+# migration 0001.  Unknown values fall through to ``"manual"`` so the
+# FK never fires at ingest time.
+_PROVIDER_MAP: dict[str, str] = {
+    "embedded": "manual",
+    "manual": "manual",
+    "local": "local",
+    "crossref": "crossref",
+    "arxiv": "arxiv",
+    "s2": "s2",
+    "semantic_scholar": "s2",
+    "semantic-scholar": "s2",
+    "unpaywall": "unpaywall",
+}
+
+
+def _map_provider(source: Any) -> str:
+    """Map a bundle's `header.source` onto a `providers.slug` value.
+
+    Unknown / missing → `"manual"` so the FK in the schema is always
+    satisfied. The original value lives in `refs.meta` regardless.
+    """
+    if not isinstance(source, str):
+        return "manual"
+    key = source.strip().lower()
+    return _PROVIDER_MAP.get(key, "manual")
 
 
 # ---------------------------------------------------------------------------
