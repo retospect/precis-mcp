@@ -308,6 +308,204 @@ class Store:
 
     # -- blocks --------------------------------------------------------------
 
+    def search_blocks_lexical(
+        self,
+        *,
+        q: str,
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        limit: int = 20,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Lexical search over `blocks.tsv`. Returns (block, ref, rank) tuples
+        sorted by ts_rank_cd DESC. Only live (non-deleted) refs are
+        considered."""
+        clauses = [
+            "r.deleted_at IS NULL",
+            "b.tsv @@ qq.qq",
+        ]
+        params: list[Any] = [q]
+        if kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("b.ref_id = %s")
+        params.append(limit)
+
+        sql = (
+            "SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count, "
+            "       NULL::vector, b.density, b.meta, "
+            "       b.created_at, b.updated_at, "
+            "       r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
+            "       r.meta, r.created_at, r.updated_at, r.deleted_at, "
+            "       ts_rank_cd(b.tsv, qq.qq) AS rank "
+            "FROM blocks b JOIN refs r ON r.id = b.ref_id, "
+            "     websearch_to_tsquery('english', %s) qq(qq) "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY rank DESC LIMIT %s"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            (_row_to_block(r[:11]), _row_to_ref(r[11:21]), float(r[21])) for r in rows
+        ]
+
+    def search_blocks_semantic(
+        self,
+        *,
+        query_vec: list[float],
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        limit: int = 20,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Cosine-distance semantic search via pgvector. Returns
+        (block, ref, distance) tuples sorted by distance ASC. Excludes
+        blocks that have no embedding."""
+        clauses = [
+            "r.deleted_at IS NULL",
+            "b.embedding IS NOT NULL",
+        ]
+        where_params: list[Any] = []
+        if kind is not None:
+            where_params.append(kind)
+            clauses.append("r.kind = %s")
+        if scope_ref_id is not None:
+            where_params.append(scope_ref_id)
+            clauses.append("b.ref_id = %s")
+
+        # Param order in the SQL below:
+        #   1. %s::vector for the SELECT distance column
+        #   2. WHERE clause params (kind, scope_ref_id)
+        #   3. %s::vector for ORDER BY
+        #   4. LIMIT %s
+        params: list[Any] = [query_vec, *where_params, query_vec, limit]
+
+        sql = (
+            "SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count, "
+            "       NULL::vector, b.density, b.meta, "
+            "       b.created_at, b.updated_at, "
+            "       r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
+            "       r.meta, r.created_at, r.updated_at, r.deleted_at, "
+            "       (b.embedding <=> %s::vector) AS dist "
+            "FROM blocks b JOIN refs r ON r.id = b.ref_id "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY b.embedding <=> %s::vector ASC LIMIT %s"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            (_row_to_block(r[:11]), _row_to_ref(r[11:21]), float(r[21])) for r in rows
+        ]
+
+    def search_blocks_fused(
+        self,
+        *,
+        q: str,
+        query_vec: list[float] | None = None,
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        limit: int = 20,
+        k: int = 60,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Hybrid search via reciprocal rank fusion.
+
+        If `query_vec` is None, falls back to lexical-only and returns
+        tuples in the same shape (so callers don't branch).
+
+        Score: ``1/(k + lex_rank) + 1/(k + sem_rank)``. Higher is better.
+        ``k=60`` is the standard RRF constant.
+        """
+        if query_vec is None:
+            # Lex only, returning ts_rank as the score for shape parity.
+            return self.search_blocks_lexical(
+                q=q, kind=kind, scope_ref_id=scope_ref_id, limit=limit
+            )
+
+        clauses = ["r.deleted_at IS NULL"]
+        params: list[Any] = []
+        if kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("b.ref_id = %s")
+
+        # We assemble the WHERE-clause prefix once and inline it into the
+        # two CTEs (lex / sem) below.
+        where_extra = (" AND " + " AND ".join(clauses)) if clauses else ""
+
+        # Three params slots before LIMIT: q (lex), query_vec ×2 (sem
+        # SELECT + ORDER BY).  Then `limit` once for each CTE.
+        # Outermost clauses (kind / scope) repeat once per CTE.
+        sql = f"""
+            WITH lex AS (
+                SELECT b.id AS bid,
+                       row_number() OVER (
+                           ORDER BY ts_rank_cd(b.tsv, qq.qq) DESC
+                       ) AS rnk
+                FROM blocks b JOIN refs r ON r.id = b.ref_id,
+                     websearch_to_tsquery('english', %s) qq(qq)
+                WHERE b.tsv @@ qq.qq
+                      {where_extra}
+                LIMIT %s
+            ),
+            sem AS (
+                SELECT b.id AS bid,
+                       row_number() OVER (
+                           ORDER BY b.embedding <=> %s::vector ASC
+                       ) AS rnk
+                FROM blocks b JOIN refs r ON r.id = b.ref_id
+                WHERE b.embedding IS NOT NULL
+                      {where_extra}
+                LIMIT %s
+            ),
+            fused AS (
+                SELECT bid,
+                       coalesce(1.0/(%s + (SELECT rnk FROM lex l WHERE l.bid = u.bid)), 0)
+                       + coalesce(1.0/(%s + (SELECT rnk FROM sem s WHERE s.bid = u.bid)), 0)
+                       AS score
+                FROM (
+                    SELECT bid FROM lex
+                    UNION
+                    SELECT bid FROM sem
+                ) u
+            )
+            SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count,
+                   NULL::vector, b.density, b.meta,
+                   b.created_at, b.updated_at,
+                   r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider,
+                   r.meta, r.created_at, r.updated_at, r.deleted_at,
+                   fused.score
+            FROM fused
+            JOIN blocks b ON b.id = fused.bid
+            JOIN refs r ON r.id = b.ref_id
+            ORDER BY fused.score DESC
+            LIMIT %s
+        """
+        # lex: q + (kind/scope) + limit
+        # sem: query_vec + (kind/scope) + limit
+        # fused: k + k
+        # outer: limit
+        full_params: list[Any] = []
+        # lex CTE
+        full_params.append(q)
+        full_params.extend(params)
+        full_params.append(limit)
+        # sem CTE
+        full_params.append(query_vec)
+        full_params.extend(params)
+        full_params.append(limit)
+        # fused CTE
+        full_params.extend([k, k])
+        # outer
+        full_params.append(limit)
+
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, full_params).fetchall()
+        return [
+            (_row_to_block(r[:11]), _row_to_ref(r[11:21]), float(r[21])) for r in rows
+        ]
+
     def insert_blocks(
         self,
         ref_id: int,
