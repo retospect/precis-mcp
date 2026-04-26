@@ -1,5 +1,3 @@
-"""Precis — unified document MCP for reading, writing, searching, and annotating."""
+"""precis-mcp v2 — MCP server for paper / document / state / tool access."""
 
-from importlib.metadata import version
-
-__version__ = version("precis-mcp")
+__version__ = "6.0.0a0"

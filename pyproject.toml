@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "5.2.6"
-description = "MCP server for structured document access — read, write, search, and annotate DOCX, LaTeX, Markdown, and scientific papers with minimal token usage"
+version = "6.0.0a0"
+description = "MCP server for paper / document / state / tool access — V2 rewrite"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
@@ -46,13 +46,10 @@ classifiers = [
 
 dependencies = [
     "mcp[cli]>=1.0",
-    "precis-summary>=0.1.0",
+    "asyncpg>=0.29",
+    "pgvector>=0.3.0",
+    "pydantic-settings>=2.0",
     "platformdirs>=4.0",
-    "python-docx>=1.1",
-    "lxml>=5.0",
-    "acatome-store[embeddings]>=1.0.0",
-    "acatome-meta>=0.1.0",
-    "pyyaml>=6.0",
 ]
 
 [project.urls]
@@ -60,73 +57,36 @@ Homepage = "https://github.com/retospect/precis-mcp"
 Repository = "https://github.com/retospect/precis-mcp"
 
 [project.optional-dependencies]
+# Paper ingest — depends on acatome-extract for PDF → .acatome bundle.
+paper = ["acatome-extract>=0.1"]
+# DOCX file handler.
 docx = ["python-docx>=1.1", "lxml>=5.0"]
+# LaTeX file handler.
 tex = ["lxml>=5.0"]
-paper = ["acatome-store[embeddings]>=1.0.0", "acatome-meta>=0.1.0"]
-flashcards = ["acatome-store>=1.0.0"]
-# Phase 12a: quest kind (paper-request lifecycle).  Pulls in the runner
-# package for its DB + models; precis only uses the read path in 12a.
-# The runner itself is renamed to ``acatome-quest-runner`` in Phase 12c
-# — the dep name will follow.
-quest = ["acatome-quest-mcp>=0.1.0"]
-# Phase 4 external stateless handlers.  Each handler is ImportError-gated
-# so the core install stays lean; install ``[external]`` to enable all of
-# them, or pin individual deps.  Handlers with ``requires`` env vars
-# (e.g. ``WOLFRAM_APP_ID``) also auto-hide from the tool enum when the
-# env is unset (§6.2 / §13).
+# Local calculator (sympy).
+calc = ["sympy>=1.12"]
+# Declarative matplotlib plot renderer.
+plot = ["matplotlib>=3.7", "pydantic>=2.0"]
+# Paid web tools (perplexity / wolfram / youtube transcripts).
 external = [
     "wolframalpha>=5.0",
     "youtube-transcript-api>=1.0",
     "httpx>=0.27",
 ]
-# Phase 5: local calculator (free, offline).  SymPy handles arithmetic,
-# exact fractions, roots, calculus, linear algebra, symbolic manipulation,
-# and unit conversion.  Separate extra because it's ~30 MB on disk.
-calc = ["sympy>=1.12"]
-# Phase 5b: declarative matplotlib plot renderer (free, offline).  Post a
-# JSON spec, get a PNG/SVG/WebP/PDF back.  Separate extra because
-# matplotlib pulls in ~70 MB of wheels (numpy, pillow, fonts).
-plot = ["matplotlib>=3.7", "pydantic>=2.0"]
-# Phase 5c: reMarkable tablet push (write-only cloud upload).  The
-# handler wraps ``remarkable-mcp`` for its cloud-sync client, but that
-# package is not on PyPI (installed from git in the cluster ansible
-# role), and PyPI rejects git-URL deps on upload.  The extra is kept
-# declared-but-empty so ``pip install precis-mcp[remarkable]`` is a
-# valid no-op; the user (or the cluster provisioning role) is
-# responsible for installing ``remarkable-mcp`` separately.  The
-# handler auto-hides the ``rmk`` kind when the package is missing or
-# ``REMARKABLE_TOKEN`` is not set.
-remarkable = []
-all = ["precis-mcp[docx,tex,paper,flashcards,quest,external,calc,plot]"]
+all = ["precis-mcp[paper,docx,tex,calc,plot,external]"]
 
 [project.scripts]
-precis = "precis.server:main"
-precis-ingest-oracle = "precis.handlers.oracle_ingest:_cli_main"
+precis = "precis.cli:main"
 
-[project.entry-points."precis.file_types"]
-".docx" = "precis.handlers.docx:DocxHandler"
-".tex" = "precis.handlers.tex:TexHandler"
-".md" = "precis.handlers.markdown:MarkdownHandler"
-".markdown" = "precis.handlers.markdown:MarkdownHandler"
-".txt" = "precis.handlers.plaintext:PlainTextHandler"
-".text" = "precis.handlers.plaintext:PlainTextHandler"
-
-[project.entry-points."precis.schemes"]
-paper = "precis.handlers.paper:PaperHandler"
-todo = "precis.handlers.todo:TodoHandler"
-# ``fc`` was retired 2026-04-22 — canonical scheme is ``flashcard``.
-# Do NOT re-add: the legacy entry-point loader registers scheme keys
-# that aren't already claimed by a built-in plugin, so ``fc`` here
-# would leak into SCHEMES as an orphan (BUG-B regression).
-flashcard = "precis.handlers.flashcard:FlashcardHandler"
-skill = "precis.handlers.skill:SkillHandler"
-quest = "precis.handlers.quest:QuestHandler"
-plot = "precis.handlers.plot:PlotHandler"
+# V2 drops entry-point handler discovery in favour of an in-tree
+# `BUILTINS` registry list. No `precis.file_types` / `precis.schemes`
+# groups.
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "testcontainers[postgres]>=4.0",
     "ruff>=0.11",
     "mypy>=1.15",
     "pre-commit>=4",
