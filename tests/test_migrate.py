@@ -1,8 +1,8 @@
 """Migration runner tests.
 
 Each test gets an ephemeral postgres database via the `fresh_db`
-fixture; the migration runner applies `0001_initial.sql` against it
-and we verify schema + seed contents."""
+fixture; the migration runner applies all bundled migrations against
+it and we verify schema + seed contents."""
 
 from __future__ import annotations
 
@@ -23,7 +23,10 @@ def _fetch(dsn: str, sql: str) -> list[dict]:
 def test_apply_creates_all_tables(fresh_db: str) -> None:
     migrator = Migrator(fresh_db, MIGRATIONS_DIR)
     applied = migrator.apply_all()
-    assert applied == ["0001_initial"]
+    # Initial migration must be first; phase 4 added 0002. Test the
+    # first migration explicitly and any later ones loosely.
+    assert applied[0] == "0001_initial"
+    assert all(v.startswith(("0001_", "0002_", "0003_", "0004_")) for v in applied)
 
     rows = _fetch(
         fresh_db,
@@ -98,17 +101,21 @@ def test_apply_is_idempotent(fresh_db: str) -> None:
     migrator = Migrator(fresh_db, MIGRATIONS_DIR)
     first = migrator.apply_all()
     second = migrator.apply_all()
-    assert first == ["0001_initial"]
+    assert first[0] == "0001_initial"
+    assert len(first) >= 1
     assert second == [], "second run must be a no-op"
 
 
 def test_applied_versions(fresh_db: str) -> None:
     migrator = Migrator(fresh_db, MIGRATIONS_DIR)
     assert migrator.applied_versions() == []
-    assert migrator.pending() == ["0001_initial"]
+    pending_before = migrator.pending()
+    assert pending_before[0] == "0001_initial"
+    assert len(pending_before) >= 1
 
     migrator.apply_all()
-    assert migrator.applied_versions() == ["0001_initial"]
+    applied = migrator.applied_versions()
+    assert applied == pending_before  # full set applied
     assert migrator.pending() == []
 
 
