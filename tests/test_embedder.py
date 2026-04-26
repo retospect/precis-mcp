@@ -64,18 +64,30 @@ class TestMakeEmbedder:
         with pytest.raises(ValueError, match="unknown embedder"):
             make_embedder("nonsense")  # type: ignore[arg-type]
 
-    def test_bge_m3_lazy_loads(self) -> None:
-        # The real backend isn't installed in CI; constructing it must
-        # raise ImportError with an actionable hint, *not* succeed
-        # silently or fail with a confusing AttributeError.
+    def test_bge_m3_construction_is_lazy(self) -> None:
+        # Constructing the embedder must NOT load torch /
+        # sentence-transformers — those are deferred to first embed()
+        # to keep MCP startup fast (Windsurf and similar clients have
+        # short handshake timeouts). Verifies the change in dba51f23.
+        e = make_embedder("bge-m3")
+        assert e.dim == 1024  # documented constant; no model load needed
+        assert e.model == "BAAI/bge-m3"
+
+    def test_bge_m3_clear_error_on_missing_dep(self) -> None:
+        # When the optional backend is missing, the agent must get a
+        # clear ImportError pointing at the install command — not a
+        # confusing AttributeError or ModuleNotFoundError mid-request.
         try:
             import sentence_transformers  # noqa: F401
 
-            pytest.skip("sentence-transformers installed; lazy-load smoke test n/a")
+            pytest.skip("sentence-transformers installed; missing-dep test n/a")
         except ImportError:
             pass
+        # Construction itself is lazy (does not import st), but embed()
+        # now must surface a clear ImportError.
+        e = make_embedder("bge-m3")
         with pytest.raises(ImportError, match="sentence-transformers"):
-            make_embedder("bge-m3")
+            e.embed_one("anything")
 
 
 class TestProtocol:

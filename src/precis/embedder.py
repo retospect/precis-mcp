@@ -94,42 +94,62 @@ class MockEmbedder:
 # ---------------------------------------------------------------------------
 
 
+_BGE_M3_DIM = 1024  # documented constant for BAAI/bge-m3
+
+
 class BgeM3Embedder:
     """``BAAI/bge-m3`` via sentence-transformers. Optional dep.
 
-    Construction loads the model into memory (slow); tests should not
-    touch this — use ``MockEmbedder``. ``model`` and ``dim`` are
-    introspected from the loaded model at construction time.
+    The model is **lazily** loaded on the first call to ``embed`` /
+    ``embed_one``. Construction itself is cheap and does not import
+    ``sentence_transformers`` — this matters because MCP clients
+    (Windsurf, etc.) spawn the server with a short handshake budget;
+    eager-loading bge-m3 takes ~7s and trips a startup timeout. Once
+    loaded, the model stays in memory for the life of the process.
+
+    Tests should still prefer ``MockEmbedder`` to avoid the model
+    download / weight load entirely.
     """
 
     def __init__(self, *, model_name: str = "BAAI/bge-m3") -> None:
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:
-            raise ImportError(
-                "sentence-transformers is not installed. "
-                "Install with: pip install 'precis-mcp[paper]' "
-                "or: pip install sentence-transformers"
-            ) from exc
-
-        self._st = SentenceTransformer(model_name)
         self._model_name = model_name
-        # Probe with one short input so we know the dim.
-        probe = self._st.encode(["dim probe"], normalize_embeddings=True)
-        self._dim = int(probe.shape[1])
+        self._st: object | None = None  # SentenceTransformer when loaded
+        # No imports here — keep startup fast for MCP clients with a
+        # short handshake budget. The optional-dep check fires on first
+        # ``embed()`` call inside ``_ensure_loaded``.
 
     @property
     def dim(self) -> int:
-        return self._dim
+        return _BGE_M3_DIM
 
     @property
     def model(self) -> str:
         return self._model_name
 
+    def _ensure_loaded(self) -> object:
+        """Load the model on first use; cached thereafter.
+
+        Raises a clear ``ImportError`` if the optional dep is missing
+        — this is the first time we actually need it, so failing here
+        is the correct surface.
+        """
+        if self._st is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as exc:
+                raise ImportError(
+                    "sentence-transformers is not installed. "
+                    "Install with: pip install 'precis-mcp[paper]' "
+                    "or: pip install sentence-transformers"
+                ) from exc
+            self._st = SentenceTransformer(self._model_name)
+        return self._st
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        embs = self._st.encode(texts, normalize_embeddings=True)
+        st = self._ensure_loaded()
+        embs = st.encode(texts, normalize_embeddings=True)  # type: ignore[attr-defined]
         return [list(map(float, e)) for e in embs]
 
     def embed_one(self, text: str) -> list[float]:
