@@ -13,58 +13,50 @@ def handler() -> CalcHandler:
     return CalcHandler()
 
 
-@pytest.mark.asyncio
-async def test_basic_arithmetic(handler: CalcHandler) -> None:
-    r = await handler.get(id="2+3*4")
+def test_basic_arithmetic(handler: CalcHandler) -> None:
+    r = handler.get(id="2+3*4")
     assert "14" in r.body
 
 
-@pytest.mark.asyncio
-async def test_uses_q_when_id_absent(handler: CalcHandler) -> None:
-    r = await handler.get(q="1+1")
+def test_uses_q_when_id_absent(handler: CalcHandler) -> None:
+    r = handler.get(q="1+1")
     assert "2" in r.body
 
 
-@pytest.mark.asyncio
-async def test_integer_id_is_coerced(handler: CalcHandler) -> None:
-    r = await handler.get(id=255)
+def test_integer_id_is_coerced(handler: CalcHandler) -> None:
+    r = handler.get(id=255)
     # 255 alone evaluates to 255
     assert "255" in r.body
 
 
-@pytest.mark.asyncio
-async def test_integration(handler: CalcHandler) -> None:
-    r = await handler.get(id="integrate(sin(x), x)")
+def test_integration(handler: CalcHandler) -> None:
+    r = handler.get(id="integrate(sin(x), x)")
     assert "cos" in r.body  # -cos(x)
 
 
-@pytest.mark.asyncio
-async def test_matrix_determinant(handler: CalcHandler) -> None:
-    r = await handler.get(id="Matrix([[1,2],[3,4]]).det()")
+def test_matrix_determinant(handler: CalcHandler) -> None:
+    r = handler.get(id="Matrix([[1,2],[3,4]]).det()")
     assert "-2" in r.body
 
 
-@pytest.mark.asyncio
-async def test_unparseable(handler: CalcHandler) -> None:
+def test_unparseable(handler: CalcHandler) -> None:
     with pytest.raises(BadInput) as exc:
-        await handler.get(id="this is not math")
+        handler.get(id="this is not math")
     assert exc.value.next is not None
 
 
-@pytest.mark.asyncio
-async def test_missing_expr_raises(handler: CalcHandler) -> None:
+def test_missing_expr_raises(handler: CalcHandler) -> None:
     with pytest.raises(BadInput):
-        await handler.get()
+        handler.get()
 
 
-@pytest.mark.asyncio
-async def test_other_verbs_unsupported(handler: CalcHandler) -> None:
+def test_other_verbs_unsupported(handler: CalcHandler) -> None:
     with pytest.raises(Unsupported):
-        await handler.search(q="x")
+        handler.search(q="x")
     with pytest.raises(Unsupported):
-        await handler.put(text="x", mode="append")
+        handler.put(text="x", mode="append")
     with pytest.raises(Unsupported):
-        await handler.move(id=1, after=2)
+        handler.move(id=1, after=2)
 
 
 def test_kindspec_declares_only_get() -> None:

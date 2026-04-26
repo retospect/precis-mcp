@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.config import PrecisConfig
 from precis.errors import (
@@ -22,6 +22,9 @@ from precis.protocol import Verb
 from precis.registry import Registry
 from precis.response import Response
 
+if TYPE_CHECKING:
+    from precis.store import Store
+
 log = logging.getLogger(__name__)
 
 
@@ -30,13 +33,18 @@ _VERBS: tuple[Verb, ...] = ("get", "search", "put", "move")
 
 @dataclass
 class PrecisRuntime:
-    """Server-wide singleton: config + registry + hint bus + dispatch."""
+    """Server-wide singleton: config + registry + hint bus + dispatch.
+
+    `store` is None for stateless deployments (no database). Ref-backed
+    handlers won't be in the registry in that case.
+    """
 
     config: PrecisConfig
     registry: Registry
     hints: HintBus
+    store: Store | None = None
 
-    async def dispatch(self, verb: str, args: dict[str, Any]) -> str:
+    def dispatch(self, verb: str, args: dict[str, Any]) -> str:
         """Run one verb call. Returns the rendered string for the agent.
 
         Errors are caught and rendered as text — they never propagate
@@ -48,7 +56,7 @@ class PrecisRuntime:
                         f"unknown verb: {verb}",
                         options=list(_VERBS),
                     )
-                response = await self._dispatch_inner(verb, dict(args))
+                response = self._dispatch_inner(verb, dict(args))
                 return self._render(response)
             except PrecisError as e:
                 return self._render_error(e)
@@ -56,7 +64,7 @@ class PrecisRuntime:
                 log.exception("internal error in %s", verb)
                 return self._render_error(Internal(f"internal error: {e}"))
 
-    async def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
+    def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         # Drop None values so handlers see absence as missing, not None
         kind = args.pop("kind", None)
         if kind is None:
@@ -83,7 +91,7 @@ class PrecisRuntime:
         method = getattr(handler, verb)
         # Strip None args so handlers see absence as missing
         clean = {k: v for k, v in args.items() if v is not None}
-        return await method(**clean)
+        return method(**clean)
 
     def _render(self, response: Response) -> str:
         out = [response.body]
@@ -103,16 +111,33 @@ class PrecisRuntime:
         return "\n".join(parts)
 
 
-def build_runtime(config: PrecisConfig | None = None) -> PrecisRuntime:
-    """Construct a runtime from the in-tree BUILTINS list."""
+def build_runtime(
+    config: PrecisConfig | None = None,
+) -> PrecisRuntime:
+    """Construct a runtime, connecting the store if `config.database_url` is set.
+
+    Stateless setups (no DB) work fine — pass a config without a
+    database_url, or rely on the default. Ref-backed handlers are
+    skipped when there's no store.
+
+    Caller owns the returned runtime; if it has a store, call
+    `runtime.store.close()` before exit.
+    """
     from precis.config import load_config
     from precis.registry import builtins
+    from precis.store import Store
 
     if config is None:
         config = load_config()
-    handlers = [cls() for cls in builtins()]
+
+    store: Store | None = None
+    if config.database_url:
+        store = Store.connect(config.database_url)
+
+    handlers = builtins(store=store)
     return PrecisRuntime(
         config=config,
         registry=Registry(handlers),
         hints=HintBus(),
+        store=store,
     )

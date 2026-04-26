@@ -14,18 +14,30 @@ from precis.errors import NotFound
 
 if TYPE_CHECKING:
     from precis.protocol import Handler
+    from precis.store import Store
 
 
-def builtins() -> list[type[Handler]]:
-    """The set of handler classes the server boots with.
+def builtins(*, store: Store | None = None) -> list[Handler]:
+    """Return handler instances for the active server configuration.
 
-    Phase 1: only `calc`. More land in subsequent phases.
-    Lazy imports avoid heavy deps (sympy, pgvector, ...) at module load
-    when only the registry shape is needed (e.g. tool-schema generation).
+    Stateless handlers (e.g. `calc`) are always included. Ref-backed
+    handlers (e.g. `memory`) require a `store` and are skipped when
+    none is provided — this lets phase-1-style stateless setups keep
+    working without a database.
+
+    Lazy imports keep heavy deps (sympy, asyncpg, pgvector) off the
+    module-load critical path until they're actually needed.
     """
     from precis.handlers.calc import CalcHandler
 
-    return [CalcHandler]
+    handlers: list[Handler] = [CalcHandler()]
+
+    if store is not None:
+        from precis.handlers.memory import MemoryHandler
+
+        handlers.append(MemoryHandler(store=store))
+
+    return handlers
 
 
 class Registry:

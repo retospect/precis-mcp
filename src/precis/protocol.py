@@ -57,14 +57,14 @@ class Handler:
 
     spec: ClassVar[KindSpec]
 
-    async def get(self, **kw: Any) -> Response:
+    def get(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support get")
 
-    async def search(self, **kw: Any) -> Response:
+    def search(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support search")
 
-    async def put(self, **kw: Any) -> Response:
+    def put(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support put")
 
-    async def move(self, **kw: Any) -> Response:
+    def move(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support move")

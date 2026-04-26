@@ -78,12 +78,12 @@ INSERT INTO kinds (slug, is_numeric, title, description) VALUES
 
 CREATE TABLE relations (
     slug         TEXT    PRIMARY KEY,
-    symmetric    BOOLEAN NOT NULL DEFAULT FALSE,
+    is_symmetric BOOLEAN NOT NULL DEFAULT FALSE,
     inverse_slug TEXT,                  -- label only; app enforces inversion
     description  TEXT
 );
 
-INSERT INTO relations (slug, symmetric, inverse_slug, description) VALUES
+INSERT INTO relations (slug, is_symmetric, inverse_slug, description) VALUES
     ('related-to',      TRUE,  NULL,              'Symmetric association'),
     ('blocks',          FALSE, 'blocked-by',      'Source blocks target'),
     ('blocked-by',      FALSE, 'blocks',          'Source is blocked by target'),
@@ -247,21 +247,28 @@ CREATE INDEX blocks_density_idx
 --   ref-level: src_pos / dst_pos NULL.
 --   block-level: src_pos / dst_pos = blocks.pos.
 -- ---------------------------------------------------------------------------
+-- pos sentinel convention:
+--   pos = -1  ->  ref-level (the link/tag attaches to the whole ref)
+--   pos >=  0 ->  block-level (the link/tag attaches to that block.pos)
+-- The app layer (precis.store) translates between -1 and Python None
+-- so callers and agents never see the sentinel. Using a sentinel keeps
+-- composite PRIMARY KEYs / UNIQUE constraints simple (NULLs are
+-- distinct in unique indexes, which would defeat dedup).
 CREATE TABLE links (
     id          BIGSERIAL    PRIMARY KEY,
     src_ref_id  BIGINT       NOT NULL REFERENCES refs(id) ON DELETE CASCADE,
-    src_pos     INT,
+    src_pos     INT          NOT NULL DEFAULT -1,
     dst_ref_id  BIGINT       NOT NULL REFERENCES refs(id) ON DELETE CASCADE,
-    dst_pos     INT,
+    dst_pos     INT          NOT NULL DEFAULT -1,
     relation    TEXT         NOT NULL REFERENCES relations(slug) ON UPDATE CASCADE,
     set_by      TEXT         NOT NULL REFERENCES actors(slug)    ON UPDATE CASCADE,
     meta        JSONB        NOT NULL DEFAULT '{}'::jsonb,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
     UNIQUE (src_ref_id, src_pos, dst_ref_id, dst_pos, relation),
-    -- Prevent identity self-loops (same ref AND same pos including both NULL).
+    CHECK (src_pos >= -1 AND dst_pos >= -1),
+    -- Prevent identity self-loops (same ref AND same pos).
     -- Same-ref different-pos links remain allowed.
-    CHECK (NOT (src_ref_id = dst_ref_id
-                AND src_pos IS NOT DISTINCT FROM dst_pos))
+    CHECK (NOT (src_ref_id = dst_ref_id AND src_pos = dst_pos))
 );
 
 CREATE INDEX links_src_idx      ON links (src_ref_id);
@@ -277,34 +284,37 @@ CREATE INDEX links_relation_idx ON links (relation);
 
 CREATE TABLE ref_closed_tags (
     ref_id      BIGINT       NOT NULL REFERENCES refs(id)            ON DELETE CASCADE,
-    pos         INT,
+    pos         INT          NOT NULL DEFAULT -1,    -- -1 = ref-level
     prefix      TEXT         NOT NULL REFERENCES tag_prefixes(prefix) ON UPDATE CASCADE,
     value       TEXT         NOT NULL,
     set_by      TEXT         NOT NULL REFERENCES actors(slug)         ON UPDATE CASCADE,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    PRIMARY KEY (ref_id, pos, prefix, value)
+    PRIMARY KEY (ref_id, pos, prefix, value),
+    CHECK (pos >= -1)
 );
 CREATE INDEX ref_closed_tags_prefix_value_idx ON ref_closed_tags (prefix, value);
 
 
 CREATE TABLE ref_flags (
     ref_id      BIGINT       NOT NULL REFERENCES refs(id)         ON DELETE CASCADE,
-    pos         INT,
+    pos         INT          NOT NULL DEFAULT -1,    -- -1 = ref-level
     name        TEXT         NOT NULL REFERENCES flag_names(name) ON UPDATE CASCADE,
     set_by      TEXT         NOT NULL REFERENCES actors(slug)     ON UPDATE CASCADE,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    PRIMARY KEY (ref_id, pos, name)
+    PRIMARY KEY (ref_id, pos, name),
+    CHECK (pos >= -1)
 );
 CREATE INDEX ref_flags_name_idx ON ref_flags (name);
 
 
 CREATE TABLE ref_open_tags (
     ref_id      BIGINT       NOT NULL REFERENCES refs(id)     ON DELETE CASCADE,
-    pos         INT,
+    pos         INT          NOT NULL DEFAULT -1,    -- -1 = ref-level
     value       TEXT         NOT NULL CHECK (value = lower(value) AND value <> ''),
     set_by      TEXT         NOT NULL REFERENCES actors(slug) ON UPDATE CASCADE,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    PRIMARY KEY (ref_id, pos, value)
+    PRIMARY KEY (ref_id, pos, value),
+    CHECK (pos >= -1)
 );
 CREATE INDEX ref_open_tags_value_idx ON ref_open_tags (value);
 
@@ -341,22 +351,26 @@ CREATE INDEX cache_state_provider_idx
 -- ---------------------------------------------------------------------------
 
 -- All tags on a ref/block, unified across the three tag tables.
+-- pos = -1 sentinel translated back to NULL for callers.
 CREATE VIEW ref_tags AS
-    SELECT ref_id, pos,
+    SELECT ref_id,
+           NULLIF(pos, -1) AS pos,
            'closed'::TEXT AS namespace,
            prefix || ':' || value AS tag,
            prefix, value AS detail,
            set_by, created_at
     FROM   ref_closed_tags
     UNION ALL
-    SELECT ref_id, pos,
+    SELECT ref_id,
+           NULLIF(pos, -1) AS pos,
            'flag'::TEXT AS namespace,
            name AS tag,
            NULL::TEXT AS prefix, name AS detail,
            set_by, created_at
     FROM   ref_flags
     UNION ALL
-    SELECT ref_id, pos,
+    SELECT ref_id,
+           NULLIF(pos, -1) AS pos,
            'open'::TEXT AS namespace,
            value AS tag,
            NULL::TEXT AS prefix, value AS detail,

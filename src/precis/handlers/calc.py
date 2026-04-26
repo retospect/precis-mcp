@@ -29,7 +29,7 @@ class CalcHandler(Handler):
         id_required=True,
     )
 
-    async def get(  # type: ignore[override]
+    def get(  # type: ignore[override]
         self,
         *,
         id: str | int | None = None,
