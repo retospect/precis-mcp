@@ -1,9 +1,12 @@
 # precis-mcp v2
 
-> **Status: design / pre-alpha.** This branch (`v2`) is a ground-up rewrite of
-> precis-mcp. Earlier (v1) source lives in the `main` branch of
+> **Status: pre-alpha, in progress.** This branch (`v2`) is a ground-up rewrite
+> of precis-mcp. Earlier (v1) source lives in the `main` branch of
 > `retospect/precis-mcp` and locally at `../precis-mcp` (also wired as the
 > `v1-local` git remote here).
+>
+> Phases done: **1 (walking skeleton)**, **2 (DB backbone + memory)**.
+> Next: **3 (paper kind + bundle ingest)** — see `docs/phase3-plan.md`.
 
 ## What v2 is
 
@@ -31,7 +34,8 @@ This is a redesign, not a refactor. Highlights:
 - Cache freshness derived from `cache_state` table, not from tags
 - HintBus collector — any layer can emit deduped, novelty-decayed hints
 - Slim exception hierarchy carrying one `next=` "breaking hint"
-- `asyncpg` + raw SQL throughout; no SQLAlchemy
+- `psycopg 3` (sync) + raw SQL throughout; no SQLAlchemy. Sync below FastMCP
+  because async was buying nothing for stdio's serial workload.
 - Forward-only numbered SQL migrations; no Alembic
 - Hybrid search (lexical tsvector + semantic pgvector, RRF fused)
 - Drops entry-point plugin discovery in favour of an in-tree `BUILTINS` list
@@ -46,9 +50,9 @@ the schema.
 - [x] Schema designed (`0001_initial.sql`)
 - [x] Store interface sketched (`docs/store_sketch.py`)
 - [x] Paper ingest spec (`docs/paper_ingest.md`)
-- [ ] Phase 1 — walking skeleton: four verbs + `calc` end-to-end (no DB)
-- [ ] Phase 2 — DB backbone: migration runner + `memory` handler
-- [ ] Phase 3 — `paper` kind (transplant PDF/BibTeX, density, ingest from bundle)
+- [x] Phase 1 — walking skeleton: four verbs + `calc` end-to-end (no DB)
+- [x] Phase 2 — DB backbone: migration runner + `memory` handler
+- [ ] Phase 3 — `paper` kind (transplant PDF/BibTeX, density, ingest from bundle) — *plan: `docs/phase3-plan.md`*
 - [ ] Phase 4 — cache-backed kinds (`web`, `youtube`, `math`)
 - [ ] Phase 5 — remaining state kinds (`todo`, `gripe`, `fc`, `conv`, `quest`, `oracle`, `skill`)
 - [ ] Phase 6 — file handlers (`docx`, `tex`, `markdown`, `book`, `plaintext`, `rmk`)
