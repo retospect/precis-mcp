@@ -4,7 +4,7 @@ title: precis — navigate Python codebases
 status: spec (unbuilt)
 tier: 1
 floor: any
-applies-to: get/search/put (kind='python'); writes are AST-validated and ruff-formatted
+applies-to: get/search/put (kind='python'); writes are AST-validated, ruff-fixed, and ruff-formatted
 last-updated: 2026-04-27
 ---
 
@@ -186,9 +186,21 @@ Symbol-scoped (not file-scoped). Renames are followed automatically.
 ## Editing code
 
 Writes go through the same `put` verb as every file kind, with two
-extras specific to python: **AST validation** is mandatory and
-**`ruff format`** runs automatically after a successful write. The
-agent ships syntactically valid, project-formatted code by default.
+extras specific to python:
+
+- **AST validation** is mandatory — the result must `ast.parse`.
+- **`ruff check --fix` then `ruff format`** runs automatically on
+  every successful write. Ruff applies safe autofixes (unused
+  imports, sorted `__all__`, `is None` over `== None`, etc.) and
+  then normalises layout. Both follow the project's `pyproject.toml`
+  / `ruff.toml`, so writes match what `ruff check --fix file.py &&
+  ruff format file.py` would produce interactively.
+
+If ruff changed the buffer, the response tells you what it did —
+not just "applied", but the specific changes (which import was
+unused, which `__all__` was re-sorted). Treat that summary as
+feedback: the agent learns its style mismatches from one write to
+the next, rather than being silently corrected.
 
 ### Replace by qualname (preferred)
 
@@ -208,13 +220,14 @@ put(kind='python',
 #   replaced precis.registry.Registry.get (lines 120–128 → 120–128)
 #   ast.parse:           ok
 #   qualname preserved:  ok
-#   ruff format:         applied
+#   ruff:                no changes
 ```
 
 The handler resolves the qualname → file + line range, splices the
-replacement, validates with `ast.parse`, runs `ruff format`, writes
-atomically, and re-indexes. The response gives the **post-format**
-line range — use those numbers in subsequent calls.
+replacement, validates with `ast.parse`, runs `ruff check --fix`
+then `ruff format`, writes atomically, and re-indexes. The response
+gives the **post-fix-and-format** line range — use those numbers in
+subsequent calls.
 
 Prefer this form: qualnames survive file moves and re-orderings.
 
@@ -229,7 +242,8 @@ put(kind='python',
 #   replaced lines 120–128 → 120 in src/precis/registry.py
 #   affects symbols: precis.registry.Registry.get
 #   ast.parse:       ok
-#   ruff format:     applied
+#   ruff:            1 change
+#     - 1 whitespace adjustment (format)
 ```
 
 Line numbers are **1-indexed and inclusive on both ends** (same as
@@ -285,7 +299,9 @@ put(kind='python',
 #   deleted precis.registry.Registry.deprecated (lines 145–152)
 #   ast.parse:           ok
 #   qualname removed:    ok
-#   ruff format:         applied
+#   ruff:                2 changes
+#     - removed 1 unused import (`json`)  # only used by deleted method
+#     - 1 whitespace adjustment (format)
 ```
 
 ### What can go wrong
@@ -349,9 +365,10 @@ logic to get wrong.
   `pyright` integration is gated behind a future
   `PRECIS_PYTHON_TYPED=1` env var.
 - **Type checking on writes.** `mypy` is not run; only `ast.parse`
-  and `ruff format`. Set `PRECIS_PYTHON_LINT_ON_WRITE=1` to also
-  gate writes behind `ruff check --select=F` (undefined names,
-  unused imports). Off by default.
+  + `ruff check --fix` + `ruff format`. Lint findings that ruff
+  cannot autofix (e.g. `F821` undefined name) pass through to the
+  response as a note but don't block the write — you'll catch them
+  on the next test run.
 - **Test running.** Out of scope; that's CI territory.
 - **Auto-commit.** Writes leave the working tree dirty.
 - **Runtime root mutation.** No `register` / `unregister` /

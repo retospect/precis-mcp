@@ -490,20 +490,17 @@ write + re-ingest; python adds three policy gates on top:
   `Class.method_b`) and accidental drop (replace whole `Class` and
   forget to keep its other methods). Override with
   `allow_rename=True` when the rename or drop is intentional.
-- **`ruff format`.** Always runs. We use the `ruff` CLI as a
-  subprocess (no Python API exists) with `--stdin-filename` so ruff
-  walks up to find the project's `pyproject.toml` / `ruff.toml`.
-  Writes match the project's pinned style; commit checks see no
-  surprises. ~60ms total cost, no opt-out switch. If `ruff` is
-  missing or errors, the write proceeds unformatted with a warning
-  header.
-
-One more gate is off by default:
-
-- **Lint.** `ruff check --select=F` (undefined names, unused
-  imports). Opt in via `PRECIS_PYTHON_LINT_ON_WRITE=1`. Off by
-  default since human-supervised flows hit too many false positives
-  on in-progress code.
+- **Ruff (fix + format).** Always runs. Two subprocess calls per
+  write: `ruff check --fix --exit-zero --stdin-filename <path>`
+  applies safe autofixes (unused imports, sorted `__all__`,
+  `is None` over `== None`, etc.); `ruff format --stdin-filename
+  <path>` normalises layout. Both walk up for
+  `pyproject.toml` / `ruff.toml` so writes follow the project's
+  pinned style. ~70ms total. If ruff modified the buffer, the
+  response includes a one-line summary of what it changed (so the
+  agent learns rather than being silently fixed). If ruff is
+  missing or errors, the write proceeds with a warning header.
+  Ruff never blocks a write.
 
 See `python-kind-spec.md § Write surface` for the pipeline order
 and response shape, and `precis-python-help § Editing code` for the

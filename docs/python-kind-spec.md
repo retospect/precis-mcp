@@ -457,14 +457,13 @@ search(kind='python', q='cache attribution',
 ## Write surface
 
 Python is **read/write in v1**. Every successful write passes through
-four quality gates:
+three quality gates:
 
 | Gate | Check | Default | Override |
 |---|---|---|---|
 | 1 | `ast.parse(new_content)` succeeds | mandatory | none — invariant |
 | 2 | No qualname previously within the addressed region disappears in the result | on | `allow_rename=True` kwarg |
-| 3 | `ruff format` on the result | mandatory | none — always runs (skipped only if `ruff` is missing or fails) |
-| 4 | `ruff check --select=F` clean (undefined names, unused imports) | off | `PRECIS_PYTHON_LINT_ON_WRITE=1` env |
+| 3 | `ruff check --fix` then `ruff format` on the result | mandatory | none — always runs (skipped only if `ruff` is missing or fails) |
 
 Write pipeline:
 
@@ -477,14 +476,21 @@ Write pipeline:
    qualname; for a class-level edit, all its methods; for a
    whole-file edit, every symbol in the module. Failure → revert,
    return `BadInput` listing the dropped qualnames.
-4. **Gate 3** (`ruff format`). Output is the canonical content.
-5. **Gate 4** (lint, if enabled). Failure → revert.
-6. Atomic write to disk (see below).
-7. Force re-ingest (mtime + sha256 changed → re-parse → update
+4. **Gate 3** (`ruff check --fix` then `ruff format`). Output is
+   the canonical content. Both run unconditionally; ruff applies
+   the safe autofixes it knows (unused imports, redundant `not in`,
+   `is None` vs `== None`, sorted `__all__`, etc.) and then
+   normalises layout. Unfixable lint findings are *not* a hard
+   gate — they pass through to the response as a note so the agent
+   can decide. The post-fix + post-format buffer is what hits disk.
+5. Atomic write to disk (see below).
+6. Force re-ingest (mtime + sha256 changed → re-parse → update
    symbol table). Held under a write lock so a concurrent `get`
    waits.
-8. Return response computed from the new symbol table — line ranges
-   reflect the **post-format** state.
+7. Return response computed from the new symbol table — line ranges
+   reflect the **post-fix-and-format** state. If ruff changed the
+   buffer (either step), the response includes a one-line summary
+   of what changed.
 
 ### Gate 2 — the no-qualname-drop check
 
@@ -568,24 +574,58 @@ construction.
 3. The post-format line range in the response is the durable answer.
    If `ruff` shifts lines, the response reflects that.
 
-**Invocation.** `subprocess.run(['ruff', 'format', '--stdin-filename', str(path)], input=buffer, capture_output=True, text=True)`.
+**Invocation.** Two subprocess calls per write, both via stdin:
+
+```python
+fixed = subprocess.run(
+    ['ruff', 'check', '--fix', '--exit-zero',
+     '--stdin-filename', str(path)],
+    input=buffer, capture_output=True, text=True, check=True,
+).stdout
+formatted = subprocess.run(
+    ['ruff', 'format', '--stdin-filename', str(path)],
+    input=fixed, capture_output=True, text=True, check=True,
+).stdout
+```
+
+`--exit-zero` on the fix step means "don't fail if there are
+unfixable findings"; we capture them on stderr and surface in the
+response, but the write proceeds. The format step is an unconditional
+layout pass.
+
 There is no Python API for ruff (it is a Rust binary; the PyPI
 `ruff` package just ships the CLI). The third-party `ruff-api` PyO3
 wrapper is unmaintained.
 
-**Config discovery.** `ruff format` natively walks up from
-`--stdin-filename` looking for `pyproject.toml` / `ruff.toml`. We
-let it — writes follow whatever style the project pinned
-(line length, quote style, trailing-comma policy). Matches what the
-user would get typing `ruff format file.py` interactively, so commit
-checks see no surprises. For repos without ruff config, ruff
-defaults apply.
+**Config discovery.** `ruff check` and `ruff format` natively walk
+up from `--stdin-filename` looking for `pyproject.toml` /
+`ruff.toml`. We let them — writes follow whatever style the project
+pinned (line length, quote style, trailing-comma policy, enabled
+rules). Matches what the user would get typing `ruff check --fix
+file.py && ruff format file.py` interactively, so commit checks see
+no surprises. For repos without ruff config, ruff defaults apply.
 
-**Cost.** ~10ms subprocess startup + ~50ms format for a 2k-line
-file. Acceptable for interactive writes; no batch-defer switch.
-If `ruff` is missing or fails (config error), the write proceeds
-unformatted with a warning in the response header. Format never
-blocks a write.
+**Cost.** ~20ms subprocess startup (two calls) + ~50ms total fix +
+format for a 2k-line file. Acceptable for interactive writes; no
+batch-defer switch. If `ruff` is missing or fails, the write
+proceeds with the unfixed/unformatted buffer and a warning header.
+Ruff never blocks a write.
+
+**Reporting changes.** When ruff modifies the buffer (either step),
+the response includes a summary so the agent learns from the
+correction rather than being silently fixed:
+
+```
+  ruff:  3 changes
+    - removed 1 unused import (`json`)
+    - sorted `__all__`
+    - 4 whitespace adjustments (format)
+```
+
+The summary distinguishes **fix** changes (semantic; ruff removed an
+unused import) from **format** changes (layout-only; whitespace,
+quote style, trailing commas). If ruff didn't change anything, the
+line reads `ruff: no changes`.
 
 ### What writes do not do
 
@@ -607,8 +647,10 @@ blocks a write.
 
   ast.parse:           ok
   qualname preserved:  ok
-  ruff format:         applied (whitespace + trailing comma)
-  lint:                skipped (PRECIS_PYTHON_LINT_ON_WRITE unset)
+  ruff:                3 changes
+    - removed 1 unused import (`json`)
+    - reformatted call site (line 124)
+    - 1 whitespace adjustment
 
 Replaced lines 120–128 → 120–126 (-2 lines).
 
@@ -617,8 +659,8 @@ Next:
   get(kind='python', id='precis-mcp-new::precis.registry.Registry.get', view='blame')
 ```
 
-Same two-track header as read responses, plus a four-line gate report
-and a diff summary.
+Same two-track header as read responses, plus a gate report (with
+ruff changes when applicable) and a diff summary.
 
 ## Git integration
 
@@ -744,7 +786,7 @@ is ~120 LOC on top of the shared library.
 - Cross-file rename refactoring. v1 supports per-symbol delete /
   create / replace; reference updates are not automatic.
 
-## Test plan (~45 tests)
+## Test plan (~46 tests)
 
 - `tests/test_python_outline.py` — 8 tests: classes, nested classes,
   decorators (`@dataclass`, `@property`), async functions, type-only
@@ -762,15 +804,17 @@ is ~120 LOC on top of the shared library.
 - `tests/test_python_indexer.py` — 4 tests: lazy reindex on mtime
   change / gitignore respect / sha256 unchanged short-circuit / hash
   drift triggers re-parse.
-- `tests/test_python_write.py` — 14 tests: replace by qualname /
+- `tests/test_python_write.py` — 15 tests: replace by qualname /
   replace by line range / replace whole file / append / create /
   refuse-create-overwrite / delete by qualname / AST-syntax-error
   reverts / no-qualname-drop reverts on accidental method rename /
   no-qualname-drop reverts on whole-class replace that drops nested
   methods / `allow_rename=True` permits rename and drop / `ruff
-  format` applied + line ranges in response reflect post-format /
-  `ruff` missing falls through with warning header / atomic-write
-  durability (concurrent reader sees old or new, never partial).
+  check --fix` removes unused imports + reports the change in
+  response / `ruff format` applied + line ranges in response
+  reflect post-fix-and-format state / `ruff` missing falls through
+  with warning header / atomic-write durability (concurrent reader
+  sees old or new, never partial).
 - `tests/test_python_runtrace.py` — gated, 2 tests: only run when
   `PRECIS_PYTHON_ALLOW_EXEC=1`. Skipped in CI by default; runs locally.
 
@@ -809,9 +853,10 @@ is ~120 LOC on top of the shared library.
   `view='callgraph' entry=…` → `outline` on the most interesting nodes
   → `source` on the one or two functions that actually need reading.
 - Indexing `precis-mcp-new` (~3k LOC) takes < 2s.
-- `pytest -q` adds ~45 tests, all green.
+- `pytest -q` adds ~46 tests, all green.
 - A fresh agent can edit a method by qualname and the resulting file
-  passes `ruff format --check` and `ast.parse` without manual fixup.
+  passes `ast.parse`, `ruff check`, and `ruff format --check`
+  without manual fixup.
 - Total LOC: ~900-1200 (indexer + read views ~700; write surface
   ~200-300 on top, mostly shared with `_FileHandlerBase`).
 
