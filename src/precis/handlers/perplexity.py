@@ -33,9 +33,11 @@ from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
+from precis.utils.md_parse import parse_markdown
 from precis.utils.next_block import render_next_section
 
 if TYPE_CHECKING:
+    from precis.embedder import Embedder
     from precis.store import Store
 
 log = logging.getLogger(__name__)
@@ -77,8 +79,15 @@ class _PerplexityBase(CacheBackedHandler):
     corpus_slug: ClassVar[str] = "default"
     # ttl_seconds + attribution + spec set by subclasses.
 
-    def __init__(self, *, store: Store) -> None:
+    def __init__(self, *, store: Store, embedder: Embedder | None = None) -> None:
         super().__init__(store=store)
+        # Embedder is optional: API-fetched cache entries today land
+        # without vectors (single-block bodies; lexical search suffices).
+        # `put(mode='import')` parses pasted reports into many blocks
+        # and benefits from per-block vectors so semantic search across
+        # imported research works. When no embedder is configured the
+        # blocks still land — just without vectors.
+        self.embedder = embedder
 
     # ── canonicalize: trim + include model so kinds don't collide ────
 
@@ -225,6 +234,138 @@ class _PerplexityBase(CacheBackedHandler):
         body = resp.body + render_next_section(nav)
         return Response(body=body, cost=resp.cost)
 
+    # ── put: import a pre-generated report as a $0 cache entry ───────
+
+    def put(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        text: str | None = None,
+        mode: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Import a Perplexity-generated report as a cached ref at $0.
+
+        Use case: Perplexity Pro subscribers can run deep research in
+        the web UI for free. Pasting that result here populates the
+        *same* cache row a paid API ``get`` would have produced — every
+        future ``get(kind=<this>, id=<query>)`` on the same query then
+        hits the cache and returns the imported body for $0.
+
+        Args:
+            id: The original query the user asked Perplexity. Becomes
+                part of the canonical cache key (combined with this
+                handler's model), so it must match the query that any
+                future ``get`` would supply for the cache to hit.
+            text: The report body, ideally as Markdown. Parsed into
+                blocks via the same splitter used for the ``markdown``
+                kind, so per-block citation handles work and search
+                returns granular hits rather than the whole report.
+            mode: Must be ``"import"``.
+        """
+        if mode != "import":
+            raise BadInput(
+                f"{self.spec.kind} only supports mode='import' for put",
+                options=["import"],
+                next=(
+                    f"put(kind={self.spec.kind!r}, id='<the query>', "
+                    "text='<paste report>', mode='import')"
+                ),
+            )
+        if not isinstance(id, str) or not id.strip():
+            raise BadInput(
+                "import requires id= (the original Perplexity query)",
+                next=(
+                    f"put(kind={self.spec.kind!r}, id='<query>', "
+                    "text='...', mode='import')"
+                ),
+            )
+        if not isinstance(text, str) or not text.strip():
+            raise BadInput(
+                "import requires text= (the report body)",
+                next=(
+                    f"put(kind={self.spec.kind!r}, id='<query>', "
+                    "text='<paste report>', mode='import')"
+                ),
+            )
+
+        query = id.strip()
+        body = text.strip()
+        key = self._canonical_key(query)
+        request_hash = self._hash(key)
+
+        body_blocks = self._blocks_from_report(body)
+
+        ref, _cache = self.store.put_cache_entry(
+            corpus_id=self.store.ensure_corpus(self.corpus_slug),
+            kind=self.spec.kind,
+            slug=self._slug_for(key),
+            title=_title_for_query(query),
+            body_blocks=body_blocks,
+            provider=self.provider,
+            request_hash=request_hash,
+            ttl_seconds=None,  # imports are pinned — never expire
+            model=self.model,
+            cost_usd=0.0,
+            ref_meta={"source": "imported"},
+            cache_meta={
+                "model": self.model,
+                "query": query,
+                "source": "imported",
+                "block_count": len(body_blocks),
+            },
+        )
+
+        n = len(body_blocks)
+        plural = "" if n == 1 else "s"
+        msg = (
+            f"imported {self.spec.kind} ref {ref.slug!r} "
+            f"({n} block{plural}). future "
+            f"get(kind={self.spec.kind!r}, id={query!r}) "
+            f"will return the imported body for $0."
+        )
+        return Response(body=msg)
+
+    def _blocks_from_report(self, body: str) -> list[BlockInsert]:
+        """Parse a pasted Perplexity report into embedded blocks.
+
+        The body is treated as Markdown — Perplexity's web exports
+        already are. Each logical chunk (heading line, paragraph,
+        list, table, code fence) becomes one block with a stable,
+        content-derived slug.
+        """
+        md_blocks = parse_markdown(body)
+        if not md_blocks:
+            # Defensive fallback: no recognisable structure → store the
+            # whole text as one paragraph block. Better than dropping.
+            return [BlockInsert(pos=0, text=body)]
+
+        embeddings: list[list[float]] | None = None
+        if self.embedder is not None:
+            embeddings = self.embedder.embed([b.text for b in md_blocks])
+
+        out: list[BlockInsert] = []
+        for i, mb in enumerate(md_blocks):
+            meta: dict[str, Any] = {
+                "kind": mb.kind,
+                "line_start": mb.line_start,
+                "line_end": mb.line_end,
+            }
+            if mb.heading_level is not None:
+                meta["heading_level"] = mb.heading_level
+            if mb.meta:
+                meta.update(mb.meta)
+            out.append(
+                BlockInsert(
+                    pos=mb.pos,
+                    slug=mb.slug,
+                    text=mb.text,
+                    embedding=embeddings[i] if embeddings else None,
+                    meta=meta,
+                )
+            )
+        return out
+
 
 # ---------------------------------------------------------------------------
 # Concrete subclasses
@@ -240,11 +381,15 @@ class WebsearchHandler(_PerplexityBase):
         description=(
             "PAID (~$0.001/call): Perplexity Sonar — fast factual web "
             "search with inline citations (2–5s). Use for definitions, "
-            "current events, quick lookups."
+            "current events, quick lookups. Also accepts "
+            "put(mode='import') to register a free, web-UI-generated "
+            "answer as a $0 cache entry for the same query."
         ),
         supports_get=True,
+        supports_put=True,
         is_numeric=False,
         id_required=True,
+        modes=("import",),
         requires_env=("PERPLEXITY_API_KEY",),
     )
 
@@ -264,11 +409,15 @@ class ThinkHandler(_PerplexityBase):
         description=(
             "PAID (~$0.005/call): Perplexity Sonar Reasoning Pro — "
             "detailed analysis with explicit reasoning (5–30s). Use "
-            "for comparisons, nuanced questions, multi-source synthesis."
+            "for comparisons, nuanced questions, multi-source synthesis. "
+            "Also accepts put(mode='import') to register a free, "
+            "web-UI-generated answer as a $0 cache entry."
         ),
         supports_get=True,
+        supports_put=True,
         is_numeric=False,
         id_required=True,
+        modes=("import",),
         requires_env=("PERPLEXITY_API_KEY",),
     )
 
@@ -291,11 +440,15 @@ class ResearchHandler(_PerplexityBase):
             "PAID (~$0.50/call, 2–10 MIN): Perplexity Sonar Deep "
             "Research — multi-step investigation with extensive "
             "citation. Use only when the question justifies the wait "
-            "and spend."
+            "and spend. Pro subscribers can run the same query free "
+            "in the web UI, then put(mode='import') the result here "
+            "to populate the cache at $0."
         ),
         supports_get=True,
+        supports_put=True,
         is_numeric=False,
         id_required=True,
+        modes=("import",),
         requires_env=("PERPLEXITY_API_KEY",),
     )
 

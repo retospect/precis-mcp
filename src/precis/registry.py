@@ -119,7 +119,9 @@ def builtins(
 
         # Perplexity Sonar trio (websearch / think / research). All three
         # share httpx + the PERPLEXITY_API_KEY env var. Hidden when
-        # either is absent.
+        # either is absent. The embedder is passed in so put(mode=
+        # 'import') — used by Pro subscribers to cache free web-UI
+        # answers at $0 — produces semantically searchable blocks.
         try:
             from precis.handlers.perplexity import (
                 ResearchHandler,
@@ -127,9 +129,9 @@ def builtins(
                 WebsearchHandler,
             )
 
-            handlers.append(WebsearchHandler(store=store))
-            handlers.append(ThinkHandler(store=store))
-            handlers.append(ResearchHandler(store=store))
+            handlers.append(WebsearchHandler(store=store, embedder=eff_embedder))
+            handlers.append(ThinkHandler(store=store, embedder=eff_embedder))
+            handlers.append(ResearchHandler(store=store, embedder=eff_embedder))
         except ImportError:
             pass  # missing httpx → not available
 

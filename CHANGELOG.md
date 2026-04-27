@@ -3,6 +3,43 @@
 All entries pre-1.0 are unreleased; v2 is in active development on the
 `v2` branch and not yet on PyPI.
 
+## Perplexity import (`put(mode='import')`)
+
+Pro subscribers can run deep research in the Perplexity web UI for
+free, paste the result into precis, and have it land in the *same*
+cache row a paid `get` would have produced. Future `get` on the same
+query then returns the imported body for $0.
+**555 → 565 tests green, 1 skip.**
+
+- `_PerplexityBase.put(id=<query>, text=<report>, mode='import')` —
+  validates inputs, parses the body via the existing `parse_markdown`
+  splitter (so reports become per-heading / per-paragraph / per-list
+  blocks with stable content-derived slugs), embeds the blocks via the
+  active `Embedder` if one is configured, and calls
+  `Store.put_cache_entry(provider='perplexity', cost_usd=0,
+  ttl_seconds=None)`.
+- The cache key matches what `get` would compute (`<model>:<query>`)
+  so the import populates the row a future paid call would hit. Both
+  `refs.meta.source` and `cache_state.meta.source` are set to
+  `"imported"` for provenance.
+- `WebsearchHandler` / `ThinkHandler` / `ResearchHandler` flip
+  `supports_put=True` and advertise `modes=("import",)`. Each kind
+  imports under its own model — so the same `id=` imported under
+  `research` and `websearch` lives in two distinct cache rows by
+  design.
+- `_PerplexityBase.__init__` accepts an optional `embedder=`; the
+  registry passes the active embedder through. With no embedder
+  configured (e.g. stateless test runs) imports still land but
+  without per-block vectors.
+- New skill: `precis-perplexity-help` — documents the three Sonar
+  tiers and the import flow side by side.
+- 10 new tests in `tests/test_perplexity.py` cover: import → cache
+  hit at $0; multi-block parsing; import without embedder; idempotent
+  re-import (replace, not duplicate); per-kind cache isolation;
+  `meta.source='imported'` provenance; mode/id/text validation;
+  imported blocks are findable via fused block search.
+- No DB schema change. No new kinds. No new env vars. No CLI changes.
+
 ## Phase 6a — Markdown file handler
 
 The first file-backed kind. Read and edit `.md` files under a

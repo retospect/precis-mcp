@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from precis.embedder import MockEmbedder
 from precis.errors import BadInput, Upstream
 from precis.handlers.perplexity import (
     ResearchHandler,
@@ -311,3 +312,217 @@ def test_cost_appears_on_fresh_fetch(websearch: WebsearchHandler) -> None:
     resp = websearch.get(id="something")
     # Cost trailer reflects the per-call cost for the tier.
     assert "$0.001" in resp.cost
+
+
+# ── put(mode='import') — register a free, web-UI-generated report ────
+
+
+_SAMPLE_RESEARCH_REPORT = """\
+# CO2 Electrolysis Catalyst Survey
+
+## Overview
+
+Direct electrochemical reduction of CO2 to value-added products
+remains a leading decarbonisation pathway. Recent cobalt phthalocyanine
+and copper-based systems have crossed the 80% Faradaic efficiency
+threshold for ethylene at industrially relevant current densities.
+
+## Catalysts
+
+- Cobalt phthalocyanine on carbon nanotubes (Wang 2023)
+- Polycrystalline copper at high overpotential (Hori 1985)
+- Single-atom Cu/N-doped carbon (Liu 2022)
+
+## Sources
+
+[1] https://example.org/wang-2023
+[2] https://example.org/hori-1985
+"""
+
+
+@pytest.fixture
+def research_with_embedder(store: Store) -> ResearchHandler:
+    """ResearchHandler wired with a deterministic mock embedder.
+
+    The mock embedder produces unit-norm 1024-dim vectors, matching the
+    DB column dim, so imported blocks land with embeddings populated.
+    """
+    return ResearchHandler(store=store, embedder=MockEmbedder(dim=1024))
+
+
+def test_import_then_get_returns_imported_body_at_zero_cost(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """The headline use case: import once, free hits forever."""
+    h = research_with_embedder
+    query = "Survey of CO2 electrolysis catalysts"
+
+    # Mutate the stub so any API call during this test would be obvious.
+    _StubClient.response = _StubResp(
+        json_data={
+            "choices": [{"message": {"content": "API SHOULD NOT BE CALLED"}}],
+            "citations": [],
+        }
+    )
+
+    put_resp = h.put(id=query, text=_SAMPLE_RESEARCH_REPORT, mode="import")
+    assert "imported" in put_resp.body.lower()
+    assert "research" in put_resp.body
+
+    # First get must hit the cache populated by the import — not the API.
+    get_resp = h.get(id=query)
+    assert "CO2 Electrolysis Catalyst Survey" in get_resp.body
+    assert "Cobalt phthalocyanine" in get_resp.body
+    assert "API SHOULD NOT BE CALLED" not in get_resp.body
+    # Cost trailer reads as free for imported entries.
+    assert "free" in get_resp.cost
+
+
+def test_import_works_without_embedder(store: Store) -> None:
+    """No embedder configured → blocks still land, just without vectors."""
+    h = ResearchHandler(store=store)  # no embedder
+    query = "embedderless import"
+    resp = h.put(id=query, text="# Title\n\nOne paragraph.", mode="import")
+    assert "imported" in resp.body.lower()
+
+
+def test_import_parses_markdown_into_multiple_blocks(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """Reports are split per heading/paragraph/list — granular search."""
+    h = research_with_embedder
+    h.put(
+        id="catalyst survey",
+        text=_SAMPLE_RESEARCH_REPORT,
+        mode="import",
+    )
+    # Look up the ref the import created and count its blocks.
+    cached = h.store.get_cache_entry(
+        provider="perplexity",
+        request_hash=h._hash(h._canonical_key("catalyst survey")),
+    )
+    assert cached is not None
+    ref, _cache = cached
+    blocks = h.store.list_blocks_for_ref(ref.id)
+    # Sample report has multiple sections → must produce >1 block.
+    assert len(blocks) >= 4
+
+
+def test_import_records_source_imported_metadata(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    h = research_with_embedder
+    h.put(id="provenance check", text="# x\n\nbody", mode="import")
+    cached = h.store.get_cache_entry(
+        provider="perplexity",
+        request_hash=h._hash(h._canonical_key("provenance check")),
+    )
+    assert cached is not None
+    ref, cache = cached
+    assert (ref.meta or {}).get("source") == "imported"
+    assert (cache.meta or {}).get("source") == "imported"
+    assert cache.cost_usd == 0.0
+    # Pinned: imports never expire.
+    assert cache.fresh_until is None
+
+
+def test_import_is_idempotent_on_repeat(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """Re-importing the same query replaces, doesn't duplicate refs."""
+    h = research_with_embedder
+    h.put(id="same query", text="# v1\n\nfirst body", mode="import")
+    h.put(id="same query", text="# v2\n\nsecond body", mode="import")
+
+    # Only one cache row should exist for this (provider, hash).
+    request_hash = h._hash(h._canonical_key("same query"))
+    cached = h.store.get_cache_entry(
+        provider="perplexity", request_hash=request_hash
+    )
+    assert cached is not None
+    ref, _cache = cached
+    blocks = h.store.list_blocks_for_ref(ref.id)
+    full = "\n".join(b.text for b in blocks)
+    # The second import wins; the first is gone.
+    assert "second body" in full
+    assert "first body" not in full
+
+
+def test_import_different_kinds_use_separate_cache_rows(
+    store: Store,
+) -> None:
+    """Importing the same query into research vs websearch creates two
+    distinct cache entries — the model is part of the key."""
+    research = ResearchHandler(store=store, embedder=MockEmbedder(dim=1024))
+    websearch = WebsearchHandler(store=store, embedder=MockEmbedder(dim=1024))
+
+    research.put(id="dual import", text="# r\n\nresearch body", mode="import")
+    websearch.put(id="dual import", text="# w\n\nwebsearch body", mode="import")
+
+    r_cache = store.get_cache_entry(
+        provider="perplexity",
+        request_hash=research._hash(research._canonical_key("dual import")),
+    )
+    w_cache = store.get_cache_entry(
+        provider="perplexity",
+        request_hash=websearch._hash(websearch._canonical_key("dual import")),
+    )
+    assert r_cache is not None and w_cache is not None
+    assert r_cache[0].id != w_cache[0].id
+    assert r_cache[0].kind == "research"
+    assert w_cache[0].kind == "websearch"
+
+
+def test_import_rejects_missing_text(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    with pytest.raises(BadInput, match="text="):
+        research_with_embedder.put(id="anything", text=None, mode="import")
+
+
+def test_import_rejects_missing_id(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    with pytest.raises(BadInput, match="id="):
+        research_with_embedder.put(id=None, text="body", mode="import")
+
+
+def test_import_rejects_unknown_mode(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    with pytest.raises(BadInput, match="mode='import'"):
+        research_with_embedder.put(id="q", text="body", mode="append")
+
+
+def test_import_then_search_finds_imported_blocks(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """Imported content participates in cross-corpus / kind-scoped search."""
+    h = research_with_embedder
+    h.put(
+        id="catalyst survey",
+        text=_SAMPLE_RESEARCH_REPORT,
+        mode="import",
+    )
+    # Use the store's block search directly — the perplexity handler
+    # doesn't expose `search` itself, but the data should be findable
+    # by anyone who does kind-filtered block search.
+    hits = h.store.search_blocks_fused(
+        q="cobalt phthalocyanine",
+        query_vec=None,
+        kind="research",
+        scope_ref_id=None,
+        limit=5,
+    )
+    assert hits, "expected lexical hit for 'cobalt phthalocyanine'"
+    # Top hit should be a block from our imported report.
+    top_block, top_ref, _score = hits[0]
+    assert top_ref.kind == "research"
+    assert "cobalt" in top_block.text.lower()
+
+
+def test_import_supports_put_advertised_in_spec() -> None:
+    """KindSpec.supports_put + modes must be honest."""
+    for cls in (WebsearchHandler, ThinkHandler, ResearchHandler):
+        assert cls.spec.supports_put is True
+        assert "import" in cls.spec.modes
