@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _python_callgraph as cgraph
+from precis.handlers import _python_entries as entries_mod
 from precis.handlers import _python_render as render
 from precis.handlers import _python_write as write
 from precis.protocol import Handler, KindSpec
@@ -38,7 +39,7 @@ from precis.response import Response
 log = logging.getLogger(__name__)
 
 
-_SUPPORTED_VIEWS = ("toc", "outline", "source", "callgraph")
+_SUPPORTED_VIEWS = ("toc", "outline", "source", "callgraph", "entries")
 _SUPPORTED_PUT_MODES = ("create", "append", "replace", "delete")
 
 
@@ -286,6 +287,21 @@ class PythonHandler(Handler):
                 depth=depth,
                 cross_repo=cross_repo,
             )
+
+        # Entries view — alias-only id; pyproject scripts + __main__ guards.
+        if view == "entries":
+            if (
+                parsed.file is not None
+                or parsed.qualname is not None
+                or parsed.start_line is not None
+                or parsed.block_selector is not None
+            ):
+                raise BadInput(
+                    "view='entries' takes a bare alias id",
+                    next=f"get(kind='python', id={parsed.alias!r}, view='entries')",
+                )
+            report = entries_mod.find_entries(idx)
+            return Response(body=entries_mod.render_entries(parsed.alias, report))
 
         # Symbol address.
         if parsed.qualname is not None:
