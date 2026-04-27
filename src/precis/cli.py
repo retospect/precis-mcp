@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Stop after N bundles (sorted lexicographically).",
     )
 
+    # Phase 6 — markdown ingest. The handler ingests lazily on every
+    # `get`, but this command lets the operator pre-warm a directory
+    # (useful before launching long-running searches).
+    im = jobs_sub.add_parser(
+        "ingest-md",
+        help="Pre-warm the store by ingesting every .md under a root.",
+    )
+    im.add_argument(
+        "root",
+        nargs="?",
+        default=None,
+        help="Markdown root (defaults to PRECIS_MARKDOWN_ROOT).",
+    )
+    im.add_argument("--database-url", default=None)
+    im.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-ingest every file even if its mtime hasn't changed.",
+    )
+
     return parser
 
 
@@ -143,8 +164,87 @@ def _run_jobs(args: argparse.Namespace) -> None:
     if args.job == "ingest-bundles":
         _run_ingest_bundles(args)
         return
+    if args.job == "ingest-md":
+        _run_ingest_md(args)
+        return
     print(f"jobs: unknown subcommand {args.job!r}", file=sys.stderr)
     sys.exit(2)
+
+
+def _run_ingest_md(args: argparse.Namespace) -> None:
+    from precis.config import load_config
+    from precis.embedder import make_embedder
+    from precis.handlers.markdown import MarkdownHandler
+    from precis.store import Store
+
+    cfg = load_config()
+    root_str = args.root or cfg.markdown_root
+    if not root_str:
+        print(
+            "ingest-md: root not specified and PRECIS_MARKDOWN_ROOT not set",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    root = Path(root_str).resolve()
+    if not root.is_dir():
+        print(f"ingest-md: not a directory: {root}", file=sys.stderr)
+        sys.exit(2)
+
+    dsn = _resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        handler = MarkdownHandler(store=store, root=root, embedder=embedder)
+
+        ingested = 0
+        skipped = 0
+        failed = 0
+        # Walk the same way the handler's index does — keeps slug
+        # derivation identical.
+        from precis.utils.md_parse import file_slug_from_path, is_valid_file_slug
+
+        for dirpath, _dirs, files in os.walk(root):
+            for name in sorted(files):
+                if not name.endswith((".md", ".markdown")):
+                    continue
+                p = Path(dirpath) / name
+                try:
+                    rel = str(p.relative_to(root))
+                    slug = file_slug_from_path(rel)
+                except ValueError:
+                    failed += 1
+                    print(f"  fail  {p}  — invalid path")
+                    continue
+                if not is_valid_file_slug(slug):
+                    failed += 1
+                    print(f"  fail  {p}  — invalid slug {slug!r}")
+                    continue
+                ref_before = store.get_ref(kind="markdown", id=slug)
+                ref = handler._ensure_ingested(slug, force=args.force)
+                if ref is None:
+                    failed += 1
+                    print(f"  fail  {p}  — ingest returned None")
+                    continue
+                if ref_before is None:
+                    ingested += 1
+                    print(f"  ok    {slug}  ({store.count_blocks(ref.id)} blocks)")
+                else:
+                    if args.force or (ref_before.meta or {}).get("sha256") != (
+                        ref.meta or {}
+                    ).get("sha256"):
+                        ingested += 1
+                        print(f"  upd   {slug}  ({store.count_blocks(ref.id)} blocks)")
+                    else:
+                        skipped += 1
+
+        print(
+            f"ingest-md: ingested={ingested}  skipped={skipped}  "
+            f"failed={failed}  [embedder={cfg.embedder}]"
+        )
+        if failed:
+            sys.exit(1)
+    finally:
+        store.close()
 
 
 def _run_ingest_bundle(args: argparse.Namespace) -> None:

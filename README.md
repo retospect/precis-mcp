@@ -10,8 +10,9 @@
 > **3.5 (navigation parity: hierarchical TOC, drill-down, Next: trailers)**,
 > **4a (cache-backed kinds: `math`, `youtube`, `web` page-fetch)**,
 > **4b (Perplexity Sonar trio: `websearch` / `think` / `research`)**,
-> **5 (state kinds: `todo`, `gripe`, `fc`, `quest`, `conv`, `oracle`, `skill`)**.
-> Queued: web bookmark mode + Wayback (deferred), file handlers, polish.
+> **5 (state kinds: `todo`, `gripe`, `fc`, `quest`, `conv`, `oracle`, `skill`)**,
+> **6a (markdown file handler with read/write + lazy re-ingest)**.
+> Queued: web bookmark mode + Wayback (deferred), other file handlers (plaintext, rmk, docx, tex, book), polish.
 
 ## What v2 is
 
@@ -62,7 +63,8 @@ the schema.
 - [x] Phase 4a — cache-backed kinds: `math` (Wolfram), `youtube` (transcripts), `web` (page fetch + trafilatura). Shared `CacheBackedHandler` base, `cache_state` CRUD, attribution footers + cost trailers — *plan: `docs/phase4-plan.md`*
 - [x] Phase 4b — Perplexity Sonar trio: `websearch`, `think`, `research`. Shared base, per-tier model + TTL + cost; cache key includes model so tiers don't collide. Web bookmark mode + Wayback enrichment deferred (needs `put` on `web` kind).
 - [x] Phase 5 — state kinds: `todo` (with STATUS transitions and `/open` `/done` filters), `gripe`, `fc` (with `/due` view), `quest` (slug-addressed with auto-mint), `conv` (read-only with `/transcript` and per-turn nav), `oracle`, `skill` (markdown served from package data dir). Shared `NumericRefHandler` base extracted from MemoryHandler.
-- [ ] Phase 6 — file handlers (`docx`, `tex`, `markdown`, `book`, `plaintext`, `rmk`)
+- [x] Phase 6a — `markdown` file handler. Slug-addressed (`notes/meeting.md` → `notes--meeting`); one block per heading / paragraph / fenced code / table / list. Block slugs are content-derived hashes so they survive re-ingest. Lazy re-ingest on every `get` checks mtime first, falls back to sha256 on stale mtime. `put` modes: `create`, `append`, `replace`, `delete` — all atomic. CLI: `precis jobs ingest-md <root>`. See `docs/phase6-plan.md`.
+- [ ] Phase 6b — remaining file handlers (`plaintext`, `rmk`, `docx`, `tex`, `book`)
 - [ ] Phase 7 — polish: `/help`, hint channel, notifications, cost footer
 
 ## License

@@ -22,6 +22,7 @@ def builtins(
     *,
     store: Store | None = None,
     embedder: Embedder | None = None,
+    markdown_root: str | None = None,
 ) -> list[Handler]:
     """Return handler instances for the active server configuration.
 
@@ -96,6 +97,25 @@ def builtins(
             handlers.append(WebHandler(store=store))
         except ImportError:
             pass  # missing httpx/trafilatura → kind not available
+
+        # File handler — markdown. Hidden when no root is configured;
+        # also hidden when the root path doesn't exist (treat as
+        # mis-configuration; better to skip than to crash on every call).
+        if markdown_root:
+            try:
+                from pathlib import Path
+
+                from precis.handlers.markdown import MarkdownHandler
+
+                handlers.append(
+                    MarkdownHandler(
+                        store=store,
+                        embedder=eff_embedder,
+                        root=Path(markdown_root),
+                    )
+                )
+            except (ImportError, ValueError):
+                pass  # bad root or missing dep → kind not available
 
         # Perplexity Sonar trio (websearch / think / research). All three
         # share httpx + the PERPLEXITY_API_KEY env var. Hidden when

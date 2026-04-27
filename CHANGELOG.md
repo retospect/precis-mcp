@@ -3,6 +3,71 @@
 All entries pre-1.0 are unreleased; v2 is in active development on the
 `v2` branch and not yet on PyPI.
 
+## Phase 6a — Markdown file handler
+
+The first file-backed kind. Read and edit `.md` files under a
+configured root with the same four verbs every other kind uses.
+**450 → 520 tests green, 1 skip.**
+
+- `precis.utils.md_parse` — pure-logic markdown splitter. Recognizes
+  ATX headings (1–6), fenced code (` ``` ` / `~~~`), pipe tables
+  (with separator row), ordered + unordered lists, paragraphs.
+  Thematic breaks are dropped; blank lines separate blocks.
+  Per-block slugs are content-derived: heading slugs from the
+  heading title (`# Hello World` → `hello-world`), other-kind slugs
+  from `<5 leading words>-<6 hex>`. Stable across re-ingest.
+- `precis.utils.md_parse.file_slug_from_path` — encodes a relative
+  file path as a ref slug (`notes/meeting.md` → `notes--meeting`).
+  `--` is the segment separator; segments are normalized to
+  lowercase a–z 0–9 `_` `-`. `is_valid_file_slug` enforces this on
+  every call (defence-in-depth against path traversal even though
+  the handler also resolves+checks against the configured root).
+- Migration `0004_file_kinds.sql` registers `markdown`, `plaintext`,
+  `rmk`, `docx`, `tex` in the `kinds` table (only `markdown` has a
+  handler in this session — others queue for phase 6b).
+- `precis.config.PrecisConfig.markdown_root` (env:
+  `PRECIS_MARKDOWN_ROOT`). The handler is hidden when unset.
+- `MarkdownHandler` (slug-addressed, supports get/search/put):
+  - `get(id='slug')` — overview + flat heading list (H1 + H2)
+    + `Next:` hint trailer.
+  - `get(id='slug~SLUG')` — one block by stable slug.
+  - `get(id='slug~N')` — one block by 0-indexed pos.
+  - `get(id='slug/toc')` — full hierarchical TOC (reuses
+    `_paper_toc.build_toc` + `render_toc`).
+  - `get(id='slug/raw')` — full source text.
+  - `get()` / `get(id='/')` — index of every `.md` file under root.
+  - `search(q='...', scope='slug')` — block-level fused-search
+    (lexical + vector if embedder).
+  - `put(mode='create', id='slug', text=...)` — create new file.
+  - `put(mode='append', id='slug', text=...)` — append paragraph.
+  - `put(mode='replace', id='slug~SLUG', text=...)` — rewrite one
+    block in place.
+  - `put(mode='delete', id='slug~SLUG')` — drop one block.
+- **Lazy re-ingest**: every `get` first stats the file. If
+  `meta.mtime_ns` matches, the cached blocks are served. If mtime
+  differs but sha256 matches, only meta is bumped. If sha256
+  differs, the file is re-parsed and blocks are atomically replaced.
+  Block slugs survive across re-ingest (content-derived). Deleted
+  files trigger soft-delete of the ref so the index stays clean.
+- **Atomic writes**: every put writes via tmpfile + `os.replace`.
+  After write the handler force-re-ingests so the next get sees
+  the new state.
+- **Path-traversal safety**: ref slugs are validated by
+  `is_valid_file_slug`; the resolved path is checked to be under
+  the configured root with `Path.relative_to`.
+- CLI: `precis jobs ingest-md <root> [--force]` — pre-warm a
+  directory (the handler ingests lazily on first `get` anyway, but
+  pre-warming is useful before launching long-running searches).
+- 70 new tests across 2 files: `test_md_parse.py` (37) covers
+  the parser + slug helpers; `test_markdown_handler.py` (33)
+  covers handler get/search/put/lazy-reingest end-to-end.
+- Skill: `precis-markdown-help.md` documents address shapes,
+  block kinds, put modes, CLI usage, and limits.
+- Live verification: created `/tmp/precis-md-demo/` with two files,
+  ingested, walked the TOC, edited a block via `put(mode=replace)`,
+  appended a paragraph, created a new file. All atomic, all
+  reflected on next `get`.
+
 ## Phase 5 — State kinds (todo, gripe, fc, quest, conv, oracle, skill)
 
 The bulk of the agent-facing API for personal state. Six new kinds

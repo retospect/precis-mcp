@@ -37,6 +37,15 @@ class PrecisConfig(BaseSettings):
       (heavy; requires the optional `paper` extra). Use for production.
     """
 
+    markdown_root: str | None = None
+    """Root directory for the ``markdown`` kind (phase 6).
+
+    Files under this path are addressable as ``markdown:<slug>`` where
+    the slug encodes the file's relative path (``foo/bar.md`` becomes
+    ``foo--bar``). When unset, the ``markdown`` kind is hidden.
+    Set via ``PRECIS_MARKDOWN_ROOT`` in the env.
+    """
+
 
 def load_config() -> PrecisConfig:
     return PrecisConfig()

@@ -141,7 +141,11 @@ def build_runtime(
         store = Store.connect(config.database_url)
         embedder = make_embedder(config.embedder, dim=store.embedding_dim())
 
-    handlers = builtins(store=store, embedder=embedder)
+    handlers = builtins(
+        store=store,
+        embedder=embedder,
+        markdown_root=config.markdown_root,
+    )
     registry = Registry(handlers)
     # Wire the registry into SkillHandler so it can synthesize the
     # 'precis-help' meta-skill listing every active kind.
