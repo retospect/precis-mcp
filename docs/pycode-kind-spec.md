@@ -394,6 +394,110 @@ search(kind='pycode', q='cache attribution',
        scope='precis-mcp-new/src/precis/handlers/_cache_base.py')
 ```
 
+## Git integration
+
+The symbol index already knows `(file, start_line, end_line)` for every
+qualname, so mapping any symbol to its git history is nearly free. Git
+becomes first-class in `pycode`, plus a small sibling `git` kind for
+repo-scoped questions that don't need symbols.
+
+### Library choice
+
+Shell out to `git` via `subprocess` for v1. Zero deps, every cluster
+node has git, same pattern the existing `code-repo-mcp` uses. Wrap
+behind `pycode_index/git.py` (~100 LOC) so we can swap to `dulwich`
+(pure-Python, Apache-2.0) later without touching handlers.
+
+| Library | Verdict |
+|---|---|
+| **`git` CLI via subprocess** | **v1 default.** Zero deps. |
+| `dulwich` (Apache-2.0) | Optional upgrade. Pure Python, no `git` on PATH. |
+| `pygit2` (libgit2) | Skip. Binary dep + GPL-linking-exception. |
+| `GitPython` | Skip. Maintenance mode; wraps the same subprocess calls. |
+| `PyDriller` | Skip. Too heavy; builds on GitPython. |
+| `gitoxide` (Rust) | Skip. Pre-1.0, no Python bindings. |
+
+### New `pycode` views (symbol-scoped)
+
+```python
+get(kind='pycode', id='...::Registry.get', view='blame')
+get(kind='pycode', id='...::Registry.get', view='log')
+get(kind='pycode', id='...::Registry.get', view='churn', days=90)
+get(kind='pycode', id='...::Registry.get', view='owners')
+get(kind='pycode', id='...::Registry.get',
+    view='diff', ref_from='v0.3.0', ref_to='HEAD')
+```
+
+- `blame` — per-line author/sha for the symbol's line range
+- `log` — symbol-scoped commit history via `git log -L<start>,<end>:<file>` (rename-following for free)
+- `churn` — commit count over a window; ranks sibling symbols
+- `owners` — commit-weighted contributors with recency decay
+- `diff` — symbol-scoped diff between two refs
+
+Output shape matches the existing `Next:` trailer style:
+
+```
+# precis.registry.Registry.get  —  blame (src/precis/registry.py:120-128)
+
+  L120  feat: hide unavailable kinds      4d   3a8f102  reto@…
+  L121  feat: hide unavailable kinds      4d   3a8f102  reto@…
+  L122  v2 walking skeleton              42d   c1e9aa4  reto@…
+  L123  v2 walking skeleton              42d   c1e9aa4  reto@…
+  L124  fix: NotFound options sort       12d   9b22e7d  reto@…
+  …
+
+3 commits across 3 authors. Last touched 4 days ago.
+
+Next:
+  get(...view='log')                    — full commit log for this symbol
+  get(...view='churn', days=90)         — change frequency
+  get(kind='git', id='precis-mcp-new', view='hot') — repo-wide hot list
+```
+
+### Sibling `git` kind (repo-scoped, language-agnostic)
+
+Some questions aren't symbol-scoped and should work on non-Python
+repos too (ansible, cluster itself):
+
+```python
+get(kind='git', id='precis-mcp-new')                          # head, branch, dirty?
+get(kind='git', id='precis-mcp-new', view='log', n=20)
+get(kind='git', id='precis-mcp-new', view='hot', days=30)     # hottest files
+get(kind='git', id='precis-mcp-new', view='owners')           # ownership map
+get(kind='git', id='precis-mcp-new',
+    view='diff', ref_from='main', ref_to='HEAD')
+get(kind='git', id='precis-mcp-new', view='branches')
+get(kind='git', id='precis-mcp-new',
+    view='blame', file='src/precis/registry.py')
+search(kind='git', q='cache attribution', scope='precis-mcp-new')  # commit messages
+```
+
+Read-only. No `mode='checkout'`, no `mode='commit'` — that's
+coding-agent territory and stays out of precis.
+
+Same `pycode_index.git` helper powers both kinds. The `git` handler
+is ~120 LOC on top of the shared library.
+
+### What we steal from Aider
+
+- **Concept**: blame + log as first-class agent affordances. Their
+  `/git`, `/diff`, `/undo` chat commands inspire our `log`/`diff`
+  views.
+- **Not stolen here**: auto-commit / dirty-commit of LLM edits. That
+  belongs to `code-repo-mcp` (the coding-agent), not `pycode` —
+  `pycode` is read-only by design.
+
+### Deferred
+
+- **Co-change matrix** ("X changes ⇒ Y often changes") — needs a one-
+  time `git log --name-only` walk with pair-count storage. Killer
+  feature for review agents; phase-2 add.
+- **SZZ bug-introducing-commit detection** — PyDriller has it, noisy.
+- **GitHub PR / issue context** — separate `gh` kind later.
+- **Cross-repo blame** (submodules, monorepo splitouts).
+- **Working-tree uncommitted diff overlay** — warn via hint; don't
+  pretend index state is HEAD.
+
 ## Out of scope (defer)
 
 - Multi-language support (Rust, JS, Go) — design leaves room via
@@ -401,7 +505,6 @@ search(kind='pycode', q='cache attribution',
   v1 ships Python only.
 - Type inference (jedi / pyright). Worth it later for accurate
   cross-file dispatch resolution.
-- Git history awareness (blame, churn, "recently changed").
 - Test → tested-symbol mapping (would be killer for review agents,
   but needs coverage data).
 - Diff-aware reindex on PR branches.

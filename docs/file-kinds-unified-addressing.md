@@ -34,20 +34,60 @@ The agent has to remember three grammars to do the same thing across
 three kinds. That's wasted context for no gain. This document picks
 one grammar.
 
-## Design principles
+## The two-track model
+
+Every file-rooted kind exposes the **same dual-track addressing**.
+This is the central organising principle; everything else falls
+out of it.
+
+| Track | Form | What it is | Stable? |
+|---|---|---|---|
+| **A — coordinates** | `~L<start>-<end>` | line range (1-indexed, inclusive) | shifts under edits above |
+| **B — headers** | `~<name>` | named region (block slug, symbol qualname, paragraph id) | yes |
+
+Track A is what external tools speak: `grep -n`, test failures,
+stack traces, IDE "go to line". Track B is what stays valid across
+edits and across sessions. Both work as `<selector>` in any address.
+
+The handler's job is to maintain the bijection between the two
+tracks. **Every response carries both forms** in its header:
+
+```
+# notes/meeting.md~agenda  (block 3, lines 42-58)
+```
+
+The agent never has to compute the mapping. Whatever you put in,
+you get the canonical name + line range out.
+
+### Why two tracks (and not one)
+
+A name-only system breaks when external tools hand you a line
+number. A coordinate-only system breaks under any edit. The
+two-track model accommodates both inputs and gives the agent a
+durable handle (Track B) to use across calls.
+
+For markdown the headers are content-derived block slugs. For
+pycode they are qualnames — and pycode headers carry **graph
+metadata** the other kinds don't have (parent, callers, callees,
+inherits). See `precis-pycode-help` for the graph-aware navigation.
+
+## Design principles (derived)
 
 1. **Path format is `/`-native.** Pretrained models read `path/to/file.py`
    fluently; `path--to--file-py` is alien. Use the natural form.
-2. **Stable names beat coordinates.** Block slugs (markdown) and
-   qualnames (pycode) survive edits; line numbers don't. Line numbers
-   are accepted as *input* (pointers) but stable names are what the
-   handler returns and stores.
+2. **Track B beats Track A for storage.** Block slugs and qualnames
+   survive edits; line numbers don't. Line numbers are accepted as
+   *input* (pointers) but stable names are what the handler returns
+   and stores.
 3. **One grammar across kinds.** The same `id` shape works for any
-   file-rooted kind; only the *meaning* of the selector changes.
+   file-rooted kind; only the *meaning* of Track-B selectors changes.
 4. **Single-root case stays terse.** When only one root is configured
    for a kind, its alias may be omitted from the id.
 5. **Read and write share a selector vocabulary.** Whatever points to
    a region for `get` also points to the same region for `put`.
+6. **The handler is a normaliser.** Accept multiple input forms
+   (canonical, absolute, line range, stale slug); emit one canonical
+   form.
 
 ## Address grammar
 
@@ -164,6 +204,57 @@ stable slug for the *next* edit.
   symbol name (must be unique within the file, else
   `BadInput("ambiguous: matches X, Y; use full qualname")`).
 
+### Multi-block line ranges
+
+A line-range selector that spans multiple Track-B regions is valid:
+
+- For **read** (`get`): the response contains every region that
+  overlaps the range, each with its stable name.
+- For **write** (`put` `mode='replace'` or `'delete'`): the entire
+  spanning range is replaced/deleted as a single splice; the
+  response lists every dropped slug:
+
+  ```
+  replaced lines 42-58 in notes/meeting.md
+    (dropped 2 blocks: 'agenda', 'next-steps')
+    (new block: 'updated-section')
+  ```
+
+  This is **intentional** — a coordinate-range edit is a coarse
+  operation by nature. If you want surgical block-level edits,
+  address by Track B (slug or qualname) instead.
+
+### Absolute paths as input
+
+The id parser accepts an absolute filesystem path and normalises
+it against configured roots:
+
+```python
+get(kind='markdown', id='/Users/bots/notes/meeting.md')
+# → normalised to canonical 'notes/meeting.md' (alias 'notes')
+```
+
+If the path is outside every configured root, `BadInput`. This is
+free tool-chain integration: agent runs `find` / `grep` / IDE,
+pastes the absolute path straight in.
+
+### Stale-slug recovery
+
+When `replace` changes a block's content, its content-derived slug
+changes. The handler stores the old slug as an alias in
+`block.meta.previous_slug` until the next replace of that block.
+A query for the stale slug returns the current content with a hint:
+
+```
+get(kind='markdown', id='notes/meeting.md~old-slug')
+→ Block 'old-slug' was renamed to 'new-slug' after a replace edit.
+  # notes/meeting.md~new-slug  (block 5, lines 42-58)
+  ...
+```
+
+If the stale slug isn't in any rename map, `NotFound` with
+`options=` listing the five nearest slugs by edit distance.
+
 ## Views
 
 Views are the *render mode* for the resolved selector. Per kind:
@@ -194,6 +285,38 @@ Views are the *render mode* for the resolved selector. Per kind:
 - `symbols` — flat symbol list (paginated).
 - `blame`, `log`, `churn`, `owners`, `diff` — git overlays.
 
+## Response header format
+
+Every selector-bearing response opens with a one-line header that
+carries **both Track A and Track B forms** of the resolved address:
+
+```
+# notes/meeting.md~agenda  (block 3, lines 42-58)
+# precis-mcp-new::precis.registry.Registry.get  (lines 120-128)
+# precis-mcp-new/src/precis/cli.py~L142  (resolved to _cmd_serve, lines 138-150)
+```
+
+Format rules:
+
+- **Path or qualname** comes first — whichever is the canonical form
+  for that kind. (Pycode prefers qualname for symbols; file-path
+  for files.)
+- **Coordinates** in parentheses afterwards — block pos for
+  markdown/plaintext, line range for everything.
+- **"Resolved to" hint** when the input form differs from the
+  canonical (line-range input → named block; absolute path →
+  canonical alias; stale slug → current slug).
+
+The agent's next call can use either form. No round-trip needed.
+
+### Pycode canonical-response choice
+
+Pycode has two equivalent address forms for symbols:
+`repo/path/to/file.py~Symbol.method` and `repo::pkg.mod.Symbol.method`.
+The handler **emits the qualname form** in responses (shorter,
+file-move-resistant, idiomatic Python). It **accepts both forms**
+as input.
+
 ## TOC row format (per-symbol/per-block)
 
 The unified TOC row carries four fields. Only fields that apply to a
@@ -205,6 +328,7 @@ kind appear:
 | **Position** | line number (`L42`) | line number |
 | **Headline** | heading text (for headings); first 80 chars (for paragraphs) | signature `def f(x: int) -> str` |
 | **Summary** | n/a | first line of docstring, ≤80 chars |
+| **Edges** (pycode only) | n/a | `calls:`, `called by:`, `inherits:`, `raises:` |
 
 Pycode example:
 
@@ -299,8 +423,22 @@ PRECIS_MARKDOWN_ROOT=/Users/bots/notes
 # New (unified)
 PRECIS_MARKDOWN_ROOTS=notes:/Users/bots/notes,work:/Users/bots/work-docs
 PRECIS_PLAINTEXT_ROOTS=scratch:/tmp/scratch
-PRECIS_PYCODE_ROOTS=precis:/Users/bots/.../precis-mcp-new,cluster:/Users/bots/.../openclaw-cluster
+PRECIS_PYCODE_ROOTS=precis-mcp-new:/Users/bots/.../precis-mcp-new,cluster:/Users/bots/.../openclaw-cluster
 ```
+
+### Alias hygiene
+
+Aliases are operator-chosen. Pick names that **don't collide with
+the first directory under the root**, otherwise the canonical
+addresses get an awkward stutter:
+
+```
+✗  precis/src/precis/cli.py        # alias=precis, src/precis is the package dir
+✓  precis-mcp-new/src/precis/cli.py # alias=precis-mcp-new (the repo name)
+```
+
+For pycode, **use the repo name** (the directory name) as the alias.
+For markdown / plaintext, any descriptive label is fine.
 
 Format: `alias:path` pairs separated by commas. Empty list (or unset)
 hides the kind. The handler is constructed once with all roots; it

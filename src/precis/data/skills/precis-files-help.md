@@ -1,0 +1,212 @@
+---
+id: precis-files-help
+title: precis — read and edit files (markdown, plaintext, code, …)
+status: draft
+tier: 1
+floor: any
+applies-to: cross-cutting (file-rooted kinds)
+last-updated: 2026-04-27
+---
+
+# precis-files-help — file-rooted kinds, shared concepts
+
+This skill covers what's the **same** across every file-rooted kind:
+`markdown`, `plaintext`, `rmk`, `docx`, `tex`, `book`, `pycode`, `git`.
+
+For kind-specific rules (block grammar, views, edits) see:
+
+- `precis-markdown-help` — `.md` files
+- `precis-pycode-help` — Python codebases
+
+## Two tracks of addressing
+
+Every file-rooted kind exposes the same dual-track addressing model.
+Pick whichever track is cheaper for the input you have:
+
+| Track | Form | When to use it |
+|---|---|---|
+| **A — coordinates** | `~L<start>-<end>` | external pointer (test failure, grep, IDE) |
+| **B — headers** | `~<name>` | durable storage; cross-session references |
+
+```python
+# Track A: I have a line number from a stack trace.
+get(kind='pycode',   id='precis/src/precis/cli.py~L142')
+get(kind='markdown', id='notes/meeting.md~L42-58')
+
+# Track B: I have a stable name from a previous response or a search hit.
+get(kind='pycode',   id='precis/src/precis/cli.py~_cmd_serve')
+get(kind='markdown', id='notes/meeting.md~conclusion')
+```
+
+**The handler always returns both forms in the response header**, so
+your next call can use whichever is more durable. Track A shifts
+under edits above; Track B does not.
+
+```
+# notes/meeting.md~conclusion  (block 5, lines 42-58)
+…
+```
+
+Every selector-bearing response carries `~name`, `block N`, and
+`lines A-B` together. No round-trip needed.
+
+## Address grammar (one shape, all kinds)
+
+```
+[<root-alias>/]<relative-path>[~<selector>][/<view>]
+```
+
+| Field | Examples |
+|---|---|
+| `<root-alias>` | `notes`, `precis`, `cluster` (omit when only one root configured) |
+| `<relative-path>` | `meeting.md`, `src/precis/registry.py` |
+| `<selector>` | `conclusion`, `Registry.get`, `L42-58`, `3` |
+| `<view>` | `toc`, `outline`, `raw`, `source`, `callgraph` |
+
+Examples worked end to end:
+
+```python
+get(kind='markdown', id='notes/meeting.md')             # overview
+get(kind='markdown', id='notes/meeting.md~conclusion')  # one block
+get(kind='markdown', id='notes/meeting.md~L42-58')      # by lines
+get(kind='markdown', id='notes/meeting.md/toc')         # full TOC
+get(kind='markdown', id='notes/meeting.md/raw')         # source
+get(kind='markdown')                                    # index of all files
+```
+
+### Absolute paths work too
+
+If you have an absolute path (from `find`, an IDE, a stack trace),
+pass it straight in. The handler matches it against configured roots
+and normalizes:
+
+```python
+get(kind='markdown', id='/Users/bots/notes/meeting.md')
+# → resolved to notes/meeting.md
+```
+
+## Multi-root configuration
+
+Each kind can have multiple roots, named by alias:
+
+```
+PRECIS_MARKDOWN_ROOTS=notes:/Users/bots/notes,work:/Users/bots/work-docs
+PRECIS_PYCODE_ROOTS=precis:/path/to/precis,cluster:/path/to/cluster
+```
+
+When **only one root is configured**, the alias is implicit:
+
+```python
+get(kind='markdown', id='meeting.md')          # alias inferred
+get(kind='markdown', id='notes/meeting.md')    # also valid
+```
+
+When **multiple roots** are configured, the alias is required:
+
+```python
+get(kind='markdown', id='notes/meeting.md')    # required
+get(kind='markdown', id='meeting.md')          # BadInput: ambiguous
+```
+
+## Read
+
+```python
+# Index — every file under every configured root for this kind.
+get(kind='markdown')
+
+# File overview — header + heading TOC preview + Next: trailer.
+get(kind='markdown', id='notes/meeting.md')
+
+# One block by name, lines, or pos.
+get(kind='markdown', id='notes/meeting.md~conclusion')
+get(kind='markdown', id='notes/meeting.md~L42-58')
+get(kind='markdown', id='notes/meeting.md~3')
+
+# Search — block-level lexical + semantic, fused.
+search(kind='markdown', q='deadline')
+search(kind='markdown', q='deadline', scope='notes/meeting.md')
+```
+
+## Write
+
+Four modes. Available on R/W kinds (`markdown`, `plaintext`, `rmk`,
+`docx`, `tex`, `book`); not on `pycode` or `git` (read-only).
+
+```python
+# Create a new file.
+put(kind='markdown', id='notes/new-file.md',
+    text='# Title\n\nFirst paragraph.', mode='create')
+
+# Append paragraph(s) to an existing file.
+put(kind='markdown', id='notes/meeting.md',
+    text='Final thought.', mode='append')
+
+# Replace one region — by slug, lines, or pos. Same op, three forms.
+put(kind='markdown', id='notes/meeting.md~conclusion',
+    text='Updated content.', mode='replace')
+put(kind='markdown', id='notes/meeting.md~L42-58',
+    text='Updated content.', mode='replace')
+
+# Delete one region — same selector forms.
+put(kind='markdown', id='notes/meeting.md~conclusion',
+    mode='delete')
+```
+
+All writes are **atomic** (tmpfile + rename). After every write the
+file is re-ingested so the next `get` sees the new state. The
+response includes the **resolved stable name** of what was edited:
+
+```
+replaced block 'conclusion' (now lines 42-62) in notes/meeting.md
+```
+
+If you addressed by line range, the response gives you the slug.
+If you addressed by slug, the response gives you the line range.
+Round-trip is free.
+
+## Reverse lookups
+
+The handler maintains the bijection between Track A and Track B.
+Every response includes both forms. You never need to compute a
+mapping by hand.
+
+| You have | You can call |
+|---|---|
+| line number | `~L<n>` (resolves to enclosing block + name) |
+| absolute path | full path (resolves to canonical) |
+| stale slug after replace | `~<old-slug>` (handler recovers via rename map) |
+| search hit | the hit's `id` field (already canonical) |
+
+When a slug no longer exists (file edited externally, content
+changed), you get `NotFound` with `options=` listing the five
+nearest matches.
+
+## Lazy re-ingest
+
+Every `get` checks the file's mtime. If unchanged, cached blocks
+are served. If changed, the handler re-hashes + re-parses before
+responding. Stable names survive re-ingest.
+
+You do not have to ingest manually. To pre-warm a directory before
+long-running searches:
+
+```
+precis jobs ingest-md /path/to/docs    # markdown
+```
+
+## Limits + safety
+
+- Slugs are validated against the configured root(s); `..` and
+  out-of-root paths are rejected with `BadInput`.
+- `mode='create'` refuses to overwrite an existing file.
+- Track-changes / multi-author concurrent editing is **out of scope**.
+- Binary files are not read; only text formats per the per-kind
+  parser.
+
+## See also
+
+- `precis-overview` — verbs and kinds
+- `precis-markdown-help` — `.md` block grammar and recipes
+- `precis-pycode-help` — Python codebase navigation
+- `precis-relations` — typed links between refs (file ↔ paper ↔ memory)
+- `precis-navigation` — recipes for common cross-kind flows
