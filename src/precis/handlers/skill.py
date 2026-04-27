@@ -52,10 +52,20 @@ class SkillHandler(Handler):
         id_required=False,
     )
 
+    #: Special slug that's synthesized at runtime from the active
+    #: registry (rather than served from a markdown file).
+    _SYNTHESIZED_SLUG: ClassVar[str] = "precis-help"
+
     def __init__(self, *, store: Store) -> None:
         # store is unused but kept in the constructor signature so the
         # registry's kw-args call shape works for every handler.
         self.store = store
+        self._registry: Any = None  # set later via bind_registry()
+
+    def bind_registry(self, registry: Any) -> None:
+        """Hook for the runtime: gives this handler a registry reference
+        so the synthesized ``precis-help`` skill can list active kinds."""
+        self._registry = registry
 
     # ── get ────────────────────────────────────────────────────────
 
@@ -75,9 +85,15 @@ class SkillHandler(Handler):
                 f"invalid skill slug: {slug!r}",
                 next="skill slugs are lowercase letters/digits/hyphens",
             )
+
+        # Synthesized meta-skill: enumerate every active kind.
+        if slug == self._SYNTHESIZED_SLUG:
+            return Response(body=self._render_help())
+
         text = _load_skill(slug)
         if text is None:
             available = sorted(_list_skills())
+            available.append(self._SYNTHESIZED_SLUG)
             raise NotFound(
                 f"skill {slug!r} not found",
                 options=available,
@@ -129,11 +145,20 @@ class SkillHandler(Handler):
 
     def _render_index(self) -> Response:
         skills = sorted(_list_skills())
-        if not skills:
-            return Response(body="no skills installed (this is a packaging bug)")
-        lines = [f"# {len(skills)} skill(s) available"]
+        # Surface the synthesized meta-skill at the top so it's the
+        # first thing the agent sees.
+        index_entries: list[tuple[str, str]] = [
+            (
+                self._SYNTHESIZED_SLUG,
+                "active kinds + verbs (auto-generated from this server)",
+            )
+        ]
         for slug in skills:
             title = _skill_title(slug)
+            index_entries.append((slug, title))
+
+        lines = [f"# {len(index_entries)} skill(s) available"]
+        for slug, title in index_entries:
             if title:
                 lines.append(f"  {slug:<32}  {title}")
             else:
@@ -141,6 +166,10 @@ class SkillHandler(Handler):
         body = "\n".join(lines)
         body += render_next_section(
             [
+                (
+                    f"get(kind='skill', id={self._SYNTHESIZED_SLUG!r})",
+                    "what this server can do (active kinds)",
+                ),
                 ("get(kind='skill', id='precis-overview')", "start here"),
                 (
                     "get(kind='skill', id='precis-navigation')",
@@ -153,6 +182,62 @@ class SkillHandler(Handler):
             ]
         )
         return Response(body=body)
+
+    def _render_help(self) -> str:
+        """Render the synthesized ``precis-help`` skill.
+
+        Lists every kind currently active in this server's registry,
+        grouped by class (state / cache / file / paid), with the verbs
+        each supports. When the registry isn't wired (e.g. unit tests
+        that build a SkillHandler directly), falls back to a static
+        introduction.
+        """
+        lines = [
+            "# precis-help",
+            "",
+            "What this server can do **right now** — active kinds",
+            "and supported verbs, generated from the live registry.",
+            "",
+        ]
+        if self._registry is None:
+            lines.append(
+                "_(registry not wired; see precis-overview for the canonical list.)_"
+            )
+            return "\n".join(lines)
+
+        rows: list[tuple[str, str, str]] = []  # (kind, verbs, desc)
+        for kind in self._registry.kinds():
+            handler = self._registry.get(kind)
+            spec = handler.spec
+            verbs: list[str] = []
+            if spec.supports_get:
+                verbs.append("get")
+            if spec.supports_search:
+                verbs.append("search")
+            if spec.supports_put:
+                verbs.append("put")
+            verb_str = " / ".join(verbs)
+            desc = (spec.description or "").splitlines()[0] if spec.description else ""
+            if len(desc) > 90:
+                desc = desc[:87] + "…"
+            rows.append((kind, verb_str, desc))
+
+        if not rows:
+            lines.append("_(no kinds available)_")
+            return "\n".join(lines)
+
+        kind_w = max(len(r[0]) for r in rows)
+        verb_w = max(len(r[1]) for r in rows)
+        for kind, verbs, desc in rows:
+            lines.append(f"  {kind:<{kind_w}}  {verbs:<{verb_w}}  {desc}")
+
+        lines.append("")
+        lines.append(
+            f"**{len(rows)} kinds active.** "
+            "For deeper docs on any kind, try "
+            "`get(kind='skill', id='precis-<kind>-help')`."
+        )
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

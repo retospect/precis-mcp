@@ -107,3 +107,77 @@ def test_skill_count_reasonable(skill: SkillHandler) -> None:
 
     skills = _list_skills()
     assert 5 <= len(skills) <= 100
+
+
+# ── synthesized precis-help skill ────────────────────────────────────
+
+
+def test_precis_help_falls_back_without_registry(skill: SkillHandler) -> None:
+    """Without bind_registry, precis-help still resolves but is a stub."""
+    out = skill.get(id="precis-help")
+    assert "precis-help" in out.body
+    assert "registry not wired" in out.body
+
+
+def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
+    """When the registry is bound, precis-help enumerates every kind."""
+
+    class _FakeSpec:
+        def __init__(
+            self,
+            kind: str,
+            *,
+            description: str = "",
+            supports_get: bool = True,
+            supports_search: bool = True,
+            supports_put: bool = False,
+        ) -> None:
+            self.kind = kind
+            self.description = description
+            self.supports_get = supports_get
+            self.supports_search = supports_search
+            self.supports_put = supports_put
+
+    class _FakeHandler:
+        def __init__(self, spec: _FakeSpec) -> None:
+            self.spec = spec
+
+    class _FakeReg:
+        def __init__(self, handlers: list[_FakeHandler]) -> None:
+            self._h = {h.spec.kind: h for h in handlers}
+
+        def kinds(self) -> list[str]:
+            return sorted(self._h.keys())
+
+        def get(self, kind: str) -> _FakeHandler:
+            return self._h[kind]
+
+    handlers = [
+        _FakeHandler(_FakeSpec("calc", description="Math expressions")),
+        _FakeHandler(
+            _FakeSpec(
+                "todo",
+                description="Tasks with status tracking",
+                supports_put=True,
+            )
+        ),
+        _FakeHandler(_FakeSpec("paper", description="Research papers")),
+    ]
+    skill.bind_registry(_FakeReg(handlers))
+
+    out = skill.get(id="precis-help")
+    assert "calc" in out.body
+    assert "todo" in out.body
+    assert "paper" in out.body
+    # Verbs surfaced.
+    assert "get / search / put" in out.body  # todo has put
+    assert "get / search" in out.body  # calc/paper don't
+    assert "3 kinds active" in out.body
+
+
+def test_precis_help_listed_in_index(skill: SkillHandler) -> None:
+    out = skill.get()
+    assert "precis-help" in out.body
+    # Hint trailer should reference it.
+    assert "precis-help" in out.body
+    assert "active kinds" in out.body

@@ -142,9 +142,16 @@ def build_runtime(
         embedder = make_embedder(config.embedder, dim=store.embedding_dim())
 
     handlers = builtins(store=store, embedder=embedder)
+    registry = Registry(handlers)
+    # Wire the registry into SkillHandler so it can synthesize the
+    # 'precis-help' meta-skill listing every active kind.
+    for h in handlers:
+        bind = getattr(h, "bind_registry", None)
+        if callable(bind):
+            bind(registry)
     return PrecisRuntime(
         config=config,
-        registry=Registry(handlers),
+        registry=registry,
         hints=HintBus(),
         store=store,
     )
