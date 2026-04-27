@@ -72,6 +72,27 @@ class Symbol:
 
 
 @dataclass(frozen=True, slots=True)
+class CallEdge:
+    """One static call-graph edge: `caller` calls `callee` at `file:line`.
+
+    `caller` is always a qualname for a function/method we indexed.
+    `callee` is either a resolved qualname (within this repo or a
+    known import) or `'ext:<name>'` for unresolved calls (stdlib,
+    third-party, dynamic dispatch, calls on local variables whose
+    types we don't track).
+
+    Best-effort resolution per the spec § Indexing pipeline step 5:
+    no type inference, no MRO walk, no duck typing. Just module-level
+    names + imports + `self`/`cls` for class context.
+    """
+
+    caller: str
+    callee: str
+    file: str
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
 class ModuleIndex:
     """One indexed `.py` file.
 
@@ -85,6 +106,16 @@ class ModuleIndex:
     order they appear in the source. `parse_error` is set if `ast.parse`
     failed; in that case `symbols` contains only the module-level row
     with degraded metadata (no docstring, line range = whole file).
+
+    `imports` maps each name *bound at module scope by an import* to
+    its resolved qualname (e.g. `{'NotFound': 'precis.errors.NotFound',
+    'os': 'os'}`). Used by the call pass for static resolution; also
+    surfaced via the `imports` view.
+
+    `calls` contains every static call edge originating in this module:
+    one entry per `ast.Call` site inside an indexed function/method.
+    Calls inside nested functions, lambdas, and comprehensions inside
+    nested scopes are pruned (locals are noise). See `CallEdge`.
     """
 
     qualname: str
@@ -92,6 +123,8 @@ class ModuleIndex:
     sha256: str
     symbols: tuple[Symbol, ...]
     parse_error: str | None = None
+    imports: dict[str, str] = field(default_factory=dict)
+    calls: tuple[CallEdge, ...] = ()
 
     @property
     def module_symbol(self) -> Symbol:

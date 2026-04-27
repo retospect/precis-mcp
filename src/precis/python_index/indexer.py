@@ -28,7 +28,13 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 
-from precis.python_index.types import ModuleIndex, RepoIndex, Symbol, SymbolKind
+from precis.python_index.types import (
+    CallEdge,
+    ModuleIndex,
+    RepoIndex,
+    Symbol,
+    SymbolKind,
+)
 
 log = logging.getLogger(__name__)
 
@@ -152,9 +158,17 @@ def index_module(
         docstring=ast.get_docstring(tree),
     )
 
+    # Pass 1 — imports. Walked first so the call pass can resolve names.
+    imports = _collect_imports(tree, module_qualname=qualname)
+
+    # Pass 2 — symbols + calls. The visitor walks function bodies looking
+    # for ast.Call sites, resolving each through `local_names` (imports
+    # ∪ top-level defs) plus `self`/`cls` for class context.
     visitor = _SymbolVisitor(
         module_qualname=qualname,
         file_relative=rel,
+        imports=imports,
+        top_level_names=_collect_top_level_names(tree, module_qualname=qualname),
     )
     visitor.visit(tree)
 
@@ -163,6 +177,8 @@ def index_module(
         file=rel,
         sha256=sha,
         symbols=(module_sym, *visitor.symbols),
+        imports=imports,
+        calls=tuple(visitor.calls),
     )
 
 
@@ -186,11 +202,24 @@ class _SymbolVisitor(ast.NodeVisitor):
     granularity.
     """
 
-    def __init__(self, *, module_qualname: str, file_relative: str) -> None:
+    def __init__(
+        self,
+        *,
+        module_qualname: str,
+        file_relative: str,
+        imports: dict[str, str],
+        top_level_names: dict[str, str],
+    ) -> None:
         self.module_qualname = module_qualname
         self.file_relative = file_relative
+        self.imports = imports
+        self.top_level_names = top_level_names
         self._stack: list[str] = [module_qualname]
+        # Stack of class qualnames currently in scope (for `self.foo` /
+        # `cls.foo` resolution). Empty when not inside a class.
+        self._class_stack: list[str] = []
         self.symbols: list[Symbol] = []
+        self.calls: list[CallEdge] = []
 
     # ── classes ──────────────────────────────────────────────────────
 
@@ -212,8 +241,10 @@ class _SymbolVisitor(ast.NodeVisitor):
         )
         # Descend so methods + nested classes get their parent right.
         self._stack.append(qualname)
+        self._class_stack.append(qualname)
         for child in node.body:
             self.visit(child)
+        self._class_stack.pop()
         self._stack.pop()
 
     # ── functions / methods (sync + async) ───────────────────────────
@@ -249,8 +280,26 @@ class _SymbolVisitor(ast.NodeVisitor):
                 is_async=is_async,
             )
         )
-        # We do NOT descend into function bodies — locally-defined
-        # helpers are noise at index granularity.
+        # Walk the body for ast.Call sites — pruning at nested function
+        # / class / lambda boundaries so calls inside locally-defined
+        # helpers don't get attributed to this enclosing function.
+        class_qn = self._class_stack[-1] if self._class_stack else None
+        for call_node in _walk_calls_in_function_body(node.body):
+            callee = _resolve_call(
+                call_node,
+                imports=self.imports,
+                top_level_names=self.top_level_names,
+                class_qualname=class_qn,
+            )
+            self.calls.append(
+                CallEdge(
+                    caller=qualname,
+                    callee=callee,
+                    file=self.file_relative,
+                    line=call_node.lineno,
+                )
+            )
+        # Do NOT descend further — locally-defined helpers stay invisible.
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +334,213 @@ def _unparse(node: ast.AST) -> str:
     # Collapse any internal whitespace runs to single spaces. Cheap and
     # idempotent for the kinds of annotations real code carries.
     return " ".join(text.split())
+
+
+def _collect_imports(tree: ast.Module, *, module_qualname: str) -> dict[str, str]:
+    """Collect every name bound at module scope by an import statement.
+
+    Returns a dict mapping the bound name to its resolved qualname:
+
+        import os                       → {'os': 'os'}
+        import os.path                  → {'os': 'os'}            (only 'os' is bound)
+        import os.path as p             → {'p': 'os.path'}
+        from os.path import join        → {'join': 'os.path.join'}
+        from os.path import join as j   → {'j': 'os.path.join'}
+        from . import sibling           → {'sibling': 'pkg.sibling'}     (relative)
+        from ..sibling import thing     → {'thing': 'pkg.parent.sibling.thing'}
+
+    Only top-level imports (directly under `Module.body`) are collected.
+    Conditional/inner imports inside `if`/`try`/function bodies are
+    deliberately skipped — they're either uncommon or context-dependent
+    and would muddy resolution.
+
+    Relative imports (`from .x import y`) are resolved against the
+    current module's qualname. If the level overruns the qualname (e.g.
+    `from ..foo import` in a top-level module), the import is skipped
+    silently — best-effort.
+    """
+    imports: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    imports[alias.asname] = alias.name
+                else:
+                    # `import a.b.c` only binds the leftmost segment.
+                    bound = alias.name.split(".")[0]
+                    imports[bound] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            base = _resolve_relative_base(
+                level=node.level,
+                module=node.module,
+                current_qualname=module_qualname,
+            )
+            if base is None:
+                continue
+            for alias in node.names:
+                if alias.name == "*":
+                    continue  # star-imports: no bound names tracked
+                bound = alias.asname or alias.name
+                imports[bound] = f"{base}.{alias.name}" if base else alias.name
+    return imports
+
+
+def _resolve_relative_base(
+    *, level: int, module: str | None, current_qualname: str
+) -> str | None:
+    """Resolve `from .X import` or `from ..X import` to an absolute qualname base.
+
+    `level` is the number of leading dots; `module` is the part after
+    the dots (may be None for `from . import x`). For non-relative
+    imports (`level == 0`), returns `module` as-is.
+
+    Returns None if `level` overruns the current qualname (degenerate
+    relative import — caller skips silently).
+    """
+    if level == 0:
+        return module
+    parts = current_qualname.split(".")
+    if level > len(parts):
+        return None
+    base = ".".join(parts[:-level])
+    if module:
+        return f"{base}.{module}" if base else module
+    return base or None
+
+
+def _collect_top_level_names(
+    tree: ast.Module, *, module_qualname: str
+) -> dict[str, str]:
+    """Names bound at module scope by `def` / `class` / simple assignment.
+
+    Returns a dict from bare name to the *qualname under this module*
+    (not the leftmost segment). Used by call resolution so that
+    in-module references like `Registry()` resolve to
+    `precis.registry.Registry`.
+
+    Imports are NOT included here (callers compose this with the
+    imports dict). Augmented assignments (`x += 1`) are skipped — they
+    require the name to exist already.
+    """
+    names: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names[node.name] = f"{module_qualname}.{node.name}"
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names[target.id] = f"{module_qualname}.{target.id}"
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names[node.target.id] = f"{module_qualname}.{node.target.id}"
+    return names
+
+
+def _walk_calls_in_function_body(body: list[ast.stmt]) -> Iterable[ast.Call]:
+    """Walk a function body's statements yielding every `ast.Call` node,
+    pruning at nested function / class / lambda boundaries.
+
+    Comprehensions, `if` / `for` / `while` / `try` / `with` blocks are
+    NOT pruned — calls inside them belong to the enclosing function
+    from the user's perspective. Walrus expressions, ternary, generator
+    expressions: also not pruned.
+    """
+    stack: list[ast.AST] = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Call):
+            yield node
+            # Recurse into args/kwargs — `f(g())` has two calls.
+            stack.extend(ast.iter_child_nodes(node))
+            continue
+        if isinstance(
+            node,
+            ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda,
+        ):
+            continue  # nested scope boundary
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _resolve_call(
+    call: ast.Call,
+    *,
+    imports: dict[str, str],
+    top_level_names: dict[str, str],
+    class_qualname: str | None,
+) -> str:
+    """Map a call site's `func` expression to a qualname.
+
+    Resolution order (per spec § Indexing pipeline step 5):
+
+    1. `Name`: look in `imports`, then `top_level_names`, else `ext:<name>`.
+    2. `Attribute` chain: peel off attrs to find the leftmost `Name`.
+       If the leftmost is `self` / `cls` and we're inside a class →
+       `<class_qualname>.<chain>`. Otherwise resolve the leftmost via
+       imports / top-level, append the rest.
+    3. Anything else (chained calls, subscript, lambda, etc.):
+       `ext:<rightmost-attr>` if we can find one, else `ext:?`.
+
+    Returns a qualname string. `'ext:<name>'` for unresolved.
+    """
+    func = call.func
+
+    if isinstance(func, ast.Name):
+        return _resolve_name(func.id, imports=imports, top_level_names=top_level_names)
+
+    if isinstance(func, ast.Attribute):
+        return _resolve_attribute(
+            func,
+            imports=imports,
+            top_level_names=top_level_names,
+            class_qualname=class_qualname,
+        )
+
+    # Chained call like `f()()`, subscript like `a[0]()`, etc. Best effort.
+    return "ext:?"
+
+
+def _resolve_name(
+    name: str, *, imports: dict[str, str], top_level_names: dict[str, str]
+) -> str:
+    """Resolve a bare name."""
+    if name in imports:
+        return imports[name]
+    if name in top_level_names:
+        return top_level_names[name]
+    return f"ext:{name}"
+
+
+def _resolve_attribute(
+    attr: ast.Attribute,
+    *,
+    imports: dict[str, str],
+    top_level_names: dict[str, str],
+    class_qualname: str | None,
+) -> str:
+    """Resolve a dotted attribute chain like `a.b.c.method`."""
+    # Peel off attributes from the rightmost end, building `chain` in
+    # left-to-right order. Stops at the first non-Attribute node.
+    chain: list[str] = []
+    cur: ast.AST = attr
+    while isinstance(cur, ast.Attribute):
+        chain.insert(0, cur.attr)
+        cur = cur.value
+
+    if not isinstance(cur, ast.Name):
+        # e.g. `func()[0].method()` or `(x or y).z()`. Best effort: ext:<last>
+        return f"ext:{chain[-1]}" if chain else "ext:?"
+
+    leftmost = cur.id
+    rest = ".".join(chain)
+
+    # `self.foo(...)` / `cls.foo(...)` — class-relative.
+    if leftmost in ("self", "cls") and class_qualname:
+        return f"{class_qualname}.{rest}"
+
+    if leftmost in imports:
+        return f"{imports[leftmost]}.{rest}"
+    if leftmost in top_level_names:
+        return f"{top_level_names[leftmost]}.{rest}"
+    return f"ext:{leftmost}.{rest}"
 
 
 def _walk_python_files(root: Path) -> Iterable[Path]:

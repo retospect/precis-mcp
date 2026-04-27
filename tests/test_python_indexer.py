@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from precis.python_index import (
+    CallEdge,
     RepoIndex,
     Symbol,
     index_repo,
@@ -392,3 +393,317 @@ def test_index_precis_itself_smoke() -> None:
 
     md = idx.module("precis.handlers.markdown")
     assert md is not None and md.parse_error is None
+
+
+# ---------------------------------------------------------------------------
+# Imports + call pass
+# ---------------------------------------------------------------------------
+
+
+def _calls_from(mod_index, caller: str) -> list[CallEdge]:
+    """Return every CallEdge whose caller matches `caller`."""
+    return [c for c in mod_index.calls if c.caller == caller]
+
+
+def test_imports_collected_for_basic_forms(tmp_path: Path) -> None:
+    """`import x`, `import x as y`, `from a.b import c [as d]` all bind."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        import os
+        import os.path as p
+        from collections import OrderedDict
+        from collections import deque as dq
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    assert mod.imports == {
+        "os": "os",
+        "p": "os.path",
+        "OrderedDict": "collections.OrderedDict",
+        "dq": "collections.deque",
+    }
+
+
+def test_relative_imports_resolve_against_module_qualname(tmp_path: Path) -> None:
+    """`from .x import y` and `from ..x import y` resolve absolutely."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/sub/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/sub/m.py",
+        """
+        from . import sibling
+        from .types import Symbol
+        from ..top import Helper
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.sub.m")
+    assert mod is not None
+    assert mod.imports == {
+        "sibling": "pkg.sub.sibling",
+        "Symbol": "pkg.sub.types.Symbol",
+        "Helper": "pkg.top.Helper",
+    }
+
+
+def test_conditional_imports_inside_function_bodies_are_ignored(tmp_path: Path) -> None:
+    """Imports inside `def`, `if`, `try` are intentionally NOT tracked.
+
+    Their context-dependence would muddy resolution; we'd rather have a
+    clean ext:<name> than a wrong qualname.
+    """
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        import os  # tracked
+
+        def f():
+            from collections import deque  # not tracked
+            return deque()
+
+        try:
+            import json  # not tracked
+        except ImportError:
+            json = None
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    assert mod.imports == {"os": "os"}
+
+
+def test_call_to_imported_function(tmp_path: Path) -> None:
+    """`from x import y; def f(): y()` → callee = 'x.y'."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        from os.path import join
+
+        def build_path(a, b):
+            return join(a, b)
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    calls = _calls_from(mod, "pkg.m.build_path")
+    assert len(calls) == 1
+    assert calls[0].callee == "os.path.join"
+
+
+def test_call_to_in_module_function(tmp_path: Path) -> None:
+    """A call from one top-level def to another resolves to the callee's qualname."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        def helper(x):
+            return x + 1
+
+        def caller(y):
+            return helper(y)
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    calls = _calls_from(mod, "pkg.m.caller")
+    assert len(calls) == 1
+    assert calls[0].callee == "pkg.m.helper"
+
+
+def test_call_to_attribute_chain_via_imported_module(tmp_path: Path) -> None:
+    """`import os.path; os.path.join()` → 'os.path.join' (not 'os.path.join.path')."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        import os
+
+        def f(a, b):
+            return os.path.join(a, b)
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    calls = _calls_from(mod, "pkg.m.f")
+    assert len(calls) == 1
+    assert calls[0].callee == "os.path.join"
+
+
+def test_self_method_call_resolves_to_class(tmp_path: Path) -> None:
+    """`class C: def m(self): self.other()` → callee = 'pkg.m.C.other'."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        class C:
+            def m(self):
+                self.other()
+                self.helper.foo()
+
+            def other(self): pass
+            def helper(self): pass
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    calls = _calls_from(mod, "pkg.m.C.m")
+    callees = {c.callee for c in calls}
+    assert "pkg.m.C.other" in callees
+    assert "pkg.m.C.helper.foo" in callees
+
+
+def test_classmethod_cls_resolves_to_class(tmp_path: Path) -> None:
+    """`@classmethod def m(cls): cls.factory()` resolves like self."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        class C:
+            @classmethod
+            def make(cls):
+                return cls.factory()
+
+            @classmethod
+            def factory(cls): pass
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    calls = _calls_from(mod, "pkg.m.C.make")
+    assert len(calls) == 1
+    assert calls[0].callee == "pkg.m.C.factory"
+
+
+def test_unresolved_call_is_marked_ext(tmp_path: Path) -> None:
+    """Calls on unknown names get `ext:<name>` so they're filterable."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        def caller(thing):
+            mystery()             # ext:mystery
+            thing.method()        # ext:thing.method (local var, type unknown)
+            return thing
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    callees = {c.callee for c in _calls_from(mod, "pkg.m.caller")}
+    assert "ext:mystery" in callees
+    assert "ext:thing.method" in callees
+
+
+def test_calls_in_nested_function_pruned(tmp_path: Path) -> None:
+    """Calls inside a locally-defined helper do NOT get attributed to
+    the enclosing function — locals are noise."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        from os.path import join
+
+        def outer():
+            def inner():
+                join("a", "b")  # should NOT show as outer's call
+            inner()             # this DOES show as outer's call
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    callees = [c.callee for c in _calls_from(mod, "pkg.m.outer")]
+    # `inner()` resolves to ext:inner (it's a local def we don't track).
+    assert "ext:inner" in callees
+    # `os.path.join` came from inside the nested function — must not appear.
+    assert "os.path.join" not in callees
+    # And the nested `inner` itself must not have been emitted as a symbol.
+    assert idx.symbol("pkg.m.outer.inner") is None
+
+
+def test_calls_inside_comprehensions_belong_to_outer(tmp_path: Path) -> None:
+    """Comprehensions / for / if blocks are NOT pruned — calls inside
+    them belong to the enclosing function."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        from os.path import basename
+
+        def f(paths):
+            return [basename(p) for p in paths if basename(p)]
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    calls = _calls_from(mod, "pkg.m.f")
+    # Two `basename` calls (one in the result, one in the filter).
+    callees = [c.callee for c in calls]
+    assert callees.count("os.path.basename") == 2
+
+
+def test_nested_call_args_recurse(tmp_path: Path) -> None:
+    """`f(g(h()))` produces three call edges from the same caller."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        from a import f, g, h
+
+        def caller():
+            f(g(h()))
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    callees = sorted(c.callee for c in _calls_from(mod, "pkg.m.caller"))
+    assert callees == ["a.f", "a.g", "a.h"]
+
+
+def test_class_constructor_call_resolves_to_class(tmp_path: Path) -> None:
+    """`Foo()` resolves to `Foo` (the class qualname) — agents read it
+    as a constructor."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        class Widget:
+            pass
+
+        def make():
+            return Widget()
+        """,
+    )
+    idx = index_repo(tmp_path)
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    calls = _calls_from(mod, "pkg.m.make")
+    assert len(calls) == 1
+    assert calls[0].callee == "pkg.m.Widget"
