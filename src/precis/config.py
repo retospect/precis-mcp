@@ -46,6 +46,18 @@ class PrecisConfig(BaseSettings):
     Set via ``PRECIS_MARKDOWN_ROOT`` in the env.
     """
 
+    python_roots: str | None = None
+    """Python repos exposed to the ``python`` kind.
+
+    Format: ``alias1:/abs/path1,alias2:/abs/path2``. Each alias is the
+    repo's short identifier used in addresses (e.g. ``precis::pkg.mod``);
+    each path is an absolute directory. Unparseable entries (missing
+    ``:``, non-existent path, duplicate alias) are dropped with a
+    warning; the remaining valid entries form the handler's known
+    roots. When unset (or zero valid entries), the ``python`` kind is
+    hidden. Set via ``PRECIS_PYTHON_ROOTS`` in the env.
+    """
+
 
 def load_config() -> PrecisConfig:
     return PrecisConfig()

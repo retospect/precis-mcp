@@ -23,6 +23,7 @@ def builtins(
     store: Store | None = None,
     embedder: Embedder | None = None,
     markdown_root: str | None = None,
+    python_roots: str | None = None,
 ) -> list[Handler]:
     """Return handler instances for the active server configuration.
 
@@ -43,6 +44,21 @@ def builtins(
     from precis.handlers.calc import CalcHandler
 
     handlers: list[Handler] = [CalcHandler()]
+
+    # Python kind — DB-free, in-memory mtime-cached AST index. Hidden
+    # when no roots are configured, or when `PRECIS_PYTHON_ROOTS` is
+    # set but every entry is malformed (parse_python_roots logs each
+    # rejection). Independent of `store` — the python kind never
+    # touches Postgres.
+    if python_roots:
+        try:
+            from precis.handlers.python import PythonHandler, parse_python_roots
+
+            roots = parse_python_roots(python_roots)
+            if roots:
+                handlers.append(PythonHandler(roots=roots))
+        except (ImportError, ValueError):
+            pass  # bad config or missing dep → kind not available
 
     if store is not None:
         from precis.embedder import MockEmbedder

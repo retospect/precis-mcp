@@ -145,6 +145,7 @@ def build_runtime(
         store=store,
         embedder=embedder,
         markdown_root=config.markdown_root,
+        python_roots=config.python_roots,
     )
     registry = Registry(handlers)
     # Wire the registry into SkillHandler so it can synthesize the

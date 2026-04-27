@@ -40,6 +40,63 @@ _SUPPORTED_VIEWS = ("toc", "outline", "source")
 
 
 # ---------------------------------------------------------------------------
+# Env var parsing
+# ---------------------------------------------------------------------------
+
+
+def parse_python_roots(raw: str | None) -> dict[str, Path]:
+    """Parse a ``PRECIS_PYTHON_ROOTS`` value into ``{alias: abs_path}``.
+
+    Format: ``alias1:/abs/path1,alias2:/abs/path2``. Whitespace around
+    each component is stripped. Entries with the following problems are
+    skipped with a warning, and the rest of the entries are kept:
+
+    - missing ``:`` separator
+    - empty alias or empty path
+    - non-existent or non-directory path
+    - duplicate alias (first wins)
+
+    A None or empty string yields ``{}``. The returned paths are
+    resolved absolute paths (``~`` expanded). The handler validates
+    these again at construction time, so a transient race between
+    parse and construct still produces a clean error.
+    """
+    if not raw:
+        return {}
+
+    out: dict[str, Path] = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" not in entry:
+            log.warning(
+                "PRECIS_PYTHON_ROOTS: skipping %r — missing ':' separator", entry
+            )
+            continue
+        alias, _, path_str = entry.partition(":")
+        alias = alias.strip()
+        path_str = path_str.strip()
+        if not alias or not path_str:
+            log.warning("PRECIS_PYTHON_ROOTS: skipping %r — empty alias or path", entry)
+            continue
+        if alias in out:
+            log.warning("PRECIS_PYTHON_ROOTS: duplicate alias %r — first wins", alias)
+            continue
+        path = Path(path_str).expanduser().resolve()
+        if not path.is_dir():
+            log.warning(
+                "PRECIS_PYTHON_ROOTS: skipping %r — not a directory: %s",
+                alias,
+                path,
+            )
+            continue
+        out[alias] = path
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Address parsing
 # ---------------------------------------------------------------------------
 
