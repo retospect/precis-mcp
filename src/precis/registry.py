@@ -81,6 +81,22 @@ def builtins(
         except ImportError:
             pass  # missing httpx/trafilatura → kind not available
 
+        # Perplexity Sonar trio (websearch / think / research). All three
+        # share httpx + the PERPLEXITY_API_KEY env var. Hidden when
+        # either is absent.
+        try:
+            from precis.handlers.perplexity import (
+                ResearchHandler,
+                ThinkHandler,
+                WebsearchHandler,
+            )
+
+            handlers.append(WebsearchHandler(store=store))
+            handlers.append(ThinkHandler(store=store))
+            handlers.append(ResearchHandler(store=store))
+        except ImportError:
+            pass  # missing httpx → not available
+
     return handlers
 
 

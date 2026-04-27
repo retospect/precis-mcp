@@ -135,4 +135,24 @@ def mint_slug(
     )
 
 
-__all__ = ["mint_slug"]
+def slug_from_text(text: str, *, max_len: int = 60) -> str:
+    """Derive a readable slug from arbitrary text.
+
+    Lowercase, ASCII-fold diacritics, replace runs of non-alphanumeric
+    characters with hyphens, trim leading/trailing hyphens, cap at
+    ``max_len`` characters. Returns an empty string if nothing usable
+    survives — caller decides on the fallback.
+
+    Used by cache-backed handlers (perplexity, web bookmarks) to derive
+    a human-meaningful slug from a query / URL / title without going
+    through the full author+year+word minter.
+    """
+    folded = _ascii_fold(text or "").lower()
+    # Replace any run of non-[a-z0-9] with a single hyphen.
+    s = re.sub(r"[^a-z0-9]+", "-", folded).strip("-")
+    if not s:
+        return ""
+    return s[:max_len].rstrip("-")
+
+
+__all__ = ["mint_slug", "slug_from_text"]
