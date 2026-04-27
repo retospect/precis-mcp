@@ -436,28 +436,33 @@ def _collect_top_level_names(
 
 
 def _walk_calls_in_function_body(body: list[ast.stmt]) -> Iterable[ast.Call]:
-    """Walk a function body's statements yielding every `ast.Call` node,
-    pruning at nested function / class / lambda boundaries.
+    """Walk a function body's statements yielding every `ast.Call` node
+    in **source order**, pruning at nested function / class / lambda
+    boundaries.
 
     Comprehensions, `if` / `for` / `while` / `try` / `with` blocks are
     NOT pruned — calls inside them belong to the enclosing function
     from the user's perspective. Walrus expressions, ternary, generator
     expressions: also not pruned.
+
+    Source order matters for the callgraph view (the rendered tree
+    follows the order calls appear in the source).
     """
-    stack: list[ast.AST] = list(body)
-    while stack:
-        node = stack.pop()
-        if isinstance(node, ast.Call):
-            yield node
-            # Recurse into args/kwargs — `f(g())` has two calls.
-            stack.extend(ast.iter_child_nodes(node))
-            continue
-        if isinstance(
-            node,
-            ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda,
-        ):
-            continue  # nested scope boundary
-        stack.extend(ast.iter_child_nodes(node))
+    for stmt in body:
+        yield from _walk_calls(stmt)
+
+
+def _walk_calls(node: ast.AST) -> Iterable[ast.Call]:
+    """Recursive helper for ``_walk_calls_in_function_body``."""
+    if isinstance(
+        node,
+        ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda,
+    ):
+        return  # nested scope boundary — locals don't count
+    if isinstance(node, ast.Call):
+        yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _walk_calls(child)
 
 
 def _resolve_call(

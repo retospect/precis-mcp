@@ -28,16 +28,17 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers import _python_callgraph as cgraph
 from precis.handlers import _python_render as render
 from precis.handlers import _python_write as write
 from precis.protocol import Handler, KindSpec
-from precis.python_index import ModuleIndex, RepoCache, Symbol
+from precis.python_index import ModuleIndex, RepoCache, RepoIndex, Symbol
 from precis.response import Response
 
 log = logging.getLogger(__name__)
 
 
-_SUPPORTED_VIEWS = ("toc", "outline", "source")
+_SUPPORTED_VIEWS = ("toc", "outline", "source", "callgraph")
 _SUPPORTED_PUT_MODES = ("create", "append", "replace", "delete")
 
 
@@ -255,6 +256,9 @@ class PythonHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        entry: str | None = None,
+        depth: int = 3,
+        cross_repo: bool = False,
         **_kw: Any,
     ) -> Response:
         # Index — no id, or "/" sentinel.
@@ -271,6 +275,16 @@ class PythonHandler(Handler):
                 f"unknown python view {view!r}",
                 options=list(_SUPPORTED_VIEWS),
                 next=f"get(kind='python', id={id!r}, view='outline')",
+            )
+
+        # Callgraph view — alias-only id; entry= required.
+        if view == "callgraph":
+            return self._render_callgraph(
+                parsed=parsed,
+                idx=idx,
+                entry=entry,
+                depth=depth,
+                cross_repo=cross_repo,
             )
 
         # Symbol address.
@@ -806,6 +820,76 @@ class PythonHandler(Handler):
             )
         # Default and view='outline'.
         return Response(body=render.render_symbol(alias, sym, idx))
+
+    def _render_callgraph(
+        self,
+        *,
+        parsed: _ParsedId,
+        idx: RepoIndex,
+        entry: str | None,
+        depth: int,
+        cross_repo: bool,
+    ) -> Response:
+        """Build + render an entry-point-rooted static call graph.
+
+        The id MUST be an alias-only address (no file, no qualname,
+        no selector). The entry point is supplied as a separate
+        kwarg in module-colon-function (`pkg.mod:func`) or dotted
+        qualname (`pkg.mod.func`) form.
+        """
+        if (
+            parsed.file is not None
+            or parsed.qualname is not None
+            or parsed.start_line is not None
+            or parsed.block_selector is not None
+        ):
+            raise BadInput(
+                "view='callgraph' takes a bare alias id (no file / qualname / selector)",
+                next=f"get(kind='python', id={parsed.alias!r}, view='callgraph', "
+                f"entry='pkg.mod:func')",
+            )
+        if entry is None or not entry.strip():
+            raise BadInput(
+                "view='callgraph' requires entry=",
+                next=f"get(kind='python', id={parsed.alias!r}, view='callgraph', "
+                f"entry='pkg.mod:func', depth=3)",
+            )
+        if not isinstance(depth, int) or depth < 1 or depth > 10:
+            raise BadInput(
+                f"depth must be an int in [1, 10]; got {depth!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='callgraph', "
+                f"entry={entry!r}, depth=3)",
+            )
+
+        other_repos: dict[str, RepoIndex] = {}
+        if cross_repo:
+            other_repos = {
+                a: self.cache.get(p) for a, p in self.roots.items() if a != parsed.alias
+            }
+
+        try:
+            tree = cgraph.build_callgraph(
+                idx,
+                entry=entry,
+                max_depth=depth,
+                other_repos=other_repos or None,
+                cross_repo=cross_repo,
+            )
+        except ValueError as e:
+            raise NotFound(
+                f"callgraph entry {entry!r} not found in repo {parsed.alias!r}: {e}",
+                next=f"search(kind='python', q={entry.rsplit('.', 1)[-1].rsplit(':', 1)[-1]!r}, "
+                f"scope={parsed.alias!r})",
+            )
+
+        body = cgraph.render_callgraph(
+            tree,
+            alias=parsed.alias,
+            entry=entry,
+            max_depth=depth,
+            cross_repo=cross_repo,
+        )
+        return Response(body=body)
 
 
 # ---------------------------------------------------------------------------
