@@ -232,6 +232,10 @@ put(kind='python',
 #   ruff format:     applied
 ```
 
+Line numbers are **1-indexed and inclusive on both ends** (same as
+vi, sed, GitHub permalinks, Python tracebacks). `L120-128` is
+lines 120, 121, …, 128 — 9 lines. `L120` is line 120 alone.
+
 Use when you have line numbers from grep / a stack trace / a test
 failure. Otherwise prefer qualnames.
 
@@ -289,9 +293,18 @@ put(kind='python',
 | Problem | Response |
 |---|---|
 | Replacement text doesn't parse as Python | `BadInput("ast.parse failed: <error>")` — file untouched |
-| Qualname-addressed edit no longer defines that qualname | `BadInput("symbol-preservation failed: Class.method not found in result")` — pass `allow_rename=True` to override |
+| Edit drops a qualname that lived inside the addressed region | `BadInput("qualname(s) dropped: Class.method_b, Class.method_c")` — pass `allow_rename=True` to override |
 | Path traversal | `BadInput("path outside configured root")` |
 | Indentation mismatch | The replacement text is spliced verbatim; you supply the indentation. Use `view='source'` first to get the right level. |
+| Line range out of bounds | `BadInput("line range L<a>-<b> outside file (1–<n>)")` |
+| Empty line range (end before start) | `BadInput("empty range: end < start")` |
+
+The drop check is one set diff: every qualname that was inside the
+addressed region before the edit must still exist in the file
+afterwards. Catches both **accidental renames** (rewriting a method
+but typing the wrong `def` line) and **accidental drops** (replacing
+a whole class but forgetting to copy over some of its methods).
+Intentional rename or drop? Pass `allow_rename=True`.
 
 ### Workflow: read → modify → write
 

@@ -428,8 +428,8 @@ four quality gates:
 | Gate | Check | Default | Override |
 |---|---|---|---|
 | 1 | `ast.parse(new_content)` succeeds | mandatory | none — invariant |
-| 2 | Qualname-addressed edits preserve the addressed qualname | on for qualname edits | `allow_rename=True` kwarg |
-| 3 | `ruff format` on the result | mandatory | `PRECIS_PYTHON_FORMAT_ON_WRITE=0` env |
+| 2 | No qualname previously within the addressed region disappears in the result | on | `allow_rename=True` kwarg |
+| 3 | `ruff format` on the result | mandatory | none — always runs (skipped only if `ruff` is missing or fails) |
 | 4 | `ruff check --select=F` clean (undefined names, unused imports) | off | `PRECIS_PYTHON_LINT_ON_WRITE=1` env |
 
 Write pipeline:
@@ -437,15 +437,65 @@ Write pipeline:
 1. Splice replacement text into the file buffer.
 2. **Gate 1** (AST). Failure → revert, return `BadInput` with the
    parse error.
-3. **Gate 2** (symbol preservation, when applicable). Failure →
-   revert.
+3. **Gate 2** (no-qualname-drop). Diff the symbol set inside the
+   addressed region: `pre_qualnames - post_qualnames` must be
+   empty. For a method-level edit the region contains exactly one
+   qualname; for a class-level edit, all its methods; for a
+   whole-file edit, every symbol in the module. Failure → revert,
+   return `BadInput` listing the dropped qualnames.
 4. **Gate 3** (`ruff format`). Output is the canonical content.
 5. **Gate 4** (lint, if enabled). Failure → revert.
-6. Atomic write: tmpfile + `os.replace`.
+6. Atomic write to disk (see below).
 7. Force re-ingest (mtime + sha256 changed → re-parse → update
-   symbol table).
+   symbol table). Held under a write lock so a concurrent `get`
+   waits.
 8. Return response computed from the new symbol table — line ranges
    reflect the **post-format** state.
+
+### Gate 2 — the no-qualname-drop check
+
+Naming aside, gate 2 protects against two related bugs:
+
+- **Accidental rename.** Replace `Class.method_a` with a body whose
+  `def` line names `method_b`. The addressed qualname vanished;
+  callers break.
+- **Accidental drop.** Replace whole `Class` with a rewritten body
+  that focuses on one method and forgets the others existed. The
+  addressed `Class` still resolves; nested members vanish silently;
+  callers break.
+
+Both are caught by the same set-diff: any qualname that was inside
+the addressed region before the edit must still be inside it (or at
+least somewhere in the file) after. Cheap because the symbol table
+is already in memory.
+
+The `allow_rename=True` kwarg overrides the check entirely — use it
+when the rename or drop is intentional. The flag name reads
+slightly off for the drop case, but one knob is better than two and
+the meaning ("yes, I know I'm changing the symbol set") is clear.
+
+### Atomic-immediate write semantics
+
+When `put` returns successfully, the new bytes are on disk. There
+is no in-memory buffer, no deferred batch.
+
+1. Write to `<file>.tmp.<pid>.<rand>` in the same directory as the
+   target (required for `os.replace` to be atomic on the same
+   filesystem).
+2. `fsync(tmp)` — force buffered writes to physical storage before
+   the rename.
+3. `os.replace(tmp, target)` — atomic on POSIX; single inode swap.
+4. `fsync(directory)` — ensures the rename itself is durable across
+   power loss.
+
+Concurrent readers see exactly the old or exactly the new content,
+never a partial mix. On crash mid-write the tmpfile may exist (a
+startup pass cleans up `*.tmp.*` orphans); the target is intact.
+
+Between the disk write and the re-ingest completing (a few ms) the
+symbol table is briefly stale. A write lock around steps 6–7 makes
+concurrent `get` calls wait, so end-to-end every put returns only
+after disk + index are caught up.
 
 ### Modes
 
@@ -484,9 +534,23 @@ construction.
 3. The post-format line range in the response is the durable answer.
    If `ruff` shifts lines, the response reflects that.
 
-Invocation: `ruff format --stdin-filename <path> < buffer` via
-`subprocess.run`. If `ruff` is missing or fails (config error), the
-write proceeds with a warning header in the response. Format never
+**Invocation.** `subprocess.run(['ruff', 'format', '--stdin-filename', str(path)], input=buffer, capture_output=True, text=True)`.
+There is no Python API for ruff (it is a Rust binary; the PyPI
+`ruff` package just ships the CLI). The third-party `ruff-api` PyO3
+wrapper is unmaintained.
+
+**Config discovery.** `ruff format` natively walks up from
+`--stdin-filename` looking for `pyproject.toml` / `ruff.toml`. We
+let it — writes follow whatever style the project pinned
+(line length, quote style, trailing-comma policy). Matches what the
+user would get typing `ruff format file.py` interactively, so commit
+checks see no surprises. For repos without ruff config, ruff
+defaults apply.
+
+**Cost.** ~10ms subprocess startup + ~50ms format for a 2k-line
+file. Acceptable for interactive writes; no batch-defer switch.
+If `ruff` is missing or fails (config error), the write proceeds
+unformatted with a warning in the response header. Format never
 blocks a write.
 
 ### What writes do not do
@@ -643,7 +707,7 @@ is ~120 LOC on top of the shared library.
 - Cross-file rename refactoring. v1 supports per-symbol delete /
   create / replace; reference updates are not automatic.
 
-## Test plan (~42 tests)
+## Test plan (~44 tests)
 
 - `tests/test_python_outline.py` — 8 tests: classes, nested classes,
   decorators (`@dataclass`, `@property`), async functions, type-only
@@ -659,13 +723,15 @@ is ~120 LOC on top of the shared library.
 - `tests/test_python_indexer.py` — 4 tests: lazy reindex on mtime
   change / gitignore respect / sha256 unchanged short-circuit / hash
   drift triggers re-parse.
-- `tests/test_python_write.py` — 12 tests: replace by qualname /
+- `tests/test_python_write.py` — 14 tests: replace by qualname /
   replace by line range / replace whole file / append / create /
   refuse-create-overwrite / delete by qualname / AST-syntax-error
-  reverts / qualname-preservation reverts on accidental rename /
-  `allow_rename=True` permits rename / `ruff format` applied + line
-  ranges in response reflect post-format / `ruff` missing falls
-  through with warning header.
+  reverts / no-qualname-drop reverts on accidental method rename /
+  no-qualname-drop reverts on whole-class replace that drops nested
+  methods / `allow_rename=True` permits rename and drop / `ruff
+  format` applied + line ranges in response reflect post-format /
+  `ruff` missing falls through with warning header / atomic-write
+  durability (concurrent reader sees old or new, never partial).
 - `tests/test_python_runtrace.py` — gated, 2 tests: only run when
   `PRECIS_PYTHON_ALLOW_EXEC=1`. Skipped in CI by default; runs locally.
 
@@ -704,7 +770,7 @@ is ~120 LOC on top of the shared library.
   `view='callgraph' entry=…` → `outline` on the most interesting nodes
   → `source` on the one or two functions that actually need reading.
 - Indexing `precis-mcp-new` (~3k LOC) takes < 2s.
-- `pytest -q` adds ~42 tests, all green.
+- `pytest -q` adds ~44 tests, all green.
 - A fresh agent can edit a method by qualname and the resulting file
   passes `ruff format --check` and `ast.parse` without manual fixup.
 - Total LOC: ~900-1200 (indexer + read views ~700; write surface
@@ -721,26 +787,6 @@ is ~120 LOC on top of the shared library.
 3. **Async / threading**: `runtrace` under `sys.setprofile` does not
    capture cross-thread calls cleanly. Document and recommend
    `viztracer` for that case.
-4. **`ruff format` config discovery**: ruff walks up from the file
-   looking for `pyproject.toml` / `ruff.toml`. For repos without
-   project ruff config, format uses ruff defaults — which may differ
-   from project style. Acceptable cost or surprising? Recommend
-   logging the resolved config path in the response header for
-   transparency.
-5. **Format-on-write performance**: a 2000-line file formats in
-   ~50ms with `ruff format`. Tolerable for interactive writes; would
-   be costly if writes batch. If batch writes become common, add a
-   `format_now=False` kwarg + `precis jobs format` CLI subcommand to
-   defer.
-6. **Symbol preservation across rename to a sibling qualname**:
-   replacing `Class.method_a` with a body whose `def` line names
-   `method_b` is rejected by gate 2. But what about replacing the
-   *entire class* `Class` with one whose body adds methods or
-   removes them? The qualname `Class` still resolves; should we
-   also check that the *contained* qualnames don't disappear
-   silently? Tentative: yes for `replace` on a class, `BadInput` if
-   any pre-existing nested qualname vanishes; override via
-   `allow_rename=True`. Decide in implementation.
 
 ## Prior art summary (for the design record)
 

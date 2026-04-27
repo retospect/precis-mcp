@@ -164,6 +164,52 @@ the path-vs-view check requires the trailing segment to come *after*
 a path segment that ends in a recognized file extension OR after a
 selector. If the path itself ends in `.md`, no view is consumed.
 
+## Line-number convention
+
+Line numbers in selectors and responses are **1-indexed and
+inclusive on both ends**. This matches every user-facing Unix tool:
+
+| Tool | Convention |
+|---|---|
+| `ed` / `vi` / `sed` (`1,5d`, `1,5p`) | 1-indexed inclusive |
+| `head -n 5`, `grep -n` | 1-indexed |
+| `git blame -L42,58` | 1-indexed inclusive |
+| Python tracebacks (`File "x.py", line 42`) | 1-indexed |
+| GitHub permalinks (`#L42-L58`) | 1-indexed inclusive |
+
+So `~L42-58` means lines 42, 43, …, 58 — 17 lines total. `~L42`
+means just line 42 (1 line). `~L42-42` is the same as `~L42`. An
+empty range like `~L58-42` (end before start) is `BadInput`.
+
+Rationale:
+
+- This is what the agent reads everywhere else — stack traces,
+  compiler errors, IDE jump-to-line, GitHub URLs are all 1-indexed.
+- Half-open ranges (`[42, 58)` Python-slice style) are great for
+  programmer APIs but unfamiliar in user-facing addressing.
+- Inclusive ranges round-trip with copy-paste from blame / log /
+  diff output.
+
+Responses always quote both the input range and the resolved range
+when they differ (e.g. when a line input gets snapped to a block
+boundary):
+
+```
+# notes/meeting.md~L42-58  (resolved to block 'conclusion', lines 40-65)
+```
+
+So the agent sees what it asked for *and* the canonical address.
+
+### Programmer-API mismatch (one wart, accepted)
+
+Python's `ast.lineno` is 1-indexed but `ast.col_offset` is
+0-indexed; LSP positions are 0-indexed; tree-sitter ranges are
+0-indexed. We do the conversion at the boundary in each indexer
+and never expose 0-indexed lines to the agent. Internal code
+should use named fields (`start_line` / `end_line`) and never carry
+raw integers around without a comment about which convention they
+follow.
+
 ## Selector parsing
 
 The `<selector>` field after `~` is a discriminated union, parsed in
@@ -393,6 +439,31 @@ put(kind='markdown', id='notes/meeting.md~3',
 All three forms resolve to the same `(line_start, line_end)`; the
 splice + atomic write + re-ingest path is identical.
 
+### Atomic and immediate
+
+When `put` returns successfully, the new bytes are on disk. There
+is no in-memory buffer, no deferred batch, no async settle. The
+sequence per write:
+
+1. Splice replacement text into the file buffer.
+2. Run all kind-specific gates (AST + format for python; block
+   parse for markdown; etc.). Failure → revert, return `BadInput`.
+3. Write to `<file>.tmp.<pid>.<rand>` in the same directory as the
+   target (required for `os.replace` to be atomic on the same
+   filesystem).
+4. `fsync(tmp)` — force buffered writes to physical storage.
+5. `os.replace(tmp, target)` — atomic rename on POSIX; single inode
+   swap.
+6. `fsync(directory)` — ensures the directory entry change itself
+   is durable across power loss.
+7. Force re-ingest under a write lock so a concurrent `get` waits.
+8. Return.
+
+Concurrent readers see exactly the old content or exactly the new
+content, never a partial mix. On crash mid-write the tmpfile may
+linger (a startup pass cleans up `*.tmp.*` orphans); the target is
+always intact.
+
 ### Stable name in response
 
 After every write the response includes the stable name of what was
@@ -408,25 +479,31 @@ for follow-up edits.
 ### Python writes
 
 Python is **R/W in v1**. The unified base provides splice + atomic
-write + re-ingest; python adds two policy gates on top:
+write + re-ingest; python adds three policy gates on top:
 
-- **`ast.parse(new_content)` succeeds.** Mandatory invariant. A
-  syntax-broken file would break every import; refusing the write
-  is correct.
-- **`ruff format` runs on the result.** Mandatory by default; opt
-  out via `PRECIS_PYTHON_FORMAT_ON_WRITE=0`. Project culture
-  demands `ruff format --check` on commit, so format-on-write
-  removes a manual step. Response line ranges reflect the
-  post-format state.
+- **AST validation.** `ast.parse(new_content)` must succeed.
+  Mandatory invariant. A syntax-broken file would break every
+  import.
+- **No-qualname-drop.** Any qualname that lived inside the
+  addressed region before the edit must still live in the file
+  after. Catches accidental rename (`Class.method_a` →
+  `Class.method_b`) and accidental drop (replace whole `Class` and
+  forget to keep its other methods). Override with
+  `allow_rename=True` when the rename or drop is intentional.
+- **`ruff format`.** Always runs. We use the `ruff` CLI as a
+  subprocess (no Python API exists) with `--stdin-filename` so ruff
+  walks up to find the project's `pyproject.toml` / `ruff.toml`.
+  Writes match the project's pinned style; commit checks see no
+  surprises. ~60ms total cost, no opt-out switch. If `ruff` is
+  missing or errors, the write proceeds unformatted with a warning
+  header.
 
-Two more gates are off-by-default:
+One more gate is off by default:
 
-- **Symbol preservation.** When the address is a qualname, the
-  resolved qualname must still exist after the edit. On for
-  qualname-addressed edits; override with `allow_rename=True`.
 - **Lint.** `ruff check --select=F` (undefined names, unused
-  imports). Off by default; opt in via
-  `PRECIS_PYTHON_LINT_ON_WRITE=1`.
+  imports). Opt in via `PRECIS_PYTHON_LINT_ON_WRITE=1`. Off by
+  default since human-supervised flows hit too many false positives
+  on in-progress code.
 
 See `python-kind-spec.md § Write surface` for the pipeline order
 and response shape, and `precis-python-help § Editing code` for the
