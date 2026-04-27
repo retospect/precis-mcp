@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _python_render as render
+from precis.handlers import _python_write as write
 from precis.protocol import Handler, KindSpec
 from precis.python_index import ModuleIndex, RepoCache, Symbol
 from precis.response import Response
@@ -37,6 +38,7 @@ log = logging.getLogger(__name__)
 
 
 _SUPPORTED_VIEWS = ("toc", "outline", "source")
+_SUPPORTED_PUT_MODES = ("create", "append", "replace", "delete")
 
 
 # ---------------------------------------------------------------------------
@@ -217,11 +219,11 @@ class PythonHandler(Handler):
         ),
         supports_get=True,
         supports_search=True,
-        supports_put=False,  # slice 6
+        supports_put=True,
         is_numeric=False,
         id_required=False,
         views=_SUPPORTED_VIEWS,
-        modes=(),
+        modes=_SUPPORTED_PUT_MODES,
     )
 
     def __init__(
@@ -367,6 +369,340 @@ class PythonHandler(Handler):
             if sym.docstring:
                 lines.append(f"  {render._oneline(sym.docstring)}")
         return Response(body="\n".join(lines))
+
+    # ── put ────────────────────────────────────────────────────────
+
+    def put(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        text: str | None = None,
+        mode: str | None = None,
+        allow_rename: bool = False,
+        **_kw: Any,
+    ) -> Response:
+        """Create / replace / append / delete code through the three gates.
+
+        Pipeline:
+
+        1. Splice the requested change into a buffer.
+        2. **Gate 1** — ``ast.parse`` on the post-buffer. Failure
+           reverts and raises ``BadInput`` with the parse error.
+        3. **Gate 2** — qualname-drop check (skipped for ``mode='delete'``;
+           bypassed by ``allow_rename=True``).
+        4. **Gate 3** — ``ruff check --fix --exit-zero`` then
+           ``ruff format`` via stdin. Always runs; never blocks. The
+           response carries a one-line summary of what ruff did.
+        5. Atomic write (tmpfile + fsync + replace + dir fsync).
+        6. Force re-index of this file in the cache.
+        7. Render gate report + post-edit pointer.
+        """
+        if mode is None or mode not in _SUPPORTED_PUT_MODES:
+            raise BadInput(
+                f"mode= is required, one of {list(_SUPPORTED_PUT_MODES)}",
+                options=list(_SUPPORTED_PUT_MODES),
+                next="put(kind='python', id='r/file.py', text='...', mode='replace')",
+            )
+        if id is None:
+            raise BadInput(
+                "put requires id=",
+                next="put(kind='python', id='r/file.py', text='...', mode='replace')",
+            )
+
+        parsed = _parse_id(str(id))
+        root = self._resolve_alias(parsed.alias)
+
+        if mode == "create":
+            return self._put_create(parsed, root, text)
+        if mode == "append":
+            return self._put_append(parsed, root, text)
+        if mode == "replace":
+            return self._put_replace(parsed, root, text, allow_rename=allow_rename)
+        if mode == "delete":
+            return self._put_delete(parsed, root, allow_rename=allow_rename)
+
+        raise Unsupported(  # pragma: no cover — defensive
+            f"unhandled mode {mode!r}",
+            options=list(_SUPPORTED_PUT_MODES),
+        )
+
+    # ── put dispatch ───────────────────────────────────────────────
+
+    def _put_create(self, parsed: _ParsedId, root: Path, text: str | None) -> Response:
+        if parsed.qualname is not None:
+            raise BadInput(
+                "create requires a file path id, not a qualname",
+                next=f"put(kind='python', id='{parsed.alias}/path/to/new.py', "
+                f"text='...', mode='create')",
+            )
+        if parsed.file is None:
+            raise BadInput(
+                "create requires a file path",
+                next="put(kind='python', id='r/path/to/new.py', text='...', mode='create')",
+            )
+        if parsed.start_line is not None or parsed.block_selector is not None:
+            raise BadInput(
+                "create does not accept a selector",
+                next=f"put(kind='python', id='{parsed.alias}/{parsed.file}', "
+                f"text='...', mode='create')",
+            )
+        if text is None:
+            raise BadInput("create requires text=", next="add text='...'")
+
+        path = (root / parsed.file).resolve()
+        # Refuse to escape the repo root via ../ tricks.
+        try:
+            path.relative_to(root)
+        except ValueError:
+            raise BadInput(
+                f"path {parsed.file!r} escapes repo root",
+                next="use a relative path that stays inside the repo",
+            )
+        if path.exists():
+            raise BadInput(
+                f"file {parsed.file!r} already exists",
+                next=f"put(kind='python', id='{parsed.alias}/{parsed.file}', "
+                f"text='...', mode='replace')",
+            )
+
+        return self._finalize_write(
+            parsed=parsed,
+            path=path,
+            new_content=_ensure_trailing_newline(text),
+            pre_in_region=set(),  # new file → nothing to drop
+            allow_rename=True,  # creating from scratch can't drop anything anyway
+            change_summary=f"Created {parsed.alias}/{parsed.file}",
+        )
+
+    def _put_append(self, parsed: _ParsedId, root: Path, text: str | None) -> Response:
+        if parsed.qualname is not None or parsed.file is None:
+            raise BadInput(
+                "append requires a file path id (no qualname, no selector)",
+                next="put(kind='python', id='r/path/to/file.py', "
+                "text='...', mode='append')",
+            )
+        if parsed.start_line is not None or parsed.block_selector is not None:
+            raise BadInput(
+                "append does not accept a selector",
+                next=f"put(kind='python', id='{parsed.alias}/{parsed.file}', "
+                f"text='...', mode='append')",
+            )
+        if text is None or not text.strip():
+            raise BadInput("append requires text=", next="add text='...'")
+
+        path, mod = self._require_existing_file(parsed, root)
+        existing = path.read_text(encoding="utf-8")
+        sep = "" if existing.endswith("\n") else "\n"
+        appended = existing + sep + text
+        appended = _ensure_trailing_newline(appended)
+
+        return self._finalize_write(
+            parsed=parsed,
+            path=path,
+            new_content=appended,
+            pre_in_region=set(),  # append never touches existing region
+            allow_rename=True,
+            change_summary=f"Appended {len(text.splitlines())} lines "
+            f"to {parsed.alias}/{parsed.file}",
+        )
+
+    def _put_replace(
+        self,
+        parsed: _ParsedId,
+        root: Path,
+        text: str | None,
+        *,
+        allow_rename: bool,
+    ) -> Response:
+        if text is None:
+            raise BadInput("replace requires text=", next="add text='...'")
+
+        path, mod, region = self._resolve_replace_region(parsed, root)
+        existing = path.read_text(encoding="utf-8")
+
+        if region is None:
+            # Whole-file replace.
+            new_content = _ensure_trailing_newline(text)
+            pre_in_region = {s.qualname for s in mod.symbols if s.kind != "module"}
+        else:
+            start, end = region
+            new_content = write.splice_lines(
+                existing, start_line=start, end_line=end, replacement=text
+            )
+            pre_in_region = {
+                s.qualname
+                for s in mod.symbols
+                if s.kind != "module" and start <= s.start_line <= end
+            }
+
+        return self._finalize_write(
+            parsed=parsed,
+            path=path,
+            new_content=new_content,
+            pre_in_region=pre_in_region,
+            allow_rename=allow_rename,
+            change_summary=_replace_summary(parsed, region),
+        )
+
+    def _put_delete(
+        self,
+        parsed: _ParsedId,
+        root: Path,
+        *,
+        allow_rename: bool,
+    ) -> Response:
+        path, mod, region = self._resolve_replace_region(parsed, root)
+        if region is None:
+            raise BadInput(
+                "delete requires a selector or qualname (cannot delete a whole file)",
+                next=f"put(kind='python', id='{parsed.alias}/{parsed.file}~Symbol', "
+                f"mode='delete')",
+            )
+        existing = path.read_text(encoding="utf-8")
+        start, end = region
+        new_content = write.splice_lines(
+            existing, start_line=start, end_line=end, replacement=""
+        )
+        # mode='delete' is an *intentional* drop; the user has already
+        # said "remove this region". Skip gate 2 by treating the
+        # region's pre-set as empty for the diff.
+        return self._finalize_write(
+            parsed=parsed,
+            path=path,
+            new_content=new_content,
+            pre_in_region=set(),
+            allow_rename=True,
+            change_summary=f"Deleted lines {start}-{end} of "
+            f"{parsed.alias}/{parsed.file or mod.file}",
+        )
+
+    # ── put helpers ────────────────────────────────────────────────
+
+    def _require_existing_file(
+        self, parsed: _ParsedId, root: Path
+    ) -> tuple[Path, ModuleIndex]:
+        """Resolve `parsed` to (existing path, indexed module). Raises
+        NotFound if either is missing."""
+        idx = self.cache.get(root)
+        if parsed.file is None:
+            raise BadInput("missing file path in id")
+        mod = idx.file(parsed.file)
+        if mod is None:
+            raise NotFound(
+                f"file {parsed.file!r} not found in repo {parsed.alias!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+            )
+        return root / parsed.file, mod
+
+    def _resolve_replace_region(
+        self, parsed: _ParsedId, root: Path
+    ) -> tuple[Path, ModuleIndex, tuple[int, int] | None]:
+        """Map a replace/delete address to (path, module, region).
+
+        `region` is None for whole-file replace; otherwise an
+        inclusive 1-indexed (start, end) line range. Raises NotFound
+        if the symbol or file is missing.
+        """
+        idx = self.cache.get(root)
+
+        # Qualname address.
+        if parsed.qualname is not None:
+            sym = idx.symbol(parsed.qualname)
+            if sym is None:
+                raise NotFound(
+                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
+                    next=f"search(kind='python', q='{parsed.qualname.split('.')[-1]}')",
+                )
+            mod = idx.file(sym.file)
+            assert mod is not None
+            return root / sym.file, mod, (sym.start_line, sym.end_line)
+
+        # File address (with optional selector).
+        if parsed.file is None:
+            raise BadInput("replace/delete requires a file path or qualname")
+        mod = idx.file(parsed.file)
+        if mod is None:
+            raise NotFound(
+                f"file {parsed.file!r} not found in repo {parsed.alias!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+            )
+
+        if parsed.start_line is not None:
+            return (
+                root / parsed.file,
+                mod,
+                (parsed.start_line, parsed.end_line or parsed.start_line),
+            )
+        if parsed.block_selector is not None:
+            sym = _resolve_block_selector(mod, parsed.block_selector)
+            if sym is None:
+                raise NotFound(
+                    f"no symbol {parsed.block_selector!r} in {parsed.file}",
+                    next=f"get(kind='python', id='{parsed.alias}/{parsed.file}', "
+                    f"view='outline')",
+                )
+            return root / parsed.file, mod, (sym.start_line, sym.end_line)
+
+        # No selector → whole-file replace.
+        return root / parsed.file, mod, None
+
+    def _finalize_write(
+        self,
+        *,
+        parsed: _ParsedId,
+        path: Path,
+        new_content: str,
+        pre_in_region: set[str],
+        allow_rename: bool,
+        change_summary: str,
+    ) -> Response:
+        """Run gates 1-3, write atomically, refresh cache, render the response.
+
+        On any *blocking* gate failure (1 or 2), this raises ``BadInput``
+        before any disk write. Gate 3 (ruff) never blocks; ruff failures
+        proceed with the unfixed buffer and a warning surfaced in the
+        response.
+        """
+        # Gate 1 — AST parse.
+        ast_gate = write.gate_ast(new_content, filename=str(path))
+        if not ast_gate.ok:
+            raise BadInput(
+                f"ast.parse failed on the post-edit buffer: {ast_gate.detail}",
+                next="check the indentation / syntax of the replacement text",
+            )
+
+        # Compute the pre-edit module qualname for gate 2's qualname extraction.
+        # If this is a brand-new file we don't have a ModuleIndex; derive the
+        # qualname from the file path.
+        module_qn = _module_qualname_for(path, repo_root=self.roots[parsed.alias])
+        post_qns = write.qualnames_in_text(new_content, module_qualname=module_qn)
+        qn_gate = write.gate_qualnames(
+            pre_in_region=pre_in_region,
+            post_in_file=post_qns,
+            allow_rename=allow_rename,
+        )
+        if not qn_gate.ok:
+            raise BadInput(
+                f"qualname-drop gate failed: {qn_gate.detail}; "
+                f"dropped: {sorted(qn_gate.dropped)!r}",
+                next="add allow_rename=True if the rename or removal is intentional",
+            )
+
+        # Gate 3 — ruff (always runs, never blocks).
+        canonical, ruff_changes = write.run_ruff(new_content, path)
+
+        # Atomic write of the canonical buffer.
+        write.atomic_write(path, canonical)
+
+        # Force the cache to re-stat this file on the next get(); the
+        # mtime change is what triggers reparse, so this is implicit.
+        # No explicit drop needed — RepoCache.get() handles it.
+
+        return Response(
+            body=_render_put_response(
+                parsed, ast_gate, qn_gate, ruff_changes, change_summary
+            )
+        )
 
     # ── helpers ────────────────────────────────────────────────────
 
@@ -532,3 +868,113 @@ def _resolve_block_selector(mod: ModuleIndex, selector: str) -> Symbol | None:
         if sym.name == selector and sym.kind != "module":
             return sym
     return None
+
+
+# ---------------------------------------------------------------------------
+# Write helpers
+# ---------------------------------------------------------------------------
+
+
+def _ensure_trailing_newline(text: str) -> str:
+    """Files conventionally end with `\\n`. Idempotent."""
+    if text and not text.endswith("\n"):
+        return text + "\n"
+    return text
+
+
+def _module_qualname_for(path: Path, *, repo_root: Path) -> str:
+    """Compute the dotted import qualname a `.py` file *would* have if
+    indexed under `repo_root`.
+
+    Mirrors `precis.python_index.indexer._qualname_for_file` but works
+    on a hypothetical not-yet-indexed file (used for ``mode='create'``
+    and for new content of mode='replace' where the file may have
+    moved or been added). Walks parents while ``__init__.py`` exists,
+    stopping at `repo_root`.
+    """
+    if path.name == "__init__.py":
+        parts: list[str] = []
+        ancestor = path.parent
+    else:
+        parts = [path.stem]
+        ancestor = path.parent
+
+    # Walk up while __init__.py exists, but never above repo_root.
+    while ancestor != repo_root and (ancestor / "__init__.py").is_file():
+        parts.insert(0, ancestor.name)
+        ancestor = ancestor.parent
+
+    if not parts:
+        return ancestor.name
+    return ".".join(parts)
+
+
+def _replace_summary(parsed: _ParsedId, region: tuple[int, int] | None) -> str:
+    """One-line description of what was replaced. Used in put responses."""
+    target = (
+        f"{parsed.alias}::{parsed.qualname}"
+        if parsed.qualname is not None
+        else f"{parsed.alias}/{parsed.file}"
+    )
+    if region is None:
+        return f"Replaced whole file {target}"
+    start, end = region
+    span = end - start + 1
+    return f"Replaced {span} line{'s' if span != 1 else ''} ({start}-{end}) in {target}"
+
+
+def _render_put_response(
+    parsed: _ParsedId,
+    ast_gate,
+    qn_gate,
+    ruff_changes,
+    change_summary: str,
+) -> str:
+    """Render the post-write response shape per spec § Response shape.
+
+    Reports each gate's result on its own line, then the change summary,
+    then a Next: hint pointing back at the affected address. Ruff's
+    line distinguishes 'no changes', 'fix' edits, 'format' edits, or
+    both — matches what an interactive `ruff check --fix && ruff format`
+    run would produce.
+    """
+    target = (
+        f"{parsed.alias}::{parsed.qualname}"
+        if parsed.qualname is not None
+        else f"{parsed.alias}/{parsed.file or ''}"
+    )
+
+    lines = [f"# {target}\n"]
+    lines.append(f"  ast.parse:           {'ok' if ast_gate.ok else 'FAIL'}")
+    lines.append(
+        f"  qualname preserved:  "
+        f"{'ok' if qn_gate.ok else 'FAIL'}"
+        + (f"  ({qn_gate.detail})" if qn_gate.detail and qn_gate.ok else "")
+    )
+
+    if not ruff_changes.ok:
+        lines.append(f"  ruff:                skipped — {ruff_changes.error}")
+    elif not ruff_changes.changed:
+        lines.append("  ruff:                no changes")
+    else:
+        kinds: list[str] = []
+        if ruff_changes.fix_changed:
+            kinds.append("fix")
+        if ruff_changes.format_changed:
+            kinds.append("format")
+        lines.append(f"  ruff:                {' + '.join(kinds)}")
+    if ruff_changes.unfixable_findings:
+        for f in ruff_changes.unfixable_findings:
+            lines.append(f"    note: {f}")
+
+    lines.append("")
+    lines.append(change_summary)
+
+    lines.append("")
+    lines.append("Next:")
+    if parsed.qualname is not None:
+        lines.append(f"  get(kind='python', id='{parsed.alias}::{parsed.qualname}')")
+    elif parsed.file is not None:
+        lines.append(f"  get(kind='python', id='{parsed.alias}/{parsed.file}')")
+
+    return "\n".join(lines)
