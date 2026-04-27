@@ -365,6 +365,34 @@ Next:
 
 `depth` defaults to 3. Cycle detection collapses revisits to `…`.
 
+#### Cross-repo resolution
+
+When multiple repos are configured (`PRECIS_PYTHON_ROOTS=a:/...,b:/...`)
+and repo `a`'s `pyproject.toml` lists `b` as a dependency (or `b` is
+imported by any module in `a`), `view='callgraph'` resolves calls
+into `b` instead of marking them `[ext]`. Off by default; opt in:
+
+```python
+get(kind='python', id='a', view='callgraph',
+    entry='a.cli:main', depth=4, cross_repo=True)
+```
+
+Mechanism: build the symbol index per repo as today; on every
+unresolved call, check the other configured repos' indexes in the
+order they appear in `PRECIS_PYTHON_ROOTS` and use the first hit.
+Falls back to `[ext]` only if no configured repo defines the symbol.
+
+Resolved cross-repo calls are tagged with their repo alias in the
+tree so the agent sees the boundary:
+
+```
+├── a.cli._cmd_ingest
+│   └── b.lib.parser.parse                                      [b]
+```
+
+Makes "explain how `precis serve` boots" work even when boot logic
+spans `precis-mcp-new` + `openclaw-cluster`.
+
 ### `runtrace` — dynamic overlay
 
 Opt-in. Runs the entry point in a subprocess under `sys.setprofile`
@@ -395,6 +423,12 @@ Next:
 
 Sandboxing: `runtrace` is **gated by an env var** (`PRECIS_PYTHON_ALLOW_EXEC=1`)
 because it executes user code. Default off. Document loudly.
+
+**Single-threaded sync code only.** `runtrace` uses `sys.setprofile`,
+which produces a clean tree for sync programs but interleaves events
+from asyncio coroutines, multi-threaded code, and multiprocessing
+workers into a flat soup. For those cases install `viztracer` and run
+it externally. The 80% case (e.g. `precis.cli:main`) is fine.
 
 ### `imports`, `symbols` — flat helper views
 
@@ -689,6 +723,9 @@ is ~120 LOC on top of the shared library.
 - **Cross-repo blame** (submodules, monorepo splitouts).
 - **Working-tree uncommitted diff overlay** — warn via hint; don't
   pretend index state is HEAD.
+- **`runtrace_engine='viztracer'`.** Frame-eval / sample-based
+  tracing for async + multi-threaded programs. Optional dep;
+  expose when a real use case lands.
 
 ## Out of scope (defer)
 
@@ -707,15 +744,17 @@ is ~120 LOC on top of the shared library.
 - Cross-file rename refactoring. v1 supports per-symbol delete /
   create / replace; reference updates are not automatic.
 
-## Test plan (~44 tests)
+## Test plan (~45 tests)
 
 - `tests/test_python_outline.py` — 8 tests: classes, nested classes,
   decorators (`@dataclass`, `@property`), async functions, type-only
   imports, no-symbols file, syntax-error file (graceful degrade),
   unicode in identifiers.
-- `tests/test_python_callgraph.py` — 8 tests: simple chain, recursion
+- `tests/test_python_callgraph.py` — 9 tests: simple chain, recursion
   cycle, method-on-self, classmethod, super() call, unresolved ext,
-  depth truncation, entry parsing (`module:func` vs console-script).
+  depth truncation, entry parsing (`module:func` vs console-script),
+  cross-repo resolution (`cross_repo=True` resolves into a sibling
+  configured repo; tagged in tree).
 - `tests/test_python_addressing.py` — 6 tests: file id, line-range,
   symbol id, package id, ambiguous shortname, malformed id.
 - `tests/test_python_search.py` — 4 tests: lexical hit on qualname,
@@ -770,7 +809,7 @@ is ~120 LOC on top of the shared library.
   `view='callgraph' entry=…` → `outline` on the most interesting nodes
   → `source` on the one or two functions that actually need reading.
 - Indexing `precis-mcp-new` (~3k LOC) takes < 2s.
-- `pytest -q` adds ~44 tests, all green.
+- `pytest -q` adds ~45 tests, all green.
 - A fresh agent can edit a method by qualname and the resulting file
   passes `ruff format --check` and `ast.parse` without manual fixup.
 - Total LOC: ~900-1200 (indexer + read views ~700; write surface
@@ -778,15 +817,24 @@ is ~120 LOC on top of the shared library.
 
 ## Open questions
 
-1. **Source view privacy**: should `source` redact secrets-shaped
-   strings (env-var-looking literals)? Probably not — it is your own
-   repo. But flag if a non-self repo is configured as a root.
-2. **Cross-repo callgraph**: if two configured repos have an import
-   relationship (one's pyproject lists the other), should `callgraph`
-   span them? Probably yes, behind `cross_repo=True`. Defer.
-3. **Async / threading**: `runtrace` under `sys.setprofile` does not
-   capture cross-thread calls cleanly. Document and recommend
-   `viztracer` for that case.
+*(none currently — all v1 design decisions resolved.)*
+
+Closed questions, for the record:
+
+- **Source view privacy** — dropped. Secrets don't belong in `.py`
+  files; redacting at view time is theatre and pattern-matching
+  has too many false positives. `source` shows source.
+- **Cross-repo callgraph** — in v1 behind `cross_repo=True` (see
+  `callgraph` view § Cross-repo resolution).
+- **`ruff format` config discovery** — resolved: ruff CLI walks up
+  natively for `pyproject.toml` / `ruff.toml`.
+- **Format-on-write performance** — resolved: ~60ms is fine; no
+  switch.
+- **Class-replace preservation** — resolved: gate 2 is a single
+  no-qualname-drop set diff, covering both rename and drop.
+- **Async / threading runtrace fidelity** — resolved: `runtrace`
+  is documented as single-threaded-sync only; recommend
+  `viztracer` for the rest.
 
 ## Prior art summary (for the design record)
 
