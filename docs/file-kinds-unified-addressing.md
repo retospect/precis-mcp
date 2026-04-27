@@ -19,7 +19,7 @@ file-rooted kinds:
 | `docx` | Word `.docx` | yes | headings | paragraph (para id) |
 | `tex` | LaTeX `.tex` + project | yes | sections | block + label |
 | `book` | multi-file project | yes | chapter graph | per-file delegated |
-| `python` | `.py` repo | read-only (v1) | class/method tree | symbol (qualname) or line range |
+| `python` | `.py` repo | yes | class/method tree | symbol (qualname) or line range |
 | `git` | any repo | read-only | branches/refs | commit/file/line |
 
 Each was designed in isolation; their addressing schemes drifted:
@@ -273,7 +273,7 @@ Views are the *render mode* for the resolved selector. Per kind:
 - `toc` — full hierarchical TOC.
 - `raw` — full source.
 
-### Python (read-only v1)
+### Python
 
 - (default) — file overview: imports + class/function tree.
 - `outline` — same as default but verbose (signatures + docstring
@@ -364,7 +364,8 @@ Markdown example (already shipped, unchanged):
 ## Write surface
 
 Mutation is **per-kind opt-in**. R/W kinds (markdown, plaintext, rmk,
-docx, tex, book) declare `supports_put=True` and accept four modes:
+docx, tex, book, python) declare `supports_put=True` and accept four
+modes:
 
 | Mode | id shape | text param | Effect |
 |---|---|---|---|
@@ -404,13 +405,32 @@ replaced block 'conclusion' (lines 42-58) in notes/meeting.md
 So an agent that started with a line range knows the durable address
 for follow-up edits.
 
-### Python mutation (deferred, designed-in)
+### Python writes
 
-Python is read-only in v1 per its spec. But the unified base will
-have all the write plumbing — adding `put(mode='replace',
-id='precis/src/precis/registry.py~Registry.get', text='…')` later
-is a subclass opt-in, not a re-architecture. The *policy* question
-(AST-validate? run tests?) stays open; the *mechanism* is ready.
+Python is **R/W in v1**. The unified base provides splice + atomic
+write + re-ingest; python adds two policy gates on top:
+
+- **`ast.parse(new_content)` succeeds.** Mandatory invariant. A
+  syntax-broken file would break every import; refusing the write
+  is correct.
+- **`ruff format` runs on the result.** Mandatory by default; opt
+  out via `PRECIS_PYTHON_FORMAT_ON_WRITE=0`. Project culture
+  demands `ruff format --check` on commit, so format-on-write
+  removes a manual step. Response line ranges reflect the
+  post-format state.
+
+Two more gates are off-by-default:
+
+- **Symbol preservation.** When the address is a qualname, the
+  resolved qualname must still exist after the edit. On for
+  qualname-addressed edits; override with `allow_rename=True`.
+- **Lint.** `ruff check --select=F` (undefined names, unused
+  imports). Off by default; opt in via
+  `PRECIS_PYTHON_LINT_ON_WRITE=1`.
+
+See `python-kind-spec.md § Write surface` for the pipeline order
+and response shape, and `precis-python-help § Editing code` for the
+recipes.
 
 ## Multi-root configuration
 

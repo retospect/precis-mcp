@@ -53,12 +53,36 @@ search(kind='python', q='attribution footer rendering', scope='precis-mcp-new')
 search(kind='python', q='cache TTL handling',
        scope='precis-mcp-new::precis.handlers')
 
-# Register / unregister a repo
-put(kind='python', id='precis-mcp-new',
-    text='/Users/bots/Documents/.../precis-mcp-new', mode='register')
-put(kind='python', id='precis-mcp-new', mode='reindex')
-put(kind='python', id='precis-mcp-new', mode='unregister')
+# Edit a method (Track B — preferred, durable across edits)
+put(kind='python', id='precis-mcp-new::precis.registry.Registry.get',
+    text='''    def get(self, kind: str) -> Handler:
+        """Look up a handler by kind name."""
+        if kind not in self._handlers:
+            raise NotFound(f"unknown kind: {kind}",
+                           options=list(self._handlers))
+        return self._handlers[kind]''',
+    mode='replace')
+
+# Edit a line range (Track A — when you have line numbers)
+put(kind='python',
+    id='precis-mcp-new/src/precis/registry.py~L120-128',
+    text='        return self._handlers[kind]', mode='replace')
+
+# Append a new top-level function
+put(kind='python', id='precis-mcp-new/src/precis/registry.py',
+    text='\n\ndef reset_registry() -> None:\n    """Clear handlers."""\n    global _GLOBAL\n    _GLOBAL = None\n',
+    mode='append')
+
+# Delete a deprecated method
+put(kind='python',
+    id='precis-mcp-new::precis.registry.Registry.deprecated',
+    mode='delete')
 ```
+
+Roots are configured at startup via `PRECIS_PYTHON_ROOTS`; there are
+no `register` / `unregister` / `reindex` modes on the agent surface.
+Reindex is automatic on file mtime change and exposed as a CLI
+subcommand for operators.
 
 ### KindSpec
 
@@ -68,8 +92,9 @@ KindSpec(
     supports_get=True, supports_search=True, supports_put=True,
     is_numeric=False, id_required=True,
     views=('toc', 'entries', 'outline', 'source', 'callgraph',
-           'runtrace', 'imports', 'symbols'),
-    modes=('register', 'reindex', 'unregister'),
+           'runtrace', 'imports', 'symbols',
+           'blame', 'log', 'churn', 'owners', 'diff'),
+    modes=('create', 'append', 'replace', 'delete'),
     requires_env=(),  # local; no API keys
 )
 ```
@@ -395,6 +420,108 @@ search(kind='python', q='cache attribution',
        scope='precis-mcp-new/src/precis/handlers/_cache_base.py')
 ```
 
+## Write surface
+
+Python is **read/write in v1**. Every successful write passes through
+four quality gates:
+
+| Gate | Check | Default | Override |
+|---|---|---|---|
+| 1 | `ast.parse(new_content)` succeeds | mandatory | none — invariant |
+| 2 | Qualname-addressed edits preserve the addressed qualname | on for qualname edits | `allow_rename=True` kwarg |
+| 3 | `ruff format` on the result | mandatory | `PRECIS_PYTHON_FORMAT_ON_WRITE=0` env |
+| 4 | `ruff check --select=F` clean (undefined names, unused imports) | off | `PRECIS_PYTHON_LINT_ON_WRITE=1` env |
+
+Write pipeline:
+
+1. Splice replacement text into the file buffer.
+2. **Gate 1** (AST). Failure → revert, return `BadInput` with the
+   parse error.
+3. **Gate 2** (symbol preservation, when applicable). Failure →
+   revert.
+4. **Gate 3** (`ruff format`). Output is the canonical content.
+5. **Gate 4** (lint, if enabled). Failure → revert.
+6. Atomic write: tmpfile + `os.replace`.
+7. Force re-ingest (mtime + sha256 changed → re-parse → update
+   symbol table).
+8. Return response computed from the new symbol table — line ranges
+   reflect the **post-format** state.
+
+### Modes
+
+| Mode | Address shape | Behavior |
+|---|---|---|
+| `create` | `repo/path/to/new.py` (no selector) | new file; refuses overwrite |
+| `replace` | file (no selector), file + selector, or qualname | swap region |
+| `append` | file (no selector) | append at file end |
+| `delete` | file + selector or qualname | remove region |
+
+Selectors for `replace` / `delete`:
+
+- `~L<a>-<b>` — Track A line range
+- `~Symbol` or `~Class.method` — local Track B symbol
+- `::pkg.mod.Symbol.method` — qualname shortcut (alternative to
+  file-path + selector)
+
+### Indentation — strict
+
+The replacement text replaces lines `[start, end]` verbatim. The
+agent supplies the indentation. The handler does **not** dedent-and-
+re-indent — that hides bugs in the replacement text. Round-trip is
+`view='source'` → modify → write; indentation is preserved by
+construction.
+
+### Format-on-write rationale
+
+`ruff format` runs every successful write because:
+
+1. Project culture demands `ruff format --check` cleanness on commit.
+   Skipping format-on-write means every commit needs a manual `ruff
+   format` pass before push.
+2. The agent doesn't have to match exact whitespace, quote style,
+   trailing-comma policy. Submit semantically correct Python; the
+   formatter handles surface details.
+3. The post-format line range in the response is the durable answer.
+   If `ruff` shifts lines, the response reflects that.
+
+Invocation: `ruff format --stdin-filename <path> < buffer` via
+`subprocess.run`. If `ruff` is missing or fails (config error), the
+write proceeds with a warning header in the response. Format never
+blocks a write.
+
+### What writes do not do
+
+- **Auto-import management.** Adding a method that needs a new
+  import requires a separate put on the file's import region. A
+  future `mode='import'` helper may add this.
+- **Cross-file rename.** A rename is a delete + create + reference
+  update. v1 does not do reference updates; chain put calls or use
+  the editor's rename refactoring.
+- **Type checking.** `mypy` is not run.
+- **Test running.** Out of scope.
+- **Auto-commit.** No `git commit` after a write — the working tree
+  is left dirty for the user / coding agent to review.
+
+### Response shape
+
+```
+# precis.registry.Registry.get  —  replace (src/precis/registry.py:120-126)
+
+  ast.parse:           ok
+  qualname preserved:  ok
+  ruff format:         applied (whitespace + trailing comma)
+  lint:                skipped (PRECIS_PYTHON_LINT_ON_WRITE unset)
+
+Replaced lines 120–128 → 120–126 (-2 lines).
+
+Next:
+  get(kind='python', id='precis-mcp-new::precis.registry.Registry.get')
+  get(kind='python', id='precis-mcp-new::precis.registry.Registry.get', view='blame')
+```
+
+Same two-track header as read responses, plus a four-line gate report
+and a diff summary.
+
 ## Git integration
 
 The symbol index already knows `(file, start_line, end_line)` for every
@@ -485,8 +612,8 @@ is ~120 LOC on top of the shared library.
   `/git`, `/diff`, `/undo` chat commands inspire our `log`/`diff`
   views.
 - **Not stolen here**: auto-commit / dirty-commit of LLM edits. That
-  belongs to `code-repo-mcp` (the coding-agent), not `python` —
-  `python` is read-only by design.
+  belongs to `code-repo-mcp` (the coding-agent), not `python`.
+  Writes leave the working tree dirty; commit policy is the user's.
 
 ### Deferred
 
@@ -511,11 +638,12 @@ is ~120 LOC on top of the shared library.
 - Diff-aware reindex on PR branches.
 - Live LSP integration (would let python share an index with the
   user's editor).
-- Mutation: `put(mode='edit', text=…)` is **explicitly out** —
-  precis stays read-only on code; editing belongs to the editor /
-  coding-agent.
+- Auto-import management on writes (a `mode='import'` helper that
+  inserts at the right place). v1 punts to the agent.
+- Cross-file rename refactoring. v1 supports per-symbol delete /
+  create / replace; reference updates are not automatic.
 
-## Test plan (~30 tests)
+## Test plan (~42 tests)
 
 - `tests/test_python_outline.py` — 8 tests: classes, nested classes,
   decorators (`@dataclass`, `@property`), async functions, type-only
@@ -528,8 +656,16 @@ is ~120 LOC on top of the shared library.
   symbol id, package id, ambiguous shortname, malformed id.
 - `tests/test_python_search.py` — 4 tests: lexical hit on qualname,
   semantic hit on docstring, scope narrowing, no-match.
-- `tests/test_python_indexer.py` — 4 tests: register / reindex / mtime
-  incremental / gitignore respect.
+- `tests/test_python_indexer.py` — 4 tests: lazy reindex on mtime
+  change / gitignore respect / sha256 unchanged short-circuit / hash
+  drift triggers re-parse.
+- `tests/test_python_write.py` — 12 tests: replace by qualname /
+  replace by line range / replace whole file / append / create /
+  refuse-create-overwrite / delete by qualname / AST-syntax-error
+  reverts / qualname-preservation reverts on accidental rename /
+  `allow_rename=True` permits rename / `ruff format` applied + line
+  ranges in response reflect post-format / `ruff` missing falls
+  through with warning header.
 - `tests/test_python_runtrace.py` — gated, 2 tests: only run when
   `PRECIS_PYTHON_ALLOW_EXEC=1`. Skipped in CI by default; runs locally.
 
@@ -542,20 +678,24 @@ is ~120 LOC on top of the shared library.
    as the indexer that gives it meaning.)
 2. **`PythonIndexer`** in `src/precis/python/indexer.py` — pure logic,
    no DB. Two passes: outline + calls. Handles syntax errors. Tests.
-3. **`PythonStore` mixin** on `Store` — register, reindex, lookup
-   helpers. Tests against `fresh_db`.
-4. **`PythonHandler`** in `src/precis/handlers/python.py` — `get`
-   first (toc, outline, source); search next; put (register / reindex)
-   last. Wire into `registry.py`.
-5. **`callgraph` view** — tree formatter + cycle detection + depth
+3. **`PythonStore` mixin** on `Store` — lookup helpers (qualname →
+   file+line, file → outline). Tests against `fresh_db`.
+4. **`PythonHandler.get` + `.search`** in `src/precis/handlers/python.py`.
+   Read surface only — toc, outline, source, callgraph stub. Wire
+   into `registry.py`.
+5. **`PythonHandler.put`** — the four modes + four validation gates.
+   Reuses splice / atomic-write helpers from `_FileHandlerBase`
+   (extracted when phase 6b shipped). New python-specific: AST gate,
+   qualname preservation, `ruff format` subprocess, optional lint.
+6. **`callgraph` view** — tree formatter + cycle detection + depth
    truncation. Tests.
-6. **`entries` view** — pyproject parser + `__main__` guard scanner.
-7. **`runtrace` view** — subprocess + `sys.setprofile`; gated by env.
-8. **`precis-python-help.md` skill** — agent-facing docs (top of file:
+7. **`entries` view** — pyproject parser + `__main__` guard scanner.
+8. **`runtrace` view** — subprocess + `sys.setprofile`; gated by env.
+9. **`precis-python-help.md` skill** — agent-facing docs (top of file:
    "use this for any Python codebase navigation; do not paste files
-   into context").
-9. Self-test: register `precis-mcp-new` itself, run callgraph from
-   `precis.cli:main`, paste output into the spec doc as the example.
+   into context"). Already drafted; refresh against the implementation.
+10. Self-test: index `precis-mcp-new` itself, run callgraph from
+    `precis.cli:main`, paste output into the spec doc as the example.
 
 ## Done criteria
 
@@ -564,24 +704,43 @@ is ~120 LOC on top of the shared library.
   `view='callgraph' entry=…` → `outline` on the most interesting nodes
   → `source` on the one or two functions that actually need reading.
 - Indexing `precis-mcp-new` (~3k LOC) takes < 2s.
-- `pytest -q` adds ~30 tests, all green.
-- Total LOC: ~700-1000 (indexer is the bulk).
+- `pytest -q` adds ~42 tests, all green.
+- A fresh agent can edit a method by qualname and the resulting file
+  passes `ruff format --check` and `ast.parse` without manual fixup.
+- Total LOC: ~900-1200 (indexer + read views ~700; write surface
+  ~200-300 on top, mostly shared with `_FileHandlerBase`).
 
 ## Open questions
 
-1. **Repo registration UX**: `put(mode='register', text='<path>')`
-   feels right, but should `id` be auto-derived from the path
-   (basename) or explicit? Phase 5's ref-handler base will give us
-   the patterns; align with that.
-2. **Source view privacy**: should `source` redact secrets-shaped
+1. **Source view privacy**: should `source` redact secrets-shaped
    strings (env-var-looking literals)? Probably not — it is your own
-   repo. But flag if registering a non-self repo.
-3. **Cross-repo callgraph**: if two registered repos have an import
+   repo. But flag if a non-self repo is configured as a root.
+2. **Cross-repo callgraph**: if two configured repos have an import
    relationship (one's pyproject lists the other), should `callgraph`
    span them? Probably yes, behind `cross_repo=True`. Defer.
-4. **Async / threading**: `runtrace` under `sys.setprofile` does not
+3. **Async / threading**: `runtrace` under `sys.setprofile` does not
    capture cross-thread calls cleanly. Document and recommend
    `viztracer` for that case.
+4. **`ruff format` config discovery**: ruff walks up from the file
+   looking for `pyproject.toml` / `ruff.toml`. For repos without
+   project ruff config, format uses ruff defaults — which may differ
+   from project style. Acceptable cost or surprising? Recommend
+   logging the resolved config path in the response header for
+   transparency.
+5. **Format-on-write performance**: a 2000-line file formats in
+   ~50ms with `ruff format`. Tolerable for interactive writes; would
+   be costly if writes batch. If batch writes become common, add a
+   `format_now=False` kwarg + `precis jobs format` CLI subcommand to
+   defer.
+6. **Symbol preservation across rename to a sibling qualname**:
+   replacing `Class.method_a` with a body whose `def` line names
+   `method_b` is rejected by gate 2. But what about replacing the
+   *entire class* `Class` with one whose body adds methods or
+   removes them? The qualname `Class` still resolves; should we
+   also check that the *contained* qualnames don't disappear
+   silently? Tentative: yes for `replace` on a class, `BadInput` if
+   any pre-existing nested qualname vanishes; override via
+   `allow_rename=True`. Decide in implementation.
 
 ## Prior art summary (for the design record)
 

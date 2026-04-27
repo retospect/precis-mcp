@@ -4,7 +4,7 @@ title: precis — navigate Python codebases
 status: spec (unbuilt)
 tier: 1
 floor: any
-applies-to: get/search (kind='python'); read-only in v1
+applies-to: get/search/put (kind='python'); writes are AST-validated and ruff-formatted
 last-updated: 2026-04-27
 ---
 
@@ -183,19 +183,168 @@ get(kind='python', id='precis::precis.registry.Registry.get',
 
 Symbol-scoped (not file-scoped). Renames are followed automatically.
 
+## Editing code
+
+Writes go through the same `put` verb as every file kind, with two
+extras specific to python: **AST validation** is mandatory and
+**`ruff format`** runs automatically after a successful write. The
+agent ships syntactically valid, project-formatted code by default.
+
+### Replace by qualname (preferred)
+
+```python
+put(kind='python',
+    id='precis::precis.registry.Registry.get',
+    text='''    def get(self, kind: str) -> Handler:
+        """Look up a handler by kind name."""
+        if kind not in self._handlers:
+            raise NotFound(
+                f"unknown kind: {kind}",
+                options=list(self._handlers),
+            )
+        return self._handlers[kind]''',
+    mode='replace')
+# Response:
+#   replaced precis.registry.Registry.get (lines 120–128 → 120–128)
+#   ast.parse:           ok
+#   qualname preserved:  ok
+#   ruff format:         applied
+```
+
+The handler resolves the qualname → file + line range, splices the
+replacement, validates with `ast.parse`, runs `ruff format`, writes
+atomically, and re-indexes. The response gives the **post-format**
+line range — use those numbers in subsequent calls.
+
+Prefer this form: qualnames survive file moves and re-orderings.
+
+### Replace by line range (when you have line numbers)
+
+```python
+put(kind='python',
+    id='precis/src/precis/registry.py~L120-128',
+    text='        return self._handlers[kind]',
+    mode='replace')
+# Response:
+#   replaced lines 120–128 → 120 in src/precis/registry.py
+#   affects symbols: precis.registry.Registry.get
+#   ast.parse:       ok
+#   ruff format:     applied
+```
+
+Use when you have line numbers from grep / a stack trace / a test
+failure. Otherwise prefer qualnames.
+
+### Append a new top-level function
+
+```python
+put(kind='python',
+    id='precis/src/precis/registry.py',
+    text='''
+
+def reset_registry() -> None:
+    """Clear all registered handlers."""
+    global _GLOBAL_REGISTRY
+    _GLOBAL_REGISTRY = None
+''',
+    mode='append')
+# Response:
+#   appended to src/precis/registry.py (lines 156–160 added)
+#   new symbols: precis.registry.reset_registry
+```
+
+### Create a new file
+
+```python
+put(kind='python',
+    id='precis/src/precis/handlers/audit.py',
+    text='''"""Audit handler."""
+from precis.protocol import Handler
+
+
+class AuditHandler(Handler):
+    pass
+''',
+    mode='create')
+```
+
+`mode='create'` refuses to overwrite an existing file; use
+`mode='replace'` on a file id (no selector) to swap a whole file.
+
+### Delete a method
+
+```python
+put(kind='python',
+    id='precis::precis.registry.Registry.deprecated',
+    mode='delete')
+# Response:
+#   deleted precis.registry.Registry.deprecated (lines 145–152)
+#   ast.parse:           ok
+#   qualname removed:    ok
+#   ruff format:         applied
+```
+
+### What can go wrong
+
+| Problem | Response |
+|---|---|
+| Replacement text doesn't parse as Python | `BadInput("ast.parse failed: <error>")` — file untouched |
+| Qualname-addressed edit no longer defines that qualname | `BadInput("symbol-preservation failed: Class.method not found in result")` — pass `allow_rename=True` to override |
+| Path traversal | `BadInput("path outside configured root")` |
+| Indentation mismatch | The replacement text is spliced verbatim; you supply the indentation. Use `view='source'` first to get the right level. |
+
+### Workflow: read → modify → write
+
+The canonical edit flow is a three-call round-trip:
+
+```python
+# 1. Read the symbol's source.
+get(kind='python',
+    id='precis::precis.registry.Registry.get',
+    view='source')
+# → returns the function body with its native indentation
+
+# 2. Modify locally (in your context).
+
+# 3. Write back at the same qualname.
+put(kind='python',
+    id='precis::precis.registry.Registry.get',
+    text=<modified source>,
+    mode='replace')
+```
+
+Because step 1 returns the indented source and step 3 takes it back
+verbatim, indentation is preserved by construction. No re-indenting
+logic to get wrong.
+
+### What you handle yourself
+
+- **Imports.** Adding a method that needs a new import? Add the
+  import in a separate `put` at the file top. v1 doesn't auto-detect
+  imports.
+- **Cross-file rename.** A rename is delete + create + reference
+  updates across the codebase. v1 does the first two; the editor /
+  coding-agent does the reference updates.
+- **Commits.** The working tree is left dirty. Commit policy is
+  yours.
+
 ## What python does NOT do
 
-- **Edit code.** Read-only in v1. Editing belongs to the editor /
-  coding-agent. The unified file-handler base has the write
-  plumbing; opt-in is a deferred decision pending AST-validation
-  policy.
 - **Cross-language.** Python only. `tree-sitter` upgrade path
   exists but is not wired.
 - **Type-aware resolution.** Static AST analysis only. `jedi` /
   `pyright` integration is gated behind a future
   `PRECIS_PYTHON_TYPED=1` env var.
-- **Runtime mutation.** No `register` / `unregister` modes; repos
-  are configured via `PRECIS_PYTHON_ROOTS` env, not at runtime.
+- **Type checking on writes.** `mypy` is not run; only `ast.parse`
+  and `ruff format`. Set `PRECIS_PYTHON_LINT_ON_WRITE=1` to also
+  gate writes behind `ruff check --select=F` (undefined names,
+  unused imports). Off by default.
+- **Test running.** Out of scope; that's CI territory.
+- **Auto-commit.** Writes leave the working tree dirty.
+- **Runtime root mutation.** No `register` / `unregister` /
+  `reindex` modes on the agent surface; repos are configured at
+  startup via `PRECIS_PYTHON_ROOTS`. Reindex happens automatically
+  on file mtime change.
 
 ## See also
 

@@ -140,7 +140,13 @@ search(kind='markdown', q='deadline', scope='notes/meeting.md')
 ## Write
 
 Four modes. Available on R/W kinds (`markdown`, `plaintext`, `rmk`,
-`docx`, `tex`, `book`); not on `python` or `git` (read-only).
+`docx`, `tex`, `book`, `python`). `git` is read-only.
+
+`python` adds two extras on top of the shared modes: writes go
+through `ast.parse` (mandatory) and `ruff format` (mandatory) before
+the atomic write. See `precis-python-help` for the validation table
+and recipes for replace-by-qualname / replace-by-line / append /
+create / delete on Python files.
 
 ```python
 # Create a new file.
