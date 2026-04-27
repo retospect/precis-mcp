@@ -11,12 +11,22 @@ last-updated: 2026-04-27
 # precis-files-help — file-rooted kinds, shared concepts
 
 This skill covers what's the **same** across every file-rooted kind:
-`markdown`, `plaintext`, `rmk`, `docx`, `tex`, `book`, `pycode`, `git`.
+
+| Kind | Files |
+|---|---|
+| `markdown` | `.md` |
+| `plaintext` | `.txt` |
+| `rmk` | `.rmk` (markdown + YAML front-matter) |
+| `docx` | `.docx` (Word) |
+| `tex` | `.tex` + LaTeX project files |
+| `book` | multi-file project glue |
+| `python` | `.py` (Python codebases) |
+| `git` | any repo (language-agnostic) |
 
 For kind-specific rules (block grammar, views, edits) see:
 
 - `precis-markdown-help` — `.md` files
-- `precis-pycode-help` — Python codebases
+- `precis-python-help` — Python codebases
 
 ## Two tracks of addressing
 
@@ -30,11 +40,11 @@ Pick whichever track is cheaper for the input you have:
 
 ```python
 # Track A: I have a line number from a stack trace.
-get(kind='pycode',   id='precis/src/precis/cli.py~L142')
+get(kind='python',   id='precis/src/precis/cli.py~L142')
 get(kind='markdown', id='notes/meeting.md~L42-58')
 
 # Track B: I have a stable name from a previous response or a search hit.
-get(kind='pycode',   id='precis/src/precis/cli.py~_cmd_serve')
+get(kind='python',   id='precis/src/precis/cli.py~_cmd_serve')
 get(kind='markdown', id='notes/meeting.md~conclusion')
 ```
 
@@ -91,7 +101,7 @@ Each kind can have multiple roots, named by alias:
 
 ```
 PRECIS_MARKDOWN_ROOTS=notes:/Users/bots/notes,work:/Users/bots/work-docs
-PRECIS_PYCODE_ROOTS=precis:/path/to/precis,cluster:/path/to/cluster
+PRECIS_PYTHON_ROOTS=precis:/path/to/precis,cluster:/path/to/cluster
 ```
 
 When **only one root is configured**, the alias is implicit:
@@ -130,7 +140,7 @@ search(kind='markdown', q='deadline', scope='notes/meeting.md')
 ## Write
 
 Four modes. Available on R/W kinds (`markdown`, `plaintext`, `rmk`,
-`docx`, `tex`, `book`); not on `pycode` or `git` (read-only).
+`docx`, `tex`, `book`); not on `python` or `git` (read-only).
 
 ```python
 # Create a new file.
@@ -187,12 +197,9 @@ Every `get` checks the file's mtime. If unchanged, cached blocks
 are served. If changed, the handler re-hashes + re-parses before
 responding. Stable names survive re-ingest.
 
-You do not have to ingest manually. To pre-warm a directory before
-long-running searches:
-
-```
-precis jobs ingest-md /path/to/docs    # markdown
-```
+You do not have to ingest manually. The first `get` or `search`
+that touches a file pulls it through the parser; subsequent calls
+hit the cached blocks.
 
 ## Limits + safety
 
@@ -207,6 +214,6 @@ precis jobs ingest-md /path/to/docs    # markdown
 
 - `precis-overview` — verbs and kinds
 - `precis-markdown-help` — `.md` block grammar and recipes
-- `precis-pycode-help` — Python codebase navigation
+- `precis-python-help` — Python codebase navigation
 - `precis-relations` — typed links between refs (file ↔ paper ↔ memory)
 - `precis-navigation` — recipes for common cross-kind flows

@@ -125,17 +125,6 @@ put(kind='memory',
 
 The block becomes citable from anywhere.
 
-## Pre-warm with the CLI
-
-The handler ingests lazily; you usually never need to pre-warm. But
-before launching long-running searches over a fresh directory:
-
-```
-precis jobs ingest-md                    # uses PRECIS_MARKDOWN_ROOTS
-precis jobs ingest-md /path/to/dir       # one-off
-precis jobs ingest-md --force            # re-ingest everything
-```
-
 ## Limits
 
 - ATX headings only (no setext).
@@ -148,5 +137,5 @@ precis jobs ingest-md --force            # re-ingest everything
 ## See also
 
 - `precis-files-help` — shared addressing model for all file kinds
-- `precis-pycode-help` — code navigation (different parser, same shape)
+- `precis-python-help` — code navigation (different parser, same shape)
 - `precis-relations` — typed links between refs

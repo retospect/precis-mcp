@@ -1,4 +1,4 @@
-# `pycode` — Python codebase navigation kind
+# `python` — Python codebase navigation kind
 
 > Status: **draft spec**. Not yet scheduled. Sized as a single phase
 > after phase 5 (state kinds), or sooner if it unblocks agent
@@ -24,47 +24,47 @@ gives drill-down. Same mental model as `paper`, different corpus.
 
 ```python
 # Top-level: a registered repo
-get(kind='pycode', id='precis-mcp-new')                  # repo overview
-get(kind='pycode', id='precis-mcp-new', view='toc')      # package tree
-get(kind='pycode', id='precis-mcp-new', view='entries')  # CLI/scripts/__main__
+get(kind='python', id='precis-mcp-new')                  # repo overview
+get(kind='python', id='precis-mcp-new', view='toc')      # package tree
+get(kind='python', id='precis-mcp-new', view='entries')  # CLI/scripts/__main__
 
 # Drill into a file
-get(kind='pycode', id='precis-mcp-new/src/precis/registry.py')
-get(kind='pycode', id='precis-mcp-new/src/precis/registry.py', view='outline')
-get(kind='pycode', id='precis-mcp-new/src/precis/registry.py', view='source')
-get(kind='pycode', id='precis-mcp-new/src/precis/registry.py~42-100')
+get(kind='python', id='precis-mcp-new/src/precis/registry.py')
+get(kind='python', id='precis-mcp-new/src/precis/registry.py', view='outline')
+get(kind='python', id='precis-mcp-new/src/precis/registry.py', view='source')
+get(kind='python', id='precis-mcp-new/src/precis/registry.py~42-100')
 
 # Drill into a symbol (slug = qualified dotted path)
-get(kind='pycode', id='precis-mcp-new::precis.registry.Registry')
-get(kind='pycode', id='precis-mcp-new::precis.registry.Registry.get')
+get(kind='python', id='precis-mcp-new::precis.registry.Registry')
+get(kind='python', id='precis-mcp-new::precis.registry.Registry.get')
 
 # Composition from an entry point
-get(kind='pycode', id='precis-mcp-new', view='callgraph',
+get(kind='python', id='precis-mcp-new', view='callgraph',
     entry='precis.cli:main')
-get(kind='pycode', id='precis-mcp-new', view='callgraph',
+get(kind='python', id='precis-mcp-new', view='callgraph',
     entry='precis.cli:main', depth=3)
 
 # Runtime overlay (opt-in; runs the code under sys.setprofile)
-get(kind='pycode', id='precis-mcp-new', view='runtrace',
+get(kind='python', id='precis-mcp-new', view='runtrace',
     entry='precis.cli:main', argv=['--help'])
 
 # Search
-search(kind='pycode', q='attribution footer rendering', scope='precis-mcp-new')
-search(kind='pycode', q='cache TTL handling',
+search(kind='python', q='attribution footer rendering', scope='precis-mcp-new')
+search(kind='python', q='cache TTL handling',
        scope='precis-mcp-new::precis.handlers')
 
 # Register / unregister a repo
-put(kind='pycode', id='precis-mcp-new',
+put(kind='python', id='precis-mcp-new',
     text='/Users/bots/Documents/.../precis-mcp-new', mode='register')
-put(kind='pycode', id='precis-mcp-new', mode='reindex')
-put(kind='pycode', id='precis-mcp-new', mode='unregister')
+put(kind='python', id='precis-mcp-new', mode='reindex')
+put(kind='python', id='precis-mcp-new', mode='unregister')
 ```
 
 ### KindSpec
 
 ```python
 KindSpec(
-    kind='pycode', title='Python code navigator',
+    kind='python', title='Python code navigator',
     supports_get=True, supports_search=True, supports_put=True,
     is_numeric=False, id_required=True,
     views=('toc', 'entries', 'outline', 'source', 'callgraph',
@@ -90,11 +90,11 @@ return a disambiguation list (precis-style "options=" hint).
 
 ## Data model
 
-One **ref per repo** in a new `pycode` corpus. Repo path stored in
-`refs.meta.path`. Indexing is a side-table `pycode_symbols`:
+One **ref per repo** in a new `python` corpus. Repo path stored in
+`refs.meta.path`. Indexing is a side-table `python_symbols`:
 
 ```sql
-create table pycode_symbols (
+create table python_symbols (
   ref_id      bigint not null references refs(id) on delete cascade,
   qualname    text not null,         -- e.g. precis.registry.Registry.get
   kind        text not null,         -- module|class|function|method
@@ -107,16 +107,16 @@ create table pycode_symbols (
   meta        jsonb not null default '{}',
   primary key (ref_id, qualname)
 );
-create index on pycode_symbols (ref_id, file);
-create index on pycode_symbols (ref_id, parent);
-create index on pycode_symbols using gin (to_tsvector('english',
+create index on python_symbols (ref_id, file);
+create index on python_symbols (ref_id, parent);
+create index on python_symbols using gin (to_tsvector('english',
   coalesce(docstring, '') || ' ' || qualname));
 ```
 
-A second table `pycode_calls` for static call edges:
+A second table `python_calls` for static call edges:
 
 ```sql
-create table pycode_calls (
+create table python_calls (
   ref_id    bigint not null references refs(id) on delete cascade,
   caller    text not null,           -- qualname
   callee    text not null,           -- qualname (or "ext:<name>" for unresolved)
@@ -124,8 +124,8 @@ create table pycode_calls (
   line      int  not null,
   primary key (ref_id, caller, callee, file, line)
 );
-create index on pycode_calls (ref_id, caller);
-create index on pycode_calls (ref_id, callee);
+create index on python_calls (ref_id, caller);
+create index on python_calls (ref_id, callee);
 ```
 
 Both populated by the indexer on `mode='register'` and `mode='reindex'`.
@@ -137,7 +137,7 @@ Re-index is incremental by file mtime.
 2. **Parse** each `.py` file with `ast.parse`. No tree-sitter dep
    for v1 — stdlib `ast` is fast enough (~1ms/file) and zero-cost.
 3. **Outline pass** — collect modules, classes, functions, methods,
-   docstrings, signatures, line ranges → `pycode_symbols`.
+   docstrings, signatures, line ranges → `python_symbols`.
 4. **Import pass** — record `import x` and `from a.b import c` per
    module → name-resolution table (in-memory, used by step 5).
 5. **Call pass** — for each `ast.Call` node, attempt static
@@ -146,7 +146,7 @@ Re-index is incremental by file mtime.
    - module-level names + imports
    - class MRO for method calls on `self`
    - fallback `ext:<name>` for unresolved (stdlib, third-party, dynamic)
-   Edges → `pycode_calls`.
+   Edges → `python_calls`.
 6. **Embed** outline rows (`qualname + signature + docstring`)
    into `blocks.embedding` for semantic `search`. One block per symbol.
 
@@ -159,9 +159,10 @@ costs the most.
 Hooks for upgrades, behind feature flags, deferred:
 
 - **`tree-sitter-python`** — only if multi-language support is added
-  later (Rust, JS). Add `pycode` → `code` rename.
+  later (Rust, JS). At that point rename `python` → `code` (or add
+  sibling kinds `rust`, `javascript`, `go`).
 - **`jedi` / `pyright`** — for cross-file type-aware resolution.
-  Slower; gates behind `requires_env=('PYCODE_TYPED',)`.
+  Slower; gates behind `requires_env=('PRECIS_PYTHON_TYPED',)`.
 
 ## Views
 
@@ -193,9 +194,9 @@ Hooks for upgrades, behind feature flags, deferred:
   └── store/                           package
 
 Next:
-  get(kind='pycode', id='precis-mcp-new', view='entries')
-  get(kind='pycode', id='precis-mcp-new::precis.registry')
-  get(kind='pycode', id='precis-mcp-new', view='callgraph',
+  get(kind='python', id='precis-mcp-new', view='entries')
+  get(kind='python', id='precis-mcp-new::precis.registry')
+  get(kind='python', id='precis-mcp-new', view='callgraph',
       entry='precis.cli:main')
 ```
 
@@ -209,15 +210,15 @@ call sites.
 # precis-mcp-new — entry points
 
   Console scripts:
-    precis            → precis.cli:main         (registered)
-    precis-paper      → precis.cli:paper_main   (registered)
+    precis            entry: precis.cli:main          file: src/precis/cli.py:42
+    precis-paper      entry: precis.cli:paper_main    file: src/precis/cli.py:118
 
   __main__ guards:
     src/precis/server.py:142    runs `serve()`
     src/precis/ingest.py:284    debug bulk-ingest
 
 Next:
-  get(kind='pycode', id='precis-mcp-new', view='callgraph',
+  get(kind='python', id='precis-mcp-new', view='callgraph',
       entry='precis.cli:main')
 ```
 
@@ -246,15 +247,15 @@ Next:
          L136  __len__(self) -> int
 
 Next:
-  get(kind='pycode', id='precis-mcp-new::precis.registry.Registry')
-  get(kind='pycode', id='precis-mcp-new/src/precis/registry.py~21-100',
+  get(kind='python', id='precis-mcp-new::precis.registry.Registry')
+  get(kind='python', id='precis-mcp-new/src/precis/registry.py~21-100',
       view='source')
 ```
 
 ### `outline` on a symbol — drill-down
 
 ```python
-get(kind='pycode', id='precis-mcp-new::precis.registry.Registry')
+get(kind='python', id='precis-mcp-new::precis.registry.Registry')
 ```
 
 ```
@@ -295,7 +296,7 @@ can read code without falling back to `read_file`.
 The flagship view. Tree (not graphviz) rooted at `entry=`.
 
 ```python
-get(kind='pycode', id='precis-mcp-new', view='callgraph',
+get(kind='python', id='precis-mcp-new', view='callgraph',
     entry='precis.cli:main', depth=3)
 ```
 
@@ -346,7 +347,7 @@ Opt-in. Runs the entry point in a subprocess under `sys.setprofile`
 counts and elapsed time, and overlays it on the static graph.
 
 ```python
-get(kind='pycode', id='precis-mcp-new', view='runtrace',
+get(kind='python', id='precis-mcp-new', view='runtrace',
     entry='precis.cli:main', argv=['--version'])
 ```
 
@@ -367,7 +368,7 @@ Next:
   get(...view='callgraph', entry='precis.cli:main')
 ```
 
-Sandboxing: `runtrace` is **gated by an env var** (`PYCODE_ALLOW_EXEC=1`)
+Sandboxing: `runtrace` is **gated by an env var** (`PRECIS_PYTHON_ALLOW_EXEC=1`)
 because it executes user code. Default off. Document loudly.
 
 ### `imports`, `symbols` — flat helper views
@@ -379,7 +380,7 @@ because it executes user code. Default off. Document loudly.
 
 ## Search
 
-`search(kind='pycode', q=…)` does hybrid search over the symbol
+`search(kind='python', q=…)` does hybrid search over the symbol
 index:
 - **lexical** on `qualname || signature || docstring` (pg_trgm /
   to_tsvector)
@@ -387,10 +388,10 @@ index:
 
 `scope=` accepts repo, package, or file:
 ```python
-search(kind='pycode', q='cache attribution', scope='precis-mcp-new')
-search(kind='pycode', q='cache attribution',
+search(kind='python', q='cache attribution', scope='precis-mcp-new')
+search(kind='python', q='cache attribution',
        scope='precis-mcp-new::precis.handlers')
-search(kind='pycode', q='cache attribution',
+search(kind='python', q='cache attribution',
        scope='precis-mcp-new/src/precis/handlers/_cache_base.py')
 ```
 
@@ -398,14 +399,14 @@ search(kind='pycode', q='cache attribution',
 
 The symbol index already knows `(file, start_line, end_line)` for every
 qualname, so mapping any symbol to its git history is nearly free. Git
-becomes first-class in `pycode`, plus a small sibling `git` kind for
+becomes first-class in `python`, plus a small sibling `git` kind for
 repo-scoped questions that don't need symbols.
 
 ### Library choice
 
 Shell out to `git` via `subprocess` for v1. Zero deps, every cluster
 node has git, same pattern the existing `code-repo-mcp` uses. Wrap
-behind `pycode_index/git.py` (~100 LOC) so we can swap to `dulwich`
+behind `python_index/git.py` (~100 LOC) so we can swap to `dulwich`
 (pure-Python, Apache-2.0) later without touching handlers.
 
 | Library | Verdict |
@@ -417,14 +418,14 @@ behind `pycode_index/git.py` (~100 LOC) so we can swap to `dulwich`
 | `PyDriller` | Skip. Too heavy; builds on GitPython. |
 | `gitoxide` (Rust) | Skip. Pre-1.0, no Python bindings. |
 
-### New `pycode` views (symbol-scoped)
+### New `python` views (symbol-scoped)
 
 ```python
-get(kind='pycode', id='...::Registry.get', view='blame')
-get(kind='pycode', id='...::Registry.get', view='log')
-get(kind='pycode', id='...::Registry.get', view='churn', days=90)
-get(kind='pycode', id='...::Registry.get', view='owners')
-get(kind='pycode', id='...::Registry.get',
+get(kind='python', id='...::Registry.get', view='blame')
+get(kind='python', id='...::Registry.get', view='log')
+get(kind='python', id='...::Registry.get', view='churn', days=90)
+get(kind='python', id='...::Registry.get', view='owners')
+get(kind='python', id='...::Registry.get',
     view='diff', ref_from='v0.3.0', ref_to='HEAD')
 ```
 
@@ -475,7 +476,7 @@ search(kind='git', q='cache attribution', scope='precis-mcp-new')  # commit mess
 Read-only. No `mode='checkout'`, no `mode='commit'` — that's
 coding-agent territory and stays out of precis.
 
-Same `pycode_index.git` helper powers both kinds. The `git` handler
+Same `python_index.git` helper powers both kinds. The `git` handler
 is ~120 LOC on top of the shared library.
 
 ### What we steal from Aider
@@ -484,8 +485,8 @@ is ~120 LOC on top of the shared library.
   `/git`, `/diff`, `/undo` chat commands inspire our `log`/`diff`
   views.
 - **Not stolen here**: auto-commit / dirty-commit of LLM edits. That
-  belongs to `code-repo-mcp` (the coding-agent), not `pycode` —
-  `pycode` is read-only by design.
+  belongs to `code-repo-mcp` (the coding-agent), not `python` —
+  `python` is read-only by design.
 
 ### Deferred
 
@@ -501,14 +502,14 @@ is ~120 LOC on top of the shared library.
 ## Out of scope (defer)
 
 - Multi-language support (Rust, JS, Go) — design leaves room via
-  the `kind` rename `pycode` → `code` and a backend Protocol, but
+  the `kind` rename `python` → `code` and a backend Protocol, but
   v1 ships Python only.
 - Type inference (jedi / pyright). Worth it later for accurate
   cross-file dispatch resolution.
 - Test → tested-symbol mapping (would be killer for review agents,
   but needs coverage data).
 - Diff-aware reindex on PR branches.
-- Live LSP integration (would let pycode share an index with the
+- Live LSP integration (would let python share an index with the
   user's editor).
 - Mutation: `put(mode='edit', text=…)` is **explicitly out** —
   precis stays read-only on code; editing belongs to the editor /
@@ -516,39 +517,41 @@ is ~120 LOC on top of the shared library.
 
 ## Test plan (~30 tests)
 
-- `tests/test_pycode_outline.py` — 8 tests: classes, nested classes,
+- `tests/test_python_outline.py` — 8 tests: classes, nested classes,
   decorators (`@dataclass`, `@property`), async functions, type-only
   imports, no-symbols file, syntax-error file (graceful degrade),
   unicode in identifiers.
-- `tests/test_pycode_callgraph.py` — 8 tests: simple chain, recursion
+- `tests/test_python_callgraph.py` — 8 tests: simple chain, recursion
   cycle, method-on-self, classmethod, super() call, unresolved ext,
   depth truncation, entry parsing (`module:func` vs console-script).
-- `tests/test_pycode_addressing.py` — 6 tests: file id, line-range,
+- `tests/test_python_addressing.py` — 6 tests: file id, line-range,
   symbol id, package id, ambiguous shortname, malformed id.
-- `tests/test_pycode_search.py` — 4 tests: lexical hit on qualname,
+- `tests/test_python_search.py` — 4 tests: lexical hit on qualname,
   semantic hit on docstring, scope narrowing, no-match.
-- `tests/test_pycode_indexer.py` — 4 tests: register / reindex / mtime
+- `tests/test_python_indexer.py` — 4 tests: register / reindex / mtime
   incremental / gitignore respect.
-- `tests/test_pycode_runtrace.py` — gated, 2 tests: only run when
-  `PYCODE_ALLOW_EXEC=1`. Skipped in CI by default; runs locally.
+- `tests/test_python_runtrace.py` — gated, 2 tests: only run when
+  `PRECIS_PYTHON_ALLOW_EXEC=1`. Skipped in CI by default; runs locally.
 
 ## Suggested commit sequence
 
-1. **Migration `0003_pycode.sql`** — `pycode_symbols`, `pycode_calls`,
-   indexes, `pycode` corpus seed, `pycode` row in the `kinds` reference
-   table.
-2. **`PycodeIndexer`** in `src/precis/pycode/indexer.py` — pure logic,
+1. **Migration `0005_python.sql`** — `python_symbols`, `python_calls`,
+   indexes, and a `python` row in the `kinds` reference table.
+   (Migration 0004 already registered the other file kinds; `python`
+   is added here rather than in 0004 so it lands in the same commit
+   as the indexer that gives it meaning.)
+2. **`PythonIndexer`** in `src/precis/python/indexer.py` — pure logic,
    no DB. Two passes: outline + calls. Handles syntax errors. Tests.
-3. **`PycodeStore` mixin** on `Store` — register, reindex, lookup
+3. **`PythonStore` mixin** on `Store` — register, reindex, lookup
    helpers. Tests against `fresh_db`.
-4. **`PycodeHandler`** in `src/precis/handlers/pycode.py` — `get`
+4. **`PythonHandler`** in `src/precis/handlers/python.py` — `get`
    first (toc, outline, source); search next; put (register / reindex)
    last. Wire into `registry.py`.
 5. **`callgraph` view** — tree formatter + cycle detection + depth
    truncation. Tests.
 6. **`entries` view** — pyproject parser + `__main__` guard scanner.
 7. **`runtrace` view** — subprocess + `sys.setprofile`; gated by env.
-8. **`precis-pycode-help.md` skill** — agent-facing docs (top of file:
+8. **`precis-python-help.md` skill** — agent-facing docs (top of file:
    "use this for any Python codebase navigation; do not paste files
    into context").
 9. Self-test: register `precis-mcp-new` itself, run callgraph from

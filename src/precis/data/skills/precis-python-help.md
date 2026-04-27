@@ -1,28 +1,27 @@
 ---
-id: precis-pycode-help
+id: precis-python-help
 title: precis — navigate Python codebases
 status: spec (unbuilt)
 tier: 1
 floor: any
-applies-to: get/search (kind='pycode'); read-only in v1
+applies-to: get/search (kind='python'); read-only in v1
 last-updated: 2026-04-27
 ---
 
-# precis-pycode-help — Python codebase navigation
+# precis-python-help — Python codebase navigation
 
 For shared addressing (two tracks, multi-root, response shape) read
 `precis-files-help` first. This skill covers what's special about
 **code**: headers carry **graph metadata**.
 
-> Use `pycode` for any Python codebase navigation task. **Do not**
+> Use `python` for any Python codebase navigation task. **Do not**
 > paste files into context to orient yourself; that wastes tokens
-> on imports, boilerplate, and whitespace. `pycode` gives you the
+> on imports, boilerplate, and whitespace. `python` gives you the
 > map first, the source last.
 
 ## What makes code different
 
-A markdown block is a leaf — it has a slug and that's it. A Python
-**header** (a class, function, or method) sits in a graph:
+A Python **header** (a class, function, or method) sits in a graph:
 
 ```
 Registry
@@ -39,25 +38,25 @@ edges traversable in one response.**
 
 ## Three address forms
 
-Pycode accepts three id shapes:
+Python accepts three id shapes:
 
 ```python
 # 1. File path — like every other file kind. Same Track A/B rules.
-get(kind='pycode', id='precis/src/precis/registry.py')
-get(kind='pycode', id='precis/src/precis/registry.py~Registry')
-get(kind='pycode', id='precis/src/precis/registry.py~Registry.get')
-get(kind='pycode', id='precis/src/precis/registry.py~L42-100')
+get(kind='python', id='precis/src/precis/registry.py')
+get(kind='python', id='precis/src/precis/registry.py~Registry')
+get(kind='python', id='precis/src/precis/registry.py~Registry.get')
+get(kind='python', id='precis/src/precis/registry.py~L42-100')
 
 # 2. Qualname shortcut — when you know the dotted name, skip the path.
-get(kind='pycode', id='precis::precis.registry.Registry.get')
+get(kind='python', id='precis::precis.registry.Registry.get')
 
 # 3. Repo overview.
-get(kind='pycode', id='precis')
-get(kind='pycode', id='precis', view='toc')
-get(kind='pycode', id='precis', view='entries')
+get(kind='python', id='precis')
+get(kind='python', id='precis', view='toc')
+get(kind='python', id='precis', view='entries')
 ```
 
-The `::` shortcut is pycode-specific. The handler's symbol index
+The `::` shortcut is python-specific. The handler's symbol index
 maps qualname → file + line range, so you don't have to know the
 file. If the qualname is ambiguous, you get `BadInput` with
 `options=` listing all matching qualnames.
@@ -71,14 +70,14 @@ file. If the qualname is ambiguous, you get `BadInput` with
 
 ```python
 # Track A: I have a line from a traceback.
-get(kind='pycode', id='precis/src/precis/cli.py~L142')
+get(kind='python', id='precis/src/precis/cli.py~L142')
 # → Resolved L142 to function _cmd_serve (lines 138-150).
 
 # Track B: I have a qualname.
-get(kind='pycode', id='precis::precis.cli._cmd_serve')
+get(kind='python', id='precis::precis.cli._cmd_serve')
 ```
 
-Track B in pycode is **not just a slug** — every header response
+Track B in python is **not just a slug** — every header response
 carries its graph context (parent, callers, callees, raises).
 
 ## Views
@@ -91,7 +90,7 @@ carries its graph context (parent, callers, callees, raises).
 | `outline` | richer per-file outline with type annotations |
 | `source` | raw source for the resolved region |
 | `callgraph` | entry-rooted call tree (requires `entry='module:func'`) |
-| `runtrace` | dynamic trace (gated by `PYCODE_ALLOW_EXEC=1`) |
+| `runtrace` | dynamic trace (gated by `PRECIS_PYTHON_ALLOW_EXEC=1`) |
 | `imports` | flat dependency map |
 | `symbols` | flat paginated symbol list |
 | `blame` / `log` / `churn` / `owners` / `diff` | git overlays |
@@ -102,10 +101,10 @@ carries its graph context (parent, callers, callees, raises).
 
 ```python
 # 1. Semantic search across the symbol index — qualname + signature + docstring.
-search(kind='pycode', q='cache attribution', scope='precis')
+search(kind='python', q='cache attribution', scope='precis')
 
 # 2. The hits come back as canonical addresses you can drill into.
-get(kind='pycode', id='precis::precis.handlers._cache_base.CacheBackedHandler')
+get(kind='python', id='precis::precis.handlers._cache_base.CacheBackedHandler')
 ```
 
 This is the single most token-efficient way to orient in an unfamiliar
@@ -117,27 +116,33 @@ exactly the symbols, not their bodies.
 
 ```python
 # `Traceback … File "src/precis/cli.py", line 142 …`
-get(kind='pycode', id='precis/src/precis/cli.py~L142')
+get(kind='python', id='precis/src/precis/cli.py~L142')
 
 # Response gives you both forms:
 #   precis/src/precis/cli.py~_cmd_serve  (function, lines 138-150)
 # Now read its callers and callees:
-get(kind='pycode', id='precis::precis.cli._cmd_serve')
+get(kind='python', id='precis::precis.cli._cmd_serve')
 ```
 
 ### Understand "how does `precis serve` boot?"
 
 ```python
-get(kind='pycode', id='precis', view='entries')
-# → precis console-script → precis.cli:main
+get(kind='python', id='precis', view='entries')
+# → precis console-script
+#     entry: precis.cli:main
+#     file:  precis/src/precis/cli.py:42
 
-get(kind='pycode', id='precis', view='callgraph',
+get(kind='python', id='precis', view='callgraph',
     entry='precis.cli:main', depth=3)
 # → tree of static call edges from main downward
 
 # Drill into the most interesting node from the graph:
-get(kind='pycode', id='precis::precis.runtime.build_runtime')
+get(kind='python', id='precis::precis.runtime.build_runtime')
 ```
+
+The `entries` view shows entry points in **both forms** — the
+`module:function` setuptools notation (used as `entry=` in
+`callgraph`) and the file path (use as a normal python id).
 
 Three calls, no `read_file`, no `grep`. The agent has the boot
 sequence mapped.
@@ -145,7 +150,7 @@ sequence mapped.
 ### Find every caller of a function
 
 ```python
-get(kind='pycode', id='precis::precis.registry.Registry.get')
+get(kind='python', id='precis::precis.registry.Registry.get')
 # Response includes a "Called by:" section:
 #   precis.runtime.build_runtime               1×
 #   precis.server.PrecisServer._dispatch       3×
@@ -158,10 +163,10 @@ view needed for this common question.
 
 ```python
 # Use TOC + outline first.
-get(kind='pycode', id='precis/src/precis/registry.py')
+get(kind='python', id='precis/src/precis/registry.py')
 
 # When you've narrowed it down, read the actual source.
-get(kind='pycode', id='precis::precis.registry.Registry.get', view='source')
+get(kind='python', id='precis::precis.registry.Registry.get', view='source')
 ```
 
 `source` returns the function body verbatim — same content
@@ -170,15 +175,15 @@ get(kind='pycode', id='precis::precis.registry.Registry.get', view='source')
 ### Git: who last touched this and why?
 
 ```python
-get(kind='pycode', id='precis::precis.registry.Registry.get', view='blame')
-get(kind='pycode', id='precis::precis.registry.Registry.get', view='log')
-get(kind='pycode', id='precis::precis.registry.Registry.get',
+get(kind='python', id='precis::precis.registry.Registry.get', view='blame')
+get(kind='python', id='precis::precis.registry.Registry.get', view='log')
+get(kind='python', id='precis::precis.registry.Registry.get',
     view='churn', days=90)
 ```
 
 Symbol-scoped (not file-scoped). Renames are followed automatically.
 
-## What pycode does NOT do
+## What python does NOT do
 
 - **Edit code.** Read-only in v1. Editing belongs to the editor /
   coding-agent. The unified file-handler base has the write
@@ -188,9 +193,9 @@ Symbol-scoped (not file-scoped). Renames are followed automatically.
   exists but is not wired.
 - **Type-aware resolution.** Static AST analysis only. `jedi` /
   `pyright` integration is gated behind a future
-  `PYCODE_TYPED=1` env var.
+  `PRECIS_PYTHON_TYPED=1` env var.
 - **Runtime mutation.** No `register` / `unregister` modes; repos
-  are configured via `PRECIS_PYCODE_ROOTS` env, not at runtime.
+  are configured via `PRECIS_PYTHON_ROOTS` env, not at runtime.
 
 ## See also
 

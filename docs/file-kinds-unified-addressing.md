@@ -1,14 +1,14 @@
 # Unified addressing for file-rooted kinds
 
 > Status: **design spec**, drafted after phase 6a (markdown) shipped
-> and before phase 6b (plaintext, rmk) and `pycode` (Python codebase
+> and before phase 6b (plaintext, rmk) and `python` (Python codebase
 > navigator) start. The goal is to lock down one address grammar
 > that every kind backed by an on-disk file (or directory of files)
 > agrees on, so the agent has a single mental model.
 
 ## Why
 
-By the end of phase 6 + pycode + git we will have at least eight
+By the end of phase 6 + python + git we will have at least eight
 file-rooted kinds:
 
 | Kind | Backing | R/W | TOC unit | Sub-file unit |
@@ -19,16 +19,16 @@ file-rooted kinds:
 | `docx` | Word `.docx` | yes | headings | paragraph (para id) |
 | `tex` | LaTeX `.tex` + project | yes | sections | block + label |
 | `book` | multi-file project | yes | chapter graph | per-file delegated |
-| `pycode` | `.py` repo | read-only (v1) | class/method tree | symbol (qualname) or line range |
+| `python` | `.py` repo | read-only (v1) | class/method tree | symbol (qualname) or line range |
 | `git` | any repo | read-only | branches/refs | commit/file/line |
 
 Each was designed in isolation; their addressing schemes drifted:
 
 - markdown encodes paths as `notes--meeting` (slug-safe `--`)
-- pycode keeps paths as `precis/src/precis/registry.py` (with `/`)
-- pycode uses `::` for symbols; markdown uses `~slug` for blocks
-- markdown uses `~A..B` for ranges (paper-style); pycode spec uses `~A-B`
-- markdown has one implicit root; pycode has many explicit ones
+- python keeps paths as `precis/src/precis/registry.py` (with `/`)
+- python uses `::` for symbols; markdown uses `~slug` for blocks
+- markdown uses `~A..B` for ranges (paper-style); python spec uses `~A-B`
+- markdown has one implicit root; python has many explicit ones
 
 The agent has to remember three grammars to do the same thing across
 three kinds. That's wasted context for no gain. This document picks
@@ -67,9 +67,9 @@ two-track model accommodates both inputs and gives the agent a
 durable handle (Track B) to use across calls.
 
 For markdown the headers are content-derived block slugs. For
-pycode they are qualnames — and pycode headers carry **graph
+python they are qualnames — and python headers carry **graph
 metadata** the other kinds don't have (parent, callers, callees,
-inherits). See `precis-pycode-help` for the graph-aware navigation.
+inherits). See `precis-python-help` for the graph-aware navigation.
 
 ## Design principles (derived)
 
@@ -117,13 +117,13 @@ get(kind='markdown', id='notes/meeting.md~3')           # block at pos 3
 get(kind='markdown', id='notes/meeting.md/toc')         # TOC view
 get(kind='markdown', id='notes/meeting.md/raw')         # source view
 
-# pycode
-get(kind='pycode', id='precis/src/precis/registry.py')             # file overview
-get(kind='pycode', id='precis/src/precis/registry.py~Registry')    # symbol (local)
-get(kind='pycode', id='precis/src/precis/registry.py~Registry.get')# nested symbol
-get(kind='pycode', id='precis/src/precis/registry.py~L42-100')     # line range
-get(kind='pycode', id='precis/src/precis/registry.py/outline')     # outline view
-get(kind='pycode', id='precis/src/precis/registry.py/callgraph')   # call graph
+# python
+get(kind='python', id='precis/src/precis/registry.py')             # file overview
+get(kind='python', id='precis/src/precis/registry.py~Registry')    # symbol (local)
+get(kind='python', id='precis/src/precis/registry.py~Registry.get')# nested symbol
+get(kind='python', id='precis/src/precis/registry.py~L42-100')     # line range
+get(kind='python', id='precis/src/precis/registry.py/outline')     # outline view
+get(kind='python', id='precis/src/precis/registry.py/callgraph')   # call graph
 ```
 
 ### Single-root shortcut (token efficiency)
@@ -172,9 +172,9 @@ priority order:
 | # | Pattern | Meaning | Applies to |
 |---|---|---|---|
 | 1 | `^L\d+(-\d+)?$` | line range (1-indexed, inclusive) | all kinds |
-| 2 | `^[a-z][a-z0-9_-]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$` | dotted symbol name | pycode (TODO: docx/tex labels) |
+| 2 | `^[a-z][a-z0-9_-]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$` | dotted symbol name | python (TODO: docx/tex labels) |
 | 3 | `^\d+$` | block position (0-indexed) | markdown, plaintext, rmk |
-| 4 | anything else | named slug | markdown (block slug), pycode (local symbol name), docx (paragraph id) |
+| 4 | anything else | named slug | markdown (block slug), python (local symbol name), docx (paragraph id) |
 
 The handler resolves the selector to a stable `(name, line_start,
 line_end)` tuple. **The response always quotes the resolved stable
@@ -196,11 +196,11 @@ stable slug for the *next* edit.
 ### Selector ambiguity rules
 
 - A bare integer is **always** a position (markdown) or rejected with
-  hint to use `L<n>` (pycode). Lines need the `L` prefix.
-- A dotted name is **always** a symbol (pycode); markdown rejects
+  hint to use `L<n>` (python). Lines need the `L` prefix.
+- A dotted name is **always** a symbol (python); markdown rejects
   with `BadInput` because block slugs don't contain dots.
 - A name that could be a symbol *or* a slug (no dot, no leading L)
-  is resolved per-kind: markdown → block slug; pycode → local
+  is resolved per-kind: markdown → block slug; python → local
   symbol name (must be unique within the file, else
   `BadInput("ambiguous: matches X, Y; use full qualname")`).
 
@@ -263,7 +263,7 @@ Views are the *render mode* for the resolved selector. Per kind:
 
 - `raw` — the full source text of the file (or, with a selector, the
   text of the resolved region only).
-- `source` — alias for `raw`. Pycode prefers `source`; markdown
+- `source` — alias for `raw`. Python prefers `source`; markdown
   prefers `raw`. Both work everywhere.
 
 ### Markdown / plaintext / rmk / docx / tex / book
@@ -273,14 +273,14 @@ Views are the *render mode* for the resolved selector. Per kind:
 - `toc` — full hierarchical TOC.
 - `raw` — full source.
 
-### Pycode (read-only v1)
+### Python (read-only v1)
 
 - (default) — file overview: imports + class/function tree.
 - `outline` — same as default but verbose (signatures + docstring
   heads + decorators + raises).
 - `source` — full source for the resolved region.
 - `callgraph` — entry-rooted static call tree (requires `entry=`).
-- `runtrace` — dynamic call trace (gated by `PYCODE_ALLOW_EXEC=1`).
+- `runtrace` — dynamic call trace (gated by `PRECIS_PYTHON_ALLOW_EXEC=1`).
 - `imports` — flat dependency map.
 - `symbols` — flat symbol list (paginated).
 - `blame`, `log`, `churn`, `owners`, `diff` — git overlays.
@@ -299,7 +299,7 @@ carries **both Track A and Track B forms** of the resolved address:
 Format rules:
 
 - **Path or qualname** comes first — whichever is the canonical form
-  for that kind. (Pycode prefers qualname for symbols; file-path
+  for that kind. (Python prefers qualname for symbols; file-path
   for files.)
 - **Coordinates** in parentheses afterwards — block pos for
   markdown/plaintext, line range for everything.
@@ -309,9 +309,9 @@ Format rules:
 
 The agent's next call can use either form. No round-trip needed.
 
-### Pycode canonical-response choice
+### Python canonical-response choice
 
-Pycode has two equivalent address forms for symbols:
+Python has two equivalent address forms for symbols:
 `repo/path/to/file.py~Symbol.method` and `repo::pkg.mod.Symbol.method`.
 The handler **emits the qualname form** in responses (shorter,
 file-move-resistant, idiomatic Python). It **accepts both forms**
@@ -322,15 +322,15 @@ as input.
 The unified TOC row carries four fields. Only fields that apply to a
 kind appear:
 
-| Field | Markdown | Pycode |
+| Field | Markdown | Python |
 |---|---|---|
 | **Stable name** | block slug | symbol qualname |
 | **Position** | line number (`L42`) | line number |
 | **Headline** | heading text (for headings); first 80 chars (for paragraphs) | signature `def f(x: int) -> str` |
 | **Summary** | n/a | first line of docstring, ≤80 chars |
-| **Edges** (pycode only) | n/a | `calls:`, `called by:`, `inherits:`, `raises:` |
+| **Edges** (python only) | n/a | `calls:`, `called by:`, `inherits:`, `raises:` |
 
-Pycode example:
+Python example:
 
 ```
 class Registry                                src/precis/registry.py:103
@@ -404,9 +404,9 @@ replaced block 'conclusion' (lines 42-58) in notes/meeting.md
 So an agent that started with a line range knows the durable address
 for follow-up edits.
 
-### Pycode mutation (deferred, designed-in)
+### Python mutation (deferred, designed-in)
 
-Pycode is read-only in v1 per its spec. But the unified base will
+Python is read-only in v1 per its spec. But the unified base will
 have all the write plumbing — adding `put(mode='replace',
 id='precis/src/precis/registry.py~Registry.get', text='…')` later
 is a subclass opt-in, not a re-architecture. The *policy* question
@@ -423,7 +423,7 @@ PRECIS_MARKDOWN_ROOT=/Users/bots/notes
 # New (unified)
 PRECIS_MARKDOWN_ROOTS=notes:/Users/bots/notes,work:/Users/bots/work-docs
 PRECIS_PLAINTEXT_ROOTS=scratch:/tmp/scratch
-PRECIS_PYCODE_ROOTS=precis-mcp-new:/Users/bots/.../precis-mcp-new,cluster:/Users/bots/.../openclaw-cluster
+PRECIS_PYTHON_ROOTS=precis-mcp-new:/Users/bots/.../precis-mcp-new,cluster:/Users/bots/.../openclaw-cluster
 ```
 
 ### Alias hygiene
@@ -437,7 +437,7 @@ addresses get an awkward stutter:
 ✓  precis-mcp-new/src/precis/cli.py # alias=precis-mcp-new (the repo name)
 ```
 
-For pycode, **use the repo name** (the directory name) as the alias.
+For python, **use the repo name** (the directory name) as the alias.
 For markdown / plaintext, any descriptive label is fine.
 
 Format: `alias:path` pairs separated by commas. Empty list (or unset)
@@ -446,7 +446,7 @@ dispatches by alias on every call.
 
 ### Why config-time, not runtime
 
-The pycode spec had `put(mode='register', text='/path')` for
+The python spec had `put(mode='register', text='/path')` for
 registering repos. Drop it. Roots are operator-level config, not
 agent-level mutation. Benefits:
 
@@ -501,9 +501,9 @@ audit. No data migration required.
 
 - The actual TOC tree-rendering code. That's per-kind, lives in each
   handler.
-- The pycode indexer (AST passes, call resolution). See
-  `docs/pycode-kind-spec.md`.
-- The git integration (blame, log, churn). See `pycode-kind-spec.md`
+- The python indexer (AST passes, call resolution). See
+  `docs/python-kind-spec.md`.
+- The git integration (blame, log, churn). See `python-kind-spec.md`
   §"Git integration".
 - The `book` kind's multi-file glue. Its `id` shape will follow this
   grammar; the *resolution* logic is the unique work.
@@ -513,7 +513,7 @@ audit. No data migration required.
 ## Open questions
 
 1. **Should view names allow per-kind aliases?** e.g. `outline` is
-   pycode's name for what markdown calls `toc`. Probably yes — keep
+   python's name for what markdown calls `toc`. Probably yes — keep
    per-kind primary names and let the parser accept the cross-kind
    alias as a hint with a "did you mean toc?" reply.
 
@@ -547,7 +547,7 @@ audit. No data migration required.
    ~30 min, breaks no production data.
 3. **Then 6b**: `plaintext` + `rmk` + extract `_FileHandlerBase`
    simultaneously, with the base shaped by the three concrete kinds.
-4. **Then pycode**: implement against this spec from day 0. Drop
+4. **Then python**: implement against this spec from day 0. Drop
    `::` as primary separator (keep as kind-specific shortcut for
    qualname-only lookup when file is unknown).
 5. **Then 6c**: `docx`, `tex`, `book`. Each is a session.
