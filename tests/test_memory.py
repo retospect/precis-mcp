@@ -125,7 +125,7 @@ def test_search_finds_match(handler: MemoryHandler) -> None:
 def test_search_no_match(handler: MemoryHandler) -> None:
     handler.put(text="hello world")
     r = handler.search(q="frobnicate")
-    assert "no memories match" in r.body
+    assert "no memory entries match" in r.body
 
 
 def test_search_requires_q(handler: MemoryHandler) -> None:

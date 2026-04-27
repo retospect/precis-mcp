@@ -8,9 +8,10 @@
 > Phases done: **1 (walking skeleton)**, **2 (DB backbone + memory)**,
 > **3 (paper kind + bundle ingest)** — see `docs/v2-cutover.md`,
 > **3.5 (navigation parity: hierarchical TOC, drill-down, Next: trailers)**,
-> **4a (cache-backed kinds: `math`, `youtube`, `web` page-fetch)**.
-> Queued: **4b (Perplexity, web bookmarks, Wayback)**.
-> Next: **5 (todo, gripe, fc, conv, quest, oracle, skill)**.
+> **4a (cache-backed kinds: `math`, `youtube`, `web` page-fetch)**,
+> **4b (Perplexity Sonar trio: `websearch` / `think` / `research`)**,
+> **5 (state kinds: `todo`, `gripe`, `fc`, `quest`, `conv`, `oracle`, `skill`)**.
+> Queued: web bookmark mode + Wayback (deferred), file handlers, polish.
 
 ## What v2 is
 
@@ -59,8 +60,8 @@ the schema.
 - [x] Phase 3 — `paper` kind: get/search, RRF block search, bundle ingest, `precis migrate` + `precis jobs ingest-bundle(s)` (see `docs/v2-cutover.md`)
 - [x] Phase 3.5 — navigation parity: hierarchical TOC, range-scoped drill-down (`~A..B/toc`), column-aligned `Next:` trailers on overview/chunk/toc views — *plan: `docs/phase3.5-plan.md`*
 - [x] Phase 4a — cache-backed kinds: `math` (Wolfram), `youtube` (transcripts), `web` (page fetch + trafilatura). Shared `CacheBackedHandler` base, `cache_state` CRUD, attribution footers + cost trailers — *plan: `docs/phase4-plan.md`*
-- [ ] Phase 4b — Perplexity (`websearch`/`think`/`research`), `web` bookmark mode, Wayback archive
-- [ ] Phase 5 — remaining state kinds (`todo`, `gripe`, `fc`, `conv`, `quest`, `oracle`, `skill`)
+- [x] Phase 4b — Perplexity Sonar trio: `websearch`, `think`, `research`. Shared base, per-tier model + TTL + cost; cache key includes model so tiers don't collide. Web bookmark mode + Wayback enrichment deferred (needs `put` on `web` kind).
+- [x] Phase 5 — state kinds: `todo` (with STATUS transitions and `/open` `/done` filters), `gripe`, `fc` (with `/due` view), `quest` (slug-addressed with auto-mint), `conv` (read-only with `/transcript` and per-turn nav), `oracle`, `skill` (markdown served from package data dir). Shared `NumericRefHandler` base extracted from MemoryHandler.
 - [ ] Phase 6 — file handlers (`docx`, `tex`, `markdown`, `book`, `plaintext`, `rmk`)
 - [ ] Phase 7 — polish: `/help`, hint channel, notifications, cost footer
 

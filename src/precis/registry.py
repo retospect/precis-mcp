@@ -45,12 +45,28 @@ def builtins(
 
     if store is not None:
         from precis.embedder import MockEmbedder
+        from precis.handlers.conversation import ConversationHandler
+        from precis.handlers.flashcard import FlashcardHandler
+        from precis.handlers.gripe import GripeHandler
         from precis.handlers.memory import MemoryHandler
+        from precis.handlers.oracle import OracleHandler
         from precis.handlers.paper import PaperHandler
+        from precis.handlers.quest import QuestHandler
+        from precis.handlers.skill import SkillHandler
+        from precis.handlers.todo import TodoHandler
 
         eff_embedder: Embedder = embedder or MockEmbedder(dim=store.embedding_dim())
 
+        # State kinds — numeric and slug-addressed refs. Cheap to
+        # instantiate (no network, no model load); always available.
         handlers.append(MemoryHandler(store=store))
+        handlers.append(TodoHandler(store=store))
+        handlers.append(GripeHandler(store=store))
+        handlers.append(FlashcardHandler(store=store))
+        handlers.append(QuestHandler(store=store))
+        handlers.append(ConversationHandler(store=store))
+        handlers.append(OracleHandler(store=store))
+        handlers.append(SkillHandler(store=store))
         handlers.append(PaperHandler(store=store, embedder=eff_embedder))
 
         # Cache-backed kinds. Each declares its env requirements via

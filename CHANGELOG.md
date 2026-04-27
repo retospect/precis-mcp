@@ -3,6 +3,83 @@
 All entries pre-1.0 are unreleased; v2 is in active development on the
 `v2` branch and not yet on PyPI.
 
+## Phase 5 — State kinds (todo, gripe, fc, quest, conv, oracle, skill)
+
+The bulk of the agent-facing API for personal state. Six new kinds
+plus the shared base that finally makes adding a new ref kind trivial.
+**447 tests green, 1 skip.**
+
+- `precis.handlers._numeric_ref.NumericRefHandler` — extracts the
+  shared CRUD shape (get / search / put-create / put-update /
+  delete / list-recent) that MemoryHandler had grown organically.
+  Subclass contract is tiny: `spec`, `kind`, `sense`,
+  `default_tags_on_create`, optional `_render_one` /
+  `_render_search_hit` / `_list_view` / `_render_create_ack`.
+- `precis.handlers.memory` — refactored to a 30-line subclass of
+  the new base. All 20 memory tests still green.
+- `TodoHandler` — STATUS:open default-on-create; status transitions
+  via closed-prefix tag replacement (STATUS:doing supersedes
+  STATUS:open atomically); `/open`, `/doing`, `/blocked`, `/done`,
+  `/queue` list views; aligned Next: trailers on every view.
+- `GripeHandler` — minimal numeric-ref kind. No default tags,
+  free-form body. Lexical search.
+- `FlashcardHandler` (`fc`) — knowledge statements with SM-2 review
+  state in `ref.meta`. `/due` view surfaces cards whose
+  `next_review` is in the past plus an "upcoming within 3 days"
+  block. The actual SM-2 grader is deferred until the review-feedback
+  agent surface lands.
+- `QuestHandler` — slug-addressed work-queue kind with auto-mint:
+  `put(text=...)` derives a slug via `slug_from_text`, appends
+  `-2`/`-3` on collision. Same STATUS: vocabulary as todos. `/open`
+  / `/doing` / `/blocked` / `/done` filters.
+- `ConversationHandler` — read-only durable transcripts; one block
+  per turn. Three views: overview (`slug`), full transcript
+  (`slug/transcript`), single turn (`slug~N`). Block-level
+  fused-search via `slug` scope.
+- `OracleHandler` — slug-addressed authoritative reference nodes
+  (e.g. saved rubrics, prompts). Read-only in phase 5; future `put`
+  adds versioning.
+- `SkillHandler` — markdown skills served from
+  `precis.data.skills` package data via `importlib.resources` (so
+  it works from a wheel). `get(kind='skill')` lists every skill with
+  its title; `get(kind='skill', id='precis-overview')` returns the
+  raw markdown; `search(kind='skill', q='...')` does case-insensitive
+  full-text search across all skills. Front-matter `title:` is
+  surfaced in the index. Read-only by design — skills are versioned
+  with code.
+- 51 new tests across 3 files: `test_todo.py` (16), `test_state_kinds.py`
+  (24), `test_skill.py` (11).
+
+## Phase 4b — Perplexity Sonar trio
+
+Three new cache-backed kinds sharing one shared base. **396 tests
+green, 1 skip.**
+
+- `precis.handlers.perplexity._PerplexityBase` (subclass of
+  `CacheBackedHandler`). Subclasses set `model`, `timeout`,
+  `cost_per_call_usd`, `ttl_seconds`, and an attribution string.
+- `WebsearchHandler` — `sonar`, 30s timeout, 7-day TTL,
+  ~$0.001/call.
+- `ThinkHandler` — `sonar-reasoning-pro`, 120s, 30-day TTL,
+  ~$0.005/call.
+- `ResearchHandler` — `sonar-deep-research`, 600s, **pinned**
+  cache (these cost ~$0.50 each — never expire automatically),
+  ~$0.50/call.
+- Cache key is `<model>:<query>` so the same prompt under different
+  tiers never collides on the `(provider='perplexity',
+  request_hash)` unique index.
+- Per-Perplexity-ToS attribution: every response carries a footer
+  noting AI generation, model used, citations are not primary
+  sources, and ToS disclosure requirements.
+- Cache-hit Next: trailer suggests the next tier up
+  (websearch → think → research) and a deep-link to fetch the
+  first cited URL via `kind='web'` for primary-source verification.
+- Migration `0003_perplexity_kinds.sql` registers the three kinds
+  in the `kinds` table.
+- 23 new tests with mocked httpx + env. All HTTP error cases
+  (401/429/5xx/timeout/network) map to the correct `Upstream`
+  variants.
+
 ## Phase 4a — Cache-backed kinds (math, youtube, web)
 
 Three new kinds plus the shared infrastructure they need. 331 tests
