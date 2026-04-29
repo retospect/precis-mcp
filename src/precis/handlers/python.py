@@ -31,6 +31,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _python_callgraph as cgraph
 from precis.handlers import _python_entries as entries_mod
 from precis.handlers import _python_render as render
+from precis.handlers import _python_runtrace as rtrace
 from precis.handlers import _python_write as write
 from precis.protocol import Handler, KindSpec
 from precis.python_index import ModuleIndex, RepoCache, RepoIndex, Symbol
@@ -40,7 +41,8 @@ from precis.utils.search_header import format_search_headline
 log = logging.getLogger(__name__)
 
 
-_SUPPORTED_VIEWS = ("toc", "outline", "source", "callgraph", "entries")
+_SUPPORTED_VIEWS = ("toc", "outline", "source", "callgraph", "entries", "runtrace")
+_RUNTRACE_GATE_ENV = "PRECIS_PYTHON_ALLOW_EXEC"
 _SUPPORTED_PUT_MODES = ("create", "append", "replace", "delete")
 
 
@@ -261,6 +263,9 @@ class PythonHandler(Handler):
         entry: str | None = None,
         depth: int = 3,
         cross_repo: bool = False,
+        argv: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int = 10,
         **_kw: Any,
     ) -> Response:
         # Index — no id, or "/" sentinel.
@@ -286,6 +291,19 @@ class PythonHandler(Handler):
                 idx=idx,
                 entry=entry,
                 depth=depth,
+                cross_repo=cross_repo,
+            )
+
+        # Runtrace view — gated; spawns a subprocess.
+        if view == "runtrace":
+            return self._render_runtrace(
+                parsed=parsed,
+                idx=idx,
+                root=root,
+                entry=entry,
+                argv=argv,
+                env=env,
+                timeout=timeout,
                 cross_repo=cross_repo,
             )
 
@@ -913,6 +931,112 @@ class PythonHandler(Handler):
             entry=entry,
             max_depth=depth,
             cross_repo=cross_repo,
+        )
+        return Response(body=body)
+
+    def _render_runtrace(
+        self,
+        *,
+        parsed: _ParsedId,
+        idx: RepoIndex,
+        root: Path,
+        entry: str | None,
+        argv: list[str] | None,
+        env: dict[str, str] | None,
+        timeout: int,
+        cross_repo: bool,
+    ) -> Response:
+        """Spawn a subprocess that runs `entry` under `sys.setprofile`,
+        capture call events, and overlay them on the static call set.
+
+        Gated by ``PRECIS_PYTHON_ALLOW_EXEC=1`` because it executes
+        user code. Off by default. The error message points at the
+        env var so the agent's recovery path is unambiguous.
+        """
+        import os
+
+        # ── address validation ─────────────────────────────────────
+        if (
+            parsed.file is not None
+            or parsed.qualname is not None
+            or parsed.start_line is not None
+            or parsed.block_selector is not None
+        ):
+            raise BadInput(
+                "view='runtrace' takes a bare alias id",
+                next=f"get(kind='python', id={parsed.alias!r}, view='runtrace', "
+                f"args={{'entry': 'pkg.mod:func'}})",
+            )
+        if entry is None or not entry.strip():
+            raise BadInput(
+                "view='runtrace' requires entry=",
+                next=f"get(kind='python', id={parsed.alias!r}, view='runtrace', "
+                f"args={{'entry': 'pkg.mod:func', 'argv': ['--help']}})",
+            )
+        if not isinstance(timeout, int) or timeout < 1 or timeout > 60:
+            raise BadInput(
+                f"timeout must be an int in [1, 60]; got {timeout!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='runtrace', "
+                f"args={{'entry': {entry!r}, 'timeout': 10}})",
+            )
+
+        # ── env gate ───────────────────────────────────────────────
+        if os.environ.get(_RUNTRACE_GATE_ENV) != "1":
+            raise BadInput(
+                f"runtrace is gated by {_RUNTRACE_GATE_ENV}=1 because it "
+                "executes user code in a subprocess",
+                next=(
+                    f"export {_RUNTRACE_GATE_ENV}=1 to enable, or use "
+                    f"view='callgraph' for static analysis "
+                    f"(args={{'entry': {entry!r}}})"
+                ),
+            )
+
+        # ── run trace ──────────────────────────────────────────────
+        # Make the configured root importable from the subprocess.
+        # When cross_repo=True, also expose every other configured root.
+        syspath_entries: list[Path] = [root, root.parent]
+        if cross_repo:
+            for alias, other in self.roots.items():
+                if alias == parsed.alias:
+                    continue
+                syspath_entries.append(other)
+                syspath_entries.append(other.parent)
+
+        result = rtrace.run_trace(
+            entry=entry,
+            argv=list(argv or []),
+            cwd=root,
+            timeout=timeout,
+            env=env,
+            syspath=syspath_entries,
+            max_events=10_000,
+        )
+
+        # ── build tree + static-only diff ──────────────────────────
+        tree = rtrace.build_tree(result.events)
+        runtime_qualnames = rtrace.collect_runtime_qualnames(tree)
+
+        # The static-only diff only makes sense when entry resolves to
+        # a known qualname in the indexed repo. If it doesn't (e.g.
+        # the user pointed at an installed-but-not-indexed package),
+        # skip the diff.
+        entry_qn = entry.replace(":", ".")
+        static_only: list[str] | None = None
+        if idx.symbol(entry_qn) is not None:
+            static_only = rtrace.static_only_qualnames(
+                idx=idx,
+                entry_qualname=entry_qn,
+                runtime_qualnames=runtime_qualnames,
+            )
+
+        body = rtrace.render_runtrace(
+            alias=parsed.alias,
+            entry=entry,
+            argv=list(argv or []),
+            result=result,
+            tree=tree,
+            static_only=static_only,
         )
         return Response(body=body)
 
