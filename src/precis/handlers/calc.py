@@ -48,11 +48,50 @@ class CalcHandler(Handler):
 
         try:
             result = expr if expr.is_number else expr.doit()
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, sympy.SympifyError) as e:
+            # Sanitize the upstream error message — sympy's
+            # ``AttributeError`` on ``__import__('os').system(...)``
+            # bubbles up as ``'int' object has no attribute
+            # 'is_number'``, which a 7B caller misreads as advice
+            # about its own input (the MCP critic's MINOR finding).
+            # Keep the full traceback in error.data via ``from e``
+            # for debugging, but the agent-facing message is short
+            # and structural. (Critic MINOR #9.)
             raise BadInput(
-                f"could not evaluate {expr_str!r}: {e}",
-                next="check operator names: integrate, diff, simplify, ...",
+                f"could not evaluate {expr_str!r} — unsupported expression",
+                next=(
+                    "calc handles arithmetic, calculus, simplify, and similar "
+                    "math; check operator names like integrate, diff, simplify, "
+                    "solve. For Python builtins / I/O, use a different tool."
+                ),
             ) from e
+
+        # The MCP critic flagged ``calc`` cheerfully echoing
+        # ``malformed**broken = malformed**broken`` — sympy parses
+        # arbitrary identifiers as free symbols, so an English
+        # snippet like ``one plus two`` (or a typo'd op name) round-
+        # trips through .doit() unchanged with no evaluation
+        # actually happening. When the result is identical to the
+        # input *and* contains free symbols rather than numeric
+        # primitives, that's almost certainly the user mis-typing
+        # rather than a deliberate symbolic expression.
+        # (Critic MINOR m4.)
+        try:
+            simplified = sympy.simplify(result) if not result.is_number else result
+        except Exception:
+            simplified = result
+        if str(simplified).replace(" ", "") == expr_str.replace(" ", "") and (
+            getattr(simplified, "free_symbols", set())
+        ):
+            raise BadInput(
+                f"expression simplifies to itself: {expr_str!r}",
+                next=(
+                    "calc evaluates math expressions (2+3*4, "
+                    "integrate(sin(x), x), …). For symbolic identities "
+                    "with no operators sympy can act on, give it more "
+                    "structure (e.g. solve(Eq(x+1, 3), x))"
+                ),
+            )
 
         return Response(body=f"{expr_str} = {result}")
 

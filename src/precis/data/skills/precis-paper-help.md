@@ -1,57 +1,66 @@
 ---
 id: precis-paper-help
 title: precis — find, read, cite papers
-status: phase-3
+status: phase-7
 tier: 1
 floor: any
 applies-to: get/search (kind='paper')
-last-updated: 2026-04-26
+last-updated: 2026-04-28
 ---
 
 # precis-paper-help — find, read, cite papers
 
-Papers are slug-addressed (`wang2020state`, `kim2024electrocatalytic`).
-Slugs are deterministic on author-surname + year + first content word
-of the title; collisions get a `-2`/`-3` suffix.
+Papers are slug-addressed (`abazari2024design`,
+`kim2024electrocatalytic`). Slugs are deterministic on author-surname
++ year + first content word of the title; collisions get a `-2`/`-3`
+suffix. Use `get(kind='paper')` (no id) to see what's actually
+ingested in this build before guessing slugs.
 
 ## Find
 
 ```python
 search(kind='paper', q='photocatalytic NOx reduction')
 search(kind='paper', q='photocatalytic NOx reduction', top_k=20)
-get(kind='paper')                              # list all papers (limit 50)
+get(kind='paper')                              # list all papers (page of 50)
 ```
 
 Block-level hybrid search (lexical tsvector + semantic pgvector, RRF
-fused). Returns hits as `<slug>~<pos>` with the matching block excerpt
-and a fused score.
+fused). Returns hits as `<slug>~<pos>` with the matching block
+excerpt, ordered best-first. The fused RRF score is **rank-based**
+(it doesn't reflect query strength on its own scale), so we don't
+surface a misleading numeric — list position is the only honest
+relevance signal.
 
 Scope to one paper:
 
 ```python
-search(kind='paper', q='Z-scheme', scope='wang2020state')
+search(kind='paper', q='Z-scheme', scope='abazari2024design')
 ```
 
 ## Read
 
 ```python
-get(kind='paper', id='wang2020state')                  # overview
-get(kind='paper', id='wang2020state', view='abstract') # abstract only
-get(kind='paper', id='wang2020state', view='toc')      # hierarchical TOC
-get(kind='paper', id='wang2020state~38')               # block 38
-get(kind='paper', id='wang2020state~38..42')           # block range
+get(kind='paper', id='abazari2024design')                  # overview
+get(kind='paper', id='abazari2024design', view='abstract') # abstract only
+get(kind='paper', id='abazari2024design', view='toc')      # hierarchical TOC
+get(kind='paper', id='abazari2024design~38')               # block 38
+get(kind='paper', id='abazari2024design~38..42')           # block range
 ```
 
-The id syntax also supports view paths:
+The id syntax also supports view paths — the kwarg `view=` and the
+path `id='slug/<view>'` accept the **same vocabulary** so you can
+reach any view either way:
 
 ```python
-get(kind='paper', id='wang2020state/abstract')
-get(kind='paper', id='wang2020state/toc')
-get(kind='paper', id='wang2020state/cite/bib')
+get(kind='paper', id='abazari2024design/abstract')
+get(kind='paper', id='abazari2024design/toc')
+get(kind='paper', id='abazari2024design/cite/bib')
+get(kind='paper', id='abazari2024design', view='cite/bib')   # equivalent
+get(kind='paper', id='abazari2024design', view='bibtex')     # also equivalent
 ```
 
-Slug pattern: `wang2020state` (whole), `wang2020state~38` (chunk),
-`wang2020state~38..42` (range).
+Supported views: `abstract`, `toc`, `bibtex` (alias `cite/bib`),
+`ris` (alias `cite/ris`), `endnote` (alias `cite/endnote`).
 
 ## Navigate
 
@@ -78,8 +87,8 @@ To **drill into a section**, use the combined chunk-range + view path
 form:
 
 ```python
-get(kind='paper', id='wang2020state~74..116/toc')   # TOC of just this range
-get(kind='paper', id='wang2020state~74..116')       # read this range
+get(kind='paper', id='abazari2024design~74..116/toc')   # TOC of just this range
+get(kind='paper', id='abazari2024design~74..116')       # read this range
 ```
 
 Each response ends with a column-aligned "Next:" block that suggests
@@ -89,10 +98,36 @@ so the agent can keep navigating without re-reading the help.
 ## Cite
 
 ```python
-get(kind='paper', id='wang2020state', view='bibtex')
-get(kind='paper', id='wang2020state', view='ris')
-get(kind='paper', id='wang2020state', view='endnote')
+get(kind='paper', id='abazari2024design', view='bibtex')
+get(kind='paper', id='abazari2024design', view='ris')
+get(kind='paper', id='abazari2024design', view='endnote')
 ```
+
+Abstracts are stripped of `<jats:*>` namespace tags before render,
+so the body is clean markdown safe to quote.
+
+## Figures
+
+**Figure binaries are not served.** The pipeline keeps a
+markdown image marker (`![](_page_N_Figure_M.jpeg)`) on the figure's
+own block and the legend on the next block; the image file lives
+on disk inside the `.acatome` bundle but is not exposed by `get`.
+
+To cite a figure, name it by paper slug + figure number — e.g.
+*"Figure 3 of `abazari2024design`"* — and quote the legend text.
+Do **not** invent image URLs; the image marker in the block body
+is a relative path that nothing serves.
+
+```python
+# Read figure 3's legend block (find it via search or /toc).
+get(kind='paper', id='abazari2024design~45')
+# 'Figure 3. Schematic representation of the structure of NU-1000…'
+```
+
+A future view (`view='fig/<N>'`) will return both the legend and a
+resolvable image URL once the bundle's image directory is wired
+into the cluster's static-file server. Until then, treat figures
+as caption-only.
 
 ## Coming in later phases
 

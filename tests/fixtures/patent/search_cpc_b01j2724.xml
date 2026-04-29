@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<world-patent-data xmlns="http://www.epo.org/exchange">
+  <biblio-search total-result-count="42">
+    <query>cpc=B01J27/24</query>
+    <range begin="1" end="3"/>
+    <search-result>
+      <publication-reference>
+        <document-id document-id-type="docdb">
+          <country>EP</country>
+          <doc-number>1234567</doc-number>
+          <kind>B1</kind>
+        </document-id>
+      </publication-reference>
+      <exchange-document country="EP" doc-number="1234567" kind="B1">
+        <bibliographic-data>
+          <publication-reference>
+            <document-id document-id-type="docdb">
+              <country>EP</country>
+              <doc-number>1234567</doc-number>
+              <kind>B1</kind>
+              <date>20200115</date>
+            </document-id>
+          </publication-reference>
+          <invention-title lang="en">Photocatalytic NOx reduction system</invention-title>
+          <parties>
+            <applicants>
+              <applicant>
+                <applicant-name>
+                  <name>SIEMENS AG</name>
+                </applicant-name>
+              </applicant>
+            </applicants>
+          </parties>
+        </bibliographic-data>
+        <abstract lang="en">
+          <p>A photocatalytic system for reducing NOx via a Z-scheme heterojunction.</p>
+        </abstract>
+      </exchange-document>
+      <publication-reference>
+        <document-id document-id-type="docdb">
+          <country>WO</country>
+          <doc-number>2023123456</doc-number>
+          <kind>A1</kind>
+        </document-id>
+      </publication-reference>
+      <exchange-document country="WO" doc-number="2023123456" kind="A1">
+        <bibliographic-data>
+          <publication-reference>
+            <document-id document-id-type="docdb">
+              <country>WO</country>
+              <doc-number>2023123456</doc-number>
+              <kind>A1</kind>
+              <date>20230615</date>
+            </document-id>
+          </publication-reference>
+          <invention-title lang="en">Method for visible-light photocatalysis</invention-title>
+          <parties>
+            <applicants>
+              <applicant>
+                <applicant-name>
+                  <name>BASF SE</name>
+                </applicant-name>
+              </applicant>
+            </applicants>
+          </parties>
+        </bibliographic-data>
+        <abstract lang="en">
+          <p>A method for performing photocatalysis under visible light illumination.</p>
+        </abstract>
+      </exchange-document>
+    </search-result>
+  </biblio-search>
+</world-patent-data>

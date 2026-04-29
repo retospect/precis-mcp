@@ -58,8 +58,9 @@ def _ascii_fold(text: str) -> str:
 def _first_author(authors: list[str]) -> str:
     """Return the first author's surname chunk, lowercased ASCII letters.
 
-    Accepts ``"Smith, John"``, ``"John Smith"``, ``"Smith"`` shapes.
-    Empty input → ``""``.
+    Accepts ``"Smith, John"``, ``"John Smith"``, ``"Smith"`` shapes,
+    plus the glued-initials shape ``"A.Clark"`` / ``"A.B.Clark"`` that
+    some publishers' metadata contains. Empty input → ``""``.
     """
     if not authors:
         return ""
@@ -74,6 +75,19 @@ def _first_author(authors: list[str]) -> str:
         parts = first.split()
         surname = parts[-1] if parts else ""
     folded = _ascii_fold(surname.lower())
+    # Strip glued-initials prefix: "a.clark" → "clark", "a.b.clark" →
+    # "clark". The MCP critic flagged ``aclark1998extended`` slugs being
+    # minted from ``A.Clark`` because the bare regex strip just dropped
+    # the dot, producing ``aclark``. We treat a leading run of
+    # one-letter dotted segments as initials and drop them.
+    if "." in folded:
+        segments = folded.split(".")
+        if (
+            len(segments) >= 2
+            and segments[-1]
+            and all(len(s) == 1 and s.isalpha() for s in segments[:-1])
+        ):
+            folded = segments[-1]
     return re.sub(r"[^a-z]", "", folded)[:_SURNAME_MAX]
 
 

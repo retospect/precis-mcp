@@ -54,6 +54,13 @@ class FlashcardHandler(NumericRefHandler):
     kind: ClassVar[str] = "fc"
     sense: ClassVar[str] = "flashcard"
 
+    def _supported_list_views(self) -> tuple[str, ...]:
+        # ``due`` plus every base view (``recent``).  Overrides the
+        # base so the unknown-view hint enumerates the actual
+        # surface for ``fc`` rather than dead-pointing at a
+        # ``precis-fc-help`` skill that does not exist.
+        return ("recent", "due")
+
     def _list_view(self, view: str) -> Response | None:
         if view == "due":
             return self._render_due()
@@ -81,7 +88,25 @@ class FlashcardHandler(NumericRefHandler):
                 upcoming.append((r.id, r.title, nxt))
 
         if not due and not upcoming:
-            return Response(body="no flashcards due")
+            # Emit the same envelope shape as the bare-list empty
+            # path: a one-line "no X" body + a Next: trailer that
+            # tells the agent how to populate the kind. The MCP
+            # critic flagged trailerless empty replies as a
+            # consistency violation. (Critic MINOR #6.)
+            body = "no flashcards due"
+            body += render_next_section(
+                [
+                    (
+                        "get(kind='fc', id='/recent')",
+                        "list every flashcard regardless of due date",
+                    ),
+                    (
+                        "put(kind='fc', text='knowledge statement')",
+                        "create a new flashcard",
+                    ),
+                ]
+            )
+            return Response(body=body)
 
         lines: list[str] = []
         if due:

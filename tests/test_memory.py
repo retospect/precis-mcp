@@ -68,26 +68,47 @@ def test_update_text(handler: MemoryHandler) -> None:
 
 
 def test_update_tags_only(handler: MemoryHandler) -> None:
+    # The closed-axis allow-list for memory is empty (per-kind axis
+    # enforcement) — memory uses only open tags. Demonstrate updating
+    # a memory with two open tags from the documented vocabulary.
     r = handler.put(text="memory with tags")
     new_id = int(r.body.rsplit("=", 1)[1])
 
-    handler.put(id=new_id, tags=["kind:decision", "CONFIDENCE:tentative"])
+    handler.put(id=new_id, tags=["kind:decision", "confidence-strong"])
 
     got = handler.get(id=new_id)
     assert "kind:decision" in got.body
-    assert "CONFIDENCE:tentative" in got.body
+    assert "confidence-strong" in got.body
 
 
-def test_update_replaces_closed_prefix(handler: MemoryHandler) -> None:
-    """CONFIDENCE:certain replaces previous CONFIDENCE:* per skill semantics."""
-    r = handler.put(text="x", tags=["CONFIDENCE:tentative"])
+def test_update_open_tags_accumulate(handler: MemoryHandler) -> None:
+    """Open tags accumulate (no axis-replacement contract). Two
+    confidence-* tags can coexist — the agent is responsible for
+    untagging the old value, exactly the pattern documented in
+    ``precis-memory-help`` for the open-tag confidence axis."""
+    r = handler.put(text="x", tags=["confidence-tentative"])
     new_id = int(r.body.rsplit("=", 1)[1])
 
-    handler.put(id=new_id, tags=["CONFIDENCE:certain"])
+    handler.put(id=new_id, tags=["confidence-strong"])
 
     got = handler.get(id=new_id)
-    assert "CONFIDENCE:certain" in got.body
-    assert "CONFIDENCE:tentative" not in got.body
+    # Both stick around — that's the open-tag contract. The
+    # remove-on-update workflow uses ``untags=`` (see
+    # test_untags_on_put.py).
+    assert "confidence-tentative" in got.body
+    assert "confidence-strong" in got.body
+
+
+def test_status_axis_rejected_on_memory(handler: MemoryHandler) -> None:
+    """Per-kind axis enforcement: STATUS: belongs on todo/gripe/quest,
+    not on memory. The MCP critic flagged ``STATUS:open`` on a memory
+    as a smell — the tag is decorative because no STATUS-filtered
+    query against ``kind='memory'`` can find it. Reject at the write
+    boundary instead."""
+    r = handler.put(text="m")
+    new_id = int(r.body.rsplit("=", 1)[1])
+    with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
+        handler.put(id=new_id, tags=["STATUS:open"])
 
 
 def test_update_no_changes_raises(handler: MemoryHandler) -> None:

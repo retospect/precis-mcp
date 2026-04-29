@@ -216,6 +216,151 @@ def test_ingest_bundle_missing_file(
 
 
 # ---------------------------------------------------------------------------
+# jobs import-perplexity
+# ---------------------------------------------------------------------------
+
+
+def test_import_perplexity_dry_run_derives_query_from_h1(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dry-run should print the derived query (from H1) per file and
+    not touch any database."""
+    (tmp_path / "a.md").write_text("# How does DAC work\n\nbody a\n")
+    (tmp_path / "b.md").write_text("# Compare BECCS vs DAC\n\nbody b\n")
+    # Headingless file — should fall back to filename.
+    (tmp_path / "headingless-report.md").write_text("just a paragraph\n")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precis",
+            "jobs",
+            "import-perplexity",
+            str(tmp_path),
+            "--dry-run",
+        ],
+    )
+    cli.main()
+    out = capsys.readouterr().out
+    assert "'How does DAC work'" in out
+    assert "'Compare BECCS vs DAC'" in out
+    assert "'headingless report'" in out  # filename fallback
+    assert "3 file(s) would import" in out
+
+
+def test_import_perplexity_filename_strategy(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--query-from filename`` ignores the H1 and uses the stem."""
+    (tmp_path / "some-topic.md").write_text("# Unused Heading\n\nbody\n")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precis",
+            "jobs",
+            "import-perplexity",
+            str(tmp_path),
+            "--dry-run",
+            "--query-from",
+            "filename",
+        ],
+    )
+    cli.main()
+    out = capsys.readouterr().out
+    assert "'some topic'" in out
+    assert "Unused Heading" not in out
+
+
+def test_import_perplexity_writes_to_db(
+    store,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: import two reports and verify both refs land in the
+    DB under the requested kind with ``source=imported`` provenance."""
+    (tmp_path / "r1.md").write_text("# Query one\n\nbody one\n")
+    (tmp_path / "r2.md").write_text("# Query two\n\nbody two\n")
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precis",
+            "jobs",
+            "import-perplexity",
+            str(tmp_path),
+            "--kind",
+            "research",
+            "--database-url",
+            dsn,
+        ],
+    )
+    cli.main()
+    out = capsys.readouterr().out
+    assert "imported=2" in out
+    assert "failed=0" in out
+
+    refs = store.list_refs(kind="research", provider="perplexity", limit=10)
+    titles = {r.title for r in refs}
+    # Titles are derived from the query via _title_for_query (capitalized).
+    assert any("Query one" in t or "Query One" in t for t in titles)
+    assert any("Query two" in t or "Query Two" in t for t in titles)
+    for r in refs:
+        assert (r.meta or {}).get("source") == "imported"
+
+
+def test_import_perplexity_skips_empty_files(
+    store,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty files are reported as failures but don't abort the batch."""
+    (tmp_path / "ok.md").write_text("# Real query\n\nbody\n")
+    (tmp_path / "empty.md").write_text("")
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precis",
+            "jobs",
+            "import-perplexity",
+            str(tmp_path),
+            "--database-url",
+            dsn,
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1  # failures → non-zero exit
+    out = capsys.readouterr().out
+    assert "imported=1" in out
+    assert "failed=1" in out
+
+
+def test_import_perplexity_missing_dir(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["precis", "jobs", "import-perplexity", "/no/such/dir"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

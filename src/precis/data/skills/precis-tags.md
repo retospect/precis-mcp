@@ -1,11 +1,11 @@
 ---
 id: precis-tags
 title: precis — set and filter by tags
-status: draft
+status: phase-7
 tier: 1
 floor: any
-applies-to: put (tags=/untags= kwargs), search/get (tags= filter)
-last-updated: 2026-04-26
+applies-to: put (tags=, untags=) and search (tags=)
+last-updated: 2026-04-28
 ---
 
 # precis-tags — set and filter by tags
@@ -21,7 +21,7 @@ Three tag shapes by case.  Pick by what you're doing:
 ## Set tags
 
 ```python
-put(kind='memory', id='48', tags=[
+put(kind='memory', id=48, tags=[
     'PRIO:high',           # replaces any other PRIO:* on this ref
     'topic:co2-capture',   # adds (lowercase tags accumulate)
     'star',                # bare flag set
@@ -30,37 +30,80 @@ put(kind='memory', id='48', tags=[
 
 UPPERCASE replaces within its prefix.  Lowercase and bare add.
 
-## Filter by tags
-
-```python
-search(kind='paper', q='photocatalysis', tags=['SRC:primary', 'CACHE:fresh'])
-# ANDs across the list
-```
-
 ## Remove tags
 
 ```python
-put(kind='memory', id='48', untags=['star', 'topic:co2-capture'])
+put(kind='memory', id=48, untags=[
+    'topic:co2-capture',  # remove this lowercase tag
+    'star',               # clear the flag
+    'STATUS:done',        # remove only if STATUS is currently 'done'
+])
 ```
 
-## Compose in one call
+`untags=` is **value-matched** for closed prefixes:
+`untags=['STATUS:open']` against a `STATUS:done` ref is a silent
+no-op (no error, no row touched). To switch axes, prefer the
+overwrite form via `tags=['STATUS:open']` — it's atomic.
+
+`untags=` is rejected on create (no existing ref to remove from)
+and goes through the same canonical-form validation as `tags=` —
+`untags=['urgent']` raises the bare-flag-collision error.
+
+## Filter by tags
+
+`search(tags=...)` narrows results to refs that carry **all** the
+listed tags (AND semantics). Combine with `q=` for ranked search
+inside the filtered set.
 
 ```python
-put(kind='todo', id='141', tags=['STATUS:done'], untags=['wip', 'star'])
+search(kind='paper', q='photocatalysis', tags=['topic:co2-capture'])
+# only blocks belonging to papers tagged with that topic
+
+search(kind='todo', q='write', tags=['STATUS:open', 'PRIO:high'])
+# only refs that carry BOTH tags
+
+search(kind='memory', q='', tags=['star'])     # not currently legal
+# search requires q=; use a list view instead:
+get(kind='memory', id='/recent')                # then post-filter, OR
+list_refs(kind='memory', tags=['star'])         # store-level (when
+                                                # exposed by a handler)
 ```
 
-## The six closed UPPERCASE prefixes
+The filter is applied at the SQL layer via the unified `ref_tags`
+view, so it cuts the rows the lexical/semantic ranker has to score —
+two orders of magnitude fewer rows for the typical "STATUS:open todo"
+pattern. Same canonical-form validation as `put(tags=...)`: an
+`urgent` filter raises the bare-flag-collision error.
+
+## The closed UPPERCASE vocabularies
+
+The runtime **rejects** unknown values inside a registered closed
+prefix and **rejects** bare flags that collide with a closed value.
+Pick from the canonical list:
 
 | Prefix | Values | Writer |
 |---|---|---|
-| `SRC:` | `primary` / `secondary` / `rumor` / `generated` | system, read-only |
-| `CACHE:` | `fresh` / `stale` / `expired` | system, read-only |
-| `DENSITY:` | `sparse` / `medium` / `dense` | system, read-only |
-| `STATUS:` | `active` / `done` / `blocked` / `archived` / `cancelled` | agent |
-| `PRIO:` | `low` / `med` / `high` / `urgent` | agent |
-| `CONFIDENCE:` | `tentative` / `moderate` / `strong` / `certain` | agent |
+| `STATUS:` | `open` / `doing` / `blocked` / `done` / `won't-do` | agent |
+| `PRIO:` | `low` / `normal` / `high` / `urgent` | agent |
+| `SRC:` | `primary` / `secondary` | agent |
+| `CACHE:` | `fresh` / `stale` / `pinned` | system |
 
-`STATUS:done` also stamps `completed_at` atomically.
+Other prefixes referenced in older docs (`DENSITY:`, `CONFIDENCE:`,
+`STATUS:archived` / `STATUS:cancelled`) are **not** in the closed
+vocabulary today and would be rejected; coin them as lowercase tags
+(`density:dense`) until they're formally registered.
+
+## Validation errors
+
+```python
+put(kind='memory', text='...', tags=['urgent'])
+# [error:BadInput] bare flag 'urgent' collides with closed value 'PRIO:urgent'
+#   next: use tags=['PRIO:urgent'] instead of tags=['urgent']
+
+put(kind='todo', id=40, tags=['STATUS:bogus'])
+# [error:BadInput] invalid STATUS value: 'bogus'
+#   options: ['blocked', 'doing', 'done', 'open', "won't-do"]
+```
 
 ## Common lowercase prefixes
 
@@ -68,23 +111,27 @@ put(kind='todo', id='141', tags=['STATUS:done'], untags=['wip', 'star'])
 - `project:` — what initiative (`project:giri`, `project:precis-v2`)
 - `kind:` — sub-kind on memories (`kind:decision`, `kind:idea`)
 
-Coin new prefixes freely.
+Coin new prefixes freely. Lowercase prefixes are open-ended; the
+runtime never rejects them.
 
 ## Common bare flags
 
-`wip`, `star`, `draft`, `private`, `pinned` (suppresses `CACHE:*` decay).
-Coin new ones freely.
+`wip`, `star`, `draft`, `private`, `pinned`. Coin new ones freely as
+long as they don't collide with the closed-vocab values above.
 
-## Notes
+## Not yet implemented
 
-- Bare flag names cannot collide with closed-vocab values.
-  `tags=['urgent']` errors — use `tags=['PRIO:urgent']`.
-- Invalid UPPERCASE values error with the valid list.
+- `tags=` filter on `get(kind=K)` list views — surfaced at the
+  store level (`Store.list_refs(tags=...)`) but not piped through
+  the agent-facing list-view path. Use `search(...)` with `q=`
+  for now.
+- Block-level (positional) tag filtering — the schema supports
+  `pos=N` tags on a specific block, but no handler currently
+  writes them and the search filter only matches ref-level tags.
 
 ## See also
 
 - `precis-overview` — verbs and kinds
 - `precis-cache` — `CACHE:*` and the `pinned` flag
-- `precis-density` — `DENSITY:*` and novelty-finding
 - `precis-todo-help` — `STATUS:` lifecycle
-- `precis-memory-help` — `CONFIDENCE:` and the `kind:` discriminator
+- `precis-memory-help` — `kind:` discriminator

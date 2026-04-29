@@ -1,0 +1,520 @@
+"""Parse OPS published-data XML into a ``ParsedPatent`` structure.
+
+EPO OPS returns variants of the WIPO ST.36 schema (with OPS-specific
+``ops:`` extensions). Three endpoints feed the handler:
+
+* ``biblio`` — bibliographic metadata: title, abstract, applicants,
+  inventors, dates, classifications.
+* ``description`` — patent body, paragraphs in ``<p>`` elements
+  inside ``<description>``.
+* ``claims`` — claim text in ``<claim>`` and ``<claim-text>``
+  elements inside ``<claims>``.
+
+We use ``xml.etree.ElementTree`` rather than ``lxml`` here so the
+parser has zero hard dependencies. (``lxml`` is in the optional
+``patent`` extra mostly for the OPS client; if it's installed we
+could swap in a faster parser later.)
+
+ST.36 namespaces vary by endpoint but the element names we care
+about are stable across versions. We strip namespaces wherever they
+appear and match on local-name — defensive parsing wins long-term
+forgiveness when EPO bumps a minor schema version.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from xml.etree import ElementTree as ET
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedPatent:
+    """Structured form of one OPS published-data record.
+
+    All fields are optional / defaultable — we never crash on a
+    sparse record. ``description_paragraphs`` and ``claim_texts``
+    are the body sections the ingest pipeline lifts into ``blocks``.
+    """
+
+    title: str
+    abstract: str | None = None
+    publication_date: str | None = None  # YYYY-MM-DD
+    application_date: str | None = None
+    family_id: str | None = None
+    applicants: list[dict[str, str]] = field(default_factory=list)
+    inventors: list[dict[str, str]] = field(default_factory=list)
+    cpc_classes: list[str] = field(default_factory=list)
+    ipc_classes: list[str] = field(default_factory=list)
+    description_paragraphs: list[str] = field(default_factory=list)
+    claim_texts: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Helpers — namespace-blind XML traversal
+# ---------------------------------------------------------------------------
+
+
+def _local(tag: str) -> str:
+    """Return ``tag`` without an XML namespace prefix."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _findall(node: ET.Element, name: str) -> list[ET.Element]:
+    """Find every descendant whose local-name matches ``name``."""
+    return [el for el in node.iter() if _local(el.tag) == name]
+
+
+def _find(node: ET.Element, name: str) -> ET.Element | None:
+    """First descendant whose local-name matches, or None."""
+    for el in node.iter():
+        if _local(el.tag) == name:
+            return el
+    return None
+
+
+def _children(node: ET.Element, name: str) -> list[ET.Element]:
+    """Direct children whose local-name matches."""
+    return [el for el in node if _local(el.tag) == name]
+
+
+def _text(el: ET.Element | None) -> str:
+    """Concatenated text content, whitespace-collapsed."""
+    if el is None:
+        return ""
+    raw = "".join(el.itertext())
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+# ---------------------------------------------------------------------------
+# Public parser
+# ---------------------------------------------------------------------------
+
+
+def parse_patent(
+    *,
+    biblio_xml: bytes | None = None,
+    description_xml: bytes | None = None,
+    claims_xml: bytes | None = None,
+) -> ParsedPatent:
+    """Combine biblio + description + claims XML into a ``ParsedPatent``.
+
+    Any of the three may be None; the corresponding fields stay
+    empty. Title is mandatory — if biblio is missing or has no
+    title we synthesise the placeholder ``"(untitled patent)"``
+    rather than failing, so the ingest pipeline still produces a
+    queryable ref.
+    """
+    title = "(untitled patent)"
+    abstract: str | None = None
+    publication_date: str | None = None
+    application_date: str | None = None
+    family_id: str | None = None
+    applicants: list[dict[str, str]] = []
+    inventors: list[dict[str, str]] = []
+    cpc_classes: list[str] = []
+    ipc_classes: list[str] = []
+    description_paragraphs: list[str] = []
+    claim_texts: list[str] = []
+
+    if biblio_xml:
+        root = _safe_root(biblio_xml)
+        if root is not None:
+            title = _extract_title(root) or title
+            abstract = _extract_abstract(root)
+            publication_date = _extract_publication_date(root)
+            application_date = _extract_application_date(root)
+            family_id = _extract_family_id(root)
+            applicants = _extract_parties(root, party_kind="applicant")
+            inventors = _extract_parties(root, party_kind="inventor")
+            cpc_classes = _extract_classifications(root, scheme="cpc")
+            ipc_classes = _extract_classifications(root, scheme="ipc")
+
+    if description_xml:
+        root = _safe_root(description_xml)
+        if root is not None:
+            description_paragraphs = _extract_paragraphs(root)
+
+    if claims_xml:
+        root = _safe_root(claims_xml)
+        if root is not None:
+            claim_texts = _extract_claims(root)
+
+    return ParsedPatent(
+        title=title,
+        abstract=abstract,
+        publication_date=publication_date,
+        application_date=application_date,
+        family_id=family_id,
+        applicants=applicants,
+        inventors=inventors,
+        cpc_classes=cpc_classes,
+        ipc_classes=ipc_classes,
+        description_paragraphs=description_paragraphs,
+        claim_texts=claim_texts,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Internals — section extractors
+# ---------------------------------------------------------------------------
+
+
+def _safe_root(xml_bytes: bytes) -> ET.Element | None:
+    """Parse XML, return root, or None on malformed input.
+
+    OPS occasionally returns truncated XML on rate-limit edges; we'd
+    rather degrade to "empty section" than crash the whole ingest.
+    """
+    try:
+        return ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return None
+
+
+def _extract_title(root: ET.Element) -> str | None:
+    """Pick the English title if present, else any title."""
+    titles = _findall(root, "invention-title")
+    if not titles:
+        return None
+    # Prefer en-language title.
+    for t in titles:
+        lang = t.attrib.get("lang") or t.attrib.get(
+            "{http://www.w3.org/XML/1998/namespace}lang"
+        )
+        if lang and lang.lower().startswith("en"):
+            return _text(t) or None
+    return _text(titles[0]) or None
+
+
+def _extract_abstract(root: ET.Element) -> str | None:
+    abstracts = _findall(root, "abstract")
+    if not abstracts:
+        return None
+    for a in abstracts:
+        lang = a.attrib.get("lang") or a.attrib.get(
+            "{http://www.w3.org/XML/1998/namespace}lang"
+        )
+        if lang and lang.lower().startswith("en"):
+            txt = _text(a)
+            if txt:
+                return txt
+    txt = _text(abstracts[0])
+    return txt or None
+
+
+def _extract_publication_date(root: ET.Element) -> str | None:
+    """Find publication date, return ISO YYYY-MM-DD."""
+    for ref in _findall(root, "publication-reference"):
+        for date_el in _findall(ref, "date"):
+            iso = _format_date(_text(date_el))
+            if iso:
+                return iso
+    # Fallback: any <date> at the top of the doc.
+    for date_el in _findall(root, "date"):
+        iso = _format_date(_text(date_el))
+        if iso:
+            return iso
+    return None
+
+
+def _extract_application_date(root: ET.Element) -> str | None:
+    for ref in _findall(root, "application-reference"):
+        for date_el in _findall(ref, "date"):
+            iso = _format_date(_text(date_el))
+            if iso:
+                return iso
+    return None
+
+
+def _extract_family_id(root: ET.Element) -> str | None:
+    """OPS surfaces ``family-id`` as an attribute on the publication ref."""
+    for ref in _findall(root, "publication-reference"):
+        fam = ref.attrib.get("family-id")
+        if fam:
+            return fam
+    # Some OPS variants put it in an ops:patent-family element.
+    fam_el = _find(root, "patent-family")
+    if fam_el is not None:
+        fid = fam_el.attrib.get("family-id")
+        if fid:
+            return fid
+    return None
+
+
+def _extract_parties(root: ET.Element, *, party_kind: str) -> list[dict[str, str]]:
+    """Extract applicants or inventors as ``[{"name": ..., "country": ...}, ...]``.
+
+    OPS structure (typical):
+
+        <applicants>
+            <applicant>
+                <applicant-name>
+                    <name>SIEMENS AG</name>
+                </applicant-name>
+                <residence>
+                    <country>DE</country>
+                </residence>
+            </applicant>
+            ...
+        </applicants>
+
+    We're permissive: any ``<<party_kind>>`` (singular) under any
+    container counts; we read its first ``<name>`` text and any
+    ``<country>`` text.
+    """
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for party in _findall(root, party_kind):
+        # Skip OPS data-format duplicates (epodoc + original) — we
+        # take the first occurrence per (name, country) pair.
+        name_el = _find(party, "name")
+        country_el = _find(party, "country")
+        name = _text(name_el)
+        country = _text(country_el)
+        if not name:
+            continue
+        key = (name.lower(), country.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "country": country})
+    return out
+
+
+def _extract_classifications(root: ET.Element, *, scheme: str) -> list[str]:
+    """Extract CPC or IPC classifications as a deduped list of strings.
+
+    CPC structure (OPS):
+
+        <classifications-cpc>
+            <classification-cpc>
+                <text>B01J27/24</text>
+            </classification-cpc>
+        </classifications-cpc>
+
+    IPC has a similar shape but with class/subclass/group split into
+    sub-elements; we render them back into a compact ``B01J27/24``-
+    style string.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    if scheme == "cpc":
+        for cls in _findall(root, "classification-cpc"):
+            txt = _text(_find(cls, "text"))
+            if not txt:
+                # Fall back to compose-from-parts.
+                txt = _compose_classification(cls)
+            if txt and txt not in seen:
+                seen.add(txt)
+                out.append(txt)
+    else:  # ipc
+        for cls in _findall(root, "classification-ipcr"):
+            txt = _text(_find(cls, "text"))
+            if not txt:
+                txt = _compose_classification(cls)
+            if txt and txt not in seen:
+                seen.add(txt)
+                out.append(txt)
+        # Some OPS variants use plain <classification-ipc>.
+        for cls in _findall(root, "classification-ipc"):
+            txt = _text(_find(cls, "text"))
+            if txt and txt not in seen:
+                seen.add(txt)
+                out.append(txt)
+    return out
+
+
+def _compose_classification(cls: ET.Element) -> str:
+    """Reassemble section/class/subclass/group/subgroup into a compact code."""
+    parts: list[str] = []
+    for tag_name in ("section", "class", "subclass"):
+        el = _find(cls, tag_name)
+        if el is not None:
+            parts.append(_text(el))
+    head = "".join(parts)
+    main = _text(_find(cls, "main-group"))
+    sub = _text(_find(cls, "subgroup"))
+    if main and sub:
+        return f"{head}{main}/{sub}"
+    if main:
+        return f"{head}{main}"
+    return head or ""
+
+
+def _extract_paragraphs(root: ET.Element) -> list[str]:
+    """Description body — one entry per ``<p>`` paragraph.
+
+    Empty paragraphs are dropped. Long ones are kept whole; the
+    ingest layer handles further chunking if it ever wants to.
+    """
+    out: list[str] = []
+    for p in _findall(root, "p"):
+        txt = _text(p)
+        if txt:
+            out.append(txt)
+    return out
+
+
+def _extract_claims(root: ET.Element) -> list[str]:
+    """Each independent + dependent claim → one string.
+
+    OPS structure: ``<claims><claim><claim-text>...</claim-text></claim>...</claims>``.
+    Some variants nest a single ``<claim-text>`` per ``<claim>``;
+    others put multiple. We concatenate per-claim.
+    """
+    out: list[str] = []
+    for claim in _findall(root, "claim"):
+        # If this claim contains nested claims (rare), only the top-level claim text.
+        texts = [_text(t) for t in _children(claim, "claim-text")]
+        joined = " ".join(t for t in texts if t)
+        if not joined:
+            joined = _text(claim)
+        joined = joined.strip()
+        if joined:
+            out.append(joined)
+    if out:
+        return out
+    # Fallback: some OPS responses skip the wrapper and put claim-text
+    # children directly under <claims>.
+    for ct in _findall(root, "claim-text"):
+        txt = _text(ct)
+        if txt:
+            out.append(txt)
+    return out
+
+
+def _format_date(raw: str) -> str | None:
+    """Normalise a date string to ISO YYYY-MM-DD if recognisable."""
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 8:
+        return f"{digits[0:4]}-{digits[4:6]}-{digits[6:8]}"
+    if len(digits) == 6:
+        return f"{digits[0:4]}-{digits[4:6]}"
+    if len(digits) == 4:
+        return digits
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Search response parsing — used by the merge layer
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OpsHit:
+    """One hit from an OPS search response."""
+
+    docdb_id: str  # canonical lowercased slug ('ep1234567b1')
+    title: str
+    applicants: list[str]
+    publication_date: str | None
+    abstract_preview: str  # first ~200 chars
+
+
+def parse_search_response(xml_bytes: bytes) -> tuple[list[OpsHit], int]:
+    """Parse an OPS search response into hits + total count.
+
+    Returns ``(hits, total)``. ``total`` reflects the OPS-reported
+    total-result-count, which can exceed ``len(hits)`` for paginated
+    queries.
+    """
+    root = _safe_root(xml_bytes)
+    if root is None:
+        return [], 0
+
+    # Total-results attribute lives on biblio-search element.
+    total = 0
+    for el in root.iter():
+        if _local(el.tag) in ("biblio-search", "search-result"):
+            t = el.attrib.get("total-result-count") or el.attrib.get("total-results")
+            if t and t.isdigit():
+                total = int(t)
+                break
+
+    hits: list[OpsHit] = []
+    for doc in _findall(root, "publication-reference"):
+        slug = _docdb_to_slug(doc)
+        if slug is None:
+            continue
+        # Walk up to the enclosing <exchange-document> so we can read
+        # title + applicants for the row.
+        # ElementTree doesn't expose parent pointers; we traverse
+        # again from root and match on contained reference. Cheap
+        # because typical search returns ≤ 25 docs.
+        host = _find_enclosing(root, doc, "exchange-document")
+        title = _text(_find(host, "invention-title")) if host is not None else ""
+        if not title:
+            title = "(untitled)"
+        applicants_el = _find(host, "applicants") if host is not None else None
+        applicants = (
+            [_text(_find(p, "name")) for p in _findall(applicants_el, "applicant")]
+            if applicants_el is not None
+            else []
+        )
+        applicants = [a for a in applicants if a]
+        pub_date = _extract_publication_date(host) if host is not None else None
+        abstract_text = _text(_find(host, "abstract")) if host is not None else ""
+        preview = abstract_text[:200].rstrip() + (
+            "…" if len(abstract_text) > 200 else ""
+        )
+        hits.append(
+            OpsHit(
+                docdb_id=slug,
+                title=title,
+                applicants=applicants,
+                publication_date=pub_date,
+                abstract_preview=preview,
+            )
+        )
+
+    if total == 0 and hits:
+        total = len(hits)
+    return hits, total
+
+
+def _docdb_to_slug(ref: ET.Element) -> str | None:
+    """Pull ``country + doc-number + kind`` from a publication-reference."""
+    for doc_id in _findall(ref, "document-id"):
+        scheme = doc_id.attrib.get("document-id-type", "")
+        if scheme.lower() != "docdb":
+            continue
+        country = _text(_find(doc_id, "country")).lower()
+        number = _text(_find(doc_id, "doc-number"))
+        kind = _text(_find(doc_id, "kind")).lower()
+        if country and number and kind:
+            return f"{country}{number}{kind}"
+    # No DOCDB document-id — fall back to first available combo.
+    for doc_id in _findall(ref, "document-id"):
+        country = _text(_find(doc_id, "country")).lower()
+        number = _text(_find(doc_id, "doc-number"))
+        kind = _text(_find(doc_id, "kind")).lower()
+        if country and number and kind:
+            return f"{country}{number}{kind}"
+    return None
+
+
+def _find_enclosing(
+    root: ET.Element, target: ET.Element, name: str
+) -> ET.Element | None:
+    """Find the nearest ancestor of ``target`` whose local-name matches.
+
+    ElementTree doesn't track parents; we walk every candidate of
+    type ``name`` and check whether ``target`` is a descendant.
+    """
+    for candidate in _findall(root, name):
+        for descendant in candidate.iter():
+            if descendant is target:
+                return candidate
+    return None
+
+
+__all__ = [
+    "OpsHit",
+    "ParsedPatent",
+    "parse_patent",
+    "parse_search_response",
+]

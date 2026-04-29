@@ -18,6 +18,7 @@ from __future__ import annotations
 import atexit
 import logging
 import sys
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -78,6 +79,7 @@ def get(
     id: str | int | None = None,
     view: str | None = None,
     q: str | None = None,
+    args: dict[str, Any] | None = None,
 ) -> str:
     """Read a ref or compute a value.
 
@@ -86,8 +88,58 @@ def get(
         id:   Identifier — string slug for slug kinds, int for numeric kinds.
         view: Display variant (kind-specific; e.g. 'bibtex' for paper).
         q:    Free-text query (used by some kinds in lieu of id).
+        args: Kind- and view-specific extra parameters as a dict. Used
+              for views that need typed payloads beyond `id`/`view`/`q`,
+              e.g. python's callgraph (``{'entry': 'pkg.mod:func',
+              'depth': 3}``) or runtrace (``{'entry': '...', 'argv':
+              [...], 'timeout': 10}``). See each kind's help skill for
+              the accepted shape. Reserved key names (``kind``, ``id``,
+              ``view``, ``q``) are rejected to prevent confusion with
+              the explicit positional kwargs.
     """
-    return _rt().dispatch("get", {"kind": kind, "id": id, "view": view, "q": q})
+    payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
+    if args:
+        err = _check_reserved_args(args, reserved=("kind", "id", "view", "q"))
+        if err is not None:
+            return err
+        payload.update(args)
+    return _rt().dispatch("get", payload)
+
+
+def _check_reserved_args(
+    args: dict[str, Any], *, reserved: tuple[str, ...]
+) -> str | None:
+    """Return a rendered error string if `args` shadows positional kwargs.
+
+    A model that mistakenly passes ``args={'id': 'foo'}`` instead of
+    ``id='foo'`` would otherwise silently overwrite the positional
+    `id` with the same value (or — worse — a different one). Surface
+    the mistake at the boundary so the recovery hint is sharp.
+
+    Mirrors the `search` tool's `top_k` validator: returns rendered
+    text rather than raising, so the MCP transport sees a normal
+    string response.
+    """
+    overlap = sorted(k for k in args if k in reserved)
+    if not overlap:
+        return None
+
+    from precis.errors import BadInput
+
+    return _rt()._render_error(  # type: ignore[attr-defined]
+        BadInput(
+            f"args={overlap!r} shadows the explicit kwargs {list(reserved)!r}",
+            next="pass these as top-level keyword arguments, not inside args=",
+        )
+    )
+
+
+#: Hard cap on ``top_k`` for the agent-facing search tool. The MCP
+#: critic flagged ``top_k=9999`` returning 7 326 hits in a single
+#: ~2.7 MB response, large enough to exhaust a 7B model's context
+#: window in one call. 100 is comfortably above any sensible
+#: pagination size and well below the response-size cliff.
+_SEARCH_TOP_K_MAX: int = 100
 
 
 @mcp.tool()
@@ -103,8 +155,32 @@ def search(
         q:     Free-text query (lexical + semantic, hybrid-fused).
         kind:  Restrict to a single kind. Omit for cross-corpus search.
         scope: Restrict to one ref's blocks (slug or numeric id).
-        top_k: Max results.
+        top_k: Max results. Must be a positive integer ≤ 100. Larger
+               values are rejected to bound response size and protect
+               smaller models' context windows.
     """
+    # Validate top_k at the MCP boundary so internal callers (tests,
+    # SDK consumers) can still pass arbitrary values when they know
+    # what they're doing. The agent-facing surface is the place to
+    # enforce the cap. See MCP critic MAJOR #10.
+    from precis.errors import BadInput
+
+    if not isinstance(top_k, int) or top_k <= 0:
+        return _rt()._render_error(  # type: ignore[attr-defined]
+            BadInput(
+                f"top_k must be a positive integer, got {top_k!r}",
+                next="search(kind='paper', q='...', top_k=10)",
+            )
+        )
+    if top_k > _SEARCH_TOP_K_MAX:
+        return _rt()._render_error(  # type: ignore[attr-defined]
+            BadInput(
+                f"top_k={top_k} exceeds maximum {_SEARCH_TOP_K_MAX}",
+                next=(
+                    f"narrow with scope= or paginate; max top_k is {_SEARCH_TOP_K_MAX}"
+                ),
+            )
+        )
     return _rt().dispatch(
         "search",
         {"kind": kind, "q": q, "scope": scope, "top_k": top_k},
@@ -118,19 +194,41 @@ def put(
     id: str | int | None = None,
     text: str | None = None,
     tags: list[str] | None = None,
+    untags: list[str] | None = None,
     link: str | None = None,
+    unlink: str | None = None,
+    rel: str | None = None,
 ) -> str:
     """Write or annotate.
 
     Args:
-        kind: Which kind to write to.
-        mode: Operation hint (e.g. 'append', 'replace', 'delete', 'note').
-              Some kinds infer mode from arguments and don't require it.
-        id:   Target ref or block. Omit to create new (numeric kinds).
-        text: Content for write modes.
-        tags: Tag strings to apply (closed 'STATUS:done', flag 'pinned',
-              or open 'topic-x').
-        link: 'target_slug' or 'target_slug:relation' to add a link.
+        kind:   Which kind to write to.
+        mode:   Operation hint. Currently the only widely-supported mode
+                is 'delete' for soft-delete on numeric-ref kinds. File
+                kinds (markdown, tex, …) accept 'append' / 'replace';
+                see each kind's help skill. Unknown modes are rejected.
+        id:     Target ref or block. Omit to create a new ref (numeric
+                kinds).
+        text:   Content for create or text update.
+        tags:   Tag strings to apply (closed 'STATUS:done', flag 'pinned',
+                or open 'topic-x'). On update, the tag list is *added* —
+                use ``untags=`` to remove.
+        untags: Tag strings to remove. Closed-prefix entries (e.g.
+                'STATUS:open') match the prefix and value; flags and
+                open tags match exactly. Removing a tag the ref doesn't
+                carry is a no-op, not an error.
+        link:   Add a link to another ref. Canonical form
+                'kind:identifier[~selector]' — e.g. 'paper:wang2020',
+                'paper:wang2020~38' (block 38), 'todo:158'. The kind
+                prefix is required.
+        unlink: Remove a link. Same canonical form as ``link=``. With
+                ``rel=`` it removes one specific (target, relation)
+                pair; without it removes every link to the target.
+        rel:    Relation slug for ``link=`` / ``unlink=``. Defaults to
+                'related-to'. See ``precis-relations`` for the full
+                vocabulary (cites, blocks, contradicts, derived-from,
+                supports, …). Required when adding non-default
+                relations.
     """
     return _rt().dispatch(
         "put",
@@ -140,7 +238,10 @@ def put(
             "text": text,
             "mode": mode,
             "tags": tags,
+            "untags": untags,
             "link": link,
+            "unlink": unlink,
+            "rel": rel,
         },
     )
 
@@ -152,6 +253,13 @@ def move(
     after: str | int,
 ) -> str:
     """Reorder a node within a structured ref.
+
+    NOTE: No active kind in this build implements ``move``. The verb
+    is reserved for structured file kinds (``docx``, ``tex``) that
+    aren't wired yet; calling it returns an Unsupported error pointing
+    you at ``put`` instead. The tool stays exposed so the surface
+    matches ``precis-overview`` and so future kinds can light it up
+    without re-registration.
 
     Args:
         kind:  Which kind owns the structure (e.g. 'docx', 'tex').

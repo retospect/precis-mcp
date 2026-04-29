@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<exchange-documents xmlns="http://www.epo.org/exchange">
+  <exchange-document country="EP" doc-number="1234567" kind="B1" family-id="012345678">
+    <bibliographic-data>
+      <publication-reference family-id="012345678">
+        <document-id document-id-type="docdb">
+          <country>EP</country>
+          <doc-number>1234567</doc-number>
+          <kind>B1</kind>
+          <date>20200115</date>
+        </document-id>
+      </publication-reference>
+      <application-reference doc-id="987654321">
+        <document-id document-id-type="docdb">
+          <country>EP</country>
+          <doc-number>9876543</doc-number>
+          <kind>A0</kind>
+          <date>20180310</date>
+        </document-id>
+      </application-reference>
+      <invention-title lang="en">Photocatalytic NOx reduction system</invention-title>
+      <invention-title lang="de">Photokatalytisches NOx-Reduktionssystem</invention-title>
+      <classifications-cpc>
+        <classification-cpc>
+          <text>B01J27/24</text>
+        </classification-cpc>
+        <classification-cpc>
+          <text>B01D53/86</text>
+        </classification-cpc>
+      </classifications-cpc>
+      <classifications-ipcr>
+        <classification-ipcr>
+          <text>B01J 27/24</text>
+        </classification-ipcr>
+      </classifications-ipcr>
+      <parties>
+        <applicants>
+          <applicant data-format="epodoc" sequence="1">
+            <applicant-name>
+              <name>SIEMENS AG</name>
+            </applicant-name>
+            <residence>
+              <country>DE</country>
+            </residence>
+          </applicant>
+          <applicant data-format="original" sequence="1">
+            <applicant-name>
+              <name>SIEMENS AG</name>
+            </applicant-name>
+            <residence>
+              <country>DE</country>
+            </residence>
+          </applicant>
+        </applicants>
+        <inventors>
+          <inventor sequence="1">
+            <inventor-name>
+              <name>MUSTERMANN, MAX</name>
+            </inventor-name>
+            <residence>
+              <country>DE</country>
+            </residence>
+          </inventor>
+        </inventors>
+      </parties>
+    </bibliographic-data>
+    <abstract lang="en">
+      <p>A photocatalytic system for reducing nitrogen oxide emissions via a Z-scheme heterojunction.</p>
+    </abstract>
+  </exchange-document>
+</exchange-documents>

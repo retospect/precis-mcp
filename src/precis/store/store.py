@@ -14,21 +14,25 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput, NotFound
+from precis.store._tag_filter import build_tag_filter
 from precis.store.pool import create_pool
 from precis.store.types import (
+    _INVERSE_RELATIONS,
     ActorSlug,
     Block,
     BlockInsert,
     CacheEntry,
     Density,
+    Link,
     Ref,
+    Relation,
     Tag,
 )
 
@@ -49,6 +53,66 @@ _SYSTEM_WRITABLE_PREFIXES: frozenset[str] = frozenset({"SRC", "CACHE", "DENSITY"
 
 # Sentinel: pos = -1 in the DB means "ref-level"; callers see None.
 _REF_LEVEL_POS = -1
+
+# Default cosine-distance floor for semantic-only hits. pgvector's
+# `<=>` operator returns ``1 - cosine_similarity``, so a distance of
+# 0.9 means ``cos(theta) ≈ 0.1`` — the two vectors are nearly
+# perpendicular, i.e. the embedding model thinks they have almost
+# nothing to do with each other. We reject anything past this
+# threshold from the semantic CTE so a nonsense query
+# (``'xyzzy frobnicate quux'``) returns an honest empty response
+# instead of a top-K of arbitrary blocks. The MCP critic flagged
+# this as MAJOR #3: search has no relevance floor, gibberish
+# queries return ranked hits. The threshold is a default, not a
+# constraint — callers (and the eventual public ``min_score=`` knob)
+# can override per call. 0.9 is generous enough to keep weakly-
+# related but legitimately near hits, strict enough to exclude the
+# random-block tail.
+SEMANTIC_DISTANCE_FLOOR = 0.9
+
+
+# Search-time noise filters. Two predicates wrap every block-search
+# WHERE clause; both are necessary to keep low-information blocks
+# from polluting the agent's view.
+#
+#   _MIN_BLOCK_CHARS:   minimum trimmed text length (excludes
+#                       single punctuation, section markers, etc.)
+#   _MARKUP_ONLY_BLOCK: PostgreSQL POSIX regex matching blocks
+#                       whose body is pure HTML markup with no
+#                       readable content. The MCP critic flagged
+#                       ``<span id="page-N-0"></span>`` anchor blocks
+#                       surfacing as top hits on noise-probe queries —
+#                       they're 30+ chars (so the length floor lets
+#                       them through) but carry zero semantic content.
+#
+# Both predicates appear in every block-search SQL clause via
+# :func:`_block_noise_clauses` so any new search method picks them up
+# uniformly. (Critic MAJOR #11 + MINOR #10.)
+_MIN_BLOCK_CHARS = 4
+_MARKUP_ONLY_BLOCK = r"^[[:space:]]*<span[^>]*></span>[[:space:]]*$"
+
+
+def _block_noise_clauses(text_alias: str = "b.text") -> list[str]:
+    """SQL predicates that drop blocks unfit for agent consumption.
+
+    Returned as a plain list of WHERE-clause fragments (no leading
+    ``AND``); callers concatenate via the same ``" AND ".join``
+    they already use for the rest of the WHERE.
+
+    Parameters mirror the alias the caller picked for the ``blocks``
+    table (``b`` everywhere in this module today, but kept
+    parametric so a future view-aliased call site doesn't have to
+    rename).
+    """
+    return [
+        f"char_length(btrim({text_alias})) >= {_MIN_BLOCK_CHARS}",
+        # PostgreSQL POSIX regex via the ``~`` operator. We compare
+        # against the constant rather than a parameter because the
+        # pattern is a static cleanup rule, not user input — and
+        # parameterising would force a separate ``$N`` slot per
+        # call site.
+        f"{text_alias} !~ '{_MARKUP_ONLY_BLOCK}'",
+    ]
 
 
 def _pos_to_db(pos: int | None) -> int:
@@ -207,29 +271,38 @@ class Store:
         *,
         title: str | None = None,
         meta_patch: dict[str, Any] | None = None,
+        conn: Connection | None = None,
     ) -> Ref:
-        """Patch title and/or merge new keys into meta."""
-        with self.pool.connection() as conn:
-            row = conn.execute(
-                """
-                UPDATE refs SET
-                    title = COALESCE(%s, title),
-                    meta  = CASE WHEN %s::jsonb IS NULL
-                                 THEN meta
-                                 ELSE meta || %s::jsonb
-                            END,
-                    updated_at = now()
-                WHERE id = %s AND deleted_at IS NULL
-                RETURNING id, corpus_id, kind, slug, title, provider, meta,
-                          created_at, updated_at, deleted_at
-                """,
-                (
-                    title,
-                    Jsonb(meta_patch) if meta_patch is not None else None,
-                    Jsonb(meta_patch) if meta_patch is not None else None,
-                    ref_id,
-                ),
-            ).fetchone()
+        """Patch title and/or merge new keys into meta.
+
+        ``conn=`` lets the caller share an existing transaction so
+        the update participates in a wider atomic unit (used by
+        ``NumericRefHandler._update`` which wraps title + tag +
+        link writes in one ``tx()``).
+        """
+        sql = """
+            UPDATE refs SET
+                title = COALESCE(%s, title),
+                meta  = CASE WHEN %s::jsonb IS NULL
+                             THEN meta
+                             ELSE meta || %s::jsonb
+                        END,
+                updated_at = now()
+            WHERE id = %s AND deleted_at IS NULL
+            RETURNING id, corpus_id, kind, slug, title, provider, meta,
+                      created_at, updated_at, deleted_at
+        """
+        params = (
+            title,
+            Jsonb(meta_patch) if meta_patch is not None else None,
+            Jsonb(meta_patch) if meta_patch is not None else None,
+            ref_id,
+        )
+        if conn is not None:
+            row = conn.execute(sql, params).fetchone()
+        else:
+            with self.pool.connection() as c:
+                row = c.execute(sql, params).fetchone()
         if row is None:
             raise NotFound(
                 f"ref id={ref_id} not found (or already deleted)",
@@ -248,6 +321,42 @@ class Store:
         if rowcount == 0:
             raise NotFound(f"ref id={ref_id} not found (or already deleted)")
 
+    def most_recent_kind(self, *, kinds: list[str] | None = None) -> str | None:
+        """Return the kind of the most recently updated live ref.
+
+        ``kinds=`` restricts the lookup to a whitelist (typically the
+        kinds whose handlers support ``search``); ``None`` means "any
+        kind". Returns ``None`` when the corpus is empty (or no live
+        ref matches the whitelist).
+
+        Used by the runtime dispatcher to default ``kind=`` for
+        ``search()`` calls that omit it. Picking the most recently
+        touched kind biases the default toward what the agent has
+        been working with — the right behaviour when a 7B caller
+        forgets the kwarg ("forgetting kind= is a real risk for
+        small models", per the MCP critic's deferred suggestion).
+
+        Cheap: a single indexed query against ``refs.updated_at``.
+        Returns the kind string from the highest-updated row.
+        """
+        clauses = ["deleted_at IS NULL"]
+        params: list[Any] = []
+        if kinds is not None:
+            if not kinds:
+                # An empty whitelist would produce ``WHERE kind IN ()``
+                # which Postgres rejects — short-circuit instead.
+                return None
+            clauses.append("kind = ANY(%s)")
+            params.append(list(kinds))
+        sql = (
+            "SELECT kind FROM refs "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY updated_at DESC LIMIT 1"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return None if row is None else str(row[0])
+
     def list_refs(
         self,
         *,
@@ -255,42 +364,93 @@ class Store:
         kind: str | None = None,
         provider: str | None = None,
         updated_after: datetime | None = None,
+        tags: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Ref]:
-        clauses = ["deleted_at IS NULL"]
+        # Aliased as ``r`` so the tag-filter helper can reference
+        # ``r.id`` uniformly across all store query shapes.
+        clauses = ["r.deleted_at IS NULL"]
         params: list[Any] = []
         if corpus_id is not None:
             params.append(corpus_id)
-            clauses.append("corpus_id = %s")
+            clauses.append("r.corpus_id = %s")
         if kind is not None:
             params.append(kind)
-            clauses.append("kind = %s")
+            clauses.append("r.kind = %s")
         if provider is not None:
             params.append(provider)
-            clauses.append("provider = %s")
+            clauses.append("r.provider = %s")
         if updated_after is not None:
             params.append(updated_after)
-            clauses.append("updated_at > %s")
+            clauses.append("r.updated_at > %s")
+
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        # ``build_tag_filter`` already prefixes with " AND "; strip it
+        # once and add each clause separately so ``" AND ".join`` still
+        # works.
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
 
         params.append(limit)
         params.append(offset)
         sql = (
-            "SELECT id, corpus_id, kind, slug, title, provider, meta, "
-            "       created_at, updated_at, deleted_at "
-            "FROM refs WHERE "
+            "SELECT r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
+            "       r.meta, r.created_at, r.updated_at, r.deleted_at "
+            "FROM refs r WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY updated_at DESC LIMIT %s OFFSET %s"
+            + " ORDER BY r.updated_at DESC LIMIT %s OFFSET %s"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_ref(r) for r in rows]
+
+    def count_refs_lexical(
+        self,
+        *,
+        q: str,
+        kind: str | None = None,
+        tags: list[str] | None = None,
+    ) -> int:
+        """Count refs matching the lexical filter (no LIMIT).
+
+        Companion to :meth:`search_refs_lexical` for pagination
+        headers. The MCP critic asked for a "you're seeing N of K"
+        readout in search responses; this gives handlers the K
+        with the same WHERE clause the search uses, so the two
+        numbers can't drift.
+
+        Tag-filter parameters are validated by the handler layer
+        via :meth:`Tag.parse_strict`; this method takes the
+        already-canonical strings and forwards them straight to
+        :func:`build_tag_filter`.
+        """
+        clauses = ["r.deleted_at IS NULL", "r.title_tsv @@ qq.qq"]
+        params: list[Any] = [q]
+        if kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
+        sql = (
+            "SELECT count(*) FROM refs r, "
+            "     websearch_to_tsquery('english', %s) qq(qq) "
+            f"WHERE {' AND '.join(clauses)}"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return int(row[0])
 
     def search_refs_lexical(
         self,
         *,
         q: str,
         kind: str | None = None,
+        tags: list[str] | None = None,
         limit: int = 20,
     ) -> list[tuple[Ref, float]]:
         """Lexical search over `refs.title_tsv`. Returns (ref, rank) sorted
@@ -300,6 +460,10 @@ class Store:
         if kind is not None:
             params.append(kind)
             clauses.append("r.kind = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
         params.append(limit)
         sql = (
             "SELECT r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
@@ -320,20 +484,33 @@ class Store:
 
     # -- blocks --------------------------------------------------------------
 
-    def search_blocks_lexical(
+    def count_blocks_lexical(
         self,
         *,
         q: str,
         kind: str | None = None,
         scope_ref_id: int | None = None,
-        limit: int = 20,
-    ) -> list[tuple[Block, Ref, float]]:
-        """Lexical search over `blocks.tsv`. Returns (block, ref, rank) tuples
-        sorted by ts_rank_cd DESC. Only live (non-deleted) refs are
-        considered."""
+        tags: list[str] | None = None,
+    ) -> int:
+        """Count blocks matching the lexical filter (no LIMIT).
+
+        Companion to :meth:`search_blocks_lexical` for pagination
+        headers. Same WHERE clause (including the
+        ``char_length(btrim(text)) >= 4`` noise-floor guard) so the
+        "you're seeing N of K" header reflects the exact universe
+        the search would return at infinite limit.
+
+        For ``search_blocks_fused``, this lexical count is the
+        primary number agents care about (the semantic CTE only
+        affects ranking among lexically-matching rows). For
+        ``search_blocks_semantic`` callers, semantic search has no
+        meaningful "total" since every embedded block is a hit at
+        some distance — those handlers should not display a total.
+        """
         clauses = [
             "r.deleted_at IS NULL",
             "b.tsv @@ qq.qq",
+            *_block_noise_clauses(),
         ]
         params: list[Any] = [q]
         if kind is not None:
@@ -342,6 +519,55 @@ class Store:
         if scope_ref_id is not None:
             params.append(scope_ref_id)
             clauses.append("b.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
+        sql = (
+            "SELECT count(*) FROM blocks b JOIN refs r ON r.id = b.ref_id, "
+            "     websearch_to_tsquery('english', %s) qq(qq) "
+            f"WHERE {' AND '.join(clauses)}"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def search_blocks_lexical(
+        self,
+        *,
+        q: str,
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Lexical search over `blocks.tsv`. Returns (block, ref, rank) tuples
+        sorted by ts_rank_cd DESC. Only live (non-deleted) refs are
+        considered.
+
+        Blocks whose text strips to fewer than 4 characters are
+        excluded — they're punctuation (".", ","), section markers,
+        or other formatting artefacts whose embeddings cluster near
+        the noise floor. Returning them dilutes results with hits an
+        agent can't quote. (MCP critic MAJOR #11.)
+        """
+        clauses = [
+            "r.deleted_at IS NULL",
+            "b.tsv @@ qq.qq",
+            *_block_noise_clauses(),
+        ]
+        params: list[Any] = [q]
+        if kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("b.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
         params.append(limit)
 
         sql = (
@@ -368,14 +594,34 @@ class Store:
         query_vec: list[float],
         kind: str | None = None,
         scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
         limit: int = 20,
+        max_distance: float | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Cosine-distance semantic search via pgvector. Returns
-        (block, ref, distance) tuples sorted by distance ASC. Excludes
-        blocks that have no embedding."""
+        (block, ref, distance) tuples sorted by distance ASC.
+
+        Excludes blocks that have no embedding *and* blocks whose
+        text strips to <4 characters — see ``search_blocks_lexical``
+        for the rationale (MCP critic MAJOR #11).
+
+        ``max_distance`` is a relevance floor on the cosine distance
+        column. Without it, a nonsense query (``'xyzzy frobnicate'``)
+        still returns the top-K closest embedded blocks because every
+        embedded row is "a hit at some distance" — semantic search
+        has no natural zero. The default
+        :data:`SEMANTIC_DISTANCE_FLOOR` rejects anything more than a
+        loose semantic neighbour, which is the right behaviour for
+        the agent surface: a 7B caller asking "is there a paper on
+        xyzzy?" should get an empty response, not the top-20 random
+        blocks. Pass ``max_distance=None`` to opt out (e.g.
+        recommendation/exploration queries that genuinely want the
+        closest match regardless of similarity). (Critic MAJOR #3.)
+        """
         clauses = [
             "r.deleted_at IS NULL",
             "b.embedding IS NOT NULL",
+            *_block_noise_clauses(),
         ]
         where_params: list[Any] = []
         if kind is not None:
@@ -384,13 +630,34 @@ class Store:
         if scope_ref_id is not None:
             where_params.append(scope_ref_id)
             clauses.append("b.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            where_params.extend(tag_params)
+
+        # Optional distance floor — applied as a HAVING-style filter
+        # on the SELECT-side distance expression. We use the same
+        # ``b.embedding <=> %s::vector`` form here as in the SELECT
+        # column so the planner can hoist the index scan.
+        distance_clause = ""
+        distance_params: list[Any] = []
+        if max_distance is not None:
+            distance_clause = " AND (b.embedding <=> %s::vector) < %s"
+            distance_params = [query_vec, float(max_distance)]
 
         # Param order in the SQL below:
         #   1. %s::vector for the SELECT distance column
-        #   2. WHERE clause params (kind, scope_ref_id)
-        #   3. %s::vector for ORDER BY
-        #   4. LIMIT %s
-        params: list[Any] = [query_vec, *where_params, query_vec, limit]
+        #   2. WHERE clause params (kind, scope_ref_id, tag-filter params)
+        #   3. distance-clause params (query_vec + max_distance) [optional]
+        #   4. %s::vector for ORDER BY
+        #   5. LIMIT %s
+        params: list[Any] = [
+            query_vec,
+            *where_params,
+            *distance_params,
+            query_vec,
+            limit,
+        ]
 
         sql = (
             "SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count, "
@@ -400,7 +667,7 @@ class Store:
             "       r.meta, r.created_at, r.updated_at, r.deleted_at, "
             "       (b.embedding <=> %s::vector) AS dist "
             "FROM blocks b JOIN refs r ON r.id = b.ref_id "
-            f"WHERE {' AND '.join(clauses)} "
+            f"WHERE {' AND '.join(clauses)}{distance_clause} "
             "ORDER BY b.embedding <=> %s::vector ASC LIMIT %s"
         )
         with self.pool.connection() as conn:
@@ -416,8 +683,10 @@ class Store:
         query_vec: list[float] | None = None,
         kind: str | None = None,
         scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
         limit: int = 20,
         k: int = 60,
+        max_distance: float | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Hybrid search via reciprocal rank fusion.
 
@@ -426,14 +695,24 @@ class Store:
 
         Score: ``1/(k + lex_rank) + 1/(k + sem_rank)``. Higher is better.
         ``k=60`` is the standard RRF constant.
+
+        ``max_distance`` is forwarded to the semantic CTE so semantic
+        rows past the relevance floor are dropped before the fusion
+        UNION. See :meth:`search_blocks_semantic` for the rationale —
+        without this, gibberish queries surface semantic-only hits
+        because pgvector ``<=>`` always returns *something*. (Critic
+        MAJOR #3.)
         """
         if query_vec is None:
             # Lex only, returning ts_rank as the score for shape parity.
             return self.search_blocks_lexical(
-                q=q, kind=kind, scope_ref_id=scope_ref_id, limit=limit
+                q=q, kind=kind, scope_ref_id=scope_ref_id, tags=tags, limit=limit
             )
 
-        clauses = ["r.deleted_at IS NULL"]
+        clauses = [
+            "r.deleted_at IS NULL",
+            *_block_noise_clauses(),  # MCP critic MAJOR #11 + MINOR #10
+        ]
         params: list[Any] = []
         if kind is not None:
             params.append(kind)
@@ -441,14 +720,29 @@ class Store:
         if scope_ref_id is not None:
             params.append(scope_ref_id)
             clauses.append("b.ref_id = %s")
+        # The tag filter has to apply to BOTH CTEs (lex + sem). Otherwise
+        # RRF would fuse a filtered set against an unfiltered set and the
+        # final ranking would skew toward the unfiltered side. The
+        # ``where_extra`` mechanism below already inlines into both, so
+        # appending here is enough.
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
 
         # We assemble the WHERE-clause prefix once and inline it into the
         # two CTEs (lex / sem) below.
         where_extra = (" AND " + " AND ".join(clauses)) if clauses else ""
 
-        # Three params slots before LIMIT: q (lex), query_vec ×2 (sem
-        # SELECT + ORDER BY).  Then `limit` once for each CTE.
-        # Outermost clauses (kind / scope) repeat once per CTE.
+        # Sem-only relevance floor. If max_distance is set, the sem CTE
+        # adds an extra predicate ``(b.embedding <=> %s::vector) < %s``
+        # so distant rows never reach RRF. Lex is unaffected — a lexical
+        # tsquery already has its own zero (rows that don't match
+        # @@ qq.qq are excluded by definition).
+        sem_distance_clause = ""
+        if max_distance is not None:
+            sem_distance_clause = " AND (b.embedding <=> %s::vector) < %s"
+
         sql = f"""
             WITH lex AS (
                 SELECT b.id AS bid,
@@ -468,7 +762,7 @@ class Store:
                        ) AS rnk
                 FROM blocks b JOIN refs r ON r.id = b.ref_id
                 WHERE b.embedding IS NOT NULL
-                      {where_extra}
+                      {where_extra}{sem_distance_clause}
                 LIMIT %s
             ),
             fused AS (
@@ -495,7 +789,7 @@ class Store:
             LIMIT %s
         """
         # lex: q + (kind/scope) + limit
-        # sem: query_vec + (kind/scope) + limit
+        # sem: query_vec + (kind/scope) + [optional: query_vec, max_distance] + limit
         # fused: k + k
         # outer: limit
         full_params: list[Any] = []
@@ -506,6 +800,9 @@ class Store:
         # sem CTE
         full_params.append(query_vec)
         full_params.extend(params)
+        if max_distance is not None:
+            full_params.append(query_vec)
+            full_params.append(float(max_distance))
         full_params.append(limit)
         # fused CTE
         full_params.extend([k, k])
@@ -636,6 +933,41 @@ class Store:
             row = conn.execute(
                 "SELECT count(*) FROM blocks WHERE ref_id = %s", (ref_id,)
             ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def count_refs(
+        self,
+        *,
+        kind: str | None = None,
+        provider: str | None = None,
+        tags: list[str] | None = None,
+    ) -> int:
+        """Count active (not soft-deleted) refs, optionally filtered.
+
+        Used by list views that paginate — they need the page total
+        and the corpus total to render '50 of N' style headers without
+        a second pass through ``list_refs(limit=very-large)``.
+
+        ``tags=`` accepts the same canonical tag-string list as
+        :meth:`list_refs`; runtime callers must validate via
+        :meth:`Tag.parse_strict` before this point.
+        """
+        clauses = ["r.deleted_at IS NULL"]
+        params: list[Any] = []
+        if kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        if provider is not None:
+            params.append(provider)
+            clauses.append("r.provider = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
+        sql = "SELECT count(*) FROM refs r WHERE " + " AND ".join(clauses)
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
         assert row is not None
         return int(row[0])
 
@@ -927,6 +1259,7 @@ class Store:
         pos: int | None = None,
         set_by: ActorSlug = "agent",
         replace_prefix: bool = False,
+        conn: Connection | None = None,
     ) -> None:
         """Add a tag to a ref (or block, with `pos`).
 
@@ -935,18 +1268,27 @@ class Store:
                 existing closed tag with the same prefix before inserting.
                 Used by the skill semantics ("CONFIDENCE:certain replaces
                 previous CONFIDENCE:*").
+            conn: Optional existing connection — pass when the caller
+                already owns a transaction (e.g. ``Store.tx()`` block)
+                so the tag write joins the surrounding atomic unit.
+                The MCP critic flagged a state-drift bug where a put-
+                create that failed tag validation still committed the
+                ref insert; the handler now wraps insert + tag adds
+                in one ``tx()`` and threads the connection through
+                this kwarg so a downstream rollback discards both.
         """
         db_pos = _pos_to_db(pos)
-        with self.pool.connection() as conn:
+
+        def _do(c: Connection) -> None:
             if tag.namespace == "closed":
                 assert tag.prefix is not None
                 if replace_prefix:
-                    conn.execute(
+                    c.execute(
                         "DELETE FROM ref_closed_tags "
                         "WHERE ref_id = %s AND pos = %s AND prefix = %s",
                         (ref_id, db_pos, tag.prefix),
                     )
-                conn.execute(
+                c.execute(
                     "INSERT INTO ref_closed_tags "
                     "(ref_id, pos, prefix, value, set_by) "
                     "VALUES (%s, %s, %s, %s, %s) "
@@ -954,19 +1296,25 @@ class Store:
                     (ref_id, db_pos, tag.prefix, tag.value, set_by),
                 )
             elif tag.namespace == "flag":
-                conn.execute(
+                c.execute(
                     "INSERT INTO ref_flags (ref_id, pos, name, set_by) "
                     "VALUES (%s, %s, %s, %s) "
                     "ON CONFLICT DO NOTHING",
                     (ref_id, db_pos, tag.value, set_by),
                 )
             else:
-                conn.execute(
+                c.execute(
                     "INSERT INTO ref_open_tags (ref_id, pos, value, set_by) "
                     "VALUES (%s, %s, %s, %s) "
                     "ON CONFLICT DO NOTHING",
                     (ref_id, db_pos, tag.value, set_by),
                 )
+
+        if conn is not None:
+            _do(conn)
+        else:
+            with self.pool.connection() as c:
+                _do(c)
 
     def remove_tag(
         self,
@@ -974,29 +1322,42 @@ class Store:
         tag: Tag,
         *,
         pos: int | None = None,
+        conn: Connection | None = None,
     ) -> None:
+        """Remove a tag from a ref (or block, with `pos`).
+
+        ``conn=`` mirrors :meth:`add_tag` so handler updates can
+        bundle remove + add into one transaction.
+        """
         db_pos = _pos_to_db(pos)
-        with self.pool.connection() as conn:
+
+        def _do(c: Connection) -> None:
             if tag.namespace == "closed":
                 assert tag.prefix is not None
-                conn.execute(
+                c.execute(
                     "DELETE FROM ref_closed_tags "
                     "WHERE ref_id = %s AND pos = %s "
                     "AND prefix = %s AND value = %s",
                     (ref_id, db_pos, tag.prefix, tag.value),
                 )
             elif tag.namespace == "flag":
-                conn.execute(
+                c.execute(
                     "DELETE FROM ref_flags "
                     "WHERE ref_id = %s AND pos = %s AND name = %s",
                     (ref_id, db_pos, tag.value),
                 )
             else:
-                conn.execute(
+                c.execute(
                     "DELETE FROM ref_open_tags "
                     "WHERE ref_id = %s AND pos = %s AND value = %s",
                     (ref_id, db_pos, tag.value),
                 )
+
+        if conn is not None:
+            _do(conn)
+        else:
+            with self.pool.connection() as c:
+                _do(c)
 
     def tags_for(
         self,
@@ -1031,6 +1392,266 @@ class Store:
                 (ref_id, _REF_LEVEL_POS, name),
             ).fetchone()
         return row is not None
+
+    def find_first_meta_for_open_tag(
+        self,
+        *,
+        kind: str,
+        tag: str,
+    ) -> dict[str, Any] | None:
+        """Return ``refs.meta`` for any one live ref of ``kind`` carrying
+        the open-tag value ``tag`` (e.g. ``'applicant:siemens-ag'``).
+
+        Used by the patent CQL lift to recover canonical applicant
+        spelling from a previously-ingested patent. Limit 1 — we only
+        need any matching meta to read the embedded applicant list.
+        Returns None when no such ref exists.
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT r.meta
+                FROM   refs r
+                JOIN   ref_open_tags t ON t.ref_id = r.id
+                WHERE  r.kind = %s
+                  AND  t.value = %s
+                  AND  r.deleted_at IS NULL
+                LIMIT 1
+                """,
+                (kind, tag),
+            ).fetchone()
+        if row is None:
+            return None
+        return row[0] if isinstance(row[0], dict) else None
+
+    # -- links ---------------------------------------------------------------
+
+    def add_link(
+        self,
+        *,
+        src_ref_id: int,
+        dst_ref_id: int,
+        relation: Relation = "related-to",
+        src_pos: int | None = None,
+        dst_pos: int | None = None,
+        set_by: ActorSlug = "agent",
+        meta: dict[str, Any] | None = None,
+        conn: Connection | None = None,
+    ) -> Link:
+        """Insert a link row, idempotent on the unique tuple.
+
+        The schema's `UNIQUE (src_ref_id, src_pos, dst_ref_id, dst_pos,
+        relation)` means a re-insert with the same arguments is a
+        no-op. We use `ON CONFLICT (...) DO UPDATE SET set_by =
+        links.set_by` so the `RETURNING` clause yields the existing
+        row on conflict — this avoids the extra SELECT that
+        `DO NOTHING` would force.
+
+        Identity self-loops (same ref + same pos) are rejected by
+        the schema's `CHECK` constraint, surfaced here as a
+        `BadInput` because that's the right error class for an
+        agent-driven misuse.
+
+        Same-ref different-pos links are allowed (e.g. block~5 →
+        block~7 within one long memory ref) — the check is
+        position-aware.
+
+        **One row per edge.** Asymmetric pairs (``cites`` /
+        ``cited-by``) are NOT auto-mirrored — exactly one row is
+        inserted regardless of relation. The "who cites me?"
+        filter that motivated the MCP critic's request is solved
+        at *read* time in :meth:`links_for`, which rewrites
+        ``relation='cited-by'`` into a dst-side match against
+        ``relation='cites'``. This keeps the unique-edge invariant
+        intact, avoids drift between the two sides, and matches
+        the design choice documented in
+        ``migrations/0005_link_relations.sql``.
+        """
+        if src_ref_id == dst_ref_id and _pos_to_db(src_pos) == _pos_to_db(dst_pos):
+            raise BadInput(
+                "cannot link a ref to itself at the same position",
+                next=(
+                    "use different src_pos/dst_pos if linking blocks "
+                    "within one ref, or pick a different target"
+                ),
+            )
+        sql = """
+            INSERT INTO links
+                (src_ref_id, src_pos, dst_ref_id, dst_pos,
+                 relation, set_by, meta)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (src_ref_id, src_pos, dst_ref_id, dst_pos, relation)
+            DO UPDATE SET set_by = links.set_by
+            RETURNING id, src_ref_id, src_pos, dst_ref_id, dst_pos,
+                      relation, set_by, meta, created_at
+        """
+        params = (
+            src_ref_id,
+            _pos_to_db(src_pos),
+            dst_ref_id,
+            _pos_to_db(dst_pos),
+            relation,
+            set_by,
+            Jsonb(meta or {}),
+        )
+        if conn is not None:
+            row = conn.execute(sql, params).fetchone()
+        else:
+            with self.pool.connection() as c:
+                row = c.execute(sql, params).fetchone()
+        assert row is not None
+        return _row_to_link(row)
+
+    def remove_link(
+        self,
+        *,
+        src_ref_id: int,
+        dst_ref_id: int,
+        relation: Relation | None = None,
+        src_pos: int | None = None,
+        dst_pos: int | None = None,
+        conn: Connection | None = None,
+    ) -> int:
+        """Remove links matching the given (src, dst, [pos pair, [relation]]).
+
+        ``relation=None`` removes **all** links between the given
+        positions regardless of relation. The handler-level
+        ``unlink=`` kwarg always passes a specific relation so this
+        broader form is a Store-only escape hatch (used by tests
+        and future bulk operations). Returns the number of rows
+        deleted; missing links are a silent no-op (rowcount=0).
+
+        Asymmetric pairs (``cites`` / ``cited-by``) are stored as a
+        single row whose direction is the one the agent named at
+        write time. Removing it removes the edge regardless of
+        which inverse name is in flight at read time (see
+        :meth:`links_for` for the read-side rewrite).
+        """
+        clauses = [
+            "src_ref_id = %s",
+            "src_pos = %s",
+            "dst_ref_id = %s",
+            "dst_pos = %s",
+        ]
+        params: list[Any] = [
+            src_ref_id,
+            _pos_to_db(src_pos),
+            dst_ref_id,
+            _pos_to_db(dst_pos),
+        ]
+        if relation is not None:
+            clauses.append("relation = %s")
+            params.append(relation)
+        sql = f"DELETE FROM links WHERE {' AND '.join(clauses)}"
+        if conn is not None:
+            cur = conn.execute(sql, params)
+        else:
+            with self.pool.connection() as c:
+                cur = c.execute(sql, params)
+        return cur.rowcount
+
+    def links_for(
+        self,
+        ref_id: int,
+        *,
+        direction: Literal["out", "in", "both"] = "both",
+        relation: Relation | None = None,
+    ) -> list[Link]:
+        """Fetch links touching ``ref_id``.
+
+        ``direction='out'``: rows where ref_id is the source.
+        ``direction='in'``:  rows where ref_id is the destination.
+        ``direction='both'`` (default): both, no deduplication —
+        a self-link (different positions) shows up twice and that's
+        correct.
+
+        ``relation=None`` returns every relation. Inbound rows keep
+        their stored relation slug; the renderer maps to inverse
+        labels via ``relations.inverse_slug`` for human-readable
+        prose.
+
+        **Inverse-relation rewrite.** When ``relation`` is the
+        inverse half of an asymmetric pair (e.g. ``'cited-by'``,
+        which is never stored — only ``'cites'`` is) the filter
+        is rewritten so both physical encodings of the edge are
+        returned. Concretely, ``relation='cited-by',
+        direction='out'`` matches:
+
+        * literal ``cited-by`` rows where this ref is src (rare),
+          AND
+        * ``cites`` rows where this ref is dst (the canonical
+          encoding of the same edge from the cited side).
+
+        This solves the "who cites me?" filter the MCP critic
+        flagged: agents can write
+        ``links_for(B, relation='cited-by', direction='out')`` and
+        get the citation graph from B's perspective without
+        knowing the schema-side asymmetry. Returned ``Link`` rows
+        keep their *stored* relation slug — the caller compares
+        against the requested filter to label them, exactly the
+        same job the renderer already does for ``direction='both'``.
+        """
+        # The role-match logic: when the caller asks for relation X
+        # in direction D, also accept rows storing inverse(X) in
+        # the opposite direction. The two conditions are unioned.
+        inverse = _INVERSE_RELATIONS.get(relation) if relation is not None else None
+
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        def _direction_clause(direction: str) -> tuple[str, list[Any]]:
+            if direction == "out":
+                return "src_ref_id = %s", [ref_id]
+            if direction == "in":
+                return "dst_ref_id = %s", [ref_id]
+            return "(src_ref_id = %s OR dst_ref_id = %s)", [ref_id, ref_id]
+
+        if inverse is None:
+            # No inverse rewrite needed — single direction clause +
+            # optional relation filter.
+            d_clause, d_params = _direction_clause(direction)
+            clauses.append(d_clause)
+            params.extend(d_params)
+            if relation is not None:
+                clauses.append("relation = %s")
+                params.append(relation)
+        else:
+            # Disjunction: literal-relation in the requested
+            # direction OR inverse-relation in the opposite
+            # direction. ``opposite`` is straightforward; for
+            # ``both``, both halves use ``both`` — every row
+            # qualifies under the relation OR inverse-relation
+            # branch. We then dedupe by id at the Python boundary.
+            opposite_dir = {"out": "in", "in": "out", "both": "both"}[direction]
+            d_left, p_left = _direction_clause(direction)
+            d_right, p_right = _direction_clause(opposite_dir)
+            clauses.append(
+                f"(({d_left} AND relation = %s) OR ({d_right} AND relation = %s))"
+            )
+            params.extend([*p_left, relation, *p_right, inverse])
+
+        sql = (
+            "SELECT id, src_ref_id, src_pos, dst_ref_id, dst_pos, "
+            "       relation, set_by, meta, created_at "
+            f"FROM links WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at ASC"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        # Dedupe by id — when ``direction='both'`` and an inverse
+        # rewrite is in play, the same row could match both halves
+        # of the OR (a self-link with different positions is the
+        # only realistic case in this schema, but the dedupe is
+        # cheap and defensive).
+        seen: set[int] = set()
+        out: list[Link] = []
+        for r in rows:
+            link_id = r[0]
+            if link_id in seen:
+                continue
+            seen.add(link_id)
+            out.append(_row_to_link(r))
+        return out
 
     # -- helpers -------------------------------------------------------------
 
@@ -1112,6 +1733,27 @@ def _row_to_ref(row: tuple) -> Ref:
         created_at=row[7],
         updated_at=row[8],
         deleted_at=row[9],
+    )
+
+
+def _row_to_link(row: tuple) -> Link:
+    """Map a links row tuple in the order:
+    (id, src_ref_id, src_pos, dst_ref_id, dst_pos,
+     relation, set_by, meta, created_at)
+
+    The DB sentinel `pos = -1` is converted back to `None` at the
+    boundary so callers always see "ref-level" as Pythonic `None`.
+    """
+    return Link(
+        id=row[0],
+        src_ref_id=row[1],
+        src_pos=row[2] if row[2] != _REF_LEVEL_POS else None,
+        dst_ref_id=row[3],
+        dst_pos=row[4] if row[4] != _REF_LEVEL_POS else None,
+        relation=row[5],
+        set_by=row[6],
+        meta=row[7] or {},
+        created_at=row[8],
     )
 
 

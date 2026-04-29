@@ -28,8 +28,14 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from precis.errors import BadInput, Upstream
+from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
+from precis.handlers._link_tag_ops import (
+    apply_link_ops,
+    apply_tag_ops,
+    format_link_tag_ack,
+    validate_link_args,
+)
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
@@ -234,6 +240,88 @@ class _PerplexityBase(CacheBackedHandler):
         body = resp.body + render_next_section(nav)
         return Response(body=body, cost=resp.cost)
 
+    # ── get: route / and /recent to the listing; else fetch/cache ────
+
+    def get(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        q: str | None = None,
+        view: str | None = None,
+        **kw: Any,
+    ) -> Response:
+        """Intercepts bare ``get`` / ``id='/'`` / ``id='/recent'`` and
+        serves a listing of the N most recent refs of this kind.
+        Anything else falls through to the cache-backed fetch path."""
+        if id is None and not (isinstance(q, str) and q.strip()):
+            return self._render_recent()
+        if isinstance(id, str):
+            stripped = id.strip()
+            if stripped in ("", "/", "/recent"):
+                return self._render_recent()
+            if stripped.startswith("/"):
+                raise BadInput(
+                    f"unknown view {stripped!r} for kind={self.spec.kind!r}",
+                    options=["/", "/recent"],
+                    next=(
+                        f"get(kind={self.spec.kind!r}, id='/recent') "
+                        "to list recent refs"
+                    ),
+                )
+        return super().get(id=id, q=q, view=view, **kw)
+
+    def _render_recent(self, *, limit: int = 20) -> Response:
+        """Render the most recent refs of this kind, newest first.
+
+        Each row shows slug, title (truncated), provenance
+        (``imported`` vs ``fetched``), and the ``updated_at`` date.
+        Empty-state message points the agent at ``get`` / ``put``.
+        """
+        refs = self.store.list_refs(
+            kind=self.spec.kind,
+            provider=self.provider,
+            limit=limit,
+        )
+        heading = f"# recent {self.spec.kind} refs"
+        if not refs:
+            body = (
+                f"{heading}\n\n"
+                f"_(no {self.spec.kind} refs yet.)_\n\n"
+                f"Next:\n"
+                f"- `get(kind={self.spec.kind!r}, id='<query>')` — "
+                f"run a fresh query (paid API)\n"
+                f"- `put(kind={self.spec.kind!r}, id='<query>', "
+                f"text='<report>', mode='import')` — "
+                f"register a pre-generated answer at $0\n"
+            )
+            return Response(body=body)
+
+        lines: list[str] = [heading, ""]
+        for ref in refs:
+            source = (ref.meta or {}).get("source") or "fetched"
+            day = ref.updated_at.strftime("%Y-%m-%d") if ref.updated_at else "—"
+            title = ref.title
+            if len(title) > 80:
+                title = title[:77] + "..."
+            lines.append(f"- `{ref.slug}` — {title}  _({source}, {day})_")
+        lines.append("")
+        lines.append(
+            f"_showing {len(refs)} of at most {limit}. "
+            f"Next: get(kind={self.spec.kind!r}, id='<slug>') to read one._"
+        )
+        return Response(body="\n".join(lines))
+
+    # ── cost trailer: distinguish imported cache entries from fetched ─
+
+    def _cost_str(self, cache, *, hit):  # type: ignore[no-untyped-def]
+        """Override: when the cache row was populated by
+        ``put(mode='import')`` we want the trailer to say so plainly
+        rather than just ``[cost: free]`` — agents can then tell at a
+        glance that the body is user-supplied rather than API-cached."""
+        if hit and (cache.meta or {}).get("source") == "imported":
+            return "[cost: free — imported]"
+        return super()._cost_str(cache, hit=hit)
+
     # ── put: import a pre-generated report as a $0 cache entry ───────
 
     def put(  # type: ignore[override]
@@ -242,34 +330,80 @@ class _PerplexityBase(CacheBackedHandler):
         id: str | int | None = None,
         text: str | None = None,
         mode: str | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+        link: str | None = None,
+        unlink: str | None = None,
+        rel: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Import a Perplexity-generated report as a cached ref at $0.
+        """Import a Perplexity-generated report **or** apply link/tag ops.
 
-        Use case: Perplexity Pro subscribers can run deep research in
-        the web UI for free. Pasting that result here populates the
-        *same* cache row a paid API ``get`` would have produced — every
-        future ``get(kind=<this>, id=<query>)`` on the same query then
-        hits the cache and returns the imported body for $0.
+        Two distinct modes:
+
+        * ``mode='import'`` — paste a Perplexity-generated report as a
+          $0 cache entry. Same shape as before: ``id=`` is the query,
+          ``text=`` is the report body, the row gets pinned (no TTL)
+          so future ``get(kind=<this>, id=<query>)`` returns it.
+        * ``mode is None`` + link/tag kwargs — apply link/tag CRUD to
+          an *existing* cache ref. Lets agents cross-link a research
+          report to the paper that prompted it, or tag a websearch
+          row ``CACHE:pinned`` so the TTL sweep doesn't reap it.
+
+        The two modes are dispatched on whichever signal is present.
+        Sending both (``mode='import'`` plus ``link=``) is a misuse
+        and rejected up front — link/tag ops belong on a *separate*
+        call after the import lands.
 
         Args:
-            id: The original query the user asked Perplexity. Becomes
-                part of the canonical cache key (combined with this
-                handler's model), so it must match the query that any
-                future ``get`` would supply for the cache to hit.
-            text: The report body, ideally as Markdown. Parsed into
-                blocks via the same splitter used for the ``markdown``
-                kind, so per-block citation handles work and search
-                returns granular hits rather than the whole report.
-            mode: Must be ``"import"``.
+            id: For ``import``, the original query. For link/tag, the
+                resolved cache row's slug (returned in the import
+                ack as ``ref %r``).
+            text: Import only — the report body.
+            mode: ``"import"`` for cache import, omitted for link/tag.
+            tags / untags: Closed-prefix tags must use the kind's
+                allowed axes (``CACHE`` for cache kinds; see
+                ``_KIND_ALLOWED_AXES``). Open tags always allowed.
+            link / unlink / rel: Cross-link target spec — same shape
+                as on memory/todo/paper.
         """
+        # Dispatch: link/tag mode is "any link/tag kwarg is set AND
+        # mode is not 'import'". The two surfaces share kwargs (id=,
+        # text=) but mean different things in each. The check below
+        # is structured so a stray kwarg gives a helpful BadInput
+        # rather than silently triggering the wrong code path.
+        link_tag_kwargs = (link, unlink, tags, untags, rel)
+        any_link_tag_kwarg = any(k is not None for k in link_tag_kwargs)
+        if mode is None and any_link_tag_kwarg:
+            return self._put_link_tag_ops(
+                id=id,
+                text=text,
+                tags=tags,
+                untags=untags,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+            )
+        if mode == "import" and any_link_tag_kwarg:
+            raise BadInput(
+                "import mode does not accept link/tag kwargs — split into two calls",
+                next=(
+                    f"put(kind={self.spec.kind!r}, id=<query>, text=..., "
+                    "mode='import') first; THEN "
+                    f"put(kind={self.spec.kind!r}, id=<slug>, link=...) "
+                    "on the resulting slug"
+                ),
+            )
         if mode != "import":
             raise BadInput(
-                f"{self.spec.kind} only supports mode='import' for put",
-                options=["import"],
+                f"{self.spec.kind} accepts mode='import' (cache import) "
+                "or link/tag kwargs without mode",
+                options=["import", "(omit) for link/tag ops"],
                 next=(
                     f"put(kind={self.spec.kind!r}, id='<the query>', "
-                    "text='<paste report>', mode='import')"
+                    "text='<paste report>', mode='import') OR "
+                    f"put(kind={self.spec.kind!r}, id='<slug>', "
+                    "link='paper:other')"
                 ),
             )
         if not isinstance(id, str) or not id.strip():
@@ -325,6 +459,85 @@ class _PerplexityBase(CacheBackedHandler):
             f"will return the imported body for $0."
         )
         return Response(body=msg)
+
+    # ── put: link/tag ops on an existing cache slug ──────────────────
+
+    def _put_link_tag_ops(
+        self,
+        *,
+        id: str | int | None,
+        text: str | None,
+        tags: list[str] | None,
+        untags: list[str] | None,
+        link: str | None,
+        unlink: str | None,
+        rel: str | None,
+    ) -> Response:
+        """Apply link/unlink/tags/untags to an existing cache row.
+
+        Cache rows are identified by slug here, NOT by query — once
+        a row exists it has a stable slug, and that's what the
+        cross-link target syntax expects (``research:my-slug``).
+        Resolving by query would require re-hashing the canonical
+        key and looking up by ``request_hash``; we'd then have no
+        path for slugs assigned via direct CLI ingest. Slug
+        addressing keeps the link/tag surface uniform with paper.
+        """
+        if text is not None:
+            raise BadInput(
+                f"text= is not supported for link/tag ops on {self.spec.kind}",
+                next=(
+                    "use mode='import' to (re)import the body, or drop "
+                    "text= and use link/unlink/tags/untags only"
+                ),
+            )
+        if not isinstance(id, str) or not id.strip():
+            raise BadInput(
+                f"{self.spec.kind} link/tag ops require id= (the slug)",
+                next=(f"put(kind={self.spec.kind!r}, id='<slug>', link='paper:other')"),
+            )
+        slug = id.strip()
+        ref = self.store.get_ref(kind=self.spec.kind, id=slug)
+        if ref is None:
+            raise NotFound(
+                f"{self.spec.kind} slug {slug!r} not found",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id='<query>') first to "
+                    "populate the cache, then link/tag the resulting slug"
+                ),
+            )
+
+        validate_link_args(link=link, unlink=unlink, rel=rel, kind=self.spec.kind)
+        if not any((link, unlink, tags, untags)):
+            raise BadInput(
+                f"{self.spec.kind} link/tag put requires at least one of "
+                "link=, unlink=, tags=, untags=",
+                next=(
+                    f"put(kind={self.spec.kind!r}, id={slug!r}, "
+                    "link='paper:other-slug')"
+                ),
+            )
+
+        n_links_added, n_links_removed = apply_link_ops(
+            self.store, ref.id, link=link, unlink=unlink, rel=rel
+        )
+        n_tags_added, n_tags_removed = apply_tag_ops(
+            self.store,
+            self.spec.kind,
+            ref.id,
+            tags=tags,
+            untags=untags,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=slug,
+                n_links_added=n_links_added,
+                n_links_removed=n_links_removed,
+                n_tags_added=n_tags_added,
+                n_tags_removed=n_tags_removed,
+            )
+        )
 
     def _blocks_from_report(self, body: str) -> list[BlockInsert]:
         """Parse a pasted Perplexity report into embedded blocks.
@@ -388,9 +601,8 @@ class WebsearchHandler(_PerplexityBase):
         supports_get=True,
         supports_put=True,
         is_numeric=False,
-        id_required=True,
+        id_required=False,
         modes=("import",),
-        requires_env=("PERPLEXITY_API_KEY",),
     )
 
     model: ClassVar[str] = "sonar"
@@ -416,9 +628,8 @@ class ThinkHandler(_PerplexityBase):
         supports_get=True,
         supports_put=True,
         is_numeric=False,
-        id_required=True,
+        id_required=False,
         modes=("import",),
-        requires_env=("PERPLEXITY_API_KEY",),
     )
 
     model: ClassVar[str] = "sonar-reasoning-pro"
@@ -447,9 +658,8 @@ class ResearchHandler(_PerplexityBase):
         supports_get=True,
         supports_put=True,
         is_numeric=False,
-        id_required=True,
+        id_required=False,
         modes=("import",),
-        requires_env=("PERPLEXITY_API_KEY",),
     )
 
     model: ClassVar[str] = "sonar-deep-research"

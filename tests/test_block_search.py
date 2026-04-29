@@ -146,16 +146,23 @@ class TestSearchBlocksSemantic:
         e = MockEmbedder(dim=1024)
         cid = store.ensure_corpus("default")
         ref = store.insert_ref(corpus_id=cid, kind="paper", slug="p", title="P")
+        # ``has`` is 3 chars and now filtered by the noise-floor guard
+        # (MCP critic MAJOR #11). Use a longer phrase so the test
+        # exercises only the embedding-presence filter it cares about.
         store.insert_blocks(
             ref.id,
             [
-                BlockInsert(pos=0, text="has", embedding=e.embed_one("has")),
-                BlockInsert(pos=1, text="missing"),
+                BlockInsert(
+                    pos=0,
+                    text="has-an-embedding",
+                    embedding=e.embed_one("has-an-embedding"),
+                ),
+                BlockInsert(pos=1, text="missing-an-embedding"),
             ],
         )
-        qv = e.embed_one("has")
+        qv = e.embed_one("has-an-embedding")
         hits = store.search_blocks_semantic(query_vec=qv, kind="paper")
-        assert {b.text for b, _, _ in hits} == {"has"}
+        assert {b.text for b, _, _ in hits} == {"has-an-embedding"}
 
     def test_scope_ref_id(self, store: Store) -> None:
         e = MockEmbedder(dim=1024)

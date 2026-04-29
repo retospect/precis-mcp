@@ -29,7 +29,7 @@ Coin new sub-kinds freely.
 put(kind='memory',
     text='Wang2020 chunk 38 has the cleanest Z-scheme diagram.',
     tags=['kind:note', 'topic:noxrr'],
-    link='wang2020state~38')
+    link='paper:wang2020state~38')
 ```
 
 ## Record a decision
@@ -37,7 +37,7 @@ put(kind='memory',
 ```python
 put(kind='memory',
     text='Decided to drop mode-driven tag/link in favour of typed kwargs.',
-    tags=['kind:decision', 'CONFIDENCE:strong', 'project:precis-v2'])
+    tags=['kind:decision', 'confidence-strong', 'project:precis-v2'])
 # → returns integer id (e.g. 73)
 ```
 
@@ -45,7 +45,7 @@ put(kind='memory',
 
 ```python
 put(kind='memory', text='Does CACHE: pinning play well with re-ingest?',
-    tags=['kind:question', 'CONFIDENCE:tentative'])
+    tags=['kind:question', 'confidence-tentative'])
 ```
 
 ## Browse memories
@@ -54,32 +54,44 @@ put(kind='memory', text='Does CACHE: pinning play well with re-ingest?',
 search(kind='memory', q='kwargs vs modes', tags=['kind:decision'])
 ```
 
-## Promote an `ask` cache to durable
+## Promote a research cache to durable
 
 ```python
-get(kind='ask', q='mechanism of NOxRR')         # generates cache
+get(kind='research', q='mechanism of NOxRR')    # generates cache
 put(kind='memory',
     text='Distilled mechanism: three-electron pathway, see §2 of cache.',
-    tags=['kind:summary', 'topic:noxrr', 'CONFIDENCE:moderate'],
-    link='mechanism-of-noxrr')
+    tags=['kind:summary', 'topic:noxrr', 'confidence-moderate'],
+    link='research:mechanism-of-noxrr')
 ```
 
 ## Bump confidence later
 
+Confidence is an open-tag axis today (lowercase, hyphenated):
+``confidence-tentative``, ``confidence-moderate``, ``confidence-strong``,
+``confidence-certain``. Open tags don't replace each other — to
+bump from ``moderate`` to ``certain``, untag the old value:
+
 ```python
-put(kind='memory', id='73', tags=['CONFIDENCE:certain'])
-# replaces previous CONFIDENCE:*
+put(kind='memory', id=73,
+    tags=['confidence-certain'],
+    untags=['confidence-moderate'])
 ```
+
+If ``confidence`` graduates to a registered closed prefix in a
+later phase, the same call shape will swap to
+``tags=['CONFIDENCE:certain']`` and the replacement becomes atomic.
 
 ## Notes
 
 - Server assigns an integer id on create; reference it thereafter.
-- Use a memory for thoughts that stand alone; use `mode='note'` on an
-  existing ref for commentary on that ref.
+- Use a memory for thoughts that stand alone; for commentary on an
+  existing ref, create the memory and `link=` it back to the ref
+  (with `rel='related-to'` or a more specific relation — see
+  `precis-relations`).
 
 ## See also
 
 - `precis-overview` — verbs and kinds
-- `precis-tags` — `kind:`, `CONFIDENCE:`, `topic:`
+- `precis-tags` — `kind:`, `topic:`, the registered closed axes
 - `precis-relations` — `related-to`, `contradicts`
-- `precis-cache` — when to promote an `ask` cache to a memory
+- `precis-cache` — when to promote a `research` / `think` cache to a memory

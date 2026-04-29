@@ -20,7 +20,11 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from precis.errors import BadInput, Upstream
-from precis.handlers._cache_base import CacheBackedHandler, FetchResult
+from precis.handlers._cache_base import (
+    CacheBackedHandler,
+    FetchResult,
+    _format_cache_footer,
+)
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
@@ -185,7 +189,15 @@ class WebHandler(CacheBackedHandler):
         resp = super()._render(ref, cache, hit=hit)
         url = (cache.meta or {}).get("url") or ""
         fetched = cache.fetched_at.date().isoformat() if cache.fetched_at else "?"
-        deep_link = f"  Source: {url}\n  Fetched: {fetched}"
+        # Surface cache age + freshness state. The MCP critic flagged
+        # the absence of the ``(web cache · age Nd · CACHE:fresh)``
+        # annotation that ``precis-cache`` documents — a caller had
+        # no way to tell a cached vs fresh response, and so no way
+        # to decide whether to force a refetch. Using
+        # :func:`_format_cache_footer` keeps the wording consistent
+        # across every cache-backed kind. (Critic MINOR #11.)
+        cache_state = _format_cache_footer(cache)
+        deep_link = f"  Source: {url}\n  Fetched: {fetched}\n  Cache:  {cache_state}"
         return Response(body=resp.body + "\n" + deep_link, cost=resp.cost)
 
 

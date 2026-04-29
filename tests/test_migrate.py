@@ -26,7 +26,10 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
     # Initial migration must be first; phase 4 added 0002. Test the
     # first migration explicitly and any later ones loosely.
     assert applied[0] == "0001_initial"
-    assert all(v.startswith(("0001_", "0002_", "0003_", "0004_")) for v in applied)
+    assert all(
+        v.startswith(("0001_", "0002_", "0003_", "0004_", "0005_", "0006_"))
+        for v in applied
+    )
 
     rows = _fetch(
         fresh_db,

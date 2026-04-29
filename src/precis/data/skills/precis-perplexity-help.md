@@ -33,7 +33,22 @@ get(kind='research',  id='landscape of post-quantum signature schemes')
 
 The response body carries the answer with inline `[N]` citations and
 a trailing `Sources:` block of underlying URLs. Cache hits return
-the same body for free; the cost trailer reads `— cached`.
+the same body for free; the cost trailer reads `— cached`. Imported
+entries (see below) read `— imported` so you can distinguish
+user-supplied bodies from API-cached ones at a glance.
+
+## Recent — list cached refs per kind
+
+```python
+get(kind='research')              # same as id='/recent'
+get(kind='research', id='/recent')
+get(kind='research', id='/')
+```
+
+Returns up to 20 refs of this kind, newest first, with slug, title,
+provenance (`imported` vs `fetched`), and last-update date. The
+listing path never calls the Perplexity API — it works with no
+`PERPLEXITY_API_KEY` set, so pure importers can use it.
 
 ## Put (mode='import') — free Pro-subscriber path
 
@@ -88,16 +103,31 @@ are different artefacts.
 - `BadInput: <kind> only supports mode='import' for put` — `put` is
   scoped to imports today; other modes will land in later phases.
 - `BadInput: import requires text=` — empty body.
-- `Upstream: PERPLEXITY_API_KEY not set` — only on `get` (paid API
-  path). Imports do not call out, but the kind is still gated on
-  the key being present.
+- `Upstream: PERPLEXITY_API_KEY not set` — raised only when a
+  cache-miss `get` actually needs to call the API. Imports,
+  `/recent`, and cache hits never trigger this.
 - `Upstream: HTTP 401 / 429 / 5xx` — paid API path only.
 
 ## Required env
 
-`PERPLEXITY_API_KEY` must be set for the kind to be available at
-all. If you only ever use imports, set it to any non-empty value;
-the import path never sends it on the wire.
+`PERPLEXITY_API_KEY` is **only** required for the paid API path
+(cache-miss `get`). Imports, `/recent` listings, cache hits, and
+bulk CLI imports all work without a key — the kind is always
+available, and the fetch path raises `Upstream` with a clear
+error only when it actually needs the key.
+
+## Bulk CLI import
+
+```
+precis jobs import-perplexity ./reports/ --kind research
+precis jobs import-perplexity ./reports/ --kind research --dry-run
+precis jobs import-perplexity ./reports/ --query-from filename
+```
+
+Walks the directory for `*.md` files, derives the `id=` query from
+the first H1 heading (falling back to the filename), and bulk-calls
+`put(mode='import')` for each. `--dry-run` prints the derived query
+per file without touching the DB.
 
 ## See also
 

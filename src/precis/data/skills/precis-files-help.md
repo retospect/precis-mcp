@@ -1,12 +1,18 @@
 ---
 id: precis-files-help
 title: precis — read and edit files (markdown, plaintext, code, …)
-status: draft
+status: planned
 tier: 1
 floor: any
 applies-to: cross-cutting (file-rooted kinds)
-last-updated: 2026-04-27
+last-updated: 2026-04-28
 ---
+
+> **Heads up:** none of the file kinds documented here (`markdown`,
+> `plaintext`, `rmk`, `docx`, `tex`, `book`, `python`, `git`) are
+> wired in this build's registry — they're queued for a later phase.
+> Filtered from the default skill index until at least one of them
+> ships. Read for design intent, not as a runtime recipe.
 
 # precis-files-help — file-rooted kinds, shared concepts
 

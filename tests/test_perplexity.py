@@ -193,15 +193,28 @@ def test_query_canonicalization_trims(websearch: WebsearchHandler) -> None:
 # ── input validation ─────────────────────────────────────────────────
 
 
-def test_empty_query_raises(websearch: WebsearchHandler) -> None:
-    # Empty input is rejected by the cache-base coercion layer.
-    with pytest.raises(BadInput, match="require a query"):
-        websearch.get(id="")
+def test_empty_id_renders_recent_listing(websearch: WebsearchHandler) -> None:
+    """Empty/whitespace id is interpreted as "show recent refs" rather
+    than rejected — same ergonomics as `get(kind='markdown')` with no
+    id. Actual empty input to the fetch path is still caught inside
+    ``_canonical_key`` if someone pushes through via ``q=``."""
+    resp = websearch.get(id="")
+    assert "recent websearch refs" in resp.body.lower()
 
 
-def test_whitespace_only_query_raises(websearch: WebsearchHandler) -> None:
-    with pytest.raises(BadInput, match="require a query"):
-        websearch.get(id="   ")
+def test_whitespace_only_id_renders_recent_listing(
+    websearch: WebsearchHandler,
+) -> None:
+    resp = websearch.get(id="   ")
+    assert "recent websearch refs" in resp.body.lower()
+
+
+def test_empty_query_via_q_still_raises(websearch: WebsearchHandler) -> None:
+    """``q=''`` with no ``id=`` still routes to the recent listing —
+    same as no input at all — because the recent view has priority
+    over query validation."""
+    resp = websearch.get(q="")
+    assert "recent websearch refs" in resp.body.lower()
 
 
 # ── env / availability ───────────────────────────────────────────────
@@ -216,14 +229,18 @@ def test_missing_api_key_raises_upstream(
         h.get(id="anything")
 
 
-def test_kind_hidden_when_env_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_kind_available_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Perplexity kinds are always available — imports, /recent, and
+    cache hits all work without an API key. Only cache-miss ``get``
+    needs the key, and that path raises ``Upstream`` with a helpful
+    message rather than hiding the kind."""
     monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
-    assert WebsearchHandler.spec.is_available() is False
-    assert ThinkHandler.spec.is_available() is False
-    assert ResearchHandler.spec.is_available() is False
+    assert WebsearchHandler.spec.is_available() is True
+    assert ThinkHandler.spec.is_available() is True
+    assert ResearchHandler.spec.is_available() is True
 
 
-def test_kind_visible_when_env_set(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_kind_available_with_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PERPLEXITY_API_KEY", "anything")
     assert WebsearchHandler.spec.is_available() is True
 
@@ -436,9 +453,7 @@ def test_import_is_idempotent_on_repeat(
 
     # Only one cache row should exist for this (provider, hash).
     request_hash = h._hash(h._canonical_key("same query"))
-    cached = h.store.get_cache_entry(
-        provider="perplexity", request_hash=request_hash
-    )
+    cached = h.store.get_cache_entry(provider="perplexity", request_hash=request_hash)
     assert cached is not None
     ref, _cache = cached
     blocks = h.store.list_blocks_for_ref(ref.id)
@@ -526,3 +541,109 @@ def test_import_supports_put_advertised_in_spec() -> None:
     for cls in (WebsearchHandler, ThinkHandler, ResearchHandler):
         assert cls.spec.supports_put is True
         assert "import" in cls.spec.modes
+
+
+# ── /recent listing view ─────────────────────────────────────────────
+
+
+def test_recent_empty_shows_helpful_empty_state(
+    research: ResearchHandler,
+) -> None:
+    """Empty store → helpful message pointing at both get and put."""
+    resp = research.get()
+    assert "no research refs yet" in resp.body.lower()
+    assert "mode='import'" in resp.body
+    # Also accepts id='/recent' explicitly and id='/'.
+    assert "no research refs yet" in research.get(id="/recent").body.lower()
+    assert "no research refs yet" in research.get(id="/").body.lower()
+
+
+def test_recent_lists_imported_and_fetched_with_provenance(
+    research_with_embedder: ResearchHandler,
+    websearch: WebsearchHandler,
+) -> None:
+    """Mix an imported ref with an API-fetched ref and confirm the
+    listing distinguishes the two with a provenance tag."""
+    # 1. Imported research ref.
+    research_with_embedder.put(
+        id="imported query A",
+        text="# A\n\nimported body A",
+        mode="import",
+    )
+    # 2. Fetched websearch ref (goes via the stubbed API).
+    websearch.get(id="fetched query B")
+
+    r_resp = research_with_embedder.get(id="/recent")
+    assert "imported query A" in r_resp.body
+    assert "(imported," in r_resp.body
+
+    w_resp = websearch.get(id="/recent")
+    assert "fetched query B" in w_resp.body
+    assert "(fetched," in w_resp.body
+
+
+def test_recent_only_returns_this_handlers_kind(
+    research_with_embedder: ResearchHandler,
+    websearch: WebsearchHandler,
+) -> None:
+    """Listings are scoped to the handler's kind — `research` never
+    shows `websearch` rows and vice versa."""
+    research_with_embedder.put(id="r-specific", text="# r\n\nbody", mode="import")
+    websearch.get(id="w-specific")
+
+    r_body = research_with_embedder.get(id="/recent").body
+    assert "r-specific" in r_body
+    assert "w-specific" not in r_body
+
+    w_body = websearch.get(id="/recent").body
+    assert "w-specific" in w_body
+    assert "r-specific" not in w_body
+
+
+def test_recent_rejects_unknown_slash_view(
+    research: ResearchHandler,
+) -> None:
+    """A typo like ``id='/recnet'`` is caught with a helpful error
+    rather than being treated as a cache-miss query."""
+    with pytest.raises(BadInput, match="unknown view"):
+        research.get(id="/recnet")
+
+
+def test_recent_survives_without_api_key(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The listing path never touches the Perplexity API — it must
+    work with no ``PERPLEXITY_API_KEY`` set. This is the whole point
+    of having relaxed ``requires_env`` on the spec."""
+    monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+    h = ResearchHandler(store=store, embedder=MockEmbedder(dim=1024))
+    h.put(id="works offline", text="# off\n\nbody", mode="import")
+    resp = h.get(id="/recent")  # no Upstream raised
+    assert "works offline" in resp.body
+
+
+# ── "— imported" cost-trailer badge ──────────────────────────────────
+
+
+def test_imported_entry_cost_reads_imported_on_hit(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """After ``put(mode='import')``, the subsequent ``get`` must flag
+    the body as user-supplied in the cost trailer."""
+    h = research_with_embedder
+    h.put(id="badged query", text="# x\n\ny", mode="import")
+    resp = h.get(id="badged query")
+    assert resp.cost == "[cost: free — imported]"
+
+
+def test_fetched_cache_hit_keeps_cached_badge(
+    websearch: WebsearchHandler,
+) -> None:
+    """An ordinary paid-API cache hit must NOT masquerade as imported
+    — only true imports get the badge."""
+    # First call writes a non-imported cache row.
+    websearch.get(id="paid hit")
+    # Second call hits cache.
+    resp2 = websearch.get(id="paid hit")
+    assert "imported" not in resp2.cost
+    assert "cached" in resp2.cost

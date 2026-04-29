@@ -316,9 +316,13 @@ class TestChunks:
         # Block 3 is NOT rendered as a body chunk — only referenced in
         # the Next: hint as the suggested next-range to read.
         assert "# wang2020state~3" not in resp.body
-        # Phase 3.5: Next: trailer offers adjacent ranges + TOC.
+        # Phase 3.5: Next: trailer offers adjacent ranges + TOC. The
+        # adjacent suggestion may render as a degenerate single-block
+        # ``~N`` (label "next chunk") or a multi-block ``~N..M``
+        # ("next chunk range"); either is fine here. (MCP critic
+        # MINOR m6 — single-block trailers no longer emit ``~N..N``.)
         assert "Next:" in resp.body
-        assert "next chunk range" in resp.body
+        assert "next chunk" in resp.body  # matches "next chunk" or "next chunk range"
         assert "TOC of this range" in resp.body
 
     def test_chunk_out_of_range_404s(self, store: Store, handler: PaperHandler) -> None:

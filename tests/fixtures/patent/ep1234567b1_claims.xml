@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<claims xmlns="http://www.epo.org/exchange" lang="en">
+  <claim num="0001">
+    <claim-text>1. A photocatalytic system for reducing nitrogen oxide emissions, comprising:
+      a visible-light-absorbing semiconductor support; and
+      a co-catalyst dispersed on the support, wherein the support and co-catalyst form a Z-scheme heterojunction.</claim-text>
+  </claim>
+  <claim num="0002">
+    <claim-text>2. The system of claim 1, wherein the support is selected from the group consisting of TiO2, WO3, BiVO4, and combinations thereof.</claim-text>
+  </claim>
+  <claim num="0003">
+    <claim-text>3. The system of claim 1, wherein the co-catalyst comprises noble-metal nanoparticles at a loading of 0.5 to 2.0 weight percent.</claim-text>
+  </claim>
+</claims>

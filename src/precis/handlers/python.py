@@ -35,6 +35,7 @@ from precis.handlers import _python_write as write
 from precis.protocol import Handler, KindSpec
 from precis.python_index import ModuleIndex, RepoCache, RepoIndex, Symbol
 from precis.response import Response
+from precis.utils.search_header import format_search_headline
 
 log = logging.getLogger(__name__)
 
@@ -386,9 +387,17 @@ class PythonHandler(Handler):
             return Response(body=f"no python symbols match {q!r}")
 
         hits.sort(key=lambda h: -h[0])
+        total = len(hits)
         hits = hits[:top_k]
 
-        lines = [f"# {len(hits)} python hit{'s' if len(hits) != 1 else ''} for {q!r}"]
+        lines = [
+            format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun="python hit",
+                query=q,
+            )
+        ]
         for score, alias, sym in hits:
             handle = f"{alias}::{sym.qualname}"
             sig = sym.signature or sym.kind

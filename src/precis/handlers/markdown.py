@@ -46,7 +46,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._paper_toc import build_toc, render_toc
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import BlockInsert, Ref, Store
+from precis.store import SEMANTIC_DISTANCE_FLOOR, BlockInsert, Ref, Store
 from precis.utils.md_parse import (
     MdBlock,
     file_slug_from_path,
@@ -55,6 +55,7 @@ from precis.utils.md_parse import (
     path_from_file_slug,
 )
 from precis.utils.next_block import render_next_section
+from precis.utils.search_header import format_search_headline
 
 log = logging.getLogger(__name__)
 
@@ -182,11 +183,32 @@ class MarkdownHandler(Handler):
             kind="markdown",
             scope_ref_id=scope_ref_id,
             limit=top_k,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         if not hits:
-            return Response(body=f"no markdown blocks match {q!r}")
+            return Response(
+                body=(
+                    f"no markdown blocks match {q!r}\n"
+                    "next: try a broader phrase or scope='<file-slug>' "
+                    "to search inside a specific note"
+                )
+            )
 
-        lines = [f"# {len(hits)} block hit{'s' if len(hits) != 1 else ''} for {q!r}"]
+        # Total-hits header — see precis.utils.search_header for
+        # the wording rationale. Lexical-only count: fused search
+        # ranks lexical matches by RRF, so the lexical universe is
+        # the meaningful "K".
+        total = self.store.count_blocks_lexical(
+            q=q, kind="markdown", scope_ref_id=scope_ref_id
+        )
+        lines = [
+            format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun="block hit",
+                query=q,
+            )
+        ]
         for block, ref, score in hits:
             slug = ref.slug or "???"
             handle = f"{slug}~{block.slug or block.pos}"

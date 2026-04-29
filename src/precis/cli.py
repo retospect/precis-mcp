@@ -4,8 +4,11 @@ Subcommands:
     serve     Run the MCP server on stdio.
     migrate   Apply pending DB migrations.
     jobs      Run a one-shot maintenance job:
-              - ingest-bundle    one .acatome file
-              - ingest-bundles   walk a directory of bundles
+              - ingest-bundle      one .acatome file
+              - ingest-bundles     walk a directory of bundles
+              - ingest-md          walk a directory of markdown files
+              - import-perplexity  bulk put(mode='import') over a
+                                   directory of Perplexity reports
 
 All DB-touching subcommands require ``PRECIS_DATABASE_URL`` (or a
 ``--database-url`` override).
@@ -122,6 +125,52 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Re-ingest every file even if its mtime hasn't changed.",
     )
 
+    # Bulk import of Perplexity-generated reports. The typical source
+    # is a directory of markdown files exported from the Perplexity
+    # web UI by a Pro subscriber — free content that populates the
+    # same cache rows paid API calls would have created.
+    ip = jobs_sub.add_parser(
+        "import-perplexity",
+        help="Bulk put(mode='import') a directory of Perplexity reports.",
+    )
+    ip.add_argument(
+        "dir",
+        help="Directory to walk (recursively) for report files.",
+    )
+    ip.add_argument(
+        "--kind",
+        choices=("websearch", "think", "research"),
+        default="research",
+        help="Which Perplexity tier to import under (default: research).",
+    )
+    ip.add_argument(
+        "--glob",
+        default="*.md",
+        help="Filename glob within the directory (default: *.md).",
+    )
+    ip.add_argument(
+        "--query-from",
+        choices=("h1", "filename"),
+        default="h1",
+        help=(
+            "How to derive the `id=` query for each file: use the "
+            "first H1 heading when present (falls back to filename), "
+            "or always use the filename (default: h1)."
+        ),
+    )
+    ip.add_argument("--database-url", default=None)
+    ip.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Stop after N files (sorted lexicographically).",
+    )
+    ip.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Parse each file and print the derived query; don't write.",
+    )
+
     return parser
 
 
@@ -166,6 +215,9 @@ def _run_jobs(args: argparse.Namespace) -> None:
         return
     if args.job == "ingest-md":
         _run_ingest_md(args)
+        return
+    if args.job == "import-perplexity":
+        _run_import_perplexity(args)
         return
     print(f"jobs: unknown subcommand {args.job!r}", file=sys.stderr)
     sys.exit(2)
@@ -343,6 +395,127 @@ def _run_ingest_bundles(args: argparse.Namespace) -> None:
             sys.exit(1)
     finally:
         store.close()
+
+
+def _run_import_perplexity(args: argparse.Namespace) -> None:
+    """Walk a directory and bulk-import every matching file as a
+    perplexity ref via ``put(mode='import')``.
+
+    Dry-run prints the derived query per file without touching the DB
+    — useful for sanity-checking the ``--query-from`` heuristic
+    before a real run.
+    """
+    from precis.config import load_config
+    from precis.embedder import make_embedder
+    from precis.handlers.perplexity import (
+        ResearchHandler,
+        ThinkHandler,
+        WebsearchHandler,
+    )
+    from precis.store import Store
+
+    base = Path(args.dir)
+    if not base.is_dir():
+        print(f"import-perplexity: not a directory: {base}", file=sys.stderr)
+        sys.exit(2)
+
+    files = sorted(p for p in base.rglob(args.glob) if p.is_file())
+    if args.limit is not None:
+        files = files[: args.limit]
+    if not files:
+        print(f"import-perplexity: no files matched {args.glob!r} under {base}")
+        return
+
+    handler_cls = {
+        "websearch": WebsearchHandler,
+        "think": ThinkHandler,
+        "research": ResearchHandler,
+    }[args.kind]
+
+    cfg = load_config()
+
+    # Dry run: parse + derive query per file; don't open a DB.
+    if args.dry_run:
+        for p in files:
+            query = _derive_perplexity_query(p, strategy=args.query_from, base=base)
+            print(f"  {p.relative_to(base)} -> {query!r}")
+        print(f"import-perplexity: dry-run  {len(files)} file(s) would import")
+        return
+
+    dsn = _resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        handler = handler_cls(store=store, embedder=embedder)
+
+        imported = failed = 0
+        for p in files:
+            rel = p.relative_to(base)
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                failed += 1
+                print(f"  fail  {rel}  — read error: {exc}", file=sys.stderr)
+                continue
+            if not text.strip():
+                failed += 1
+                print(f"  fail  {rel}  — empty file", file=sys.stderr)
+                continue
+            query = _derive_perplexity_query(p, strategy=args.query_from, base=base)
+            try:
+                handler.put(id=query, text=text, mode="import")
+            except Exception as exc:
+                failed += 1
+                print(f"  fail  {rel}  — {exc}", file=sys.stderr)
+                continue
+            imported += 1
+            print(f"  ok    {rel}  -> {query!r}")
+
+        print(
+            f"import-perplexity: kind={args.kind} imported={imported} "
+            f"failed={failed}  [embedder={cfg.embedder}]"
+        )
+        if failed:
+            sys.exit(1)
+    finally:
+        store.close()
+
+
+def _derive_perplexity_query(
+    path: Path,
+    *,
+    strategy: str,
+    base: Path,
+) -> str:
+    """Pick the ``id=`` query for a report file.
+
+    ``h1``:  first ``# Heading`` in the file, else fall back to filename.
+    ``filename``: always the stem with hyphens turned into spaces.
+    """
+    if strategy == "filename":
+        return _query_from_filename(path)
+    # strategy == "h1"
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("# ") and not stripped.startswith("## "):
+                heading = stripped[2:].strip()
+                if heading:
+                    return heading
+    except (OSError, UnicodeDecodeError):
+        pass  # fall through to filename
+    return _query_from_filename(path)
+
+
+def _query_from_filename(path: Path) -> str:
+    """Stem with underscores/hyphens normalized to spaces."""
+    stem = path.stem
+    # Normalize common separators to spaces; collapse repeats.
+    for ch in ("-", "_"):
+        stem = stem.replace(ch, " ")
+    while "  " in stem:
+        stem = stem.replace("  ", " ")
+    return stem.strip()
 
 
 def _resolve_dsn(override: str | None, *, cfg: Any = None) -> str:

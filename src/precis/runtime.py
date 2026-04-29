@@ -15,6 +15,7 @@ from precis.config import PrecisConfig
 from precis.errors import (
     BadInput,
     Internal,
+    NotFound,
     PrecisError,
 )
 from precis.hints import HintBus
@@ -67,21 +68,96 @@ class PrecisRuntime:
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         # Drop None values so handlers see absence as missing, not None
         kind = args.pop("kind", None)
+        kind_was_defaulted = False
         if kind is None:
             if verb == "search":
-                # Phase 1: cross-corpus search not yet wired. Future:
-                # iterate registry, fan-out, RRF-merge.
-                raise BadInput(
-                    "cross-kind search not yet implemented",
-                    next="add kind=<one of: calc>",
-                )
-            raise BadInput("missing kind=", options=self.registry.kinds())
+                # Cross-kind fan-out isn't built yet, but a 7B caller
+                # routinely forgets ``kind=``. Pick the most recently
+                # touched search-supporting kind as a sensible default
+                # and echo the choice back in the response so the
+                # caller can see what we did. Falls back to a sharp
+                # error when there's nothing to default to (empty
+                # corpus, stateless deployment, …). The user requested
+                # this defaulting in the third critic pass: small
+                # models bounce off ``kind=`` requirements far more
+                # than frontier models, and "what was I just working
+                # on?" is the right disambiguation rule.
+                search_kinds = [
+                    k
+                    for k in self.registry.kinds()
+                    if self.registry.get(k).spec.supports_search
+                ]
+                kind = self._default_search_kind(search_kinds)
+                if kind is None:
+                    raise BadInput(
+                        "cross-kind search not yet implemented",
+                        options=search_kinds,
+                        next=(
+                            "pass kind=<one of the listed kinds> — comma-lists "
+                            "(kind='paper,memory') are not supported either"
+                        ),
+                    )
+                kind_was_defaulted = True
+            else:
+                raise BadInput("missing kind=", options=self.registry.kinds())
 
-        handler = self.registry.get(kind)
+        # Comma-list kinds are documented historically but not implemented.
+        # Catch them here with a precise hint rather than letting the
+        # registry surface a generic "unknown kind" error that mentions
+        # only single-kind options.
+        if isinstance(kind, str) and "," in kind:
+            raise BadInput(
+                f"comma-list kind not supported: {kind!r}",
+                options=self._kinds_for_verb(verb),
+                next=(
+                    "pass exactly one kind — multi-kind search is not "
+                    "implemented yet; merge results client-side"
+                ),
+            )
+
+        try:
+            handler = self.registry.get(kind)
+        except NotFound as exc:
+            # The registry's "unknown kind" error carries every active
+            # kind regardless of verb. The MCP critic flagged this as
+            # MAJOR #12: an agent that asked ``search(kind='all', q='…')``
+            # got back the *full* kind list including kinds that don't
+            # support search at all (calc, math, web, …) — so its retry
+            # against kind='calc' hit a *second* error. Re-raise with
+            # the verb-filtered options so the recovery hint actually
+            # works.
+            from precis.errors import NotFound as _NF
+
+            raise _NF(
+                f"unknown kind: {kind}",
+                options=self._kinds_for_verb(verb),
+                next="see precis-overview for the kind list",
+            ) from exc
         if not handler.spec.supports(verb):  # type: ignore[arg-type]
             from precis.errors import Unsupported
 
             verbs = [v for v in _VERBS if handler.spec.supports(v)]
+            # Special case for ``move``: when *no* active kind implements
+            # it, the agent has no recovery path inside this server. Say
+            # so explicitly rather than letting it look like a per-kind
+            # quirk; this prevents the loop where a small model retries
+            # move() against another kind in the hope it'll work.
+            if verb == "move":
+                movers = [
+                    k
+                    for k in self.registry.kinds()
+                    if self.registry.get(k).spec.supports_move
+                ]
+                if not movers:
+                    raise Unsupported(
+                        "no active kind currently supports move",
+                        options=verbs,
+                        next=(
+                            "move is reserved for structured file kinds "
+                            "(docx, tex) that aren't wired in this build; "
+                            "use put for everything else"
+                        ),
+                    )
             raise Unsupported(
                 f"{kind} does not support {verb}",
                 options=verbs,
@@ -91,7 +167,10 @@ class PrecisRuntime:
         method = getattr(handler, verb)
         # Strip None args so handlers see absence as missing
         clean = {k: v for k, v in args.items() if v is not None}
-        return method(**clean)
+        response = method(**clean)
+        if kind_was_defaulted:
+            response = self._tag_defaulted_kind(response, kind)
+        return response
 
     def _render(self, response: Response) -> str:
         out = [response.body]
@@ -99,8 +178,60 @@ class PrecisRuntime:
         for h in hints:
             out.append(f"\n[{h.level}] {h.text}")
         if response.cost:
-            out.append(f"\n— cost: {response.cost}")
+            # Handlers return a fully-formatted cost string like
+            # ``[cost: ~$0.0020 — cached]``. Don't prepend "— cost:" —
+            # that produced the double-"cost:" trailer flagged by the
+            # MCP critic ("— cost: [cost: ~$0.0020]").
+            out.append(f"\n{response.cost}")
         return "".join(out)
+
+    def _default_search_kind(self, search_kinds: list[str]) -> str | None:
+        """Pick a sensible default kind for ``search()`` calls without one.
+
+        Strategy:
+          1. If the store has any live ref in a search-supporting
+             kind, use the kind of the most recently updated one —
+             this biases the default toward "what was the agent just
+             working on?".
+          2. Otherwise (no store, empty store), return None and let
+             the caller raise the canonical missing-kind error.
+
+        Returning None signals "I don't have a defensible default" so
+        the dispatcher falls through to the explicit BadInput.
+        """
+        if self.store is None or not search_kinds:
+            return None
+        try:
+            return self.store.most_recent_kind(kinds=search_kinds)
+        except Exception:  # pragma: no cover — store outage etc.
+            log.exception("most_recent_kind lookup failed")
+            return None
+
+    @staticmethod
+    def _tag_defaulted_kind(response: Response, kind: str) -> Response:
+        """Prepend a ``(searched kind=...)`` annotation to a response.
+
+        Surfaced when the caller omitted ``kind=`` and the runtime
+        defaulted to the most recently touched search-supporting
+        kind. Naming it explicitly lets the caller see and steer
+        the choice on retry.
+        """
+        annotated = f"(searched kind={kind!r})\n{response.body}"
+        return Response(body=annotated, cost=response.cost)
+
+    def _kinds_for_verb(self, verb: str) -> list[str]:
+        """Return the active kinds whose KindSpec supports ``verb``.
+
+        Used by error paths so an "unknown kind" reply on a search
+        request lists only kinds that *do* support search — agents
+        that retry against the suggested options shouldn't cascade
+        into a second error. (MCP critic MAJOR #12.)
+        """
+        return [
+            k
+            for k in self.registry.kinds()
+            if self.registry.get(k).spec.supports(verb)  # type: ignore[arg-type]
+        ]
 
     def _render_error(self, err: PrecisError) -> str:
         parts = [f"[error:{err.__class__.__name__}] {err.cause}"]

@@ -13,7 +13,7 @@ The schema is defined in `src/precis/migrations/0001_initial.sql`.
 from __future__ import annotations
 
 from precis.store.migrate import Migrator
-from precis.store.store import Store
+from precis.store.store import SEMANTIC_DISTANCE_FLOOR, Store
 from precis.store.types import (
     ActorSlug,
     Block,
@@ -29,6 +29,7 @@ from precis.store.types import (
 )
 
 __all__ = [
+    "SEMANTIC_DISTANCE_FLOOR",
     "ActorSlug",
     "Block",
     "BlockInsert",

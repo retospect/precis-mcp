@@ -1,12 +1,25 @@
 ---
 id: precis-navigation
 title: precis — recipes for common flows
-status: draft
+status: aspirational
 tier: 1
 floor: any
 applies-to: cross-cutting (all kinds)
-last-updated: 2026-04-26
+last-updated: 2026-04-28
 ---
+
+> **Heads up:** the MCP critic (Apr 2026) flagged 8 of the 9 recipes
+> below as containing at least one non-functional call — `limit=`
+> instead of `top_k=`, `kind='all'` (cross-kind not implemented),
+> `kind='ask'` (not a real kind), `due='friday'` on `put(kind='todo')`
+> (no `due=` parameter), `view='representatives'`/`'methods'`/
+> `'coverage'`/`'today'`/`'overdue'` (none implemented),
+> `tags=['DENSITY:*']`/`['CONFIDENCE:*']` (not registered prefixes).
+> This skill is now `status: aspirational` and filtered from the
+> default index. The recipes describe the *intended* shape; pick
+> apart whichever sub-step you need from a working skill
+> (`precis-paper-help`, `precis-memory-help`, `precis-todo-help`,
+> `precis-relations`, `precis-tags`) before running.
 
 # precis-navigation — recipes for common flows
 
@@ -43,7 +56,7 @@ without the lit-review padding.
 put(kind='memory',
     text='Z-scheme heterojunction in Wang2020 §3 looks transferable to NOxRR.',
     tags=['kind:idea', 'topic:noxrr', 'CONFIDENCE:tentative'],
-    link='wang2020state~38')
+    link='paper:wang2020state~38')
 ```
 
 One call, three slots: content, classification (tags), provenance (link).
@@ -101,11 +114,11 @@ put(kind='memory',
     text='Z-scheme heterojunctions consistently outperform single-component '
          'systems on NOxRR by ~2x quantum efficiency.',
     tags=['kind:summary', 'topic:noxrr', 'CONFIDENCE:moderate'],
-    link='wang2020state')
+    link='paper:wang2020state')
 # → returns integer id (e.g. 89)
 
 # 3. Add a contradicting source if one exists.
-put(kind='memory', id='89', link='chen2021critique', rel='contradicts')
+put(kind='memory', id='89', link='paper:chen2021critique', rel='contradicts')
 ```
 
 Now `get(kind='memory', id='89', view='links')` shows the evidence both
@@ -156,7 +169,7 @@ put(kind='ask', id='mechanism-of-noxrr', tags=['pinned'])
 put(kind='memory',
     text='Three-electron pathway, see §2 of cached answer.',
     tags=['kind:summary', 'topic:noxrr', 'CONFIDENCE:moderate'],
-    link='mechanism-of-noxrr')
+    link='research:mechanism-of-noxrr')
 ```
 
 ## See also

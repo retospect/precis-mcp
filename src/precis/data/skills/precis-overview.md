@@ -1,11 +1,11 @@
 ---
 id: precis-overview
 title: precis — four verbs, one address scheme
-status: draft
+status: phase-7
 tier: 1
 floor: any
 applies-to: all
-last-updated: 2026-04-26
+last-updated: 2026-04-28
 ---
 
 # precis-overview — four verbs, one address scheme
@@ -17,13 +17,20 @@ last-updated: 2026-04-26
 | `get`    | You know the **name** (slug, id, file path) — or you're calling a tool. |
 | `search` | You're looking for **content** by topic or phrase.  |
 | `put`    | You want to **write** (content, note, link, tag).   |
-| `move`   | You want to **reorder** within one document.        |
+| `move`   | _Reserved for structured file kinds (docx, tex). No active kind in this build implements `move`._ |
 
 Address by **`id=` for names, `q=` for content**.
 
-For `get`/`put`/`move`, `kind=` is required.  For `search`, `kind=` is
-optional and defaults to `'all'`; pass a single kind or a comma-list
-(`kind='paper,memory,ask'`) to narrow.
+For `get`/`put`/`move`, `kind=` is required.
+
+For `search`, `kind=` is conventionally required, but **omitting
+it defaults to the most recently touched search-supporting kind**
+and the response prepends `(searched kind='X')` so you can see
+the choice. This is a 7B-model affordance — cross-kind fan-out
+(`kind='all'` or comma-lists like `kind='paper,memory'`) is not
+yet implemented. To pick a different kind, name it explicitly.
+Use `get(kind='skill', id='precis-help')` to discover the full
+set of search-supporting kinds.
 
 ## Kinds — refs
 
@@ -32,48 +39,53 @@ shapes — slug for canonical/named refs, integer for agent scratch:
 
 | Kind      | Example id            | What                              |
 |-----------|-----------------------|-----------------------------------|
-| `paper`   | `wang2020state`       | Ingested research paper           |
-| `book`    | `wittgenstein-pi`     | Ingested book                     |
+| `paper`   | `abazari2024design`   | Ingested research paper           |
 | `skill`   | `precis-overview`     | Agent how-to (you're reading one) |
 | `oracle`  | `precis-glossary`     | Wiki-like reference               |
 | `quest`   | `ship-v2`             | A long-running goal               |
 | `conv`    | `2026-04-26-spec`     | Past conversation                 |
+| `markdown`| `notes--meeting`      | A `.md` file under the configured root |
 | `todo`    | `122` (int)           | A task                            |
 | `memory`  | `47` (int)            | Agent note / scratchpad           |
 | `gripe`   | `9` (int)             | Annoyance / niggle — log freely, filter later |
 | `fc`      | `204` (int)           | Flashcard (SM-2 spaced rep)       |
 
-Files on disk are refs too: `report.docx`, `paper.tex`, `notes.md`,
-`plain.txt`, `sketch.rmk`.
+The **active** set varies by build — use `get(kind='skill',
+id='precis-help')` to enumerate. `book`, `docx`, `tex`, and
+`plaintext` are reserved kinds that aren't wired in this build.
 
 ## Kinds — tools
 
-Stateless; pass a query in `q=`, get text back.  No slugs, no chunks, no links.
+Stateless or cache-backed; pass a query in `q=` (or `id=`), get text
+back. No agent-side slugs, no chunks, no links — results are cached
+on a `(provider, request_hash)` key.
 
-| Kind        | What                                | Example `q=`             | Cost |
-|-------------|-------------------------------------|--------------------------|------|
+| Kind        | What                                | Example `q=`                 | Cost |
+|-------------|-------------------------------------|------------------------------|------|
 | `calc`      | Local SymPy: arithmetic, algebra    | `2+3*4`, `integrate(sin(x), x)` | free |
-| `math`      | Wolfram Alpha: facts, world data    | `population of Ireland`  | paid |
-| `clock`     | Time, dates, durations              | `now`, `friday`          | free |
-| `rng`       | Random numbers, sampling            | `1..100`, `choice(a,b,c)`| free |
-| `plot`      | Render a matplotlib plot from JSON  | (spec)                   | free |
-| `youtube`   | Fetch a transcript                  | `dQw4w9WgXcQ`            | free |
-| `websearch` | Web search                          | `latest perovskite results` | paid |
-| `ask`       | Perplexity (Sonar): research depth  | `mechanism of NOxRR`     | paid |
+| `math`      | Wolfram Alpha: facts, world data    | `population of Ireland`      | paid |
+| `youtube`   | Fetch a transcript                  | `dQw4w9WgXcQ`                | free |
+| `web`       | Fetch + extract one URL             | `https://example.com/page`   | free |
+| `websearch` | Perplexity Sonar: fast factual      | `latest perovskite results`  | paid |
+| `think`     | Perplexity Sonar Reasoning Pro      | `compare DAC and BECCS`      | paid |
+| `research`  | Perplexity Sonar Deep Research      | `mechanism of NOxRR`         | paid |
 
-Paid tools cache automatically.  See `precis-cache`.
+Paid tools cache automatically.  Pro subscribers can also
+`put(mode='import')` a free web-UI answer into any of the three
+Perplexity kinds at $0 — see `precis-perplexity-help`. See
+`precis-cache` for TTLs and freshness.
 
 ## Examples
 
 ```python
 # Find a paper, read its abstract.
-search(kind='paper', q='photocatalytic NOx reduction', limit=5)
-get(kind='paper', id='wang2020state', view='abstract')
+search(kind='paper', q='photocatalytic NOx reduction', top_k=5)
+get(kind='paper', id='abazari2024design', view='abstract')
 
 # Make a todo, mark a different one done.
-put(kind='todo', text='Review section 3 of wang2020state.',
-    tags=['PRIO:high'], due='friday')
-put(kind='todo', id='122', tags=['STATUS:done'])
+put(kind='todo', text='Review section 3 of abazari2024design.',
+    tags=['PRIO:high'])
+put(kind='todo', id=122, tags=['STATUS:done'])
 
 # Quick calculation; real-world fact.
 get(kind='calc', q='42 * 365')                # → 15330        (free)

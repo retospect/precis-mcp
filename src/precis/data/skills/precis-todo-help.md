@@ -1,74 +1,93 @@
 ---
 id: precis-todo-help
-title: precis — create, prioritise, schedule, complete todos
-status: draft
+title: precis — create, prioritise, complete todos
+status: phase-7
 tier: 1
 floor: any
 applies-to: get/search (kind='todo'), put (kind='todo')
-last-updated: 2026-04-26
+last-updated: 2026-04-28
 ---
 
-# precis-todo-help — create, prioritise, schedule, complete todos
+# precis-todo-help — create, prioritise, complete todos
 
 ## Create
 
 ```python
-put(kind='todo', text='Review section 3 of wang2020state.',
-    tags=['PRIO:high', 'project:precis-v2'],
-    due='friday')
-# server assigns integer id (e.g. 122); STATUS:active default
+put(kind='todo', text='Review section 3 of abazari2024design.',
+    tags=['PRIO:high'])
+# server assigns integer id (e.g. 122); STATUS:open default
 ```
-
-`due=` accepts `'2026-05-01'`, `'friday'`, `'+3d'`, `'tomorrow 5pm'`.
-Server normalises to ISO.
 
 ## See what's on
 
 ```python
-get(kind='todo', view='today')        # due today, active
-get(kind='todo', view='overdue')      # past due, active
-get(kind='todo', view='due')          # all dated active, sorted
-get(kind='todo', view='unscheduled')  # active, no due date
-get(kind='todo', view='blocked')      # active with blocked-by links
-get(kind='todo', view='done')         # recently completed
+get(kind='todo')                      # alias for /recent
+get(kind='todo', id='/recent')        # most recent 20 (any status)
+get(kind='todo', id='/open')          # open + doing + blocked (the queue)
+get(kind='todo', id='/doing')         # in-progress only
+get(kind='todo', id='/blocked')       # waiting on something
+get(kind='todo', id='/done')          # completed
 ```
 
-## Mark done
+`id='/queue'` is an alias for `/open`. **Date-driven views (`/today`,
+`/overdue`, `/due`, `/unscheduled`) are not implemented** — todos
+have no built-in due-date field today; track scheduling client-side
+or via lowercase tags (`due:2026-05-01`).
+
+## Mark done / move through statuses
 
 ```python
-put(kind='todo', id='122', tags=['STATUS:done'])
-# stamps completed_at atomically
+put(kind='todo', id=122, tags=['STATUS:done'])
+put(kind='todo', id=122, tags=['STATUS:doing'])
+put(kind='todo', id=122, tags=['STATUS:blocked'])
 ```
+
+`STATUS:` is closed-prefix and replaces atomically — setting one
+removes the previous value.
 
 ## Block on another todo
 
 ```python
-put(kind='todo', id='141', link='158', rel='blocked-by')
-# 141 enters view='blocked' until 158 hits STATUS:done
+put(kind='todo', id=141, link='todo:158', rel='blocked-by')
+# id=141 declares it's blocked-by id=158
 ```
+
+The link target always carries an explicit kind prefix
+(`todo:158`, `paper:wang2020state`, `markdown:notes/x.md`); the
+relation goes in a separate `rel=` kwarg. See `precis-relations`
+for the full vocabulary and inverse map.
 
 ## Re-prioritise
 
 ```python
-put(kind='todo', id='141', tags=['PRIO:urgent'], untags=['wip'])
-# PRIO:urgent replaces any other PRIO:*
+put(kind='todo', id=141, tags=['PRIO:urgent'])
+# replaces any other PRIO:* on this ref atomically
 ```
 
-## Sweep by project
+For closed-prefix axes, just set the new value — overwrite is
+atomic. For open or flag tags, use `untags=['topic-x']` (see
+`precis-tags` for the full removal semantics).
+
+## Search by content
 
 ```python
-search(kind='todo', tags=['project:precis-v2', 'STATUS:active'])
+search(kind='todo', q='precis-v2 review', tags=['STATUS:open'])
+# narrow to open todos only
 ```
 
-## Notes
+`tags=` accepts the same canonical forms as `put`. Multiple tags
+combine with AND (`tags=['STATUS:open', 'PRIO:high']` returns
+only refs that carry both).
 
-- `STATUS:` values: `active` (default), `done`, `blocked`, `archived`, `cancelled`.
-- `PRIO:` values: `low`, `med`, `high`, `urgent`.
-- `view='today'` shows everything due today, sorted by priority.
-  Use `tags=['PRIO:urgent']` to filter.
+## Vocabulary
+
+- `STATUS:` values: `open` (default on create), `doing`, `blocked`,
+  `done`, `won't-do`. Unknown values are rejected with the valid
+  list at write time.
+- `PRIO:` values: `low`, `normal`, `high`, `urgent`.
 
 ## See also
 
 - `precis-overview` — verbs and kinds
-- `precis-tags` — `STATUS:`, `PRIO:`, `project:`
+- `precis-tags` — `STATUS:`, `PRIO:`, validation rules
 - `precis-relations` — `blocks` / `blocked-by`

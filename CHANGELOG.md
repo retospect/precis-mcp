@@ -3,6 +3,1096 @@
 All entries pre-1.0 are unreleased; v2 is in active development on the
 `v2` branch and not yet on PyPI.
 
+## Planned — Phase 9: `patent` kind (EPO OPS)
+
+Read-only third durable knowledge corpus alongside `paper` and
+`markdown`. Spec at `docs/patent-kind-spec.md`; agent skills at
+`src/precis/data/skills/precis-patent-help.md` (entry-level) and
+`precis-patent-power.md` (raw CQL); deferred filter affordances at
+`docs/search-future-filters.md`.
+
+Phase-1 surface:
+- `search(kind='patent', q=, tags=, scope=, top_k=)` — merged
+  local + remote OPS hits, `[local]` markers, 7-day cache on the
+  remote leg.
+- `get(kind='patent', id=<docdb-slug>)` — fetch-as-ingest from
+  OPS (biblio + description + claims), ST.36 XML parsed and
+  embedded, raw XML mirrored on disk under
+  `$PRECIS_PATENT_RAW_ROOT/<cc>/<num>/<kc>/`.
+- `get(kind='patent', id='/recent' | '/published')` — list views
+  (ingest time vs publication date).
+- Tags use open lowercase prefixes (`cpc:`, `ipc:`, `applicant:`,
+  `country:`, `kind:`, `family:`, `topic:`) lifted to OPS CQL on
+  the remote leg via `_TAG_TO_CQL` translation table.
+- Migration `0006_patent_kind.sql` registers the kind, two
+  providers (`epo_ops`, `epo_ops_search`), and adds
+  `"patent": frozenset({"SRC", "CACHE"})` to
+  `store/types.py::_KIND_ALLOWED_AXES`.
+- Required env: `EPO_OPS_CLIENT_KEY`, `EPO_OPS_CLIENT_SECRET`,
+  `PRECIS_PATENT_RAW_ROOT`.
+
+Phase 2 (separate cut): saved CQL watches table, runner, CLI,
+launchd plist on balthazar.
+
+Decisions captured this round:
+- Search signature stays cross-kind uniform — no patent-specific
+  kwargs (`ti=`/`ab=`/`pd=`/etc.). Power users put raw CQL in
+  `q=`; the simple-vs-power-user split is two skill files.
+- Date-range / state-marker / `source=local|remote|both` knobs
+  captured in `docs/search-future-filters.md` for cross-kind
+  consistency rather than implemented patent-only.
+- Slug normalisation strips whitespace only (no dots) so DOIs /
+  arXiv ids in other kinds aren't undermined by precedent.
+
+## MCP critic phase-8 — deferred items: axis enforcement, total_hits, inverse-rewrite, paper+research+conv+oracle crosslink
+
+Five of the six items the previous CHANGELOG flagged as "deferred"
+landed this session. **894 → 970 tests green, 1 skip** in this
+package's own suite (74 new regression tests across
+`tests/test_critic_phase8.py`, `tests/test_paper_research_crosslinking.py`,
+and `tests/test_conv_oracle_crosslinking.py`, plus three test
+files updated for the new axis discipline).
+
+### Cross-linking on read-only kinds (paper, research, think, websearch, conv, oracle)
+
+Six previously-immutable kinds gained a *narrow* link/tag put
+surface this session. Body content stays read-only — paper
+ingests still come from `.acatome` bundles, transcripts arrive
+from the chat-bridge, oracle bodies are seeded externally,
+Perplexity reports come from the API or paste-import — but
+``link``/``unlink``/``tags``/``untags``/``rel`` are now first-
+class on every one of them. The motivating use case was
+"paper-A cites paper-B"; the same surface lets a research
+report link back to its prompting paper, a conversation
+record-link the todo it produced, and an oracle reference the
+papers underlying its rubric.
+
+New module `precis/handlers/_link_tag_ops.py` factors the
+validation and store-call wiring out of `NumericRefHandler.put`:
+
+- `validate_link_args(link, unlink, rel, kind)` — mutual exclusion
+  + bare-`rel=` rejection.
+- `validate_relation(rel) -> Relation` — registered-vocab check
+  with `BadInput` on miss; defaults to `related-to` when omitted.
+- `apply_link_ops(store, src_ref_id, ...) -> (n_added, n_removed)`
+  — wraps `parse_link_target` + `add_link`/`remove_link`.
+- `apply_tag_ops(store, kind, ref_id, ...) -> (n_added, n_removed)`
+  — wraps `Tag.parse_strict` (kind-aware) + `add_tag`/`remove_tag`.
+- `format_link_tag_ack(...)` — the one-line response renderer
+  used by both new handlers, dropping zero-op segments.
+
+`PaperHandler.put`:
+
+- Accepts only ``link``/``unlink``/``tags``/``untags``/``rel``
+  with ``id=<slug>``. Defaults are unchanged (`related-to`).
+- Rejects ``text=`` with a hint pointing at the bundle ingest CLI.
+- Rejects ``mode=`` because there's no body mutation surface.
+- Rejects chunk selectors (`slug~46`) and path views
+  (`slug/cite/bib`) — link/tag ops are ref-level only. Re-uses
+  `_parse_paper_id` so the parser-side rejection is consistent
+  with the read surface.
+- Per-kind axis enforcement: `STATUS:` and `PRIO:` are rejected;
+  `SRC:` and `CACHE:` are accepted (matches `_KIND_ALLOWED_AXES`).
+
+`_PerplexityBase.put` (research / think / websearch) now
+dispatches:
+
+- `mode='import'` → existing $0 cache-import path, unchanged.
+- `mode is None` + any of `link`/`unlink`/`tags`/`untags`/`rel`
+  → new `_put_link_tag_ops` path. Resolves `id=` as a slug
+  (NOT a query — query resolution would require re-hashing the
+  canonical key and wouldn't cover slugs from direct ingest).
+- `mode='import'` + link/tag kwargs → `BadInput`. Mixing the
+  two surfaces is a misuse; the error suggests splitting into
+  two calls.
+- Anything else → `BadInput` with both options enumerated.
+
+`OracleHandler.put` and `ConversationHandler.put` follow the
+same template as paper: link/tag-only, ``text=``/``mode=``
+rejected with hints pointing at the proper write path (corpus
+seed pipeline for oracles, chat-bridge for conv). `conv`
+additionally rejects chunk selectors (`slug~12`) and path
+views (`slug/transcript`) since link/tag ops are ref-level.
+
+Spec changes: `supports_put=True` on `paper`, `oracle`, `conv`.
+The Perplexity trio kept `supports_put=True` (already there for
+import mode); description and put-modes documentation updated
+to mention link/tag.
+
+Per-kind axis enforcement covers paper (`{SRC, CACHE}`), the
+cache trio (`{CACHE}`), and conv/oracle (empty — open tags only);
+`STATUS:`/`PRIO:` on any of these raises `BadInput` at the agent
+boundary, matching the discipline added elsewhere this session.
+
+`NumericRefHandler` was *not* refactored to use the new helpers
+this pass — it works, and rewiring it for marginal DRY would
+add regression risk. The shared module exists for paper + cache
++ any future read-only kinds that gain link/tag surfaces.
+
+## MCP critic phase-8 — deferred items: axis enforcement, total_hits, inverse-rewrite
+
+Three of the six items the previous CHANGELOG flagged as
+"deferred" landed this session. **894 → 923 tests green, 1 skip**
+(27 new regression tests in `tests/test_critic_phase8.py`,
+plus three test files updated for the new axis discipline).
+
+### Per-kind axis enforcement
+
+The MCP critic flagged ``STATUS:open`` on a memory as a smell —
+memory has no workflow state, so the tag is decorative and a
+filter query (``search(kind='todo', tags=['STATUS:open'])``)
+cannot find it. The validator accepted it anyway because closed-
+prefix tags weren't gated on the kind.
+
+Fix: ``Tag.parse_strict`` and ``Tag.normalize_filter`` accept
+an optional ``kind=`` kwarg. When set, the parser checks
+``_KIND_ALLOWED_AXES`` (a new map in ``store/types.py``) and
+rejects closed-prefix tags whose axis isn't whitelisted for
+that kind. The map is conservative:
+
+- **Workflow kinds** (`todo`, `gripe`, `quest`) — `{STATUS, PRIO}`
+- **Free-form notes** (`memory`) — `{}` (open tags only)
+- **Flashcards** (`fc`), **conversations** (`conv`),
+  **oracles**, **skills** — `{}` (no closed axes today)
+- **Papers** — `{SRC, CACHE}` (primary/secondary lit + cache state)
+- **Cache kinds** (`research`, `think`, `web`, `websearch`,
+  `youtube`) — `{CACHE}`
+
+Kinds absent from the map remain unrestricted (backwards-
+compatible). Callers that don't know their kind at validation
+time (filter queries that span kinds, migrations) pass
+``kind=None`` and get the global vocabulary check unchanged.
+
+Threading: every `_numeric_ref.search`/`put`, plus
+`PaperHandler.search`, now passes `kind=self.kind` (or the
+literal slug) into `Tag.normalize_filter`/`parse_strict`. Open
+tags and bare flags are unaffected — the gate only fires on
+closed-prefix tags.
+
+Tests updated: `test_memory.py`'s closed-prefix tests moved to
+todos (where the axis is real) or rewritten to exercise the
+open-tag accumulation pattern. `test_search_tag_filter.py`'s
+memory cases switched to open tags (`topic-co2-capture`).
+`test_untags_on_put.py`'s closed-prefix value-match test moved
+to TodoHandler. The new `test_critic_phase8.py::TestPerKindAxisEnforcement`
+class pins the contract end-to-end.
+
+### Auto-mirror inverse relations — read-side rewrite (not auto-insert)
+
+The MCP critic flagged ``cites`` from A to B as not auto-
+discoverable as ``cited-by`` from B to A — `links_for(B,
+relation='cited-by', direction='out')` returned nothing because
+the schema stores exactly one row per edge.
+
+There were two ways to fix this:
+
+- **Option A (auto-insert):** insert *two* rows on every
+  asymmetric link. Pro: the outbound query "just works".
+  Con: doubles ``direction='both'`` cardinality, contradicts
+  the explicit one-row-per-edge design in
+  `migrations/0005_link_relations.sql`, and creates a drift
+  surface (the two halves of the edge can disagree if one is
+  mutated independently).
+- **Option B (read-side rewrite):** keep one row per edge,
+  rewrite the relation filter at *query* time. The user
+  picked B after I laid out the tradeoff.
+
+Implementation: `Store.links_for` now consults
+`_INVERSE_RELATIONS` (a Python mirror of `relations.inverse_slug`).
+When the requested `relation=` has a registered inverse, the
+WHERE clause becomes a disjunction:
+
+- "literal-relation in the requested direction" OR
+- "inverse-relation in the opposite direction"
+
+So `links_for(B, relation='cited-by', direction='out')` matches
+both literal `cited-by` rows where B is src (rare; only if
+explicitly inserted) and `cites` rows where B is dst (the
+canonical encoding of the same edge from the cited side).
+Returned `Link` rows keep their *stored* relation slug — the
+caller compares against the requested filter to label them,
+exactly the same job the renderer already does for
+`direction='both'`.
+
+`add_link` is unchanged: still one row per edge. `remove_link`
+likewise stays single-row — there's no shadow row to clean up.
+
+The relations covered: every asymmetric pair listed in
+`migrations/0001_initial.sql` and `0005_link_relations.sql`
+(`blocks`/`blocked-by`, `contradicts`/`contradicted-by`,
+`cites`/`cited-by`, `derived-from`/`derived-into`,
+`supports`/`supported-by`, `generalises`/`specialises`).
+Symmetric (`related-to`) and inverse-less (`see-also`) skip
+the rewrite — they don't appear in `_INVERSE_RELATIONS`.
+
+### `total_hits` header in search responses
+
+Every search handler now emits a leading line of the form
+
+    # 10 of 1234 paper matches for 'photocatalysis'
+
+The MCP critic flagged the missing "of K" readout as a
+pagination footgun: an agent that asks for `top_k=10` and gets
+exactly 10 hits couldn't tell whether it had everything or
+just the first page. Now the header makes the cardinality
+explicit.
+
+Implementation:
+
+- New `Store.count_refs_lexical(q, kind, tags)` and
+  `Store.count_blocks_lexical(q, kind, scope_ref_id, tags)` —
+  same WHERE clauses as their `search_*_lexical` companions
+  (including the noise-floor `char_length(btrim(text)) >= 4`
+  guard from phase 7), no LIMIT. Two queries per search call;
+  on TSV-indexed columns the COUNT is sub-millisecond.
+- New helper `precis.utils.search_header.format_search_headline`
+  centralises the header wording. The "N of K" suffix is
+  suppressed when `total <= n_returned` (no value in saying
+  "10 of 10") and when `total is None` (semantic-only search,
+  where every embedded block is a hit at some distance).
+  Pluralisation handles `-ch`/`-sh`/`-s`/`-x`/`-z` endings so
+  `paper match` → `paper matches` rather than `matchs`.
+- Wired into every search handler: `_numeric_ref.py`,
+  `paper.py`, `markdown.py`, `oracle.py`, `quest.py`,
+  `conversation.py`, `skill.py`, `python.py`. The Python and
+  Skill handlers compute total in-process (`total = len(hits)`
+  before the `top_k` slice).
+
+For RRF-fused searches (`paper`, `markdown`, `conv`), the
+total is the *lexical* count — RRF only re-ranks lexically-
+matching rows, so the lexical universe is the meaningful "K".
+The handler comment notes this; the docstring on
+`count_blocks_lexical` does too.
+
+### Brief: why I'm not adding `prompts/list` and `meta/registry`
+
+Both are optional MCP protocol extensions. `prompts/list`
+advertises named prompt templates — our skill system already
+covers this via `get(kind='skill')` and would just duplicate
+the surface in a more rigid shape. `meta/registry` exposes the
+tool/kind schema as structured data; today agents discover
+kinds via `precis-overview`, and every frontier model handles
+the prose form. Skipping both keeps us flexible against the
+MCP spec evolving.
+
+### Out of scope this session
+
+Still queued from the phase-7 deferred list:
+
+- **Relevance floor on rank scores.** Soft threshold beyond
+  the noise-floor filter. Needs empirical per-kind tuning.
+- (Done — see the cross-linking entry above.) Paper, research,
+  think, websearch, conv, and oracle all gained the link/tag put
+  surface this session.
+
+## MCP critic phase-7 follow-up — schema, skill index, search hardening
+
+The second MCP critic pass (Apr 2026) found 3 CRITICAL, 9 MAJOR,
+and 6 MINOR issues against the live phase-7 build. **862 → 894
+tests green, 1 skip** (32 new regression tests in
+`tests/test_mcp_critic_phase7.py`).
+
+### CRITICAL #1 — `rel=` / `unlink=` / `untags=` weren't on the MCP `put` schema
+
+The handler layer landed these kwargs in the previous pass, but the
+FastMCP tool wrapper in `precis/server.py` only forwarded
+`{kind, id, text, mode, tags, link}`. `rel='cites'` was silently
+discarded; every linked claim collapsed to `related-to`.
+
+Fix: tool schema now declares `untags`, `unlink`, `rel`. Tool
+description rewritten to drop the retired colon-suffix shortcut
+("`'target_slug:relation'`") and document the canonical
+`'kind:identifier[~selector]' + rel='…'` form. Mode hint clarified
+to name only `delete` (the only widely-supported mode on numeric
+kinds) plus the file-kind list.
+
+### CRITICAL #2 — unknown `mode=` values silently no-opped
+
+`mode='untag'` and `mode='unlink'` returned `updated memory id=N`
+without doing anything — the handler's `if mode == 'delete'` branch
+was followed by the regular update path, which simply ignored the
+unknown mode. The critic identified this as the worst possible
+failure mode for an agent loop (silent state divergence on undo).
+
+Fix: `NumericRefHandler.put` now validates `mode=` against
+`_SUPPORTED_PUT_MODES = ("delete",)` up front. Anything else
+(`'note'`, `'untag'`, `'unlink'`, typos like `'deelete'`) raises
+`BadInput` with the supported list and a hint pointing at the
+correct kwargs (`untags=`, `unlink=`, `mode='delete'`).
+
+### CRITICAL #3 — skill index advertised skills for unregistered kinds
+
+`get(kind='skill')` listed 17 skills as authoritative; 3 of them
+(`precis-markdown-help`, `precis-python-help`, `precis-files-help`)
+documented kinds the registry rejected. Following any of them
+produced `NotFound` cascades on the agent's first call.
+
+Fix: `SkillHandler` now filters the index via `_availability_gap()`,
+which checks two gates per skill:
+
+- **Subject-kind gate.** Slugs of the form `precis-<kind>-help`
+  with `<kind>` not in `registry.kinds()` are filtered.
+- **Status gate.** Front-matter `status: planned` /
+  `status: aspirational` filters the skill regardless of name.
+
+Filtered skills remain **retrievable by exact slug** with a
+`> **Heads up:**` banner explaining why they're hidden — the docs
+stay accessible if you know what you're looking for, they just
+don't pollute discovery.
+
+The trailer at the bottom of the index also swapped its second
+suggestion from `precis-navigation` (now aspirational) to
+`precis-tags` (active).
+
+### MAJOR #4 — `precis-cache` documented `kind='ask'` that doesn't exist
+
+`ask` was never wired in this build. The skill listed it as one
+of four cached kinds with a TTL table that was wrong on every
+row.
+
+Fix: rewrote `precis-cache.md` against the live handlers. The
+TTL table now reads from the canonical source (`math` pinned,
+`web` 7d, `websearch` 7d, `think` 30d, `research` pinned,
+`youtube` 30d) with a note that the handler classes are the
+single source of truth. Every example uses a live kind. Same
+fix in `precis-memory-help.md` (`kind='ask'` → `kind='research'`)
+and `precis-navigation.md` (which was already gated by status:
+aspirational, see #7).
+
+### MAJOR #6 + #7 — `precis-density` and `precis-navigation` are aspirational
+
+Neither skill describes the live runtime: `precis-density`
+documents `view='representatives'/'echoes'/'coverage'` and a
+`DENSITY:*` tag prefix, none of which exist; `precis-navigation`
+contains 9 recipes, 8 of which contain at least one
+non-functional call.
+
+Fix: front-matter `status: planned` (density) / `aspirational`
+(navigation), with explicit "Heads up" banners enumerating the
+runtime mismatches. The skill-index filter then hides them from
+discovery, as does `precis-files-help` (which documents file
+kinds queued for a later phase).
+
+### MAJOR #8 — unregistered `UPPERCASE:` tag prefixes were silently accepted
+
+`Tag.parse_strict` validated values inside *registered* prefixes
+(`STATUS:bogus` rejected) but let unregistered prefixes pass
+through unchecked. So `DENSITY:sparse` and `CONFIDENCE:moderate` —
+both documented in `precis-tags.md` as "would be rejected" — were
+accepted at runtime and silently joined the corpus. Same for
+typos like `STATSU:open`.
+
+Fix: any uppercase prefix not in `_CLOSED_VOCAB` raises `BadInput`
+with the registered axis list and a recovery hint (use a
+registered axis, or write as a lowercase open tag like
+`density-sparse`). This catches typos too — `STATSU:open` no
+longer survives into queries silently. Two memory tests that
+relied on the old behaviour were updated to use `PRIO:` (a real
+registered axis); the `confidence-*` examples in
+`precis-memory-help.md` were rewritten as open tags with the
+``untags=`` removal idiom for swapping.
+
+### MAJOR #9 + MINOR m1 — paper default overview leaked `<jats:*>` XML
+
+`view='abstract'` stripped JATS namespace tags, but the default
+`get(kind='paper', id=…)` overview rendered the abstract verbatim.
+Worse, even `view='abstract'` produced
+`AbstractMetal–organic frameworks…` (heading word fused with the
+body's first word).
+
+Fix: `_render_overview` now calls the same `_strip_jats` helper
+the abstract view uses, so both paths produce identical clean
+output. `_strip_jats` was also rewritten:
+
+- `<jats:title>Abstract</jats:title>` is dropped outright (the
+  view name and rendering context already name the section, and
+  the heading word was the only thing causing the mash).
+- Closing tags get a single space rather than empty-string, so
+  adjacent paragraphs don't fuse word-to-word.
+- Whitespace runs collapsed to keep paragraph structure clean.
+
+Two new tests pin both the no-mash and the no-`<jats:` invariants.
+
+### MAJOR #10 — `top_k` was unbounded; `top_k=9999` returned 7 326 hits
+
+`search(kind='paper', q='photocatalytic', top_k=9999)` returned
+~2.7 MB in a single response, large enough to exhaust a 7B
+model's context window in one call. The schema didn't document
+a maximum.
+
+Fix: `precis/server.py` enforces `top_k ∈ [1, 100]` at the MCP
+boundary (the `_SEARCH_TOP_K_MAX` constant is exported and pinned
+by a regression test). Larger values raise `BadInput` with the
+cap value and a hint to narrow with `scope=` or paginate. The
+internal-caller path (tests, SDK consumers calling `dispatch`
+directly) is unchanged — the cap is the agent-facing-only
+guardrail.
+
+### MAJOR #11 — search returned punctuation-only blocks as hits
+
+Adversarial queries (`q='🚀💩'`, `q='xyzzy_definitely_no_match_…'`)
+returned 10 hits dominated by punctuation-only chunks (".", ",",
+"kinetics."). These are formatting artefacts whose embeddings
+cluster near the noise floor; cosine similarity puts any query
+close to them.
+
+Fix: every block-search method (`search_blocks_lexical`,
+`search_blocks_semantic`, `search_blocks_fused`) adds
+`char_length(btrim(b.text)) >= 4` to its WHERE clause. Blocks
+shorter than 4 stripped chars don't appear in any search output —
+they're not deleted (so direct chunk reads via `id=slug~N` still
+work), just filtered from search results.
+
+A relevance floor on rank scores would land in a follow-up; the
+current fix removes the lowest-quality hits without needing
+empirical threshold tuning.
+
+### MAJOR #12 — cross-kind error options listed kinds that don't support search
+
+`search(kind='all', q='…')` raised `NotFound: unknown kind: all`
+with `options=` containing **every** active kind, including
+`calc`, `math`, `web`, `websearch`, `think`, `research`, and
+`youtube` — all of which support `get` only. Agents retrying
+against the suggested options hit a second `Unsupported` error.
+
+Fix: the runtime catches the registry's `NotFound` in
+`_dispatch_inner` and re-raises with `options=
+self._kinds_for_verb(verb)` — the verb-filtered subset. The
+comma-list catch-all does the same now. Same one-line shape as
+the no-kind path that was already correct.
+
+### MAJOR #13 — `mode='note'` was advertised but no kind accepted it
+
+The tool description listed `'note'` as a supported mode; the
+critic checked `precis-memory-help`'s prose and found it
+referenced `mode='note'` but never called it. No handler
+implements it.
+
+Fix: `_SUPPORTED_PUT_MODES` (numeric kinds) is now strictly
+`("delete",)` and the tool description names only the modes
+that have working handlers. The reference in
+`precis-memory-help.md` was rewritten to point at the real
+pattern (create memory + `link=` back to the ref with a
+specific `rel=`).
+
+### MINOR m2 — empty-list responses on read-only kinds had no Next: trailers
+
+`oracle`, `conv`, and `quest` empty-list views returned bare
+strings ("no oracles defined yet") with no recovery hint — the
+critic flagged this as a consistency violation against `gripe`
+and `fc` which already emitted trailers.
+
+Fix: each empty-list path now emits a one-line `Next:` block
+with a concrete next-call shape. Three small handler edits.
+
+### MINOR m3 — paper-id underscore returned `BadInput: unparseable`
+
+7B models reflexively use snake_case. `get(kind='paper', id='nonexistent_paper_xyz')`
+raised `BadInput` instead of either `NotFound` (slug doesn't exist)
+or a clear "underscore is illegal" message. The slug regex's
+permissive prefix-match meant the trailing `_paper_xyz` ended up
+in the chunk-selector branch and produced a generic error.
+
+Fix: post-match check that catches non-`~`/non-`/` rest. If the
+first leftover char is `_`, the error names the rule
+("underscores not allowed; slugs match `[a-z0-9-]+`"); for any
+other illegal char, the error names that char specifically.
+
+### MINOR m4 — `calc` echoed gibberish identifiers as symbolic expressions
+
+`calc(id='malformed**broken')` returned `malformed**broken =
+malformed**broken` because sympy parsed the identifiers as free
+symbols and `simplify(symbol**symbol)` is itself. No signal to
+the agent that the input wasn't a math expression.
+
+Fix: when the simplified result is identical to the input string
+**and** contains free symbols, raise
+`BadInput: expression simplifies to itself` with a hint pointing
+at concrete patterns (`solve(Eq(…))`, `integrate(…)`). Pure
+numerics (`2+3*4`) and real symbolic calculus
+(`integrate(sin(x), x)`) still work — the heuristic only fires on
+the "no operator simplified anything" case.
+
+### MINOR m6 — single-block trailers rendered as `~N..N`
+
+The chunk-range trailer formatter emitted `~77..77` for a
+degenerate single-block range, training agents to write
+`~5..5` for unrelated singletons later. The canonical
+single-block form is `~N`.
+
+Fix: trailer collapses `lo == hi` to `~N` with the label
+`"next chunk"` (vs `"next chunk range"` for true ranges).
+
+### Out of scope / deferred
+
+These are real findings I haven't shipped yet:
+
+- **Relevance floor on rank scores (MAJOR #11a).** The noise-floor
+  filter handles the most egregious case (punctuation-only
+  blocks); a soft threshold on rank scores still wants empirical
+  tuning per kind.
+- **`total_hits` in search responses (MAJOR #10b).** Pagination
+  intent needs a header field that says "you're seeing N of K".
+  Not landed yet — would require changes to every search
+  handler's render.
+- **Cross-kind link CRUD on file-/cache-backed handlers
+  (MAJOR #4 follow-up).** Numeric refs accept `link=` /
+  `unlink=` / `rel=`; paper / markdown / python / cache kinds
+  don't yet.
+- **Auto-mirroring inverse relations.** `cites` from A to B is
+  not automatically inserted as `cited-by` from B to A. The
+  renderer shows both directions correctly via two queries, but
+  a "who cites me?" filter still requires `direction='in'`.
+- **`prompts/list` and `meta/registry` resource.** The critic
+  recommended these as MCP-spec extensions; not in scope this
+  pass.
+- **Per-kind axis enforcement.** The critic noted `STATUS:open`
+  on a memory is a smell (memories don't have a STATUS axis),
+  but per-kind axis restriction is a bigger feature than the
+  CRITICAL/MAJOR items here. Still queued.
+
+## Link CRUD — `link=` / `unlink=` / `rel=` end to end
+
+The previous critic pass flagged `link=` as silently no-op
+(`if link is not None: pass  # links CRUD lands later`). That
+placeholder is now replaced with a working end-to-end implementation
+on every numeric-ref kind (`memory`, `todo`, `gripe`, `fc`, `quest`,
+`conv`). **819 → 861 tests green, 1 skip** (42 new link CRUD tests).
+
+### Migration: full relations vocabulary
+
+`migrations/0005_link_relations.sql` seeds the relations the docs
+have always promised but the schema never carried:
+
+- Citation graph: `cites` / `cited-by`.
+- Provenance: `derived-from` / `derived-into`.
+- Evidential support: `supports` / `supported-by`.
+- Generalisation: `generalises` / `specialises`.
+- Asymmetric pointer: `see-also` (no inverse).
+
+Each row has its `inverse_slug` populated for the renderer's
+direction-aware labelling. **Inverse handling stays app-level** —
+adding a `cites` link does *not* auto-mirror as `cited-by`. The
+`view='links'` renderer queries both directions and shows the
+relation as stored, with arrows for direction.
+
+The `Relation` typing literal in `precis/store/types.py` was
+extended to mirror the seed exactly. A regression test
+(`TestRelationsVocabularyMatchesSchema`) pins that every literal
+slug exists in the seeded table, so future drift between Python
+and SQL fails loudly at test time rather than silently at INSERT.
+
+### Canonical syntax: `kind:identifier[~selector]` + separate `rel=`
+
+The agent-facing skill docs were inconsistent: `precis-todo-help`
+said `link='target_id:relation'` was the only syntax and there was
+no `rel=` parameter; `precis-relations` and `precis-memory-help`
+showed the opposite. Both forms had cases where they were ambiguous
+(numeric ids vs slugs vs relation suffixes all sharing `:`).
+
+Settled on the strict form:
+
+```python
+put(kind='memory', id=47,
+    link='paper:wang2020state~38',
+    rel='cites')
+
+put(kind='memory', id=47, unlink='paper:wang2020state', rel='cites')
+get(kind='memory', id=47, view='links')
+```
+
+- **Kind prefix is mandatory** — no bare slugs, no implicit fallback
+  to the source kind.
+- **`rel=` is a separate kwarg** — no overloaded colon-suffix.
+- **Block selector** unchanged: `~pos` (numeric) or `~slug`.
+
+The kwarg parsing rejects two genuine misuses up front:
+- `link=` and `unlink=` together → `BadInput` ("mutually exclusive").
+- `rel=` without `link=`/`unlink=` → `BadInput` ("rel= requires
+  link= or unlink=") — silent swallowing here would let typos
+  vanish.
+
+### Target parser
+
+New module `precis/handlers/_link_target.py`:
+
+```python
+@dataclass(frozen=True, slots=True)
+class LinkTarget:
+    ref_id: int
+    pos: int | None
+    kind: str
+    raw: str
+
+def parse_link_target(target: str, *, store: Store) -> LinkTarget: ...
+```
+
+The parser hits the store to resolve the target *before* any
+mutation, so a `link='paper:does-not-exist'` on a put-create is
+rejected up-front and doesn't leave a half-created memory row in
+the corpus (regression test
+`test_bad_link_target_rejected_before_create` pins this).
+
+Validation paths:
+- Missing `:` prefix → `BadInput` with canonical-form hint.
+- Empty kind / identifier / selector → `BadInput`.
+- Unknown kind → `BadInput` with the full options list (queried
+  from the live `kinds` table, so file-kinds added in 0004 show
+  up automatically).
+- Numeric kind with non-numeric id → `BadInput`.
+- Slug kind ref not found → `NotFound`.
+- Block pos out of range / block slug missing → `NotFound` with
+  hint to `get(kind=…, id=…)` for the block list.
+- Negative pos → `BadInput` (the runtime sentinel `-1` is
+  internal-only).
+
+### Store CRUD
+
+Three new methods on `Store`:
+
+- `add_link(...)` — idempotent on the unique tuple via
+  `ON CONFLICT (...) DO UPDATE SET set_by = links.set_by RETURNING *`.
+  Schema-level `CHECK (NOT (src_ref_id = dst_ref_id AND src_pos =
+  dst_pos))` is mirrored as a `BadInput` at the runtime boundary
+  (sharper hint than the DB error). Same-ref different-pos links
+  are allowed (block~5 → block~7 within one ref).
+- `remove_link(...)` — `relation=None` removes all rows between
+  the (src, src_pos, dst, dst_pos) tuple regardless of relation;
+  the handler-level `unlink=` without `rel=` uses this. Returns
+  rowcount; missing rows are silent no-ops.
+- `links_for(ref_id, *, direction=..., relation=...)` — `out` /
+  `in` / `both`, with optional relation filter. Used by the
+  `view='links'` renderer.
+
+`_row_to_link` maps the DB sentinel `pos = -1` back to Python
+`None` at the boundary so callers always see "ref-level" as
+Pythonic absence.
+
+### Handler integration
+
+`NumericRefHandler.put` accepts `link=`, `unlink=`, `rel=` on
+both create and update paths. `_validate_relation` provides the
+canonical-form check at the agent boundary, raising `BadInput`
+with the full options list — sharper than the FK violation the
+DB would otherwise raise.
+
+`NumericRefHandler.get(view='links')` renders both directions:
+
+```
+# memory 42 — links
+
+## outbound
+→ paper:wang2020state~38  (cites)
+→ memory:7  (related-to)
+
+## inbound
+← memory:55  (derived-from)
+```
+
+Endpoints are bulk-fetched with one round trip
+(`SELECT … WHERE id = ANY(%s)`) so the render is O(N) on link
+count, not O(N) on `link × DB-query`. Soft-deleted targets render
+with a `(deleted)` marker rather than vanishing — agents need to
+know when a link points at a tombstoned ref.
+
+`view=` is now eagerly validated against the per-handler views
+tuple (currently just `('links',)` on numeric kinds). Subclasses
+with extra views override `get()` in the usual way.
+
+### Documentation reconciliation
+
+- `precis-relations`: rewritten as the canonical reference. Full
+  vocabulary table with inverses, validation-error catalogue,
+  semantics notes (idempotent, position-aware, kind-agnostic,
+  inverse-as-documentation).
+- `precis-todo-help`: `link='158:blocked-by'` → `link='todo:158'`,
+  `rel='blocked-by'`. The "no `untags=`" line — outdated since
+  last session — was replaced with a pointer to `precis-tags`.
+  The "tag-filter not yet implemented" disclaimer was replaced
+  with a working example.
+- `precis-memory-help`: bare-slug examples → `paper:`/`research:`
+  prefixed.
+- `precis-navigation`: same.
+- `precis-markdown-help`: already canonical (`markdown:notes/x.md`),
+  no change.
+
+### Tests
+
+`tests/test_link_crud.py` — 42 tests across:
+
+- **`TestParseLinkTarget`** (14): all syntax forms, rejection
+  paths, missing kind/ref/block, negative pos, empty selector.
+- **`TestStoreLinkCRUD`** (10): basic add, idempotency, multi-
+  relation rows, ref-level self-loop rejection, block-level
+  self-loop allowed, specific-relation removal, broad removal,
+  no-op missing removal, direction filter, relation filter.
+- **`TestRelationsVocabularyMatchesSchema`** (1): the
+  Python literal mirrors the seeded SQL.
+- **`TestMemoryHandlerLink`** (11): create-time link, explicit
+  rel, block target, update-time link, unlink with rel, unlink
+  without rel (broad), mutual-exclusion check, rel-without-
+  link/unlink rejection, unlink-on-create rejection, unknown
+  relation, atomic rejection of bad target before insert.
+- **`TestMemoryHandlerLinksView`** (6): no-links hint, outbound
+  arrow, inbound arrow, block-pos rendering, unknown view
+  rejection, deleted-target marker.
+
+### Out of scope this pass (still queued)
+
+- **Block-level link source positions on numeric refs.** The
+  schema and target parser support `src_pos`, but the handler
+  surface only writes ref-level (`src_pos = None`) sources. Memory
+  has no block subdivision today; the moment a numeric kind grows
+  blocks, this becomes interesting.
+- **Cross-handler link CRUD.** PaperHandler / MarkdownHandler /
+  PythonHandler don't accept `link=` yet — only the numeric refs
+  do. The schema doesn't care about source kind, but the
+  agent-facing kwargs need to be wired per handler.
+- **Symmetric-relation auto-mirroring.** `cites` from A to B is
+  *not* auto-inserted as `cited-by` from B to A. The renderer
+  shows both directions correctly, but a query like "who cites
+  me?" still requires `direction='in'`. Auto-mirroring tempts
+  consistency bugs (which side is canonical?); leaving it manual
+  for now.
+- **Bulk link operations.** `link=` accepts one target per call.
+  Multi-link should land if a real workflow needs it; for now
+  iteration on the agent side is enough.
+
+## MCP critic follow-up — TOC heuristic + tag filter + untags
+
+Closing the deferred items from the previous critic pass.
+**730 → 819 tests green, 1 skip** (53 TOC-rejection tests, 24
+tag-filter tests, 12 untags tests).
+
+### Paper TOC — reject metadata as headings
+
+The hierarchical TOC heuristic (`_paper_toc.detect_heading`) was
+treating publisher metadata blocks (`**DOI: 10.1002/...**`,
+`**Keywords: ...**`, `**Received: 12 Mar 2024**`) as H2 headings,
+because they're bold-only single-line blocks. The MCP critic
+flagged a paper where 357 of 460 blocks landed under a single
+``DOI:…`` pseudo-heading, making the hierarchical TOC useless.
+
+`detect_heading` now applies an anti-pattern filter:
+
+- `_METADATA_PHRASE_RE` — always-metadata phrases (`©`, `Copyright`,
+  `License`, `Funding`, `Article history`, `Supplementary`,
+  `Conflict of interest`, `Available online`, `Cite this article`).
+  Match anywhere → reject.
+- `_METADATA_LEAD_RE` ∧ `_METADATA_SHAPE_RE` — conditional-metadata
+  leads (`DOI`, `Keywords`, `Authors`, `Affiliations`, `Received`,
+  `Accepted`, `Published`, `Corresponding`, `Email`, `ORCID`,
+  `Cite this`, `Submitted`, `Revised`) only count as metadata when
+  the title also carries a metadata-shape signal (`:`, em-dash,
+  en-dash, `@`, or any digit). This keeps a real subsection title
+  like "DOI tracking subsection" — no colon, no digit — from being
+  false-flagged.
+- DOI strings (`10.NNNN/...`) and URLs (`https?://`) anywhere in the
+  title → reject.
+- Title length > 60 chars → reject (real subsection titles are short).
+
+The filter applies uniformly to H1, H2, MD-H1, and MD-H2 paths so a
+``■ **DOI: 10.x/y**`` artefact also gets caught even though it
+carries the H1 marker. **This is v2-only** — v1 (`precis-mcp`)
+indexed from typed nodes that already carried heading level, so no
+fix is owed there.
+
+### `tags=` filter on search — DRY at the SQL layer
+
+The schema already had a unified `ref_tags` view over the three
+narrow tag tables (`ref_closed_tags`, `ref_flags`, `ref_open_tags`),
+indexed for prefix-and-value lookups. The "missing piece" was a
+single helper that emits a SQL fragment usable by every store
+query that selects refs.
+
+New module `precis/store/_tag_filter.py`:
+
+```python
+def build_tag_filter(
+    tags: list[str] | None,
+    *,
+    ref_alias: str = "r",
+    block_level: bool = False,
+) -> tuple[str, list[Any]]:
+    """Build the SQL AND fragment + params for a tags filter."""
+```
+
+Returns `("", [])` for `None`/`[]` so callers splice
+unconditionally. The fragment uses `r.id IN (SELECT ref_id FROM
+ref_tags WHERE tag IN (...) AND pos IS NULL GROUP BY ref_id HAVING
+COUNT(DISTINCT tag) = N)` — AND semantics across all tags through a
+single subquery, so the planner narrows on the indexed prefix-value
+columns before the lexical/semantic ranking runs.
+
+Wired into six store methods:
+
+- `list_refs(tags=...)` — list view filter.
+- `count_refs(tags=...)` — paginated headers.
+- `search_refs_lexical(tags=...)` — title search.
+- `search_blocks_lexical(tags=...)` — block lex search.
+- `search_blocks_semantic(tags=...)` — pgvector cosine search.
+- `search_blocks_fused(tags=...)` — RRF, applied to **both** CTEs
+  (a regression test pins this — fusing a filtered against an
+  unfiltered set defeats the filter).
+
+`list_refs` and `count_refs` were also re-aliased to `r` for
+consistency with the rest of the search surface; this is a private
+breaking change but everything internal to the package was updated
+in the same edit.
+
+### Validation: `Tag.normalize_filter`
+
+New classmethod on `Tag` that runs `parse_strict` over each tag and
+returns canonical-form strings. Same rejection set as `put(tags=)`:
+unknown closed-vocab values (`STATUS:bogus`) and bare flags that
+collide with a closed value (`'urgent'`) raise `BadInput` with the
+canonical alternative in the next: hint.
+
+Surfaced in:
+
+- `PaperHandler.search(tags=...)` — block search with topic filter.
+- `NumericRefHandler.search(tags=...)` — covers memory, todo,
+  gripe, fc, conv, quest by inheritance.
+
+Empty result responses on numeric-ref kinds now mention the active
+filter in the body so an agent that wrote `tags=['topic-typo']`
+sees why the search returned nothing.
+
+### `untags=` parameter on put
+
+Closed-prefix overwrite already handled "switch STATUS to done"
+via `tags=['STATUS:done']`, but there was no path to *remove* a
+lowercase or bare tag once set. Added on `NumericRefHandler.put`:
+
+```python
+put(kind='memory', id=48, untags=[
+    'topic:co2-capture',  # remove this lowercase tag
+    'star',               # clear the flag
+    'STATUS:done',        # remove only if STATUS is currently 'done'
+])
+```
+
+- **Value-matched** for closed prefixes (`STATUS:open` against a
+  `STATUS:done` ref is a silent no-op — same shape as a SQL
+  DELETE finding zero rows).
+- **Idempotent** — removing a tag that isn't there is a no-op.
+- **`STATUS:` empty form rejected** at parse time, so removing
+  "any STATUS regardless of value" is impossible by accident.
+- **Rejected on create** (`id=None`) — there's nothing to remove
+  from yet; raises `BadInput`.
+- Same `Tag.parse_strict` validation as `tags=` — bare-flag
+  collisions and unknown closed-vocab values raise the same
+  `BadInput` shape they do on the write path.
+- The "at least one of" check on update was widened to accept
+  `untags=` alone as a sufficient update.
+
+Sub-class `_remove_tags(ref_id, untags)` mirrors `_apply_tags`, so
+every NumericRef kind picks up the parameter without per-class
+wiring.
+
+### Documentation
+
+- `precis-tags`:
+  - "Remove tags" section added with value-matched semantics.
+  - "Filter by tags" section added with AND semantics, perf note,
+    validation-error reference.
+  - `applies-to` updated to `put (tags=, untags=) and search (tags=)`.
+  - "Not yet implemented" pruned to the genuinely-deferred items
+    (list-view-level filter exposure; block-level positional
+    tag filter).
+
+### Tests
+
+- `tests/test_paper_toc_metadata_rejection.py` — 53 tests covering
+  the metadata rejection vocabulary, length cap, DOI/URL anywhere,
+  H1/H2/MD-H1/MD-H2 paths, the synthetic 357-of-460 regression,
+  and the metadata-only-paper "no fake headings" check.
+- `tests/test_search_tag_filter.py` — 24 tests across
+  `build_tag_filter` unit tests, store-level (`list_refs`,
+  `count_refs`, `search_refs_lexical`, `search_blocks_lexical/
+  semantic/fused`), handler-level validation, and the ref-vs-block
+  pos-boundary regression.
+- `tests/test_untags_on_put.py` — 12 tests across removal flows,
+  closed-prefix value matching, idempotency, validation symmetry
+  with `tags=`, and the create-path rejection.
+
+### Out of scope this pass (still queued)
+
+- **Cross-kind / comma-list search.** Real feature, runtime
+  rejects with a precise hint today.
+- **Slug dedupe one-shot.** It's an `.acatome` bundle-file
+  workflow, not a runtime fix; tracked for the bundle-repo
+  session.
+- **Block-level (positional) tag filtering** end-to-end. The
+  helper has the `block_level=True` path and the schema supports
+  it, but no handler writes block-level tags or surfaces a kwarg
+  to filter on them. Picked up when a real consumer needs it.
+- **`tags=` on agent-facing `get(kind=K)` list views.** Already
+  exposed at `Store.list_refs(tags=...)`; piping through the list
+  view path is a small extension once the right handler surface
+  decides which list-views accept which kwargs.
+
+## MCP critic pass — surface honesty + tag validation
+
+Tightened the agent-facing surface in response to the April 2026
+MCP critic findings (2 CRITICAL, 11 MAJOR, 4 MINOR). Documentation
+no longer over-promises; the runtime no longer silently accepts
+invalid tags.
+**712 → 730 tests green, 1 skip.**
+
+### Honest scoring + clearer errors
+
+- **Search render drops misleading `score=`.** RRF fused scores are
+  rank-based by construction (`1/(k+rank_lex) + 1/(k+rank_sem)`) and
+  the same staircase appears for every query. List position is the
+  only honest relevance signal, so we now render
+  `## 1. <slug>~<pos>` — no numeric score.
+- **`move` with no implementing kind** now returns
+  `Unsupported: no active kind currently supports move` with a
+  pointer to `put`. Previously the error looked like a per-kind
+  quirk and prompted retry-loops on small models.
+- **Cost trailer dedup.** The runtime no longer prepends `— cost: `
+  to the handler's already-bracketed `[cost: ~$0.0020]`, so we no
+  longer emit the double-`cost:` form
+  (`— cost: [cost: ~$0.0020]` → `[cost: ~$0.0020]`).
+- **Cross-kind search hint** now enumerates every kind whose spec
+  has `supports_search=True` rather than the hard-coded `<one of:
+  calc>` placeholder. Comma-list kinds (`paper,memory`) are caught
+  with a precise `comma-list kind not supported` error.
+
+### Paper handler
+
+- **`view='cite/bib'` ⇄ `view='bibtex'` symmetric.** The id-path
+  form (`id='slug/cite/bib'`) and the kwarg form
+  (`view='cite/bib'`) now share an alias map. `cite/ris` and
+  `cite/endnote` likewise.
+- **`view='abstract'` strips `<jats:*>` namespace tags** before
+  render, so abstracts read as clean prose instead of leaking
+  `<jats:title>Abstract</jats:title><jats:p>…</jats:p>`.
+- **Paper list view paginates and shows the total.** Caps at 50,
+  appends `(50 of N)` for larger corpora, ends with a Next: trailer
+  pointing to `search` and `get(id='<slug>')`.
+- **Slug minter strips glued-initials prefix.** `A.Clark` no longer
+  produces `aclark1998extended`; the leading run of single-letter
+  dotted segments is treated as initials and dropped, so the slug
+  is `clark1998extended`. `St.Pierre` and other multi-letter
+  prefixes are preserved.
+- **`Store.count_refs(kind=, provider=)`** primitive added so
+  paginated list views can render `(N of M)` without a second
+  unbounded `list_refs` call.
+
+### Tag validation
+
+- **`Tag.parse_strict`** rejects two classes of bad input loudly
+  with a `BadInput` carrying the canonical alternative:
+    - **Unknown closed-vocab values** (`STATUS:bogus`) — error
+      lists the valid set.
+    - **Bare flags that collide with closed-vocab values**
+      (`'urgent'`) — error suggests `'PRIO:urgent'`.
+- Closed vocabularies registered in `store.types`:
+    - `STATUS`: `open / doing / blocked / done / won't-do`
+    - `PRIO`: `low / normal / high / urgent`
+    - `SRC`: `primary / secondary`
+    - `CACHE`: `fresh / stale / pinned`
+- `_numeric_ref._apply_tags` calls `parse_strict` for every
+  user-supplied tag, so all NumericRef kinds (memory, todo, gripe,
+  fc, etc.) enforce the discipline uniformly.
+- The previous permissive `Tag.parse` is preserved for internal
+  call sites that aren't agent-driven.
+
+### Numeric-ref list trailers
+
+- `_list_view('recent')` now emits a Next: trailer in both the
+  populated and the empty case, so `get(kind='memory', id='/recent')`
+  no longer trails off silently. Empty-state hint points at
+  `put(kind=K, text='...')` to populate.
+
+### Documentation
+
+- **`precis-overview`** dropped the four fictional kinds
+  (`clock`, `rng`, `plot`, `ask`); renamed `ask` to the actual
+  three Perplexity kinds (`websearch`, `think`, `research`); fixed
+  the `wang2020state` example to a slug that's actually ingested
+  (`abazari2024design`); softened the `move` row to "reserved";
+  rewrote the cross-kind search paragraph to match runtime
+  behaviour; dropped the unsupported `due='friday'` put example.
+- **`precis-todo-help`** STATUS vocabulary aligned with runtime
+  (`open` not `active`); `view='today'` / `'overdue'` etc. removed
+  (not implemented); `due=` / `untags=` / `rel=` examples replaced
+  with the `link='target_id:relation'` form actually accepted by
+  the schema.
+- **`precis-tags`** STATUS vocabulary aligned; `DENSITY:` /
+  `CONFIDENCE:` removed from the closed list (not registered);
+  validation errors documented with example messages; "Not yet
+  implemented" section flags `tags=` filter on search and
+  `untags=` on put.
+- **`precis-paper-help`** all `wang2020state` examples replaced
+  with `abazari2024design`; symmetric view-alias semantics
+  documented; honest description of search ordering (no numeric
+  score); JATS strip noted.
+- **`server.py`** `move` tool docstring says "No active kind in
+  this build implements `move`" so the schema-level description
+  matches the runtime behaviour.
+
+### Tests
+
+- New `tests/test_mcp_critic_regressions.py` (18 tests) — one per
+  fix, named to match the critic's labels so future failures
+  point straight at the relevant CHANGELOG line.
+
+### Deferred (acknowledged but not implemented this pass)
+
+- **Cross-kind / comma-list search.** Real feature, not just a
+  doc fix; the runtime now rejects with a precise hint and the
+  docs no longer claim the default behaviour exists.
+- **`view='today'` / `'overdue'` etc. on todo.** Needs a real
+  due-date field. Removed from the docs; users can still tag
+  `due:2026-05-01` lowercase and post-filter.
+- **`due=` / `untags=` / `rel=` parameters on put.** Removed from
+  the docs; users compose state via `tags=['STATUS:done']` and
+  `link='target:rel'` against the documented schema.
+- **`tags=` filter on search.** Removed from the docs; fetch a
+  list view and filter client-side until the parameter lands.
+- **Paper TOC section detector improvements.** The critic flagged
+  one paper where 357 of 460 blocks landed under a single
+  "DOI: …" pseudo-section heading. Heuristic work; deferred.
+- **Slug dedup tool** (`precis jobs dedup-paper-slugs`). The
+  minter no longer produces the bug; existing duplicate slugs in
+  production corpora need a separate one-shot pass.
+
+## Perplexity polish (`/recent`, imported badge, bulk CLI, no-key usability)
+
+Follow-up to the import flow. Imports are now first-class for Pro
+subscribers who don't have an API key at all.
+**699 → 712 tests green, 1 skip.**
+
+- `get(kind=<perplexity>)` with no `id=` (or `id='/'` / `id='/recent'`)
+  renders a newest-first listing of up to 20 cached refs of that
+  kind, showing slug, title, provenance (`imported` vs `fetched`),
+  and date. `id_required=False` on all three KindSpecs to reflect it.
+- `requires_env=("PERPLEXITY_API_KEY",)` dropped from all three
+  specs. Imports, `/recent`, and cache hits all work without a
+  key; only a cache-miss `get` still raises `Upstream` when the
+  key is absent. Previously users had to set a dummy
+  `PERPLEXITY_API_KEY` just to unhide the kind.
+- `_cost_str` override: cache hits whose `cache_state.meta.source`
+  is `"imported"` render as `[cost: free — imported]` so agents
+  can tell user-supplied bodies from API-cached ones at a glance.
+- New CLI: `precis jobs import-perplexity <dir>`. Walks a directory
+  of markdown reports and bulk-calls `put(mode='import')` for each.
+  `--kind` selects the tier, `--query-from h1|filename` picks the
+  id-derivation heuristic (H1 heading with filename fallback, or
+  always filename), `--dry-run` previews the derived queries.
+- Updated `precis-perplexity-help` skill with the new verbs,
+  listing view, and CLI.
+- 13 new tests across `tests/test_perplexity.py` and
+  `tests/test_cli.py`: empty-state listing, mixed provenance
+  listing, per-kind scope isolation, bad-view typo rejection,
+  listing-without-API-key, imported-badge on hit, fetched keeps
+  `cached` badge, CLI dry-run with H1 + filename-fallback, CLI
+  filename-strategy override, CLI end-to-end write, CLI
+  empty-file handling, CLI missing-dir handling.
+
 ## Perplexity import (`put(mode='import')`)
 
 Pro subscribers can run deep research in the Perplexity web UI for

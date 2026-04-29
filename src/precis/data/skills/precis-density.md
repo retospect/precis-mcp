@@ -1,12 +1,20 @@
 ---
 id: precis-density
 title: precis — find novel content, compress a paper, check coverage
-status: draft
+status: planned
 tier: 1
 floor: any
 applies-to: search (tags=['DENSITY:*']), get (view='representatives'/'echoes'/'coverage')
-last-updated: 2026-04-26
+last-updated: 2026-04-28
 ---
+
+> **Heads up:** none of `view='representatives'`, `view='echoes'`,
+> `view='coverage'` are wired in this build, and `DENSITY:*` is not
+> a registered tag prefix. This skill describes the planned API; it
+> is filtered from the default skill index. Keep it for reference;
+> don't run the recipes blind.
+
+
 
 # precis-density — find novel content, compress a paper, check coverage
 

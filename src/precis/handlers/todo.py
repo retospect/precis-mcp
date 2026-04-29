@@ -51,6 +51,12 @@ class TodoHandler(NumericRefHandler):
     # Statuses that count as "open work" (i.e. on the agent's queue).
     _OPEN_STATUSES: ClassVar[frozenset[str]] = frozenset({"open", "doing", "blocked"})
 
+    def _supported_list_views(self) -> tuple[str, ...]:
+        # Surfaced via the unknown-list-view error so a 7B caller
+        # who tries ``id='/all'`` gets the actual recovery options
+        # rather than a dangling ``see precis-todo-help`` hint.
+        return ("recent", "open", "doing", "blocked", "done", "queue")
+
     def _list_view(self, view: str) -> Response | None:
         # Default behaviour for /recent / "" stays in the base class.
         if view in ("open", "doing", "blocked", "done"):
@@ -84,7 +90,14 @@ class TodoHandler(NumericRefHandler):
                 kept.append((r.id, status, r.title))
 
         if not kept:
-            return Response(body=f"no todos with status in {sorted(wanted)}")
+            body = f"no todos with status in {sorted(wanted)}"
+            body += render_next_section(
+                [
+                    ("get(kind='todo', id='/recent')", "list todos in any state"),
+                    ("put(kind='todo', text='new task')", "create a new todo"),
+                ]
+            )
+            return Response(body=body)
 
         lines = [f"# {len(kept)} todo (status: {status_filter})"]
         for ref_id, status, title in kept:

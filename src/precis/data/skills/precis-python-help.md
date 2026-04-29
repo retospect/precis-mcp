@@ -1,11 +1,11 @@
 ---
 id: precis-python-help
 title: precis — navigate Python codebases
-status: spec (unbuilt)
+status: built (slices 1-8.5)
 tier: 1
 floor: any
 applies-to: get/search/put (kind='python'); writes are AST-validated, ruff-fixed, and ruff-formatted
-last-updated: 2026-04-27
+last-updated: 2026-04-29
 ---
 
 # precis-python-help — Python codebase navigation
@@ -87,13 +87,47 @@ carries its graph context (parent, callers, callees, raises).
 | (default for repo) | package tree (modules, packages) |
 | (default for file) | imports + class/function tree |
 | (default for symbol) | signature + docstring + decorators + raises + callers + callees |
+| `toc` | repo-wide module/package tree |
 | `outline` | richer per-file outline with type annotations |
 | `source` | raw source for the resolved region |
-| `callgraph` | entry-rooted call tree (requires `entry='module:func'`) |
+| `entries` | console scripts + `__main__` guards |
+| `callgraph` | entry-rooted call tree (needs `args={'entry': 'module:func'}`) |
 | `runtrace` | dynamic trace (gated by `PRECIS_PYTHON_ALLOW_EXEC=1`) |
-| `imports` | flat dependency map |
-| `symbols` | flat paginated symbol list |
-| `blame` / `log` / `churn` / `owners` / `diff` | git overlays |
+
+Views `imports` / `symbols` / git overlays (`blame` / `log` / `churn`
+/ `owners` / `diff`) are **deferred** — call them and you'll get
+`Unsupported`. Use `outline` + `entries` + `callgraph` instead.
+
+## Passing kind-specific args
+
+Most calls use `id` and `view`. Some views need extra typed inputs
+(`callgraph` needs an entry point; `runtrace` needs argv) — those
+go through the generic `args=` kwarg on `get`:
+
+```python
+get(kind='python', id='precis', view='callgraph',
+    args={'entry': 'precis.cli:main', 'depth': 3})
+
+get(kind='python', id='precis', view='runtrace',
+    args={'entry': 'precis.cli:main', 'argv': ['--version']})
+```
+
+`args=` is a free-form dict (`dict[str, Any]`). Keys recognised by
+the python kind:
+
+| Key | Used by | Type | Default |
+|---|---|---|---|
+| `entry` | `callgraph`, `runtrace` | `'module:func'` or `'module.func'` | required |
+| `depth` | `callgraph` | int 1-10 | 3 |
+| `cross_repo` | `callgraph`, `runtrace` | bool | False |
+| `argv` | `runtrace` | `list[str]` | `[]` |
+| `env` | `runtrace` | `dict[str, str]` | inherits |
+| `timeout` | `runtrace` | int seconds | 10 |
+| `allow_rename` | `put` (replace/delete) | bool | False |
+
+**Don't** put reserved kwargs (`kind` / `id` / `view` / `q`) inside
+`args=`. The boundary rejects this with a sharp `BadInput` rather
+than silently shadow the explicit positional kwargs.
 
 ## Recipes
 
@@ -133,7 +167,7 @@ get(kind='python', id='precis', view='entries')
 #     file:  precis/src/precis/cli.py:42
 
 get(kind='python', id='precis', view='callgraph',
-    entry='precis.cli:main', depth=3)
+    args={'entry': 'precis.cli:main', 'depth': 3})
 # → tree of static call edges from main downward
 
 # Drill into the most interesting node from the graph:

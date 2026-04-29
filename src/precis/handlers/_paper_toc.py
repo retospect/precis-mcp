@@ -48,6 +48,118 @@ _H2_RE = re.compile(r"^\s*\*\*([A-Z][^*]{0,80}?)\*\*\s*$")
 _MD_H1_RE = re.compile(r"^\s*#\s+(\S.*?)\s*$")
 _MD_H2_RE = re.compile(r"^\s*##\s+(\S.*?)\s*$")
 
+# ---------------------------------------------------------------------------
+# Metadata anti-patterns
+# ---------------------------------------------------------------------------
+#
+# acatome-extract bundles emit publisher metadata blocks early in the
+# stream as bold-only single lines — `**DOI: 10.1002/...**`,
+# `**Keywords: photocatalysis, NOx**`, `**Received: 12 Mar 2024**`,
+# etc. These match `_H2_RE` cleanly and were previously treated as
+# H2 headings, so the first metadata block "owned" every body block
+# until the next bold-only line. The MCP critic flagged a paper
+# where 357 of 460 blocks landed under a single ``DOI:…`` pseudo-
+# heading; the hierarchical TOC was useless on that ref.
+#
+# We reject any candidate H1/H2 whose title text matches one of the
+# known publisher-metadata leads, contains a DOI string, contains a
+# URL, or runs longer than the typical real subsection length.
+
+# Metadata "lead" words — rejected as headings only when the title
+# *also* carries a metadata shape signal (colon / em-dash / digit / @).
+# This split keeps a real subsection like "DOI tracking subsection"
+# (no colon, no digit) from being false-flagged just because it
+# starts with "DOI".
+_METADATA_LEAD_RE = re.compile(
+    r"""^(?:
+        DOI                |
+        Keywords?          |
+        Author(?:s|ship)?  |
+        Affiliation(?:s)?  |
+        Received           |
+        Accepted           |
+        Published          |
+        Corresponding      |
+        Email              |
+        E-?mail            |
+        ORCID              |
+        Cite[\ ]this       |
+        Submitted          |
+        Revised
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Shape signals — punctuation and content that's typical for
+# publisher metadata but rare in section heading titles. ``:`` /
+# em-dash / en-dash for ``DOI: …`` and ``Authors — …``; ``@`` for
+# email; any digit for dates like ``Received 12 Mar 2024``.
+_METADATA_SHAPE_RE = re.compile(r"[:\u2014\u2013@]|\d")
+
+# Phrases that are always publisher metadata, with or without any
+# trailing punctuation. These are unambiguous — no real subsection
+# title in a paper will start with "Copyright" or "Article history".
+# Each alternative is followed by ``(?!\w)`` (non-word lookahead)
+# rather than ``\b`` so the ``©`` glyph (non-word) matches cleanly.
+_METADATA_PHRASE_RE = re.compile(
+    r"""^(?:
+        ©                          |
+        Copyright                  |
+        License                    |
+        Funding                    |
+        Conflict[\ ]of[\ ]interest |
+        Article[\ ]history         |
+        Supplementary              |
+        Available[\ ]online        |
+        Cite[\ ]this[\ ]article
+    )(?!\w)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_DOI_IN_TITLE_RE = re.compile(r"\b10\.\d{4,9}/[^\s]+", re.IGNORECASE)
+_URL_IN_TITLE_RE = re.compile(r"https?://", re.IGNORECASE)
+
+# Real subsection titles are short. Anything longer than this in the
+# H2 path is almost certainly a metadata sentence ("Received 12
+# March 2024 and accepted on 14 May 2024.") rather than a heading.
+# H1 has the ``■`` marker as a stronger gate, so the cap matters
+# less there but we still apply it for safety.
+_HEADING_TITLE_MAX_LEN = 60
+
+
+def _is_metadata_title(title: str) -> bool:
+    """Return True when ``title`` looks like publisher metadata.
+
+    Anti-pattern hits:
+      * always-metadata phrase (``©``, ``Copyright``, ``Article
+        history``, …) — see :data:`_METADATA_PHRASE_RE`.
+      * conditional-metadata lead (``DOI``, ``Keywords``, …) followed
+        by colon or em-dash — see :data:`_METADATA_LEAD_COLON_RE`.
+        The colon requirement avoids false-flagging a real subsection
+        like "DOI tracking" that happens to start with a metadata
+        word.
+      * contains a DOI string anywhere.
+      * contains a URL anywhere.
+      * exceeds the title-length cap.
+
+    Centralised so H1 and H2 detection share the same filter — we
+    don't want a `■ **DOI: 10.x/y**` bundle artefact to slip through
+    just because it carries the H1 marker.
+    """
+    if len(title) > _HEADING_TITLE_MAX_LEN:
+        return True
+    if _METADATA_PHRASE_RE.match(title):
+        return True
+    if _METADATA_LEAD_RE.match(title) and _METADATA_SHAPE_RE.search(title):
+        return True
+    if _DOI_IN_TITLE_RE.search(title):
+        return True
+    if _URL_IN_TITLE_RE.search(title):
+        return True
+    return False
+
 
 @dataclass(frozen=True, slots=True)
 class HeadingHit:
@@ -62,20 +174,28 @@ def detect_heading(block: Block) -> HeadingHit | None:
     """Classify a block as H1 / H2 / not-a-heading.
 
     Multi-line blocks are never treated as headings — real headings
-    are short single-line entries.
+    are short single-line entries. Publisher metadata blocks (DOI,
+    keywords, author affiliations, …) are rejected even when they
+    match the bold-only pattern; see :func:`_is_metadata_title`.
     """
     text = block.text.strip()
     if not text or "\n" in text:
         return None
 
-    if m := _H1_RE.match(text):
-        return HeadingHit(pos=block.pos, title=m.group(1).strip(), level=1)
-    if m := _MD_H1_RE.match(text):
-        return HeadingHit(pos=block.pos, title=m.group(1).strip(), level=1)
-    if m := _H2_RE.match(text):
-        return HeadingHit(pos=block.pos, title=m.group(1).strip(), level=2)
-    if m := _MD_H2_RE.match(text):
-        return HeadingHit(pos=block.pos, title=m.group(1).strip(), level=2)
+    candidates: tuple[tuple[re.Pattern[str], int], ...] = (
+        (_H1_RE, 1),
+        (_MD_H1_RE, 1),
+        (_H2_RE, 2),
+        (_MD_H2_RE, 2),
+    )
+    for pattern, level in candidates:
+        m = pattern.match(text)
+        if m is None:
+            continue
+        title = m.group(1).strip()
+        if _is_metadata_title(title):
+            return None
+        return HeadingHit(pos=block.pos, title=title, level=level)
     return None
 
 

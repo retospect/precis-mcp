@@ -7,6 +7,7 @@ in a migration. Two-step, explicit, greppable.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
@@ -150,6 +151,39 @@ def builtins(
             handlers.append(ResearchHandler(store=store, embedder=eff_embedder))
         except ImportError:
             pass  # missing httpx → not available
+
+        # Patent kind — EPO Open Patent Services. Hidden unless
+        # ``EPO_OPS_CLIENT_KEY``, ``EPO_OPS_CLIENT_SECRET`` and
+        # ``PRECIS_PATENT_RAW_ROOT`` are all set; the
+        # ``KindSpec.requires_env`` gate at registry construction
+        # then drops the kind. We construct the handler eagerly only
+        # when all three are present so the live ``OpsClient`` (which
+        # lazy-imports ``epo_ops``) gets exercised at startup just
+        # enough to surface a missing-package error early.
+        epo_key = os.environ.get("EPO_OPS_CLIENT_KEY")
+        epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
+        epo_raw_root = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+        if epo_key and epo_secret and epo_raw_root:
+            try:
+                from pathlib import Path
+
+                from precis.handlers._patent_ops import OpsClient
+                from precis.handlers.patent import PatentHandler
+
+                handlers.append(
+                    PatentHandler(
+                        store=store,
+                        ops=OpsClient(
+                            key=epo_key,
+                            secret=epo_secret,
+                            user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
+                        ),
+                        raw_root=Path(epo_raw_root).expanduser(),
+                        embedder=eff_embedder,
+                    )
+                )
+            except (ImportError, ValueError):
+                pass  # missing python-epo-ops-client → kind not available
 
     return handlers
 

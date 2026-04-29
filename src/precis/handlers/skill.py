@@ -8,10 +8,22 @@ This is the agent's manual: ``get(kind='skill', id='precis-overview')``
 returns the overview, ``get(kind='skill', id='precis-paper-help')``
 returns the paper-handler docs, etc.
 
-A bare ``get(kind='skill')`` lists every available skill so the agent
-can discover what's documented. Front-matter ``title:`` is surfaced in
-the index; a one-line description (the first non-front-matter line)
-acts as a synopsis.
+A bare ``get(kind='skill')`` lists every **available** skill — i.e.
+every skill whose ``status:`` front-matter is ``active`` (or absent)
+*and* whose subject kind is registered in the live runtime. Skills
+documenting unregistered kinds (``precis-markdown-help`` when the
+markdown handler isn't wired) and skills tagged ``status: planned``
+or ``status: aspirational`` are filtered out — they remain
+retrievable by exact slug, but with a banner warning the agent that
+the recipes inside don't all execute on this build.
+
+This filtering closes the MCP critic's CRITICAL #3 finding
+("tools/list advertises skills for kinds the registry rejects")
+and MAJOR #6 ("``precis-density`` documents three views that don't
+exist") — the index now agrees with the runtime.
+
+Front-matter ``title:`` is surfaced in the index; a one-line
+description (the first non-front-matter line) acts as a synopsis.
 
 Read-only. Skills ship with the package; agents can't write them at
 runtime — that's by design (skills are versioned with code).
@@ -29,6 +41,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Store
 from precis.utils.next_block import render_next_section
+from precis.utils.search_header import format_search_headline
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +112,13 @@ class SkillHandler(Handler):
                 options=available,
                 next="get(kind='skill') to list every skill",
             )
+        # Banner if this skill is filtered from the index — the agent
+        # asked for it explicitly, so we serve it, but we want them
+        # to know the recipes inside may not all run on this build.
+        # See CRITICAL #3 and MAJOR #6 in the MCP critique.
+        gap = _availability_gap(slug, registry=self._registry)
+        if gap is not None:
+            text = f"> **Heads up:** {gap}\n\n" + text
         return Response(body=text)
 
     # ── search ─────────────────────────────────────────────────────
@@ -134,8 +154,17 @@ class SkillHandler(Handler):
         if not hits:
             return Response(body=f"no skills mention {q!r}")
         hits.sort(key=lambda h: -h[1])  # most matches first
+        # Total before paging — same shape as ref/block search totals.
+        total = len(hits)
         hits = hits[:top_k]
-        lines = [f"# {len(hits)} skill match(es) for {q!r}"]
+        lines = [
+            format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun="skill match",
+                query=q,
+            )
+        ]
         for slug, cnt, preview in hits:
             preview_short = (preview[:120] + "…") if len(preview) > 120 else preview
             lines.append(f"\n## {slug}  ({cnt} hits)\n{preview_short}")
@@ -153,7 +182,15 @@ class SkillHandler(Handler):
                 "active kinds + verbs (auto-generated from this server)",
             )
         ]
+        hidden_slugs: list[str] = []
         for slug in skills:
+            # Filter skills whose subject kind isn't in the registry
+            # or whose front-matter status isn't ``active``. They
+            # remain reachable via direct slug get(), but they don't
+            # clutter the index that agents use for discovery.
+            if _availability_gap(slug, registry=self._registry) is not None:
+                hidden_slugs.append(slug)
+                continue
             title = _skill_title(slug)
             index_entries.append((slug, title))
 
@@ -163,6 +200,14 @@ class SkillHandler(Handler):
                 lines.append(f"  {slug:<32}  {title}")
             else:
                 lines.append(f"  {slug}")
+        if hidden_slugs:
+            lines.append("")
+            lines.append(
+                f"_(+ {len(hidden_slugs)} non-active skills hidden — "
+                "documenting kinds not wired in this build, or marked "
+                "status: planned. Reach them by exact slug if you need "
+                "to.)_"
+            )
         body = "\n".join(lines)
         body += render_next_section(
             [
@@ -172,8 +217,8 @@ class SkillHandler(Handler):
                 ),
                 ("get(kind='skill', id='precis-overview')", "start here"),
                 (
-                    "get(kind='skill', id='precis-navigation')",
-                    "how to drill into refs",
+                    "get(kind='skill', id='precis-tags')",
+                    "tag axes + validation rules",
                 ),
                 (
                     "search(kind='skill', q='...')",
@@ -272,6 +317,97 @@ def _load_skill(slug: str) -> str | None:
         return path.read_text(encoding="utf-8")  # type: ignore[union-attr]
     except (ModuleNotFoundError, FileNotFoundError):
         return None
+
+
+def _parse_frontmatter(text: str) -> dict[str, str]:
+    """Extract the YAML-style front-matter as a flat dict of strings.
+
+    We don't pull in PyYAML for this — the front-matter we use is
+    strictly key:value pairs. Lists and nested dicts aren't supported,
+    which is fine because the only fields we read here are scalars
+    (``status``, ``applies-to``, ``title``).
+    """
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    out: dict[str, str] = {}
+    for line in text[3:end].splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        out[key.strip().lower()] = val.strip().strip("\"'")
+    return out
+
+
+def _availability_gap(slug: str, *, registry: Any) -> str | None:
+    """Return a human-readable reason why this skill is filtered, or None.
+
+    Two gates:
+
+    1. Subject-kind gate. If the slug looks like ``precis-<kind>-help``
+       and ``<kind>`` isn't in the registry, the skill documents
+       something this build can't do. Filtered.
+    2. Status gate. Front-matter ``status:`` of ``planned`` or
+       ``aspirational`` flags the skill as "describes a future API,
+       don't follow recipes blind". Filtered.
+
+    Cross-cutting skills (``precis-overview``, ``precis-tags``, …)
+    don't follow the per-kind naming pattern; they pass gate 1
+    automatically. They're still subject to gate 2.
+
+    Returns ``None`` if the skill is fully available.
+    """
+    if slug == SkillHandler._SYNTHESIZED_SLUG:
+        return None
+
+    text = _load_skill(slug)
+    if text is None:
+        return None  # caller handles 'not found'
+
+    fm = _parse_frontmatter(text)
+    status = fm.get("status", "active").lower()
+    if status in ("planned", "aspirational"):
+        return (
+            f"this skill is marked status: {status} — its examples "
+            "describe a planned API, not the live runtime. Treat as "
+            "design notes, not as recipes."
+        )
+
+    # Per-kind skill: precis-<kind>-help. The middle segment is the
+    # kind name. Cross-cutting skills (precis-overview, precis-tags,
+    # precis-navigation, precis-cache, …) don't end in '-help' and
+    # are exempt from this gate.
+    if slug.startswith("precis-") and slug.endswith("-help"):
+        kind = slug[len("precis-") : -len("-help")]
+        # ``precis-help`` itself was already filtered above
+        # (synthesized slug), so the kind here is always non-empty.
+        if registry is not None and not _registry_has_kind(registry, kind):
+            return (
+                f"this skill documents kind={kind!r} which is **not "
+                "wired** in this build — its examples will return "
+                "[error:NotFound] unknown kind."
+            )
+
+    return None
+
+
+def _registry_has_kind(registry: Any, kind: str) -> bool:
+    """Best-effort registry membership check.
+
+    We access the registry through duck-typing because the
+    SkillHandler may be constructed before the registry is fully
+    set up (in tests, e.g.). Treat any AttributeError or KeyError
+    as "kind not registered" so the filter stays conservative
+    rather than crashing the index.
+    """
+    try:
+        kinds = registry.kinds()
+    except (AttributeError, KeyError):
+        return False
+    return kind in kinds
 
 
 def _skill_title(slug: str) -> str:

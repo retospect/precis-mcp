@@ -21,6 +21,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Store, Tag
 from precis.utils.next_block import render_next_section
+from precis.utils.search_header import format_search_headline
 from precis.utils.slug import slug_from_text
 
 
@@ -90,7 +91,15 @@ class QuestHandler(Handler):
         hits = self.store.search_refs_lexical(q=q, kind="quest", limit=top_k)
         if not hits:
             return Response(body=f"no quest entries match {q!r}")
-        lines = [f"# {len(hits)} quest match(es) for {q!r}"]
+        total = self.store.count_refs_lexical(q=q, kind="quest")
+        lines = [
+            format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun="quest match",
+                query=q,
+            )
+        ]
         for ref, rank in hits:
             preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
             lines.append(f"\n## quest {ref.slug}  (rank={rank:.2f})\n{preview}")
@@ -223,7 +232,11 @@ class QuestHandler(Handler):
 
             raise Unsupported(
                 f"unknown quest list view {view!r}",
-                next="see precis-quest-help — try /recent /open /done",
+                options=["recent", "open", "doing", "blocked", "done"],
+                next=(
+                    "list views available for 'quest': "
+                    "/recent, /open, /doing, /blocked, /done"
+                ),
             )
 
         if wanted is None:
@@ -237,7 +250,19 @@ class QuestHandler(Handler):
                     kept.append((r.slug or "?", r.title, status))
 
         if not kept:
-            return Response(body=f"no quests in view {view!r}")
+            # MCP critic MINOR m2: empty-list paths still emit a
+            # Next: trailer with a concrete create-shape so the agent
+            # has somewhere to go from a "no rows" reply.
+            body = f"no quests in view {view!r}"
+            body += render_next_section(
+                [
+                    (
+                        "put(kind='quest', text='goal text')",
+                        "open a new quest",
+                    ),
+                ]
+            )
+            return Response(body=body)
         label = view or "recent"
         lines = [f"# {len(kept)} quest ({label})"]
         for slug, title, status in kept:

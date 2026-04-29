@@ -74,7 +74,12 @@ external = [
     "httpx>=0.27",
     "trafilatura>=1.6",  # web page → markdown extractor
 ]
-all = ["precis-mcp[paper,docx,tex,calc,plot,external]"]
+# Patent kind — EPO Open Patent Services. Free fair-use, OAuth2.
+patent = [
+    "python-epo-ops-client>=4.0",
+    "lxml>=5.0",
+]
+all = ["precis-mcp[paper,docx,tex,calc,plot,external,patent]"]
 
 [project.scripts]
 precis = "precis.cli:main"

@@ -220,3 +220,45 @@ class CacheBackedHandler(Handler):
             return "[cost: free]"
         suffix = " — cached" if hit else ""
         return f"[cost: ~${cache.cost_usd:.4f}{suffix}]"
+
+
+def _format_cache_footer(cache: CacheEntry) -> str:
+    """Render the canonical cache annotation: ``age Nd · CACHE:state``.
+
+    Mirrors the footer documented in the ``precis-cache`` skill.
+    Used by handlers that want to surface cache status alongside
+    their per-kind footer (e.g. web's ``Source: ...``).
+
+    State derivation matches the ``cache_freshness`` view in
+    ``0001_initial.sql``:
+
+    - ``fresh_until is None`` → ``CACHE:pinned`` (never expires)
+    - ``fresh_until > now``   → ``CACHE:fresh`` (within TTL)
+    - else                    → ``CACHE:stale`` (past TTL — the
+      handler will re-fetch on next miss)
+
+    The age is the number of full days since ``fetched_at``, capped
+    at 0 (so ``-0d`` from clock skew renders as ``0d``).
+    """
+    now = datetime.now(UTC)
+    if cache.fetched_at is not None:
+        age_days = max(0, (now - cache.fetched_at).days)
+        age_str = f"age {age_days}d"
+    else:
+        age_str = "age ?"
+
+    if cache.fresh_until is None:
+        state = "CACHE:pinned"
+    elif cache.fresh_until > now:
+        state = "CACHE:fresh"
+    else:
+        state = "CACHE:stale"
+
+    return f"{age_str} · {state}"
+
+
+__all__ = [
+    "CacheBackedHandler",
+    "FetchResult",
+    "_format_cache_footer",
+]
