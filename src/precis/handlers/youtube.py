@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
@@ -21,6 +22,7 @@ from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
+from precis.utils.optional_deps import require_optional
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -29,6 +31,27 @@ log = logging.getLogger(__name__)
 
 
 _VIDEO_ID_RE = re.compile(r"^[\w-]{11}$")
+
+
+# Per-request language preference, threaded from the public ``get`` to
+# ``_canonical_key`` without an instance attribute.
+#
+# FastMCP runs sync tool callables in a worker-thread pool — concurrent
+# calls used to clobber a shared ``self._lang_pref`` and silently mix
+# language preferences between cache lookups. ``ContextVar`` gives each
+# request (each worker thread, in our case) its own isolated value with
+# no cross-thread bleed, and the surrounding ``token`` reset in
+# :meth:`YouTubeHandler.get` ensures the variable can't leak past the
+# call boundary.
+#
+# The default is a tuple (immutable) rather than a list — ContextVar
+# defaults are shared across contexts that haven't yet called ``set``,
+# and a mutable default would let a stray ``.append`` in any caller
+# leak across requests. The handler converts to ``list`` at read time
+# via the surrounding ``sorted(...)`` call site.
+_LANG_PREF: ContextVar[tuple[str, ...]] = ContextVar(
+    "precis.youtube._lang_pref", default=("en",)
+)
 
 
 _YT_BASE_ATTRIBUTION = (
@@ -92,9 +115,15 @@ class YouTubeHandler(CacheBackedHandler):
 
         # Plug `languages=` kwarg into the cache key so distinct
         # language preferences cache separately. Default to English.
-        # We thread it via the canonical key.
-        self._lang_pref = _parse_languages(languages or "")
-        return super().get(id=id, q=q, view=view)
+        # The preference is stashed on a per-request ``ContextVar`` so
+        # concurrent worker-thread calls don't clobber each other (the
+        # previous instance-attribute approach was racy under FastMCP's
+        # thread pool).
+        token = _LANG_PREF.set(tuple(_parse_languages(languages or "")))
+        try:
+            return super().get(id=id, q=q, view=view)
+        finally:
+            _LANG_PREF.reset(token)
 
     # ── canonicalization & cache key ──────────────────────────────────
 
@@ -105,9 +134,8 @@ class YouTubeHandler(CacheBackedHandler):
         and bare ``X`` collapse into a single row keyed on the id.
         """
         video_id = _extract_video_id(query)
-        langs = getattr(self, "_lang_pref", ["en"])
         # Stable language portion of the key (sorted; empty langs == ['en']).
-        lang_part = "+".join(sorted(langs))
+        lang_part = "+".join(sorted(_LANG_PREF.get()))
         return f"{video_id}:{lang_part}"
 
     def _slug_for(self, key: str) -> str:
@@ -127,20 +155,13 @@ class YouTubeHandler(CacheBackedHandler):
         video_id, lang_part = key.split(":", 1)
         languages = lang_part.split("+") if lang_part else ["en"]
 
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-            from youtube_transcript_api._errors import (
-                NoTranscriptFound,
-                TranscriptsDisabled,
-                VideoUnavailable,
-            )
-        except ImportError as exc:  # pragma: no cover — guarded at registry
-            raise Upstream(
-                "youtube-transcript-api is not installed",
-                next="pip install 'precis-mcp[external]'",
-            ) from exc
+        yt = require_optional("youtube_transcript_api", extra="external")
+        errs = require_optional("youtube_transcript_api._errors", extra="external")
+        TranscriptsDisabled = errs.TranscriptsDisabled
+        NoTranscriptFound = errs.NoTranscriptFound
+        VideoUnavailable = errs.VideoUnavailable
 
-        api = YouTubeTranscriptApi()
+        api = yt.YouTubeTranscriptApi()
         try:
             snippets = api.fetch(video_id, languages=languages)
         except TranscriptsDisabled as exc:
@@ -194,16 +215,9 @@ def _list_languages(video_id: str) -> Response:
     and changes if the uploader adds tracks. Each call hits the API
     directly.
     """
+    yt = require_optional("youtube_transcript_api", extra="external")
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-    except ImportError as exc:  # pragma: no cover
-        raise Upstream(
-            "youtube-transcript-api is not installed",
-            next="pip install 'precis-mcp[external]'",
-        ) from exc
-
-    try:
-        transcript_list = YouTubeTranscriptApi().list(video_id)
+        transcript_list = yt.YouTubeTranscriptApi().list(video_id)
     except Exception as exc:
         raise Upstream(f"YouTube API error: {exc}") from exc
 
