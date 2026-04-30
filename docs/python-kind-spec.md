@@ -24,37 +24,37 @@ gives drill-down. Same mental model as `paper`, different corpus.
 
 ```python
 # Top-level: a registered repo
-get(kind='python', id='precis-mcp-new')                  # repo overview
-get(kind='python', id='precis-mcp-new', view='toc')      # package tree
-get(kind='python', id='precis-mcp-new', view='entries')  # CLI/scripts/__main__
+get(kind='python', id='precis-mcp')                  # repo overview
+get(kind='python', id='precis-mcp', view='toc')      # package tree
+get(kind='python', id='precis-mcp', view='entries')  # CLI/scripts/__main__
 
 # Drill into a file
-get(kind='python', id='precis-mcp-new/src/precis/registry.py')
-get(kind='python', id='precis-mcp-new/src/precis/registry.py', view='outline')
-get(kind='python', id='precis-mcp-new/src/precis/registry.py', view='source')
-get(kind='python', id='precis-mcp-new/src/precis/registry.py~42-100')
+get(kind='python', id='precis-mcp/src/precis/registry.py')
+get(kind='python', id='precis-mcp/src/precis/registry.py', view='outline')
+get(kind='python', id='precis-mcp/src/precis/registry.py', view='source')
+get(kind='python', id='precis-mcp/src/precis/registry.py~42-100')
 
 # Drill into a symbol (slug = qualified dotted path)
-get(kind='python', id='precis-mcp-new::precis.registry.Registry')
-get(kind='python', id='precis-mcp-new::precis.registry.Registry.get')
+get(kind='python', id='precis-mcp::precis.registry.Registry')
+get(kind='python', id='precis-mcp::precis.registry.Registry.get')
 
 # Composition from an entry point
-get(kind='python', id='precis-mcp-new', view='callgraph',
+get(kind='python', id='precis-mcp', view='callgraph',
     entry='precis.cli:main')
-get(kind='python', id='precis-mcp-new', view='callgraph',
+get(kind='python', id='precis-mcp', view='callgraph',
     entry='precis.cli:main', depth=3)
 
 # Runtime overlay (opt-in; runs the code under sys.setprofile)
-get(kind='python', id='precis-mcp-new', view='runtrace',
+get(kind='python', id='precis-mcp', view='runtrace',
     entry='precis.cli:main', argv=['--help'])
 
 # Search
-search(kind='python', q='attribution footer rendering', scope='precis-mcp-new')
+search(kind='python', q='attribution footer rendering', scope='precis-mcp')
 search(kind='python', q='cache TTL handling',
-       scope='precis-mcp-new::precis.handlers')
+       scope='precis-mcp::precis.handlers')
 
 # Edit a method (Track B — preferred, durable across edits)
-put(kind='python', id='precis-mcp-new::precis.registry.Registry.get',
+put(kind='python', id='precis-mcp::precis.registry.Registry.get',
     text='''    def get(self, kind: str) -> Handler:
         """Look up a handler by kind name."""
         if kind not in self._handlers:
@@ -65,17 +65,17 @@ put(kind='python', id='precis-mcp-new::precis.registry.Registry.get',
 
 # Edit a line range (Track A — when you have line numbers)
 put(kind='python',
-    id='precis-mcp-new/src/precis/registry.py~L120-128',
+    id='precis-mcp/src/precis/registry.py~L120-128',
     text='        return self._handlers[kind]', mode='replace')
 
 # Append a new top-level function
-put(kind='python', id='precis-mcp-new/src/precis/registry.py',
+put(kind='python', id='precis-mcp/src/precis/registry.py',
     text='\n\ndef reset_registry() -> None:\n    """Clear handlers."""\n    global _GLOBAL\n    _GLOBAL = None\n',
     mode='append')
 
 # Delete a deprecated method
 put(kind='python',
-    id='precis-mcp-new::precis.registry.Registry.deprecated',
+    id='precis-mcp::precis.registry.Registry.deprecated',
     mode='delete')
 ```
 
@@ -194,7 +194,7 @@ Hooks for upgrades, behind feature flags, deferred:
 ### `toc` — package tree
 
 ```
-# precis-mcp-new — TOC (24 modules, 7 packages)
+# precis-mcp — TOC (24 modules, 7 packages)
 
   precis/                              package
   ├── __init__.py                       1 import
@@ -219,9 +219,9 @@ Hooks for upgrades, behind feature flags, deferred:
   └── store/                           package
 
 Next:
-  get(kind='python', id='precis-mcp-new', view='entries')
-  get(kind='python', id='precis-mcp-new::precis.registry')
-  get(kind='python', id='precis-mcp-new', view='callgraph',
+  get(kind='python', id='precis-mcp', view='entries')
+  get(kind='python', id='precis-mcp::precis.registry')
+  get(kind='python', id='precis-mcp', view='callgraph',
       entry='precis.cli:main')
 ```
 
@@ -232,7 +232,7 @@ finds `if __name__ == "__main__":` guards, and any `argparse.ArgumentParser()`
 call sites.
 
 ```
-# precis-mcp-new — entry points
+# precis-mcp — entry points
 
   Console scripts:
     precis            entry: precis.cli:main          file: src/precis/cli.py:42
@@ -243,7 +243,7 @@ call sites.
     src/precis/ingest.py:284    debug bulk-ingest
 
 Next:
-  get(kind='python', id='precis-mcp-new', view='callgraph',
+  get(kind='python', id='precis-mcp', view='callgraph',
       entry='precis.cli:main')
 ```
 
@@ -272,15 +272,15 @@ Next:
          L136  __len__(self) -> int
 
 Next:
-  get(kind='python', id='precis-mcp-new::precis.registry.Registry')
-  get(kind='python', id='precis-mcp-new/src/precis/registry.py~21-100',
+  get(kind='python', id='precis-mcp::precis.registry.Registry')
+  get(kind='python', id='precis-mcp/src/precis/registry.py~21-100',
       view='source')
 ```
 
 ### `outline` on a symbol — drill-down
 
 ```python
-get(kind='python', id='precis-mcp-new::precis.registry.Registry')
+get(kind='python', id='precis-mcp::precis.registry.Registry')
 ```
 
 ```
@@ -321,7 +321,7 @@ can read code without falling back to `read_file`.
 The flagship view. Tree (not graphviz) rooted at `entry=`.
 
 ```python
-get(kind='python', id='precis-mcp-new', view='callgraph',
+get(kind='python', id='precis-mcp', view='callgraph',
     entry='precis.cli:main', depth=3)
 ```
 
@@ -391,7 +391,7 @@ tree so the agent sees the boundary:
 ```
 
 Makes "explain how `precis serve` boots" work even when boot logic
-spans `precis-mcp-new` + `openclaw-cluster`.
+spans `precis-mcp` + `openclaw-cluster`.
 
 ### `runtrace` — dynamic overlay
 
@@ -400,7 +400,7 @@ Opt-in. Runs the entry point in a subprocess under `sys.setprofile`
 counts and elapsed time, and overlays it on the static graph.
 
 ```python
-get(kind='python', id='precis-mcp-new', view='runtrace',
+get(kind='python', id='precis-mcp', view='runtrace',
     entry='precis.cli:main', argv=['--version'])
 ```
 
@@ -447,11 +447,11 @@ index:
 
 `scope=` accepts repo, package, or file:
 ```python
-search(kind='python', q='cache attribution', scope='precis-mcp-new')
+search(kind='python', q='cache attribution', scope='precis-mcp')
 search(kind='python', q='cache attribution',
-       scope='precis-mcp-new::precis.handlers')
+       scope='precis-mcp::precis.handlers')
 search(kind='python', q='cache attribution',
-       scope='precis-mcp-new/src/precis/handlers/_cache_base.py')
+       scope='precis-mcp/src/precis/handlers/_cache_base.py')
 ```
 
 ## Write surface
@@ -655,8 +655,8 @@ line reads `ruff: no changes`.
 Replaced lines 120–128 → 120–126 (-2 lines).
 
 Next:
-  get(kind='python', id='precis-mcp-new::precis.registry.Registry.get')
-  get(kind='python', id='precis-mcp-new::precis.registry.Registry.get', view='blame')
+  get(kind='python', id='precis-mcp::precis.registry.Registry.get')
+  get(kind='python', id='precis-mcp::precis.registry.Registry.get', view='blame')
 ```
 
 Same two-track header as read responses, plus a gate report (with
@@ -719,7 +719,7 @@ Output shape matches the existing `Next:` trailer style:
 Next:
   get(...view='log')                    — full commit log for this symbol
   get(...view='churn', days=90)         — change frequency
-  get(kind='git', id='precis-mcp-new', view='hot') — repo-wide hot list
+  get(kind='git', id='precis-mcp', view='hot') — repo-wide hot list
 ```
 
 ### Sibling `git` kind (repo-scoped, language-agnostic)
@@ -728,16 +728,16 @@ Some questions aren't symbol-scoped and should work on non-Python
 repos too (ansible, cluster itself):
 
 ```python
-get(kind='git', id='precis-mcp-new')                          # head, branch, dirty?
-get(kind='git', id='precis-mcp-new', view='log', n=20)
-get(kind='git', id='precis-mcp-new', view='hot', days=30)     # hottest files
-get(kind='git', id='precis-mcp-new', view='owners')           # ownership map
-get(kind='git', id='precis-mcp-new',
+get(kind='git', id='precis-mcp')                          # head, branch, dirty?
+get(kind='git', id='precis-mcp', view='log', n=20)
+get(kind='git', id='precis-mcp', view='hot', days=30)     # hottest files
+get(kind='git', id='precis-mcp', view='owners')           # ownership map
+get(kind='git', id='precis-mcp',
     view='diff', ref_from='main', ref_to='HEAD')
-get(kind='git', id='precis-mcp-new', view='branches')
-get(kind='git', id='precis-mcp-new',
+get(kind='git', id='precis-mcp', view='branches')
+get(kind='git', id='precis-mcp',
     view='blame', file='src/precis/registry.py')
-search(kind='git', q='cache attribution', scope='precis-mcp-new')  # commit messages
+search(kind='git', q='cache attribution', scope='precis-mcp')  # commit messages
 ```
 
 Read-only. No `mode='checkout'`, no `mode='commit'` — that's
@@ -843,7 +843,7 @@ is ~120 LOC on top of the shared library.
 9. **`precis-python-help.md` skill** — agent-facing docs (top of file:
    "use this for any Python codebase navigation; do not paste files
    into context"). Already drafted; refresh against the implementation.
-10. Self-test: index `precis-mcp-new` itself, run callgraph from
+10. Self-test: index `precis-mcp` itself, run callgraph from
     `precis.cli:main`, paste output into the spec doc as the example.
 
 ## Done criteria
@@ -852,7 +852,7 @@ is ~120 LOC on top of the shared library.
   ever calling `read_file` or `grep_search`. Path: `view='entries'` →
   `view='callgraph' entry=…` → `outline` on the most interesting nodes
   → `source` on the one or two functions that actually need reading.
-- Indexing `precis-mcp-new` (~3k LOC) takes < 2s.
+- Indexing `precis-mcp` (~3k LOC) takes < 2s.
 - `pytest -q` adds ~46 tests, all green.
 - A fresh agent can edit a method by qualname and the resulting file
   passes `ast.parse`, `ruff check`, and `ruff format --check`

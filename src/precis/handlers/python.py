@@ -36,6 +36,15 @@ from precis.handlers import _python_write as write
 from precis.protocol import Handler, KindSpec
 from precis.python_index import ModuleIndex, RepoCache, RepoIndex, Symbol
 from precis.response import Response
+from precis.utils.edit_resolve import (
+    EditOp,
+    apply_edit,
+    classify_diff_hunks,
+    format_unified_diff,
+    normalize_dry_run,
+    render_dry_run_full,
+    render_dry_run_header,
+)
 from precis.utils.search_header import format_search_headline
 
 log = logging.getLogger(__name__)
@@ -43,7 +52,7 @@ log = logging.getLogger(__name__)
 
 _SUPPORTED_VIEWS = ("toc", "outline", "source", "callgraph", "entries", "runtrace")
 _RUNTRACE_GATE_ENV = "PRECIS_PYTHON_ALLOW_EXEC"
-_SUPPORTED_PUT_MODES = ("create", "append", "replace", "delete")
+_SUPPORTED_PUT_MODES = ("create", "append", "replace", "delete", "edit", "insert")
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +449,13 @@ class PythonHandler(Handler):
         text: str | None = None,
         mode: str | None = None,
         allow_rename: bool = False,
+        find: str | None = None,
+        before: str = "",
+        after: str = "",
+        where: str | None = None,
+        match: str = "unique",
+        nth: int | None = None,
+        dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
         """Create / replace / append / delete code through the three gates.
@@ -481,6 +497,21 @@ class PythonHandler(Handler):
             return self._put_replace(parsed, root, text, allow_rename=allow_rename)
         if mode == "delete":
             return self._put_delete(parsed, root, allow_rename=allow_rename)
+        if mode in ("edit", "insert"):
+            return self._put_anchored(
+                parsed=parsed,
+                root=root,
+                op_kind=mode,
+                find=find,
+                text=text,
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+                allow_rename=allow_rename,
+                dry_run=dry_run,
+            )
 
         raise Unsupported(  # pragma: no cover — defensive
             f"unhandled mode {mode!r}",
@@ -637,6 +668,136 @@ class PythonHandler(Handler):
             f"{parsed.alias}/{parsed.file or mod.file}",
         )
 
+    def _put_anchored(
+        self,
+        *,
+        parsed: _ParsedId,
+        root: Path,
+        op_kind: str,  # "edit" or "insert"
+        find: str | None,
+        text: str | None,
+        before: str,
+        after: str,
+        where: str | None,
+        match: str,
+        nth: int | None,
+        allow_rename: bool,
+        dry_run: bool | str = False,
+    ) -> Response:
+        """Anchored find/replace (mode='edit') or insert (mode='insert').
+
+        Region is the whole file when no selector is given, or the
+        addressed symbol/line range when ``id`` carries one. The
+        spliced buffer goes through the same three gates as
+        ``mode='replace'``: ``ast.parse``, qualname-drop, ruff.
+        """
+        if find is None or not find:
+            raise BadInput(
+                f"mode={op_kind!r} requires find= (the exact text to locate)",
+                next=(
+                    f"put(kind='python', id={parsed.alias}/{parsed.file or '...'}, "
+                    f"mode={op_kind!r}, find='exact text', text='replacement')"
+                ),
+            )
+        if text is None:
+            raise BadInput(
+                f"mode={op_kind!r} requires text= ('' is allowed for delete-by-edit)",
+                next="add text='...'",
+            )
+
+        # Resolve the search region. Same logic as replace/delete:
+        # whole file when no selector, otherwise the symbol's line range.
+        path, mod, region = self._resolve_replace_region(parsed, root)
+        full = path.read_text(encoding="utf-8")
+
+        if region is None:
+            # Whole-file search.
+            region_text = full
+            base_line = 1
+            region_start = 1
+            region_end = len(full.splitlines()) or 1
+            region_label = f"{parsed.alias}/{parsed.file}"
+        else:
+            region_start, region_end = region
+            base_line = region_start
+            # Extract the region's lines (1-indexed inclusive).
+            file_lines = full.splitlines(keepends=True)
+            region_text = "".join(file_lines[region_start - 1 : region_end])
+            sel_token = (
+                parsed.qualname
+                or parsed.block_selector
+                or (
+                    f"L{parsed.start_line}-{parsed.end_line}"
+                    if parsed.start_line is not None
+                    else f"L{region_start}-{region_end}"
+                )
+            )
+            region_label = f"{parsed.alias}/{parsed.file or mod.file}~{sel_token}"
+
+        op = EditOp(
+            op="edit" if op_kind == "edit" else "insert",
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=where,  # type: ignore[arg-type]
+            match=match,  # type: ignore[arg-type]
+            nth=nth,
+            region_label=region_label,
+            base_line=base_line,
+        )
+        result = apply_edit(region_text, op)
+
+        # Splice the post-edit region back into the full file.
+        if region is None:
+            new_content = result.new_buffer
+        else:
+            new_content = write.splice_lines(
+                full,
+                start_line=region_start,
+                end_line=region_end,
+                replacement=result.new_buffer,
+            )
+
+        # Compute pre_in_region for the qualname-drop gate. Symbols
+        # whose source lines overlap any edited span are at risk —
+        # if they don't appear in the post-buffer, the gate fires.
+        pre_in_region: set[str] = set()
+        if op_kind == "edit":
+            for sym in mod.symbols:
+                if sym.kind == "module":
+                    continue
+                for span_start, span_end in result.edited_spans:
+                    if not (sym.end_line < span_start or sym.start_line > span_end):
+                        pre_in_region.add(sym.qualname)
+                        break
+        # mode='insert' adds bytes adjacent to existing symbols but
+        # cannot drop them (the matched anchor is preserved). Empty
+        # pre-set is correct.
+
+        n_spans = len(result.edited_spans)
+        verb = "edited" if op_kind == "edit" else "inserted"
+        span_str = ", ".join(
+            f"L{a}-{b}" if a != b else f"L{a}" for a, b in result.edited_spans
+        )
+        change_summary = (
+            f"{verb} {n_spans} span{'s' if n_spans != 1 else ''} "
+            f"in {region_label} ({span_str})"
+        )
+
+        return self._finalize_write(
+            parsed=parsed,
+            path=path,
+            new_content=new_content,
+            pre_in_region=pre_in_region,
+            allow_rename=allow_rename,
+            change_summary=change_summary,
+            dry_run=dry_run,
+            edited_spans=result.edited_spans,
+            region_label=region_label,
+            match_policy=op.match,
+        )
+
     # ── put helpers ────────────────────────────────────────────────
 
     def _require_existing_file(
@@ -716,6 +877,10 @@ class PythonHandler(Handler):
         pre_in_region: set[str],
         allow_rename: bool,
         change_summary: str,
+        dry_run: bool | str = False,
+        edited_spans: tuple[tuple[int, int], ...] = (),
+        region_label: str = "",
+        match_policy: str = "unique",
     ) -> Response:
         """Run gates 1-3, write atomically, refresh cache, render the response.
 
@@ -723,7 +888,17 @@ class PythonHandler(Handler):
         before any disk write. Gate 3 (ruff) never blocks; ruff failures
         proceed with the unfixed buffer and a warning surfaced in the
         response.
+
+        When ``dry_run`` is set (``True`` / ``"diff"`` / ``"full"``), the
+        same gates run on the post-edit buffer (so the agent sees would-it-
+        validate?) but the atomic write is skipped and the response is the
+        proposed diff or post-edit region instead. Disk and cache are
+        untouched. Only ``mode='edit'`` / ``mode='insert'`` callers pass
+        meaningful ``edited_spans`` / ``region_label``; older modes leave
+        them as defaults and get the standard write response.
         """
+        dry_mode = normalize_dry_run(dry_run)
+
         # Gate 1 — AST parse.
         ast_gate = write.gate_ast(new_content, filename=str(path))
         if not ast_gate.ok:
@@ -752,6 +927,21 @@ class PythonHandler(Handler):
         # Gate 3 — ruff (always runs, never blocks).
         canonical, ruff_changes = write.run_ruff(new_content, path)
 
+        if dry_mode is not None:
+            return self._render_dry_run(
+                parsed=parsed,
+                path=path,
+                pre=path.read_text(encoding="utf-8") if path.exists() else "",
+                post=canonical,
+                edited_spans=edited_spans,
+                region_label=region_label or change_summary,
+                match_policy=match_policy,
+                ast_gate=ast_gate,
+                qn_gate=qn_gate,
+                ruff_changes=ruff_changes,
+                mode=dry_mode,
+            )
+
         # Atomic write of the canonical buffer.
         write.atomic_write(path, canonical)
 
@@ -764,6 +954,66 @@ class PythonHandler(Handler):
                 parsed, ast_gate, qn_gate, ruff_changes, change_summary
             )
         )
+
+    def _render_dry_run(
+        self,
+        *,
+        parsed: _ParsedId,
+        path: Path,
+        pre: str,
+        post: str,
+        edited_spans: tuple[tuple[int, int], ...],
+        region_label: str,
+        match_policy: str,
+        ast_gate: write.GateResult,
+        qn_gate: write.GateResult,
+        ruff_changes: write.RuffChanges,
+        mode: str,  # 'diff' or 'full'
+    ) -> Response:
+        """Render a dry-run response for python: header + (diff | full).
+
+        The header surfaces gate-by-gate results so the agent knows
+        whether the proposed edit would pass validation (gates 1+2) and
+        whether ruff made any incidental changes (a hunk count outside
+        ``edited_spans``).
+        """
+        within, outside = classify_diff_hunks(pre, post, edited_spans)
+        ruff_note = (
+            f"would format ({within} hunk{'s' if within != 1 else ''} on edited spans, "
+            f"{outside} unrelated)"
+            if ruff_changes.ok and ruff_changes.changed
+            else (
+                "no changes"
+                if ruff_changes.ok
+                else f"unavailable ({ruff_changes.error or 'unknown'})"
+            )
+        )
+        extras = [
+            ("ast.parse:", "ok" if ast_gate.ok else f"FAILED — {ast_gate.detail}"),
+            (
+                "qualname-drop:",
+                "ok" if qn_gate.ok else f"FAILED — dropped {qn_gate.dropped!r}",
+            ),
+            ("ruff:", ruff_note),
+        ]
+        label = region_label or f"{parsed.alias}/{parsed.file or '?'}"
+        header = render_dry_run_header(
+            region_label=label,
+            edited_spans=edited_spans,
+            match_policy=match_policy,
+            extras=extras,
+        )
+        if mode == "full":
+            body = render_dry_run_full(
+                post,
+                edited_spans=edited_spans,
+                region_label=label,
+            )
+        else:
+            file_label = f"{parsed.alias}/{parsed.file or path.name}"
+            diff = format_unified_diff(pre, post, file_label=file_label).rstrip("\n")
+            body = diff or "(no diff — pre and post are identical)"
+        return Response(body="\n".join([*header, "", body]))
 
     # ── helpers ────────────────────────────────────────────────────
 

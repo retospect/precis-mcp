@@ -6,7 +6,13 @@ import math
 
 import pytest
 
-from precis.embedder import Embedder, MockEmbedder, make_embedder
+from precis.embedder import (
+    _BGE_M3_MAX_CHARS,
+    BgeM3Embedder,
+    Embedder,
+    MockEmbedder,
+    make_embedder,
+)
 
 
 class TestMockEmbedder:
@@ -88,6 +94,93 @@ class TestMakeEmbedder:
         e = make_embedder("bge-m3")
         with pytest.raises(ImportError, match="sentence-transformers"):
             e.embed_one("anything")
+
+
+class _RecordingEncoder:
+    """Stand-in for ``sentence_transformers.SentenceTransformer``.
+
+    Records every batch passed to ``encode()`` so tests can assert what
+    the real model would have received. Returns deterministic
+    zero-vectors so the surrounding code path runs end-to-end.
+    """
+
+    def __init__(self, dim: int = 1024) -> None:
+        self.dim = dim
+        self.calls: list[list[str]] = []
+
+    def encode(self, texts, normalize_embeddings: bool = True):
+        self.calls.append(list(texts))
+        return [[0.0] * self.dim for _ in texts]
+
+
+class TestBgeM3CharTruncation:
+    """Defensive char-level truncation in :class:`BgeM3Embedder`.
+
+    Regression for the MPS-OOM failure on a corrupted-OCR table block
+    (~192 KiB single string) that bypassed upstream chunking. Without
+    truncation, sentence-transformers tried to allocate ~73 GiB on MPS
+    before the tokenizer's 8192-token cap kicked in.
+    """
+
+    def _embedder_with_fake_encoder(self) -> tuple[BgeM3Embedder, _RecordingEncoder]:
+        e = BgeM3Embedder()
+        fake = _RecordingEncoder(dim=1024)
+        e._st = fake
+        return e, fake
+
+    def test_short_text_passes_through_untruncated(self) -> None:
+        e, fake = self._embedder_with_fake_encoder()
+        e.embed_one("a short paragraph")
+        assert fake.calls == [["a short paragraph"]]
+
+    def test_oversized_text_is_truncated(self) -> None:
+        e, fake = self._embedder_with_fake_encoder()
+        big = "x" * (_BGE_M3_MAX_CHARS * 4)
+        e.embed_one(big)
+        sent = fake.calls[0][0]
+        assert len(sent) == _BGE_M3_MAX_CHARS
+        assert sent == big[:_BGE_M3_MAX_CHARS]
+
+    def test_block_count_preserved_in_batch(self) -> None:
+        # The store relies on len(texts) == len(returned_vectors). The
+        # truncation guard must not split or drop any input.
+        e, fake = self._embedder_with_fake_encoder()
+        texts = [
+            "small one",
+            "y" * (_BGE_M3_MAX_CHARS * 2),
+            "small two",
+            "z" * (_BGE_M3_MAX_CHARS + 1),
+        ]
+        result = e.embed(texts)
+        assert len(result) == len(texts)
+        sent = fake.calls[0]
+        assert len(sent) == 4
+        assert sent[0] == "small one"
+        assert sent[2] == "small two"
+        assert len(sent[1]) == _BGE_M3_MAX_CHARS
+        assert len(sent[3]) == _BGE_M3_MAX_CHARS
+
+    def test_under_cap_inputs_pass_by_identity(self) -> None:
+        # Pin the implementation choice that under-cap strings are not
+        # copied (hot path stays allocation-free for typical paragraphs).
+        e, fake = self._embedder_with_fake_encoder()
+        small = "fits easily"
+        big = "x" * (_BGE_M3_MAX_CHARS + 100)
+        e.embed([small, big])
+        sent = fake.calls[0]
+        assert sent[0] is small
+        assert sent[1] is not big
+
+    def test_default_cap_is_safe_for_bge_m3_attention(self) -> None:
+        # Sanity bound: keep the constant in a tight range so future
+        # tuning is deliberate.
+        assert 8_000 <= _BGE_M3_MAX_CHARS <= 32_000
+
+    def test_empty_batch_short_circuits_before_load(self) -> None:
+        # Empty batches must not trigger model load at all — important
+        # for slim test environments without sentence-transformers.
+        e = BgeM3Embedder()
+        assert e.embed([]) == []
 
 
 class TestProtocol:

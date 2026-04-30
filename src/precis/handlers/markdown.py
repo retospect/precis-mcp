@@ -47,6 +47,15 @@ from precis.handlers._paper_toc import build_toc, render_toc
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, BlockInsert, Ref, Store
+from precis.utils.edit_resolve import (
+    EditOp,
+    apply_edit,
+    classify_diff_hunks,
+    format_unified_diff,
+    normalize_dry_run,
+    render_dry_run_full,
+    render_dry_run_header,
+)
 from precis.utils.md_parse import (
     MdBlock,
     file_slug_from_path,
@@ -62,7 +71,7 @@ log = logging.getLogger(__name__)
 
 
 _SUPPORTED_VIEWS = ("toc", "raw")
-_SUPPORTED_PUT_MODES = ("append", "replace", "delete", "create")
+_SUPPORTED_PUT_MODES = ("append", "replace", "delete", "create", "edit", "insert")
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +265,13 @@ class MarkdownHandler(Handler):
         id: str | int | None = None,
         text: str | None = None,
         mode: str | None = None,
+        find: str | None = None,
+        before: str = "",
+        after: str = "",
+        where: str | None = None,
+        match: str = "unique",
+        nth: int | None = None,
+        dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
         if mode is None or mode not in _SUPPORTED_PUT_MODES:
@@ -281,6 +297,20 @@ class MarkdownHandler(Handler):
             return self._put_replace(slug, sel, text)
         if mode == "delete":
             return self._put_delete(slug, sel)
+        if mode in ("edit", "insert"):
+            return self._put_anchored(
+                slug=slug,
+                sel=sel,
+                op_kind=mode,
+                find=find,
+                text=text,
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+                dry_run=dry_run,
+            )
 
         raise Unsupported(  # pragma: no cover — defensive
             f"unhandled mode {mode!r}",
@@ -366,6 +396,178 @@ class MarkdownHandler(Handler):
         _replace_lines(path, target.line_start, target.line_end, [])
         self._ensure_ingested(slug, force=True)
         return Response(body=f"deleted block {target.slug!r} from {slug!r}")
+
+    def _put_anchored(
+        self,
+        *,
+        slug: str,
+        sel: _BlockSel | None,
+        op_kind: str,  # "edit" or "insert"
+        find: str | None,
+        text: str | None,
+        before: str,
+        after: str,
+        where: str | None,
+        match: str,
+        nth: int | None,
+        dry_run: bool | str = False,
+    ) -> Response:
+        """Anchored find/replace (mode='edit') or insert (mode='insert').
+
+        Region is the whole file when no selector is given, or the
+        addressed block's text when ``id='slug~BLOCK'`` is supplied.
+        Content selects via :func:`apply_edit`; the result is spliced
+        back into the file and the file is re-ingested.
+
+        ``dry_run`` short-circuits the disk write and re-ingest; the
+        agent gets the proposed diff (or post-edit region) plus
+        validation results. Disk is untouched.
+
+        Errors come from ``apply_edit`` (not-found, ambiguous, no-op)
+        and from selector resolution (block missing). All errors are
+        ``BadInput`` / ``NotFound`` with actionable ``next=`` hints.
+        """
+        dry_mode = normalize_dry_run(dry_run)
+        if find is None or not find:
+            raise BadInput(
+                f"mode={op_kind!r} requires find= (the exact text to locate)",
+                next=(
+                    f"put(kind='markdown', id={slug!r}, mode={op_kind!r}, "
+                    f"find='exact text', text='replacement')"
+                ),
+            )
+        if text is None:
+            raise BadInput(
+                f"mode={op_kind!r} requires text= (the replacement / inserted text; '' is allowed for delete-by-edit)",
+                next="add text='...'  (use text='' on mode='edit' to delete the matched span)",
+            )
+        # Build the EditOp early so its validators throw with sharp
+        # error messages (e.g. unknown match policy, missing where=).
+        op = EditOp(
+            op="edit" if op_kind == "edit" else "insert",
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=where,  # type: ignore[arg-type]
+            match=match,  # type: ignore[arg-type]
+            nth=nth,
+            region_label=f"{slug}" if sel is None else f"{slug}~{sel.value}",
+            base_line=1,  # patched below if sel is given
+        )
+
+        path = self._resolve_path(slug, must_exist=True)
+        full = path.read_text(encoding="utf-8")
+
+        if sel is None:
+            # Whole-file edit. apply_edit operates on the full buffer.
+            result = apply_edit(full, op)
+            new_full = result.new_buffer
+        else:
+            # Block-scoped edit. Resolve the block, run apply_edit
+            # against its text only, splice back into the full file.
+            blocks = parse_markdown(full)
+            target = _find_block(blocks, sel)
+            if target is None:
+                raise NotFound(
+                    f"block {sel.value!r} not found in {slug!r}",
+                    next=f"get(kind='markdown', id='{slug}/toc')",
+                )
+            # Re-build EditOp with the absolute base_line so error
+            # messages cite file lines, not block-relative lines.
+            op = EditOp(
+                op=op.op,
+                find=op.find,
+                text=op.text,
+                before=op.before,
+                after=op.after,
+                where=op.where,
+                match=op.match,
+                nth=op.nth,
+                region_label=op.region_label,
+                base_line=target.line_start,
+            )
+            result = apply_edit(target.text, op)
+            new_block_lines = result.new_buffer.split("\n")
+            # ``MdBlock.text`` is the lines joined with '\n' (no
+            # trailing newline). The pure splice handles the file's
+            # trailing-newline preservation.
+            new_full = _splice_lines(
+                full, target.line_start, target.line_end, new_block_lines
+            )
+
+        if dry_mode is not None:
+            return self._render_dry_run(
+                slug=slug,
+                sel=sel,
+                pre=full,
+                post=new_full,
+                edited_spans=result.edited_spans,
+                match_policy=op.match,
+                mode=dry_mode,
+            )
+
+        # Real write — atomic, then re-ingest.
+        _atomic_write(path, new_full)
+        self._ensure_ingested(slug, force=True)
+
+        # Build a short summary line per edited span.
+        spans = result.edited_spans or ()
+        span_str = ", ".join(f"L{a}-{b}" if a != b else f"L{a}" for a, b in spans)
+        verb = "edited" if op_kind == "edit" else "inserted"
+        scope = f"{slug}~{sel.value}" if sel else slug
+        summary = (
+            f"{verb} {len(spans)} span{'s' if len(spans) != 1 else ''} "
+            f"in {scope} ({span_str})"
+        )
+        return Response(body=summary)
+
+    def _render_dry_run(
+        self,
+        *,
+        slug: str,
+        sel: _BlockSel | None,
+        pre: str,
+        post: str,
+        edited_spans: tuple[tuple[int, int], ...],
+        match_policy: str,
+        mode: str,  # 'diff' or 'full'
+    ) -> Response:
+        """Render a dry-run response: header + (diff | full).
+
+        ``mode='diff'`` emits a unified diff against the full file;
+        ``mode='full'`` emits the post-edit lines around each span
+        with leading-line markers (``> `` for edited, blank for
+        context). The header lines are identical in both cases.
+        """
+        region_label = f"{slug}~{sel.value}" if sel else slug
+        # Markdown re-parses on every ingest — cheap to confirm here.
+        try:
+            n_blocks = len(parse_markdown(post))
+            reparse_note = f"ok (would re-ingest {n_blocks} block(s))"
+        except Exception as exc:  # pragma: no cover — defensive
+            reparse_note = f"FAILED ({exc})"
+        within, outside = classify_diff_hunks(pre, post, edited_spans)
+        extras = [
+            ("re-parse:", reparse_note),
+            ("hunks:", f"{within} within edited spans, {outside} outside"),
+        ]
+        header = render_dry_run_header(
+            region_label=region_label,
+            edited_spans=edited_spans,
+            match_policy=match_policy,
+            extras=extras,
+        )
+        if mode == "full":
+            body = render_dry_run_full(
+                post,
+                edited_spans=edited_spans,
+                region_label=region_label,
+            )
+        else:
+            diff = format_unified_diff(pre, post, file_label=slug).rstrip("\n")
+            body = diff or "(no diff — pre and post are identical)"
+        return Response(body="\n".join([*header, "", body]))
 
     # ── ingest pipeline ────────────────────────────────────────────
 
@@ -754,15 +956,17 @@ def _atomic_write(path: Path, content: str) -> None:
         raise
 
 
-def _replace_lines(
-    path: Path, line_start: int, line_end: int, new_lines: list[str]
-) -> None:
-    """Replace 1-indexed inclusive ``[line_start, line_end]`` with new content.
+def _splice_lines(
+    raw: str, line_start: int, line_end: int, new_lines: list[str]
+) -> str:
+    """Pure splice — return ``raw`` with ``[line_start, line_end]``
+    replaced by ``new_lines`` (1-indexed inclusive).
 
     If ``new_lines`` is empty, the lines are deleted (and any trailing
     blank line is collapsed so we don't grow a stack of empty blanks).
+    Used by both the live write path and ``dry_run`` to materialise
+    the post-edit buffer without touching disk.
     """
-    raw = path.read_text(encoding="utf-8")
     lines = raw.splitlines()
     # 1-indexed inclusive → slice indices.
     lo = line_start - 1
@@ -782,6 +986,19 @@ def _replace_lines(
     new_content = "\n".join(lines)
     if not new_content.endswith("\n"):
         new_content += "\n"
+    return new_content
+
+
+def _replace_lines(
+    path: Path, line_start: int, line_end: int, new_lines: list[str]
+) -> None:
+    """Replace 1-indexed inclusive ``[line_start, line_end]`` with new content.
+
+    If ``new_lines`` is empty, the lines are deleted (and any trailing
+    blank line is collapsed so we don't grow a stack of empty blanks).
+    """
+    raw = path.read_text(encoding="utf-8")
+    new_content = _splice_lines(raw, line_start, line_end, new_lines)
     _atomic_write(path, new_content)
 
 

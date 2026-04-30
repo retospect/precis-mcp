@@ -349,62 +349,59 @@ put(kind='python',
 
 ### Anchored edits inside a function
 
-> **Status:** the `edit` and `insert` ops are a proposal — see
-> `precis-edit-protocol`. Until they ship, use `mode='replace'`
-> with a qualname or line range.
-
 For changes smaller than a whole symbol (rename one call site, bump
-a literal, fix one identifier), `op='edit'` is the surgical
+a literal, fix one identifier), `mode='edit'` is the surgical
 primitive. The schema is identical to every other file kind; the
 universal grammar lives in `precis-edit-protocol`. Python's
-validation gates (`ast.parse` + ruff + qualname-stable) all apply.
+validation gates (`ast.parse` + qualname-stable + ruff) all apply
+automatically.
 
 ```python
 # Rename one call site, bounded to one function. Anchors guarantee
-# we don't touch the call's definition or unrelated occurrences.
+# we don't touch unrelated occurrences.
 put(kind='python',
-    id='precis::precis.cli._cmd_serve',
-    op='edit',
+    id='r::precis.cli._cmd_serve',
+    mode='edit',
     find='deprecated_call(',
     text='new_call(',
     match='all')
 
-# Bump a version string with regex (opt-in).
+# Disambiguate by surrounding context when a token appears many times.
 put(kind='python',
-    id='precis/src/precis/__init__.py',
-    op='edit',
-    regex=True,
-    find=r'^__version__ = "[\d.]+"',
-    flags=['m'],
-    text='__version__ = "0.3.0"',
-    match='unique')
+    id='r/src/precis/cli.py',
+    mode='edit',
+    find='name',
+    before='len(',
+    after=')',
+    text='full_name')
 
-# Multi-edit transaction — both apply or neither does, single ruff pass.
+# Insert a new function after an existing anchor. The AST gate
+# verifies the post-edit buffer parses cleanly.
 put(kind='python',
-    id='precis/src/precis/cli.py',
-    edits=[
-        {"op": "edit",
-         "find": "from .old import X",
-         "text": "from .new import X"},
-        {"op": "edit",
-         "find": "X.legacy_method(",
-         "text": "X.method(",
-         "match": "all"},
-    ])
+    id='r/src/precis/cli.py',
+    mode='insert',
+    find='    return x + 1\n',
+    where='after',
+    text='\n\ndef twice(x: int) -> int:\n    return x * 2\n')
 ```
 
 Python-specific quirks:
 
-- **Edits that cross top-level statements are rejected** by default.
-  Pass `allow_cross_region=True` for legitimate restructures.
 - The same AST + qualname-stable + ruff gates that run on `replace`
-  also run on `edit` — a syntactically broken edit is rejected,
-  unintended renames are caught.
+  also run on `edit` and `insert` — a syntactically broken edit is
+  rejected, unintended renames are caught.
+- A `mode='edit'` that touches a `def` line (renaming the symbol)
+  is rejected unless you pass `allow_rename=True`. Same gate as
+  `mode='replace'`.
 - `match='unique'` is the default. With ≥2 matches you get every
   candidate's line number plus a hint to add an anchor (`before=` /
-  `after=`) or pick a policy (`match='all'` / `nth`).
-- Use `dry_run=True` before any large multi-edit batch — it returns
-  the diff and the validation results without writing.
+  `after=`) or pick a policy (`match='all'` / `match='nth'`).
+- The selector decides the search region: `id='r/src/m.py'` searches
+  the whole file; `id='r::pkg.m.func'` or `id='r/src/m.py~func'`
+  searches just one symbol's source range; `id='r/src/m.py~L20-L40'`
+  searches that line range.
+- Regex / multi-edit batches / `dry_run` are deferred to v2 — see
+  `precis-edit-protocol`.
 
 ### What can go wrong
 

@@ -1,7 +1,7 @@
 ---
-status: draft proposal — not yet implemented
+status: v1 shipped — markdown + python (mode='edit' / mode='insert'); regex/batch/dry_run deferred to v2
 applies-to: every R/W file-rooted kind (markdown, plaintext, rmk, docx, tex, book, python)
-supersedes: nothing yet — extends the four-mode surface in `file-kinds-unified-addressing.md`
+supersedes: nothing — extends the four-mode surface in `file-kinds-unified-addressing.md`
 last-updated: 2026-04-30
 ---
 
@@ -483,24 +483,43 @@ and `insert`.
 `precis-files-help` adds an "Anchored edits" section after the
 existing "Write" section. The four-mode list grows to six.
 
-## Implementation order
+## Implementation status
 
-Estimated total: 2 sessions for the spine + markdown reference,
-1 session per additional kind.
+### v1 (shipped)
 
-1. **Spec + skill** (this doc + `precis-edit-protocol.md`).
-   No code yet.
-2. **`_FileHandlerBase.edit_buffer()`** — the resolution algorithm
-   in pure-Python with a `Region` ABC. Unit tests with synthetic
-   regions, no I/O.
-3. **markdown reference implementation** — wires `edit` and
-   `insert` modes through the existing splice path. Cross-block
-   rejection via `_BlockRange.contains(span)`.
-4. **plaintext + rmk** — tiny additions, mostly the cross-region
-   check.
-5. **python** — adds the AST + qualname-stable + ruff gates as
-   already specified in `python-kind-spec.md § Write surface`.
-6. **tex / docx / book** — once their base R/W lands.
+- **`precis.utils.edit_resolve`** — pure resolver. ~440 LOC; 40
+  unit tests. `EditOp` dataclass with construction validation,
+  `find_candidates` (literal + anchor filter), `select_candidates`
+  (match policy with sharp errors), `apply_edit` (splice end-to-
+  start). Fuzzy nearest-line suggestions on "find not found"
+  errors via sliding-window `difflib.SequenceMatcher`.
+- **`MarkdownHandler`** — `mode='edit'` / `mode='insert'` route to
+  a new `_put_anchored` helper that resolves the search region
+  (whole file or one block), runs `apply_edit`, splices back, and
+  re-ingests. 13 integration tests.
+- **`PythonHandler`** — same shape; the new helper feeds into the
+  existing `_finalize_write()` so the `ast.parse` + qualname-stable
+  + ruff gates apply automatically. 12 integration tests.
+
+### Deferred to v2
+
+- `regex=True` + `flags=` — opt-in regex with unbounded-pattern
+  guard.
+- `edits=[…]` atomic batch transactions.
+- `dry_run=True` returning the unified diff without writing.
+- `expect_lines=N` safety assertion.
+- Explicit cross-region rejection (`allow_cross_region=False`).
+  Today markdown allows cross-block matches; the parser re-tokens
+  on re-ingest. Python's AST gate already catches the breakage
+  cross-statement matches would cause, so the explicit knob isn't
+  strictly necessary on the python side either.
+
+### Queued kinds
+
+- `plaintext`, `rmk` — tiny additions once their base R/W lands.
+- `docx`, `tex`, `book` — when their R/W shipping. The protocol
+  surface and resolver will not change; only the `Region` /
+  validation gate per kind.
 
 ## Open questions
 

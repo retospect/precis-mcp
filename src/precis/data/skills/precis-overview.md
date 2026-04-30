@@ -1,11 +1,11 @@
 ---
 id: precis-overview
 title: precis — four verbs, one address scheme
-status: phase-7
+status: phase-9
 tier: 1
 floor: any
 applies-to: all
-last-updated: 2026-04-28
+last-updated: 2026-04-30
 ---
 
 # precis-overview — four verbs, one address scheme
@@ -51,6 +51,7 @@ shapes — slug for canonical/named refs, integer for agent scratch:
 | `quest`   | `ship-v2`             | A long-running goal               |
 | `conv`    | `2026-04-26-spec`     | Past conversation                 |
 | `markdown`| `notes--meeting`      | A `.md` file under the configured root |
+| `python`  | `precis-mcp::precis.cli.main` | A symbol / file in a configured Python repo |
 | `todo`    | `122` (int)           | A task                            |
 | `memory`  | `47` (int)            | Agent note / scratchpad           |
 | `gripe`   | `9` (int)             | Annoyance / niggle — log freely, filter later |
@@ -107,4 +108,5 @@ get(kind='math', q='speed of light in km/h')  # → 1.079e9 km/h (paid)
 - `precis-paper-help` — paper views, citation export
 - `precis-todo-help` — todo lifecycle, priority, due dates, blocking
 - `precis-memory-help` — memory sub-kinds via `kind:`
+- `precis-python-help` — Python code navigation, callgraph + runtrace, AST-gated edits
 - `precis-navigation` — recipes for common flows

@@ -96,6 +96,19 @@ class MockEmbedder:
 
 _BGE_M3_DIM = 1024  # documented constant for BAAI/bge-m3
 
+# Hard ceiling on the per-text char length passed to bge-m3. The model's
+# tokenizer caps at 8192 tokens, but pathological input (corrupted-OCR
+# tables, fragmented unicode runs) can balloon attention into 70+ GiB
+# allocations on MPS before the tokenizer truncates. We pre-truncate at
+# the char level so the encoder never sees more input than it can handle.
+#
+# 16,000 chars ≈ 4–8K tokens depending on content density, which is
+# safely under the 8192 cap even for token-dense markdown / LaTeX. This
+# is a pure survival guard — structure-aware splitting (e.g.
+# ``acatome_extract.chunker.split_table``) belongs upstream at the
+# source so retrieval boundaries stay meaningful.
+_BGE_M3_MAX_CHARS = 16_000
+
 
 class BgeM3Embedder:
     """``BAAI/bge-m3`` via sentence-transformers. Optional dep.
@@ -106,6 +119,15 @@ class BgeM3Embedder:
     (Windsurf, etc.) spawn the server with a short handshake budget;
     eager-loading bge-m3 takes ~7s and trips a startup timeout. Once
     loaded, the model stays in memory for the life of the process.
+
+    Each input text is truncated to :data:`_BGE_M3_MAX_CHARS` chars
+    before being passed to the encoder. This is a defensive guard
+    against malformed blocks that escape upstream chunking (e.g. a
+    corrupted-OCR table block of 192,000 chars that triggered MPS OOM
+    in production). The 1:1 ``len(texts) == len(returned_vectors)``
+    contract is preserved — truncation is lossy on the suffix but does
+    not change block count, so the store's blocks↔vectors mapping
+    stays intact.
 
     Tests should still prefer ``MockEmbedder`` to avoid the model
     download / weight load entirely.
@@ -149,7 +171,12 @@ class BgeM3Embedder:
         if not texts:
             return []
         st = self._ensure_loaded()
-        embs = st.encode(texts, normalize_embeddings=True)  # type: ignore[attr-defined]
+        # Per-text char truncation — see class docstring + _BGE_M3_MAX_CHARS.
+        # Cheap O(n) check; only allocates a new string when over budget.
+        safe = [
+            t if len(t) <= _BGE_M3_MAX_CHARS else t[:_BGE_M3_MAX_CHARS] for t in texts
+        ]
+        embs = st.encode(safe, normalize_embeddings=True)  # type: ignore[attr-defined]
         return [list(map(float, e)) for e in embs]
 
     def embed_one(self, text: str) -> list[float]:

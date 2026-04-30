@@ -1,21 +1,17 @@
 ---
 id: precis-edit-protocol
 title: precis — anchored edits across every file kind
-status: draft proposal — not yet implemented
+status: shipped (v1) — markdown + python; other file kinds queued
 tier: 2
 floor: any
-applies-to: put with op='edit' or op='insert' on any R/W file kind (markdown, plaintext, rmk, docx, tex, book, python)
+applies-to: put with mode='edit' or mode='insert' on R/W file kinds (markdown + python today; plaintext, rmk, docx, tex, book queued)
 last-updated: 2026-04-30
 ---
 
-> **Heads up:** the `edit` and `insert` ops described here are a
-> proposal (`docs/edit-protocol-spec.md`). Until they ship, use
-> `mode='replace'` with the existing selector grammar.
-
 # precis-edit-protocol — sub-region anchored search/replace
 
-For changes smaller than a whole region, use `op='edit'` instead of
-`mode='replace'`. The grammar is **identical across every file
+For changes smaller than a whole region, use `mode='edit'` instead
+of `mode='replace'`. The grammar is **identical across every file
 kind**; only the validation gates differ. Per-kind quirks (cross-
 region rules, AST gates, paragraph integrity) live in each kind's
 skill — this one covers what's universal.
@@ -24,45 +20,38 @@ skill — this one covers what's universal.
 
 | You want to | Use |
 |---|---|
-| Rewrite a whole block / function / paragraph | `mode='replace'` (exists today) |
-| Change one token, one cite, one literal | `op='edit'` |
-| Add a paragraph next to an existing anchor | `op='insert'` |
-| Bulk rename one identifier | `op='edit'` with `match='all'` |
-| Apply N related changes atomically | `edits=[…]` batch |
+| Rewrite a whole block / function / paragraph | `mode='replace'` |
+| Change one token, one cite, one literal | `mode='edit'` |
+| Add text adjacent to an existing anchor | `mode='insert'` |
+| Bulk rename one identifier | `mode='edit'` with `match='all'` |
 
-The rule of thumb: **content selects, range bounds.** Line ranges
-narrow where to look; the literal `find=` decides what to change.
-This survives drift after prior edits.
+The rule of thumb: **content selects, range bounds.** The `id=`
+selector narrows where to look; the literal `find=` decides what
+to change. This survives drift after prior edits.
 
 ## Schema
 
 ```python
 put(kind='<kind>', id='<path>[~<selector>]',
-    op='edit',           # or 'insert'
-    find='<exact text>', # literal by default; regex=True opts in
-    before='<anchor>',   # optional: text immediately preceding find
-    after='<anchor>',    # optional: text immediately following find
-    text='<new text>',   # for edit: the replacement
-    where='before|after',# for insert only: where to put `text`
-    match='unique',      # unique | first | all | nth
-    nth=2,               # 1-indexed when match='nth'
-    regex=False,         # default
-    flags=['i','m','s'], # only when regex=True
-    dry_run=False)       # show diff, don't write
+    mode='edit',          # or 'insert'
+    find='<exact text>',  # literal — required
+    before='<anchor>',    # optional: text immediately preceding find
+    after='<anchor>',     # optional: text immediately following find
+    text='<new text>',    # required (use '' on edit to delete the match)
+    where='before|after', # required for mode='insert' only
+    match='unique',       # unique (default) | first | all | nth
+    nth=2)                # 1-indexed when match='nth'
 ```
 
-Multi-edit batch (atomic):
+The motivating case from the spec:
 
 ```python
-put(kind='markdown', id='notes/foo.md', edits=[
-    {"op": "edit", "find": "draft",  "text": "final"},
-    {"op": "insert", "find": "## Conclusion", "where": "after",
-     "text": "\n\nAddendum: see appendix.\n"},
-])
+# 'the fox jumps over the fence.' → 'the fox jumps over a fence.'
+put(kind='markdown', id='notes--foo~intro',
+    mode='edit',
+    find='the', before='over ', after=' fence',
+    text='a')
 ```
-
-Either every edit applies and the file is rewritten once, or
-nothing changes on disk.
 
 ## Resolution algorithm
 
@@ -73,15 +62,12 @@ Identical for every kind:
 2. **Find candidate matches** of `find` inside the region.
 3. **Anchor filter** — drop candidates whose surrounding bytes
    don't equal `before=` / `after=`. Whitespace is **strict**.
-4. **Cross-region check** — kinds reject matches spanning a
-   structural boundary (markdown block, docx paragraph) unless
-   `allow_cross_region=True`.
-5. **Apply `match` policy**:
+4. **Apply `match` policy**:
    - `unique` (default) — exactly 1 match required.
    - `first` — earliest match wins.
    - `all` — every match.
    - `nth` — the Nth match (1-indexed).
-6. **Splice → validate → format → atomic write → re-ingest.**
+5. **Splice → kind-specific validate → format → atomic write → re-ingest.**
 
 If any step fails, disk is untouched.
 
@@ -89,49 +75,49 @@ If any step fails, disk is untouched.
 
 ### `find` not found
 
-```
-edit failed: find='\\cite{foo2020}' not found in paper.tex~L120-180
+The error includes up to 3 fuzzy nearest lines so the agent has
+something concrete to fix:
 
+```
+find='dpoamine' not found in notes--neuroscience~abstract
 Nearest matches in the region:
-  L137  \\cite{foo2021}   (1-char diff)
-  L152  \\cite{bar2020}   (3-char diff)
-
-Try one of:
-  - widen the range:   id='paper.tex'
-  - update find=:      find='\\cite{foo2021}'
-  - search first:      search(kind='tex', q='foo2020', scope='paper.tex')
+  L42  dopamine is a neurotransmitter   (88% similar)
 ```
+
+Next: widen the `id=` to a larger region, or copy the exact text
+from `get(... view='raw')`.
 
 ### Ambiguous (`match='unique'` had ≥2 hits)
 
-```
-edit failed: find='the' has 3 matches in notes/foo.md~intro
-  L42  "The fox jumps over the fence."
-  L42  "...over [the] fence." ← match #2
-  L43  "[The] morning was clear."
+Every candidate is listed with its line number:
 
-Disambiguate with:
-  - anchor:   before='over ', after=' fence'   → unique
-  - policy:   match='all'    → replace every occurrence
-  - policy:   match='nth', nth=2
 ```
+find='the' has 3 matches in notes--foo~intro (match='unique' requires exactly 1):
+  L42  The fox jumps over the fence.
+  L43  The morning was clear.
+```
+
+Next: narrow with `before='...'` / `after='...'`, or pick a policy
+(`match='all'` / `match='nth'` with `nth=N`).
 
 ### Post-edit validation
 
-```
-edit failed: python AST parse error after edit
-  in: precis/src/precis/cli.py
-  at: line 142  (within the edited region)
-  msg: SyntaxError: unexpected indent
+Kind-specific gates run on the spliced buffer before any disk
+write. Failure rolls back; disk stays unchanged.
 
-The file on disk is unchanged. Inspect the proposed buffer with:
-  put(... dry_run=True)
 ```
+ast.parse failed on the post-edit buffer: SyntaxError: ... (line 142)
+Next: check the indentation / syntax of the replacement text
+```
+
+For python this fires for `ast.parse` failures and for the
+qualname-drop check (an edit that renames a `def` is rejected
+unless you pass `allow_rename=True`).
 
 ## Why anchors instead of regex
 
 Two-anchor + literal `find` covers most cases regex covers, with
-three advantages over regex:
+three advantages:
 
 - **No escape hazards.** Models do not reliably escape `.`, `*`,
   `(`, `\`. Literal anchors sidestep this.
@@ -140,43 +126,45 @@ three advantages over regex:
 - **Bounded ambiguity.** Regex can match in surprising places;
   literal text + before/after cannot.
 
-Regex stays available behind `regex=True` for genuine cases (version
-bumps, structured renames). The handler refuses unbounded patterns
-(`.*` with no anchor) with a hint.
-
-## `dry_run=True`
-
-Returns the unified diff that *would* be written, with all resolved
-coordinates and validation results — without touching disk. Use
-before any large multi-edit batch.
+Regex / `dry_run` / multi-edit batches are **deferred to v2** —
+the v1 surface is intentionally minimal.
 
 ## Per-kind quirks
 
 The schema is universal; the validation differs:
 
-| Kind | Cross-region default | Validation gate | Format step |
+| Kind | Status | Validation gate | Format step |
 |---|---|---|---|
-| `markdown` | reject across blocks | re-parse blocks | trim trailing ws |
-| `plaintext` | reject across paragraphs | none | none |
-| `rmk` | reject across blocks; never edits front-matter | re-parse | trim trailing ws |
-| `docx` | reject across paragraphs (run integrity) | re-parse | none |
-| `tex` | reject across `\begin{}\end{}` envs | brace + env balance | none |
-| `book` | delegated per child file | delegated | delegated |
-| `python` | reject across top-level statements | `ast.parse` + qualname-stable | `ruff check --fix` + `ruff format` |
+| `markdown` | **shipped v1** | re-parse blocks on re-ingest | none |
+| `python` | **shipped v1** | `ast.parse` + qualname-stable | `ruff check --fix` + `ruff format` |
+| `plaintext` | queued | none | none |
+| `rmk` | queued | re-parse | trim trailing ws |
+| `docx` | queued | re-parse XML; run integrity | none |
+| `tex` | queued | brace + env balance | none |
+| `book` | queued | delegated per child file | delegated |
 
 For kind-specific examples and recipes, see the kind's own skill
 (`precis-markdown-help § Surgical edits`, `precis-python-help §
-Anchored edits`, …).
+Anchored edits`).
 
-## What this protocol does NOT do
+v1 does **not** include the explicit cross-region rejection
+(matches that span markdown blocks or python top-level statements
+are allowed; the kind's own validation gate catches the breakage
+that would result). A future version may add an opt-out
+`allow_cross_region=False` knob if data shows it's needed.
 
-- **vi-style modal commands.** No cursor state, no `:s/old/new/`,
-  no counts. If a client wants that as sugar, it compiles to this
-  schema before reaching the handler.
+## What this protocol does NOT do (v1)
+
+- **Regex.** Literal `find=` only. Deferred to v2 with `regex=True`.
+- **Multi-edit batches.** One edit per call. `edits=[…]` is v2.
+- **`dry_run`.** Defer to v2; for now, edits go straight through.
+- **vi-style modal commands.** Not even in v2 — kept out of the
+  protocol layer. If a client wants `:s/old/new/` sugar, it
+  compiles to this schema before reaching the handler.
 - **Cross-file edits.** One `id` per `put`. Sequence multiple calls
   (or use `quest` / `sortie`) for multi-file refactors.
-- **Fuzzy `find`.** Exact match (or regex). Fuzzy lives in the
-  *suggestion* leg of error messages, never in the executed match.
+- **Fuzzy `find`.** Exact match. Fuzzy lives only in the
+  *suggestion* leg of error messages.
 - **Cursor / position state across calls.** Stateless.
 
 ## See also
@@ -184,4 +172,4 @@ Anchored edits`, …).
 - `precis-files-help` — universal address grammar that `id=` uses
 - `precis-markdown-help § Surgical edits` — markdown recipes
 - `precis-python-help § Anchored edits` — python recipes (AST + ruff gates apply)
-- `docs/edit-protocol-spec.md` — full design rationale and open questions
+- `docs/edit-protocol-spec.md` — full design rationale and v2 roadmap

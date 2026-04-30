@@ -8,11 +8,11 @@ applies-to: cross-cutting (file-rooted kinds)
 last-updated: 2026-04-28
 ---
 
-> **Heads up:** none of the file kinds documented here (`markdown`,
-> `plaintext`, `rmk`, `docx`, `tex`, `book`, `python`, `git`) are
-> wired in this build's registry — they're queued for a later phase.
-> Filtered from the default skill index until at least one of them
-> ships. Read for design intent, not as a runtime recipe.
+> **Status:** `markdown` and `python` are shipped (read + write,
+> including the new `mode='edit'` / `mode='insert'` surface). The
+> other file kinds documented here (`plaintext`, `rmk`, `docx`,
+> `tex`, `book`, `git`) are queued for later phases. The shared
+> addressing model below applies to all of them.
 
 # precis-files-help — file-rooted kinds, shared concepts
 
@@ -189,49 +189,42 @@ Round-trip is free.
 
 ## Anchored edits
 
-> **Status:** the `edit` and `insert` ops are a proposal — see
-> `precis-edit-protocol`. Until they ship, use `mode='replace'`
-> with the existing selector grammar.
-
 The four-mode surface (`create` / `append` / `replace` / `delete`)
-gains two more for sub-region edits:
+is joined by two sub-region modes for surgical changes:
 
-| Op | Region | Behavior |
+| Mode | Region | Behavior |
 |---|---|---|
 | `edit` | optional (defaults to whole file) | find literal text and replace it — anchored, validated |
 | `insert` | optional | insert text immediately before/after a found anchor |
 
 The grammar is **identical across every R/W file kind**; per-kind
-quirks (cross-region rules, validation gates) live in each kind's
+quirks (validation gates, format steps) live in each kind's
 skill. The full universal grammar lives in `precis-edit-protocol`.
+
+v1 ships for `markdown` and `python`; other R/W file kinds are
+queued.
 
 ```python
 # Surgical replacement: change one token, leave everything else alone.
-# Content selects ('the'); anchors disambiguate; line range is just a bound.
-put(kind='markdown', id='notes/foo.md~intro',
-    op='edit',
+# Content selects ('the'); anchors disambiguate; the selector bounds the search.
+put(kind='markdown', id='notes--foo~intro',
+    mode='edit',
     find='the', before='over ', after=' fence',
     text='a',
     match='unique')
 
 # Insert a paragraph adjacent to an anchor, no rewriting.
-put(kind='markdown', id='notes/foo.md',
-    op='insert',
+put(kind='markdown', id='notes--foo',
+    mode='insert',
     find='## Conclusion', where='before',
     text='\n## TL;DR\n\nQuick summary.\n\n')
 
-# Atomic batch — both edits succeed or neither applies.
-put(kind='python', id='precis/src/precis/cli.py', edits=[
-    {"op": "edit", "find": "from .old import X",
-     "text": "from .new import X"},
-    {"op": "edit", "find": "X.legacy_method(",
-     "text": "X.method(", "match": "all"},
-])
-
-# Preview a change without writing.
-put(kind='python', id='precis/src/precis/cli.py',
-    op='edit', find='old', text='new', match='all',
-    dry_run=True)
+# Bulk rename across one file. Python's AST + ruff gates apply.
+put(kind='python', id='r/src/precis/cli.py',
+    mode='edit',
+    find='X.legacy_method(',
+    text='X.method(',
+    match='all')
 ```
 
 The rule of thumb: **content selects, range bounds.** Use the `id`

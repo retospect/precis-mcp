@@ -3,6 +3,217 @@
 All entries pre-1.0 are unreleased; v2 is in active development on the
 `v2` branch and not yet on PyPI.
 
+## `python` code-navigator kind (April 2026)
+
+**New kind** `python` joins the file-handler family: a multi-root,
+AST-indexed navigator over Python repos. Configured at startup via
+`PRECIS_PYTHON_ROOTS=alias:/abs/path,…`; hidden when unset (same
+gating pattern as `markdown`). No DB persistence — index lives
+in-memory in a per-root `RepoCache` keyed by `(file, mtime_ns,
+sha256)`. First `get` builds the index; subsequent calls only
+reparse files whose mtime changed.
+
+**Two-track addressing.** Line-range track `alias/path/file.py~L42-58`
+is durable across edits but resolves to whatever symbol overlaps;
+qualname track `alias::pkg.mod.Class.method` is content-addressable
+and survives line shifts. `_parse_id()` accepts both. The repo
+overview (`get(kind='python', id=alias)`) is the entry into either.
+
+**Read views.**
+
+- `toc` — package tree per repo, modules grouped by package depth
+- `outline` — file-level outline with class hierarchy + signatures
+- `source` — raw lines for a resolved region with header
+- `entries` — pyproject `[project.scripts]` console scripts plus
+  every `if __name__ == '__main__':` guard, each linked to its
+  callable for the agent to drill into
+- `callgraph` — entry-rooted static call tree built from a
+  per-module call-edge index. Cycle detection (`[cycle]`),
+  deduplication (`[see above]`), depth limit (`[truncated]`),
+  multiplicity for repeated edges, `[ext]` for unresolved
+  stdlib/third-party/dynamic. Cross-repo resolution via
+  `cross_repo=True` (looks up unresolved callees in sibling
+  configured roots).
+- `runtrace` — *dynamic* overlay. Spawns the entry under
+  `sys.setprofile` in a subprocess (gated by
+  `PRECIS_PYTHON_ALLOW_EXEC=1`), forwards `argv`/`env`/`timeout`,
+  reads the JSON trace back, builds a `TraceNode` tree with
+  per-call timings + multiplicity, renders it in the same box-
+  drawn style as the static `callgraph`, then appends a
+  `Static-only` diff listing qualnames the static graph reaches
+  but the runtime didn't. Useful for finding dead code,
+  config-flag-gated paths, and import-time vs call-time wiring.
+
+**Stdlib subtree collapse.** `runtrace` argparse-heavy entries blew
+the response token budget (a single `--help` produced 5030 events
+across `argparse.*` / `gettext.*` / `re.*` / `os.*`). The renderer
+now folds anything whose top-level module is in
+`sys.stdlib_module_names` into its root and annotates the row with
+`(+N stdlib)` so the agent sees what was elided. Default
+`max_events` lowered from 10000 → 2000. Both behaviours are
+opt-out via `args={'expand_stdlib': True}` and tunable via
+`args={'max_events': N}`. The `Static-only` diff is computed on the
+*un-collapsed* event stream so it stays accurate regardless of
+display.
+
+**Search.** Lexical hybrid over the symbol index — qualname tokens,
+docstring excerpt, signature. `scope=` accepts repo / package /
+file. Each hit comes back as a canonical address you can drill
+into directly. The single most token-efficient way to orient in an
+unfamiliar repo: better than `grep` because it understands
+intent (`q='where do we handle stale data'` works), better than
+reading files cold because it returns symbols not bodies.
+
+**Write surface.** `put` accepts `create` / `append` / `replace` /
+`delete` plus the new anchored modes (`edit` / `insert`) inherited
+from phase 8. Three validation gates run on every write:
+
+1. `ast.parse` validates the result is syntactically valid Python
+   (rolls back on `SyntaxError`).
+2. **Qualname-drop gate** — extracts the set of qualnames defined
+   in the modified region before and after; rejects any write that
+   silently disappears a name unless `allow_rename=True` is passed.
+   Catches accidental renames in anchored edits where the search
+   region overlapped a `def` / `class` line.
+3. `ruff check --fix` followed by `ruff format` — applies safe
+   autofixes and reformats. Reports added/removed/modified line
+   counts in the response. Skipped (with a warning header) if
+   `ruff` is unavailable, never blocks the write.
+
+After a successful write, the affected file's cache entry is
+invalidated so the next `get` reindexes from disk.
+
+**Skill.** `precis-python-help` (in `data/skills/`) documents the
+addressing grammar, every view, the `args=` dict's accepted keys,
+the write surface with all three gates, and a recipe section
+(orienting in unknown repos, mapping stack traces, finding
+dead code via the static-vs-runtime diff). The MCP `get` tool
+gained an `args: dict[str, Any] | None = None` kwarg so view-
+specific payloads (`{'entry': ..., 'depth': ...}` for callgraph;
+`{'entry': ..., 'argv': [...], 'expand_stdlib': True}` for
+runtrace) flow through. Reserved keys (`kind`/`id`/`view`/`q`)
+inside `args=` are rejected at the boundary.
+
+Pinned by `tests/test_python_indexer.py` (25 cases),
+`test_python_cache.py` (9), `test_python_handler.py` (44 read-path),
+`test_python_handler_writes.py` (37 + 12 anchored-edit), 
+`test_python_callgraph.py` (17), `test_python_entries.py` (18),
+`test_python_runtrace.py` (39, with real-subprocess end-to-end),
+`test_python_config_wire.py` (18), and `test_mcp_args_kwarg.py`
+(13). Full design rationale in `docs/python-kind-spec.md`.
+
+## Anchored edit protocol — v1 (April 2026)
+
+**New write modes** `mode='edit'` and `mode='insert'` join the
+existing four (`create`/`append`/`replace`/`delete`) on every R/W
+file kind. v1 ships for `markdown` and `python`; the protocol
+surface is already universal so other R/W kinds (`plaintext`,
+`rmk`, `docx`, `tex`, `book`) inherit it when they ship.
+
+**Why.** `mode='replace'` swaps a *whole resolved region* (a
+markdown block, a python qualname, a line range). Right granularity
+for structural edits, far too coarse for surgical changes — every
+"the fox jumps over **the** fence" → "...over **a** fence" round-
+trip rewrote the whole paragraph. Cost: tokens, risk (model has to
+reproduce the unchanged tail verbatim), lost provenance. The new
+modes resolve by *content*: literal `find=`, optional `before=`/
+`after=` anchors, `match='unique|first|all|nth'` policy.
+
+**Pure resolver.** `precis.utils.edit_resolve` is no-I/O and shared
+across kinds. `EditOp` dataclass with construction-time validation;
+`find_candidates` (literal + anchor filter, overlapping matches
+seen); `select_candidates` with sharp `BadInput` errors:
+
+- *not found*: error includes up to 3 fuzzy-nearest lines via
+  sliding-window `SequenceMatcher` (typo aid like "dpoamine" →
+  "dopamine") and a `next=` hint to widen the region.
+- *ambiguous* (`match='unique'` + ≥2 hits): error lists every
+  candidate's line + 80-char context plus disambiguation hints
+  (`before=` / `after=` / `match='all'` / `match='nth'`).
+
+`apply_edit` splices end-to-start so byte offsets stay valid across
+multi-match replacements. No-op detection — `find` == `text` raises
+rather than silently writing nothing.
+
+**Markdown wiring.** `MarkdownHandler.put` accepts the new modes;
+`_put_anchored` resolves the search region (whole file when no
+selector, the addressed block's text when `id='slug~BLOCK'`), runs
+`apply_edit`, splices back via `_replace_lines`, atomic-writes,
+re-ingests. The block's content-derived slug may change after an
+edit; the next `get` re-tokens.
+
+**Python wiring.** `PythonHandler.put` routes the new modes
+through the same `_finalize_write` pipeline `replace`/`delete` use,
+so the three gates (`ast.parse` validation, qualname-drop
+prevention, `ruff check --fix && ruff format`) all apply
+automatically. The qualname-drop gate's `pre_in_region` set is
+computed as "any symbol whose source overlaps any edited span,"
+catching anchored renames of `def` / `class` lines unless
+`allow_rename=True`.
+
+**Skills.** New `precis-edit-protocol` (tier 2) documents the
+universal grammar; `precis-markdown-help`, `precis-python-help`,
+and `precis-files-help` gain "Surgical edits" / "Anchored edits"
+sections. Skill discovery: protocol skill is loaded on demand via
+cross-links from per-kind skills and from error-message footers.
+
+**`dry_run` for anchored edits.** Both `mode='edit'` and
+`mode='insert'` accept `dry_run=True | 'diff' | 'full'`. The same
+resolver, splice, and validation gates run; the disk write and
+re-ingest are skipped. The response carries:
+
+- a structured header (region label, edited spans, match policy,
+  per-gate pass/fail — `ast.parse`, `qualname-drop`, `ruff` for
+  python; `re-parse`, `hunks within/outside` for markdown), and
+- a body that's either a unified diff (`dry_run=True` / `'diff'`,
+  the default) with standard `--- a/<label>` / `+++ b/<label>`
+  headers and 3 lines of context, or the post-edit lines around
+  each edited span with `> ` markers (`dry_run='full'`).
+
+Rationale: the diff is the right default — it answers "did the
+resolver pick the right candidate?", "will the result look
+right?", and "did anything unexpected happen (e.g. ruff
+autofix)?" in one token-efficient view. `'full'` is the escape
+hatch for cases where the agent wants to see the post-edit region
+in its natural form. Ruff's incidental changes are surfaced
+separately as `outside-spans` hunks so the agent isn't surprised
+by autofixes that touch lines it didn't address.
+
+**Still deferred to v2.** Regex (`regex=True` + `flags=`), atomic
+multi-edit batches (`edits=[…]`), `expect_lines=N`, explicit
+cross-region rejection. The v1+`dry_run` surface is still
+additive; future deferred features will not break existing calls.
+
+Pinned by `tests/test_edit_resolve.py` (59 unit tests covering
+`normalize_dry_run`, `format_unified_diff`, `classify_diff_hunks`,
+`render_dry_run_header`, `render_dry_run_full`),
+`tests/test_markdown_handler.py` (20 anchored-edit tests including
+7 dry_run cases), `tests/test_python_handler_writes.py` (20 anchored
+edit tests including 8 dry_run cases that verify gates run + disk
+untouched + diff/full formats). Full design rationale in
+`docs/edit-protocol-spec.md`.
+
+## bge-m3 char-truncation guard (April 2026)
+
+`BgeM3Embedder.embed()` now truncates each input string to
+`_BGE_M3_MAX_CHARS` (16,000) before handing it to
+`sentence_transformers.SentenceTransformer.encode()`. Defends against
+malformed blocks that escape upstream chunking — e.g. a corrupted-OCR
+markdown table block of 192,633 chars that triggered a 73 GiB MPS-OOM
+during ingest of `animeshjana2024recent`. The 1:1
+`len(texts) == len(returned_vectors)` contract is preserved (truncation
+is lossy on the suffix, never splits or drops blocks), so the store's
+`blocks ↔ vectors` mapping is unchanged.
+
+This complements the structure-aware `split_table` /
+`enforce_hard_max` helpers added in `acatome-extract@0.6.2`.
+Splitting belongs at the producer (where retrieval-meaningful chunk
+boundaries can be preserved with header context); truncation belongs
+at the consumer (where the hard MPS/CUDA constraint actually lives)
+and protects every other handler that bypasses acatome-extract
+(markdown, docx, tex, web, voice). Pinned by
+`tests/test_embedder.py::TestBgeM3CharTruncation` (6 cases).
+
 ## MCP critique re-probe fixes (April 2026, second pass)
 
 The critic re-probed after the first round and approved with one

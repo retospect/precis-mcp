@@ -388,3 +388,290 @@ def test_nested_dir_files(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "deep/nested/file.md", "# Deep\n\nContent.\n")
     out = handler.get(id="deep--nested--file")
     assert "Deep" in out.body
+
+
+# ── put: edit (anchored) ──────────────────────────────────────────────
+
+
+def test_put_edit_swaps_token_in_block(handler: MarkdownHandler, md_root: Path) -> None:
+    """The motivating example from the spec: 'over <the> fence' → 'over a fence'."""
+    _write(md_root, "doc.md", "# Title\n\nThe fox jumps over the fence.\n")
+    handler.get(id="doc")
+    ref = handler.store.get_ref(kind="markdown", id="doc")
+    assert ref is not None
+    blocks = handler.store.list_blocks_for_ref(ref.id)
+    para = next(b for b in blocks if "fox" in b.text)
+
+    handler.put(
+        id=f"doc~{para.slug}",
+        mode="edit",
+        find="the",
+        before="over ",
+        after=" fence",
+        text="a",
+    )
+    raw = (md_root / "doc.md").read_text()
+    assert "over a fence." in raw
+    # The first 'The' should be untouched.
+    assert raw.startswith("# Title\n\nThe fox")
+
+
+def test_put_edit_whole_file_no_selector(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    """No ~selector → search the whole file."""
+    _write(md_root, "doc.md", "# Title\n\nFoo and bar and baz.\n")
+    handler.put(
+        id="doc",
+        mode="edit",
+        find="bar",
+        text="QUX",
+    )
+    raw = (md_root / "doc.md").read_text()
+    assert "Foo and QUX and baz." in raw
+
+
+def test_put_edit_match_all_replaces_every_occurrence(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    _write(md_root, "doc.md", "# T\n\nx is x and x.\n")
+    handler.put(
+        id="doc",
+        mode="edit",
+        find="x",
+        text="Y",
+        match="all",
+    )
+    raw = (md_root / "doc.md").read_text()
+    assert "Y is Y and Y." in raw
+
+
+def test_put_edit_ambiguous_match_unique_errors(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    _write(md_root, "doc.md", "# T\n\nfoo and foo.\n")
+    with pytest.raises(BadInput) as excinfo:
+        handler.put(id="doc", mode="edit", find="foo", text="bar")
+    msg = str(excinfo.value)
+    assert "2 matches" in msg or "matches" in msg
+
+
+def test_put_edit_not_found_carries_actionable_hint(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    _write(md_root, "doc.md", "# Title\n\nHello world.\n")
+    with pytest.raises(BadInput) as excinfo:
+        handler.put(id="doc", mode="edit", find="goodbye", text="x")
+    msg = str(excinfo.value)
+    assert "not found" in msg
+    # Region label should include the file slug.
+    assert "doc" in msg
+
+
+def test_put_edit_requires_find(handler: MarkdownHandler, md_root: Path) -> None:
+    _write(md_root, "doc.md", "# T\n\nA.\n")
+    with pytest.raises(BadInput, match="requires find="):
+        handler.put(id="doc", mode="edit", text="x")
+
+
+def test_put_edit_requires_text(handler: MarkdownHandler, md_root: Path) -> None:
+    _write(md_root, "doc.md", "# T\n\nA.\n")
+    with pytest.raises(BadInput, match="requires text="):
+        handler.put(id="doc", mode="edit", find="A")
+
+
+def test_put_edit_no_op_errors(handler: MarkdownHandler, md_root: Path) -> None:
+    """Identical find=text=text is a no-op and should not silently succeed."""
+    _write(md_root, "doc.md", "# T\n\nfoo bar.\n")
+    with pytest.raises(BadInput, match="no change"):
+        handler.put(id="doc", mode="edit", find="foo", text="foo")
+
+
+def test_put_edit_persists_via_reingest(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    """After mode='edit', the next get() must see the new text."""
+    _write(md_root, "doc.md", "# Title\n\nDraft version.\n")
+    handler.put(id="doc", mode="edit", find="Draft", text="Final")
+    out = handler.get(id="doc/raw")
+    assert "Final version." in out.body
+    assert "Draft" not in out.body
+
+
+# ── put: insert (anchored) ────────────────────────────────────────────
+
+
+def test_put_insert_after_anchor(handler: MarkdownHandler, md_root: Path) -> None:
+    _write(md_root, "doc.md", "Hello world.\n")
+    handler.put(
+        id="doc",
+        mode="insert",
+        find="Hello",
+        where="after",
+        text=" cruel",
+    )
+    raw = (md_root / "doc.md").read_text()
+    assert "Hello cruel world." in raw
+
+
+def test_put_insert_before_anchor(handler: MarkdownHandler, md_root: Path) -> None:
+    _write(md_root, "doc.md", "world.\n")
+    handler.put(
+        id="doc",
+        mode="insert",
+        find="world",
+        where="before",
+        text="big ",
+    )
+    raw = (md_root / "doc.md").read_text()
+    assert "big world." in raw
+
+
+def test_put_insert_requires_where(handler: MarkdownHandler, md_root: Path) -> None:
+    _write(md_root, "doc.md", "x\n")
+    with pytest.raises(BadInput, match="requires where="):
+        handler.put(id="doc", mode="insert", find="x", text="y")
+
+
+def test_put_edit_invalid_match_policy(handler: MarkdownHandler, md_root: Path) -> None:
+    _write(md_root, "doc.md", "# T\n\nfoo.\n")
+    with pytest.raises(BadInput, match="unknown match policy"):
+        handler.put(
+            id="doc",
+            mode="edit",
+            find="foo",
+            text="bar",
+            match="bogus",
+        )
+
+
+# ── put: dry_run ──────────────────────────────────────────────────────
+
+
+def test_put_edit_dry_run_does_not_write(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    """dry_run=True must NOT touch the file on disk."""
+    initial = "# Title\n\nDraft version.\n"
+    _write(md_root, "doc.md", initial)
+    out = handler.put(
+        id="doc",
+        mode="edit",
+        find="Draft",
+        text="Final",
+        dry_run=True,
+    )
+    # File still has the original content.
+    assert (md_root / "doc.md").read_text() == initial
+    # Response is the dry-run header + diff.
+    assert "DRY RUN" in out.body
+    assert "Draft" in out.body or "-Draft" in out.body
+    assert "Final" in out.body or "+Final" in out.body
+
+
+def test_put_edit_dry_run_diff_has_unified_headers(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    _write(md_root, "doc.md", "before\nfoo\nafter\n")
+    out = handler.put(
+        id="doc",
+        mode="edit",
+        find="foo",
+        text="bar",
+        dry_run="diff",
+    )
+    # Standard difflib unified-diff headers.
+    assert "--- a/doc" in out.body
+    assert "+++ b/doc" in out.body
+    assert "-foo" in out.body
+    assert "+bar" in out.body
+
+
+def test_put_edit_dry_run_full_shows_post_edit_lines(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    _write(md_root, "doc.md", "alpha\nbeta\nfoo\ndelta\nepsilon\n")
+    out = handler.put(
+        id="doc",
+        mode="edit",
+        find="foo",
+        text="REPLACED",
+        dry_run="full",
+    )
+    assert "DRY RUN" in out.body
+    # Full view shows the post-edit line marked with `> `.
+    assert "REPLACED" in out.body
+    assert "> " in out.body  # marker for edited lines
+    # Should NOT contain the diff `--- a/` / `+++ b/` headers.
+    assert "--- a/" not in out.body
+
+
+def test_put_edit_dry_run_validates_errors_before_write(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    """Even in dry-run, ``find`` not present is still an error."""
+    _write(md_root, "doc.md", "# T\n\nhello.\n")
+    with pytest.raises(BadInput, match="not found"):
+        handler.put(
+            id="doc",
+            mode="edit",
+            find="nonexistent",
+            text="x",
+            dry_run=True,
+        )
+
+
+def test_put_edit_dry_run_block_scoped(handler: MarkdownHandler, md_root: Path) -> None:
+    """dry_run on a block-scoped edit: diff still shows the file-level
+    line numbers, file untouched."""
+    initial = "# Title\n\nFirst paragraph with fox.\n\n## Sub\n\nOther.\n"
+    _write(md_root, "doc.md", initial)
+    handler.get(id="doc")  # ingest first
+    ref = handler.store.get_ref(kind="markdown", id="doc")
+    assert ref is not None
+    blocks = handler.store.list_blocks_for_ref(ref.id)
+    para = next(b for b in blocks if "fox" in b.text)
+
+    out = handler.put(
+        id=f"doc~{para.slug}",
+        mode="edit",
+        find="fox",
+        text="cat",
+        dry_run=True,
+    )
+    assert (md_root / "doc.md").read_text() == initial
+    assert "DRY RUN" in out.body
+    assert "-First paragraph with fox" in out.body
+    assert "+First paragraph with cat" in out.body
+
+
+def test_put_insert_dry_run_does_not_write(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    initial = "Hello world.\n"
+    _write(md_root, "doc.md", initial)
+    out = handler.put(
+        id="doc",
+        mode="insert",
+        find="Hello",
+        where="after",
+        text=" cruel",
+        dry_run=True,
+    )
+    assert (md_root / "doc.md").read_text() == initial
+    assert "DRY RUN" in out.body
+    assert "+Hello cruel world." in out.body
+
+
+def test_put_edit_dry_run_rejects_unknown_mode(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    _write(md_root, "doc.md", "x\n")
+    with pytest.raises(BadInput, match="dry_run must be"):
+        handler.put(
+            id="doc",
+            mode="edit",
+            find="x",
+            text="y",
+            dry_run="brief",
+        )

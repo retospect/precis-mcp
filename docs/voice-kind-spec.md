@@ -279,7 +279,7 @@ Cluster MCP config snippet:
 
 ```json
 "precis2": {
-  "command": ".../precis-mcp-new/.venv/bin/precis",
+  "command": ".../precis-mcp/.venv/bin/precis",
   "args": ["serve"],
   "env": {
     "PRECIS_VOICE_OUTPUT_DIR": "/opt/nfs/shared/voice",

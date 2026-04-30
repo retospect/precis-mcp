@@ -462,9 +462,330 @@ def test_response_includes_change_summary(handler: PythonHandler, repo: Path) ->
 
 
 def test_kind_spec_supports_put() -> None:
-    """The KindSpec advertises put + the four modes — the dispatcher
+    """The KindSpec advertises put + the supported modes — the dispatcher
     relies on this for surface validation."""
     from precis.handlers.python import _SUPPORTED_PUT_MODES
 
     assert PythonHandler.spec.supports_put is True
     assert tuple(PythonHandler.spec.modes) == _SUPPORTED_PUT_MODES
+    # v1 modes: create + append + replace + delete + edit + insert.
+    assert "edit" in _SUPPORTED_PUT_MODES
+    assert "insert" in _SUPPORTED_PUT_MODES
+
+
+# ---------------------------------------------------------------------------
+# mode='edit' — anchored sub-region replace
+# ---------------------------------------------------------------------------
+
+
+def test_edit_swaps_token_in_function(handler: PythonHandler, repo: Path) -> None:
+    """The motivating case: rename one call site without touching others."""
+    handler.put(
+        id="r::pkg.m.helper",
+        mode="edit",
+        find="x + 1",
+        text="x + 2",
+    )
+    body = (repo / "pkg" / "m.py").read_text()
+    assert "x + 2" in body
+    assert "x + 1" not in body
+    # Other symbols intact.
+    assert "def greet" in body
+    assert "def shout" in body
+
+
+def test_edit_uses_anchors_to_disambiguate(handler: PythonHandler, repo: Path) -> None:
+    """`name` appears multiple times across greet/shout; anchored
+    edit picks one specific occurrence."""
+    handler.put(
+        id="r/pkg/m.py",
+        mode="edit",
+        find="name",
+        before="len(",
+        after=")",
+        text="full_name",
+    )
+    body = (repo / "pkg" / "m.py").read_text()
+    assert "len(full_name)" in body
+    # Other `name` occurrences unchanged.
+    assert "self, name: str" in body  # both methods' signatures intact
+    assert "self.greet(name)" in body  # shout's body intact
+
+
+def test_edit_match_all_replaces_every_occurrence(
+    handler: PythonHandler, repo: Path
+) -> None:
+    handler.put(
+        id="r/pkg/m.py",
+        mode="edit",
+        find="name: str",
+        text="name: bytes",
+        match="all",
+    )
+    body = (repo / "pkg" / "m.py").read_text()
+    assert body.count("name: bytes") == 2
+    assert "name: str" not in body
+
+
+def test_edit_unique_match_errors_when_ambiguous(
+    handler: PythonHandler, repo: Path
+) -> None:
+    pre = (repo / "pkg" / "m.py").read_text()
+    with pytest.raises(BadInput) as excinfo:
+        handler.put(id="r/pkg/m.py", mode="edit", find="name", text="renamed")
+    msg = str(excinfo.value)
+    assert "matches" in msg
+    # File untouched on validation failure.
+    assert (repo / "pkg" / "m.py").read_text() == pre
+
+
+def test_edit_within_qualname_region(handler: PythonHandler, repo: Path) -> None:
+    """Editing scoped to one symbol's source — the anchored search
+    only sees that symbol's lines."""
+    handler.put(
+        id="r::pkg.m.C.shout",
+        mode="edit",
+        find=".upper()",
+        text=".lower()",
+    )
+    body = (repo / "pkg" / "m.py").read_text()
+    assert ".lower()" in body
+    # `greet` body unchanged.
+    assert "return helper(len(name))" in body
+
+
+def test_edit_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> None:
+    """Gate 1 (ast.parse) catches an edit that produces invalid Python."""
+    pre = (repo / "pkg" / "m.py").read_text()
+    with pytest.raises(BadInput, match="ast.parse failed"):
+        handler.put(
+            id="r/pkg/m.py",
+            mode="edit",
+            find="def helper",
+            text="def )(broken",
+        )
+    # File untouched.
+    assert (repo / "pkg" / "m.py").read_text() == pre
+
+
+def test_edit_blocks_qualname_drop_via_anchored_replace(
+    handler: PythonHandler, repo: Path
+) -> None:
+    """An anchored edit that renames a `def` should fail gate 2."""
+    pre = (repo / "pkg" / "m.py").read_text()
+    with pytest.raises(BadInput, match="qualname-drop"):
+        handler.put(
+            id="r/pkg/m.py",
+            mode="edit",
+            find="def helper(",
+            text="def renamed(",
+        )
+    assert (repo / "pkg" / "m.py").read_text() == pre
+
+
+def test_edit_qualname_rename_with_allow_rename(
+    handler: PythonHandler, repo: Path
+) -> None:
+    handler.put(
+        id="r/pkg/m.py",
+        mode="edit",
+        find="def helper(",
+        text="def renamed(",
+        allow_rename=True,
+    )
+    body = (repo / "pkg" / "m.py").read_text()
+    assert "def renamed(" in body
+    assert "def helper(" not in body
+
+
+def test_edit_not_found_carries_actionable_hint(handler: PythonHandler) -> None:
+    with pytest.raises(BadInput) as excinfo:
+        handler.put(
+            id="r/pkg/m.py",
+            mode="edit",
+            find="nonexistent_token",
+            text="x",
+        )
+    msg = str(excinfo.value)
+    assert "not found" in msg
+
+
+def test_edit_requires_find(handler: PythonHandler) -> None:
+    with pytest.raises(BadInput, match="requires find="):
+        handler.put(id="r/pkg/m.py", mode="edit", text="x")
+
+
+def test_edit_requires_text(handler: PythonHandler) -> None:
+    with pytest.raises(BadInput, match="requires text="):
+        handler.put(id="r/pkg/m.py", mode="edit", find="def helper")
+
+
+# ---------------------------------------------------------------------------
+# mode='insert' — anchored insert
+# ---------------------------------------------------------------------------
+
+
+def test_insert_after_function_definition(handler: PythonHandler, repo: Path) -> None:
+    """Insert a new top-level function after the existing helper."""
+    handler.put(
+        id="r/pkg/m.py",
+        mode="insert",
+        find="    return x + 1\n",
+        where="after",
+        text="\n\ndef twice(x: int) -> int:\n    return x * 2\n",
+    )
+    body = (repo / "pkg" / "m.py").read_text()
+    assert "def twice" in body
+    assert "def helper" in body  # original preserved
+
+
+def test_insert_requires_where(handler: PythonHandler) -> None:
+    with pytest.raises(BadInput, match="requires where="):
+        handler.put(
+            id="r/pkg/m.py",
+            mode="insert",
+            find="def helper",
+            text="x = 1\n",
+        )
+
+
+def test_insert_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> None:
+    """An insert that breaks syntax fails gate 1, file untouched."""
+    pre = (repo / "pkg" / "m.py").read_text()
+    with pytest.raises(BadInput, match="ast.parse failed"):
+        handler.put(
+            id="r/pkg/m.py",
+            mode="insert",
+            find="def helper",
+            where="before",
+            text="def )(broken",
+        )
+    assert (repo / "pkg" / "m.py").read_text() == pre
+
+
+# ---------------------------------------------------------------------------
+# mode='edit' / mode='insert' — dry_run
+# ---------------------------------------------------------------------------
+
+
+def test_edit_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> None:
+    """dry_run=True must NOT touch the file on disk."""
+    pre = (repo / "pkg" / "m.py").read_text()
+    out = handler.put(
+        id="r/pkg/m.py",
+        mode="edit",
+        find="x + 1",
+        text="x + 2",
+        dry_run=True,
+    )
+    # File untouched.
+    assert (repo / "pkg" / "m.py").read_text() == pre
+    # Header advertises a dry run plus the gates.
+    assert "DRY RUN" in out.body
+    assert "ast.parse:" in out.body
+    assert "qualname-drop:" in out.body
+    assert "ruff:" in out.body
+
+
+def test_edit_dry_run_diff_format(handler: PythonHandler, repo: Path) -> None:
+    out = handler.put(
+        id="r/pkg/m.py",
+        mode="edit",
+        find="x + 1",
+        text="x + 2",
+        dry_run="diff",
+    )
+    # Standard difflib unified-diff headers.
+    assert "--- a/r/pkg/m.py" in out.body
+    assert "+++ b/r/pkg/m.py" in out.body
+    assert "-    return x + 1" in out.body
+    assert "+    return x + 2" in out.body
+
+
+def test_edit_dry_run_full_format(handler: PythonHandler, repo: Path) -> None:
+    out = handler.put(
+        id="r/pkg/m.py",
+        mode="edit",
+        find="x + 1",
+        text="x + 2",
+        dry_run="full",
+    )
+    assert "DRY RUN" in out.body
+    # Full view shows the post-edit line marked with `> `; no diff headers.
+    assert "x + 2" in out.body
+    assert "> " in out.body
+    assert "--- a/" not in out.body
+
+
+def test_edit_dry_run_runs_gates(handler: PythonHandler, repo: Path) -> None:
+    """A syntactically broken dry_run still fires gate 1 (no write)."""
+    pre = (repo / "pkg" / "m.py").read_text()
+    with pytest.raises(BadInput, match="ast.parse failed"):
+        handler.put(
+            id="r/pkg/m.py",
+            mode="edit",
+            find="def helper",
+            text="def )(broken",
+            dry_run=True,
+        )
+    assert (repo / "pkg" / "m.py").read_text() == pre
+
+
+def test_edit_dry_run_qualname_drop_blocks(handler: PythonHandler, repo: Path) -> None:
+    """dry_run still enforces gate 2 (qualname-drop)."""
+    pre = (repo / "pkg" / "m.py").read_text()
+    with pytest.raises(BadInput, match="qualname-drop"):
+        handler.put(
+            id="r/pkg/m.py",
+            mode="edit",
+            find="def helper(",
+            text="def renamed(",
+            dry_run=True,
+        )
+    assert (repo / "pkg" / "m.py").read_text() == pre
+
+
+def test_edit_dry_run_qualname_with_allow_rename(
+    handler: PythonHandler, repo: Path
+) -> None:
+    """dry_run + allow_rename: gate 2 passes, file still untouched."""
+    pre = (repo / "pkg" / "m.py").read_text()
+    out = handler.put(
+        id="r/pkg/m.py",
+        mode="edit",
+        find="def helper(",
+        text="def renamed(",
+        allow_rename=True,
+        dry_run=True,
+    )
+    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert "DRY RUN" in out.body
+    assert "qualname-drop:" in out.body
+    assert "ok" in out.body  # allow_rename → ok
+
+
+def test_insert_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> None:
+    pre = (repo / "pkg" / "m.py").read_text()
+    out = handler.put(
+        id="r/pkg/m.py",
+        mode="insert",
+        find="    return x + 1\n",
+        where="after",
+        text="\n\ndef twice(x: int) -> int:\n    return x * 2\n",
+        dry_run=True,
+    )
+    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert "DRY RUN" in out.body
+    # Diff shows the new function as added lines.
+    assert "+def twice" in out.body or "+\n+def twice" in out.body
+
+
+def test_edit_dry_run_rejects_unknown_mode(handler: PythonHandler) -> None:
+    with pytest.raises(BadInput, match="dry_run must be"):
+        handler.put(
+            id="r/pkg/m.py",
+            mode="edit",
+            find="x + 1",
+            text="x + 2",
+            dry_run="brief",
+        )

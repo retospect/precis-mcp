@@ -666,7 +666,7 @@ Cluster MCP config snippet:
 
 ```json
 "precis2": {
-  "command": ".../precis-mcp-new/.venv/bin/precis",
+  "command": ".../precis-mcp/.venv/bin/precis",
   "args": ["serve"],
   "env": {
     "EPO_OPS_CLIENT_KEY": "${vault_epo_ops_client_key}",

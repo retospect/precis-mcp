@@ -338,8 +338,8 @@ carries **both Track A and Track B forms** of the resolved address:
 
 ```
 # notes/meeting.md~agenda  (block 3, lines 42-58)
-# precis-mcp-new::precis.registry.Registry.get  (lines 120-128)
-# precis-mcp-new/src/precis/cli.py~L142  (resolved to _cmd_serve, lines 138-150)
+# precis-mcp::precis.registry.Registry.get  (lines 120-128)
+# precis-mcp/src/precis/cli.py~L142  (resolved to _cmd_serve, lines 138-150)
 ```
 
 Format rules:
@@ -517,7 +517,7 @@ PRECIS_MARKDOWN_ROOT=/Users/bots/notes
 # New (unified)
 PRECIS_MARKDOWN_ROOTS=notes:/Users/bots/notes,work:/Users/bots/work-docs
 PRECIS_PLAINTEXT_ROOTS=scratch:/tmp/scratch
-PRECIS_PYTHON_ROOTS=precis-mcp-new:/Users/bots/.../precis-mcp-new,cluster:/Users/bots/.../openclaw-cluster
+PRECIS_PYTHON_ROOTS=precis-mcp:/Users/bots/.../precis-mcp,cluster:/Users/bots/.../openclaw-cluster
 ```
 
 ### Alias hygiene
@@ -528,7 +528,7 @@ addresses get an awkward stutter:
 
 ```
 ✗  precis/src/precis/cli.py        # alias=precis, src/precis is the package dir
-✓  precis-mcp-new/src/precis/cli.py # alias=precis-mcp-new (the repo name)
+✓  precis-mcp/src/precis/cli.py # alias=precis-mcp (the repo name)
 ```
 
 For python, **use the repo name** (the directory name) as the alias.

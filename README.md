@@ -11,7 +11,10 @@
 > **4a (cache-backed kinds: `math`, `youtube`, `web` page-fetch)**,
 > **4b (Perplexity Sonar trio: `websearch` / `think` / `research`)**,
 > **5 (state kinds: `todo`, `gripe`, `fc`, `quest`, `conv`, `oracle`, `skill`)**,
-> **6a (markdown file handler with read/write + lazy re-ingest)**.
+> **6a (markdown file handler with read/write + lazy re-ingest)**,
+> **7 (precis-help meta-skill synthesised from live registry)**,
+> **8 (anchored edit protocol — `mode='edit'` + `mode='insert'` on markdown + python)**,
+> **9 (python code-navigator kind — AST index, callgraph, runtrace)**.
 > Queued: web bookmark mode + Wayback (deferred), other file handlers (plaintext, rmk, docx, tex, book), polish.
 
 ## What v2 is
@@ -64,8 +67,11 @@ the schema.
 - [x] Phase 4b — Perplexity Sonar trio: `websearch`, `think`, `research`. Shared base, per-tier model + TTL + cost; cache key includes model so tiers don't collide. Web bookmark mode + Wayback enrichment deferred (needs `put` on `web` kind).
 - [x] Phase 5 — state kinds: `todo` (with STATUS transitions and `/open` `/done` filters), `gripe`, `fc` (with `/due` view), `quest` (slug-addressed with auto-mint), `conv` (read-only with `/transcript` and per-turn nav), `oracle`, `skill` (markdown served from package data dir). Shared `NumericRefHandler` base extracted from MemoryHandler.
 - [x] Phase 6a — `markdown` file handler. Slug-addressed (`notes/meeting.md` → `notes--meeting`); one block per heading / paragraph / fenced code / table / list. Block slugs are content-derived hashes so they survive re-ingest. Lazy re-ingest on every `get` checks mtime first, falls back to sha256 on stale mtime. `put` modes: `create`, `append`, `replace`, `delete` — all atomic. CLI: `precis jobs ingest-md <root>`. See `docs/phase6-plan.md`.
+- [x] Phase 7 — `precis-help` meta-skill synthesised from the live registry. `SkillHandler.bind_registry()` is invoked by `build_runtime()` after `Registry` construction; the help skill enumerates every active kind with verbs + description and includes a banner when a documented-but-not-wired kind is requested.
+- [x] Phase 8 — anchored edit protocol. New write modes `mode='edit'` and `mode='insert'` join `create`/`append`/`replace`/`delete` on every R/W file kind. Resolves by *content* (literal `find=` with optional `before=`/`after=` anchors and `match='unique|first|all|nth'` policy). Pure resolver in `precis.utils.edit_resolve`; sharp `BadInput` on not-found (with fuzzy nearest-line hints) and ambiguous (with disambiguation guidance). v1 ships for `markdown` and `python`. See `docs/edit-protocol-spec.md`.
+- [x] Phase 9 — `python` code-navigator kind. Multi-root, AST-indexed in-memory with mtime-invalidated cache (no DB persistence). Two-track addressing: line ranges (`alias/path/file.py~L42-58`) and qualnames (`alias::pkg.mod.Class.method`). Views: `toc`, `outline`, `source`, `entries` (pyproject console scripts + `__main__` guards), `callgraph` (entry-rooted static call tree with cycle detection + cross-repo resolution), `runtrace` (dynamic call graph captured under `sys.setprofile` in a gated subprocess, with stdlib subtree collapse and a static-only diff). Write surface: same modes as markdown plus three validation gates (`ast.parse`, qualname-drop prevention, `ruff check --fix && ruff format`). Configured via `PRECIS_PYTHON_ROOTS=alias:/path,…`; runtrace gated by `PRECIS_PYTHON_ALLOW_EXEC=1`. See `docs/python-kind-spec.md` and `precis-python-help` skill.
 - [ ] Phase 6b — remaining file handlers (`plaintext`, `rmk`, `docx`, `tex`, `book`)
-- [ ] Phase 7 — polish: `/help`, hint channel, notifications, cost footer
+- [ ] Polish: hint channel notifications, cost footer parity across kinds, web bookmark mode + Wayback enrichment
 
 ## License
 
