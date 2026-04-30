@@ -1,5 +1,5 @@
 ---
-status: v1 shipped — markdown + python (mode='edit' / mode='insert'); regex/batch/dry_run deferred to v2
+status: v1 + dry_run shipped — markdown + python; regex/batch/expect_lines/cross_region deferred to v2
 applies-to: every R/W file-rooted kind (markdown, plaintext, rmk, docx, tex, book, python)
 supersedes: nothing — extends the four-mode surface in `file-kinds-unified-addressing.md`
 last-updated: 2026-04-30
@@ -501,12 +501,30 @@ existing "Write" section. The four-mode list grows to six.
   existing `_finalize_write()` so the `ast.parse` + qualname-stable
   + ruff gates apply automatically. 12 integration tests.
 
+### v1 + `dry_run` (shipped)
+
+- **`dry_run=True | 'diff' | 'full'`** on `mode='edit'` and
+  `mode='insert'`. The same resolver, splice, and validation gates
+  run; the disk write and re-ingest are skipped.
+- **Header** lists region, edited spans, match policy, and per-gate
+  results. Markdown shows `re-parse` + `hunks within/outside`;
+  python shows `ast.parse:` + `qualname-drop:` + `ruff:` (with
+  ruff's incidental hunks called out as "outside spans" so the
+  agent isn't surprised by autofixes).
+- **Body** is a unified diff (default — `dry_run=True` aliases
+  `'diff'`) with standard `--- a/<label>` / `+++ b/<label>` headers
+  and 3 lines of context, OR the post-edit lines around each edited
+  span with `> ` markers (`'full'`).
+- Gate failures (AST parse, qualname-drop) still raise during
+  dry-run so the agent learns "would this validate?" without any
+  disk mutation. 19 dry_run-specific tests across the resolver,
+  markdown, and python suites.
+
 ### Deferred to v2
 
 - `regex=True` + `flags=` — opt-in regex with unbounded-pattern
   guard.
 - `edits=[…]` atomic batch transactions.
-- `dry_run=True` returning the unified diff without writing.
 - `expect_lines=N` safety assertion.
 - Explicit cross-region rejection (`allow_cross_region=False`).
   Today markdown allows cross-block matches; the parser re-tokens
