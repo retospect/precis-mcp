@@ -151,3 +151,110 @@ class TestViewsRegistered:
 
     def test_cited_by_in_views(self):
         assert "cited-by" in PaperHandler.views
+
+
+# ===========================================================================
+# Regression suite — 2026-04-25 mcp-critic review (v3 B6)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# /cites and /cited-by paginate at 20 by default
+# ---------------------------------------------------------------------------
+
+
+class TestS2CitesPagination:
+    """``/cites`` and ``/cited-by`` cap responses at
+    ``_S2_PAGE_DEFAULT`` (20) by default; ``/N`` paginates by offset;
+    ``/all`` returns the unbounded form.
+
+    Review 2026-04-25 mcp-critic finding B6 — heavily-cited papers
+    used to dump every reference in one shot, blowing the agent's
+    context window with 3k+ tokens of metadata and offering no
+    pagination knob.
+    """
+
+    @staticmethod
+    def _fake_papers(n: int) -> list[dict]:
+        return [
+            {"title": f"Paper {i}", "year": 2020, "doi": f"10.x/{i}", "s2_id": f"s{i}"}
+            for i in range(n)
+        ]
+
+    def test_default_caps_at_twenty(self):
+        h = PaperHandler()
+        ref = {"slug": "big2024paper", "doi": "10.x/big"}
+        with patch(
+            "acatome_meta.citations.citations",
+            return_value={"references": self._fake_papers(52)},
+        ):
+            out = h._read_s2_graph(ref, "references", limit=20, offset=0)
+        # Showing-clause names the slice; trailer carries next-page.
+        assert "1\u201320 of 52" in out  # en-dash separator
+        assert "get(id='big2024paper/cites/20')" in out
+        assert "get(id='big2024paper/cites/all')" in out
+
+    def test_offset_jumps_to_page(self):
+        h = PaperHandler()
+        ref = {"slug": "big2024paper", "doi": "10.x/big"}
+        with patch(
+            "acatome_meta.citations.citations",
+            return_value={"references": self._fake_papers(52)},
+        ):
+            out = h._read_s2_graph(ref, "references", limit=20, offset=20)
+        assert "21\u201340 of 52" in out
+        # Trailer points at the third page.
+        assert "get(id='big2024paper/cites/40')" in out
+
+    def test_all_returns_unbounded(self):
+        h = PaperHandler()
+        ref = {"slug": "big2024paper", "doi": "10.x/big"}
+        with patch(
+            "acatome_meta.citations.citations",
+            return_value={"references": self._fake_papers(52)},
+        ):
+            out = h._read_s2_graph(ref, "references", limit=None, offset=0)
+        # No pagination clause; trailer has no next-page link.
+        assert "52 references" in out
+        assert "/cites/20" not in out
+
+    def test_offset_past_end_emits_recovery_hint(self):
+        h = PaperHandler()
+        ref = {"slug": "small2024paper", "doi": "10.x/s"}
+        with patch(
+            "acatome_meta.citations.citations",
+            return_value={"references": self._fake_papers(5)},
+        ):
+            out = h._read_s2_graph(ref, "references", limit=20, offset=100)
+        assert "past the end" in out
+        assert "get(id='small2024paper/cites/0')" in out
+
+    def test_subview_parser_routes_default(self):
+        h = PaperHandler()
+        ref = {"slug": "x"}
+        limit, offset = h._parse_s2_pagination(None, ref, "cites")
+        assert limit == 20
+        assert offset == 0
+
+    def test_subview_parser_routes_all(self):
+        h = PaperHandler()
+        ref = {"slug": "x"}
+        limit, offset = h._parse_s2_pagination("all", ref, "cites")
+        assert limit is None
+        assert offset == 0
+
+    def test_subview_parser_routes_offset(self):
+        h = PaperHandler()
+        ref = {"slug": "x"}
+        limit, offset = h._parse_s2_pagination("40", ref, "cites")
+        assert limit == 20
+        assert offset == 40
+
+    def test_subview_parser_rejects_garbage(self):
+        from precis.protocol import ErrorCode, PrecisError
+
+        h = PaperHandler()
+        ref = {"slug": "x"}
+        with pytest.raises(PrecisError) as excinfo:
+            h._parse_s2_pagination("garbage", ref, "cites")
+        assert excinfo.value.code is ErrorCode.PARAM_INVALID

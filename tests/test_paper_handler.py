@@ -1,6 +1,14 @@
-"""Tests for paper handler date/tag/filter features."""
+"""Tests for :class:`precis.handlers.paper.PaperHandler`.
+
+Covers date/tag/filter parsing utilities, plus regression suite from
+the 2026-04-25 mcp-critic review (JATS cleanup, abstract view, figure
+error shape, figure caption rescue, range clamping, caption-label
+dedup, fig_num rebinding, empty figure-block hint, inverted chunk
+range).
+"""
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -10,6 +18,12 @@ from precis.handlers._ref_base import (
     _parse_year_value,
     _relative_date,
 )
+from precis.handlers.paper import (
+    PaperHandler,
+    _caption_body,
+    _clean_jats,
+)
+from precis.protocol import ErrorCode, PrecisError
 
 
 class TestParseDateValue:
@@ -770,7 +784,7 @@ class TestTocPositionlessBlocks:
         # Stub paper with metadata but no body — abstract only.  Must
         # return a structured ERROR [unavailable] with actionable hints,
         # NOT crash and NOT render an empty TOC.
-        from precis.protocol import PrecisError, ErrorCode
+        from precis.protocol import ErrorCode, PrecisError
 
         toc = [
             self._positionless("abstract", "Just an abstract."),
@@ -1074,7 +1088,7 @@ class TestNegativeChunkSelector:
             return []
 
     def test_chunks_negative_index(self):
-        from precis.protocol import PrecisError, ErrorCode
+        from precis.protocol import ErrorCode, PrecisError
 
         with pytest.raises(PrecisError) as exc:
             self._handler()._read_chunks(
@@ -1084,7 +1098,7 @@ class TestNegativeChunkSelector:
         assert "non-negative" in exc.value.cause
 
     def test_chunks_negative_range_start(self):
-        from precis.protocol import PrecisError, ErrorCode
+        from precis.protocol import ErrorCode, PrecisError
 
         with pytest.raises(PrecisError) as exc:
             self._handler()._read_chunks(
@@ -1093,7 +1107,7 @@ class TestNegativeChunkSelector:
         assert exc.value.code == ErrorCode.ID_MALFORMED
 
     def test_chunks_negative_range_end(self):
-        from precis.protocol import PrecisError, ErrorCode
+        from precis.protocol import ErrorCode, PrecisError
 
         with pytest.raises(PrecisError) as exc:
             self._handler()._read_chunks(
@@ -1102,7 +1116,7 @@ class TestNegativeChunkSelector:
         assert exc.value.code == ErrorCode.ID_MALFORMED
 
     def test_summary_negative_selector(self):
-        from precis.protocol import PrecisError, ErrorCode
+        from precis.protocol import ErrorCode, PrecisError
 
         with pytest.raises(PrecisError) as exc:
             self._handler()._read_summary(
@@ -1111,7 +1125,7 @@ class TestNegativeChunkSelector:
         assert exc.value.code == ErrorCode.ID_MALFORMED
 
     def test_links_negative_selector(self):
-        from precis.protocol import PrecisError, ErrorCode
+        from precis.protocol import ErrorCode, PrecisError
 
         with pytest.raises(PrecisError) as exc:
             self._handler()._read_links(
@@ -1154,3 +1168,568 @@ class TestPaperStructuralNavigationSkill:
         assert "Decision table" in out or "decision table" in out.lower()
         assert "/toc" in out
         assert "/abstract" in out
+
+
+# ===========================================================================
+# Regression suite — 2026-04-25 mcp-critic review (paper-handler concerns)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# v2 B4 — JATS XML stripping
+# ---------------------------------------------------------------------------
+
+
+class TestJatsCleanup:
+    """``_clean_jats`` is the single helper every abstract path runs
+    through (mcp-critic finding B4)."""
+
+    def test_strips_jats_title_and_p(self):
+        raw = (
+            "<jats:title>Abstract</jats:title>"
+            "<jats:p>Hello world.</jats:p>"
+        )
+        out = _clean_jats(raw)
+        assert "<jats:" not in out
+        assert "</jats:" not in out
+        assert "Hello world." in out
+        assert "Abstract" in out
+
+    def test_jats_sub_becomes_unicode(self):
+        raw = "NO<jats:sub>3</jats:sub>"
+        # ``₃`` is U+2083
+        assert _clean_jats(raw) == "NO\u2083"
+
+    def test_jats_sup_becomes_unicode(self):
+        raw = "H<jats:sup>+</jats:sup>"
+        # ``⁺`` is U+207A
+        assert _clean_jats(raw) == "H\u207a"
+
+    def test_jats_sub_then_sup_combined(self):
+        # Real CrossRef shape from the critic's ``ni2024atomic`` probe.
+        raw = "NO<jats:sub>3</jats:sub><jats:sup>−</jats:sup>"
+        out = _clean_jats(raw)
+        # Subscript ₃ + Unicode minus ⁻ in superscript.
+        assert out == "NO\u2083\u207b"
+
+    def test_non_digit_sub_falls_back_to_underscore(self):
+        # ``x`` isn't in the digit/operator translation table, so we
+        # wrap with markdown italics rather than silently drop it.
+        raw = "y<jats:sub>x</jats:sub>"
+        out = _clean_jats(raw)
+        assert "_x_" in out
+
+    def test_empty_input(self):
+        assert _clean_jats("") == ""
+        assert _clean_jats(None) is None  # type: ignore[arg-type]
+
+
+class TestPaperAbstractView:
+    """``/abstract`` view runs the cleaned text through ``_clean_jats``."""
+
+    @staticmethod
+    def _handler_with_abstract(raw_text: str):
+        h = PaperHandler()
+        store = MagicMock()
+        store.get.return_value = {
+            "slug": "ni2024atomic",
+            "title": "T",
+            "ref_id": 1,
+        }
+
+        def get_blocks(slug, block_type=None):
+            if block_type == "abstract":
+                return [{"text": raw_text}]
+            return []
+
+        store.get_blocks.side_effect = get_blocks
+        return h, store
+
+    def test_abstract_view_strips_jats(self):
+        h, store = self._handler_with_abstract(
+            "<jats:title>Abstract</jats:title>"
+            "<jats:p>Reducing nitrate (NO<jats:sub>3</jats:sub>"
+            "<jats:sup>−</jats:sup>) releases H<jats:sup>+</jats:sup>.</jats:p>"
+        )
+        ref = store.get.return_value
+        out = h._read_abstract(store, ref)
+        assert "<jats:" not in out
+        assert "</jats:" not in out
+        assert "NO\u2083\u207b" in out  # NO₃⁻
+        assert "H\u207a" in out  # H⁺
+
+    def test_overview_strips_jats_from_preview(self):
+        # The overview pulls the first abstract block and snips it to
+        # 500 chars; the snip must run *after* JATS cleanup.  Without
+        # this, an abstract starting with ``<jats:title>...`` was
+        # rendered verbatim into the agent's overview.
+        h, store = self._handler_with_abstract(
+            "<jats:title>Abstract</jats:title>"
+            "<jats:p>Body here.</jats:p>"
+        )
+        # Patch link-count helper and figures so overview doesn't hit
+        # un-mocked branches.
+        store.get_link_count.return_value = {}
+        store.get_figures.return_value = []
+        ref = store.get.return_value
+        out = h._read_overview(store, ref)
+        assert "<jats:" not in out
+        assert "Body here." in out
+
+
+# ---------------------------------------------------------------------------
+# v2 B5/D4 — figure error envelope is consistent
+# ---------------------------------------------------------------------------
+
+
+class TestFigureErrorShape:
+    """All three flavours of bad figure number (``0``, ``-1``, ``abc``)
+    raise the same structured ``PrecisError`` via the central
+    ``_figure_not_found`` helper.  Review 2026-04-25 finding B5/D4.
+    """
+
+    @staticmethod
+    def _handler():
+        h = PaperHandler()
+        store = MagicMock()
+        store.get.return_value = {
+            "slug": "wu2008first",
+            "title": "T",
+            "ref_id": 1,
+        }
+        store.get_figures.return_value = [
+            {"fig_num": 1, "caption": "", "page": 1},
+            {"fig_num": 2, "caption": "", "page": 2},
+            {"fig_num": 3, "caption": "", "page": 3},
+        ]
+        store.get_blocks.return_value = []
+        return h, store
+
+    def test_figure_zero_raises_structured_id_not_found(self):
+        h, store = self._handler()
+        ref = store.get.return_value
+        try:
+            h._read_figures(store, ref, "0")
+        except PrecisError as exc:
+            assert exc.code is ErrorCode.ID_NOT_FOUND
+            assert "available: 1, 2, 3" in exc.next
+            assert "wu2008first/fig" in exc.next
+        else:
+            raise AssertionError("expected PrecisError")
+
+    def test_figure_negative_raises_structured_id_not_found(self):
+        h, store = self._handler()
+        ref = store.get.return_value
+        try:
+            h._read_figures(store, ref, "-1")
+        except PrecisError as exc:
+            assert exc.code is ErrorCode.ID_NOT_FOUND
+            assert "available: 1, 2, 3" in exc.next
+        else:
+            raise AssertionError("expected PrecisError")
+
+    def test_figure_non_numeric_raises_structured_id_malformed(self):
+        h, store = self._handler()
+        ref = store.get.return_value
+        try:
+            h._read_figures(store, ref, "abc")
+        except PrecisError as exc:
+            assert exc.code is ErrorCode.ID_MALFORMED
+            assert "abc" in exc.cause
+            assert "available: 1, 2, 3" in exc.next
+        else:
+            raise AssertionError("expected PrecisError")
+
+    def test_figure_out_of_range_raises_structured_id_not_found(self):
+        h, store = self._handler()
+        ref = store.get.return_value
+        try:
+            h._read_figures(store, ref, "99")
+        except PrecisError as exc:
+            assert exc.code is ErrorCode.ID_NOT_FOUND
+            assert "99" in exc.cause
+            assert "available: 1, 2, 3" in exc.next
+        else:
+            raise AssertionError("expected PrecisError")
+
+
+# ---------------------------------------------------------------------------
+# v2 B7 — figure caption pairing rescue
+# ---------------------------------------------------------------------------
+
+
+class TestFigureCaptionRescue:
+    """When ``store.get_figures`` returns ``caption=""`` but a body
+    block contains the literal ``Figure N. ...`` text, the handler
+    pairs them on read.  Review 2026-04-25 finding B7.
+    """
+
+    @staticmethod
+    def _handler_with_orphan_caption():
+        h = PaperHandler()
+        store = MagicMock()
+        store.get.return_value = {
+            "slug": "wu2008first",
+            "title": "T",
+            "ref_id": 1,
+        }
+        store.get_figures.return_value = [
+            # Caption deliberately empty — the rescue must find it.
+            {"fig_num": 3, "caption": "", "page": 1},
+        ]
+        store.get_blocks.return_value = [
+            {
+                "block_index": 38,
+                "page": 1,
+                "block_type": "text",
+                "text": "Some preceding paragraph.",
+            },
+            {
+                "block_index": 40,
+                "page": 1,
+                "block_type": "text",
+                "text": (
+                    "Figure 3. (a) Electronic band structure of pristine "
+                    "zigzag (10,0) SWCNT and (b) corresponding density of "
+                    "states."
+                ),
+            },
+        ]
+        store.get_figure_image.return_value = {
+            "image_bytes": b"fake-png-bytes",
+            "image_ext": ".png",
+            "fig_num": 3,
+            "caption": "",
+        }
+        return h, store
+
+    def test_overview_pairs_caption_from_body(self):
+        h, store = self._handler_with_orphan_caption()
+        out = h._read_figures(store, store.get.return_value, "3")
+        assert "[no caption]" not in out
+        assert "Electronic band structure" in out
+        # Bold marker + figure number prefix lands ahead of the caption
+        assert "**Figure 3.**" in out
+
+    def test_legend_returns_rescued_caption(self):
+        h, store = self._handler_with_orphan_caption()
+        out = h._read_figures(store, store.get.return_value, "3/legend")
+        assert out.startswith("Figure 3.")
+        assert "Electronic band structure" in out
+
+    def test_image_view_carries_caption_inline(self):
+        h, store = self._handler_with_orphan_caption()
+        out = h._read_figures(store, store.get.return_value, "3/image")
+        # Caption appears above the base64 blob
+        idx_caption = out.find("**Figure 3.**")
+        idx_b64 = out.find("data:image/png;base64,")
+        assert idx_caption >= 0, "caption should be present in /image view"
+        assert idx_b64 >= 0
+        assert idx_caption < idx_b64
+
+    def test_rescue_prefers_same_page_match(self):
+        h = PaperHandler()
+        store = MagicMock()
+        store.get_blocks.return_value = [
+            {
+                "block_index": 5,
+                "page": 7,
+                "block_type": "text",
+                "text": "Figure 2. Caption from page 7.",
+            },
+            {
+                "block_index": 10,
+                "page": 9,
+                "block_type": "text",
+                "text": "Figure 2. Caption from page 9.",
+            },
+        ]
+        rescued = h._rescue_caption(store, "x", 2, page=9)
+        assert rescued == "Figure 2. Caption from page 9."
+
+
+# ---------------------------------------------------------------------------
+# v2 D5 — pagination clamping at end of paper
+# ---------------------------------------------------------------------------
+
+
+class TestRangeClamping:
+    """``~38..200`` on an 87-block paper used to deliver blocks
+    38..85 then advertise a fake ``Next: ~200.. for more`` hint that
+    paginated into an empty range.  Review 2026-04-25 finding D5.
+    """
+
+    @staticmethod
+    def _handler_with_blocks(n_blocks: int):
+        h = PaperHandler()
+        store = MagicMock()
+        ref = {"slug": "wu2008first", "ref_id": 1}
+        store.get.return_value = ref
+        store.get_blocks.return_value = [
+            {
+                "block_index": i,
+                "page": i // 5 + 1,
+                "block_type": "text",
+                "text": f"block {i}",
+                "node_id": f"n{i}",
+            }
+            for i in range(n_blocks)
+        ]
+        store.get_links.return_value = []
+        return h, store, ref
+
+    def test_range_extending_past_end_clamps(self):
+        h, store, ref = self._handler_with_blocks(87)
+        out = h._read_chunks(store, ref, "38..200")
+        # Clamp notice surfaces up front
+        assert "Range clamped to" in out
+        assert "~38..86" in out
+        # End-of-paper marker present, no aspirational Next: hint
+        assert "End of paper" in out
+        assert "Next: get(id='wu2008first~200" not in out
+        # The last delivered block is the actual last block
+        assert ">> wu2008first ~86" in out
+
+    def test_open_range_still_works_at_end(self):
+        h, store, ref = self._handler_with_blocks(87)
+        out = h._read_chunks(store, ref, "80..")
+        assert "End of paper" in out
+        # No off-the-end Next: line
+        assert "Next: get(" not in out
+
+    def test_range_inside_paper_keeps_next_hint(self):
+        h, store, ref = self._handler_with_blocks(87)
+        out = h._read_chunks(store, ref, "10..30")
+        # Mid-paper range gets a Next: hint pointing at the next chunk.
+        assert "End of paper" not in out
+        assert "Next: get(id='wu2008first~30..')" in out
+
+    def test_range_starting_past_end_explains(self):
+        h, store, ref = self._handler_with_blocks(87)
+        out = h._read_chunks(store, ref, "200..300")
+        assert "paper has 87 blocks" in out
+        assert "~0..86" in out
+
+
+# ---------------------------------------------------------------------------
+# v3 B7 — caption-label deduplication
+# ---------------------------------------------------------------------------
+
+
+class TestCaptionBodyStripsLeadingLabel:
+    """``_caption_body`` strips ``Figure N.`` / ``Fig. N`` /
+    ``Scheme N.`` prefixes so the formatter doesn't emit
+    ``**Figure 1.** Figure 1. CO2 cycle...``.
+
+    Review 2026-04-25 mcp-critic finding B7 (caption-label
+    duplication — the formatter adds its own bold marker on top of
+    a caption that already includes the label).
+    """
+
+    def test_strips_figure_label(self):
+        assert (
+            _caption_body("Figure 1. CO2 cycle due to anthropogenic activities")
+            == "CO2 cycle due to anthropogenic activities"
+        )
+
+    def test_strips_fig_dot_label(self):
+        assert _caption_body("Fig. 3 Schematic of the apparatus") == "Schematic of the apparatus"
+
+    def test_strips_scheme_label(self):
+        assert _caption_body("Scheme 2. Reaction pathway") == "Reaction pathway"
+
+    def test_caption_without_label_unchanged(self):
+        assert _caption_body("Some caption text") == "Some caption text"
+
+    def test_empty_caption_returns_empty(self):
+        assert _caption_body("") == ""
+
+    def test_overview_does_not_duplicate_label(self):
+        """End-to-end: ``/fig/N`` overview never emits ``Figure N. Figure N.``."""
+        h = PaperHandler()
+        store = MagicMock()
+        store.get.return_value = {"slug": "x", "title": "T", "ref_id": 1}
+        store.get_figures.return_value = [
+            {
+                "fig_num": 1,
+                "caption": "Figure 1. CO2 cycle due to anthropogenic activities",
+                "page": 1,
+                "block_index": 0,
+            },
+        ]
+        store.get_blocks.return_value = []
+        out = h._read_figures(store, store.get.return_value, "1")
+        # The bold marker appears once; the literal "Figure 1." prefix
+        # has been stripped from the caption body.
+        assert "**Figure 1.** CO2 cycle" in out
+        assert "Figure 1. Figure 1." not in out
+        # Negative: the legend view (no bold marker) still ships the
+        # full label intact for citation purposes.
+        legend = h._read_figures(store, store.get.return_value, "1/legend")
+        assert legend.startswith("Figure 1.")
+
+
+# ---------------------------------------------------------------------------
+# v3 B7 (#2) — _resolved_figs re-binds fig_num to printed number
+# ---------------------------------------------------------------------------
+
+
+class TestResolvedFigsRebindsAutoNumberedFigures:
+    """When the figure extractor missed a caption and the store
+    auto-assigned ``fig_num=3`` while the printed caption is
+    ``Figure 4.``, ``_resolved_figs`` re-binds the API number to 4
+    and pairs the body-block caption.  Review 2026-04-25 mcp-critic
+    finding B7 (figure-number mismatch).
+    """
+
+    def _store_with_orphaned_fig(self):
+        store = MagicMock()
+        store.get_figures.return_value = [
+            {
+                "fig_num": 3,           # auto-assigned
+                "caption": "",          # extractor lost it
+                "page": 6,
+                "block_index": 38,
+            },
+        ]
+        store.get_blocks.return_value = [
+            {
+                "block_index": 38,
+                "page": 6,
+                "block_type": "figure",
+                "text": "",
+            },
+            {
+                "block_index": 39,
+                "page": 6,
+                "block_type": "text",
+                "text": "Figure 4. ATR-SEIRAS spectra showing key intermediates.",
+            },
+        ]
+        return store
+
+    def test_fig_num_rebinds_to_printed_number(self):
+        store = self._store_with_orphaned_fig()
+        figs = PaperHandler._resolved_figs(store, "ni2024atomic")
+        assert len(figs) == 1
+        assert figs[0]["fig_num"] == 4   # the printed label
+        assert figs[0]["_orig_fig_num"] == 3   # bundle-side lookup key
+        assert "ATR-SEIRAS" in figs[0]["caption"]
+
+    def test_caption_pairs_in_overview_view(self):
+        h = PaperHandler()
+        store = self._store_with_orphaned_fig()
+        store.get.return_value = {"slug": "ni2024atomic", "title": "T", "ref_id": 1}
+        # Caller asks for the printed number.
+        out = h._read_figures(store, store.get.return_value, "4")
+        assert "[no caption]" not in out
+        assert "ATR-SEIRAS" in out
+
+    def test_old_extraction_index_not_advertised(self):
+        """The auto-assigned ``3`` must not appear in the listing once
+        ``4`` has taken its place — otherwise ``/fig/3`` resolves to
+        nothing while the caller copies it from a stale enum."""
+        h = PaperHandler()
+        store = self._store_with_orphaned_fig()
+        store.get.return_value = {"slug": "ni2024atomic", "title": "T", "ref_id": 1}
+        listing = h._read_figures(store, store.get.return_value, None)
+        assert "fig 4" in listing
+        # No "fig 3" entry — the API number is the printed number.
+        assert "fig 3 " not in listing
+
+
+# ---------------------------------------------------------------------------
+# v3 B5 — empty figure-block chunks emit /fig/N hint
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyFigureBlockChunkEmitsFigHint:
+    """``PaperHandler._block_chunk_hint`` returns a single
+    ``→ get(id='<slug>/fig/<N>')`` line for figure-type blocks with
+    empty text.  Review 2026-04-25 mcp-critic finding B5 — the chunk
+    view used to render an empty figure block as a header followed
+    by two blank lines, with no signal that the figure binary lives
+    at ``/fig/N``.
+    """
+
+    def test_returns_fig_hint_for_empty_figure_block(self):
+        h = PaperHandler()
+        store = MagicMock()
+        store.get_figures.return_value = [
+            {"fig_num": 4, "caption": "", "page": 6, "block_index": 38},
+        ]
+        store.get_blocks.return_value = [
+            {
+                "block_index": 38,
+                "page": 6,
+                "block_type": "figure",
+                "text": "",
+            },
+            {
+                "block_index": 39,
+                "page": 6,
+                "block_type": "text",
+                "text": "Figure 4. ATR-SEIRAS spectra.",
+            },
+        ]
+        block = {
+            "block_index": 38,
+            "block_type": "figure",
+            "text": "",
+            "page": 6,
+        }
+        hint = h._block_chunk_hint(store, "ni2024atomic", block)
+        assert "get(id='ni2024atomic/fig/4')" in hint
+
+    def test_returns_empty_for_text_block(self):
+        h = PaperHandler()
+        store = MagicMock()
+        block = {"block_index": 12, "block_type": "text", "text": "hello"}
+        assert h._block_chunk_hint(store, "x", block) == ""
+
+    def test_returns_empty_when_block_has_no_index(self):
+        h = PaperHandler()
+        store = MagicMock()
+        block = {"block_index": None, "block_type": "figure", "text": ""}
+        assert h._block_chunk_hint(store, "x", block) == ""
+
+
+# ---------------------------------------------------------------------------
+# v3 M — inverted chunk range
+# ---------------------------------------------------------------------------
+
+
+class TestInvertedChunkRange:
+    """``~5..3`` raises ``ID_MALFORMED`` with a swap-the-ends hint
+    instead of returning ``"No blocks in range ~5..3"`` — the silent
+    empty result was indistinguishable from a valid empty selector.
+
+    Review 2026-04-25 mcp-critic finding M (inverted range).  Lives
+    in :class:`precis.handlers._ref_base.RefHandler`; tested here
+    alongside the rest of the chunk-range coverage.
+    """
+
+    def test_inverted_range_raises_id_malformed(self):
+        from precis.handlers._ref_base import RefHandler
+
+        h = RefHandler()
+        store = MagicMock()
+        ref = {"slug": "x"}
+        with pytest.raises(PrecisError) as excinfo:
+            h._read_chunks(store, ref, "5..3")
+        assert excinfo.value.code is ErrorCode.ID_MALFORMED
+        # Recovery hint suggests the swapped form.
+        assert "3..5" in (excinfo.value.next or "")
+        assert "inverted" in (excinfo.value.cause or "").lower()
+
+    def test_normal_range_still_passes(self):
+        from precis.handlers._ref_base import RefHandler
+
+        h = RefHandler()
+        store = MagicMock()
+        store.get_blocks.return_value = []
+        store.get_links.return_value = []
+        ref = {"slug": "x"}
+        # Doesn't raise; returns the empty-blocks message.
+        out = h._read_chunks(store, ref, "3..5")
+        assert "No blocks" in out

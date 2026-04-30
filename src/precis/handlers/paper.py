@@ -65,6 +65,31 @@ _CAPTION_PATTERNS = {
     ),
 }
 
+# Same pattern, anchored on the leading label only.  Used to strip the
+# duplicate prefix when we re-emit a caption with our own bold marker.
+# Without this, ``**Figure 1.** Figure 1. CO2 cycle...`` ships to the
+# agent and gets copied verbatim into prose.  Review 2026-04-25 mcp-
+# critic finding B7 (caption-label duplication).
+_CAPTION_LEAD_RE = re.compile(
+    r"^\s*(?:Figure|Fig\.?|Scheme)\s+\d+\.?\s*[:\-—]?\s*",
+    re.IGNORECASE,
+)
+
+
+def _caption_body(text: str) -> str:
+    """Return ``text`` with any leading ``Figure N.`` label stripped.
+
+    The figure formatter adds its own ``**Figure N.**`` bold marker, so
+    a caption that already starts with ``Figure 1. CO2 cycle...`` would
+    otherwise render as ``**Figure 1.** Figure 1. CO2 cycle...`` —
+    duplicate prefix the caller has to clean up by hand.
+    """
+    if not text:
+        return text
+    stripped = _CAPTION_LEAD_RE.sub("", text, count=1)
+    # Preserve internal whitespace; only trim the head + tail.
+    return stripped.strip()
+
 
 def _convert_jats_sub(match: re.Match[str]) -> str:
     """Replace ``<jats:sub>x</jats:sub>`` with Unicode subscript or
@@ -294,11 +319,17 @@ class PaperHandler(RefHandler):
 
     def _read_cites_view(self, store, ref, selector, subview, **kwargs) -> str:
         extract_kwargs(kwargs, (), context="paper/cites")
-        return self._read_s2_graph(ref, direction="references")
+        limit, offset = self._parse_s2_pagination(subview, ref, "cites")
+        return self._read_s2_graph(
+            ref, direction="references", limit=limit, offset=offset
+        )
 
     def _read_cited_by_view(self, store, ref, selector, subview, **kwargs) -> str:
         extract_kwargs(kwargs, (), context="paper/cited-by")
-        return self._read_s2_graph(ref, direction="cited_by")
+        limit, offset = self._parse_s2_pagination(subview, ref, "cited-by")
+        return self._read_s2_graph(
+            ref, direction="cited_by", limit=limit, offset=offset
+        )
 
     def _read_fig_view(self, store, ref, selector, subview, **kwargs) -> str:
         extract_kwargs(kwargs, (), context="paper/fig")
@@ -487,7 +518,8 @@ class PaperHandler(RefHandler):
     def _list_entry(self, ref: dict) -> str:
         # Every field coerced via ``or ""`` — partially-ingested refs
         # may carry None values even for declared keys.  See BUG-A
-        # regression coverage in ``test_phase6_journal.py``.
+        # regression coverage in ``test_paper_handler.py``
+        # (``TestListRendererTolerateNones``).
         slug = ref.get("slug") or "???"
         title = _truncate(ref.get("title") or "", 80)
         year = ref.get("year") or ""
@@ -630,7 +662,11 @@ class PaperHandler(RefHandler):
         # through the same ``_figure_not_found`` helper which produces
         # a consistent ``ERROR [<code>]`` envelope with the available
         # list folded into the ``next:`` hint.
-        figs = store.get_figures(slug)
+        # ``_resolved_figs`` (B7) re-binds API ``fig_num`` to printed
+        # figure numbers when the extractor missed the caption, so the
+        # available-list hint matches what the caller will see in the
+        # listing view.
+        figs = self._resolved_figs(store, slug)
         try:
             fig_num = int(raw_num)
         except ValueError:
@@ -671,17 +707,21 @@ class PaperHandler(RefHandler):
             )
 
     def _list_figures(self, store, slug: str) -> str:
-        figs = store.get_figures(slug)
+        # Use _resolved_figs so any caption rescued from an adjacent
+        # text block (B7) carries through to both the displayed caption
+        # AND the API ``fig_num`` — without re-binding, ``/fig/3`` lists
+        # a caption beginning ``Figure 4.`` and the citation key (3)
+        # disagrees with the printed label (4).  Review 2026-04-25
+        # mcp-critic finding B7 (figure-number mismatch).
+        figs = self._resolved_figs(store, slug)
         if not figs:
             return f"No figures found for {slug}"
         lines = [f"📊 {slug} — {len(figs)} figure(s)", ""]
         for fig in figs:
             n = fig["fig_num"]
             page = fig.get("page", "")
-            caption = fig.get("caption", "") or self._rescue_caption(
-                store, slug, n, fig.get("page")
-            )
-            lines.append(f"  fig {n}  p{page}  {_truncate(caption, 100)}")
+            caption_body = _caption_body(fig.get("caption", ""))
+            lines.append(f"  fig {n}  p{page}  {_truncate(caption_body, 100)}")
         lines.append("")
         lines.append("Next:")
         # Listing trailer can't promise a caption for an unknown figure
@@ -703,21 +743,17 @@ class PaperHandler(RefHandler):
         self, store, slug: str, fig_num: int, *, figs: list | None = None
     ) -> str:
         if figs is None:
-            figs = store.get_figures(slug)
+            figs = self._resolved_figs(store, slug)
         fig = next((f for f in figs if f["fig_num"] == fig_num), None)
         if not fig:
             raise self._figure_not_found(
                 slug=slug, figs=figs, requested=str(fig_num),
                 code=ErrorCode.ID_NOT_FOUND,
             )
-        # Caption pairing (B7): the figure-extractor sometimes leaves
-        # ``caption=''`` even though the literal "Figure N. ..." text
-        # is present as an adjacent text block.  Scan body blocks for
-        # a same-numbered caption when the metadata field is empty so
-        # ``/fig/N`` always carries the legend.
-        caption = fig.get("caption", "") or self._rescue_caption(
-            store, slug, fig_num, fig.get("page")
-        )
+        # Caption already resolved in ``_resolved_figs`` (B7).  Strip the
+        # leading ``Figure N.`` label so it doesn't duplicate with the
+        # bold marker we add below.
+        caption = _caption_body(fig.get("caption", ""))
         page = fig.get("page", "")
         # Trailer reflects actual caption resolution so a downstream
         # agent reading only the trailer knows whether the /image view
@@ -746,26 +782,34 @@ class PaperHandler(RefHandler):
         self, store, slug: str, fig_num: int, *, figs: list | None = None
     ) -> str:
         if figs is None:
-            figs = store.get_figures(slug)
+            figs = self._resolved_figs(store, slug)
         fig = next((f for f in figs if f["fig_num"] == fig_num), None)
         if not fig:
             raise self._figure_not_found(
                 slug=slug, figs=figs, requested=str(fig_num),
                 code=ErrorCode.ID_NOT_FOUND,
             )
-        # B7 — if the figure-extractor missed the caption, scan body
-        # blocks for a ``Figure N.`` line and surface that instead of
-        # an unhelpful ``[no caption]`` placeholder.  See the same
-        # rescue path in ``_figure_overview`` and ``_figure_image``.
-        caption = fig.get("caption", "") or self._rescue_caption(
-            store, slug, fig_num, fig.get("page")
-        )
+        # B7 — caption resolution happens in ``_resolved_figs`` so the
+        # legend view is just a passthrough.  We keep the full label
+        # (``Figure 3. (a) Electronic band structure...``) here because
+        # the legend view is consumed standalone — the bold marker
+        # only adds noise without an image alongside.
+        caption = fig.get("caption", "")
         return caption if caption else f"[no caption for {slug} fig {fig_num}]"
 
     def _figure_image(
         self, store, slug: str, fig_num: int, *, figs: list | None = None
     ) -> str:
-        result = store.get_figure_image(slug, fig_num)
+        # ``_resolved_figs`` may re-bind the API ``fig_num`` to the
+        # printed figure number when the figure-extractor missed the
+        # caption (B7 finding #2).  Look up the resolved metadata first
+        # so the store-bundle lookup uses whatever number actually
+        # carries the image bytes.
+        if figs is None:
+            figs = self._resolved_figs(store, slug)
+        meta = next((f for f in figs if f["fig_num"] == fig_num), None)
+        store_fig_num = meta.get("_orig_fig_num", fig_num) if meta else fig_num
+        result = store.get_figure_image(slug, store_fig_num)
         if not result:
             return (
                 f"No image data for {slug} fig {fig_num}.\n"
@@ -775,15 +819,13 @@ class PaperHandler(RefHandler):
         import base64
 
         # B7 — caption hint above the base64 blob so an agent quoting
-        # the image alone has the legend right there.  Pulled from the
-        # figure metadata, falling back to the rescue scan when empty.
-        if figs is None:
-            figs = store.get_figures(slug)
-        meta = next((f for f in figs if f["fig_num"] == fig_num), None)
+        # the image alone has the legend right there.  Resolved-figs
+        # caption wins; fall back to whatever the bundle ships with.
         page_hint = meta.get("page") if meta else None
-        caption = result.get("caption", "") or (meta.get("caption", "") if meta else "")
+        caption = (meta.get("caption", "") if meta else "") or result.get("caption", "")
         if not caption:
             caption = self._rescue_caption(store, slug, fig_num, page_hint)
+        caption = _caption_body(caption)
         caption_short = _truncate(caption, 200) if caption else ""
 
         b64 = base64.b64encode(result["image_bytes"]).decode("ascii")
@@ -871,6 +913,141 @@ class PaperHandler(RefHandler):
                     return (block.get("text") or "").strip()
         return (candidates[0].get("text") or "").strip()
 
+    def _block_chunk_hint(self, store, slug: str, block: dict) -> str:
+        """Override: hint at ``/fig/N`` for empty figure-type chunks.
+
+        When a figure block carries no caption text, the chunk view
+        used to render as ``>> slug ~38  p6  [figure]\\n\\n\\n`` —
+        three lines, none of them actionable.  This method finds the
+        figure's API number (rebound via ``_resolved_figs`` for B7
+        compliance) and emits a single ``→ get(id='<slug>/fig/<N>')``
+        line so the caller knows where the binary lives.
+
+        Returns "" when the block isn't a figure or no fig_num maps
+        back to its block_index.  Review 2026-04-25 mcp-critic
+        finding B5.
+        """
+        if (block.get("block_type") or "text") != "figure":
+            return ""
+        block_idx = block.get("block_index")
+        if block_idx is None:
+            return ""
+        try:
+            figs = self._resolved_figs(store, slug)
+        except Exception:
+            return ""
+        # Match by either current block_index (figure-type blocks) or
+        # the original auto-numbered fig that rescued from this block.
+        for fig in figs:
+            fig_block_idx = fig.get("block_index")
+            if fig_block_idx == block_idx:
+                return f"→ get(id='{slug}/fig/{fig['fig_num']}')  — figure image + caption"
+        return ""
+
+    @classmethod
+    def _resolved_figs(cls, store, slug: str) -> list[dict]:
+        """Return figures with rescued captions and re-bound API numbers.
+
+        ``store.get_figures`` parses the figure number from the figure
+        block's own caption text (e.g. "Figure 4. ATR-SEIRAS …").
+        When extraction lost the caption, the block has ``caption=""``
+        and the store falls back to assigning sequential auto numbers
+        starting from the smallest unused integer.
+
+        That fallback is the source of the B7 figure-number mismatch:
+        the API exposes ``/fig/3`` (auto-assigned) while the printed
+        figure adjacent in body text is "Figure 4."  An agent that
+        sees "Figure 4" in a body chunk and tries ``get(id='…/fig/4')``
+        lands on the wrong (or no) figure.
+
+        This helper post-processes the store's output: for every fig
+        whose caption is empty, it scans the next 1..5 body blocks for
+        a "Figure N. …" caption and, if found, re-binds ``fig_num`` to
+        N and uses the body text as the caption.  The original number
+        is preserved in ``_orig_fig_num`` so the bundle-side image
+        lookup can still find the bytes.
+
+        Duplicate-N collisions after re-binding fall back to the
+        original auto number for the loser, keeping the API enum
+        unique.  Review 2026-04-25 mcp-critic finding B7.
+        """
+        figs = list(store.get_figures(slug))
+        if not figs:
+            return figs
+        # Figure blocks that already had a parseable caption: keep
+        # both their fig_num and caption.  Only the caption-less ones
+        # are candidates for re-binding.
+        if all(f.get("caption") for f in figs):
+            return figs
+        try:
+            blocks = list(store.get_blocks(slug))
+        except Exception:
+            return figs
+        text_blocks = [
+            b for b in blocks
+            if (b.get("block_type") or "text") == "text"
+            and b.get("block_index") is not None
+            and (b.get("text") or "").strip()
+        ]
+        text_blocks.sort(key=lambda b: b["block_index"])
+        # Pre-compute (block_index → printed_n, text) for blocks whose
+        # first line begins with a "Figure N." label.
+        labelled: list[tuple[int, int, str]] = []
+        for b in text_blocks:
+            text = (b.get("text") or "").lstrip()
+            m = _CAPTION_PATTERNS["fig"].match(text)
+            if not m:
+                continue
+            try:
+                n = int(m.group(1))
+            except (ValueError, TypeError):
+                continue
+            labelled.append((b["block_index"], n, (b.get("text") or "").strip()))
+        if not labelled:
+            return figs
+        used_nums = {f["fig_num"] for f in figs if f.get("caption")}
+        out: list[dict] = []
+        for fig in figs:
+            if fig.get("caption"):
+                out.append(fig)
+                continue
+            fig_block_idx = fig.get("block_index")
+            candidate: tuple[int, int, str] | None = None
+            if fig_block_idx is not None:
+                # Closest forward labelled block within 5 indices wins —
+                # PDF extractors emit "Figure N. caption" right after
+                # the figure block in 90 %+ of papers.
+                for idx, n, txt in labelled:
+                    delta = idx - fig_block_idx
+                    if 0 < delta <= 5 and n not in used_nums:
+                        candidate = (idx, n, txt)
+                        break
+            if candidate is None:
+                # Fallback: same-numbered "Figure <fig_num>." anywhere
+                # in body blocks, optionally on the same page.  This
+                # is the legacy ``_rescue_caption`` path — keep it
+                # alive so figures whose ``block_index`` is unknown
+                # still get their caption paired.
+                rescued = cls._rescue_caption(
+                    store, slug, fig["fig_num"], fig.get("page")
+                )
+                if rescued:
+                    new_fig = dict(fig)
+                    new_fig["caption"] = rescued
+                    out.append(new_fig)
+                else:
+                    out.append(fig)
+                continue
+            _, n, caption_text = candidate
+            new_fig = dict(fig)
+            new_fig["_orig_fig_num"] = fig.get("fig_num")
+            new_fig["fig_num"] = n
+            new_fig["caption"] = caption_text
+            used_nums.add(n)
+            out.append(new_fig)
+        out.sort(key=lambda f: f.get("fig_num", 0))
+        return out
+
     @staticmethod
     def _figure_not_found(
         *,
@@ -907,6 +1084,56 @@ class PaperHandler(RefHandler):
 
     # ── Semantic Scholar graph ────────────────────────────────────
 
+    #: Default cap on /cites and /cited-by responses.  Heavily-cited
+    #: papers (>50 references) used to dump everything in one shot,
+    #: blowing the agent's context window with 3 k+ tokens of metadata
+    #: and offering no pagination knob.  Review 2026-04-25 mcp-critic
+    #: finding B6.
+    _S2_PAGE_DEFAULT = 20
+
+    def _parse_s2_pagination(
+        self, subview: str | None, ref: dict, view: str
+    ) -> tuple[int | None, int]:
+        """Parse the ``/cites`` / ``/cited-by`` subview into limit + offset.
+
+        Accepted forms (``view`` is ``cites`` or ``cited-by``)::
+
+            <view>          → limit=20, offset=0
+            <view>/all      → limit=None (no cap), offset=0
+            <view>/<N>      → limit=20, offset=N (pagination by offset)
+
+        Returns ``(limit, offset)``.  ``limit=None`` means no cap.
+
+        Invalid offsets raise ``PARAM_INVALID`` with a recovery hint.
+        """
+        if not subview:
+            return self._S2_PAGE_DEFAULT, 0
+        slug = ref.get("slug", "???")
+        if subview == "all":
+            return None, 0
+        try:
+            offset = int(subview)
+        except ValueError:
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause=(
+                    f"unrecognised /{view} subview {subview!r} — expected an "
+                    "integer offset or 'all'"
+                ),
+                next=(
+                    f"get(id='{slug}/{view}')      — first {self._S2_PAGE_DEFAULT}\n"
+                    f"  get(id='{slug}/{view}/{self._S2_PAGE_DEFAULT}')   — next page\n"
+                    f"  get(id='{slug}/{view}/all') — full list"
+                ),
+            ) from None
+        if offset < 0:
+            raise PrecisError(
+                ErrorCode.PARAM_INVALID,
+                cause=f"/{view}/{offset} — offset must be non-negative",
+                next=f"get(id='{slug}/{view}/0') for the first page",
+            )
+        return self._S2_PAGE_DEFAULT, offset
+
     @staticmethod
     def _get_s2_identifier(ref: dict) -> str | None:
         """Return the best S2-compatible identifier for a ref."""
@@ -921,9 +1148,23 @@ class PaperHandler(RefHandler):
             return f"ARXIV:{arxiv_id}"
         return None
 
-    def _read_s2_graph(self, ref: dict, direction: str) -> str:
-        """Fetch cites or cited-by from Semantic Scholar on demand."""
+    def _read_s2_graph(
+        self,
+        ref: dict,
+        direction: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> str:
+        """Fetch cites or cited-by from Semantic Scholar on demand.
+
+        ``limit=None`` returns every paper; an integer caps the
+        response size.  Pagination is offset-based — the trailer
+        emits the next-page URI when more results remain.  Review
+        2026-04-25 mcp-critic finding B6.
+        """
         slug = ref.get("slug", "???")
+        view = "cites" if direction == "references" else "cited-by"
         s2_id = self._get_s2_identifier(ref)
         if not s2_id:
             return (
@@ -944,11 +1185,12 @@ class PaperHandler(RefHandler):
         except Exception as e:
             return f"Semantic Scholar lookup failed for {slug}: {e}"
 
-        papers = result.get(direction, [])
+        all_papers = result.get(direction, [])
         label = "references" if direction == "references" else "citing papers"
         emoji = "📖" if direction == "references" else "📣"
+        total = len(all_papers)
 
-        if not papers:
+        if not all_papers:
             other = "cited-by" if direction == "references" else "cites"
             return (
                 f"{emoji} {slug} — 0 {label} found on Semantic Scholar.\n"
@@ -956,7 +1198,26 @@ class PaperHandler(RefHandler):
                 f"  get(id='{slug}/{other}')  — try the other direction"
             )
 
-        lines = [f"{emoji} {slug} — {len(papers)} {label} (via Semantic Scholar)", ""]
+        if offset >= total:
+            return (
+                f"{emoji} {slug} — offset {offset} is past the end "
+                f"({total} {label} total).\n"
+                f"Next: get(id='{slug}/{view}/0') for the first page"
+            )
+
+        # Slice for pagination.  ``limit=None`` means /all → keep all.
+        end = total if limit is None else min(offset + limit, total)
+        papers = all_papers[offset:end]
+
+        showing_clause = (
+            f"{total} {label}"
+            if limit is None or total <= limit
+            else f"{label} {offset + 1}–{end} of {total}"
+        )
+        lines = [
+            f"{emoji} {slug} — {showing_clause} (via Semantic Scholar)",
+            "",
+        ]
         for p in papers:
             title = _truncate(p.get("title", ""), 80)
             year = p.get("year", "")
@@ -970,6 +1231,17 @@ class PaperHandler(RefHandler):
         other = "cited-by" if direction == "references" else "cites"
         lines.append("")
         lines.append("Next:")
+        # Pagination trailer — only when we actually capped.  Without
+        # this the caller has no way to fetch the long tail of a
+        # 50-citation paper; with it, every paginated response carries
+        # the literal next URI to copy.
+        if limit is not None and end < total:
+            lines.append(
+                f"  get(id='{slug}/{view}/{end}')  — next {min(limit, total - end)} of {total}"
+            )
+            lines.append(
+                f"  get(id='{slug}/{view}/all')  — full list ({total} entries)"
+            )
         lines.append(
             f"  get(id='{slug}/{other}')  — {('incoming citations' if direction == 'references' else 'outgoing references')}"
         )

@@ -347,7 +347,9 @@ class SkillHandler(Handler):
         for key, value in sorted(skill.frontmatter.items()):
             lines.append(f"  {key}: {value}")
         lines.append("")
-        lines.append(f"Source: {skill.source_path}")
+        # Same scan-path-relative form as ``_render_skill`` so the
+        # /meta view doesn't leak the operator's home directory either.
+        lines.append(f"Source: {self._relative_source(skill.source_path)}")
         return "\n".join(lines)
 
     def _read_recent_view(self, subview, **kwargs) -> str:
@@ -397,8 +399,36 @@ class SkillHandler(Handler):
     def _render_skill(self, slug: str) -> str:
         skill = self._require(slug)
         header = f"📋 skill:{skill.slug} — {skill.name}"
-        tail = f"\n\nSource: {skill.source_path}"
+        # Use the scan-path-relative form so the response doesn't leak
+        # the operator's home directory into every transcript / log.
+        # Falls back to the basename if the source isn't under any
+        # registered scan path (e.g. test fixtures with absolute
+        # paths).  Review 2026-04-25 mcp-critic finding M (skill
+        # source path leak).
+        tail = f"\n\nSource: {self._relative_source(skill.source_path)}"
         return f"{header}\n\n{skill.body}{tail}"
+
+    def _relative_source(self, source_path: Path) -> str:
+        """Render ``source_path`` relative to its scan-path root.
+
+        Looks up the deepest matching ``self._scan_paths`` entry and
+        returns the suffix below it (``builtin/clock-basics/SKILL.md``).
+        Falls back to ``parent/SKILL.md`` when no scan path matches —
+        still hides the absolute path while keeping the slug visible.
+        """
+        try:
+            for base in self._scan_paths:
+                try:
+                    rel = source_path.relative_to(base)
+                except ValueError:
+                    continue
+                # Prefix with the base directory's name so two skills
+                # with the same slug from different scan paths stay
+                # distinguishable in the response.
+                return f"{base.name}/{rel}"
+        except Exception:
+            pass
+        return f"{source_path.parent.name}/{source_path.name}"
 
     def _list_all(self) -> str:
         if not self._index:

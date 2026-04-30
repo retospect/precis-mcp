@@ -708,7 +708,7 @@ The MCP `put` tool surfaces `tags=` as of the 2026-04-22 22:45 wheel
 schema fix + forwarding is in
 `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/src/precis/server.py:534-634`;
 tests in
-`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:407-439`
+`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server.py:407-439`
 lock the two required behaviours (forward when set, omit when
 unset).  Live verification:
 
@@ -1543,7 +1543,7 @@ test matrix until re-fixed.
   #11)** — §3.3 step 1 creates a skill with `id=''` and the slug
   carried in either `name:` (canonical) or `slug:` (historical) of the
   posted frontmatter.  Unit coverage:
-  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase12b_skill.py:430-475`.
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_skill_handler.py:430-475`.
 
 - [ ] **`think:` bare landing is free (fix: 2026-04-22, bug #9)** —
   `mcp5_get(id='think:')` returns a help view with `[cost: free]`
@@ -1573,7 +1573,7 @@ test matrix until re-fixed.
   (same gating pattern as `tracked`).  Unit coverage:
   `test_put_forwards_tags_when_set` and `test_put_omits_tags_when_not_set`
   in
-  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:407-439`.
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server.py:407-439`.
   Live-verified 2026-04-23 21:13 via §6.7.1 (todo create-with-tags
   works end-to-end on the wire).
 
@@ -1588,7 +1588,7 @@ test matrix until re-fixed.
   and routed both `_query_corpus_refs` (line 471) and `_read_overview`
   (line 171) through it.  Unit coverage: `TestTagHydration` (4 tests)
   in
-  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase6_journal.py:225-276`.
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_memory_handler.py:225-276`.
   Live-verified 2026-04-23 22:02: `mcp4_put(type='memory',
   tags=['smoke-test','bug-j'], …)` then `mcp4_get(id='memory:<slug>')`
   → overview shows `tags: bug-j, smoke-test` (sorted, no char-iter).
@@ -1634,13 +1634,13 @@ test matrix until re-fixed.
 <!-- Retired regression entries (fix verified + unit test in place,
      re-check not required on every smoke run):
      - 2026-04-22  skill:/kind/<name> parsed-URI slug-leak bug.
-       Unit tests in test_phase12b_skill.py cover it; the live
+       Unit tests in test_skill_handler.py cover it; the live
        §3.1 `skill:/kind/quest` step already exercises the same path.
      - 2026-04-22  skill frontmatter parsing too strict (bug #3).
        `_parse_skill_md` now falls back to directory-name for `name:`
        and first body line for `description:`; broken-YAML skills
        index rather than disappearing.  Unit tests in
-       test_phase12b_skill.py lock the leniency contract.
+       test_skill_handler.py lock the leniency contract.
      - 2026-04-22  grep= vs query= plumbing on paper list (bug #6).
        Handled as distinct kwargs in `_ref_base.py`; `_list_refs`
        prefers metadata filtering when both are supplied.  Covered by
@@ -1666,7 +1666,7 @@ test matrix until re-fixed.
        bare slug without type= / scheme / file-ext / DOI-ish hint emits
        KIND_UNKNOWN for parity with search/put.
        Unit test: test_get_with_bare_slug_errors + 4 siblings in
-       test_server_phase1.py:273-339.
+       test_server.py:273-339.
        Live-verified 20:15.
      - 2026-04-22  BUG-D: paper overview rendered authors as raw JSON.
        Fix: route `authors` through `_author_names` in `_read_overview`.
@@ -1678,7 +1678,7 @@ test matrix until re-fixed.
        other exceptions become UNEXPECTED.
        Unit tests: test_dispatch_unknown_kind_emits_structured_envelope +
        test_dispatch_precis_error_preserves_options_and_next in
-       test_server_phase1.py:287-332.
+       test_server.py:287-332.
        Live-verified 20:15 on `type='conv'`.
      - 2026-04-22  BUG-F: search grep= silently dropped when paired with query=.
        Fix: added grep= kwarg to `server.search()`; new `_search_with_grep` in
@@ -1692,20 +1692,20 @@ test matrix until re-fixed.
        Fix: skill `_search` now tokenises on whitespace and AND-matches across
        the `name + description` blob.
        Unit tests: test_search_ands_across_tokens + 2 siblings in
-       test_phase12b_skill.py:402-425.
+       test_skill_handler.py:402-425.
        Live-verified 20:15: `query='acquire paper'` hits find-paper.
      - 2026-04-22  BUG-H: quest schema-missing errored as UNEXPECTED.
        Fix: new `_handle_pg_errors` wrapper on `QuestHandler._db_*`.
        UndefinedTable → UNAVAILABLE with `acatome-quest status --count`
        next-hint; OperationalError → UNAVAILABLE with DATABASE_URL next-hint.
        Unit tests: TestPgErrorTranslation (3 tests) in
-       test_phase12_quest.py:476-538.
+       test_quest_handler.py:476-538.
        Live-verified 20:15: schema-missing now emits structured UNAVAILABLE.
      - 2026-04-22  BUG-I: search(type='<web|research|think>') TypeError on top_k.
        Fix: `_WebBase.read()` accepts `**_ignore` so top_k forwarded by the
        search dispatcher is absorbed.
        Unit tests: test_read_absorbs_top_k_kwarg + test_read_absorbs_arbitrary_unknown_kwargs
-       in test_phase3_web.py:337-355.
+       in test_websearch_handler.py:337-355.
        Live-verified 20:15: `search(type='think', query='what is 2+2?')` returns
        real Perplexity answer. -->
 
@@ -1763,7 +1763,7 @@ required before this is live):
    `[t.name for t in r.tags]` (line 467) + the direct
    `ref.get("tags") or []` in `_read_overview` (line 167).
 3. Added `TestTagHydration` (4 tests) in
-   `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase6_journal.py:225-276`
+   `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_memory_handler.py:225-276`
    pinning the JSON-string decode path, unparseable-tags tolerance,
    None safety, and the already-parsed-list compatibility for
    existing fixtures.
@@ -1872,7 +1872,7 @@ the MCP host with the new wheel.
    one create + one mutate example; trimmed two other lines to stay
    under the 600-token description budget enforced by
    `test_llm_tool_use.py::TestDescriptionBudget` (final: 590 tokens).
-3. **`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:407-439`**
+3. **`@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server.py:407-439`**
    — two new tests on `TestDispatchWritePaths` (same class as the
    existing `test_put_with_explicit_type_still_works`):
    `test_put_forwards_tags_when_set` asserts the kwarg reaches
@@ -1971,13 +1971,13 @@ restart are still owed before the next live run.
 |---|---|---|---|
 | BUG-A | Coerce `None` ref-fields to `""` before join in `_list_refs._matches`; same defence in `_list_entry` | §5.4 bullet 1-3 | `TestListRendererTolerateNones` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_paper_handler.py:268-344` |
 | BUG-B | Retired the legacy `fc` entry point in `pyproject.toml [project.entry-points."precis.schemes"]`; added `flashcard` entry for parity; registry regression asserts `fc` + `conv` stay absent from SCHEMES | §7.4 bullets | `test_retired_scheme_aliases_do_not_leak` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_registry.py:84-110` |
-| BUG-C | New `_has_identifier_hint` helper + `get()` dispatch check: bare slug without `type=` and without scheme / file-ext / DOI-ish hint emits `KIND_UNKNOWN` for parity with `search`/`put` | §15.4 bullet "`get(id='some-slug')`" | `test_get_with_bare_slug_errors` + 4 siblings in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:273-339` |
+| BUG-C | New `_has_identifier_hint` helper + `get()` dispatch check: bare slug without `type=` and without scheme / file-ext / DOI-ish hint emits `KIND_UNKNOWN` for parity with `search`/`put` | §15.4 bullet "`get(id='some-slug')`" | `test_get_with_bare_slug_errors` + 4 siblings in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server.py:273-339` |
 | BUG-D | Route `authors` through `_author_names` in `_read_overview` so JSON-array authors decode for the landing page (same normalisation as the cite formatters) | §5.1 `marquessilva1999grasp` | `TestOverviewAuthorsNormalisation` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_paper_handler.py:347-418` |
-| BUG-E | `_dispatch` raw-fallback now emits the structured `ERROR [<code>]: …` envelope via `_format_error` — `PrecisError` passes options/next through verbatim, other exceptions become `UNEXPECTED` | §15.4 per-verb `KIND_UNKNOWN` bullets, §9.4 `conv:` | `test_dispatch_unknown_kind_emits_structured_envelope` + `test_dispatch_precis_error_preserves_options_and_next` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:287-332` |
+| BUG-E | `_dispatch` raw-fallback now emits the structured `ERROR [<code>]: …` envelope via `_format_error` — `PrecisError` passes options/next through verbatim, other exceptions become `UNEXPECTED` | §15.4 per-verb `KIND_UNKNOWN` bullets, §9.4 `conv:` | `test_dispatch_unknown_kind_emits_structured_envelope` + `test_dispatch_precis_error_preserves_options_and_next` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server.py:287-332` |
 | BUG-F | Added `grep=` kwarg to `server.search()` signature; new `_search_with_grep` in `_ref_base` runs metadata pre-filter then vector search over the filtered subset (paper kind over-fetches + post-filters) | §5.4 regression check "vector search pre-filtered by tag:review" | `TestSearchWithGrep` + `TestSearchToolForwardsGrep` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_paper_handler.py:421-536` |
-| BUG-G | Skill `_search` now tokenises on whitespace and AND-matches: every token must appear in the `name + description` blob | §3.1 `search(type='skill', query='acquire paper')` | `test_search_ands_across_tokens` + 2 siblings in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase12b_skill.py:402-425` |
-| BUG-H | New `_handle_pg_errors` wrapper on `QuestHandler._db_*`: `psycopg.errors.UndefinedTable` → `UNAVAILABLE` with `acatome-quest status --count` next-hint; `OperationalError` → `UNAVAILABLE` with `DATABASE_URL` next-hint | §4.5 after migration rollback | `TestPgErrorTranslation` (3 tests) in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase12_quest.py:476-538` |
-| BUG-I | `_WebBase.read()` accepts `**_ignore` so `top_k` forwarded by the search dispatcher is absorbed instead of raising `TypeError`.  Docstring notes the rationale | §10.1, §11, §14 `search(…)` bullets | `test_read_absorbs_top_k_kwarg` + `test_read_absorbs_arbitrary_unknown_kwargs` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase3_web.py:337-355` |
+| BUG-G | Skill `_search` now tokenises on whitespace and AND-matches: every token must appear in the `name + description` blob | §3.1 `search(type='skill', query='acquire paper')` | `test_search_ands_across_tokens` + 2 siblings in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_skill_handler.py:402-425` |
+| BUG-H | New `_handle_pg_errors` wrapper on `QuestHandler._db_*`: `psycopg.errors.UndefinedTable` → `UNAVAILABLE` with `acatome-quest status --count` next-hint; `OperationalError` → `UNAVAILABLE` with `DATABASE_URL` next-hint | §4.5 after migration rollback | `TestPgErrorTranslation` (3 tests) in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_quest_handler.py:476-538` |
+| BUG-I | `_WebBase.read()` accepts `**_ignore` so `top_k` forwarded by the search dispatcher is absorbed instead of raising `TypeError`.  Docstring notes the rationale | §10.1, §11, §14 `search(…)` bullets | `test_read_absorbs_top_k_kwarg` + `test_read_absorbs_arbitrary_unknown_kwargs` in `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_websearch_handler.py:337-355` |
 
 #### Collateral changes
 
@@ -1987,9 +1987,9 @@ restart are still owed before the next live run.
   convention.  `test_llm_live.py::TestGetPaper` all pass (LLM emits
   `type='paper'` correctly on 6/6 prompts).
 - Existing tests updated for the BUG-C semantic change:
-  - `test_phase2_cost.py::TestServerDispatchFooter` — every
+  - `test_cost.py::TestServerDispatchFooter` — every
     `server.get(id='wang2020state')` call now passes `type='paper'`.
-  - `test_server_phase1.py::test_get_with_id_still_works` retired;
+  - `test_server.py::test_get_with_id_still_works` retired;
     replaced by the 5-test `TestAmbiguousKindErrors::test_get_*` suite
     that locks the new behaviour + the scheme-prefix / DOI / file-ext
     carve-outs.
@@ -2209,7 +2209,7 @@ next live run has a clear baseline to verify against.
 #### Regression coverage added
 
 - `TestAmbiguousKindErrors` in
-  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server_phase1.py:220-298` —
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_server.py:220-298` —
   7 tests locking the `KIND_UNKNOWN` response shape across search/get/put.
 - `TestCitation` in
   `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_paper_handler.py:138-266` —
@@ -2217,9 +2217,9 @@ next live run has a clear baseline to verify against.
   `marquessilva1999grasp` JSON-array, `mikladal2013l` Unicode/tag
   regressions, reserved-char escaping, missing-authors fallback).
 - Landing-page tests for `web`, `think`, `research` in
-  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase3_web.py:302-357`.
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_websearch_handler.py:302-357`.
 - Skill-append frontmatter-slug fallback + strict error path in
-  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_phase12b_skill.py:430-475`.
+  `@/Users/bots/Documents/openclaw-cluster/pips/packages/precis-mcp/tests/test_skill_handler.py:430-475`.
 
 #### Data migration owed
 

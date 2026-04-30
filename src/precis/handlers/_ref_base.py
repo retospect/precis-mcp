@@ -268,6 +268,20 @@ class RefHandler(Handler):
     # Tiny sections get merged into the previous group
     _MERGE_THRESHOLD = 3
 
+    def _block_chunk_hint(self, store, slug: str, block: dict) -> str:
+        """Return a single-line ``→ get(id=…)`` hint for an empty block.
+
+        Default: empty (no hint).  Subclasses with non-text block types
+        whose payload lives in a sibling subview override this — see
+        :meth:`PaperHandler._block_chunk_hint` for the figure case.
+
+        Review 2026-04-25 mcp-critic finding B5 — empty figure-block
+        chunks used to render as a header followed by two blank lines
+        with no hint that the figure binary is reachable via
+        ``/fig/N``.
+        """
+        return ""
+
     # ── Main dispatch ────────────────────────────────────────────────
 
     def read(
@@ -856,6 +870,21 @@ class RefHandler(Handler):
                 ),
             )
 
+        # Inverted ranges (``~5..3``) used to fall through to "no
+        # blocks in range" silently — indistinguishable from a valid
+        # empty selector, while blocks 3..5 actually exist.  Detect
+        # and surface the inversion so the caller can swap the ends.
+        # Review 2026-04-25 mcp-critic finding M (inverted range).
+        if start > end:
+            raise PrecisError(
+                ErrorCode.ID_MALFORMED,
+                cause=(
+                    f"inverted chunk range {selector!r} — "
+                    f"start ({start}) is greater than end ({end})"
+                ),
+                next=f"try id='{slug}{SEP}{end}..{start}' (swap the ends)",
+            )
+
         # Don't filter by block_type — search returns hits across every
         # type that has an embedding (figure captions, section headers,
         # lists), so a search hint at ``slug›N`` could refer to any of
@@ -938,6 +967,17 @@ class RefHandler(Handler):
                 header += f"  [{n_links} link{'s' if n_links != 1 else ''}]"
             lines.append(header)
             lines.append(text)
+            # Empty-content blocks (figures with no extracted caption)
+            # used to render as a header followed by two blank lines.
+            # The agent had no signal that the chunk is intentionally
+            # opaque (image binary lives elsewhere) vs. an extraction
+            # failure.  Subclasses can override ``_block_chunk_hint``
+            # to emit a ``→ get(id=…)`` line pointing at the right
+            # subview.  Review 2026-04-25 mcp-critic finding B5.
+            if not (text or "").strip():
+                hint = self._block_chunk_hint(store, slug, block)
+                if hint:
+                    lines.append(hint)
             lines.append("")
 
         # Trailer (D5): suppress the off-the-end ``Next:`` hint when we

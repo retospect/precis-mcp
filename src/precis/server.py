@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os.path
+import re
 import sys
 from typing import Any
 
@@ -69,7 +70,7 @@ def _split_sep(text: str) -> list[str]:
 # ``›`` (U+203A, single right-pointing angle quotation mark) is
 # *not* in this list — it is the legacy canonical from v5.x and
 # remains accepted on input for back-compat (see
-# :data:`precis.uri._LEGACY_SEP` and ``test_review_2026_04_25``).
+# :data:`precis.uri._LEGACY_SEP` and ``test_uri.TestSeparatorFlip``).
 _LOOKALIKE_SEPS: dict[str, str] = {
     "\u2010": "U+2010 (Unicode hyphen)",
     "\u2011": "U+2011 (non-breaking hyphen)",
@@ -93,7 +94,13 @@ def _check_lookalike_sep(id: str) -> str | None:
     """
     for ch, desc in _LOOKALIKE_SEPS.items():
         if ch in id:
+            # Replace the lookalike with the canonical SEP, then collapse
+            # any adjacent SEPs.  Without this, ``~–5`` (tilde + en-dash
+            # + 5) becomes ``~~5`` instead of ``~5`` — review 2026-04-25
+            # mcp-critic finding D4: the suggested fix in the error
+            # message must itself parse.
             fixed = id.replace(ch, SEP)
+            fixed = re.sub(rf"{re.escape(SEP)}{{2,}}", SEP, fixed)
             ctx = CallContext(
                 kind="", verb="", args={"id": id}
             )

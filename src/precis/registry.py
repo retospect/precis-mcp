@@ -1632,6 +1632,45 @@ def clear_startup_warnings() -> None:
     _ENV_WARNED.clear()
 
 
+def visible_schemes() -> set[str]:
+    """Return the schemes whose plugin has at least one visible kind.
+
+    Used by :func:`resolve` when raising ``KIND_UNKNOWN`` so the
+    ``options:`` enum surfaced to the agent only lists schemes the
+    operator can actually invoke (env-requires satisfied,
+    ``PRECIS_KINDS`` mask permits, handler-verb support exists).
+
+    Without this filter, optional / env-gated schemes (``rmk``,
+    ``math``, ``websearch`` when their credentials are unset) leak
+    into the enum even though calls against them fail with
+    ``KIND_UNAVAILABLE``.  The agent picks one, retries, fails — every
+    new turn.  Review 2026-04-25 mcp-critic finding A3.
+
+    Returns the union over all four verbs because schemes are
+    declared at plugin level, not verb level — a scheme is "visible"
+    as soon as any verb on its kind is reachable.
+    """
+    _discover()
+    out: set[str] = set()
+    for plugin in PLUGINS.values():
+        kind_specs = list(plugin.kinds) if plugin.kinds else []
+        if not kind_specs:
+            # Plugins that decline to declare ``kinds=`` (file-only
+            # handlers in older registrations) stay visible — there is
+            # no env-gate to evaluate.  Skipping them would silently
+            # drop the ``file:`` scheme from the enum.
+            out.update(plugin.schemes)
+            continue
+        for spec in kind_specs:
+            if not _env_satisfied(spec):
+                continue
+            if _KINDS_MASK is not None and spec.name not in _KINDS_MASK:
+                continue
+            out.update(plugin.schemes)
+            break
+    return out
+
+
 def get_plugin(name: str) -> Plugin | None:
     """Get a registered plugin by name."""
     _discover()
@@ -1685,10 +1724,24 @@ def resolve(scheme: str, path: str) -> Handler:
 
     handler_cls = SCHEMES.get(scheme)
     if not handler_cls:
+        # ``options:`` enum is filtered through ``visible_schemes()``
+        # so env-gated kinds (``rmk`` without ``REMARKABLE_TOKEN``,
+        # ``math`` without ``WOLFRAM_APP_ID``, …) don't leak into the
+        # recovery hint.  Without the filter the agent picks one, the
+        # call fails with KIND_UNAVAILABLE, and the agent retries —
+        # review 2026-04-25 mcp-critic finding A3.
+        visible = visible_schemes()
+        # ``file`` is a synthetic scheme dispatched by extension, not
+        # a registered plugin scheme — surface it explicitly when at
+        # least one ``FILE_TYPES`` handler is registered so the enum
+        # still teaches the agent about file-extension routing.
+        scheme_options = sorted(visible)
+        if FILE_TYPES:
+            scheme_options = ["file", *scheme_options]
         raise PrecisError(
             ErrorCode.KIND_UNKNOWN,
             cause=f"unknown scheme: {scheme!r}",
-            options=["file", *sorted(SCHEMES.keys())],
+            options=scheme_options,
         )
     inst = _SCHEME_INSTANCES.get(scheme)
     if inst is None:
@@ -1849,7 +1902,14 @@ def _format_error(
     if where_bits:
         lines.append(f"  where: {' '.join(where_bits)}")
 
-    if cause:
+    # Drop ``cause:`` when its full text is byte-identical to the
+    # ``ERROR [<code>]: <summary>`` line — most one-line causes
+    # already appear in the summary, and repeating them costs ~30
+    # tokens per error response with zero added information.  Multi-
+    # line causes (rare) keep the line so the wrapped detail isn't
+    # lost.  Review 2026-04-25 mcp-critic finding M (cause duplicates
+    # message).
+    if cause and cause.strip() != summary:
         lines.append(f"  cause: {cause}")
     if options:
         lines.append(f"  options: {', '.join(options)}")

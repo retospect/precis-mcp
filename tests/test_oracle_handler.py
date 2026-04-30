@@ -17,18 +17,13 @@ builds, registers, and round-trips through fakes cleanly.
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from unittest.mock import patch
-
-import pytest
 
 from precis.handlers.oracle import (
     OracleHandler,
     _now_iso,
     _parse_meta,
 )
-from precis.protocol import ErrorCode, PrecisError
-
 
 # ---------------------------------------------------------------------------
 # Helper-fn unit tests
@@ -369,3 +364,70 @@ class TestTraditionOverview:
         # Old broken syntax must not be advertised.
         assert "get(id='oracle:iching/0')" not in out
         assert "oracle:iching/0.." not in out
+
+
+# ===========================================================================
+# Regression suite — 2026-04-25 mcp-critic review (v2 D12)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# /recent works (returns the tradition list with a one-line note)
+# ---------------------------------------------------------------------------
+
+
+class TestOracleRecentParity:
+    """``oracle:/recent`` works.  Review 2026-04-25 finding D12.
+
+    Every other state-backed kind (memory, todo, quest, skill,
+    flashcard) accepts ``/recent``.  Oracle is stateless — it has no
+    draw history — but rejecting the input was harsher than helpful.
+    The handler now treats ``/recent`` as a tradition-listing alias
+    with a one-line note explaining that draws aren't tracked.
+    """
+
+    def setup_method(self):
+        from precis.registry import _discover
+
+        _discover()
+
+    def test_recent_returns_tradition_list(self):
+        from unittest.mock import MagicMock, patch
+
+        from precis.handlers.oracle import OracleHandler
+
+        h = OracleHandler()
+        store = MagicMock()
+        store.list_refs_by_corpus.return_value = [
+            {
+                "slug": "oracle:iching",
+                "title": "I-Ching",
+                "tags": '["oracle","built-in","i-ching"]',
+                "meta": {},
+            }
+        ]
+        store.get_blocks.return_value = []
+        with patch(
+            "precis.handlers.oracle._get_store", return_value=store
+        ):
+            out = h.read("/recent", None, None, None, "", False, 0, 0)
+        assert "aren't tracked" in out
+        assert "Oracle" in out
+        # Drops down into the tradition listing
+        assert "iching" in out
+
+    def test_recent_view_arg_also_works(self):
+        # If the URI parser routes ``oracle:/recent`` to ``view='recent'``
+        # rather than ``path='/recent'``, the same fallback fires.
+        from unittest.mock import MagicMock, patch
+
+        from precis.handlers.oracle import OracleHandler
+
+        h = OracleHandler()
+        store = MagicMock()
+        store.list_refs_by_corpus.return_value = []
+        with patch(
+            "precis.handlers.oracle._get_store", return_value=store
+        ):
+            out = h.read("", None, "recent", None, "", False, 0, 0)
+        assert "aren't tracked" in out

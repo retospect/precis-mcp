@@ -2,6 +2,7 @@
 
 import pytest
 
+from precis import server, tools
 from precis.uri import SEP, parse
 
 # ─── Basic scheme + path ────────────────────────────────────────────
@@ -305,3 +306,77 @@ class TestSEPSeparator:
         p = parse(f"doi:10.1021/jacs.2c01234{SEP}38")
         assert p.path == "10.1021/jacs.2c01234"
         assert p.selector == "38"
+
+
+# ===========================================================================
+# Regression suite — 2026-04-25 mcp-critic review (v1 fix 3)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Canonical SEP is ``~`` and ``›`` is still accepted
+# ---------------------------------------------------------------------------
+
+
+class TestSeparatorFlip:
+    """Canonical separator must be ASCII ``~`` for small-model
+    compatibility (mcp-critic rule E3 — CRITICAL).  The legacy U+203A
+    must keep parsing on input, but every output / docstring / example
+    uses ``~``."""
+
+    def test_canonical_sep_is_ascii_tilde(self):
+        assert SEP == "~"
+        # Belt-and-braces: ASCII codepoint, not the Unicode lookalike.
+        assert ord(SEP) == 0x7E
+
+    def test_legacy_sep_still_parses_index(self):
+        p = parse("paper:foo\u203a38")
+        assert p.selector == "38"
+        assert p.range_start == 38
+
+    def test_legacy_sep_still_parses_slug(self):
+        p = parse("file:planning.docx\u203aKR8M2")
+        assert p.selector == "KR8M2"
+        assert p.selector_type == "slug"
+
+    def test_legacy_sep_still_parses_range(self):
+        p = parse("paper:foo\u203a38..42")
+        assert p.range_start == 38
+        assert p.range_end == 42
+
+    def test_canonical_and_legacy_parse_to_same_result(self):
+        canonical = parse("paper:foo~38..42")
+        legacy = parse("paper:foo\u203a38..42")
+        assert canonical.selector == legacy.selector
+        assert canonical.range_start == legacy.range_start
+        assert canonical.range_end == legacy.range_end
+        assert canonical.scheme == legacy.scheme
+        assert canonical.path == legacy.path
+
+    def test_legacy_sep_absent_from_get_docstring(self):
+        # The agent reads ``server.get.__doc__`` via ``tools/list``;
+        # exposing the legacy U+203A there teaches the agent to emit
+        # the lookalike character.  Every example must use ``~``.
+        doc = server.get.__doc__ or ""
+        assert "\u203a" not in doc, (
+            "server.get docstring still mentions U+203A (\u203a); "
+            "examples must use ASCII ~ — see mcp-critic rule E3"
+        )
+
+    def test_legacy_sep_absent_from_put_docstring(self):
+        doc = server.put.__doc__ or ""
+        assert "\u203a" not in doc
+
+    def test_legacy_sep_absent_from_move_docstring(self):
+        doc = server.move.__doc__ or ""
+        assert "\u203a" not in doc
+
+    def test_tools_read_docstring_uses_canonical_sep(self):
+        doc = tools.read.__doc__ or ""
+        assert "\u203a" not in doc
+        # And the canonical form is mentioned, not just absent.
+        assert "~selector" in doc or "[~selector]" in doc
+
+    def test_tools_put_docstring_uses_canonical_sep(self):
+        doc = tools.put.__doc__ or ""
+        assert "\u203a" not in doc

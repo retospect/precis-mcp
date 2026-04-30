@@ -854,3 +854,57 @@ class TestFileBaseHelpView:
         )
         assert "skill:tex-workflow" in out
         assert "tex:" in out or "LaTeX" in out
+
+
+# ===========================================================================
+# Regression suite — 2026-04-25 mcp-critic review (v3 M)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Skill source path is rendered relative to scan-path root
+# ---------------------------------------------------------------------------
+
+
+class TestSkillSourcePathRelative:
+    """``SkillHandler._render_skill`` surfaces the scan-path-relative
+    path so transcripts don't leak the operator's home directory.
+
+    Review 2026-04-25 mcp-critic finding M (skill source-path leak).
+    """
+
+    def test_relative_source_under_scan_path(self, tmp_path):
+        from precis.handlers.skill import SkillHandler
+
+        scan = tmp_path / "skills"
+        scan.mkdir()
+        skill_dir = scan / "demo-skill"
+        skill_dir.mkdir()
+        md = skill_dir / "SKILL.md"
+        md.write_text(
+            "---\nname: demo\ndescription: testing\n---\n\nbody text\n",
+            encoding="utf-8",
+        )
+        h = SkillHandler(scan_paths=[scan])
+        # ``_render_skill`` reads from the in-memory index; trigger
+        # the scan first the same way ``read()`` does on real calls.
+        h._ensure_fresh()
+        out = h._render_skill("demo-skill")
+        # Source line uses scan-path-relative form, not the absolute
+        # path that would leak ``tmp_path`` (and the operator's home
+        # in production).
+        assert "Source: skills/demo-skill/SKILL.md" in out
+        assert str(tmp_path) not in out
+
+    def test_relative_source_falls_back_to_basename_for_absolute_path(self):
+        # When the source path isn't under any registered scan path
+        # (e.g. test fixtures with absolute paths), the helper falls
+        # back to ``parent/basename`` — still hides the absolute path.
+        from pathlib import Path
+
+        from precis.handlers.skill import SkillHandler
+
+        h = SkillHandler(scan_paths=[Path("/nonexistent/scan")])
+        rel = h._relative_source(Path("/some/random/dir/SKILL.md"))
+        assert rel == "dir/SKILL.md"
+        assert "/some/random" not in rel

@@ -291,10 +291,15 @@ class TestInvokeHandlerEnrichment:
 
 class TestFormatErrorShape:
     def test_structure_has_four_lines_for_full_error(self):
+        # ``cause`` is multi-line so the summary (first line) and the
+        # full cause are distinct.  The dedup branch (mcp-critic
+        # finding M) only collapses single-line causes that match the
+        # summary verbatim — multi-line causes carry detail beyond
+        # the summary and stay.
         out = _format_error(
             ErrorCode.VIEW_UNKNOWN,
             CallContext(kind="demo", verb="get", args={"id": "x"}),
-            cause="view '/bad' unknown",
+            cause="view '/bad' unknown\n  paper has /toc and /summary",
             options=["/toc", "/summary"],
             next_hint="get(id='x/toc') for chunk index",
         )
@@ -302,8 +307,22 @@ class TestFormatErrorShape:
         assert lines[0] == "ERROR [view_unknown]: view '/bad' unknown"
         assert lines[1] == "  where: type='demo' verb='get' id='x'"
         assert lines[2] == "  cause: view '/bad' unknown"
-        assert lines[3] == "  options: /toc, /summary"
-        assert lines[4] == "  next: get(id='x/toc') for chunk index"
+        assert lines[3] == "  paper has /toc and /summary"
+        assert lines[4] == "  options: /toc, /summary"
+        assert lines[5] == "  next: get(id='x/toc') for chunk index"
+
+    def test_cause_dropped_when_byte_equal_to_summary(self):
+        # mcp-critic finding M: every error envelope used to carry
+        # ``cause: <same string as summary>`` — ~30 wasted tokens per
+        # error.  The dedup branch in ``_format_error`` drops the
+        # line when ``cause`` matches the summary verbatim.
+        out = _format_error(
+            ErrorCode.PARAM_INVALID,
+            CallContext(kind="demo", verb="get"),
+            cause="bad query",
+        )
+        assert out.startswith("ERROR [param_invalid]: bad query")
+        assert "cause: bad query" not in out
 
     def test_gripe_code_appends_gripe_next_hint_when_empty(self):
         out = _format_error(
@@ -333,10 +352,14 @@ class TestFormatErrorShape:
         assert "gripe" not in out
 
     def test_missing_where_omits_line(self):
+        # Multi-line cause so the cause line survives the dedup
+        # branch — single-line causes ride in the summary line and
+        # the explicit ``cause:`` line is dropped (mcp-critic
+        # finding M).
         out = _format_error(
             ErrorCode.PARAM_INVALID,
             CallContext(),
-            cause="bad query",
+            cause="bad query\n  expected: a non-empty string",
         )
         assert "where:" not in out
         assert "cause: bad query" in out

@@ -6,7 +6,7 @@ import pytest
 from docx import Document
 
 from precis.handlers.docx import DocxHandler
-from precis.protocol import PrecisError
+from precis.protocol import ErrorCode, PrecisError
 
 
 @pytest.fixture
@@ -387,3 +387,122 @@ class TestAutoCreate:
         result = handler.read(str(path), None, None, None, "", False, 0, 1)
         assert path.exists()
         assert "0 nodes" in result or "empty" in result.lower()
+
+
+# ===========================================================================
+# Regression suite — 2026-04-25 mcp-critic review (v2 E2 + F1)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# v2 E2 — kind name is ``docx`` not ``word``
+# ---------------------------------------------------------------------------
+
+
+class TestDocxKindRename:
+    """The DOCX file kind is registered under the canonical name
+    ``docx``.  No back-compat ``word`` alias is registered (review
+    2026-04-25 finding E2 — small models routed dictionary-lookup
+    queries to ``word`` thinking it was a definition kind).
+    """
+
+    def setup_method(self):
+        from precis.registry import _discover
+
+        _discover()
+
+    def test_docx_kind_registered(self):
+        from precis.registry import KINDS
+
+        assert "docx" in KINDS
+        assert KINDS["docx"].handler_cls is DocxHandler
+
+    def test_word_is_not_a_kind_anymore(self):
+        # Hard rename — ``word`` should not resolve as either a kind
+        # or an alias.  Callers that hard-coded ``type='word'`` must
+        # update.
+        from precis.registry import ALIASES, KINDS
+
+        assert "word" not in KINDS
+        assert "word" not in ALIASES
+
+    def test_docx_handler_class_renamed(self):
+        from precis.handlers import docx as docx_module
+
+        # The class is ``DocxHandler``; the legacy ``WordHandler``
+        # name no longer exists.
+        assert hasattr(docx_module, "DocxHandler")
+        assert not hasattr(docx_module, "WordHandler")
+
+
+# ---------------------------------------------------------------------------
+# v2 F1 — file kind validates path before opening
+# ---------------------------------------------------------------------------
+
+
+class TestFileKindRejectsNonPaths:
+    """``DocxHandler`` (and every other ``FileHandlerBase`` subclass)
+    rejects ``/recent``, empty paths, and paths without an extension
+    *before* python-docx can leak ``FileNotFoundError`` and the
+    ``/[Content_Types].xml`` zip-member name to the agent.  Review
+    2026-04-25 finding F1.
+    """
+
+    def test_docx_rejects_slash_recent(self):
+        h = DocxHandler()
+        try:
+            h._resolve_path("/recent")
+        except PrecisError as exc:
+            assert exc.code is ErrorCode.PARAM_INVALID
+            assert "is not a file path" in exc.cause
+            assert "Content_Types" not in str(exc)
+            # Recovery hint points at the right shape.
+            assert ".docx" in exc.next
+        else:
+            raise AssertionError("expected PrecisError")
+
+    def test_docx_rejects_empty_path(self):
+        h = DocxHandler()
+        try:
+            h._resolve_path("")
+        except PrecisError as exc:
+            assert exc.code is ErrorCode.PARAM_INVALID
+            assert "filename" in exc.cause
+        else:
+            raise AssertionError("expected PrecisError")
+
+    def test_docx_rejects_dot_path(self):
+        # ``Path('.').exists()`` is True — the cwd — which used to slip
+        # past the existence check and fall through to python-docx.
+        h = DocxHandler()
+        try:
+            h._resolve_path(".")
+        except PrecisError as exc:
+            assert exc.code is ErrorCode.PARAM_INVALID
+        else:
+            raise AssertionError("expected PrecisError")
+
+    def test_full_dispatch_returns_structured_error_for_recent(self):
+        # End-to-end: ``server.get(type='docx', id='/recent')`` must
+        # return a structured ``ERROR [<code>]: … / next: …``
+        # envelope, not a Python stack trace.
+        from precis import server
+
+        out = server.get(type="docx", id="/recent")
+        assert "ERROR [" in out
+        assert "FileNotFoundError" not in out
+        assert "Content_Types" not in out
+        # Cost footer parity — every error envelope in the server
+        # carries a cost line so wrappers parsing for budgets see it.
+        assert "[cost: free]" in out
+
+    def test_unknown_extension_returns_clean_error(self):
+        h = DocxHandler()
+        try:
+            h._resolve_path("/tmp/nope.xyz")
+        except PrecisError as exc:
+            assert exc.code is ErrorCode.ID_NOT_FOUND
+            assert ".docx" in exc.next
+            assert "FileNotFoundError" not in str(exc)
+        else:
+            raise AssertionError("expected PrecisError")

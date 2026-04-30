@@ -301,3 +301,70 @@ class TestEnvWarningIdempotence:
             visible_kinds(verb)
         matching = [w for w in STARTUP_WARNINGS if "gamma" in w]
         assert len(matching) == 1
+
+
+# ===========================================================================
+# Regression suite — 2026-04-25 mcp-critic review (v3 A3)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# visible_schemes filters env-gated kinds
+# ---------------------------------------------------------------------------
+
+
+class TestVisibleSchemes:
+    """``visible_schemes`` exposes only the schemes whose plugin has
+    at least one visible kind (env-requires satisfied + mask-allowed).
+
+    The unfiltered ``SCHEMES`` dict used to leak into ``KIND_UNKNOWN``
+    error responses, surfacing ``rmk`` (needs ``REMARKABLE_TOKEN``)
+    and ``math`` (needs ``WOLFRAM_APP_ID``) as if they were
+    invocable.  Review 2026-04-25 mcp-critic finding A3.
+    """
+
+    def test_returns_set_of_scheme_strings(self):
+        from precis.registry import visible_schemes
+
+        out = visible_schemes()
+        assert isinstance(out, set)
+        assert all(isinstance(s, str) for s in out)
+
+    def test_paper_scheme_always_visible(self):
+        # ``paper`` has no env-requires; must be in every visible
+        # build of the package that registers the papers plugin.
+        from precis.registry import _discover, visible_schemes
+
+        _discover()
+        out = visible_schemes()
+        assert "paper" in out
+
+    def test_rmk_hidden_when_no_remarkable_token(self, monkeypatch):
+        # Strip the env so the requires gate fails, then ask the
+        # registry for visible schemes.
+        from precis.registry import _ENV_WARNED, _discover, visible_schemes
+
+        monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+        # _env_satisfied caches its "warned" decision per process —
+        # clear so the test's view is fresh.
+        _ENV_WARNED.discard("rmk")
+        _discover()
+        assert "rmk" not in visible_schemes()
+
+    def test_kind_unknown_options_omits_hidden_scheme(self, monkeypatch):
+        # Resolve a non-existent scheme and confirm the error envelope
+        # lists only visible schemes.  ``rmk`` is hidden when its
+        # token is unset; the options enum must reflect that.
+        from precis.protocol import PrecisError
+        from precis.registry import _ENV_WARNED, _discover, resolve
+
+        monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+        _ENV_WARNED.discard("rmk")
+        _discover()
+        with pytest.raises(PrecisError) as excinfo:
+            resolve("definitely-not-a-scheme", "")
+        # Options is the second-positional kwarg; pull from .options.
+        opts = excinfo.value.options or []
+        assert "rmk" not in opts
+        # And the visible schemes do appear (paper is always present).
+        assert "paper" in opts
