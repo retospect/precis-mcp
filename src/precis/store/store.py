@@ -996,9 +996,10 @@ class Store:
     ) -> IngestResult:
         """Read a `.acatome` bundle and write it into the v2 schema.
 
-        Idempotency: if a paper with the same DOI is already present
-        (kind='paper', meta->>'doi' = bundle.doi), the call is a
-        no-op — `IngestResult.inserted=False`. Re-extract is a separate
+        Idempotency: if a paper with the same DOI, pdf_hash, or
+        arxiv_id is already present (kind='paper', matching the first
+        available key), the call is a no-op —
+        `IngestResult.inserted=False`. Re-extract is a separate
         operation handled by a future `--force` flag.
 
         Block embeddings:
@@ -1019,17 +1020,30 @@ class Store:
         raw = read_bundle(Path(path))
         parsed = parse_bundle(raw, embedding_dim=embedder.dim)
 
-        # DOI dedupe: short-circuit if we already have this paper. We
-        # could also dedupe on (provider, request_hash) for cache kinds
-        # but papers don't have a unique-per-content key beyond DOI.
+        # Identity dedupe: short-circuit if we already have this paper
+        # under any stable content key. Checked in order of strength:
+        #   1. DOI          — canonical publication identifier
+        #   2. pdf_hash     — sha256 of source PDF, exact content match
+        #   3. arxiv_id     — preprint identifier (DOI-less preprints)
+        # Rescued bundles (acatome-extract `text_rescue` path) often
+        # lack a DOI but still carry pdf_hash, which is what used to
+        # trigger silent duplicate re-ingest on each directory walk.
+        dedupe_keys: list[tuple[str, str]] = []
         if parsed.doi:
+            dedupe_keys.append(("doi", parsed.doi))
+        if parsed.pdf_hash:
+            dedupe_keys.append(("pdf_hash", parsed.pdf_hash))
+        if parsed.arxiv_id:
+            dedupe_keys.append(("arxiv_id", parsed.arxiv_id))
+
+        for meta_key, value in dedupe_keys:
             with self.pool.connection() as conn:
                 row = conn.execute(
                     "SELECT id, slug FROM refs "
                     "WHERE kind = 'paper' AND deleted_at IS NULL "
-                    "AND meta->>'doi' = %s "
+                    "AND meta->>%s = %s "
                     "LIMIT 1",
-                    (parsed.doi,),
+                    (meta_key, value),
                 ).fetchone()
             if row is not None:
                 ref_id, slug = row[0], row[1]

@@ -9,6 +9,8 @@ Subcommands:
               - ingest-md             walk a directory of markdown files
               - ingest-oracles        seed the oracle kind from
                                       bundled (or supplied) YAMLs
+              - dedupe-papers         remove duplicate paper refs
+                                      sharing pdf_hash / doi / arxiv_id
               - import-perplexity     bulk put(mode='import') over a
                                       directory of Perplexity reports
               - watch-patents         create a saved CQL patent watch
@@ -160,6 +162,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Don't write — show what would be ingested.",
+    )
+
+    # Dedupe helper — removes duplicate paper refs that share a
+    # pdf_hash / doi / arxiv_id but ended up with distinct slug-
+    # suffixed rows (created by the pre-fix ingest path that only
+    # deduped on DOI). Safe by default: dry-run prints what would go.
+    dp = jobs_sub.add_parser(
+        "dedupe-papers",
+        help="Remove duplicate paper refs sharing pdf_hash / doi / arxiv_id.",
+    )
+    dp.add_argument("--database-url", default=None)
+    dp.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually delete duplicates (default: dry-run only prints).",
+    )
+    dp.add_argument(
+        "--key",
+        choices=("pdf_hash", "doi", "arxiv_id", "all"),
+        default="all",
+        help="Which identity key to dedupe on (default: all).",
     )
 
     # Bulk import of Perplexity-generated reports. The typical source
@@ -352,6 +375,9 @@ def _run_jobs(args: argparse.Namespace) -> None:
         return
     if args.job == "ingest-oracles":
         _run_ingest_oracles(args)
+        return
+    if args.job == "dedupe-papers":
+        _run_dedupe_papers(args)
         return
     if args.job == "import-perplexity":
         _run_import_perplexity(args)
@@ -851,6 +877,99 @@ def _run_ingest_bundles(args: argparse.Namespace) -> None:
         )
         if failed:
             sys.exit(1)
+    finally:
+        store.close()
+
+
+def _run_dedupe_papers(args: argparse.Namespace) -> None:
+    """Implements ``precis jobs dedupe-papers`` — find and remove
+    duplicate paper refs that share a content-identity key.
+
+    Pre-fix ingest only deduped on DOI, so DOI-less bundles (e.g.
+    ``text_rescue`` extracts) accumulated one extra row per rerun
+    with a ``-N`` slug suffix. Each group is collapsed to its
+    lowest-id row; duplicates are hard-deleted (blocks/tags/links
+    cascade via ON DELETE CASCADE on refs.id).
+
+    Dry-run by default. Pass ``--apply`` to actually delete.
+    """
+    from precis.config import load_config
+    from precis.store import Store
+
+    cfg = load_config()
+    dsn = _resolve_dsn(args.database_url, cfg=cfg)
+
+    keys = ("pdf_hash", "doi", "arxiv_id") if args.key == "all" else (args.key,)
+
+    store = Store.connect(dsn)
+    try:
+        total_groups = 0
+        total_dupes = 0
+        # Track IDs already scheduled for deletion so that a paper
+        # surfaced under multiple keys (e.g. shared pdf_hash AND
+        # shared doi) isn't double-counted and doesn't mess with the
+        # "keep lowest id" rule across keys.
+        victim_ids: set[int] = set()
+
+        with store.pool.connection() as conn:
+            for key in keys:
+                rows = conn.execute(
+                    "WITH live AS ("
+                    "  SELECT id, slug, meta->>%s AS v "
+                    "  FROM refs "
+                    "  WHERE kind = 'paper' AND deleted_at IS NULL "
+                    "    AND meta ? %s AND meta->>%s <> ''"
+                    ") "
+                    "SELECT v, "
+                    "       array_agg(id ORDER BY id) AS ids, "
+                    "       array_agg(slug ORDER BY id) AS slugs "
+                    "FROM live "
+                    "GROUP BY v "
+                    "HAVING count(*) > 1",
+                    (key, key, key),
+                ).fetchall()
+                if not rows:
+                    continue
+                print(f"== Duplicates by {key} ({len(rows)} groups) ==")
+                for value, ids, slugs in rows:
+                    # Skip groups whose survivor is already a victim
+                    # of an earlier-key pass — pathological, but cheap
+                    # to guard against.
+                    keep, *rest = zip(ids, slugs, strict=True)
+                    keep_id, keep_slug = keep
+                    dupe_pairs = [
+                        (rid, rslug) for rid, rslug in rest if rid not in victim_ids
+                    ]
+                    if not dupe_pairs:
+                        continue
+                    total_groups += 1
+                    total_dupes += len(dupe_pairs)
+                    preview = (value or "")[:60]
+                    print(
+                        f"  {key}={preview!r}: keep #{keep_id} "
+                        f"{keep_slug!r}, remove "
+                        + ", ".join(f"#{rid} {rslug!r}" for rid, rslug in dupe_pairs)
+                    )
+                    for rid, _slug in dupe_pairs:
+                        victim_ids.add(rid)
+
+        verb = "would remove" if not args.apply else "removing"
+        print(
+            f"dedupe-papers: {verb} {total_dupes} duplicate refs across "
+            f"{total_groups} groups [keys={','.join(keys)}]"
+        )
+
+        if args.apply and victim_ids:
+            with store.tx() as conn:
+                conn.execute(
+                    "DELETE FROM refs WHERE id = ANY(%s)",
+                    (sorted(victim_ids),),
+                )
+            print(f"dedupe-papers: deleted {len(victim_ids)} refs")
+        elif args.apply:
+            print("dedupe-papers: nothing to delete")
+        else:
+            print("dedupe-papers: dry-run (pass --apply to delete)")
     finally:
         store.close()
 

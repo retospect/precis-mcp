@@ -388,10 +388,15 @@ class TestIngestBundle:
         assert block.embedding is not None
         assert len(block.embedding) == 1024
 
-    def test_paper_without_doi_inserted(self, tmp_path: Path, store: Store) -> None:
-        # No DOI → no idempotent dedupe on second ingest. Each call
-        # creates a new ref (slug suffix on collision).
+    def test_paper_without_identity_inserted(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        # No DOI, no pdf_hash, no arxiv_id → no identity key at all.
+        # Each call creates a new ref (slug suffix on collision). This
+        # is the degenerate path that only hits when acatome-extract
+        # fails to produce any stable key.
         data = _bundle_dict(doi=None)
+        data["header"]["pdf_hash"] = None
         path = _write_bundle(tmp_path, data)
         e = MockEmbedder(dim=1024)
         first = store.ingest_bundle(path, embedder=e)
@@ -400,8 +405,34 @@ class TestIngestBundle:
         assert second.inserted is True
         assert first.slug != second.slug
 
+    def test_idempotent_on_pdf_hash(self, tmp_path: Path, store: Store) -> None:
+        # DOI-less bundles (text_rescue path) still carry pdf_hash,
+        # which must dedupe on second ingest.
+        data = _bundle_dict(doi=None)
+        path = _write_bundle(tmp_path, data)
+        e = MockEmbedder(dim=1024)
+        first = store.ingest_bundle(path, embedder=e)
+        second = store.ingest_bundle(path, embedder=e)
+        assert first.inserted is True
+        assert second.inserted is False
+        assert second.ref_id == first.ref_id
+        assert second.slug == first.slug
+
+    def test_idempotent_on_arxiv_id(self, tmp_path: Path, store: Store) -> None:
+        # Preprints without DOI still dedup on arxiv_id.
+        data = _bundle_dict(doi=None, arxiv_id="2401.12345")
+        data["header"]["pdf_hash"] = None
+        path = _write_bundle(tmp_path, data)
+        e = MockEmbedder(dim=1024)
+        first = store.ingest_bundle(path, embedder=e)
+        second = store.ingest_bundle(path, embedder=e)
+        assert first.inserted is True
+        assert second.inserted is False
+        assert second.ref_id == first.ref_id
+
     def test_slug_collision_resolves(self, tmp_path: Path, store: Store) -> None:
-        # Pre-create a ref with the slug we'd mint.
+        # Pre-create a ref with the slug we'd mint — unrelated to the
+        # bundle, so neither pdf_hash nor DOI can dedup. Must suffix.
         cid = store.ensure_corpus("default")
         store.insert_ref(
             corpus_id=cid,
@@ -410,7 +441,9 @@ class TestIngestBundle:
             title="Existing",
             meta={},
         )
-        path = _write_bundle(tmp_path, _bundle_dict(doi=None))
+        data = _bundle_dict(doi=None)
+        data["header"]["pdf_hash"] = None
+        path = _write_bundle(tmp_path, data)
         e = MockEmbedder(dim=1024)
         result = store.ingest_bundle(path, embedder=e)
         assert result.inserted is True
