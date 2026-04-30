@@ -58,8 +58,19 @@ def fake_ops(
         claims={"ep1234567b1": claims_xml},
         # The CQL the handler builds for the smoke search will match
         # whatever the q= produces; tests below pre-compute that.
+        # ``photocatalytic`` is the query used for the local-merge test
+        # because it stems to the same English snowball stem as the
+        # text the description fixture ingests (the verbatim word
+        # ``photocatalytic`` appears in paragraphs 1, 2 and the abstract,
+        # whereas ``photocatalysis`` stems to ``photocatalysi`` — a
+        # distinct stem — so a lex query for the latter does not hit
+        # the local blocks). Without this match the
+        # ``test_search_with_local_marks_local`` case devolves to a
+        # remote-only response that cannot exercise the [local] /
+        # dedup logic the test pins.
         searches={
             '(ti="photocatalysis" OR ab="photocatalysis")': search_xml,
+            '(ti="photocatalytic" OR ab="photocatalytic")': search_xml,
             'cpc="B01J27/24"': search_xml,
         },
     )
@@ -250,7 +261,12 @@ class TestSearch:
     def test_search_with_local_marks_local(self, handler: PatentHandler) -> None:
         # Ingest the patent so it's local.
         handler.get(id="EP1234567B1")
-        r = handler.search(q="photocatalysis", top_k=10)
+        # ``photocatalytic`` is the literal word in the description
+        # fixture; ``photocatalysis`` (used in the no-local sibling
+        # test) stems to a different English-snowball lexeme and
+        # would not hit the local lex CTE. Either query reaches the
+        # remote leg via the equivalent fake_ops mapping.
+        r = handler.search(q="photocatalytic", top_k=10)
         # Local hits are block-level, so ep1234567b1 appears in many
         # ## headers — but every one is marked [local].
         assert "[local]" in r.body

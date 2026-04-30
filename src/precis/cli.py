@@ -4,11 +4,16 @@ Subcommands:
     serve     Run the MCP server on stdio.
     migrate   Apply pending DB migrations.
     jobs      Run a one-shot maintenance job:
-              - ingest-bundle      one .acatome file
-              - ingest-bundles     walk a directory of bundles
-              - ingest-md          walk a directory of markdown files
-              - import-perplexity  bulk put(mode='import') over a
-                                   directory of Perplexity reports
+              - ingest-bundle         one .acatome file
+              - ingest-bundles        walk a directory of bundles
+              - ingest-md             walk a directory of markdown files
+              - ingest-oracles        seed the oracle kind from
+                                      bundled (or supplied) YAMLs
+              - import-perplexity     bulk put(mode='import') over a
+                                      directory of Perplexity reports
+              - watch-patents         create a saved CQL patent watch
+              - list-patent-watches   list saved patent watches
+              - run-patent-watches    run all due (or one) watch passes
 
 All DB-touching subcommands require ``PRECIS_DATABASE_URL`` (or a
 ``--database-url`` override).
@@ -125,6 +130,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Re-ingest every file even if its mtime hasn't changed.",
     )
 
+    # Phase 5 — oracle seed ingest. Reads bundled wisdom YAMLs (or
+    # a user-supplied directory) and writes one ``oracle`` ref per
+    # tradition with one block per entry. Idempotent: skips refs
+    # that already exist unless ``--overwrite`` is passed.
+    io = jobs_sub.add_parser(
+        "ingest-oracles",
+        help="Seed the oracle kind from YAML wisdom files.",
+    )
+    io.add_argument(
+        "src",
+        nargs="?",
+        default=None,
+        help=(
+            "Directory of oracle YAML files. Defaults to the bundled "
+            "data/oracle/ shipped with the package."
+        ),
+    )
+    io.add_argument("--database-url", default=None)
+    io.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Replace existing oracle refs (drops & re-inserts blocks); "
+            "default is to skip already-ingested traditions."
+        ),
+    )
+    io.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Don't write — show what would be ingested.",
+    )
+
     # Bulk import of Perplexity-generated reports. The typical source
     # is a directory of markdown files exported from the Perplexity
     # web UI by a Pro subscriber — free content that populates the
@@ -171,6 +208,103 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Parse each file and print the derived query; don't write.",
     )
 
+    # ── patent watches ────────────────────────────────────────────────
+    # Phase 2 of the patent kind. The runner is hidden from the agent
+    # surface — these CLI subcommands are how operators create / list
+    # / drive watches. Hidden from the help text when EPO_OPS_*
+    # vars are missing isn't worth the complexity; we surface the
+    # subcommands always and rely on the runtime env-var check
+    # inside the runner itself.
+
+    wp = jobs_sub.add_parser(
+        "watch-patents",
+        help="Create a saved CQL patent watch (or delete one with --delete).",
+    )
+    wp.add_argument(
+        "cql",
+        nargs="?",
+        default=None,
+        help=(
+            "CQL string (strict, no bare keywords). Required unless --delete is given."
+        ),
+    )
+    wp.add_argument(
+        "--name",
+        required=True,
+        help="Watch slug; used by run-patent-watches --name and --delete.",
+    )
+    wp.add_argument(
+        "--every",
+        default="7d",
+        help=(
+            "How often the watch should re-run. Accepts 'Nh' (hours), "
+            "'Nd' (days), 'Nw' (weeks). Default: 7d."
+        ),
+    )
+    wp.add_argument(
+        "--auto-get",
+        action="store_true",
+        help=(
+            "Ingest hits directly into the patent kind. "
+            "Default is to open a quest summarising new hits."
+        ),
+    )
+    wp.add_argument(
+        "--max-per-pass",
+        type=int,
+        default=None,
+        help=(
+            "Cap how many patents this watch ingests / surfaces "
+            "in a single pass. Overflow drops and resurfaces "
+            "next pass. Default: no cap."
+        ),
+    )
+    wp.add_argument(
+        "--delete",
+        action="store_true",
+        help="Delete the watch with --name (cql positional ignored).",
+    )
+    wp.add_argument("--database-url", default=None)
+
+    lp = jobs_sub.add_parser(
+        "list-patent-watches",
+        help="List every saved patent watch.",
+    )
+    lp.add_argument(
+        "--show-cql",
+        action="store_true",
+        help="Include each watch's CQL in the output (long lines).",
+    )
+    lp.add_argument("--database-url", default=None)
+
+    rp = jobs_sub.add_parser(
+        "run-patent-watches",
+        help="Run a one-shot pass over all due patent watches.",
+    )
+    rp.add_argument(
+        "--name",
+        default=None,
+        help=(
+            "Run exactly one watch by name, regardless of due-ness. "
+            "Useful for debugging."
+        ),
+    )
+    rp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would happen; don't write quests, ingest, or update last_run_at.",
+    )
+    rp.add_argument(
+        "--fair-use-limit-gb",
+        type=float,
+        default=None,
+        help=(
+            "Override the rolling 7-day fair-use cap (default 3 GiB, "
+            "or PRECIS_PATENT_FAIR_USE_LIMIT_GB env var)."
+        ),
+    )
+    rp.add_argument("--database-url", default=None)
+
     return parser
 
 
@@ -216,11 +350,241 @@ def _run_jobs(args: argparse.Namespace) -> None:
     if args.job == "ingest-md":
         _run_ingest_md(args)
         return
+    if args.job == "ingest-oracles":
+        _run_ingest_oracles(args)
+        return
     if args.job == "import-perplexity":
         _run_import_perplexity(args)
         return
+    if args.job == "watch-patents":
+        _run_watch_patents(args)
+        return
+    if args.job == "list-patent-watches":
+        _run_list_patent_watches(args)
+        return
+    if args.job == "run-patent-watches":
+        _run_run_patent_watches(args)
+        return
     print(f"jobs: unknown subcommand {args.job!r}", file=sys.stderr)
     sys.exit(2)
+
+
+# ---------------------------------------------------------------------------
+# Patent watch CLI helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_interval(spec: str) -> int:
+    """Parse ``--every`` into seconds.
+
+    Accepts ``Nh`` (hours), ``Nd`` (days), ``Nw`` (weeks), or a bare
+    number of seconds. The CLI helper rejects anything else with a
+    short error message — saved-watch intervals run for years, so a
+    typo at create time would silently bake in a wrong cadence.
+    """
+    s = spec.strip().lower()
+    if not s:
+        raise ValueError("empty interval")
+    if s.isdigit():
+        return int(s)
+    unit = s[-1]
+    head = s[:-1]
+    if not head.isdigit():
+        raise ValueError(f"invalid interval {spec!r} — expected like '7d', '1h', '1w'")
+    n = int(head)
+    if n <= 0:
+        raise ValueError(f"invalid interval {spec!r} — must be positive")
+    multipliers = {"h": 3600, "d": 86_400, "w": 604_800}
+    if unit not in multipliers:
+        raise ValueError(f"invalid interval unit {unit!r} — use 'h', 'd', or 'w'")
+    return n * multipliers[unit]
+
+
+def _run_watch_patents(args: argparse.Namespace) -> None:
+    """Implements ``precis jobs watch-patents`` — create or delete a watch."""
+    from precis.config import load_config
+    from precis.errors import PrecisError
+    from precis.handlers import _patent_watch_db as watch_db
+    from precis.store import Store
+
+    cfg = load_config()
+    dsn = _resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        if args.delete:
+            try:
+                watch_db.delete(store, args.name)
+            except PrecisError as e:
+                print(f"watch-patents: {e}", file=sys.stderr)
+                if e.next:
+                    print(f"  next: {e.next}", file=sys.stderr)
+                sys.exit(1)
+            print(f"watch-patents: deleted {args.name!r}")
+            return
+
+        if args.cql is None:
+            print(
+                "watch-patents: cql is required (or pass --delete to remove a watch)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        try:
+            interval_s = _parse_interval(args.every)
+        except ValueError as e:
+            print(f"watch-patents: {e}", file=sys.stderr)
+            sys.exit(2)
+
+        try:
+            watch = watch_db.create(
+                store,
+                name=args.name,
+                cql=args.cql,
+                interval_s=interval_s,
+                auto_get=args.auto_get,
+                max_per_pass=args.max_per_pass,
+                created_by="cli",
+            )
+        except PrecisError as e:
+            print(f"watch-patents: {e}", file=sys.stderr)
+            if e.next:
+                print(f"  next: {e.next}", file=sys.stderr)
+            sys.exit(1)
+        mode = "auto-get" if watch.auto_get else "quest-on-new-hits"
+        days = watch.interval_s / 86_400
+        cap = (
+            f"{watch.max_per_pass}/pass" if watch.max_per_pass is not None else "no cap"
+        )
+        print(
+            f"watch-patents: created {watch.name!r} "
+            f"[{mode}, every {days:g}d, {cap}]\n"
+            f"  cql: {watch.cql}"
+        )
+    finally:
+        store.close()
+
+
+def _run_list_patent_watches(args: argparse.Namespace) -> None:
+    """Implements ``precis jobs list-patent-watches``."""
+    from precis.config import load_config
+    from precis.handlers import _patent_watch_db as watch_db
+    from precis.store import Store
+
+    cfg = load_config()
+    dsn = _resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        watches = watch_db.list_all(store)
+        if not watches:
+            print("list-patent-watches: no saved watches")
+            return
+        # Header
+        cols = f"{'NAME':<24}  {'EVERY':>6}  {'MODE':<8}  {'LAST RUN':<19}  {'SEEN':>5}"
+        print(cols)
+        print("-" * len(cols))
+        for w in watches:
+            mode = "auto" if w.auto_get else "quest"
+            days = w.interval_s / 86_400
+            every_str = f"{days:g}d" if days >= 1 else f"{w.interval_s // 3600}h"
+            last = (
+                w.last_run_at.strftime("%Y-%m-%d %H:%M:%S")
+                if w.last_run_at is not None
+                else "(never)"
+            )
+            print(
+                f"{w.name:<24}  {every_str:>6}  {mode:<8}  "
+                f"{last:<19}  {len(w.last_seen_pn):>5}"
+            )
+            if args.show_cql:
+                print(f"    cql: {w.cql}")
+        print(f"-- total: {len(watches)}")
+    finally:
+        store.close()
+
+
+def _run_run_patent_watches(args: argparse.Namespace) -> None:
+    """Implements ``precis jobs run-patent-watches``."""
+    from pathlib import Path
+
+    from precis.config import load_config
+    from precis.embedder import make_embedder
+    from precis.handlers._patent_ops import OpsClient
+    from precis.jobs.patent_watch import (
+        DEFAULT_FAIR_USE_LIMIT_GB,
+        run_one_pass,
+    )
+    from precis.store import Store
+
+    # Env vars must be set; without them OPS calls would fail
+    # immediately with auth errors.
+    epo_key = os.environ.get("EPO_OPS_CLIENT_KEY")
+    epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
+    raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+    if not (epo_key and epo_secret and raw_root_str):
+        print(
+            "run-patent-watches: EPO_OPS_CLIENT_KEY, "
+            "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
+            "be set",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    cfg = load_config()
+    dsn = _resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        ops = OpsClient(
+            key=epo_key,
+            secret=epo_secret,
+            user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
+        )
+
+        fair_use_limit_gb = args.fair_use_limit_gb
+        if fair_use_limit_gb is None:
+            env_lim = os.environ.get("PRECIS_PATENT_FAIR_USE_LIMIT_GB")
+            fair_use_limit_gb = float(env_lim) if env_lim else DEFAULT_FAIR_USE_LIMIT_GB
+
+        summary = run_one_pass(
+            store=store,
+            ops=ops,
+            embedder=embedder,
+            raw_root=Path(raw_root_str).expanduser(),
+            only_name=args.name,
+            dry_run=args.dry_run,
+            fair_use_limit_gb=fair_use_limit_gb,
+        )
+
+        if summary.paused_global:
+            gb = summary.fair_use_bytes_before / (1024**3)
+            print(
+                f"run-patent-watches: paused — rolling 7d fair-use "
+                f"{gb:.2f} GiB ≥ limit {fair_use_limit_gb:.2f} GiB"
+            )
+            return
+        if not summary.results:
+            print("run-patent-watches: no watches due")
+            return
+        for r in summary.results:
+            if r.error is not None:
+                print(f"  fail  {r.watch_name}  — {r.error}")
+                continue
+            if r.skipped_dry_run:
+                print(
+                    f"  dry   {r.watch_name}  "
+                    f"({len(r.new_pn)} new patent{'s' if len(r.new_pn) != 1 else ''})"
+                )
+                continue
+            quest_part = f"quest={r.quest_slug}" if r.quest_slug is not None else ""
+            ingest_part = f"ingested={len(r.ingested_pn)}" if r.ingested_pn else ""
+            overflow_part = f"overflow={len(r.overflow_pn)}" if r.overflow_pn else ""
+            details = (
+                " ".join(p for p in (quest_part, ingest_part, overflow_part) if p)
+                or "no new hits"
+            )
+            print(f"  ok    {r.watch_name}  new={len(r.new_pn)}  {details}")
+    finally:
+        store.close()
 
 
 def _run_ingest_md(args: argparse.Namespace) -> None:
@@ -294,6 +658,100 @@ def _run_ingest_md(args: argparse.Namespace) -> None:
             f"failed={failed}  [embedder={cfg.embedder}]"
         )
         if failed:
+            sys.exit(1)
+    finally:
+        store.close()
+
+
+def _run_ingest_oracles(args: argparse.Namespace) -> None:
+    """Implements ``precis jobs ingest-oracles``.
+
+    Walks a directory of YAML files (defaulting to the bundled
+    ``data/oracle/``) and inserts one ``oracle`` ref per tradition
+    with one block per entry. Idempotent: existing refs are skipped
+    unless ``--overwrite`` is passed; ``--dry-run`` reports without
+    touching the DB.
+    """
+    from precis.config import load_config
+    from precis.embedder import make_embedder
+    from precis.jobs.ingest_oracles import (
+        bundled_oracle_dir,
+        ingest_directory,
+    )
+    from precis.store import Store
+
+    if args.src is not None:
+        src = Path(args.src).expanduser()
+    else:
+        bundled = bundled_oracle_dir()
+        if bundled is None:
+            print(
+                "ingest-oracles: bundled oracle dir not found and no path "
+                "supplied; pass <src> as the first argument",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        src = bundled
+    if not src.is_dir():
+        print(f"ingest-oracles: not a directory: {src}", file=sys.stderr)
+        sys.exit(2)
+
+    cfg = load_config()
+
+    if args.dry_run:
+        # Dry-run still parses every YAML to validate the schema, but
+        # never opens a DB connection — useful before pointing the
+        # CLI at a fresh deploy.
+        try:
+            agg = ingest_directory(
+                src,
+                store=None,  # type: ignore[arg-type]
+                embedder=None,
+                overwrite=args.overwrite,
+                dry_run=True,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ingest-oracles: {exc}", file=sys.stderr)
+            sys.exit(2)
+        print(
+            f"ingest-oracles: dry-run from {src}\n"
+            f"  files={agg['files']}  would-create={agg['created']}  "
+            f"chunks={agg['chunks']}"
+        )
+        for fname, stats in agg["per_file"].items():
+            print(f"  {fname:<28}  entries={stats['chunks']}")
+        return
+
+    dsn = _resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        try:
+            agg = ingest_directory(
+                src,
+                store=store,
+                embedder=embedder,
+                overwrite=args.overwrite,
+                dry_run=False,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ingest-oracles: {exc}", file=sys.stderr)
+            sys.exit(2)
+
+        print(
+            f"ingest-oracles: from {src}  [embedder={cfg.embedder}]\n"
+            f"  files={agg['files']}  created={agg['created']}  "
+            f"replaced={agg['replaced']}  skipped={agg['skipped']}  "
+            f"errors={agg['errors']}  total chunks={agg['chunks']}"
+        )
+        for fname, stats in agg["per_file"].items():
+            print(
+                f"  {fname:<28}  "
+                f"created={stats['created']} replaced={stats['replaced']} "
+                f"chunks={stats['chunks']} skipped={stats['skipped']} "
+                f"errors={stats['errors']}"
+            )
+        if agg["errors"]:
             sys.exit(1)
     finally:
         store.close()

@@ -105,17 +105,47 @@ variable, query-of-the-day part.
 
 ## Saved CQL via watches
 
-The CLI watch runner takes the same CQL you'd use in `q=`:
+The CLI watch runner takes **strict** explicit CQL — bare keywords
+like `'photocatalysis'` are rejected at create time. Watches run
+unattended for years, so meaning shouldn't drift if the ad-hoc
+auto-promote rules ever change. Always write the field name
+explicitly:
 
 ```sh
-precis jobs watch-patents 'cpc=B01J27/24 and pa="university of limerick"'
-precis jobs watch-patents 'ti=nanobud or ab=nanobud' --every 1d
-precis jobs watch-patents 'pa=basf and cpc=B01J' --auto-get
+# Always require --name (used by run-patent-watches and --delete).
+precis jobs watch-patents 'cpc=B01J27/24 and pa="university of limerick"' --name limerick-cat
+precis jobs watch-patents 'ti=nanobud or ab=nanobud' --name nanobud --every 1d
+precis jobs watch-patents 'pa=basf and cpc=B01J' --name basf-b01j --auto-get
+precis jobs watch-patents 'cpc=Y02E60/13' --name h2 --max-per-pass 5
 ```
 
-Each pass diffs against the publication numbers seen previously
-and queues new hits into `quest:patents-pending-review` (or
-ingests directly with `--auto-get`).
+`--every` accepts hours (`1h`), days (`7d`, default), or weeks
+(`2w`). `--max-per-pass` caps how many patents a single pass will
+ingest (in `--auto-get` mode) or surface (in default quest mode).
+
+The runner runs once per pass — typically driven by a launchd /
+cron hourly tick that calls `precis jobs run-patent-watches`. Each
+pass diffs the OPS hit list against `last_seen_pn`. New hits then
+either:
+
+- **Default mode** — open one quest summarising the new patents
+  with their Espacenet links. Triage by ingesting the interesting
+  ones with `get(kind='patent', id='<docdb>')` and closing the
+  quest with `put(kind='quest', id='<slug>', tags=['STATUS:done'])`.
+- **`--auto-get` mode** — ingest each new patent directly. If the
+  pass exceeds `--max-per-pass`, overflow is **dropped** and resurfaces
+  on the next pass (oldest-publication-date first). Use auto-get
+  only for trusted CQLs whose hits you'll always want.
+
+Manage watches:
+
+```sh
+precis jobs list-patent-watches              # NAME · EVERY · MODE · LAST RUN · SEEN
+precis jobs list-patent-watches --show-cql   # include the stored CQL
+precis jobs run-patent-watches               # one-shot pass over due watches
+precis jobs run-patent-watches --name limerick-cat --dry-run
+precis jobs watch-patents --name limerick-cat --delete
+```
 
 ## OPS quirks worth knowing
 

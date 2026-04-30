@@ -39,6 +39,7 @@ from precis.errors import BadInput
 from precis.protocol import Handler
 from precis.response import Response
 from precis.store.types import BlockInsert
+from precis.utils.next_block import render_next_section
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -102,6 +103,14 @@ class CacheBackedHandler(Handler):
     attribution: ClassVar[str]
     corpus_slug: ClassVar[str] = "default"
 
+    #: One-line example query for this kind, used by error hints and
+    #: empty-listing trailers. Each subclass overrides with something
+    #: idiomatic (a Wolfram fact, a YouTube id, a URL …) so a 7B caller
+    #: hitting the same hardcoded ``population of Ireland`` regardless
+    #: of which cache kind they called doesn't run a Wolfram query when
+    #: they meant to fetch a URL. (MCP critic MAJOR — hint hardcoded.)
+    example_query: ClassVar[str] = "your query"
+
     def __init__(self, *, store: Store) -> None:
         self.store = store
 
@@ -115,6 +124,21 @@ class CacheBackedHandler(Handler):
         view: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # Bare get / "/" / "/recent" → listing of the most recent refs.
+        # Promoted from PerplexityHandler so every cache-backed kind
+        # behaves the same (math/web/youtube used to BadInput here).
+        # (MCP critic MAJOR — inconsistent bare-get behaviour.)
+        if self._is_listing_request(id, q):
+            return self._render_recent()
+        if isinstance(id, str) and id.startswith("/"):
+            raise BadInput(
+                f"unknown view {id!r} for kind={self.spec.kind!r}",
+                options=["/", "/recent"],
+                next=(
+                    f"get(kind={self.spec.kind!r}, id='/recent') to list recent refs"
+                ),
+            )
+
         query = self._coerce_query(id, q)
         key = self._canonical_key(query)
         request_hash = self._hash(key)
@@ -142,6 +166,28 @@ class CacheBackedHandler(Handler):
             cache_meta=result.meta,
         )
         return self._render(ref, cache, hit=False)
+
+    @staticmethod
+    def _is_listing_request(id: str | int | None, q: str | None) -> bool:
+        """Decide whether bare get should produce a /recent listing.
+
+        Treat any of these as the listing shape:
+
+        * ``id`` is missing **and** ``q`` is missing/blank,
+        * ``id`` is an empty/whitespace string (``id=''``, ``id='   '``),
+        * ``id`` is the explicit list-view path ``'/'`` or ``'/recent'``.
+
+        The empty-string branch matches the previous Perplexity behaviour
+        — a 7B caller that learned ``get(kind='memory')`` from one kind
+        often retries it as ``get(kind=X, id='')`` when the schema demands
+        an id. Bouncing them with BadInput vs. serving the listing is
+        the difference between a footgun and a useful default.
+        """
+        if id is None and not (isinstance(q, str) and q.strip()):
+            return True
+        if isinstance(id, str) and id.strip() in ("", "/", "/recent"):
+            return True
+        return False
 
     # ── subclass hooks ────────────────────────────────────────────────
 
@@ -180,16 +226,22 @@ class CacheBackedHandler(Handler):
         """SHA-256 hex digest used as `cache_state.request_hash`."""
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
-    @staticmethod
-    def _coerce_query(id: str | int | None, q: str | None) -> str:
-        """Pull a query string from `id=` or `q=`. One must be set."""
+    def _coerce_query(self, id: str | int | None, q: str | None) -> str:
+        """Pull a query string from `id=` or `q=`. One must be set.
+
+        The recovery hint names the *caller's* kind and the kind's own
+        example query — not a hardcoded ``kind='math', q='population of
+        Ireland'`` (a footgun that nudged 7B callers from web/youtube
+        into running paid Wolfram queries). (MCP critic MAJOR — hint
+        D2/D6 inconsistency.)
+        """
         if isinstance(id, str) and id.strip():
             return id.strip()
         if isinstance(q, str) and q.strip():
             return q.strip()
         raise BadInput(
-            "cache-backed kinds require a query as `id` or `q`",
-            next="get(kind='math', q='population of Ireland')",
+            f"{self.spec.kind} requires a query as `id` or `q`",
+            next=(f"get(kind={self.spec.kind!r}, q={self.example_query!r})"),
         )
 
     # ── response rendering ────────────────────────────────────────────
@@ -220,6 +272,50 @@ class CacheBackedHandler(Handler):
             return "[cost: free]"
         suffix = " — cached" if hit else ""
         return f"[cost: ~${cache.cost_usd:.4f}{suffix}]"
+
+    # ── /recent listing — shared across cache-backed kinds ─────────────
+
+    def _render_recent(self, *, limit: int = 20) -> Response:
+        """List the most recent refs of this kind, newest first.
+
+        Default implementation used by every cache-backed kind. Empty-
+        state names the kind-specific example query so the next hint is
+        actionable (rather than the previous "kind='math'" hardcoded
+        suggestion). PerplexityHandler still overrides to surface
+        tier-specific guidance, but math/web/youtube now agree on the
+        listing shape. (MCP critic MAJOR — bare-get inconsistency.)
+        """
+        refs = self.store.list_refs(
+            kind=self.spec.kind,
+            provider=self.provider,
+            limit=limit,
+        )
+        heading = f"# recent {self.spec.kind} refs"
+        if not refs:
+            body = f"{heading}\n\n_(no {self.spec.kind} refs yet.)_\n"
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind={self.spec.kind!r}, q={self.example_query!r})",
+                        "run a fresh query",
+                    ),
+                ]
+            )
+            return Response(body=body)
+
+        lines: list[str] = [heading, ""]
+        for ref in refs:
+            day = ref.updated_at.strftime("%Y-%m-%d") if ref.updated_at else "—"
+            title = ref.title
+            if len(title) > 80:
+                title = title[:77] + "..."
+            lines.append(f"- `{ref.slug}` — {title}  _({day})_")
+        lines.append("")
+        lines.append(
+            f"_showing {len(refs)} of at most {limit}. "
+            f"Next: get(kind={self.spec.kind!r}, id='<slug>') to read one._"
+        )
+        return Response(body="\n".join(lines))
 
 
 def _format_cache_footer(cache: CacheEntry) -> str:

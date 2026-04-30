@@ -26,6 +26,7 @@ from precis.response import Response
 from precis.store import Store
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 
 
 class OracleHandler(Handler):
@@ -39,6 +40,7 @@ class OracleHandler(Handler):
         ),
         supports_get=True,
         supports_search=True,
+        supports_search_hits=True,
         # Phase-8: cross-linking. Body is curated — set externally
         # via the corpus seeding pipeline. Put surface is link/tag
         # only, same shape as paper.
@@ -100,6 +102,27 @@ class OracleHandler(Handler):
             preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
             lines.append(f"\n## oracle {ref.slug}  (rank={rank:.2f})\n{preview}")
         return Response(body="\n".join(lines))
+
+    # ── search_hits: structured form for cross-kind merge ───────────
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Title-level lexical search returned as ``SearchHit``s.
+
+        Oracle bodies live in blocks but the canonical search
+        surface today indexes the title only — cross-kind merge
+        therefore stays consistent with single-kind ``search()``.
+        Block-level search is a follow-up.
+        """
+        if not (q and q.strip()):
+            return []
+        pairs = self.store.search_refs_lexical(q=q, kind="oracle", limit=top_k)
+        return ref_hits_to_search_hits(pairs, kind="oracle")
 
     # ── put: link/tag CRUD only (no body mutation) ────────────────
 

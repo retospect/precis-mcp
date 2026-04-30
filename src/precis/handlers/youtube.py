@@ -66,6 +66,7 @@ class YouTubeHandler(CacheBackedHandler):
     ttl_seconds: ClassVar[int | None] = 30 * 24 * 60 * 60  # 30 days
     attribution: ClassVar[str] = _YT_BASE_ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
+    example_query: ClassVar[str] = "dQw4w9WgXcQ"
 
     def __init__(self, *, store: Store) -> None:
         super().__init__(store=store)

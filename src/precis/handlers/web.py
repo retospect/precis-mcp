@@ -69,6 +69,7 @@ class WebHandler(CacheBackedHandler):
     ttl_seconds: ClassVar[int | None] = 7 * 24 * 60 * 60  # 7 days
     attribution: ClassVar[str] = _WEB_BASE_ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
+    example_query: ClassVar[str] = "https://example.com/article"
 
     def __init__(self, *, store: Store) -> None:
         super().__init__(store=store)

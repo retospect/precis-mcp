@@ -85,6 +85,7 @@ class MathHandler(CacheBackedHandler):
     ttl_seconds: ClassVar[int | None] = None
     attribution: ClassVar[str] = _WOLFRAM_BASE_ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
+    example_query: ClassVar[str] = "population of Ireland"
 
     # Per-call cost is tier-dependent for paid Wolfram plans; the free
     # tier is rate-limited but free. We surface a conservative

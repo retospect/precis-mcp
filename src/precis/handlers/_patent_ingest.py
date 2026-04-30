@@ -203,7 +203,10 @@ def ingest_patent(
 
     # Build ref meta from the parsed structure. ``raw_meta`` keeps
     # the parsed view available without re-reading XML.
-    meta = _build_meta(parsed, parsed_id)
+    # ``fair_use_bytes`` lets the watch runner sum a rolling 7-day
+    # window via SQL without needing a side table — see
+    # ``precis.jobs.patent_watch.compute_rolling_fair_use_bytes``.
+    meta = _build_meta(parsed, parsed_id, fair_use_bytes=bytes_fetched)
 
     with store.tx() as conn:
         cid = store.ensure_corpus(corpus_slug)
@@ -248,12 +251,22 @@ def ingest_patent(
 # ---------------------------------------------------------------------------
 
 
-def _build_meta(parsed: ParsedPatent, docdb: DocDbId) -> dict:
+def _build_meta(
+    parsed: ParsedPatent,
+    docdb: DocDbId,
+    *,
+    fair_use_bytes: int = 0,
+) -> dict:
     """Compose the ``refs.meta`` payload.
 
     Layout matches the spec at ``docs/patent-kind-spec.md``. We keep
     this in one place so the handler renderers can rely on stable
     keys.
+
+    Args:
+        fair_use_bytes: total raw OPS body bytes consumed to ingest
+            this patent. Persisted so the watch runner can compute a
+            rolling 7-day fair-use total via a single SQL aggregate.
     """
     return {
         "country": docdb.country,
@@ -267,6 +280,7 @@ def _build_meta(parsed: ParsedPatent, docdb: DocDbId) -> dict:
         "cpc_classes": parsed.cpc_classes,
         "ipc_classes": parsed.ipc_classes,
         "abstract": parsed.abstract,
+        "fair_use_bytes": fair_use_bytes,
     }
 
 

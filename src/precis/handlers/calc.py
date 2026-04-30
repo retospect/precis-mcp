@@ -93,7 +93,7 @@ class CalcHandler(Handler):
                 ),
             )
 
-        return Response(body=f"{expr_str} = {result}")
+        return Response(body=f"{expr_str} = {_humanise(result)}")
 
     @staticmethod
     def _coerce_expr(id: str | int | None, q: str | None) -> str:
@@ -107,3 +107,21 @@ class CalcHandler(Handler):
             "calc requires an expression as `id` or `q`",
             next="get(kind='calc', id='2+3*4')",
         )
+
+
+# Sympy's special constants render with cryptic names (``zoo``, ``oo``,
+# ``nan``) that 7B callers misread as typos. Translate the trio into
+# plain English in the response so the meaning is unambiguous. (MCP
+# critic MINOR — calc 1/0 returns ``zoo`` with no explanation.)
+_SYMPY_HUMAN_NAMES: dict[str, str] = {
+    "zoo": "complex infinity (e.g. division by zero)",
+    "oo": "+infinity",
+    "-oo": "-infinity",
+    "nan": "undefined (NaN)",
+}
+
+
+def _humanise(result: Any) -> str:
+    """Render a sympy result, replacing opaque constants with English."""
+    rendered = str(result)
+    return _SYMPY_HUMAN_NAMES.get(rendered, rendered)

@@ -56,6 +56,7 @@ from precis.utils.md_parse import (
 )
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class MarkdownHandler(Handler):
         ),
         supports_get=True,
         supports_search=True,
+        supports_search_hits=True,
         supports_put=True,
         is_numeric=False,
         id_required=False,
@@ -217,6 +219,34 @@ class MarkdownHandler(Handler):
             lines.append(f"_{ref.title}_")
             lines.append(preview)
         return Response(body="\n".join(lines))
+
+    # ── search_hits: structured form for cross-kind merge ──────────
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Block-level fused search returned as ``SearchHit``s.
+
+        Same engine as :meth:`search` but skips path-scoped lookups
+        — cross-kind merge has no per-file scope.
+        """
+        if not (q and q.strip()):
+            return []
+        query_vec: list[float] | None = None
+        if self.embedder is not None:
+            query_vec = self.embedder.embed_one(q)
+        triples = self.store.search_blocks_fused(
+            q=q,
+            query_vec=query_vec,
+            kind="markdown",
+            limit=top_k,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+        )
+        return block_hits_to_search_hits(triples, kind="markdown")
 
     # ── put ────────────────────────────────────────────────────────
 

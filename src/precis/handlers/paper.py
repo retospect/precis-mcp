@@ -18,6 +18,7 @@ v2:
 
 from __future__ import annotations
 
+import html
 import re
 from typing import Any, ClassVar
 
@@ -35,6 +36,7 @@ from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 
 # ---------------------------------------------------------------------------
 # Public spec
@@ -62,6 +64,7 @@ class PaperHandler(Handler):
         ),
         supports_get=True,
         supports_search=True,
+        supports_search_hits=True,
         # Phase-8: cross-linking. ``supports_put=True`` does NOT mean
         # paper bodies become writable — the put handler restricts to
         # link/unlink/tags/untags + rel and rejects ``text=``/``mode=``
@@ -112,9 +115,14 @@ class PaperHandler(Handler):
         if chunk_spec is not None and effective_view is not None:
             if effective_view == "toc":
                 return self._render_toc(ref, scope=chunk_spec)
+            # Build the full id string first, then repr() it whole — the
+            # MCP critic flagged ``id={slug!r}~{lo}..{hi}/toc`` as
+            # producing ``id='slug'~38..38/toc`` (slug repr'd, suffix
+            # outside the quotes) which is a SyntaxError when pasted.
+            recovery_id = f"{slug}~{chunk_spec[0]}..{chunk_spec[1]}/toc"
             raise BadInput(
                 f"cannot combine chunk selector (~N..M) with view={effective_view!r}",
-                next=f"get(kind='paper', id={slug!r}~{chunk_spec[0]}..{chunk_spec[1]}/toc)",
+                next=f"get(kind='paper', id={recovery_id!r})",
             )
 
         if chunk_spec is not None:
@@ -222,9 +230,70 @@ class PaperHandler(Handler):
             handle = f"{slug}~{block.pos}"
             preview = _excerpt(block.text)
             lines.append(f"\n## {i}. {handle}")
-            lines.append(f"_{ref.title}_")
+            lines.append(f"_{_clean_inline_text(ref.title)}_")
             lines.append(preview)
-        return Response(body="\n".join(lines))
+
+        body = "\n".join(lines)
+
+        # Pagination affordance — when the lexical total exceeds what
+        # we returned, surface the narrow-with-scope path explicitly.
+        # Without this trailer a 7B caller seeing ``# 100 of 101`` often
+        # reads the header as "this is everything" and stops short of
+        # hit #101. (MCP critic MAJOR — search has no pagination
+        # affordance when capped.)
+        if total > len(hits):
+            top_slug = (hits[0][1].slug or "???") if hits else None
+            nav: list[tuple[str, str]] = []
+            if scope is None and top_slug is not None:
+                nav.append(
+                    (
+                        f"search(kind='paper', q={q!r}, scope={top_slug!r})",
+                        f"narrow to blocks inside {top_slug}",
+                    )
+                )
+            nav.append(
+                (
+                    f"search(kind='paper', q={q!r} + ' <salient term>')",
+                    "tighten the query with a hit-specific token",
+                )
+            )
+            body += render_next_section(nav)
+
+        return Response(body=body)
+
+    # -- search_hits: structured form for cross-kind merge -------------------
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        tags: list[str] | None = None,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Block-level fused search returned as ``SearchHit``s.
+
+        Same engine as :meth:`search`, but skips the per-handler
+        rendering and surfaces the structured rows so the runtime
+        cross-kind dispatcher can RRF-fuse them with hits from
+        other kinds.  ``scope=`` is intentionally omitted — cross-
+        kind merge has no per-paper scope.
+        """
+        if not (q and q.strip()):
+            return []
+        normalized_tags = Tag.normalize_filter(tags, kind="paper")
+        query_vec: list[float] | None = None
+        if self.embedder is not None:
+            query_vec = self.embedder.embed_one(q)
+        triples = self.store.search_blocks_fused(
+            q=q,
+            query_vec=query_vec,
+            kind="paper",
+            tags=normalized_tags,
+            limit=top_k,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+        )
+        return block_hits_to_search_hits(triples, kind="paper")
 
     # -- put: link/tag CRUD only (no body mutation) --------------------------
 
@@ -352,10 +421,10 @@ class PaperHandler(Handler):
         year = meta.get("year")
         authors_raw = meta.get("authors")
         authors = _format_authors(authors_raw)
-        journal = meta.get("journal") or ""
+        journal = _clean_inline_text(str(meta.get("journal") or ""))
         n_blocks = self.store.count_blocks(ref.id)
 
-        lines = [f"# {ref.slug}", f"_{ref.title}_"]
+        lines = [f"# {ref.slug}", f"_{_clean_inline_text(ref.title)}_"]
         if authors:
             lines.append(authors)
         venue: list[str] = []
@@ -411,10 +480,30 @@ class PaperHandler(Handler):
             if not abstract:
                 return Response(body=f"no abstract on file for {ref.slug}")
             # Strip JATS XML namespace tags (<jats:title>, <jats:p>, …)
-            # that some publishers leave in the metadata. The MCP critic
-            # found these leaking through verbatim, forcing every caller
-            # to do client-side cleanup.
-            return Response(body=_strip_jats(str(abstract)))
+            # that some publishers leave in the metadata, then run the
+            # entity unescape pipeline so ``&amp;`` lands as ``&``.
+            # The MCP critic flagged the body-only response as missing
+            # any affordance — add a slug header + Next: trailer so
+            # the caller knows which paper they're reading and where
+            # to go next. (MCP critic NIT — abstract has no header /
+            # Next:.)
+            cleaned = _clean_inline_text(_strip_jats(str(abstract)))
+            slug = ref.slug or "???"
+            title = _clean_inline_text(ref.title)
+            body = f"# {slug} — abstract\n_{title}_\n\n{cleaned}"
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind='paper', id='{slug}', view='toc')",
+                        "hierarchical TOC",
+                    ),
+                    (
+                        f"get(kind='paper', id='{slug}', view='bibtex')",
+                        "BibTeX citation",
+                    ),
+                ]
+            )
+            return Response(body=body)
 
         if view == "toc":
             return self._render_toc(ref, scope=None)
@@ -435,7 +524,7 @@ class PaperHandler(Handler):
                 next=(
                     "figure binaries aren't served — figures live as legend "
                     "blocks inside the body. Find the figure number via "
-                    f"view='toc', then read the legend block "
+                    "view='toc', then read the legend block "
                     "(e.g. 'Figure 3. …' on a ~N block). See the "
                     "'Figures' section of precis-paper-help."
                 ),
@@ -454,10 +543,24 @@ class PaperHandler(Handler):
                 f"no blocks in {ref.slug} for range ~{lo}..{hi}",
                 next=f"get(kind='paper', id='{ref.slug}', view='toc')",
             )
+
+        # Figure-and-caption coalescing: when a single-block request
+        # lands on an image-only block, fetch the next block too so the
+        # caller sees the caption in the same response. Without this an
+        # agent gets just ``![](_page_19_Figure_1.jpeg)`` — no number,
+        # no caption, and a relative URL that nothing serves.
+        # (MCP critic MAJOR — figure block returns image marker with no
+        # caption.)
+        if len(blocks) == 1 and lo == hi and _is_image_only_block(blocks[0].text):
+            tail = self.store.list_blocks_for_ref(ref.id, pos_range=(hi + 1, hi + 1))
+            if tail and _looks_like_caption(tail[0].text):
+                blocks = [*blocks, *tail]
+                hi = tail[0].pos
+
         lines: list[str] = []
         for b in blocks:
             lines.append(f"# {ref.slug}~{b.pos}")
-            lines.append(b.text)
+            lines.append(_render_block_body(ref.slug or "???", b.pos, b.text))
             lines.append("")
 
         # Next: trailer — adjacent ranges + parent toc + citation.
@@ -561,7 +664,12 @@ class PaperHandler(Handler):
         lines = [f"# {len(refs)} paper{'s' if len(refs) != 1 else ''}{suffix}"]
         for r in refs:
             year = (r.meta or {}).get("year") or ""
-            preview = _excerpt(r.title, limit=80)
+            # Run titles through the JATS/entity cleanup before
+            # excerpting — otherwise a title like
+            # ``Cu/ZnO<sub>x</sub>`` lands in the list verbatim and
+            # any LLM reading it copies the markup back into prose.
+            # (MCP critic MINOR — list view leaks raw HTML/JATS.)
+            preview = _excerpt(_clean_inline_text(r.title), limit=80)
             yr = f"  ({year})" if year else ""
             lines.append(f"  {r.slug:<30}{yr}  {preview}")
         body = "\n".join(lines)
@@ -738,7 +846,8 @@ def _parse_paper_id(
 
 
 def _format_authors(raw: Any) -> str:
-    names = _author_names(raw)
+    names = [_clean_inline_text(n) for n in _author_names(raw)]
+    names = [n for n in names if n]
     if not names:
         return ""
     if len(names) <= 3:
@@ -769,26 +878,43 @@ def _author_names(raw: Any) -> list[str]:
 
 
 def _format_citation(ref: Ref, *, style: str) -> str:
+    """Render a citation in BibTeX / RIS / EndNote.
+
+    All scalar metadata fields are run through :func:`_clean_inline_text`
+    to strip JATS / HTML markup and unescape entities (``&amp;`` →
+    ``&``); BibTeX additionally LaTeX-escapes ``& % _ #`` so the output
+    compiles cleanly. (MCP critic MINOR — BibTeX leaks ``&amp;`` and
+    paper list leaks ``<sub>``.)
+    """
     meta = ref.meta or {}
     slug = ref.slug or "???"
-    title = ref.title
-    authors = _author_names(meta.get("authors"))
-    journal = str(meta.get("journal") or "")
+    title = _clean_inline_text(ref.title)
+    authors = [_clean_inline_text(a) for a in _author_names(meta.get("authors"))]
+    authors = [a for a in authors if a]
+    journal = _clean_inline_text(str(meta.get("journal") or ""))
     year = meta.get("year")
-    doi = str(meta.get("doi") or "")
+    doi = _clean_inline_text(str(meta.get("doi") or ""))
 
     if style == "bibtex":
+        # LaTeX-escape every scalar field that might carry a special
+        # char. ``and``/``year``/``doi`` rarely do but we run them
+        # through anyway for symmetry; a stray ``&`` in the title was
+        # the actual MCP-critic finding.
+        bx_title = _latex_escape(title)
+        bx_authors = " and ".join(_latex_escape(a) for a in authors)
+        bx_journal = _latex_escape(journal)
+        bx_doi = _latex_escape(doi)
         lines = [f"@article{{{slug},"]
-        if title:
-            lines.append(f"  title = {{{title}}},")
-        if authors:
-            lines.append(f"  author = {{{' and '.join(authors)}}},")
+        if bx_title:
+            lines.append(f"  title = {{{bx_title}}},")
+        if bx_authors:
+            lines.append(f"  author = {{{bx_authors}}},")
         if year:
             lines.append(f"  year = {{{year}}},")
-        if journal:
-            lines.append(f"  journal = {{{journal}}},")
-        if doi:
-            lines.append(f"  doi = {{{doi}}},")
+        if bx_journal:
+            lines.append(f"  journal = {{{bx_journal}}},")
+        if bx_doi:
+            lines.append(f"  doi = {{{bx_doi}}},")
         lines.append("}")
         return "\n".join(lines) + "\n"
 
@@ -820,6 +946,62 @@ def _format_citation(ref: Ref, *, style: str) -> str:
     if doi:
         out.append(f"%R {doi}")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Inline-markup + LaTeX-escape helpers
+# ---------------------------------------------------------------------------
+
+# Strip a small whitelist of inline HTML / JATS tags that publishers
+# leak into title/journal metadata: ``<sub>``, ``<sup>``, ``<i>``,
+# ``<b>``, ``<em>``, ``<strong>`` plus any ``<jats:*>`` namespace tag.
+# The tag *contents* are kept; only the markers go.
+_INLINE_TAG_RE = re.compile(
+    r"</?(?:sub|sup|i|b|em|strong|jats:[a-zA-Z0-9_-]+)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+# Characters that need backslash-escaping for LaTeX. The list is the
+# minimum set that breaks BibTeX / biber compilation when present in
+# field values; ``$``, ``{``, ``}``, ``\`` are not common in
+# bibliographic metadata and would need a richer escape.
+_LATEX_ESCAPES: dict[str, str] = {
+    "&": r"\&",
+    "%": r"\%",
+    "_": r"\_",
+    "#": r"\#",
+}
+
+
+def _clean_inline_text(text: str) -> str:
+    """Run the metadata-cleanup pipeline used by every renderer.
+
+    Steps (idempotent):
+
+    1. ``html.unescape`` to flip ``&amp;`` → ``&``, ``&lt;`` → ``<``,
+       and any double-encoded ``&amp;lt;`` shapes back to literal text.
+       Run twice so the double-encoded shape lands as ``<``.
+    2. Strip a small whitelist of inline HTML/JATS tags.
+    3. Collapse whitespace runs.
+
+    Pure — never raises.
+    """
+    if not text:
+        return ""
+    cleaned = html.unescape(html.unescape(text))
+    cleaned = _INLINE_TAG_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _latex_escape(text: str) -> str:
+    """Backslash-escape the LaTeX special chars BibTeX trips on."""
+    if not text:
+        return ""
+    out = text
+    for ch, esc in _LATEX_ESCAPES.items():
+        out = out.replace(ch, esc)
+    return out
 
 
 def _excerpt(text: str, *, limit: int = 280) -> str:
@@ -904,6 +1086,80 @@ def _strip_jats(text: str) -> str:
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+# ---------------------------------------------------------------------------
+# Figure-and-caption coalescing
+# ---------------------------------------------------------------------------
+
+# Markdown image markers like ``![](path/to.jpeg)``. The path component
+# is captured so the placeholder can name the original asset (purely
+# informational — the image isn't served).
+_IMAGE_MARKER_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+
+# Page-anchor span that acatome-extract emits before image blocks
+# (``<span id="page-19-0"></span>``). Stripped along with the image so
+# the placeholder body is just a one-line marker.
+_PAGE_ANCHOR_RE = re.compile(r"<span\s+id=\"page-\d+-\d+\"\s*></span>")
+
+# Caption blocks start with ``**Fig``, ``**Figure``, ``**Scheme``, or
+# ``**Table`` — the bold-prefixed legend pattern emitted by Marker /
+# acatome-extract. The check is applied to the *first non-empty line*
+# of the candidate block.
+_CAPTION_LEAD_RE = re.compile(
+    r"^\*\*\s*(Fig(?:ure)?|Scheme|Table)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_image_only_block(text: str) -> bool:
+    """True when the block consists solely of image markers + page anchors.
+
+    A block that's just ``<span id="page-N-M"></span>![](_page_N_*.jpeg)``
+    has no readable content for the agent — the relative path resolves
+    to nothing the MCP serves, and there's no caption text to quote.
+    """
+    stripped = _PAGE_ANCHOR_RE.sub("", text)
+    stripped = _IMAGE_MARKER_RE.sub("", stripped)
+    return stripped.strip() == ""
+
+
+def _looks_like_caption(text: str) -> bool:
+    """True when the block opens with a Fig/Scheme/Table legend lead."""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        return bool(_CAPTION_LEAD_RE.match(line))
+    return False
+
+
+def _render_block_body(slug: str, pos: int, text: str) -> str:
+    """Replace bare image markers with a structured placeholder.
+
+    The relative URL ``![](_page_19_Figure_1.jpeg)`` resolves to
+    nothing — quoting it back is a footgun for any LLM citing the
+    figure. Replace each marker with a short ``[figure: slug~N — see
+    caption block]`` placeholder, and strip the page-anchor spans
+    around it. The original asset path is preserved in parentheses for
+    diagnostic purposes only. (MCP critic MAJOR — figure marker leaks
+    relative path.)
+    """
+    if not _IMAGE_MARKER_RE.search(text):
+        return text
+    cleaned = _PAGE_ANCHOR_RE.sub("", text)
+
+    def _replace(m: re.Match[str]) -> str:
+        asset = m.group(1)
+        return (
+            f"[figure: {slug}~{pos} — image not served; "
+            f"see the caption block (next ~{pos + 1}). "
+            f"asset: {asset}]"
+        )
+
+    cleaned = _IMAGE_MARKER_RE.sub(_replace, cleaned)
+    # Collapse whitespace-only artefacts left behind by the strip.
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 __all__ = ["PaperHandler"]

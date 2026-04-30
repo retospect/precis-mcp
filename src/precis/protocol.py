@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from precis.errors import Unsupported
 from precis.response import Response
+
+if TYPE_CHECKING:
+    from precis.utils.search_merge import SearchHit
 
 Verb = Literal["get", "search", "put", "move"]
 
@@ -30,6 +33,14 @@ class KindSpec:
     supports_search: bool = False
     supports_put: bool = False
     supports_move: bool = False
+
+    # Cross-kind search opt-in. When True, the handler's
+    # ``search_hits`` method returns ``list[SearchHit]`` and
+    # participates in fan-out merges (``kind='paper,memory'``,
+    # ``kind='*'``). Independent of ``supports_search``: a handler
+    # may serve a custom-shaped single-kind ``search()`` (skill,
+    # python) without being eligible for the universal merge.
+    supports_search_hits: bool = False
 
     is_numeric: bool = False  # public id is int (else str slug)
     id_required: bool = True  # False if get may omit id
@@ -62,6 +73,21 @@ class Handler:
 
     def search(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support search")
+
+    def search_hits(self, **kw: Any) -> list[SearchHit]:
+        """Structured search for cross-kind merge.
+
+        Returns a list of ``SearchHit`` already sorted best-first.
+        Used by the runtime when ``kind`` is a comma-list / ``'*'``
+        / ``None``-with-cross-kind-default to fan out across every
+        kind whose ``KindSpec.supports_search_hits`` is True.
+
+        Default raises ``Unsupported``; concrete handlers override.
+        Single-kind ``search()`` text rendering stays the canonical
+        agent surface — this method is the structured input to the
+        merge primitive, not a replacement.
+        """
+        raise Unsupported(f"{self.spec.kind} does not support cross-kind search")
 
     def put(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support put")

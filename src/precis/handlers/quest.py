@@ -22,6 +22,7 @@ from precis.response import Response
 from precis.store import Store, Tag
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 from precis.utils.slug import slug_from_text
 
 
@@ -35,6 +36,7 @@ class QuestHandler(Handler):
         ),
         supports_get=True,
         supports_search=True,
+        supports_search_hits=True,
         supports_put=True,
         is_numeric=False,
         id_required=False,
@@ -104,6 +106,21 @@ class QuestHandler(Handler):
             preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
             lines.append(f"\n## quest {ref.slug}  (rank={rank:.2f})\n{preview}")
         return Response(body="\n".join(lines))
+
+    # ── search_hits: structured form for cross-kind merge ───────────
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Ref-level lexical search returned as ``SearchHit``s."""
+        if not (q and q.strip()):
+            return []
+        pairs = self.store.search_refs_lexical(q=q, kind="quest", limit=top_k)
+        return ref_hits_to_search_hits(pairs, kind="quest")
 
     # ── put ────────────────────────────────────────────────────────
 

@@ -1,0 +1,25 @@
+slug: proverbs-irish
+title: Irish Proverbs
+description: Irish proverbs (seanfhocail).  Gaeilge with English rendering — quality
+  over quantity, fit-to-environment, strategic retreat.
+tags:
+- proverbs
+entries:
+- title: Beagán is fearr ná mórán go dona
+  body: A small amount of something good beats a large amount of something bad.  Quality
+    scales worse than quantity in consequences — one bad ingredient ruins the meal,
+    one good one cannot save it.
+  original: Beagán is fearr ná mórán go dona.
+  lang: ga
+- title: Níl aon tinteán mar do thinteán féin
+  body: There's no fireside like your own fireside.  Familiar contexts solve problems
+    faster because the support infrastructure is invisible there.  Don't underrate
+    the value of working at home — the surrounding tools matter.
+  original: Níl aon tinteán mar do thinteán féin.
+  lang: ga
+- title: Is fearr rith maith ná drochsheasamh
+  body: A good run is better than a bad stand.  Strategic retreat preserves the
+    asset (you, the team, the company); a bad stand burns it.  Sunk-cost fallacy
+    makes "stand" feel noble; sometimes "run" is the discipline.
+  original: Is fearr rith maith ná drochsheasamh.
+  lang: ga

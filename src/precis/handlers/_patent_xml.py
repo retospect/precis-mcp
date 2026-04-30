@@ -435,29 +435,33 @@ def parse_search_response(xml_bytes: bytes) -> tuple[list[OpsHit], int]:
                 total = int(t)
                 break
 
+    # Drive iteration off ``<exchange-document>`` — one element per
+    # patent record. Each carries a nested ``<publication-reference>``
+    # we read for the docdb id; walking publication-references at
+    # the top level would double-count (we'd pick up both the
+    # search-result-level reference *and* the bibliographic-data
+    # nested one inside each exchange-document).
+    seen: set[str] = set()
     hits: list[OpsHit] = []
-    for doc in _findall(root, "publication-reference"):
-        slug = _docdb_to_slug(doc)
-        if slug is None:
+    for host in _findall(root, "exchange-document"):
+        ref_el = _find(host, "publication-reference")
+        if ref_el is None:
             continue
-        # Walk up to the enclosing <exchange-document> so we can read
-        # title + applicants for the row.
-        # ElementTree doesn't expose parent pointers; we traverse
-        # again from root and match on contained reference. Cheap
-        # because typical search returns ≤ 25 docs.
-        host = _find_enclosing(root, doc, "exchange-document")
-        title = _text(_find(host, "invention-title")) if host is not None else ""
-        if not title:
-            title = "(untitled)"
-        applicants_el = _find(host, "applicants") if host is not None else None
+        slug = _docdb_to_slug(ref_el)
+        if slug is None or slug in seen:
+            continue
+        seen.add(slug)
+
+        title = _text(_find(host, "invention-title")) or "(untitled)"
+        applicants_el = _find(host, "applicants")
         applicants = (
             [_text(_find(p, "name")) for p in _findall(applicants_el, "applicant")]
             if applicants_el is not None
             else []
         )
         applicants = [a for a in applicants if a]
-        pub_date = _extract_publication_date(host) if host is not None else None
-        abstract_text = _text(_find(host, "abstract")) if host is not None else ""
+        pub_date = _extract_publication_date(host)
+        abstract_text = _text(_find(host, "abstract"))
         preview = abstract_text[:200].rstrip() + (
             "…" if len(abstract_text) > 200 else ""
         )
@@ -470,6 +474,29 @@ def parse_search_response(xml_bytes: bytes) -> tuple[list[OpsHit], int]:
                 abstract_preview=preview,
             )
         )
+
+    # Fallback for variant OPS responses that omit the
+    # ``<exchange-document>`` wrapper (rare, but observed on some
+    # error-recovery paths). Walk publication-references that are
+    # NOT inside an exchange-document and dedup on slug.
+    if not hits:
+        for ref_el in _findall(root, "publication-reference"):
+            host = _find_enclosing(root, ref_el, "exchange-document")
+            if host is not None:
+                continue
+            slug = _docdb_to_slug(ref_el)
+            if slug is None or slug in seen:
+                continue
+            seen.add(slug)
+            hits.append(
+                OpsHit(
+                    docdb_id=slug,
+                    title="(untitled)",
+                    applicants=[],
+                    publication_date=None,
+                    abstract_preview="",
+                )
+            )
 
     if total == 0 and hits:
         total = len(hits)

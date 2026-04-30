@@ -342,21 +342,56 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
     return out
 
 
+#: Match ``kind='X'`` (or ``kind="X"``) inside the front-matter
+#: ``applies-to:`` line. Power-user skills like ``precis-patent-power``
+#: don't follow the ``precis-<kind>-help`` naming pattern but their
+#: front-matter still names the kind via ``applies-to: search
+#: (kind='patent', q=<CQL>)``. Parsing this lets the gate hide the
+#: skill alongside its ``-help`` sibling when the kind is missing.
+_APPLIES_TO_KIND_RE = re.compile(r"""kind\s*=\s*['"]([a-z][a-z0-9_-]*)['"]""")
+
+
+def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
+    """Return every kind the skill claims to apply to.
+
+    Two sources, in priority order:
+      1. Front-matter ``applies-to:`` — extract every ``kind='X'``.
+      2. Slug suffix ``precis-<kind>-help`` — derived as a fallback
+         so existing ``-help`` skills without explicit front-matter
+         still gate correctly.
+
+    Returns an empty list for cross-cutting skills (``precis-overview``,
+    ``precis-tags``, …) that don't reference any specific kind.
+    """
+    kinds: list[str] = []
+    applies = fm.get("applies-to") or fm.get("applies_to") or ""
+    if applies:
+        kinds.extend(_APPLIES_TO_KIND_RE.findall(applies))
+    if slug.startswith("precis-") and slug.endswith("-help"):
+        derived = slug[len("precis-") : -len("-help")]
+        if derived and derived not in kinds:
+            kinds.append(derived)
+    return kinds
+
+
 def _availability_gap(slug: str, *, registry: Any) -> str | None:
     """Return a human-readable reason why this skill is filtered, or None.
 
     Two gates:
 
-    1. Subject-kind gate. If the slug looks like ``precis-<kind>-help``
-       and ``<kind>`` isn't in the registry, the skill documents
-       something this build can't do. Filtered.
+    1. Subject-kind gate. The skill names a kind via the slug
+       (``precis-<kind>-help``) or the ``applies-to:`` front-matter
+       (``kind='X'``). When *any* referenced kind is missing from the
+       registry, the skill is filtered — the recipes don't all run.
+       Power-user companions like ``precis-patent-power`` flow through
+       the front-matter side of this gate.
     2. Status gate. Front-matter ``status:`` of ``planned`` or
        ``aspirational`` flags the skill as "describes a future API,
        don't follow recipes blind". Filtered.
 
     Cross-cutting skills (``precis-overview``, ``precis-tags``, …)
-    don't follow the per-kind naming pattern; they pass gate 1
-    automatically. They're still subject to gate 2.
+    reference no kind and pass gate 1 automatically. They're still
+    subject to gate 2.
 
     Returns ``None`` if the skill is fully available.
     """
@@ -376,20 +411,14 @@ def _availability_gap(slug: str, *, registry: Any) -> str | None:
             "design notes, not as recipes."
         )
 
-    # Per-kind skill: precis-<kind>-help. The middle segment is the
-    # kind name. Cross-cutting skills (precis-overview, precis-tags,
-    # precis-navigation, precis-cache, …) don't end in '-help' and
-    # are exempt from this gate.
-    if slug.startswith("precis-") and slug.endswith("-help"):
-        kind = slug[len("precis-") : -len("-help")]
-        # ``precis-help`` itself was already filtered above
-        # (synthesized slug), so the kind here is always non-empty.
-        if registry is not None and not _registry_has_kind(registry, kind):
-            return (
-                f"this skill documents kind={kind!r} which is **not "
-                "wired** in this build — its examples will return "
-                "[error:NotFound] unknown kind."
-            )
+    if registry is not None:
+        for kind in _kinds_referenced_by_skill(slug, fm):
+            if not _registry_has_kind(registry, kind):
+                return (
+                    f"this skill documents kind={kind!r} which is **not "
+                    "wired** in this build — its examples will return "
+                    "[error:NotFound] unknown kind."
+                )
 
     return None
 

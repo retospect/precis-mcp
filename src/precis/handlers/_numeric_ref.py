@@ -39,6 +39,7 @@ from precis.store import Link, Ref, Store, Tag
 from precis.store.types import Relation
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 
 # Mirror of the ``Relation`` literal's allowed values. Keeping the
 # tuple form here lets ``_validate_relation`` enumerate options for
@@ -142,8 +143,7 @@ class NumericRefHandler(Handler):
                     f"unknown view {view!r} for kind={self.kind!r}",
                     options=list(_BASE_VIEWS),
                     next=(
-                        f"views available for {self.kind!r}: "
-                        f"{', '.join(_BASE_VIEWS)}"
+                        f"views available for {self.kind!r}: {', '.join(_BASE_VIEWS)}"
                     ),
                 )
             if view == "links":
@@ -194,6 +194,31 @@ class NumericRefHandler(Handler):
         for ref, rank in hits:
             lines.append(self._render_search_hit(ref, rank))
         return Response(body="\n".join(lines))
+
+    # ── search_hits: structured form for cross-kind merge ──────────
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        tags: list[str] | None = None,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Ref-level lexical search returned as ``SearchHit``s.
+
+        Numeric-ref kinds search the ref title only — bodies tend
+        to be short enough that one row per ref is the right
+        granularity for cross-kind merge.  Subclasses with
+        block-level bodies (none today) should override.
+        """
+        if not (q and q.strip()):
+            return []
+        normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
+        pairs = self.store.search_refs_lexical(
+            q=q, kind=self.kind, tags=normalized_tags, limit=top_k
+        )
+        return ref_hits_to_search_hits(pairs, kind=self.kind)
 
     # ── put ────────────────────────────────────────────────────────
 

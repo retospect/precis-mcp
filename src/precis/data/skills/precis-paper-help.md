@@ -129,13 +129,40 @@ resolvable image URL once the bundle's image directory is wired
 into the cluster's static-file server. Until then, treat figures
 as caption-only.
 
-## Coming in later phases
+## Tag and cross-link a paper
 
-- `put(kind='paper', ...)` — paper edits and tags. Phase 5+.
-- `get(id='doi:10.1002/...')` and `get(id='arxiv:2207.09327')` — URI
-  scheme prefixes. Phase 4 acatome-quest-mcp territory.
+Paper bodies are import-only — you can't rewrite a paper's text from
+`put`. Tag and link operations work today, however:
+
+```python
+# Tag a paper. Closed-prefix axes for paper are SRC: and CACHE:; open
+# tags (topic-x, etc.) are always allowed.
+put(kind='paper', id='abazari2024design', tags=['topic:photocatalysis'])
+put(kind='paper', id='abazari2024design', tags=['SRC:primary'])
+
+# Drop tags. STATUS:/PRIO: aren't on paper's allowed-axis list and
+# raise BadInput at validation; that's by design.
+put(kind='paper', id='abazari2024design', untags=['topic:photocatalysis'])
+
+# Cross-cite another paper.
+put(kind='paper', id='abazari2024design',
+    link='paper:other-slug', rel='cites')
+```
+
+Chunk selectors (`~N`, `~A..B`) and view paths (`/toc`, `/cite/bib`)
+are rejected here — link/tag operates at the ref level. See
+`precis-relations` for the relation vocabulary and `precis-tags` for
+the closed-prefix axes.
+
+## Not yet
+
+- `put(kind='paper', text=...)` — body mutation. Bodies arrive via
+  `.acatome` bundle ingest; there's no API to overwrite them.
+- `get(id='doi:10.1002/...')` / `get(id='arxiv:2207.09327')` — URI
+  scheme prefixes. Resolution lives in `acatome-quest-mcp` for now;
+  inside precis you address by slug.
 - `view='representatives'`, `view='methods'`, etc. — semantic section
-  views. Phase 5+.
+  views.
 
 ## See also
 

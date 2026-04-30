@@ -1,0 +1,169 @@
+slug: engineering
+title: Engineering
+description: Engineering and decision-theoretic principles.  Knuth, Chesterton,
+  Hyrum, Gall, Postel, Dunning-Kruger — named patterns and counter-patterns for
+  software-shaped work.
+tags:
+- engineering
+entries:
+- title: Premature optimisation is the root of all evil
+  body: Don't tune what isn't slow.  The bottleneck is rarely where you guess; measure
+    first, optimise the actual hotspot. Over-tuning early code is anti-progress
+    — it tangles the design and locks in the wrong shape.
+  source: Donald Knuth, 1974
+  lang: en
+
+- title: Chesterton's fence
+  body: Don't remove a fence until you understand why it was put there.  Most "obvious"
+    simplifications were tried before; they failed for non-obvious reasons.  Before
+    deleting, reconstruct the original constraint.
+  source: G.K. Chesterton, 1929
+  lang: en
+
+- title: Hyrum's Law
+  body: Every observable behaviour of your system will eventually be depended upon
+    by somebody.  The "private" detail isn't private once it's in production.  Plan
+    for the API to be everything that's observable, not just everything that's documented.
+  source: Hyrum Wright
+  lang: en
+
+- title: Gall's Law
+  body: A complex system that works is invariably found to have evolved from a simple
+    system that worked.  Greenfield designs of the full complex system fail.  Build
+    the simple working version, then grow it.
+  source: John Gall, 1975
+  lang: en
+
+- title: Dunning-Kruger effect
+  body: Low competence at a task correlates with overconfident self-assessment,
+    because the same skills required to do the task are required to evaluate the
+    doing.  Calibrate humility to expertise, not the other way around.
+  source: Dunning & Kruger, 1999
+  lang: en
+
+- title: Postel's Law (Robustness Principle)
+  body: Be conservative in what you do, liberal in what you accept. Strict outputs
+    reduce ambiguity for downstream consumers; tolerant inputs let upstream producers
+    evolve.  The asymmetry stabilises distributed systems.
+  source: Jon Postel, RFC 760
+  lang: en
+
+- title: Conway's Law
+  body: Organisations which design systems are constrained to produce designs which
+    are copies of their communication structures.  If four teams build a compiler,
+    expect four passes.  To change the architecture, change the org chart first —
+    or deliberately invert it (the "Inverse Conway Manoeuvre").
+  source: Melvin Conway, 1967
+  lang: en
+
+- title: Brooks's Law
+  body: Adding manpower to a late software project makes it later.  New people
+    consume the time of existing people during ramp-up, and every additional
+    engineer multiplies communication paths quadratically.  Nine women cannot make
+    a baby in one month.
+  source: Fred Brooks, The Mythical Man-Month, 1975
+  lang: en
+
+- title: Hofstadter's Law
+  body: It always takes longer than you expect, even when you take into account
+    Hofstadter's Law.  The recursion is the point — no amount of buffer eliminates
+    underestimation bias in complex creative work.  Decompose ruthlessly and track
+    actuals against estimates to slowly recalibrate your intuition.
+  source: Douglas Hofstadter, Gödel, Escher, Bach, 1979
+  lang: en
+
+- title: Ninety-ninety rule
+  body: The first 90 percent of the code accounts for the first 90 percent of the
+    development time.  The remaining 10 percent accounts for the other 90 percent.
+    "Almost done" is the most dangerous status on a project board.
+  source: Tom Cargill, Bell Labs; popularised by Jon Bentley, CACM, 1985
+  lang: en
+
+- title: Goodhart's Law
+  body: When a measure becomes a target, it ceases to be a good measure.  Any
+    observed statistical regularity will collapse once pressure is placed on it
+    for control purposes.  Lines-of-code counts, test-coverage percentages, and
+    velocity points are all targets waiting to be gamed; instrument outcomes, not
+    proxies.
+  source: Charles Goodhart, 1975
+  lang: en
+
+- title: Zawinski's Law (Law of Software Envelopment)
+  body: Every program attempts to expand until it can read mail.  Those programs
+    which cannot so expand are replaced by ones which can.  Feature creep is not
+    laziness — it is market gravity.  Resist by making the core irreplaceable, not
+    by refusing to evolve.
+  source: Jamie Zawinski, 1995
+  lang: en
+
+- title: Wirth's Law
+  body: Software is getting slower more rapidly than hardware is getting faster.
+    Each layer of abstraction, each new dependency, each "convenient" framework
+    silently spends the dividend Moore's Law deposits.  Prefer lean over lush;
+    profile before adding a library.
+  source: Niklaus Wirth, A Plea for Lean Software, 1995
+  lang: en
+
+- title: Linus's Law
+  body: Given enough eyeballs, all bugs are shallow.  A sufficiently large and
+    diverse reviewer pool means almost every problem will be characterised quickly
+    and a fix will be obvious to someone.  The corollary is that code hidden behind
+    closed doors accumulates invisible defects.
+  source: Eric S. Raymond, The Cathedral and the Bazaar, 1999 (named after Linus Torvalds)
+  lang: en
+
+- title: Parkinson's Law
+  body: Work expands so as to fill the time available for its completion.  Given
+    a week for a two-hour task, the task becomes a week-long task.  Impose tight
+    timeboxes; the constraint forces prioritisation and surfaces the irreducible
+    kernel of work.
+  source: C. Northcote Parkinson, The Economist, 1955
+  lang: en
+
+- title: Parkinson's Law of Triviality (Bikeshedding)
+  body: The time spent on any agenda item is in inverse proportion to the sum of
+    money involved.  Committees approve multi-million-pound nuclear reactors quickly
+    but debate bicycle-shed paint for hours — everyone has an opinion on the shed.
+    Guard review bandwidth — the loudest discussion is rarely the most important one.
+  source: C. Northcote Parkinson, 1957
+  lang: en
+
+- title: Murphy's Law
+  body: If there are two or more ways to do something and one results in a
+    catastrophe, someone will do it that way.  In production, whatever can go wrong
+    will — and at the worst possible moment.  Design defensively; assume failure,
+    validate inputs, handle exceptions, instrument everything.
+  source: Edward A. Murphy Jr., 1949
+  lang: en
+
+- title: Cunningham's Law
+  body: The best way to get the right answer on the internet is not to ask a
+    question — it's to post the wrong answer.  Corrective instinct is stronger
+    than helpful instinct.  In code review and RFCs, a concrete (imperfect) proposal
+    attracts better feedback than an open question.
+  source: Ward Cunningham, attributed by Steven McGeady, c. 1980
+  lang: en
+
+- title: Peter Principle
+  body: In a hierarchy, every employee tends to rise to their level of incompetence.
+    Promotion rewards past performance, but each level requires different skills;
+    eventually every post is occupied by someone incompetent to carry out its
+    duties.  Promote for the target role, not as a reward for the current one.
+  source: Laurence J. Peter, The Peter Principle, 1969
+  lang: en
+
+- title: Lehman's First Law (Continuing Change)
+  body: A program that is used and that reflects some external reality undergoes
+    continuing change or becomes progressively less useful.  Software that stops
+    changing is software that is slowly dying.  Maintenance is not a tax on
+    success — it is the core work.
+  source: Manny Lehman, 1974
+  lang: en
+
+- title: Lehman's Second Law (Increasing Complexity)
+  body: As a program evolves it becomes more complex, and extra resources must be
+    deployed to preserve and simplify its structure.  Entropy is the default
+    trajectory; refactoring is the only force that opposes it.  Budget for
+    complexity reduction as a first-class deliverable, not a luxury.
+  source: Manny Lehman, 1974
+  lang: en

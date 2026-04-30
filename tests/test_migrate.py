@@ -27,7 +27,17 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
     # first migration explicitly and any later ones loosely.
     assert applied[0] == "0001_initial"
     assert all(
-        v.startswith(("0001_", "0002_", "0003_", "0004_", "0005_", "0006_"))
+        v.startswith(
+            (
+                "0001_",
+                "0002_",
+                "0003_",
+                "0004_",
+                "0005_",
+                "0006_",
+                "0007_",
+            )
+        )
         for v in applied
     )
 

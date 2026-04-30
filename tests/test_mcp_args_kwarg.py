@@ -15,14 +15,38 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+from mcp.types import CallToolResult
 
 from precis import server
 from precis.handlers.python import PythonHandler
 from precis.python_index import RepoCache
 from precis.registry import Registry
 from precis.runtime import PrecisRuntime
+
+
+def _body(out: Any) -> str:
+    """Pull the text body out of a tool result.
+
+    The MCP boundary returns ``str`` on success and a ``CallToolResult``
+    with ``isError=True`` on failure (so the protocol-level flag is
+    correct — see MCP critic MAJOR on errors-as-strings). Tests that
+    just want to grep the textual body don't care which shape they
+    got; this helper papers over the difference.
+    """
+    if isinstance(out, CallToolResult):
+        # Successful tools return a single TextContent block; errors
+        # carry the same shape with isError=True.
+        return out.content[0].text  # type: ignore[union-attr]
+    return out
+
+
+def _is_error(out: Any) -> bool:
+    """True when the tool result carries the protocol-level error flag."""
+    return isinstance(out, CallToolResult) and bool(out.isError)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -74,8 +98,10 @@ def test_args_rejects_reserved_keys(
     """Passing kind/id/view/q inside args= is a programming mistake;
     surface it at the MCP boundary so the recovery hint is sharp."""
     out = server.get(kind="python", id="demo", args=shadowed)
-    assert "[error:BadInput]" in out
-    assert "shadows the explicit kwargs" in out
+    assert _is_error(out)
+    body = _body(out)
+    assert "[error:BadInput]" in body
+    assert "shadows the explicit kwargs" in body
 
 
 def test_args_reserved_check_lists_all_overlaps(
@@ -83,7 +109,9 @@ def test_args_reserved_check_lists_all_overlaps(
 ) -> None:
     """Multiple overlapping keys all surface in the message."""
     out = server.get(kind="python", id="demo", args={"id": "x", "view": "outline"})
-    assert "'id'" in out and "'view'" in out
+    assert _is_error(out)
+    body = _body(out)
+    assert "'id'" in body and "'view'" in body
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +182,10 @@ def test_args_with_bad_value_surfaces_handler_error(
         view="callgraph",
         args={"entry": "demopkg.m.main", "depth": 999},
     )
-    assert "[error:BadInput]" in out
-    assert "depth must be" in out
+    assert _is_error(out)
+    body = _body(out)
+    assert "[error:BadInput]" in body
+    assert "depth must be" in body
 
 
 def test_args_callgraph_unknown_entry_returns_not_found(
@@ -167,8 +197,10 @@ def test_args_callgraph_unknown_entry_returns_not_found(
         view="callgraph",
         args={"entry": "demopkg.m.does_not_exist"},
     )
-    assert "[error:NotFound]" in out
-    assert "callgraph entry" in out
+    assert _is_error(out)
+    body = _body(out)
+    assert "[error:NotFound]" in body
+    assert "callgraph entry" in body
 
 
 # ---------------------------------------------------------------------------

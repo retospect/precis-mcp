@@ -321,10 +321,9 @@ With that addition, `tags=['STATUS:open']` on a patent raises
 `BadInput` at the agent boundary — same per-kind axis discipline
 the MCP critic enforced for paper / cache trio.
 
-### Saved-watch table (deferred to patent phase 2)
+### Saved-watch table
 
-Watch infrastructure moved to a follow-up cut so the initial
-patent kind can land cleanly. When watches return:
+Landed in phase 2 alongside the runner and CLI.
 
 ```sql
 CREATE TABLE patent_watches (
@@ -480,10 +479,15 @@ tests/test_patent_cql.py
 tests/test_patent_merge.py
 tests/test_patent_ingest.py
 
-# Phase 2 — saved CQL watches (separate cut)
-src/precis/jobs/patent_watch.py                # watch-patents runner
+# Phase 2 — saved CQL watches (landed)
+src/precis/jobs/__init__.py
+src/precis/jobs/patent_watch.py                # run_one_pass + fair-use accounting
+src/precis/jobs/_patent_quest.py               # quest-body composer
+src/precis/handlers/_patent_watch_db.py        # DAO over patent_watches
 src/precis/migrations/0007_patent_watches.sql
+tests/test_patent_watch_db.py
 tests/test_patent_watch.py
+tests/test_patent_watch_cli.py
 ```
 
 ### Optional dependency group
@@ -590,21 +594,21 @@ precis jobs ingest-patent <docdb_id>           # alias for get(id=...) — usefu
 precis jobs ingest-patent --from-search '<cql>' [--limit N] [--dry-run]
 precis jobs sweep-patent-stale                  # re-fetch refs older than 90 days
 
-# Phase 2 — watches (deferred)
-precis jobs watch-patents '<cql>'              [--every 7d] [--name <slug>] [--auto-get]
-precis jobs list-patent-watches
-precis jobs run-patent-watches                  # one-shot pass for all saved watches
+# Phase 2 — watches (landed)
+precis jobs watch-patents '<cql>' --name <slug> [--every 7d] [--auto-get] [--max-per-pass N]
+precis jobs watch-patents --name <slug> --delete
+precis jobs list-patent-watches [--show-cql]
+precis jobs run-patent-watches [--name <slug>] [--dry-run] [--fair-use-limit-gb N]
 ```
 
 `ingest-patent` is a CLI affordance — the agent mostly drives ingest
 through `get(id=...)` from the MCP. Both end up in the same
 pipeline.
 
-### Background runner *(Phase 2)*
+### Background runner
 
-Deferred to a follow-up cut. When watches land, the runner runs
-as a launchd / cron job on `balthazar` (same host as
-`acatome-quest-mcp`):
+The runner is invoked as a launchd / cron job on `balthazar`
+(same host as `acatome-quest-mcp`):
 
 ```
 # /Users/deploy/Library/LaunchAgents/com.precis.patent_watch.plist
@@ -752,16 +756,16 @@ The footer matches the language pattern `wolframalpha` and
 - **Live integration test** gated on `PRECIS_PATENT_TEST_LIVE=1`
   — round-trip a known public EP patent (e.g. `ep1000000a1`).
 
-### Phase 2 (when watches land)
+### Phase 2 (landed)
 
-- Watch runner: in-memory fake DB; inject CQL → fake hit list
-  → diff against `last_seen_pn` → assert quest entries
+- Watch runner: ephemeral postgres + `FakeOpsClient`; inject
+  CQL → fake hit list → diff against `last_seen_pn` → assert
+  quest entries
   (default) or `get(id=...)` calls (`--auto-get`).
 - Watch CQL strictness: bare-keyword auto-promote allowed in
-  ad-hoc `q=` but rejected at watch-create time. (Watches run
-  unattended for years, so meaning shouldn't drift if
-  auto-promote rules change — settle the policy when phase 2
-  starts.)
+  ad-hoc `q=` but rejected at watch-create time via
+  ``validate_strict_cql``. Watches run unattended for years; this
+  prevents meaning-drift if auto-promote rules ever change.
 
 ## Build order
 
@@ -779,17 +783,20 @@ The footer matches the language pattern `wolframalpha` and
 8. CLI: `ingest-patent`, `sweep-patent-stale`. (Watch CLI is
    phase 2.)
 9. **—— phase 1 ships here ——**
-10. *Phase 2*: `patent_watches` migration
-    (`0007_patent_watches.sql`), runner
-    (`src/precis/jobs/patent_watch.py`), CLI
-    (`watch-patents`/`list-patent-watches`/`run-patent-watches`),
-    + ansible playbook for the launchd timer.
+10. *Phase 2 (landed)*: `patent_watches` migration
+    (`0007_patent_watches.sql`), DAO
+    (`_patent_watch_db.py`), runner
+    (`src/precis/jobs/patent_watch.py`), quest composer
+    (`src/precis/jobs/_patent_quest.py`), CLI
+    (`watch-patents`/`list-patent-watches`/`run-patent-watches`).
+    Ansible playbook for the launchd timer is the only deferred
+    deploy artefact.
 11. Skill cross-link from `precis-overview.md` and `precis-help`
     index regeneration.
 12. Ansible playbook for shared NFS mount
     (`/opt/nfs/shared/patents/`) — see deployment TODO above.
-13. *Phase 2*: ansible launchd plist on balthazar (after watch
-    runner lands).
+13. Ansible launchd plist on balthazar (deploy step;
+    runner code itself landed in phase 2).
 14. End-to-end live test on cluster.
 
 Estimated size: ~1 phase, comparable to `paper` plus the `voice`

@@ -1,0 +1,540 @@
+slug: proverbs-buddhist
+title: Buddhist Wisdom
+description: >
+  Pan-Buddhist sayings across Theravāda, Mahāyāna, Zen, and Tibetan traditions.
+  Pali / Sanskrit originals where applicable — mind & perception, impermanence,
+  strategic non-action.
+tags:
+  - proverbs
+  - buddhist
+  - wisdom
+entries:
+  - title: Mind is the forerunner of all actions
+    body: >
+      The mind precedes all things; all things are mind-made. If one acts with a
+      corrupted mind, suffering follows as the wheel the hoof. If one acts with a
+      serene mind, happiness follows like an inseparable shadow. The system begins
+      with state, not circumstance — debug the observer before debugging the world.
+    original: "Manopubbaṅgamā dhammā, manoseṭṭhā manomayā."
+    lang: pi
+    source: Dhammapada 1
+
+  - title: Hatred is never ended by hatred
+    body: >
+      Hatred is never ended by hatred; it is ended by non-hatred. This is an
+      ancient law. Escalation loops are self-sustaining — each retaliation
+      re-justifies the next. The only exit is a unilateral state change. The rule
+      is not moral sentiment; it is a statement about system dynamics.
+    original: "Na hi verena verāni sammantīdha kudācanaṃ; averena ca sammanti — esa dhammo sanantano."
+    lang: pi
+    source: Dhammapada 5
+
+  - title: The untrained mind does more harm than any enemy
+    body: >
+      More than those who hate you, more than all your enemies, an undisciplined
+      mind does greater harm. The threat model is internal. External adversaries
+      operate at the boundary; the mind operates at the root. Priority inversion
+      is guaranteed if this is ignored.
+    original: "Diso disaṃ yaṃ taṃ kayirā, verī vā pana verinaṃ; micchāpaṇihitaṃ cittaṃ pāpiyo naṃ tato kare."
+    lang: pi
+    source: Dhammapada 42
+
+  - title: A well-tamed mind brings happiness
+    body: >
+      A disciplined mind brings happiness. This is the symmetric counterpart to
+      the enemy-mind verse — the instrument cuts both ways. Training the mind is
+      not suppression; it is calibration. The same faculty that generates
+      suffering, trained, generates freedom.
+    original: "Cittaṃ dantaṃ sukhāvahaṃ."
+    lang: pi
+    source: Dhammapada 35
+
+  - title: The mind is hard to restrain, swift, and wanders at will
+    body: >
+      The mind is fluttering and unsteady, difficult to guard and to restrain.
+      The wise one straightens it as a fletcher straightens an arrow shaft.
+      This is the engineering problem before any other: the instrument doing
+      the straightening is the same instrument being straightened. Start early;
+      the recursive correction takes time.
+    original: "Phandanaṃ capalaṃ cittaṃ dūrakkhaṃ dunnivārayaṃ; ujuṃ karoti medhāvī usukārova tejanaṃ."
+    lang: pi
+    source: Dhammapada 33
+
+  - title: Better than a thousand hollow words is one word that brings peace
+    body: >
+      Better than a thousand hollow verses is one verse, heard and bringing
+      peace. Information density is not volume. A single precise intervention
+      outweighs a cascade of noise. Know the load-bearing word and speak that;
+      leave the rest unspoken.
+    original: "Sahassamapi ce vācā, anatthapadasaṃhitā; ekaṃ atthapadaṃ seyyo, yaṃ sutvā upasammati."
+    lang: pi
+    source: Dhammapada 100
+
+  - title: All conditioned things are impermanent
+    body: >
+      All conditioned things are impermanent — when one sees this with wisdom,
+      one turns away from suffering. Anicca is not pessimism; it is an accurate
+      model. Every system built on the assumption of permanence accumulates
+      brittleness. The correct architecture accounts for decay from the first
+      design decision.
+    original: "Sabbe saṅkhārā aniccā."
+    lang: pi
+    source: Dhammapada 277
+
+  - title: Impermanence applied to sorrow dissolves it
+    body: >
+      When one sees that all conditioned things are suffering, one turns away from
+      suffering. The same perception that reveals fragility also dissolves
+      attachment to that fragility. The map that shows the cliff also shows
+      the path around it.
+    original: "Sabbe saṅkhārā dukkhā."
+    lang: pi
+    source: Dhammapada 278
+
+  - title: "Not-self: the ground of all phenomena"
+    body: >
+      All phenomena are without self — when one sees this with wisdom, one turns
+      away from suffering. Anattā is the deepest premise. The entity doing the
+      suffering is not a fixed object; it is a process. Processes can be
+      interrupted, redesigned, dissolved. The solver and the problem share
+      the same substrate.
+    original: "Sabbe dhammā anattā."
+    lang: pi
+    source: Dhammapada 279
+
+  - title: Mindfulness is the path to the deathless
+    body: >
+      Mindfulness is the path to the deathless; heedlessness is the path to
+      death. The wise, who are mindful, do not die; the heedless are as if
+      already dead. Attention is the variable that determines whether an action
+      exists or merely happens. Operating on automatic is not efficiency — it is
+      absence.
+    original: "Appamādo amatapadaṃ, pamādo maccuno padaṃ."
+    lang: pi
+    source: Dhammapada 21
+
+  - title: Even the wise are swept away by heedlessness
+    body: >
+      The earnest, the mindful, advance like a racehorse past the jade.
+      Apramāda — diligence, non-negligence — is the common factor in every
+      lasting achievement. The difference between the sage and the ordinary
+      person is not intelligence but consistency of attention.
+    original: "Appamatto pamattesu, suttesu bahujāgaro; abalassaṃva sīghasso hitvā yāti sumedhaso."
+    lang: pi
+    source: Dhammapada 29
+
+  - title: As a solid rock is not shaken by the wind
+    body: >
+      Just as a solid rock is not shaken by the wind, so the wise are not moved
+      by praise or blame. The equilibrium being described is not indifference —
+      it is structural stability. Praise and blame are information; the response
+      should be proportional to signal quality, not emotional amplitude.
+    original: "Selo yathā ekaghano vātena na samīrati; evaṃ nindāpasaṃsāsu na samiñjanti paṇḍitā."
+    lang: pi
+    source: Dhammapada 81
+
+  - title: Irrigators channel water; fletchers fashion arrows; carpenters shape wood; the wise shape themselves
+    body: >
+      Irrigators channel water, fletchers fashion arrow shafts, carpenters shape
+      wood — the wise discipline themselves. Mastery of external material
+      requires first mastery of the self-shaping process. The craftsman is
+      always also the material being worked.
+    original: "Udakaṃ hi nayanti nettikā; usukārā namayanti tejanaṃ; dāruṃ namayanti tacchakā; attānaṃ damayanti paṇḍitā."
+    lang: pi
+    source: Dhammapada 80
+
+  - title: Few cross to the far shore; most run along this bank
+    body: >
+      Among those who reach the far shore, they are few; most people, on this
+      bank, run to and fro. Most effort is lateral — motion along the near bank,
+      mistaken for progress. Crossing requires a different kind of effort, not
+      more of the same.
+    original: "Appakā te manussesu ye janā pāragāmino; athāyaṃ itarā pajā tīramevānudhāvati."
+    lang: pi
+    source: Dhammapada 85
+
+  - title: The gift of Dhamma excels all gifts
+    body: >
+      The gift of Dhamma excels all gifts; the taste of Dhamma excels all
+      tastes; the delight in Dhamma excels all delights. What you transmit as
+      principle outlasts what you transmit as material. Code that teaches
+      someone to think clearly is more durable than code that solves a single
+      problem.
+    original: "Sabbadānaṃ dhammadānaṃ jināti."
+    lang: pi
+    source: Dhammapada 354
+
+  - title: Not by birth is one a brahmin, but by deeds
+    body: >
+      Not by birth does one become an outcaste or a brahmin — by deeds does one
+      become either. Function, not origin, determines category. Claimed status
+      dissolves at the first misalignment between role and action. The test is
+      always operational.
+    original: "Na jaccā vasalo hoti, na jaccā hoti brāhmaṇo; kammunā vasalo hoti, kammunā hoti brāhmaṇo."
+    lang: pi
+    source: Sutta Nipāta 1.7
+
+  - title: Whatever harm an enemy may do to an enemy, a wrongly directed mind does greater harm
+    body: >
+      Whatever a foe may do to a foe, or a hater to one hated, a wrongly-directed
+      mind inflicts on oneself a greater harm. The attack surface of misdirected
+      thought is larger than any external threat. Internal threat modelling is
+      necessary infrastructure, not optional practice.
+    original: "Yaṃ ce kiñci sāpateyyaṃ... na taṃ cittaṃ micchāppaṇihitaṃ."
+    lang: pi
+    source: Dhammapada 42
+
+  - title: When you see a fault in others, investigate your own
+    body: >
+      This mind is difficult, subtle, moves wherever it wants. The sage guards the
+      mind — a guarded mind brings happiness. Observing faults in others is often
+      the mind projecting its own unguarded states. The calibration procedure
+      starts at home.
+    original: "Dunniggahassa lahuno, yatthakāmanipātino; cittassa damatho sādhu, cittaṃ dantaṃ sukhāvahaṃ."
+    lang: pi
+    source: Dhammapada 35
+
+  - title: Nagarjuna — things have no inherent existence
+    body: >
+      Nothing whatsoever exists without dependent origination. Every phenomenon
+      depends on conditions; remove the conditions, the phenomenon dissolves.
+      Treating any system component as intrinsically fixed is an ontological
+      error that propagates into every downstream decision.
+    original: "Yaḥ pratītyasamutpādaḥ śūnyatā saiva te matā."
+    lang: sa
+    source: Mūlamadhyamakakārikā 24.18 (Nāgārjuna)
+
+  - title: Nagarjuna — the middle way between being and non-being
+    body: >
+      The Tathāgata has taught avoidance of both extremes — that things exist
+      and that they do not exist. Binary ontologies are both wrong. Most
+      engineering failures involve attachment to one of the two poles: that
+      the system is fixed (over-confidence) or that nothing works (nihilism).
+      Operate in the middle.
+    original: "Astīti nāstīti ubhe 'pi antā."
+    lang: sa
+    source: Mūlamadhyamakakārikā 15.10 (Nāgārjuna)
+
+  - title: Shantideva — all suffering comes from seeking happiness for oneself
+    body: >
+      All the suffering in the world arises from seeking happiness for oneself;
+      all the happiness in the world arises from seeking happiness for others.
+      The sign is reversed: self-referential optimisation produces local minima.
+      Expanding the objective function is also the pragmatic strategy.
+    original: "Sarvaduḥkhāni jāyante sukham icchato 'tmanaḥ."
+    lang: sa
+    source: Bodhicaryāvatāra 8.129 (Śāntideva)
+
+  - title: Shantideva — if you can fix it, why worry?
+    body: >
+      If a problem can be remedied, why be unhappy about it? And if it cannot be
+      remedied, what is the use of being unhappy? This is not stoic detachment —
+      it is a decision tree applied to the suffering subroutine. Anxiety is
+      justified only if it produces action; otherwise it is pure waste.
+    original: "Yady asti tasya pratikaraḥ, kastatrāśokaḥ; atha nāsti kaḥ śokaḥ."
+    lang: sa
+    source: Bodhicaryāvatāra 6.10 (Śāntideva)
+
+  - title: Shantideva — patience destroys accumulated merit less than anger
+    body: >
+      An instant of anger destroys the merit accumulated over a thousand aeons.
+      The asymmetry is the point: positive states build slowly; one reactive
+      burst erases the stack. Rate-of-decay and rate-of-accumulation are not
+      symmetric. Guard the destructor, not just the constructor.
+    original: "Kṣaṇamātreṇa nāśayati krodhaḥ kalpaśatārjitam."
+    lang: sa
+    source: Bodhicaryāvatāra 6.1 (Śāntideva)
+
+  - title: Zen — What was your face before your parents were born?
+    body: >
+      What was your original face before your parents were born? This koan
+      attacks the assumption of a fixed, prior self. The entity performing the
+      inquiry is the inquiry itself. There is no observer behind the observation;
+      there is only observing. This collapses the subject–object frame entirely.
+    original: "父母未生前本来面目"
+    lang: zh
+    source: Huangbo / Zen koan tradition
+
+  - title: Zen — Before enlightenment, chop wood, carry water
+    body: >
+      Before enlightenment, chop wood, carry water. After enlightenment, chop
+      wood, carry water. The transformation is in the doer, not the task. Elevated
+      states do not upgrade the task list — they upgrade the quality of presence
+      brought to it. The work itself is unaltered; everything else is.
+    original: "悟前樵水悟後同"
+    lang: zh
+    source: Qingyuan Weixin / Zen tradition
+
+  - title: Zen — If you understand, things are just as they are
+    body: >
+      If you understand, things are just as they are; if you do not understand,
+      things are just as they are. Understanding does not change the world —
+      it changes the frame through which the world is met. Resistance to
+      reality is always to the frame, never to the thing itself.
+    original: "若悟，法爾如是；若不悟，法爾如是。"
+    lang: zh
+    source: Zen tradition
+
+  - title: Zen — When hungry, eat; when tired, sleep
+    body: >
+      When hungry, eat; when tired, sleep. The great matter is not esoteric.
+      The barrier to liberation is usually added complexity, not missing
+      information. Simplicity is not laziness — it is the removal of
+      unnecessary mediation between the situation and the response.
+    original: "飢來喫飯，困來即眠。"
+    lang: zh
+    source: Linji Yixuan / Zen tradition
+
+  - title: Zen — The finger pointing at the moon is not the moon
+    body: >
+      Do not confuse the finger pointing at the moon with the moon itself.
+      The map is not the territory. All models, doctrines, and frameworks
+      are pointing instruments — useful, but not the thing. Holding the
+      pointer as the target is a category error with high downstream cost.
+    original: "以指指月，指非是月。"
+    lang: zh
+    source: Laṅkāvatāra Sūtra / Zen tradition
+
+  - title: Zen — Sit quietly, do nothing; spring comes
+    body: >
+      Sit quietly, do nothing; spring comes and the grass grows by itself.
+      Wu-wei adjacent: there are processes that correct themselves if the
+      interference stops. Not every problem is solved by action — some are
+      solved by removing the obstruction and waiting. Know which kind you
+      are holding.
+    original: "閒坐無為，春來草自生。"
+    lang: zh
+    source: Zen saying (Osho / attributed to Matsuo Bashō tradition)
+
+  - title: Zen — The obstacle is the path
+    body: >
+      The obstacle is the path. Resistance is information. Whatever refuses to
+      move is indicating exactly the place where work needs to happen. Routing
+      around every obstacle is not efficiency — it is accumulation of unresolved
+      technical debt in the self.
+    original: "障礙即道"
+    lang: zh
+    source: Zen aphorism
+
+  - title: Milarepa — My religion is not deceiving myself
+    body: >
+      My religion is to not deceive myself. The simplest and most demanding
+      practice. Every sophisticated structure of belief can become a system for
+      elaborate self-deception. The prior that needs auditing most is the one
+      you are most attached to.
+    original: "ང་ཡི་ཆོས་ལུགས་བདག་ཉིད་མི་བསླུ་བ་ཡིན།"
+    lang: bo
+    source: Milarepa (Tibetan, c. 1052–1135)
+
+  - title: Tibetan — Knowledge without practice is like a candle in the wind
+    body: >
+      Knowledge that is not practised is like a lamp put out by the wind.
+      The half-life of unimplemented insight is short. Information that does not
+      reach motor output dissipates. The test of understanding is change in
+      behaviour, not fluency in description.
+    original: "ཤེས་པ་ཉམས་སུ་མི་ལེན་ན་ལུང་མ་བསྟན་ལྟར་འཐབ་རྩོད་ཡིན།"
+    lang: bo
+    source: Tibetan proverb
+
+  - title: Tibetan — Do not mistake a clod of earth for a gem
+    body: >
+      Do not mistake a clod of earth for a precious gem. The error of
+      mis-classification goes both ways — treating the worthless as precious
+      and the precious as worthless. Accurate valuation requires first
+      emptying the categories you inherited and re-examining the contents.
+    original: "ས་རྡོ་ལ་ནོར་བུར་བལྟས་ན་མ་ནོར།"
+    lang: bo
+    source: Tibetan proverb
+
+  - title: Tibetan — The wise do not speak of what they know
+    body: >
+      The wise person does not speak of what they know, and what they do not
+      know they do not pretend to know. Epistemic calibration. Overclaiming
+      is a form of corruption — it degrades the signal value of everything
+      you say. Silence on uncertainty is not ignorance; it is precision.
+    original: "མཁས་པས་ཤེས་ལ་མི་སྨྲ། མི་ཤེས་ལ་མི་ཤེས་ཞེས་མི་སྨྲ།"
+    lang: bo
+    source: Tibetan proverb
+
+  - title: Tibetan — Do not be anxious about the future, but act rightly now
+    body: >
+      Do not worry about the future; act rightly now and the future will
+      take care of itself. Future-anxiety is present-action's competitor for
+      cognitive bandwidth. The only time at which action is possible is
+      always now. Redirect the resource.
+    original: "མ་འོངས་དོན་ལ་མི་འཐབ་ཅིང་། ད་ལྟའི་ལས་ལེགས་བསྒྲུབས་ན་འགྲིག།"
+    lang: bo
+    source: Tibetan proverb
+
+  - title: Pali — Do not overlook tiny good actions
+    body: >
+      Do not overlook tiny good actions, thinking they will not come back to
+      you. Dripping water fills a pot drop by drop. The compounding of small
+      acts is non-linear — the rate looks negligible until the threshold is
+      crossed. The error is discounting small, consistent inputs.
+    original: "Māppamaññetha puññassa, na maṃ taṃ āgamissati."
+    lang: pi
+    source: Dhammapada 122
+
+  - title: The idler misses the time for practice
+    body: >
+      The man who has not lived the holy life, who in youth has not acquired
+      wealth, broods over the past like a heron on a pond without fish. One
+      of the most costly forms of regret is the regret of non-deployment —
+      capacity that existed and was not used. The window is not indefinite.
+    original: "Acaritvā brahmacariyaṃ, aladdhā yobbane dhanaṃ; jiṇṇakoñcāva jhāyanti, khīṇamaccheva pallale."
+    lang: pi
+    source: Dhammapada 155
+
+  - title: Even a murderous mind becomes a weapon against itself
+    body: >
+      An ill-directed mind inflicts greater harm on oneself than any enemy.
+      Anger, carried, is retained as liability — not by the target but by the
+      carrier. The retention cost is paid in continuous present tense, regardless
+      of what the original event justified.
+    original: "Diso disaṃ yaṃ taṃ kayirā, verī vā pana verinaṃ."
+    lang: pi
+    source: Dhammapada 42
+
+  - title: Uproot craving before it takes root
+    body: >
+      Craving grows like a māluva creeper; it ensnares. Cut it at the root.
+      Craving is a dependency that, left unresolved, expands until it owns the
+      entire dependency graph. Catch it early, at first arising. Technical debt
+      in the self has the same growth dynamics as technical debt in systems.
+    original: "Māluvā yathā sattaṃ gaṇhāti... taṃhāya evaṃ uyyuttho."
+    lang: pi
+    source: Dhammapada 334
+
+  - title: The house-builder is seen — you shall build no more
+    body: >
+      House-builder, you are seen! You will not build this house again. All your
+      rafters are broken, your ridge-pole demolished. My mind, gone to the
+      unconditioned, has attained the extinction of craving. The moment the
+      generative mechanism is identified, it loses its power. Name the engine;
+      the engine stops.
+    original: "Gahakāraka, diṭṭhosi; puna gehaṃ na kāhasi."
+    lang: pi
+    source: Dhammapada 154
+
+  - title: The well-tamed elephant is the mount of kings
+    body: >
+      A well-tamed elephant bears the king in battle; the self-tamed person is
+      best among people. External power requires internal foundation.
+      The most capable instrument is always the disciplined self, not the
+      most elaborate tool.
+    original: "Attā hi attano nātho, kohi nātho paro siyā?"
+    lang: pi
+    source: Dhammapada 160
+
+  - title: You are your own refuge; no one else can be your refuge
+    body: >
+      Oneself is one's own refuge; who else could be the refuge? With oneself
+      completely tamed, one obtains a refuge hard to obtain. Delegating
+      liberation is impossible. The infrastructure of freedom must be built
+      locally. No external authority can do this work.
+    original: "Attā hi attano nātho, kohi nātho paro siyā; attanā hi sudantena nāthaṃ labhati dullabhaṃ."
+    lang: pi
+    source: Dhammapada 160
+
+  - title: Watchfulness in everything — do not let the moment pass
+    body: >
+      Arise! Do not be heedless. Live according to right principles. The one
+      who lives in accordance with the Dhamma sleeps happily in this world and
+      in the next. The call is always to return from abstraction to the
+      immediate present. The moment passes whether or not you are in it.
+    original: "Uṭṭhānenapamādena saññamena damena ca."
+    lang: pi
+    source: Dhammapada 24
+
+  - title: The path is walked by the walker, not the pointing
+    body: >
+      You yourselves must make the effort. The Tathāgatas only point the way.
+      Those who practise meditation are freed from the bonds of death.
+      No system of thought can walk the path on your behalf. The map does not
+      traverse itself. Agency is non-transferable.
+    original: "Tumhehi kiccaṃ ātappaṃ, akkhātāro tathāgatā."
+    lang: pi
+    source: Dhammapada 276
+
+  - title: Three things cannot remain hidden — sun, moon, and truth
+    body: >
+      Three things cannot long be hidden: the sun, the moon, and the truth.
+      Accurate models of reality have a compressive advantage over inaccurate
+      ones. The truth need not be forced — it only needs time. Build for
+      accuracy; let time do its work.
+    original: "(Attributed to the Buddha in various canonical contexts)"
+    lang: pi
+    source: Buddhist traditional saying
+
+  - title: The calmed mind does not retaliate
+    body: >
+      Conquer anger by non-anger, conquer evil by good, conquer the miser by
+      generosity, conquer the liar by truth. Each conquest is through the
+      opposite quality, not the same quality amplified. Escalation matches
+      the opponent's weapon; inversion changes the game.
+    original: "Akkodhena jine kodhaṃ, asādhuṃ sādhunā jine; jine kadariyaṃ dānena, saccenālikavādinaṃ."
+    lang: pi
+    source: Dhammapada 223
+
+  - title: The wise do not grieve for what is past
+    body: >
+      Let go of the past; let go of the future; let go of the present. Crossing
+      to the farther shore of existence, with mind released from everything, do
+      not again undergo birth and decay. Grief for the past and anxiety for the
+      future are both taxes on the present. The only productive tense is now.
+    original: "Atītaṃ nānvāgameyya, nappaṭikaṅkhe anāgataṃ."
+    lang: pi
+    source: Majjhima Nikāya 131 (Bhaddekaratta Sutta)
+
+  - title: Pleasant speech costs nothing and gains everything
+    body: >
+      Speak the truth; do not speak unpleasant things; do not speak lies even
+      out of love. Do not speak unpleasant truths; do not lie out of pleasantness.
+      This is the ancient rule. The constraint is not kindness vs. honesty —
+      it is the discipline of accurate, unharming speech. Harder than both extremes.
+    original: "Saccaṃ brūhi, na piyaṃ vadeyya."
+    lang: pi
+    source: Dhammapada 224 / Manusmṛti parallel
+
+  - title: Meditation extinguishes doubt
+    body: >
+      For one who is always industrious, who is ever mindful, who is intent on
+      pure deeds, who acts with consideration, who is restrained, and who lives
+      according to the Dhamma — for that mindful and wise person, glory
+      continuously increases. Doubt feeds on inaction; consistent, examined
+      practice drains it.
+    original: "Appamattassa bhikkhuno, aṇuṃ thūlaṃ sukhāvahaṃ."
+    lang: pi
+    source: Dhammapada 24
+
+  - title: Dogen — To study the self is to forget the self
+    body: >
+      To study the Buddha Way is to study the self. To study the self is to
+      forget the self. To forget the self is to be enlightened by all things.
+      The deepest investigation begins with the self and ends with the
+      dissolution of the investigator. The conclusion of real inquiry is the
+      removal of the fixed point that was doing the looking.
+    original: "自己をならうというは、自己をわすれるなり。"
+    lang: ja
+    source: Shōbōgenzō, Genjōkōan (Dōgen, 1233)
+
+  - title: "Dogen — Being-time: existence is time"
+    body: >
+      The time being stands on the top of the highest mountain peak, it plunges
+      to the bottom of the deepest ocean. Because existence is time, all
+      existence is all of time. Time is not the medium through which things
+      move — time is what things are. No action is separate from its moment.
+    original: "而今の山水は、古仏の道現成なり。"
+    lang: ja
+    source: Shōbōgenzō, Sansuikyō (Dōgen)
+
+  - title: Suzuki Roshi — In the beginner's mind there are many possibilities
+    body: >
+      In the beginner's mind there are many possibilities; in the expert's mind
+      there are few. Expertise narrows the hypothesis space efficiently, but
+      that same narrowing is the blind spot. The most dangerous expertise is the
+      kind that has stopped noticing what it is not looking for.
+    original: "初心"
+    lang: ja
+    source: Zen Mind, Beginner's Mind (Shunryū Suzuki, 1970)

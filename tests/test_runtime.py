@@ -61,11 +61,24 @@ def test_hints_appended_to_response(runtime: PrecisRuntime) -> None:
     assert "[tip] calc tip" in out
 
 
-def test_search_without_kind_returns_phase1_stub(
+def test_search_without_kind_in_stateless_runtime_errors_with_hint(
     runtime: PrecisRuntime,
 ) -> None:
+    """In a stateless runtime (no store) with no search-supporting kinds
+    available, ``search()`` without ``kind=`` falls through the cross-
+    kind defaulting and surfaces a ``BadInput`` whose recovery hint
+    enumerates the wildcard / comma-list forms.
+
+    Pre-fix, the error message was a hard-coded "cross-kind search not
+    yet implemented" stub from phase 1.  The cross-kind fan-out is now
+    real, but stateless runtimes have no kinds to fan out to, so the
+    error path stays — only the hint changed.
+    """
     out = runtime.dispatch("search", {"q": "anything"})
-    assert "not yet implemented" in out
+    assert "[error:BadInput]" in out
+    assert "no defensible default" in out or "no kinds available" in out
+    # Hint must mention the new cross-kind affordances.
+    assert "kind='*'" in out or "kind='paper,memory'" in out
 
 
 def test_build_runtime_no_database() -> None:

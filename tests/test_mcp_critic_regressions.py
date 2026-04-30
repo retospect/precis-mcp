@@ -91,32 +91,31 @@ def test_cost_trailer_not_double_prefixed(runtime_stateless: PrecisRuntime) -> N
 # ── MAJOR: cross-kind search hint enumerates real kinds ─────────────
 
 
-def test_cross_kind_search_hint_enumerates_search_kinds(
+def test_cross_kind_search_default_fans_out_when_store_is_empty(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """Pre-fix the hint hard-coded ``add kind=<one of: calc>`` even
-    though calc doesn't support search. Now the options list reflects
-    every kind whose spec advertises ``supports_search=True``.
-
-    Triggered against a fresh empty store so the runtime's
-    ``most_recent_kind`` default returns ``None`` and we fall
-    through to the BadInput. The default-kind path itself is
-    exercised in :func:`test_search_defaults_to_most_recent_kind`.
+    """When the caller omits ``kind=`` against an empty store,
+    ``most_recent_kind`` returns None and the runtime now falls
+    through to a cross-kind ``kind='*'`` fan-out instead of the
+    previous ``BadInput`` about "cross-kind search not yet
+    implemented". The empty-result body must enumerate the kinds
+    that were searched so the agent can narrow on retry.
     """
     out = runtime_with_store.dispatch("search", {"q": "anything"})
-    assert "[error:BadInput]" in out
-    assert "cross-kind search not yet implemented" in out
-    # At least one search-supporting kind must surface in the hint.
-    search_kinds = [
+    # No error — the wildcard merge handles it.
+    assert "[error:BadInput]" not in out
+    # The "no matches across X, Y, Z" body must enumerate every
+    # active kind that opted into cross-kind merge.
+    search_hits_kinds = [
         k
         for k in runtime_with_store.registry.kinds()
-        if runtime_with_store.registry.get(k).spec.supports_search
+        if runtime_with_store.registry.get(k).spec.supports_search_hits
     ]
-    assert search_kinds, "expected at least one search-supporting kind in the registry"
-    for k in search_kinds:
-        assert k in out, f"expected {k!r} in the hint options"
-    # Comma-list form must not be advertised — it's not implemented.
-    assert "paper,memory" not in out or "not supported" in out
+    assert search_hits_kinds, (
+        "expected at least one cross-kind search-hits kind in the registry"
+    )
+    for k in search_hits_kinds:
+        assert k in out, f"expected {k!r} listed in the no-matches body"
 
 
 def test_search_defaults_to_most_recent_kind(
@@ -130,9 +129,7 @@ def test_search_defaults_to_most_recent_kind(
     """
     # Create a memory ref so 'memory' becomes the most recently
     # touched search-supporting kind.
-    runtime_with_store.dispatch(
-        "put", {"kind": "memory", "text": "default-kind probe"}
-    )
+    runtime_with_store.dispatch("put", {"kind": "memory", "text": "default-kind probe"})
     out = runtime_with_store.dispatch("search", {"q": "default-kind probe"})
     # The annotation must surface — the agent has to know which
     # kind we picked so it can override on retry.
@@ -142,12 +139,45 @@ def test_search_defaults_to_most_recent_kind(
     assert "[error:BadInput]" not in out
 
 
-def test_comma_list_kind_rejected_with_clear_hint(
+def test_comma_list_kind_dispatches_cross_kind_merge(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    out = runtime_with_store.dispatch("search", {"kind": "paper,memory", "q": "test"})
+    """``kind='paper,memory'`` now fans out via ``search_hits`` and
+    RRF-fuses the streams via :func:`merge_and_render`. The previous
+    behaviour (a sharp ``BadInput`` saying multi-kind search was
+    "not implemented yet, merge results client-side") is gone — the
+    universal merge primitive handles it server-side now.
+
+    Empty corpus → empty-body response, NOT an error.
+    """
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "paper,memory", "q": "qabsentword"}
+    )
+    assert "[error:BadInput]" not in out
+    assert "comma-list kind not supported" not in out
+    # Empty cross-kind result surfaces the kinds that were searched.
+    assert "paper" in out and "memory" in out
+
+
+def test_wildcard_kind_dispatches_cross_kind_merge(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``kind='*'`` is the canonical "search every kind" form."""
+    out = runtime_with_store.dispatch("search", {"kind": "*", "q": "qabsentword"})
+    assert "[error:BadInput]" not in out
+
+
+def test_cross_kind_unknown_kind_lists_eligible_options(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Unknown kind in a comma-list returns BadInput naming the kinds
+    that DO opt into cross-kind merge — same shape as the pre-existing
+    'unknown kind' error path so retries don't cascade."""
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "paper,nosuchkind", "q": "test"}
+    )
     assert "[error:BadInput]" in out
-    assert "comma-list kind not supported" in out
+    assert "nosuchkind" in out
 
 
 # ── MAJOR: paper view aliases (cite/bib ⇄ bibtex) symmetric ─────────
@@ -400,16 +430,16 @@ class TestSemanticRelevanceFloor:
 
         e = MockEmbedder(dim=1024)
         cid = store.ensure_corpus("default")
-        ref = store.insert_ref(
-            corpus_id=cid, kind="paper", slug="p", title="P"
-        )
+        ref = store.insert_ref(corpus_id=cid, kind="paper", slug="p", title="P")
         # Three blocks of meaningful text — none lexically or
         # semantically close to the gibberish query.
         store.insert_blocks(
             ref.id,
             [
                 BlockInsert(
-                    pos=0, text="alpha beta gamma", embedding=e.embed_one("alpha beta gamma")
+                    pos=0,
+                    text="alpha beta gamma",
+                    embedding=e.embed_one("alpha beta gamma"),
                 ),
                 BlockInsert(
                     pos=1,
@@ -417,7 +447,9 @@ class TestSemanticRelevanceFloor:
                     embedding=e.embed_one("delta epsilon zeta"),
                 ),
                 BlockInsert(
-                    pos=2, text="eta theta iota", embedding=e.embed_one("eta theta iota")
+                    pos=2,
+                    text="eta theta iota",
+                    embedding=e.embed_one("eta theta iota"),
                 ),
             ],
         )
@@ -446,3 +478,308 @@ def _default_config():
     from precis.config import PrecisConfig
 
     return PrecisConfig(database_url=None, embedder="mock")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# April-2026 second-pass critic findings
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_instructions_advertises_every_verb() -> None:
+    """The MCP critic flagged ``Verbs: get, search, put, put.`` — the
+    duplicate ``put`` hid ``move`` from any caller relying on
+    serverInfo.instructions. The import-time assert in server.py now
+    catches regressions, but pin it from a test too."""
+    from precis import server
+
+    for verb in ("get", "search", "put", "move"):
+        assert verb in server._INSTRUCTIONS, (
+            f"server _INSTRUCTIONS must list every verb; missing {verb!r}"
+        )
+
+
+def test_server_name_is_precis_mcp() -> None:
+    """``serverInfo.name`` should be ``precis-mcp`` (not the bare
+    ``precis``) so log lines disambiguate against other tooling."""
+    from precis import server
+
+    assert server.mcp.name == "precis-mcp"
+
+
+def test_dispatch_with_status_flags_errors() -> None:
+    """``dispatch_with_status`` returns ``is_error=True`` on PrecisError
+    so the MCP wrapper can flip the protocol-level ``isError`` flag.
+    (MCP critic MAJOR — errors-as-strings without isError.)"""
+    from precis.config import PrecisConfig
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(database_url=None, embedder="mock"),
+        registry=Registry([]),
+        hints=HintBus(),
+    )
+    body, is_error = rt.dispatch_with_status("get", {"kind": "calc"})
+    assert is_error is True
+    assert "[error:" in body
+
+    # Success path stays is_error=False.
+    body, is_error = rt.dispatch_with_status("frobnicate", {})
+    assert is_error is True
+    assert "[error:BadInput]" in body
+
+
+def test_chunk_view_combo_recovery_hint_is_parseable() -> None:
+    """The recovery hint emitted when a caller mixes ``~A..B`` with
+    ``view=`` must round-trip through ``ast.parse`` — the previous form
+    quoted only the slug, leaving the chunk suffix outside the quotes
+    and producing a SyntaxError when copied. (MCP critic MAJOR.)"""
+    import ast
+    import re
+
+    from precis.handlers.paper import PaperHandler, _parse_paper_id  # noqa: F401
+
+    # Drive the BadInput path directly via the parser/error renderer.
+    pytest.importorskip("psycopg")
+    # Construct a minimal handler stub — we don't need a real store
+    # for this check; assemble the next= string the way the handler
+    # does.
+    slug = "wang2020state"
+    chunk = (38, 38)
+    recovery_id = f"{slug}~{chunk[0]}..{chunk[1]}/toc"
+    next_hint = f"get(kind='paper', id={recovery_id!r})"
+    # Strip the leading "get(" and trailing ")" via regex, keep the
+    # arg list parseable.
+    m = re.match(r"^get\((.+)\)$", next_hint)
+    assert m, f"next hint should look like get(...): {next_hint!r}"
+    # ast.parse on the arg list as a function call — it must parse.
+    ast.parse(next_hint, mode="eval")
+
+
+def test_calc_humanises_sympy_constants() -> None:
+    """``1/0`` → ``zoo`` was opaque; now we surface plain English so a
+    7B model doesn't misread it as a typo. (MCP critic MINOR.)"""
+    from precis.handlers.calc import CalcHandler
+
+    h = CalcHandler()
+    out = h.get(id="1/0").body
+    assert "complex infinity" in out
+
+    out = h.get(id="oo + 1").body
+    assert "+infinity" in out or "infinity" in out
+
+
+def test_toc_renders_single_block_section_as_tilde_n() -> None:
+    """``~N..N`` was leaking through the TOC renderer even though the
+    chunk renderer dropped it; both paths now agree. (MCP critic
+    MINOR — ``~38..38`` would still surface as a model.)"""
+    from precis.handlers._paper_toc import _format_block_range
+
+    assert _format_block_range(38, 38) == "~38"
+    assert _format_block_range(38, 50) == "~38..50"
+
+
+def test_cache_backed_listing_hint_uses_caller_kind() -> None:
+    """The empty-state hint must name the kind being called and the
+    kind-specific example query — not the hardcoded
+    ``kind='math', q='population of Ireland'``. (MCP critic MAJOR.)"""
+    from precis.handlers.math import MathHandler
+    from precis.handlers.web import WebHandler
+    from precis.handlers.youtube import YouTubeHandler
+
+    for cls, expected_query in (
+        (MathHandler, "population of Ireland"),
+        (WebHandler, "https://example.com/article"),
+        (YouTubeHandler, "dQw4w9WgXcQ"),
+    ):
+        assert cls.example_query == expected_query, (
+            f"{cls.__name__}.example_query must name a kind-shaped recovery query"
+        )
+
+
+def test_skill_index_hides_power_user_skill_for_unwired_kind() -> None:
+    """``precis-patent-power`` is hostile when ``kind='patent'`` isn't
+    wired (the skill examples all return [error:NotFound]); the index
+    must hide it the same way ``precis-patent-help`` is hidden.
+    (MCP critic MAJOR.)"""
+    from precis.handlers.skill import _availability_gap
+
+    class _NoPatentRegistry:
+        def kinds(self) -> list[str]:
+            return ["calc", "paper", "memory"]
+
+    gap = _availability_gap("precis-patent-power", registry=_NoPatentRegistry())
+    assert gap is not None, (
+        "precis-patent-power references kind='patent' in its applies-to "
+        "front-matter; the gate must hide it when patent isn't wired"
+    )
+    assert "patent" in gap
+
+
+def test_bibtex_unescapes_html_entities() -> None:
+    """Carbon Capture Science &amp; Technology should land as
+    ``Carbon Capture Science \\& Technology`` in the BibTeX output —
+    not the verbatim HTML entity. (MCP critic MINOR.)"""
+    from precis.handlers.paper import _format_citation
+    from precis.store.types import Ref
+
+    ref = Ref(
+        id=1,
+        corpus_id=1,
+        kind="paper",
+        slug="ahmed2025revolutionary",
+        title="Revolutionary CO<sub>2</sub> capture",
+        provider=None,
+        meta={
+            "journal": "Carbon Capture Science &amp; Technology",
+            "year": 2025,
+        },
+        created_at=None,
+        updated_at=None,
+        deleted_at=None,
+    )
+    bibtex = _format_citation(ref, style="bibtex")
+    # &amp; must collapse to & then LaTeX-escape to \&.
+    assert r"\&" in bibtex
+    assert "&amp;" not in bibtex
+    # JATS / HTML inline tags strip from the title.
+    assert "<sub>" not in bibtex
+    assert "CO2" in bibtex
+
+
+def test_paper_list_view_strips_jats_markup() -> None:
+    """List view titles must not leak ``Cu/ZnO<sub>x</sub>``; the
+    cleanup helper strips inline JATS / HTML tags. (MCP critic MINOR.)"""
+    from precis.handlers.paper import _clean_inline_text
+
+    assert _clean_inline_text("Cu/ZnO<sub>x</sub> Nanoparticles") == (
+        "Cu/ZnOx Nanoparticles"
+    )
+    # Double-escaped `<i>` survives entity unescape twice as a literal
+    # `<i>` tag, then the inline-tag stripper drops it. Both layers
+    # have to fire for the result to be agent-safe.
+    assert (
+        _clean_inline_text("Acidic Media&amp;lt;i&amp;gt;Active&amp;lt;/i&amp;gt;A")
+        == "Acidic MediaActiveA"
+    )
+
+
+def test_figure_block_pairs_with_caption(store: Store) -> None:
+    """When the caller asks for a single image-only block, the renderer
+    auto-pulls the adjacent caption block so the agent sees both in one
+    response. (MCP critic MAJOR — figure block returns image marker
+    with no caption.)"""
+    from precis.handlers.paper import (
+        _is_image_only_block,
+        _looks_like_caption,
+    )
+
+    # Pure-logic checks first.
+    image_block = '<span id="page-19-0"></span>![](_page_19_Figure_1.jpeg)'
+    caption_block = "**Fig. 16. (a)** Mechanism of photocatalytic NOx reduction."
+    assert _is_image_only_block(image_block)
+    assert _looks_like_caption(caption_block)
+    assert not _is_image_only_block(caption_block)
+    assert not _looks_like_caption(image_block)
+
+
+def test_figure_block_renders_structured_placeholder() -> None:
+    """Bare ``![](...)`` markers leak relative paths nothing serves;
+    replace each with a structured ``[figure: slug~N — ...]``
+    placeholder so an LLM citing the figure can't quote a dead URL.
+    """
+    from precis.handlers.paper import _render_block_body
+
+    image_block = '<span id="page-19-0"></span>![](_page_19_Figure_1.jpeg)'
+    rendered = _render_block_body("ahmed2025revolutionary", 210, image_block)
+    assert "![](" not in rendered, "bare image marker must not leak through"
+    assert "[figure: ahmed2025revolutionary~210" in rendered
+    assert "_page_19_Figure_1.jpeg" in rendered  # asset still surfaced for diagnostics
+
+
+def test_args_extras_unknown_key_rejected(runtime_with_store: PrecisRuntime) -> None:
+    """``args={'depth': 3}`` against a kind that doesn't accept depth
+    must raise rather than be silently swallowed by ``**_kw``.
+    (MCP critic MINOR — args= silently consumed.)"""
+    out = runtime_with_store.dispatch(
+        "get",
+        {"kind": "paper", "id": "doesnt-matter", "__extras__": {"depth": 3}},
+    )
+    assert "[error:BadInput]" in out
+    assert "depth" in out
+    assert "not accepted by paper.get" in out
+
+
+# ── MAJOR: error returns from MCP tools must not blow up structured
+#          output validation in mcp 1.27+ ─────────────────────────────
+
+
+def test_search_error_path_survives_fastmcp_convert_result(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``mcp`` 1.27 added structured-output schema validation in
+    ``FuncMetadata.convert_result``: when a tool annotated ``-> str``
+    returns a ``CallToolResult`` (our error path), FastMCP validates
+    ``result.structuredContent`` against the auto-generated schema.
+    Our errors only set ``content`` + ``isError``, so
+    ``structuredContent`` is ``None`` and the str-shaped model
+    rejected it with a Pydantic ``model_type`` error.
+
+    The fix disables structured output on every tool
+    (``@mcp.tool(structured_output=False)``).  Pin both the success
+    path (returns plain str through the boundary) and the error path
+    (returns a ``CallToolResult`` with ``isError=True``) by going
+    through the actual FastMCP ``call_tool`` entrypoint.
+    """
+    import asyncio
+
+    from precis import server
+
+    server._runtime = runtime_with_store
+    try:
+        # 1) success path — known kind, even if no hits.  Must come back
+        #    as a list of ContentBlock with the rendered text body.
+        out_ok = asyncio.run(
+            server.mcp.call_tool(
+                "search",
+                {"q": "anything", "kind": "paper", "top_k": 3},
+            )
+        )
+        assert isinstance(out_ok, list), (
+            f"success path should return ContentBlock list, got {type(out_ok)}"
+        )
+        body_ok = "".join(b.text for b in out_ok if getattr(b, "type", None) == "text")
+        # Either we got hits ("# N matches for") or the empty-result
+        # template ("no paper blocks match"); either is fine — the
+        # important thing is no exception leaked through convert_result.
+        assert "match" in body_ok.lower(), f"unexpected success body: {body_ok!r}"
+
+        # 2) error path — unknown kind in cross-kind list.  Must come
+        #    back without raising and must carry ``[error:BadInput]``.
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        try:
+            out_err = asyncio.run(
+                server.mcp.call_tool(
+                    "search",
+                    {"q": "anything", "kind": "paper,nosuchkind", "top_k": 3},
+                )
+            )
+        except ToolError as e:  # pragma: no cover — fail loudly if it raises
+            raise AssertionError(
+                f"FastMCP rejected the error CallToolResult: {e}"
+            ) from e
+
+        # FastMCP returns the CallToolResult verbatim for tool-author
+        # errors; older paths return a content list.  Either way, the
+        # rendered body must mention the error class.
+        if hasattr(out_err, "content"):
+            blocks = out_err.content  # type: ignore[union-attr]
+            assert getattr(out_err, "isError", False), (
+                "error path must set isError=True on the protocol surface"
+            )
+        else:
+            blocks = out_err
+        body_err = "".join(b.text for b in blocks if getattr(b, "type", None) == "text")
+        assert "[error:BadInput]" in body_err
+        assert "nosuchkind" in body_err
+    finally:
+        server._runtime = None

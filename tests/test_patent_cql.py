@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from precis.errors import BadInput
-from precis.handlers._patent_cql import build_cql, slugify_applicant
+from precis.handlers._patent_cql import (
+    build_cql,
+    slugify_applicant,
+    validate_strict_cql,
+)
 
 # ---------------------------------------------------------------------------
 # Stubs for the store-dependent applicant lookup
@@ -160,6 +164,58 @@ class TestEmptyInput:
 # ---------------------------------------------------------------------------
 # slugify_applicant — round-trip helper
 # ---------------------------------------------------------------------------
+
+
+class TestValidateStrictCQL:
+    """``validate_strict_cql`` rejects bare keywords; accepts explicit CQL."""
+
+    @pytest.mark.parametrize(
+        "cql",
+        [
+            "cpc=B01J27/24",
+            'pa="Siemens AG"',
+            "ti=nanobud or ab=nanobud",
+            'cpc=B01J27/24 and pa="basf"',
+            'ti="photocatalysis" not pa="exclude me"',
+            'pd within "2020 2025"',
+        ],
+    )
+    def test_explicit_cql_accepted(self, cql: str) -> None:
+        assert validate_strict_cql(cql) == cql.strip()
+
+    def test_strips_surrounding_whitespace(self) -> None:
+        assert validate_strict_cql("   cpc=B01J27/24   ") == "cpc=B01J27/24"
+
+    @pytest.mark.parametrize(
+        "cql",
+        [
+            "photocatalysis",
+            "carbon nanotube",
+            "  multiple words but no operators  ",
+        ],
+    )
+    def test_bare_keyword_rejected(self, cql: str) -> None:
+        with pytest.raises(BadInput, match="bare keyword"):
+            validate_strict_cql(cql)
+
+    def test_empty_rejected(self) -> None:
+        with pytest.raises(BadInput, match="empty"):
+            validate_strict_cql("")
+
+    def test_whitespace_only_rejected(self) -> None:
+        with pytest.raises(BadInput, match="empty"):
+            validate_strict_cql("   ")
+
+    def test_non_string_rejected(self) -> None:
+        with pytest.raises(BadInput, match="must be a string"):
+            validate_strict_cql(None)  # type: ignore[arg-type]
+
+    def test_recovery_hint_present(self) -> None:
+        # Bare keyword case must point at explicit-field examples.
+        with pytest.raises(BadInput) as exc:
+            validate_strict_cql("photocatalysis")
+        assert exc.value.next is not None
+        assert "cpc=" in exc.value.next or "ti=" in exc.value.next
 
 
 class TestSlugify:

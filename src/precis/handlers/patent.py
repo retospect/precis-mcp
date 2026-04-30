@@ -36,6 +36,11 @@ from precis.handlers._patent_xml import OpsHit, parse_search_response
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.utils.search_merge import (
+    SearchHit,
+    block_hits_to_search_hits,
+    merge_and_render,
+)
 
 # ---------------------------------------------------------------------------
 # Spec
@@ -54,10 +59,6 @@ _REQUIRED_ENV: tuple[str, ...] = (
     "EPO_OPS_CLIENT_SECRET",
     "PRECIS_PATENT_RAW_ROOT",
 )
-
-# ``[local]`` marker convention — matches the language used in the
-# search-future-filters doc and the patent-help skill.
-_LOCAL_MARKER = "[local]"
 
 # Conservative cap on local list views so the agent's context
 # isn't blown by a large patent corpus.
@@ -88,6 +89,7 @@ class PatentHandler(Handler):
         ),
         supports_get=True,
         supports_search=True,
+        supports_search_hits=True,
         supports_put=False,
         is_numeric=False,
         id_required=False,
@@ -427,50 +429,77 @@ class PatentHandler(Handler):
         remote_hits: list[OpsHit],
         top_k: int,
     ) -> Response:
-        # Build a slug → "is local" set so we can dedup remote hits
-        # whose DOCDB id we already have locally.
-        local_slugs: set[str] = {ref.slug for _, ref, _ in local_hits if ref.slug}
+        """Merge local + remote hits into one rendered response.
 
-        if not local_hits and not remote_hits:
-            label = q or cql or "(no query)"
-            return Response(body=f"no patents match {label!r}")
-
-        n_total = len(local_hits) + sum(
-            1 for h in remote_hits if h.docdb_id not in local_slugs
+        Delegates to :func:`merge_and_render` so the rank-dedupe-
+        label-render pipeline is shared with cross-kind search.
+        Local hits keep priority (mode='priority'); remote hits
+        whose DOCDB id is already present locally drop via the
+        ``dedupe_key`` field rather than the previous bespoke
+        ``local_slugs`` set.
+        """
+        # ``ref_level_dedupe=True`` collapses the local stream's
+        # dedup identity to the DOCDB slug (one identity per
+        # patent ref, not per block) so the OPS remote stream's
+        # ``dedupe_key='patent:<docdb>'`` matches and remote rows
+        # for already-local patents drop. Block-level dedup would
+        # never collide with the ref-keyed remote stream.
+        local_stream: list[SearchHit] = block_hits_to_search_hits(
+            local_hits,
+            kind="patent",
+            source="local",
+            excerpt=200,
+            ref_level_dedupe=True,
         )
-        header = f"# {n_total} patent hit{'s' if n_total != 1 else ''}"
-        if q:
-            header += f" for {q!r}"
-        lines: list[str] = [header]
+        remote_stream: list[SearchHit] = [
+            _ops_hit_to_search_hit(h) for h in remote_hits
+        ]
 
-        rank = 0
-        for block, ref, _score in local_hits:
-            rank += 1
-            slug = ref.slug or "?"
-            preview = _excerpt(block.text, limit=200)
-            lines.append(f"\n## {rank}. {slug}~{block.pos}  {_LOCAL_MARKER}")
-            lines.append(f"_{ref.title}_")
-            lines.append(preview)
+        response = merge_and_render(
+            [local_stream, remote_stream],
+            top_k=top_k,
+            query=q or cql,
+            header_noun="patent hit",
+            mode="priority",
+            empty_body=f"no patents match {(q or cql or '(no query)')!r}",
+        )
 
-        for hit in remote_hits:
-            if hit.docdb_id in local_slugs:
-                continue
-            rank += 1
-            applicants = ", ".join(hit.applicants[:2])
-            pub = hit.publication_date or ""
-            lines.append(f"\n## {rank}. {hit.docdb_id}")
-            lines.append(f"_{hit.title}_")
-            if applicants or pub:
-                meta_line = " · ".join(p for p in (applicants, pub) if p)
-                lines.append(meta_line)
-            if hit.abstract_preview:
-                lines.append(hit.abstract_preview)
-
-        # Espacenet attribution for the search.
+        # Espacenet attribution for the search itself.
         if cql:
-            lines.append("")
-            lines.append(f"_See Espacenet: {_espacenet_search_url(cql)}_")
-        return Response(body="\n".join(lines))
+            response = Response(
+                body=response.body
+                + f"\n\n_See Espacenet: {_espacenet_search_url(cql)}_",
+                cost=response.cost,
+            )
+        return response
+
+    # ── search_hits: structured form for cross-kind merge ──────────
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        tags: list[str] | None = None,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Local-only block-level search returned as ``SearchHit``s.
+
+        Cross-kind merge intentionally skips the OPS remote leg —
+        upstream calls cost money and shouldn't fire on every
+        cross-kind search. Operators who want OPS hits run the
+        single-kind ``search(kind='patent', q=...)`` directly.
+        """
+        if not (q and q.strip()):
+            return []
+        normalized_tags = Tag.normalize_filter(tags, kind="patent")
+        triples = self._search_local(
+            q=q,
+            scope_ref_id=None,
+            tags=normalized_tags,
+            top_k=top_k,
+        )
+        return block_hits_to_search_hits(triples, kind="patent")
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +557,36 @@ def _parse_patent_id(raw: str) -> tuple[str, tuple[int, int] | None]:
 # ---------------------------------------------------------------------------
 # Render helpers
 # ---------------------------------------------------------------------------
+
+
+def _ops_hit_to_search_hit(hit: OpsHit) -> SearchHit:
+    """Adapt an OPS remote-search hit into a ``SearchHit``.
+
+    ``source='ops'`` so the renderer marks remote rows with
+    ``[ops]`` (mirroring the local rows' ``[local]`` marker).
+    The DOCDB id becomes both the ``slug`` (for the citation
+    handle) and the ``dedupe_key`` (so a remote hit that's
+    already in the local store drops in priority-merge mode).
+    """
+    applicants = ", ".join(hit.applicants[:2])
+    pub = hit.publication_date or ""
+    extras: tuple[str, ...] = ()
+    if applicants or pub:
+        extras = (" · ".join(p for p in (applicants, pub) if p),)
+    return SearchHit(
+        # OPS doesn't return a relevance score, so use a sentinel
+        # zero — the rank position within the remote stream is the
+        # only ranking signal merge_and_render uses anyway in
+        # priority mode.
+        score=0.0,
+        kind="patent",
+        slug=hit.docdb_id,
+        title=hit.title,
+        preview=hit.abstract_preview or "",
+        source="ops",
+        extra_lines=extras,
+        dedupe_key=f"patent:{hit.docdb_id}",
+    )
 
 
 def _excerpt(text: str, *, limit: int = 200) -> str:

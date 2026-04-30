@@ -119,14 +119,34 @@ def test_attribution_renders_on_hit_and_miss(
 # ── input validation ─────────────────────────────────────────────────
 
 
-def test_missing_query_raises(handler: _FakeCacheKindAsMath) -> None:
-    with pytest.raises(BadInput, match="require a query"):
-        handler.get()
+def test_bare_get_serves_recent_listing(
+    handler: _FakeCacheKindAsMath,
+) -> None:
+    """Bare ``get()`` no longer raises — it serves a /recent listing
+    so math/web/youtube agree with websearch/think/research on the
+    cross-kind convention. (MCP critic MAJOR — bare-get inconsistency.)
+    """
+    resp = handler.get()
+    assert "recent math refs" in resp.body.lower()
 
 
-def test_blank_query_raises(handler: _FakeCacheKindAsMath) -> None:
-    with pytest.raises(BadInput):
-        handler.get(q="   ")
+def test_blank_query_serves_recent_listing(
+    handler: _FakeCacheKindAsMath,
+) -> None:
+    """Whitespace-only ``q=`` is treated the same as no query — the
+    listing path swallows it rather than raising. Same ergonomics as
+    the Perplexity kinds."""
+    resp = handler.get(q="   ")
+    assert "recent math refs" in resp.body.lower()
+
+
+def test_query_via_id_path_view_raises(
+    handler: _FakeCacheKindAsMath,
+) -> None:
+    """An unknown slash path (``id='/foo'``) is sharply rejected —
+    the listing only accepts ``/`` and ``/recent``."""
+    with pytest.raises(BadInput, match=r"unknown view"):
+        handler.get(id="/foo")
 
 
 # ── freshness ─────────────────────────────────────────────────────────

@@ -232,4 +232,63 @@ def _escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-__all__ = ["build_cql", "slugify_applicant"]
+def validate_strict_cql(cql: str) -> str:
+    """Validate that ``cql`` is explicit CQL — no bare-keyword auto-promote.
+
+    Phase-2 ``watch-patents`` rule (spec § Phase 2 testing notes,
+    confirmed in this build): saved watches must use explicit CQL so
+    their meaning doesn't drift if the ad-hoc ``q=`` auto-promote
+    heuristic ever changes. Bare keywords like ``"photocatalysis"``
+    are rejected at create time with a recovery hint pointing at the
+    explicit fields.
+
+    Returns the CQL trimmed of leading/trailing whitespace on
+    success. Raises ``BadInput`` with a recovery hint on failure —
+    same shape as ``parse_docdb_id``'s rejections so the agent has a
+    consistent fix-it surface.
+
+    Validation is intentionally lightweight:
+
+    * non-empty;
+    * contains either an explicit ``field=value`` mark, or one of
+      the recognised boolean operators (``and`` / ``or`` / ``not`` /
+      ``within``).
+
+    We do **not** try to parse OPS's full CQL grammar — OPS itself
+    will reject malformed expressions on first run with a clear 4xx,
+    and over-strict client-side validation would lock out perfectly
+    legal queries that use rare fields we haven't enumerated.
+    """
+    if not isinstance(cql, str):
+        raise BadInput(
+            f"watch CQL must be a string, got {type(cql).__name__!r}",
+            next="watch-patents 'cpc=B01J27/24 and pa=\"Siemens AG\"'",
+        )
+
+    trimmed = cql.strip()
+    if not trimmed:
+        raise BadInput(
+            "watch CQL is empty",
+            next="watch-patents 'cpc=B01J27/24'",
+        )
+
+    lower = trimmed.lower()
+    has_field = _CQL_FIELD_MARK in trimmed
+    has_operator = any(op in f" {lower} " for op in _CQL_OPERATORS)
+
+    if not (has_field or has_operator):
+        raise BadInput(
+            f"watch CQL must be explicit, not a bare keyword: {cql!r}",
+            next=(
+                "watches run unattended for years — meaning shouldn't "
+                "drift if auto-promote rules change. Use explicit CQL "
+                "fields, e.g. "
+                '\'ti="photocatalysis" or ab="photocatalysis"\', '
+                "'cpc=B01J27/24', 'pa=\"Siemens AG\"'"
+            ),
+        )
+
+    return trimmed
+
+
+__all__ = ["build_cql", "slugify_applicant", "validate_strict_cql"]

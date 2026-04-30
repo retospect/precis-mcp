@@ -21,15 +21,45 @@ import sys
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, TextContent
 
 from precis.runtime import PrecisRuntime, build_runtime
 
+# FastMCP refuses ``str | CallToolResult`` return annotations (it bans
+# CallToolResult inside unions; see ``func_metadata.py``). We still
+# return ``CallToolResult`` at runtime on errors — FastMCP's
+# ``FuncMetadata.convert_result`` passes ``CallToolResult`` instances
+# through verbatim so the protocol-level ``isError`` flag is preserved.
+# Each tool's annotation therefore stays ``str``; the actual return
+# type is ``str | CallToolResult`` but only ``str`` is advertised to
+# FastMCP.
+_ToolReturn = Any  # documents runtime: str on success, CallToolResult on error
+
+# mcp 1.27.0's ``FuncMetadata.convert_result`` validates
+# ``CallToolResult.structuredContent`` against the auto-generated output
+# schema whenever the tool has one.  Our error path returns a
+# ``CallToolResult`` with only ``content`` + ``isError`` set, so the
+# validation against the ``str``-shaped schema rejects ``structuredContent
+# = None``.  Disabling structured output skips that validation and lets
+# the success path render plain ``TextContent`` directly.  Agents see no
+# difference — every wrapper has always grokked the ``[error:Class]
+# cause / options / next`` text.
+_TOOL_KW: dict[str, Any] = {"structured_output": False}
+
 _INSTRUCTIONS = (
     "precis-mcp v2 — four-verb agent tool surface.\n\n"
-    "Verbs: get, search, put, put.  Discriminator: kind=.\n"
+    "Verbs: get, search, put, move.  Discriminator: kind=.\n"
     "Read the `precis-overview` skill (get(kind='skill', id='precis-overview'))\n"
     "for the full mental model: kind topology, addressing, views, modes,\n"
     "tags, links, and cache."
+)
+
+# Sanity check the instructions actually advertise every verb. The MCP
+# critic flagged ``put, put`` as a silent typo that hides ``move`` from
+# every caller relying on serverInfo.instructions; an assertion here
+# catches future regressions at import time.
+assert all(v in _INSTRUCTIONS for v in ("get", "search", "put", "move")), (
+    "_INSTRUCTIONS must list every verb"
 )
 
 
@@ -65,7 +95,9 @@ def _shutdown_runtime() -> None:
 
 
 log = logging.getLogger(__name__)
-mcp: FastMCP = FastMCP("precis", instructions=_INSTRUCTIONS)
+# Server name is ``precis-mcp`` so log lines and serverInfo unambiguously
+# point at this package (the bare ``precis`` collides with other tooling).
+mcp: FastMCP = FastMCP("precis-mcp", instructions=_INSTRUCTIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +105,40 @@ mcp: FastMCP = FastMCP("precis", instructions=_INSTRUCTIONS)
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+def _dispatch(verb: str, payload: dict[str, Any]) -> _ToolReturn:
+    """Dispatch one verb call and shape the MCP-level result.
+
+    On success, returns the rendered string — FastMCP wraps it as the
+    sole text content of the tool result. On error, returns a
+    :class:`CallToolResult` with ``isError=True`` so the protocol
+    surface matches the body. The body itself stays the same
+    ``[error:Class] cause / options / next`` text the runtime always
+    rendered, so wrappers that already grok that shape keep working.
+    (MCP critic MAJOR — errors-as-strings without ``isError``.)
+    """
+    body, is_error = _rt().dispatch_with_status(verb, payload)
+    if not is_error:
+        return body
+    return CallToolResult(
+        content=[TextContent(type="text", text=body)],
+        isError=True,
+    )
+
+
+def _validation_error(body: str) -> _ToolReturn:
+    """Wrap a pre-dispatch validation error in a CallToolResult.
+
+    Used by the ``search`` and ``get`` tools when they reject malformed
+    arguments before reaching the runtime. Keeps the protocol surface
+    consistent with runtime-side errors.
+    """
+    return CallToolResult(
+        content=[TextContent(type="text", text=body)],
+        isError=True,
+    )
+
+
+@mcp.tool(**_TOOL_KW)
 def get(
     kind: str,
     id: str | int | None = None,
@@ -101,9 +166,9 @@ def get(
     if args:
         err = _check_reserved_args(args, reserved=("kind", "id", "view", "q"))
         if err is not None:
-            return err
-        payload.update(args)
-    return _rt().dispatch("get", payload)
+            return _validation_error(err)
+        payload["__extras__"] = dict(args)
+    return _dispatch("get", payload)
 
 
 def _check_reserved_args(
@@ -142,7 +207,7 @@ def _check_reserved_args(
 _SEARCH_TOP_K_MAX: int = 100
 
 
-@mcp.tool()
+@mcp.tool(**_TOOL_KW)
 def search(
     q: str,
     kind: str | None = None,
@@ -166,28 +231,33 @@ def search(
     from precis.errors import BadInput
 
     if not isinstance(top_k, int) or top_k <= 0:
-        return _rt()._render_error(  # type: ignore[attr-defined]
-            BadInput(
-                f"top_k must be a positive integer, got {top_k!r}",
-                next="search(kind='paper', q='...', top_k=10)",
+        return _validation_error(
+            _rt()._render_error(  # type: ignore[attr-defined]
+                BadInput(
+                    f"top_k must be a positive integer, got {top_k!r}",
+                    next="search(kind='paper', q='...', top_k=10)",
+                )
             )
         )
     if top_k > _SEARCH_TOP_K_MAX:
-        return _rt()._render_error(  # type: ignore[attr-defined]
-            BadInput(
-                f"top_k={top_k} exceeds maximum {_SEARCH_TOP_K_MAX}",
-                next=(
-                    f"narrow with scope= or paginate; max top_k is {_SEARCH_TOP_K_MAX}"
-                ),
+        return _validation_error(
+            _rt()._render_error(  # type: ignore[attr-defined]
+                BadInput(
+                    f"top_k={top_k} exceeds maximum {_SEARCH_TOP_K_MAX}",
+                    next=(
+                        f"narrow with scope= or paginate; "
+                        f"max top_k is {_SEARCH_TOP_K_MAX}"
+                    ),
+                )
             )
         )
-    return _rt().dispatch(
+    return _dispatch(
         "search",
         {"kind": kind, "q": q, "scope": scope, "top_k": top_k},
     )
 
 
-@mcp.tool()
+@mcp.tool(**_TOOL_KW)
 def put(
     kind: str,
     mode: str | None = None,
@@ -230,7 +300,7 @@ def put(
                 supports, …). Required when adding non-default
                 relations.
     """
-    return _rt().dispatch(
+    return _dispatch(
         "put",
         {
             "kind": kind,
@@ -246,7 +316,7 @@ def put(
     )
 
 
-@mcp.tool()
+@mcp.tool(**_TOOL_KW)
 def move(
     kind: str,
     id: str | int,
@@ -266,7 +336,7 @@ def move(
         id:    Node to move.
         after: Reference node — moved node lands after this one.
     """
-    return _rt().dispatch("move", {"kind": kind, "id": id, "after": after})
+    return _dispatch("move", {"kind": kind, "id": id, "after": after})
 
 
 # ---------------------------------------------------------------------------

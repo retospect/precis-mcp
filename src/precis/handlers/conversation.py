@@ -28,6 +28,7 @@ from precis.response import Response
 from precis.store import Store
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 
 
 class ConversationHandler(Handler):
@@ -42,6 +43,7 @@ class ConversationHandler(Handler):
         ),
         supports_get=True,
         supports_search=True,
+        supports_search_hits=True,
         # Phase-8: cross-linking. Body remains capture-on-write
         # (transcripts arrive via the chat-bridge, not from agent
         # ``put``). The link/tag surface is the same shape as
@@ -134,6 +136,31 @@ class ConversationHandler(Handler):
             lines.append(f"_{ref.title}_")
             lines.append(preview)
         return Response(body="\n".join(lines))
+
+    # ── search_hits: structured form for cross-kind merge ──────────
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Block-level lexical search returned as ``SearchHit``s.
+
+        State kinds (incl. ``conv``) keep semantic search off in
+        phase 5; the lexical path is the only stream that goes
+        into the cross-kind merge.
+        """
+        if not (q and q.strip()):
+            return []
+        triples = self.store.search_blocks_fused(
+            q=q,
+            query_vec=None,
+            kind="conv",
+            limit=top_k,
+        )
+        return block_hits_to_search_hits(triples, kind="conv", excerpt=160)
 
     # ── put: link/tag CRUD only (no body mutation) ─────────────────
 

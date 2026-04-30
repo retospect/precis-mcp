@@ -83,6 +83,7 @@ class _PerplexityBase(CacheBackedHandler):
     # ── inherited from CacheBackedHandler (subclasses override) ──────
     provider: ClassVar[str] = "perplexity"
     corpus_slug: ClassVar[str] = "default"
+    example_query: ClassVar[str] = "your question"
     # ttl_seconds + attribution + spec set by subclasses.
 
     def __init__(self, *, store: Store, embedder: Embedder | None = None) -> None:
@@ -240,35 +241,9 @@ class _PerplexityBase(CacheBackedHandler):
         body = resp.body + render_next_section(nav)
         return Response(body=body, cost=resp.cost)
 
-    # ── get: route / and /recent to the listing; else fetch/cache ────
-
-    def get(  # type: ignore[override]
-        self,
-        *,
-        id: str | int | None = None,
-        q: str | None = None,
-        view: str | None = None,
-        **kw: Any,
-    ) -> Response:
-        """Intercepts bare ``get`` / ``id='/'`` / ``id='/recent'`` and
-        serves a listing of the N most recent refs of this kind.
-        Anything else falls through to the cache-backed fetch path."""
-        if id is None and not (isinstance(q, str) and q.strip()):
-            return self._render_recent()
-        if isinstance(id, str):
-            stripped = id.strip()
-            if stripped in ("", "/", "/recent"):
-                return self._render_recent()
-            if stripped.startswith("/"):
-                raise BadInput(
-                    f"unknown view {stripped!r} for kind={self.spec.kind!r}",
-                    options=["/", "/recent"],
-                    next=(
-                        f"get(kind={self.spec.kind!r}, id='/recent') "
-                        "to list recent refs"
-                    ),
-                )
-        return super().get(id=id, q=q, view=view, **kw)
+    # ── /recent listing — Perplexity-specific; surfaces imported vs
+    #    fetched provenance and points at the import path so Pro users
+    #    can hydrate the cache at $0 from the web UI.
 
     def _render_recent(self, *, limit: int = 20) -> Response:
         """Render the most recent refs of this kind, newest first.

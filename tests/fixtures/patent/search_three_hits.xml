@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<world-patent-data xmlns="http://www.epo.org/exchange">
+  <biblio-search total-result-count="3">
+    <query>cpc=B01J27/24</query>
+    <range begin="1" end="3"/>
+    <search-result>
+      <publication-reference>
+        <document-id document-id-type="docdb">
+          <country>EP</country>
+          <doc-number>1234567</doc-number>
+          <kind>B1</kind>
+        </document-id>
+      </publication-reference>
+      <exchange-document country="EP" doc-number="1234567" kind="B1">
+        <bibliographic-data>
+          <publication-reference>
+            <document-id document-id-type="docdb">
+              <country>EP</country>
+              <doc-number>1234567</doc-number>
+              <kind>B1</kind>
+              <date>20200115</date>
+            </document-id>
+          </publication-reference>
+          <invention-title lang="en">First photocatalytic system</invention-title>
+          <parties>
+            <applicants>
+              <applicant>
+                <applicant-name>
+                  <name>SIEMENS AG</name>
+                </applicant-name>
+              </applicant>
+            </applicants>
+          </parties>
+        </bibliographic-data>
+        <abstract lang="en">
+          <p>A system for photocatalysis. Earliest of three.</p>
+        </abstract>
+      </exchange-document>
+      <publication-reference>
+        <document-id document-id-type="docdb">
+          <country>WO</country>
+          <doc-number>2023123456</doc-number>
+          <kind>A1</kind>
+        </document-id>
+      </publication-reference>
+      <exchange-document country="WO" doc-number="2023123456" kind="A1">
+        <bibliographic-data>
+          <publication-reference>
+            <document-id document-id-type="docdb">
+              <country>WO</country>
+              <doc-number>2023123456</doc-number>
+              <kind>A1</kind>
+              <date>20230615</date>
+            </document-id>
+          </publication-reference>
+          <invention-title lang="en">Second method for visible-light photocatalysis</invention-title>
+          <parties>
+            <applicants>
+              <applicant>
+                <applicant-name>
+                  <name>BASF SE</name>
+                </applicant-name>
+              </applicant>
+            </applicants>
+          </parties>
+        </bibliographic-data>
+        <abstract lang="en">
+          <p>Method for photocatalysis under visible light.</p>
+        </abstract>
+      </exchange-document>
+      <publication-reference>
+        <document-id document-id-type="docdb">
+          <country>US</country>
+          <doc-number>20240012345</doc-number>
+          <kind>A1</kind>
+        </document-id>
+      </publication-reference>
+      <exchange-document country="US" doc-number="20240012345" kind="A1">
+        <bibliographic-data>
+          <publication-reference>
+            <document-id document-id-type="docdb">
+              <country>US</country>
+              <doc-number>20240012345</doc-number>
+              <kind>A1</kind>
+              <date>20240301</date>
+            </document-id>
+          </publication-reference>
+          <invention-title lang="en">Third advance — recent application</invention-title>
+          <parties>
+            <applicants>
+              <applicant>
+                <applicant-name>
+                  <name>EXAMPLE CORP</name>
+                </applicant-name>
+              </applicant>
+            </applicants>
+          </parties>
+        </bibliographic-data>
+        <abstract lang="en">
+          <p>Most recent of the three. Used for sort-order tests.</p>
+        </abstract>
+      </exchange-document>
+    </search-result>
+  </biblio-search>
+</world-patent-data>

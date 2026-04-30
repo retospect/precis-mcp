@@ -177,31 +177,44 @@ broader convention.
 Tags that don't have a CQL equivalent (e.g. `topic:my-project`)
 are ignored on the remote leg — they only narrow the local hits.
 
-## Background watches *(Phase 2 — not in initial cut)*
+## Background watches
 
-> Watches are deferred to a follow-up cut so the entry-level
-> ingest + search loop can ship first. When they land, you'll be
-> able to run:
->
-> ```sh
-> precis jobs watch-patents 'cpc=B01J27/24'                 # every 7d, queue for review
-> precis jobs watch-patents 'ti=nanobud' --every 1d
-> precis jobs watch-patents 'cpc=B01J27/24' --auto-get      # ingest hits automatically
-> precis jobs list-patent-watches
-> precis jobs run-patent-watches                             # one-shot
-> ```
->
-> For now, run an explicit `search(kind='patent', q=...)` when
-> you want to check for new hits, and `get(kind='patent', id=...)`
-> on anything you want to keep.
->
-> When phase 2 lands, each watch pass will diff against
-> publication numbers seen previously. New hits land in either a
-> `quest` (`patents-pending-review`) for the agent to triage and
-> `get(id=...)` selectively (default), or the store directly via
-> `--auto-get` (uses fair-use quota on every run; only for
-> trusted CQLs). The watch CQL grammar is the same one `q=`
-> accepts — see `precis-patent-power`.
+Saved CQL watches let you set up "tell me when something new
+matches this query" without polling by hand. Each watch carries a
+CQL string, an interval (default 7 days), and a mode:
+
+```sh
+# Default mode: open a quest for new hits, you triage manually.
+precis jobs watch-patents 'cpc=B01J27/24' --name catalysts
+precis jobs watch-patents 'ti=nanobud or ab=nanobud' --name nanobud --every 1d
+
+# Auto-get: ingest new hits directly. Use --max-per-pass to cap.
+precis jobs watch-patents 'pa=basf and cpc=B01J' --name basf-b01j --auto-get --max-per-pass 5
+
+# Manage them.
+precis jobs list-patent-watches
+precis jobs list-patent-watches --show-cql
+precis jobs run-patent-watches                       # one-shot pass over due watches
+precis jobs run-patent-watches --name catalysts --dry-run
+precis jobs watch-patents --name catalysts --delete
+```
+
+**Watches require strict CQL.** Bare keywords like `'photocatalysis'`
+are rejected at create time so meaning doesn't drift if the ad-hoc
+auto-promote heuristic ever changes. Always use explicit fields:
+`ti="..."`, `ab="..."`, `cpc=`, `pa=`, etc.
+
+Each pass diffs the OPS hit list against `last_seen_pn`. New hits
+either become a quest summary (default) or get ingested directly
+(`--auto-get`). In auto-get mode, hits past `--max-per-pass` are
+**dropped** — they resurface on the next pass, oldest publication
+date first.
+
+The runner is fair-use aware: when the rolling 7-day OPS bytes
+total exceeds `PRECIS_PATENT_FAIR_USE_LIMIT_GB` (default 3 GiB), it
+pauses without mutating any watch row. The next hourly tick retries.
+
+See `precis-patent-power` for the full CQL grammar and usage notes.
 
 ## Failure modes
 

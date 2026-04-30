@@ -450,7 +450,7 @@ def render_toc(
             key=lambda s: s.block_count,
         )
         lines.append("")
-        rl_call = f"~{biggest.start}..{biggest.end}"
+        rl_call = _format_block_range(biggest.start, biggest.end)
         lines.append("Next:")
         lines.extend(
             format_next_block(
@@ -478,6 +478,17 @@ def _count_sections(s: Section) -> int:
     return 1 + sum(_count_sections(c) for c in s.children)
 
 
+def _format_block_range(lo: int, hi: int) -> str:
+    """Render a block range — ``~N`` for single-block, ``~N..M`` otherwise.
+
+    The chunk renderer dropped degenerate ``~N..N`` forms because they
+    train agents to use range syntax for singletons; the TOC renderer
+    has to follow suit so the two paths agree on the canonical address.
+    (MCP critic MINOR — TOC view shows ``~N..N``.)
+    """
+    return f"~{lo}" if lo == hi else f"~{lo}..{hi}"
+
+
 def _collect_rows(
     s: Section,
     *,
@@ -485,7 +496,7 @@ def _collect_rows(
     blocks_by_pos: dict[int, Block] | None,
 ) -> list[tuple[int, str, str, str]]:
     """Flatten the section tree into row tuples for column alignment."""
-    rng = f"~{s.start}..{s.end}"
+    rng = _format_block_range(s.start, s.end)
     count = f"({s.block_count})"
     label = _section_label(s, blocks_by_pos=blocks_by_pos)
     rows: list[tuple[int, str, str, str]] = [(depth, rng, count, label)]
