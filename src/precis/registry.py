@@ -7,8 +7,9 @@ in a migration. Two-step, explicit, greppable.
 
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 from precis.errors import NotFound
@@ -17,6 +18,37 @@ if TYPE_CHECKING:
     from precis.embedder import Embedder
     from precis.protocol import Handler
     from precis.store import Store
+
+log = logging.getLogger(__name__)
+
+
+def _try_register(
+    handlers: list[Handler],
+    factory: Callable[[], Handler | None],
+    *,
+    label: str,
+) -> None:
+    """Run ``factory`` and append the returned handler to ``handlers``.
+
+    Centralises the ``try: import; except (ImportError, ValueError):
+    pass`` pattern that used to be repeated five times for the
+    optional-extra handlers (math, youtube, web, perplexity, patent)
+    plus the markdown / python file handlers. Drops ``label`` into
+    a debug log on import failure so a misconfigured environment
+    surfaces in the server log without breaking startup.
+
+    ``factory`` returning ``None`` is treated as a soft-skip — the
+    same outcome as catching the exception, but the factory itself
+    can decide to bail (e.g. when an env-driven config field is
+    missing) without raising.
+    """
+    try:
+        handler = factory()
+    except (ImportError, ValueError) as exc:
+        log.debug("optional kind %r unavailable: %s", label, exc)
+        return
+    if handler is not None:
+        handlers.append(handler)
 
 
 def builtins(
@@ -42,24 +74,35 @@ def builtins(
     sentence-transformers) off the module-load critical path until
     they're actually needed.
     """
-    from precis.handlers.calc import CalcHandler
+    handlers: list[Handler] = []
 
-    handlers: list[Handler] = [CalcHandler()]
+    # Calc — local sympy-backed calculator. Hidden when sympy is not
+    # installed (it lives in the [calc] / [all] optional extras), so a
+    # bare `pip install precis-mcp` doesn't crash the registry on
+    # module import.
+    def _build_calc() -> Handler:
+        from precis.handlers.calc import CalcHandler
+
+        return CalcHandler()
+
+    _try_register(handlers, _build_calc, label="calc")
 
     # Python kind — DB-free, in-memory mtime-cached AST index. Hidden
-    # when no roots are configured, or when `PRECIS_PYTHON_ROOTS` is
-    # set but every entry is malformed (parse_python_roots logs each
-    # rejection). Independent of `store` — the python kind never
+    # when no roots are configured, or when ``PRECIS_PYTHON_ROOTS`` is
+    # set but every entry is malformed (``parse_python_roots`` logs
+    # each rejection). Independent of `store` — the python kind never
     # touches Postgres.
     if python_roots:
-        try:
+
+        def _build_python() -> Handler | None:
             from precis.handlers.python import PythonHandler, parse_python_roots
 
             roots = parse_python_roots(python_roots)
-            if roots:
-                handlers.append(PythonHandler(roots=roots))
-        except (ImportError, ValueError):
-            pass  # bad config or missing dep → kind not available
+            if not roots:
+                return None  # all entries malformed → soft-skip
+            return PythonHandler(roots=roots)
+
+        _try_register(handlers, _build_python, label="python")
 
     if store is not None:
         from precis.embedder import MockEmbedder
@@ -88,74 +131,77 @@ def builtins(
         handlers.append(PaperHandler(store=store, embedder=eff_embedder))
 
         # Cache-backed kinds. Each declares its env requirements via
-        # `KindSpec.requires_env`; the dispatcher hides them from the
-        # agent enum when the env vars aren't set, and the actual
-        # network call only fires inside ``_fetch`` (lazy, on cache miss).
-        # Optional deps (wolframalpha, httpx, etc.) are guarded by the
-        # `[external]` extra; if missing, importing the handler raises
-        # ImportError and the kind is skipped silently below.
-        try:
+        # ``KindSpec.requires_env``; the dispatcher hides them from
+        # the agent enum when the env vars aren't set, and the actual
+        # network call only fires inside ``_fetch`` (lazy, on cache
+        # miss). Optional deps (wolframalpha, httpx, etc.) are
+        # guarded by the ``[external]`` extra; if missing, importing
+        # the handler raises ``ImportError`` and the kind is skipped
+        # silently via :func:`_try_register`.
+        def _build_math() -> Handler:
             from precis.handlers.math import MathHandler
 
-            handlers.append(MathHandler(store=store))
-        except ImportError:
-            pass  # missing wolframalpha → kind not available
+            return MathHandler(store=store)
 
-        try:
+        _try_register(handlers, _build_math, label="math")
+
+        def _build_youtube() -> Handler:
             from precis.handlers.youtube import YouTubeHandler
 
-            handlers.append(YouTubeHandler(store=store))
-        except ImportError:
-            pass  # missing youtube-transcript-api → kind not available
+            return YouTubeHandler(store=store)
 
-        try:
+        _try_register(handlers, _build_youtube, label="youtube")
+
+        def _build_web() -> Handler:
             from precis.handlers.web import WebHandler
 
-            handlers.append(WebHandler(store=store))
-        except ImportError:
-            pass  # missing httpx/trafilatura → kind not available
+            return WebHandler(store=store)
+
+        _try_register(handlers, _build_web, label="web")
 
         # File handler — markdown. Hidden when no root is configured;
         # also hidden when the root path doesn't exist (treat as
-        # mis-configuration; better to skip than to crash on every call).
+        # mis-configuration; better to skip than to crash on every
+        # call). The handler's __init__ raises ``ValueError`` for a
+        # missing/non-directory root, which ``_try_register`` catches.
         if markdown_root:
-            try:
+
+            def _build_markdown() -> Handler:
                 from pathlib import Path
 
                 from precis.handlers.markdown import MarkdownHandler
 
-                handlers.append(
-                    MarkdownHandler(
-                        store=store,
-                        embedder=eff_embedder,
-                        root=Path(markdown_root),
-                    )
+                return MarkdownHandler(
+                    store=store,
+                    embedder=eff_embedder,
+                    root=Path(markdown_root),
                 )
-            except (ImportError, ValueError):
-                pass  # bad root or missing dep → kind not available
 
-        # Perplexity Sonar trio (websearch / think / research). All three
-        # share httpx + the PERPLEXITY_API_KEY env var. Hidden when
-        # either is absent. The embedder is passed in so put(mode=
-        # 'import') — used by Pro subscribers to cache free web-UI
-        # answers at $0 — produces semantically searchable blocks.
-        try:
-            from precis.handlers.perplexity import (
-                ResearchHandler,
-                ThinkHandler,
-                WebsearchHandler,
-            )
+            _try_register(handlers, _build_markdown, label="markdown")
 
-            handlers.append(WebsearchHandler(store=store, embedder=eff_embedder))
-            handlers.append(ThinkHandler(store=store, embedder=eff_embedder))
-            handlers.append(ResearchHandler(store=store, embedder=eff_embedder))
-        except ImportError:
-            pass  # missing httpx → not available
+        # Perplexity Sonar trio (websearch / think / research). All
+        # three share httpx + the ``PERPLEXITY_API_KEY`` env var.
+        # Hidden when httpx is absent; per-key gating happens via
+        # each handler's ``KindSpec.requires_env``. The embedder is
+        # passed in so ``put(mode='import')`` — used by Pro
+        # subscribers to cache free web-UI answers at $0 — produces
+        # semantically searchable blocks.
+        def _bind_perplexity(
+            builder: Callable[..., Handler],
+        ) -> Callable[[], Handler]:
+            return lambda: builder(store=store, embedder=eff_embedder)
+
+        for _label, _builder in (
+            ("websearch", _build_perplexity_websearch),
+            ("think", _build_perplexity_think),
+            ("research", _build_perplexity_research),
+        ):
+            _try_register(handlers, _bind_perplexity(_builder), label=_label)
 
         # Patent kind — EPO Open Patent Services. Hidden unless
         # ``EPO_OPS_CLIENT_KEY``, ``EPO_OPS_CLIENT_SECRET`` and
         # ``PRECIS_PATENT_RAW_ROOT`` are all set; the
-        # ``KindSpec.requires_env`` gate at registry construction
+        # ``KindSpec.requires_env`` gate at ``Registry`` construction
         # then drops the kind. We construct the handler eagerly only
         # when all three are present so the live ``OpsClient`` (which
         # lazy-imports ``epo_ops``) gets exercised at startup just
@@ -164,28 +210,56 @@ def builtins(
         epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
         epo_raw_root = os.environ.get("PRECIS_PATENT_RAW_ROOT")
         if epo_key and epo_secret and epo_raw_root:
-            try:
+
+            def _build_patent() -> Handler:
                 from pathlib import Path
 
                 from precis.handlers._patent_ops import OpsClient
                 from precis.handlers.patent import PatentHandler
 
-                handlers.append(
-                    PatentHandler(
-                        store=store,
-                        ops=OpsClient(
-                            key=epo_key,
-                            secret=epo_secret,
-                            user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
-                        ),
-                        raw_root=Path(epo_raw_root).expanduser(),
-                        embedder=eff_embedder,
-                    )
+                return PatentHandler(
+                    store=store,
+                    ops=OpsClient(
+                        key=epo_key,
+                        secret=epo_secret,
+                        user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
+                    ),
+                    raw_root=Path(epo_raw_root).expanduser(),
+                    embedder=eff_embedder,
                 )
-            except (ImportError, ValueError):
-                pass  # missing python-epo-ops-client → kind not available
+
+            _try_register(handlers, _build_patent, label="patent")
 
     return handlers
+
+
+# ---------------------------------------------------------------------------
+# Per-handler factories that the perplexity loop above feeds through
+# ``_try_register``. Defined at module scope so each call gets a fresh
+# import inside its own ``_try_register`` failure boundary — if the
+# trio's shared ``httpx`` isn't installed, ``websearch`` fails first
+# and the next two are still attempted (and will fail the same way,
+# matching the previous "drop all three" behaviour without sharing
+# their failure mode at the import level).
+# ---------------------------------------------------------------------------
+
+
+def _build_perplexity_websearch(*, store: Store, embedder: Embedder) -> Handler:
+    from precis.handlers.perplexity import WebsearchHandler
+
+    return WebsearchHandler(store=store, embedder=embedder)
+
+
+def _build_perplexity_think(*, store: Store, embedder: Embedder) -> Handler:
+    from precis.handlers.perplexity import ThinkHandler
+
+    return ThinkHandler(store=store, embedder=embedder)
+
+
+def _build_perplexity_research(*, store: Store, embedder: Embedder) -> Handler:
+    from precis.handlers.perplexity import ResearchHandler
+
+    return ResearchHandler(store=store, embedder=embedder)
 
 
 class Registry:
