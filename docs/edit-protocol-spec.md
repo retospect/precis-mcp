@@ -1,5 +1,5 @@
 ---
-status: v1 + dry_run shipped — markdown + python; regex/batch/expect_lines/cross_region deferred to v2
+status: v1 + dry_run shipped — markdown + python; v2 closed (every deferred item evaluated and rejected, see "Considered and rejected")
 applies-to: every R/W file-rooted kind (markdown, plaintext, rmk, docx, tex, book, python)
 supersedes: nothing — extends the four-mode surface in `file-kinds-unified-addressing.md`
 last-updated: 2026-04-30
@@ -520,17 +520,37 @@ existing "Write" section. The four-mode list grows to six.
   disk mutation. 19 dry_run-specific tests across the resolver,
   markdown, and python suites.
 
-### Deferred to v2
+### Considered and rejected (v2 closed)
 
-- `regex=True` + `flags=` — opt-in regex with unbounded-pattern
-  guard.
-- `edits=[…]` atomic batch transactions.
-- `expect_lines=N` safety assertion.
-- Explicit cross-region rejection (`allow_cross_region=False`).
-  Today markdown allows cross-block matches; the parser re-tokens
-  on re-ingest. Python's AST gate already catches the breakage
-  cross-statement matches would cause, so the explicit knob isn't
-  strictly necessary on the python side either.
+After v1 + `dry_run` shipped, every remaining v2 candidate was
+re-evaluated and rejected. The protocol surface is **complete** for
+the kinds we ship. New features will be added per-kind as new file
+kinds land (plaintext, rmk, tex, docx, book), not as additional
+universal knobs.
+
+- **`regex=True` + `flags=`** — rejected. Models construct
+  unsafe / over-broad regex routinely. The escape-hazard risk and
+  the unbounded-pattern guard complexity outweigh the rare cases
+  literal find + anchors can't cover. Workaround: do the regex
+  outside (e.g. `rg` / `sed -n`), feed the resulting literal text
+  back in via `find=`.
+- **`edits=[…]` atomic batch** — rejected. Single-file atomicity
+  doesn't address the actual risk surface (most multi-edit
+  refactors are cross-file). Sequential `put()` calls + `dry_run`
+  give better failure observability with no protocol cost.
+  Cross-file refactors belong to a different abstraction (e.g.
+  `sortie` campaigns), not single-file batches.
+- **`expect_lines=N`** — rejected. `dry_run` subsumes the use case
+  with strictly more information. Adding the parameter creates
+  surface area for an assertion that's rarely meaningful (most
+  edits address by stable identifier, not line count).
+- **Explicit `allow_cross_region=False`** — deferred *as protocol
+  knob*; will appear as **per-kind default behavior** when DOCX or
+  another rich-text kind lands. For markdown the parser re-tokens
+  on re-ingest (zero damage); for python the AST gate catches
+  cross-statement breakage automatically. The knob only earns its
+  keep when run-formatting boundaries can be silently destroyed,
+  which is a DOCX-shaped problem.
 
 ### Queued kinds
 

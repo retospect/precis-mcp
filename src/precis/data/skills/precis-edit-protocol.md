@@ -155,8 +155,11 @@ three advantages:
 - **Bounded ambiguity.** Regex can match in surprising places;
   literal text + before/after cannot.
 
-Regex and multi-edit batches are **deferred to v2** — the v1
-surface is intentionally minimal.
+Regex and multi-edit batches were considered for v2 and **rejected**
+(escape hazards / unbounded patterns; sequential `put()` + `dry_run`
+subsumes the batch use case). The v1 surface is the protocol's
+complete shape — see `docs/edit-protocol-spec.md § Considered and
+rejected` for the full rationale.
 
 ## Per-kind quirks
 
@@ -182,10 +185,14 @@ are allowed; the kind's own validation gate catches the breakage
 that would result). A future version may add an opt-out
 `allow_cross_region=False` knob if data shows it's needed.
 
-## What this protocol does NOT do (v1)
+## What this protocol does NOT do
 
-- **Regex.** Literal `find=` only. Deferred to v2 with `regex=True`.
-- **Multi-edit batches.** One edit per call. `edits=[…]` is v2.
+- **Regex.** Literal `find=` only. Considered and rejected for v2
+  (escape hazards). Run regex outside the protocol (e.g. `rg`),
+  feed literal text back in via `find=`.
+- **Multi-edit batches.** One edit per call. Considered and
+  rejected for v2 (`dry_run` + sequential `put()` covers the use
+  case with better failure observability).
 - **vi-style modal commands.** Not even in v2 — kept out of the
   protocol layer. If a client wants `:s/old/new/` sugar, it
   compiles to this schema before reaching the handler.
