@@ -37,6 +37,7 @@ from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.text import excerpt as _excerpt
 
 # ---------------------------------------------------------------------------
 # Public spec
@@ -235,7 +236,7 @@ class PaperHandler(Handler):
             # excerpt paths now stay on the same contract.
             # (MCP critic re-probe MAJOR — figure marker leaks in
             # search previews.)
-            preview = _excerpt(_scrub_block_text(block.text))
+            preview = _excerpt(_scrub_block_text(block.text), limit=280)
             lines.append(f"\n## {i}. {handle}")
             lines.append(f"_{_clean_inline_text(ref.title)}_")
             lines.append(preview)
@@ -1031,13 +1032,6 @@ def _latex_escape(text: str) -> str:
     for ch, esc in _LATEX_ESCAPES.items():
         out = out.replace(ch, esc)
     return out
-
-
-def _excerpt(text: str, *, limit: int = 280) -> str:
-    text = " ".join(text.split())  # collapse whitespace
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
 
 
 # ---------------------------------------------------------------------------

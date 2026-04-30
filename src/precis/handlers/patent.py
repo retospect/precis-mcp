@@ -41,6 +41,7 @@ from precis.utils.search_merge import (
     block_hits_to_search_hits,
     merge_and_render,
 )
+from precis.utils.text import excerpt as _excerpt
 
 # ---------------------------------------------------------------------------
 # Spec
@@ -587,15 +588,6 @@ def _ops_hit_to_search_hit(hit: OpsHit) -> SearchHit:
         extra_lines=extras,
         dedupe_key=f"patent:{hit.docdb_id}",
     )
-
-
-def _excerpt(text: str, *, limit: int = 200) -> str:
-    """Trim ``text`` to roughly ``limit`` chars on a word boundary."""
-    text = " ".join(text.split())
-    if len(text) <= limit:
-        return text
-    cut = text[:limit].rsplit(" ", 1)[0]
-    return f"{cut}…"
 
 
 def _format_biblio(ref: Ref, meta: dict[str, Any]) -> str:

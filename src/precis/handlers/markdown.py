@@ -66,6 +66,7 @@ from precis.utils.md_parse import (
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.text import excerpt as _excerpt
 
 log = logging.getLogger(__name__)
 
@@ -1000,10 +1001,3 @@ def _replace_lines(
     raw = path.read_text(encoding="utf-8")
     new_content = _splice_lines(raw, line_start, line_end, new_lines)
     _atomic_write(path, new_content)
-
-
-def _excerpt(text: str, *, limit: int = 240) -> str:
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit].rstrip() + "…"
