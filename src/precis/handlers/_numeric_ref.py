@@ -29,24 +29,17 @@ the relevant hook.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, cast, get_args
+from typing import Any, ClassVar
 
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers._link_tag_ops import validate_relation
 from precis.handlers._link_target import parse_link_target
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Link, Ref, Store, Tag
-from precis.store.types import Relation
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
-
-# Mirror of the ``Relation`` literal's allowed values. Keeping the
-# tuple form here lets ``_validate_relation`` enumerate options for
-# the agent's BadInput hint without re-importing typing internals
-# at every call.
-_VALID_RELATIONS: tuple[str, ...] = get_args(Relation)
-_DEFAULT_RELATION: Relation = "related-to"
 
 # Views every numeric-ref kind picks up for free. Subclasses with
 # additional views should override `get()` to layer their dispatch
@@ -358,7 +351,7 @@ class NumericRefHandler(Handler):
         # ref in the corpus. The parser hits the DB but doesn't
         # mutate; the insert + link both happen below.
         target = parse_link_target(link, store=self.store) if link is not None else None
-        relation = self._validate_relation(rel)
+        relation = validate_relation(rel)
 
         # Pre-validate every tag *before* we touch the DB. The MCP
         # critic flagged a state-drift bug: a put-create that failed
@@ -438,7 +431,7 @@ class NumericRefHandler(Handler):
         unlink_target = (
             parse_link_target(unlink, store=self.store) if unlink is not None else None
         )
-        relation = self._validate_relation(rel)
+        relation = validate_relation(rel)
 
         # Pre-validate tags + untags. The MCP critic flagged that a
         # rejected tag mid-update could leave partial state — half
@@ -543,32 +536,6 @@ class NumericRefHandler(Handler):
             # otherwise get a silent no-op via the value-match path.
             tag = Tag.parse_strict(s, kind=self.kind)
             self.store.remove_tag(ref_id, tag)
-
-    def _validate_relation(self, rel: str | None) -> Relation:
-        """Validate ``rel=`` against the registered relations vocabulary.
-
-        Returns the canonical default ``related-to`` when ``rel`` is
-        None, so callers can pass the result straight to
-        :meth:`Store.add_link`. Raises ``BadInput`` with the full
-        options list when an unknown relation is given — that's
-        cheaper feedback than the FK violation the DB would
-        otherwise return.
-        """
-        if rel is None:
-            return _DEFAULT_RELATION
-        if rel not in _VALID_RELATIONS:
-            raise BadInput(
-                f"unknown relation: {rel!r}",
-                options=list(_VALID_RELATIONS),
-                next=(
-                    "pick from the registered relations or omit rel= "
-                    f"for the default {_DEFAULT_RELATION!r}"
-                ),
-            )
-        # Narrow ``str`` → ``Relation`` (Literal) for downstream
-        # type-checkers; the membership check above is the runtime
-        # guarantee.
-        return cast(Relation, rel)
 
     # ── coercion ────────────────────────────────────────────────────
 
