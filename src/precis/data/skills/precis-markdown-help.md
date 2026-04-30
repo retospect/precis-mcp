@@ -146,6 +146,8 @@ Markdown-specific quirks:
 - The selector decides the search region: `id='notes--foo'`
   searches the whole file; `id='notes--foo~intro'` searches just
   one block.
+- Pass `dry_run=True` (or `dry_run='full'`) to preview the edit
+  without writing — see `precis-edit-protocol`.
 
 ### Cross-kind: link a memory to a markdown block
 

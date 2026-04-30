@@ -33,14 +33,43 @@ to change. This survives drift after prior edits.
 
 ```python
 put(kind='<kind>', id='<path>[~<selector>]',
-    mode='edit',          # or 'insert'
-    find='<exact text>',  # literal — required
-    before='<anchor>',    # optional: text immediately preceding find
-    after='<anchor>',     # optional: text immediately following find
-    text='<new text>',    # required (use '' on edit to delete the match)
-    where='before|after', # required for mode='insert' only
-    match='unique',       # unique (default) | first | all | nth
-    nth=2)                # 1-indexed when match='nth'
+    mode='edit',           # or 'insert'
+    find='<exact text>',   # literal — required
+    before='<anchor>',     # optional: text immediately preceding find
+    after='<anchor>',      # optional: text immediately following find
+    text='<new text>',     # required (use '' on edit to delete the match)
+    where='before|after',  # required for mode='insert' only
+    match='unique',        # unique (default) | first | all | nth
+    nth=2,                 # 1-indexed when match='nth'
+    dry_run=False)         # True | 'diff' | 'full' — preview without writing
+```
+
+### `dry_run` — preview without writing
+
+Pass `dry_run=True` (or `dry_run='diff'`) to run the same resolver
+and validation gates without touching disk. The response carries:
+
+- a structured header (region, edited spans, match policy, per-
+  gate pass/fail), and
+- a body that's a unified diff (`'diff'`, default) or the post-
+  edit lines with `> ` markers (`'full'`).
+
+Gate failures still raise during dry-run, so you learn whether
+the edit would validate without any disk mutation. Use it before
+any large or risky edit.
+
+```python
+# Diff preview (default).
+put(kind='python', id='r/src/precis/cli.py',
+    mode='edit',
+    find='deprecated_call(', text='new_call(', match='all',
+    dry_run=True)
+
+# Post-edit region preview.
+put(kind='markdown', id='notes--foo',
+    mode='edit',
+    find='draft', text='final',
+    dry_run='full')
 ```
 
 The motivating case from the spec:
@@ -126,8 +155,8 @@ three advantages:
 - **Bounded ambiguity.** Regex can match in surprising places;
   literal text + before/after cannot.
 
-Regex / `dry_run` / multi-edit batches are **deferred to v2** —
-the v1 surface is intentionally minimal.
+Regex and multi-edit batches are **deferred to v2** — the v1
+surface is intentionally minimal.
 
 ## Per-kind quirks
 
@@ -157,7 +186,6 @@ that would result). A future version may add an opt-out
 
 - **Regex.** Literal `find=` only. Deferred to v2 with `regex=True`.
 - **Multi-edit batches.** One edit per call. `edits=[…]` is v2.
-- **`dry_run`.** Defer to v2; for now, edits go straight through.
 - **vi-style modal commands.** Not even in v2 — kept out of the
   protocol layer. If a client wants `:s/old/new/` sugar, it
   compiles to this schema before reaching the handler.

@@ -400,8 +400,11 @@ Python-specific quirks:
   the whole file; `id='r::pkg.m.func'` or `id='r/src/m.py~func'`
   searches just one symbol's source range; `id='r/src/m.py~L20-L40'`
   searches that line range.
-- Regex / multi-edit batches / `dry_run` are deferred to v2 — see
-  `precis-edit-protocol`.
+- Pass `dry_run=True` to preview the edit and see the gate
+  results (AST, qualname-drop, ruff including any incidental
+  autofixes) without writing. `dry_run='full'` emits the post-edit
+  region instead of a diff. See `precis-edit-protocol`.
+- Regex and multi-edit batches are deferred to v2.
 
 ### What can go wrong
 
