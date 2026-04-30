@@ -41,9 +41,15 @@ class CalcHandler(Handler):
         try:
             expr = sympy.sympify(expr_str)
         except (sympy.SympifyError, SyntaxError, TypeError) as e:
+            # Hint uses ``q=`` to match the canonical example in
+            # precis-overview / precis-help. The handler accepts
+            # ``id=`` too, but teaching ``id=`` here trains agents to
+            # mix kwargs across tool-kinds and trip over the q= vs
+            # id= split elsewhere. (MCP critic MINOR — calc recovery
+            # hint uses id= while canonical example uses q=.)
             raise BadInput(
                 f"could not parse expression: {expr_str!r}",
-                next="get(kind='calc', id='2+3*4')",
+                next="get(kind='calc', q='2+3*4')",
             ) from e
 
         try:
@@ -104,8 +110,8 @@ class CalcHandler(Handler):
         if isinstance(q, str) and q:
             return q
         raise BadInput(
-            "calc requires an expression as `id` or `q`",
-            next="get(kind='calc', id='2+3*4')",
+            "calc requires an expression as `q` (or `id`)",
+            next="get(kind='calc', q='2+3*4')",
         )
 
 

@@ -92,7 +92,20 @@ class QuestHandler(Handler):
             )
         hits = self.store.search_refs_lexical(q=q, kind="quest", limit=top_k)
         if not hits:
-            return Response(body=f"no quest entries match {q!r}")
+            body = f"no quest entries match {q!r}"
+            body += render_next_section(
+                [
+                    (
+                        "search(kind='quest', q='broader term')",
+                        "loosen the query",
+                    ),
+                    (
+                        "get(kind='quest')",
+                        "list recent quests",
+                    ),
+                ]
+            )
+            return Response(body=body)
         total = self.store.count_refs_lexical(q=q, kind="quest")
         lines = [
             format_search_headline(

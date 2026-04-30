@@ -58,8 +58,18 @@ Homepage = "https://github.com/retospect/precis-mcp"
 Repository = "https://github.com/retospect/precis-mcp"
 
 [project.optional-dependencies]
-# Paper ingest — depends on acatome-extract for PDF → .acatome bundle.
-paper = ["acatome-extract>=0.1"]
+# Paper ingest — depends on acatome-extract for PDF → .acatome bundle
+# and sentence-transformers for the bge-m3 embedder used at search
+# time. Without sentence-transformers the search() verb on every
+# embedder-backed kind crashes with -32603 even though tools/list
+# advertises it as supported. (MCP critic CRITICAL — search(kind=
+# 'paper', …) is broken in this deployment.) The hint surfaced by
+# `BgeM3Embedder._ensure_loaded` says `pip install 'precis-mcp
+# [paper]'`, so this extra has to actually carry the dep.
+paper = [
+    "acatome-extract[embeddings]>=0.1",
+    "sentence-transformers>=3.0",
+]
 # DOCX file handler.
 docx = ["python-docx>=1.1", "lxml>=5.0"]
 # LaTeX file handler.

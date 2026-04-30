@@ -175,7 +175,35 @@ class NumericRefHandler(Handler):
         )
         if not hits:
             tag_suffix = f" tagged {normalized_tags}" if normalized_tags else ""
-            return Response(body=f"no {self._sense()} entries match {q!r}{tag_suffix}")
+            body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
+            # Empty searches should still teach the agent what to try
+            # next — broaden the query, drop the tag filter (if any),
+            # or fall back to the recent-list view.  Without this, a
+            # small-model caller retries the same query, gives up, or
+            # guesses at the wrong kind.  (MCP critic MINOR — empty-
+            # result responses on search lack recovery hints.)
+            nav: list[tuple[str, str]] = []
+            nav.append(
+                (
+                    f"search(kind={self.kind!r}, q='broader term')",
+                    "loosen the query",
+                )
+            )
+            if normalized_tags:
+                nav.append(
+                    (
+                        f"search(kind={self.kind!r}, q={q!r})",
+                        "drop the tag filter",
+                    )
+                )
+            nav.append(
+                (
+                    f"get(kind={self.kind!r}, id='/recent')",
+                    f"list recent {self._sense()} entries",
+                )
+            )
+            body += render_next_section(nav)
+            return Response(body=body)
 
         # Total-hits header: a second COUNT(*) with the same WHERE
         # clause so the agent sees "10 of 1234 hits" when results are

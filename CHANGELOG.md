@@ -3,6 +3,70 @@
 All entries pre-1.0 are unreleased; v2 is in active development on the
 `v2` branch and not yet on PyPI.
 
+## MCP critique fixes (April 2026)
+
+Five findings from the latest MCP critic pass — one CRITICAL plus
+four MAJOR/MINOR. Five new regression tests in
+`tests/test_mcp_critic_regressions.py`; full suite 1270 → 1271 green
+(one previously-skipped paper-search test now runs because
+sentence-transformers actually lands), lint + format + mypy clean.
+
+**CRITICAL — `[paper]` extra didn't carry sentence-transformers.**
+`BgeM3Embedder._ensure_loaded` raises with the hint `pip install
+'precis-mcp[paper]'`, but the `[paper]` extra previously declared
+only `acatome-extract>=0.1` (whose own `[embeddings]` extra is
+where sentence-transformers lives). Result: a fresh
+`pip install 'precis-mcp[paper]'` venv crashed with -32603 on every
+search() against an embedder-backed kind, even though tools/list
+advertised the verb as supported. The extra now declares
+`acatome-extract[embeddings]>=0.1` and pins
+`sentence-transformers>=3.0` directly so the install hint matches
+reality. Verified by `pip install -e '.[all]' && python -c
+'from sentence_transformers import SentenceTransformer'`.
+
+**MAJOR — searched-kind annotation must surface on error paths.**
+`_dispatch_inner` previously only prepended `(searched kind='X')` to
+successful responses, so a search() that crashed inside the
+defaulted kind's handler left the caller blind to which kind was
+actually tried. The dispatcher now wraps the handler call: a
+`PrecisError` has its `cause` annotated; non-Precis exceptions are
+re-raised as `Internal` with the prefix already in the message. Both
+branches verified by `test_search_default_kind_annotates_error_path`.
+
+**MINOR — calc recovery hint uses `q=` to match canonical example.**
+`precis-overview` and `precis-help` show `q='2+3*4'` everywhere for
+tool-kinds. The calc handler still accepts both `id=` and `q=`, but
+its `next=` trailers no longer teach `id=` — that was training
+agents to mix kwargs and trip over the q= vs id= split elsewhere.
+Two next-strings updated in `handlers/calc.py`; pinned by
+`test_calc_recovery_hint_uses_q_kwarg`.
+
+**MINOR — empty numeric-ref + quest searches grow Next: trailer.**
+`memory`/`todo`/`gripe`/`fc`/`quest` empty searches used to return a
+single line ("no memory entries match 'X'") with no recovery
+affordance, while empty *list* responses on the same kinds carried
+a clean Next: block. Asymmetry fixed in
+`handlers/_numeric_ref.py::search` and `handlers/quest.py::search`:
+empty searches now suggest a broader query, dropping any tag filter
+(when one was applied), and the recent-list view. Pinned by two
+new tests.
+
+**MINOR — `view='fig/<N>'` is reserved, not a typo.**
+`precis-paper-help` advertises `view='fig/<N>'` as a future-reserved
+affordance. The handler used to lump it into the generic "unknown
+view" Unsupported error, making a caller who'd read the help skill
+assume the docs were wrong. `PaperHandler._render_view` now special-
+cases `view.startswith('fig/')` and surfaces a deliberate "reserved
+view" error citing `precis-paper-help` and the caption-only
+workaround. Pinned by `test_paper_view_fig_n_is_reserved_not_unknown`.
+
+**Deferred (not in this cut):** the critic also suggested a
+registry-time embedder probe that downgrades `tools/list` when the
+optional dep is genuinely absent (e.g. on a stateless deployment
+that intentionally skipped `[paper]`). Worth doing for parity with
+how the markdown / python kinds gate themselves on roots, but not
+required now that the install path actually works. Queued.
+
 ## Planned — Phase 9: `patent` kind (EPO OPS)
 
 Read-only third durable knowledge corpus alongside `paper` and

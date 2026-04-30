@@ -783,3 +783,189 @@ def test_search_error_path_survives_fastmcp_convert_result(
         assert "nosuchkind" in body_err
     finally:
         server._runtime = None
+
+
+# ── MAJOR (Apr 2026): searched-kind annotation must surface on errors ──
+
+
+def test_search_default_kind_annotates_error_path(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """When ``search()`` is called without ``kind=`` and the chosen
+    default kind's handler raises, the rendered error must still
+    name the kind we tried.  Without this, a caller can't tell
+    which kind to retry against, whether the touch-default is
+    sticky, or whether the default has rolled to a kind that will
+    never succeed in this deployment.  (MCP critic MAJOR — search
+    with no kind= does not preface the chosen kind on failure.)
+    """
+    # Make 'memory' the most recently touched search-supporting
+    # kind so the runtime defaults to it.
+    runtime_with_store.dispatch("put", {"kind": "memory", "text": "default-kind probe"})
+    # Force a failure inside the memory handler's search() by
+    # monkeypatching the bound method to raise.  We exercise the
+    # PrecisError branch first…
+    handler = runtime_with_store.registry.get("memory")
+    original = handler.search
+
+    def _boom(**_kw):  # type: ignore[no-untyped-def]
+        raise BadInput("synthetic search failure")
+
+    try:
+        handler.search = _boom  # type: ignore[method-assign]
+        out = runtime_with_store.dispatch("search", {"q": "anything"})
+    finally:
+        handler.search = original  # type: ignore[method-assign]
+
+    assert "[error:BadInput]" in out, f"expected error envelope, got: {out!r}"
+    assert "(searched kind='memory')" in out, (
+        "the chosen-kind annotation must surface on error paths so the "
+        "agent knows which kind we tried"
+    )
+
+    # …and the non-Precis branch (gets wrapped as Internal but the
+    # annotation still has to land).
+    def _explode(**_kw):  # type: ignore[no-untyped-def]
+        raise RuntimeError("synthetic non-precis failure")
+
+    try:
+        handler.search = _explode  # type: ignore[method-assign]
+        out2 = runtime_with_store.dispatch("search", {"q": "anything"})
+    finally:
+        handler.search = original  # type: ignore[method-assign]
+
+    assert "[error:Internal]" in out2
+    assert "(searched kind='memory')" in out2
+
+
+# ── MINOR (Apr 2026): calc recovery hint uses q=, not id= ─────────────
+
+
+def test_calc_recovery_hint_uses_q_kwarg() -> None:
+    """precis-overview / precis-help show ``q='2+3*4'`` as the canonical
+    calc shape.  The handler still accepts ``id=`` for symmetry, but
+    the recovery hint must teach ``q=`` so a caller scraping the
+    next: trailer doesn't start emitting ``id=`` for tool-kinds and
+    trip over the q= vs id= split everywhere else.  (MCP critic
+    MINOR — calc recovery hint uses id= while canonical example
+    uses q=.)
+    """
+    from precis.handlers.calc import CalcHandler
+
+    handler = CalcHandler()
+
+    # Unparseable expression → BadInput with a recovery hint.
+    with pytest.raises(BadInput) as exc_info:
+        handler.get(q="2+")
+    assert exc_info.value.next is not None
+    assert "q=" in exc_info.value.next, (
+        f"calc recovery hint must teach q=, got: {exc_info.value.next!r}"
+    )
+    assert "id=" not in exc_info.value.next, (
+        f"calc recovery hint must not teach id= (canonical example uses q=), "
+        f"got: {exc_info.value.next!r}"
+    )
+
+    # Missing-expression error path.
+    with pytest.raises(BadInput) as exc_info2:
+        handler.get()
+    assert exc_info2.value.next is not None
+    assert "q=" in exc_info2.value.next
+    assert "id=" not in exc_info2.value.next
+
+
+# ── MINOR (Apr 2026): empty numeric-ref search has Next: trailer ──────
+
+
+def test_empty_numeric_ref_search_has_next_trailer(store: Store) -> None:
+    """Empty searches on memory/todo/gripe/fc/quest must surface a
+    Next: block — same shape as the very-good empty-list responses
+    on get(kind='conv') / get(kind='gripe').  Without this, a small-
+    model caller retries the same query, gives up, or guesses at
+    the wrong kind.  (MCP critic MINOR — empty-result responses on
+    search lack recovery hints.)
+    """
+    from precis.handlers.memory import MemoryHandler
+    from precis.handlers.todo import TodoHandler
+
+    mem = MemoryHandler(store=store)
+    mem.put(text="hello world")
+    out = mem.search(q="frobnicate-zzz-quux")
+    assert "no memory entries match" in out.body
+    assert "Next:" in out.body, (
+        "empty memory search must carry a Next: trailer with at least "
+        "one runnable suggestion"
+    )
+    assert "search(kind='memory'" in out.body
+    assert "/recent" in out.body
+
+    todo = TodoHandler(store=store)
+    todo.put(text="finish report")
+    out_todo = todo.search(q="probe-zzz-quux")
+    assert "no todo entries match" in out_todo.body
+    assert "Next:" in out_todo.body
+    assert "search(kind='todo'" in out_todo.body
+
+
+def test_empty_numeric_ref_search_with_tags_suggests_dropping_filter(
+    store: Store,
+) -> None:
+    """When the empty result was filtered by tags, the Next: block
+    must surface a "drop the tag filter" affordance — otherwise a
+    caller stuck at zero hits has no way to tell whether the corpus
+    is empty or whether the filter is the reason.
+    """
+    from precis.handlers.memory import MemoryHandler
+
+    handler = MemoryHandler(store=store)
+    handler.put(text="hello world")
+    out = handler.search(q="hello", tags=["topic-no-such-thing"])
+    assert "no memory entries match" in out.body
+    assert "Next:" in out.body
+    assert "drop the tag filter" in out.body
+
+
+# ── MINOR (Apr 2026): paper view='fig/<N>' is reserved, not a typo ────
+
+
+def test_paper_view_fig_n_is_reserved_not_unknown(store: Store) -> None:
+    """precis-paper-help advertises ``view='fig/<N>'`` as a future-
+    reserved affordance.  The handler currently lumps it into the
+    generic "unknown view" enum, which makes a caller who has read
+    the help skill assume the docs are wrong rather than the build
+    being early.  Surface a deliberate "reserved view" error that
+    cites the help skill.  (MCP critic MINOR — fig/<N> is documented
+    but unrecognised view path returns the same enum as a typo.)
+    """
+    from precis.errors import Unsupported
+    from precis.handlers.paper import PaperHandler
+
+    corpus_id = store.ensure_corpus("default")
+    ref = store.insert_ref(
+        corpus_id=corpus_id,
+        kind="paper",
+        slug="testpaper2026figview",
+        title="Test paper for fig/N reserved view",
+        meta={},
+    )
+    assert isinstance(corpus_id, int)
+    assert ref.id is not None
+
+    handler = PaperHandler(store=store)
+
+    with pytest.raises(Unsupported) as exc_info:
+        handler.get(id="testpaper2026figview", view="fig/3")
+
+    msg = str(exc_info.value.cause)
+    assert "fig/3" in msg
+    assert "reserved" in msg.lower(), (
+        f"reserved-view error should call out the reservation; got: {msg!r}"
+    )
+    assert exc_info.value.next is not None
+    assert "precis-paper-help" in exc_info.value.next
+    # Don't conflate with a typo: a typo in the canonical view enum
+    # (e.g. 'biibtex') still routes to the original "unknown view"
+    # message, which is the right shape for a typo.
+    with pytest.raises(Unsupported) as exc_typo:
+        handler.get(id="testpaper2026figview", view="biibtex")
+    assert "unknown view" in str(exc_typo.value.cause).lower()

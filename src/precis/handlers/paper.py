@@ -529,6 +529,28 @@ class PaperHandler(Handler):
                     "'Figures' section of precis-paper-help."
                 ),
             )
+        # ``view='fig/<N>'`` is documented in precis-paper-help as a
+        # reserved-for-future affordance.  Without a dedicated branch
+        # it falls into the generic "unknown view" error below,
+        # which makes a caller who *has* read the help skill assume
+        # the docs are wrong rather than the build being early.
+        # Surface the reservation explicitly so the caller knows to
+        # use the caption-only workaround until figure-binary
+        # serving is wired.  (MCP critic MINOR — fig/<N> documented
+        # but unrecognised view path returns the same enum as a
+        # typo.)
+        if view.startswith("fig/"):
+            raise Unsupported(
+                f"view={view!r} is reserved for a future build",
+                options=list(_SUPPORTED_VIEWS),
+                next=(
+                    "view='fig/<N>' is documented in precis-paper-help as "
+                    "reserved — figure-binary serving isn't wired yet.  "
+                    "Until then, find the figure number via view='toc' "
+                    "and read the legend block on the matching ~N "
+                    "(e.g. 'Figure 3. …')."
+                ),
+            )
         raise Unsupported(
             f"unknown view {view!r} for kind='paper'",
             options=list(_SUPPORTED_VIEWS),

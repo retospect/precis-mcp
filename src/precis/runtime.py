@@ -213,7 +213,29 @@ class PrecisRuntime:
             args.update(extras)
         # Strip None args so handlers see absence as missing
         clean = {k: v for k, v in args.items() if v is not None}
-        response = method(**clean)
+        try:
+            response = method(**clean)
+        except PrecisError as exc:
+            # ``(searched kind=...)`` must surface on error paths too,
+            # not just on success — otherwise a crash inside the
+            # defaulted kind's handler leaves the caller blind to
+            # which kind was actually tried.  (MCP critic MAJOR —
+            # search with no kind= does not preface the chosen kind
+            # on failure.)
+            if kind_was_defaulted:
+                exc.cause = f"(searched kind={kind!r}) {exc.cause}"
+            raise
+        except Exception as exc:
+            # Non-Precis exceptions get wrapped as ``Internal`` at
+            # the dispatcher boundary; do the wrap here when the
+            # kind was defaulted so the annotation lands on the
+            # final rendered error rather than being lost in the
+            # generic ``internal error: ...`` shape.
+            if kind_was_defaulted:
+                raise Internal(
+                    f"(searched kind={kind!r}) internal error: {exc}"
+                ) from exc
+            raise
         if kind_was_defaulted:
             response = self._tag_defaulted_kind(response, kind)
         return response
