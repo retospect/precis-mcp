@@ -266,6 +266,8 @@ class PythonHandler(Handler):
         argv: list[str] | None = None,
         env: dict[str, str] | None = None,
         timeout: int = 10,
+        max_events: int = 2_000,
+        expand_stdlib: bool = False,
         **_kw: Any,
     ) -> Response:
         # Index — no id, or "/" sentinel.
@@ -305,6 +307,8 @@ class PythonHandler(Handler):
                 env=env,
                 timeout=timeout,
                 cross_repo=cross_repo,
+                max_events=max_events,
+                expand_stdlib=expand_stdlib,
             )
 
         # Entries view — alias-only id; pyproject scripts + __main__ guards.
@@ -945,6 +949,8 @@ class PythonHandler(Handler):
         env: dict[str, str] | None,
         timeout: int,
         cross_repo: bool,
+        max_events: int,
+        expand_stdlib: bool,
     ) -> Response:
         """Spawn a subprocess that runs `entry` under `sys.setprofile`,
         capture call events, and overlay them on the static call set.
@@ -952,6 +958,10 @@ class PythonHandler(Handler):
         Gated by ``PRECIS_PYTHON_ALLOW_EXEC=1`` because it executes
         user code. Off by default. The error message points at the
         env var so the agent's recovery path is unambiguous.
+
+        By default, stdlib subtrees (argparse, re, gettext, builtins,
+        …) are folded for legibility. Pass ``expand_stdlib=True`` via
+        ``args=`` to keep the full tree.
         """
         import os
 
@@ -978,6 +988,12 @@ class PythonHandler(Handler):
                 f"timeout must be an int in [1, 60]; got {timeout!r}",
                 next=f"get(kind='python', id={parsed.alias!r}, view='runtrace', "
                 f"args={{'entry': {entry!r}, 'timeout': 10}})",
+            )
+        if not isinstance(max_events, int) or max_events < 1 or max_events > 1_000_000:
+            raise BadInput(
+                f"max_events must be an int in [1, 1_000_000]; got {max_events!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='runtrace', "
+                f"args={{'entry': {entry!r}, 'max_events': 2000}})",
             )
 
         # ── env gate ───────────────────────────────────────────────
@@ -1010,12 +1026,19 @@ class PythonHandler(Handler):
             timeout=timeout,
             env=env,
             syspath=syspath_entries,
-            max_events=10_000,
+            max_events=max_events,
         )
 
         # ── build tree + static-only diff ──────────────────────────
         tree = rtrace.build_tree(result.events)
+        # Capture qualnames *before* the stdlib collapse so the diff
+        # reflects what actually ran, not what the agent sees.
         runtime_qualnames = rtrace.collect_runtime_qualnames(tree)
+
+        collapsed = False
+        if not expand_stdlib:
+            tree = rtrace.collapse_stdlib(tree)
+            collapsed = True
 
         # The static-only diff only makes sense when entry resolves to
         # a known qualname in the indexed repo. If it doesn't (e.g.
@@ -1037,6 +1060,7 @@ class PythonHandler(Handler):
             result=result,
             tree=tree,
             static_only=static_only,
+            collapsed=collapsed,
         )
         return Response(body=body)
 

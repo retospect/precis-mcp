@@ -114,6 +114,43 @@ This is the first cut.
     mode='create')
 ```
 
+### Surgical edits inside one block
+
+> **Status:** the `edit` and `insert` ops are a proposal — see
+> `precis-edit-protocol`. Until they ship, use `mode='replace'`
+> with the existing block selector.
+
+For changes smaller than a whole block (one citation, one date, one
+typo), use `op='edit'` with a literal `find=` plus optional
+`before=` / `after=` anchors. The schema is identical across every
+file kind; the universal grammar lives in `precis-edit-protocol`.
+
+```python
+# Swap one token. Anchors disambiguate when the same word appears
+# multiple times.
+put(kind='markdown', id='notes/foo.md~intro',
+    op='edit',
+    find='the', before='over ', after=' fence',
+    text='a')
+
+# Insert a paragraph before a heading without rewriting the heading.
+put(kind='markdown', id='notes/foo.md',
+    op='insert',
+    find='## Conclusion', where='before',
+    text='\n## TL;DR\n\nQuick summary here.\n\n')
+```
+
+Markdown-specific quirks:
+
+- **Edits that cross block boundaries are rejected** by default.
+  Pass `allow_cross_region=True` for legitimate restructures.
+- After an edit, the block's content-derived slug may change. The
+  response carries the new slug; the old one resolves once via
+  `block.meta.previous_slug`.
+- `match='unique'` is the default. With ≥2 matches you get every
+  candidate's line number plus a hint to add an anchor or pick a
+  policy.
+
 ### Cross-kind: link a memory to a markdown block
 
 ```python
@@ -137,5 +174,6 @@ The block becomes citable from anywhere.
 ## See also
 
 - `precis-files-help` — shared addressing model for all file kinds
+- `precis-edit-protocol` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
 - `precis-python-help` — code navigation (different parser, same shape)
 - `precis-relations` — typed links between refs

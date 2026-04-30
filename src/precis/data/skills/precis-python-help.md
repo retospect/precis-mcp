@@ -122,8 +122,17 @@ the python kind:
 | `cross_repo` | `callgraph`, `runtrace` | bool | False |
 | `argv` | `runtrace` | `list[str]` | `[]` |
 | `env` | `runtrace` | `dict[str, str]` | inherits |
-| `timeout` | `runtrace` | int seconds | 10 |
+| `timeout` | `runtrace` | int seconds 1-60 | 10 |
+| `max_events` | `runtrace` | int 1-1_000_000 | 2_000 |
+| `expand_stdlib` | `runtrace` | bool | False |
 | `allow_rename` | `put` (replace/delete) | bool | False |
+
+By default `runtrace` folds stdlib subtrees (anything under
+`sys.stdlib_module_names` — `argparse.*`, `re.*`, `gettext.*`,
+`builtins.*`, `os.*`, …) into their root and annotates the row with
+`(+N stdlib)`. Pass `expand_stdlib=True` to keep the full tree —
+useful when you suspect a callback path hops back into user code
+through a stdlib (`list.sort` → user comparator, etc.).
 
 **Don't** put reserved kwargs (`kind` / `id` / `view` / `q`) inside
 `args=`. The boundary rejects this with a sharp `BadInput` rather
@@ -338,6 +347,65 @@ put(kind='python',
 #     - 1 whitespace adjustment (format)
 ```
 
+### Anchored edits inside a function
+
+> **Status:** the `edit` and `insert` ops are a proposal — see
+> `precis-edit-protocol`. Until they ship, use `mode='replace'`
+> with a qualname or line range.
+
+For changes smaller than a whole symbol (rename one call site, bump
+a literal, fix one identifier), `op='edit'` is the surgical
+primitive. The schema is identical to every other file kind; the
+universal grammar lives in `precis-edit-protocol`. Python's
+validation gates (`ast.parse` + ruff + qualname-stable) all apply.
+
+```python
+# Rename one call site, bounded to one function. Anchors guarantee
+# we don't touch the call's definition or unrelated occurrences.
+put(kind='python',
+    id='precis::precis.cli._cmd_serve',
+    op='edit',
+    find='deprecated_call(',
+    text='new_call(',
+    match='all')
+
+# Bump a version string with regex (opt-in).
+put(kind='python',
+    id='precis/src/precis/__init__.py',
+    op='edit',
+    regex=True,
+    find=r'^__version__ = "[\d.]+"',
+    flags=['m'],
+    text='__version__ = "0.3.0"',
+    match='unique')
+
+# Multi-edit transaction — both apply or neither does, single ruff pass.
+put(kind='python',
+    id='precis/src/precis/cli.py',
+    edits=[
+        {"op": "edit",
+         "find": "from .old import X",
+         "text": "from .new import X"},
+        {"op": "edit",
+         "find": "X.legacy_method(",
+         "text": "X.method(",
+         "match": "all"},
+    ])
+```
+
+Python-specific quirks:
+
+- **Edits that cross top-level statements are rejected** by default.
+  Pass `allow_cross_region=True` for legitimate restructures.
+- The same AST + qualname-stable + ruff gates that run on `replace`
+  also run on `edit` — a syntactically broken edit is rejected,
+  unintended renames are caught.
+- `match='unique'` is the default. With ≥2 matches you get every
+  candidate's line number plus a hint to add an anchor (`before=` /
+  `after=`) or pick a policy (`match='all'` / `nth`).
+- Use `dry_run=True` before any large multi-edit batch — it returns
+  the diff and the validation results without writing.
+
 ### What can go wrong
 
 | Problem | Response |
@@ -413,5 +481,6 @@ logic to get wrong.
 ## See also
 
 - `precis-files-help` — shared addressing for all file kinds
+- `precis-edit-protocol` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
 - `precis-markdown-help` — markdown-specific block grammar
 - `precis-overview` — verbs and kinds

@@ -187,6 +187,60 @@ If you addressed by line range, the response gives you the slug.
 If you addressed by slug, the response gives you the line range.
 Round-trip is free.
 
+## Anchored edits
+
+> **Status:** the `edit` and `insert` ops are a proposal — see
+> `precis-edit-protocol`. Until they ship, use `mode='replace'`
+> with the existing selector grammar.
+
+The four-mode surface (`create` / `append` / `replace` / `delete`)
+gains two more for sub-region edits:
+
+| Op | Region | Behavior |
+|---|---|---|
+| `edit` | optional (defaults to whole file) | find literal text and replace it — anchored, validated |
+| `insert` | optional | insert text immediately before/after a found anchor |
+
+The grammar is **identical across every R/W file kind**; per-kind
+quirks (cross-region rules, validation gates) live in each kind's
+skill. The full universal grammar lives in `precis-edit-protocol`.
+
+```python
+# Surgical replacement: change one token, leave everything else alone.
+# Content selects ('the'); anchors disambiguate; line range is just a bound.
+put(kind='markdown', id='notes/foo.md~intro',
+    op='edit',
+    find='the', before='over ', after=' fence',
+    text='a',
+    match='unique')
+
+# Insert a paragraph adjacent to an anchor, no rewriting.
+put(kind='markdown', id='notes/foo.md',
+    op='insert',
+    find='## Conclusion', where='before',
+    text='\n## TL;DR\n\nQuick summary.\n\n')
+
+# Atomic batch — both edits succeed or neither applies.
+put(kind='python', id='precis/src/precis/cli.py', edits=[
+    {"op": "edit", "find": "from .old import X",
+     "text": "from .new import X"},
+    {"op": "edit", "find": "X.legacy_method(",
+     "text": "X.method(", "match": "all"},
+])
+
+# Preview a change without writing.
+put(kind='python', id='precis/src/precis/cli.py',
+    op='edit', find='old', text='new', match='all',
+    dry_run=True)
+```
+
+The rule of thumb: **content selects, range bounds.** Use the `id`
+selector to narrow where the search runs (one block, one function,
+one line range); use literal `find=` plus optional `before=` /
+`after=` to choose which match to edit. `match='unique'` (the
+default) means "must be exactly one match — else error with every
+candidate listed."
+
 ## Reverse lookups
 
 The handler maintains the bijection between Track A and Track B.
@@ -226,6 +280,7 @@ hit the cached blocks.
 ## See also
 
 - `precis-overview` — verbs and kinds
+- `precis-edit-protocol` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
 - `precis-markdown-help` — `.md` block grammar and recipes
 - `precis-python-help` — Python codebase navigation
 - `precis-relations` — typed links between refs (file ↔ paper ↔ memory)

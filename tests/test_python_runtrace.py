@@ -468,6 +468,247 @@ def test_render_failed_includes_stderr_tail() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Stdlib collapse (display-only)
+# ---------------------------------------------------------------------------
+
+
+def test_is_stdlib_qn_recognises_top_level_stdlib() -> None:
+    """Anything whose top-level module is in `sys.stdlib_module_names`
+    counts as stdlib for collapse purposes."""
+    assert rtrace._is_stdlib_qn("argparse.ArgumentParser.__init__")
+    assert rtrace._is_stdlib_qn("re._compile")
+    assert rtrace._is_stdlib_qn("builtins.dict.setdefault")
+    assert rtrace._is_stdlib_qn("posix.fspath")
+    assert rtrace._is_stdlib_qn("os._Environ.__getitem__")
+    assert rtrace._is_stdlib_qn("_frozen_importlib._call_with_frames_removed")
+
+
+def test_is_stdlib_qn_user_code_is_not_stdlib() -> None:
+    assert not rtrace._is_stdlib_qn("precis.cli.main")
+    assert not rtrace._is_stdlib_qn("demopkg.m.helper")
+    assert not rtrace._is_stdlib_qn("")
+    assert not rtrace._is_stdlib_qn("<module>")
+
+
+def test_collapse_stdlib_drops_subtree_and_records_count() -> None:
+    """A user→stdlib→deeper subtree collapses to the stdlib root with
+    `collapsed_count` == number of dropped descendants (counting
+    multiplicities)."""
+    events = (
+        _ev("call", "a.main", 0.0),
+        _ev("call", "argparse.ArgumentParser.__init__", 0.001),
+        _ev("call", "argparse._ActionsContainer.__init__", 0.002),
+        _ev("call", "argparse._ActionsContainer.register", 0.003),
+        _ev("return", "argparse._ActionsContainer.register", 0.004),
+        _ev("call", "argparse._ActionsContainer.register", 0.005),
+        _ev("return", "argparse._ActionsContainer.register", 0.006),
+        _ev("return", "argparse._ActionsContainer.__init__", 0.007),
+        _ev("return", "argparse.ArgumentParser.__init__", 0.008),
+        _ev("return", "a.main", 0.009),
+    )
+    tree = rtrace.build_tree(events)
+    assert tree is not None
+    rtrace.collapse_stdlib(tree)
+
+    # User root untouched.
+    assert tree.qualname == "a.main"
+    assert len(tree.children) == 1
+
+    # Stdlib node kept, but its descendants are gone.
+    stdlib_root = tree.children[0]
+    assert stdlib_root.qualname == "argparse.ArgumentParser.__init__"
+    assert stdlib_root.children == []
+    # 3 descendants were dropped: ActionsContainer.__init__ (mult=1)
+    # plus register (coalesced mult=2). Total = 3.
+    assert stdlib_root.collapsed_count == 3
+
+
+def test_collapse_stdlib_preserves_user_code() -> None:
+    """User → user → user trees are not touched."""
+    events = (
+        _ev("call", "a.main", 0.0),
+        _ev("call", "a.helper", 0.001),
+        _ev("call", "a.inner", 0.002),
+        _ev("return", "a.inner", 0.003),
+        _ev("return", "a.helper", 0.004),
+        _ev("return", "a.main", 0.005),
+    )
+    tree = rtrace.build_tree(events)
+    assert tree is not None
+    rtrace.collapse_stdlib(tree)
+    # All three user qualnames survive.
+    qns = rtrace.collect_runtime_qualnames(tree)
+    assert qns == {"a.main", "a.helper", "a.inner"}
+
+
+def test_collapse_stdlib_idempotent() -> None:
+    """Calling twice is a no-op on the second pass."""
+    events = (
+        _ev("call", "a.main", 0.0),
+        _ev("call", "argparse.X", 0.001),
+        _ev("call", "argparse.Y", 0.002),
+        _ev("return", "argparse.Y", 0.003),
+        _ev("return", "argparse.X", 0.004),
+        _ev("return", "a.main", 0.005),
+    )
+    tree = rtrace.build_tree(events)
+    assert tree is not None
+    rtrace.collapse_stdlib(tree)
+    once = tree.children[0].collapsed_count
+    rtrace.collapse_stdlib(tree)
+    assert tree.children[0].collapsed_count == once
+    assert tree.children[0].children == []
+
+
+def test_collapse_stdlib_handles_none_root() -> None:
+    assert rtrace.collapse_stdlib(None) is None
+
+
+def test_render_shows_collapsed_count_annotation() -> None:
+    """The renderer surfaces `(+N stdlib)` for collapsed nodes."""
+    events = (
+        _ev("call", "a.main", 0.0),
+        _ev("call", "argparse.X", 0.001),
+        _ev("call", "argparse.Y", 0.002),
+        _ev("return", "argparse.Y", 0.003),
+        _ev("return", "argparse.X", 0.004),
+        _ev("return", "a.main", 0.005),
+    )
+    result = rtrace.TraceResult(
+        ok=True, events=events, truncated=False, exit_code=0, elapsed_s=0.005
+    )
+    tree = rtrace.build_tree(events)
+    rtrace.collapse_stdlib(tree)
+    body = rtrace.render_runtrace(
+        alias="r", entry="a:main", argv=[], result=result, tree=tree, collapsed=True
+    )
+    assert "(+1 stdlib)" in body  # 1 descendant dropped
+    assert "stdlib collapsed" in body  # header flag
+    assert "expand_stdlib" in body  # Next: hint
+
+
+def test_render_no_collapsed_annotation_when_expand_stdlib() -> None:
+    """When `collapsed=False` (i.e. user passed expand_stdlib=True),
+    neither the header flag nor the Next: hint mentions it."""
+    events = (
+        _ev("call", "a.main", 0.0),
+        _ev("return", "a.main", 0.001),
+    )
+    result = rtrace.TraceResult(
+        ok=True, events=events, truncated=False, exit_code=0, elapsed_s=0.001
+    )
+    tree = rtrace.build_tree(events)
+    body = rtrace.render_runtrace(
+        alias="r", entry="a:main", argv=[], result=result, tree=tree, collapsed=False
+    )
+    assert "stdlib collapsed" not in body
+    assert "expand_stdlib" not in body
+
+
+# ---------------------------------------------------------------------------
+# Handler integration: max_events + expand_stdlib via args=
+# ---------------------------------------------------------------------------
+
+
+def test_runtrace_collapses_stdlib_by_default(repo: Path, gate_on: None) -> None:
+    """End-to-end: argparse-heavy entry should NOT show every
+    argparse internal in the default rendered output."""
+    pkg = repo / "demopkg"
+    _write(
+        pkg / "argparse_user.py",
+        """
+        import argparse
+
+        def main() -> None:
+            p = argparse.ArgumentParser()
+            p.add_argument('--flag')
+            p.parse_args([])
+        """,
+    )
+    handler = PythonHandler(roots={"r": pkg})
+    out = handler.get(
+        id="r",
+        view="runtrace",
+        entry="demopkg.argparse_user:main",
+        timeout=5,
+    )
+    body = out.body
+    # Header flag set.
+    assert "stdlib collapsed" in body
+    # Collapse annotation appears at least once.
+    assert "stdlib)" in body
+    # Recovery hint.
+    assert "expand_stdlib" in body
+
+
+def test_runtrace_expand_stdlib_keeps_full_tree(repo: Path, gate_on: None) -> None:
+    """With `expand_stdlib=True`, deep argparse internals are visible
+    and the collapse annotations disappear."""
+    pkg = repo / "demopkg"
+    _write(
+        pkg / "argparse_user.py",
+        """
+        import argparse
+
+        def main() -> None:
+            p = argparse.ArgumentParser()
+            p.add_argument('--flag')
+            p.parse_args([])
+        """,
+    )
+    handler = PythonHandler(roots={"r": pkg})
+    out = handler.get(
+        id="r",
+        view="runtrace",
+        entry="demopkg.argparse_user:main",
+        timeout=5,
+        expand_stdlib=True,
+    )
+    body = out.body
+    assert "stdlib collapsed" not in body
+    assert "(+" not in body or "stdlib)" not in body  # no collapse annotation
+    # An argparse-internal qualname now appears that the default run hid.
+    assert "argparse._ActionsContainer" in body or "argparse.Action" in body
+
+
+def test_runtrace_max_events_validation(handler: PythonHandler, gate_on: None) -> None:
+    """`max_events` must be a positive int within the documented range."""
+    with pytest.raises(BadInput, match="max_events must be"):
+        handler.get(id="r", view="runtrace", entry="demopkg.m:main", max_events=0)
+    with pytest.raises(BadInput, match="max_events must be"):
+        handler.get(
+            id="r", view="runtrace", entry="demopkg.m:main", max_events=2_000_000
+        )
+
+
+def test_runtrace_max_events_truncates(repo: Path, gate_on: None) -> None:
+    """A tight `max_events` cap surfaces as `truncated` in the output."""
+    pkg = repo / "demopkg"
+    _write(
+        pkg / "loop_lots.py",
+        """
+        def helper() -> int:
+            return 1
+
+        def main() -> int:
+            total = 0
+            for _ in range(500):
+                total += helper()
+            return total
+        """,
+    )
+    handler = PythonHandler(roots={"r": pkg})
+    out = handler.get(
+        id="r",
+        view="runtrace",
+        entry="demopkg.loop_lots:main",
+        timeout=5,
+        max_events=10,  # intentionally tiny
+    )
+    assert "truncated" in out.body
+
+
+# ---------------------------------------------------------------------------
 # KindSpec advertises runtrace
 # ---------------------------------------------------------------------------
 

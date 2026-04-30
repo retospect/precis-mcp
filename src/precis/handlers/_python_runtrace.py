@@ -77,6 +77,11 @@ class TraceNode:
     `multiplicity` collapses consecutive sibling calls to the same
     qualname (so a loop calling `helper()` 23 times becomes one node
     with `multiplicity=23` rather than 23 leaf rows).
+
+    `collapsed_count` is set by `collapse_stdlib`: when a stdlib
+    subtree is folded into its root, this counts how many descendant
+    call-events were dropped. Used by the renderer to show
+    `(+N stdlib)` so the agent sees what was elided.
     """
 
     qualname: str
@@ -84,6 +89,7 @@ class TraceNode:
     total_ns: float = 0.0
     is_c: bool = False
     children: list[TraceNode] = field(default_factory=list)
+    collapsed_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +300,75 @@ def collect_runtime_qualnames(root: TraceNode | None) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Stdlib collapse
+# ---------------------------------------------------------------------------
+
+# Top-level module names whose subtrees we hide by default. Built from
+# ``sys.stdlib_module_names`` (Python 3.10+, frozen at interpreter
+# build) plus a small pin list for frozen-import internals that don't
+# always show up under the canonical name.
+_STDLIB_TOP_MODULES: frozenset[str] = frozenset(sys.stdlib_module_names) | frozenset(
+    {
+        "_frozen_importlib",
+        "_frozen_importlib_external",
+        "_bootstrap",
+        "_bootstrap_external",
+    }
+)
+
+
+def _is_stdlib_qn(qn: str) -> bool:
+    """True iff ``qn``'s top-level module is in the stdlib.
+
+    Builtins and posix C calls (e.g. ``builtins.dict.setdefault``,
+    ``posix.fspath``) qualify. Empty / `<module>` qualnames don't.
+    """
+    if not qn or qn.startswith("<"):
+        return False
+    top = qn.split(".", 1)[0]
+    return top in _STDLIB_TOP_MODULES
+
+
+def _count_descendants(node: TraceNode) -> int:
+    """Total call-events under ``node`` (counting multiplicities)."""
+    n = 0
+    stack = list(node.children)
+    while stack:
+        cur = stack.pop()
+        n += cur.multiplicity
+        stack.extend(cur.children)
+    return n
+
+
+def collapse_stdlib(root: TraceNode | None) -> TraceNode | None:
+    """Fold stdlib subtrees into their root node.
+
+    Walks the tree top-down. For every node whose qualname is in the
+    stdlib (per `_is_stdlib_qn`), drop all its children and stash the
+    descendant count on `collapsed_count`. Non-stdlib subtrees are
+    descended into normally.
+
+    Returns the same root for chaining (``tree = collapse_stdlib(tree)``).
+    Mutates in place. Idempotent.
+
+    Note this is a *display* transform — runtime qualnames for the
+    static-only diff should be collected from the original tree
+    *before* calling this.
+    """
+    if root is None:
+        return None
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if _is_stdlib_qn(node.qualname) and node.children:
+            node.collapsed_count = _count_descendants(node)
+            node.children = []
+            continue
+        stack.extend(node.children)
+    return root
+
+
+# ---------------------------------------------------------------------------
 # Render
 # ---------------------------------------------------------------------------
 
@@ -306,6 +381,7 @@ def render_runtrace(
     result: TraceResult,
     tree: TraceNode | None,
     static_only: list[str] | None = None,
+    collapsed: bool = False,
 ) -> str:
     """Format a `TraceResult` for the agent.
 
@@ -313,6 +389,10 @@ def render_runtrace(
     two are visually comparable. Adds total-time and multiplicity
     annotations. Appends a ``Static-only`` section listing qualnames
     the static graph reached but the runtime didn't.
+
+    `collapsed=True` signals that stdlib subtrees were folded — the
+    header is annotated and a hint about ``expand_stdlib=True`` is
+    appended to ``Next:`` so the agent knows how to drill in.
     """
     n_calls = sum(1 for e in result.events if e.event in ("call", "c_call"))
     argv_repr = " ".join(argv) if argv else ""
@@ -321,6 +401,8 @@ def render_runtrace(
     flags: list[str] = []
     if result.truncated:
         flags.append("truncated")
+    if collapsed:
+        flags.append("stdlib collapsed")
     if not result.ok:
         flags.append(f"failed: {result.error or 'unknown'}")
     flags_str = ", " + ", ".join(flags) if flags else ""
@@ -360,6 +442,11 @@ def render_runtrace(
         f"  get(kind='python', id={alias!r}, view='callgraph', "
         f"args={{'entry': {entry!r}}})"
     )
+    if collapsed:
+        lines.append(
+            f"  get(kind='python', id={alias!r}, view='runtrace', "
+            f"args={{'entry': {entry!r}, 'expand_stdlib': True}})"
+        )
     if not result.ok:
         lines.append("  # gate check: export PRECIS_PYTHON_ALLOW_EXEC=1 if missing")
 
@@ -376,6 +463,8 @@ def _render_node(node: TraceNode) -> str:
         parts.append(f"{ms:.1f}ms")
     if node.is_c:
         parts.append("[ext]")
+    if node.collapsed_count > 0:
+        parts.append(f"(+{node.collapsed_count} stdlib)")
     return "  ".join(parts)
 
 
