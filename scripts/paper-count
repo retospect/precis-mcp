@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# paper-count — count papers in the precis-mcp store.
+#
+# Wrapper that re-execs under `uv run --project=<precis-mcp>` so the
+# right venv (with acatome-extract + sentence-transformers) is active
+# regardless of the caller's CWD or shell environment.
+
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+: "${PRECIS_DATABASE_URL:=postgresql://acatome:acatome@127.0.0.1:5432/precis}"
+: "${PRECIS_EMBEDDER:=bge-m3}"
+export PRECIS_DATABASE_URL PRECIS_EMBEDDER
+
+exec uv run --project "$PKG_DIR" --no-sync python "$SCRIPT_DIR/_paper_count.py" "$@"
