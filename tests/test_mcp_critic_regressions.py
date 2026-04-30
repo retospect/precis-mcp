@@ -685,6 +685,13 @@ def test_figure_block_renders_structured_placeholder() -> None:
     """Bare ``![](...)`` markers leak relative paths nothing serves;
     replace each with a structured ``[figure: slug~N — ...]``
     placeholder so an LLM citing the figure can't quote a dead URL.
+
+    The MCP critic's April 2026 re-probe flagged the previous cut
+    as STILL leaking ``_page_*_Figure`` because the placeholder
+    text kept the asset path "for diagnostics".  Asset path is
+    now dropped — a 7B caller reading ``asset: _page_3_Figure_3
+    .jpeg`` treated the string as a real file, defeating the
+    point of the substitution.
     """
     from precis.handlers.paper import _render_block_body
 
@@ -692,7 +699,10 @@ def test_figure_block_renders_structured_placeholder() -> None:
     rendered = _render_block_body("ahmed2025revolutionary", 210, image_block)
     assert "![](" not in rendered, "bare image marker must not leak through"
     assert "[figure: ahmed2025revolutionary~210" in rendered
-    assert "_page_19_Figure_1.jpeg" in rendered  # asset still surfaced for diagnostics
+    assert "image not served" in rendered
+    # Asset path must NOT appear — that was the re-probe regression.
+    assert "_page_19_Figure_1.jpeg" not in rendered
+    assert "_page_" not in rendered
 
 
 def test_args_extras_unknown_key_rejected(runtime_with_store: PrecisRuntime) -> None:
@@ -926,6 +936,67 @@ def test_empty_numeric_ref_search_with_tags_suggests_dropping_filter(
 
 
 # ── MINOR (Apr 2026): paper view='fig/<N>' is reserved, not a typo ────
+
+
+def test_paper_search_preview_strips_image_markers(store: Store) -> None:
+    """The MCP critic's April 2026 re-probe flagged the search render
+    as still leaking raw ``![](_page_3_Figure_3.jpeg)`` markers in
+    its preview lines.  ``_render_chunks`` had the substitution
+    wired but ``search()`` did not.  Centralising the strip in
+    ``_scrub_block_text`` and applying it at both call sites keeps
+    every excerpt path on the same contract.
+    """
+    from precis.handlers.paper import PaperHandler, _scrub_block_text
+
+    # Pure-helper sanity: image marker + page anchor both go.
+    raw = '<span id="page-3-0"></span>![](_page_3_Figure_3.jpeg)'
+    scrubbed = _scrub_block_text(raw)
+    assert "![](" not in scrubbed
+    assert "_page_" not in scrubbed
+    assert "<span" not in scrubbed
+    assert "[figure]" in scrubbed
+    # Idempotent — running twice yields the same string.
+    assert _scrub_block_text(scrubbed) == scrubbed
+
+    # End-to-end: seed a paper with an image-only block + a caption
+    # block and run the search() rendering.  Neither preview must
+    # carry the marker / asset path.
+    corpus_id = store.ensure_corpus("default")
+    ref = store.insert_ref(
+        corpus_id=corpus_id,
+        kind="paper",
+        slug="markerleak2026probe",
+        title="Search-preview marker leak regression",
+        meta={"abstract": "minimal corpus to drive the search() render path"},
+    )
+    from precis.store import BlockInsert
+
+    image_block_text = (
+        '<span id="page-3-0"></span>![](_page_3_Figure_3.jpeg) photocatalytic'
+    )
+    caption_block_text = "**Fig. 3.** Photocatalytic NOx reduction mechanism on Cu/ZnO."
+    store.insert_blocks(
+        ref.id,
+        [
+            BlockInsert(pos=10, text=image_block_text),
+            BlockInsert(pos=11, text=caption_block_text),
+        ],
+    )
+
+    handler = PaperHandler(store=store)
+    out = handler.search(q="photocatalytic")
+    body = out.body
+
+    # The search hit MUST be present (this is the path under test).
+    assert "markerleak2026probe" in body
+    # Neither leak token is allowed in the rendered body.
+    assert "![](" not in body, (
+        f"search preview must scrub image markers; got body={body!r}"
+    )
+    assert "_page_" not in body, (
+        f"search preview must not leak the asset path; got body={body!r}"
+    )
+    assert "<span" not in body
 
 
 def test_paper_view_fig_n_is_reserved_not_unknown(store: Store) -> None:

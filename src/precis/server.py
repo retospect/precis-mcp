@@ -75,13 +75,41 @@ def _rt() -> PrecisRuntime:
 
 
 def _init_runtime() -> PrecisRuntime:
-    """Build the runtime once and register cleanup at process exit."""
+    """Build the runtime once and register cleanup at process exit.
+
+    Also wires the prompts and resources modalities — skill files
+    surface as ``prompts/list`` entries and kind handlers as
+    ``resources/list`` + ``resources/templates/list``.  Both
+    surfaces delegate to the runtime so there is no parallel
+    rendering pipeline.  See :mod:`precis.mcp_modalities`.
+    """
     global _runtime
     if _runtime is not None:
         return _runtime
     _runtime = build_runtime()
+    _wire_modalities(_runtime)
     atexit.register(_shutdown_runtime)
     return _runtime
+
+
+def _wire_modalities(runtime: PrecisRuntime) -> None:
+    """Register prompts + resources for the running MCP.
+
+    Best-effort: if either registration fails we log and continue —
+    a wiring bug must not prevent the MCP from booting and serving
+    the four verb tools.  The MCP critic flagged the modality gap
+    as MINOR; the tools surface remains the priority.
+    """
+    from precis.mcp_modalities import register_resources, register_skill_prompts
+
+    try:
+        register_skill_prompts(mcp, runtime)
+    except Exception:
+        log.exception("failed to register skill prompts")
+    try:
+        register_resources(mcp, runtime)
+    except Exception:
+        log.exception("failed to register resources")
 
 
 def _shutdown_runtime() -> None:

@@ -3,6 +3,75 @@
 All entries pre-1.0 are unreleased; v2 is in active development on the
 `v2` branch and not yet on PyPI.
 
+## MCP critique re-probe fixes (April 2026, second pass)
+
+The critic re-probed after the first round and approved with one
+remaining MAJOR (image-marker leak hadn't been wired into the search
+preview) plus a modality-coverage observation: the server was
+tools-only and silent on `prompts`, `resources`, `sampling`, and
+`elicitation`.  Five tracks landed.
+
+**MAJOR — figure markers no longer leak in search previews.**
+The previous cut wired `_render_block_body`'s marker substitution
+into `_render_chunks` (the get-with-`~N` path) but left the search
+hit preview going through `_excerpt(block.text)` untreated.  Three
+re-probed papers all returned raw `<span id="page-3-0"></span>![]
+(_page_3_Figure_3.jpeg)` in their preview lines.  Centralised the
+substitution in `_scrub_block_text` and applied it at both call
+sites.  Bonus: dropped the asset path from `_render_block_body`'s
+placeholder ("for diagnostics" still leaked the same `_page_*`
+token).  Pinned by `test_paper_search_preview_strips_image_markers`
+plus a stricter `test_figure_block_renders_structured_placeholder`.
+
+**MAJOR — skills surface as MCP prompts.**
+New `precis.mcp_modalities` module wires every skill that passes
+`_availability_gap` into `prompts/list`, with the body served by
+the same `_load_skill` / `SkillHandler.get` path the `get` verb
+uses.  No skill text is duplicated.  Each prompt carries `tags=
+{precis, skill, tier-N, kind:<X>, …}` so modern clients can
+group / filter; we deliberately do **not** hide tier-2 ("power-
+user") or draft skills — the menu is small (~16 entries) and the
+reviewer asked for exposure, not curation.  `prompts/get` route
+hits the synthesised `precis-help` and `precis-status` renderers
+without any special-casing.  Six tests in `tests/test_mcp_modali
+ties.py`.
+
+**MAJOR — refs surface as MCP resources.**
+Two surfaces, both DRY:
+- `resources/list` enumerates only the bounded sets — skills
+  today.  **Papers are deliberately not enumerated** (3000+ refs
+  would blow client context and make `listChanged: true` near-
+  useless).
+- `resources/templates/list` advertises URI templates for the
+  high-cardinality kinds: `precis://paper/{id}`, `precis://
+  memory/{id}`, `precis://todo/{id}`, etc.  Modern clients use
+  templates for autocomplete; concrete URIs are constructed by
+  callers (typically from search hits).
+Resource reads dispatch through `runtime.dispatch("get", ...)` so
+there is no parallel rendering pipeline.  Numeric-ref kinds
+str→int coerce in the read path.
+
+**MAJOR — `precis-status` synth skill probes optional deps.**
+The first-round CRITICAL (sentence-transformers missing from
+`[paper]`) would have been caught by a health probe; this skill
+is that probe.  `get(kind='skill', id='precis-status')` walks an
+`_OPTIONAL_DEP_PROBES` table (10 entries: sentence-transformers,
+sympy, wolframalpha, youtube-transcript-api, httpx, trafilatura,
+python-docx, lxml, python-epo-ops-client, matplotlib), reports OK
+/ MISSING / ERROR per probe with install hints, plus an "Overall:
+OK | DEGRADED" summary and the live registered-kinds list.
+Adding a probe is one row.  Refactor: replaced the single
+`_SYNTHESIZED_SLUG = "precis-help"` with a `_SYNTHESIZED_SKILLS`
+dict so future synth skills are a one-line addition.
+
+**NIT — version vs status numbering bridge.**
+Added a one-line block at the top of `precis-overview.md` mapping
+`status: phase-N` (skill front-matter, build-phase markers) to
+`serverInfo.version` (the canonical release marker).  Cheaper
+than touching 19 front-matter blocks.
+
+**Test count:** 1282 passed, 1 skipped (was 1271/1).
+
 ## MCP critique fixes (April 2026)
 
 Five findings from the latest MCP critic pass — one CRITICAL plus

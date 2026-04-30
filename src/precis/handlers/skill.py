@@ -65,8 +65,23 @@ class SkillHandler(Handler):
         id_required=False,
     )
 
-    #: Special slug that's synthesized at runtime from the active
-    #: registry (rather than served from a markdown file).
+    #: Special slugs synthesised at runtime rather than served from a
+    #: markdown file.  Maps slug → one-line description used in the
+    #: index view.  The actual rendering dispatches via ``_render_<slug
+    #: stem>``: ``precis-help`` → ``_render_help``, ``precis-status``
+    #: → ``_render_status``.
+    #:
+    #: Adding a synthesised skill is one entry here plus one render
+    #: method.  All other gates (availability-gap, index, prompt
+    #: enumeration) discover the slug through this dict.
+    _SYNTHESIZED_SKILLS: ClassVar[dict[str, str]] = {
+        "precis-help": ("active kinds + verbs (auto-generated from this server)"),
+        "precis-status": ("optional dependencies + runtime health probe"),
+    }
+
+    #: Backwards-compat alias for the original single-slug attribute.
+    #: Tests and the old availability-gap path reference this name; the
+    #: new code paths consult ``_SYNTHESIZED_SKILLS`` directly.
     _SYNTHESIZED_SLUG: ClassVar[str] = "precis-help"
 
     def __init__(self, *, store: Store) -> None:
@@ -99,17 +114,26 @@ class SkillHandler(Handler):
                 next="skill slugs are lowercase letters/digits/hyphens",
             )
 
-        # Synthesized meta-skill: enumerate every active kind.
-        if slug == self._SYNTHESIZED_SLUG:
-            return Response(body=self._render_help())
+        # Synthesised meta-skills: enumerate active kinds, probe
+        # optional deps, …  Each entry in ``_SYNTHESIZED_SKILLS``
+        # dispatches to ``_render_<slug-stem>``.
+        if slug in self._SYNTHESIZED_SKILLS:
+            method_name = "_render_" + slug.split("-", 1)[1].replace("-", "_")
+            renderer = getattr(self, method_name, None)
+            if renderer is None:  # pragma: no cover — registry typo
+                raise NotFound(
+                    f"synthesised skill {slug!r} has no renderer",
+                    next="see SkillHandler._SYNTHESIZED_SKILLS",
+                )
+            return Response(body=renderer())
 
         text = _load_skill(slug)
         if text is None:
             available = sorted(_list_skills())
-            available.append(self._SYNTHESIZED_SLUG)
+            available.extend(self._SYNTHESIZED_SKILLS)
             raise NotFound(
                 f"skill {slug!r} not found",
-                options=available,
+                options=sorted(available),
                 next="get(kind='skill') to list every skill",
             )
         # Banner if this skill is filtered from the index — the agent
@@ -174,13 +198,10 @@ class SkillHandler(Handler):
 
     def _render_index(self) -> Response:
         skills = sorted(_list_skills())
-        # Surface the synthesized meta-skill at the top so it's the
-        # first thing the agent sees.
+        # Surface every synthesised meta-skill at the top so they're
+        # the first things the agent sees, in registration order.
         index_entries: list[tuple[str, str]] = [
-            (
-                self._SYNTHESIZED_SLUG,
-                "active kinds + verbs (auto-generated from this server)",
-            )
+            (slug, desc) for slug, desc in self._SYNTHESIZED_SKILLS.items()
         ]
         hidden_slugs: list[str] = []
         for slug in skills:
@@ -212,8 +233,12 @@ class SkillHandler(Handler):
         body += render_next_section(
             [
                 (
-                    f"get(kind='skill', id={self._SYNTHESIZED_SLUG!r})",
+                    "get(kind='skill', id='precis-help')",
                     "what this server can do (active kinds)",
+                ),
+                (
+                    "get(kind='skill', id='precis-status')",
+                    "optional-deps + runtime health",
                 ),
                 ("get(kind='skill', id='precis-overview')", "start here"),
                 (
@@ -283,6 +308,153 @@ class SkillHandler(Handler):
             "`get(kind='skill', id='precis-<kind>-help')`."
         )
         return "\n".join(lines)
+
+    def _render_status(self) -> str:
+        """Render the synthesised ``precis-status`` skill.
+
+        Probes optional Python dependencies and reports installed /
+        missing per backing module.  The MCP critic's April 2026
+        re-probe noted that the previous CRITICAL (sentence-
+        transformers missing from `[paper]`) would have been caught
+        by a health tool surfacing optional-deps state — this skill
+        is that tool.
+
+        Pure introspection, no DB or network.  Each probe is a
+        ``(label, module, kind it backs, install-hint)`` row; the
+        method imports each module lazily and tags the line OK /
+        MISSING / ERROR.  Adding a new probe is one row in
+        ``_OPTIONAL_DEP_PROBES``.
+        """
+        import importlib
+
+        lines = [
+            "# precis-status",
+            "",
+            "Optional-dependency health probe.  Each row tags the",
+            "Python module that backs a precis kind or affordance,",
+            "and reports whether it imports cleanly in this venv.",
+            "",
+        ]
+
+        rows: list[tuple[str, str, str, str]] = []  # (label, status, kind, hint)
+        worst = "OK"
+        for module, label, backs, hint in _OPTIONAL_DEP_PROBES:
+            try:
+                mod = importlib.import_module(module)
+            except ImportError:
+                rows.append((label, "MISSING", backs, hint))
+                worst = "DEGRADED"
+                continue
+            except Exception as exc:  # pragma: no cover — import-side bug
+                rows.append((label, f"ERROR: {exc}", backs, hint))
+                worst = "DEGRADED"
+                continue
+            version = getattr(mod, "__version__", None) or "(unknown)"
+            rows.append((label, f"OK {version}", backs, ""))
+
+        label_w = max(len(r[0]) for r in rows)
+        status_w = max(len(r[1]) for r in rows)
+        for label, status, backs, hint in rows:
+            line = f"  {label:<{label_w}}  {status:<{status_w}}  {backs}"
+            lines.append(line)
+            if hint and not status.startswith("OK"):
+                lines.append(f"    └─ install: {hint}")
+
+        lines.append("")
+        lines.append(f"**Overall: {worst}**")
+        if worst == "DEGRADED":
+            lines.append(
+                "\nMissing entries above mean the listed kinds will "
+                "raise at runtime even though `tools/list` advertises "
+                "them.  Install the missing extra and restart the MCP."
+            )
+
+        # Embedder + store are deeper than a bare import probe, but
+        # cheap to surface from the bound registry when wired.
+        if self._registry is not None:
+            try:
+                kinds = sorted(self._registry.kinds())
+            except Exception:  # pragma: no cover
+                kinds = []
+            if kinds:
+                lines.append("")
+                lines.append(
+                    f"**Registered kinds ({len(kinds)}):** " + ", ".join(kinds)
+                )
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Optional-dep probe table — used by ``precis-status``
+# ---------------------------------------------------------------------------
+
+#: ``(import name, display label, kinds it backs, pip install hint)``.
+#:
+#: Adding a new probe is one row.  Keep the import name precise
+#: (the exact ``importlib.import_module`` argument) and the install
+#: hint copy-pasteable.
+_OPTIONAL_DEP_PROBES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "sentence_transformers",
+        "sentence-transformers",
+        "paper / markdown / patent / quest semantic search",
+        "pip install 'precis-mcp[paper]'",
+    ),
+    (
+        "sympy",
+        "sympy",
+        "calc",
+        "pip install 'precis-mcp[calc]'",
+    ),
+    (
+        "wolframalpha",
+        "wolframalpha",
+        "math",
+        "pip install 'precis-mcp[external]'",
+    ),
+    (
+        "youtube_transcript_api",
+        "youtube-transcript-api",
+        "youtube",
+        "pip install 'precis-mcp[external]'",
+    ),
+    (
+        "httpx",
+        "httpx",
+        "web / perplexity (websearch / think / research)",
+        "pip install 'precis-mcp[external]'",
+    ),
+    (
+        "trafilatura",
+        "trafilatura",
+        "web (page → markdown extraction)",
+        "pip install 'precis-mcp[external]'",
+    ),
+    (
+        "docx",
+        "python-docx",
+        "docx file kind",
+        "pip install 'precis-mcp[docx]'",
+    ),
+    (
+        "lxml",
+        "lxml",
+        "tex / patent / docx XML parsing",
+        "pip install 'precis-mcp[tex]' or [docx] or [patent]",
+    ),
+    (
+        "epo_ops",
+        "python-epo-ops-client",
+        "patent (EPO OPS biblio + claims)",
+        "pip install 'precis-mcp[patent]'",
+    ),
+    (
+        "matplotlib",
+        "matplotlib",
+        "plot kind (declarative renderer)",
+        "pip install 'precis-mcp[plot]'",
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +567,7 @@ def _availability_gap(slug: str, *, registry: Any) -> str | None:
 
     Returns ``None`` if the skill is fully available.
     """
-    if slug == SkillHandler._SYNTHESIZED_SLUG:
+    if slug in SkillHandler._SYNTHESIZED_SKILLS:
         return None
 
     text = _load_skill(slug)

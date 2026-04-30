@@ -10,6 +10,12 @@ last-updated: 2026-04-28
 
 # precis-overview — four verbs, one address scheme
 
+> **Versioning:** `serverInfo.version` is the canonical release marker
+> (e.g. `6.0.0a0` ↔ the 6.0 / phase-7 line).  Skill front-matter
+> `status: phase-N` labels are the **build phase** that wired the
+> skill — they don't change the release version.  When in doubt,
+> trust `serverInfo.version`.
+
 ## Verbs
 
 | Verb     | Use when                                            |

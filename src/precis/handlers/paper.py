@@ -228,7 +228,14 @@ class PaperHandler(Handler):
         for i, (block, ref, _score) in enumerate(hits, 1):
             slug = ref.slug or "???"
             handle = f"{slug}~{block.pos}"
-            preview = _excerpt(block.text)
+            # Scrub image markers + page anchors out of the preview
+            # so the search hit lines never carry the raw
+            # ``![](_page_*.jpeg)`` markdown.  The same substitution
+            # ``_render_chunks`` applies on the get path; both
+            # excerpt paths now stay on the same contract.
+            # (MCP critic re-probe MAJOR — figure marker leaks in
+            # search previews.)
+            preview = _excerpt(_scrub_block_text(block.text))
             lines.append(f"\n## {i}. {handle}")
             lines.append(f"_{_clean_inline_text(ref.title)}_")
             lines.append(preview)
@@ -1161,27 +1168,55 @@ def _render_block_body(slug: str, pos: int, text: str) -> str:
 
     The relative URL ``![](_page_19_Figure_1.jpeg)`` resolves to
     nothing — quoting it back is a footgun for any LLM citing the
-    figure. Replace each marker with a short ``[figure: slug~N — see
-    caption block]`` placeholder, and strip the page-anchor spans
-    around it. The original asset path is preserved in parentheses for
-    diagnostic purposes only. (MCP critic MAJOR — figure marker leaks
-    relative path.)
+    figure. Replace each marker with a short ``[figure: slug~N —
+    image not served; caption on adjacent block]`` placeholder, and
+    strip the page-anchor spans around it.
+
+    The asset path is **not** preserved.  An earlier cut kept it
+    "for diagnostics" but a 7B caller reading ``asset: _page_3_
+    Figure_3.jpeg`` still treats the string as a real file —
+    that's the same footgun the substitution exists to close.
+    The MCP critic's April 2026 re-probe pinned this regression.
     """
     if not _IMAGE_MARKER_RE.search(text):
         return text
     cleaned = _PAGE_ANCHOR_RE.sub("", text)
 
-    def _replace(m: re.Match[str]) -> str:
-        asset = m.group(1)
+    def _replace(_m: re.Match[str]) -> str:
         return (
             f"[figure: {slug}~{pos} — image not served; "
-            f"see the caption block (next ~{pos + 1}). "
-            f"asset: {asset}]"
+            f"caption on adjacent block (~{pos + 1})]"
         )
 
     cleaned = _IMAGE_MARKER_RE.sub(_replace, cleaned)
     # Collapse whitespace-only artefacts left behind by the strip.
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _scrub_block_text(text: str) -> str:
+    """Strip image markers + page anchors from arbitrary block text.
+
+    Companion to :func:`_render_block_body` for code paths that
+    don't have a slug/pos in scope (search previews, future digest
+    views).  The output never carries a markdown image marker or
+    a page-anchor span — anything that would lure an LLM into
+    quoting a non-served asset is dropped, replaced by a brief
+    ``[figure]`` sentinel.
+
+    Idempotent: running twice yields the same result, because the
+    regexes don't match their own replacements.
+
+    The MCP critic's April 2026 re-probe flagged the search
+    preview path leaking raw ``![](_page_3_Figure_3.jpeg)``
+    markers because :func:`_render_block_body` was only wired
+    into ``_render_chunks``.  Centralising the substitution in
+    one helper keeps every excerpt path on the same contract.
+    """
+    if not text:
+        return text
+    cleaned = _PAGE_ANCHOR_RE.sub("", text)
+    cleaned = _IMAGE_MARKER_RE.sub("[figure]", cleaned)
+    return cleaned
 
 
 __all__ = ["PaperHandler"]
