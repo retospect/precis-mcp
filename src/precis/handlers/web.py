@@ -28,6 +28,7 @@ from precis.handlers._cache_base import (
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
+from precis.utils.optional_deps import require_optional
 from precis.utils.url import canonical_url, host_of, is_http_url, slug_from_url
 
 if TYPE_CHECKING:
@@ -107,21 +108,8 @@ class WebHandler(CacheBackedHandler):
     # ── upstream fetch + extract ──────────────────────────────────────
 
     def _fetch(self, key: str) -> FetchResult:
-        try:
-            import httpx
-        except ImportError as exc:  # pragma: no cover — guarded at registry
-            raise Upstream(
-                "httpx is not installed",
-                next="pip install 'precis-mcp[external]'",
-            ) from exc
-
-        try:
-            import trafilatura
-        except ImportError as exc:  # pragma: no cover — guarded at registry
-            raise Upstream(
-                "trafilatura is not installed",
-                next="pip install 'precis-mcp[external]'",
-            ) from exc
+        httpx = require_optional("httpx", extra="external")
+        trafilatura = require_optional("trafilatura", extra="external")
 
         import os
 

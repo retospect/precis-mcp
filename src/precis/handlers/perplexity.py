@@ -41,6 +41,7 @@ from precis.response import Response
 from precis.store.types import BlockInsert
 from precis.utils.md_parse import parse_markdown
 from precis.utils.next_block import render_next_section
+from precis.utils.optional_deps import require_optional
 
 if TYPE_CHECKING:
     from precis.embedder import Embedder
@@ -131,13 +132,7 @@ class _PerplexityBase(CacheBackedHandler):
         return key
 
     def _fetch(self, key: str) -> FetchResult:
-        try:
-            import httpx
-        except ImportError as exc:  # pragma: no cover — guarded at registry
-            raise Upstream(
-                "httpx is not installed",
-                next="pip install 'precis-mcp[external]'",
-            ) from exc
+        httpx = require_optional("httpx", extra="external")
 
         # Strip the "<model>:" prefix to get the real prompt.
         _, _, query = key.partition(":")
