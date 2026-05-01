@@ -229,11 +229,14 @@ class TestPerplexityLinkTagOps:
             research.tag(id=slug, add=["STATUS:open"])
 
     def test_import_with_link_kwarg_rejected(self, store: Store) -> None:
-        """Mixing import + link/tag is a misuse — split into two calls."""
+        """link/tag kwargs are no longer accepted on put — the error
+        points the caller at the dedicated link verb."""
         from precis.handlers.perplexity import ResearchHandler
 
         research = ResearchHandler(hub=Hub(store=store))
-        with pytest.raises(BadInput, match="does not accept link/tag kwargs"):
+        with pytest.raises(
+            BadInput, match=r"link=/unlink=/rel= are not accepted on put"
+        ):
             research.put(
                 id="q",
                 text="body",
@@ -241,30 +244,32 @@ class TestPerplexityLinkTagOps:
                 link="paper:something",
             )
 
-    def test_link_tag_op_with_text_rejected(self, store: Store) -> None:
+    def test_tags_kwarg_rejected_on_put(self, store: Store) -> None:
+        """tags=/untags= are no longer accepted on put either."""
         from precis.handlers.perplexity import ResearchHandler
 
         research = ResearchHandler(hub=Hub(store=store))
-        ack = research.put(id="q", text="body", mode="import")
-        slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
-        with pytest.raises(BadInput, match="text= is not supported"):
-            research.put(id=slug, text="rewrite", tags=["CACHE:pinned"])
+        with pytest.raises(
+            BadInput, match=r"tags=/untags= are not accepted on put"
+        ):
+            research.put(id="q", text="body", mode="import", tags=["CACHE:pinned"])
 
-    def test_link_tag_op_unknown_slug(self, store: Store) -> None:
+    def test_link_unknown_slug(self, store: Store) -> None:
+        """link verb on an unknown cache slug raises NotFound."""
         from precis.handlers.perplexity import ResearchHandler
 
         research = ResearchHandler(hub=Hub(store=store))
         with pytest.raises(NotFound, match="research slug 'no-such' not found"):
-            research.put(id="no-such", link="paper:other")
+            research.link(id="no-such", target="paper:other")
 
-    def test_no_op_rejected(self, store: Store) -> None:
+    def test_put_without_mode_rejected(self, store: Store) -> None:
+        """put on a perplexity kind requires mode='import'. Any other
+        invocation rejects with the supported-modes hint."""
         from precis.handlers.perplexity import ResearchHandler
 
         research = ResearchHandler(hub=Hub(store=store))
         ack = research.put(id="q", text="body", mode="import")
         slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
-        # mode=None, no link/tag kwargs at all → existing "mode=
-        # 'import'" guard rejects.
         with pytest.raises(BadInput, match="mode='import'"):
             research.put(id=slug)
 

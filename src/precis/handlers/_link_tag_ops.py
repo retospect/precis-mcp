@@ -38,42 +38,6 @@ _VALID_RELATIONS: tuple[str, ...] = get_args(Relation)
 _DEFAULT_RELATION: Relation = "related-to"
 
 
-def validate_link_args(
-    *,
-    link: str | None,
-    unlink: str | None,
-    rel: str | None,
-    kind: str,
-) -> None:
-    """Reject obviously-wrong combinations of link/unlink/rel.
-
-    ``link=`` and ``unlink=`` are mutually exclusive — they touch
-    the same row family but in opposite directions, and a single
-    call asking for both is almost always a misunderstanding.
-
-    Bare ``rel=`` (without link/unlink) is rejected: there's no
-    operation to attach the relation to, and silently swallowing
-    the kwarg would let a typo (``link='x', rel='cites'`` mistyped
-    to drop the link= part) vanish into the void.
-
-    ``kind=`` is taken so the BadInput "next:" hint can spell
-    the call shape with the caller's kind, matching the existing
-    NumericRefHandler error wording.
-    """
-    if link is not None and unlink is not None:
-        raise BadInput(
-            "link= and unlink= are mutually exclusive",
-            next=(
-                "issue two put() calls if you want to remove one link and add another"
-            ),
-        )
-    if rel is not None and link is None and unlink is None:
-        raise BadInput(
-            "rel= requires link= or unlink=",
-            next=f"put(kind={kind!r}, id=N, link='paper:slug', rel='cites')",
-        )
-
-
 def validate_relation(rel: str | None) -> Relation:
     """Validate ``rel=`` against the registered relations vocabulary.
 
@@ -115,9 +79,9 @@ def apply_link_ops(
     string spec to a ``(ref_id, pos)`` pair via the store; bad
     targets raise ``BadInput`` before we touch any rows.
 
-    Caller is responsible for having validated the args via
-    :func:`validate_link_args` first; this function does not
-    re-check mutual exclusion.
+    Caller passes either ``link=`` (add) or ``unlink=`` (remove);
+    the seven-verb ``link()`` method enforces that they're not both
+    set at the call boundary.
     """
     relation = validate_relation(rel)
 
@@ -245,6 +209,5 @@ __all__ = [
     "apply_link_ops",
     "apply_tag_ops",
     "format_link_tag_ack",
-    "validate_link_args",
     "validate_relation",
 ]
