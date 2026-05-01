@@ -24,9 +24,8 @@ import psycopg
 import pytest
 
 from precis.config import PrecisConfig
+from precis.dispatch import Registry, boot
 from precis.hints import HintBus
-from precis.protocol import Handler
-from precis.registry import Registry, builtins
 from precis.runtime import PrecisRuntime
 from precis.store import Migrator, Store
 
@@ -51,8 +50,7 @@ def hints() -> HintBus:
 @pytest.fixture
 def registry_stateless() -> Registry:
     """Stateless registry — calc only. Used by phase 1 tests."""
-    handlers: list[Handler] = builtins(store=None)
-    return Registry(handlers)
+    return boot(store=None)
 
 
 @pytest.fixture
@@ -124,10 +122,9 @@ def store(fresh_db: str) -> Iterator[Store]:
 def runtime_with_store(store: Store, hints: HintBus) -> PrecisRuntime:
     """Runtime backed by an ephemeral, migrated DB. Tests that need a full
     runtime+store stack take this fixture."""
-    handlers: list[Handler] = builtins(store=store)
     return PrecisRuntime(
         config=PrecisConfig(),
-        registry=Registry(handlers),
+        registry=boot(store=store),
         hints=hints,
         store=store,
     )

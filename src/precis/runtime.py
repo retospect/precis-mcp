@@ -13,15 +13,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.config import PrecisConfig
+from precis.dispatch import Registry
 from precis.errors import (
     BadInput,
     Internal,
-    NotFound,
     PrecisError,
 )
 from precis.hints import HintBus
 from precis.protocol import Handler, Verb
-from precis.registry import Registry
 from precis.response import Response
 from precis.utils.search_merge import SearchHit, merge_and_render
 
@@ -154,7 +153,7 @@ class PrecisRuntime:
             return str(kind), False, None
 
         if verb != "search":
-            raise BadInput("missing kind=", options=self.registry.kinds())
+            raise BadInput("missing kind=", options=sorted(self.registry.kinds))
 
         # 7B callers routinely forget ``kind=``. Pick the most
         # recently touched search-supporting kind as a sensible
@@ -164,8 +163,8 @@ class PrecisRuntime:
         # deployment, empty corpus).
         search_kinds = [
             k
-            for k in self.registry.kinds()
-            if self.registry.get(k).spec.supports_search
+            for k in sorted(self.registry.kinds)
+            if self.registry.handler_for(k).spec.supports_search
         ]
         defaulted = self._default_search_kind(search_kinds)
         if defaulted is not None:
@@ -202,16 +201,15 @@ class PrecisRuntime:
                 bounce ``move()`` against every kind hoping for one
                 that works.
         """
-        try:
-            handler = self.registry.get(kind)
-        except NotFound as exc:
+        handler = self.registry.handler_for(kind)
+        if handler is None:
             from precis.errors import NotFound as _NF
 
             raise _NF(
                 f"unknown kind: {kind}",
                 options=self._kinds_for_verb(verb),
                 next="see precis-overview for the kind list",
-            ) from exc
+            )
 
         if not handler.spec.supports(verb):  # type: ignore[arg-type]
             from precis.errors import Unsupported
@@ -220,8 +218,8 @@ class PrecisRuntime:
             if verb == "move":
                 movers = [
                     k
-                    for k in self.registry.kinds()
-                    if self.registry.get(k).spec.supports_move
+                    for k in sorted(self.registry.kinds)
+                    if self.registry.handler_for(k).spec.supports_move
                 ]
                 if not movers:
                     raise Unsupported(
@@ -406,8 +404,8 @@ class PrecisRuntime:
         absence from this list is by design.
         """
         out: list[str] = []
-        for k in self.registry.kinds():
-            spec = self.registry.get(k).spec
+        for k in sorted(self.registry.kinds):
+            spec = self.registry.handler_for(k).spec
             if spec.supports_search and spec.supports_search_hits:
                 out.append(k)
         return out
@@ -431,7 +429,7 @@ class PrecisRuntime:
 
         bad = [t for t in requested if t not in eligible]
         if bad:
-            registered = set(self.registry.kinds())
+            registered = self.registry.kinds
             unknown = [t for t in bad if t not in registered]
             unsupported = [t for t in bad if t in registered]
             if unknown:
@@ -497,7 +495,9 @@ class PrecisRuntime:
 
         streams: list[list[SearchHit]] = []
         for k in kinds:
-            handler = self.registry.get(k)
+            handler = self.registry.handler_for(k)
+            if handler is None:
+                continue
             try:
                 hits = handler.search_hits(q=q, tags=tags, top_k=top_k)
             except TypeError:
@@ -532,8 +532,8 @@ class PrecisRuntime:
         """
         return [
             k
-            for k in self.registry.kinds()
-            if self.registry.get(k).spec.supports(verb)  # type: ignore[arg-type]
+            for k in sorted(self.registry.kinds)
+            if self.registry.handler_for(k).spec.supports(verb)  # type: ignore[arg-type]
         ]
 
     def render_error(self, err: PrecisError) -> str:
@@ -573,10 +573,16 @@ def build_runtime(
 
     Caller owns the returned runtime; if it has a store, call
     `runtime.store.close()` before exit.
+
+    Composition root goes through :func:`precis.dispatch.boot`,
+    which constructs every handler, wraps each in
+    :func:`precis.dispatch._try` (swallows ``InitError`` + missing
+    optional deps), and populates the flat dispatch table. See
+    ``docs/seven-verb-surface-migration.md`` D7/D8.
     """
     from precis.config import load_config
+    from precis.dispatch import boot
     from precis.embedder import Embedder, make_embedder
-    from precis.registry import builtins
     from precis.store import Store
 
     if config is None:
@@ -588,20 +594,13 @@ def build_runtime(
         store = Store.connect(config.database_url)
         embedder = make_embedder(config.embedder, dim=store.embedding_dim())
 
-    handlers = builtins(
+    registry = boot(
         store=store,
         embedder=embedder,
         markdown_root=config.markdown_root,
         plaintext_root=config.plaintext_root,
         python_roots=config.python_roots,
     )
-    registry = Registry(handlers)
-    # Wire the registry into SkillHandler so it can synthesize the
-    # 'precis-help' meta-skill listing every active kind.
-    for h in handlers:
-        bind = getattr(h, "bind_registry", None)
-        if callable(bind):
-            bind(registry)
     return PrecisRuntime(
         config=config,
         registry=registry,

@@ -19,6 +19,8 @@ from precis.dispatch import (
     _try,
     boot,
 )
+from precis.protocol import Handler, KindSpec
+from precis.response import Response
 
 # ---------------------------------------------------------------------------
 # Registry primitives
@@ -117,70 +119,76 @@ def test_kinds_supporting_verb() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _Good:
-    """Constructs fine and registers one ability."""
+_GOOD_SPEC = KindSpec(
+    kind="good",
+    title="Good test handler",
+    description="A handler that constructs fine.",
+    supports_get=True,
+)
 
-    def __init__(self, r: Registry) -> None:
-        r.register_ability("good", "get", None, self.get)
+
+class _Good(Handler):
+    """Constructs fine; ``_try`` calls ``_register_with`` for us."""
+
+    spec = _GOOD_SPEC
 
     def get(self, **kw):
-        return "good"
+        return Response(body="good")
 
 
-class _BadInit(Exception):
-    """Unrelated exception type — _try should NOT swallow this."""
+class _BadConfig(Handler):
+    """Raises ``InitError`` before ``_register_with`` is reached."""
 
+    spec = KindSpec(
+        kind="badconfig",
+        title="Bad config test handler",
+        description="Raises InitError to simulate a missing dep.",
+        supports_get=True,
+    )
 
-class _BadConfig:
-    """Raises ``InitError`` before registering anything."""
-
-    def __init__(self, r: Registry) -> None:
+    def __init__(self) -> None:
         raise InitError("bad config: PRECIS_FOO missing")
 
 
-class _BugInInit:
-    """Raises a non-``InitError`` exception. _try must propagate."""
+class _BugInInit(Handler):
+    """Raises a non-``InitError`` exception. ``_try`` must propagate."""
 
-    def __init__(self, r: Registry) -> None:
+    spec = KindSpec(
+        kind="bug",
+        title="Buggy init test handler",
+        description="Simulates a programmer error that must not be swallowed.",
+        supports_get=True,
+    )
+
+    def __init__(self) -> None:
         raise RuntimeError("programmer bug")
-
-
-class _RegistersThenRaises:
-    """Violates the contract: registers BEFORE raising ``InitError``.
-
-    The registry will end up with a dangling entry. The test asserts
-    this is the operator's problem to notice (via the WARN log), not
-    something _try tries to roll back.
-    """
-
-    def __init__(self, r: Registry) -> None:
-        r.register_ability("broken", "get", None, self.get)
-        raise InitError("decided to fail after registering, naughty")
-
-    def get(self, **kw):
-        return "broken"
 
 
 def test_try_returns_instance_on_success() -> None:
     r = Registry()
-    inst = _try(_Good, r)
+    inst = _try(_Good, r=r)
     assert isinstance(inst, _Good)
     # Compare with == (not ``is``): Python creates a fresh bound-method
     # object on every attribute access, so identity fails even though
     # both resolve to the same underlying function + instance.
     assert r.get("good", "get") == inst.get
-    # And the stored callable actually fires on the right instance.
-    assert r.get("good", "get")() == "good"
+    # The stored callable actually fires on the right instance.
+    assert r.get("good", "get")().body == "good"
+    # ``_register_with`` stashed the registry on the handler.
+    assert inst.registry is r
+    # And registered the handler itself for metadata queries.
+    assert r.handler_for("good") is inst
 
 
 def test_try_returns_none_on_init_error(caplog: pytest.LogCaptureFixture) -> None:
     r = Registry()
     with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
-        inst = _try(_BadConfig, r)
+        inst = _try(_BadConfig, r=r)
     assert inst is None
-    # No abilities registered — registration was the last block in the
-    # well-behaved handler, so an early raise leaves the registry clean.
+    # Registration never happened — the handler raised before
+    # ``_try`` could call ``_register_with``.
     assert r.abilities == {}
+    assert r.handlers == {}
     # Operator-facing WARN names the class and the reason.
     assert any(
         "_BadConfig init failed" in rec.message and "PRECIS_FOO missing" in rec.message
@@ -191,24 +199,37 @@ def test_try_returns_none_on_init_error(caplog: pytest.LogCaptureFixture) -> Non
 def test_try_propagates_non_init_exceptions() -> None:
     """Programmer bugs must NOT be silently swallowed — they would
     otherwise hide real errors behind "kind missing from surface"
-    noise."""
+    noise. ``InitError`` / ``ImportError`` / ``ValueError`` are the
+    only swallowed exceptions."""
     r = Registry()
     with pytest.raises(RuntimeError, match="programmer bug"):
-        _try(_BugInInit, r)
+        _try(_BugInInit, r=r)
 
 
-def test_try_does_not_roll_back_partial_registration() -> None:
-    """A handler that registers before raising leaves the registry in
-    a broken state. This documents current behaviour so a future
-    refactor doesn't silently change it — the handler-author contract
-    says "register LAST", and violators pay the cost of a broken
-    dispatch entry pointing at a half-constructed instance."""
+def test_try_swallows_import_error(caplog: pytest.LogCaptureFixture) -> None:
+    """Optional-dep handlers (math/sympy, patent/epo_ops) surface
+    missing deps as ``ImportError`` from module-level imports inside
+    ``__init__``. ``_try`` treats these as missing-dep and logs."""
+
+    class _NeedsMissingModule(Handler):
+        spec = KindSpec(
+            kind="needsmod",
+            title="Needs a missing module",
+            description="Simulates an optional-dep import failure.",
+            supports_get=True,
+        )
+
+        def __init__(self) -> None:
+            raise ImportError("no module named fictional_dep")
+
+        def get(self, **kw):
+            return Response(body="never")
+
     r = Registry()
-    result = _try(_RegistersThenRaises, r)
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        result = _try(_NeedsMissingModule, r=r)
     assert result is None
-    # The errant entry is still there. The dispatch table is corrupt
-    # for this key. Operator sees the WARN and must fix the handler.
-    assert ("broken", "get", None) in r.abilities
+    assert r.abilities == {}
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +237,17 @@ def test_try_does_not_roll_back_partial_registration() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_boot_returns_empty_registry_when_no_handlers_wired() -> None:
-    """Phase 1 stub boot: no handlers are wired yet, so boot returns
-    an empty registry. Once handlers port over, this test gets
-    replaced by the per-kind registration asserts."""
-    r = boot({})
+def test_boot_stateless_registers_calc_only() -> None:
+    """Stateless path (no store) registers only the calc kind.
+
+    This is the phase-1 "no DB" deployment mode, preserved from the
+    v1 ``registry.builtins(store=None)`` shape.
+    """
+    r = boot(store=None)
     assert isinstance(r, Registry)
-    assert r.abilities == {}
-    assert r.kinds == set()
+    assert r.kinds == {"calc"}
+    # calc exposes only ``get``.
+    assert r.verbs_for("calc") == {"get"}
+    # Overview blurb was registered.
+    assert "calc" in r.overview
+    assert r.overview["calc"]

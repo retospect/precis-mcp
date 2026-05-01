@@ -1,10 +1,7 @@
 """Handler registration + flat dispatch table (seven-verb surface).
 
-Replaces the v1 ``precis.registry`` module. The old module stays
-in-tree during phase 1 of the seven-verb migration (see
-``docs/seven-verb-surface-migration.md``) so the live server keeps
-working while handlers are ported; it is deleted once nothing imports
-it.
+Replaces the v1 ``precis.registry`` module. The live server goes
+through this module exclusively; ``precis.registry`` is gone.
 
 ## Handler-author contract
 
@@ -98,6 +95,11 @@ class Registry:
     abilities: dict[AbilityKey, Ability] = field(default_factory=dict)
     skills:    dict[str, str]            = field(default_factory=dict)
     overview:  dict[str, str]            = field(default_factory=dict)
+    #: Handler instances keyed by kind. Holds the object that owns
+    #: the bound methods in ``abilities``. Runtime reads these for
+    #: per-kind metadata (``KindSpec`` today; dropped once everything
+    #: is driven from ``abilities`` + ``overview``).
+    handlers: dict[str, Any] = field(default_factory=dict)
 
     # ----- registration primitives (called from handler __init__) -----
 
@@ -134,12 +136,28 @@ class Registry:
         """
         self.overview[kind] = blurb
 
+    def register_handler(self, kind: str, handler: Any) -> None:
+        """Record the handler instance that owns ``kind``.
+
+        The runtime reads ``handlers[kind]`` for per-kind metadata
+        (``KindSpec``, ``search_hits`` method, etc.). Raises on
+        duplicate — two handlers owning the same kind is a boot-time
+        bug.
+        """
+        if kind in self.handlers:
+            raise DuplicateRegistration(f"duplicate handler for kind: {kind!r}")
+        self.handlers[kind] = handler
+
     # ----- read views (for the server and for internal introspection) -----
 
     @property
     def kinds(self) -> set[str]:
         """All kinds with at least one registered ability."""
         return {k for (k, _v, _m) in self.abilities}
+
+    def handler_for(self, kind: str) -> Any | None:
+        """Return the handler instance for ``kind``, or ``None``."""
+        return self.handlers.get(kind)
 
     def verbs_for(self, kind: str) -> set[str]:
         """Set of verbs the given kind supports. Empty if kind unknown."""
@@ -168,22 +186,39 @@ class Registry:
 # ---------------------------------------------------------------------------
 
 
-def _try(cls: Callable[..., Any], *args: Any, **kw: Any) -> Any | None:
-    """Construct a handler; swallow :class:`InitError` into ``None``.
+def _try(cls: Callable[..., Any], *, r: Registry, **kw: Any) -> Any | None:
+    """Construct a handler, auto-register it, swallow missing-dep errors.
 
-    Only ``InitError`` is caught — a stray ``KeyError`` /
-    ``AttributeError`` is a programmer bug, not a missing dep, and
-    should crash boot so it gets noticed.
+    Caught exceptions:
 
-    Logs at WARN when an ``InitError`` is swallowed, including the
-    handler class name so operators can grep for "<ClassName> init
-    failed" in the server log.
+    - :class:`InitError` — the handler's own ``__init__`` decided it
+      can't usefully run. The canonical path.
+    - ``ImportError`` — optional-dep handlers (math/sympy,
+      patent/epo_ops) surface here when their module-level imports
+      blow up. Treated as a missing dep, not a programmer bug.
+    - ``ValueError`` — file-root handlers (markdown/plaintext/python)
+      raise this from their existing ``__init__`` for malformed /
+      non-existent roots. Legacy behaviour, preserved for now;
+      eventually those paths convert to ``InitError``.
+
+    Anything else propagates — a stray ``KeyError`` /
+    ``AttributeError`` is a programmer bug and should crash boot so
+    it gets noticed.
+
+    On successful construction, calls ``inst._register_with(r)`` to
+    populate the dispatch table. This is the seam that makes
+    construction and registration atomic from the caller's
+    perspective: :func:`_try` returns either a fully registered
+    handler or ``None``; it never returns a constructed-but-
+    unregistered instance.
     """
     try:
-        return cls(*args, **kw)
-    except InitError as exc:
+        inst = cls(**kw)
+    except (InitError, ImportError, ValueError) as exc:
         log.warning("%s init failed: %s", getattr(cls, "__name__", cls), exc)
         return None
+    inst._register_with(r)
+    return inst
 
 
 # ---------------------------------------------------------------------------
@@ -191,30 +226,157 @@ def _try(cls: Callable[..., Any], *args: Any, **kw: Any) -> Any | None:
 # ---------------------------------------------------------------------------
 
 
-def boot(env: dict[str, Any] | None = None) -> Registry:
+def boot(
+    *,
+    store: Any = None,
+    embedder: Any = None,
+    markdown_root: str | None = None,
+    plaintext_root: str | None = None,
+    python_roots: str | None = None,
+) -> Registry:
     """Build and return a fully-populated :class:`Registry`.
 
     The composition root. Hand-ordered by dependency: construct
-    infrastructure kinds first (filereader, embedder, store), then
-    the kinds that consume them. Each step goes through :func:`_try`
-    so any :class:`InitError` is logged and the kind silently drops
-    off the LLM surface.
+    infrastructure kinds first (embedder, store-backed primitives),
+    then the kinds that consume them. Each step goes through
+    :func:`_try` so any :class:`InitError` is logged and the kind
+    silently drops off the LLM surface.
 
-    ``env`` is the same config bag the v1 ``builtins()`` took —
-    a plain dict for now. During phase 1 of the seven-verb migration
-    this function is a stub; real handler wiring is added as each
-    handler is ported to the constructor-registers shape.
+    Stateless handlers (calc) are always attempted. Store-backed
+    handlers (memory, todo, paper, ...) are skipped when ``store`` is
+    ``None`` — this preserves the phase-1 stateless deployment mode
+    from the old ``registry.builtins()``.
 
-    See ``docs/seven-verb-surface-migration.md`` D7/D8 for the full
-    design and rejected alternatives.
+    Optional-dependency handlers (math needs sympy, patent needs
+    ``epo_ops``, etc.) raise :class:`InitError` from their own
+    ``__init__`` when their deps aren't satisfied; :func:`_try`
+    catches and logs.
+
+    See ``docs/seven-verb-surface-migration.md`` D7/D8 for the design
+    rationale and rejected alternatives.
     """
-    env = env or {}
+    import os  # local import; dispatch shouldn't own env reading above
+
     r = Registry()
 
-    # TODO(seven-verb-phase1): wire handlers here, ordered by dep.
-    # Each line is ``_try(HandlerCls, r, env, *deps)``. Handlers whose
-    # required deps returned None are skipped entirely (no attempt,
-    # no WARN spam).
+    # --- Stateless handlers (no store) ---------------------------------
+
+    # Calc — local sympy-backed calculator. The handler raises
+    # InitError when sympy isn't installed.
+    from precis.handlers.calc import CalcHandler
+    _try(CalcHandler, r=r)
+
+    # Python — DB-free in-memory AST index. Skipped when no roots
+    # are configured or every entry is malformed (parse_python_roots
+    # logs each rejection).
+    if python_roots:
+        from precis.handlers.python import PythonHandler, parse_python_roots
+        roots = parse_python_roots(python_roots)
+        if roots:
+            _try(PythonHandler, r=r, roots=roots)
+
+    # --- Store-backed handlers ------------------------------------------
+
+    if store is not None:
+        from precis.embedder import MockEmbedder
+        from precis.handlers.conversation import ConversationHandler
+        from precis.handlers.flashcard import FlashcardHandler
+        from precis.handlers.gripe import GripeHandler
+        from precis.handlers.memory import MemoryHandler
+        from precis.handlers.oracle import OracleHandler
+        from precis.handlers.paper import PaperHandler
+        from precis.handlers.quest import QuestHandler
+        from precis.handlers.skill import SkillHandler
+        from precis.handlers.todo import TodoHandler
+
+        eff_embedder = embedder or MockEmbedder(dim=store.embedding_dim())
+
+        # Numeric- and slug-addressed refs. Cheap; always available
+        # when the store is up.
+        _try(MemoryHandler,       r=r, store=store)
+        _try(TodoHandler,         r=r, store=store)
+        _try(GripeHandler,        r=r, store=store)
+        _try(FlashcardHandler,    r=r, store=store)
+        _try(QuestHandler,        r=r, store=store)
+        _try(ConversationHandler, r=r, store=store)
+        _try(OracleHandler,       r=r, store=store)
+        _try(SkillHandler,        r=r, store=store)
+        _try(PaperHandler,        r=r, store=store, embedder=eff_embedder)
+
+        # Cache-backed kinds. Each declares its env / optional-dep
+        # requirements inside __init__ and raises InitError when
+        # they aren't met.
+        from precis.handlers.math import MathHandler
+        _try(MathHandler,    r=r, store=store)
+
+        from precis.handlers.youtube import YouTubeHandler
+        _try(YouTubeHandler, r=r, store=store)
+
+        from precis.handlers.web import WebHandler
+        _try(WebHandler,     r=r, store=store)
+
+        # File handlers — markdown / plaintext are hidden when no root
+        # is configured; the handler __init__ raises InitError for a
+        # missing / non-existent / non-directory root.
+        if markdown_root:
+            from pathlib import Path
+
+            from precis.handlers.markdown import MarkdownHandler
+            _try(
+                MarkdownHandler,
+                r=r,
+                store=store,
+                embedder=eff_embedder,
+                root=Path(markdown_root),
+            )
+
+        if plaintext_root:
+            from pathlib import Path
+
+            from precis.handlers.plaintext import PlaintextHandler
+            _try(
+                PlaintextHandler,
+                r=r,
+                store=store,
+                embedder=eff_embedder,
+                root=Path(plaintext_root),
+            )
+
+        # Perplexity Sonar trio. Each raises InitError independently
+        # when httpx or the API key is missing.
+        from precis.handlers.perplexity import (
+            ResearchHandler,
+            ThinkHandler,
+            WebsearchHandler,
+        )
+        _try(WebsearchHandler, r=r, store=store, embedder=eff_embedder)
+        _try(ThinkHandler,     r=r, store=store, embedder=eff_embedder)
+        _try(ResearchHandler,  r=r, store=store, embedder=eff_embedder)
+
+        # Patent — EPO OPS. Hidden unless the env trio is set; the
+        # ``OpsClient`` construction (and thus the ``epo_ops`` import)
+        # is deferred so missing env vars don't even reach the
+        # handler.
+        epo_key = os.environ.get("EPO_OPS_CLIENT_KEY")
+        epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
+        epo_raw_root = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+        if epo_key and epo_secret and epo_raw_root:
+            from pathlib import Path
+
+            from precis.handlers._patent_ops import OpsClient
+            from precis.handlers.patent import PatentHandler
+            _try(
+                PatentHandler,
+                r=r,
+                store=store,
+                embedder=eff_embedder,
+                ops=OpsClient(
+                    key=epo_key,
+                    secret=epo_secret,
+                    user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
+                ),
+                raw_root=Path(epo_raw_root).expanduser(),
+            )
 
     log.info(
         "precis dispatch boot: %d kinds live: %s",

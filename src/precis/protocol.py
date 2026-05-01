@@ -16,6 +16,7 @@ from precis.errors import Unsupported
 from precis.response import Response
 
 if TYPE_CHECKING:
+    from precis.dispatch import Registry
     from precis.utils.search_merge import SearchHit
 
 Verb = Literal["get", "search", "put", "move"]
@@ -64,9 +65,45 @@ class Handler:
     Subclasses override the verbs they support and declare a `KindSpec`
     ClassVar. The default implementations raise `Unsupported` so a
     handler that lies about its KindSpec is detectable.
+
+    Construction: handlers take ``r: Registry`` as a keyword argument
+    and self-register by calling :meth:`_register_with` as the last
+    statement of ``__init__``. See ``docs/seven-verb-surface-migration.md``
+    D7 for the contract.
     """
 
     spec: ClassVar[KindSpec]
+
+    #: Populated by :meth:`_register_with` so handlers that need
+    #: registry introspection (e.g. SkillHandler rendering
+    #: ``precis-help``) can read it without a separate late-bind
+    #: hook. Typed ``Any`` to avoid a hard import of
+    #: ``precis.dispatch.Registry`` in every handler module.
+    registry: Any = None
+
+    def _register_with(self, r: Registry) -> None:
+        """Register every verb declared supported in ``self.spec``.
+
+        Invoked by :func:`precis.dispatch._try` immediately after
+        successful construction. Reads ``self.spec`` and populates
+        the flat dispatch table with bound methods, and stashes
+        ``r`` on ``self.registry`` for the handful of handlers that
+        want to query the registry at runtime (skill rendering,
+        cross-handler metadata lookups).
+
+        ``mode`` on every ability is ``None`` under the v1 shape —
+        ``put`` is still polymorphic over a mode-string. The seven-
+        verb semantic migration splits ``put`` into ``put / edit /
+        delete / tag / link`` and introduces (kind, verb, mode) keys
+        with non-None modes.
+        """
+        self.registry = r
+        spec = self.spec
+        r.register_handler(spec.kind, self)
+        for verb in ("get", "search", "put", "move"):
+            if spec.supports(verb):  # type: ignore[arg-type]
+                r.register_ability(spec.kind, verb, None, getattr(self, verb))
+        r.register_overview(spec.kind, spec.description)
 
     def get(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support get")

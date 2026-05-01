@@ -86,14 +86,11 @@ class SkillHandler(Handler):
 
     def __init__(self, *, store: Store) -> None:
         # store is unused but kept in the constructor signature so the
-        # registry's kw-args call shape works for every handler.
+        # registry's kw-args call shape works for every handler. The
+        # registry reference used to synthesise ``precis-help`` comes
+        # from ``self.registry``, populated by ``Handler._register_with``
+        # immediately after construction.
         self.store = store
-        self._registry: Any = None  # set later via bind_registry()
-
-    def bind_registry(self, registry: Any) -> None:
-        """Hook for the runtime: gives this handler a registry reference
-        so the synthesized ``precis-help`` skill can list active kinds."""
-        self._registry = registry
 
     # ── get ────────────────────────────────────────────────────────
 
@@ -140,7 +137,7 @@ class SkillHandler(Handler):
         # asked for it explicitly, so we serve it, but we want them
         # to know the recipes inside may not all run on this build.
         # See CRITICAL #3 and MAJOR #6 in the MCP critique.
-        gap = _availability_gap(slug, registry=self._registry)
+        gap = _availability_gap(slug, registry=self.registry)
         if gap is not None:
             text = f"> **Heads up:** {gap}\n\n" + text
         return Response(body=text)
@@ -197,7 +194,7 @@ class SkillHandler(Handler):
             # the same honesty work or 7B callers will quote the
             # title and invoke an [error:NotFound] kind. (MCP critic
             # MINOR — search surfaces unwired skills without marker.)
-            gap = _availability_gap(slug, registry=self._registry)
+            gap = _availability_gap(slug, registry=self.registry)
             marker = " [unwired]" if gap is not None else ""
             lines.append(f"\n## {slug}{marker}  ({cnt} hits)\n{preview_short}")
         return Response(body="\n".join(lines))
@@ -217,7 +214,7 @@ class SkillHandler(Handler):
             # or whose front-matter status isn't ``active``. They
             # remain reachable via direct slug get(), but they don't
             # clutter the index that agents use for discovery.
-            if _availability_gap(slug, registry=self._registry) is not None:
+            if _availability_gap(slug, registry=self.registry) is not None:
                 hidden_slugs.append(slug)
                 continue
             title = _skill_title(slug)
@@ -277,15 +274,15 @@ class SkillHandler(Handler):
             "and supported verbs, generated from the live registry.",
             "",
         ]
-        if self._registry is None:
+        if self.registry is None:
             lines.append(
                 "_(registry not wired; see precis-overview for the canonical list.)_"
             )
             return "\n".join(lines)
 
         rows: list[tuple[str, str, str]] = []  # (kind, verbs, desc)
-        for kind in self._registry.kinds():
-            handler = self._registry.get(kind)
+        for kind in sorted(self.registry.kinds):
+            handler = self.registry.handler_for(kind)
             spec = handler.spec
             verbs: list[str] = []
             if spec.supports_get:
@@ -379,9 +376,9 @@ class SkillHandler(Handler):
 
         # Embedder + store are deeper than a bare import probe, but
         # cheap to surface from the bound registry when wired.
-        if self._registry is not None:
+        if self.registry is not None:
             try:
-                kinds = sorted(self._registry.kinds())
+                kinds = sorted(self.registry.kinds)
             except Exception:  # pragma: no cover
                 kinds = []
             if kinds:
@@ -613,7 +610,11 @@ def _registry_has_kind(registry: Any, kind: str) -> bool:
     rather than crashing the index.
     """
     try:
-        kinds = registry.kinds()
+        kinds = registry.kinds
+        # New ``dispatch.Registry`` exposes ``kinds`` as a set
+        # property; older shapes used a method. Accept both.
+        if callable(kinds):
+            kinds = kinds()
     except (AttributeError, KeyError):
         return False
     return kind in kinds
