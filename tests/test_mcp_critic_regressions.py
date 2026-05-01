@@ -488,10 +488,16 @@ def test_instructions_advertises_every_verb() -> None:
     """The MCP critic flagged ``Verbs: get, search, put, put.`` — the
     duplicate ``put`` hid ``move`` from any caller relying on
     serverInfo.instructions. The import-time assert in server.py now
-    catches regressions, but pin it from a test too."""
+    catches regressions, but pin it from a test too.
+
+    Updated for the seven-verb surface: instructions advertise the
+    seven agent-facing verbs. ``move`` is intentionally absent — it
+    survives as a back-compat tool but D5 folds reorder semantics
+    into ``edit(mode='reorder')``, so new callers shouldn't see it.
+    """
     from precis import server
 
-    for verb in ("get", "search", "put", "move"):
+    for verb in ("get", "search", "put", "edit", "delete", "tag", "link"):
         assert verb in server._INSTRUCTIONS, (
             f"server _INSTRUCTIONS must list every verb; missing {verb!r}"
         )

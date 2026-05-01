@@ -1,8 +1,9 @@
 """MCP stdio server. Thin FastMCP wrapper around `PrecisRuntime`.
 
-Four tools — `get`, `search`, `put`, `move` — are registered as plain
-sync functions. FastMCP runs sync tool callables in a worker thread, so
-the rest of the codebase (runtime, store, handlers) stays sync.
+Eight tools — `get`, `search`, `put`, `edit`, `delete`, `tag`, `link`,
+and the legacy `move` shim — are registered as plain sync functions.
+FastMCP runs sync tool callables in a worker thread, so the rest of
+the codebase (runtime, store, handlers) stays sync.
 
 The runtime — including the postgres connection pool — is built before
 `mcp.run()` and torn down after it returns. Only the FastMCP loop
@@ -47,20 +48,23 @@ _ToolReturn = Any  # documents runtime: str on success, CallToolResult on error
 _TOOL_KW: dict[str, Any] = {"structured_output": False}
 
 _INSTRUCTIONS = (
-    "precis-mcp v2 — four-verb agent tool surface.\n\n"
-    "Verbs: get, search, put, move.  Discriminator: kind=.\n"
+    "precis-mcp v2 — seven-verb agent tool surface.\n\n"
+    "Verbs: get, search, put, edit, delete, tag, link.  Discriminator: kind=.\n"
     "Read the `precis-overview` skill (get(kind='skill', id='precis-overview'))\n"
     "for the full mental model: kind topology, addressing, views, modes,\n"
     "tags, links, and cache."
 )
 
 # Sanity check the instructions actually advertise every verb. The MCP
-# critic flagged ``put, put`` as a silent typo that hides ``move`` from
+# critic flagged ``put, put`` as a silent typo that hid ``move`` from
 # every caller relying on serverInfo.instructions; an assertion here
-# catches future regressions at import time.
-assert all(v in _INSTRUCTIONS for v in ("get", "search", "put", "move")), (
-    "_INSTRUCTIONS must list every verb"
-)
+# catches future regressions at import time. ``move`` is intentionally
+# absent from the agent-facing instructions even though the tool
+# remains registered for back-compat — D5 in the migration doc folds
+# reorder semantics into ``edit(mode='reorder')``.
+assert all(
+    v in _INSTRUCTIONS for v in ("get", "search", "put", "edit", "delete", "tag", "link")
+), "_INSTRUCTIONS must list every agent-facing verb"
 
 
 _runtime: PrecisRuntime | None = None
@@ -345,6 +349,164 @@ def put(
 
 
 @mcp.tool(**_TOOL_KW)
+def edit(
+    kind: str,
+    id: str | int,
+    mode: str = "find-replace",
+    text: str | None = None,
+    find: str | None = None,
+    before: str | None = None,
+    after: str | None = None,
+    where: str | None = None,
+    match: str | None = None,
+    nth: int | None = None,
+    allow_rename: bool | None = None,
+    dry_run: bool | None = None,
+) -> str:
+    """Edit a region within an existing ref's content.
+
+    Distinct from ``put`` — ``put`` creates new refs (or rewrites a
+    whole-file ref); ``edit`` rewrites a region within an existing one.
+    The mode menu is kind-specific:
+
+    - ``find-replace`` (default): anchor-based string replace. Pair
+      ``find=`` with ``text=`` plus ``before=`` / ``after=`` /
+      ``where=`` / ``match=`` / ``nth=`` to disambiguate. ``allow_rename``
+      and ``dry_run`` keep the same semantics as today's
+      ``put(mode='edit')``.
+    - ``append`` / ``insert`` / ``replace``: file-kind region edits.
+      ``id=`` carries a selector (``slug~SLUG`` or ``slug~Lstart-Lend``);
+      ``text=`` is the new region content.
+    - ``reorder``: structured-file rearrangement (deferred — not yet
+      wired). See migration doc D5.
+
+    See each kind's help skill (``get(kind='skill', id='precis-edit-
+    protocol')``) for the per-kind menu.
+
+    Args:
+        kind: Which kind to edit.
+        id:   Existing ref id, optionally with selector for region edits.
+        mode: ``find-replace`` (default), ``append``, ``insert``,
+              ``replace``, ``reorder``.
+        text: Replacement / inserted content (mode-dependent).
+        find: Anchor string for ``find-replace`` mode.
+        before / after / where: Disambiguation anchors.
+        match: ``unique`` (default) or ``nth``.
+        nth:   1-based index when ``match='nth'``.
+        allow_rename: For find-replace edits that change a symbol name.
+        dry_run: Preview the edit without writing.
+    """
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "id": id,
+        "mode": mode,
+        "text": text,
+        "find": find,
+        "before": before,
+        "after": after,
+        "where": where,
+        "match": match,
+        "nth": nth,
+        "allow_rename": allow_rename,
+        "dry_run": dry_run,
+    }
+    return _dispatch("edit", payload)
+
+
+@mcp.tool(**_TOOL_KW)
+def delete(
+    kind: str,
+    id: str | int,
+) -> str:
+    """Delete a ref or region.
+
+    Behaviour is kind-specific:
+
+    - Numeric-ref kinds (memory, todo, gripe, fc, quest, oracle, conv):
+      soft-delete the ref. The row is retained for audit / undelete;
+      it just stops appearing in list views and search.
+    - File kinds with a selector in ``id=`` (markdown, plaintext,
+      python): delete the addressed block / symbol / line range.
+      Without a selector → ``BadInput`` (use ``edit(mode='replace',
+      text='')`` to clear a whole file).
+    - Cache-backed and read-only kinds (calc, math, web, youtube,
+      research, think, websearch, paper): ``Unsupported``.
+
+    No undo — soft-delete is recoverable at the SQL layer; selector
+    deletes write the file out without the deleted region.
+
+    Args:
+        kind: Which kind to delete from.
+        id:   Ref id (or ``slug~SELECTOR`` for region deletes on file
+              kinds).
+    """
+    return _dispatch("delete", {"kind": kind, "id": id})
+
+
+@mcp.tool(**_TOOL_KW)
+def tag(
+    kind: str,
+    id: str | int,
+    add: list[str] | None = None,
+    remove: list[str] | None = None,
+) -> str:
+    """Add and/or remove tags on an existing ref.
+
+    Both ``add`` and ``remove`` are accepted in the same call so a
+    transactional STATUS bump (``add=['STATUS:done'], remove=['STATUS:open']``)
+    happens atomically.
+
+    Tag vocabulary mirrors ``put(tags=...)``:
+
+    - **Closed UPPERCASE prefixes** (``STATUS:``, ``PRIO:``, ``SRC:``,
+      ``CACHE:``) replace within the prefix when added — adding
+      ``STATUS:done`` implicitly removes any existing ``STATUS:*``.
+    - **Flag tags** (bare lowercase like ``pinned``, ``draft``)
+      toggle on / off.
+    - **Open tags** (``topic-co2-capture``, ``namespace:value``) add
+      and remove freely.
+
+    Args:
+        kind:   Kind owning the ref.
+        id:     Ref id (slug for slug kinds, int for numeric kinds).
+        add:    Tags to add.
+        remove: Tags to remove.
+    """
+    return _dispatch("tag", {"kind": kind, "id": id, "add": add, "remove": remove})
+
+
+@mcp.tool(**_TOOL_KW)
+def link(
+    kind: str,
+    id: str | int,
+    target: str | None = None,
+    mode: str = "add",
+    rel: str | None = None,
+) -> str:
+    """Add or remove a link between two refs.
+
+    Args:
+        kind:   Kind owning the source ref.
+        id:     Source ref id.
+        target: Canonical link target ``kind:id[~selector]`` —
+                e.g. ``paper:wang2020``, ``paper:wang2020~38`` (block
+                38), ``todo:158``. The ``kind:`` prefix is required.
+        mode:   ``add`` (default) creates the edge. ``remove`` deletes
+                it. With ``rel=`` on remove, removes the specific
+                (target, relation) pair; without, removes every link
+                to the target.
+        rel:    Relation slug. Defaults to ``related-to`` on add. See
+                ``precis-relations`` for the full vocabulary
+                (``cites``, ``blocks``, ``contradicts``, ``derived-from``,
+                ``supports``, …).
+    """
+    return _dispatch(
+        "link",
+        {"kind": kind, "id": id, "target": target, "mode": mode, "rel": rel},
+    )
+
+
+@mcp.tool(**_TOOL_KW)
 def move(
     kind: str,
     id: str | int,
@@ -352,12 +514,13 @@ def move(
 ) -> str:
     """Reorder a node within a structured ref.
 
-    NOTE: No active kind in this build implements ``move``. The verb
-    is reserved for structured file kinds (``docx``, ``tex``) that
-    aren't wired yet; calling it returns an Unsupported error pointing
-    you at ``put`` instead. The tool stays exposed so the surface
-    matches ``precis-overview`` and so future kinds can light it up
-    without re-registration.
+    DEPRECATED: kept for back-compat with v1 callers; the seven-verb
+    surface (D5) folds reorder into ``edit(mode='reorder')``. New
+    callers should ignore this verb. The ``move`` tool will be removed
+    in a future release.
+
+    No active kind in this build implements ``move``; calling it
+    returns an Unsupported error pointing at ``edit`` / ``put``.
 
     Args:
         kind:  Which kind owns the structure (e.g. 'docx', 'tex').

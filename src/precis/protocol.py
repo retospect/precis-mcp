@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from precis.dispatch import Hub
     from precis.utils.search_merge import SearchHit
 
-Verb = Literal["get", "search", "put", "move"]
+Verb = Literal["get", "search", "put", "edit", "delete", "tag", "link", "move"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +33,26 @@ class KindSpec:
     supports_get: bool = False
     supports_search: bool = False
     supports_put: bool = False
+    #: Region-edit verb (``edit(mode='find-replace'|'append'|'insert'|...)``).
+    #: Distinct from ``supports_put`` because file kinds want a clean
+    #: split between "create new ref" (put) and "rewrite an existing
+    #: one's content" (edit). Numeric-ref kinds (memory, todo, …) keep
+    #: ``supports_edit=False`` — their text mutation is just put-with-id.
+    supports_edit: bool = False
+    #: Soft-delete or selector-delete (``delete(kind, id)``). True for
+    #: numeric-ref kinds (soft-delete the ref) and for file kinds where
+    #: a selector targets a block / symbol.
+    supports_delete: bool = False
+    #: Tag-ops verb (``tag(kind, id, add=[...], remove=[...])``).
+    supports_tag: bool = False
+    #: Link-ops verb (``link(kind, id, target='...', mode='add'|'remove',
+    #: rel='...')``).
+    supports_link: bool = False
+    #: Move/reorder verb. Reserved for structured-file kinds (docx, tex)
+    #: that aren't wired yet. The seven-verb migration (D5) folds
+    #: reorder into ``edit(mode='reorder')``; this flag stays for
+    #: back-compat during the cutover and goes away in the cleanup
+    #: commit.
     supports_move: bool = False
 
     # Cross-kind search opt-in. When True, the handler's
@@ -93,15 +113,17 @@ class Handler:
         registry of sibling kinds, …) at request time.
 
         ``mode`` on every ability is ``None`` under the v1 shape —
-        ``put`` is still polymorphic over a mode-string. The seven-
-        verb semantic migration splits ``put`` into ``put / edit /
-        delete / tag / link`` and introduces (kind, verb, mode) keys
-        with non-None modes.
+        ``put`` was polymorphic over a mode-string. The seven-verb
+        cutover splits ``put`` into ``put / edit / delete / tag /
+        link``; mode strings are still ``None`` at this layer because
+        each new verb has its own dedicated method on the handler.
+        Per-verb mode discrimination (e.g. ``edit(mode='replace')``)
+        happens inside the handler, not at the dispatch table layer.
         """
         self.hub = hub
         spec = self.spec
         hub.register_handler(spec.kind, self)
-        for verb in ("get", "search", "put", "move"):
+        for verb in _ALL_VERBS:
             if spec.supports(verb):  # type: ignore[arg-type]
                 hub.register_ability(spec.kind, verb, None, getattr(self, verb))
         hub.register_overview(spec.kind, spec.description)
@@ -130,5 +152,34 @@ class Handler:
     def put(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support put")
 
+    def edit(self, **kw: Any) -> Response:
+        raise Unsupported(f"{self.spec.kind} does not support edit")
+
+    def delete(self, **kw: Any) -> Response:
+        raise Unsupported(f"{self.spec.kind} does not support delete")
+
+    def tag(self, **kw: Any) -> Response:
+        raise Unsupported(f"{self.spec.kind} does not support tag")
+
+    def link(self, **kw: Any) -> Response:
+        raise Unsupported(f"{self.spec.kind} does not support link")
+
     def move(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support move")
+
+
+# Verb iteration order. ``_register_with`` walks this list to populate
+# the dispatch table; the runtime walks it for "what does this kind
+# support?" answers in error messages. Reads top-down match the agent-
+# facing mental model: read verbs first, then write verbs, with the
+# exotic ``move`` last because no active kind currently uses it.
+_ALL_VERBS: tuple[Verb, ...] = (
+    "get",
+    "search",
+    "put",
+    "edit",
+    "delete",
+    "tag",
+    "link",
+    "move",
+)

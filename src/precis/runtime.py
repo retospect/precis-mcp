@@ -26,7 +26,7 @@ from precis.errors import (
     Internal,
     PrecisError,
 )
-from precis.protocol import Handler, Verb
+from precis.protocol import _ALL_VERBS, Handler, Verb
 from precis.response import Response
 from precis.utils.search_merge import SearchHit, merge_and_render
 
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-_VERBS: tuple[Verb, ...] = ("get", "search", "put", "move")
+_VERBS: tuple[Verb, ...] = _ALL_VERBS
 
 # Wildcard token for cross-kind search. Equivalent to a comma-list
 # of every kind whose ``KindSpec.supports_search_hits`` is True.
