@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, Gone, NotFound
 from precis.handlers.memory import MemoryHandler
 from precis.runtime import PrecisRuntime
 
@@ -135,7 +135,10 @@ def test_delete(handler: MemoryHandler) -> None:
     deleted = handler.delete(id=new_id)
     assert "deleted" in deleted.body
 
-    with pytest.raises(NotFound):
+    # MCP critic MINOR-C (round 1): soft-deleted refs raise ``Gone``
+    # (distinct from ``NotFound`` for never-existed ids). The row is
+    # still addressable at the SQL layer by clearing ``deleted_at``.
+    with pytest.raises(Gone, match="soft-deleted"):
         handler.get(id=new_id)
 
 

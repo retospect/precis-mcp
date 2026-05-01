@@ -25,10 +25,6 @@ and skips the upstream call (and its cost).
 | `research` | pinned (too expensive to expire) | Sonar Deep Research | ~$0.50 |
 | `youtube` | 30 days | youtube-transcript-api | free |
 
-`ask` is **not** a real kind on this build; older docs that
-reference it should be read as `research` (or `websearch` /
-`think`, depending on cost tier).
-
 ## Call a tool
 
 ```python

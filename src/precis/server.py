@@ -458,10 +458,32 @@ def tag(
     - **Closed UPPERCASE prefixes** (``STATUS:``, ``PRIO:``, ``SRC:``,
       ``CACHE:``) replace within the prefix when added — adding
       ``STATUS:done`` implicitly removes any existing ``STATUS:*``.
+      **Gated per-kind** (see matrix below): a closed prefix rejected
+      on one kind with ``[error:BadInput] axis not allowed on kind 'K'``
+      is the expected response, not a bug. Re-read ``get(kind='skill',
+      id='precis-tags')`` for the axis matrix.
     - **Flag tags** (bare lowercase like ``pinned``, ``draft``)
       toggle on / off.
     - **Open tags** (``topic-co2-capture``, ``namespace:value``) add
-      and remove freely.
+      and remove freely on every kind.
+
+    **Per-kind closed-prefix gating (summary)**:
+
+    - ``todo`` / ``gripe`` / ``quest``: ``STATUS`` + ``PRIO`` (workflow
+      kinds — both axes allowed)
+    - ``memory`` / ``fc`` / ``conv``: no closed axes (use open tags like
+      ``confidence-strong``, ``topic-noxrr`` — memories intentionally
+      have no ``PRIO:`` axis)
+    - ``paper`` / ``patent``: ``SRC`` + ``CACHE`` (provenance +
+      cache-freshness)
+    - ``web`` / ``research`` / ``think`` / ``websearch`` / ``youtube``:
+      ``CACHE`` only (agent-applied workflow axes rejected)
+    - ``oracle`` / ``skill``: no closed axes (read-only references)
+    - ``python`` / ``calc`` / ``math``: tag verb unsupported (read-only
+      or stateless kinds)
+
+    See ``get(kind='skill', id='precis-tags')`` for the authoritative
+    axis matrix; this docstring is a summary that may lag.
 
     Args:
         kind:   Kind owning the ref.

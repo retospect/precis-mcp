@@ -153,6 +153,198 @@ class TestOracle:
         out = oracle.get()
         assert "no oracles" in out.body
 
+    # MCP critic MAJOR-$ (round 2): oracle bodies were previously
+    # unbounded — get(id='stoic') returned all 16 entries verbatim
+    # (~1750 tokens). The fix introduces per-entry addressing so each
+    # call hits a single block (~50–200 tokens) while leaving the
+    # full catalog one call away (view='index').
+
+    def _seed_multi_oracle(
+        self, store: Store, slug: str, title: str, entries: list[tuple[str, str]]
+    ) -> int:
+        """Seed an oracle with multiple entries (title, body) — mimics
+        the real ingest shape (section_path meta on each block)."""
+        with store.tx() as conn:
+            corpus_id = store.ensure_corpus("default")
+            ref = store.insert_ref(
+                corpus_id=corpus_id,
+                kind="oracle",
+                slug=slug,
+                title=title,
+                meta={},
+                conn=conn,
+            )
+            inserts = [
+                BlockInsert(
+                    pos=i,
+                    text=body,
+                    meta={"section_path": [entry_title]},
+                )
+                for i, (entry_title, body) in enumerate(entries)
+            ]
+            store.insert_blocks(ref.id, inserts, conn=conn)
+        return ref.id
+
+    def test_multi_entry_get_returns_one_random(
+        self, oracle: OracleHandler
+    ) -> None:
+        """Default ``get(id=<slug>)`` on a multi-entry oracle returns
+        exactly ONE entry — not the whole catalog. The entry is chosen
+        at random; over many draws each entry appears with roughly
+        equal probability."""
+        self._seed_multi_oracle(
+            oracle.store,
+            slug="engineering",
+            title="Engineering",
+            entries=[
+                ("Knuth's law", "Don't tune what isn't slow."),
+                ("Chesterton's fence", "Don't remove a fence blindly."),
+                ("Postel's law", "Be conservative in what you send."),
+            ],
+        )
+        # 20 draws — with 3 entries, seeing only one value is p ≈ 3e-9.
+        seen: set[str] = set()
+        for _ in range(20):
+            out = oracle.get(id="engineering")
+            body = out.body
+            # Exactly one entry's body text appears.
+            hits = [
+                body_frag
+                for body_frag in (
+                    "Don't tune what isn't slow.",
+                    "Don't remove a fence blindly.",
+                    "Be conservative in what you send.",
+                )
+                if body_frag in body
+            ]
+            assert len(hits) == 1, f"multi-hit body: {body!r}"
+            seen.add(hits[0])
+        # Randomness check: with 3 entries × 20 draws, we should
+        # have seen at least 2 distinct entries.
+        assert len(seen) >= 2
+
+    def test_get_selector_returns_specific_entry(
+        self, oracle: OracleHandler
+    ) -> None:
+        """``get(id='<slug>~N')`` returns entry N deterministically."""
+        self._seed_multi_oracle(
+            oracle.store,
+            slug="eng",
+            title="Engineering",
+            entries=[
+                ("Knuth's law", "Don't tune what isn't slow."),
+                ("Chesterton's fence", "Don't remove a fence blindly."),
+            ],
+        )
+        out = oracle.get(id="eng~1")
+        assert "Chesterton's fence" in out.body
+        assert "Don't remove a fence blindly." in out.body
+        assert "Don't tune what isn't slow." not in out.body
+        # Handle form in body.
+        assert "oracle eng~1" in out.body
+
+    def test_get_selector_out_of_range_raises(
+        self, oracle: OracleHandler
+    ) -> None:
+        self._seed_multi_oracle(
+            oracle.store,
+            slug="eng",
+            title="Engineering",
+            entries=[("a", "A body"), ("b", "B body")],
+        )
+        with pytest.raises(NotFound, match="no entry at position 99"):
+            oracle.get(id="eng~99")
+
+    def test_get_selector_non_integer_raises(
+        self, oracle: OracleHandler
+    ) -> None:
+        from precis.errors import BadInput
+
+        self._seed_multi_oracle(
+            oracle.store,
+            slug="eng",
+            title="Engineering",
+            entries=[("a", "A body"), ("b", "B body")],
+        )
+        with pytest.raises(BadInput, match="integer entry position"):
+            oracle.get(id="eng~not-a-number")
+
+    def test_get_view_index_lists_entries(self, oracle: OracleHandler) -> None:
+        """``view='index'`` (or ``id='<slug>/index'``) returns a
+        numbered catalog of entry handles with title + first-line
+        preview. The preview is clipped so the index stays bounded
+        even with 60+ entries (iching)."""
+        long_body = (
+            "This is the first line of a longer entry that continues "
+            "across several paragraphs with elaboration and examples.\n"
+            "\nBackground details go here, far beyond what the index "
+            "should show."
+        )
+        self._seed_multi_oracle(
+            oracle.store,
+            slug="eng",
+            title="Engineering",
+            entries=[
+                ("Knuth's law", long_body),
+                ("Chesterton's fence", "Don't remove a fence blindly."),
+            ],
+        )
+        out = oracle.get(id="eng", view="index")
+        # Both entry titles surface.
+        assert "Knuth's law" in out.body
+        assert "Chesterton's fence" in out.body
+        assert "2 entries" in out.body
+        # Handle hints are present.
+        assert "eng~0" in out.body
+        assert "eng~1" in out.body
+        # First-line preview appears; background text does NOT.
+        assert "first line of a longer entry" in out.body
+        assert "Background details" not in out.body, (
+            "index must clip to the first line — caller fetches "
+            "~N to read the full body"
+        )
+
+    def test_get_view_index_path_form_equivalent(
+        self, oracle: OracleHandler
+    ) -> None:
+        """``id='<slug>/index'`` is equivalent to ``view='index'``."""
+        self._seed_multi_oracle(
+            oracle.store,
+            slug="eng",
+            title="Engineering",
+            entries=[("a", "A body"), ("b", "B body")],
+        )
+        a = oracle.get(id="eng", view="index")
+        b = oracle.get(id="eng/index")
+        assert a.body == b.body
+
+    def test_get_view_conflict_raises(self, oracle: OracleHandler) -> None:
+        from precis.errors import BadInput
+
+        self._seed_multi_oracle(
+            oracle.store,
+            slug="eng",
+            title="Engineering",
+            entries=[("a", "A body")],
+        )
+        with pytest.raises(BadInput, match="conflicts with view="):
+            oracle.get(id="eng/index", view="nonexistent")
+
+    def test_single_block_oracle_renders_verbatim(
+        self, oracle: OracleHandler
+    ) -> None:
+        """Single-block oracles (short rubrics, pinpoint prompts) don't
+        shuffle — there's only one entry to return. Pinning this so
+        the random path is truly a multi-entry affordance."""
+        self._seed_oracle(
+            oracle.store,
+            slug="rubric-x",
+            title="Short rubric",
+            body_text="Always cite the source.",
+        )
+        out = oracle.get(id="rubric-x")
+        assert "Always cite the source." in out.body
+
 
 # ── ConversationHandler ────────────────────────────────────────────
 

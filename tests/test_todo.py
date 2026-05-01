@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, Gone, NotFound
 from precis.handlers.todo import TodoHandler
 
 
@@ -135,7 +135,10 @@ def test_delete(handler: TodoHandler) -> None:
     r = handler.put(text="ephemeral")
     todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
     handler.delete(id=todo_id)
-    with pytest.raises(NotFound):
+    # MCP critic MINOR-C (round 1): soft-deleted refs raise ``Gone``
+    # (distinct from ``NotFound`` for never-existed ids) so the LLM
+    # can tell a tombstone from a typo.
+    with pytest.raises(Gone, match="soft-deleted"):
         handler.get(id=todo_id)
 
 

@@ -21,7 +21,7 @@ Three tag shapes by case.  Pick by what you're doing:
 ## Set tags
 
 ```python
-tag(kind='memory', id=48, add=[
+tag(kind='todo', id=48, add=[
     'PRIO:high',           # replaces any other PRIO:* on this ref
     'topic:co2-capture',   # adds (lowercase tags accumulate)
     'star',                # bare flag set
@@ -30,10 +30,15 @@ tag(kind='memory', id=48, add=[
 
 UPPERCASE replaces within its prefix.  Lowercase and bare add.
 
+**Closed prefixes are kind-gated** — ``PRIO:`` and ``STATUS:`` only
+apply to workflow kinds (``todo``, ``gripe``, ``quest``); ``memory``
+and other free-form kinds reject them. See the per-kind axis matrix
+below.
+
 ## Remove tags
 
 ```python
-tag(kind='memory', id=48, remove=[
+tag(kind='todo', id=48, remove=[
     'topic:co2-capture',  # remove this lowercase tag
     'star',               # clear the flag
     'STATUS:done',        # remove only if STATUS is currently 'done'
@@ -88,15 +93,38 @@ Pick from the canonical list:
 | `SRC:` | `primary` / `secondary` | agent |
 | `CACHE:` | `fresh` / `stale` / `pinned` | system |
 
-Other prefixes referenced in older docs (`DENSITY:`, `CONFIDENCE:`,
-`STATUS:archived` / `STATUS:cancelled`) are **not** in the closed
-vocabulary today and would be rejected; coin them as lowercase tags
-(`density:dense`) until they're formally registered.
+Any UPPERCASE prefix outside that table is rejected at the write
+boundary — coin concepts as lowercase tags (`density:dense`,
+`confidence:strong`) instead, which the runtime accepts freely.
+
+## Per-kind axis matrix
+
+Each kind opts in to a subset of the closed prefixes above. A tag
+outside the kind's allowed set raises `BadInput` at the write
+boundary, with the kind's allowed axes named in the recovery hint.
+Write the equivalent semantic as a lowercase open tag instead.
+
+| Kind                              | Allowed closed axes |
+|-----------------------------------|---------------------|
+| `todo`, `gripe`, `quest`          | `STATUS`, `PRIO`    |
+| `paper`, `patent`                 | `SRC`, `CACHE`      |
+| `research`, `think`, `websearch`, `web`, `youtube` | `CACHE` |
+| `memory`, `fc`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |
+
+For a `memory` you'd write priority as a lowercase open tag:
+
+```python
+tag(kind='memory', id=48, add=['prio:high'])      # OK
+tag(kind='memory', id=48, add=['PRIO:high'])      # rejected
+```
+
+The error names the kind's allowed axes and suggests the lowercase
+rewrite, so a 7B caller that hits it converges in one round-trip.
 
 ## Validation errors
 
 ```python
-put(kind='memory', text='...', tags=['urgent'])
+put(kind='todo', text='...', tags=['urgent'])
 # [error:BadInput] bare flag 'urgent' collides with closed value 'PRIO:urgent'
 #   next: use tags=['PRIO:urgent'] instead of tags=['urgent']
 

@@ -259,7 +259,13 @@ class TestIngestPaper:
         assert store.get_ref(kind="oracle", id="minitest") is None
 
     def test_handler_round_trip(self, store: Store, yaml_dir: Path) -> None:
-        """End-to-end: ingest then read via OracleHandler."""
+        """End-to-end: ingest then read via OracleHandler.
+
+        The bare ``get(id='minitest')`` now returns a single random
+        entry (MCP critic MAJOR-$, round 2 of the seven-verb cutover),
+        so we verify BOTH entries landed via the deterministic
+        ``~N`` selectors — that's what the test actually cared about.
+        """
         embedder = MockEmbedder(dim=store.embedding_dim())
         ingest_paper(
             yaml_dir / "minitest.yaml",
@@ -267,12 +273,19 @@ class TestIngestPaper:
             embedder=embedder,
         )
         h = OracleHandler(hub=Hub(store=store))
-        resp = h.get(id="minitest")
-        body = resp.body
-        assert "oracle minitest" in body
-        assert "Mini Test" in body
-        assert "The first lesson." in body
-        assert "The second lesson." in body
+        # Entry 0 — deterministic fetch by position.
+        resp0 = h.get(id="minitest~0")
+        assert "oracle minitest~0" in resp0.body
+        assert "Mini Test" in resp0.body
+        assert "The first lesson." in resp0.body
+        # Entry 1 — deterministic fetch by position.
+        resp1 = h.get(id="minitest~1")
+        assert "oracle minitest~1" in resp1.body
+        assert "The second lesson." in resp1.body
+        # Default (random) call hits one of the two entries.
+        default = h.get(id="minitest")
+        assert "oracle minitest~" in default.body
+        assert "Mini Test" in default.body
 
 
 class TestIngestDirectory:

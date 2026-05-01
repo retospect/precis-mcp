@@ -250,23 +250,42 @@ class PaperHandler(Handler):
         # reads the header as "this is everything" and stops short of
         # hit #101. (MCP critic MAJOR — search has no pagination
         # affordance when capped.)
+        #
+        # Singleton-hit special case (MCP critic MINOR-$): when
+        # ``len(hits) == 1`` the previous nav was 46 % of the response
+        # and 100 % redundant — the scope suggestion narrowed to the
+        # only hit's own paper (a no-op), and the salient-term
+        # suggestion is moot when the caller already has a tight
+        # match. Replace the two-line nav with a single ``top_k=``
+        # widen hint, which is the only useful next step from a
+        # one-of-many singleton.
         if total > len(hits):
-            top_slug = (hits[0][1].slug or "???") if hits else None
-            nav: list[tuple[str, str]] = []
-            if scope is None and top_slug is not None:
+            if len(hits) == 1:
+                body += render_next_section(
+                    [
+                        (
+                            f"search(kind='paper', q={q!r}, top_k=10)",
+                            f"see more of the {total} matches",
+                        ),
+                    ]
+                )
+            else:
+                top_slug = (hits[0][1].slug or "???") if hits else None
+                nav: list[tuple[str, str]] = []
+                if scope is None and top_slug is not None:
+                    nav.append(
+                        (
+                            f"search(kind='paper', q={q!r}, scope={top_slug!r})",
+                            f"narrow to blocks inside {top_slug}",
+                        )
+                    )
                 nav.append(
                     (
-                        f"search(kind='paper', q={q!r}, scope={top_slug!r})",
-                        f"narrow to blocks inside {top_slug}",
+                        f"search(kind='paper', q={q!r} + ' <salient term>')",
+                        "tighten the query with a hit-specific token",
                     )
                 )
-            nav.append(
-                (
-                    f"search(kind='paper', q={q!r} + ' <salient term>')",
-                    "tighten the query with a hit-specific token",
-                )
-            )
-            body += render_next_section(nav)
+                body += render_next_section(nav)
 
         return Response(body=body)
 

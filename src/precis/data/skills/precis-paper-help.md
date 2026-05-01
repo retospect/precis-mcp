@@ -161,12 +161,10 @@ the closed-prefix axes.
 - `get(id='doi:10.1002/...')` / `get(id='arxiv:2207.09327')` — URI
   scheme prefixes. Resolution lives in `acatome-quest-mcp` for now;
   inside precis you address by slug.
-- `view='representatives'`, `view='methods'`, etc. — semantic section
-  views.
 
 ## See also
 
 - `precis-overview` — verbs and kinds
 - `precis-relations` — `related-to`, `contradicts` between papers
-- `precis-tags` — `topic:`, `SRC:`, `DENSITY:*`
+- `precis-tags` — `topic:`, `SRC:`
 - `precis-memory-help` — capturing thoughts from a paper

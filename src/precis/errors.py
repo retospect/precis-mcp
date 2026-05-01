@@ -55,6 +55,23 @@ class BadInput(PrecisError):
     """Parameter invalid or unparseable."""
 
 
+class Gone(PrecisError):
+    """Ref existed and was soft-deleted.
+
+    Distinct envelope from :class:`NotFound` so the LLM can tell the
+    two apart: ``NotFound`` means "try a different id / spelling",
+    while ``Gone`` means "the row was here, it was deleted, the MCP
+    surface can't resurrect it." The row is still recoverable at the
+    SQL layer (``deleted_at IS NOT NULL`` filter) but no MCP verb
+    undoes the delete.
+
+    Added as a response to MCP critic finding MINOR-C: ``delete
+    memory id=3676`` then ``get memory id=3676`` previously returned
+    the same ``[error:NotFound]`` as a never-existed id, leaving the
+    caller unable to tell whether they hit a typo or a tombstone.
+    """
+
+
 class Unsupported(PrecisError):
     """Mode or view not supported by this kind."""
 

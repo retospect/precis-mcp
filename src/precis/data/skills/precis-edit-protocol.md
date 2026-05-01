@@ -4,7 +4,7 @@ title: precis — anchored edits across every file kind
 status: active
 tier: 2
 floor: any
-applies-to: put with mode='edit' or mode='insert' on R/W file kinds (markdown, plaintext, python today; rmk, docx, tex, book queued)
+applies-to: put with mode='edit' or mode='insert' on R/W file kinds (markdown, plaintext, python)
 last-updated: 2026-05-01
 ---
 
@@ -171,15 +171,11 @@ rejected` for the full rationale.
 
 The schema is universal; the validation differs:
 
-| Kind | Status | Validation gate | Format step |
-|---|---|---|---|
-| `markdown` | **shipped v1** | re-parse blocks on re-ingest | none |
-| `plaintext` | **shipped v1** | UTF-8 encode check | none |
-| `python` | **shipped v1** | `ast.parse` + qualname-stable | `ruff check --fix` + `ruff format` |
-| `rmk` | queued | re-parse | trim trailing ws |
-| `docx` | queued | re-parse XML; run integrity | none |
-| `tex` | queued | brace + env balance | none |
-| `book` | queued | delegated per child file | delegated |
+| Kind | Validation gate | Format step |
+|---|---|---|
+| `markdown` | re-parse blocks on re-ingest | none |
+| `plaintext` | UTF-8 encode check | none |
+| `python` | `ast.parse` + qualname-stable | `ruff check --fix` + `ruff format` |
 
 For kind-specific examples and recipes, see the kind's own skill
 (`precis-markdown-help § Surgical edits`, `precis-python-help §

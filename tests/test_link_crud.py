@@ -392,12 +392,21 @@ class TestMemoryHandlerLink:
 
 class TestMemoryHandlerLinksView:
     def test_no_links(self, memory_handler: MemoryHandler, store: Store) -> None:
+        """MCP critic MINOR-C (round 2, deep pass): the no-links
+        recovery hint teaches ``link(...)`` (the canonical add-link
+        verb after seven-verb cutover), not the stale
+        ``put(link=, rel=)`` form which no longer works on most
+        kinds."""
         m = memory_handler.put(text="alone")
         new_id = int(m.body.split("=")[-1].strip().split()[0])
         out = memory_handler.get(id=new_id, view="links")
         assert "(no links)" in out.body
-        # Hint pointing at how to add one.
-        assert "link='kind:identifier'" in out.body
+        # Hint points at the ``link()`` verb.
+        assert "link(kind='memory'" in out.body
+        assert "target='kind:identifier'" in out.body
+        # Stale ``put(link=)`` form must not appear.
+        assert "put(kind='memory'" not in out.body
+        assert "link='kind:identifier'" not in out.body
 
     def test_outbound_rendering(
         self, memory_handler: MemoryHandler, store: Store

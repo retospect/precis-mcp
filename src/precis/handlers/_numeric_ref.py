@@ -32,7 +32,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.handlers._link_tag_ops import validate_relation
 from precis.handlers._link_target import parse_link_target
 from precis.protocol import Handler, KindSpec
@@ -74,6 +74,44 @@ class NumericRefHandler(Handler):
     @classmethod
     def _sense(cls) -> str:
         return cls.sense or cls.kind
+
+    # ── ref resolution with soft-delete distinction ────────────────
+
+    def _resolve_live_ref(self, ref_id: int) -> Ref:
+        """Fetch a ref by id, raising ``Gone`` if soft-deleted and
+        ``NotFound`` if it never existed.
+
+        MCP critic MINOR-C (round 1): before this split, both cases
+        returned the same ``[error:NotFound]`` envelope, so the LLM
+        couldn't tell whether it hit a typo (try a different id) or
+        a tombstone (the row was deleted, no MCP undo). Distinct
+        envelopes mean the recovery vocabulary is sharp.
+
+        The ``Gone`` path uses ``include_deleted=True`` on
+        ``get_ref`` so soft-deleted rows surface for detection;
+        they're still excluded from every other read path.
+        """
+        ref = self.store.get_ref(kind=self.kind, id=ref_id)
+        if ref is not None:
+            return ref
+        # Second probe: does the row exist but is soft-deleted?
+        tombstone = self.store.get_ref(
+            kind=self.kind, id=ref_id, include_deleted=True
+        )
+        if tombstone is not None:
+            raise Gone(
+                f"{self._sense()} id={ref_id} was soft-deleted "
+                "(row retained for audit; no MCP undo)",
+                next=(
+                    "post-mortem only — soft-deleted refs are "
+                    "recoverable at the SQL layer by setting "
+                    "deleted_at=NULL on the row"
+                ),
+            )
+        raise NotFound(
+            f"{self._sense()} id={ref_id} not found",
+            next=f"search(kind={self.kind!r}, q='...') to find existing",
+        )
 
     # ── get ─────────────────────────────────────────────────────────
 
@@ -117,12 +155,7 @@ class NumericRefHandler(Handler):
             )
 
         ref_id = self._coerce_id(id)
-        ref = self.store.get_ref(kind=self.kind, id=ref_id)
-        if ref is None:
-            raise NotFound(
-                f"{self._sense()} id={ref_id} not found",
-                next=f"search(kind={self.kind!r}, q='...') to find existing",
-            )
+        ref = self._resolve_live_ref(ref_id)
         if view is not None:
             if view not in _BASE_VIEWS:
                 raise Unsupported(
@@ -345,12 +378,7 @@ class NumericRefHandler(Handler):
                 ),
             )
         ref_id = self._coerce_id(id)
-        existing = self.store.get_ref(kind=self.kind, id=ref_id)
-        if existing is None:
-            raise NotFound(
-                f"{self._sense()} id={ref_id} not found",
-                next=f"check id with: get(kind={self.kind!r}, id={ref_id})",
-            )
+        existing = self._resolve_live_ref(ref_id)
         # Pre-validate every tag *before* touching the DB so a
         # rejected tag mid-call doesn't leave partial state. Mirrors
         # the contract on ``_create`` / ``_update``.
@@ -403,12 +431,7 @@ class NumericRefHandler(Handler):
                 options=["add", "remove"],
             )
         ref_id = self._coerce_id(id)
-        existing = self.store.get_ref(kind=self.kind, id=ref_id)
-        if existing is None:
-            raise NotFound(
-                f"{self._sense()} id={ref_id} not found",
-                next=f"check id with: get(kind={self.kind!r}, id={ref_id})",
-            )
+        existing = self._resolve_live_ref(ref_id)
         link_target = parse_link_target(target, store=self.store)
         relation = validate_relation(rel)
         if mode == "add":
@@ -540,7 +563,7 @@ class NumericRefHandler(Handler):
 
         Each link line names the other endpoint in canonical
         ``kind:identifier[~pos]`` form so it can be round-tripped
-        back into a future ``put(link=…)`` call without any further
+        back into a future ``link(target=…)`` call without any further
         translation.
         """
         out_links = self.store.links_for(ref.id, direction="out")
@@ -551,9 +574,16 @@ class NumericRefHandler(Handler):
             lines.append("")
             lines.append("(no links)")
             lines.append("")
+            # MCP critic MINOR-C (round 2, deep pass): the recovery
+            # hint used to suggest ``put(link='kind:identifier', rel=…)``.
+            # ``put(link=)`` survives on numeric-ref kinds as a
+            # create-and-link-in-one shortcut (D3), but the canonical
+            # add-link verb for an existing ref is ``link(...)``. Teach
+            # that here so the LLM doesn't mix the two idioms when
+            # later adding links to refs the caller already has.
             lines.append(
-                f"add one with: put(kind={self.kind!r}, id={ref.id}, "
-                "link='kind:identifier', rel='related-to')"
+                f"add one with: link(kind={self.kind!r}, id={ref.id}, "
+                "target='kind:identifier', rel='related-to')"
             )
             return Response(body="\n".join(lines))
 

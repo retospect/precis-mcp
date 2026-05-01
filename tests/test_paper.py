@@ -395,3 +395,58 @@ class TestSearch:
         _seed_paper(store, blocks=["alpha"])
         resp = lex_only.search(q="zzqqxx")
         assert "no paper blocks match" in resp.body
+
+    def test_singleton_hit_no_redundant_trailer(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """MCP critic MINOR-$: ``top_k=1`` against a corpus with many
+        matches used to render a two-line nav (``scope=<that slug>``
+        + ``+ <salient term>``) that was 46 % of the response and
+        100 % redundant — scoping to the only hit's own paper is a
+        no-op, and the salient-term hint is moot when the caller
+        already has a tight match.
+
+        New shape: a single ``top_k=10`` widen hint replaces both
+        lines. ``scope=`` with the hit's own slug must NOT appear,
+        and the long-form salient-term suggestion must be gone too.
+        """
+        # Seed multiple papers all matching the same word so a
+        # ``top_k=1`` query has many more matches than it returned.
+        for slug in ("paper-a", "paper-b", "paper-c", "paper-d"):
+            _seed_paper(
+                store,
+                slug=slug,
+                title=f"Paper {slug}",
+                blocks=[f"photocatalytic nitrogen reduction in {slug}"],
+            )
+        resp = handler.search(q="photocatalytic", top_k=1)
+        # Header still announces "1 of N" so the caller knows there
+        # are more matches.
+        assert " of " in resp.body
+        # New: a top_k=10 widen hint is present.
+        assert "top_k=10" in resp.body
+        assert "see more of the" in resp.body
+        # Old: scope=<self> is no longer suggested.
+        # ``scope='paper-a'`` would only appear in the legacy two-
+        # line trailer; pin its absence.
+        assert "narrow to blocks inside" not in resp.body
+        assert "tighten the query with a hit-specific token" not in resp.body
+
+    def test_multi_hit_keeps_full_nav(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The singleton suppression is *only* for ``len(hits) == 1`` —
+        multi-hit pages still get the scope + salient-term suggestions
+        because each piece of the nav is genuinely useful when the
+        caller has multiple matches to triangulate from."""
+        for slug in ("paper-a", "paper-b", "paper-c"):
+            _seed_paper(
+                store,
+                slug=slug,
+                title=f"Paper {slug}",
+                blocks=[f"photocatalytic reduction in {slug}"],
+            )
+        resp = handler.search(q="photocatalytic", top_k=2)
+        # Two-line nav must still be present.
+        assert "narrow to blocks inside" in resp.body
+        assert "tighten the query with a hit-specific token" in resp.body

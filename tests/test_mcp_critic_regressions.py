@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub, boot
-from precis.errors import BadInput
+from precis.errors import BadInput, Gone, NotFound
 from precis.handlers.paper import _normalise_view, _strip_jats
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
@@ -360,13 +360,16 @@ def test_status_vocabulary_matches_todo_handler() -> None:
 
 
 def test_precis_overview_skill_no_dead_kinds() -> None:
-    """The MCP critic flagged ``clock``, ``rng``, ``plot``, and ``ask``
-    as documented kinds that don't exist in the runtime. Pin them out
-    of the canonical entry-point doc.
+    """MCP critic (multiple rounds) + May 2026 policy tightening:
+    the canonical entry-point doc must not reference any kind that
+    isn't wired in the runtime. The stricter "unwired = unmentioned"
+    discipline removes even *reserved* kinds (``book``, ``docx``,
+    ``tex``, ``rmk``) that were previously tolerated as informational.
 
-    ``book`` is intentionally still mentioned — but only as a
-    *reserved* kind (not yet wired). That's information, not bait,
-    so it's allowed.
+    The rule of thumb: if an agent reads this skill and copy-pastes
+    a kind name into ``get(kind=X, …)``, X must succeed (or fail for
+    reasons unrelated to X not existing). Today's wired set is the
+    only set we advertise.
     """
     from importlib import resources
 
@@ -375,8 +378,16 @@ def test_precis_overview_skill_no_dead_kinds() -> None:
         .joinpath("precis-overview.md")
         .read_text("utf-8")
     )
+    # Never-wired kinds (flagged by the original critic pass).
     for dead in ("`clock`", "`rng`", "`plot`", "`ask`"):
         assert dead not in text, f"precis-overview still references dead kind {dead!r}"
+    # Reserved-but-unwired kinds (stripped under the May 2026
+    # policy). If one of these lands, wire the handler AND re-add
+    # the kind mention in the same commit.
+    for reserved in ("`book`", "`docx`", "`tex`", "`rmk`"):
+        assert (
+            reserved not in text
+        ), f"precis-overview reintroduces unwired kind {reserved!r}"
 
 
 def test_precis_overview_skill_has_no_wang2020state_example() -> None:
@@ -390,6 +401,115 @@ def test_precis_overview_skill_has_no_wang2020state_example() -> None:
         .read_text("utf-8")
     )
     assert "wang2020state" not in text
+
+
+# ── MINOR-C: tag tool description documents per-kind axis gating ────
+
+
+def test_tag_tool_description_documents_per_kind_gating() -> None:
+    """MCP critic MINOR-C (round 1): the ``tag`` tool's description
+    must teach the LLM about per-kind closed-prefix gating so a
+    ``BadInput: axis not allowed on kind 'memory'`` reads as expected
+    behaviour, not a bug. Agents that don't know the gating retry the
+    same call with different values and burn tokens in confusion.
+
+    The description is what the MCP client sees in ``tools/list`` —
+    it's the LLM's only spec for the verb, so the gating must be
+    discoverable there.
+    """
+    import inspect
+
+    from precis import server
+
+    # ``server.tag`` is the decorated function; its __doc__ is what
+    # FastMCP serialises into the tools/list manifest.
+    tag_fn = server.tag
+    doc = inspect.getdoc(tag_fn) or ""
+    # The gating phrase ("axis not allowed on kind") is the exact
+    # error string the runtime emits — a docstring ↔ error pair.
+    assert "axis not allowed on kind" in doc
+    # Explicit per-kind matrix + pointer to the authoritative skill.
+    assert "Per-kind closed-prefix gating" in doc
+    assert "precis-tags" in doc
+    # Pin a few known-correct axis assignments so a future rework of
+    # _KIND_ALLOWED_AXES nudges the docstring too.
+    for expected in (
+        "todo",  # STATUS + PRIO
+        "memory",  # no closed axes
+        "paper",  # SRC + CACHE
+        "CACHE",  # cache-only kinds
+    ):
+        assert expected in doc, f"tag docstring must mention {expected!r}"
+
+
+# ── MINOR-C: soft-deleted refs distinguished from never-existed ────
+
+
+class TestSoftDeleteGoneEnvelope:
+    """MCP critic MINOR-C (round 1): ``delete memory id=N`` then
+    ``get memory id=N`` previously returned an identical
+    ``[error:NotFound]`` to a never-existed id, so the LLM couldn't
+    tell whether it hit a typo (try a different id) or a tombstone
+    (the row is gone, no MCP undo).
+
+    The fix adds a distinct ``Gone`` error class; the rendering
+    uses ``err.__class__.__name__`` so the envelope is
+    ``[error:Gone]`` with a recovery hint pointing at the SQL
+    layer (the only path that can resurrect a soft-deleted ref).
+    """
+
+    def test_never_existed_raises_notfound(self, store: Store) -> None:
+        from precis.handlers.memory import MemoryHandler
+
+        h = MemoryHandler(hub=Hub(store=store))
+        with pytest.raises(NotFound, match="id=99999999 not found"):
+            h.get(id=99999999)
+
+    def test_soft_deleted_raises_gone_not_notfound(self, store: Store) -> None:
+        from precis.handlers.memory import MemoryHandler
+
+        h = MemoryHandler(hub=Hub(store=store))
+        out = h.put(text="probe — will be deleted")
+        # Ack shape is "created memory id=N …" (_render_create_ack).
+        import re
+
+        m = re.search(r"id=(\d+)", out.body)
+        assert m is not None, f"unexpected put body shape: {out.body!r}"
+        ref_id = int(m.group(1))
+
+        # Soft-delete the ref.
+        h.delete(id=ref_id)
+
+        # NotFound is wrong — the row is still there, just flagged.
+        # Gone carries an "SQL layer" recovery hint.
+        with pytest.raises(Gone) as excinfo:
+            h.get(id=ref_id)
+        assert "soft-deleted" in excinfo.value.cause
+        assert excinfo.value.next is not None
+        assert "SQL" in excinfo.value.next
+
+    def test_rendered_envelope_labelled_gone(
+        self, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """End-to-end through the dispatcher: the rendered string
+        uses ``[error:Gone]`` (not ``[error:NotFound]``) so any
+        wrapper parsing the envelope-prefix sees the distinction."""
+        out_put = runtime_with_store.dispatch(
+            "put", {"kind": "memory", "text": "envelope probe"}
+        )
+        import re
+
+        m = re.search(r"id=(\d+)", out_put)
+        assert m is not None
+        ref_id = int(m.group(1))
+        runtime_with_store.dispatch("delete", {"kind": "memory", "id": ref_id})
+
+        out_get = runtime_with_store.dispatch(
+            "get", {"kind": "memory", "id": ref_id}
+        )
+        assert "[error:Gone]" in out_get
+        assert "[error:NotFound]" not in out_get
+        assert "soft-deleted" in out_get
 
 
 # ── MAJOR: put with bad tags must not leave a ghost ref behind ─────

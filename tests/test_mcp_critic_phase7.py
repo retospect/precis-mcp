@@ -113,25 +113,29 @@ class TestPutNarrowedToCreateOnly:
 
 
 class TestSkillIndexFiltering:
-    def test_density_marked_planned(self) -> None:
-        """``precis-density`` documents three views the runtime
-        rejects; front-matter must say so."""
+    def test_density_and_navigation_deleted(self) -> None:
+        """Round 3 tightening of the unwired-= unmentioned discipline:
+        ``precis-density`` and ``precis-navigation`` were previously
+        shipped with status: planned / aspirational banners, but both
+        described features that don't exist (DENSITY tag prefix,
+        ``view='representatives'``, ``kind='ask'``, ``kind='all'``,
+        …). Even hidden from the default index they were still
+        retrievable by explicit slug, teaching agents APIs that
+        would throw. The stricter policy (per repo owner, May 2026)
+        is: if we can't help mention something unwired, don't.
+        These two files are deleted; re-add them when the described
+        APIs land.
+        """
         from importlib import resources
 
-        text = (resources.files("precis.data.skills") / "precis-density.md").read_text(
-            encoding="utf-8"
-        )
-        fm = _parse_frontmatter(text)
-        assert fm.get("status") == "planned"
-
-    def test_navigation_marked_aspirational(self) -> None:
-        from importlib import resources
-
-        text = (
-            resources.files("precis.data.skills") / "precis-navigation.md"
-        ).read_text(encoding="utf-8")
-        fm = _parse_frontmatter(text)
-        assert fm.get("status") == "aspirational"
+        for gone in ("precis-density.md", "precis-navigation.md"):
+            traversable = resources.files("precis.data.skills") / gone
+            # ``Traversable`` doesn't expose ``exists`` uniformly, so
+            # probe via ``is_file`` (available since py3.11).
+            assert not traversable.is_file(), (
+                f"{gone} resurfaced — it describes unwired features "
+                "and must stay deleted until those features land"
+            )
 
     def test_files_help_marked_active(self) -> None:
         """``precis-files-help`` documents the shared address grammar
@@ -155,13 +159,6 @@ class TestSkillIndexFiltering:
         assert "PRECIS_PLAINTEXT_ROOT" in text
         assert "PRECIS_PYTHON_ROOTS" in text
 
-    def test_availability_gap_filters_status_planned(
-        self, runtime: PrecisRuntime
-    ) -> None:
-        gap = _availability_gap("precis-density", hub=runtime.hub)
-        assert gap is not None
-        assert "planned" in gap.lower()
-
     def test_availability_gap_filters_unregistered_kind_help(
         self, runtime: PrecisRuntime
     ) -> None:
@@ -180,27 +177,30 @@ class TestSkillIndexFiltering:
         gap = _availability_gap("precis-memory-help", hub=runtime.hub)
         assert gap is None
 
-    def test_index_omits_filtered_skills(self, runtime: PrecisRuntime) -> None:
-        """The bare ``get(kind='skill')`` index doesn't list
-        ``precis-density`` or ``precis-navigation``."""
+    def test_index_omits_deleted_skills(self, runtime: PrecisRuntime) -> None:
+        """Direct confirmation that the bare ``get(kind='skill')``
+        index doesn't reference the deleted skills — defense in depth
+        against a stale cached copy resurfacing via resource enumeration
+        or FM re-parsing."""
         h = runtime.hub.handler_for("skill")
         assert isinstance(h, SkillHandler)
         out = h.get()
         assert "precis-density" not in out.body
         assert "precis-navigation" not in out.body
-        # But the hidden-count footer notes them.
-        assert "non-active skills hidden" in out.body
 
-    def test_filtered_skill_still_retrievable_with_banner(
-        self, runtime: PrecisRuntime
-    ) -> None:
-        """Direct slug fetch still works and prepends a heads-up banner."""
+    def test_deleted_skill_raises_notfound(self, runtime: PrecisRuntime) -> None:
+        """Direct fetch of a deleted skill must ``NotFound``, not
+        return a banner-wrapped stale copy. This pins the stricter
+        "unwired = unmentioned" discipline: the deleted skills are
+        genuinely gone, not soft-hidden."""
+        from precis.errors import NotFound
+
         h = runtime.hub.handler_for("skill")
         assert isinstance(h, SkillHandler)
-        out = h.get(id="precis-density")
-        assert "Heads up" in out.body
-        # The original content is still there.
-        assert "DENSITY" in out.body or "representatives" in out.body
+        with pytest.raises(NotFound):
+            h.get(id="precis-density")
+        with pytest.raises(NotFound):
+            h.get(id="precis-navigation")
 
 
 # ── MAJOR #8: unregistered UPPERCASE: prefixes rejected ──────────

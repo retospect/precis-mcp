@@ -55,7 +55,7 @@ shapes — slug for canonical/named refs, integer for agent scratch:
 | `conv`    | `2026-04-26-spec`     | Past conversation                 | store |
 | `markdown`| `notes--meeting`      | A `.md` file under the configured root | `PRECIS_MARKDOWN_ROOT` |
 | `plaintext`| `notes--log`         | A `.txt` / `.log` file under the configured root | `PRECIS_PLAINTEXT_ROOT` |
-| `python`  | `precis-mcp::precis.cli.main` | A symbol / file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
+| `python`  | `precis::precis.cli.main` | A symbol / file in a configured Python repo (alias before `::` matches `PRECIS_PYTHON_ROOTS`) | `PRECIS_PYTHON_ROOTS` |
 | `todo`    | `122` (int)           | A task                            | store |
 | `memory`  | `47` (int)            | Agent note / scratchpad           | store |
 | `gripe`   | `9` (int)             | Annoyance / niggle — log freely, filter later | store |
@@ -64,8 +64,7 @@ shapes — slug for canonical/named refs, integer for agent scratch:
 The **active** set varies by build — rows whose *Needs* column names
 an env var are only registered when that var is set. Use
 `get(kind='skill', id='precis-help')` to enumerate the kinds that
-are live **right now** in this server. `book`, `docx`, `tex`, and
-`rmk` are reserved kinds that aren't wired in any build yet.
+are live **right now** in this server.
 
 ## Kinds — tools
 
@@ -110,10 +109,8 @@ get(kind='math', q='speed of light in km/h')  # → 1.079e9 km/h (paid)
 - `precis-relations` — link vocabulary (`related-to`, `blocks`, `contradicts`)
 - `precis-tags` — three namespaces by case, six closed prefixes
 - `precis-cache` — paid-tool caching, freshness, force-refetch
-- `precis-density` — novelty-finding, corpus coverage
 - `precis-paper-help` — paper views, citation export
 - `precis-todo-help` — todo lifecycle, priority, due dates, blocking
 - `precis-memory-help` — memory sub-kinds via `kind:`
 - `precis-python-help` — Python code navigation, callgraph + runtrace, AST-gated edits
 - `precis-files-help` — shared address grammar for file-backed kinds (markdown, plaintext, python)
-- `precis-navigation` — recipes for common flows

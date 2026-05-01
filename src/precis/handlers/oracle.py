@@ -1,17 +1,28 @@
 """OracleHandler — saved long-form prompts / authoritative reference nodes.
 
-Slug-addressed, durable. Each `oracle` is a curated prompt that
-agents can fetch verbatim — e.g. ``oracle:reviewer-rigor`` returns the
-canonical reviewer rubric, ``oracle:cite-style`` returns the citation
-style guide.
+Slug-addressed, durable. Each `oracle` is a curated collection of
+wisdom entries (proverbs, Stoic principles, engineering rules of
+thumb, …). Entries are blocks within the oracle ref; the slug picks
+the tradition, a block selector picks the entry.
 
-Shape mirrors :class:`ConversationHandler` (slug get + lexical search +
-list view), minus the per-turn navigation. Phase 5 ships a read-only
-handler; future ``put`` adds versioning.
+Addressing modes:
+
+- ``get(kind='oracle')``                → list traditions
+- ``get(kind='oracle', id='stoic')``    → **one random entry**
+- ``get(kind='oracle', id='stoic~3')``  → entry at position 3
+- ``get(kind='oracle', id='stoic/index')`` → numbered entry catalog
+- ``get(kind='oracle', id='stoic', view='index')`` → same as above
+
+The random default matches oracle semantics ("consult the oracle"
+returns one piece of wisdom, not all of it) and keeps the per-call
+token footprint bounded (~50–200 tokens) instead of dumping all
+14–64 entries verbatim (MCP critic MAJOR-$: oracle:stoic was
+~1750 tokens per call, oracle:engineering ~2355 tokens).
 """
 
 from __future__ import annotations
 
+import secrets
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -28,7 +39,14 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.store import Block, Ref
+from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
+
+# Block-selector views accepted on ``id=<slug>/<view>`` or
+# ``view=<view>``. ``index`` is the escape hatch for callers who want
+# the full catalog before picking an entry.
+_ORACLE_VIEWS: tuple[str, ...] = ("index",)
 
 
 class OracleHandler(Handler):
@@ -66,20 +84,71 @@ class OracleHandler(Handler):
         view: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # No id → list oracles. Path-form lists (``id='/'``) land here
+        # too for symmetry with other slug kinds.
         if id is None or (isinstance(id, str) and id.startswith("/")):
             return self._render_list()
-        slug = str(id).strip()
+
+        slug, selector, path_view = _parse_oracle_id(str(id))
+
+        # view= and path-form views are equivalent. Reject the
+        # collision so the caller isn't confused if the two disagree.
+        if view is not None and path_view is not None and view != path_view:
+            raise BadInput(
+                f"id= path view {path_view!r} conflicts with view={view!r}",
+                next=f"pick one: get(kind='oracle', id={slug!r}, view={view!r})",
+            )
+        effective_view = view or path_view
+
         ref = self.store.get_ref(kind="oracle", id=slug)
         if ref is None:
             raise NotFound(
                 f"oracle slug {slug!r} not found",
                 next="search(kind='oracle', q='...') to find existing",
             )
-        # The full body lives in the first block (or in title for short
-        # oracles). We render whichever has content.
         blocks = self.store.list_blocks_for_ref(ref.id)
-        body_text = "\n\n".join(b.text for b in blocks) if blocks else ref.title
-        return Response(body=f"# oracle {slug}\n_{ref.title}_\n\n{body_text}")
+
+        # Empty oracle — no blocks, body lives in the title only.
+        if not blocks:
+            return Response(
+                body=f"# oracle {slug}\n_{ref.title}_\n\n(empty tradition)"
+            )
+
+        # Explicit view takes precedence over the selector.
+        if effective_view is not None:
+            if effective_view not in _ORACLE_VIEWS:
+                raise BadInput(
+                    f"unknown oracle view {effective_view!r}",
+                    options=list(_ORACLE_VIEWS),
+                    next=(
+                        f"get(kind='oracle', id={slug!r}, view='index') "
+                        "to list entry handles"
+                    ),
+                )
+            return self._render_index(ref, blocks)
+
+        # Selector-based addressing: ``slug~N`` → entry at pos N.
+        if selector is not None:
+            try:
+                pos = int(selector)
+            except ValueError:
+                raise BadInput(
+                    f"oracle selector must be an integer entry position, "
+                    f"got {selector!r}",
+                    next=(
+                        f"get(kind='oracle', id={slug!r}, view='index') "
+                        "to see available entry positions"
+                    ),
+                ) from None
+            return self._render_entry(ref, blocks, pos)
+
+        # Default (no selector, no view): single-block oracles render
+        # verbatim; multi-block oracles return one random entry with
+        # hints toward the deterministic paths.
+        if len(blocks) == 1:
+            body = blocks[0].text
+            return Response(body=f"# oracle {slug}\n_{ref.title}_\n\n{body}")
+        return self._render_random_entry(ref, blocks)
 
     def search(  # type: ignore[override]
         self,
@@ -212,3 +281,185 @@ class OracleHandler(Handler):
                 ),
             ],
         )
+
+    # ── per-entry rendering ─────────────────────────────────────────
+
+    def _render_random_entry(self, ref: Ref, blocks: list[Block]) -> Response:
+        """Pick one entry at random; render it with catalog hints.
+
+        Uses ``secrets.randbelow`` (CSPRNG) for unbiased selection —
+        ``random.randrange`` would be equally correct but ``secrets``
+        reads slightly more intentionally for an "oracle consult"
+        semantic. Callers that need determinism use ``~N``.
+        """
+        idx = secrets.randbelow(len(blocks))
+        block = blocks[idx]
+        slug = ref.slug or "???"
+        title = _entry_title(block) or f"entry {block.pos}"
+        body = (
+            f"# oracle {slug}~{block.pos}\n"
+            f"_{ref.title} — {title}_\n\n"
+            f"{block.text}"
+        )
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='oracle', id={slug!r})",
+                    "consult again (random pick)",
+                ),
+                (
+                    f"get(kind='oracle', id='{slug}/index')",
+                    f"see all {len(blocks)} entries",
+                ),
+                (
+                    f"get(kind='oracle', id='{slug}~{block.pos}')",
+                    "fetch THIS entry deterministically",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    def _render_entry(self, ref: Ref, blocks: list[Block], pos: int) -> Response:
+        """Render the entry at ``pos`` (deterministic)."""
+        block = next((b for b in blocks if b.pos == pos), None)
+        slug = ref.slug or "???"
+        if block is None:
+            raise NotFound(
+                f"oracle {slug!r} has no entry at position {pos} "
+                f"(valid range: 0..{len(blocks) - 1})",
+                next=(
+                    f"get(kind='oracle', id='{slug}/index') "
+                    "to list entry positions"
+                ),
+            )
+        title = _entry_title(block) or f"entry {pos}"
+        body = (
+            f"# oracle {slug}~{pos}\n"
+            f"_{ref.title} — {title}_\n\n"
+            f"{block.text}"
+        )
+        # Prev/next affordances are cheap and obvious.
+        nav: list[tuple[str, str]] = []
+        if pos > 0 and any(b.pos == pos - 1 for b in blocks):
+            nav.append(
+                (
+                    f"get(kind='oracle', id='{slug}~{pos - 1}')",
+                    "previous entry",
+                )
+            )
+        if any(b.pos == pos + 1 for b in blocks):
+            nav.append(
+                (
+                    f"get(kind='oracle', id='{slug}~{pos + 1}')",
+                    "next entry",
+                )
+            )
+        nav.append(
+            (
+                f"get(kind='oracle', id={slug!r})",
+                "another random entry",
+            )
+        )
+        nav.append(
+            (
+                f"get(kind='oracle', id='{slug}/index')",
+                "full entry catalog",
+            )
+        )
+        body += render_next_section(nav)
+        return Response(body=body)
+
+    def _render_index(self, ref: Ref, blocks: list[Block]) -> Response:
+        """Numbered catalog of every entry — title + first-line preview.
+
+        This is the critic's preferred "always-bounded" shape. Rough
+        budget: ~8–15 tokens per entry × up to 64 entries (iching) ~=
+        1000 tokens worst case, well below the 2355 the old dump-all
+        default produced.
+        """
+        slug = ref.slug or "???"
+        lines = [
+            f"# oracle {slug}/index",
+            f"_{ref.title}_",
+            f"\n{len(blocks)} entries:",
+        ]
+        for block in blocks:
+            title = _entry_title(block) or f"(entry {block.pos})"
+            preview = _first_line(block.text)
+            handle = f"{slug}~{block.pos}"
+            if preview and preview != title:
+                lines.append(f"- **{block.pos}. {title}** — {preview}  `{handle}`")
+            else:
+                lines.append(f"- **{block.pos}. {title}**  `{handle}`")
+        body = "\n".join(lines)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='oracle', id={slug!r})",
+                    "random entry (default)",
+                ),
+                (
+                    f"get(kind='oracle', id='{slug}~N')",
+                    "fetch entry N (0-indexed)",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+
+# ── module-level helpers ────────────────────────────────────────────
+
+
+def _parse_oracle_id(id_str: str) -> tuple[str, str | None, str | None]:
+    """Split ``slug``, ``slug~N``, ``slug/view`` into components.
+
+    Returns ``(slug, selector, view)`` where:
+
+    - ``selector`` is the text after ``~`` (stringly typed; the caller
+      validates it as an integer position)
+    - ``view`` is the text after ``/`` (must be in ``_ORACLE_VIEWS``)
+
+    ``slug~N/view`` is rejected upstream — entry-level views aren't
+    a thing yet; we keep the grammar linear.
+    """
+    id_str = id_str.strip()
+    # Handle selector FIRST — ``slug~N`` can also have no ``/``.
+    if "~" in id_str:
+        slug, rest = id_str.split("~", 1)
+        if "/" in rest:
+            # Entry-level view (``slug~N/view``) not supported today.
+            # Let the caller raise BadInput with an actionable hint.
+            sel, view = rest.split("/", 1)
+            return slug.strip(), sel.strip(), view.strip()
+        return slug.strip(), rest.strip(), None
+    if "/" in id_str:
+        slug, view = id_str.split("/", 1)
+        return slug.strip(), None, view.strip()
+    return id_str, None, None
+
+
+def _entry_title(block: Block) -> str | None:
+    """Extract a human-readable title for an oracle entry.
+
+    Oracle ingest (see ``jobs/ingest_oracles.py``) stores the entry
+    title as the first element of ``meta['section_path']``. Falls
+    back to ``None`` if the block was added through some other path.
+    """
+    meta = block.meta or {}
+    path = meta.get("section_path") or []
+    if isinstance(path, list) and path:
+        first = path[0]
+        if isinstance(first, str) and first.strip():
+            return first.strip()
+    return None
+
+
+def _first_line(text: str, *, max_chars: int = 80) -> str:
+    """Return the first non-empty line, clipped to ``max_chars``."""
+    for line in text.splitlines():
+        s = line.strip()
+        if s:
+            if len(s) > max_chars:
+                return s[: max_chars - 1].rstrip() + "…"
+            return s
+    return ""
