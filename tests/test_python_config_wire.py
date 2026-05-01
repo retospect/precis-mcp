@@ -13,8 +13,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from precis.dispatch import Registry, boot
 from precis.handlers.python import PythonHandler, parse_python_roots
-from precis.registry import builtins
 
 # ---------------------------------------------------------------------------
 # parse_python_roots
@@ -103,39 +103,35 @@ def test_parse_ignores_blank_entries(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# builtins() integration
+# boot() integration
 # ---------------------------------------------------------------------------
-
-
-def _kinds_in(handlers) -> set[str]:
-    return {h.spec.kind for h in handlers}
 
 
 def test_python_handler_hidden_when_no_roots() -> None:
     """No PRECIS_PYTHON_ROOTS → no python kind, regardless of store."""
-    handlers = builtins()
-    assert "python" not in _kinds_in(handlers)
+    r = boot()
+    assert "python" not in r.kinds
 
 
 def test_python_handler_hidden_when_all_entries_invalid(caplog) -> None:
     with caplog.at_level(logging.WARNING):
-        handlers = builtins(python_roots="bogus,no-colon-either")
-    assert "python" not in _kinds_in(handlers)
+        r = boot(python_roots="bogus,no-colon-either")
+    assert "python" not in r.kinds
 
 
 def test_python_handler_present_when_one_root_valid(tmp_path: Path) -> None:
-    handlers = builtins(python_roots=f"r:{tmp_path}")
-    assert "python" in _kinds_in(handlers)
-    h = next(h for h in handlers if h.spec.kind == "python")
+    r = boot(python_roots=f"r:{tmp_path}")
+    assert "python" in r.kinds
+    h = r.handler_for("python")
     assert isinstance(h, PythonHandler)
     assert h.roots == {"r": tmp_path.resolve()}
 
 
 def test_python_handler_present_without_store(tmp_path: Path) -> None:
     """Python kind doesn't depend on a store; it should appear even
-    when builtins() is called with store=None."""
-    handlers = builtins(store=None, python_roots=f"r:{tmp_path}")
-    assert "python" in _kinds_in(handlers)
+    when boot() is called with store=None."""
+    r = boot(store=None, python_roots=f"r:{tmp_path}")
+    assert "python" in r.kinds
 
 
 def test_python_handler_present_with_multiple_valid_roots(tmp_path: Path) -> None:
@@ -143,24 +139,25 @@ def test_python_handler_present_with_multiple_valid_roots(tmp_path: Path) -> Non
     b = tmp_path / "b"
     a.mkdir()
     b.mkdir()
-    handlers = builtins(python_roots=f"a:{a},b:{b}")
-    h = next(h for h in handlers if h.spec.kind == "python")
+    r = boot(python_roots=f"a:{a},b:{b}")
+    h = r.handler_for("python")
+    assert isinstance(h, PythonHandler)
     assert set(h.roots) == {"a", "b"}
 
 
 # ---------------------------------------------------------------------------
-# Smoke: end-to-end registry construction
+# Smoke: end-to-end dispatch table construction
 # ---------------------------------------------------------------------------
 
 
-def test_registry_resolves_python_kind(tmp_path: Path) -> None:
-    """`Registry(...).get('python')` returns the wired handler."""
-    from precis.registry import Registry
-
-    handlers = builtins(python_roots=f"r:{tmp_path}")
-    reg = Registry(handlers)
-    assert "python" in reg.kinds()
-    h = reg.get("python")
+def test_dispatch_resolves_python_kind(tmp_path: Path) -> None:
+    """``boot()`` populates ``(python, get, None)`` so the runtime
+    dispatch table can route ``get(kind='python', ...)`` calls."""
+    r = boot(python_roots=f"r:{tmp_path}")
+    assert "python" in r.kinds
+    assert isinstance(r, Registry)
+    assert r.get("python", "get") is not None
+    h = r.handler_for("python")
     assert isinstance(h, PythonHandler)
 
 

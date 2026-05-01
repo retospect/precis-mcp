@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Registry, boot
 from precis.errors import BadInput
 from precis.handlers.paper import _normalise_view, _strip_jats
 from precis.hints import HintBus
-from precis.protocol import Handler
-from precis.registry import Registry, builtins
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
 from precis.utils.slug import _first_author, mint_slug
@@ -62,7 +61,7 @@ def test_cost_trailer_not_double_prefixed(runtime_stateless: PrecisRuntime) -> N
     ``— cost: [cost: ~$0.0020]``. Verify only one ``cost:`` appears."""
 
     # We use a fake handler to avoid pulling in a paid kind.
-    from precis.protocol import KindSpec
+    from precis.protocol import Handler, KindSpec
     from precis.response import Response
 
     class _FakePaid(Handler):
@@ -76,11 +75,15 @@ def test_cost_trailer_not_double_prefixed(runtime_stateless: PrecisRuntime) -> N
         def get(self, **_kw):  # type: ignore[no-untyped-def]
             return Response(body="hello", cost="[cost: ~$0.0020]")
 
-    runtime_stateless.registry._by_kind["fakepaid"] = _FakePaid()  # type: ignore[attr-defined]
+    fake = _FakePaid()
+    fake._register_with(runtime_stateless.registry)
     try:
         out = runtime_stateless.dispatch("get", {"kind": "fakepaid", "id": "x"})
     finally:
-        runtime_stateless.registry._by_kind.pop("fakepaid", None)  # type: ignore[attr-defined]
+        reg = runtime_stateless.registry
+        reg.abilities.pop(("fakepaid", "get", None), None)
+        reg.handlers.pop("fakepaid", None)
+        reg.overview.pop("fakepaid", None)
 
     # Exactly one occurrence of "cost:" — the one inside the brackets.
     assert out.count("cost:") == 1, f"expected single cost: occurrence, got: {out!r}"
@@ -465,10 +468,9 @@ class TestSemanticRelevanceFloor:
 
 @pytest.fixture
 def runtime_with_store(store: Store) -> PrecisRuntime:
-    handlers: list[Handler] = builtins(store=store)
     return PrecisRuntime(
         config=_default_config(),
-        registry=Registry(handlers),
+        registry=boot(store=store),
         hints=HintBus(),
         store=store,
     )
@@ -514,7 +516,7 @@ def test_dispatch_with_status_flags_errors() -> None:
 
     rt = PrecisRuntime(
         config=PrecisConfig(database_url=None, embedder="mock"),
-        registry=Registry([]),
+        registry=Registry(),
         hints=HintBus(),
     )
     body, is_error = rt.dispatch_with_status("get", {"kind": "calc"})

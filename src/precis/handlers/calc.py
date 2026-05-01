@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-import sympy
-
 from precis.errors import BadInput
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -29,6 +27,16 @@ class CalcHandler(Handler):
         id_required=True,
     )
 
+    def __init__(self) -> None:
+        # ``sympy`` is an optional [calc] / [all] extra. Import here
+        # so a bare ``pip install precis-mcp`` surface a clean
+        # missing-dep at boot (dispatch._try catches ImportError and
+        # drops the calc kind), rather than failing at module import
+        # and taking the whole precis.handlers package down with it.
+        import sympy
+
+        self._sympy = sympy
+
     def get(  # type: ignore[override]
         self,
         *,
@@ -37,6 +45,7 @@ class CalcHandler(Handler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        sympy = self._sympy
         expr_str = self._coerce_expr(id, q)
         try:
             expr = sympy.sympify(expr_str)

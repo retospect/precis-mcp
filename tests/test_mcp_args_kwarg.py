@@ -23,7 +23,6 @@ from mcp.types import CallToolResult
 from precis import server
 from precis.handlers.python import PythonHandler
 from precis.python_index import RepoCache
-from precis.registry import Registry
 from precis.runtime import PrecisRuntime
 
 
@@ -70,11 +69,13 @@ def server_runtime(tmp_path: Path, runtime: PrecisRuntime) -> Iterator[PrecisRun
         "def helper():\n    return 1\n\n\ndef main():\n    return helper()\n"
     )
 
-    # Splice a python handler into the runtime's registry.
+    # Splice a python handler into the runtime's registry by
+    # invoking ``_register_with`` directly. Under the new dispatch
+    # layer the registry is a flat (kind, verb, mode) -> callable
+    # table plus a handlers-by-kind map; ``_register_with`` mutates
+    # both in one step, atomic for the caller.
     py = PythonHandler(roots={"demo": tmp_path / "demo"}, cache=RepoCache())
-    handlers = list(runtime.registry._by_kind.values())  # type: ignore[attr-defined]
-    handlers.append(py)
-    runtime.registry = Registry(handlers)
+    py._register_with(runtime.registry)
 
     server._runtime = runtime
     try:

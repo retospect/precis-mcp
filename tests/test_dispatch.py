@@ -251,3 +251,56 @@ def test_boot_stateless_registers_calc_only() -> None:
     # Overview blurb was registered.
     assert "calc" in r.overview
     assert r.overview["calc"]
+
+
+def test_boot_stateless_registers_handler_instance() -> None:
+    """``handler_for`` returns the live ``CalcHandler`` instance so
+    runtime metadata reads (``.spec``, ``search_hits``, …) hit the
+    same object the dispatch table's bound methods belong to."""
+    from precis.handlers.calc import CalcHandler
+
+    r = boot(store=None)
+    h = r.handler_for("calc")
+    assert isinstance(h, CalcHandler)
+    # The ability in the table is the same method on the same instance.
+    assert r.get("calc", "get") == h.get
+
+
+def test_boot_survives_missing_sympy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bare-install regression: boot must not crash if sympy (the
+    [calc] optional dep) isn't installed. The calc kind silently
+    drops off the surface, same way math / youtube / web / patent
+    drop when their extras are missing.
+    """
+    import builtins as _bi
+
+    real_import = _bi.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "sympy" or name.startswith("sympy."):
+            raise ImportError("simulated: sympy not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(_bi, "__import__", _fake_import)
+    import sys as _sys
+
+    monkeypatch.delitem(_sys.modules, "precis.handlers.calc", raising=False)
+    monkeypatch.delitem(_sys.modules, "sympy", raising=False)
+
+    r = boot(store=None)
+    assert "calc" not in r.kinds
+
+
+def test_duplicate_handler_registration_raises() -> None:
+    """Two handlers claiming the same kind is always a programming
+    error — caught at boot time so it doesn't silently shadow at
+    dispatch time."""
+    from precis.handlers.calc import CalcHandler
+
+    r = Registry()
+    first = CalcHandler()
+    first._register_with(r)
+
+    second = CalcHandler()
+    with pytest.raises(DuplicateRegistration, match="duplicate handler"):
+        second._register_with(r)
