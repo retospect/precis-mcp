@@ -72,21 +72,21 @@ the same PR.''',
 ### Append a new paragraph to an existing note
 
 ```python
-put(kind='plaintext', id='captures/session-2026-05-01',
-    text='Wrapped up the session at 11:00. Follow-ups filed.',
-    mode='append')
+edit(kind='plaintext', id='captures/session-2026-05-01',
+     text='Wrapped up the session at 11:00. Follow-ups filed.',
+     mode='append')
 ```
 
 ### Surgical edit
 
-Same as every R/W file kind — `mode='edit'` with a literal `find=`
-plus optional `before=` / `after=` anchors. The schema lives in
-`precis-edit-protocol`.
+Same as every R/W file kind — `edit(mode='find-replace')` with a
+literal `find=` plus optional `before=` / `after=` anchors. The
+schema lives in `precis-edit-protocol`.
 
 ```python
-put(kind='plaintext', id='captures/session-2026-05-01',
-    mode='edit',
-    find='09:15', text='09:20')
+edit(kind='plaintext', id='captures/session-2026-05-01',
+     mode='find-replace',
+     find='09:15', text='09:20')
 ```
 
 The `id` selector bounds the search region: pass `~<slug>` to

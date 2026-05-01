@@ -1,14 +1,14 @@
 ---
 id: precis-overview
-title: precis — four verbs, one address scheme
-status: phase-9
+title: precis — seven verbs, one address scheme
+status: phase-10
 tier: 1
 floor: any
 applies-to: all
-last-updated: 2026-04-30
+last-updated: 2026-05-01
 ---
 
-# precis-overview — four verbs, one address scheme
+# precis-overview — seven verbs, one address scheme
 
 > **Versioning:** `serverInfo.version` is the canonical release marker
 > (e.g. `6.0.0a0` ↔ the 6.0 / phase-7 line).  Skill front-matter
@@ -22,12 +22,15 @@ last-updated: 2026-04-30
 |----------|-----------------------------------------------------|
 | `get`    | You know the **name** (slug, id, file path) — or you're calling a tool. |
 | `search` | You're looking for **content** by topic or phrase.  |
-| `put`    | You want to **write** (content, note, link, tag).   |
-| `move`   | _Reserved for structured file kinds (docx, tex). No active kind in this build implements `move`._ |
+| `put`    | You want to **create** a new ref (and optionally tag/link it on creation). |
+| `edit`   | You want to **rewrite a region** of an existing file (`find-replace`, `append`, `insert`, `replace`). |
+| `delete` | Soft-delete a numeric ref, or delete a region from a file kind by selector. |
+| `tag`    | Add and/or remove tags on an existing ref (`add=[...]`, `remove=[...]`). |
+| `link`   | Add or remove a cross-link to another ref (`target=`, `mode='add'\|'remove'`, `rel=`). |
 
 Address by **`id=` for names, `q=` for content**.
 
-For `get`/`put`/`move`, `kind=` is required.
+For `get`/`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required.
 
 For `search`, `kind=` is conventionally required, but **omitting
 it defaults to the most recently touched search-supporting kind**
@@ -95,7 +98,7 @@ get(kind='paper', id='abazari2024design', view='abstract')
 # Make a todo, mark a different one done.
 put(kind='todo', text='Review section 3 of abazari2024design.',
     tags=['PRIO:high'])
-put(kind='todo', id=122, tags=['STATUS:done'])
+tag(kind='todo', id=122, add=['STATUS:done'])
 
 # Quick calculation; real-world fact.
 get(kind='calc', q='42 * 365')                # → 15330        (free)

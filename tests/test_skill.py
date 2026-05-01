@@ -262,3 +262,127 @@ def test_overview_kinds_table_names_env_gates() -> None:
             f"precis-overview kinds table must name {env} on the "
             f"{kind!r} row so readers know when the kind is active"
         )
+
+
+# ── seven-verb-surface regression test ─────────────────────────────
+
+
+# Forbidden mode= values that belonged to the legacy four-verb
+# surface and should never reappear in skill text. ``import`` and
+# ``create`` survive the cutover (Perplexity import + creation
+# shortcut, migration doc D3). Anything else under ``put(mode=…)``
+# is a leftover.
+_LEGACY_PUT_MODES: tuple[str, ...] = (
+    "delete",
+    "edit",
+    "append",
+    "insert",
+    "replace",
+)
+
+# Other legacy kwargs / verbs that have no place in the new surface.
+_LEGACY_LITERAL_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("untags=", "tag(remove=[...])"),
+    ("unlink=", "link(target=..., mode='remove')"),
+    ("move(", "edit(mode='reorder')"),
+)
+
+
+def _find_matching_paren(s: str, start: int) -> int:
+    """Return the index of the ``)`` matching the ``(`` at ``start``.
+
+    Quote-aware: skips over single-, double-, and triple-quoted
+    string literals so a ``)`` inside a docstring example doesn't
+    fool the matcher. Returns ``-1`` when no match is found.
+    """
+    depth = 0
+    i = start
+    while i < len(s):
+        c = s[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        elif c in "\"'":
+            quote = c
+            if s[i : i + 3] == quote * 3:
+                end = s.find(quote * 3, i + 3)
+                if end == -1:
+                    return -1
+                i = end + 3
+                continue
+            i += 1
+            while i < len(s) and s[i] != quote:
+                if s[i] == "\\":
+                    i += 2
+                    continue
+                i += 1
+        i += 1
+    return -1
+
+
+def test_skills_use_seven_verb_surface() -> None:
+    """Every shipped skill must teach the seven-verb shape, not the legacy four-verb one.
+
+    The migration doc (D4) is explicit: hard cutover, no alias window.
+    A release that removed the old surface but still documented it in
+    skills would be worse than no release. This regression catches
+    any skill that still teaches a legacy pattern.
+
+    Two checks:
+
+    1. Plain substring for legacy kwargs / verbs (``untags=``,
+       ``unlink=``, ``move(``) anywhere in the file.
+    2. Scope-aware ``mode=<legacy-value>`` detection: only flagged
+       when it appears inside a ``put(...)`` call. ``mode='replace'``
+       inside ``edit(...)`` is correct and must not be flagged.
+       ``mode='create'`` and ``mode='import'`` are accepted on
+       ``put`` (D3) and aren't in the legacy list.
+
+    See ``docs/seven-verb-surface-migration.md`` Phase 2.
+    """
+    import re
+    from importlib.resources import files
+
+    put_call_re = re.compile(r"\bput\(")
+    legacy_mode_re = re.compile(
+        r"mode\s*=\s*['\"](" + "|".join(_LEGACY_PUT_MODES) + r")['\"]"
+    )
+
+    skills_dir = files("precis.data.skills")
+    failures: list[str] = []
+    for path in skills_dir.iterdir():
+        # Only check shipped markdown skills, not __init__.py / __pycache__.
+        if not str(path).endswith(".md"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        for needle, suggestion in _LEGACY_LITERAL_PATTERNS:
+            if needle in text:
+                failures.append(
+                    f"{path.name}: legacy pattern {needle!r} \u2192 use {suggestion}"
+                )
+        # Scope mode= check to put(...) calls only. mode='replace'
+        # inside edit(...) is the supported new shape.
+        for m in put_call_re.finditer(text):
+            paren_open = m.end() - 1
+            paren_close = _find_matching_paren(text, paren_open)
+            if paren_close == -1:
+                continue
+            args = text[paren_open + 1 : paren_close]
+            for mm in legacy_mode_re.finditer(args):
+                mode_val = mm.group(1)
+                if mode_val == "delete":
+                    hint = "delete(...) verb"
+                elif mode_val == "edit":
+                    hint = "edit(mode='find-replace', ...) verb"
+                else:
+                    hint = f"edit(mode={mode_val!r}, ...) verb"
+                failures.append(
+                    f"{path.name}: put(... mode={mode_val!r} ...) \u2192 use {hint}"
+                )
+    assert not failures, (
+        "seven-verb regression: legacy four-verb patterns found in skills:\n  "
+        + "\n  ".join(failures)
+    )

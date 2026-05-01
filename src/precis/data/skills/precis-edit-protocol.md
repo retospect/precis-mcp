@@ -38,8 +38,8 @@ to change. This survives drift after prior edits.
 ## Schema
 
 ```python
-put(kind='<kind>', id='<path>[~<selector>]',
-    mode='edit',           # or 'insert'
+edit(kind='<kind>', id='<path>[~<selector>]',
+    mode='find-replace',           # or 'insert'
     find='<exact text>',   # literal — required
     before='<anchor>',     # optional: text immediately preceding find
     after='<anchor>',      # optional: text immediately following find
@@ -66,14 +66,14 @@ any large or risky edit.
 
 ```python
 # Diff preview (default).
-put(kind='python', id='r/src/precis/cli.py',
-    mode='edit',
+edit(kind='python', id='r/src/precis/cli.py',
+    mode='find-replace',
     find='deprecated_call(', text='new_call(', match='all',
     dry_run=True)
 
 # Post-edit region preview.
-put(kind='markdown', id='notes--foo',
-    mode='edit',
+edit(kind='markdown', id='notes--foo',
+    mode='find-replace',
     find='draft', text='final',
     dry_run='full')
 ```
@@ -82,8 +82,8 @@ The motivating case from the spec:
 
 ```python
 # 'the fox jumps over the fence.' → 'the fox jumps over a fence.'
-put(kind='markdown', id='notes--foo~intro',
-    mode='edit',
+edit(kind='markdown', id='notes--foo~intro',
+    mode='find-replace',
     find='the', before='over ', after=' fence',
     text='a')
 ```

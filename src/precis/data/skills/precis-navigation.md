@@ -72,7 +72,7 @@ put(kind='todo', text='Review section 3 of wang2020state.',
 get(kind='todo', view='today')                              # what's due today
 get(kind='todo', view='overdue')                            # what slipped
 
-put(kind='todo', id='122', tags=['STATUS:done'])            # mark complete
+tag(kind='todo', id='122', add=['STATUS:done'])             # mark complete
 ```
 
 ## Find information — corpus first, fresh `ask` last
@@ -118,7 +118,7 @@ put(kind='memory',
 # → returns integer id (e.g. 89)
 
 # 3. Add a contradicting source if one exists.
-put(kind='memory', id='89', link='paper:chen2021critique', rel='contradicts')
+link(kind='memory', id='89', target='paper:chen2021critique', rel='contradicts')
 ```
 
 Now `get(kind='memory', id='89', view='links')` shows the evidence both
@@ -150,10 +150,10 @@ get(kind='todo', view='blocked', tags=['project:precis-v2'])  # what's stuck
 get(kind='todo', view='overdue', tags=['project:precis-v2'])  # what slipped
 
 # Bump priority on a key one:
-put(kind='todo', id='141', tags=['PRIO:urgent'])
+tag(kind='todo', id='141', add=['PRIO:urgent'])
 
 # Resolve a blocker:
-put(kind='todo', id='158', tags=['STATUS:done'])
+tag(kind='todo', id='158', add=['STATUS:done'])
 # Anything blocked-by 158 now exits view='blocked'.
 ```
 
@@ -163,7 +163,7 @@ put(kind='todo', id='158', tags=['STATUS:done'])
 get(kind='ask', q='mechanism of NOxRR')   # generates cache
 
 # It's a useful answer.  Pin against decay:
-put(kind='ask', id='mechanism-of-noxrr', tags=['pinned'])
+tag(kind='ask', id='mechanism-of-noxrr', add=['pinned'])
 
 # Or distill into a memory that survives cache deletion:
 put(kind='memory',

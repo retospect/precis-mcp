@@ -171,18 +171,17 @@ put(kind='markdown', id='notes/new-file.md',
     text='# Title\n\nFirst paragraph.', mode='create')
 
 # Append paragraph(s) to an existing file.
-put(kind='markdown', id='notes/meeting.md',
+edit(kind='markdown', id='notes/meeting.md',
     text='Final thought.', mode='append')
 
 # Replace one region — by slug, lines, or pos. Same op, three forms.
-put(kind='markdown', id='notes/meeting.md~conclusion',
+edit(kind='markdown', id='notes/meeting.md~conclusion',
     text='Updated content.', mode='replace')
-put(kind='markdown', id='notes/meeting.md~L42-58',
+edit(kind='markdown', id='notes/meeting.md~L42-58',
     text='Updated content.', mode='replace')
 
 # Delete one region — same selector forms.
-put(kind='markdown', id='notes/meeting.md~conclusion',
-    mode='delete')
+delete(kind='markdown', id='notes/meeting.md~conclusion')
 ```
 
 All writes are **atomic** (tmpfile + rename). After every write the
@@ -217,21 +216,21 @@ the R/W file kinds (`rmk`, `docx`, `tex`, `book`) are queued.
 ```python
 # Surgical replacement: change one token, leave everything else alone.
 # Content selects ('the'); anchors disambiguate; the selector bounds the search.
-put(kind='markdown', id='notes--foo~intro',
-    mode='edit',
+edit(kind='markdown', id='notes--foo~intro',
+    mode='find-replace',
     find='the', before='over ', after=' fence',
     text='a',
     match='unique')
 
 # Insert a paragraph adjacent to an anchor, no rewriting.
-put(kind='markdown', id='notes--foo',
+edit(kind='markdown', id='notes--foo',
     mode='insert',
     find='## Conclusion', where='before',
     text='\n## TL;DR\n\nQuick summary.\n\n')
 
 # Bulk rename across one file. Python's AST + ruff gates apply.
-put(kind='python', id='r/src/precis/cli.py',
-    mode='edit',
+edit(kind='python', id='r/src/precis/cli.py',
+    mode='find-replace',
     find='X.legacy_method(',
     text='X.method(',
     match='all')

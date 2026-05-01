@@ -131,7 +131,7 @@ either:
 - **Default mode** — open one quest summarising the new patents
   with their Espacenet links. Triage by ingesting the interesting
   ones with `get(kind='patent', id='<docdb>')` and closing the
-  quest with `put(kind='quest', id='<slug>', tags=['STATUS:done'])`.
+  quest with `tag(kind='quest', id='<slug>', add=['STATUS:done'])`.
 - **`--auto-get` mode** — ingest each new patent directly. If the
   pass exceeds `--max-per-pass`, overflow is **dropped** and resurfaces
   on the next pass (oldest-publication-date first). Use auto-get

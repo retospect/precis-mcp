@@ -72,14 +72,15 @@ Confidence is an open-tag axis today (lowercase, hyphenated):
 bump from ``moderate`` to ``certain``, untag the old value:
 
 ```python
-put(kind='memory', id=73,
-    tags=['confidence-certain'],
-    untags=['confidence-moderate'])
+tag(kind='memory', id=73,
+    add=['confidence-certain'],
+    remove=['confidence-moderate'])
 ```
 
 If ``confidence`` graduates to a registered closed prefix in a
 later phase, the same call shape will swap to
-``tags=['CONFIDENCE:certain']`` and the replacement becomes atomic.
+``add=['CONFIDENCE:certain']`` and the replacement becomes atomic
+(no separate ``remove=`` needed).
 
 ## Notes
 

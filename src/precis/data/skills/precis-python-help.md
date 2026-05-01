@@ -248,7 +248,7 @@ the next, rather than being silently corrected.
 ### Replace by qualname (preferred)
 
 ```python
-put(kind='python',
+edit(kind='python',
     id='precis::precis.registry.Registry.get',
     text='''    def get(self, kind: str) -> Handler:
         """Look up a handler by kind name."""
@@ -277,7 +277,7 @@ Prefer this form: qualnames survive file moves and re-orderings.
 ### Replace by line range (when you have line numbers)
 
 ```python
-put(kind='python',
+edit(kind='python',
     id='precis/src/precis/registry.py~L120-128',
     text='        return self._handlers[kind]',
     mode='replace')
@@ -299,7 +299,7 @@ failure. Otherwise prefer qualnames.
 ### Append a new top-level function
 
 ```python
-put(kind='python',
+edit(kind='python',
     id='precis/src/precis/registry.py',
     text='''
 
@@ -335,9 +335,8 @@ class AuditHandler(Handler):
 ### Delete a method
 
 ```python
-put(kind='python',
-    id='precis::precis.registry.Registry.deprecated',
-    mode='delete')
+delete(kind='python',
+    id='precis::precis.registry.Registry.deprecated')
 # Response:
 #   deleted precis.registry.Registry.deprecated (lines 145–152)
 #   ast.parse:           ok
@@ -347,8 +346,8 @@ put(kind='python',
 #     - 1 whitespace adjustment (format)
 ```
 
-**Whole-file delete is out of scope.** `put(kind='python',
-id='precis/src/precis/mod.py', mode='delete')` is rejected —
+**Whole-file delete is out of scope.** `delete(kind='python',
+id='precis/src/precis/mod.py')` is rejected —
 filesystem deletion belongs with `rm` / `git rm`. precis manages
 content (refs, blocks, embeddings), not files. To drop a whole
 module from the index: delete it with your OS tool; the next
@@ -367,17 +366,17 @@ automatically.
 ```python
 # Rename one call site, bounded to one function. Anchors guarantee
 # we don't touch unrelated occurrences.
-put(kind='python',
+edit(kind='python',
     id='r::precis.cli._cmd_serve',
-    mode='edit',
+    mode='find-replace',
     find='deprecated_call(',
     text='new_call(',
     match='all')
 
 # Disambiguate by surrounding context when a token appears many times.
-put(kind='python',
+edit(kind='python',
     id='r/src/precis/cli.py',
-    mode='edit',
+    mode='find-replace',
     find='name',
     before='len(',
     after=')',
@@ -385,7 +384,7 @@ put(kind='python',
 
 # Insert a new function after an existing anchor. The AST gate
 # verifies the post-edit buffer parses cleanly.
-put(kind='python',
+edit(kind='python',
     id='r/src/precis/cli.py',
     mode='insert',
     find='    return x + 1\n',
@@ -446,7 +445,7 @@ get(kind='python',
 # 2. Modify locally (in your context).
 
 # 3. Write back at the same qualname.
-put(kind='python',
+edit(kind='python',
     id='precis::precis.registry.Registry.get',
     text=<modified source>,
     mode='replace')

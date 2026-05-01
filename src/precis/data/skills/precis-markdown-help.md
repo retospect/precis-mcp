@@ -71,7 +71,7 @@ get(kind='markdown', id='notes/meeting.md~architecture')
 ### Append a thought without reading the whole file
 
 ```python
-put(kind='markdown', id='notes/meeting.md',
+edit(kind='markdown', id='notes/meeting.md',
     text='Action item: review the plan with team.',
     mode='append')
 ```
@@ -83,7 +83,7 @@ put(kind='markdown', id='notes/meeting.md',
 get(kind='markdown', id='notes/meeting.md/toc')
 
 # 2. Replace just that block.
-put(kind='markdown', id='notes/meeting.md~conclusion',
+edit(kind='markdown', id='notes/meeting.md~conclusion',
     text='## Final thoughts\n\nReplaced.',
     mode='replace')
 ```
@@ -92,7 +92,7 @@ put(kind='markdown', id='notes/meeting.md~conclusion',
 
 ```python
 # `grep -n deadline notes/*.md` → file:42 …
-put(kind='markdown', id='notes/meeting.md~L42-58',
+edit(kind='markdown', id='notes/meeting.md~L42-58',
     text='Updated paragraph.',
     mode='replace')
 # Response gives you the new stable slug for follow-up edits.
@@ -124,13 +124,13 @@ file kind; the universal grammar lives in `precis-edit-protocol`.
 ```python
 # Swap one token. Anchors disambiguate when the same word appears
 # multiple times.
-put(kind='markdown', id='notes--foo~intro',
-    mode='edit',
+edit(kind='markdown', id='notes--foo~intro',
+    mode='find-replace',
     find='the', before='over ', after=' fence',
     text='a')
 
 # Insert a paragraph before a heading without rewriting the heading.
-put(kind='markdown', id='notes--foo',
+edit(kind='markdown', id='notes--foo',
     mode='insert',
     find='## Conclusion', where='before',
     text='\n## TL;DR\n\nQuick summary here.\n\n')

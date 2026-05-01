@@ -137,16 +137,16 @@ Paper bodies are import-only — you can't rewrite a paper's text from
 ```python
 # Tag a paper. Closed-prefix axes for paper are SRC: and CACHE:; open
 # tags (topic-x, etc.) are always allowed.
-put(kind='paper', id='abazari2024design', tags=['topic:photocatalysis'])
-put(kind='paper', id='abazari2024design', tags=['SRC:primary'])
+tag(kind='paper', id='abazari2024design', add=['topic:photocatalysis'])
+tag(kind='paper', id='abazari2024design', add=['SRC:primary'])
 
 # Drop tags. STATUS:/PRIO: aren't on paper's allowed-axis list and
 # raise BadInput at validation; that's by design.
-put(kind='paper', id='abazari2024design', untags=['topic:photocatalysis'])
+tag(kind='paper', id='abazari2024design', remove=['topic:photocatalysis'])
 
 # Cross-cite another paper.
-put(kind='paper', id='abazari2024design',
-    link='paper:other-slug', rel='cites')
+link(kind='paper', id='abazari2024design',
+     target='paper:other-slug', rel='cites')
 ```
 
 Chunk selectors (`~N`, `~A..B`) and view paths (`/toc`, `/cite/bib`)

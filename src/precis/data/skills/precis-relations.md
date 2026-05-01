@@ -4,7 +4,7 @@ title: precis — link two refs
 status: phase-7
 tier: 1
 floor: any
-applies-to: put (link=, unlink=, rel=), get (view='links')
+applies-to: link (target=, mode=, rel=), get (view='links'), put (link=, rel= on create)
 last-updated: 2026-04-28
 ---
 
@@ -47,16 +47,16 @@ There is **no** colon-suffix shortcut — earlier docs that showed
 ## Link a memory to a paper
 
 ```python
-put(kind='memory', id=47, link='paper:wang2020state')
-# default rel='related-to'
+link(kind='memory', id=47, target='paper:wang2020state')
+# default rel='related-to', mode='add'
 ```
 
 ## Cite a specific block
 
 ```python
-put(kind='memory', id=89,
-    link='paper:wang2020state~38',
-    rel='cites')
+link(kind='memory', id=89,
+     target='paper:wang2020state~38',
+     rel='cites')
 ```
 
 Block selector `~38` pins the link to paper block 38 rather than
@@ -65,17 +65,17 @@ the paper as a whole.
 ## Block one todo on another
 
 ```python
-put(kind='todo', id=141,
-    link='todo:158',
-    rel='blocked-by')
+link(kind='todo', id=141,
+     target='todo:158',
+     rel='blocked-by')
 ```
 
 ## Record a contradiction across kinds
 
 ```python
-put(kind='memory', id=89,
-    link='paper:chen2021critique',
-    rel='contradicts')
+link(kind='memory', id=89,
+     target='paper:chen2021critique',
+     rel='contradicts')
 ```
 
 ## See what's linked
@@ -95,37 +95,33 @@ inbound.
 
 ```python
 # Remove a specific (target, relation) pair
-put(kind='todo', id=141, unlink='todo:158', rel='blocked-by')
+link(kind='todo', id=141, target='todo:158', mode='remove', rel='blocked-by')
 
 # Remove ALL links to a target (any relation)
-put(kind='todo', id=141, unlink='todo:158')
+link(kind='todo', id=141, target='todo:158', mode='remove')
 ```
 
-`unlink=` and `link=` are mutually exclusive in one call. Issue
-two calls if you want to swap a relation atomically — though for
-that the easiest pattern is `unlink=...` then `link=...` in
-sequence.
+`mode='add'` and `mode='remove'` are mutually exclusive — issue
+two `link()` calls if you want to swap a relation atomically:
+remove the old (target, rel) pair, then add the new one.
 
 ## Validation errors
 
 ```python
-put(kind='memory', id=47, link='wang2020state')
+link(kind='memory', id=47, target='wang2020state')
 # [error:BadInput] link target 'wang2020state' missing required 'kind:' prefix
 #   next: use canonical 'kind:identifier' form
 #         (e.g. 'paper:wang2020state' or 'todo:158')
 
-put(kind='memory', id=47, link='paper:nope')
+link(kind='memory', id=47, target='paper:nope')
 # [error:NotFound] link target 'paper:nope' resolves to no live paper ref
 #   next: check it exists: get(kind='paper', id='nope')
 
-put(kind='memory', id=47, link='paper:wang2020state', rel='references')
+link(kind='memory', id=47, target='paper:wang2020state', rel='references')
 # [error:BadInput] unknown relation: 'references'
 #   options: ['blocked-by', 'blocks', 'cited-by', 'cites', ...]
 #   next: pick from the registered relations or omit rel=
 #         for the default 'related-to'
-
-put(kind='memory', text='new', rel='cites')
-# [error:BadInput] rel= requires link= or unlink=
 ```
 
 ## Notes

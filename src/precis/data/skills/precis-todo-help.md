@@ -37,9 +37,9 @@ or via lowercase tags (`due:2026-05-01`).
 ## Mark done / move through statuses
 
 ```python
-put(kind='todo', id=122, tags=['STATUS:done'])
-put(kind='todo', id=122, tags=['STATUS:doing'])
-put(kind='todo', id=122, tags=['STATUS:blocked'])
+tag(kind='todo', id=122, add=['STATUS:done'])
+tag(kind='todo', id=122, add=['STATUS:doing'])
+tag(kind='todo', id=122, add=['STATUS:blocked'])
 ```
 
 `STATUS:` is closed-prefix and replaces atomically — setting one
@@ -48,7 +48,7 @@ removes the previous value.
 ## Block on another todo
 
 ```python
-put(kind='todo', id=141, link='todo:158', rel='blocked-by')
+link(kind='todo', id=141, target='todo:158', rel='blocked-by')
 # id=141 declares it's blocked-by id=158
 ```
 
@@ -60,12 +60,12 @@ for the full vocabulary and inverse map.
 ## Re-prioritise
 
 ```python
-put(kind='todo', id=141, tags=['PRIO:urgent'])
+tag(kind='todo', id=141, add=['PRIO:urgent'])
 # replaces any other PRIO:* on this ref atomically
 ```
 
 For closed-prefix axes, just set the new value — overwrite is
-atomic. For open or flag tags, use `untags=['topic-x']` (see
+atomic. For open or flag tags, use `tag(remove=['topic-x'])` (see
 `precis-tags` for the full removal semantics).
 
 ## Search by content

@@ -4,7 +4,7 @@ title: precis — set and filter by tags
 status: phase-7
 tier: 1
 floor: any
-applies-to: put (tags=, untags=) and search (tags=)
+applies-to: tag (add=, remove=), search (tags=), put (tags= on create)
 last-updated: 2026-04-28
 ---
 
@@ -21,7 +21,7 @@ Three tag shapes by case.  Pick by what you're doing:
 ## Set tags
 
 ```python
-put(kind='memory', id=48, tags=[
+tag(kind='memory', id=48, add=[
     'PRIO:high',           # replaces any other PRIO:* on this ref
     'topic:co2-capture',   # adds (lowercase tags accumulate)
     'star',                # bare flag set
@@ -33,21 +33,21 @@ UPPERCASE replaces within its prefix.  Lowercase and bare add.
 ## Remove tags
 
 ```python
-put(kind='memory', id=48, untags=[
+tag(kind='memory', id=48, remove=[
     'topic:co2-capture',  # remove this lowercase tag
     'star',               # clear the flag
     'STATUS:done',        # remove only if STATUS is currently 'done'
 ])
 ```
 
-`untags=` is **value-matched** for closed prefixes:
-`untags=['STATUS:open']` against a `STATUS:done` ref is a silent
+`tag(remove=...)` is **value-matched** for closed prefixes:
+`remove=['STATUS:open']` against a `STATUS:done` ref is a silent
 no-op (no error, no row touched). To switch axes, prefer the
-overwrite form via `tags=['STATUS:open']` — it's atomic.
+overwrite form via `tag(add=['STATUS:open'])` — it's atomic.
 
-`untags=` is rejected on create (no existing ref to remove from)
-and goes through the same canonical-form validation as `tags=` —
-`untags=['urgent']` raises the bare-flag-collision error.
+`tag()` is rejected on a non-existent ref, and `remove=` goes
+through the same canonical-form validation as `add=` —
+`remove=['urgent']` raises the bare-flag-collision error.
 
 ## Filter by tags
 
@@ -72,7 +72,7 @@ list_refs(kind='memory', tags=['star'])         # store-level (when
 The filter is applied at the SQL layer via the unified `ref_tags`
 view, so it cuts the rows the lexical/semantic ranker has to score —
 two orders of magnitude fewer rows for the typical "STATUS:open todo"
-pattern. Same canonical-form validation as `put(tags=...)`: an
+pattern. Same canonical-form validation as `tag(add=...)`: an
 `urgent` filter raises the bare-flag-collision error.
 
 ## The closed UPPERCASE vocabularies
@@ -100,10 +100,21 @@ put(kind='memory', text='...', tags=['urgent'])
 # [error:BadInput] bare flag 'urgent' collides with closed value 'PRIO:urgent'
 #   next: use tags=['PRIO:urgent'] instead of tags=['urgent']
 
-put(kind='todo', id=40, tags=['STATUS:bogus'])
+tag(kind='todo', id=40, add=['STATUS:bogus'])
 # [error:BadInput] invalid STATUS value: 'bogus'
 #   options: ['blocked', 'doing', 'done', 'open', "won't-do"]
 ```
+
+## Create-with-tags shortcut
+
+`put` accepts `tags=[...]` on creation as a shortcut so you don't
+need two calls for a fresh ref:
+
+```python
+put(kind='memory', text='...', tags=['kind:decision', 'topic-co2'])
+```
+
+After creation, use `tag(...)` to mutate.
 
 ## Common lowercase prefixes
 

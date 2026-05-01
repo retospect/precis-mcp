@@ -60,19 +60,19 @@ Soft-delete the cache ref, then re-query. The next `get` will miss
 and refetch:
 
 ```python
-put(kind='research', id='mechanism-of-noxrr', mode='delete')
+delete(kind='research', id='mechanism-of-noxrr')
 get(kind='research', q='mechanism of NOxRR')
 ```
 
-(`mode='delete'` is the only mode supported on numeric-ref kinds;
-file kinds and cache kinds also accept `delete`. See per-kind help.)
+`delete` works on every cache kind and every numeric-ref kind. File
+kinds also accept `delete` with a region selector. See per-kind help.
 
 ## Preserve indefinitely
 
 ```python
-put(kind='think', id='photocat-mechanism', tags=['pinned'])
+tag(kind='think', id='photocat-mechanism', add=['pinned'])
 # the 'pinned' flag suppresses CACHE:* decay; never expires
-# until unpinned with put(..., untags=['pinned'])
+# until unpinned with tag(..., remove=['pinned'])
 ```
 
 ## Notes
