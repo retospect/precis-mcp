@@ -227,10 +227,8 @@ class PrecisRuntime:
                 against a suggested kind doesn't cascade into a
                 second error (MCP critic MAJOR #12).
             Unsupported: handler exists but does not implement
-                ``verb``. The ``move`` verb has a special-cased hint
-                when no active kind implements it — agents otherwise
-                bounce ``move()`` against every kind hoping for one
-                that works.
+                ``verb``. The reply enumerates the verbs this kind
+                *does* support so the recovery hint is sharp.
         """
         handler = self.hub.handler_for(kind)
         if handler is None:
@@ -246,22 +244,6 @@ class PrecisRuntime:
             from precis.errors import Unsupported
 
             verbs = [v for v in _VERBS if handler.spec.supports(v)]
-            if verb == "move":
-                movers = [
-                    k
-                    for k in sorted(self.hub.kinds)
-                    if self.hub.handler_for(k).spec.supports_move
-                ]
-                if not movers:
-                    raise Unsupported(
-                        "no active kind currently supports move",
-                        options=verbs,
-                        next=(
-                            "move is reserved for structured file kinds "
-                            "(docx, tex) that aren't wired in this build; "
-                            "use put for everything else"
-                        ),
-                    )
             raise Unsupported(
                 f"{kind} does not support {verb}",
                 options=verbs,

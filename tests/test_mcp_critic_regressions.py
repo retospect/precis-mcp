@@ -38,17 +38,21 @@ def test_search_render_omits_misleading_score(store: Store) -> None:
     )
 
 
-# ── CRITICAL: move verb has zero implementing kinds ─────────────────
+# ── CRITICAL: unknown verb is rejected at the dispatcher boundary ────
 
 
-def test_move_no_implementer_friendly_error(runtime: PrecisRuntime) -> None:
-    """When no kind in the active registry supports ``move``, the
-    runtime says so explicitly rather than letting the error look
-    like a per-kind quirk."""
+def test_unknown_verb_rejected(runtime: PrecisRuntime) -> None:
+    """The seven-verb migration removed the legacy ``move`` verb.
+    The dispatcher must reject unknown verbs at the boundary with a
+    BadInput naming the supported verbs — agents otherwise bounce
+    against every kind hoping for one that works.
+    """
     out = runtime.dispatch("move", {"kind": "calc", "id": "x", "after": "y"})
-    assert "[error:Unsupported]" in out
-    assert "no active kind currently supports move" in out
-    assert "use put" in out
+    assert "[error:BadInput]" in out
+    assert "unknown verb: move" in out
+    # Options should enumerate the live verb surface.
+    for verb in ("get", "search", "put", "edit", "delete", "tag", "link"):
+        assert verb in out
 
 
 # ── MAJOR: cost trailer no longer double-prefixes "cost:" ───────────

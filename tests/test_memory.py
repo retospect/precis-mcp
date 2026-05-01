@@ -198,4 +198,6 @@ def test_kindspec_supports_get_search_put(runtime_with_store: PrecisRuntime) -> 
     assert handler.spec.supports_get is True
     assert handler.spec.supports_search is True
     assert handler.spec.supports_put is True
-    assert handler.spec.supports_move is False
+    assert handler.spec.supports_delete is True
+    assert handler.spec.supports_tag is True
+    assert handler.spec.supports_link is True

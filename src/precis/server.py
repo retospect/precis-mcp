@@ -1,9 +1,9 @@
 """MCP stdio server. Thin FastMCP wrapper around `PrecisRuntime`.
 
-Eight tools — `get`, `search`, `put`, `edit`, `delete`, `tag`, `link`,
-and the legacy `move` shim — are registered as plain sync functions.
-FastMCP runs sync tool callables in a worker thread, so the rest of
-the codebase (runtime, store, handlers) stays sync.
+Seven tools — `get`, `search`, `put`, `edit`, `delete`, `tag`, `link`
+— are registered as plain sync functions. FastMCP runs sync tool
+callables in a worker thread, so the rest of the codebase (runtime,
+store, handlers) stays sync.
 
 The runtime — including the postgres connection pool — is built before
 `mcp.run()` and torn down after it returns. Only the FastMCP loop
@@ -56,12 +56,9 @@ _INSTRUCTIONS = (
 )
 
 # Sanity check the instructions actually advertise every verb. The MCP
-# critic flagged ``put, put`` as a silent typo that hid ``move`` from
+# critic flagged ``put, put`` as a silent typo that hid a verb from
 # every caller relying on serverInfo.instructions; an assertion here
-# catches future regressions at import time. ``move`` is intentionally
-# absent from the agent-facing instructions even though the tool
-# remains registered for back-compat — D5 in the migration doc folds
-# reorder semantics into ``edit(mode='reorder')``.
+# catches future regressions at import time.
 assert all(
     v in _INSTRUCTIONS for v in ("get", "search", "put", "edit", "delete", "tag", "link")
 ), "_INSTRUCTIONS must list every agent-facing verb"
@@ -504,30 +501,6 @@ def link(
         "link",
         {"kind": kind, "id": id, "target": target, "mode": mode, "rel": rel},
     )
-
-
-@mcp.tool(**_TOOL_KW)
-def move(
-    kind: str,
-    id: str | int,
-    after: str | int,
-) -> str:
-    """Reorder a node within a structured ref.
-
-    DEPRECATED: kept for back-compat with v1 callers; the seven-verb
-    surface (D5) folds reorder into ``edit(mode='reorder')``. New
-    callers should ignore this verb. The ``move`` tool will be removed
-    in a future release.
-
-    No active kind in this build implements ``move``; calling it
-    returns an Unsupported error pointing at ``edit`` / ``put``.
-
-    Args:
-        kind:  Which kind owns the structure (e.g. 'docx', 'tex').
-        id:    Node to move.
-        after: Reference node — moved node lands after this one.
-    """
-    return _dispatch("move", {"kind": kind, "id": id, "after": after})
 
 
 # ---------------------------------------------------------------------------

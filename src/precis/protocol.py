@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from precis.dispatch import Hub
     from precis.utils.search_merge import SearchHit
 
-Verb = Literal["get", "search", "put", "edit", "delete", "tag", "link", "move"]
+Verb = Literal["get", "search", "put", "edit", "delete", "tag", "link"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,12 +48,6 @@ class KindSpec:
     #: Link-ops verb (``link(kind, id, target='...', mode='add'|'remove',
     #: rel='...')``).
     supports_link: bool = False
-    #: Move/reorder verb. Reserved for structured-file kinds (docx, tex)
-    #: that aren't wired yet. The seven-verb migration (D5) folds
-    #: reorder into ``edit(mode='reorder')``; this flag stays for
-    #: back-compat during the cutover and goes away in the cleanup
-    #: commit.
-    supports_move: bool = False
 
     # Cross-kind search opt-in. When True, the handler's
     # ``search_hits`` method returns ``list[SearchHit]`` and
@@ -164,15 +158,11 @@ class Handler:
     def link(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support link")
 
-    def move(self, **kw: Any) -> Response:
-        raise Unsupported(f"{self.spec.kind} does not support move")
-
 
 # Verb iteration order. ``_register_with`` walks this list to populate
 # the dispatch table; the runtime walks it for "what does this kind
 # support?" answers in error messages. Reads top-down match the agent-
-# facing mental model: read verbs first, then write verbs, with the
-# exotic ``move`` last because no active kind currently uses it.
+# facing mental model: read verbs first, then write verbs.
 _ALL_VERBS: tuple[Verb, ...] = (
     "get",
     "search",
@@ -181,5 +171,4 @@ _ALL_VERBS: tuple[Verb, ...] = (
     "delete",
     "tag",
     "link",
-    "move",
 )
