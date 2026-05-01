@@ -218,7 +218,7 @@ class Python:
         r.register_overview("python", "Python source files with AST + qualname graph.")
 ```
 
-Composition root in `src/precis/registry.py`:
+Composition root in `src/precis/dispatch.py`:
 
 ```python
 def boot(env: Env) -> Registry:
@@ -533,7 +533,8 @@ No alias window. The registry refactor, the new verbs, and the
 deletion of the old shape all land in the same commit.
 
 1. **Registry + boot (D7/D8 infrastructure).** Net-new code in
-   `src/precis/registry.py`:
+   `src/precis/dispatch.py` (the existing `src/precis/registry.py`
+   is deleted at the end of phase 1 once nothing imports it):
    - `Registry` class with `abilities: dict[(kind, verb, mode),
      Callable]`, `skills: dict[str, str]`, `overview: dict[str,
      str]`, `kinds: set[str]`. Methods: `register_ability`,
@@ -596,9 +597,10 @@ deletion of the old shape all land in the same commit.
 6. **Tests added in `tests/test_seven_verb_surface/`:**
    - One file per new verb. Assert dispatch correctness and
      unsupported-kind error shape.
-   - `tests/test_registry.py` — boot ordering, `InitError`
+   - `tests/test_dispatch.py` — boot ordering, `InitError`
      swallowing, duplicate-register fails loud, missing-dep drops
-     kind silently.
+     kind silently. (The existing `tests/test_registry.py`
+     covers the old surface and is deleted with `registry.py`.)
    - `tests/test_schema.py::test_each_verb_has_flat_schema` —
      asserts every verb's inputSchema is flat (no `if/then`
      conditional required fields).
