@@ -285,11 +285,11 @@ def test_put_insert_before_anchor(handler: PlaintextHandler, pt_root: Path) -> N
     assert "PREFIX: end of story" in (pt_root / "log.txt").read_text()
 
 
-def test_put_edit_dry_run_diff(handler: PlaintextHandler, pt_root: Path) -> None:
+def test_edit_dry_run_diff(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "doc.txt", "foo.\n")
-    out = handler.put(
+    out = handler.edit(
         id="doc",
-        mode="edit",
+        mode="find-replace",
         find="foo",
         text="bar",
         dry_run=True,

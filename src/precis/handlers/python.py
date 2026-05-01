@@ -54,7 +54,11 @@ log = logging.getLogger(__name__)
 
 _SUPPORTED_VIEWS = ("toc", "outline", "source", "callgraph", "entries", "runtrace")
 _RUNTRACE_GATE_ENV = "PRECIS_PYTHON_ALLOW_EXEC"
-_SUPPORTED_PUT_MODES = ("create", "append", "replace", "delete", "edit", "insert")
+# After the seven-verb cutover, ``put`` on a file kind is creation-only.
+# Region edits live on ``edit`` (mode='find-replace'|'append'|'insert'|
+# 'replace'); selector-deletes live on ``delete``. The three gates
+# (parse / qualname-drop / ruff) ride on whichever verb is invoked.
+_SUPPORTED_PUT_MODES = ("create",)
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +454,14 @@ class PythonHandler(Handler):
                 lines.append(f"  {render._oneline(sym.docstring)}")
         return Response(body="\n".join(lines))
 
-    # ── put ────────────────────────────────────────────────────────
+    # ── put: create a new file (creation-only) ─────────────────────
+
+    _LEGACY_PUT_MODES_TO_EDIT: ClassVar[tuple[str, ...]] = (
+        "append",
+        "insert",
+        "replace",
+        "edit",
+    )
 
     def put(  # type: ignore[override]
         self,
@@ -458,75 +469,44 @@ class PythonHandler(Handler):
         id: str | int | None = None,
         text: str | None = None,
         mode: str | None = None,
-        allow_rename: bool = False,
-        find: str | None = None,
-        before: str = "",
-        after: str = "",
-        where: str | None = None,
-        match: str = "unique",
-        nth: int | None = None,
-        dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
-        """Create / replace / append / delete code through the three gates.
+        """Create a new Python file in a configured repo.
 
-        Pipeline:
-
-        1. Splice the requested change into a buffer.
-        2. **Gate 1** — ``ast.parse`` on the post-buffer. Failure
-           reverts and raises ``BadInput`` with the parse error.
-        3. **Gate 2** — qualname-drop check (skipped for ``mode='delete'``;
-           bypassed by ``allow_rename=True``).
-        4. **Gate 3** — ``ruff check --fix --exit-zero`` then
-           ``ruff format`` via stdin. Always runs; never blocks. The
-           response carries a one-line summary of what ruff did.
-        5. Atomic write (tmpfile + fsync + replace + dir fsync).
-        6. Force re-index of this file in the cache.
-        7. Render gate report + post-edit pointer.
+        Per the seven-verb surface (D6), ``put`` on python is
+        creation-only. Region edits (append / insert / replace /
+        find-replace) live on the ``edit`` verb; symbol / file
+        deletes live on ``delete``. Both go through the three
+        gates (parse / qualname-drop / ruff).
         """
-        if mode is None or mode not in _SUPPORTED_PUT_MODES:
+        if mode in self._LEGACY_PUT_MODES_TO_EDIT:
+            new_mode = "find-replace" if mode == "edit" else mode
             raise BadInput(
-                f"mode= is required, one of {list(_SUPPORTED_PUT_MODES)}",
-                options=list(_SUPPORTED_PUT_MODES),
-                next="put(kind='python', id='r/file.py', text='...', mode='replace')",
+                f"mode={mode!r} is not accepted on put for kind='python'",
+                next=(
+                    f"use edit(kind='python', id=..., mode={new_mode!r}, ...) "
+                    "for region edits"
+                ),
+            )
+        if mode == "delete":
+            raise BadInput(
+                "mode='delete' is not accepted on put for kind='python'",
+                next="use delete(kind='python', id='r::pkg.mod.symbol') instead",
+            )
+        if mode != "create":
+            raise BadInput(
+                f"mode= is required and must be 'create' (got {mode!r})",
+                options=["create"],
+                next="put(kind='python', id='r/path/new.py', text='...', mode='create')",
             )
         if id is None:
             raise BadInput(
-                "put requires id=",
-                next="put(kind='python', id='r/file.py', text='...', mode='replace')",
+                "put requires id= (the file path)",
+                next="put(kind='python', id='r/path/new.py', text='...', mode='create')",
             )
-
         parsed = _parse_id(str(id))
         root = self._resolve_alias(parsed.alias)
-
-        if mode == "create":
-            return self._put_create(parsed, root, text)
-        if mode == "append":
-            return self._put_append(parsed, root, text)
-        if mode == "replace":
-            return self._put_replace(parsed, root, text, allow_rename=allow_rename)
-        if mode == "delete":
-            return self._put_delete(parsed, root, allow_rename=allow_rename)
-        if mode in ("edit", "insert"):
-            return self._put_anchored(
-                parsed=parsed,
-                root=root,
-                op_kind=mode,
-                find=find,
-                text=text,
-                before=before,
-                after=after,
-                where=where,
-                match=match,
-                nth=nth,
-                allow_rename=allow_rename,
-                dry_run=dry_run,
-            )
-
-        raise Unsupported(  # pragma: no cover — defensive
-            f"unhandled mode {mode!r}",
-            options=list(_SUPPORTED_PUT_MODES),
-        )
+        return self._put_create(parsed, root, text)
 
     # ── seven-verb surface ─────────────────────────────────────────
 

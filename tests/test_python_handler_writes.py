@@ -86,9 +86,16 @@ def test_put_rejects_unknown_mode(handler: PythonHandler) -> None:
         handler.put(id="r/pkg/m.py", text="x = 1\n", mode="bogus")
 
 
+def test_put_legacy_mode_rejected(handler: PythonHandler) -> None:
+    """Legacy put-mode 'replace' (and friends) is now rejected on python
+    put — the error points at the dedicated edit verb."""
+    with pytest.raises(BadInput, match="mode='replace' is not accepted on put"):
+        handler.put(id="r/pkg/m.py", text="x = 1\n", mode="replace")
+
+
 def test_put_requires_id(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="put requires id="):
-        handler.put(text="x = 1\n", mode="replace")
+        handler.put(text="x = 1\n", mode="create")
 
 
 def test_put_unknown_alias_raises(handler: PythonHandler) -> None:
@@ -462,16 +469,19 @@ def test_response_includes_change_summary(handler: PythonHandler, repo: Path) ->
     assert "r::pkg.m.helper" in out.body
 
 
-def test_kind_spec_supports_put() -> None:
-    """The KindSpec advertises put + the supported modes — the dispatcher
-    relies on this for surface validation."""
+def test_kind_spec_supports_seven_verb_surface() -> None:
+    """The KindSpec advertises the seven-verb shape: ``put`` is
+    creation-only (``mode='create'`` only), ``edit`` and ``delete``
+    are first-class verbs that own region edits + selector deletes
+    respectively."""
     from precis.handlers.python import _SUPPORTED_PUT_MODES
 
     assert PythonHandler.spec.supports_put is True
+    assert PythonHandler.spec.supports_edit is True
+    assert PythonHandler.spec.supports_delete is True
+    # ``put`` only carries ``create`` after the cutover.
     assert tuple(PythonHandler.spec.modes) == _SUPPORTED_PUT_MODES
-    # v1 modes: create + append + replace + delete + edit + insert.
-    assert "edit" in _SUPPORTED_PUT_MODES
-    assert "insert" in _SUPPORTED_PUT_MODES
+    assert _SUPPORTED_PUT_MODES == ("create",)
 
 
 # ---------------------------------------------------------------------------

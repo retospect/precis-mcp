@@ -63,7 +63,10 @@ log = logging.getLogger(__name__)
 
 
 _SUPPORTED_VIEWS = ("raw",)
-_SUPPORTED_PUT_MODES = ("append", "replace", "delete", "create", "edit", "insert")
+# After the seven-verb cutover, ``put`` on a file kind is creation-only.
+# Region edits move to the ``edit`` verb (mode='find-replace'|'append'|
+# 'insert'|'replace') and selector-deletes move to ``delete``.
+_SUPPORTED_PUT_MODES = ("create",)
 
 
 class PlaintextHandler(Handler):
@@ -234,7 +237,14 @@ class PlaintextHandler(Handler):
         )
         return block_hits_to_search_hits(triples, kind="plaintext")
 
-    # ── put ────────────────────────────────────────────────────────
+    # ── put: create a new file (creation-only) ─────────────────────
+
+    _LEGACY_PUT_MODES_TO_EDIT: ClassVar[tuple[str, ...]] = (
+        "append",
+        "insert",
+        "replace",
+        "edit",
+    )
 
     def put(  # type: ignore[override]
         self,
@@ -242,57 +252,41 @@ class PlaintextHandler(Handler):
         id: str | int | None = None,
         text: str | None = None,
         mode: str | None = None,
-        find: str | None = None,
-        before: str = "",
-        after: str = "",
-        where: str | None = None,
-        match: str = "unique",
-        nth: int | None = None,
-        dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
-        if mode is None or mode not in _SUPPORTED_PUT_MODES:
-            raise BadInput(
-                f"mode= is required, one of {list(_SUPPORTED_PUT_MODES)}",
-                options=list(_SUPPORTED_PUT_MODES),
-                next="put(kind='plaintext', id='foo', text='...', mode='append')",
-            )
+        """Create a new plaintext file.
 
+        Per the seven-verb surface (D6), ``put`` is creation-only on
+        file kinds. Region edits live on the ``edit`` verb; region
+        deletes live on ``delete``.
+        """
+        if mode in self._LEGACY_PUT_MODES_TO_EDIT:
+            new_mode = "find-replace" if mode == "edit" else mode
+            raise BadInput(
+                f"mode={mode!r} is not accepted on put for kind='plaintext'",
+                next=(
+                    f"use edit(kind='plaintext', id=..., mode={new_mode!r}, ...) "
+                    "for region edits"
+                ),
+            )
+        if mode == "delete":
+            raise BadInput(
+                "mode='delete' is not accepted on put for kind='plaintext'",
+                next="use delete(kind='plaintext', id='slug~SLUG') for region deletes",
+            )
+        if mode != "create":
+            raise BadInput(
+                f"mode= is required and must be 'create' (got {mode!r})",
+                options=["create"],
+                next="put(kind='plaintext', id='foo', text='...', mode='create')",
+            )
         if id is None:
             raise BadInput(
-                "put requires id=",
-                next="put(kind='plaintext', id='foo', text='...', mode='append')",
+                "put requires id= (the file path / slug)",
+                next="put(kind='plaintext', id='foo', text='...', mode='create')",
             )
-
-        slug, sel, _path_view = _parse_pt_id(str(id))
-
-        if mode == "create":
-            return self._put_create(slug, text)
-        if mode == "append":
-            return self._put_append(slug, text)
-        if mode == "replace":
-            return self._put_replace(slug, sel, text)
-        if mode == "delete":
-            return self._put_delete(slug, sel)
-        if mode in ("edit", "insert"):
-            return self._put_anchored(
-                slug=slug,
-                sel=sel,
-                op_kind=mode,
-                find=find,
-                text=text,
-                before=before,
-                after=after,
-                where=where,
-                match=match,
-                nth=nth,
-                dry_run=dry_run,
-            )
-
-        raise Unsupported(  # pragma: no cover — defensive
-            f"unhandled mode {mode!r}",
-            options=list(_SUPPORTED_PUT_MODES),
-        )
+        slug, _sel, _path_view = _parse_pt_id(str(id))
+        return self._put_create(slug, text)
 
     # ── put helpers ────────────────────────────────────────────────
 
@@ -302,8 +296,8 @@ class PlaintextHandler(Handler):
             raise BadInput(
                 f"file already exists: {path}",
                 next=(
-                    f"put(kind='plaintext', id={slug!r}, text=..., "
-                    "mode='replace') if you mean to edit"
+                    f"edit(kind='plaintext', id={slug!r}, mode='replace', "
+                    "text=...) if you mean to edit"
                 ),
             )
         path.parent.mkdir(parents=True, exist_ok=True)
