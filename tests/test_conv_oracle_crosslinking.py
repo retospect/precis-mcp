@@ -92,23 +92,21 @@ class TestOraclePutAccepted:
 
 
 class TestOraclePutRejected:
-    def test_text_rejected(self, oracle: OracleHandler, store: Store) -> None:
+    """Oracle bodies are curated externally; ``put`` is unwired on
+    this kind after the seven-verb cutover. Tag and link mutation
+    move to the dedicated verbs.
+    """
+
+    def test_put_unsupported(self, oracle: OracleHandler, store: Store) -> None:
         _seed_oracle(store, "rubric-x")
-        with pytest.raises(BadInput, match="oracle bodies are curated"):
+        from precis.errors import Unsupported
+
+        with pytest.raises(Unsupported, match="oracle does not support put"):
             oracle.put(id="rubric-x", text="rewrite me")
 
-    def test_mode_rejected(self, oracle: OracleHandler, store: Store) -> None:
-        _seed_oracle(store, "rubric-x")
-        with pytest.raises(BadInput, match="mode='replace' not supported"):
-            oracle.put(id="rubric-x", mode="replace")
-
-    def test_missing_id(self, oracle: OracleHandler) -> None:
-        with pytest.raises(BadInput, match="requires id="):
-            oracle.put(link="paper:foo")
-
-    def test_unknown_slug(self, oracle: OracleHandler) -> None:
+    def test_unknown_slug_on_link(self, oracle: OracleHandler) -> None:
         with pytest.raises(NotFound, match="oracle slug 'no-such' not found"):
-            oracle.put(id="no-such", link="paper:foo")
+            oracle.link(id="no-such", target="paper:foo")
 
     def test_status_axis_rejected(self, oracle: OracleHandler, store: Store) -> None:
         """Oracles have no closed-axis tags — STATUS: must reject."""
@@ -116,16 +114,15 @@ class TestOraclePutRejected:
         with pytest.raises(BadInput, match="axis not allowed on kind 'oracle'"):
             oracle.tag(id="rubric-x", add=["STATUS:open"])
 
-    def test_no_op_rejected(self, oracle: OracleHandler, store: Store) -> None:
+    def test_tag_no_op_rejected(self, oracle: OracleHandler, store: Store) -> None:
         _seed_oracle(store, "rubric-x")
-        with pytest.raises(BadInput, match="requires at least one"):
-            oracle.put(id="rubric-x")
+        with pytest.raises(BadInput, match="requires add= or remove="):
+            oracle.tag(id="rubric-x")
 
-    def test_link_unlink_mutex(self, oracle: OracleHandler, store: Store) -> None:
+    def test_link_target_required(self, oracle: OracleHandler, store: Store) -> None:
         _seed_oracle(store, "rubric-x")
-        _seed_paper(store, "p1")
-        with pytest.raises(BadInput, match="link= and unlink= are mutually exclusive"):
-            oracle.put(id="rubric-x", link="paper:p1", unlink="paper:p1")
+        with pytest.raises(BadInput, match="requires target="):
+            oracle.link(id="rubric-x")
 
 
 # ── ConversationHandler.put ─────────────────────────────────────────
@@ -154,35 +151,33 @@ class TestConvPutAccepted:
 
 
 class TestConvPutRejected:
-    def test_text_rejected(self, conv: ConversationHandler, store: Store) -> None:
+    """Conv transcripts are capture-on-write; ``put`` is unwired on
+    this kind after the seven-verb cutover. Tag and link mutation
+    move to the dedicated verbs.
+    """
+
+    def test_put_unsupported(self, conv: ConversationHandler, store: Store) -> None:
         _seed_conv(store, "thread-1")
-        with pytest.raises(BadInput, match="capture-on-write"):
+        from precis.errors import Unsupported
+
+        with pytest.raises(Unsupported, match="conv does not support put"):
             conv.put(id="thread-1", text="rewrite")
 
-    def test_mode_rejected(self, conv: ConversationHandler, store: Store) -> None:
-        _seed_conv(store, "thread-1")
-        with pytest.raises(BadInput, match="mode='append' not supported"):
-            conv.put(id="thread-1", mode="append")
-
-    def test_missing_id(self, conv: ConversationHandler) -> None:
-        with pytest.raises(BadInput, match="requires id="):
-            conv.put(link="paper:foo")
-
-    def test_unknown_slug(self, conv: ConversationHandler) -> None:
+    def test_unknown_slug_on_link(self, conv: ConversationHandler) -> None:
         with pytest.raises(NotFound, match="conv slug 'no-such' not found"):
-            conv.put(id="no-such", link="paper:foo")
+            conv.link(id="no-such", target="paper:foo")
 
     def test_chunk_selector_rejected(
         self, conv: ConversationHandler, store: Store
     ) -> None:
         _seed_conv(store, "thread-1")
-        with pytest.raises(BadInput, match="conv put operates at ref level"):
-            conv.put(id="thread-1~0", link="paper:foo")
+        with pytest.raises(BadInput, match="conv ops operate at ref level"):
+            conv.link(id="thread-1~0", target="paper:foo")
 
     def test_path_view_rejected(self, conv: ConversationHandler, store: Store) -> None:
         _seed_conv(store, "thread-1")
-        with pytest.raises(BadInput, match="conv put operates at ref level"):
-            conv.put(id="thread-1/transcript", link="paper:foo")
+        with pytest.raises(BadInput, match="conv ops operate at ref level"):
+            conv.link(id="thread-1/transcript", target="paper:foo")
 
     def test_status_axis_rejected(
         self, conv: ConversationHandler, store: Store
@@ -192,12 +187,14 @@ class TestConvPutRejected:
         with pytest.raises(BadInput, match="axis not allowed on kind 'conv'"):
             conv.tag(id="thread-1", add=["STATUS:open"])
 
-    def test_no_op_rejected(self, conv: ConversationHandler, store: Store) -> None:
+    def test_tag_no_op_rejected(self, conv: ConversationHandler, store: Store) -> None:
         _seed_conv(store, "thread-1")
-        with pytest.raises(BadInput, match="requires at least one"):
-            conv.put(id="thread-1")
+        with pytest.raises(BadInput, match="requires add= or remove="):
+            conv.tag(id="thread-1")
 
-    def test_bare_rel_rejected(self, conv: ConversationHandler, store: Store) -> None:
+    def test_link_target_required(
+        self, conv: ConversationHandler, store: Store
+    ) -> None:
         _seed_conv(store, "thread-1")
-        with pytest.raises(BadInput, match="rel= requires link= or unlink="):
-            conv.put(id="thread-1", rel="cites", tags=["topic-x"])
+        with pytest.raises(BadInput, match="requires target="):
+            conv.link(id="thread-1")

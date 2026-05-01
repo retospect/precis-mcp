@@ -20,7 +20,6 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
-    apply_link_tag_only_put,
     apply_tag_ops,
     format_link_tag_ack,
 )
@@ -38,18 +37,16 @@ class ConversationHandler(Handler):
         title="Conversation",
         description=(
             "Durable conversation transcript — slug-addressed, one "
-            "block per message turn. Body is capture-on-write only; "
-            "put accepts link/tag ops only (cross-link to papers, "
-            "memory, todos)."
+            "block per message turn. Body is capture-on-write; use "
+            "tag / link to cross-link to papers, memory, todos."
         ),
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
-        # Phase-8: cross-linking. Body remains capture-on-write
-        # (transcripts arrive via the chat-bridge, not from agent
-        # ``put``). The link/tag surface is the same shape as
-        # paper/oracle.
-        supports_put=True,
+        # Phase-9 / seven-verb cutover: conv transcripts are
+        # capture-on-write (arrive via the chat-bridge, never written
+        # by agents). Cross-linking and tagging ride on the dedicated
+        # tag/link verbs; ``put`` is therefore not exposed.
         supports_tag=True,
         supports_link=True,
         is_numeric=False,
@@ -167,104 +164,13 @@ class ConversationHandler(Handler):
         )
         return block_hits_to_search_hits(triples, kind="conv", excerpt=160)
 
-    # ── put: link/tag CRUD only (no body mutation) ─────────────────
-
-    def put(  # type: ignore[override]
-        self,
-        *,
-        id: str | int | None = None,
-        text: str | None = None,
-        mode: str | None = None,
-        tags: list[str] | None = None,
-        untags: list[str] | None = None,
-        link: str | None = None,
-        unlink: str | None = None,
-        rel: str | None = None,
-        **_kw: Any,
-    ) -> Response:
-        """Apply link/tag operations to an existing conversation ref.
-
-        Conversations are *capture-on-write*: their turns arrive via
-        the chat-bridge that captured the thread, not from agent
-        ``put``. Editing transcript content from an agent would
-        break the audit trail. Cross-linking the conversation to
-        the todo it produced, or to the paper that prompted it,
-        is a separate concern and lands here.
-
-        Per-kind axis enforcement: conversations carry no closed-
-        prefix tags (the workflow state lives on associated todos
-        / quests). Only open tags are accepted; ``STATUS:`` /
-        ``PRIO:`` raise ``BadInput`` at the agent boundary.
-
-        ``id`` must be a bare slug — chunk selectors (``slug~12``)
-        and path views (``slug/transcript``) are read-only-side
-        addressing. Reject them so a misuse doesn't silently
-        target the wrong row.
-        """
-        if text is not None:
-            raise BadInput(
-                "conv transcripts are capture-on-write — not editable from put",
-                next=(
-                    "transcripts arrive via the chat bridge; for "
-                    "cross-links use put(kind='conv', id=<slug>, "
-                    "link='paper:foo')"
-                ),
-            )
-        if mode is not None:
-            raise BadInput(
-                f"mode={mode!r} not supported for kind='conv'",
-                next=(
-                    "conv put accepts only link/unlink/tags/untags — "
-                    "no body modes. Drop the mode= kwarg."
-                ),
-            )
-        if id is None:
-            raise BadInput(
-                "conv put requires id= (the conv slug)",
-                next=(
-                    "put(kind='conv', id='<slug>', link='paper:foo') "
-                    "— find the slug via search(kind='conv', q='...')"
-                ),
-            )
-
-        # Reject chunk selectors and path views — link/tag ops are
-        # ref-level. Reuse ``_parse_conv_id`` so the error wording
-        # matches the read-side parser's contract.
-        slug, chunk, path_view = _parse_conv_id(str(id))
-        if chunk is not None or path_view is not None:
-            raise BadInput(
-                "conv put operates at ref level — drop the turn "
-                "selector / path view from id=",
-                next=f"put(kind='conv', id={slug!r}, link=...)",
-            )
-
-        ref = self.store.get_ref(kind="conv", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"conv slug {slug!r} not found",
-                next="search(kind='conv', q='...') to find existing slugs",
-            )
-
-        ack = apply_link_tag_only_put(
-            self.store,
-            kind="conv",
-            ref_id=ref.id,
-            ref_label=slug,
-            link=link,
-            unlink=unlink,
-            tags=tags,
-            untags=untags,
-            rel=rel,
-        )
-        return Response(body=ack)
-
     # ── seven-verb surface ─────────────────────────────────────────
 
     def _resolve_conv_slug(self, id: str | int) -> tuple[str, int]:
         """Coerce an agent-facing id to a (slug, ref_id) pair.
 
-        Rejects chunk selectors / path views the same way ``put`` does
-        — link/tag ops are ref-level only.
+        Rejects chunk selectors / path views — link/tag ops are
+        ref-level only.
         """
         slug, chunk, path_view = _parse_conv_id(str(id))
         if chunk is not None or path_view is not None:

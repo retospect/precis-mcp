@@ -104,35 +104,38 @@ class TestPaperPutAcceptedOps:
 
 
 class TestPaperPutRejected:
-    def test_text_rejected(self, paper: PaperHandler, store: Store) -> None:
+    """Paper bodies are import-only after the seven-verb cutover. The
+    ``put`` verb is no longer wired on this kind; classification +
+    cross-citation move to the dedicated ``tag`` / ``link`` verbs.
+
+    These tests pin the new failure modes — both the wholesale
+    ``put`` rejection and the per-axis validation that survives on
+    the new verbs (e.g. ``STATUS:`` is still not on paper's allowed
+    closed-axis list).
+    """
+
+    def test_put_unsupported(self, paper: PaperHandler, store: Store) -> None:
+        """``put`` is unwired on paper; bodies arrive via .acatome
+        bundle ingest, not the agent surface."""
         _seed_paper(store, "paper-a")
-        with pytest.raises(BadInput, match="paper bodies are not writable"):
+        from precis.errors import Unsupported
+
+        with pytest.raises(Unsupported, match="paper does not support put"):
             paper.put(id="paper-a", text="rewrite me")
 
-    def test_mode_rejected(self, paper: PaperHandler, store: Store) -> None:
-        """Mode is rejected even without text — papers aren't body-mutable
-        and 'mode' has no meaning on a link/tag-only put surface."""
-        _seed_paper(store, "paper-a")
-        with pytest.raises(BadInput, match="mode='replace' not supported"):
-            paper.put(id="paper-a", mode="replace")
-
-    def test_missing_id(self, paper: PaperHandler) -> None:
-        with pytest.raises(BadInput, match="requires id="):
-            paper.put(link="paper:other")
-
-    def test_unknown_paper(self, paper: PaperHandler) -> None:
+    def test_unknown_paper_on_link(self, paper: PaperHandler) -> None:
         with pytest.raises(NotFound, match="paper slug 'no-such' not found"):
-            paper.put(id="no-such", link="paper:other")
+            paper.link(id="no-such", target="paper:other")
 
     def test_chunk_selector_rejected(self, paper: PaperHandler, store: Store) -> None:
         _seed_paper(store, "paper-a")
-        with pytest.raises(BadInput, match="paper put operates at ref level"):
-            paper.put(id="paper-a~46", link="paper:other")
+        with pytest.raises(BadInput, match="paper ops operate at ref level"):
+            paper.link(id="paper-a~46", target="paper:other")
 
     def test_path_view_rejected(self, paper: PaperHandler, store: Store) -> None:
         _seed_paper(store, "paper-a")
-        with pytest.raises(BadInput, match="paper put operates at ref level"):
-            paper.put(id="paper-a/cite/bib", link="paper:other")
+        with pytest.raises(BadInput, match="paper ops operate at ref level"):
+            paper.link(id="paper-a/cite/bib", target="paper:other")
 
     def test_status_axis_rejected_on_paper(
         self, paper: PaperHandler, store: Store
@@ -142,22 +145,17 @@ class TestPaperPutRejected:
         with pytest.raises(BadInput, match="axis not allowed on kind 'paper'"):
             paper.tag(id="paper-a", add=["STATUS:open"])
 
-    def test_no_op_rejected(self, paper: PaperHandler, store: Store) -> None:
-        """At least one of link/unlink/tags/untags is required."""
+    def test_tag_no_op_rejected(self, paper: PaperHandler, store: Store) -> None:
+        """``tag()`` with neither add= nor remove= is a misuse."""
         _seed_paper(store, "paper-a")
-        with pytest.raises(BadInput, match="requires at least one"):
-            paper.put(id="paper-a")
+        with pytest.raises(BadInput, match="requires add= or remove="):
+            paper.tag(id="paper-a")
 
-    def test_link_unlink_mutex(self, paper: PaperHandler, store: Store) -> None:
+    def test_link_target_required(self, paper: PaperHandler, store: Store) -> None:
+        """``link()`` requires a target= so a typo can't silently no-op."""
         _seed_paper(store, "paper-a")
-        _seed_paper(store, "paper-b")
-        with pytest.raises(BadInput, match="link= and unlink= are mutually exclusive"):
-            paper.put(id="paper-a", link="paper:paper-b", unlink="paper:paper-b")
-
-    def test_bare_rel_rejected(self, paper: PaperHandler, store: Store) -> None:
-        _seed_paper(store, "paper-a")
-        with pytest.raises(BadInput, match="rel= requires link= or unlink="):
-            paper.put(id="paper-a", rel="cites", tags=["topic-x"])
+        with pytest.raises(BadInput, match="requires target="):
+            paper.link(id="paper-a")
 
 
 class TestPaperBidirectionalGraph:

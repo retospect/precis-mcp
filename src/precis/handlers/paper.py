@@ -28,7 +28,6 @@ from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
-    validate_link_args,
 )
 from precis.handlers._paper_toc import build_toc, filter_toc_to_range, render_toc
 from precis.protocol import Handler, KindSpec
@@ -60,19 +59,17 @@ class PaperHandler(Handler):
         title="Paper",
         description=(
             "Scientific paper. Slug-addressed; one ref per paper, blocks "
-            "per chunk. Ingested from .acatome bundles. Put accepts "
-            "link/unlink/tags only — paper bodies are import-only."
+            "per chunk. Ingested from .acatome bundles (paper bodies are "
+            "import-only). Use tag / link to classify and cross-cite."
         ),
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
-        # Phase-8: cross-linking. ``supports_put=True`` does NOT mean
-        # paper bodies become writable — the put handler restricts to
-        # link/unlink/tags/untags + rel and rejects ``text=``/``mode=``
-        # for content mutation. The motivating use case is letting
-        # papers cross-cite each other and carry CACHE: tags without
-        # going through a memory ref as a hop.
-        supports_put=True,
+        # Phase-9 / seven-verb cutover: paper bodies are import-only
+        # (arrive via .acatome bundle ingest, never edited from the
+        # agent surface). Cross-linking and tag classification ride
+        # on the dedicated tag/link verbs; ``put`` is therefore not
+        # exposed on this kind.
         supports_tag=True,
         supports_link=True,
         is_numeric=False,
@@ -307,133 +304,15 @@ class PaperHandler(Handler):
         )
         return block_hits_to_search_hits(triples, kind="paper")
 
-    # -- put: link/tag CRUD only (no body mutation) --------------------------
-
-    def put(  # type: ignore[override]
-        self,
-        *,
-        id: str | int | None = None,
-        text: str | None = None,
-        mode: str | None = None,
-        tags: list[str] | None = None,
-        untags: list[str] | None = None,
-        link: str | None = None,
-        unlink: str | None = None,
-        rel: str | None = None,
-        **_kw: Any,
-    ) -> Response:
-        """Apply link/tag operations to an existing paper ref.
-
-        Papers are *body-immutable*: the canonical content arrives via
-        ``.acatome`` bundle ingest and shouldn't be edited from the
-        agent. But cross-linking (paper → paper citations, memory →
-        paper references) and tag classification (``SRC:primary``,
-        ``CACHE:pinned``) are first-class workflows. This put surface
-        accepts exactly the link/tag kwargs and rejects everything
-        else with a sharp error.
-
-        Accepted kwargs:
-
-        * ``id`` — paper slug. Required. Chunk selectors (``~N``,
-          ``~A..B``) and path views (``/toc``, ``/cite/bib``) are
-          rejected here — link/tag ops are ref-level.
-        * ``link`` / ``unlink`` — ``kind:identifier[~pos]`` target.
-        * ``rel`` — relation slug; defaults to ``related-to`` when
-          omitted on link/unlink.
-        * ``tags`` / ``untags`` — closed-prefix tags must use one of
-          the paper-allowed axes (``SRC``, ``CACHE``); ``STATUS:``
-          and ``PRIO:`` are rejected at validation. Open tags are
-          always allowed.
-
-        Rejected kwargs:
-
-        * ``text=`` — paper bodies aren't writable. Use the bundle
-          ingest CLI to land a new paper.
-        * ``mode=`` — there's no mutation mode here. Append/replace/
-          delete are nonsensical against an immutable body.
-        """
-        if text is not None:
-            raise BadInput(
-                "paper bodies are not writable from put",
-                next=(
-                    "ingest a paper via `precis jobs ingest-paper "
-                    "<bundle.acatome>`; for citations use "
-                    "put(kind='paper', id=<slug>, link='paper:other-slug', rel='cites')"
-                ),
-            )
-        if mode is not None:
-            raise BadInput(
-                f"mode={mode!r} not supported for kind='paper'",
-                next=(
-                    "paper put accepts only link/unlink/tags/untags — "
-                    "no body modes. Drop the mode= kwarg."
-                ),
-            )
-        if id is None:
-            raise BadInput(
-                "paper put requires id= (the paper slug)",
-                next=(
-                    "put(kind='paper', id='<slug>', link='paper:other', rel='cites') "
-                    "— find the slug via search(kind='paper', q='...')"
-                ),
-            )
-
-        # Reject chunk selectors and path views — link/tag ops live at
-        # the ref level. Re-using ``_parse_paper_id`` here means a
-        # caller passing ``slug~46`` or ``slug/cite/bib`` gets the
-        # specific "ref-level only" error rather than a generic
-        # NotFound on the parsed slug.
-        slug, chunk_spec, path_view = _parse_paper_id(str(id))
-        if chunk_spec is not None or path_view is not None:
-            raise BadInput(
-                "paper put operates at ref level — drop the chunk "
-                "selector / path view from id=",
-                next=f"put(kind='paper', id={slug!r}, link=...)",
-            )
-
-        ref = self.store.get_ref(kind="paper", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"paper slug {slug!r} not found",
-                next="search(kind='paper', q='...') to find existing slugs",
-            )
-
-        validate_link_args(link=link, unlink=unlink, rel=rel, kind="paper")
-        if not any((link, unlink, tags, untags)):
-            raise BadInput(
-                "paper put requires at least one of link=, unlink=, tags=, untags=",
-                next=(
-                    f"put(kind='paper', id={slug!r}, "
-                    "link='paper:other-slug', rel='cites')"
-                ),
-            )
-
-        n_links_added, n_links_removed = apply_link_ops(
-            self.store, ref.id, link=link, unlink=unlink, rel=rel
-        )
-        n_tags_added, n_tags_removed = apply_tag_ops(
-            self.store, "paper", ref.id, tags=tags, untags=untags
-        )
-        return Response(
-            body=format_link_tag_ack(
-                kind="paper",
-                ref_label=slug,
-                n_links_added=n_links_added,
-                n_links_removed=n_links_removed,
-                n_tags_added=n_tags_added,
-                n_tags_removed=n_tags_removed,
-            )
-        )
-
     # -- seven-verb surface --------------------------------------------------
 
     def _resolve_paper_slug(self, id: str | int) -> tuple[str, int]:
         """Coerce an agent-facing id to a (slug, ref_id) pair.
 
-        Rejects chunk selectors and path views the same way ``put``
-        does — link/tag/edit ops live at the ref level only. Raises
-        ``BadInput`` (selector present) or ``NotFound`` (slug
-        unknown) so the caller can let those propagate.
+        Rejects chunk selectors and path views — link/tag ops live
+        at the ref level only. Raises ``BadInput`` (selector
+        present) or ``NotFound`` (slug unknown) so the caller can
+        let those propagate.
         """
         slug, chunk_spec, path_view = _parse_paper_id(str(id))
         if chunk_spec is not None or path_view is not None:

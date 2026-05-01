@@ -18,7 +18,6 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
-    apply_link_tag_only_put,
     apply_tag_ops,
     format_link_tag_ack,
 )
@@ -38,16 +37,17 @@ class OracleHandler(Handler):
         title="Oracle",
         description=(
             "Authoritative reference node — slug-addressed, curated "
-            "prompt or rubric. Read-only body; put accepts link/tag "
-            "ops only (cross-link to papers, memory, etc.)."
+            "prompt or rubric. Read-only body; use tag / link to "
+            "cross-link to papers, memory, etc."
         ),
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
-        # Phase-8: cross-linking. Body is curated — set externally
-        # via the corpus seeding pipeline. Put surface is link/tag
-        # only, same shape as paper.
-        supports_put=True,
+        # Phase-9 / seven-verb cutover: oracle bodies are curated —
+        # set externally via the corpus seeding pipeline, never
+        # written from the agent surface. Cross-linking and tag
+        # classification ride on the dedicated tag/link verbs;
+        # ``put`` is therefore not exposed.
         supports_tag=True,
         supports_link=True,
         is_numeric=False,
@@ -113,76 +113,6 @@ class OracleHandler(Handler):
         Block-level search is a follow-up.
         """
         return search_hits_slug_refs(self.store, kind="oracle", q=q, top_k=top_k)
-
-    # ── put: link/tag CRUD only (no body mutation) ────────────────
-
-    def put(  # type: ignore[override]
-        self,
-        *,
-        id: str | int | None = None,
-        text: str | None = None,
-        mode: str | None = None,
-        tags: list[str] | None = None,
-        untags: list[str] | None = None,
-        link: str | None = None,
-        unlink: str | None = None,
-        rel: str | None = None,
-        **_kw: Any,
-    ) -> Response:
-        """Apply link/tag operations to an existing oracle ref.
-
-        Oracle bodies are curated content seeded externally — the
-        agent shouldn't edit them. Cross-linking (oracle → paper
-        that motivates the rubric, oracle → todo that tracks
-        revisions) and open-tag classification are useful
-        though, so a narrow link/tag put surface is exposed
-        here, mirroring :class:`PaperHandler.put`.
-        """
-        if text is not None:
-            raise BadInput(
-                "oracle bodies are curated and not writable from put",
-                next=(
-                    "edit the source oracle in the corpus seed pipeline; "
-                    "for cross-links use put(kind='oracle', id=<slug>, "
-                    "link='paper:foo')"
-                ),
-            )
-        if mode is not None:
-            raise BadInput(
-                f"mode={mode!r} not supported for kind='oracle'",
-                next=(
-                    "oracle put accepts only link/unlink/tags/untags — "
-                    "no body modes. Drop the mode= kwarg."
-                ),
-            )
-        if id is None:
-            raise BadInput(
-                "oracle put requires id= (the oracle slug)",
-                next=(
-                    "put(kind='oracle', id='<slug>', link='paper:foo') "
-                    "— find the slug via search(kind='oracle', q='...')"
-                ),
-            )
-        slug = str(id).strip()
-        ref = self.store.get_ref(kind="oracle", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"oracle slug {slug!r} not found",
-                next="search(kind='oracle', q='...') to find existing slugs",
-            )
-
-        ack = apply_link_tag_only_put(
-            self.store,
-            kind="oracle",
-            ref_id=ref.id,
-            ref_label=slug,
-            link=link,
-            unlink=unlink,
-            tags=tags,
-            untags=untags,
-            rel=rel,
-        )
-        return Response(body=ack)
 
     # ── seven-verb surface ─────────────────────────────────────────
 
