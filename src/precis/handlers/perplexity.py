@@ -38,10 +38,15 @@ from precis.handlers._link_tag_ops import (
 )
 from precis.protocol import KindSpec
 from precis.response import Response
+from precis.store import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import BlockInsert
-from precis.utils.md_parse import parse_markdown
+from precis.utils.block_ingest import to_block_inserts
+from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
+from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.text import excerpt as _excerpt
 
 log = logging.getLogger(__name__)
 
@@ -187,9 +192,17 @@ class _PerplexityBase(CacheBackedHandler):
         body, citations = _format_perplexity_body(data)
         title = _title_for_query(query)
 
+        # Block-parse + embed via the shared ingestion pipeline so
+        # ``search(kind='think', q=...)`` can find content inside the
+        # fetched report — same shape ``put(mode='import')`` uses.
+        # Marginal embedding cost (5–20 calls) is negligible against
+        # the API latency (5–30s for think, 2–10 min for research)
+        # and the per-call dollar cost.
+        body_blocks = self._blocks_from_report(body)
+
         return FetchResult(
             title=title,
-            body_blocks=[BlockInsert(pos=0, text=body)],
+            body_blocks=body_blocks,
             cost_usd=self.cost_per_call_usd,
             meta={
                 "model": self.model,
@@ -497,45 +510,125 @@ class _PerplexityBase(CacheBackedHandler):
             )
         )
 
+    # ── search ─────────────────────────────────────────────────────
+
+    def search(  # type: ignore[override]
+        self,
+        *,
+        q: str | None = None,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> Response:
+        """Block-level fused search across cached reports of this kind.
+
+        Both API-fetched and ``put(mode='import')`` paths block-parse +
+        embed via :meth:`_blocks_from_report`, so hits land on whichever
+        provenance happens to carry the matching content. The body
+        format is the same across paths — agents see one consistent
+        rendering.
+        """
+        if q is None or not q.strip():
+            raise BadInput(
+                f"search requires q= for kind={self.spec.kind!r}",
+                next=f"search(kind={self.spec.kind!r}, q='your query')",
+            )
+
+        query_vec: list[float] | None = None
+        if self.embedder is not None:
+            query_vec = self.embedder.embed_one(q)
+
+        hits = self.store.search_blocks_fused(
+            q=q,
+            query_vec=query_vec,
+            kind=self.spec.kind,
+            limit=top_k,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+        )
+        if not hits:
+            return Response(
+                body=(
+                    f"no {self.spec.kind} blocks match {q!r}\n"
+                    f"next: get(kind={self.spec.kind!r}, "
+                    f"id={self.example_query!r}) to populate the cache, "
+                    f"or try a broader query"
+                )
+            )
+
+        total = self.store.count_blocks_lexical(q=q, kind=self.spec.kind)
+        lines = [
+            format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun="block hit",
+                query=q,
+            )
+        ]
+        for block, ref, score in hits:
+            slug = ref.slug or "???"
+            handle = f"{slug}~{block.slug or block.pos}"
+            preview = _excerpt(block.text)
+            lines.append(f"\n## {handle}  (score={score:.4f})")
+            lines.append(f"_{ref.title}_")
+            lines.append(preview)
+        return Response(body="\n".join(lines))
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Block-level fused search returned as :class:`SearchHit`s.
+
+        Same engine as :meth:`search`; used by the runtime when
+        ``kind`` fans out across multiple kinds (``kind='*'``,
+        ``kind='paper,think'``, …).
+        """
+        if not (q and q.strip()):
+            return []
+        query_vec: list[float] | None = None
+        if self.embedder is not None:
+            query_vec = self.embedder.embed_one(q)
+        triples = self.store.search_blocks_fused(
+            q=q,
+            query_vec=query_vec,
+            kind=self.spec.kind,
+            limit=top_k,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+        )
+        return block_hits_to_search_hits(triples, kind=self.spec.kind)
+
     def _blocks_from_report(self, body: str) -> list[BlockInsert]:
-        """Parse a pasted Perplexity report into embedded blocks.
+        """Parse a Perplexity report body into embedded blocks.
 
         The body is treated as Markdown — Perplexity's web exports
-        already are. Each logical chunk (heading line, paragraph,
-        list, table, code fence) becomes one block with a stable,
-        content-derived slug.
+        and API responses are already markdown-shaped. Each logical
+        chunk (heading line, paragraph, list, table, code fence)
+        becomes one block with a stable, content-derived slug.
+
+        Used from two paths:
+
+        * :meth:`_fetch` — API cache-miss responses get block-parsed
+          + embedded so ``search(kind='think', q=...)`` lands hits
+          inside fetched reports (not just imported ones).
+        * :meth:`put` (``mode='import'``) — pasted-from-web-UI
+          reports follow the same pipeline at $0.
+
+        The empty-input branch returns a single un-embedded block
+        wrapping the raw body so the cache row is never empty when
+        the upstream returned something we couldn't parse.
         """
         md_blocks = parse_markdown(body)
         if not md_blocks:
-            # Defensive fallback: no recognisable structure → store the
-            # whole text as one paragraph block. Better than dropping.
+            # Defensive fallback: parser found no structure → store
+            # the whole text as one paragraph block (no embedding).
+            # Better than dropping content.
             return [BlockInsert(pos=0, text=body)]
 
-        embeddings: list[list[float]] | None = None
-        if self.embedder is not None:
-            embeddings = self.embedder.embed([b.text for b in md_blocks])
-
-        out: list[BlockInsert] = []
-        for i, mb in enumerate(md_blocks):
-            meta: dict[str, Any] = {
-                "kind": mb.kind,
-                "line_start": mb.line_start,
-                "line_end": mb.line_end,
-            }
-            if mb.heading_level is not None:
-                meta["heading_level"] = mb.heading_level
-            if mb.meta:
-                meta.update(mb.meta)
-            out.append(
-                BlockInsert(
-                    pos=mb.pos,
-                    slug=mb.slug,
-                    text=mb.text,
-                    embedding=embeddings[i] if embeddings else None,
-                    meta=meta,
-                )
-            )
-        return out
+        return to_block_inserts(
+            md_blocks, embedder=self.embedder, meta_for=block_meta
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +650,8 @@ class WebsearchHandler(_PerplexityBase):
             "answer as a $0 cache entry for the same query."
         ),
         supports_get=True,
+        supports_search=True,
+        supports_search_hits=True,
         supports_put=True,
         supports_tag=True,
         supports_link=True,
@@ -586,6 +681,8 @@ class ThinkHandler(_PerplexityBase):
             "web-UI-generated answer as a $0 cache entry."
         ),
         supports_get=True,
+        supports_search=True,
+        supports_search_hits=True,
         supports_put=True,
         supports_tag=True,
         supports_link=True,
@@ -618,6 +715,8 @@ class ResearchHandler(_PerplexityBase):
             "to populate the cache at $0."
         ),
         supports_get=True,
+        supports_search=True,
+        supports_search_hits=True,
         supports_put=True,
         supports_tag=True,
         supports_link=True,

@@ -46,7 +46,8 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._paper_toc import build_toc, render_toc
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, BlockInsert, Ref
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
+from precis.utils.block_ingest import to_block_inserts
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -58,6 +59,7 @@ from precis.utils.edit_resolve import (
 )
 from precis.utils.md_parse import (
     MdBlock,
+    block_meta,
     file_slug_from_path,
     is_valid_file_slug,
     parse_markdown,
@@ -793,7 +795,9 @@ class MarkdownHandler(Handler):
             "size": st.st_size,
         }
 
-        embeddings = self._embed_blocks(md_blocks)
+        inserts = to_block_inserts(
+            md_blocks, embedder=self.embedder, meta_for=block_meta
+        )
 
         with self.store.tx() as conn:
             corpus_id = self.store.ensure_corpus("default")
@@ -809,31 +813,11 @@ class MarkdownHandler(Handler):
             else:
                 self.store.update_ref(ref.id, title=title, meta_patch=new_meta)
 
-            inserts = [
-                BlockInsert(
-                    pos=mb.pos,
-                    slug=mb.slug,
-                    text=mb.text,
-                    embedding=embeddings[i] if embeddings else None,
-                    meta=_block_meta(mb),
-                )
-                for i, mb in enumerate(md_blocks)
-            ]
             self.store.insert_blocks(ref.id, inserts, replace=True, conn=conn)
 
         # Re-fetch to pick up the patched meta + new title.
         refreshed = self.store.get_ref(kind="markdown", id=slug)
         return refreshed
-
-    def _embed_blocks(self, blocks: list[MdBlock]) -> list[list[float]] | None:
-        """Embed every block, or None if no embedder is configured.
-
-        Mock embedder is fine for tests; production uses bge-m3. We
-        embed serially — markdown files are tiny vs paper bundles.
-        """
-        if self.embedder is None or not blocks:
-            return None
-        return [self.embedder.embed_one(b.text) for b in blocks]
 
     # ── render helpers ─────────────────────────────────────────────
 
@@ -1080,19 +1064,6 @@ def _find_block(blocks: list[MdBlock], sel: _BlockSel) -> MdBlock | None:
         if b.slug == sel.value:
             return b
     return None
-
-
-def _block_meta(mb: MdBlock) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "kind": mb.kind,
-        "line_start": mb.line_start,
-        "line_end": mb.line_end,
-    }
-    if mb.heading_level is not None:
-        out["heading_level"] = mb.heading_level
-    if mb.meta:
-        out.update(mb.meta)
-    return out
 
 
 def _derive_title(blocks: list[MdBlock], *, fallback: str) -> str:

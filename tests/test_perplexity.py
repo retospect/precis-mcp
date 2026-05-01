@@ -649,3 +649,151 @@ def test_fetched_cache_hit_keeps_cached_badge(
     resp2 = websearch.get(id="paid hit")
     assert "imported" not in resp2.cost
     assert "cached" in resp2.cost
+
+
+# ── fetch-path block parsing + embedding ─────────────────────────────
+
+
+@pytest.fixture
+def think_with_embedder(store: Store) -> ThinkHandler:
+    """ThinkHandler wired with the mock embedder so the fetch path's
+    ``_blocks_from_report`` produces vectors."""
+    return ThinkHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
+
+
+_MULTI_PARA_BODY = (
+    "# Investigation Summary\n"
+    "\n"
+    "First paragraph discusses the catalyst landscape with copper-based "
+    "electrodes leading the field [1].\n"
+    "\n"
+    "## Mechanism\n"
+    "\n"
+    "Second paragraph covers the proton-coupled electron transfer "
+    "mechanism critical to selectivity [2].\n"
+    "\n"
+    "## Outlook\n"
+    "\n"
+    "Third paragraph forecasts the next five years of efficiency gains.\n"
+)
+
+
+def test_fetch_path_block_parses_body(think_with_embedder: ThinkHandler) -> None:
+    """Cache-miss API response body is parsed into multiple addressable
+    blocks (one per heading / paragraph), not stored as one lump.
+
+    Before the consolidation, ``_fetch`` returned a single un-embedded
+    block — agents could ``get`` the report but never ``search`` inside
+    it. Now both API-fetched and ``put(mode='import')`` paths share the
+    same block-parsing pipeline.
+    """
+    # Stub multi-paragraph response.
+    _StubClient.response = _StubResp(
+        json_data={
+            "choices": [{"message": {"content": _MULTI_PARA_BODY}}],
+            "citations": ["https://example.com/1", "https://example.com/2"],
+        }
+    )
+    h = think_with_embedder
+    h.get(id="catalyst landscape question")
+
+    # Find the cache row and count blocks.
+    refs = h.store.list_refs(kind="think", provider="perplexity", limit=10)
+    assert len(refs) == 1
+    n_blocks = h.store.count_blocks(refs[0].id)
+    # Three paragraphs + three headings + the Sources trailer ≥ 4 blocks.
+    assert n_blocks >= 4, (
+        f"expected fetch path to produce ≥4 blocks, got {n_blocks}"
+    )
+
+
+def test_fetch_path_embeds_blocks(think_with_embedder: ThinkHandler) -> None:
+    """The fetch-path blocks must carry vectors when an embedder is
+    wired — otherwise ``search(kind='think', q=...)`` returns nothing
+    despite the rows existing."""
+    _StubClient.response = _StubResp(
+        json_data={
+            "choices": [{"message": {"content": _MULTI_PARA_BODY}}],
+            "citations": [],
+        }
+    )
+    h = think_with_embedder
+    h.get(id="another query")
+
+    refs = h.store.list_refs(kind="think", provider="perplexity", limit=10)
+    # ``with_embedding=True`` is required — the default loads only the
+    # block bodies (cheap path for rendering) and leaves the vector
+    # column NULL.
+    blocks = h.store.list_blocks_for_ref(refs[0].id, with_embedding=True)
+    embedded = [b for b in blocks if b.embedding is not None]
+    assert embedded, "expected fetch-path blocks to be embedded"
+    # Mock embedder yields 1024-dim unit-norm vectors.
+    assert all(len(b.embedding) == 1024 for b in embedded)
+
+
+# ── search verb on perplexity kinds ─────────────────────────────────
+
+
+def test_search_finds_blocks_in_fetched_report(
+    think_with_embedder: ThinkHandler,
+) -> None:
+    """End-to-end: fetch a report (cache miss) → search inside it.
+
+    Pre-consolidation this was impossible: the fetch path stored a
+    single un-embedded lump and ``supports_search=False`` blocked the
+    verb anyway. Both gaps are now closed.
+    """
+    _StubClient.response = _StubResp(
+        json_data={
+            "choices": [{"message": {"content": _MULTI_PARA_BODY}}],
+            "citations": [],
+        }
+    )
+    h = think_with_embedder
+    h.get(id="long-tail query")
+
+    resp = h.search(q="proton-coupled electron transfer")
+    assert "block hit" in resp.body
+    assert "mechanism" in resp.body.lower()
+
+
+def test_search_rejects_blank_query(think_with_embedder: ThinkHandler) -> None:
+    with pytest.raises(BadInput, match="search requires q="):
+        think_with_embedder.search(q="")
+
+
+def test_search_returns_empty_state_for_unknown_query(
+    think_with_embedder: ThinkHandler,
+) -> None:
+    resp = think_with_embedder.search(q="nothing matches this string xyzpdq")
+    assert "no think blocks match" in resp.body
+
+
+def test_search_hits_returns_structured_for_cross_kind_merge(
+    think_with_embedder: ThinkHandler,
+) -> None:
+    """``search_hits()`` is what the runtime calls when fanning out
+    across multiple kinds (``kind='*'`` / ``kind='paper,think'``)."""
+    _StubClient.response = _StubResp(
+        json_data={
+            "choices": [{"message": {"content": _MULTI_PARA_BODY}}],
+            "citations": [],
+        }
+    )
+    h = think_with_embedder
+    h.get(id="cross-kind query")
+
+    hits = h.search_hits(q="catalyst landscape")
+    assert hits, "expected at least one structured hit"
+    # Every SearchHit advertises this kind so the merger renders it.
+    assert all(h.kind == "think" for h in hits)
+
+
+def test_search_supports_announced_in_kind_spec() -> None:
+    """The KindSpec must advertise the verb so the dispatcher routes
+    ``search(kind='think', ...)`` to the handler instead of returning
+    Unsupported. Pin the flags here so a future refactor can't silently
+    revert the cutover."""
+    for cls in (WebsearchHandler, ThinkHandler, ResearchHandler):
+        assert cls.spec.supports_search is True, cls.__name__
+        assert cls.spec.supports_search_hits is True, cls.__name__

@@ -26,7 +26,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from precis.utils.slug import slug_from_text
 
@@ -83,6 +83,26 @@ class MdBlock:
 
     meta: dict[str, str] = field(default_factory=dict)
     """Per-kind metadata (e.g. ``{'lang': 'python'}`` for code blocks)."""
+
+
+def block_meta(mb: MdBlock) -> dict[str, Any]:
+    """Render an :class:`MdBlock` as the dict shape the store expects on
+    :attr:`BlockInsert.meta`.
+
+    Promoted from a private helper in ``handlers/markdown.py`` so the
+    Perplexity handler (and any future markdown-fed kind) can share
+    one block-meta builder rather than each re-deriving the layout.
+    """
+    out: dict[str, Any] = {
+        "kind": mb.kind,
+        "line_start": mb.line_start,
+        "line_end": mb.line_end,
+    }
+    if mb.heading_level is not None:
+        out["heading_level"] = mb.heading_level
+    if mb.meta:
+        out.update(mb.meta)
+    return out
 
 
 def parse_markdown(content: str) -> list[MdBlock]:

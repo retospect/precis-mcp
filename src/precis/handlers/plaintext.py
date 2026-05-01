@@ -33,7 +33,8 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, BlockInsert, Ref
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
+from precis.utils.block_ingest import to_block_inserts
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -738,7 +739,9 @@ class PlaintextHandler(Handler):
             "size": st.st_size,
         }
 
-        embeddings = self._embed_blocks(pt_blocks)
+        inserts = to_block_inserts(
+            pt_blocks, embedder=self.embedder, meta_for=_plaintext_block_meta
+        )
 
         with self.store.tx() as conn:
             corpus_id = self.store.ensure_corpus("default")
@@ -754,24 +757,9 @@ class PlaintextHandler(Handler):
             else:
                 self.store.update_ref(ref.id, title=title, meta_patch=new_meta)
 
-            inserts = [
-                BlockInsert(
-                    pos=pb.pos,
-                    slug=pb.slug,
-                    text=pb.text,
-                    embedding=embeddings[i] if embeddings else None,
-                    meta={"line_start": pb.line_start, "line_end": pb.line_end},
-                )
-                for i, pb in enumerate(pt_blocks)
-            ]
             self.store.insert_blocks(ref.id, inserts, replace=True, conn=conn)
 
         return self.store.get_ref(kind="plaintext", id=slug)
-
-    def _embed_blocks(self, blocks: list[PlaintextBlock]) -> list[list[float]] | None:
-        if self.embedder is None or not blocks:
-            return None
-        return [self.embedder.embed_one(b.text) for b in blocks]
 
     # ── render helpers ─────────────────────────────────────────────
 
@@ -1010,6 +998,15 @@ def _find_block(blocks: list[PlaintextBlock], sel: _BlockSel) -> PlaintextBlock 
         if b.slug == sel.value:
             return b
     return None
+
+
+def _plaintext_block_meta(pb: PlaintextBlock) -> dict[str, Any]:
+    """Per-block metadata for plaintext: just the line span.
+
+    Plaintext has no "kind" axis (every block is a paragraph), so the
+    layout is deliberately thinner than markdown's ``block_meta``.
+    """
+    return {"line_start": pb.line_start, "line_end": pb.line_end}
 
 
 def _derive_title(blocks: list[PlaintextBlock], *, fallback: str) -> str:

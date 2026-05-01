@@ -299,16 +299,25 @@ class TestCrossKindErrorOptionsFiltered:
         rendered = runtime.dispatch("search", {"kind": "all", "q": "x"})
         assert "[error:NotFound]" in rendered
         # The options line must exist and must NOT mention search-
-        # incapable kinds.
+        # incapable kinds. Parse the comma-separated list rather
+        # than substring-matching: ``web`` is search-incapable but
+        # ``websearch`` (perplexity tier) gained ``supports_search``
+        # in the fetch-path-embedding consolidation, so the loose
+        # ``"web" in line`` check that previously sufficed now
+        # falses-positive on ``websearch``.
         opt_line = next(
             (line for line in rendered.splitlines() if "options:" in line), ""
         )
         assert opt_line, "expected an options: line in the error reply"
-        assert "calc" not in opt_line
-        assert "math" not in opt_line
-        assert "web" not in opt_line
-        assert "websearch" not in opt_line
-        assert "youtube" not in opt_line
+        opts = {
+            tok.strip()
+            for tok in opt_line.split(":", 1)[1].split(",")
+        }
+        # Search-incapable kinds must not appear.
+        assert "calc" not in opts
+        assert "math" not in opts
+        assert "web" not in opts
+        assert "youtube" not in opts
 
 
 # ── MINOR m3: paper-id underscore error names the rule ──────────
