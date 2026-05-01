@@ -180,6 +180,14 @@ class Registry:
         """
         return self.abilities.get((kind, verb, mode))
 
+    def __contains__(self, kind: object) -> bool:
+        """Allow ``kind in registry`` to mean "kind is registered"."""
+        return kind in self.kinds
+
+    def __len__(self) -> int:
+        """Number of live kinds."""
+        return len(self.kinds)
+
 
 # ---------------------------------------------------------------------------
 # Boot helpers

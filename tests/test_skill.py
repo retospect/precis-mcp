@@ -113,7 +113,14 @@ def test_skill_count_reasonable(skill: SkillHandler) -> None:
 
 
 def test_precis_help_falls_back_without_registry(skill: SkillHandler) -> None:
-    """Without bind_registry, precis-help still resolves but is a stub."""
+    """Without a registry bound, precis-help still resolves but is a stub.
+
+    Under the old design a handler's registry reference came from
+    ``bind_registry(...)``. Under the new design it's populated by
+    ``Handler._register_with`` at construction time. Direct-constructed
+    fixtures (like this one) never go through ``_register_with``, so
+    ``self.registry`` stays ``None`` and the skill falls back.
+    """
     out = skill.get(id="precis-help")
     assert "precis-help" in out.body
     assert "registry not wired" in out.body
@@ -143,13 +150,18 @@ def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
             self.spec = spec
 
     class _FakeReg:
+        """Duck-typed stand-in for ``dispatch.Registry`` exposing the
+        two attributes ``SkillHandler._render_help`` consults:
+        ``kinds`` (iterable property) and ``handler_for(kind)``."""
+
         def __init__(self, handlers: list[_FakeHandler]) -> None:
             self._h = {h.spec.kind: h for h in handlers}
 
+        @property
         def kinds(self) -> list[str]:
             return sorted(self._h.keys())
 
-        def get(self, kind: str) -> _FakeHandler:
+        def handler_for(self, kind: str) -> _FakeHandler:
             return self._h[kind]
 
     handlers = [
@@ -163,7 +175,7 @@ def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
         ),
         _FakeHandler(_FakeSpec("paper", description="Research papers")),
     ]
-    skill.bind_registry(_FakeReg(handlers))
+    skill.registry = _FakeReg(handlers)
 
     out = skill.get(id="precis-help")
     assert "calc" in out.body
@@ -194,12 +206,15 @@ def test_search_marks_unwired_skills(skill: SkillHandler) -> None:
     (MCP critic MINOR: ``D5 — hint lies by omission``.)"""
 
     class _NoFileKindsReg:
+        """Duck-typed registry that deliberately omits the file kinds
+        (markdown / plaintext / python) so their help skills surface
+        with the ``[unwired]`` marker."""
+
+        @property
         def kinds(self) -> list[str]:
-            # Deliberately omit markdown / plaintext / python so the
-            # file-help skills surface as [unwired].
             return ["calc", "paper", "memory"]
 
-    skill.bind_registry(_NoFileKindsReg())
+    skill.registry = _NoFileKindsReg()
     # 'edit' appears in several file-kind skills; the search hit
     # list should include markdown/plaintext help with the marker.
     out = skill.search(q="edit")

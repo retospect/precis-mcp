@@ -817,7 +817,7 @@ def test_search_default_kind_annotates_error_path(
     # Force a failure inside the memory handler's search() by
     # monkeypatching the bound method to raise.  We exercise the
     # PrecisError branch first…
-    handler = runtime_with_store.registry.get("memory")
+    handler = runtime_with_store.registry.handler_for("memory")
     original = handler.search
 
     def _boom(**_kw):  # type: ignore[no-untyped-def]
