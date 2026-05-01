@@ -81,6 +81,10 @@ class PlaintextHandler(Handler):
         supports_search=True,
         supports_search_hits=True,
         supports_put=True,
+        supports_edit=True,
+        supports_delete=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         views=_SUPPORTED_VIEWS,
@@ -530,6 +534,172 @@ class PlaintextHandler(Handler):
             diff = format_unified_diff(pre, post, file_label=slug).rstrip("\n")
             body = diff or "(no diff — pre and post are identical)"
         return Response(body="\n".join([*header, "", body]))
+
+    # ── seven-verb surface ─────────────────────────────────────────
+
+    #: Modes accepted by :meth:`edit` — region-modifying ops only.
+    _EDIT_MODES: ClassVar[tuple[str, ...]] = (
+        "find-replace",
+        "append",
+        "insert",
+        "replace",
+    )
+
+    def edit(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        mode: str = "find-replace",
+        text: str | None = None,
+        find: str | None = None,
+        before: str = "",
+        after: str = "",
+        where: str | None = None,
+        match: str = "unique",
+        nth: int | None = None,
+        dry_run: bool | str = False,
+        **_kw: Any,
+    ) -> Response:
+        """Region-edit an existing plaintext file.
+
+        Same shape as :meth:`MarkdownHandler.edit`. Routes to the
+        existing private helpers; ``mode='find-replace'`` is the new
+        default name for the legacy ``put(mode='edit')`` path.
+        """
+        if mode not in self._EDIT_MODES:
+            raise BadInput(
+                f"unknown edit mode {mode!r}",
+                options=list(self._EDIT_MODES),
+                next=(
+                    "edit(kind='plaintext', id='slug', mode='find-replace', "
+                    "find='old', text='new')"
+                ),
+            )
+        slug, sel, _path_view = _parse_pt_id(str(id))
+        if mode == "append":
+            return self._put_append(slug, text)
+        if mode == "replace":
+            return self._put_replace(slug, sel, text)
+        op_kind = "edit" if mode == "find-replace" else mode
+        return self._put_anchored(
+            slug=slug,
+            sel=sel,
+            op_kind=op_kind,
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=where,
+            match=match,
+            nth=nth,
+            dry_run=dry_run,
+        )
+
+    def delete(self, *, id: str | int, **_kw: Any) -> Response:  # type: ignore[override]
+        """Delete a paragraph / region from a plaintext file.
+
+        Requires a selector in ``id`` (``slug~SLUG`` or
+        ``slug~Lstart-Lend``). Whole-file delete is not exposed.
+        """
+        slug, sel, _path_view = _parse_pt_id(str(id))
+        if sel is None:
+            raise BadInput(
+                f"delete on plaintext requires a block selector — id={slug!r}~SLUG",
+                next=(
+                    f"delete(kind='plaintext', id='{slug}~SLUG') to remove "
+                    "a paragraph, or use the OS to remove the whole file"
+                ),
+            )
+        return self._put_delete(slug, sel)
+
+    def _resolve_pt_ref(self, id: str | int) -> tuple[str, int]:
+        """Coerce an id to (slug, ref_id), ingesting the file if needed."""
+        slug, sel, path_view = _parse_pt_id(str(id))
+        if sel is not None or path_view is not None:
+            raise BadInput(
+                "plaintext tag/link ops operate at file level — drop the "
+                "block selector / path view from id=",
+                next=f"tag(kind='plaintext', id={slug!r}, add=[...])",
+            )
+        ref = self._ensure_ingested(slug)
+        if ref is None:
+            raise NotFound(
+                f"plaintext file {slug!r} not found under {self.root}",
+                next="get(kind='plaintext') to list every known file",
+            )
+        return slug, ref.id
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove tags on a plaintext file."""
+        if not add and not remove:
+            raise BadInput(
+                "tag(kind='plaintext', id=...) requires add= or remove=",
+                next="tag(kind='plaintext', id='<slug>', add=['draft'])",
+            )
+        from precis.handlers._link_tag_ops import apply_tag_ops, format_link_tag_ack
+
+        slug, ref_id = self._resolve_pt_ref(id)
+        n_added, n_removed = apply_tag_ops(
+            self.store, "plaintext", ref_id, tags=add, untags=remove
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind="plaintext",
+                ref_label=slug,
+                n_links_added=0,
+                n_links_removed=0,
+                n_tags_added=n_added,
+                n_tags_removed=n_removed,
+            )
+        )
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add or remove a link from a plaintext file to another ref."""
+        if target is None:
+            raise BadInput(
+                "link(kind='plaintext', id=...) requires target=",
+                next="link(kind='plaintext', id='<slug>', target='paper:slug')",
+            )
+        if mode not in ("add", "remove"):
+            raise BadInput(
+                f"link mode must be 'add' or 'remove', got {mode!r}",
+                options=["add", "remove"],
+            )
+        from precis.handlers._link_tag_ops import apply_link_ops, format_link_tag_ack
+
+        slug, ref_id = self._resolve_pt_ref(id)
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref_id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind="plaintext",
+                ref_label=slug,
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
 
     # ── ingest pipeline ────────────────────────────────────────────
 

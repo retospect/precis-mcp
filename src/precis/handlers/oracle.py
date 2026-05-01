@@ -16,7 +16,12 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
-from precis.handlers._link_tag_ops import apply_link_tag_only_put
+from precis.handlers._link_tag_ops import (
+    apply_link_ops,
+    apply_link_tag_only_put,
+    apply_tag_ops,
+    format_link_tag_ack,
+)
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     search_hits_slug_refs,
@@ -43,6 +48,8 @@ class OracleHandler(Handler):
         # via the corpus seeding pipeline. Put surface is link/tag
         # only, same shape as paper.
         supports_put=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
     )
@@ -176,6 +183,87 @@ class OracleHandler(Handler):
             rel=rel,
         )
         return Response(body=ack)
+
+    # ── seven-verb surface ─────────────────────────────────────────
+
+    def _resolve_oracle_slug(self, id: str | int) -> tuple[str, int]:
+        """Coerce an agent-facing id to a (slug, ref_id) pair."""
+        slug = str(id).strip()
+        ref = self.store.get_ref(kind="oracle", id=slug)
+        if ref is None:
+            raise NotFound(
+                f"oracle slug {slug!r} not found",
+                next="search(kind='oracle', q='...') to find existing slugs",
+            )
+        return slug, ref.id
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove oracle tags. Open-tag only (no closed prefixes)."""
+        if not add and not remove:
+            raise BadInput(
+                "tag(kind='oracle', id=...) requires add= or remove=",
+                next="tag(kind='oracle', id='<slug>', add=['topic-eval'])",
+            )
+        slug, ref_id = self._resolve_oracle_slug(id)
+        n_added, n_removed = apply_tag_ops(
+            self.store, "oracle", ref_id, tags=add, untags=remove
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind="oracle",
+                ref_label=slug,
+                n_links_added=0,
+                n_links_removed=0,
+                n_tags_added=n_added,
+                n_tags_removed=n_removed,
+            )
+        )
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add or remove a link from this oracle to another ref."""
+        if target is None:
+            raise BadInput(
+                "link(kind='oracle', id=...) requires target=",
+                next="link(kind='oracle', id='<slug>', target='paper:slug')",
+            )
+        if mode not in ("add", "remove"):
+            raise BadInput(
+                f"link mode must be 'add' or 'remove', got {mode!r}",
+                options=["add", "remove"],
+            )
+        slug, ref_id = self._resolve_oracle_slug(id)
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref_id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind="oracle",
+                ref_label=slug,
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
 
     def _render_list(self) -> Response:
         # Empty-list responses on read-only kinds still teach the

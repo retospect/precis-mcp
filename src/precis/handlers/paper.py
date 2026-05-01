@@ -73,6 +73,8 @@ class PaperHandler(Handler):
         # papers cross-cite each other and carry CACHE: tags without
         # going through a memory ref as a hop.
         supports_put=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         views=_SUPPORTED_VIEWS,
@@ -420,6 +422,99 @@ class PaperHandler(Handler):
                 n_links_removed=n_links_removed,
                 n_tags_added=n_tags_added,
                 n_tags_removed=n_tags_removed,
+            )
+        )
+
+    # -- seven-verb surface --------------------------------------------------
+
+    def _resolve_paper_slug(self, id: str | int) -> tuple[str, int]:
+        """Coerce an agent-facing id to a (slug, ref_id) pair.
+
+        Rejects chunk selectors and path views the same way ``put``
+        does — link/tag/edit ops live at the ref level only. Raises
+        ``BadInput`` (selector present) or ``NotFound`` (slug
+        unknown) so the caller can let those propagate.
+        """
+        slug, chunk_spec, path_view = _parse_paper_id(str(id))
+        if chunk_spec is not None or path_view is not None:
+            raise BadInput(
+                "paper ops operate at ref level — drop the chunk "
+                "selector / path view from id=",
+                next=f"tag(kind='paper', id={slug!r}, ...) or link(kind='paper', id={slug!r}, ...)",
+            )
+        ref = self.store.get_ref(kind="paper", id=slug)
+        if ref is None:
+            raise NotFound(
+                f"paper slug {slug!r} not found",
+                next="search(kind='paper', q='...') to find existing slugs",
+            )
+        return slug, ref.id
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove paper tags. Allowed axes: ``SRC``, ``CACHE`` + open."""
+        if not add and not remove:
+            raise BadInput(
+                "tag(kind='paper', id=...) requires add= or remove=",
+                next="tag(kind='paper', id='<slug>', add=['CACHE:pinned'])",
+            )
+        slug, ref_id = self._resolve_paper_slug(id)
+        n_added, n_removed = apply_tag_ops(
+            self.store, "paper", ref_id, tags=add, untags=remove
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind="paper",
+                ref_label=slug,
+                n_links_added=0,
+                n_links_removed=0,
+                n_tags_added=n_added,
+                n_tags_removed=n_removed,
+            )
+        )
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add or remove a link from this paper to another ref."""
+        if target is None:
+            raise BadInput(
+                "link(kind='paper', id=...) requires target=",
+                next="link(kind='paper', id='<slug>', target='paper:other-slug', rel='cites')",
+            )
+        if mode not in ("add", "remove"):
+            raise BadInput(
+                f"link mode must be 'add' or 'remove', got {mode!r}",
+                options=["add", "remove"],
+            )
+        slug, ref_id = self._resolve_paper_slug(id)
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref_id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind="paper",
+                ref_label=slug,
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
             )
         )
 

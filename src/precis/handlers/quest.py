@@ -42,6 +42,9 @@ class QuestHandler(Handler):
         supports_search=True,
         supports_search_hits=True,
         supports_put=True,
+        supports_delete=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
     )
@@ -220,7 +223,7 @@ class QuestHandler(Handler):
         if id is None or not str(id).strip():
             raise BadInput(
                 "delete requires id=",
-                next="put(kind='quest', id='<slug>', mode='delete')",
+                next="delete(kind='quest', id='<slug>')",
             )
         slug = str(id).strip()
         existing = self.store.get_ref(kind="quest", id=slug)
@@ -231,6 +234,94 @@ class QuestHandler(Handler):
             )
         self.store.soft_delete_ref(existing.id)
         return Response(body=f"deleted quest {slug!r}")
+
+    # ── seven-verb surface ─────────────────────────────────────────
+
+    def delete(self, *, id: str | int, **_kw: Any) -> Response:  # type: ignore[override]
+        """Soft-delete a quest by slug."""
+        return self._delete(id)
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add and/or remove tags on an existing quest.
+
+        Quest's primary use case is STATUS transitions
+        (``add=['STATUS:doing']`` / ``add=['STATUS:done']``). Closed-
+        prefix replacement semantics ensure only one STATUS at a time.
+        """
+        if not add and not remove:
+            raise BadInput(
+                "tag(kind='quest', id=...) requires add= or remove=",
+                next=(
+                    "tag(kind='quest', id='<slug>', add=['STATUS:doing']) or "
+                    "tag(kind='quest', id='<slug>', remove=['draft'])"
+                ),
+            )
+        slug = str(id).strip()
+        existing = self.store.get_ref(kind="quest", id=slug)
+        if existing is None:
+            raise NotFound(
+                f"quest slug {slug!r} not found",
+                next="search(kind='quest', q='...') to find existing",
+            )
+        # Reuse the shared tag-ops helper so the validate-then-write
+        # transactional shape matches every other kind.
+        from precis.handlers._link_tag_ops import apply_tag_ops
+
+        apply_tag_ops(
+            self.store, "quest", existing.id, tags=add, untags=remove
+        )
+        return Response(body=f"tagged quest {slug!r}")
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add or remove a link from an existing quest."""
+        if target is None:
+            raise BadInput(
+                "link(kind='quest', id=...) requires target=",
+                next="link(kind='quest', id='<slug>', target='paper:slug')",
+            )
+        if mode not in ("add", "remove"):
+            raise BadInput(
+                f"link mode must be 'add' or 'remove', got {mode!r}",
+                options=["add", "remove"],
+            )
+        slug = str(id).strip()
+        existing = self.store.get_ref(kind="quest", id=slug)
+        if existing is None:
+            raise NotFound(
+                f"quest slug {slug!r} not found",
+                next="search(kind='quest', q='...') to find existing",
+            )
+        from precis.handlers._link_tag_ops import apply_link_ops
+
+        if mode == "add":
+            apply_link_ops(
+                self.store, existing.id, link=target, unlink=None, rel=rel
+            )
+            return Response(body=f"linked quest {slug!r} → {target}")
+        n_added, n_removed = apply_link_ops(
+            self.store, existing.id, link=None, unlink=target, rel=rel
+        )
+        return Response(
+            body=(
+                f"unlinked quest {slug!r} ↛ {target} "
+                f"({n_removed} edge{'s' if n_removed != 1 else ''} removed)"
+            )
+        )
 
     # ── list views ─────────────────────────────────────────────────
 

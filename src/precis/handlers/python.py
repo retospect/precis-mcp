@@ -236,6 +236,8 @@ class PythonHandler(Handler):
         supports_get=True,
         supports_search=True,
         supports_put=True,
+        supports_edit=True,
+        supports_delete=True,
         is_numeric=False,
         id_required=False,
         views=_SUPPORTED_VIEWS,
@@ -525,6 +527,88 @@ class PythonHandler(Handler):
             f"unhandled mode {mode!r}",
             options=list(_SUPPORTED_PUT_MODES),
         )
+
+    # ── seven-verb surface ─────────────────────────────────────────
+
+    #: Modes accepted by :meth:`edit` — region-modifying ops only.
+    #: Python supports the same set as markdown/plaintext minus
+    #: ``create`` (lives on ``put``) and ``delete`` (its own verb).
+    _EDIT_MODES: ClassVar[tuple[str, ...]] = (
+        "find-replace",
+        "append",
+        "insert",
+        "replace",
+    )
+
+    def edit(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        mode: str = "find-replace",
+        text: str | None = None,
+        find: str | None = None,
+        before: str = "",
+        after: str = "",
+        where: str | None = None,
+        match: str = "unique",
+        nth: int | None = None,
+        allow_rename: bool = False,
+        dry_run: bool | str = False,
+        **_kw: Any,
+    ) -> Response:
+        """Region-edit an existing python file or symbol.
+
+        Routes through the same three gates (parse / qualname-drop /
+        ruff) as the legacy ``put(mode=...)`` path. ``mode='find-
+        replace'`` is the new default for the legacy ``put(mode='edit')``.
+        """
+        if mode not in self._EDIT_MODES:
+            raise BadInput(
+                f"unknown edit mode {mode!r}",
+                options=list(self._EDIT_MODES),
+                next=(
+                    "edit(kind='python', id='r/file.py', mode='find-replace', "
+                    "find='old', text='new')"
+                ),
+            )
+        parsed = _parse_id(str(id))
+        root = self._resolve_alias(parsed.alias)
+        if mode == "append":
+            return self._put_append(parsed, root, text)
+        if mode == "replace":
+            return self._put_replace(parsed, root, text, allow_rename=allow_rename)
+        op_kind = "edit" if mode == "find-replace" else mode
+        return self._put_anchored(
+            parsed=parsed,
+            root=root,
+            op_kind=op_kind,
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=where,
+            match=match,
+            nth=nth,
+            allow_rename=allow_rename,
+            dry_run=dry_run,
+        )
+
+    def delete(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        allow_rename: bool = False,
+        **_kw: Any,
+    ) -> Response:
+        """Delete a file, symbol, or line range from a python repo.
+
+        Same gating as ``put(mode='delete')`` — the qualname-drop
+        check is skipped (delete intentionally drops symbols), and
+        ruff still runs against the remaining file content.
+        """
+        parsed = _parse_id(str(id))
+        root = self._resolve_alias(parsed.alias)
+        return self._put_delete(parsed, root, allow_rename=allow_rename)
 
     # ── put dispatch ───────────────────────────────────────────────
 

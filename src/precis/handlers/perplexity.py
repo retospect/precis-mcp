@@ -508,6 +508,104 @@ class _PerplexityBase(CacheBackedHandler):
             )
         )
 
+    # ── seven-verb surface ─────────────────────────────────────────
+
+    def _resolve_cache_slug(self, id: str | int) -> tuple[str, int]:
+        """Coerce an agent-facing id to a (slug, ref_id) pair."""
+        slug = str(id).strip()
+        if not slug:
+            raise BadInput(
+                f"{self.spec.kind} ops require id= (the slug)",
+                next=(
+                    f"tag(kind={self.spec.kind!r}, id='<slug>', "
+                    "add=['CACHE:pinned'])"
+                ),
+            )
+        ref = self.store.get_ref(kind=self.spec.kind, id=slug)
+        if ref is None:
+            raise NotFound(
+                f"{self.spec.kind} slug {slug!r} not found",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id='<query>') first to "
+                    "populate the cache, then tag/link the resulting slug"
+                ),
+            )
+        return slug, ref.id
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove tags on an existing cache slug."""
+        if not add and not remove:
+            raise BadInput(
+                f"tag(kind={self.spec.kind!r}, id=...) requires add= or remove=",
+                next=(
+                    f"tag(kind={self.spec.kind!r}, id='<slug>', "
+                    "add=['CACHE:pinned'])"
+                ),
+            )
+        slug, ref_id = self._resolve_cache_slug(id)
+        n_added, n_removed = apply_tag_ops(
+            self.store, self.spec.kind, ref_id, tags=add, untags=remove
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=slug,
+                n_links_added=0,
+                n_links_removed=0,
+                n_tags_added=n_added,
+                n_tags_removed=n_removed,
+            )
+        )
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add or remove a link from this cache slug to another ref."""
+        if target is None:
+            raise BadInput(
+                f"link(kind={self.spec.kind!r}, id=...) requires target=",
+                next=(
+                    f"link(kind={self.spec.kind!r}, id='<slug>', "
+                    "target='paper:slug')"
+                ),
+            )
+        if mode not in ("add", "remove"):
+            raise BadInput(
+                f"link mode must be 'add' or 'remove', got {mode!r}",
+                options=["add", "remove"],
+            )
+        slug, ref_id = self._resolve_cache_slug(id)
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref_id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=slug,
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
+
     def _blocks_from_report(self, body: str) -> list[BlockInsert]:
         """Parse a pasted Perplexity report into embedded blocks.
 
@@ -569,6 +667,8 @@ class WebsearchHandler(_PerplexityBase):
         ),
         supports_get=True,
         supports_put=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         modes=("import",),
@@ -596,6 +696,8 @@ class ThinkHandler(_PerplexityBase):
         ),
         supports_get=True,
         supports_put=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         modes=("import",),
@@ -626,6 +728,8 @@ class ResearchHandler(_PerplexityBase):
         ),
         supports_get=True,
         supports_put=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         modes=("import",),

@@ -334,6 +334,131 @@ class NumericRefHandler(Handler):
             rel=rel,
         )
 
+    # ── seven-verb surface (delegates to the same private helpers) ─
+
+    def delete(self, *, id: str | int, **_kw: Any) -> Response:  # type: ignore[override]
+        """Soft-delete a numeric ref by id.
+
+        Mirrors the legacy ``put(id=N, mode='delete')`` shape one-
+        for-one — same store call, same response wording. The
+        seven-verb surface promotes deletion to a first-class verb
+        so agents don't have to rummage through ``put`` modes to
+        find it.
+        """
+        return self._delete(id)
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add and/or remove tags on an existing numeric ref.
+
+        Both ``add`` and ``remove`` apply atomically inside one
+        transaction. An empty call (no ``add`` / no ``remove``) is
+        rejected — the caller almost certainly meant something
+        specific and a silent no-op would mask the typo.
+        """
+        if not add and not remove:
+            raise BadInput(
+                f"tag(kind={self.kind!r}, id=...) requires add= or remove=",
+                next=(
+                    f"tag(kind={self.kind!r}, id=N, add=['STATUS:done']) or "
+                    f"tag(kind={self.kind!r}, id=N, remove=['draft'])"
+                ),
+            )
+        ref_id = self._coerce_id(id)
+        existing = self.store.get_ref(kind=self.kind, id=ref_id)
+        if existing is None:
+            raise NotFound(
+                f"{self._sense()} id={ref_id} not found",
+                next=f"check id with: get(kind={self.kind!r}, id={ref_id})",
+            )
+        # Pre-validate every tag *before* touching the DB so a
+        # rejected tag mid-call doesn't leave partial state. Mirrors
+        # the contract on ``_create`` / ``_update``.
+        parsed_add: list[Tag] = (
+            [Tag.parse_strict(s, kind=self.kind) for s in add] if add else []
+        )
+        parsed_remove: list[Tag] = (
+            [Tag.parse_strict(s, kind=self.kind) for s in remove] if remove else []
+        )
+        with self.store.tx() as conn:
+            for t in parsed_add:
+                self.store.add_tag(
+                    ref_id,
+                    t,
+                    set_by="agent",
+                    replace_prefix=(t.namespace == "closed"),
+                    conn=conn,
+                )
+            for t in parsed_remove:
+                self.store.remove_tag(ref_id, t, conn=conn)
+        return Response(body=f"tagged {self._sense()} id={ref_id}")
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add or remove a link from an existing numeric ref.
+
+        ``mode='add'`` (default) creates the edge; ``mode='remove'``
+        deletes it. With ``rel=`` on remove, removes only that
+        (target, relation) pair; without ``rel=``, removes every
+        link to the target at that selector.
+        """
+        if target is None:
+            raise BadInput(
+                f"link(kind={self.kind!r}, id=...) requires target=",
+                next=(
+                    f"link(kind={self.kind!r}, id=N, target='paper:slug', "
+                    "rel='cites')"
+                ),
+            )
+        if mode not in ("add", "remove"):
+            raise BadInput(
+                f"link mode must be 'add' or 'remove', got {mode!r}",
+                options=["add", "remove"],
+            )
+        ref_id = self._coerce_id(id)
+        existing = self.store.get_ref(kind=self.kind, id=ref_id)
+        if existing is None:
+            raise NotFound(
+                f"{self._sense()} id={ref_id} not found",
+                next=f"check id with: get(kind={self.kind!r}, id={ref_id})",
+            )
+        link_target = parse_link_target(target, store=self.store)
+        relation = validate_relation(rel)
+        if mode == "add":
+            self.store.add_link(
+                src_ref_id=ref_id,
+                dst_ref_id=link_target.ref_id,
+                dst_pos=link_target.pos,
+                relation=relation,
+            )
+            return Response(body=f"linked {self._sense()} id={ref_id} → {target}")
+        # mode == "remove"
+        n_removed = self.store.remove_link(
+            src_ref_id=ref_id,
+            dst_ref_id=link_target.ref_id,
+            dst_pos=link_target.pos,
+            relation=relation if rel is not None else None,
+        )
+        return Response(
+            body=(
+                f"unlinked {self._sense()} id={ref_id} ↛ {target} "
+                f"({n_removed} edge{'s' if n_removed != 1 else ''} removed)"
+            )
+        )
+
     # ── private CRUD ───────────────────────────────────────────────
 
     def _create(

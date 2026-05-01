@@ -34,6 +34,9 @@ class MemoryHandler(NumericRefHandler):
         supports_search=True,
         supports_search_hits=True,
         supports_put=True,
+        supports_delete=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=True,
         id_required=False,
     )

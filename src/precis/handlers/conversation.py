@@ -18,7 +18,12 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers._link_tag_ops import apply_link_tag_only_put
+from precis.handlers._link_tag_ops import (
+    apply_link_ops,
+    apply_link_tag_only_put,
+    apply_tag_ops,
+    format_link_tag_ack,
+)
 from precis.handlers._slug_ref_shared import render_slug_ref_list
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -45,6 +50,8 @@ class ConversationHandler(Handler):
         # ``put``). The link/tag surface is the same shape as
         # paper/oracle.
         supports_put=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
     )
@@ -250,6 +257,97 @@ class ConversationHandler(Handler):
             rel=rel,
         )
         return Response(body=ack)
+
+    # ── seven-verb surface ─────────────────────────────────────────
+
+    def _resolve_conv_slug(self, id: str | int) -> tuple[str, int]:
+        """Coerce an agent-facing id to a (slug, ref_id) pair.
+
+        Rejects chunk selectors / path views the same way ``put`` does
+        — link/tag ops are ref-level only.
+        """
+        slug, chunk, path_view = _parse_conv_id(str(id))
+        if chunk is not None or path_view is not None:
+            raise BadInput(
+                "conv ops operate at ref level — drop the turn "
+                "selector / path view from id=",
+                next=f"tag(kind='conv', id={slug!r}, ...) or link(kind='conv', id={slug!r}, ...)",
+            )
+        ref = self.store.get_ref(kind="conv", id=slug)
+        if ref is None:
+            raise NotFound(
+                f"conv slug {slug!r} not found",
+                next="search(kind='conv', q='...') to find existing slugs",
+            )
+        return slug, ref.id
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove conversation tags. Open-tag only (no closed prefixes)."""
+        if not add and not remove:
+            raise BadInput(
+                "tag(kind='conv', id=...) requires add= or remove=",
+                next="tag(kind='conv', id='<slug>', add=['topic-debug'])",
+            )
+        slug, ref_id = self._resolve_conv_slug(id)
+        n_added, n_removed = apply_tag_ops(
+            self.store, "conv", ref_id, tags=add, untags=remove
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind="conv",
+                ref_label=slug,
+                n_links_added=0,
+                n_links_removed=0,
+                n_tags_added=n_added,
+                n_tags_removed=n_removed,
+            )
+        )
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add or remove a link from this conversation to another ref."""
+        if target is None:
+            raise BadInput(
+                "link(kind='conv', id=...) requires target=",
+                next="link(kind='conv', id='<slug>', target='paper:slug')",
+            )
+        if mode not in ("add", "remove"):
+            raise BadInput(
+                f"link mode must be 'add' or 'remove', got {mode!r}",
+                options=["add", "remove"],
+            )
+        slug, ref_id = self._resolve_conv_slug(id)
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref_id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind="conv",
+                ref_label=slug,
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
 
     # ── render helpers ──────────────────────────────────────────────
 
