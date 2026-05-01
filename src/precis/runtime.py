@@ -244,10 +244,26 @@ class PrecisRuntime:
             from precis.errors import Unsupported
 
             verbs = [v for v in _VERBS if handler.spec.supports(v)]
+            # ``options`` enumerates the supported verbs as the
+            # recovery vocabulary; ``next`` gives a concrete call
+            # shape rather than re-listing the same names so the
+            # LLM sees one canonical retry to copy. Pick ``get`` as
+            # the safest recovery suggestion when available — every
+            # kind supports it; otherwise fall back to the first
+            # supported verb in the canonical order.
+            recovery = "get" if "get" in verbs else (verbs[0] if verbs else None)
+            if recovery is None:
+                # Defensive: shouldn't happen — a kind with no
+                # supported verbs would be useless. Drop the next:
+                # trailer rather than render a meaningless one.
+                raise Unsupported(
+                    f"{kind} does not support {verb}",
+                    options=verbs,
+                )
             raise Unsupported(
                 f"{kind} does not support {verb}",
                 options=verbs,
-                next=f"try one of {verbs} on kind={kind!r}",
+                next=f"{recovery}(kind={kind!r}, ...) is supported on this kind",
             )
         return handler
 

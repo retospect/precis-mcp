@@ -55,6 +55,26 @@ def test_unknown_verb_rejected(runtime: PrecisRuntime) -> None:
         assert verb in out
 
 
+def test_unsupported_verb_lists_supported_verbs(runtime: PrecisRuntime) -> None:
+    """When a kind doesn't support the requested verb, the dispatcher
+    enumerates the verbs it *does* support so the LLM has a sharp
+    recovery vocabulary to copy from.
+
+    ``options:`` carries the comma-separated supported-verb list
+    (the recovery vocabulary). ``next:`` carries one concrete call
+    shape for a verb the kind supports — picking ``get`` when
+    available, since every kind ships ``get``.
+    """
+    out = runtime.dispatch("link", {"kind": "calc", "id": "foo", "target": "x:y"})
+    assert "[error:Unsupported]" in out
+    assert "calc does not support link" in out
+    # Options enumerate calc's supported verbs (only ``get``).
+    assert "options: get" in out
+    # ``next`` points at a concrete recovery call rather than re-
+    # listing the options as a Python literal.
+    assert "next: get(kind='calc', ...) is supported on this kind" in out
+
+
 # ── MAJOR: cost trailer no longer double-prefixes "cost:" ───────────
 
 
