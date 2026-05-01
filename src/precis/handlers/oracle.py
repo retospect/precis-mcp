@@ -15,18 +15,16 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, NotFound
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    apply_tag_ops,
-    format_link_tag_ack,
-    validate_link_args,
+from precis.handlers._link_tag_ops import apply_link_tag_only_put
+from precis.handlers._slug_ref_shared import (
+    render_slug_ref_list,
+    search_hits_slug_refs,
+    search_slug_refs,
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Store
-from precis.utils.next_block import render_next_section
-from precis.utils.search_header import format_search_headline
-from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
+from precis.utils.search_merge import SearchHit
 
 
 class OracleHandler(Handler):
@@ -81,27 +79,13 @@ class OracleHandler(Handler):
         top_k: int = 10,
         **_kw: Any,
     ) -> Response:
-        if q is None or not q.strip():
-            raise BadInput(
-                "search requires q=",
-                next="search(kind='oracle', q='your query')",
-            )
-        hits = self.store.search_refs_lexical(q=q, kind="oracle", limit=top_k)
-        if not hits:
-            return Response(body=f"no oracle entries match {q!r}")
-        total = self.store.count_refs_lexical(q=q, kind="oracle")
-        lines = [
-            format_search_headline(
-                n_returned=len(hits),
-                total=total,
-                noun="oracle match",
-                query=q,
-            )
-        ]
-        for ref, rank in hits:
-            preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
-            lines.append(f"\n## oracle {ref.slug}  (rank={rank:.2f})\n{preview}")
-        return Response(body="\n".join(lines))
+        return search_slug_refs(
+            self.store,
+            kind="oracle",
+            q=q,
+            top_k=top_k,
+            noun="oracle match",
+        )
 
     # ── search_hits: structured form for cross-kind merge ───────────
 
@@ -119,10 +103,7 @@ class OracleHandler(Handler):
         therefore stays consistent with single-kind ``search()``.
         Block-level search is a follow-up.
         """
-        if not (q and q.strip()):
-            return []
-        pairs = self.store.search_refs_lexical(q=q, kind="oracle", limit=top_k)
-        return ref_hits_to_search_hits(pairs, kind="oracle")
+        return search_hits_slug_refs(self.store, kind="oracle", q=q, top_k=top_k)
 
     # ── put: link/tag CRUD only (no body mutation) ────────────────
 
@@ -181,49 +162,33 @@ class OracleHandler(Handler):
                 next="search(kind='oracle', q='...') to find existing slugs",
             )
 
-        validate_link_args(link=link, unlink=unlink, rel=rel, kind="oracle")
-        if not any((link, unlink, tags, untags)):
-            raise BadInput(
-                "oracle put requires at least one of link=, unlink=, tags=, untags=",
-                next=(f"put(kind='oracle', id={slug!r}, link='paper:other-slug')"),
-            )
-
-        n_links_added, n_links_removed = apply_link_ops(
-            self.store, ref.id, link=link, unlink=unlink, rel=rel
+        ack = apply_link_tag_only_put(
+            self.store,
+            kind="oracle",
+            ref_id=ref.id,
+            ref_label=slug,
+            link=link,
+            unlink=unlink,
+            tags=tags,
+            untags=untags,
+            rel=rel,
         )
-        n_tags_added, n_tags_removed = apply_tag_ops(
-            self.store, "oracle", ref.id, tags=tags, untags=untags
-        )
-        return Response(
-            body=format_link_tag_ack(
-                kind="oracle",
-                ref_label=slug,
-                n_links_added=n_links_added,
-                n_links_removed=n_links_removed,
-                n_tags_added=n_tags_added,
-                n_tags_removed=n_tags_removed,
-            )
-        )
+        return Response(body=ack)
 
     def _render_list(self) -> Response:
-        refs = self.store.list_refs(kind="oracle", limit=50)
-        if not refs:
-            # Empty-list responses on read-only kinds still teach the
-            # agent the next call shape — see-also the help skill
-            # rather than just returning a bare sentence. (MCP critic
-            # MINOR m2.)
-            body = "no oracles defined yet"
-            body += render_next_section(
-                [
-                    (
-                        "get(kind='skill', id='precis-overview')",
-                        "learn about the kind list",
-                    ),
-                ]
-            )
-            return Response(body=body)
-        lines = [f"# {len(refs)} oracle(s)"]
-        for r in refs:
-            preview = (r.title[:80] + "…") if len(r.title) > 80 else r.title
-            lines.append(f"  {(r.slug or '?'):<30}  {preview}")
-        return Response(body="\n".join(lines))
+        # Empty-list responses on read-only kinds still teach the
+        # agent the next call shape — see-also the help skill
+        # rather than just returning a bare sentence. (MCP critic
+        # MINOR m2.)
+        return render_slug_ref_list(
+            self.store,
+            kind="oracle",
+            label_plural="oracle(s)",
+            empty_body="no oracles defined yet",
+            empty_next=[
+                (
+                    "get(kind='skill', id='precis-overview')",
+                    "learn about the kind list",
+                ),
+            ],
+        )

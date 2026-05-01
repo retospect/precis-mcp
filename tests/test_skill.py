@@ -181,3 +181,68 @@ def test_precis_help_listed_in_index(skill: SkillHandler) -> None:
     # Hint trailer should reference it.
     assert "precis-help" in out.body
     assert "active kinds" in out.body
+
+
+# ── search marks unwired skills ──────────────────────────────────────
+
+
+def test_search_marks_unwired_skills(skill: SkillHandler) -> None:
+    """``search(kind='skill', q=...)`` must annotate skills whose
+    subject kind isn't in the live registry with ``[unwired]`` —
+    7B callers quote the title and invoke ``[error:NotFound]``
+    otherwise. Mirror of the index's hidden-skills behaviour.
+    (MCP critic MINOR: ``D5 — hint lies by omission``.)"""
+
+    class _NoFileKindsReg:
+        def kinds(self) -> list[str]:
+            # Deliberately omit markdown / plaintext / python so the
+            # file-help skills surface as [unwired].
+            return ["calc", "paper", "memory"]
+
+    skill.bind_registry(_NoFileKindsReg())
+    # 'edit' appears in several file-kind skills; the search hit
+    # list should include markdown/plaintext help with the marker.
+    out = skill.search(q="edit")
+    assert "[unwired]" in out.body, (
+        "at least one unwired file-kind skill should surface with the [unwired] marker"
+    )
+    # Skills the registry DOES support must NOT carry the marker.
+    # precis-tags is a cross-cutting skill that references no specific
+    # kind — it must remain unmarked.
+    tags_out = skill.search(q="tags")
+    # Find the precis-tags hit line and confirm it has no marker.
+    lines = [ln for ln in tags_out.body.splitlines() if "## precis-tags" in ln]
+    if lines:
+        assert "[unwired]" not in lines[0], (
+            f"cross-cutting skill should not be marked [unwired]: {lines[0]!r}"
+        )
+
+
+# ── precis-overview kinds table stays honest ──────────────────────────
+
+
+def test_overview_kinds_table_names_env_gates() -> None:
+    """Every file-backed kind row in the precis-overview kinds table
+    must name the env var that gates it, so a reader is never
+    surprised by ``[error:NotFound] unknown kind: markdown`` after
+    copying an example. (Review 2026-05: MAJOR-C — kind='markdown'
+    advertised as active but unknown to registry.)"""
+    from importlib import resources
+
+    text = (
+        resources.files("precis.data.skills")
+        .joinpath("precis-overview.md")
+        .read_text("utf-8")
+    )
+    # Every shipped file-backed kind row names its env-var gate.
+    for kind, env in (
+        ("markdown", "PRECIS_MARKDOWN_ROOT"),
+        ("plaintext", "PRECIS_PLAINTEXT_ROOT"),
+        ("python", "PRECIS_PYTHON_ROOTS"),
+    ):
+        # Look for a line containing both the kind name and the env var.
+        found = any(f"`{kind}`" in line and env in line for line in text.splitlines())
+        assert found, (
+            f"precis-overview kinds table must name {env} on the "
+            f"{kind!r} row so readers know when the kind is active"
+        )

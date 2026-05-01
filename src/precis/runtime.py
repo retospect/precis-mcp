@@ -20,7 +20,7 @@ from precis.errors import (
     PrecisError,
 )
 from precis.hints import HintBus
-from precis.protocol import Verb
+from precis.protocol import Handler, Verb
 from precis.registry import Registry
 from precis.response import Response
 from precis.utils.search_merge import SearchHit, merge_and_render
@@ -89,70 +89,122 @@ class PrecisRuntime:
                 response = self._dispatch_inner(verb, dict(args))
                 return self._render(response), False
             except PrecisError as e:
-                return self._render_error(e), True
+                return self.render_error(e), True
             except Exception as e:
                 log.exception("internal error in %s", verb)
-                return self._render_error(Internal(f"internal error: {e}")), True
+                return (
+                    self.render_error(Internal(f"internal error: {e}")),
+                    True,
+                )
 
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
-        # Drop None values so handlers see absence as missing, not None
-        kind = args.pop("kind", None)
-        kind_was_defaulted = False
+        """Orchestrate one verb call.
 
-        # ── cross-kind search dispatch ────────────────────────────────
-        # ``kind='*'`` (wildcard) and ``kind='paper,memory'`` (comma-
-        # list) fan out across every requested kind whose
-        # ``KindSpec.supports_search_hits`` is True, then RRF-fuse the
-        # results via ``merge_and_render``.  Other verbs (get/put/move)
-        # keep the single-kind contract — multi-kind get is meaningless
-        # and multi-kind put would silently scatter writes.
+        Three responsibilities, each delegated to a helper:
+          1. Cross-kind fan-out (``kind='*'`` / comma-list).
+          2. Single-kind resolution including ``kind=`` defaulting
+             for ``search`` calls that omit it.
+          3. Handler invocation with extras whitelist + defaulted-kind
+             error annotation.
+        """
+        kind = args.pop("kind", None)
+
+        # Cross-kind: ``kind='*'`` or comma-list. Other verbs keep the
+        # single-kind contract — multi-kind get is meaningless and
+        # multi-kind put would silently scatter writes.
         if verb == "search" and self._is_cross_kind_request(kind):
             return self._dispatch_cross_kind(kind, dict(args))
 
-        if kind is None:
-            if verb == "search":
-                # 7B callers routinely forget ``kind=``.  Pick the most
-                # recently touched search-supporting kind as a sensible
-                # default and echo the choice back so the caller can
-                # see what we did.  Falls back to ``kind='*'`` cross-
-                # kind dispatch when the registry has more than one
-                # search-hits-supporting kind and the store can't
-                # narrow further (stateless deployment, empty corpus).
-                search_kinds = [
-                    k
-                    for k in self.registry.kinds()
-                    if self.registry.get(k).spec.supports_search
-                ]
-                kind = self._default_search_kind(search_kinds)
-                if kind is None:
-                    cross_kind = self._cross_kind_kinds()
-                    if len(cross_kind) >= 2:
-                        return self._dispatch_cross_kind(
-                            _CROSS_KIND_WILDCARD, dict(args)
-                        )
-                    raise BadInput(
-                        "missing kind= and no defensible default available",
-                        options=search_kinds,
-                        next=(
-                            "pass kind=<one of the listed kinds>, or use "
-                            "kind='*' / kind='paper,memory' for cross-kind merge"
-                        ),
-                    )
-                kind_was_defaulted = True
-            else:
-                raise BadInput("missing kind=", options=self.registry.kinds())
+        # Resolve the kind. ``_resolve_kind`` may itself short-circuit
+        # to a cross-kind merge when ``kind`` is None on a search call
+        # and the corpus has >=2 search-supporting kinds.
+        resolved_kind, kind_was_defaulted, cross_kind_resp = self._resolve_kind(
+            verb, kind, args
+        )
+        if cross_kind_resp is not None:
+            return cross_kind_resp
 
+        handler = self._resolve_handler(resolved_kind, verb)
+        return self._invoke_handler(
+            handler,
+            verb,
+            kind=resolved_kind,
+            kind_was_defaulted=kind_was_defaulted,
+            args=args,
+        )
+
+    def _resolve_kind(
+        self,
+        verb: str,
+        kind: Any,
+        args: dict[str, Any],
+    ) -> tuple[str, bool, Response | None]:
+        """Pin ``kind`` to a single string, or short-circuit to cross-kind.
+
+        Returns ``(kind, defaulted, cross_kind_response)``. When the
+        third element is non-None, the caller must return it directly
+        — the resolver decided to fan out across kinds because no
+        single defensible default exists.
+
+        Raises ``BadInput`` when ``kind`` is missing for a non-search
+        verb, or when ``search`` has no usable default and no eligible
+        cross-kind targets.
+        """
+        if kind is not None:
+            return str(kind), False, None
+
+        if verb != "search":
+            raise BadInput("missing kind=", options=self.registry.kinds())
+
+        # 7B callers routinely forget ``kind=``. Pick the most
+        # recently touched search-supporting kind as a sensible
+        # default and echo the choice back. Falls back to wildcard
+        # cross-kind dispatch when the registry has >=2 search-hits-
+        # capable kinds and the store can't narrow further (stateless
+        # deployment, empty corpus).
+        search_kinds = [
+            k
+            for k in self.registry.kinds()
+            if self.registry.get(k).spec.supports_search
+        ]
+        defaulted = self._default_search_kind(search_kinds)
+        if defaulted is not None:
+            return defaulted, True, None
+
+        cross_kind = self._cross_kind_kinds()
+        if len(cross_kind) >= 2:
+            return (
+                _CROSS_KIND_WILDCARD,
+                False,
+                self._dispatch_cross_kind(_CROSS_KIND_WILDCARD, dict(args)),
+            )
+
+        raise BadInput(
+            "missing kind= and no defensible default available",
+            options=search_kinds,
+            next=(
+                "pass kind=<one of the listed kinds>, or use "
+                "kind='*' / kind='paper,memory' for cross-kind merge"
+            ),
+        )
+
+    def _resolve_handler(self, kind: str, verb: str) -> Handler:
+        """Look up the handler for ``kind`` and verify it supports ``verb``.
+
+        Raises:
+            NotFound: ``kind`` is not registered. Options carries
+                only the verb-supporting kinds so an agent retrying
+                against a suggested kind doesn't cascade into a
+                second error (MCP critic MAJOR #12).
+            Unsupported: handler exists but does not implement
+                ``verb``. The ``move`` verb has a special-cased hint
+                when no active kind implements it — agents otherwise
+                bounce ``move()`` against every kind hoping for one
+                that works.
+        """
         try:
             handler = self.registry.get(kind)
         except NotFound as exc:
-            # The registry's "unknown kind" error carries every active
-            # kind regardless of verb. The MCP critic flagged this as
-            # MAJOR #12: an agent that asked ``search(kind='all', q='…')``
-            # got back the *full* kind list including kinds that don't
-            # support search at all (calc, math, web, …) — so its retry
-            # against kind='calc' hit a *second* error. Re-raise with
-            # the verb-filtered options so the recovery hint actually
-            # works.
             from precis.errors import NotFound as _NF
 
             raise _NF(
@@ -160,15 +212,11 @@ class PrecisRuntime:
                 options=self._kinds_for_verb(verb),
                 next="see precis-overview for the kind list",
             ) from exc
+
         if not handler.spec.supports(verb):  # type: ignore[arg-type]
             from precis.errors import Unsupported
 
             verbs = [v for v in _VERBS if handler.spec.supports(v)]
-            # Special case for ``move``: when *no* active kind implements
-            # it, the agent has no recovery path inside this server. Say
-            # so explicitly rather than letting it look like a per-kind
-            # quirk; this prevents the loop where a small model retries
-            # move() against another kind in the hope it'll work.
             if verb == "move":
                 movers = [
                     k
@@ -190,13 +238,28 @@ class PrecisRuntime:
                 options=verbs,
                 next=f"try one of {verbs} on kind={kind!r}",
             )
+        return handler
 
+    def _invoke_handler(
+        self,
+        handler: Handler,
+        verb: str,
+        *,
+        kind: str,
+        kind_was_defaulted: bool,
+        args: dict[str, Any],
+    ) -> Response:
+        """Call ``handler.<verb>`` with extras-whitelisted kwargs.
+
+        ``args=`` extras forwarded by the MCP boundary are validated
+        against the handler's signature *before* the call so
+        ``**_kw`` doesn't swallow typos silently. Errors raised by
+        the handler are annotated with ``(searched kind=…)`` when the
+        caller omitted ``kind=`` and we defaulted, so failures stay
+        traceable to the specific kind that was tried.
+        """
         method = getattr(handler, verb)
-        # Pull off the args= extras forwarded by the MCP boundary so we
-        # can validate them against the handler's signature *before*
-        # the call. Without this gate, ``**_kw`` swallows unknown keys
-        # silently and the agent gets no signal that ``args={'depth':3}``
-        # vanished. (MCP critic MINOR — args= silently consumed.)
+
         extras = args.pop(_EXTRAS_KEY, None)
         if extras:
             unknown = self._unknown_extras(method, extras)
@@ -211,17 +274,12 @@ class PrecisRuntime:
                     ),
                 )
             args.update(extras)
-        # Strip None args so handlers see absence as missing
+
+        # Strip None args so handlers see absence as missing.
         clean = {k: v for k, v in args.items() if v is not None}
         try:
             response = method(**clean)
         except PrecisError as exc:
-            # ``(searched kind=...)`` must surface on error paths too,
-            # not just on success — otherwise a crash inside the
-            # defaulted kind's handler leaves the caller blind to
-            # which kind was actually tried.  (MCP critic MAJOR —
-            # search with no kind= does not preface the chosen kind
-            # on failure.)
             if kind_was_defaulted:
                 exc.cause = f"(searched kind={kind!r}) {exc.cause}"
             raise
@@ -236,6 +294,7 @@ class PrecisRuntime:
                     f"(searched kind={kind!r}) internal error: {exc}"
                 ) from exc
             raise
+
         if kind_was_defaulted:
             response = self._tag_defaulted_kind(response, kind)
         return response
@@ -477,13 +536,26 @@ class PrecisRuntime:
             if self.registry.get(k).spec.supports(verb)  # type: ignore[arg-type]
         ]
 
-    def _render_error(self, err: PrecisError) -> str:
+    def render_error(self, err: PrecisError) -> str:
+        """Render a :class:`PrecisError` as the canonical agent-facing string.
+
+        Public surface so transport layers (``precis.server``) can format
+        pre-dispatch validation errors with the same shape the runtime
+        produces on raise. Was previously named ``_render_error`` and
+        accessed via ``# type: ignore[attr-defined]`` from the MCP tool
+        wrappers; the underscore-prefixed alias is kept for backwards
+        compatibility with anything still calling the old name.
+        """
         parts = [f"[error:{err.__class__.__name__}] {err.cause}"]
         if err.options:
             parts.append(f"  options: {', '.join(map(str, err.options))}")
         if err.next:
             parts.append(f"  next: {err.next}")
         return "\n".join(parts)
+
+    # Backwards-compatible alias. Internal callers that pre-date the
+    # promotion to a public method still reference ``_render_error``.
+    _render_error = render_error
 
 
 def build_runtime(
@@ -520,6 +592,7 @@ def build_runtime(
         store=store,
         embedder=embedder,
         markdown_root=config.markdown_root,
+        plaintext_root=config.plaintext_root,
         python_roots=config.python_roots,
     )
     registry = Registry(handlers)

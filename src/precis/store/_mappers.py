@@ -1,0 +1,204 @@
+"""Shared row mappers, position sentinels, and noise-filter helpers.
+
+Every domain mixin (``refs``, ``blocks``, ``tags``, ``links``,
+``cache``, ``ingest``) needs to either translate between the DB
+``pos = -1`` sentinel and Python ``None`` (refs are "ref-level" at
+-1) or convert a psycopg row tuple into one of the typed
+:mod:`precis.store.types` dataclasses. Keeping these in one module
+avoids cross-mixin imports and keeps each mixin focused on the
+SQL it owns.
+
+Nothing here is agent-facing — everything is re-exported privately
+by :mod:`precis.store.store` and never leaks through
+``from precis.store import ...``.
+"""
+
+from __future__ import annotations
+
+from precis.store.types import (
+    Block,
+    CacheEntry,
+    Link,
+    Ref,
+)
+
+# ---------------------------------------------------------------------------
+# Tag prefix ownership — mirrored from `tag_prefixes.writable_by` for
+# fast checks; the DB still enforces. Kept in sync with
+# ``0001_initial.sql``.
+# ---------------------------------------------------------------------------
+_AGENT_WRITABLE_PREFIXES: frozenset[str] = frozenset({"STATUS", "PRIO", "CONFIDENCE"})
+_SYSTEM_WRITABLE_PREFIXES: frozenset[str] = frozenset({"SRC", "CACHE", "DENSITY"})
+
+
+# Sentinel: pos = -1 in the DB means "ref-level"; callers see None.
+_REF_LEVEL_POS = -1
+
+
+# Default cosine-distance floor for semantic-only hits. pgvector's
+# `<=>` operator returns ``1 - cosine_similarity``, so a distance of
+# 0.9 means ``cos(theta) ≈ 0.1`` — the two vectors are nearly
+# perpendicular, i.e. the embedding model thinks they have almost
+# nothing to do with each other. We reject anything past this
+# threshold from the semantic CTE so a nonsense query
+# (``'xyzzy frobnicate quux'``) returns an honest empty response
+# instead of a top-K of arbitrary blocks. The MCP critic flagged
+# this as MAJOR #3: search has no relevance floor, gibberish
+# queries return ranked hits. The threshold is a default, not a
+# constraint — callers (and the eventual public ``min_score=`` knob)
+# can override per call. 0.9 is generous enough to keep weakly-
+# related but legitimately near hits, strict enough to exclude the
+# random-block tail.
+SEMANTIC_DISTANCE_FLOOR = 0.9
+
+
+# Search-time noise filters. Two predicates wrap every block-search
+# WHERE clause; both are necessary to keep low-information blocks
+# from polluting the agent's view.
+#
+#   _MIN_BLOCK_CHARS:   minimum trimmed text length (excludes
+#                       single punctuation, section markers, etc.)
+#   _MARKUP_ONLY_BLOCK: PostgreSQL POSIX regex matching blocks
+#                       whose body is pure HTML markup with no
+#                       readable content. The MCP critic flagged
+#                       ``<span id="page-N-0"></span>`` anchor blocks
+#                       surfacing as top hits on noise-probe queries —
+#                       they're 30+ chars (so the length floor lets
+#                       them through) but carry zero semantic content.
+#
+# Both predicates appear in every block-search SQL clause via
+# :func:`_block_noise_clauses` so any new search method picks them up
+# uniformly. (Critic MAJOR #11 + MINOR #10.)
+_MIN_BLOCK_CHARS = 4
+_MARKUP_ONLY_BLOCK = r"^[[:space:]]*<span[^>]*></span>[[:space:]]*$"
+
+
+def _block_noise_clauses(text_alias: str = "b.text") -> list[str]:
+    """SQL predicates that drop blocks unfit for agent consumption.
+
+    Returned as a plain list of WHERE-clause fragments (no leading
+    ``AND``); callers concatenate via the same ``" AND ".join``
+    they already use for the rest of the WHERE.
+
+    Parameters mirror the alias the caller picked for the ``blocks``
+    table (``b`` everywhere in this module today, but kept
+    parametric so a future view-aliased call site doesn't have to
+    rename).
+    """
+    return [
+        f"char_length(btrim({text_alias})) >= {_MIN_BLOCK_CHARS}",
+        # PostgreSQL POSIX regex via the ``~`` operator. We compare
+        # against the constant rather than a parameter because the
+        # pattern is a static cleanup rule, not user input — and
+        # parameterising would force a separate ``$N`` slot per
+        # call site.
+        f"{text_alias} !~ '{_MARKUP_ONLY_BLOCK}'",
+    ]
+
+
+def _pos_to_db(pos: int | None) -> int:
+    """Translate caller's None (= ref-level) to DB sentinel -1."""
+    return _REF_LEVEL_POS if pos is None else pos
+
+
+# ---------------------------------------------------------------------------
+# Row mappers (psycopg row tuple -> dataclass)
+# ---------------------------------------------------------------------------
+
+
+def _row_to_block(row: tuple) -> Block:
+    """Map a blocks row tuple in the order:
+    (id, ref_id, pos, slug, text, token_count, embedding, density, meta,
+     created_at, updated_at)
+    """
+    embedding = row[6]
+    if embedding is not None and not isinstance(embedding, list):
+        # pgvector returns numpy.ndarray when registered; coerce for stable
+        # cross-version output.
+        embedding = list(map(float, embedding))
+    return Block(
+        id=row[0],
+        ref_id=row[1],
+        pos=row[2],
+        slug=row[3],
+        text=row[4],
+        token_count=row[5],
+        embedding=embedding,
+        density=row[7],
+        meta=row[8] or {},
+        created_at=row[9],
+        updated_at=row[10],
+    )
+
+
+def _row_to_ref(row: tuple) -> Ref:
+    """Map a refs row tuple in the order:
+    (id, corpus_id, kind, slug, title, provider, meta,
+     created_at, updated_at, deleted_at)
+    """
+    return Ref(
+        id=row[0],
+        corpus_id=row[1],
+        kind=row[2],
+        slug=row[3],
+        title=row[4],
+        provider=row[5],
+        meta=row[6] or {},
+        created_at=row[7],
+        updated_at=row[8],
+        deleted_at=row[9],
+    )
+
+
+def _row_to_link(row: tuple) -> Link:
+    """Map a links row tuple in the order:
+    (id, src_ref_id, src_pos, dst_ref_id, dst_pos,
+     relation, set_by, meta, created_at)
+
+    The DB sentinel ``pos = -1`` is converted back to ``None`` at the
+    boundary so callers always see "ref-level" as Pythonic ``None``.
+    """
+    return Link(
+        id=row[0],
+        src_ref_id=row[1],
+        src_pos=row[2] if row[2] != _REF_LEVEL_POS else None,
+        dst_ref_id=row[3],
+        dst_pos=row[4] if row[4] != _REF_LEVEL_POS else None,
+        relation=row[5],
+        set_by=row[6],
+        meta=row[7] or {},
+        created_at=row[8],
+    )
+
+
+def _row_to_cache_entry(row: tuple) -> CacheEntry:
+    """Map a cache_state row tuple in the order:
+    (ref_id, provider, request_hash, model, fetched_at, fresh_until,
+     cost_usd, meta)
+    """
+    return CacheEntry(
+        ref_id=row[0],
+        provider=row[1],
+        request_hash=row[2],
+        model=row[3],
+        fetched_at=row[4],
+        fresh_until=row[5],
+        cost_usd=float(row[6]) if row[6] is not None else None,
+        meta=row[7] or {},
+    )
+
+
+__all__ = [
+    "SEMANTIC_DISTANCE_FLOOR",
+    "_AGENT_WRITABLE_PREFIXES",
+    "_MARKUP_ONLY_BLOCK",
+    "_MIN_BLOCK_CHARS",
+    "_REF_LEVEL_POS",
+    "_SYSTEM_WRITABLE_PREFIXES",
+    "_block_noise_clauses",
+    "_pos_to_db",
+    "_row_to_block",
+    "_row_to_cache_entry",
+    "_row_to_link",
+    "_row_to_ref",
+]

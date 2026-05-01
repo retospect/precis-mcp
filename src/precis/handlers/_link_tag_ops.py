@@ -209,6 +209,58 @@ def apply_tag_ops(
     return n_added, n_removed
 
 
+def apply_link_tag_only_put(
+    store: Store,
+    *,
+    kind: str,
+    ref_id: int,
+    ref_label: str,
+    link: str | None,
+    unlink: str | None,
+    tags: list[str] | None,
+    untags: list[str] | None,
+    rel: str | None,
+) -> str:
+    """One-shot orchestration for read-only-body kinds.
+
+    Bundles the five steps every link-tag-only ``put`` performs
+    (validate link args → reject empty op → apply links → apply
+    tags → format ack) into a single call so the per-handler
+    ``put`` method is a thin wrapper around this.
+
+    Callers are responsible for:
+      * rejecting ``text=`` / ``mode=`` / unsupported kwargs upstream
+        (each kind has its own wording);
+      * resolving ``id`` to a live ref (``ref_id``);
+      * computing the human-visible ``ref_label`` (usually the slug).
+
+    Returns the formatted ack body string; callers wrap it in a
+    :class:`Response` themselves so they can bolt on any
+    per-kind ``next:`` trailers.
+    """
+    validate_link_args(link=link, unlink=unlink, rel=rel, kind=kind)
+    if not any((link, unlink, tags, untags)):
+        raise BadInput(
+            f"{kind} put requires at least one of link=, unlink=, tags=, untags=",
+            next=(f"put(kind={kind!r}, id={ref_label!r}, link='paper:other-slug')"),
+        )
+
+    n_links_added, n_links_removed = apply_link_ops(
+        store, ref_id, link=link, unlink=unlink, rel=rel
+    )
+    n_tags_added, n_tags_removed = apply_tag_ops(
+        store, kind, ref_id, tags=tags, untags=untags
+    )
+    return format_link_tag_ack(
+        kind=kind,
+        ref_label=ref_label,
+        n_links_added=n_links_added,
+        n_links_removed=n_links_removed,
+        n_tags_added=n_tags_added,
+        n_tags_removed=n_tags_removed,
+    )
+
+
 def format_link_tag_ack(
     *,
     kind: str,
@@ -243,6 +295,7 @@ def format_link_tag_ack(
 
 __all__ = [
     "apply_link_ops",
+    "apply_link_tag_only_put",
     "apply_tag_ops",
     "format_link_tag_ack",
     "validate_link_args",

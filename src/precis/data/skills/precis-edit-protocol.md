@@ -1,12 +1,18 @@
 ---
 id: precis-edit-protocol
 title: precis — anchored edits across every file kind
-status: shipped (v1) — markdown + python; other file kinds queued
+status: active
 tier: 2
 floor: any
-applies-to: put with mode='edit' or mode='insert' on R/W file kinds (markdown + python today; plaintext, rmk, docx, tex, book queued)
-last-updated: 2026-04-30
+applies-to: put with mode='edit' or mode='insert' on R/W file kinds (markdown, plaintext, python today; rmk, docx, tex, book queued)
+last-updated: 2026-05-01
 ---
+
+> **Status:** v1 ships for `markdown`, `plaintext`, and `python`
+> — each gated on its own env var (`PRECIS_MARKDOWN_ROOT`,
+> `PRECIS_PLAINTEXT_ROOT`, `PRECIS_PYTHON_ROOTS`). Use
+> `get(kind='skill', id='precis-help')` to confirm which are live
+> in the server you're talking to.
 
 # precis-edit-protocol — sub-region anchored search/replace
 
@@ -168,8 +174,8 @@ The schema is universal; the validation differs:
 | Kind | Status | Validation gate | Format step |
 |---|---|---|---|
 | `markdown` | **shipped v1** | re-parse blocks on re-ingest | none |
+| `plaintext` | **shipped v1** | UTF-8 encode check | none |
 | `python` | **shipped v1** | `ast.parse` + qualname-stable | `ruff check --fix` + `ruff format` |
-| `plaintext` | queued | none | none |
 | `rmk` | queued | re-parse | trim trailing ws |
 | `docx` | queued | re-parse XML; run integrity | none |
 | `tex` | queued | brace + env balance | none |

@@ -133,16 +133,27 @@ class TestSkillIndexFiltering:
         fm = _parse_frontmatter(text)
         assert fm.get("status") == "aspirational"
 
-    def test_files_help_marked_planned(self) -> None:
-        """``precis-files-help`` documents kinds (markdown/python/…) not
-        currently in the runtime registry."""
+    def test_files_help_marked_active(self) -> None:
+        """``precis-files-help`` documents the shared address grammar
+        for the shipped file kinds (markdown, plaintext, python). It
+        was ``status: planned`` while those kinds were pre-wire; now
+        that all three ship (each gated on its own env var) the skill
+        is ``status: active``. Individual kinds are still hidden from
+        the index via the availability-gap gate when their env var
+        isn't set in the current runtime."""
         from importlib import resources
 
         text = (
             resources.files("precis.data.skills") / "precis-files-help.md"
         ).read_text(encoding="utf-8")
         fm = _parse_frontmatter(text)
-        assert fm.get("status") == "planned"
+        assert fm.get("status") == "active"
+        # The status banner inside the skill must still warn readers
+        # that each file kind is gated on an env var — that's the
+        # honesty clause.
+        assert "PRECIS_MARKDOWN_ROOT" in text
+        assert "PRECIS_PLAINTEXT_ROOT" in text
+        assert "PRECIS_PYTHON_ROOTS" in text
 
     def test_availability_gap_filters_status_planned(
         self, runtime: PrecisRuntime

@@ -545,11 +545,11 @@ class PythonHandler(Handler):
         # Refuse to escape the repo root via ../ tricks.
         try:
             path.relative_to(root)
-        except ValueError:
+        except ValueError as exc:
             raise BadInput(
                 f"path {parsed.file!r} escapes repo root",
                 next="use a relative path that stays inside the repo",
-            )
+            ) from exc
         if path.exists():
             raise BadInput(
                 f"file {parsed.file!r} already exists",
@@ -1177,7 +1177,7 @@ class PythonHandler(Handler):
                 f"callgraph entry {entry!r} not found in repo {parsed.alias!r}: {e}",
                 next=f"search(kind='python', q={entry.rsplit('.', 1)[-1].rsplit(':', 1)[-1]!r}, "
                 f"scope={parsed.alias!r})",
-            )
+            ) from e
 
         body = cgraph.render_callgraph(
             tree,

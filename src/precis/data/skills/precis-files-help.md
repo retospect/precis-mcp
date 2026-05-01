@@ -1,37 +1,43 @@
 ---
 id: precis-files-help
 title: precis — read and edit files (markdown, plaintext, code, …)
-status: planned
+status: active
 tier: 1
 floor: any
 applies-to: cross-cutting (file-rooted kinds)
-last-updated: 2026-04-28
+last-updated: 2026-05-01
 ---
 
-> **Status:** `markdown` and `python` are shipped (read + write,
-> including the new `mode='edit'` / `mode='insert'` surface). The
-> other file kinds documented here (`plaintext`, `rmk`, `docx`,
-> `tex`, `book`, `git`) are queued for later phases. The shared
-> addressing model below applies to all of them.
+> **Status:** `markdown`, `plaintext`, and `python` ship today
+> (read + write, including the `mode='edit'` / `mode='insert'`
+> surface). **Each is gated on an env var** — `PRECIS_MARKDOWN_ROOT`,
+> `PRECIS_PLAINTEXT_ROOT`, `PRECIS_PYTHON_ROOTS` — so a build that
+> doesn't set them won't register the corresponding kind. Use
+> `get(kind='skill', id='precis-help')` to see which of these are
+> live in the server you're talking to. The other kinds listed
+> below (`rmk`, `docx`, `tex`, `book`, `git`) are reserved — not
+> yet wired in any build. The shared addressing model applies
+> wherever a kind lands.
 
 # precis-files-help — file-rooted kinds, shared concepts
 
 This skill covers what's the **same** across every file-rooted kind:
 
-| Kind | Files |
-|---|---|
-| `markdown` | `.md` |
-| `plaintext` | `.txt` |
-| `rmk` | `.rmk` (markdown + YAML front-matter) |
-| `docx` | `.docx` (Word) |
-| `tex` | `.tex` + LaTeX project files |
-| `book` | multi-file project glue |
-| `python` | `.py` (Python codebases) |
-| `git` | any repo (language-agnostic) |
+| Kind | Files | Status |
+|---|---|---|
+| `markdown` | `.md` | shipped (needs `PRECIS_MARKDOWN_ROOT`) |
+| `plaintext` | `.txt`, `.log` | shipped (needs `PRECIS_PLAINTEXT_ROOT`) |
+| `python` | `.py` (Python codebases) | shipped (needs `PRECIS_PYTHON_ROOTS`) |
+| `rmk` | `.rmk` (markdown + YAML front-matter) | reserved, not wired |
+| `docx` | `.docx` (Word) | reserved, not wired |
+| `tex` | `.tex` + LaTeX project files | reserved, not wired |
+| `book` | multi-file project glue | reserved, not wired |
+| `git` | any repo (language-agnostic) | reserved, not wired |
 
 For kind-specific rules (block grammar, views, edits) see:
 
 - `precis-markdown-help` — `.md` files
+- `precis-plaintext-help` — `.txt` / `.log` files
 - `precis-python-help` — Python codebases
 
 ## Two tracks of addressing
@@ -145,8 +151,8 @@ search(kind='markdown', q='deadline', scope='notes/meeting.md')
 
 ## Write
 
-Four modes. Available on R/W kinds (`markdown`, `plaintext`, `rmk`,
-`docx`, `tex`, `book`, `python`). `git` is read-only.
+Four modes. Available on R/W kinds (`markdown`, `plaintext`, `python`
+today; `rmk`, `docx`, `tex`, `book` queued). `git` is read-only.
 
 `python` adds two extras on top of the shared modes: writes go
 through `ast.parse` (mandatory) and `ruff check --fix` + `ruff
@@ -154,6 +160,10 @@ format` (mandatory) before the atomic write. If ruff modifies the
 buffer the response says what it changed. See `precis-python-help`
 for the validation table and recipes for replace-by-qualname /
 replace-by-line / append / create / delete on Python files.
+
+`plaintext` has no validation gate — writes go to disk verbatim
+after a UTF-8 encode check. Block grammar is "one paragraph per
+blank-line-separated run".
 
 ```python
 # Create a new file.
@@ -201,8 +211,8 @@ The grammar is **identical across every R/W file kind**; per-kind
 quirks (validation gates, format steps) live in each kind's
 skill. The full universal grammar lives in `precis-edit-protocol`.
 
-v1 ships for `markdown` and `python`; other R/W file kinds are
-queued.
+v1 ships for `markdown`, `plaintext`, and `python`; the rest of
+the R/W file kinds (`rmk`, `docx`, `tex`, `book`) are queued.
 
 ```python
 # Surgical replacement: change one token, leave everything else alone.

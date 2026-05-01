@@ -1,8 +1,8 @@
 """In-tree handler registry.
 
-V2 drops setuptools entry-point plugin discovery. New kinds = append a
-class to `BUILTINS()` here and add a row to the `kinds` reference table
-in a migration. Two-step, explicit, greppable.
+V2 drops setuptools entry-point plugin discovery. New kinds = add a
+factory call to :func:`builtins` here and add a row to the ``kinds``
+reference table in a migration. Two-step, explicit, greppable.
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ def builtins(
     store: Store | None = None,
     embedder: Embedder | None = None,
     markdown_root: str | None = None,
+    plaintext_root: str | None = None,
     python_roots: str | None = None,
 ) -> list[Handler]:
     """Return handler instances for the active server configuration.
@@ -178,6 +179,25 @@ def builtins(
                 )
 
             _try_register(handlers, _build_markdown, label="markdown")
+
+        # File handler — plaintext. Same gating rules as markdown: a
+        # missing env var hides the kind; a bad path (non-existent,
+        # not a directory) raises ``ValueError`` inside the handler
+        # __init__ and ``_try_register`` silently skips the kind.
+        if plaintext_root:
+
+            def _build_plaintext() -> Handler:
+                from pathlib import Path
+
+                from precis.handlers.plaintext import PlaintextHandler
+
+                return PlaintextHandler(
+                    store=store,
+                    embedder=eff_embedder,
+                    root=Path(plaintext_root),
+                )
+
+            _try_register(handlers, _build_plaintext, label="plaintext")
 
         # Perplexity Sonar trio (websearch / think / research). All
         # three share httpx + the ``PERPLEXITY_API_KEY`` env var.

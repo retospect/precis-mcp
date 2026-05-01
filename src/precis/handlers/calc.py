@@ -86,8 +86,16 @@ class CalcHandler(Handler):
             simplified = sympy.simplify(result) if not result.is_number else result
         except Exception:
             simplified = result
-        if str(simplified).replace(" ", "") == expr_str.replace(" ", "") and (
-            getattr(simplified, "free_symbols", set())
+        # ``getattr(..., set())`` would be the natural form here but
+        # mypy's overload selection latches onto sympy's typed
+        # ``free_symbols`` attribute and flags the default. Use the
+        # ``hasattr`` + access pattern instead — same semantics.
+        free_symbols = (
+            simplified.free_symbols if hasattr(simplified, "free_symbols") else set()
+        )
+        if (
+            str(simplified).replace(" ", "") == expr_str.replace(" ", "")
+            and free_symbols
         ):
             raise BadInput(
                 f"expression simplifies to itself: {expr_str!r}",

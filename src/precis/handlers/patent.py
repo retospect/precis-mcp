@@ -383,12 +383,11 @@ class PatentHandler(Handler):
             blocks = self.store.list_blocks_for_ref(ref.id)
             if not blocks:
                 return Response(body=f"no body blocks stored for {slug}")
-            # Naive split: meta has ``len(description_paragraphs)``
-            # paragraphs first, then claims. Reconstruct by counting.
-            n_desc = len(meta.get("cpc_classes") and [])  # placeholder
-            # Better: use block density / position; description tends
-            # to be in the early third, claims in the last third.
-            # For phase 1, just dump everything labeled by view.
+            # Phase 1: dump every body block under whichever section
+            # the caller asked for. A future cut should split
+            # description vs claims by block density / position
+            # (description in the early third, claims in the last);
+            # for now the pure dump matches what the ingester labels.
             section = "Description" if view == "description" else "Claims"
             lines = [f"# {slug} — {section}"]
             for b in blocks:

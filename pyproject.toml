@@ -122,7 +122,6 @@ line-length = 88
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 ignore = [
     "B008",    # function-call-in-default-argument (typer pattern)
-    "B904",    # raise-without-from-inside-except
     "E501",    # line-too-long (formatter handles what it can)
     "E741",    # ambiguous-variable-name
     "RUF001",  # ambiguous-unicode-character-string
@@ -154,10 +153,7 @@ warn_unused_configs = true
 check_untyped_defs = true
 ignore_missing_imports = true
 disable_error_code = [
-    "arg-type",
     "assignment",
-    "attr-defined",
-    "call-arg",
     "dict-item",
     "index",
     "method-assign",

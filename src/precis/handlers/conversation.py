@@ -17,12 +17,8 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    apply_tag_ops,
-    format_link_tag_ack,
-    validate_link_args,
-)
+from precis.handlers._link_tag_ops import apply_link_tag_only_put
+from precis.handlers._slug_ref_shared import render_slug_ref_list
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Store
@@ -240,53 +236,38 @@ class ConversationHandler(Handler):
                 next="search(kind='conv', q='...') to find existing slugs",
             )
 
-        validate_link_args(link=link, unlink=unlink, rel=rel, kind="conv")
-        if not any((link, unlink, tags, untags)):
-            raise BadInput(
-                "conv put requires at least one of link=, unlink=, tags=, untags=",
-                next=(f"put(kind='conv', id={slug!r}, link='paper:other-slug')"),
-            )
-
-        n_links_added, n_links_removed = apply_link_ops(
-            self.store, ref.id, link=link, unlink=unlink, rel=rel
+        ack = apply_link_tag_only_put(
+            self.store,
+            kind="conv",
+            ref_id=ref.id,
+            ref_label=slug,
+            link=link,
+            unlink=unlink,
+            tags=tags,
+            untags=untags,
+            rel=rel,
         )
-        n_tags_added, n_tags_removed = apply_tag_ops(
-            self.store, "conv", ref.id, tags=tags, untags=untags
-        )
-        return Response(
-            body=format_link_tag_ack(
-                kind="conv",
-                ref_label=slug,
-                n_links_added=n_links_added,
-                n_links_removed=n_links_removed,
-                n_tags_added=n_tags_added,
-                n_tags_removed=n_tags_removed,
-            )
-        )
+        return Response(body=ack)
 
     # ── render helpers ──────────────────────────────────────────────
 
     def _render_list(self) -> Response:
-        refs = self.store.list_refs(kind="conv", limit=20)
-        if not refs:
-            # MCP critic MINOR m2: empty-list paths on read-only
-            # kinds still want a Next: trailer so the agent gets a
-            # concrete recovery call shape.
-            body = "no conversations recorded yet"
-            body += render_next_section(
-                [
-                    (
-                        "get(kind='skill', id='precis-overview')",
-                        "see what kinds this server has",
-                    ),
-                ]
-            )
-            return Response(body=body)
-        lines = [f"# {len(refs)} conversation(s)"]
-        for r in refs:
-            preview = (r.title[:80] + "…") if len(r.title) > 80 else r.title
-            lines.append(f"  {(r.slug or '?'):<30}  {preview}")
-        return Response(body="\n".join(lines))
+        # MCP critic MINOR m2: empty-list paths on read-only kinds
+        # still want a Next: trailer so the agent gets a concrete
+        # recovery call shape.
+        return render_slug_ref_list(
+            self.store,
+            kind="conv",
+            label_plural="conversation(s)",
+            limit=20,
+            empty_body="no conversations recorded yet",
+            empty_next=[
+                (
+                    "get(kind='skill', id='precis-overview')",
+                    "see what kinds this server has",
+                ),
+            ],
+        )
 
     def _render_overview(self, slug: str, ref: Any) -> Response:
         n_blocks = self.store.count_blocks(ref.id)

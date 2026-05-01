@@ -192,12 +192,17 @@ def merge_and_render(
     rendered = merged[:top_k]
     total_pre_cap = len(merged)
 
+    # ``format_search_headline`` requires a concrete query string.
+    # ``query=None`` is supported on the empty-body path only — when
+    # we reach the renderer we always have hits, and the empty
+    # string is a defensible fallback for the rare wildcard /
+    # browse-all caller that omitted the query.
     lines = [
         format_search_headline(
             n_returned=len(rendered),
             total=total_pre_cap,
             noun=header_noun,
-            query=query,
+            query=query or "",
         )
     ]
     for i, hit in enumerate(rendered, 1):

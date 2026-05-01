@@ -1,0 +1,165 @@
+"""Shared render + search helpers for slug-addressed ref kinds.
+
+Slug-addressed kinds (``oracle``, ``conv``, ``quest``, plus slices of
+``paper`` / ``patent``) repeatedly hand-roll the same three pieces:
+
+1. A ref-level lexical search that calls ``search_refs_lexical`` +
+   ``count_refs_lexical`` and renders ``# N match(es) for 'q'``
+   followed by one ``## {kind} {slug}  (rank=X.XX)`` block per hit.
+2. A ``search_hits`` variant that returns :class:`SearchHit` records
+   for cross-kind merge.
+3. A bare ``# {N} {kind}(s)`` list view rendered from
+   ``list_refs(kind=..., limit=50)``.
+
+These helpers factor each piece into a free-standing function so the
+per-handler methods become thin wrappers. Kept free-standing (no
+base class) to match the style set by :mod:`_link_tag_ops` —
+"call sites stay obvious" was the original rationale and still holds.
+
+Per-kind hints (``next:`` trailers on empty states, custom noun
+phrasing for ``format_search_headline``) are passed in rather than
+hard-coded, so handlers remain free to tailor the agent-facing
+wording without forking the helper.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from precis.errors import BadInput
+from precis.response import Response
+from precis.utils.next_block import render_next_section
+from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
+
+if TYPE_CHECKING:
+    from precis.store import Store
+
+
+def search_slug_refs(
+    store: Store,
+    *,
+    kind: str,
+    q: str | None,
+    top_k: int,
+    noun: str,
+    empty_next: list[tuple[str, str]] | None = None,
+) -> Response:
+    """Render a ref-level lexical search over a slug-addressed kind.
+
+    ``q`` must be non-empty; empty queries raise :class:`BadInput`
+    with a hint tailored to ``kind`` so the agent sees a concrete
+    recovery call. ``noun`` is the singular form used in the
+    headline (``"oracle match"``, ``"quest match"``); it's
+    pluralised by :func:`format_search_headline`.
+
+    ``empty_next`` is an optional list of ``(call, description)``
+    pairs appended as a ``Next:`` trailer to the empty-state body.
+    Without it, the empty body is just ``"no <kind> entries match
+    'q'"``.
+    """
+    if q is None or not q.strip():
+        raise BadInput(
+            "search requires q=",
+            next=f"search(kind={kind!r}, q='your query')",
+        )
+
+    hits = store.search_refs_lexical(q=q, kind=kind, limit=top_k)
+    if not hits:
+        body = f"no {kind} entries match {q!r}"
+        if empty_next:
+            body += render_next_section(empty_next)
+        return Response(body=body)
+
+    total = store.count_refs_lexical(q=q, kind=kind)
+    lines = [
+        format_search_headline(
+            n_returned=len(hits),
+            total=total,
+            noun=noun,
+            query=q,
+        )
+    ]
+    for ref, rank in hits:
+        preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
+        lines.append(f"\n## {kind} {ref.slug}  (rank={rank:.2f})\n{preview}")
+    return Response(body="\n".join(lines))
+
+
+def search_hits_slug_refs(
+    store: Store,
+    *,
+    kind: str,
+    q: str | None,
+    top_k: int,
+) -> list[SearchHit]:
+    """Ref-level lexical search returned as :class:`SearchHit`\\ s.
+
+    Mirrors :func:`search_slug_refs`'s retrieval path but skips the
+    rendering — used by the cross-kind merge (``kind='*'`` /
+    comma-lists). Empty queries yield an empty list rather than
+    raising, because the cross-kind dispatcher asks each kind for
+    hits and expects failure-free streams.
+    """
+    if not (q and q.strip()):
+        return []
+    pairs = store.search_refs_lexical(q=q, kind=kind, limit=top_k)
+    return ref_hits_to_search_hits(pairs, kind=kind)
+
+
+def render_slug_ref_list(
+    store: Store,
+    *,
+    kind: str,
+    label_plural: str,
+    limit: int = 50,
+    empty_body: str | None = None,
+    empty_next: list[tuple[str, str]] | None = None,
+    preview_len: int = 80,
+    slug_col_width: int = 30,
+) -> Response:
+    """Render a plain ``# N kind(s)`` list for a slug-addressed kind.
+
+    Used by the browse-all path (``get(kind=<slug-kind>)`` with no
+    id=): shows the most-recently-updated refs of ``kind`` in a
+    single-column slug/title listing.
+
+    Args:
+        label_plural: Phrasing for the headline (``"oracle(s)"``,
+            ``"conversation(s)"``, ``"quest"``). Handlers own the
+            pluralisation nuance so the helper stays layout-only.
+        limit: Row cap on ``store.list_refs``. Defaults to 50,
+            which matches the existing oracle/conv values.
+        empty_body: Override message shown when the corpus has no
+            refs of this kind yet. Defaults to
+            ``"no <kind> entries yet"``.
+        empty_next: Optional ``Next:`` trailer on the empty path
+            so the agent has somewhere to go from a blank list.
+
+    The resulting body is ASCII-aligned with a fixed slug column
+    so tall listings stay readable at monospaced widths.
+    """
+    refs = store.list_refs(kind=kind, limit=limit)
+    if not refs:
+        body = empty_body or f"no {kind} entries yet"
+        if empty_next:
+            body += render_next_section(empty_next)
+        return Response(body=body)
+
+    lines = [f"# {len(refs)} {label_plural}"]
+    for r in refs:
+        preview = (
+            (r.title[:preview_len] + "…") if len(r.title) > preview_len else r.title
+        )
+        slug = r.slug or "?"
+        if len(slug) > slug_col_width:
+            slug = slug[: slug_col_width - 1] + "…"
+        lines.append(f"  {slug:<{slug_col_width}}  {preview}")
+    return Response(body="\n".join(lines))
+
+
+__all__ = [
+    "render_slug_ref_list",
+    "search_hits_slug_refs",
+    "search_slug_refs",
+]

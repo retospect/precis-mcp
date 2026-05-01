@@ -347,6 +347,14 @@ put(kind='python',
 #     - 1 whitespace adjustment (format)
 ```
 
+**Whole-file delete is out of scope.** `put(kind='python',
+id='precis/src/precis/mod.py', mode='delete')` is rejected —
+filesystem deletion belongs with `rm` / `git rm`. precis manages
+content (refs, blocks, embeddings), not files. To drop a whole
+module from the index: delete it with your OS tool; the next
+`get` will soft-delete the ref and the module vanishes from
+searches on its own.
+
 ### Anchored edits inside a function
 
 For changes smaller than a whole symbol (rename one call site, bump

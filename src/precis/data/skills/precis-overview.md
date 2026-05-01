@@ -43,23 +43,26 @@ set of search-supporting kinds.
 Content you address by id, drill into chunks, link, and tag.  Two id
 shapes — slug for canonical/named refs, integer for agent scratch:
 
-| Kind      | Example id            | What                              |
-|-----------|-----------------------|-----------------------------------|
-| `paper`   | `abazari2024design`   | Ingested research paper           |
-| `skill`   | `precis-overview`     | Agent how-to (you're reading one) |
-| `oracle`  | `precis-glossary`     | Wiki-like reference               |
-| `quest`   | `ship-v2`             | A long-running goal               |
-| `conv`    | `2026-04-26-spec`     | Past conversation                 |
-| `markdown`| `notes--meeting`      | A `.md` file under the configured root |
-| `python`  | `precis-mcp::precis.cli.main` | A symbol / file in a configured Python repo |
-| `todo`    | `122` (int)           | A task                            |
-| `memory`  | `47` (int)            | Agent note / scratchpad           |
-| `gripe`   | `9` (int)             | Annoyance / niggle — log freely, filter later |
-| `fc`      | `204` (int)           | Flashcard (SM-2 spaced rep)       |
+| Kind      | Example id            | What                              | Needs |
+|-----------|-----------------------|-----------------------------------|-------|
+| `paper`   | `abazari2024design`   | Ingested research paper           | store |
+| `skill`   | `precis-overview`     | Agent how-to (you're reading one) | — |
+| `oracle`  | `precis-glossary`     | Wiki-like reference               | store |
+| `quest`   | `ship-v2`             | A long-running goal               | store |
+| `conv`    | `2026-04-26-spec`     | Past conversation                 | store |
+| `markdown`| `notes--meeting`      | A `.md` file under the configured root | `PRECIS_MARKDOWN_ROOT` |
+| `plaintext`| `notes--log`         | A `.txt` / `.log` file under the configured root | `PRECIS_PLAINTEXT_ROOT` |
+| `python`  | `precis-mcp::precis.cli.main` | A symbol / file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
+| `todo`    | `122` (int)           | A task                            | store |
+| `memory`  | `47` (int)            | Agent note / scratchpad           | store |
+| `gripe`   | `9` (int)             | Annoyance / niggle — log freely, filter later | store |
+| `fc`      | `204` (int)           | Flashcard (SM-2 spaced rep)       | store |
 
-The **active** set varies by build — use `get(kind='skill',
-id='precis-help')` to enumerate. `book`, `docx`, `tex`, and
-`plaintext` are reserved kinds that aren't wired in this build.
+The **active** set varies by build — rows whose *Needs* column names
+an env var are only registered when that var is set. Use
+`get(kind='skill', id='precis-help')` to enumerate the kinds that
+are live **right now** in this server. `book`, `docx`, `tex`, and
+`rmk` are reserved kinds that aren't wired in any build yet.
 
 ## Kinds — tools
 
@@ -109,4 +112,5 @@ get(kind='math', q='speed of light in km/h')  # → 1.079e9 km/h (paid)
 - `precis-todo-help` — todo lifecycle, priority, due dates, blocking
 - `precis-memory-help` — memory sub-kinds via `kind:`
 - `precis-python-help` — Python code navigation, callgraph + runtrace, AST-gated edits
+- `precis-files-help` — shared address grammar for file-backed kinds (markdown, plaintext, python)
 - `precis-navigation` — recipes for common flows

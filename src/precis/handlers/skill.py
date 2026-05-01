@@ -191,7 +191,15 @@ class SkillHandler(Handler):
         ]
         for slug, cnt, preview in hits:
             preview_short = (preview[:120] + "…") if len(preview) > 120 else preview
-            lines.append(f"\n## {slug}  ({cnt} hits)\n{preview_short}")
+            # Mark skills whose subject kind isn't in the live
+            # registry (or whose status is planned/aspirational).
+            # The index view already hides them; search has to do
+            # the same honesty work or 7B callers will quote the
+            # title and invoke an [error:NotFound] kind. (MCP critic
+            # MINOR — search surfaces unwired skills without marker.)
+            gap = _availability_gap(slug, registry=self._registry)
+            marker = " [unwired]" if gap is not None else ""
+            lines.append(f"\n## {slug}{marker}  ({cnt} hits)\n{preview_short}")
         return Response(body="\n".join(lines))
 
     # ── helpers ────────────────────────────────────────────────────

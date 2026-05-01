@@ -46,6 +46,16 @@ class PrecisConfig(BaseSettings):
     Set via ``PRECIS_MARKDOWN_ROOT`` in the env.
     """
 
+    plaintext_root: str | None = None
+    """Root directory for the ``plaintext`` kind.
+
+    Files ending in ``.txt`` or ``.log`` under this path are addressable
+    as ``plaintext:<slug>`` with the same path-encoding rule as
+    ``markdown`` (``foo/bar.txt`` → ``foo--bar``). When unset, the
+    ``plaintext`` kind is hidden. Set via ``PRECIS_PLAINTEXT_ROOT``
+    in the env.
+    """
+
     python_roots: str | None = None
     """Python repos exposed to the ``python`` kind.
 

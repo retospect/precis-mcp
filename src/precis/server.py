@@ -219,7 +219,7 @@ def _check_reserved_args(
 
     from precis.errors import BadInput
 
-    return _rt()._render_error(  # type: ignore[attr-defined]
+    return _rt().render_error(
         BadInput(
             f"args={overlap!r} shadows the explicit kwargs {list(reserved)!r}",
             next="pass these as top-level keyword arguments, not inside args=",
@@ -260,7 +260,7 @@ def search(
 
     if not isinstance(top_k, int) or top_k <= 0:
         return _validation_error(
-            _rt()._render_error(  # type: ignore[attr-defined]
+            _rt().render_error(
                 BadInput(
                     f"top_k must be a positive integer, got {top_k!r}",
                     next="search(kind='paper', q='...', top_k=10)",
@@ -269,7 +269,7 @@ def search(
         )
     if top_k > _SEARCH_TOP_K_MAX:
         return _validation_error(
-            _rt()._render_error(  # type: ignore[attr-defined]
+            _rt().render_error(
                 BadInput(
                     f"top_k={top_k} exceeds maximum {_SEARCH_TOP_K_MAX}",
                     next=(

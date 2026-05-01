@@ -17,12 +17,15 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, NotFound
+from precis.handlers._slug_ref_shared import (
+    search_hits_slug_refs,
+    search_slug_refs,
+)
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Store, Tag
 from precis.utils.next_block import render_next_section
-from precis.utils.search_header import format_search_headline
-from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
+from precis.utils.search_merge import SearchHit
 from precis.utils.slug import slug_from_text
 
 
@@ -85,40 +88,23 @@ class QuestHandler(Handler):
         top_k: int = 10,
         **_kw: Any,
     ) -> Response:
-        if q is None or not q.strip():
-            raise BadInput(
-                "search requires q=",
-                next="search(kind='quest', q='your query')",
-            )
-        hits = self.store.search_refs_lexical(q=q, kind="quest", limit=top_k)
-        if not hits:
-            body = f"no quest entries match {q!r}"
-            body += render_next_section(
-                [
-                    (
-                        "search(kind='quest', q='broader term')",
-                        "loosen the query",
-                    ),
-                    (
-                        "get(kind='quest')",
-                        "list recent quests",
-                    ),
-                ]
-            )
-            return Response(body=body)
-        total = self.store.count_refs_lexical(q=q, kind="quest")
-        lines = [
-            format_search_headline(
-                n_returned=len(hits),
-                total=total,
-                noun="quest match",
-                query=q,
-            )
-        ]
-        for ref, rank in hits:
-            preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
-            lines.append(f"\n## quest {ref.slug}  (rank={rank:.2f})\n{preview}")
-        return Response(body="\n".join(lines))
+        return search_slug_refs(
+            self.store,
+            kind="quest",
+            q=q,
+            top_k=top_k,
+            noun="quest match",
+            empty_next=[
+                (
+                    "search(kind='quest', q='broader term')",
+                    "loosen the query",
+                ),
+                (
+                    "get(kind='quest')",
+                    "list recent quests",
+                ),
+            ],
+        )
 
     # ── search_hits: structured form for cross-kind merge ───────────
 
@@ -130,10 +116,7 @@ class QuestHandler(Handler):
         **_kw: Any,
     ) -> list[SearchHit]:
         """Ref-level lexical search returned as ``SearchHit``s."""
-        if not (q and q.strip()):
-            return []
-        pairs = self.store.search_refs_lexical(q=q, kind="quest", limit=top_k)
-        return ref_hits_to_search_hits(pairs, kind="quest")
+        return search_hits_slug_refs(self.store, kind="quest", q=q, top_k=top_k)
 
     # ── put ────────────────────────────────────────────────────────
 
