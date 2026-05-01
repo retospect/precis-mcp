@@ -1,4 +1,4 @@
-"""Tests for ``PRECIS_PYTHON_ROOTS`` parsing and registry wiring.
+"""Tests for ``PRECIS_PYTHON_ROOTS`` parsing and hub wiring.
 
 Covers:
 - ``parse_python_roots`` parser corner cases (empty, malformed,
@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from precis.dispatch import Registry, boot
+from precis.dispatch import Hub, boot
 from precis.handlers.python import PythonHandler, parse_python_roots
 
 # ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ def test_dispatch_resolves_python_kind(tmp_path: Path) -> None:
     dispatch table can route ``get(kind='python', ...)`` calls."""
     r = boot(python_roots=f"r:{tmp_path}")
     assert "python" in r.kinds
-    assert isinstance(r, Registry)
+    assert isinstance(r, Hub)
     assert r.get("python", "get") is not None
     h = r.handler_for("python")
     assert isinstance(h, PythonHandler)

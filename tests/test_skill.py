@@ -112,22 +112,22 @@ def test_skill_count_reasonable(skill: SkillHandler) -> None:
 # ── synthesized precis-help skill ────────────────────────────────────
 
 
-def test_precis_help_falls_back_without_registry(skill: SkillHandler) -> None:
-    """Without a registry bound, precis-help still resolves but is a stub.
+def test_precis_help_falls_back_without_hub(skill: SkillHandler) -> None:
+    """Without a hub bound, precis-help still resolves but is a stub.
 
     Under the old design a handler's registry reference came from
     ``bind_registry(...)``. Under the new design it's populated by
     ``Handler._register_with`` at construction time. Direct-constructed
     fixtures (like this one) never go through ``_register_with``, so
-    ``self.registry`` stays ``None`` and the skill falls back.
+    ``self.hub`` stays ``None`` and the skill falls back.
     """
     out = skill.get(id="precis-help")
     assert "precis-help" in out.body
-    assert "registry not wired" in out.body
+    assert "hub not wired" in out.body
 
 
 def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
-    """When the registry is bound, precis-help enumerates every kind."""
+    """When the hub is bound, precis-help enumerates every kind."""
 
     class _FakeSpec:
         def __init__(
@@ -149,8 +149,8 @@ def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
         def __init__(self, spec: _FakeSpec) -> None:
             self.spec = spec
 
-    class _FakeReg:
-        """Duck-typed stand-in for ``dispatch.Registry`` exposing the
+    class _FakeHub:
+        """Duck-typed stand-in for ``dispatch.Hub`` exposing the
         two attributes ``SkillHandler._render_help`` consults:
         ``kinds`` (iterable property) and ``handler_for(kind)``."""
 
@@ -175,7 +175,7 @@ def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
         ),
         _FakeHandler(_FakeSpec("paper", description="Research papers")),
     ]
-    skill.registry = _FakeReg(handlers)
+    skill.hub = _FakeHub(handlers)
 
     out = skill.get(id="precis-help")
     assert "calc" in out.body
@@ -200,13 +200,13 @@ def test_precis_help_listed_in_index(skill: SkillHandler) -> None:
 
 def test_search_marks_unwired_skills(skill: SkillHandler) -> None:
     """``search(kind='skill', q=...)`` must annotate skills whose
-    subject kind isn't in the live registry with ``[unwired]`` —
+    subject kind isn't in the live hub with ``[unwired]`` —
     7B callers quote the title and invoke ``[error:NotFound]``
     otherwise. Mirror of the index's hidden-skills behaviour.
     (MCP critic MINOR: ``D5 — hint lies by omission``.)"""
 
-    class _NoFileKindsReg:
-        """Duck-typed registry that deliberately omits the file kinds
+    class _NoFileKindsHub:
+        """Duck-typed hub that deliberately omits the file kinds
         (markdown / plaintext / python) so their help skills surface
         with the ``[unwired]`` marker."""
 
@@ -214,14 +214,14 @@ def test_search_marks_unwired_skills(skill: SkillHandler) -> None:
         def kinds(self) -> list[str]:
             return ["calc", "paper", "memory"]
 
-    skill.registry = _NoFileKindsReg()
+    skill.hub = _NoFileKindsHub()
     # 'edit' appears in several file-kind skills; the search hit
     # list should include markdown/plaintext help with the marker.
     out = skill.search(q="edit")
     assert "[unwired]" in out.body, (
         "at least one unwired file-kind skill should surface with the [unwired] marker"
     )
-    # Skills the registry DOES support must NOT carry the marker.
+    # Skills the hub DOES support must NOT carry the marker.
     # precis-tags is a cross-cutting skill that references no specific
     # kind — it must remain unmarked.
     tags_out = skill.search(q="tags")

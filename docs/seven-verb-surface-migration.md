@@ -356,6 +356,63 @@ Alternatives considered and rejected:
   asymptotic cost, more indirection, and the flat table makes
   cross-kind queries ("who supports `tag`?") a single pass.
 
+### D9 — Hub: registry + service hub in one object
+
+The class drafted as `Registry` in D7/D8 ships as `Hub` in
+`src/precis/dispatch.py`. Same registration table; folded onto it
+are the shared infrastructure handlers reach at request time:
+
+```python
+@dataclass
+class Hub:
+    abilities: dict[AbilityKey, Ability]
+    skills:    dict[str, str]
+    overview:  dict[str, str]
+    handlers:  dict[str, Any]
+
+    store:     Store | None       # DB pool wrapper
+    embedder:  Embedder | None    # vector backend
+    hints:     HintBus            # per-request hint collector
+
+    def embed_one(self, text: str) -> list[float]: ...
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+    def emit_hint(self, hint: Hint) -> None: ...
+    def request_scope(self) -> ContextManager: ...
+    def get_conn_pool(self) -> ConnectionPool | None: ...
+```
+
+Why fold these in rather than passing them around as ad-hoc kwargs:
+
+- One bag, one rename. Adding a new shared resource (rate limiter,
+  cost ledger, …) becomes a Hub field, not a thread through every
+  handler signature.
+- Service methods hide the underlying object. Swap the embedder
+  implementation under the surface (`MockEmbedder` →
+  `BgeM3Embedder`) without touching call sites.
+- Handlers reach the bag uniformly via `self.hub` after
+  `_register_with` runs. Hint emission, embedding, future facilities
+  all share one access point — no separate `bind_hints()` /
+  `bind_embedder()` injectors.
+
+`PrecisRuntime` keeps `config` and the lifecycle of the store
+(opens it, closes it). The Hub merely holds the reference. Tests
+that read `runtime.store` / `runtime.hints` keep working via
+delegating properties; new code uses `runtime.hub` directly.
+
+Rejected alternatives:
+
+- **Separate `Deps` bag passed alongside `Registry`.** Two objects
+  to thread, same churn. The Hub IS the bag — the registration
+  data and the shared services live together because handlers
+  always need both.
+- **Service locator (`Hub.get('embedder')`).** Stringly-typed,
+  hides the contract. Typed methods (`embed_one`, `emit_hint`) are
+  greppable and let the type checker catch typos.
+- **Hub owns store close.** Lifecycle stays with whoever opened
+  the pool — the runtime in production, the test fixture in CI.
+  The Hub is short-lived enough that an extra owner muddies
+  cleanup ordering.
+
 ## Target signatures
 
 Final published schemas. Use these as the authoritative reference for

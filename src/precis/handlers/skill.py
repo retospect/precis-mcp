@@ -86,9 +86,9 @@ class SkillHandler(Handler):
 
     def __init__(self, *, store: Store) -> None:
         # store is unused but kept in the constructor signature so the
-        # registry's kw-args call shape works for every handler. The
-        # registry reference used to synthesise ``precis-help`` comes
-        # from ``self.registry``, populated by ``Handler._register_with``
+        # boot loop's kw-args call shape works for every handler. The
+        # hub reference used to synthesise ``precis-help`` comes from
+        # ``self.hub``, populated by ``Handler._register_with``
         # immediately after construction.
         self.store = store
 
@@ -137,7 +137,7 @@ class SkillHandler(Handler):
         # asked for it explicitly, so we serve it, but we want them
         # to know the recipes inside may not all run on this build.
         # See CRITICAL #3 and MAJOR #6 in the MCP critique.
-        gap = _availability_gap(slug, registry=self.registry)
+        gap = _availability_gap(slug, hub=self.hub)
         if gap is not None:
             text = f"> **Heads up:** {gap}\n\n" + text
         return Response(body=text)
@@ -194,7 +194,7 @@ class SkillHandler(Handler):
             # the same honesty work or 7B callers will quote the
             # title and invoke an [error:NotFound] kind. (MCP critic
             # MINOR — search surfaces unwired skills without marker.)
-            gap = _availability_gap(slug, registry=self.registry)
+            gap = _availability_gap(slug, hub=self.hub)
             marker = " [unwired]" if gap is not None else ""
             lines.append(f"\n## {slug}{marker}  ({cnt} hits)\n{preview_short}")
         return Response(body="\n".join(lines))
@@ -214,7 +214,7 @@ class SkillHandler(Handler):
             # or whose front-matter status isn't ``active``. They
             # remain reachable via direct slug get(), but they don't
             # clutter the index that agents use for discovery.
-            if _availability_gap(slug, registry=self.registry) is not None:
+            if _availability_gap(slug, hub=self.hub) is not None:
                 hidden_slugs.append(slug)
                 continue
             title = _skill_title(slug)
@@ -271,18 +271,18 @@ class SkillHandler(Handler):
             "# precis-help",
             "",
             "What this server can do **right now** — active kinds",
-            "and supported verbs, generated from the live registry.",
+            "and supported verbs, generated from the live hub.",
             "",
         ]
-        if self.registry is None:
+        if self.hub is None:
             lines.append(
-                "_(registry not wired; see precis-overview for the canonical list.)_"
+                "_(hub not wired; see precis-overview for the canonical list.)_"
             )
             return "\n".join(lines)
 
         rows: list[tuple[str, str, str]] = []  # (kind, verbs, desc)
-        for kind in sorted(self.registry.kinds):
-            handler = self.registry.handler_for(kind)
+        for kind in sorted(self.hub.kinds):
+            handler = self.hub.handler_for(kind)
             spec = handler.spec
             verbs: list[str] = []
             if spec.supports_get:
@@ -375,10 +375,10 @@ class SkillHandler(Handler):
             )
 
         # Embedder + store are deeper than a bare import probe, but
-        # cheap to surface from the bound registry when wired.
-        if self.registry is not None:
+        # cheap to surface from the bound hub when wired.
+        if self.hub is not None:
             try:
-                kinds = sorted(self.registry.kinds)
+                kinds = sorted(self.hub.kinds)
             except Exception:  # pragma: no cover
                 kinds = []
             if kinds:
@@ -551,7 +551,7 @@ def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
     return kinds
 
 
-def _availability_gap(slug: str, *, registry: Any) -> str | None:
+def _availability_gap(slug: str, *, hub: Any) -> str | None:
     """Return a human-readable reason why this skill is filtered, or None.
 
     Two gates:
@@ -559,7 +559,7 @@ def _availability_gap(slug: str, *, registry: Any) -> str | None:
     1. Subject-kind gate. The skill names a kind via the slug
        (``precis-<kind>-help``) or the ``applies-to:`` front-matter
        (``kind='X'``). When *any* referenced kind is missing from the
-       registry, the skill is filtered — the recipes don't all run.
+       hub, the skill is filtered — the recipes don't all run.
        Power-user companions like ``precis-patent-power`` flow through
        the front-matter side of this gate.
     2. Status gate. Front-matter ``status:`` of ``planned`` or
@@ -588,9 +588,9 @@ def _availability_gap(slug: str, *, registry: Any) -> str | None:
             "design notes, not as recipes."
         )
 
-    if registry is not None:
+    if hub is not None:
         for kind in _kinds_referenced_by_skill(slug, fm):
-            if not _registry_has_kind(registry, kind):
+            if not _hub_has_kind(hub, kind):
                 return (
                     f"this skill documents kind={kind!r} which is **not "
                     "wired** in this build — its examples will return "
@@ -600,19 +600,18 @@ def _availability_gap(slug: str, *, registry: Any) -> str | None:
     return None
 
 
-def _registry_has_kind(registry: Any, kind: str) -> bool:
-    """Best-effort registry membership check.
+def _hub_has_kind(hub: Any, kind: str) -> bool:
+    """Best-effort hub membership check.
 
-    We access the registry through duck-typing because the
-    SkillHandler may be constructed before the registry is fully
-    set up (in tests, e.g.). Treat any AttributeError or KeyError
-    as "kind not registered" so the filter stays conservative
-    rather than crashing the index.
+    We access the hub through duck-typing because the SkillHandler
+    may be wired up against a fake hub in tests. Treat any
+    AttributeError or KeyError as "kind not registered" so the
+    filter stays conservative rather than crashing the index.
     """
     try:
-        kinds = registry.kinds
-        # New ``dispatch.Registry`` exposes ``kinds`` as a set
-        # property; older shapes used a method. Accept both.
+        kinds = hub.kinds
+        # ``dispatch.Hub`` exposes ``kinds`` as a set property;
+        # older / fake shapes may use a method. Accept both.
         if callable(kinds):
             kinds = kinds()
     except (AttributeError, KeyError):

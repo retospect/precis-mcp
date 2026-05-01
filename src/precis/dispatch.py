@@ -1,7 +1,15 @@
-"""Handler registration + flat dispatch table (seven-verb surface).
+"""Handler registration + flat dispatch table + service hub (seven-verb surface).
 
 Replaces the v1 ``precis.registry`` module. The live server goes
 through this module exclusively; ``precis.registry`` is gone.
+
+The :class:`Hub` is both the **registration table** (``(kind, verb,
+mode) -> callable``) and the **service hub** that hands out shared
+infrastructure to handlers: the store (DB pool), embedder, and the
+hint bus. Handlers receive the Hub via :meth:`Handler._register_with`
+and stash it on ``self.hub``; from there they can call
+``self.hub.embed_one(...)``, ``self.hub.emit_hint(...)``, etc. The
+underlying objects stay swappable behind the service methods.
 
 ## Handler-author contract
 
@@ -13,7 +21,7 @@ and leaves the kind absent from the dispatch surface. Any other
 exception propagates — it's a bug, not a missing dep, and should
 crash boot so it gets noticed. Register as the last block of
 ``__init__``; once any ``register_*`` call has run, the instance is
-committed to the registry.
+committed to the hub.
 
 ## Failure-mode semantics
 
@@ -23,7 +31,7 @@ A handler's ``__init__`` has exactly two exit paths:
   in the dispatch table points at a working bound method. Kind is
   live on the LLM surface.
 - *Raises ``InitError``.* No instance created (Python never binds a
-  name on a raising ``__init__``). Registry state untouched because
+  name on a raising ``__init__``). Hub state untouched because
   registration is the last block. Kind invisible: absent from
   ``tools/list`` dispatch, from ``precis-help``, from search
   suggestions. Operator sees one WARN line naming the reason.
@@ -37,7 +45,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from precis.hints import Hint, HintBus
+
+if TYPE_CHECKING:
+    from precis.embedder import Embedder
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -73,23 +87,40 @@ class DuplicateRegistration(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Registry
+# Hub
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class Registry:
-    """Flat dispatch table: ``(kind, verb, mode) -> callable``.
+class Hub:
+    """Composition root: dispatch table + shared infrastructure.
 
-    Owned by :func:`boot`. Handlers mutate it via the ``register_*``
-    methods during their own ``__init__``. After boot it is read-only
-    from the server's perspective; the MCP tool functions in
-    ``server.py`` consult ``self.abilities`` on every call.
+    Two roles in one object:
+
+    1. **Registration table** — ``(kind, verb, mode) -> callable``.
+       Owned by :func:`boot`. Handlers mutate it via the
+       ``register_*`` methods during their own ``__init__``. After
+       boot it is read-only from the server's perspective; the MCP
+       tool functions in ``server.py`` consult ``self.abilities`` on
+       every call.
+    2. **Service hub** — holds ``store`` (DB pool wrapper),
+       ``embedder`` (vector backend), and ``hints`` (per-request
+       hint collector). Handlers reach these through service methods
+       (``embed_one``, ``emit_hint``, …) so the underlying
+       implementations stay swappable.
 
     No decorator magic, no reflection on method names — every entry
     is placed here by an explicit ``register_ability(...)`` call, which
     makes ``rg register_ability`` the authoritative "who handles X?"
     query.
+
+    Lifecycle: the ``store`` field is set by :func:`boot` from the
+    composition root that opened the connection pool. The Hub itself
+    does **not** own the store's close — that stays with whoever
+    opened it (``PrecisRuntime`` in production). The Hub is otherwise
+    self-contained: ``HintBus`` is constructed in-place, and the
+    embedder is either passed in or left ``None`` for stateless
+    deployments.
     """
 
     abilities: dict[AbilityKey, Ability] = field(default_factory=dict)
@@ -100,6 +131,20 @@ class Registry:
     #: per-kind metadata (``KindSpec`` today; dropped once everything
     #: is driven from ``abilities`` + ``overview``).
     handlers: dict[str, Any] = field(default_factory=dict)
+
+    #: Database-backed store. ``None`` for stateless deployments —
+    #: store-backed handlers (memory, paper, todo, …) won't be
+    #: registered in that case. Set once at boot; read freely.
+    store:    Any = None  # precis.store.Store | None
+    #: Vector embedder. ``None`` when no embedder is configured —
+    #: handlers that need vectors should call :meth:`embed_one`,
+    #: which raises a clean error in that case rather than crashing
+    #: deep inside the call.
+    embedder: Any = None  # precis.embedder.Embedder | None
+    #: Per-request hint collector. Always present; emit hints via
+    #: :meth:`emit_hint`. Handlers don't need to know about the
+    #: contextvar plumbing.
+    hints: HintBus = field(default_factory=HintBus)
 
     # ----- registration primitives (called from handler __init__) -----
 
@@ -181,12 +226,69 @@ class Registry:
         return self.abilities.get((kind, verb, mode))
 
     def __contains__(self, kind: object) -> bool:
-        """Allow ``kind in registry`` to mean "kind is registered"."""
+        """Allow ``kind in hub`` to mean "kind is registered"."""
         return kind in self.kinds
 
     def __len__(self) -> int:
         """Number of live kinds."""
         return len(self.kinds)
+
+    # ----- service methods (the "hub" half of the Hub) -----
+
+    def embed_one(self, text: str) -> list[float]:
+        """Embed a single text into the configured vector space.
+
+        Raises :class:`RuntimeError` when no embedder is wired — a
+        handler that reached for the embedder on a stateless build
+        is mis-registered, since :func:`boot` skips embedder-needing
+        handlers when ``embedder is None``. Hitting this means a
+        handler optional-dep guard is missing.
+        """
+        if self.embedder is None:
+            raise RuntimeError(
+                "hub has no embedder configured; "
+                "this handler should have raised InitError at boot"
+            )
+        return self.embedder.embed_one(text)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of texts. See :meth:`embed_one` for failure mode."""
+        if self.embedder is None:
+            raise RuntimeError(
+                "hub has no embedder configured; "
+                "this handler should have raised InitError at boot"
+            )
+        return self.embedder.embed(texts)
+
+    def emit_hint(self, hint: Hint) -> None:
+        """Append a hint to the current request's collector.
+
+        No-op outside a request scope (so module-import-time and
+        boot-time emissions don't leak into the next request). The
+        runtime opens the scope around every dispatch call.
+        """
+        self.hints.emit(hint)
+
+    def request_scope(self) -> Any:
+        """Open a hint-collection request scope. Use as a context manager.
+
+        ``with hub.request_scope(): ...`` — hints emitted inside the
+        block are collected for that request and rendered after the
+        verb result. The runtime owns this; handlers shouldn't need
+        to call it directly.
+        """
+        return self.hints.request()
+
+    def get_conn_pool(self) -> Any:
+        """Return the underlying ``psycopg_pool.ConnectionPool``, or ``None``.
+
+        Provided so handlers that need raw SQL (cache primitives,
+        bespoke queries) can reach the pool without hard-coding
+        ``self.store.pool``. Returns ``None`` on stateless builds.
+        Mostly future-facing; today's handlers use the higher-level
+        ``Store`` API directly.
+        """
+        return None if self.store is None else self.store.pool
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +296,7 @@ class Registry:
 # ---------------------------------------------------------------------------
 
 
-def _try(cls: Callable[..., Any], *, r: Registry, **kw: Any) -> Any | None:
+def _try(cls: Callable[..., Any], *, hub: Hub, **kw: Any) -> Any | None:
     """Construct a handler, auto-register it, swallow missing-dep errors.
 
     Caught exceptions:
@@ -213,7 +315,7 @@ def _try(cls: Callable[..., Any], *, r: Registry, **kw: Any) -> Any | None:
     ``AttributeError`` is a programmer bug and should crash boot so
     it gets noticed.
 
-    On successful construction, calls ``inst._register_with(r)`` to
+    On successful construction, calls ``inst._register_with(hub)`` to
     populate the dispatch table. This is the seam that makes
     construction and registration atomic from the caller's
     perspective: :func:`_try` returns either a fully registered
@@ -225,7 +327,7 @@ def _try(cls: Callable[..., Any], *, r: Registry, **kw: Any) -> Any | None:
     except (InitError, ImportError, ValueError) as exc:
         log.warning("%s init failed: %s", getattr(cls, "__name__", cls), exc)
         return None
-    inst._register_with(r)
+    inst._register_with(hub)
     return inst
 
 
@@ -236,13 +338,13 @@ def _try(cls: Callable[..., Any], *, r: Registry, **kw: Any) -> Any | None:
 
 def boot(
     *,
-    store: Any = None,
-    embedder: Any = None,
+    store: Store | None = None,
+    embedder: Embedder | None = None,
     markdown_root: str | None = None,
     plaintext_root: str | None = None,
     python_roots: str | None = None,
-) -> Registry:
-    """Build and return a fully-populated :class:`Registry`.
+) -> Hub:
+    """Build and return a fully-populated :class:`Hub`.
 
     The composition root. Hand-ordered by dependency: construct
     infrastructure kinds first (embedder, store-backed primitives),
@@ -260,19 +362,32 @@ def boot(
     ``__init__`` when their deps aren't satisfied; :func:`_try`
     catches and logs.
 
+    The returned :class:`Hub` carries the live ``store`` and
+    ``embedder`` references so handlers can reach them via
+    ``self.hub.embed_one(...)`` etc. without each one needing its
+    own copy of the dependency wiring.
+
     See ``docs/seven-verb-surface-migration.md`` D7/D8 for the design
     rationale and rejected alternatives.
     """
     import os  # local import; dispatch shouldn't own env reading above
 
-    r = Registry()
+    # If a store is wired but no embedder was provided, fall back to
+    # the deterministic mock at the right dim. Doing this here —
+    # rather than per-handler — means every handler that asks the
+    # hub for an embedder gets the same instance.
+    if store is not None and embedder is None:
+        from precis.embedder import MockEmbedder
+        embedder = MockEmbedder(dim=store.embedding_dim())
+
+    hub = Hub(store=store, embedder=embedder)
 
     # --- Stateless handlers (no store) ---------------------------------
 
     # Calc — local sympy-backed calculator. The handler raises
     # InitError when sympy isn't installed.
     from precis.handlers.calc import CalcHandler
-    _try(CalcHandler, r=r)
+    _try(CalcHandler, hub=hub)
 
     # Python — DB-free in-memory AST index. Skipped when no roots
     # are configured or every entry is malformed (parse_python_roots
@@ -281,12 +396,11 @@ def boot(
         from precis.handlers.python import PythonHandler, parse_python_roots
         roots = parse_python_roots(python_roots)
         if roots:
-            _try(PythonHandler, r=r, roots=roots)
+            _try(PythonHandler, hub=hub, roots=roots)
 
     # --- Store-backed handlers ------------------------------------------
 
     if store is not None:
-        from precis.embedder import MockEmbedder
         from precis.handlers.conversation import ConversationHandler
         from precis.handlers.flashcard import FlashcardHandler
         from precis.handlers.gripe import GripeHandler
@@ -297,31 +411,29 @@ def boot(
         from precis.handlers.skill import SkillHandler
         from precis.handlers.todo import TodoHandler
 
-        eff_embedder = embedder or MockEmbedder(dim=store.embedding_dim())
-
         # Numeric- and slug-addressed refs. Cheap; always available
         # when the store is up.
-        _try(MemoryHandler,       r=r, store=store)
-        _try(TodoHandler,         r=r, store=store)
-        _try(GripeHandler,        r=r, store=store)
-        _try(FlashcardHandler,    r=r, store=store)
-        _try(QuestHandler,        r=r, store=store)
-        _try(ConversationHandler, r=r, store=store)
-        _try(OracleHandler,       r=r, store=store)
-        _try(SkillHandler,        r=r, store=store)
-        _try(PaperHandler,        r=r, store=store, embedder=eff_embedder)
+        _try(MemoryHandler,       hub=hub, store=store)
+        _try(TodoHandler,         hub=hub, store=store)
+        _try(GripeHandler,        hub=hub, store=store)
+        _try(FlashcardHandler,    hub=hub, store=store)
+        _try(QuestHandler,        hub=hub, store=store)
+        _try(ConversationHandler, hub=hub, store=store)
+        _try(OracleHandler,       hub=hub, store=store)
+        _try(SkillHandler,        hub=hub, store=store)
+        _try(PaperHandler,        hub=hub, store=store, embedder=embedder)
 
         # Cache-backed kinds. Each declares its env / optional-dep
         # requirements inside __init__ and raises InitError when
         # they aren't met.
         from precis.handlers.math import MathHandler
-        _try(MathHandler,    r=r, store=store)
+        _try(MathHandler,    hub=hub, store=store)
 
         from precis.handlers.youtube import YouTubeHandler
-        _try(YouTubeHandler, r=r, store=store)
+        _try(YouTubeHandler, hub=hub, store=store)
 
         from precis.handlers.web import WebHandler
-        _try(WebHandler,     r=r, store=store)
+        _try(WebHandler,     hub=hub, store=store)
 
         # File handlers — markdown / plaintext are hidden when no root
         # is configured; the handler __init__ raises InitError for a
@@ -332,9 +444,9 @@ def boot(
             from precis.handlers.markdown import MarkdownHandler
             _try(
                 MarkdownHandler,
-                r=r,
+                hub=hub,
                 store=store,
-                embedder=eff_embedder,
+                embedder=embedder,
                 root=Path(markdown_root),
             )
 
@@ -344,9 +456,9 @@ def boot(
             from precis.handlers.plaintext import PlaintextHandler
             _try(
                 PlaintextHandler,
-                r=r,
+                hub=hub,
                 store=store,
-                embedder=eff_embedder,
+                embedder=embedder,
                 root=Path(plaintext_root),
             )
 
@@ -357,9 +469,9 @@ def boot(
             ThinkHandler,
             WebsearchHandler,
         )
-        _try(WebsearchHandler, r=r, store=store, embedder=eff_embedder)
-        _try(ThinkHandler,     r=r, store=store, embedder=eff_embedder)
-        _try(ResearchHandler,  r=r, store=store, embedder=eff_embedder)
+        _try(WebsearchHandler, hub=hub, store=store, embedder=embedder)
+        _try(ThinkHandler,     hub=hub, store=store, embedder=embedder)
+        _try(ResearchHandler,  hub=hub, store=store, embedder=embedder)
 
         # Patent — EPO OPS. Hidden unless the env trio is set; the
         # ``OpsClient`` construction (and thus the ``epo_ops`` import)
@@ -375,9 +487,9 @@ def boot(
             from precis.handlers.patent import PatentHandler
             _try(
                 PatentHandler,
-                r=r,
+                hub=hub,
                 store=store,
-                embedder=eff_embedder,
+                embedder=embedder,
                 ops=OpsClient(
                     key=epo_key,
                     secret=epo_secret,
@@ -388,17 +500,17 @@ def boot(
 
     log.info(
         "precis dispatch boot: %d kinds live: %s",
-        len(r.kinds),
-        sorted(r.kinds),
+        len(hub.kinds),
+        sorted(hub.kinds),
     )
-    return r
+    return hub
 
 
 __all__ = [
     "Ability",
     "AbilityKey",
     "DuplicateRegistration",
+    "Hub",
     "InitError",
-    "Registry",
     "boot",
 ]

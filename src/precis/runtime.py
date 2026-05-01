@@ -1,8 +1,15 @@
 """Server runtime.
 
-`PrecisRuntime` owns the registry, hint bus, config, and dispatch
-logic. The MCP server (in `precis.server`) is a thin FastMCP wrapper
-around it; tests dispatch directly without going through MCP.
+`PrecisRuntime` wraps the :class:`~precis.dispatch.Hub` (which owns
+the registration table, store, embedder, and hint bus) with config
+and dispatch logic. The MCP server (in `precis.server`) is a thin
+FastMCP wrapper around it; tests dispatch directly without going
+through MCP.
+
+Lifecycle: the runtime owns the *close* of the store — callers do
+``runtime.store.close()`` (or rely on a context manager wrapping the
+runtime) to release the connection pool. The Hub merely *holds* the
+store reference; whoever opened it is responsible for closing it.
 """
 
 from __future__ import annotations
@@ -13,18 +20,18 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.config import PrecisConfig
-from precis.dispatch import Registry
+from precis.dispatch import Hub
 from precis.errors import (
     BadInput,
     Internal,
     PrecisError,
 )
-from precis.hints import HintBus
 from precis.protocol import Handler, Verb
 from precis.response import Response
 from precis.utils.search_merge import SearchHit, merge_and_render
 
 if TYPE_CHECKING:
+    from precis.hints import HintBus
     from precis.store import Store
 
 log = logging.getLogger(__name__)
@@ -46,16 +53,40 @@ _EXTRAS_KEY = "__extras__"
 
 @dataclass
 class PrecisRuntime:
-    """Server-wide singleton: config + registry + hint bus + dispatch.
+    """Server-wide singleton: config + hub + dispatch logic.
 
-    `store` is None for stateless deployments (no database). Ref-backed
-    handlers won't be in the registry in that case.
+    The :class:`~precis.dispatch.Hub` carries the dispatch table, the
+    store (or ``None`` for stateless deployments), the embedder, and
+    the hint bus. Tests and external callers reach those through the
+    runtime's delegating properties (``runtime.hints``,
+    ``runtime.store``) so the rename of internal field names didn't
+    cascade through every test fixture.
     """
 
     config: PrecisConfig
-    registry: Registry
-    hints: HintBus
-    store: Store | None = None
+    hub: Hub
+
+    # ----- delegating properties ---------------------------------------
+
+    @property
+    def hints(self) -> HintBus:
+        """Per-request hint collector. Delegates to ``self.hub.hints``."""
+        return self.hub.hints
+
+    @property
+    def store(self) -> Store | None:
+        """Connected store, or ``None`` for stateless deployments."""
+        return self.hub.store
+
+    @property
+    def registry(self) -> Hub:
+        """Backwards-compat alias for ``self.hub``.
+
+        Kept so test fixtures that still spell ``runtime.registry``
+        continue to work; new code should use ``runtime.hub`` (or
+        the typed delegators on this class).
+        """
+        return self.hub
 
     def dispatch(self, verb: str, args: dict[str, Any]) -> str:
         """Run one verb call. Returns the rendered string for the agent.
@@ -78,7 +109,7 @@ class PrecisRuntime:
         for the rendering. (MCP critic MAJOR — errors silently masked
         as content because ``isError`` was never set.)
         """
-        with self.hints.request():
+        with self.hub.request_scope():
             try:
                 if verb not in _VERBS:
                     raise BadInput(
@@ -153,18 +184,18 @@ class PrecisRuntime:
             return str(kind), False, None
 
         if verb != "search":
-            raise BadInput("missing kind=", options=sorted(self.registry.kinds))
+            raise BadInput("missing kind=", options=sorted(self.hub.kinds))
 
         # 7B callers routinely forget ``kind=``. Pick the most
         # recently touched search-supporting kind as a sensible
         # default and echo the choice back. Falls back to wildcard
-        # cross-kind dispatch when the registry has >=2 search-hits-
+        # cross-kind dispatch when the hub has >=2 search-hits-
         # capable kinds and the store can't narrow further (stateless
         # deployment, empty corpus).
         search_kinds = [
             k
-            for k in sorted(self.registry.kinds)
-            if self.registry.handler_for(k).spec.supports_search
+            for k in sorted(self.hub.kinds)
+            if self.hub.handler_for(k).spec.supports_search
         ]
         defaulted = self._default_search_kind(search_kinds)
         if defaulted is not None:
@@ -201,7 +232,7 @@ class PrecisRuntime:
                 bounce ``move()`` against every kind hoping for one
                 that works.
         """
-        handler = self.registry.handler_for(kind)
+        handler = self.hub.handler_for(kind)
         if handler is None:
             from precis.errors import NotFound as _NF
 
@@ -218,8 +249,8 @@ class PrecisRuntime:
             if verb == "move":
                 movers = [
                     k
-                    for k in sorted(self.registry.kinds)
-                    if self.registry.handler_for(k).spec.supports_move
+                    for k in sorted(self.hub.kinds)
+                    if self.hub.handler_for(k).spec.supports_move
                 ]
                 if not movers:
                     raise Unsupported(
@@ -404,8 +435,8 @@ class PrecisRuntime:
         absence from this list is by design.
         """
         out: list[str] = []
-        for k in sorted(self.registry.kinds):
-            spec = self.registry.handler_for(k).spec
+        for k in sorted(self.hub.kinds):
+            spec = self.hub.handler_for(k).spec
             if spec.supports_search and spec.supports_search_hits:
                 out.append(k)
         return out
@@ -429,7 +460,7 @@ class PrecisRuntime:
 
         bad = [t for t in requested if t not in eligible]
         if bad:
-            registered = self.registry.kinds
+            registered = self.hub.kinds
             unknown = [t for t in bad if t not in registered]
             unsupported = [t for t in bad if t in registered]
             if unknown:
@@ -495,7 +526,7 @@ class PrecisRuntime:
 
         streams: list[list[SearchHit]] = []
         for k in kinds:
-            handler = self.registry.handler_for(k)
+            handler = self.hub.handler_for(k)
             if handler is None:
                 continue
             try:
@@ -532,8 +563,8 @@ class PrecisRuntime:
         """
         return [
             k
-            for k in sorted(self.registry.kinds)
-            if self.registry.handler_for(k).spec.supports(verb)  # type: ignore[arg-type]
+            for k in sorted(self.hub.kinds)
+            if self.hub.handler_for(k).spec.supports(verb)  # type: ignore[arg-type]
         ]
 
     def render_error(self, err: PrecisError) -> str:
@@ -577,7 +608,9 @@ def build_runtime(
     Composition root goes through :func:`precis.dispatch.boot`,
     which constructs every handler, wraps each in
     :func:`precis.dispatch._try` (swallows ``InitError`` + missing
-    optional deps), and populates the flat dispatch table. See
+    optional deps), and populates the flat dispatch table. The
+    returned :class:`Hub` carries the store / embedder / hints; the
+    runtime is a thin wrapper around it. See
     ``docs/seven-verb-surface-migration.md`` D7/D8.
     """
     from precis.config import load_config
@@ -594,16 +627,11 @@ def build_runtime(
         store = Store.connect(config.database_url)
         embedder = make_embedder(config.embedder, dim=store.embedding_dim())
 
-    registry = boot(
+    hub = boot(
         store=store,
         embedder=embedder,
         markdown_root=config.markdown_root,
         plaintext_root=config.plaintext_root,
         python_roots=config.python_roots,
     )
-    return PrecisRuntime(
-        config=config,
-        registry=registry,
-        hints=HintBus(),
-        store=store,
-    )
+    return PrecisRuntime(config=config, hub=hub)

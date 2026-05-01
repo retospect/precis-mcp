@@ -158,32 +158,32 @@ class TestSkillIndexFiltering:
     def test_availability_gap_filters_status_planned(
         self, runtime: PrecisRuntime
     ) -> None:
-        gap = _availability_gap("precis-density", registry=runtime.registry)
+        gap = _availability_gap("precis-density", hub=runtime.hub)
         assert gap is not None
         assert "planned" in gap.lower()
 
     def test_availability_gap_filters_unregistered_kind_help(
         self, runtime: PrecisRuntime
     ) -> None:
-        # ``markdown`` kind is not in the test runtime's registry.
-        gap = _availability_gap("precis-markdown-help", registry=runtime.registry)
+        # ``markdown`` kind is not in the test runtime's hub.
+        gap = _availability_gap("precis-markdown-help", hub=runtime.hub)
         assert gap is not None
         assert "not" in gap.lower() and "wired" in gap.lower()
 
     def test_availability_gap_passes_active_skill(self, runtime: PrecisRuntime) -> None:
         # ``precis-overview`` is cross-cutting and active.
-        gap = _availability_gap("precis-overview", registry=runtime.registry)
+        gap = _availability_gap("precis-overview", hub=runtime.hub)
         assert gap is None
 
     def test_availability_gap_passes_active_help(self, runtime: PrecisRuntime) -> None:
-        # ``memory`` is in every test fixture's registry.
-        gap = _availability_gap("precis-memory-help", registry=runtime.registry)
+        # ``memory`` is in every test fixture's hub.
+        gap = _availability_gap("precis-memory-help", hub=runtime.hub)
         assert gap is None
 
     def test_index_omits_filtered_skills(self, runtime: PrecisRuntime) -> None:
         """The bare ``get(kind='skill')`` index doesn't list
         ``precis-density`` or ``precis-navigation``."""
-        h = runtime.registry.handler_for("skill")
+        h = runtime.hub.handler_for("skill")
         assert isinstance(h, SkillHandler)
         out = h.get()
         assert "precis-density" not in out.body
@@ -195,7 +195,7 @@ class TestSkillIndexFiltering:
         self, runtime: PrecisRuntime
     ) -> None:
         """Direct slug fetch still works and prepends a heads-up banner."""
-        h = runtime.registry.handler_for("skill")
+        h = runtime.hub.handler_for("skill")
         assert isinstance(h, SkillHandler)
         out = h.get(id="precis-density")
         assert "Heads up" in out.body
@@ -426,12 +426,9 @@ def runtime(store: Store) -> PrecisRuntime:
     from precis.config import PrecisConfig
     from precis.dispatch import boot
     from precis.embedder import make_embedder
-    from precis.hints import HintBus
 
     embedder = make_embedder("mock", dim=store.embedding_dim())
     return PrecisRuntime(
         config=PrecisConfig(),
-        registry=boot(store=store, embedder=embedder),
-        hints=HintBus(),
-        store=store,
+        hub=boot(store=store, embedder=embedder),
     )

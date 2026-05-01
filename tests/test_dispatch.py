@@ -14,8 +14,8 @@ import pytest
 
 from precis.dispatch import (
     DuplicateRegistration,
+    Hub,
     InitError,
-    Registry,
     _try,
     boot,
 )
@@ -23,12 +23,12 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 
 # ---------------------------------------------------------------------------
-# Registry primitives
+# Hub primitives
 # ---------------------------------------------------------------------------
 
 
 def test_register_ability_records_key_and_callable() -> None:
-    r = Registry()
+    r = Hub()
 
     def fn(**kw): return "ok"
 
@@ -40,7 +40,7 @@ def test_register_ability_records_key_and_callable() -> None:
 
 
 def test_register_ability_with_mode() -> None:
-    r = Registry()
+    r = Hub()
 
     def create(**kw): return "c"
     def replace(**kw): return "r"
@@ -54,7 +54,7 @@ def test_register_ability_with_mode() -> None:
 
 
 def test_register_ability_rejects_duplicate_key() -> None:
-    r = Registry()
+    r = Hub()
     r.register_ability("demo", "get", None, lambda **k: None)
 
     with pytest.raises(DuplicateRegistration, match="duplicate ability"):
@@ -62,7 +62,7 @@ def test_register_ability_rejects_duplicate_key() -> None:
 
 
 def test_register_skill_rejects_duplicate_slug() -> None:
-    r = Registry()
+    r = Hub()
     r.register_skill("precis-demo-help", "first content")
 
     with pytest.raises(DuplicateRegistration, match="duplicate skill"):
@@ -73,14 +73,14 @@ def test_register_overview_allows_overwrite() -> None:
     """Overview is the one place where a later registration silently
     replaces an earlier one — a composite handler can set a blurb
     after its per-kind calls."""
-    r = Registry()
+    r = Hub()
     r.register_overview("demo", "first blurb")
     r.register_overview("demo", "second blurb")
     assert r.overview["demo"] == "second blurb"
 
 
 def test_get_returns_none_on_miss() -> None:
-    r = Registry()
+    r = Hub()
     assert r.get("nosuch", "get") is None
     assert r.get("nosuch", "get", "create") is None
 
@@ -91,7 +91,7 @@ def test_get_returns_none_on_miss() -> None:
 
 
 def test_kinds_and_verbs_for_derivations() -> None:
-    r = Registry()
+    r = Hub()
     r.register_ability("demo", "get", None, lambda **k: None)
     r.register_ability("demo", "put", "create", lambda **k: None)
     r.register_ability("demo", "tag", None, lambda **k: None)
@@ -104,7 +104,7 @@ def test_kinds_and_verbs_for_derivations() -> None:
 
 
 def test_kinds_supporting_verb() -> None:
-    r = Registry()
+    r = Hub()
     r.register_ability("a", "tag", None, lambda **k: None)
     r.register_ability("b", "tag", None, lambda **k: None)
     r.register_ability("c", "get", None, lambda **k: None)
@@ -165,8 +165,8 @@ class _BugInInit(Handler):
 
 
 def test_try_returns_instance_on_success() -> None:
-    r = Registry()
-    inst = _try(_Good, r=r)
+    r = Hub()
+    inst = _try(_Good, hub=r)
     assert isinstance(inst, _Good)
     # Compare with == (not ``is``): Python creates a fresh bound-method
     # object on every attribute access, so identity fails even though
@@ -174,16 +174,16 @@ def test_try_returns_instance_on_success() -> None:
     assert r.get("good", "get") == inst.get
     # The stored callable actually fires on the right instance.
     assert r.get("good", "get")().body == "good"
-    # ``_register_with`` stashed the registry on the handler.
-    assert inst.registry is r
+    # ``_register_with`` stashed the hub on the handler.
+    assert inst.hub is r
     # And registered the handler itself for metadata queries.
     assert r.handler_for("good") is inst
 
 
 def test_try_returns_none_on_init_error(caplog: pytest.LogCaptureFixture) -> None:
-    r = Registry()
+    r = Hub()
     with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
-        inst = _try(_BadConfig, r=r)
+        inst = _try(_BadConfig, hub=r)
     assert inst is None
     # Registration never happened — the handler raised before
     # ``_try`` could call ``_register_with``.
@@ -201,9 +201,9 @@ def test_try_propagates_non_init_exceptions() -> None:
     otherwise hide real errors behind "kind missing from surface"
     noise. ``InitError`` / ``ImportError`` / ``ValueError`` are the
     only swallowed exceptions."""
-    r = Registry()
+    r = Hub()
     with pytest.raises(RuntimeError, match="programmer bug"):
-        _try(_BugInInit, r=r)
+        _try(_BugInInit, hub=r)
 
 
 def test_try_swallows_import_error(caplog: pytest.LogCaptureFixture) -> None:
@@ -225,9 +225,9 @@ def test_try_swallows_import_error(caplog: pytest.LogCaptureFixture) -> None:
         def get(self, **kw):
             return Response(body="never")
 
-    r = Registry()
+    r = Hub()
     with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
-        result = _try(_NeedsMissingModule, r=r)
+        result = _try(_NeedsMissingModule, hub=r)
     assert result is None
     assert r.abilities == {}
 
@@ -244,7 +244,7 @@ def test_boot_stateless_registers_calc_only() -> None:
     v1 ``registry.builtins(store=None)`` shape.
     """
     r = boot(store=None)
-    assert isinstance(r, Registry)
+    assert isinstance(r, Hub)
     assert r.kinds == {"calc"}
     # calc exposes only ``get``.
     assert r.verbs_for("calc") == {"get"}
@@ -297,7 +297,7 @@ def test_duplicate_handler_registration_raises() -> None:
     dispatch time."""
     from precis.handlers.calc import CalcHandler
 
-    r = Registry()
+    r = Hub()
     first = CalcHandler()
     first._register_with(r)
 

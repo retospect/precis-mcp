@@ -1,7 +1,7 @@
 """Pytest fixtures (sync, psycopg 3).
 
-Phase 1 fixtures: hints, registry, runtime — stateless. Used by all
-tests that don't touch the DB.
+Phase 1 fixtures: hub, runtime — stateless. Used by all tests that
+don't touch the DB.
 
 Phase 2 fixtures: fresh_db, store — postgres-backed. Tests that
 exercise the store layer take `store` directly. Each `store` fixture
@@ -24,7 +24,7 @@ import psycopg
 import pytest
 
 from precis.config import PrecisConfig
-from precis.dispatch import Registry, boot
+from precis.dispatch import Hub, boot
 from precis.hints import HintBus
 from precis.runtime import PrecisRuntime
 from precis.store import Migrator, Store
@@ -44,29 +44,36 @@ MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "precis" / "migrations"
 
 @pytest.fixture
 def hints() -> HintBus:
+    """Standalone HintBus for tests that exercise it directly.
+
+    Most tests should reach the bus via ``runtime.hints`` /
+    ``hub.hints``; this fixture exists for the small handful that
+    instantiate a HintBus in isolation.
+    """
     return HintBus()
 
 
 @pytest.fixture
-def registry_stateless() -> Registry:
-    """Stateless registry — calc only. Used by phase 1 tests."""
+def hub_stateless() -> Hub:
+    """Stateless hub — calc only. Used by phase 1 tests."""
     return boot(store=None)
 
 
 @pytest.fixture
-def runtime_stateless(registry_stateless: Registry, hints: HintBus) -> PrecisRuntime:
+def runtime_stateless(hub_stateless: Hub) -> PrecisRuntime:
     """Runtime with no store. Phase 1 tests use this."""
-    return PrecisRuntime(
-        config=PrecisConfig(),
-        registry=registry_stateless,
-        hints=hints,
-    )
+    return PrecisRuntime(config=PrecisConfig(), hub=hub_stateless)
 
 
 # Backwards-compat aliases for existing phase-1 tests.
 @pytest.fixture
-def registry(registry_stateless: Registry) -> Registry:
-    return registry_stateless
+def registry(hub_stateless: Hub) -> Hub:
+    """Alias kept so older tests that take ``registry`` still resolve.
+
+    The Hub plays the registry role under the seven-verb surface;
+    new fixtures should depend on ``hub_stateless`` directly.
+    """
+    return hub_stateless
 
 
 @pytest.fixture
@@ -119,15 +126,15 @@ def store(fresh_db: str) -> Iterator[Store]:
 
 
 @pytest.fixture
-def runtime_with_store(store: Store, hints: HintBus) -> PrecisRuntime:
+def runtime_with_store(store: Store) -> PrecisRuntime:
     """Runtime backed by an ephemeral, migrated DB. Tests that need a full
-    runtime+store stack take this fixture."""
-    return PrecisRuntime(
-        config=PrecisConfig(),
-        registry=boot(store=store),
-        hints=hints,
-        store=store,
-    )
+    runtime+store stack take this fixture.
+
+    The :class:`Hub` carries the store + a fresh HintBus; the runtime
+    delegates to it via the ``store`` / ``hints`` properties so old
+    test sites that read ``runtime.store`` keep working.
+    """
+    return PrecisRuntime(config=PrecisConfig(), hub=boot(store=store))
 
 
 # ---------------------------------------------------------------------------

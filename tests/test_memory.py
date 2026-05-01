@@ -193,7 +193,7 @@ def test_runtime_unknown_memory_renders_error(
 
 
 def test_kindspec_supports_get_search_put(runtime_with_store: PrecisRuntime) -> None:
-    handler = runtime_with_store.registry.handler_for("memory")
+    handler = runtime_with_store.hub.handler_for("memory")
     assert handler.spec.is_numeric is True
     assert handler.spec.supports_get is True
     assert handler.spec.supports_search is True

@@ -77,7 +77,7 @@ def _enumerate_prompt_skills(runtime: PrecisRuntime) -> list[str]:
     """
     out: list[str] = list(SkillHandler._SYNTHESIZED_SKILLS)
     for slug in sorted(_list_skills()):
-        if _availability_gap(slug, registry=runtime.registry) is None:
+        if _availability_gap(slug, hub=runtime.hub) is None:
             out.append(slug)
     # Stable order: synthesised first (already in dict order), then
     # sorted on-disk slugs.  Dedup just in case a synthesised slug
@@ -285,7 +285,7 @@ def _read_resource(runtime: PrecisRuntime, uri: str) -> str:
     typed_id: Any = ident
     spec = None
     try:
-        handler = runtime.registry.handler_for(kind)
+        handler = runtime.hub.handler_for(kind)
         spec = handler.spec if handler is not None else None
     except Exception:  # pragma: no cover — let dispatch raise the proper error
         spec = None
@@ -324,7 +324,7 @@ def register_resources(mcp: FastMCP, runtime: PrecisRuntime) -> tuple[int, int]:
 
     # Templates: every reachable kind so the modern client can offer
     # autocomplete on slugs / numeric ids without enumeration.
-    registered_kinds = runtime.registry.kinds
+    registered_kinds = runtime.hub.kinds
     for kind, template, description in _TEMPLATE_KINDS:
         if kind not in registered_kinds:
             continue

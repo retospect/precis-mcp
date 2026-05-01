@@ -16,7 +16,7 @@ from precis.errors import Unsupported
 from precis.response import Response
 
 if TYPE_CHECKING:
-    from precis.dispatch import Registry
+    from precis.dispatch import Hub
     from precis.utils.search_merge import SearchHit
 
 Verb = Literal["get", "search", "put", "move"]
@@ -66,30 +66,31 @@ class Handler:
     ClassVar. The default implementations raise `Unsupported` so a
     handler that lies about its KindSpec is detectable.
 
-    Construction: handlers take ``r: Registry`` as a keyword argument
-    and self-register by calling :meth:`_register_with` as the last
-    statement of ``__init__``. See ``docs/seven-verb-surface-migration.md``
-    D7 for the contract.
+    Construction: :func:`precis.dispatch._try` builds the instance,
+    then calls :meth:`_register_with` to publish it to the
+    :class:`~precis.dispatch.Hub`. See
+    ``docs/seven-verb-surface-migration.md`` D7 for the contract.
     """
 
     spec: ClassVar[KindSpec]
 
     #: Populated by :meth:`_register_with` so handlers that need
-    #: registry introspection (e.g. SkillHandler rendering
-    #: ``precis-help``) can read it without a separate late-bind
-    #: hook. Typed ``Any`` to avoid a hard import of
-    #: ``precis.dispatch.Registry`` in every handler module.
-    registry: Any = None
+    #: hub introspection (e.g. SkillHandler rendering
+    #: ``precis-help``, or any handler that wants the embedder /
+    #: hint bus) can read it without a separate late-bind hook.
+    #: Typed ``Any`` to avoid a hard import of
+    #: ``precis.dispatch.Hub`` in every handler module.
+    hub: Any = None
 
-    def _register_with(self, r: Registry) -> None:
+    def _register_with(self, hub: Hub) -> None:
         """Register every verb declared supported in ``self.spec``.
 
         Invoked by :func:`precis.dispatch._try` immediately after
         successful construction. Reads ``self.spec`` and populates
         the flat dispatch table with bound methods, and stashes
-        ``r`` on ``self.registry`` for the handful of handlers that
-        want to query the registry at runtime (skill rendering,
-        cross-handler metadata lookups).
+        ``hub`` on ``self.hub`` so the handler can reach shared
+        infrastructure (``embed_one``, ``emit_hint``, the live
+        registry of sibling kinds, …) at request time.
 
         ``mode`` on every ability is ``None`` under the v1 shape —
         ``put`` is still polymorphic over a mode-string. The seven-
@@ -97,13 +98,13 @@ class Handler:
         delete / tag / link`` and introduces (kind, verb, mode) keys
         with non-None modes.
         """
-        self.registry = r
+        self.hub = hub
         spec = self.spec
-        r.register_handler(spec.kind, self)
+        hub.register_handler(spec.kind, self)
         for verb in ("get", "search", "put", "move"):
             if spec.supports(verb):  # type: ignore[arg-type]
-                r.register_ability(spec.kind, verb, None, getattr(self, verb))
-        r.register_overview(spec.kind, spec.description)
+                hub.register_ability(spec.kind, verb, None, getattr(self, verb))
+        hub.register_overview(spec.kind, spec.description)
 
     def get(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support get")

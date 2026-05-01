@@ -75,7 +75,7 @@ def server_runtime(tmp_path: Path, runtime: PrecisRuntime) -> Iterator[PrecisRun
     # table plus a handlers-by-kind map; ``_register_with`` mutates
     # both in one step, atomic for the caller.
     py = PythonHandler(roots={"demo": tmp_path / "demo"}, cache=RepoCache())
-    py._register_with(runtime.registry)
+    py._register_with(runtime.hub)
 
     server._runtime = runtime
     try:

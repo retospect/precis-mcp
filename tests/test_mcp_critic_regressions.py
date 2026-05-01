@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from precis.dispatch import Registry, boot
+from precis.dispatch import Hub, boot
 from precis.errors import BadInput
 from precis.handlers.paper import _normalise_view, _strip_jats
-from precis.hints import HintBus
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
 from precis.utils.slug import _first_author, mint_slug
@@ -111,8 +110,8 @@ def test_cross_kind_search_default_fans_out_when_store_is_empty(
     # active kind that opted into cross-kind merge.
     search_hits_kinds = [
         k
-        for k in sorted(runtime_with_store.registry.kinds)
-        if runtime_with_store.registry.handler_for(k).spec.supports_search_hits
+        for k in sorted(runtime_with_store.hub.kinds)
+        if runtime_with_store.hub.handler_for(k).spec.supports_search_hits
     ]
     assert search_hits_kinds, (
         "expected at least one cross-kind search-hits kind in the registry"
@@ -470,9 +469,7 @@ class TestSemanticRelevanceFloor:
 def runtime_with_store(store: Store) -> PrecisRuntime:
     return PrecisRuntime(
         config=_default_config(),
-        registry=boot(store=store),
-        hints=HintBus(),
-        store=store,
+        hub=boot(store=store),
     )
 
 
@@ -516,8 +513,7 @@ def test_dispatch_with_status_flags_errors() -> None:
 
     rt = PrecisRuntime(
         config=PrecisConfig(database_url=None, embedder="mock"),
-        registry=Registry(),
-        hints=HintBus(),
+        hub=Hub(),
     )
     body, is_error = rt.dispatch_with_status("get", {"kind": "calc"})
     assert is_error is True
@@ -604,11 +600,11 @@ def test_skill_index_hides_power_user_skill_for_unwired_kind() -> None:
     (MCP critic MAJOR.)"""
     from precis.handlers.skill import _availability_gap
 
-    class _NoPatentRegistry:
+    class _NoPatentHub:
         def kinds(self) -> list[str]:
             return ["calc", "paper", "memory"]
 
-    gap = _availability_gap("precis-patent-power", registry=_NoPatentRegistry())
+    gap = _availability_gap("precis-patent-power", hub=_NoPatentHub())
     assert gap is not None, (
         "precis-patent-power references kind='patent' in its applies-to "
         "front-matter; the gate must hide it when patent isn't wired"
@@ -817,7 +813,7 @@ def test_search_default_kind_annotates_error_path(
     # Force a failure inside the memory handler's search() by
     # monkeypatching the bound method to raise.  We exercise the
     # PrecisError branch first…
-    handler = runtime_with_store.registry.handler_for("memory")
+    handler = runtime_with_store.hub.handler_for("memory")
     original = handler.search
 
     def _boom(**_kw):  # type: ignore[no-untyped-def]
