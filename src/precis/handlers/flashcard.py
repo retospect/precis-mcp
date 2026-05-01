@@ -131,7 +131,7 @@ class FlashcardHandler(NumericRefHandler):
             [
                 ("get(kind='fc', id=N)", "read the card to quiz yourself"),
                 (
-                    "put(kind='fc', id=N, tags=['REVIEW:good'])",
+                    "tag(kind='fc', id=N, add=['REVIEW:good'])",
                     "log a review (SM-2 grade)",
                 ),
                 ("put(kind='fc', text='knowledge statement')", "create a new card"),

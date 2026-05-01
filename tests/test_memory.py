@@ -56,15 +56,23 @@ def test_get_bad_id(handler: MemoryHandler) -> None:
         handler.get(id="not-a-number")
 
 
-def test_update_text(handler: MemoryHandler) -> None:
+def test_put_on_existing_id_rejected(handler: MemoryHandler) -> None:
+    """Seven-verb cutover: put is creation-only on numeric kinds.
+
+    Mutating an existing memory's text body is no longer exposed —
+    capture the new wording as a fresh memory or use
+    ``delete + put`` to replace. Tag/link mutation moves to the
+    dedicated verbs.
+    """
     r = handler.put(text="original")
     new_id = int(r.body.rsplit("=", 1)[1])
 
-    handler.put(id=new_id, text="updated")
+    with pytest.raises(BadInput, match="put on existing memory"):
+        handler.put(id=new_id, text="updated")
 
+    # The original text is untouched.
     got = handler.get(id=new_id)
-    assert "updated" in got.body
-    assert "original" not in got.body
+    assert "original" in got.body
 
 
 def test_update_tags_only(handler: MemoryHandler) -> None:
@@ -111,11 +119,13 @@ def test_status_axis_rejected_on_memory(handler: MemoryHandler) -> None:
         handler.tag(id=new_id, add=["STATUS:open"])
 
 
-def test_update_no_changes_raises(handler: MemoryHandler) -> None:
+def test_tag_no_op_rejected(handler: MemoryHandler) -> None:
+    """``tag()`` with no add= and no remove= is a misuse — reject
+    rather than silently no-op so a typo doesn't vanish."""
     r = handler.put(text="x")
     new_id = int(r.body.rsplit("=", 1)[1])
-    with pytest.raises(BadInput, match="at least one"):
-        handler.put(id=new_id)
+    with pytest.raises(BadInput, match="requires add= or remove="):
+        handler.tag(id=new_id)
 
 
 def test_delete(handler: MemoryHandler) -> None:

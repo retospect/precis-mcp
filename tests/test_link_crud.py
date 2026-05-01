@@ -334,29 +334,35 @@ class TestMemoryHandlerLink:
         memory_handler.link(id=new_id, target="paper:wang2020state", mode="remove")
         assert store.links_for(new_id, direction="out") == []
 
-    def test_link_and_unlink_mutually_exclusive(
+    def test_put_on_existing_id_rejected(
         self, memory_handler: MemoryHandler, store: Store
     ) -> None:
+        """After the seven-verb cutover, put is creation-only on
+        memory. Passing ``id=`` (with anything) raises BadInput
+        pointing at tag/link/delete.
+        """
         _seed_paper(store)
         m = memory_handler.put(text="m")
         new_id = int(m.body.split("=")[-1].strip().split()[0])
-        with pytest.raises(BadInput, match="mutually exclusive"):
+        with pytest.raises(BadInput, match="put on existing memory"):
             memory_handler.put(
                 id=new_id,
                 link="paper:wang2020state",
-                unlink="paper:wang2020state",
             )
 
-    def test_rel_without_link_or_unlink_rejected(
+    def test_rel_without_link_on_create_rejected(
         self, memory_handler: MemoryHandler
     ) -> None:
-        m = memory_handler.put(text="m")
-        new_id = int(m.body.split("=")[-1].strip().split()[0])
-        with pytest.raises(BadInput, match="rel= requires link= or unlink="):
-            memory_handler.put(id=new_id, rel="cites")
+        """On create, ``rel=`` only makes sense paired with ``link=``.
+        A bare ``rel=`` is a misuse and rejects rather than silently
+        no-opping."""
+        with pytest.raises(BadInput, match="rel= requires link= on create"):
+            memory_handler.put(text="m", rel="cites")
 
-    def test_unlink_on_create_rejected(self, memory_handler: MemoryHandler) -> None:
-        with pytest.raises(BadInput, match="unlink= is not supported on create"):
+    def test_unlink_kwarg_rejected_on_put(self, memory_handler: MemoryHandler) -> None:
+        """``unlink=`` is gone from the put surface entirely — the error
+        points at the link verb's ``mode='remove'`` form."""
+        with pytest.raises(BadInput, match="unlink= is not accepted on put"):
             memory_handler.put(text="m", unlink="paper:wang2020state")
 
     def test_unknown_relation_rejected(

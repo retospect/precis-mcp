@@ -156,19 +156,23 @@ def test_update_with_only_untags_is_valid(memory: MemoryHandler, store: Store) -
     assert "tagged memory" in out.body
 
 
-def test_update_no_args_still_rejected(memory: MemoryHandler, store: Store) -> None:
+def test_put_on_existing_id_rejected(memory: MemoryHandler, store: Store) -> None:
+    """After the seven-verb cutover, ``put`` is creation-only on
+    numeric refs. Passing ``id=`` is a misuse and the error points
+    at the right verb to reach instead of accepting a no-op."""
     rid = _create_with_tags(memory)
-    with pytest.raises(BadInput, match="at least one of text=, tags=, untags="):
+    with pytest.raises(BadInput, match="put on existing memory"):
         memory.put(id=rid)
 
 
 # ── create path: untags rejected ───────────────────────────────────
 
 
-def test_untag_on_create_rejected(memory: MemoryHandler) -> None:
-    """``untags=`` with no ``id=`` has no meaning — there's no
-    existing ref to remove tags from."""
-    with pytest.raises(BadInput, match="untags= is not supported on create"):
+def test_untags_kwarg_rejected_on_put(memory: MemoryHandler) -> None:
+    """``untags=`` is no longer a put kwarg; the error points at
+    the tag verb's ``remove=`` parameter so an agent stuck on the
+    old shape gets a sharp hint."""
+    with pytest.raises(BadInput, match="untags= is not accepted on put"):
         memory.put(text="hello", untags=["topic-x"])
 
 

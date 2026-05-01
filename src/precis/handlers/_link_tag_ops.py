@@ -167,8 +167,8 @@ def apply_tag_ops(
     Closed-prefix add semantics: a new closed-prefix value
     *replaces* any existing value under the same prefix
     (``STATUS:done`` displaces ``STATUS:open``). This matches
-    the contract on ``NumericRefHandler._apply_tags`` and the
-    workflow expectation that there's only one STATUS at a time.
+    the workflow expectation that there's only one STATUS at a
+    time.
 
     Validation runs *first* across both lists. The MCP critic
     flagged that the previous loop interleaved parse + write,

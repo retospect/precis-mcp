@@ -112,7 +112,7 @@ class TodoHandler(NumericRefHandler):
             [
                 ("get(kind='todo', id=N)", "read full todo + tags"),
                 (
-                    "put(kind='todo', id=N, tags=['STATUS:done'])",
+                    "tag(kind='todo', id=N, add=['STATUS:done'])",
                     "mark a todo done",
                 ),
                 ("put(kind='todo', text='new task')", "create a new todo"),
@@ -125,11 +125,11 @@ class TodoHandler(NumericRefHandler):
         body += render_next_section(
             [
                 (
-                    f"put(kind='todo', id={ref_id}, tags=['STATUS:doing'])",
+                    f"tag(kind='todo', id={ref_id}, add=['STATUS:doing'])",
                     "start work on this todo",
                 ),
                 (
-                    f"put(kind='todo', id={ref_id}, mode='delete')",
+                    f"delete(kind='todo', id={ref_id})",
                     "delete this todo",
                 ),
                 ("get(kind='todo', id='/open')", "list open todos"),

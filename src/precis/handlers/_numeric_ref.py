@@ -48,16 +48,6 @@ from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 # this tuple via a class-level hook.
 _BASE_VIEWS: tuple[str, ...] = ("links",)
 
-# The full set of ``mode=`` values numeric-ref kinds accept on put.
-# Anything else (``mode='note'``, ``mode='untag'``, ``mode='unlink'``,
-# typos like ``mode='deelete'``) must reject up front rather than
-# silently falling through to the create / update branch — that was
-# the MCP critic's CRITICAL #2 ("``mode='unlink'`` silently
-# succeeds without removing anything"). The unlink/untag *operations*
-# now have their own kwargs (``unlink=``, ``untags=``); ``mode=``
-# is only kept around for the soft-delete path.
-_SUPPORTED_PUT_MODES: tuple[str, ...] = ("delete",)
-
 
 class NumericRefHandler(Handler):
     """Base class for numeric-id ref kinds (memory, todo, gripe, fc, …)."""
@@ -244,7 +234,7 @@ class NumericRefHandler(Handler):
         )
         return ref_hits_to_search_hits(pairs, kind=self.kind)
 
-    # ── put ────────────────────────────────────────────────────────
+    # ── put: create-only on numeric-ref kinds ──────────────────────
 
     def put(  # type: ignore[override]
         self,
@@ -259,80 +249,64 @@ class NumericRefHandler(Handler):
         rel: str | None = None,
         **_kw: Any,
     ) -> Response:
-        # Validate ``mode=`` up front. The MCP critic flagged
-        # ``mode='unlink'`` / ``mode='untag'`` as silently succeeding
-        # without doing anything — both are misuses now that ``unlink=``
-        # and ``untags=`` are first-class kwargs, but the previous
-        # code path treated any non-'delete' mode as a no-op. Reject
-        # explicitly with the actual supported list so an agent
-        # picking ``mode='note'`` from a stale doc gets a sharp error
-        # rather than a phantom success.
-        if mode is not None and mode not in _SUPPORTED_PUT_MODES:
+        """Create a new numeric ref.
+
+        Per the seven-verb surface (D6), ``put`` is creation-only on
+        numeric-ref kinds. Mutating an existing ref splits across
+        dedicated verbs:
+
+        - text body: not exposed (numeric-ref bodies are immutable
+          once created — capture the new wording as a fresh ref or
+          use ``delete`` + ``put`` to replace).
+        - tags:  ``tag(kind, id, add=[...], remove=[...])``
+        - links: ``link(kind, id, target=..., mode='add'|'remove', rel=...)``
+        - delete: ``delete(kind, id)`` (soft-delete)
+
+        ``id=``, ``mode=``, ``untags=``, ``unlink=`` are all rejected
+        with a pointer at the right verb so an agent stuck on the
+        old shape gets a sharp recovery hint rather than a silent
+        no-op. ``tags=`` / ``link=`` / ``rel=`` are accepted on
+        creation as the D3 shortcut.
+        """
+        if id is not None:
             raise BadInput(
-                f"unknown mode {mode!r} for kind={self.kind!r}",
-                options=list(_SUPPORTED_PUT_MODES),
+                f"put on existing {self._sense()} id={id!r} is not supported",
                 next=(
-                    "to remove tags use untags=[...]; to remove a link use "
-                    "unlink='kind:identifier'; to soft-delete use "
-                    f"put(kind={self.kind!r}, id=N, mode='delete')"
+                    f"to mutate id={id}: tag(kind={self.kind!r}, id=N, add=[...]/remove=[...]) / "
+                    f"link(kind={self.kind!r}, id=N, target=..., mode='add'|'remove') / "
+                    f"delete(kind={self.kind!r}, id=N)"
                 ),
             )
-        if mode == "delete":
-            return self._delete(id)
-
-        # ``link=`` and ``unlink=`` are mutually exclusive — they touch
-        # the same row family but in opposite directions, and a single
-        # call asking for both is almost always a misunderstanding.
-        # Reject loudly rather than silently apply both.
-        if link is not None and unlink is not None:
+        if mode is not None:
             raise BadInput(
-                "link= and unlink= are mutually exclusive",
+                f"mode= is not accepted on put for kind={self.kind!r}",
                 next=(
-                    "issue two put() calls if you want to remove one "
-                    "link and add another"
+                    "put creates a new ref; for delete use "
+                    f"delete(kind={self.kind!r}, id=N)"
                 ),
             )
-
-        # ``rel=`` only makes sense with link/unlink. A bare ``rel=``
-        # is a no-op today, and silently swallowing it would let a
-        # typo (``link='x', rel='cites'`` typed as ``rel='cites'``)
-        # vanish into the void.
-        if rel is not None and link is None and unlink is None:
+        if untags is not None:
             raise BadInput(
-                "rel= requires link= or unlink=",
-                next=(f"put(kind={self.kind!r}, id=N, link='paper:slug', rel='cites')"),
+                "untags= is not accepted on put",
+                next=f"use tag(kind={self.kind!r}, id=N, remove=[...])",
             )
-
-        if id is None:
-            if untags:
-                # Untag-on-create has no meaning: there's nothing to
-                # remove. Reject loudly rather than silently swallow
-                # the kwarg.
-                raise BadInput(
-                    "untags= is not supported on create",
-                    next=(
-                        f"create first with put(kind={self.kind!r}, "
-                        "text='...'), then put(id=N, untags=[...])"
-                    ),
-                )
-            if unlink is not None:
-                raise BadInput(
-                    "unlink= is not supported on create",
-                    next=(
-                        f"create first with put(kind={self.kind!r}, "
-                        "text='...'), then put(id=N, unlink=...)"
-                    ),
-                )
-            return self._create(text=text, tags=tags, link=link, rel=rel)
-        return self._update(
-            self._coerce_id(id),
-            text=text,
-            tags=tags,
-            untags=untags,
-            link=link,
-            unlink=unlink,
-            rel=rel,
-        )
+        if unlink is not None:
+            raise BadInput(
+                "unlink= is not accepted on put",
+                next=(
+                    f"use link(kind={self.kind!r}, id=N, target='kind:slug', "
+                    "mode='remove')"
+                ),
+            )
+        if rel is not None and link is None:
+            raise BadInput(
+                "rel= requires link= on create",
+                next=(
+                    f"put(kind={self.kind!r}, text='...', "
+                    "link='paper:slug', rel='cites')"
+                ),
+            )
+        return self._create(text=text, tags=tags, link=link, rel=rel)
 
     # ── seven-verb surface (delegates to the same private helpers) ─
 
@@ -525,145 +499,15 @@ class NumericRefHandler(Handler):
                 )
         return self._render_create_ack(ref.id)
 
-    def _update(
-        self,
-        ref_id: int,
-        *,
-        text: str | None,
-        tags: list[str] | None,
-        untags: list[str] | None = None,
-        link: str | None,
-        unlink: str | None = None,
-        rel: str | None = None,
-    ) -> Response:
-        existing = self.store.get_ref(kind=self.kind, id=ref_id)
-        if existing is None:
-            raise NotFound(
-                f"{self._sense()} id={ref_id} not found",
-                next=f"check id with: get(kind={self.kind!r}, id={ref_id})",
-            )
-        if text is None and not tags and not untags and link is None and unlink is None:
-            raise BadInput(
-                "update requires at least one of text=, tags=, untags=, link=, unlink=",
-                next=(
-                    f"put(kind={self.kind!r}, id=N, text='new', "
-                    "tags=['STATUS:done']) or unlink='paper:slug'"
-                ),
-            )
-        # Resolve link/unlink targets and validate the relation up
-        # front. If any of these are bad we want to reject before
-        # touching the ref's title or tag rows.
-        link_target = (
-            parse_link_target(link, store=self.store) if link is not None else None
-        )
-        unlink_target = (
-            parse_link_target(unlink, store=self.store) if unlink is not None else None
-        )
-        relation = validate_relation(rel)
-
-        # Pre-validate tags + untags. The MCP critic flagged that a
-        # rejected tag mid-update could leave partial state — half
-        # the tags applied, the rest skipped. Validate everything
-        # *before* the transaction; any BadInput is raised before
-        # any DB write happens. (Critic MAJOR #1, write side of the
-        # same fix as ``_create``.)
-        parsed_tags: list[Tag] = (
-            [Tag.parse_strict(t, kind=self.kind) for t in tags] if tags else []
-        )
-        parsed_untags: list[Tag] = (
-            [Tag.parse_strict(t, kind=self.kind) for t in untags] if untags else []
-        )
-
-        # All validation done. Atomic update: every write joins a
-        # single transaction so a downstream constraint violation
-        # rolls the whole update back rather than leaving the ref
-        # in a half-mutated state.
-        with self.store.tx() as conn:
-            if text is not None:
-                self.store.update_ref(ref_id, title=text, conn=conn)
-            for tag in parsed_tags:
-                self.store.add_tag(
-                    ref_id,
-                    tag,
-                    set_by="agent",
-                    replace_prefix=(tag.namespace == "closed"),
-                    conn=conn,
-                )
-            for tag in parsed_untags:
-                self.store.remove_tag(ref_id, tag, conn=conn)
-            if link_target is not None:
-                self.store.add_link(
-                    src_ref_id=ref_id,
-                    dst_ref_id=link_target.ref_id,
-                    dst_pos=link_target.pos,
-                    relation=relation,
-                    conn=conn,
-                )
-            if unlink_target is not None:
-                # ``rel=`` on unlink is per-relation; absence means
-                # "any link to this target at this position". The
-                # store method's ``relation=None`` path does the
-                # broad delete.
-                self.store.remove_link(
-                    src_ref_id=ref_id,
-                    dst_ref_id=unlink_target.ref_id,
-                    dst_pos=unlink_target.pos,
-                    relation=relation if rel is not None else None,
-                    conn=conn,
-                )
-        return Response(body=f"updated {self._sense()} id={ref_id}")
-
     def _delete(self, id: str | int | None) -> Response:
         if id is None:
             raise BadInput(
                 "delete requires id=",
-                next=f"put(kind={self.kind!r}, id=N, mode='delete')",
+                next=f"delete(kind={self.kind!r}, id=N)",
             )
         ref_id = self._coerce_id(id)
         self.store.soft_delete_ref(ref_id)
         return Response(body=f"deleted {self._sense()} id={ref_id}")
-
-    def _apply_tags(self, ref_id: int, tags: list[str]) -> None:
-        # Strict parse — rejects unknown closed-vocab values
-        # (``STATUS:bogus``) and bare flags that collide with a closed
-        # value (``'urgent'`` instead of ``'PRIO:urgent'``). Defaults
-        # applied via ``default_tags_on_create`` are hard-coded
-        # canonical values, so they pass validation unchanged.
-        #
-        # ``kind=`` is forwarded so per-kind axis enforcement catches
-        # closed-axis tags on kinds that don't use that axis (e.g.
-        # ``STATUS:open`` on a ``memory``).
-        for s in tags:
-            tag = Tag.parse_strict(s, kind=self.kind)
-            self.store.add_tag(
-                ref_id,
-                tag,
-                set_by="agent",
-                replace_prefix=(tag.namespace == "closed"),
-            )
-
-    def _remove_tags(self, ref_id: int, untags: list[str]) -> None:
-        """Remove a set of tags from ``ref_id``.
-
-        Same strict validation as :meth:`_apply_tags` — the agent
-        must spell each tag in canonical form. Closed-prefix tags
-        require an explicit value (``STATUS:done``); the empty form
-        ``STATUS:`` is rejected at parse time, so we don't risk a
-        silent "remove all rows under this prefix" footgun.
-
-        Removal is value-matched: ``untags=['STATUS:open']`` against
-        a ref whose current STATUS is ``done`` is a no-op (the SQL
-        DELETE finds no row). The store layer is silent on misses,
-        which matches the closed-prefix overwrite contract on
-        :meth:`_apply_tags` (where adding a different value
-        replaces the old one without complaint).
-        """
-        for s in untags:
-            # Per-kind axis enforcement matters on remove too: agents
-            # that mistype the axis (``STATUS:`` on a memory) would
-            # otherwise get a silent no-op via the value-match path.
-            tag = Tag.parse_strict(s, kind=self.kind)
-            self.store.remove_tag(ref_id, tag)
 
     # ── coercion ────────────────────────────────────────────────────
 

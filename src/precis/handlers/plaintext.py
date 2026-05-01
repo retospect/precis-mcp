@@ -368,7 +368,7 @@ class PlaintextHandler(Handler):
         if sel is None:
             raise BadInput(
                 "delete requires a block selector — id='slug~BLOCK'",
-                next=f"put(kind='plaintext', id='{slug}~BLOCK', mode='delete')",
+                next=f"delete(kind='plaintext', id='{slug}~BLOCK')",
             )
         path = self._resolve_path(slug, must_exist=True)
         blocks = parse_plaintext(path.read_text(encoding="utf-8"))
@@ -893,11 +893,11 @@ class PlaintextHandler(Handler):
             [
                 (f"get(kind='plaintext', id='{ref.slug}')", "back to overview"),
                 (
-                    f"put(kind='plaintext', id='{handle}', text='...', mode='replace')",
+                    f"edit(kind='plaintext', id='{handle}', text='...', mode='replace')",
                     "edit this paragraph",
                 ),
                 (
-                    f"put(kind='plaintext', id='{handle}', mode='delete')",
+                    f"delete(kind='plaintext', id='{handle}')",
                     "delete this paragraph",
                 ),
             ]

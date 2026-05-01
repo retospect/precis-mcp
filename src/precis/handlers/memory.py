@@ -5,12 +5,13 @@ Numeric-id ref kind. Refactored in phase 5 to subclass
 place across memory / todo / gripe / fc / conv / quest.
 
 Semantics from the `precis-memory-help` skill:
-    - put(text=...)            — create new memory, return its id
-    - put(id=N, text=...)      — replace memory N's text
-    - put(id=N, mode='delete') — soft-delete memory N
-    - put(id=N, tags=[...])    — add/replace tags on memory N
-    - get(id=N)                — read memory text + tags
-    - get(id='/recent')        — list recent memories
+    - put(text=...)                — create new memory, return its id
+    - tag(id=N, add=[...])         — add/replace tags on memory N
+    - tag(id=N, remove=[...])      — remove tags from memory N
+    - link(id=N, target='kind:id') — cross-link memory N to another ref
+    - delete(id=N)                 — soft-delete memory N
+    - get(id=N)                    — read memory text + tags
+    - get(id='/recent')            — list recent memories
     - search(q=...)            — lexical search over memories
 """
 

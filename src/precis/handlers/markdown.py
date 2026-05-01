@@ -384,7 +384,7 @@ class MarkdownHandler(Handler):
         if sel is None:
             raise BadInput(
                 "delete requires a block selector — id='slug~BLOCK'",
-                next=f"put(kind='markdown', id='{slug}~BLOCK', mode='delete')",
+                next=f"delete(kind='markdown', id='{slug}~BLOCK')",
             )
         path = self._resolve_path(slug, must_exist=True)
         blocks = parse_markdown(path.read_text(encoding="utf-8"))
@@ -963,11 +963,11 @@ class MarkdownHandler(Handler):
             [
                 (f"get(kind='markdown', id='{ref.slug}')", "back to overview"),
                 (
-                    f"put(kind='markdown', id='{handle}', text='...', mode='replace')",
+                    f"edit(kind='markdown', id='{handle}', text='...', mode='replace')",
                     "edit this block",
                 ),
                 (
-                    f"put(kind='markdown', id='{handle}', mode='delete')",
+                    f"delete(kind='markdown', id='{handle}')",
                     "delete this block",
                 ),
             ]

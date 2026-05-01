@@ -124,7 +124,7 @@ class QuestHandler(Handler):
         """Ref-level lexical search returned as ``SearchHit``s."""
         return search_hits_slug_refs(self.store, kind="quest", q=q, top_k=top_k)
 
-    # ── put ────────────────────────────────────────────────────────
+    # ── put: create-only ───────────────────────────────────────────
 
     def put(  # type: ignore[override]
         self,
@@ -135,11 +135,28 @@ class QuestHandler(Handler):
         tags: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
-        if mode == "delete":
-            return self._delete(id)
-        if id is None:
-            return self._create(text=text, tags=tags)
-        return self._update(str(id), text=text, tags=tags)
+        """Create a new quest (slug auto-derived from text).
+
+        Quest mutation splits across the seven-verb surface:
+
+        - tag(kind='quest', id=<slug>, add=[...], remove=[...])
+        - link(kind='quest', id=<slug>, target=..., mode='add'|'remove')
+        - delete(kind='quest', id=<slug>)
+        """
+        if id is not None:
+            raise BadInput(
+                f"put on existing quest id={id!r} is not supported",
+                next=(
+                    f"to mutate quest {id!r}: tag(kind='quest', id={id!r}, ...) / "
+                    f"link(kind='quest', id={id!r}, ...) / delete(kind='quest', id={id!r})"
+                ),
+            )
+        if mode is not None:
+            raise BadInput(
+                "mode= is not accepted on put for kind='quest'",
+                next="put creates a new quest; for delete use delete(kind='quest', id=<slug>)",
+            )
+        return self._create(text=text, tags=tags)
 
     def _create(self, *, text: str | None, tags: list[str] | None) -> Response:
         if text is None or not text.strip():
@@ -181,43 +198,12 @@ class QuestHandler(Handler):
         body = f"created quest {slug!r} (status: open)"
         body += render_next_section(
             [
-                (f"put(kind='quest', id={slug!r}, tags=['STATUS:doing'])", "claim it"),
+                (f"tag(kind='quest', id={slug!r}, add=['STATUS:doing'])", "claim it"),
                 (f"get(kind='quest', id={slug!r})", "read it back"),
                 ("get(kind='quest', id='/open')", "list open quests"),
             ]
         )
         return Response(body=body)
-
-    def _update(
-        self,
-        slug: str,
-        *,
-        text: str | None,
-        tags: list[str] | None,
-    ) -> Response:
-        existing = self.store.get_ref(kind="quest", id=slug)
-        if existing is None:
-            raise NotFound(
-                f"quest slug {slug!r} not found",
-                next=f"check id with: get(kind='quest', id={slug!r})",
-            )
-        if text is not None:
-            self.store.update_ref(existing.id, title=text)
-        if tags:
-            for s in tags:
-                tag = Tag.parse(s)
-                self.store.add_tag(
-                    existing.id,
-                    tag,
-                    set_by="agent",
-                    replace_prefix=(tag.namespace == "closed"),
-                )
-        if text is None and not tags:
-            raise BadInput(
-                "update requires at least one of text=, tags=",
-                next=f"put(kind='quest', id={slug!r}, tags=['STATUS:done'])",
-            )
-        return Response(body=f"updated quest {slug!r}")
 
     def _delete(self, id: str | int | None) -> Response:
         if id is None or not str(id).strip():

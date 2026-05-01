@@ -70,43 +70,42 @@ def _seed_paper(store: Store, slug: str = "wang2020state", n_blocks: int = 4) ->
 # ── CRITICAL #2: mode= validation ─────────────────────────────────
 
 
-class TestUnknownModeRejected:
-    """``mode='untag'`` / ``'unlink'`` / ``'note'`` no longer silently
-    no-op. The numeric-ref handlers (memory, todo, gripe, fc, …)
-    accept only ``mode='delete'`` (or absence)."""
+class TestPutNarrowedToCreateOnly:
+    """After the seven-verb cutover, numeric-ref kinds (memory, todo,
+    gripe, fc, …) accept ``put`` only for creation. ``id=`` and
+    ``mode=`` are both rejected with sharp pointers at the dedicated
+    verbs (tag / link / delete) so an agent stuck on the legacy
+    ``put(mode='X')`` shape gets a recovery hint rather than a
+    silent no-op.
 
-    def test_mode_untag_rejected(self, store: Store) -> None:
-        h = MemoryHandler(hub=Hub(store=store))
-        m = h.put(text="m")
-        rid = int(m.body.split("=")[-1].strip().split()[0])
-        with pytest.raises(BadInput, match="unknown mode 'untag'"):
-            h.put(id=rid, mode="untag", tags=["topic-x"])
+    The original critic finding was CRITICAL #2: ``mode='unlink'``
+    silently succeeded without removing anything. The fix migrated
+    those operations to dedicated verbs; the regression here is
+    that ``put`` is now noisy about every legacy invocation shape.
+    """
 
-    def test_mode_unlink_rejected(self, store: Store) -> None:
+    def test_put_with_mode_rejected(self, store: Store) -> None:
+        """Any ``mode=`` on numeric-ref put is rejected — there's no
+        creation mode worth carrying."""
         h = MemoryHandler(hub=Hub(store=store))
-        m = h.put(text="m")
-        rid = int(m.body.split("=")[-1].strip().split()[0])
-        with pytest.raises(BadInput, match="unknown mode 'unlink'"):
-            h.put(id=rid, mode="unlink")
-
-    def test_mode_note_rejected(self, store: Store) -> None:
-        h = MemoryHandler(hub=Hub(store=store))
-        m = h.put(text="m")
-        rid = int(m.body.split("=")[-1].strip().split()[0])
-        with pytest.raises(BadInput, match="unknown mode 'note'"):
-            h.put(id=rid, mode="note", text="annotation")
-
-    def test_mode_typo_rejected(self, store: Store) -> None:
-        """Even a typo of the supported mode is caught."""
-        h = MemoryHandler(hub=Hub(store=store))
-        with pytest.raises(BadInput, match="unknown mode"):
+        with pytest.raises(BadInput, match="mode= is not accepted on put"):
             h.put(text="m", mode="deelete")
 
-    def test_mode_delete_still_works(self, store: Store) -> None:
+    def test_put_on_existing_id_rejected(self, store: Store) -> None:
+        """``id=`` on put points the caller at tag/link/delete."""
         h = MemoryHandler(hub=Hub(store=store))
         m = h.put(text="m")
         rid = int(m.body.split("=")[-1].strip().split()[0])
-        out = h.put(id=rid, mode="delete")
+        with pytest.raises(BadInput, match="put on existing memory"):
+            h.put(id=rid)
+
+    def test_delete_verb_works(self, store: Store) -> None:
+        """The replacement for the legacy ``put(id=N, mode='delete')``
+        — the dedicated ``delete`` verb soft-deletes the ref."""
+        h = MemoryHandler(hub=Hub(store=store))
+        m = h.put(text="m")
+        rid = int(m.body.split("=")[-1].strip().split()[0])
+        out = h.delete(id=rid)
         assert "deleted" in out.body
 
 
@@ -360,18 +359,6 @@ class TestTopKCap:
         from precis.server import _SEARCH_TOP_K_MAX
 
         assert _SEARCH_TOP_K_MAX == 100
-
-
-# ── MAJOR #13: mode='note' not in supported list ────────────────
-
-
-class TestModeNoteRetired:
-    def test_mode_note_not_in_supported_modes(self) -> None:
-        """The numeric-ref handlers no longer claim to support
-        ``mode='note'``."""
-        from precis.handlers._numeric_ref import _SUPPORTED_PUT_MODES
-
-        assert "note" not in _SUPPORTED_PUT_MODES
 
 
 # ── MINOR m2: empty-list responses carry Next: trailers ─────────
