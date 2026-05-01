@@ -74,7 +74,7 @@ def test_update_tags_only(handler: MemoryHandler) -> None:
     r = handler.put(text="memory with tags")
     new_id = int(r.body.rsplit("=", 1)[1])
 
-    handler.put(id=new_id, tags=["kind:decision", "confidence-strong"])
+    handler.tag(id=new_id, add=["kind:decision", "confidence-strong"])
 
     got = handler.get(id=new_id)
     assert "kind:decision" in got.body
@@ -89,7 +89,7 @@ def test_update_open_tags_accumulate(handler: MemoryHandler) -> None:
     r = handler.put(text="x", tags=["confidence-tentative"])
     new_id = int(r.body.rsplit("=", 1)[1])
 
-    handler.put(id=new_id, tags=["confidence-strong"])
+    handler.tag(id=new_id, add=["confidence-strong"])
 
     got = handler.get(id=new_id)
     # Both stick around — that's the open-tag contract. The
@@ -108,7 +108,7 @@ def test_status_axis_rejected_on_memory(handler: MemoryHandler) -> None:
     r = handler.put(text="m")
     new_id = int(r.body.rsplit("=", 1)[1])
     with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
-        handler.put(id=new_id, tags=["STATUS:open"])
+        handler.tag(id=new_id, add=["STATUS:open"])
 
 
 def test_update_no_changes_raises(handler: MemoryHandler) -> None:
@@ -122,7 +122,7 @@ def test_delete(handler: MemoryHandler) -> None:
     r = handler.put(text="goodbye")
     new_id = int(r.body.rsplit("=", 1)[1])
 
-    deleted = handler.put(id=new_id, mode="delete")
+    deleted = handler.delete(id=new_id)
     assert "deleted" in deleted.body
 
     with pytest.raises(NotFound):
@@ -131,7 +131,7 @@ def test_delete(handler: MemoryHandler) -> None:
 
 def test_delete_missing_raises(handler: MemoryHandler) -> None:
     with pytest.raises(NotFound):
-        handler.put(id=99999, mode="delete")
+        handler.delete(id=99999)
 
 
 def test_search_finds_match(handler: MemoryHandler) -> None:

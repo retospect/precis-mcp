@@ -303,7 +303,7 @@ class TestMemoryHandlerLink:
         m = memory_handler.put(text="just a memory")
         new_id = int(m.body.split("=")[-1].strip().split()[0])
 
-        memory_handler.put(id=new_id, link="paper:wang2020state", rel="cites")
+        memory_handler.link(id=new_id, target="paper:wang2020state", rel="cites")
 
         links = store.links_for(new_id, direction="out")
         assert len(links) == 1
@@ -315,10 +315,10 @@ class TestMemoryHandlerLink:
         _seed_paper(store)
         m = memory_handler.put(text="m", link="paper:wang2020state", rel="cites")
         new_id = int(m.body.split("=")[-1].strip().split()[0])
-        memory_handler.put(id=new_id, link="paper:wang2020state", rel="contradicts")
+        memory_handler.link(id=new_id, target="paper:wang2020state", rel="contradicts")
         assert len(store.links_for(new_id, direction="out")) == 2
 
-        memory_handler.put(id=new_id, unlink="paper:wang2020state", rel="cites")
+        memory_handler.link(id=new_id, target="paper:wang2020state", mode="remove", rel="cites")
         remaining = store.links_for(new_id, direction="out")
         assert len(remaining) == 1
         assert remaining[0].relation == "contradicts"
@@ -329,9 +329,9 @@ class TestMemoryHandlerLink:
         _seed_paper(store)
         m = memory_handler.put(text="m", link="paper:wang2020state", rel="cites")
         new_id = int(m.body.split("=")[-1].strip().split()[0])
-        memory_handler.put(id=new_id, link="paper:wang2020state", rel="contradicts")
+        memory_handler.link(id=new_id, target="paper:wang2020state", rel="contradicts")
 
-        memory_handler.put(id=new_id, unlink="paper:wang2020state")
+        memory_handler.link(id=new_id, target="paper:wang2020state", mode="remove")
         assert store.links_for(new_id, direction="out") == []
 
     def test_link_and_unlink_mutually_exclusive(
@@ -412,7 +412,7 @@ class TestMemoryHandlerLinksView:
         b_resp = memory_handler.put(text="beta")
         a_id = int(a_resp.body.split("=")[-1].strip().split()[0])
         b_id = int(b_resp.body.split("=")[-1].strip().split()[0])
-        memory_handler.put(id=a_id, link=f"memory:{b_id}", rel="cites")
+        memory_handler.link(id=a_id, target=f"memory:{b_id}", rel="cites")
 
         out = memory_handler.get(id=b_id, view="links")
         assert "inbound" in out.body
@@ -448,7 +448,7 @@ class TestMemoryHandlerLinksView:
         b = memory_handler.put(text="beta")
         a_id = int(a.body.split("=")[-1].strip().split()[0])
         b_id = int(b.body.split("=")[-1].strip().split()[0])
-        memory_handler.put(id=a_id, link=f"memory:{b_id}")
+        memory_handler.link(id=a_id, target=f"memory:{b_id}")
         store.soft_delete_ref(b_id)
 
         out = memory_handler.get(id=a_id, view="links")

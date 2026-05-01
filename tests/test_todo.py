@@ -53,7 +53,7 @@ def test_status_done_replaces_open(handler: TodoHandler) -> None:
     """STATUS: is a closed prefix → setting STATUS:done must drop STATUS:open."""
     r = handler.put(text="task")
     todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
-    handler.put(id=todo_id, tags=["STATUS:done"])
+    handler.tag(id=todo_id, add=["STATUS:done"])
     tags = {str(t) for t in handler.store.tags_for(todo_id)}
     assert "STATUS:done" in tags
     assert "STATUS:open" not in tags
@@ -62,7 +62,7 @@ def test_status_done_replaces_open(handler: TodoHandler) -> None:
 def test_can_transition_to_doing(handler: TodoHandler) -> None:
     r = handler.put(text="task")
     todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
-    handler.put(id=todo_id, tags=["STATUS:doing"])
+    handler.tag(id=todo_id, add=["STATUS:doing"])
     tags = {str(t) for t in handler.store.tags_for(todo_id)}
     assert "STATUS:doing" in tags
 
@@ -97,7 +97,7 @@ def test_list_open_filters_by_status(handler: TodoHandler) -> None:
     id1 = int(r1.body.split("id=")[1].split()[0].rstrip(",.()"))
     r2 = handler.put(text="finished one")
     id2 = int(r2.body.split("id=")[1].split()[0].rstrip(",.()"))
-    handler.put(id=id2, tags=["STATUS:done"])
+    handler.tag(id=id2, add=["STATUS:done"])
 
     out = handler.get(id="/open")
     assert "open one" in out.body
@@ -111,7 +111,7 @@ def test_list_done_only_shows_done(handler: TodoHandler) -> None:
     r1 = handler.put(text="will-finish")
     r2 = handler.put(text="still-open")
     id1 = int(r1.body.split("id=")[1].split()[0].rstrip(",.()"))
-    handler.put(id=id1, tags=["STATUS:done"])
+    handler.tag(id=id1, add=["STATUS:done"])
     out = handler.get(id="/done")
     assert "will-finish" in out.body
     assert "still-open" not in out.body
@@ -134,7 +134,7 @@ def test_bare_get_lists_recent(handler: TodoHandler) -> None:
 def test_delete(handler: TodoHandler) -> None:
     r = handler.put(text="ephemeral")
     todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
-    handler.put(id=todo_id, mode="delete")
+    handler.delete(id=todo_id)
     with pytest.raises(NotFound):
         handler.get(id=todo_id)
 

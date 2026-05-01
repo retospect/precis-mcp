@@ -146,7 +146,7 @@ def test_create_refuses_path_escape(handler: PythonHandler) -> None:
 
 
 def test_append_adds_at_eof(handler: PythonHandler, repo: Path) -> None:
-    handler.put(
+    handler.edit(
         id="r/pkg/m.py",
         text="\n\ndef appended() -> int:\n    return 0\n",
         mode="append",
@@ -161,17 +161,17 @@ def test_append_adds_at_eof(handler: PythonHandler, repo: Path) -> None:
 
 def test_append_requires_text(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="requires text"):
-        handler.put(id="r/pkg/m.py", mode="append")
+        handler.edit(id="r/pkg/m.py", mode="append")
 
 
 def test_append_rejects_selector(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="does not accept a selector"):
-        handler.put(id="r/pkg/m.py~L1-L1", text="x = 1\n", mode="append")
+        handler.edit(id="r/pkg/m.py~L1-L1", text="x = 1\n", mode="append")
 
 
 def test_append_rejects_qualname(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="requires a file path"):
-        handler.put(id="r::pkg.m.helper", text="x = 1\n", mode="append")
+        handler.edit(id="r::pkg.m.helper", text="x = 1\n", mode="append")
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ def test_append_rejects_qualname(handler: PythonHandler) -> None:
 
 
 def test_replace_by_qualname_swaps_function(handler: PythonHandler, repo: Path) -> None:
-    handler.put(
+    handler.edit(
         id="r::pkg.m.helper",
         text="def helper(x: int) -> int:\n    return x * 2\n",
         mode="replace",
@@ -192,7 +192,7 @@ def test_replace_by_qualname_swaps_function(handler: PythonHandler, repo: Path) 
 
 def test_replace_by_qualname_swaps_method(handler: PythonHandler, repo: Path) -> None:
     """Methods preserve indentation discipline — caller supplies it."""
-    handler.put(
+    handler.edit(
         id="r::pkg.m.C.greet",
         text="    def greet(self, name: str) -> str:\n        return f'hello {name}'\n",
         mode="replace",
@@ -203,7 +203,7 @@ def test_replace_by_qualname_swaps_method(handler: PythonHandler, repo: Path) ->
 
 def test_replace_unknown_qualname_raises(handler: PythonHandler) -> None:
     with pytest.raises(NotFound, match="symbol .* not found"):
-        handler.put(
+        handler.edit(
             id="r::pkg.m.NoSuchSymbol",
             text="def NoSuchSymbol(): pass\n",
             mode="replace",
@@ -217,7 +217,7 @@ def test_replace_unknown_qualname_raises(handler: PythonHandler) -> None:
 
 def test_replace_by_line_range(handler: PythonHandler, repo: Path) -> None:
     """Replace lines containing the helper function (lines 4-6)."""
-    handler.put(
+    handler.edit(
         id="r/pkg/m.py~L4-L6",
         text="def helper(x):\n    return x - 1\n",
         mode="replace",
@@ -228,7 +228,7 @@ def test_replace_by_line_range(handler: PythonHandler, repo: Path) -> None:
 
 
 def test_replace_by_block_selector(handler: PythonHandler, repo: Path) -> None:
-    handler.put(
+    handler.edit(
         id="r/pkg/m.py~C.greet",
         text="    def greet(self, name: str) -> str:\n        return name.upper()\n",
         mode="replace",
@@ -240,7 +240,7 @@ def test_replace_by_block_selector(handler: PythonHandler, repo: Path) -> None:
 def test_replace_whole_file(handler: PythonHandler, repo: Path) -> None:
     """No selector → replace the entire file. allow_rename needed because
     the symbol set differs."""
-    handler.put(
+    handler.edit(
         id="r/pkg/m.py",
         text='"""New."""\n\n\ndef brand_new() -> int:\n    return 42\n',
         mode="replace",
@@ -253,7 +253,7 @@ def test_replace_whole_file(handler: PythonHandler, repo: Path) -> None:
 
 def test_replace_requires_text(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="requires text"):
-        handler.put(id="r::pkg.m.helper", mode="replace")
+        handler.edit(id="r::pkg.m.helper", mode="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ def test_replace_requires_text(handler: PythonHandler) -> None:
 def test_gate1_blocks_syntax_error(handler: PythonHandler, repo: Path) -> None:
     pre = (repo / "pkg" / "m.py").read_text()
     with pytest.raises(BadInput, match="ast.parse failed"):
-        handler.put(
+        handler.edit(
             id="r::pkg.m.helper",
             text="def helper(\n",  # truncated — syntax error
             mode="replace",
@@ -283,7 +283,7 @@ def test_gate2_blocks_accidental_rename(handler: PythonHandler, repo: Path) -> N
     qualname — gate 2 must reject."""
     pre = (repo / "pkg" / "m.py").read_text()
     with pytest.raises(BadInput, match="qualname-drop"):
-        handler.put(
+        handler.edit(
             id="r::pkg.m.helper",
             text="def renamed(x: int) -> int:\n    return x + 1\n",
             mode="replace",
@@ -293,7 +293,7 @@ def test_gate2_blocks_accidental_rename(handler: PythonHandler, repo: Path) -> N
 
 
 def test_gate2_bypassed_with_allow_rename(handler: PythonHandler, repo: Path) -> None:
-    handler.put(
+    handler.edit(
         id="r::pkg.m.helper",
         text="def renamed(x: int) -> int:\n    return x + 1\n",
         mode="replace",
@@ -309,7 +309,7 @@ def test_gate2_blocks_class_method_drop(handler: PythonHandler, repo: Path) -> N
     `pkg.m.C.shout` would disappear from the file."""
     pre = (repo / "pkg" / "m.py").read_text()
     with pytest.raises(BadInput, match="qualname-drop"):
-        handler.put(
+        handler.edit(
             id="r::pkg.m.C",
             text='''class C:
     """A class."""
@@ -328,7 +328,7 @@ def test_gate2_passes_when_symbol_moved_within_file(
     """Moving `helper` out of class C (or anywhere in the file) is fine
     — its qualname survives at the file level. Here we just rewrite the
     function body and the gate sees `pkg.m.helper` still present."""
-    handler.put(
+    handler.edit(
         id="r::pkg.m.helper",
         text="def helper(x: int) -> int:\n    # moved logic\n    return x + 100\n",
         mode="replace",
@@ -345,7 +345,7 @@ def test_gate2_passes_when_symbol_moved_within_file(
 @pytest.mark.skipif(not _RUFF_AVAILABLE, reason="ruff binary not on PATH")
 def test_gate3_runs_ruff_fix(handler: PythonHandler, repo: Path) -> None:
     """A replacement with an unused import gets ruff-fixed before disk write."""
-    handler.put(
+    handler.edit(
         id="r::pkg.m.helper",
         text="import json\ndef helper(x: int) -> int:\n    return x + 1\n",
         mode="replace",
@@ -357,7 +357,7 @@ def test_gate3_runs_ruff_fix(handler: PythonHandler, repo: Path) -> None:
 @pytest.mark.skipif(not _RUFF_AVAILABLE, reason="ruff binary not on PATH")
 def test_gate3_runs_ruff_format(handler: PythonHandler, repo: Path) -> None:
     """Tight syntax gets reformatted by ruff format."""
-    handler.put(
+    handler.edit(
         id="r::pkg.m.helper",
         text="def helper(x:int)->int:\n    return x+1\n",
         mode="replace",
@@ -376,7 +376,7 @@ def test_gate3_missing_ruff_does_not_block(
     from precis.handlers import _python_write
 
     monkeypatch.setattr(_python_write, "_find_ruff", lambda: None)
-    out = handler.put(
+    out = handler.edit(
         id="r::pkg.m.helper",
         text="def helper(x: int) -> int:\n    return x + 99\n",
         mode="replace",
@@ -394,13 +394,13 @@ def test_gate3_missing_ruff_does_not_block(
 def test_delete_by_qualname_removes_function(
     handler: PythonHandler, repo: Path
 ) -> None:
-    handler.put(id="r::pkg.m.helper", mode="delete")
+    handler.delete(id="r::pkg.m.helper")
     body = (repo / "pkg" / "m.py").read_text()
     assert "def helper" not in body
 
 
 def test_delete_by_block_selector(handler: PythonHandler, repo: Path) -> None:
-    handler.put(id="r/pkg/m.py~C.shout", mode="delete")
+    handler.delete(id="r/pkg/m.py~C.shout")
     body = (repo / "pkg" / "m.py").read_text()
     assert "def shout" not in body
     assert "def greet" in body  # didn't delete the wrong method
@@ -408,14 +408,14 @@ def test_delete_by_block_selector(handler: PythonHandler, repo: Path) -> None:
 
 def test_delete_by_line_range(handler: PythonHandler, repo: Path) -> None:
     """Lines 4-6 are the helper function in the dedented fixture."""
-    handler.put(id="r/pkg/m.py~L4-L6", mode="delete")
+    handler.delete(id="r/pkg/m.py~L4-L6")
     body = (repo / "pkg" / "m.py").read_text()
     assert "def helper" not in body
 
 
 def test_delete_refuses_whole_file(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="cannot delete a whole file"):
-        handler.put(id="r/pkg/m.py", mode="delete")
+        handler.delete(id="r/pkg/m.py")
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +426,7 @@ def test_delete_refuses_whole_file(handler: PythonHandler) -> None:
 def test_cache_sees_post_write_state(handler: PythonHandler, repo: Path) -> None:
     """A get() right after a put() reflects the new content — no stale
     symbols cached. The mtime change drives RepoCache invalidation."""
-    handler.put(
+    handler.edit(
         id="r::pkg.m.helper",
         text="def helper(x: int) -> int:\n    return x + 999\n",
         mode="replace",
@@ -452,7 +452,7 @@ def test_create_then_get_lists_new_symbol(handler: PythonHandler, repo: Path) ->
 
 
 def test_response_includes_change_summary(handler: PythonHandler, repo: Path) -> None:
-    out = handler.put(
+    out = handler.edit(
         id="r::pkg.m.helper",
         text="def helper(x: int) -> int:\n    return x + 5\n",
         mode="replace",
@@ -481,9 +481,9 @@ def test_kind_spec_supports_put() -> None:
 
 def test_edit_swaps_token_in_function(handler: PythonHandler, repo: Path) -> None:
     """The motivating case: rename one call site without touching others."""
-    handler.put(
+    handler.edit(
         id="r::pkg.m.helper",
-        mode="edit",
+        mode="find-replace",
         find="x + 1",
         text="x + 2",
     )
@@ -498,9 +498,9 @@ def test_edit_swaps_token_in_function(handler: PythonHandler, repo: Path) -> Non
 def test_edit_uses_anchors_to_disambiguate(handler: PythonHandler, repo: Path) -> None:
     """`name` appears multiple times across greet/shout; anchored
     edit picks one specific occurrence."""
-    handler.put(
+    handler.edit(
         id="r/pkg/m.py",
-        mode="edit",
+        mode="find-replace",
         find="name",
         before="len(",
         after=")",
@@ -516,9 +516,9 @@ def test_edit_uses_anchors_to_disambiguate(handler: PythonHandler, repo: Path) -
 def test_edit_match_all_replaces_every_occurrence(
     handler: PythonHandler, repo: Path
 ) -> None:
-    handler.put(
+    handler.edit(
         id="r/pkg/m.py",
-        mode="edit",
+        mode="find-replace",
         find="name: str",
         text="name: bytes",
         match="all",
@@ -533,7 +533,7 @@ def test_edit_unique_match_errors_when_ambiguous(
 ) -> None:
     pre = (repo / "pkg" / "m.py").read_text()
     with pytest.raises(BadInput) as excinfo:
-        handler.put(id="r/pkg/m.py", mode="edit", find="name", text="renamed")
+        handler.edit(id="r/pkg/m.py", mode="find-replace", find="name", text="renamed")
     msg = str(excinfo.value)
     assert "matches" in msg
     # File untouched on validation failure.
@@ -543,9 +543,9 @@ def test_edit_unique_match_errors_when_ambiguous(
 def test_edit_within_qualname_region(handler: PythonHandler, repo: Path) -> None:
     """Editing scoped to one symbol's source — the anchored search
     only sees that symbol's lines."""
-    handler.put(
+    handler.edit(
         id="r::pkg.m.C.shout",
-        mode="edit",
+        mode="find-replace",
         find=".upper()",
         text=".lower()",
     )
@@ -559,9 +559,9 @@ def test_edit_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> None
     """Gate 1 (ast.parse) catches an edit that produces invalid Python."""
     pre = (repo / "pkg" / "m.py").read_text()
     with pytest.raises(BadInput, match="ast.parse failed"):
-        handler.put(
+        handler.edit(
             id="r/pkg/m.py",
-            mode="edit",
+            mode="find-replace",
             find="def helper",
             text="def )(broken",
         )
@@ -575,9 +575,9 @@ def test_edit_blocks_qualname_drop_via_anchored_replace(
     """An anchored edit that renames a `def` should fail gate 2."""
     pre = (repo / "pkg" / "m.py").read_text()
     with pytest.raises(BadInput, match="qualname-drop"):
-        handler.put(
+        handler.edit(
             id="r/pkg/m.py",
-            mode="edit",
+            mode="find-replace",
             find="def helper(",
             text="def renamed(",
         )
@@ -587,9 +587,9 @@ def test_edit_blocks_qualname_drop_via_anchored_replace(
 def test_edit_qualname_rename_with_allow_rename(
     handler: PythonHandler, repo: Path
 ) -> None:
-    handler.put(
+    handler.edit(
         id="r/pkg/m.py",
-        mode="edit",
+        mode="find-replace",
         find="def helper(",
         text="def renamed(",
         allow_rename=True,
@@ -601,9 +601,9 @@ def test_edit_qualname_rename_with_allow_rename(
 
 def test_edit_not_found_carries_actionable_hint(handler: PythonHandler) -> None:
     with pytest.raises(BadInput) as excinfo:
-        handler.put(
+        handler.edit(
             id="r/pkg/m.py",
-            mode="edit",
+            mode="find-replace",
             find="nonexistent_token",
             text="x",
         )
@@ -613,12 +613,12 @@ def test_edit_not_found_carries_actionable_hint(handler: PythonHandler) -> None:
 
 def test_edit_requires_find(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="requires find="):
-        handler.put(id="r/pkg/m.py", mode="edit", text="x")
+        handler.edit(id="r/pkg/m.py", mode="find-replace", text="x")
 
 
 def test_edit_requires_text(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="requires text="):
-        handler.put(id="r/pkg/m.py", mode="edit", find="def helper")
+        handler.edit(id="r/pkg/m.py", mode="find-replace", find="def helper")
 
 
 # ---------------------------------------------------------------------------
@@ -628,7 +628,7 @@ def test_edit_requires_text(handler: PythonHandler) -> None:
 
 def test_insert_after_function_definition(handler: PythonHandler, repo: Path) -> None:
     """Insert a new top-level function after the existing helper."""
-    handler.put(
+    handler.edit(
         id="r/pkg/m.py",
         mode="insert",
         find="    return x + 1\n",
@@ -642,7 +642,7 @@ def test_insert_after_function_definition(handler: PythonHandler, repo: Path) ->
 
 def test_insert_requires_where(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="requires where="):
-        handler.put(
+        handler.edit(
             id="r/pkg/m.py",
             mode="insert",
             find="def helper",
@@ -654,7 +654,7 @@ def test_insert_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> No
     """An insert that breaks syntax fails gate 1, file untouched."""
     pre = (repo / "pkg" / "m.py").read_text()
     with pytest.raises(BadInput, match="ast.parse failed"):
-        handler.put(
+        handler.edit(
             id="r/pkg/m.py",
             mode="insert",
             find="def helper",
@@ -672,9 +672,9 @@ def test_insert_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> No
 def test_edit_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> None:
     """dry_run=True must NOT touch the file on disk."""
     pre = (repo / "pkg" / "m.py").read_text()
-    out = handler.put(
+    out = handler.edit(
         id="r/pkg/m.py",
-        mode="edit",
+        mode="find-replace",
         find="x + 1",
         text="x + 2",
         dry_run=True,
@@ -689,9 +689,9 @@ def test_edit_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> None
 
 
 def test_edit_dry_run_diff_format(handler: PythonHandler, repo: Path) -> None:
-    out = handler.put(
+    out = handler.edit(
         id="r/pkg/m.py",
-        mode="edit",
+        mode="find-replace",
         find="x + 1",
         text="x + 2",
         dry_run="diff",
@@ -704,9 +704,9 @@ def test_edit_dry_run_diff_format(handler: PythonHandler, repo: Path) -> None:
 
 
 def test_edit_dry_run_full_format(handler: PythonHandler, repo: Path) -> None:
-    out = handler.put(
+    out = handler.edit(
         id="r/pkg/m.py",
-        mode="edit",
+        mode="find-replace",
         find="x + 1",
         text="x + 2",
         dry_run="full",
@@ -722,9 +722,9 @@ def test_edit_dry_run_runs_gates(handler: PythonHandler, repo: Path) -> None:
     """A syntactically broken dry_run still fires gate 1 (no write)."""
     pre = (repo / "pkg" / "m.py").read_text()
     with pytest.raises(BadInput, match="ast.parse failed"):
-        handler.put(
+        handler.edit(
             id="r/pkg/m.py",
-            mode="edit",
+            mode="find-replace",
             find="def helper",
             text="def )(broken",
             dry_run=True,
@@ -736,9 +736,9 @@ def test_edit_dry_run_qualname_drop_blocks(handler: PythonHandler, repo: Path) -
     """dry_run still enforces gate 2 (qualname-drop)."""
     pre = (repo / "pkg" / "m.py").read_text()
     with pytest.raises(BadInput, match="qualname-drop"):
-        handler.put(
+        handler.edit(
             id="r/pkg/m.py",
-            mode="edit",
+            mode="find-replace",
             find="def helper(",
             text="def renamed(",
             dry_run=True,
@@ -751,9 +751,9 @@ def test_edit_dry_run_qualname_with_allow_rename(
 ) -> None:
     """dry_run + allow_rename: gate 2 passes, file still untouched."""
     pre = (repo / "pkg" / "m.py").read_text()
-    out = handler.put(
+    out = handler.edit(
         id="r/pkg/m.py",
-        mode="edit",
+        mode="find-replace",
         find="def helper(",
         text="def renamed(",
         allow_rename=True,
@@ -767,7 +767,7 @@ def test_edit_dry_run_qualname_with_allow_rename(
 
 def test_insert_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> None:
     pre = (repo / "pkg" / "m.py").read_text()
-    out = handler.put(
+    out = handler.edit(
         id="r/pkg/m.py",
         mode="insert",
         find="    return x + 1\n",
@@ -783,9 +783,9 @@ def test_insert_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> No
 
 def test_edit_dry_run_rejects_unknown_mode(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="dry_run must be"):
-        handler.put(
+        handler.edit(
             id="r/pkg/m.py",
-            mode="edit",
+            mode="find-replace",
             find="x + 1",
             text="x + 2",
             dry_run="brief",
@@ -886,7 +886,7 @@ def test_replace_identical_body_under_package_root_is_noop(
     with a phantom 'would disappear' error. Now: round-trip the same
     source and succeed."""
     unchanged = "def lookup(name: str) -> str:\n    return name\n"
-    out = package_root_handler.put(
+    out = package_root_handler.edit(
         id="precis::precis.registry.lookup",
         mode="replace",
         text=unchanged,
@@ -906,7 +906,7 @@ def test_replace_identical_body_under_package_root_via_line_range(
     #   L3: (blank)
     #   L4: def lookup(name: str) -> str:
     #   L5:     return name
-    out = package_root_handler.put(
+    out = package_root_handler.edit(
         id="precis/registry.py~L4-5",
         mode="replace",
         text=unchanged,

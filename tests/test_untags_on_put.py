@@ -51,7 +51,7 @@ def test_untag_removes_open_tag(memory: MemoryHandler, store: Store) -> None:
     rid = _create_with_tags(memory, "topic-co2-capture")
     assert any(t.value == "topic-co2-capture" for t in store.tags_for(rid))
 
-    memory.put(id=rid, untags=["topic-co2-capture"])
+    memory.tag(id=rid, remove=["topic-co2-capture"])
 
     assert not any(t.value == "topic-co2-capture" for t in store.tags_for(rid))
 
@@ -61,7 +61,7 @@ def test_untag_removes_flag(memory: MemoryHandler, store: Store) -> None:
     rid = _create_with_tags(memory, "star")
     assert any(t.value == "star" for t in store.tags_for(rid))
 
-    memory.put(id=rid, untags=["star"])
+    memory.tag(id=rid, remove=["star"])
 
     assert not any(t.value == "star" for t in store.tags_for(rid))
 
@@ -82,21 +82,21 @@ def test_untag_closed_prefix_value_match(store: Store) -> None:
     rid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
 
     # Todos create with STATUS:open by default. Bump to STATUS:done.
-    todo.put(id=rid, tags=["STATUS:done"])
+    todo.tag(id=rid, add=["STATUS:done"])
     assert any(
         t.namespace == "closed" and t.prefix == "STATUS" and t.value == "done"
         for t in store.tags_for(rid)
     )
 
     # Wrong-value untag is a no-op — STATUS:done stays put.
-    todo.put(id=rid, untags=["STATUS:open"])
+    todo.tag(id=rid, remove=["STATUS:open"])
     assert any(
         t.namespace == "closed" and t.prefix == "STATUS" and t.value == "done"
         for t in store.tags_for(rid)
     )
 
     # Right-value untag removes it.
-    todo.put(id=rid, untags=["STATUS:done"])
+    todo.tag(id=rid, remove=["STATUS:done"])
     assert not any(
         t.namespace == "closed" and t.prefix == "STATUS" for t in store.tags_for(rid)
     )
@@ -106,15 +106,15 @@ def test_untag_idempotent(memory: MemoryHandler, store: Store) -> None:
     """Removing a tag that isn't there is a silent no-op (same as
     SQL DELETE finding zero rows)."""
     rid = _create_with_tags(memory)
-    memory.put(id=rid, untags=["topic-not-set"])  # no error
-    memory.put(id=rid, untags=["topic-not-set"])  # still no error
+    memory.tag(id=rid, remove=["topic-not-set"])  # no error
+    memory.tag(id=rid, remove=["topic-not-set"])  # still no error
 
 
 def test_untag_with_tags_combined(memory: MemoryHandler, store: Store) -> None:
     """Same put can both add and remove tags atomically (well, two
     DB calls, but one agent call)."""
     rid = _create_with_tags(memory, "topic-old")
-    memory.put(id=rid, tags=["topic-new"], untags=["topic-old"])
+    memory.tag(id=rid, add=["topic-new"], remove=["topic-old"])
 
     values = {t.value for t in store.tags_for(rid)}
     assert "topic-new" in values
@@ -127,13 +127,13 @@ def test_untag_with_tags_combined(memory: MemoryHandler, store: Store) -> None:
 def test_untag_rejects_bare_collision(memory: MemoryHandler) -> None:
     rid = _create_with_tags(memory, "topic-x")
     with pytest.raises(BadInput, match="bare flag 'urgent'"):
-        memory.put(id=rid, untags=["urgent"])
+        memory.tag(id=rid, remove=["urgent"])
 
 
 def test_untag_rejects_unknown_status(memory: MemoryHandler) -> None:
     rid = _create_with_tags(memory)
     with pytest.raises(BadInput, match="invalid STATUS value"):
-        memory.put(id=rid, untags=["STATUS:bogus"])
+        memory.tag(id=rid, remove=["STATUS:bogus"])
 
 
 def test_untag_rejects_empty_value_form(memory: MemoryHandler) -> None:
@@ -142,7 +142,7 @@ def test_untag_rejects_empty_value_form(memory: MemoryHandler) -> None:
     the empty string is not among them."""
     rid = _create_with_tags(memory)
     with pytest.raises(BadInput):
-        memory.put(id=rid, untags=["STATUS:"])
+        memory.tag(id=rid, remove=["STATUS:"])
 
 
 # ── update path: at-least-one validation ────────────────────────────
@@ -152,8 +152,8 @@ def test_update_with_only_untags_is_valid(memory: MemoryHandler, store: Store) -
     """``untags=`` alone is a sufficient update — no need to also
     pass text= or tags=."""
     rid = _create_with_tags(memory, "topic-x")
-    out = memory.put(id=rid, untags=["topic-x"])
-    assert "updated memory" in out.body
+    out = memory.tag(id=rid, remove=["topic-x"])
+    assert "tagged memory" in out.body
 
 
 def test_update_no_args_still_rejected(memory: MemoryHandler, store: Store) -> None:

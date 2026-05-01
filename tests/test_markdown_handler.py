@@ -275,7 +275,7 @@ def test_put_create_rejects_existing(handler: MarkdownHandler, md_root: Path) ->
 
 def test_put_append(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "# Doc\n\nFirst para.\n")
-    handler.put(id="doc", text="Appended paragraph.", mode="append")
+    handler.edit(id="doc", text="Appended paragraph.", mode="append")
     raw = (md_root / "doc.md").read_text()
     assert "First para." in raw
     assert "Appended paragraph." in raw
@@ -288,7 +288,7 @@ def test_put_append(handler: MarkdownHandler, md_root: Path) -> None:
 def test_put_append_requires_text(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "# X\n")
     with pytest.raises(BadInput, match="requires text"):
-        handler.put(id="doc", mode="append")
+        handler.edit(id="doc", mode="append")
 
 
 # ── put: replace ─────────────────────────────────────────────────────
@@ -307,7 +307,7 @@ def test_put_replace_block(handler: MarkdownHandler, md_root: Path) -> None:
     blocks = handler.store.list_blocks_for_ref(ref.id)
     para = next(b for b in blocks if b.text.startswith("Original"))
 
-    handler.put(
+    handler.edit(
         id=f"doc~{para.slug}",
         text="Replacement paragraph.",
         mode="replace",
@@ -325,14 +325,14 @@ def test_put_replace_requires_block_selector(
 ) -> None:
     _write(md_root, "doc.md", "# X\n\nA.\n")
     with pytest.raises(BadInput, match="block selector"):
-        handler.put(id="doc", text="new", mode="replace")
+        handler.edit(id="doc", text="new", mode="replace")
 
 
 def test_put_replace_unknown_block(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "# X\n\nA.\n")
     handler.get(id="doc")
     with pytest.raises(NotFound, match="block.*not found"):
-        handler.put(id="doc~nope", text="x", mode="replace")
+        handler.edit(id="doc~nope", text="x", mode="replace")
 
 
 # ── put: delete ──────────────────────────────────────────────────────
@@ -350,7 +350,7 @@ def test_put_delete_block(handler: MarkdownHandler, md_root: Path) -> None:
     blocks = handler.store.list_blocks_for_ref(ref.id)
     target = next(b for b in blocks if b.text.startswith("Delete"))
 
-    handler.put(id=f"doc~{target.slug}", mode="delete")
+    handler.delete(id=f"doc~{target.slug}")
     raw = (md_root / "doc.md").read_text()
     assert "Delete me." not in raw
     assert "Keep me." in raw
@@ -359,7 +359,7 @@ def test_put_delete_block(handler: MarkdownHandler, md_root: Path) -> None:
 def test_put_delete_requires_selector(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "# X\n")
     with pytest.raises(BadInput, match="block selector"):
-        handler.put(id="doc", mode="delete")
+        handler.delete(id="doc")
 
 
 # ── put: bad mode ────────────────────────────────────────────────────
@@ -403,9 +403,9 @@ def test_put_edit_swaps_token_in_block(handler: MarkdownHandler, md_root: Path) 
     blocks = handler.store.list_blocks_for_ref(ref.id)
     para = next(b for b in blocks if "fox" in b.text)
 
-    handler.put(
+    handler.edit(
         id=f"doc~{para.slug}",
-        mode="edit",
+        mode="find-replace",
         find="the",
         before="over ",
         after=" fence",
@@ -422,9 +422,9 @@ def test_put_edit_whole_file_no_selector(
 ) -> None:
     """No ~selector → search the whole file."""
     _write(md_root, "doc.md", "# Title\n\nFoo and bar and baz.\n")
-    handler.put(
+    handler.edit(
         id="doc",
-        mode="edit",
+        mode="find-replace",
         find="bar",
         text="QUX",
     )
@@ -436,9 +436,9 @@ def test_put_edit_match_all_replaces_every_occurrence(
     handler: MarkdownHandler, md_root: Path
 ) -> None:
     _write(md_root, "doc.md", "# T\n\nx is x and x.\n")
-    handler.put(
+    handler.edit(
         id="doc",
-        mode="edit",
+        mode="find-replace",
         find="x",
         text="Y",
         match="all",
@@ -452,7 +452,7 @@ def test_put_edit_ambiguous_match_unique_errors(
 ) -> None:
     _write(md_root, "doc.md", "# T\n\nfoo and foo.\n")
     with pytest.raises(BadInput) as excinfo:
-        handler.put(id="doc", mode="edit", find="foo", text="bar")
+        handler.edit(id="doc", mode="find-replace", find="foo", text="bar")
     msg = str(excinfo.value)
     assert "2 matches" in msg or "matches" in msg
 
@@ -462,7 +462,7 @@ def test_put_edit_not_found_carries_actionable_hint(
 ) -> None:
     _write(md_root, "doc.md", "# Title\n\nHello world.\n")
     with pytest.raises(BadInput) as excinfo:
-        handler.put(id="doc", mode="edit", find="goodbye", text="x")
+        handler.edit(id="doc", mode="find-replace", find="goodbye", text="x")
     msg = str(excinfo.value)
     assert "not found" in msg
     # Region label should include the file slug.
@@ -472,20 +472,20 @@ def test_put_edit_not_found_carries_actionable_hint(
 def test_put_edit_requires_find(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "# T\n\nA.\n")
     with pytest.raises(BadInput, match="requires find="):
-        handler.put(id="doc", mode="edit", text="x")
+        handler.edit(id="doc", mode="find-replace", text="x")
 
 
 def test_put_edit_requires_text(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "# T\n\nA.\n")
     with pytest.raises(BadInput, match="requires text="):
-        handler.put(id="doc", mode="edit", find="A")
+        handler.edit(id="doc", mode="find-replace", find="A")
 
 
 def test_put_edit_no_op_errors(handler: MarkdownHandler, md_root: Path) -> None:
     """Identical find=text=text is a no-op and should not silently succeed."""
     _write(md_root, "doc.md", "# T\n\nfoo bar.\n")
     with pytest.raises(BadInput, match="no change"):
-        handler.put(id="doc", mode="edit", find="foo", text="foo")
+        handler.edit(id="doc", mode="find-replace", find="foo", text="foo")
 
 
 def test_put_edit_persists_via_reingest(
@@ -493,7 +493,7 @@ def test_put_edit_persists_via_reingest(
 ) -> None:
     """After mode='edit', the next get() must see the new text."""
     _write(md_root, "doc.md", "# Title\n\nDraft version.\n")
-    handler.put(id="doc", mode="edit", find="Draft", text="Final")
+    handler.edit(id="doc", mode="find-replace", find="Draft", text="Final")
     out = handler.get(id="doc/raw")
     assert "Final version." in out.body
     assert "Draft" not in out.body
@@ -504,7 +504,7 @@ def test_put_edit_persists_via_reingest(
 
 def test_put_insert_after_anchor(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "Hello world.\n")
-    handler.put(
+    handler.edit(
         id="doc",
         mode="insert",
         find="Hello",
@@ -517,7 +517,7 @@ def test_put_insert_after_anchor(handler: MarkdownHandler, md_root: Path) -> Non
 
 def test_put_insert_before_anchor(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "world.\n")
-    handler.put(
+    handler.edit(
         id="doc",
         mode="insert",
         find="world",
@@ -531,15 +531,15 @@ def test_put_insert_before_anchor(handler: MarkdownHandler, md_root: Path) -> No
 def test_put_insert_requires_where(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "x\n")
     with pytest.raises(BadInput, match="requires where="):
-        handler.put(id="doc", mode="insert", find="x", text="y")
+        handler.edit(id="doc", mode="insert", find="x", text="y")
 
 
 def test_put_edit_invalid_match_policy(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "# T\n\nfoo.\n")
     with pytest.raises(BadInput, match="unknown match policy"):
-        handler.put(
+        handler.edit(
             id="doc",
-            mode="edit",
+            mode="find-replace",
             find="foo",
             text="bar",
             match="bogus",
@@ -555,9 +555,9 @@ def test_put_edit_dry_run_does_not_write(
     """dry_run=True must NOT touch the file on disk."""
     initial = "# Title\n\nDraft version.\n"
     _write(md_root, "doc.md", initial)
-    out = handler.put(
+    out = handler.edit(
         id="doc",
-        mode="edit",
+        mode="find-replace",
         find="Draft",
         text="Final",
         dry_run=True,
@@ -574,9 +574,9 @@ def test_put_edit_dry_run_diff_has_unified_headers(
     handler: MarkdownHandler, md_root: Path
 ) -> None:
     _write(md_root, "doc.md", "before\nfoo\nafter\n")
-    out = handler.put(
+    out = handler.edit(
         id="doc",
-        mode="edit",
+        mode="find-replace",
         find="foo",
         text="bar",
         dry_run="diff",
@@ -592,9 +592,9 @@ def test_put_edit_dry_run_full_shows_post_edit_lines(
     handler: MarkdownHandler, md_root: Path
 ) -> None:
     _write(md_root, "doc.md", "alpha\nbeta\nfoo\ndelta\nepsilon\n")
-    out = handler.put(
+    out = handler.edit(
         id="doc",
-        mode="edit",
+        mode="find-replace",
         find="foo",
         text="REPLACED",
         dry_run="full",
@@ -613,9 +613,9 @@ def test_put_edit_dry_run_validates_errors_before_write(
     """Even in dry-run, ``find`` not present is still an error."""
     _write(md_root, "doc.md", "# T\n\nhello.\n")
     with pytest.raises(BadInput, match="not found"):
-        handler.put(
+        handler.edit(
             id="doc",
-            mode="edit",
+            mode="find-replace",
             find="nonexistent",
             text="x",
             dry_run=True,
@@ -633,9 +633,9 @@ def test_put_edit_dry_run_block_scoped(handler: MarkdownHandler, md_root: Path) 
     blocks = handler.store.list_blocks_for_ref(ref.id)
     para = next(b for b in blocks if "fox" in b.text)
 
-    out = handler.put(
+    out = handler.edit(
         id=f"doc~{para.slug}",
-        mode="edit",
+        mode="find-replace",
         find="fox",
         text="cat",
         dry_run=True,
@@ -651,7 +651,7 @@ def test_put_insert_dry_run_does_not_write(
 ) -> None:
     initial = "Hello world.\n"
     _write(md_root, "doc.md", initial)
-    out = handler.put(
+    out = handler.edit(
         id="doc",
         mode="insert",
         find="Hello",
@@ -669,9 +669,9 @@ def test_put_edit_dry_run_rejects_unknown_mode(
 ) -> None:
     _write(md_root, "doc.md", "x\n")
     with pytest.raises(BadInput, match="dry_run must be"):
-        handler.put(
+        handler.edit(
             id="doc",
-            mode="edit",
+            mode="find-replace",
             find="x",
             text="y",
             dry_run="brief",

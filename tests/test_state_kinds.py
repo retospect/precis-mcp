@@ -249,14 +249,14 @@ class TestQuest:
         quest.put(text="open one")
         r2 = quest.put(text="closed one")
         slug = r2.body.split("'")[1]  # extract 'closed-one' from message
-        quest.put(id=slug, tags=["STATUS:done"])
+        quest.tag(id=slug, add=["STATUS:done"])
         out = quest.get(id="/open")
         assert "open-one" in out.body
         assert "closed-one" not in out.body
 
     def test_status_transition(self, quest: QuestHandler) -> None:
         quest.put(text="task")
-        quest.put(id="task", tags=["STATUS:doing"])
+        quest.tag(id="task", add=["STATUS:doing"])
         out = quest.get(id="task")
         assert "STATUS:doing" in out.body
         assert "STATUS:open" not in out.body
@@ -267,6 +267,6 @@ class TestQuest:
 
     def test_delete(self, quest: QuestHandler) -> None:
         quest.put(text="ephemeral")
-        quest.put(id="ephemeral", mode="delete")
+        quest.delete(id="ephemeral")
         with pytest.raises(NotFound):
             quest.get(id="ephemeral")

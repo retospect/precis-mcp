@@ -55,7 +55,15 @@ def test_other_verbs_unsupported(handler: CalcHandler) -> None:
     with pytest.raises(Unsupported):
         handler.search(q="x")
     with pytest.raises(Unsupported):
-        handler.put(text="x", mode="append")
+        handler.put(text="x")
+    with pytest.raises(Unsupported):
+        handler.edit(id=1)
+    with pytest.raises(Unsupported):
+        handler.delete(id=1)
+    with pytest.raises(Unsupported):
+        handler.tag(id=1, add=["x"])
+    with pytest.raises(Unsupported):
+        handler.link(id=1, target="x:y")
     with pytest.raises(Unsupported):
         handler.move(id=1, after=2)
 
@@ -66,4 +74,8 @@ def test_kindspec_declares_only_get() -> None:
     assert spec.supports_get is True
     assert spec.supports_search is False
     assert spec.supports_put is False
+    assert spec.supports_edit is False
+    assert spec.supports_delete is False
+    assert spec.supports_tag is False
+    assert spec.supports_link is False
     assert spec.supports_move is False

@@ -61,7 +61,7 @@ class TestOraclePutAccepted:
     def test_link_oracle_to_paper(self, store: Store, oracle: OracleHandler) -> None:
         o_id = _seed_oracle(store, "reviewer-rigor")
         _seed_paper(store, "smith2024")
-        out = oracle.put(id="reviewer-rigor", link="paper:smith2024", rel="cites")
+        out = oracle.link(id="reviewer-rigor", target="paper:smith2024", rel="cites")
         assert "+1 link" in out.body
         assert "reviewer-rigor" in out.body
         out_links = store.links_for(o_id, relation="cites", direction="out")
@@ -69,15 +69,15 @@ class TestOraclePutAccepted:
 
     def test_open_tag_added(self, store: Store, oracle: OracleHandler) -> None:
         o_id = _seed_oracle(store, "rubric-x")
-        out = oracle.put(id="rubric-x", tags=["topic-citation-style"])
+        out = oracle.tag(id="rubric-x", add=["topic-citation-style"])
         assert "+1 tag" in out.body
         rows = store.tags_for(o_id)
         assert any(t.value == "topic-citation-style" for t in rows)
 
     def test_untag_removes(self, store: Store, oracle: OracleHandler) -> None:
         o_id = _seed_oracle(store, "rubric-x")
-        oracle.put(id="rubric-x", tags=["topic-foo"])
-        out = oracle.put(id="rubric-x", untags=["topic-foo"])
+        oracle.tag(id="rubric-x", add=["topic-foo"])
+        out = oracle.tag(id="rubric-x", remove=["topic-foo"])
         assert "-1 tag" in out.body
         rows = store.tags_for(o_id)
         assert all(t.value != "topic-foo" for t in rows)
@@ -85,8 +85,8 @@ class TestOraclePutAccepted:
     def test_unlink_removes(self, store: Store, oracle: OracleHandler) -> None:
         o_id = _seed_oracle(store, "rubric-x")
         _seed_paper(store, "p1")
-        oracle.put(id="rubric-x", link="paper:p1", rel="cites")
-        out = oracle.put(id="rubric-x", unlink="paper:p1", rel="cites")
+        oracle.link(id="rubric-x", target="paper:p1", rel="cites")
+        out = oracle.link(id="rubric-x", target="paper:p1", mode="remove", rel="cites")
         assert "-1 link" in out.body
         assert store.links_for(o_id, relation="cites", direction="out") == []
 
@@ -114,7 +114,7 @@ class TestOraclePutRejected:
         """Oracles have no closed-axis tags — STATUS: must reject."""
         _seed_oracle(store, "rubric-x")
         with pytest.raises(BadInput, match="axis not allowed on kind 'oracle'"):
-            oracle.put(id="rubric-x", tags=["STATUS:open"])
+            oracle.tag(id="rubric-x", add=["STATUS:open"])
 
     def test_no_op_rejected(self, oracle: OracleHandler, store: Store) -> None:
         _seed_oracle(store, "rubric-x")
@@ -140,14 +140,14 @@ class TestConvPutAccepted:
     def test_link_conv_to_paper(self, store: Store, conv: ConversationHandler) -> None:
         c_id = _seed_conv(store, "thread-1")
         _seed_paper(store, "smith2024")
-        out = conv.put(id="thread-1", link="paper:smith2024", rel="derived-from")
+        out = conv.link(id="thread-1", target="paper:smith2024", rel="derived-from")
         assert "+1 link" in out.body
         out_links = store.links_for(c_id, relation="derived-from", direction="out")
         assert len(out_links) == 1
 
     def test_open_tag_added(self, store: Store, conv: ConversationHandler) -> None:
         c_id = _seed_conv(store, "thread-1")
-        out = conv.put(id="thread-1", tags=["topic-noxrr"])
+        out = conv.tag(id="thread-1", add=["topic-noxrr"])
         assert "+1 tag" in out.body
         rows = store.tags_for(c_id)
         assert any(t.value == "topic-noxrr" for t in rows)
@@ -190,7 +190,7 @@ class TestConvPutRejected:
         """Conversations have no closed-axis tags — STATUS: rejects."""
         _seed_conv(store, "thread-1")
         with pytest.raises(BadInput, match="axis not allowed on kind 'conv'"):
-            conv.put(id="thread-1", tags=["STATUS:open"])
+            conv.tag(id="thread-1", add=["STATUS:open"])
 
     def test_no_op_rejected(self, conv: ConversationHandler, store: Store) -> None:
         _seed_conv(store, "thread-1")

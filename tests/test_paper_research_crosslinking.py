@@ -55,7 +55,7 @@ class TestPaperPutAcceptedOps:
         """Paper-A `cites` paper-B is the headline use case."""
         a_id = _seed_paper(store, "paper-a", "A")
         b_id = _seed_paper(store, "paper-b", "B")
-        out = paper.put(id="paper-a", link="paper:paper-b", rel="cites")
+        out = paper.link(id="paper-a", target="paper:paper-b", rel="cites")
         assert "+1 link" in out.body
         assert "paper-a" in out.body
         # Verify the row landed.
@@ -67,14 +67,14 @@ class TestPaperPutAcceptedOps:
         """Omitting rel= picks ``related-to``."""
         _seed_paper(store, "paper-a")
         _seed_paper(store, "paper-b")
-        paper.put(id="paper-a", link="paper:paper-b")
+        paper.link(id="paper-a", target="paper:paper-b")
         # Read it back from B's side via the inverse-aware filter.
         b_links = store.links_for(_seed_id_of(store, "paper-b"), direction="in")
         assert any(link.relation == "related-to" for link in b_links)
 
     def test_tags_added(self, store: Store, paper: PaperHandler) -> None:
         ref_id = _seed_paper(store, "paper-a")
-        out = paper.put(id="paper-a", tags=["SRC:primary", "topic-co2"])
+        out = paper.tag(id="paper-a", add=["SRC:primary", "topic-co2"])
         assert "+2 tag" in out.body
         # Verify both rows landed.
         rows = store.tags_for(ref_id)
@@ -90,14 +90,14 @@ class TestPaperPutAcceptedOps:
             dst_ref_id=_seed_id_of(store, "paper-b"),
             relation="cites",
         )
-        out = paper.put(id="paper-a", unlink="paper:paper-b", rel="cites")
+        out = paper.link(id="paper-a", target="paper:paper-b", mode="remove", rel="cites")
         assert "-1 link" in out.body
         assert store.links_for(a_id, relation="cites", direction="out") == []
 
     def test_untags_removes(self, store: Store, paper: PaperHandler) -> None:
         ref_id = _seed_paper(store, "paper-a")
-        paper.put(id="paper-a", tags=["topic-co2"])
-        out = paper.put(id="paper-a", untags=["topic-co2"])
+        paper.tag(id="paper-a", add=["topic-co2"])
+        out = paper.tag(id="paper-a", remove=["topic-co2"])
         assert "-1 tag" in out.body
         rows = store.tags_for(ref_id)
         assert all(t.value != "topic-co2" for t in rows)
@@ -140,7 +140,7 @@ class TestPaperPutRejected:
         """Per-kind axis enforcement still fires — papers don't carry STATUS."""
         _seed_paper(store, "paper-a")
         with pytest.raises(BadInput, match="axis not allowed on kind 'paper'"):
-            paper.put(id="paper-a", tags=["STATUS:open"])
+            paper.tag(id="paper-a", add=["STATUS:open"])
 
     def test_no_op_rejected(self, paper: PaperHandler, store: Store) -> None:
         """At least one of link/unlink/tags/untags is required."""
@@ -169,7 +169,7 @@ class TestPaperBidirectionalGraph:
         a_id = _seed_paper(store, "paper-a")
         _seed_paper(store, "paper-b")
         b_id = _seed_id_of(store, "paper-b")
-        paper.put(id="paper-a", link="paper:paper-b", rel="cites")
+        paper.link(id="paper-a", target="paper:paper-b", rel="cites")
         # From B's side, query via the inverse name.
         cited_by = store.links_for(b_id, relation="cited-by", direction="out")
         assert len(cited_by) == 1
@@ -182,8 +182,8 @@ class TestPaperBidirectionalGraph:
         which name was used to discover it."""
         a_id = _seed_paper(store, "paper-a")
         _seed_paper(store, "paper-b")
-        paper.put(id="paper-a", link="paper:paper-b", rel="cites")
-        paper.put(id="paper-a", unlink="paper:paper-b", rel="cites")
+        paper.link(id="paper-a", target="paper:paper-b", rel="cites")
+        paper.link(id="paper-a", target="paper:paper-b", mode="remove", rel="cites")
         b_id = _seed_id_of(store, "paper-b")
         assert store.links_for(b_id, relation="cited-by", direction="out") == []
 
@@ -208,7 +208,7 @@ class TestPerplexityLinkTagOps:
         slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
         # Seed a paper to link to.
         _seed_paper(store, "rayleigh1899")
-        out = research.put(id=slug, link="paper:rayleigh1899", rel="derived-from")
+        out = research.link(id=slug, target="paper:rayleigh1899", rel="derived-from")
         assert "+1 link" in out.body
 
     def test_tag_cache_pinned(self, store: Store) -> None:
@@ -217,7 +217,7 @@ class TestPerplexityLinkTagOps:
         research = ResearchHandler(hub=Hub(store=store))
         ack = research.put(id="q", text="body", mode="import")
         slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
-        out = research.put(id=slug, tags=["CACHE:pinned"])
+        out = research.tag(id=slug, add=["CACHE:pinned"])
         assert "+1 tag" in out.body
 
     def test_status_axis_rejected_on_research(self, store: Store) -> None:
@@ -228,7 +228,7 @@ class TestPerplexityLinkTagOps:
         ack = research.put(id="q", text="body", mode="import")
         slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
         with pytest.raises(BadInput, match="axis not allowed on kind 'research'"):
-            research.put(id=slug, tags=["STATUS:open"])
+            research.tag(id=slug, add=["STATUS:open"])
 
     def test_import_with_link_kwarg_rejected(self, store: Store) -> None:
         """Mixing import + link/tag is a misuse — split into two calls."""

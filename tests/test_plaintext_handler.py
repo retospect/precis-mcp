@@ -203,7 +203,7 @@ def test_put_create_refuses_overwrite(handler: PlaintextHandler, pt_root: Path) 
 
 def test_put_append(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "foo.txt", "original paragraph.\n")
-    out = handler.put(id="foo", text="new paragraph", mode="append")
+    out = handler.edit(id="foo", text="new paragraph", mode="append")
     assert "appended to plaintext" in out.body
     content = (pt_root / "foo.txt").read_text()
     assert "original paragraph" in content
@@ -213,14 +213,14 @@ def test_put_append(handler: PlaintextHandler, pt_root: Path) -> None:
 def test_put_append_requires_text(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "foo.txt", "x.\n")
     with pytest.raises(BadInput, match="append requires text"):
-        handler.put(id="foo", mode="append")
+        handler.edit(id="foo", mode="append")
 
 
 def test_put_replace_by_pos(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "doc.txt", "first paragraph.\n\nsecond paragraph.\n")
     # Force ingest, then replace paragraph 0.
     handler.get(id="doc")
-    out = handler.put(id="doc~0", text="FIRST (edited) paragraph.", mode="replace")
+    out = handler.edit(id="doc~0", text="FIRST (edited) paragraph.", mode="replace")
     assert "replaced paragraph" in out.body
     content = (pt_root / "doc.txt").read_text()
     assert "FIRST (edited)" in content
@@ -230,7 +230,7 @@ def test_put_replace_by_pos(handler: PlaintextHandler, pt_root: Path) -> None:
 def test_put_delete_by_pos(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "doc.txt", "keep me.\n\ndrop me.\n\nkeep me too.\n")
     handler.get(id="doc")  # force ingest
-    out = handler.put(id="doc~1", mode="delete")
+    out = handler.delete(id="doc~1")
     assert "deleted paragraph" in out.body
     content = (pt_root / "doc.txt").read_text()
     assert "keep me" in content
@@ -241,8 +241,8 @@ def test_put_delete_file_without_selector_rejected(
     handler: PlaintextHandler, pt_root: Path
 ) -> None:
     _write(pt_root, "doc.txt", "x.\n")
-    with pytest.raises(BadInput, match="delete requires a block selector"):
-        handler.put(id="doc", mode="delete")
+    with pytest.raises(BadInput, match="requires a block selector"):
+        handler.delete(id="doc")
 
 
 # ── put: anchored edit + insert (shared protocol) ────────────────────
@@ -254,9 +254,9 @@ def test_put_edit_surgical(handler: PlaintextHandler, pt_root: Path) -> None:
         "log.txt",
         "Session opened at 09:15 with tests failing.\n\nResolved at 11:00.\n",
     )
-    out = handler.put(
+    out = handler.edit(
         id="log",
-        mode="edit",
+        mode="find-replace",
         find="09:15",
         text="09:20",
     )
@@ -269,12 +269,12 @@ def test_put_edit_surgical(handler: PlaintextHandler, pt_root: Path) -> None:
 def test_put_edit_requires_find(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "log.txt", "x.\n")
     with pytest.raises(BadInput, match="requires find"):
-        handler.put(id="log", mode="edit", text="y")
+        handler.edit(id="log", mode="find-replace", text="y")
 
 
 def test_put_insert_before_anchor(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "log.txt", "end of story.\n")
-    out = handler.put(
+    out = handler.edit(
         id="log",
         mode="insert",
         find="end of story",
@@ -320,7 +320,7 @@ def test_log_write_preserves_extension(
     .log file must not rewrite it to .txt on the next write."""
     _write(pt_root, "server.log", "line one.\n")
     handler.get(id="server")  # ingest to pin the .log extension in meta
-    handler.put(id="server", text="line two.", mode="append")
+    handler.edit(id="server", text="line two.", mode="append")
     # Still a .log on disk.
     assert (pt_root / "server.log").exists()
     assert not (pt_root / "server.txt").exists()
