@@ -382,14 +382,14 @@ def test_index_precis_itself_smoke() -> None:
     assert idx.n_modules >= 30
     assert idx.n_symbols >= 200
 
-    # Stable canary symbols
-    reg = idx.symbol("precis.registry.Registry")
+    # Stable canary symbols — pick ones unlikely to churn.
+    reg = idx.symbol("precis.dispatch.Registry")
     assert reg is not None and reg.kind == "class"
 
-    builtins_fn = idx.symbol("precis.registry.builtins")
-    assert builtins_fn is not None and builtins_fn.kind == "function"
-    assert builtins_fn.signature is not None
-    assert "list[Handler]" in builtins_fn.signature
+    boot_fn = idx.symbol("precis.dispatch.boot")
+    assert boot_fn is not None and boot_fn.kind == "function"
+    assert boot_fn.signature is not None
+    assert "Registry" in boot_fn.signature
 
     md = idx.module("precis.handlers.markdown")
     assert md is not None and md.parse_error is None

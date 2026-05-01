@@ -183,9 +183,8 @@ class TestSkillIndexFiltering:
     def test_index_omits_filtered_skills(self, runtime: PrecisRuntime) -> None:
         """The bare ``get(kind='skill')`` index doesn't list
         ``precis-density`` or ``precis-navigation``."""
-        h = next(
-            x for x in runtime.registry._by_kind.values() if isinstance(x, SkillHandler)
-        )
+        h = runtime.registry.handler_for("skill")
+        assert isinstance(h, SkillHandler)
         out = h.get()
         assert "precis-density" not in out.body
         assert "precis-navigation" not in out.body
@@ -196,9 +195,8 @@ class TestSkillIndexFiltering:
         self, runtime: PrecisRuntime
     ) -> None:
         """Direct slug fetch still works and prepends a heads-up banner."""
-        h = next(
-            x for x in runtime.registry._by_kind.values() if isinstance(x, SkillHandler)
-        )
+        h = runtime.registry.handler_for("skill")
+        assert isinstance(h, SkillHandler)
         out = h.get(id="precis-density")
         assert "Heads up" in out.body
         # The original content is still there.
@@ -426,20 +424,14 @@ def runtime(store: Store) -> PrecisRuntime:
     """A runtime wired with every active handler — same shape the
     real MCP server uses, but pointed at the test store."""
     from precis.config import PrecisConfig
+    from precis.dispatch import boot
     from precis.embedder import make_embedder
     from precis.hints import HintBus
-    from precis.registry import Registry, builtins
 
     embedder = make_embedder("mock", dim=store.embedding_dim())
-    handlers = builtins(store=store, embedder=embedder)
-    registry = Registry(handlers)
-    for h in handlers:
-        bind = getattr(h, "bind_registry", None)
-        if callable(bind):
-            bind(registry)
     return PrecisRuntime(
         config=PrecisConfig(),
-        registry=registry,
+        registry=boot(store=store, embedder=embedder),
         hints=HintBus(),
         store=store,
     )

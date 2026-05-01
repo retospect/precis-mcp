@@ -111,8 +111,8 @@ def test_cross_kind_search_default_fans_out_when_store_is_empty(
     # active kind that opted into cross-kind merge.
     search_hits_kinds = [
         k
-        for k in runtime_with_store.registry.kinds()
-        if runtime_with_store.registry.get(k).spec.supports_search_hits
+        for k in sorted(runtime_with_store.registry.kinds)
+        if runtime_with_store.registry.handler_for(k).spec.supports_search_hits
     ]
     assert search_hits_kinds, (
         "expected at least one cross-kind search-hits kind in the registry"

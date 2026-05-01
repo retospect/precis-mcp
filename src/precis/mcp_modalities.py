@@ -285,7 +285,8 @@ def _read_resource(runtime: PrecisRuntime, uri: str) -> str:
     typed_id: Any = ident
     spec = None
     try:
-        spec = runtime.registry.get(kind).spec
+        handler = runtime.registry.handler_for(kind)
+        spec = handler.spec if handler is not None else None
     except Exception:  # pragma: no cover — let dispatch raise the proper error
         spec = None
     if spec is not None and spec.is_numeric:
@@ -323,7 +324,7 @@ def register_resources(mcp: FastMCP, runtime: PrecisRuntime) -> tuple[int, int]:
 
     # Templates: every reachable kind so the modern client can offer
     # autocomplete on slugs / numeric ids without enumeration.
-    registered_kinds = set(runtime.registry.kinds())
+    registered_kinds = runtime.registry.kinds
     for kind, template, description in _TEMPLATE_KINDS:
         if kind not in registered_kinds:
             continue
