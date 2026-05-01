@@ -128,23 +128,20 @@ def test_precis_help_falls_back_without_hub(skill: SkillHandler) -> None:
 
 
 def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
-    """When the hub is bound, precis-help enumerates every kind."""
+    """When the hub is bound, precis-help enumerates every kind.
+
+    The renderer reads ``Hub.verbs_for(kind)`` to source the live
+    verb set rather than re-deriving from ``KindSpec.supports_*``
+    flags — that way adding a new verb to ``_ALL_VERBS`` lights it
+    up here automatically (regression for the seven-verb cutover,
+    which previously left this skill stale showing only get/search/
+    put despite handlers also supporting edit/delete/tag/link).
+    """
 
     class _FakeSpec:
-        def __init__(
-            self,
-            kind: str,
-            *,
-            description: str = "",
-            supports_get: bool = True,
-            supports_search: bool = True,
-            supports_put: bool = False,
-        ) -> None:
+        def __init__(self, kind: str, *, description: str = "") -> None:
             self.kind = kind
             self.description = description
-            self.supports_get = supports_get
-            self.supports_search = supports_search
-            self.supports_put = supports_put
 
     class _FakeHandler:
         def __init__(self, spec: _FakeSpec) -> None:
@@ -152,11 +149,18 @@ def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
 
     class _FakeHub:
         """Duck-typed stand-in for ``dispatch.Hub`` exposing the
-        two attributes ``SkillHandler._render_help`` consults:
-        ``kinds`` (iterable property) and ``handler_for(kind)``."""
+        three attributes ``SkillHandler._render_help`` consults:
+        ``kinds`` (iterable property), ``handler_for(kind)``, and
+        ``verbs_for(kind)`` — the live verb set from the dispatch
+        table."""
 
-        def __init__(self, handlers: list[_FakeHandler]) -> None:
+        def __init__(
+            self,
+            handlers: list[_FakeHandler],
+            verbs_per_kind: dict[str, set[str]],
+        ) -> None:
             self._h = {h.spec.kind: h for h in handlers}
+            self._verbs = verbs_per_kind
 
         @property
         def kinds(self) -> list[str]:
@@ -165,26 +169,33 @@ def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
         def handler_for(self, kind: str) -> _FakeHandler:
             return self._h[kind]
 
+        def verbs_for(self, kind: str) -> set[str]:
+            return self._verbs.get(kind, set())
+
     handlers = [
         _FakeHandler(_FakeSpec("calc", description="Math expressions")),
         _FakeHandler(
-            _FakeSpec(
-                "todo",
-                description="Tasks with status tracking",
-                supports_put=True,
-            )
+            _FakeSpec("todo", description="Tasks with status tracking")
         ),
         _FakeHandler(_FakeSpec("paper", description="Research papers")),
     ]
-    skill.hub = _FakeHub(handlers)
+    # Mirror the live spec for each kind via the seven-verb table.
+    verbs_per_kind = {
+        "calc": {"get"},
+        "todo": {"get", "search", "put", "delete", "tag", "link"},
+        "paper": {"get", "search", "tag", "link"},
+    }
+    skill.hub = _FakeHub(handlers, verbs_per_kind)
 
     out = skill.get(id="precis-help")
     assert "calc" in out.body
     assert "todo" in out.body
     assert "paper" in out.body
-    # Verbs surfaced.
-    assert "get / search / put" in out.body  # todo has put
-    assert "get / search" in out.body  # calc/paper don't
+    # Verbs surfaced — full seven-verb visibility per kind.
+    assert "get / search / put / delete / tag / link" in out.body  # todo
+    assert "get / search / tag / link" in out.body  # paper
+    # calc supports only get; the row should show that single verb.
+    assert "calc" in out.body
     assert "3 kinds active" in out.body
 
 

@@ -245,12 +245,16 @@ class PrecisRuntime:
 
             verbs = [v for v in _VERBS if handler.spec.supports(v)]
             # ``options`` enumerates the supported verbs as the
-            # recovery vocabulary; ``next`` gives a concrete call
-            # shape rather than re-listing the same names so the
-            # LLM sees one canonical retry to copy. Pick ``get`` as
-            # the safest recovery suggestion when available — every
-            # kind supports it; otherwise fall back to the first
-            # supported verb in the canonical order.
+            # recovery vocabulary; ``next`` gives a concrete
+            # *callable* shape rather than re-listing the same
+            # names so the LLM can copy-paste-execute. Pick ``get``
+            # as the safest recovery suggestion when available —
+            # every kind supports it and a minimum-arg ``get(kind=
+            # X)`` either returns a list view (numeric/file kinds)
+            # or fails with a kind-specific BadInput pointing at
+            # the right next step (calc/math/web/etc. requiring
+            # ``q=`` or ``id=``). Either way the LLM lands one
+            # call closer to the answer.
             recovery = "get" if "get" in verbs else (verbs[0] if verbs else None)
             if recovery is None:
                 # Defensive: shouldn't happen — a kind with no
@@ -263,7 +267,7 @@ class PrecisRuntime:
             raise Unsupported(
                 f"{kind} does not support {verb}",
                 options=verbs,
-                next=f"{recovery}(kind={kind!r}, ...) is supported on this kind",
+                next=f"try {recovery}(kind={kind!r})",
             )
         return handler
 

@@ -283,18 +283,19 @@ class SkillHandler(Handler):
             )
             return "\n".join(lines)
 
+        # Pull the canonical verb order from the protocol so this
+        # renderer never goes stale when a new verb is added — every
+        # kind's row reflects exactly what the live dispatch table
+        # advertises via ``Hub.verbs_for(kind)``.
+        from precis.protocol import _ALL_VERBS
+
         rows: list[tuple[str, str, str]] = []  # (kind, verbs, desc)
         for kind in sorted(self.hub.kinds):
             handler = self.hub.handler_for(kind)
             spec = handler.spec
-            verbs: list[str] = []
-            if spec.supports_get:
-                verbs.append("get")
-            if spec.supports_search:
-                verbs.append("search")
-            if spec.supports_put:
-                verbs.append("put")
-            verb_str = " / ".join(verbs)
+            live_verbs = self.hub.verbs_for(kind)
+            ordered = [v for v in _ALL_VERBS if v in live_verbs]
+            verb_str = " / ".join(ordered)
             desc = (spec.description or "").splitlines()[0] if spec.description else ""
             if len(desc) > 90:
                 desc = desc[:87] + "…"

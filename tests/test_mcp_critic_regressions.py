@@ -70,9 +70,10 @@ def test_unsupported_verb_lists_supported_verbs(runtime: PrecisRuntime) -> None:
     assert "calc does not support link" in out
     # Options enumerate calc's supported verbs (only ``get``).
     assert "options: get" in out
-    # ``next`` points at a concrete recovery call rather than re-
-    # listing the options as a Python literal.
-    assert "next: get(kind='calc', ...) is supported on this kind" in out
+    # ``next`` is a *callable* recovery shape — copy-paste-runnable.
+    # No '...' placeholders that would prevent immediate retry.
+    assert "next: try get(kind='calc')" in out
+    assert "..." not in out
 
 
 # ── MAJOR: cost trailer no longer double-prefixes "cost:" ───────────
