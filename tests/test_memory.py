@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.memory import MemoryHandler
 from precis.runtime import PrecisRuntime
-from precis.store import Store
 
 # ---------------------------------------------------------------------------
 # Handler-level tests (skip MCP, skip dispatch)
@@ -15,8 +15,8 @@ from precis.store import Store
 
 
 @pytest.fixture
-def handler(store: Store) -> MemoryHandler:
-    return MemoryHandler(store=store)
+def handler(hub: Hub) -> MemoryHandler:
+    return MemoryHandler(hub=hub)
 
 
 def test_create_returns_id(handler: MemoryHandler) -> None:

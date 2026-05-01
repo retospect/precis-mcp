@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.python import PythonHandler, _parse_id
 
@@ -61,7 +62,7 @@ def repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def handler(repo: Path) -> PythonHandler:
-    return PythonHandler(roots={"r": repo})
+    return PythonHandler(hub=Hub(), roots={"r": repo})
 
 
 # ---------------------------------------------------------------------------
@@ -71,17 +72,17 @@ def handler(repo: Path) -> PythonHandler:
 
 def test_construct_rejects_missing_root(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not a directory"):
-        PythonHandler(roots={"r": tmp_path / "no-such-dir"})
+        PythonHandler(hub=Hub(), roots={"r": tmp_path / "no-such-dir"})
 
 
 def test_construct_rejects_invalid_alias(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="invalid python repo alias"):
-        PythonHandler(roots={"bad/alias": tmp_path})
+        PythonHandler(hub=Hub(), roots={"bad/alias": tmp_path})
 
 
 def test_construct_resolves_paths(tmp_path: Path) -> None:
     """Roots get path-resolved at construction so later equality checks work."""
-    handler = PythonHandler(roots={"r": tmp_path})
+    handler = PythonHandler(hub=Hub(), roots={"r": tmp_path})
     assert handler.roots["r"] == tmp_path.resolve()
 
 
@@ -170,7 +171,7 @@ def test_get_slash_lists_repos(handler: PythonHandler) -> None:
 
 
 def test_get_with_no_roots_configured(tmp_path: Path) -> None:
-    handler = PythonHandler(roots={})
+    handler = PythonHandler(hub=Hub(), roots={})
     out = handler.get()
     assert "no repos configured" in out.body
 
@@ -383,7 +384,7 @@ def test_search_top_k_limits_results(repo: Path) -> None:
         "pkg/many.py",
         "def a(): pass\ndef b(): pass\ndef c(): pass\ndef d(): pass\n",
     )
-    handler = PythonHandler(roots={"r": repo})
+    handler = PythonHandler(hub=Hub(), roots={"r": repo})
     out = handler.search(q="pkg", top_k=2)
     # Header reports the actual hit count (≤ 2).
     header = out.body.splitlines()[0]
@@ -406,7 +407,7 @@ def test_two_roots_independent(tmp_path: Path) -> None:
     _write(r2, "pkg/__init__.py", "")
     _write(r2, "pkg/b.py", "def in_r2(): pass\n")
 
-    handler = PythonHandler(roots={"r1": r1, "r2": r2})
+    handler = PythonHandler(hub=Hub(), roots={"r1": r1, "r2": r2})
     out1 = handler.get(id="r1", view="toc")
     out2 = handler.get(id="r2", view="toc")
     assert "a.py" in out1.body and "b.py" not in out1.body
@@ -422,7 +423,7 @@ def test_search_across_repos(tmp_path: Path) -> None:
     _write(r2, "pkg/__init__.py", "")
     _write(r2, "pkg/b.py", "def special_thing_two(): pass\n")
 
-    handler = PythonHandler(roots={"r1": r1, "r2": r2})
+    handler = PythonHandler(hub=Hub(), roots={"r1": r1, "r2": r2})
     out = handler.search(q="special_thing")
     assert "r1::pkg.a.special_thing_one" in out.body
     assert "r2::pkg.b.special_thing_two" in out.body

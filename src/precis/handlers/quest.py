@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import (
     search_hits_slug_refs,
@@ -23,7 +24,7 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import Store, Tag
+from precis.store import Tag
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 from precis.utils.slug import slug_from_text
@@ -48,8 +49,10 @@ class QuestHandler(Handler):
     _CORPUS_SLUG = "default"
     _DEFAULT_TAGS_ON_CREATE = ("STATUS:open",)
 
-    def __init__(self, *, store: Store) -> None:
-        self.store = store
+    def __init__(self, *, hub: Hub) -> None:
+        if hub.store is None:
+            raise InitError("quest: store required")
+        self.store = hub.store
 
     # ── get ────────────────────────────────────────────────────────
 

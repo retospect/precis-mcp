@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers.youtube import (
     YouTubeHandler,
@@ -100,8 +101,8 @@ def _patch_yt(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def handler(store: Store) -> YouTubeHandler:
-    return YouTubeHandler(store=store)
+def handler(hub: Hub) -> YouTubeHandler:
+    return YouTubeHandler(hub=hub)
 
 
 # ── basic flow ────────────────────────────────────────────────────────
@@ -173,7 +174,7 @@ def test_transcripts_disabled_raises_not_found(
             raise TranscriptsDisabled("disabled")
 
     sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = Bad  # type: ignore[attr-defined]
-    h = YouTubeHandler(store=store)
+    h = YouTubeHandler(hub=Hub(store=store))
     with pytest.raises(NotFound, match="disabled"):
         h.get(id="dQw4w9WgXcQ")
 
@@ -192,7 +193,7 @@ def test_no_transcript_raises_not_found(
             raise NoTranscriptFound("no track")
 
     sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = Bad  # type: ignore[attr-defined]
-    h = YouTubeHandler(store=store)
+    h = YouTubeHandler(hub=Hub(store=store))
     with pytest.raises(NotFound, match="no transcript"):
         h.get(id="dQw4w9WgXcQ")
 
@@ -211,7 +212,7 @@ def test_video_unavailable_raises_not_found(
             raise VideoUnavailable("private")
 
     sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = Bad  # type: ignore[attr-defined]
-    h = YouTubeHandler(store=store)
+    h = YouTubeHandler(hub=Hub(store=store))
     with pytest.raises(NotFound, match="unavailable"):
         h.get(id="dQw4w9WgXcQ")
 
@@ -226,7 +227,7 @@ def test_generic_exception_raises_upstream(
             raise RuntimeError("yt boom")
 
     sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = Bad  # type: ignore[attr-defined]
-    h = YouTubeHandler(store=store)
+    h = YouTubeHandler(hub=Hub(store=store))
     with pytest.raises(Upstream, match="YouTube API error"):
         h.get(id="dQw4w9WgXcQ")
 

@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.skill import SkillHandler
 
 
 @pytest.fixture
 def skill() -> SkillHandler:
-    """SkillHandler doesn't actually need a store; pass None."""
-    return SkillHandler(store=None)  # type: ignore[arg-type]
+    """SkillHandler doesn't need a store; an empty hub is enough."""
+    return SkillHandler(hub=Hub())
 
 
 # ── single fetch ──────────────────────────────────────────────────────

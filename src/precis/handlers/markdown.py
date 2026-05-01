@@ -41,12 +41,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from precis.embedder import Embedder
+from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._paper_toc import build_toc, render_toc
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, BlockInsert, Ref, Store
+from precis.store import SEMANTIC_DISTANCE_FLOOR, BlockInsert, Ref
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -100,19 +100,15 @@ class MarkdownHandler(Handler):
         modes=_SUPPORTED_PUT_MODES,
     )
 
-    def __init__(
-        self,
-        *,
-        store: Store,
-        root: Path,
-        embedder: Embedder | None = None,
-    ) -> None:
+    def __init__(self, *, hub: Hub, root: Path) -> None:
+        if hub.store is None:
+            raise InitError("markdown: store required")
         if not root.exists() or not root.is_dir():
             raise ValueError(
                 f"markdown root {str(root)!r} does not exist or is not a directory"
             )
-        self.store = store
-        self.embedder = embedder
+        self.store = hub.store
+        self.embedder = hub.embedder
         self.root = root.resolve()
 
     # ── get ────────────────────────────────────────────────────────

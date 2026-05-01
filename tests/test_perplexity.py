@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, Upstream
 from precis.handlers.perplexity import (
@@ -103,18 +104,18 @@ def _patch_httpx_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def websearch(store: Store) -> WebsearchHandler:
-    return WebsearchHandler(store=store)
+def websearch(hub_no_embedder: Hub) -> WebsearchHandler:
+    return WebsearchHandler(hub=hub_no_embedder)
 
 
 @pytest.fixture
-def think(store: Store) -> ThinkHandler:
-    return ThinkHandler(store=store)
+def think(hub_no_embedder: Hub) -> ThinkHandler:
+    return ThinkHandler(hub=hub_no_embedder)
 
 
 @pytest.fixture
-def research(store: Store) -> ResearchHandler:
-    return ResearchHandler(store=store)
+def research(hub_no_embedder: Hub) -> ResearchHandler:
+    return ResearchHandler(hub=hub_no_embedder)
 
 
 # ── basic flow ────────────────────────────────────────────────────────
@@ -224,7 +225,7 @@ def test_missing_api_key_raises_upstream(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
-    h = WebsearchHandler(store=store)
+    h = WebsearchHandler(hub=Hub(store=store))
     with pytest.raises(Upstream, match="PERPLEXITY_API_KEY"):
         h.get(id="anything")
 
@@ -364,7 +365,7 @@ def research_with_embedder(store: Store) -> ResearchHandler:
     The mock embedder produces unit-norm 1024-dim vectors, matching the
     DB column dim, so imported blocks land with embeddings populated.
     """
-    return ResearchHandler(store=store, embedder=MockEmbedder(dim=1024))
+    return ResearchHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
 
 
 def test_import_then_get_returns_imported_body_at_zero_cost(
@@ -397,7 +398,7 @@ def test_import_then_get_returns_imported_body_at_zero_cost(
 
 def test_import_works_without_embedder(store: Store) -> None:
     """No embedder configured → blocks still land, just without vectors."""
-    h = ResearchHandler(store=store)  # no embedder
+    h = ResearchHandler(hub=Hub(store=store))  # no embedder
     query = "embedderless import"
     resp = h.put(id=query, text="# Title\n\nOne paragraph.", mode="import")
     assert "imported" in resp.body.lower()
@@ -468,8 +469,9 @@ def test_import_different_kinds_use_separate_cache_rows(
 ) -> None:
     """Importing the same query into research vs websearch creates two
     distinct cache entries — the model is part of the key."""
-    research = ResearchHandler(store=store, embedder=MockEmbedder(dim=1024))
-    websearch = WebsearchHandler(store=store, embedder=MockEmbedder(dim=1024))
+    hub = Hub(store=store, embedder=MockEmbedder(dim=1024))
+    research = ResearchHandler(hub=hub)
+    websearch = WebsearchHandler(hub=hub)
 
     research.put(id="dual import", text="# r\n\nresearch body", mode="import")
     websearch.put(id="dual import", text="# w\n\nwebsearch body", mode="import")
@@ -616,7 +618,7 @@ def test_recent_survives_without_api_key(
     work with no ``PERPLEXITY_API_KEY`` set. This is the whole point
     of having relaxed ``requires_env`` on the spec."""
     monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
-    h = ResearchHandler(store=store, embedder=MockEmbedder(dim=1024))
+    h = ResearchHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
     h.put(id="works offline", text="# off\n\nbody", mode="import")
     resp = h.get(id="/recent")  # no Upstream raised
     assert "works offline" in resp.body

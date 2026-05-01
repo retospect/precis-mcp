@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import Upstream
 from precis.handlers.math import MathHandler, _format_doc
 from precis.store import Store
@@ -61,10 +62,10 @@ class _Doc:
 
 
 @pytest.fixture
-def handler(store: Store, monkeypatch: pytest.MonkeyPatch) -> MathHandler:
+def handler(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> MathHandler:
     """MathHandler with a mocked HTTP layer + WOLFRAM_APP_ID set."""
     monkeypatch.setenv("WOLFRAM_APP_ID", "TEST-APP-ID")
-    return MathHandler(store=store)
+    return MathHandler(hub=hub)
 
 
 def _patch_run_query(monkeypatch: pytest.MonkeyPatch, doc: Any) -> list[str]:
@@ -202,7 +203,7 @@ def test_missing_app_id_raises_upstream(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("WOLFRAM_APP_ID", raising=False)
-    h = MathHandler(store=store)
+    h = MathHandler(hub=Hub(store=store))
     with pytest.raises(Upstream, match="WOLFRAM_APP_ID"):
         h.get(q="anything")
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.python import PythonHandler
 
@@ -60,7 +61,7 @@ def repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def handler(repo: Path) -> PythonHandler:
-    return PythonHandler(roots={"r": repo})
+    return PythonHandler(hub=Hub(), roots={"r": repo})
 
 
 # Whether ruff is reachable from the test process. Some assertions
@@ -830,7 +831,7 @@ def package_root_repo(tmp_path: Path) -> Path:
 @pytest.fixture
 def package_root_handler(package_root_repo: Path) -> PythonHandler:
     """Handler whose alias 'precis' points at a root that is a package."""
-    return PythonHandler(roots={"precis": package_root_repo})
+    return PythonHandler(hub=Hub(), roots={"precis": package_root_repo})
 
 
 def test_put_create_rejects_doubled_root_prefix(

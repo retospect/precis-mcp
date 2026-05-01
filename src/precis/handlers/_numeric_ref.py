@@ -31,12 +31,13 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._link_tag_ops import validate_relation
 from precis.handlers._link_target import parse_link_target
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import Link, Ref, Store, Tag
+from precis.store import Link, Ref, Tag
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
@@ -73,8 +74,10 @@ class NumericRefHandler(Handler):
     #: "todo id=…", …). Defaults to the kind name.
     sense: ClassVar[str] = ""
 
-    def __init__(self, *, store: Store) -> None:
-        self.store = store
+    def __init__(self, *, hub: Hub) -> None:
+        if hub.store is None:
+            raise InitError(f"{self.kind}: store required")
+        self.store = hub.store
 
     # Convenience: callers / tests sometimes use `handler.sense` to
     # build messages — keep it cheap.

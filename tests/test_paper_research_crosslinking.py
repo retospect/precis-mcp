@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.paper import PaperHandler
 from precis.store import Store
@@ -38,8 +39,8 @@ from precis.store import Store
 
 
 @pytest.fixture
-def paper(store: Store) -> PaperHandler:
-    return PaperHandler(store=store)
+def paper(hub: Hub) -> PaperHandler:
+    return PaperHandler(hub=hub)
 
 
 def _seed_paper(store: Store, slug: str, title: str = "Test Paper") -> int:
@@ -196,7 +197,7 @@ class TestPerplexityLinkTagOps:
         link it to the paper that prompted it."""
         from precis.handlers.perplexity import ResearchHandler
 
-        research = ResearchHandler(store=store)
+        research = ResearchHandler(hub=Hub(store=store))
         # Import a tiny report so a slug exists to link to.
         ack = research.put(
             id="why is the sky blue",
@@ -213,7 +214,7 @@ class TestPerplexityLinkTagOps:
     def test_tag_cache_pinned(self, store: Store) -> None:
         from precis.handlers.perplexity import ResearchHandler
 
-        research = ResearchHandler(store=store)
+        research = ResearchHandler(hub=Hub(store=store))
         ack = research.put(id="q", text="body", mode="import")
         slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
         out = research.put(id=slug, tags=["CACHE:pinned"])
@@ -223,7 +224,7 @@ class TestPerplexityLinkTagOps:
         """Cache kinds only allow CACHE: — STATUS: must reject."""
         from precis.handlers.perplexity import ResearchHandler
 
-        research = ResearchHandler(store=store)
+        research = ResearchHandler(hub=Hub(store=store))
         ack = research.put(id="q", text="body", mode="import")
         slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
         with pytest.raises(BadInput, match="axis not allowed on kind 'research'"):
@@ -233,7 +234,7 @@ class TestPerplexityLinkTagOps:
         """Mixing import + link/tag is a misuse — split into two calls."""
         from precis.handlers.perplexity import ResearchHandler
 
-        research = ResearchHandler(store=store)
+        research = ResearchHandler(hub=Hub(store=store))
         with pytest.raises(BadInput, match="does not accept link/tag kwargs"):
             research.put(
                 id="q",
@@ -245,7 +246,7 @@ class TestPerplexityLinkTagOps:
     def test_link_tag_op_with_text_rejected(self, store: Store) -> None:
         from precis.handlers.perplexity import ResearchHandler
 
-        research = ResearchHandler(store=store)
+        research = ResearchHandler(hub=Hub(store=store))
         ack = research.put(id="q", text="body", mode="import")
         slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
         with pytest.raises(BadInput, match="text= is not supported"):
@@ -254,14 +255,14 @@ class TestPerplexityLinkTagOps:
     def test_link_tag_op_unknown_slug(self, store: Store) -> None:
         from precis.handlers.perplexity import ResearchHandler
 
-        research = ResearchHandler(store=store)
+        research = ResearchHandler(hub=Hub(store=store))
         with pytest.raises(NotFound, match="research slug 'no-such' not found"):
             research.put(id="no-such", link="paper:other")
 
     def test_no_op_rejected(self, store: Store) -> None:
         from precis.handlers.perplexity import ResearchHandler
 
-        research = ResearchHandler(store=store)
+        research = ResearchHandler(hub=Hub(store=store))
         ack = research.put(id="q", text="body", mode="import")
         slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
         # mode=None, no link/tag kwargs at all → existing "mode=
@@ -272,7 +273,7 @@ class TestPerplexityLinkTagOps:
     def test_unknown_mode_rejected(self, store: Store) -> None:
         from precis.handlers.perplexity import ResearchHandler
 
-        research = ResearchHandler(store=store)
+        research = ResearchHandler(hub=Hub(store=store))
         with pytest.raises(BadInput, match="mode='import'"):
             research.put(id="q", text="body", mode="append")
 

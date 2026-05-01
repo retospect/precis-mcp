@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.plaintext import PlaintextHandler
 from precis.store import Store
@@ -18,8 +19,8 @@ def pt_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def handler(store: Store, pt_root: Path) -> PlaintextHandler:
-    return PlaintextHandler(store=store, root=pt_root)
+def handler(hub: Hub, pt_root: Path) -> PlaintextHandler:
+    return PlaintextHandler(hub=hub, root=pt_root)
 
 
 def _write(root: Path, rel: str, content: str) -> Path:
@@ -70,14 +71,14 @@ def test_parser_slugs_distinguish_same_first_words() -> None:
 
 def test_construction_fails_on_missing_root(store: Store, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="does not exist"):
-        PlaintextHandler(store=store, root=tmp_path / "no-such-dir")
+        PlaintextHandler(hub=Hub(store=store), root=tmp_path / "no-such-dir")
 
 
 def test_construction_fails_on_file_root(store: Store, tmp_path: Path) -> None:
     f = tmp_path / "f.txt"
     f.write_text("hi")
     with pytest.raises(ValueError, match="not a directory"):
-        PlaintextHandler(store=store, root=f)
+        PlaintextHandler(hub=Hub(store=store), root=f)
 
 
 # ── index ─────────────────────────────────────────────────────────────

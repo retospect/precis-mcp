@@ -21,6 +21,7 @@ import pytest
 from mcp.types import CallToolResult
 
 from precis import server
+from precis.dispatch import Hub
 from precis.handlers.python import PythonHandler
 from precis.python_index import RepoCache
 from precis.runtime import PrecisRuntime
@@ -74,7 +75,7 @@ def server_runtime(tmp_path: Path, runtime: PrecisRuntime) -> Iterator[PrecisRun
     # layer the registry is a flat (kind, verb, mode) -> callable
     # table plus a handlers-by-kind map; ``_register_with`` mutates
     # both in one step, atomic for the caller.
-    py = PythonHandler(roots={"demo": tmp_path / "demo"}, cache=RepoCache())
+    py = PythonHandler(hub=Hub(), roots={"demo": tmp_path / "demo"}, cache=RepoCache())
     py._register_with(runtime.hub)
 
     server._runtime = runtime

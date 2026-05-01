@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.handlers._link_tag_ops import (
@@ -42,10 +43,6 @@ from precis.store.types import BlockInsert
 from precis.utils.md_parse import parse_markdown
 from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
-
-if TYPE_CHECKING:
-    from precis.embedder import Embedder
-    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -87,15 +84,17 @@ class _PerplexityBase(CacheBackedHandler):
     example_query: ClassVar[str] = "your question"
     # ttl_seconds + attribution + spec set by subclasses.
 
-    def __init__(self, *, store: Store, embedder: Embedder | None = None) -> None:
-        super().__init__(store=store)
+    def __init__(self, *, hub: Hub) -> None:
+        super().__init__(hub=hub)
         # Embedder is optional: API-fetched cache entries today land
         # without vectors (single-block bodies; lexical search suffices).
         # `put(mode='import')` parses pasted reports into many blocks
         # and benefits from per-block vectors so semantic search across
         # imported research works. When no embedder is configured the
-        # blocks still land — just without vectors.
-        self.embedder = embedder
+        # blocks still land — just without vectors. The hub carries
+        # whichever embedder the runtime wired up (``MockEmbedder`` in
+        # tests, ``BgeM3Embedder`` in prod, or ``None`` on stateless).
+        self.embedder = hub.embedder
 
     # ── canonicalize: trim + include model so kinds don't collide ────
 

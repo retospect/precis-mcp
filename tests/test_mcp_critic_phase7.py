@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.calc import CalcHandler
 from precis.handlers.memory import MemoryHandler
@@ -75,21 +76,21 @@ class TestUnknownModeRejected:
     accept only ``mode='delete'`` (or absence)."""
 
     def test_mode_untag_rejected(self, store: Store) -> None:
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         m = h.put(text="m")
         rid = int(m.body.split("=")[-1].strip().split()[0])
         with pytest.raises(BadInput, match="unknown mode 'untag'"):
             h.put(id=rid, mode="untag", tags=["topic-x"])
 
     def test_mode_unlink_rejected(self, store: Store) -> None:
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         m = h.put(text="m")
         rid = int(m.body.split("=")[-1].strip().split()[0])
         with pytest.raises(BadInput, match="unknown mode 'unlink'"):
             h.put(id=rid, mode="unlink")
 
     def test_mode_note_rejected(self, store: Store) -> None:
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         m = h.put(text="m")
         rid = int(m.body.split("=")[-1].strip().split()[0])
         with pytest.raises(BadInput, match="unknown mode 'note'"):
@@ -97,12 +98,12 @@ class TestUnknownModeRejected:
 
     def test_mode_typo_rejected(self, store: Store) -> None:
         """Even a typo of the supported mode is caught."""
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         with pytest.raises(BadInput, match="unknown mode"):
             h.put(text="m", mode="deelete")
 
     def test_mode_delete_still_works(self, store: Store) -> None:
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         m = h.put(text="m")
         rid = int(m.body.split("=")[-1].strip().split()[0])
         out = h.put(id=rid, mode="delete")
@@ -241,7 +242,7 @@ class TestUnregisteredPrefixesRejected:
 
 class TestPaperOverviewStripsJats:
     def test_overview_no_jats_in_body(self, store: Store) -> None:
-        h = PaperHandler(store=store)
+        h = PaperHandler(hub=Hub(store=store))
         cid = store.ensure_corpus("default")
         store.insert_ref(
             corpus_id=cid,
@@ -316,7 +317,7 @@ class TestCrossKindErrorOptionsFiltered:
 
 class TestPaperSlugUnderscoreError:
     def test_underscore_message_names_rule(self, store: Store) -> None:
-        h = PaperHandler(store=store)
+        h = PaperHandler(hub=Hub(store=store))
         # Even with no live ref by that slug, parsing should reject
         # *before* the lookup with a clear "underscore is illegal"
         # message that names the offending char (rather than the
@@ -330,12 +331,12 @@ class TestPaperSlugUnderscoreError:
 
 class TestCalcRejectsGibberish:
     def test_malformed_expression_rejected(self) -> None:
-        h = CalcHandler()
+        h = CalcHandler(hub=Hub())
         with pytest.raises(BadInput, match="simplifies to itself"):
             h.get(id="malformed**broken")
 
     def test_real_math_still_works(self) -> None:
-        h = CalcHandler()
+        h = CalcHandler(hub=Hub())
         out = h.get(id="2+3*4")
         assert "= 14" in out.body
 
@@ -343,7 +344,7 @@ class TestCalcRejectsGibberish:
         """Genuine symbolic computation (``integrate``, ``solve``, …)
         produces a different output shape than the input and must
         not be rejected."""
-        h = CalcHandler()
+        h = CalcHandler(hub=Hub())
         out = h.get(id="integrate(sin(x), x)")
         # Result is "-cos(x)" — different from the input.
         assert "cos(x)" in out.body
@@ -380,7 +381,7 @@ class TestEmptyListTrailers:
     def test_oracle_empty_list_has_trailer(self, store: Store) -> None:
         from precis.handlers.oracle import OracleHandler
 
-        h = OracleHandler(store=store)
+        h = OracleHandler(hub=Hub(store=store))
         out = h.get()
         assert "no oracles defined" in out.body
         assert "Next:" in out.body
@@ -388,7 +389,7 @@ class TestEmptyListTrailers:
     def test_conv_empty_list_has_trailer(self, store: Store) -> None:
         from precis.handlers.conversation import ConversationHandler
 
-        h = ConversationHandler(store=store)
+        h = ConversationHandler(hub=Hub(store=store))
         out = h.get()
         assert "no conversations" in out.body
         assert "Next:" in out.body
@@ -396,7 +397,7 @@ class TestEmptyListTrailers:
     def test_quest_empty_list_has_trailer(self, store: Store) -> None:
         from precis.handlers.quest import QuestHandler
 
-        h = QuestHandler(store=store)
+        h = QuestHandler(hub=Hub(store=store))
         out = h.get(id="/recent")
         assert "no quests" in out.body
         assert "Next:" in out.body
@@ -407,7 +408,7 @@ class TestEmptyListTrailers:
 
 class TestDegenerateRangeTrailer:
     def test_single_block_next_is_tilde_n(self, store: Store) -> None:
-        h = PaperHandler(store=store)
+        h = PaperHandler(hub=Hub(store=store))
         _seed_paper(store, n_blocks=4)
         # Reading ~0..2 should suggest "~3" (degenerate single-block)
         # rather than "~3..3".

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -27,7 +28,7 @@ class CalcHandler(Handler):
         id_required=True,
     )
 
-    def __init__(self) -> None:
+    def __init__(self, *, hub: Hub) -> None:
         # ``sympy`` is an optional [calc] / [all] extra. Import here
         # so a bare ``pip install precis-mcp`` surface a clean
         # missing-dep at boot (dispatch._try catches ImportError and
@@ -35,6 +36,12 @@ class CalcHandler(Handler):
         # and taking the whole precis.handlers package down with it.
         import sympy
 
+        # Calc is stateless — no store, no embedder, no hint usage
+        # at __init__ time. ``hub`` is taken for signature uniformity
+        # across every handler, and planted on ``self.hub`` by
+        # :meth:`Handler._register_with` right after construction in
+        # case future features want to emit hints from here.
+        _ = hub
         self._sympy = sympy
 
     def get(  # type: ignore[override]

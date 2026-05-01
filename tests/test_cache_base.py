@@ -11,6 +11,7 @@ from typing import ClassVar
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
@@ -33,8 +34,8 @@ class _FakeCacheKind(CacheBackedHandler):
     attribution: ClassVar[str] = "Computed by FakeCorp."
     corpus_slug: ClassVar[str] = "default"
 
-    def __init__(self, *, store: Store) -> None:
-        super().__init__(store=store)
+    def __init__(self, *, hub: Hub) -> None:
+        super().__init__(hub=hub)
         self.fetch_calls: list[str] = []
         self.canned: dict[str, FetchResult] = {}
 
@@ -66,8 +67,8 @@ class _FakeCacheKindAsMath(_FakeCacheKind):
 
 
 @pytest.fixture
-def handler(store: Store) -> _FakeCacheKindAsMath:
-    return _FakeCacheKindAsMath(store=store)
+def handler(hub: Hub) -> _FakeCacheKindAsMath:
+    return _FakeCacheKindAsMath(hub=hub)
 
 
 # ── basic flow ────────────────────────────────────────────────────────
@@ -156,7 +157,7 @@ def test_pinned_entries_never_expire(store: Store) -> None:
     class Pinned(_FakeCacheKindAsMath):
         ttl_seconds: ClassVar[int | None] = None  # pin
 
-    h = Pinned(store=store)
+    h = Pinned(hub=Hub(store=store))
     h.get(q="pi")
     h.get(q="pi")
     assert len(h.fetch_calls) == 1
@@ -166,7 +167,7 @@ def test_zero_ttl_means_always_stale(store: Store) -> None:
     class ZeroTTL(_FakeCacheKindAsMath):
         ttl_seconds: ClassVar[int | None] = 0
 
-    h = ZeroTTL(store=store)
+    h = ZeroTTL(hub=Hub(store=store))
     h.get(q="now")
     h.get(q="now")
     # ttl=0 means fresh_until = now() + 0s, so the second call is stale.
@@ -189,7 +190,7 @@ def test_free_provider_renders_cost_free(store: Store) -> None:
                 cost_usd=None,
             )
 
-    h = Free(store=store)
+    h = Free(hub=Hub(store=store))
     resp = h.get(q="anything")
     assert resp.cost == "[cost: free]"
 
@@ -204,7 +205,7 @@ def test_cost_zero_renders_free(store: Store) -> None:
                 cost_usd=0.0,
             )
 
-    h = Zero(store=store)
+    h = Zero(hub=Hub(store=store))
     resp = h.get(q="anything")
     assert resp.cost == "[cost: free]"
 
@@ -225,6 +226,6 @@ def test_multi_block_body_renders_concatenated(store: Store) -> None:
                 cost_usd=0.001,
             )
 
-    h = Multi(store=store)
+    h = Multi(hub=Hub(store=store))
     resp = h.get(q="anything")
     assert "first paragraph\n\nsecond paragraph" in resp.body

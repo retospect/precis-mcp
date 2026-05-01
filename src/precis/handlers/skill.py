@@ -36,10 +36,10 @@ import re
 from importlib import resources
 from typing import Any, ClassVar
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import Store
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 
@@ -84,13 +84,16 @@ class SkillHandler(Handler):
     #: new code paths consult ``_SYNTHESIZED_SKILLS`` directly.
     _SYNTHESIZED_SLUG: ClassVar[str] = "precis-help"
 
-    def __init__(self, *, store: Store) -> None:
-        # store is unused but kept in the constructor signature so the
-        # boot loop's kw-args call shape works for every handler. The
-        # hub reference used to synthesise ``precis-help`` comes from
-        # ``self.hub``, populated by ``Handler._register_with``
-        # immediately after construction.
-        self.store = store
+    def __init__(self, *, hub: Hub) -> None:
+        # The skill handler is file-backed: markdown under
+        # ``precis.data.skills`` plus synthesised meta-skills. The
+        # hub itself is only needed for ``precis-help`` / ``precis-
+        # status`` rendering, and that reference is planted on
+        # ``self.hub`` by :meth:`Handler._register_with` immediately
+        # after this ``__init__`` returns — so we intentionally do
+        # no work here. Accepting ``hub=`` keeps the boot-loop
+        # kw-args shape uniform across every handler.
+        _ = hub
 
     # ── get ────────────────────────────────────────────────────────
 

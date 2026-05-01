@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
@@ -220,20 +221,20 @@ class TestSearchBlocksTagFilter:
 class TestPaperHandlerSearchTags:
     def test_valid_tag_passes_through(self, store: Store) -> None:
         a, _ = _seed_two_papers_with_blocks(store)
-        h = PaperHandler(store=store, embedder=MockEmbedder(dim=1024))
+        h = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
         out = h.search(q="photocatalysis", tags=["topic-co2-capture"])
         assert "paper-a" in out.body
         assert "paper-b" not in out.body
 
     def test_invalid_tag_rejected_at_handler(self, store: Store) -> None:
-        h = PaperHandler(store=store, embedder=MockEmbedder(dim=1024))
+        h = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
         # ``urgent`` collides with ``PRIO:urgent`` — same rejection
         # shape as put(tags=['urgent']).
         with pytest.raises(BadInput, match="bare flag 'urgent'"):
             h.search(q="x", tags=["urgent"])
 
     def test_invalid_status_value_rejected(self, store: Store) -> None:
-        h = PaperHandler(store=store, embedder=MockEmbedder(dim=1024))
+        h = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
         with pytest.raises(BadInput, match="invalid STATUS value"):
             h.search(q="x", tags=["STATUS:bogus"])
 
@@ -245,7 +246,7 @@ class TestMemorySearchTags:
         # we care about is "filter at handler level passes through to
         # the store and reduces hits."
         a, _ = _seed_two_memories(store)
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         out = h.search(q="precis", tags=["topic-co2-capture"])
         assert f"id={a}" in out.body or str(a) in out.body
         # Check the count line reflects the narrowed result.
@@ -253,7 +254,7 @@ class TestMemorySearchTags:
 
     def test_empty_result_mentions_filter(self, store: Store) -> None:
         _seed_two_memories(store)
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         out = h.search(q="precis", tags=["topic-no-such-thing"])
         assert "no memory entries match" in out.body
         assert "topic-no-such-thing" in out.body
@@ -262,7 +263,7 @@ class TestMemorySearchTags:
         """Per-kind axis enforcement also fires on the search path —
         STATUS: filters against memory raise at the handler boundary
         rather than silently returning zero hits."""
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
             h.search(q="precis", tags=["STATUS:open"])
 
@@ -273,7 +274,7 @@ class TestMemorySearchTags:
         use STATUS — exercise it on todo, where STATUS is allowed."""
         from precis.handlers.todo import TodoHandler
 
-        h = TodoHandler(store=store)
+        h = TodoHandler(hub=Hub(store=store))
         with pytest.raises(BadInput, match="invalid STATUS value"):
             h.search(q="x", tags=["STATUS:active"])  # 'active' not in vocab
 

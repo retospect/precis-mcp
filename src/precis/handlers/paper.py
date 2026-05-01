@@ -22,7 +22,7 @@ import html
 import re
 from typing import Any, ClassVar
 
-from precis.embedder import Embedder
+from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
@@ -33,7 +33,7 @@ from precis.handlers._link_tag_ops import (
 from precis.handlers._paper_toc import build_toc, filter_toc_to_range, render_toc
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -78,9 +78,11 @@ class PaperHandler(Handler):
         views=_SUPPORTED_VIEWS,
     )
 
-    def __init__(self, *, store: Store, embedder: Embedder | None = None) -> None:
-        self.store = store
-        self.embedder = embedder
+    def __init__(self, *, hub: Hub) -> None:
+        if hub.store is None:
+            raise InitError("paper: store required")
+        self.store = hub.store
+        self.embedder = hub.embedder
 
     # -- get -----------------------------------------------------------------
 

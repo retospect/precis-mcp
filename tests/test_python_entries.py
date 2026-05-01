@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers import _python_entries as entries_mod
 from precis.handlers.python import PythonHandler
@@ -74,7 +75,7 @@ def repo_with_pyproject(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def handler(repo_with_pyproject: Path) -> PythonHandler:
-    return PythonHandler(roots={"demo": repo_with_pyproject})
+    return PythonHandler(hub=Hub(), roots={"demo": repo_with_pyproject})
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +265,7 @@ def test_render_includes_scripts_and_guards(handler: PythonHandler) -> None:
 def test_render_no_pyproject(tmp_path: Path) -> None:
     _write(tmp_path, "pkg/__init__.py", "")
     _write(tmp_path, "pkg/m.py", "x = 1\n")
-    handler = PythonHandler(roots={"r": tmp_path})
+    handler = PythonHandler(hub=Hub(), roots={"r": tmp_path})
     out = handler.get(id="r", view="entries")
     assert "no pyproject.toml found" in out.body
 

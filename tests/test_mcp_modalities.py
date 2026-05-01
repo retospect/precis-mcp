@@ -27,6 +27,7 @@ import asyncio
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.handlers.skill import SkillHandler
 from precis.mcp_modalities import (
     _enumerate_prompt_skills,
@@ -313,7 +314,7 @@ def test_precis_status_marks_missing_optional_dep(monkeypatch) -> None:
     )
     monkeypatch.setattr(skill_module, "_OPTIONAL_DEP_PROBES", fake_probes)
 
-    handler = SkillHandler(store=None)  # type: ignore[arg-type]
+    handler = SkillHandler(hub=Hub())
     body = handler._render_status()
     assert "MISSING" in body
     assert "fake-probe" in body

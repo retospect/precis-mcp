@@ -16,12 +16,12 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._link_tag_ops import apply_link_tag_only_put
 from precis.handlers._slug_ref_shared import render_slug_ref_list
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import Store
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -49,8 +49,10 @@ class ConversationHandler(Handler):
         id_required=False,
     )
 
-    def __init__(self, *, store: Store) -> None:
-        self.store = store
+    def __init__(self, *, hub: Hub) -> None:
+        if hub.store is None:
+            raise InitError("conv: store required")
+        self.store = hub.store
 
     def get(  # type: ignore[override]
         self,

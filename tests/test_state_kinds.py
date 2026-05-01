@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.conversation import ConversationHandler
 from precis.handlers.flashcard import FlashcardHandler
@@ -26,8 +27,8 @@ from precis.store.types import BlockInsert
 
 class TestGripe:
     @pytest.fixture
-    def gripe(self, store: Store) -> GripeHandler:
-        return GripeHandler(store=store)
+    def gripe(self, hub: Hub) -> GripeHandler:
+        return GripeHandler(hub=hub)
 
     def test_create_and_read(self, gripe: GripeHandler) -> None:
         r = gripe.put(text="VS Code keeps reloading the workspace")
@@ -56,8 +57,8 @@ class TestGripe:
 
 class TestFlashcard:
     @pytest.fixture
-    def fc(self, store: Store) -> FlashcardHandler:
-        return FlashcardHandler(store=store)
+    def fc(self, hub: Hub) -> FlashcardHandler:
+        return FlashcardHandler(hub=hub)
 
     def test_create_and_read(self, fc: FlashcardHandler) -> None:
         r = fc.put(text="Paris is the capital of France")
@@ -108,8 +109,8 @@ class TestFlashcard:
 
 class TestOracle:
     @pytest.fixture
-    def oracle(self, store: Store) -> OracleHandler:
-        return OracleHandler(store=store)
+    def oracle(self, hub: Hub) -> OracleHandler:
+        return OracleHandler(hub=hub)
 
     def _seed_oracle(self, store: Store, slug: str, title: str, body_text: str) -> int:
         """Insert an oracle directly via the store — there's no put() yet."""
@@ -158,8 +159,8 @@ class TestOracle:
 
 class TestConversation:
     @pytest.fixture
-    def conv(self, store: Store) -> ConversationHandler:
-        return ConversationHandler(store=store)
+    def conv(self, hub: Hub) -> ConversationHandler:
+        return ConversationHandler(hub=hub)
 
     def _seed_conv(self, store: Store, slug: str, title: str, turns: list[str]) -> int:
         with store.tx() as conn:
@@ -224,8 +225,8 @@ class TestConversation:
 
 class TestQuest:
     @pytest.fixture
-    def quest(self, store: Store) -> QuestHandler:
-        return QuestHandler(store=store)
+    def quest(self, hub: Hub) -> QuestHandler:
+        return QuestHandler(hub=hub)
 
     def test_create_mints_slug_from_text(self, quest: QuestHandler) -> None:
         r = quest.put(text="Ingest paper acheson 2026")

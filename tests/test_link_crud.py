@@ -22,6 +22,7 @@ from typing import get_args
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers.memory import MemoryHandler
@@ -32,8 +33,8 @@ from precis.store.types import Relation
 
 
 @pytest.fixture
-def memory_handler(store: Store) -> MemoryHandler:
-    return MemoryHandler(store=store)
+def memory_handler(hub: Hub) -> MemoryHandler:
+    return MemoryHandler(hub=hub)
 
 
 def _seed_paper(store: Store, slug: str = "wang2020state") -> int:

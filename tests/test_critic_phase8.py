@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
 from precis.store import BlockInsert, Store, Tag
@@ -84,7 +85,7 @@ class TestPerKindAxisEnforcement:
     def test_axis_check_on_handler_put(self, store: Store) -> None:
         """End-to-end: handler.put rejects STATUS: on memory at
         the agent boundary."""
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
             h.put(text="m", tags=["STATUS:open"])
 
@@ -92,7 +93,7 @@ class TestPerKindAxisEnforcement:
         """End-to-end: handler.search also rejects STATUS: on
         memory in the tags= filter (so agents don't get silent
         zero-hits responses)."""
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
             h.search(q="x", tags=["STATUS:open"])
 
@@ -277,7 +278,7 @@ class TestTotalHitsHeader:
                 slug=None,
                 title=f"precis fact {i}",
             )
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         out = h.search(q="precis", top_k=2)
         # 2 hits returned, 5 total. Header should reflect both.
         assert "2 of 5" in out.body
@@ -292,7 +293,7 @@ class TestTotalHitsHeader:
                 slug=None,
                 title=f"precis fact {i}",
             )
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         out = h.search(q="precis", top_k=10)
         # All 2 returned. No "of N" trailer.
         assert "of 2" not in out.body

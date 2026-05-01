@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.markdown import MarkdownHandler
 from precis.store import Store
@@ -19,8 +20,8 @@ def md_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def handler(store: Store, md_root: Path) -> MarkdownHandler:
-    return MarkdownHandler(store=store, root=md_root)
+def handler(hub: Hub, md_root: Path) -> MarkdownHandler:
+    return MarkdownHandler(hub=hub, root=md_root)
 
 
 def _write(root: Path, rel: str, content: str) -> Path:
@@ -35,14 +36,14 @@ def _write(root: Path, rel: str, content: str) -> Path:
 
 def test_construction_fails_on_missing_root(store: Store, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="does not exist"):
-        MarkdownHandler(store=store, root=tmp_path / "no-such-dir")
+        MarkdownHandler(hub=Hub(store=store), root=tmp_path / "no-such-dir")
 
 
 def test_construction_fails_on_file_root(store: Store, tmp_path: Path) -> None:
     f = tmp_path / "f.md"
     f.write_text("hi")
     with pytest.raises(ValueError, match="not a directory"):
-        MarkdownHandler(store=store, root=f)
+        MarkdownHandler(hub=Hub(store=store), root=f)
 
 
 # ── index view ───────────────────────────────────────────────────────

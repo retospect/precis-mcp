@@ -11,9 +11,9 @@ from typing import Any
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, Upstream
 from precis.handlers.web import WebHandler, _extract_title
-from precis.store import Store
 
 # ── stub httpx.Client ────────────────────────────────────────────────
 
@@ -68,8 +68,8 @@ def _patch_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def handler(store: Store) -> WebHandler:
-    return WebHandler(store=store)
+def handler(hub: Hub) -> WebHandler:
+    return WebHandler(hub=hub)
 
 
 _SAMPLE_HTML = """

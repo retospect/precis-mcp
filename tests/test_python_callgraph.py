@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers import _python_callgraph as cgraph
 from precis.handlers.python import PythonHandler
@@ -86,7 +87,7 @@ def repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def handler(repo: Path) -> PythonHandler:
-    return PythonHandler(roots={"r": repo})
+    return PythonHandler(hub=Hub(), roots={"r": repo})
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +253,7 @@ def test_cross_repo_resolves_imported_symbol(tmp_path: Path) -> None:
         """,
     )
 
-    handler = PythonHandler(roots={"a": a, "b": b})
+    handler = PythonHandler(hub=Hub(), roots={"a": a, "b": b})
 
     # Without cross_repo: shared resolves to its imported qualname but
     # isn't a member of repo `a` — so it shows as ext-ish. Specifically,

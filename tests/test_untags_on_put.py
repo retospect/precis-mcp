@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store, Tag
@@ -30,8 +31,8 @@ from precis.store import Store, Tag
 
 
 @pytest.fixture
-def memory(store: Store) -> MemoryHandler:
-    return MemoryHandler(store=store)
+def memory(hub: Hub) -> MemoryHandler:
+    return MemoryHandler(hub=hub)
 
 
 def _create_with_tags(h: MemoryHandler, *tags: str, text: str = "hello") -> int:
@@ -76,7 +77,7 @@ def test_untag_closed_prefix_value_match(store: Store) -> None:
     """
     from precis.handlers.todo import TodoHandler
 
-    todo = TodoHandler(store=store)
+    todo = TodoHandler(hub=Hub(store=store))
     out = todo.put(text="task")
     rid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
 

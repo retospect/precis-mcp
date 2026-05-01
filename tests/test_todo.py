@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.todo import TodoHandler
-from precis.store import Store
 
 
 @pytest.fixture
-def handler(store: Store) -> TodoHandler:
-    return TodoHandler(store=store)
+def handler(hub: Hub) -> TodoHandler:
+    return TodoHandler(hub=hub)
 
 
 # ── put: create ──────────────────────────────────────────────────────

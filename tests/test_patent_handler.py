@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._patent_ops import FakeOpsClient
@@ -84,13 +85,8 @@ def raw_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def handler(store: Store, fake_ops: FakeOpsClient, raw_root: Path) -> PatentHandler:
-    return PatentHandler(
-        store=store,
-        ops=fake_ops,
-        raw_root=raw_root,
-        embedder=MockEmbedder(dim=store.embedding_dim()),
-    )
+def handler(hub: Hub, fake_ops: FakeOpsClient, raw_root: Path) -> PatentHandler:
+    return PatentHandler(hub=hub, ops=fake_ops, raw_root=raw_root)
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +130,9 @@ class TestGetIngestFlow:
     ) -> None:
         empty_ops = FakeOpsClient()
         h = PatentHandler(
-            store=store,
+            hub=Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim())),
             ops=empty_ops,
             raw_root=raw_root,
-            embedder=MockEmbedder(dim=store.embedding_dim()),
         )
         with pytest.raises(NotFound, match="not found at OPS"):
             h.get(id="ep9999999z9")

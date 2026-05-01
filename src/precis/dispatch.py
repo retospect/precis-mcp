@@ -321,9 +321,14 @@ def _try(cls: Callable[..., Any], *, hub: Hub, **kw: Any) -> Any | None:
     perspective: :func:`_try` returns either a fully registered
     handler or ``None``; it never returns a constructed-but-
     unregistered instance.
+
+    ``hub`` is threaded into the constructor as a kwarg — every
+    handler ``__init__`` takes ``*, hub: Hub`` (plus optional handler-
+    specific extras like ``root=`` / ``ops=``). Boot sites pass only
+    ``hub=hub`` plus those extras; the rest comes off the hub itself.
     """
     try:
-        inst = cls(**kw)
+        inst = cls(hub=hub, **kw)
     except (InitError, ImportError, ValueError) as exc:
         log.warning("%s init failed: %s", getattr(cls, "__name__", cls), exc)
         return None
@@ -412,28 +417,29 @@ def boot(
         from precis.handlers.todo import TodoHandler
 
         # Numeric- and slug-addressed refs. Cheap; always available
-        # when the store is up.
-        _try(MemoryHandler,       hub=hub, store=store)
-        _try(TodoHandler,         hub=hub, store=store)
-        _try(GripeHandler,        hub=hub, store=store)
-        _try(FlashcardHandler,    hub=hub, store=store)
-        _try(QuestHandler,        hub=hub, store=store)
-        _try(ConversationHandler, hub=hub, store=store)
-        _try(OracleHandler,       hub=hub, store=store)
-        _try(SkillHandler,        hub=hub, store=store)
-        _try(PaperHandler,        hub=hub, store=store, embedder=embedder)
+        # when the store is up. Each handler reads ``hub.store`` /
+        # ``hub.embedder`` directly — boot only threads the hub.
+        _try(MemoryHandler,       hub=hub)
+        _try(TodoHandler,         hub=hub)
+        _try(GripeHandler,        hub=hub)
+        _try(FlashcardHandler,    hub=hub)
+        _try(QuestHandler,        hub=hub)
+        _try(ConversationHandler, hub=hub)
+        _try(OracleHandler,       hub=hub)
+        _try(SkillHandler,        hub=hub)
+        _try(PaperHandler,        hub=hub)
 
         # Cache-backed kinds. Each declares its env / optional-dep
         # requirements inside __init__ and raises InitError when
         # they aren't met.
         from precis.handlers.math import MathHandler
-        _try(MathHandler,    hub=hub, store=store)
+        _try(MathHandler,    hub=hub)
 
         from precis.handlers.youtube import YouTubeHandler
-        _try(YouTubeHandler, hub=hub, store=store)
+        _try(YouTubeHandler, hub=hub)
 
         from precis.handlers.web import WebHandler
-        _try(WebHandler,     hub=hub, store=store)
+        _try(WebHandler,     hub=hub)
 
         # File handlers — markdown / plaintext are hidden when no root
         # is configured; the handler __init__ raises InitError for a
@@ -442,25 +448,13 @@ def boot(
             from pathlib import Path
 
             from precis.handlers.markdown import MarkdownHandler
-            _try(
-                MarkdownHandler,
-                hub=hub,
-                store=store,
-                embedder=embedder,
-                root=Path(markdown_root),
-            )
+            _try(MarkdownHandler, hub=hub, root=Path(markdown_root))
 
         if plaintext_root:
             from pathlib import Path
 
             from precis.handlers.plaintext import PlaintextHandler
-            _try(
-                PlaintextHandler,
-                hub=hub,
-                store=store,
-                embedder=embedder,
-                root=Path(plaintext_root),
-            )
+            _try(PlaintextHandler, hub=hub, root=Path(plaintext_root))
 
         # Perplexity Sonar trio. Each raises InitError independently
         # when httpx or the API key is missing.
@@ -469,9 +463,9 @@ def boot(
             ThinkHandler,
             WebsearchHandler,
         )
-        _try(WebsearchHandler, hub=hub, store=store, embedder=embedder)
-        _try(ThinkHandler,     hub=hub, store=store, embedder=embedder)
-        _try(ResearchHandler,  hub=hub, store=store, embedder=embedder)
+        _try(WebsearchHandler, hub=hub)
+        _try(ThinkHandler,     hub=hub)
+        _try(ResearchHandler,  hub=hub)
 
         # Patent — EPO OPS. Hidden unless the env trio is set; the
         # ``OpsClient`` construction (and thus the ``epo_ops`` import)
@@ -488,8 +482,6 @@ def boot(
             _try(
                 PatentHandler,
                 hub=hub,
-                store=store,
-                embedder=embedder,
                 ops=OpsClient(
                     key=epo_key,
                     secret=epo_secret,

@@ -137,6 +137,32 @@ def runtime_with_store(store: Store) -> PrecisRuntime:
     return PrecisRuntime(config=PrecisConfig(), hub=boot(store=store))
 
 
+@pytest.fixture
+def hub(store: Store) -> Hub:
+    """Lightweight Hub for tests that construct handlers directly.
+
+    Carries the test store plus a deterministic ``MockEmbedder`` at
+    the right vector dim so handlers like paper / perplexity that
+    optionally use the embedder get the same behaviour they'd see
+    under :func:`boot`. Tests that want to exercise the no-embedder
+    path build their own ``Hub(store=store)`` inline rather than
+    rebinding this fixture.
+    """
+    from precis.embedder import MockEmbedder
+    return Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
+
+
+@pytest.fixture
+def hub_no_embedder(store: Store) -> Hub:
+    """Hub with the test store but no embedder.
+
+    For tests that exercise the lex-only / no-vector code paths
+    explicitly. The store is wired so handlers can still read /
+    write refs.
+    """
+    return Hub(store=store)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

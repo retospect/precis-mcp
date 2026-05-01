@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.conversation import ConversationHandler
 from precis.handlers.oracle import OracleHandler
@@ -52,8 +53,8 @@ def _seed_paper(store: Store, slug: str, title: str = "P") -> int:
 
 
 @pytest.fixture
-def oracle(store: Store) -> OracleHandler:
-    return OracleHandler(store=store)
+def oracle(hub: Hub) -> OracleHandler:
+    return OracleHandler(hub=hub)
 
 
 class TestOraclePutAccepted:
@@ -131,8 +132,8 @@ class TestOraclePutRejected:
 
 
 @pytest.fixture
-def conv(store: Store) -> ConversationHandler:
-    return ConversationHandler(store=store)
+def conv(hub: Hub) -> ConversationHandler:
+    return ConversationHandler(hub=hub)
 
 
 class TestConvPutAccepted:

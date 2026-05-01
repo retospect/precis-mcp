@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _python_callgraph as cgraph
 from precis.handlers import _python_entries as entries_mod
@@ -244,9 +245,15 @@ class PythonHandler(Handler):
     def __init__(
         self,
         *,
+        hub: Hub,
         roots: dict[str, Path],
         cache: RepoCache | None = None,
     ) -> None:
+        # ``hub`` is taken for signature uniformity; python is an
+        # in-memory kind (no DB, no embedder), so we don't actually
+        # read anything from it. ``Handler._register_with`` stashes
+        # the hub on ``self.hub`` for any future expansion.
+        _ = hub
         if not isinstance(roots, dict):
             raise TypeError("roots must be a dict[str, Path]")
         resolved: dict[str, Path] = {}

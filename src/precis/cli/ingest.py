@@ -229,6 +229,7 @@ def run_bundles(args: argparse.Namespace) -> None:
 def run_md(args: argparse.Namespace) -> None:
     """Implements ``precis jobs ingest-md`` — pre-warm markdown ingest."""
     from precis.config import load_config
+    from precis.dispatch import Hub
     from precis.embedder import make_embedder
     from precis.handlers.markdown import MarkdownHandler
     from precis.store import Store
@@ -250,7 +251,10 @@ def run_md(args: argparse.Namespace) -> None:
     store = Store.connect(dsn)
     try:
         embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
-        handler = MarkdownHandler(store=store, root=root, embedder=embedder)
+        handler = MarkdownHandler(
+            hub=Hub(store=store, embedder=embedder),
+            root=root,
+        )
 
         ingested = 0
         skipped = 0

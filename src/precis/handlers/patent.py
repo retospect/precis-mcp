@@ -23,7 +23,7 @@ import re
 from pathlib import Path
 from typing import Any, ClassVar
 
-from precis.embedder import Embedder
+from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._patent_cql import build_cql
 from precis.handlers._patent_ingest import ingest_patent
@@ -35,7 +35,7 @@ from precis.handlers._patent_slug import parse_docdb_id
 from precis.handlers._patent_xml import OpsHit, parse_search_response
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
@@ -101,15 +101,16 @@ class PatentHandler(Handler):
     def __init__(
         self,
         *,
-        store: Store,
+        hub: Hub,
         ops: OpsClientProto,
         raw_root: Path,
-        embedder: Embedder | None = None,
     ) -> None:
-        self.store = store
+        if hub.store is None:
+            raise InitError("patent: store required")
+        self.store = hub.store
+        self.embedder = hub.embedder
         self.ops = ops
         self.raw_root = raw_root
-        self.embedder = embedder
 
     # ── verbs ──────────────────────────────────────────────────────────
 

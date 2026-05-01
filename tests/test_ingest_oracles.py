@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.handlers.oracle import OracleHandler
 from precis.jobs.ingest_oracles import (
@@ -265,7 +266,7 @@ class TestIngestPaper:
             store=store,
             embedder=embedder,
         )
-        h = OracleHandler(store=store)
+        h = OracleHandler(hub=Hub(store=store))
         resp = h.get(id="minitest")
         body = resp.body
         assert "oracle minitest" in body

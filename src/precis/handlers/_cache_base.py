@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
 from precis.protocol import Handler
 from precis.response import Response
@@ -42,7 +43,6 @@ from precis.store.types import BlockInsert
 from precis.utils.next_block import render_next_section
 
 if TYPE_CHECKING:
-    from precis.store import Store
     from precis.store.types import CacheEntry, Ref
 
 
@@ -111,8 +111,10 @@ class CacheBackedHandler(Handler):
     #: they meant to fetch a URL. (MCP critic MAJOR — hint hardcoded.)
     example_query: ClassVar[str] = "your query"
 
-    def __init__(self, *, store: Store) -> None:
-        self.store = store
+    def __init__(self, *, hub: Hub) -> None:
+        if hub.store is None:
+            raise InitError(f"{self.provider}: store required")
+        self.store = hub.store
 
     # ── public verb (default `get` implementation) ─────────────────────
 

@@ -26,7 +26,7 @@ def test_search_render_omits_misleading_score(store: Store) -> None:
     The render now uses position only — no numeric should leak."""
     from precis.handlers.paper import PaperHandler
 
-    handler = PaperHandler(store=store)
+    handler = PaperHandler(hub=Hub(store=store))
     # Direct grep against the source — the format string is the
     # behaviour. Don't need a real corpus to assert it.
     import inspect
@@ -381,7 +381,7 @@ class TestTransactionalPut:
     def test_create_with_invalid_tag_writes_nothing(self, store: Store) -> None:
         from precis.handlers.memory import MemoryHandler
 
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         before = len(store.list_refs(kind="memory", limit=200))
         with pytest.raises(BadInput):
             h.put(text="probe", tags=["urgent"])  # collides with PRIO:urgent
@@ -391,7 +391,7 @@ class TestTransactionalPut:
     def test_create_with_unknown_axis_writes_nothing(self, store: Store) -> None:
         from precis.handlers.memory import MemoryHandler
 
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         before = len(store.list_refs(kind="memory", limit=200))
         with pytest.raises(BadInput):
             h.put(text="tx-test", tags=["DENSITY:bogus"])  # unknown closed axis
@@ -401,7 +401,7 @@ class TestTransactionalPut:
     def test_update_with_invalid_tag_does_not_change_text(self, store: Store) -> None:
         from precis.handlers.memory import MemoryHandler
 
-        h = MemoryHandler(store=store)
+        h = MemoryHandler(hub=Hub(store=store))
         out = h.put(text="original")
         ref_id = int(out.body.rsplit("=", 1)[1])
         with pytest.raises(BadInput):
@@ -455,7 +455,7 @@ class TestSemanticRelevanceFloor:
                 ),
             ],
         )
-        h = PaperHandler(store=store, embedder=e)
+        h = PaperHandler(hub=Hub(store=store, embedder=e))
         out = h.search(q="xyzzy frobnicate quux")
         # The handler returns the empty-results envelope, not a
         # ranked top-K of irrelevant blocks.
@@ -557,7 +557,7 @@ def test_calc_humanises_sympy_constants() -> None:
     7B model doesn't misread it as a typo. (MCP critic MINOR.)"""
     from precis.handlers.calc import CalcHandler
 
-    h = CalcHandler()
+    h = CalcHandler(hub=Hub())
     out = h.get(id="1/0").body
     assert "complex infinity" in out
 
@@ -860,7 +860,7 @@ def test_calc_recovery_hint_uses_q_kwarg() -> None:
     """
     from precis.handlers.calc import CalcHandler
 
-    handler = CalcHandler()
+    handler = CalcHandler(hub=Hub())
 
     # Unparseable expression → BadInput with a recovery hint.
     with pytest.raises(BadInput) as exc_info:
@@ -896,7 +896,8 @@ def test_empty_numeric_ref_search_has_next_trailer(store: Store) -> None:
     from precis.handlers.memory import MemoryHandler
     from precis.handlers.todo import TodoHandler
 
-    mem = MemoryHandler(store=store)
+    hub = Hub(store=store)
+    mem = MemoryHandler(hub=hub)
     mem.put(text="hello world")
     out = mem.search(q="frobnicate-zzz-quux")
     assert "no memory entries match" in out.body
@@ -907,7 +908,7 @@ def test_empty_numeric_ref_search_has_next_trailer(store: Store) -> None:
     assert "search(kind='memory'" in out.body
     assert "/recent" in out.body
 
-    todo = TodoHandler(store=store)
+    todo = TodoHandler(hub=hub)
     todo.put(text="finish report")
     out_todo = todo.search(q="probe-zzz-quux")
     assert "no todo entries match" in out_todo.body
@@ -925,7 +926,7 @@ def test_empty_numeric_ref_search_with_tags_suggests_dropping_filter(
     """
     from precis.handlers.memory import MemoryHandler
 
-    handler = MemoryHandler(store=store)
+    handler = MemoryHandler(hub=Hub(store=store))
     handler.put(text="hello world")
     out = handler.search(q="hello", tags=["topic-no-such-thing"])
     assert "no memory entries match" in out.body
@@ -981,7 +982,7 @@ def test_paper_search_preview_strips_image_markers(store: Store) -> None:
         ],
     )
 
-    handler = PaperHandler(store=store)
+    handler = PaperHandler(hub=Hub(store=store))
     out = handler.search(q="photocatalytic")
     body = out.body
 
@@ -1020,7 +1021,7 @@ def test_paper_view_fig_n_is_reserved_not_unknown(store: Store) -> None:
     assert isinstance(corpus_id, int)
     assert ref.id is not None
 
-    handler = PaperHandler(store=store)
+    handler = PaperHandler(hub=Hub(store=store))
 
     with pytest.raises(Unsupported) as exc_info:
         handler.get(id="testpaper2026figview", view="fig/3")

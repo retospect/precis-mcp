@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers import _python_runtrace as rtrace
 from precis.handlers.python import PythonHandler
@@ -76,7 +77,7 @@ def repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def handler(repo: Path) -> PythonHandler:
-    return PythonHandler(roots={"r": repo / "demopkg"})
+    return PythonHandler(hub=Hub(), roots={"r": repo / "demopkg"})
 
 
 @pytest.fixture
@@ -199,7 +200,7 @@ def test_runtrace_argv_is_forwarded(repo: Path, gate_on: None) -> None:
             print(f"GOT_ARGV={sys.argv[1:]}")
         """,
     )
-    handler = PythonHandler(roots={"r": pkg})
+    handler = PythonHandler(hub=Hub(), roots={"r": pkg})
     out = handler.get(
         id="r",
         view="runtrace",
@@ -249,7 +250,7 @@ def test_runtrace_timeout_kills_runaway(repo: Path, gate_on: None) -> None:
                 time.sleep(0.01)
         """,
     )
-    handler = PythonHandler(roots={"r": pkg})
+    handler = PythonHandler(hub=Hub(), roots={"r": pkg})
     out = handler.get(
         id="r",
         view="runtrace",
@@ -625,7 +626,7 @@ def test_runtrace_collapses_stdlib_by_default(repo: Path, gate_on: None) -> None
             p.parse_args([])
         """,
     )
-    handler = PythonHandler(roots={"r": pkg})
+    handler = PythonHandler(hub=Hub(), roots={"r": pkg})
     out = handler.get(
         id="r",
         view="runtrace",
@@ -656,7 +657,7 @@ def test_runtrace_expand_stdlib_keeps_full_tree(repo: Path, gate_on: None) -> No
             p.parse_args([])
         """,
     )
-    handler = PythonHandler(roots={"r": pkg})
+    handler = PythonHandler(hub=Hub(), roots={"r": pkg})
     out = handler.get(
         id="r",
         view="runtrace",
@@ -697,7 +698,7 @@ def test_runtrace_max_events_truncates(repo: Path, gate_on: None) -> None:
             return total
         """,
     )
-    handler = PythonHandler(roots={"r": pkg})
+    handler = PythonHandler(hub=Hub(), roots={"r": pkg})
     out = handler.get(
         id="r",
         view="runtrace",

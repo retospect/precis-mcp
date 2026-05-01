@@ -17,7 +17,7 @@ that long-lived caching produces stale answers.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from precis.errors import BadInput, Upstream
 from precis.handlers._cache_base import (
@@ -30,9 +30,6 @@ from precis.response import Response
 from precis.store.types import BlockInsert
 from precis.utils.optional_deps import require_optional
 from precis.utils.url import canonical_url, host_of, is_http_url, slug_from_url
-
-if TYPE_CHECKING:
-    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -71,9 +68,6 @@ class WebHandler(CacheBackedHandler):
     attribution: ClassVar[str] = _WEB_BASE_ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "https://example.com/article"
-
-    def __init__(self, *, store: Store) -> None:
-        super().__init__(store=store)
 
     # ── canonicalization & cache key ──────────────────────────────────
 

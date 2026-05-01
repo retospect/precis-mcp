@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers.calc import CalcHandler
 
 
 @pytest.fixture
 def handler() -> CalcHandler:
-    return CalcHandler()
+    return CalcHandler(hub=Hub())
 
 
 def test_basic_arithmetic(handler: CalcHandler) -> None:

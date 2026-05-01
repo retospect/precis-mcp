@@ -132,6 +132,11 @@ class _Good(Handler):
 
     spec = _GOOD_SPEC
 
+    def __init__(self, *, hub: Hub) -> None:
+        # Smoke-test handler: no deps, but accept ``hub`` since
+        # ``_try`` always threads it.
+        _ = hub
+
     def get(self, **kw):
         return Response(body="good")
 
@@ -146,7 +151,8 @@ class _BadConfig(Handler):
         supports_get=True,
     )
 
-    def __init__(self) -> None:
+    def __init__(self, *, hub: Hub) -> None:
+        _ = hub
         raise InitError("bad config: PRECIS_FOO missing")
 
 
@@ -160,7 +166,8 @@ class _BugInInit(Handler):
         supports_get=True,
     )
 
-    def __init__(self) -> None:
+    def __init__(self, *, hub: Hub) -> None:
+        _ = hub
         raise RuntimeError("programmer bug")
 
 
@@ -219,7 +226,8 @@ def test_try_swallows_import_error(caplog: pytest.LogCaptureFixture) -> None:
             supports_get=True,
         )
 
-        def __init__(self) -> None:
+        def __init__(self, *, hub: Hub) -> None:
+            _ = hub
             raise ImportError("no module named fictional_dep")
 
         def get(self, **kw):
@@ -298,9 +306,9 @@ def test_duplicate_handler_registration_raises() -> None:
     from precis.handlers.calc import CalcHandler
 
     r = Hub()
-    first = CalcHandler()
+    first = CalcHandler(hub=r)
     first._register_with(r)
 
-    second = CalcHandler()
+    second = CalcHandler(hub=r)
     with pytest.raises(DuplicateRegistration, match="duplicate handler"):
         second._register_with(r)

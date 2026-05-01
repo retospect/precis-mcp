@@ -22,16 +22,13 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 import os
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 from urllib.parse import quote_plus
 
 from precis.errors import Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.store.types import BlockInsert
-
-if TYPE_CHECKING:
-    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -92,9 +89,6 @@ class MathHandler(CacheBackedHandler):
     # placeholder so cost trailers exist; tier-aware accounting can
     # land later.
     _COST_PER_CALL: ClassVar[float] = 0.002
-
-    def __init__(self, *, store: Store) -> None:
-        super().__init__(store=store)
 
     # ── canonicalization & cache key ──────────────────────────────────
 

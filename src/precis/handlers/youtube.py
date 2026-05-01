@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
 from precis.errors import BadInput, NotFound, Upstream
@@ -23,9 +23,6 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
 from precis.utils.optional_deps import require_optional
-
-if TYPE_CHECKING:
-    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -90,9 +87,6 @@ class YouTubeHandler(CacheBackedHandler):
     attribution: ClassVar[str] = _YT_BASE_ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "dQw4w9WgXcQ"
-
-    def __init__(self, *, store: Store) -> None:
-        super().__init__(store=store)
 
     # ── overridden get to honour view='languages' ─────────────────────
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.paper import PaperHandler, _parse_paper_id
@@ -121,8 +122,8 @@ def _seed_paper(
 
 
 @pytest.fixture
-def handler(store: Store) -> PaperHandler:
-    return PaperHandler(store=store, embedder=MockEmbedder(dim=1024))
+def handler(hub: Hub) -> PaperHandler:
+    return PaperHandler(hub=hub)
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +391,7 @@ class TestSearch:
         # Use a handler without an embedder so we exercise the lex-only
         # path; semantic search would always score nonzero RRF on the
         # closest neighbour even without a lex match.
-        lex_only = PaperHandler(store=store, embedder=None)
+        lex_only = PaperHandler(hub=Hub(store=store))
         _seed_paper(store, blocks=["alpha"])
         resp = lex_only.search(q="zzqqxx")
         assert "no paper blocks match" in resp.body
