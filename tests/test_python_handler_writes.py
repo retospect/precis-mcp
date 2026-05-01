@@ -789,3 +789,125 @@ def test_edit_dry_run_rejects_unknown_mode(handler: PythonHandler) -> None:
             text="x + 2",
             dry_run="brief",
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression: critic CRITICAL-C B2 — double-root-prefix path guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def package_root_repo(tmp_path: Path) -> Path:
+    """Repo whose root IS itself a package (has __init__.py at root).
+
+    This matches real-world precis-style deployments
+    (``PRECIS_PYTHON_ROOTS=precis=<pkg>/src/precis``) where the alias
+    points inside the package, not above it. Callers who paste the
+    full repo-root-relative path (``src/precis/foo.py``) produce a
+    double-prefixed id like ``alias/src/precis/foo.py``.
+
+    The root directory is named literally ``precis`` so the indexer
+    produces qualnames starting with ``precis.`` — matching the
+    alias and production layout.
+    """
+    root = tmp_path / "precis"
+    root.mkdir()
+    _write(root, "__init__.py", "")
+    _write(
+        root,
+        "registry.py",
+        '''
+        """Top-level module inside the root package."""
+
+
+        def lookup(name: str) -> str:
+            return name
+        ''',
+    )
+    return root
+
+
+@pytest.fixture
+def package_root_handler(package_root_repo: Path) -> PythonHandler:
+    """Handler whose alias 'precis' points at a root that is a package."""
+    return PythonHandler(roots={"precis": package_root_repo})
+
+
+def test_put_create_rejects_doubled_root_prefix(
+    package_root_handler: PythonHandler, package_root_repo: Path
+) -> None:
+    """Passing ``precis/src/precis/foo.py`` when root is already
+    ``.../src/precis`` would silently create a phantom nested
+    ``src/precis/src/precis/foo.py`` tree. Reject instead."""
+    with pytest.raises(BadInput, match="repeats the root's path"):
+        package_root_handler.put(
+            id=f"precis/{package_root_repo.parts[-1]}/foo.py",
+            mode="create",
+            text="x = 1\n",
+        )
+    # And no phantom directory was created.
+    assert not (package_root_repo / package_root_repo.parts[-1]).exists()
+
+
+def test_put_create_reject_includes_suggested_unprefixed_path(
+    package_root_handler: PythonHandler, package_root_repo: Path
+) -> None:
+    """The BadInput's ``next=`` hint must point at the address the
+    caller probably meant — alias plus the *stripped* relative path,
+    not the doubled prefix."""
+    root_name = package_root_repo.parts[-1]
+    with pytest.raises(BadInput) as exc_info:
+        package_root_handler.put(
+            id=f"precis/{root_name}/foo.py",
+            mode="create",
+            text="x = 1\n",
+        )
+    err = exc_info.value
+    hint = str(err.next)
+    # Correct form: alias + bare filename.
+    assert "'precis/foo.py'" in hint
+    # Must NOT recreate the doubled form.
+    assert f"precis/{root_name}/foo.py" not in hint
+
+
+# ---------------------------------------------------------------------------
+# Regression: critic MAJOR-C F1 — qualname-drop gate false positive
+# ---------------------------------------------------------------------------
+
+
+def test_replace_identical_body_under_package_root_is_noop(
+    package_root_handler: PythonHandler, package_root_repo: Path
+) -> None:
+    """When the repo root is itself a package, the handler-side module
+    qualname helper used to short by one segment relative to the
+    indexer's qualname (``lookup`` vs ``precis.registry.lookup``). A
+    replace with identical body then tripped the qualname-drop gate
+    with a phantom 'would disappear' error. Now: round-trip the same
+    source and succeed."""
+    unchanged = "def lookup(name: str) -> str:\n    return name\n"
+    out = package_root_handler.put(
+        id="precis::precis.registry.lookup",
+        mode="replace",
+        text=unchanged,
+    )
+    assert "ast.parse" in out.body
+    assert "qualname preserved" in out.body
+
+
+def test_replace_identical_body_under_package_root_via_line_range(
+    package_root_handler: PythonHandler, package_root_repo: Path
+) -> None:
+    """Same bug via the ``~L<start>-<end>`` selector form."""
+    unchanged = "def lookup(name: str) -> str:\n    return name\n"
+    # registry.py after dedent is:
+    #   L1: """Top-level module inside the root package."""
+    #   L2: (blank)
+    #   L3: (blank)
+    #   L4: def lookup(name: str) -> str:
+    #   L5:     return name
+    out = package_root_handler.put(
+        id="precis/registry.py~L4-5",
+        mode="replace",
+        text=unchanged,
+    )
+    assert "qualname preserved" in out.body

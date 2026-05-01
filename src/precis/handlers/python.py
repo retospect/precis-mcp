@@ -35,6 +35,7 @@ from precis.handlers import _python_runtrace as rtrace
 from precis.handlers import _python_write as write
 from precis.protocol import Handler, KindSpec
 from precis.python_index import ModuleIndex, RepoCache, RepoIndex, Symbol
+from precis.python_index.indexer import _qualname_for_file
 from precis.response import Response
 from precis.utils.edit_resolve import (
     EditOp,
@@ -540,6 +541,8 @@ class PythonHandler(Handler):
             )
         if text is None:
             raise BadInput("create requires text=", next="add text='...'")
+
+        _reject_doubled_root_prefix(parsed, root)
 
         path = (root / parsed.file).resolve()
         # Refuse to escape the repo root via ../ tricks.
@@ -1389,31 +1392,66 @@ def _ensure_trailing_newline(text: str) -> str:
     return text
 
 
+def _reject_doubled_root_prefix(parsed: _ParsedId, root: Path) -> None:
+    """Refuse ids whose relative path re-enters the root's tail segments.
+
+    Real-world trip-wire: precis itself is deployed with
+    ``PRECIS_PYTHON_ROOTS=precis=<pkg>/src/precis`` — i.e. the alias
+    already points *inside* the package. Agents copy-pasting paths
+    from the repo root write ``id='precis/src/precis/foo.py'``; the
+    handler would then happily create a phantom
+    ``<pkg>/src/precis/src/precis/foo.py`` directory tree (which
+    also confuses the indexer into short qualnames).
+
+    Rule: if the caller's relative path begins with segments that
+    equal the last N segments of ``root``, reject with a hint that
+    strips the redundant prefix. Single-segment overlap is enough —
+    the root's leaf is the package name, and having a sibling
+    directory of that name inside the package is almost never what
+    the agent meant.
+    """
+    if parsed.file is None:
+        return
+    file_parts = tuple(p for p in parsed.file.split("/") if p)
+    if not file_parts:
+        return
+    root_parts = root.parts
+    # Find the longest prefix of ``file_parts`` that matches a suffix
+    # of ``root.parts``.
+    max_overlap = min(len(file_parts), len(root_parts))
+    for overlap in range(max_overlap, 0, -1):
+        if root_parts[-overlap:] == file_parts[:overlap]:
+            redundant = "/".join(file_parts[:overlap])
+            stripped = "/".join(file_parts[overlap:])
+            raise BadInput(
+                f"path {parsed.file!r} repeats the root's path "
+                f"components ({redundant!r}); addresses are relative "
+                f"to the repo root",
+                next=(
+                    f"put(kind='python', id='{parsed.alias}/{stripped}', ...)"
+                    if stripped
+                    else f"put(kind='python', id={parsed.alias!r}, ...)"
+                ),
+            )
+
+
 def _module_qualname_for(path: Path, *, repo_root: Path) -> str:
     """Compute the dotted import qualname a `.py` file *would* have if
     indexed under `repo_root`.
 
-    Mirrors `precis.python_index.indexer._qualname_for_file` but works
-    on a hypothetical not-yet-indexed file (used for ``mode='create'``
-    and for new content of mode='replace' where the file may have
-    moved or been added). Walks parents while ``__init__.py`` exists,
-    stopping at `repo_root`.
+    Delegates to the indexer's authoritative helper so the handler's
+    gate 2 (qualname-drop) sees the same qualname shape as
+    ``RepoIndex.symbol`` does for the same file. An earlier in-file
+    reimplementation stopped walking at ``repo_root``, which produced
+    qualnames shorter than the indexer's whenever the repo root was
+    itself a package (``__init__.py`` at root) — firing a phantom
+    'would disappear' drop on otherwise no-op replaces.
+
+    ``repo_root`` is retained only to keep call-site compatibility;
+    the indexer helper uses the file's parent chain directly.
     """
-    if path.name == "__init__.py":
-        parts: list[str] = []
-        ancestor = path.parent
-    else:
-        parts = [path.stem]
-        ancestor = path.parent
-
-    # Walk up while __init__.py exists, but never above repo_root.
-    while ancestor != repo_root and (ancestor / "__init__.py").is_file():
-        parts.insert(0, ancestor.name)
-        ancestor = ancestor.parent
-
-    if not parts:
-        return ancestor.name
-    return ".".join(parts)
+    del repo_root  # kept for signature compatibility
+    return _qualname_for_file(path)
 
 
 def _replace_summary(parsed: _ParsedId, region: tuple[int, int] | None) -> str:
