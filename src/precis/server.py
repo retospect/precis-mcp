@@ -336,12 +336,24 @@ def put(
 
     Args:
         kind:   Which kind to write to.
-        mode:   Operation hint. Currently the only widely-supported mode
-                is 'delete' for soft-delete on numeric-ref kinds. File
-                kinds (markdown, tex, …) accept 'append' / 'replace';
-                see each kind's help skill. Unknown modes are rejected.
-        id:     Target ref or block. Omit to create a new ref (numeric
-                kinds).
+        mode:   Operation hint. Kind-specific:
+                - File kinds (``markdown``, ``plaintext``, ``tex``,
+                  ``python``): ``put`` is **creation-only** since the
+                  seven-verb cutover — ``mode='create'`` is required
+                  and is the only accepted value. Region edits
+                  (``append`` / ``insert`` / ``replace`` /
+                  ``find-replace``) live on the ``edit`` verb;
+                  whole-file deletes live on ``delete``.
+                - Numeric-ref kinds (``memory``, ``todo``, ``gripe``,
+                  ``conv``, ``fc``, ``quest``): omit ``mode=`` to
+                  create a new ref; ``mode='delete'`` soft-deletes.
+                - ``perplexity``: ``mode='import'`` ingests a
+                  pre-generated report as a $0 cache entry.
+                Unknown modes are rejected. See each kind's help skill
+                for the authoritative list.
+        id:     Target ref or block. Omit to create a new ref on
+                numeric-ref kinds; required (file path/slug) for file
+                kinds with ``mode='create'``.
         text:   Content for create or text update.
         tags:   Tag strings to apply (closed 'STATUS:done', flag 'pinned',
                 or open 'topic-x'). On update, the tag list is *added* —
