@@ -26,7 +26,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from precis.store._mappers import _row_to_cache_entry, _row_to_ref
+from precis.store._mappers import _REFS_COLS, _row_to_cache_entry, _row_to_ref
 from precis.store.types import Block, BlockInsert, CacheEntry, Ref
 
 
@@ -167,8 +167,7 @@ class CacheMixin:
             row = conn.execute(
                 "UPDATE refs SET title = %s, updated_at = now() "
                 "WHERE id = %s AND deleted_at IS NULL "
-                "RETURNING id, corpus_id, kind, slug, title, provider, meta, "
-                "          created_at, updated_at, deleted_at",
+                f"RETURNING {_REFS_COLS}",
                 (title, ref_id),
             ).fetchone()
             if row is None:
@@ -287,8 +286,7 @@ class CacheMixin:
             row = conn.execute(
                 "INSERT INTO refs (corpus_id, kind, slug, title, provider, meta) "
                 "VALUES (%s, %s, %s, %s, %s, %s) "
-                "RETURNING id, corpus_id, kind, slug, title, provider, meta, "
-                "          created_at, updated_at, deleted_at",
+                f"RETURNING {_REFS_COLS}",
                 (corpus_id, kind, slug, title, provider, ref_meta_json),
             ).fetchone()
             assert row is not None

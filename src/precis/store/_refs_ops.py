@@ -19,6 +19,7 @@ MRO against the concrete ``Store``.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
@@ -27,7 +28,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import NotFound
-from precis.store._mappers import _row_to_ref
+from precis.store._mappers import _REFS_COLS, _REFS_COLS_ALIASED, _row_to_ref
 from precis.store._tag_filter import build_tag_filter
 from precis.store.types import Ref
 
@@ -71,12 +72,11 @@ class RefsMixin:
         """
         self._validate_slug_for_kind(kind, slug, conn=conn)
 
-        sql = """
-            INSERT INTO refs (corpus_id, kind, slug, title, provider, meta)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING id, corpus_id, kind, slug, title, provider, meta,
-                      created_at, updated_at, deleted_at
-        """
+        sql = (
+            "INSERT INTO refs (corpus_id, kind, slug, title, provider, meta) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
+            f"RETURNING {_REFS_COLS}"
+        )
         params = (corpus_id, kind, slug, title, provider, Jsonb(meta or {}))
 
         if conn is not None:
@@ -100,18 +100,10 @@ class RefsMixin:
         kinds. The caller's ``isinstance`` of ``id`` picks the column.
         """
         if isinstance(id, int):
-            sql = (
-                "SELECT id, corpus_id, kind, slug, title, provider, meta, "
-                "       created_at, updated_at, deleted_at "
-                "FROM refs WHERE kind = %s AND id = %s"
-            )
+            sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND id = %s"
             params: tuple[Any, ...] = (kind, id)
         else:
-            sql = (
-                "SELECT id, corpus_id, kind, slug, title, provider, meta, "
-                "       created_at, updated_at, deleted_at "
-                "FROM refs WHERE kind = %s AND slug = %s"
-            )
+            sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND slug = %s"
             params = (kind, id)
         if not include_deleted:
             sql += " AND deleted_at IS NULL"
@@ -119,6 +111,40 @@ class RefsMixin:
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
         return _row_to_ref(row) if row is not None else None
+
+    def fetch_refs_by_ids(
+        self,
+        ref_ids: Iterable[int],
+        *,
+        include_deleted: bool = True,
+    ) -> dict[int, Ref]:
+        """Bulk-fetch refs by id, returning ``{id: Ref}``.
+
+        Used by callers that have a set of ``ref_id`` integers and
+        need the full :class:`Ref` row for each — most commonly the
+        link-endpoint resolver in :class:`NumericRefHandler`, which
+        used to reach into ``self.store.pool`` with its own raw
+        ``SELECT`` (a handler/schema layering break flagged by the
+        MCP critic).
+
+        ``include_deleted`` defaults to ``True`` because the primary
+        caller (link rendering) wants to show a soft-deleted endpoint
+        with a deletion marker rather than silently dropping the row.
+        Pass ``False`` to filter tombstones out.
+
+        Missing ids are simply absent from the returned dict — the
+        caller decides whether that's an error or an ``<unknown>``
+        placeholder.
+        """
+        ids = list(ref_ids)
+        if not ids:
+            return {}
+        sql = f"SELECT {_REFS_COLS} FROM refs WHERE id = ANY(%s)"
+        if not include_deleted:
+            sql += " AND deleted_at IS NULL"
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (ids,)).fetchall()
+        return {r[0]: _row_to_ref(r) for r in rows}
 
     def update_ref(
         self,
@@ -135,7 +161,7 @@ class RefsMixin:
         ``NumericRefHandler._update`` which wraps title + tag +
         link writes in one ``tx()``).
         """
-        sql = """
+        sql = f"""
             UPDATE refs SET
                 title = COALESCE(%s, title),
                 meta  = CASE WHEN %s::jsonb IS NULL
@@ -144,8 +170,7 @@ class RefsMixin:
                         END,
                 updated_at = now()
             WHERE id = %s AND deleted_at IS NULL
-            RETURNING id, corpus_id, kind, slug, title, provider, meta,
-                      created_at, updated_at, deleted_at
+            RETURNING {_REFS_COLS}
         """
         params = (
             title,
@@ -253,9 +278,7 @@ class RefsMixin:
         params.append(limit)
         params.append(offset)
         sql = (
-            "SELECT r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
-            "       r.meta, r.created_at, r.updated_at, r.deleted_at "
-            "FROM refs r WHERE "
+            f"SELECT {_REFS_COLS_ALIASED} FROM refs r WHERE "
             + " AND ".join(clauses)
             + " ORDER BY r.updated_at DESC LIMIT %s OFFSET %s"
         )
@@ -327,8 +350,7 @@ class RefsMixin:
             params.extend(tag_params)
         params.append(limit)
         sql = (
-            "SELECT r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
-            "       r.meta, r.created_at, r.updated_at, r.deleted_at, "
+            f"SELECT {_REFS_COLS_ALIASED}, "
             "       ts_rank_cd(r.title_tsv, qq.qq) AS rank "
             "FROM refs r, websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)} "

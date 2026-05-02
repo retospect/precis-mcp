@@ -610,25 +610,13 @@ class NumericRefHandler(Handler):
     def _fetch_endpoints(self, ref_ids: set[int]) -> dict[int, Ref]:
         """Bulk-fetch refs by id, returning ``{id: Ref}``.
 
-        Soft-deleted refs are kept in the result so a link to a
-        deleted ref still renders (with a deletion marker handled
-        by the caller). Missing rows are simply absent from the
-        dict — the caller renders an ``<unknown>`` placeholder.
+        Thin delegate to :meth:`Store.fetch_refs_by_ids`. Kept as a
+        method here (instead of inlining at the call site) because
+        subclasses / tests may want to override it with a canned
+        endpoint dict. Soft-deleted refs are retained so a link
+        to a tombstoned ref still renders with a deletion marker.
         """
-        if not ref_ids:
-            return {}
-        with self.store.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT id, corpus_id, kind, slug, title, provider, meta, "
-                "       created_at, updated_at, deleted_at "
-                "FROM refs WHERE id = ANY(%s)",
-                (list(ref_ids),),
-            ).fetchall()
-        # Reuse the same Ref dataclass everywhere else in the
-        # codebase uses; keep the projection in column order.
-        from precis.store.store import _row_to_ref
-
-        return {r[0]: _row_to_ref(r) for r in rows}
+        return self.store.fetch_refs_by_ids(ref_ids)
 
     @staticmethod
     def _format_link_line(

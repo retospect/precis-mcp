@@ -41,6 +41,7 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
+from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
@@ -349,11 +350,8 @@ class PatentHandler(Handler):
         Stable secondary sort on slug — matches the spec's confirmed
         tie-break rule.
         """
-        from precis.store.store import _row_to_ref  # local import to avoid cycle
-
-        sql = """
-            SELECT r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider,
-                   r.meta, r.created_at, r.updated_at, r.deleted_at
+        sql = f"""
+            SELECT {_REFS_COLS_ALIASED}
             FROM   refs r
             WHERE  r.kind = 'patent' AND r.deleted_at IS NULL
             ORDER BY (r.meta->>'publication_date') DESC NULLS LAST,

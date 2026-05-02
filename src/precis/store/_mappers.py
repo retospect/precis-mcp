@@ -140,10 +140,36 @@ def _row_to_block(row: tuple) -> Block:
     )
 
 
+# ---------------------------------------------------------------------------
+# Shared ``SELECT ... FROM refs`` column list.
+#
+# Every caller that wants a row :func:`_row_to_ref` can map needs the
+# same 10 columns in the same order; hand-copying the list diverges
+# over time (MCP critic: the string was duplicated in 6+ locations
+# plus a handler layering break in ``_numeric_ref._fetch_endpoints``).
+# Keep the two variants in lock-step: ``_REFS_COLS`` for unaliased
+# queries (``FROM refs``), ``_REFS_COLS_ALIASED`` for queries that
+# alias the table as ``r`` (tag-filter + joins).
+# ---------------------------------------------------------------------------
+_REFS_COLS = (
+    "id, corpus_id, kind, slug, title, provider, meta, "
+    "created_at, updated_at, deleted_at"
+)
+_REFS_COLS_ALIASED = (
+    "r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, r.meta, "
+    "r.created_at, r.updated_at, r.deleted_at"
+)
+
+
 def _row_to_ref(row: tuple) -> Ref:
     """Map a refs row tuple in the order:
     (id, corpus_id, kind, slug, title, provider, meta,
      created_at, updated_at, deleted_at)
+
+    The column list is declared once in :data:`_REFS_COLS` /
+    :data:`_REFS_COLS_ALIASED`; every ``SELECT`` that feeds this
+    mapper should reference one of those constants so drift between
+    the SQL projection and the tuple layout can't happen.
     """
     return Ref(
         id=row[0],
@@ -202,6 +228,8 @@ __all__ = [
     "_AGENT_WRITABLE_PREFIXES",
     "_MARKUP_ONLY_BLOCK",
     "_MIN_BLOCK_CHARS",
+    "_REFS_COLS",
+    "_REFS_COLS_ALIASED",
     "_REF_LEVEL_POS",
     "_SYSTEM_WRITABLE_PREFIXES",
     "_block_noise_clauses",
