@@ -580,6 +580,160 @@ def test_ingest_md_deprecation_alias_still_works(
 
 
 # ---------------------------------------------------------------------------
+# gripes — human-only triage dump
+# ---------------------------------------------------------------------------
+
+
+def _insert_gripe(store, text: str) -> int:
+    """Seed a gripe ref bypassing the handler (no agent-facing read)."""
+    corpus_id = store.ensure_corpus("default")
+    ref = store.insert_ref(
+        corpus_id=corpus_id,
+        kind="gripe",
+        slug=None,
+        title=text,
+        meta={},
+    )
+    return ref.id
+
+
+def test_gripes_dump_text_format(
+    store,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`precis gripes` prints every live gripe in reverse-chrono order."""
+    _insert_gripe(store, "first complaint")
+    _insert_gripe(store, "second complaint")
+
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(sys, "argv", ["precis", "gripes", "--database-url", dsn])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "2 gripe(s)" in out
+    assert "first complaint" in out
+    assert "second complaint" in out
+    # Newest first by default: second complaint appears before first.
+    assert out.index("second complaint") < out.index("first complaint")
+
+
+def test_gripes_dump_empty(
+    store,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(sys, "argv", ["precis", "gripes", "--database-url", dsn])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "no live gripes" in out
+
+
+def test_gripes_dump_json_one_per_line(
+    store,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _insert_gripe(store, "alpha gripe")
+    _insert_gripe(store, "beta gripe")
+
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(
+        sys, "argv", ["precis", "gripes", "--format", "json", "--database-url", dsn]
+    )
+    cli.main()
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    payloads = [json.loads(ln) for ln in lines]
+    assert {p["text"] for p in payloads} == {"alpha gripe", "beta gripe"}
+    # Every object carries id + timestamps.
+    for p in payloads:
+        assert isinstance(p["id"], int)
+        assert p["created_at"] is not None
+        assert "deleted_at" not in p  # live-only by default
+
+
+def test_gripes_dump_include_deleted(
+    store,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--include-deleted surfaces soft-deleted tombstones."""
+    live_id = _insert_gripe(store, "still here")
+    dead_id = _insert_gripe(store, "tombstoned")
+    store.soft_delete_ref(dead_id)
+
+    dsn = _store_dsn_from(store)
+    # Default run hides the tombstone.
+    monkeypatch.setattr(sys, "argv", ["precis", "gripes", "--database-url", dsn])
+    cli.main()
+    default_out = capsys.readouterr().out
+    assert "still here" in default_out
+    assert "tombstoned" not in default_out
+
+    # --include-deleted surfaces it with a marker.
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["precis", "gripes", "--include-deleted", "--database-url", dsn],
+    )
+    cli.main()
+    all_out = capsys.readouterr().out
+    assert "still here" in all_out
+    assert "tombstoned" in all_out
+    assert "(deleted)" in all_out
+    assert "live=1" in all_out
+    assert "deleted=1" in all_out
+    assert str(live_id) in all_out
+    assert str(dead_id) in all_out
+
+
+def test_gripes_dump_oldest_first_and_limit(
+    store,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _insert_gripe(store, "oldest")
+    _insert_gripe(store, "middle")
+    _insert_gripe(store, "newest")
+
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precis",
+            "gripes",
+            "--oldest-first",
+            "--limit",
+            "2",
+            "--database-url",
+            dsn,
+        ],
+    )
+    cli.main()
+    out = capsys.readouterr().out
+    # Oldest-first + limit 2 → "oldest" and "middle", no "newest".
+    assert "oldest" in out
+    assert "middle" in out
+    assert "newest" not in out
+    assert out.index("oldest") < out.index("middle")
+
+
+def test_gripes_dump_without_dsn_exits(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PRECIS_DATABASE_URL", raising=False)
+    monkeypatch.setattr(sys, "argv", ["precis", "gripes"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "no database_url" in err
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

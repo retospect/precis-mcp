@@ -34,7 +34,7 @@ from precis.handlers._paper_toc import build_toc, filter_toc_to_range, render_to
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -150,7 +150,8 @@ class PaperHandler(Handler):
     ) -> Response:
         if id is None:
             return self._render_list_papers()
-        slug, chunk_spec, path_view = _parse_paper_id(str(id))
+        raw_id = _maybe_resolve_doi(self.store, str(id))
+        slug, chunk_spec, path_view = _parse_paper_id(raw_id)
 
         ref = resolve_live_slug_ref(
             self.store,
@@ -221,10 +222,11 @@ class PaperHandler(Handler):
 
         scope_ref_id: int | None = None
         if scope is not None:
+            scope_slug = _maybe_resolve_doi(self.store, str(scope))
             scope_ref = resolve_live_slug_ref(
                 self.store,
                 kind="paper",
-                id=scope,
+                id=scope_slug,
                 next_hint="search(kind='paper', q='...') to find one",
                 options=_suggest_paper_slugs(scope, store=self.store),
             )
@@ -407,7 +409,8 @@ class PaperHandler(Handler):
         present) or ``NotFound`` (slug unknown) so the caller can
         let those propagate.
         """
-        slug, chunk_spec, path_view = _parse_paper_id(str(id))
+        raw_id = _maybe_resolve_doi(self.store, str(id))
+        slug, chunk_spec, path_view = _parse_paper_id(raw_id)
         if chunk_spec is not None or path_view is not None:
             raise BadInput(
                 "paper ops operate at ref level — drop the chunk "
@@ -823,6 +826,16 @@ _SLUG_RE = re.compile(r"^([a-z0-9][a-z0-9\-]*)(.*)$")
 _RANGE_RE = re.compile(r"^(\d+)\.\.(\d+)$")
 _CHUNK_RE = re.compile(r"^(\d+)$")
 
+# A DOI-form paper id. DOIs start with ``10.<registrant>/<suffix>`` per
+# the IDF spec; the suffix can legally contain slashes and dots (e.g.
+# ``10.1038/s41598-023-44772-6``, ``10.1111/jnc.13915``), which is why
+# they can't be routed through ``_SLUG_RE`` — the regex would try to
+# split the DOI on ``/`` as a view path and fail. Chunk selectors
+# (``~38``) still attach to DOI-form ids; view paths (``/abstract``)
+# do not — use the ``view=`` kwarg instead, because we can't safely
+# disambiguate ``/abstract`` as "view=abstract" vs "DOI suffix /abstract".
+_DOI_RE = re.compile(r"^(10\.\d+/[^~]+?)(~.*)?$")
+
 _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
     ("cite", "bib"): "bibtex",
     ("cite", "bibtex"): "bibtex",
@@ -834,6 +847,50 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
     ("ris",): "ris",
     ("endnote",): "endnote",
 }
+
+
+def _maybe_resolve_doi(store: Store, raw: str) -> str:
+    """Translate a DOI-form paper id to its slug form.
+
+    When an agent hands us a DOI (e.g. ``10.1111/jnc.13915``) as the
+    paper id, route it through ``meta->>'doi'`` and substitute the
+    slug so the rest of the pipeline (``_parse_paper_id``,
+    :func:`resolve_live_slug_ref`, rendering) stays slug-addressed
+    and unchanged.
+
+    Chunk selectors ride along: ``10.1111/jnc.13915~38`` →
+    ``wang2020dopamine~38``. View paths are *not* supported on
+    DOI-form ids — DOI suffixes can legally contain ``/``, so we
+    can't disambiguate ``10.1000/foo/abstract`` between "DOI
+    literal" and "DOI + view=abstract". The caller must use the
+    ``view=`` kwarg alongside a DOI.
+
+    Non-DOI inputs (starting with anything other than ``10.``) are
+    returned unchanged — this function is a no-op on slug-form ids.
+
+    Raises :class:`NotFound` when the DOI is well-formed but no live
+    paper carries it; the error carries a ``search(kind='paper',
+    q='...')`` hint rather than falling through to the generic
+    ``"illegal character"`` message the slug regex would emit.
+    """
+    if not raw.startswith("10."):
+        return raw
+    m = _DOI_RE.match(raw)
+    if m is None:
+        # Looks like a DOI prefix but doesn't match the full shape —
+        # let the slug parser emit its usual error.
+        return raw
+    doi, selector = m.group(1), (m.group(2) or "")
+    slug = store.find_paper_slug_by_doi(doi)
+    if slug is None:
+        raise NotFound(
+            f"paper with DOI {doi!r} not ingested",
+            next=(
+                "search(kind='paper', q='<title or authors>') to find "
+                "an existing slug, or ingest the paper first"
+            ),
+        )
+    return slug + selector
 
 
 def _parse_paper_id(

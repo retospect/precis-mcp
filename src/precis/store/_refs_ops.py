@@ -112,6 +112,30 @@ class RefsMixin:
             row = conn.execute(sql, params).fetchone()
         return _row_to_ref(row) if row is not None else None
 
+    def find_paper_slug_by_doi(self, doi: str) -> str | None:
+        """Look up a paper's slug by its DOI.
+
+        DOIs are stored in ``refs.meta->>'doi'`` at ingest time. This
+        helper is used by the paper ``get`` entry point so callers can
+        address a paper by its DOI (``10.1111/jnc.13915``) in addition
+        to its minted slug — a convenience for agents that have a
+        bibliography full of DOIs from an external source and haven't
+        yet learned the local slug naming convention.
+
+        Returns ``None`` when no live paper carries this DOI; the
+        caller decides whether that's an error (agent-facing) or a
+        fall-through (internal dedupe already has its own path).
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT slug FROM refs "
+                "WHERE kind = 'paper' AND deleted_at IS NULL "
+                "AND meta->>'doi' = %s "
+                "LIMIT 1",
+                (doi,),
+            ).fetchone()
+        return row[0] if row is not None else None
+
     def fetch_refs_by_ids(
         self,
         ref_ids: Iterable[int],

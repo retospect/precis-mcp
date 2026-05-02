@@ -7,7 +7,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers.paper import PaperHandler, _parse_paper_id
+from precis.handlers.paper import PaperHandler, _maybe_resolve_doi, _parse_paper_id
 from precis.store import BlockInsert, Store
 
 # ---------------------------------------------------------------------------
@@ -73,6 +73,72 @@ class TestParsePaperId:
     def test_invalid_slug(self) -> None:
         with pytest.raises(BadInput):
             _parse_paper_id("/cite/bib")
+
+
+# ---------------------------------------------------------------------------
+# DOI-form id resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveDoi:
+    """``_maybe_resolve_doi`` routes DOI-form ids through meta->>'doi'."""
+
+    def test_non_doi_passthrough(self, store: Store) -> None:
+        # Slug-form inputs are untouched — no DB lookup, no error.
+        assert _maybe_resolve_doi(store, "wang2020state") == "wang2020state"
+        assert _maybe_resolve_doi(store, "wang2020state~38") == "wang2020state~38"
+        assert _maybe_resolve_doi(store, "wang2020state/abstract") == (
+            "wang2020state/abstract"
+        )
+
+    def test_doi_translates_to_slug(self, store: Store) -> None:
+        _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
+        assert (
+            _maybe_resolve_doi(store, "10.1111/jnc.13915") == "wang2020state"
+        )
+
+    def test_doi_preserves_chunk_selector(self, store: Store) -> None:
+        _seed_paper(store, slug="wang2020state", doi="10.1038/s41598-023-44772-6")
+        assert (
+            _maybe_resolve_doi(store, "10.1038/s41598-023-44772-6~38..42")
+            == "wang2020state~38..42"
+        )
+
+    def test_doi_with_dots_in_suffix(self, store: Store) -> None:
+        # Suffixes like ``jnc.13915`` carry dots; the slug parser would
+        # reject these at the ``.`` — DOI resolution short-circuits that.
+        _seed_paper(store, slug="smith2019foo", doi="10.1016/j.ejphar.2025.177633")
+        assert (
+            _maybe_resolve_doi(store, "10.1016/j.ejphar.2025.177633")
+            == "smith2019foo"
+        )
+
+    def test_unknown_doi_raises_notfound(self, store: Store) -> None:
+        _seed_paper(store, doi="10.1/x")
+        with pytest.raises(NotFound, match="DOI .* not ingested"):
+            _maybe_resolve_doi(store, "10.9999/nope")
+
+    def test_get_by_doi_end_to_end(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
+        resp = handler.get(id="10.1111/jnc.13915")
+        assert "wang2020state" in resp.body
+        assert "State of the art" in resp.body
+
+    def test_get_by_doi_with_view_kwarg(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        # DOI + ``view=`` kwarg is the supported combo (path-view
+        # forms like ``/abstract`` don't work on DOIs).
+        _seed_paper(
+            store,
+            slug="wang2020state",
+            doi="10.1111/jnc.13915",
+            abstract="A long-form abstract here.",
+        )
+        resp = handler.get(id="10.1111/jnc.13915", view="abstract")
+        assert "A long-form abstract here." in resp.body
 
 
 # ---------------------------------------------------------------------------

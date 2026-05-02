@@ -6,6 +6,7 @@ parser registration and implementation live in a sibling module:
 
 - :mod:`precis.cli.migrate`   — ``precis migrate``
 - :mod:`precis.cli.maintenance` — ``precis maintenance run`` (nightly cron)
+- :mod:`precis.cli.gripe`     — ``precis gripes`` (human-only triage dump)
 - :mod:`precis.cli.ingest`    — ``precis jobs ingest-{bundle,bundles,md,oracles}``
 - :mod:`precis.cli.dedupe`    — ``precis jobs dedupe-papers``
 - :mod:`precis.cli.perplexity`— ``precis jobs import-perplexity``
@@ -22,7 +23,7 @@ import argparse
 import logging
 import sys
 
-from precis.cli import dedupe, ingest, maintenance, migrate, patent, perplexity
+from precis.cli import dedupe, gripe, ingest, maintenance, migrate, patent, perplexity
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,10 @@ def main() -> None:
         maintenance.run(args)
         return
 
+    if args.cmd == "gripes":
+        gripe.run(args)
+        return
+
     if args.cmd == "jobs":
         _dispatch_job(args)
         return
@@ -86,6 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     migrate.add_parser(sub)
     maintenance.add_parser(sub)
+    gripe.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)
