@@ -475,8 +475,9 @@ class PlaintextHandler(Handler):
 
     # ── put helpers ────────────────────────────────────────────────
 
-    def _put_create(self, slug: str, text: str | None,
-                    *, preferred_ext: str | None = None) -> Response:
+    def _put_create(
+        self, slug: str, text: str | None, *, preferred_ext: str | None = None
+    ) -> Response:
         path = self._resolve_path(slug, must_exist=False, preferred_ext=preferred_ext)
         if path.exists():
             # Previously the hint pointed at
@@ -1347,8 +1348,9 @@ class PlaintextHandler(Handler):
 
     # ── path resolution ────────────────────────────────────────────
 
-    def _resolve_path(self, slug: str, *, must_exist: bool,
-                      preferred_ext: str | None = None) -> Path:
+    def _resolve_path(
+        self, slug: str, *, must_exist: bool, preferred_ext: str | None = None
+    ) -> Path:
         if not is_valid_file_slug(slug):
             raise BadInput(
                 f"invalid {self._KIND} slug: {slug!r}",
