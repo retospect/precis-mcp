@@ -683,6 +683,184 @@ def test_instructions_advertises_every_verb() -> None:
         )
 
 
+# ── cold-start discoverability: sandbox preamble in serverInfo.instructions ─
+
+
+def _runtime_with_root(
+    root: str | None, *, file_kinds: tuple[str, ...]
+) -> PrecisRuntime:
+    """Build a PrecisRuntime whose config.root is ``root`` and whose hub
+    reports ``file_kinds`` as registered.
+
+    We fake the hub's ``kinds`` property rather than spinning up real file
+    handlers — ``_build_instructions`` only needs the set membership test,
+    and threading through the full handler stack (with its store
+    dependency) would pull a DB fixture into a logic test.
+    """
+    from precis.config import PrecisConfig
+
+    config = PrecisConfig(root=root) if root is not None else PrecisConfig()
+
+    class _FakeHub:
+        kinds = set(file_kinds)
+
+    hub = _FakeHub()
+    # PrecisRuntime is a dataclass with ``config`` + ``hub`` fields; any
+    # object with a ``kinds`` attribute satisfies the call sites in
+    # ``_build_instructions``.
+    return PrecisRuntime(config=config, hub=hub)  # type: ignore[arg-type]
+
+
+def test_build_instructions_returns_static_core_when_root_unset() -> None:
+    """MCP critic MAJOR-C (cold-start discoverability): when
+    ``PRECIS_ROOT`` is unset, the instructions fall back to the
+    pinned static verb blurb. No stray sandbox prose, no changes to
+    the existing-test invariants.
+    """
+    from precis import server
+
+    runtime = _runtime_with_root(None, file_kinds=())
+    out = server._build_instructions(runtime)
+    assert out == server._INSTRUCTIONS
+
+
+def test_build_instructions_returns_static_core_when_root_set_but_no_file_kind_registered() -> (
+    None
+):
+    """If ``root`` is set but no file-rooted handler registered, the
+    preamble would lie (there's no ``get(kind='markdown')`` to call).
+    Fall back to the static core rather than advertise a dead surface.
+    """
+    from precis import server
+
+    runtime = _runtime_with_root("/nonexistent", file_kinds=("paper", "todo"))
+    out = server._build_instructions(runtime)
+    assert out == server._INSTRUCTIONS
+
+
+def test_build_instructions_announces_sandbox_when_root_has_files(tmp_path) -> None:
+    """Canonical case: ``PRECIS_ROOT`` is set, file kinds are
+    registered, files exist. The preamble precedes the static core,
+    names the counts, and lists the per-kind ``get(kind='…')`` calls
+    a cold-start agent would otherwise not know to try.
+    """
+    from precis import server
+
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "meeting.md").write_text("# hi", encoding="utf-8")
+    (tmp_path / "notes" / "ideas.md").write_text("# ideas", encoding="utf-8")
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "run.log").write_text("line", encoding="utf-8")
+    (tmp_path / "drafts").mkdir()
+    (tmp_path / "drafts" / "paper.tex").write_text(
+        "\\documentclass{article}", encoding="utf-8"
+    )
+
+    runtime = _runtime_with_root(
+        str(tmp_path), file_kinds=("markdown", "plaintext", "tex")
+    )
+    out = server._build_instructions(runtime)
+
+    # Preamble prepends the static core.
+    assert out.endswith(server._INSTRUCTIONS)
+    assert out != server._INSTRUCTIONS
+
+    # Counts are visible.
+    assert "2 markdown" in out
+    assert "1 plaintext" in out
+    assert "1 tex" in out
+
+    # Per-kind index calls are named so agents can follow up.
+    assert "get(kind='markdown')" in out
+    assert "get(kind='plaintext')" in out
+    assert "get(kind='tex')" in out
+
+    # Workspace-tag hint carries a concrete, runnable example rather
+    # than prose. ``search(tags=['workspace'])`` with empty ``q=`` is
+    # currently rejected (cross-kind search requires q=), so the
+    # banner teaches the keyword form — pin that exact shape.
+    assert "`workspace`" in out
+    assert "search(q='<keyword>', tags=['workspace'])" in out
+
+
+def test_build_instructions_handles_empty_sandbox(tmp_path) -> None:
+    """``PRECIS_ROOT`` set, file kinds registered, tree empty → preamble
+    invites the agent to create a file instead of claiming nothing
+    can be done.
+    """
+    from precis import server
+
+    runtime = _runtime_with_root(
+        str(tmp_path), file_kinds=("markdown", "plaintext", "tex")
+    )
+    out = server._build_instructions(runtime)
+
+    assert out.endswith(server._INSTRUCTIONS)
+    assert "empty" in out
+    assert "mode='create'" in out
+    # The concrete search example lands in the empty branch too so
+    # an agent starting from zero knows how to verify its first write.
+    assert "search(q='<keyword>', tags=['workspace'])" in out
+
+
+def test_build_instructions_ignores_unregistered_kinds(tmp_path) -> None:
+    """If only ``markdown`` is registered, a ``.tex`` file on disk
+    doesn't surface in the counts — we must not advertise tools the
+    build doesn't actually have.
+    """
+    from precis import server
+
+    (tmp_path / "a.md").write_text("# a", encoding="utf-8")
+    (tmp_path / "b.tex").write_text("\\documentclass{article}", encoding="utf-8")
+
+    runtime = _runtime_with_root(str(tmp_path), file_kinds=("markdown",))
+    out = server._build_instructions(runtime)
+
+    assert "1 markdown" in out
+    assert "tex" not in out.split(server._INSTRUCTIONS, 1)[0]
+    assert "get(kind='markdown')" in out
+    assert "get(kind='tex')" not in out
+
+
+def test_build_instructions_handles_missing_root_directory() -> None:
+    """``PRECIS_ROOT`` points at a path that doesn't exist on this
+    host. We shouldn't crash — we should render the empty-sandbox
+    preamble (the walker just yields nothing).
+    """
+    from precis import server
+
+    runtime = _runtime_with_root("/this/path/does/not/exist", file_kinds=("markdown",))
+    out = server._build_instructions(runtime)
+
+    # Graceful: render the empty-sandbox preamble, never raise.
+    assert out.endswith(server._INSTRUCTIONS)
+    assert "empty" in out
+
+
+def test_apply_instructions_mutates_underlying_mcp_server(tmp_path) -> None:
+    """The ``_apply_instructions`` helper must write through to
+    ``fastmcp._mcp_server.instructions`` so the handshake payload
+    (``initialize`` response's ``serverInfo.instructions``) carries
+    the dynamic text. Pin the integration since FastMCP exposes
+    ``instructions`` as a read-only property with no setter.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    from precis import server
+
+    (tmp_path / "a.md").write_text("# a", encoding="utf-8")
+    runtime = _runtime_with_root(str(tmp_path), file_kinds=("markdown",))
+
+    fastmcp = FastMCP("test-server", instructions="placeholder")
+    server._apply_instructions(fastmcp, runtime)
+
+    # Property delegates to the lowlevel attribute we mutated.
+    assert fastmcp.instructions is not None
+    assert "Editable sandbox" in fastmcp.instructions
+    assert "1 markdown" in fastmcp.instructions
+    assert fastmcp.instructions.endswith(server._INSTRUCTIONS)
+
+
 def test_server_name_is_precis_mcp() -> None:
     """``serverInfo.name`` should be ``precis-mcp`` (not the bare
     ``precis``) so log lines disambiguate against other tooling."""

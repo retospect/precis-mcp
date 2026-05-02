@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import atexit
 import logging
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -65,6 +67,102 @@ assert all(
 ), "_INSTRUCTIONS must list every agent-facing verb"
 
 
+# File-rooted kinds and their extensions. Used by the instructions
+# composer to count files in ``PRECIS_ROOT`` so an MCP client sees
+# *"Editable sandbox (3 markdown, 1 plaintext, 1 tex)"* on connect
+# instead of a kind-agnostic verb blurb. (MCP critic MAJOR-C — cold-
+# start discoverability: tool descriptions don't reveal that
+# ``PRECIS_ROOT`` exists or that ``get(kind='markdown')`` lists it.)
+_FILE_KIND_EXTS: dict[str, frozenset[str]] = {
+    "markdown": frozenset({".md"}),
+    "plaintext": frozenset({".txt", ".log"}),
+    "tex": frozenset({".tex"}),
+}
+
+
+def _file_kind_counts(root: str, kinds: list[str]) -> dict[str, int]:
+    """One ``os.walk`` over ``root`` counting files per file-rooted kind.
+
+    ``kinds`` is the subset of :data:`_FILE_KIND_EXTS` actually registered
+    in the current build — a kind absent from the runtime hub (e.g.
+    ``tex`` on a build that never registered it) is left out of the
+    tally. Every listed kind appears in the return value, possibly with
+    ``0`` so callers can distinguish *"registered but empty"* from
+    *"not registered"*.
+    """
+    counts: dict[str, int] = {k: 0 for k in kinds}
+    if not counts:
+        return counts
+    ext_to_kind: dict[str, str] = {
+        ext: kind for kind in kinds for ext in _FILE_KIND_EXTS.get(kind, ())
+    }
+    root_path = Path(root)
+    if not root_path.is_dir():
+        return counts
+    for _dirpath, _dirnames, files in os.walk(root_path):
+        for name in files:
+            kind = ext_to_kind.get(Path(name).suffix.lower())
+            if kind is not None:
+                counts[kind] += 1
+    return counts
+
+
+def _build_instructions(runtime: PrecisRuntime) -> str:
+    """Static verb blurb plus a workspace preamble when ``PRECIS_ROOT`` is set.
+
+    Prepends, not appends — the sandbox banner is the first thing a
+    cold-start agent should read. The static core (``_INSTRUCTIONS``)
+    stays byte-for-byte identical, so
+    ``test_instructions_advertises_every_verb`` and the import-time
+    assertion continue to pin it.
+
+    Branches:
+
+    - No ``root`` configured (``PRECIS_ROOT`` unset): return the static
+      core unchanged.
+    - ``root`` set but no file-rooted handler registered (e.g. store-
+      only build that somehow has the env var): static core. The
+      preamble would lie.
+    - ``root`` set, at least one file kind registered, tree empty:
+      preamble invites the agent to create a file.
+    - ``root`` set and files present: preamble lists counts and the
+      per-kind index call.
+
+    The workspace-tag hint carries a concrete ``search(q=...,
+    tags=['workspace'])`` example rather than prose — empty-``q``
+    listing isn't supported today, so the banner teaches the shape
+    that actually runs.
+    """
+    core = _INSTRUCTIONS
+    root = getattr(runtime.config, "root", None)
+    if not root:
+        return core
+    registered_kinds = runtime.hub.kinds
+    file_kinds = [k for k in _FILE_KIND_EXTS if k in registered_kinds]
+    if not file_kinds:
+        return core
+    counts = _file_kind_counts(root, file_kinds)
+    total = sum(counts.values())
+    if total == 0:
+        preamble = (
+            "Editable sandbox under PRECIS_ROOT is empty. Create a file with\n"
+            "  put(kind='markdown'|'plaintext'|'tex', id='<slug>',\n"
+            "      text='...', mode='create')\n"
+            "Everything here carries the `workspace` tag — scope search with:\n"
+            "  search(q='<keyword>', tags=['workspace'])\n\n"
+        )
+    else:
+        summary = ", ".join(f"{counts[k]} {k}" for k in file_kinds if counts[k])
+        by_kind = "\n".join(f"  get(kind='{k}')" for k in file_kinds)
+        preamble = (
+            f"Editable sandbox under PRECIS_ROOT ({summary}). List with:\n"
+            f"{by_kind}\n"
+            "Everything here carries the `workspace` tag — scope search with:\n"
+            "  search(q='<keyword>', tags=['workspace'])\n\n"
+        )
+    return preamble + core
+
+
 _runtime: PrecisRuntime | None = None
 
 
@@ -84,14 +182,38 @@ def _init_runtime() -> PrecisRuntime:
     ``resources/list`` + ``resources/templates/list``.  Both
     surfaces delegate to the runtime so there is no parallel
     rendering pipeline.  See :mod:`precis.mcp_modalities`.
+
+    Finally, rewrites ``serverInfo.instructions`` so the MCP client
+    sees a sandbox preamble on connect when ``PRECIS_ROOT`` is set.
+    The default, module-load-time instructions are still the static
+    verb blurb (``_INSTRUCTIONS``) so tests that import ``server``
+    without initialising the runtime continue to see the pinned
+    string.
     """
     global _runtime
     if _runtime is not None:
         return _runtime
     _runtime = build_runtime()
     _wire_modalities(_runtime)
+    _apply_instructions(mcp, _runtime)
     atexit.register(_shutdown_runtime)
     return _runtime
+
+
+def _apply_instructions(fastmcp: FastMCP, runtime: PrecisRuntime) -> None:
+    """Overwrite ``serverInfo.instructions`` on the underlying MCP server.
+
+    FastMCP 1.x exposes ``instructions`` as a read-only property that
+    delegates to ``self._mcp_server.instructions`` (a plain attribute
+    on the lowlevel ``MCPServer``). No setter; best-effort mutation of
+    the underlying attribute is the only knob until upstream grows one.
+    On failure we log and keep the static core — the server still
+    boots, agents just miss the dynamic preamble.
+    """
+    try:
+        fastmcp._mcp_server.instructions = _build_instructions(runtime)
+    except Exception:
+        log.exception("failed to apply dynamic instructions")
 
 
 def _wire_modalities(runtime: PrecisRuntime) -> None:
