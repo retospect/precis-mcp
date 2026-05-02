@@ -205,13 +205,21 @@ class MarkdownHandler(Handler):
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         if not hits:
-            return Response(
-                body=(
-                    f"no markdown blocks match {q!r}\n"
-                    "next: try a broader phrase or scope='<file-slug>' "
-                    "to search inside a specific note"
-                )
+            # Canonical Next: block — c5 unified-trailer patch.
+            body = f"no markdown blocks match {q!r}"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind='markdown', q={q!r}, top_k=50)",
+                        "widen the lexical net",
+                    ),
+                    (
+                        f"search(kind='markdown', q={q!r}, scope='<file-slug>')",
+                        "search inside a specific note",
+                    ),
+                ]
             )
+            return Response(body=body)
 
         # Total-hits header — see precis.utils.search_header for
         # the wording rationale. Lexical-only count: fused search

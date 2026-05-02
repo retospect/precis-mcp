@@ -503,14 +503,25 @@ class CacheBackedHandler(Handler):
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         if not hits:
-            return Response(
-                body=(
-                    f"no {self.spec.kind} blocks match {q!r}\n"
-                    f"next: get(kind={self.spec.kind!r}, "
-                    f"id={self.example_query!r}) to populate the cache, "
-                    f"or try a broader query"
-                )
+            # Canonical Next: block — matches the success-path
+            # trailer shape used by ref-backed kinds. An inline
+            # ``next: ...`` prose line here used to desynchronise
+            # the empty-state envelope across cache-backed vs
+            # ref-backed kinds. (c5 unified-trailer patch.)
+            body = f"no {self.spec.kind} blocks match {q!r}"
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind={self.spec.kind!r}, id={self.example_query!r})",
+                        "populate the cache first",
+                    ),
+                    (
+                        f"search(kind={self.spec.kind!r}, q={q!r}, top_k=50)",
+                        "widen the lexical net",
+                    ),
+                ]
             )
+            return Response(body=body)
 
         total = self.store.count_blocks_lexical(q=q, kind=self.spec.kind)
         lines = [

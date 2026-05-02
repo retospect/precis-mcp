@@ -187,13 +187,21 @@ class PlaintextHandler(Handler):
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         if not hits:
-            return Response(
-                body=(
-                    f"no plaintext blocks match {q!r}\n"
-                    "next: try a broader phrase or scope='<file-slug>' "
-                    "to search inside a specific file"
-                )
+            # Canonical Next: block — c5 unified-trailer patch.
+            body = f"no plaintext blocks match {q!r}"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind='plaintext', q={q!r}, top_k=50)",
+                        "widen the lexical net",
+                    ),
+                    (
+                        f"search(kind='plaintext', q={q!r}, scope='<file-slug>')",
+                        "search inside a specific file",
+                    ),
+                ]
             )
+            return Response(body=body)
 
         total = self.store.count_blocks_lexical(
             q=q, kind="plaintext", scope_ref_id=scope_ref_id

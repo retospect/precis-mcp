@@ -249,13 +249,26 @@ class PaperHandler(Handler):
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         if not hits:
-            return Response(
-                body=(
-                    f"no paper blocks match {q!r}\n"
-                    "next: try a broader phrase, drop low-info tokens, or "
-                    "search a different kind via get(kind='skill', id='precis-help')"
-                )
+            # Use the canonical Next: block shape rather than an
+            # inline ``next: ...`` prose line. The critic rules
+            # (C17 / D12) say trailers share one delimiter style
+            # across kinds, and the empty-search branch was the
+            # last holdout of the lowercase-prose shape. (c5
+            # unified-trailer patch.)
+            body = f"no paper blocks match {q!r}"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind='paper', q={q!r}, top_k=50)",
+                        "widen the lexical net",
+                    ),
+                    (
+                        "get(kind='skill', id='precis-help')",
+                        "see search tips for other kinds",
+                    ),
+                ]
             )
+            return Response(body=body)
 
         # Total-hits header: count blocks the lexical filter would
         # match without the LIMIT, so the agent sees "10 of K" when

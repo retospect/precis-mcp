@@ -22,6 +22,7 @@ from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
+from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
 
 log = logging.getLogger(__name__)
@@ -222,9 +223,19 @@ def _list_languages(video_id: str) -> Response:
     lines.append("")
     lines.append(f"— {_YT_BASE_ATTRIBUTION}")
     lines.append(f"  Watch: https://www.youtube.com/watch?v={video_id}")
-    lines.append("")
-    lines.append(f"Next: get(kind='youtube', id='{video_id}', languages='LANG_CODE')")
-    return Response(body="\n".join(lines), cost="[cost: free]")
+    body = "\n".join(lines)
+    # Canonical Next: block — c5 unified-trailer patch. Previously
+    # a raw ``Next: get(...)`` f-string that skipped the column
+    # alignment every other kind uses.
+    body += render_next_section(
+        [
+            (
+                f"get(kind='youtube', id='{video_id}', languages='LANG_CODE')",
+                "fetch a specific transcript",
+            ),
+        ]
+    )
+    return Response(body=body, cost="[cost: free]")
 
 
 # ---------------------------------------------------------------------------
