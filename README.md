@@ -111,7 +111,7 @@ config:
       "env": {
         "PRECIS_DATABASE_URL": "postgresql://localhost/precis",
         "PRECIS_EMBEDDER": "bge-m3",
-        "PRECIS_MARKDOWN_ROOT": "/absolute/path/to/notes",
+        "PRECIS_ROOT": "/absolute/path/to/notes",
         "PRECIS_PYTHON_ROOTS": "myrepo:/absolute/path/to/myrepo"
       }
     }
@@ -125,8 +125,7 @@ config:
 |-------------------------------|--------------------------------------------------|
 | `PRECIS_DATABASE_URL`         | Postgres DSN (required for all ref kinds).       |
 | `PRECIS_EMBEDDER`             | `"mock"` (dev/tests) or `"bge-m3"` (prod).       |
-| `PRECIS_MARKDOWN_ROOT`        | Root dir for the `markdown` kind. Hidden when unset. |
-| `PRECIS_PLAINTEXT_ROOT`       | Root dir for the `plaintext` kind.               |
+| `PRECIS_ROOT`                 | Single root dir for `markdown` / `plaintext` / `tex` kinds. The trio is hidden when unset; every read/write is normalised against this path (`Path.resolve()` + `relative_to`). |
 | `PRECIS_PYTHON_ROOTS`         | `alias:/path,alias2:/path2` — exposed Python repos. |
 | `PRECIS_PYTHON_ALLOW_EXEC=1`  | Gate for `python` runtrace (spawns subprocess).  |
 | `EPO_OPS_CLIENT_KEY` + `_SECRET` + `PRECIS_PATENT_RAW_ROOT` | Enables `patent` kind. |
@@ -199,8 +198,10 @@ the server.
 ```text
 precis serve                       # Start the MCP stdio server.
 precis migrate                     # Run pending SQL migrations.
+precis jobs ingest [root]          # Pre-warm .md / .txt / .tex under PRECIS_ROOT
+                                   #   (mtime-gated; compose into launchers:
+                                   #    `precis jobs ingest && precis serve`).
 precis jobs ingest-bundle[s] ...   # Ingest .acatome paper bundles.
-precis jobs ingest-md <root>       # Bulk-ingest markdown under root.
 precis jobs ingest-oracles ...     # Seed the oracle kind from YAML wisdom files.
 precis jobs dedupe-papers          # Collapse duplicate paper refs.
 precis jobs import-perplexity ...  # Bulk-import Perplexity web-UI answers.

@@ -107,6 +107,7 @@ def _build_parser() -> argparse.ArgumentParser:
 #: up the module attribute lazily so adding a new job is one line
 #: here plus one handler in the owning module.
 _JOB_DISPATCH: dict[str, tuple[object, str]] = {
+    "ingest": (ingest, "run_ingest"),
     "ingest-bundle": (ingest, "run_bundle"),
     "ingest-bundles": (ingest, "run_bundles"),
     "ingest-md": (ingest, "run_md"),

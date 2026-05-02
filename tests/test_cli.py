@@ -361,6 +361,225 @@ def test_import_perplexity_missing_dir(
 
 
 # ---------------------------------------------------------------------------
+# ingest (unified prose-file ingest)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_covers_all_three_prose_kinds(
+    store,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single ``precis jobs ingest`` call under PRECIS_ROOT must
+    ingest every .md / .txt / .tex file under that root."""
+    (tmp_path / "notes.md").write_text("# Notes\n\nbody.\n")
+    (tmp_path / "log.txt").write_text("stdout line 1.\nstdout line 2.\n")
+    (tmp_path / "paper.tex").write_text(r"\section{Intro}" + "\n\nbody.\n")
+
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["precis", "jobs", "ingest", str(tmp_path), "--database-url", dsn],
+    )
+    cli.main()
+    out = capsys.readouterr().out
+    # Per-kind summary line and each kind shows an ok row.
+    assert "md=1/1" in out
+    assert "plaintext=1/1" in out
+    assert "tex=1/1" in out
+    # Each ref was inserted into the store.
+    assert store.get_ref(kind="markdown", id="notes") is not None
+    assert store.get_ref(kind="plaintext", id="log") is not None
+    assert store.get_ref(kind="tex", id="paper") is not None
+
+
+def test_ingest_mtime_gate_skips_unchanged_on_second_run(
+    store,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Running ``ingest`` twice against an unchanged tree must skip
+    every file on the second run."""
+    (tmp_path / "a.md").write_text("# A\n\nbody.\n")
+    (tmp_path / "b.tex").write_text(r"\section{B}" + "\n")
+
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["precis", "jobs", "ingest", str(tmp_path), "--database-url", dsn],
+    )
+    cli.main()
+    capsys.readouterr()  # drop first-run output
+
+    cli.main()
+    out = capsys.readouterr().out
+    # Second run reports zero new ingests but non-zero skips.
+    assert "ingested=0" in out
+    assert "skipped=2" in out
+
+
+def test_ingest_force_re_ingests_unchanged(
+    store,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--force`` overrides the mtime/sha gates and re-embeds every
+    file. Useful after swapping the embedder."""
+    (tmp_path / "a.md").write_text("# A\n\nbody.\n")
+
+    dsn = _store_dsn_from(store)
+    argv = [
+        "precis",
+        "jobs",
+        "ingest",
+        str(tmp_path),
+        "--database-url",
+        dsn,
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    cli.main()
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys, "argv", argv + ["--force"])
+    cli.main()
+    out = capsys.readouterr().out
+    # Force path counts every match as ingested, never skipped.
+    assert "ingested=1" in out
+    assert "skipped=0" in out
+
+
+def test_ingest_scope_to_one_kind(
+    store,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--kinds tex`` restricts the walk so other extensions are
+    untouched even when present on disk."""
+    (tmp_path / "a.md").write_text("# A\n\nbody.\n")
+    (tmp_path / "b.tex").write_text(r"\section{B}" + "\n")
+
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precis",
+            "jobs",
+            "ingest",
+            str(tmp_path),
+            "--database-url",
+            dsn,
+            "--kinds",
+            "tex",
+        ],
+    )
+    cli.main()
+    # Only the tex ref lands in the store.
+    assert store.get_ref(kind="markdown", id="a") is None
+    assert store.get_ref(kind="tex", id="b") is not None
+
+
+def test_ingest_rejects_unknown_kind(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Typo in ``--kinds`` exits with code 2 and names the valid set."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precis",
+            "jobs",
+            "ingest",
+            str(tmp_path),
+            "--kinds",
+            "bogus",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "bogus" in err
+    assert "md" in err
+
+
+def test_ingest_without_root_and_no_env_exits(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No positional root, no ``PRECIS_ROOT`` → exit 2 with a
+    message that points at the env var."""
+    monkeypatch.delenv("PRECIS_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["precis", "jobs", "ingest"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "PRECIS_ROOT" in err
+
+
+def test_ingest_auto_applies_workspace_tag(
+    store,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every ref ingested via the CLI must carry the ``workspace``
+    flag (handler contract surfaces through the CLI path too)."""
+    (tmp_path / "note.md").write_text("# N\n\nbody.\n")
+    (tmp_path / "log.txt").write_text("line.\n")
+    (tmp_path / "p.tex").write_text(r"\section{P}" + "\n")
+
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["precis", "jobs", "ingest", str(tmp_path), "--database-url", dsn],
+    )
+    cli.main()
+
+    for kind, slug in [("markdown", "note"), ("plaintext", "log"), ("tex", "p")]:
+        ref = store.get_ref(kind=kind, id=slug)
+        assert ref is not None, f"{kind}:{slug} not ingested"
+        assert store.has_flag(ref.id, "workspace"), (
+            f"{kind}:{slug} missing workspace flag"
+        )
+
+
+def test_ingest_md_deprecation_alias_still_works(
+    store,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``precis jobs ingest-md`` keeps working for one release cycle
+    but prints a deprecation notice on stderr."""
+    (tmp_path / "a.md").write_text("# A\n\nbody.\n")
+    (tmp_path / "b.tex").write_text(r"\section{B}" + "\n")  # must NOT ingest
+
+    dsn = _store_dsn_from(store)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["precis", "jobs", "ingest-md", str(tmp_path), "--database-url", dsn],
+    )
+    cli.main()
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err.lower()
+    # Scoped to markdown only.
+    assert store.get_ref(kind="markdown", id="a") is not None
+    assert store.get_ref(kind="tex", id="b") is None
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -34,6 +35,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
+from precis.store.types import Tag
 from precis.utils.block_ingest import to_block_inserts
 from precis.utils.edit_resolve import (
     EditOp,
@@ -61,7 +63,6 @@ from precis.utils.text import excerpt as _excerpt
 log = logging.getLogger(__name__)
 
 
-_SUPPORTED_VIEWS = ("raw",)
 # After the seven-verb cutover, ``put`` on a file kind is creation-only.
 # Region edits move to the ``edit`` verb (mode='find-replace'|'append'|
 # 'insert'|'replace') and selector-deletes move to ``delete``.
@@ -89,7 +90,7 @@ class PlaintextHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
-        views=_SUPPORTED_VIEWS,
+        views=("raw",),
         modes=_SUPPORTED_PUT_MODES,
     )
 
@@ -100,6 +101,33 @@ class PlaintextHandler(Handler):
     _KIND: ClassVar[str] = "plaintext"
     _EXTENSIONS: ClassVar[tuple[str, ...]] = (".txt", ".log")
     _DEFAULT_EXT: ClassVar[str] = ".txt"
+
+    #: Views accepted by :meth:`get` (in addition to the no-view
+    #: overview / block selector). Subclasses extend this and override
+    #: :meth:`_render_view` to add their own (e.g. tex's ``toc``).
+    _SUPPORTED_VIEWS: ClassVar[tuple[str, ...]] = ("raw",)
+
+    # ── parser hooks (overrideable by subclasses) ─────────────────
+    def _parse_blocks(self, content: str) -> list[PlaintextBlock]:
+        """Parse ``content`` into a list of paragraph-shaped blocks.
+
+        Plaintext: blank-line splitting via
+        :func:`precis.utils.plaintext_parse.parse_plaintext`. Subclasses
+        (e.g. :class:`TexHandler`) override to inject their own block
+        grammar; the return type may widen to a subclass of
+        :class:`PlaintextBlock` as long as the new fields are
+        additive.
+        """
+        return parse_plaintext(content)
+
+    def _block_meta(self, block: PlaintextBlock) -> dict[str, Any]:
+        """Per-block metadata stored on the row's ``meta`` JSON.
+
+        Plaintext records only the line span; subclasses extend with
+        kind-specific axes (e.g. tex stores ``section_level``,
+        ``section_title``, ``section_path``, ``inputs``).
+        """
+        return {"line_start": block.line_start, "line_end": block.line_end}
 
     @classmethod
     def _strip_ext(cls, rel_path: str) -> tuple[str, str]:
@@ -113,13 +141,28 @@ class PlaintextHandler(Handler):
 
     def _walk_files(self) -> list[Path]:
         """Yield every file under ``self.root`` whose extension is in
-        :attr:`_EXTENSIONS` (case-insensitive)."""
+        :attr:`_EXTENSIONS` (case-insensitive).
+
+        Symlinks whose target resolves **outside** :attr:`root` are
+        dropped — listing them in the index would mislead the agent
+        (the file would show up but every read would fail the
+        ``relative_to`` gate). Listing == reachability.
+        """
         out: list[Path] = []
         exts = tuple(e.lower() for e in self._EXTENSIONS)
         for dirpath, _dirnames, filenames in os.walk(self.root):
             for name in filenames:
-                if name.lower().endswith(exts):
-                    out.append(Path(dirpath) / name)
+                if not name.lower().endswith(exts):
+                    continue
+                candidate = Path(dirpath) / name
+                try:
+                    resolved = candidate.resolve()
+                    resolved.relative_to(self.root)
+                except (OSError, ValueError):
+                    # Broken symlink, traversal escape, or any other
+                    # unresolvable path — silently skip.
+                    continue
+                out.append(candidate)
         return out
 
     def __init__(self, *, hub: Hub, root: Path) -> None:
@@ -151,7 +194,7 @@ class PlaintextHandler(Handler):
         ref = self._ensure_ingested(slug)
         if ref is None:
             raise NotFound(
-                f"{self._KIND} file {slug!r} not found under {self.root}",
+                f"{self._KIND} file {slug!r} not found under PRECIS_ROOT",
                 next=f"get(kind='{self._KIND}') to list every known file",
             )
 
@@ -164,16 +207,26 @@ class PlaintextHandler(Handler):
         if sel is not None:
             return self._render_block(ref, sel)
 
-        if effective_view == "raw":
-            return self._render_raw(ref)
         if effective_view is not None:
-            raise Unsupported(
-                f"unknown {self._KIND} view {effective_view!r}",
-                options=list(_SUPPORTED_VIEWS),
-                next=f"get(kind='{self._KIND}', id='{slug}/raw')",
-            )
+            return self._render_view(effective_view, ref, slug=slug)
 
         return self._render_overview(ref)
+
+    def _render_view(self, view: str, ref: Ref, *, slug: str) -> Response:
+        """Dispatch to a per-view renderer.
+
+        Plaintext supports only ``raw``. Subclasses extend
+        :attr:`_SUPPORTED_VIEWS` and override this method to add
+        their own (calling ``super()._render_view(...)`` to fall
+        through to ``raw`` / Unsupported).
+        """
+        if view == "raw":
+            return self._render_raw(ref)
+        raise Unsupported(
+            f"unknown {self._KIND} view {view!r}",
+            options=list(self._SUPPORTED_VIEWS),
+            next=f"get(kind='{self._KIND}', id='{slug}/raw')",
+        )
 
     # ── search ─────────────────────────────────────────────────────
 
@@ -333,7 +386,7 @@ class PlaintextHandler(Handler):
         path = self._resolve_path(slug, must_exist=False)
         if path.exists():
             raise BadInput(
-                f"file already exists: {path}",
+                f"file already exists: {slug!r}",
                 next=(
                     f"edit(kind='{self._KIND}', id={slug!r}, mode='replace', "
                     "text=...) if you mean to edit"
@@ -387,7 +440,7 @@ class PlaintextHandler(Handler):
                 ),
             )
         path = self._resolve_path(slug, must_exist=True)
-        blocks = parse_plaintext(path.read_text(encoding="utf-8"))
+        blocks = self._parse_blocks(path.read_text(encoding="utf-8"))
         target = _find_block(blocks, sel)
         if target is None:
             raise NotFound(
@@ -406,7 +459,7 @@ class PlaintextHandler(Handler):
                 next=f"delete(kind='{self._KIND}', id='{slug}~BLOCK')",
             )
         path = self._resolve_path(slug, must_exist=True)
-        blocks = parse_plaintext(path.read_text(encoding="utf-8"))
+        blocks = self._parse_blocks(path.read_text(encoding="utf-8"))
         target = _find_block(blocks, sel)
         if target is None:
             raise NotFound(
@@ -470,7 +523,7 @@ class PlaintextHandler(Handler):
             result = apply_edit(full, op)
             new_full = result.new_buffer
         else:
-            blocks = parse_plaintext(full)
+            blocks = self._parse_blocks(full)
             target = _find_block(blocks, sel)
             if target is None:
                 raise NotFound(
@@ -544,7 +597,7 @@ class PlaintextHandler(Handler):
     ) -> Response:
         region_label = f"{slug}~{sel.value}" if sel else slug
         try:
-            n_blocks = len(parse_plaintext(post))
+            n_blocks = len(self._parse_blocks(post))
             reparse_note = f"ok (would re-ingest {n_blocks} paragraph(s))"
         except Exception as exc:  # pragma: no cover — defensive
             reparse_note = f"FAILED ({exc})"
@@ -664,7 +717,7 @@ class PlaintextHandler(Handler):
         ref = self._ensure_ingested(slug)
         if ref is None:
             raise NotFound(
-                f"{self._KIND} file {slug!r} not found under {self.root}",
+                f"{self._KIND} file {slug!r} not found under PRECIS_ROOT",
                 next=f"get(kind='{self._KIND}') to list every known file",
             )
         return slug, ref.id
@@ -743,6 +796,29 @@ class PlaintextHandler(Handler):
 
     # ── ingest pipeline ────────────────────────────────────────────
 
+    # Flag tag auto-applied to every ref under ``PRECIS_ROOT`` so the
+    # LLM can scope ``search(tags=['workspace'])`` to its working
+    # directory. Applied via :meth:`_apply_workspace_tag` at every
+    # successful-ingest exit point.
+    _WORKSPACE_FLAG: ClassVar[str] = "workspace"
+
+    def _apply_workspace_tag(self, ref: Ref) -> None:
+        """Idempotently stamp the ``workspace`` flag tag on *ref*.
+
+        Called at the tail of :meth:`_ensure_ingested`. ``add_tag``
+        uses ``ON CONFLICT DO NOTHING``, so repeated calls are cheap
+        and safe (one INSERT that no-ops). The tag is set with
+        ``set_by='system'`` to distinguish it from agent-authored
+        tags — filter queries that want only the auto-stamp can
+        still find it, but audit views can identify it as
+        machine-applied.
+        """
+        self.store.add_tag(
+            ref.id,
+            Tag.flag(self._WORKSPACE_FLAG),
+            set_by="system",
+        )
+
     def _ensure_ingested(self, slug: str, *, force: bool = False) -> Ref | None:
         path = self._resolve_path(slug, must_exist=False)
         ref = self.store.get_ref(kind=self._KIND, id=slug)
@@ -757,6 +833,7 @@ class PlaintextHandler(Handler):
         meta = (ref.meta if ref is not None else {}) or {}
 
         if not force and ref is not None and meta.get("mtime_ns") == mtime_ns:
+            self._apply_workspace_tag(ref)
             return ref
 
         content = path.read_text(encoding="utf-8")
@@ -764,9 +841,10 @@ class PlaintextHandler(Handler):
 
         if not force and ref is not None and meta.get("sha256") == sha:
             self.store.update_ref(ref.id, meta_patch={"mtime_ns": mtime_ns})
+            self._apply_workspace_tag(ref)
             return ref
 
-        pt_blocks = parse_plaintext(content)
+        pt_blocks = self._parse_blocks(content)
         title = _derive_title(pt_blocks, fallback=slug)
         # Preserve the original extension in meta so the handler can
         # rebuild the real file path even when several extensions map
@@ -785,7 +863,7 @@ class PlaintextHandler(Handler):
         }
 
         inserts = to_block_inserts(
-            pt_blocks, embedder=self.embedder, meta_for=_plaintext_block_meta
+            pt_blocks, embedder=self.embedder, meta_for=self._block_meta
         )
 
         with self.store.tx() as conn:
@@ -804,7 +882,10 @@ class PlaintextHandler(Handler):
 
             self.store.insert_blocks(ref.id, inserts, replace=True, conn=conn)
 
-        return self.store.get_ref(kind=self._KIND, id=slug)
+        fresh = self.store.get_ref(kind=self._KIND, id=slug)
+        if fresh is not None:
+            self._apply_workspace_tag(fresh)
+        return fresh
 
     # ── render helpers ─────────────────────────────────────────────
 
@@ -825,13 +906,13 @@ class PlaintextHandler(Handler):
         if not seen:
             return Response(
                 body=(
-                    f"no {self._KIND} files found under {self.root}\n"
+                    f"no {self._KIND} files found under PRECIS_ROOT\n"
                     f"create one with put(kind='{self._KIND}', id='SLUG', "
                     "text='...', mode='create')"
                 )
             )
 
-        lines = [f"# {len(seen)} {self._KIND} file(s) under {self.root}"]
+        lines = [f"# {len(seen)} {self._KIND} file(s) under PRECIS_ROOT"]
         max_w = max(len(s) for s in seen)
         for slug in sorted(seen):
             lines.append(f"  {slug:<{max_w}}  {seen[slug]}")
@@ -984,7 +1065,7 @@ class PlaintextHandler(Handler):
             ) from exc
         if must_exist and not path.exists():
             raise NotFound(
-                f"{self._KIND} file not found on disk: {path}",
+                f"{self._KIND} file {slug!r} not found on disk",
                 next=(
                     f"put(kind='{self._KIND}', id='<slug>', text='...', mode='create')"
                 ),
@@ -1039,7 +1120,9 @@ def _parse_pt_id(raw: str) -> tuple[str, _BlockSel | None, str | None]:
     return s, sel, view
 
 
-def _find_block(blocks: list[PlaintextBlock], sel: _BlockSel) -> PlaintextBlock | None:
+def _find_block(
+    blocks: Sequence[PlaintextBlock], sel: _BlockSel
+) -> PlaintextBlock | None:
     if sel.is_pos:
         try:
             target_pos = int(sel.value)
@@ -1053,15 +1136,6 @@ def _find_block(blocks: list[PlaintextBlock], sel: _BlockSel) -> PlaintextBlock 
         if b.slug == sel.value:
             return b
     return None
-
-
-def _plaintext_block_meta(pb: PlaintextBlock) -> dict[str, Any]:
-    """Per-block metadata for plaintext: just the line span.
-
-    Plaintext has no "kind" axis (every block is a paragraph), so the
-    layout is deliberately thinner than markdown's ``block_meta``.
-    """
-    return {"line_start": pb.line_start, "line_end": pb.line_end}
 
 
 def _derive_title(blocks: list[PlaintextBlock], *, fallback: str) -> str:

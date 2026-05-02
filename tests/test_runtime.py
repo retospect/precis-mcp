@@ -139,3 +139,177 @@ def _migrations_dir():
     from pathlib import Path
 
     return Path(__file__).parent.parent / "src" / "precis" / "migrations"
+
+
+# ── cross-kind tag filter — backstop against silent ``**_kw`` drops ──
+#
+# The cross-kind dispatcher fans out ``search_hits(q=..., tags=...)``
+# to every search-hits-capable handler. Handler signatures are
+# uneven: numeric-ref kinds push ``tags=`` into SQL via
+# ``Tag.normalize_filter``, but most slug-ref and block-level
+# handlers take ``**_kw`` and silently drop unknown kwargs. That
+# means ``tags=['workspace']`` in a cross-kind search was effectively
+# a no-op for ``markdown`` / ``tex`` / ``plaintext`` / ``oracle`` /
+# ``quest`` / ``think`` / ``websearch`` / ``web`` — every stream
+# returned unfiltered hits, the merger RRF'd them together, and the
+# agent got the scope-to-workspace promise broken.
+#
+# The runtime post-filters after each stream: it fetches
+# ``tags_for(ref_id)`` per hit and keeps only hits whose ref tags
+# are a superset of the required filter. These tests pin that
+# behaviour.
+
+
+def test_cross_kind_search_honours_tag_filter(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Cross-kind ``search(tags=['topic-rhubarb'])`` MUST drop hits from
+    refs that don't carry the tag, even when the owning handler's
+    ``search_hits`` silently ignores ``tags=``.
+
+    Reproduction: create two memory refs — one tagged
+    ``topic-rhubarb``, one plain. A cross-kind search for a word
+    both share, with that tag filter, should see only the tagged
+    one.
+    """
+    # Create two memories sharing the word ``rhubarb-specific``.
+    out1 = runtime_with_store.dispatch(
+        "put",
+        {"kind": "memory", "text": "first rhubarb-specific note"},
+    )
+    # The second memory carries the ``topic-rhubarb`` open tag.
+    out2 = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "second rhubarb-specific note",
+            "tags": ["topic-rhubarb"],
+        },
+    )
+    assert "[error:" not in out1
+    assert "[error:" not in out2
+
+    # Cross-kind search with the tag filter.
+    filtered = runtime_with_store.dispatch(
+        "search",
+        {"kind": "*", "q": "rhubarb-specific", "tags": ["topic-rhubarb"]},
+    )
+    assert "[error:" not in filtered
+    # Exactly one surviving hit — the tagged memory.
+    assert "second rhubarb-specific note" in filtered
+    assert "first rhubarb-specific note" not in filtered
+
+
+def test_cross_kind_search_without_tags_still_returns_unfiltered(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Baseline: with no ``tags=`` in the query, the cross-kind
+    fan-out returns every match (no accidental post-filter when
+    the agent didn't ask for one)."""
+    runtime_with_store.dispatch(
+        "put", {"kind": "memory", "text": "aardvark-specific first"}
+    )
+    runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "aardvark-specific second",
+            "tags": ["topic-aardvark"],
+        },
+    )
+    out = runtime_with_store.dispatch("search", {"kind": "*", "q": "aardvark-specific"})
+    assert "[error:" not in out
+    # Both refs present — filter is off.
+    assert "aardvark-specific first" in out
+    assert "aardvark-specific second" in out
+
+
+def test_cross_kind_search_with_unmatched_tag_returns_no_hits(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """When no ref in any kind carries the required tag, the
+    cross-kind result must be empty — not a fallback to
+    unfiltered results."""
+    runtime_with_store.dispatch(
+        "put", {"kind": "memory", "text": "kumquat-specific note"}
+    )
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "*", "q": "kumquat-specific", "tags": ["topic-nonexistent"]},
+    )
+    assert "[error:" not in out
+    assert "kumquat-specific note" not in out
+    # Cross-kind empty surfaces the searched-kinds list.
+    assert "no matches" in out.lower()
+
+
+def test_cross_kind_tag_filter_matches_flag_namespace(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The filter comparison is on the tag's canonical string form
+    (``__str__``). A bare ``'workspace'`` in the filter matches
+    the flag-namespace entry on the ref (the ``workspace`` flag
+    added in migration 0008) regardless of whether the caller
+    thought of it as a flag or an open tag. Pins the namespace-
+    agnostic comparison in ``_filter_hits_by_tags``.
+    """
+    # Give a memory ref the workspace flag directly via the store —
+    # memory handlers don't auto-apply it (only prose-file handlers
+    # do), but the flag is registered in ``flag_names`` so we can
+    # attach it for this test.
+    out = runtime_with_store.dispatch(
+        "put", {"kind": "memory", "text": "pineapple-specific note"}
+    )
+    assert "[error:" not in out
+    # Extract ref id from the response so we can stamp the flag.
+    import re
+
+    match = re.search(r"id=(\d+)", out)
+    assert match, f"could not parse ref id out of {out!r}"
+    ref_id = int(match.group(1))
+    from precis.store.types import Tag as _Tag
+
+    assert runtime_with_store.store is not None
+    runtime_with_store.store.add_tag(ref_id, _Tag.flag("workspace"), set_by="system")
+
+    filtered = runtime_with_store.dispatch(
+        "search",
+        {"kind": "*", "q": "pineapple-specific", "tags": ["workspace"]},
+    )
+    assert "[error:" not in filtered
+    assert "pineapple-specific note" in filtered
+
+
+def test_cross_kind_tag_filter_requires_all_listed_tags(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Multiple tags in the filter list are AND-combined — a ref
+    must carry every listed tag to survive. Single-tag matches
+    don't leak through."""
+    runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "guava-specific with-one-tag",
+            "tags": ["topic-guava"],
+        },
+    )
+    runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "guava-specific with-both",
+            "tags": ["topic-guava", "topic-fruit"],
+        },
+    )
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "*",
+            "q": "guava-specific",
+            "tags": ["topic-guava", "topic-fruit"],
+        },
+    )
+    assert "[error:" not in out
+    assert "with-both" in out
+    assert "with-one-tag" not in out

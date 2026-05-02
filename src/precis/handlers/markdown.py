@@ -47,6 +47,7 @@ from precis.handlers._paper_toc import build_toc, render_toc
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
+from precis.store.types import Tag
 from precis.utils.block_ingest import to_block_inserts
 from precis.utils.edit_resolve import (
     EditOp,
@@ -140,7 +141,7 @@ class MarkdownHandler(Handler):
         ref = self._ensure_ingested(slug)
         if ref is None:
             raise NotFound(
-                f"markdown file {slug!r} not found under {self.root}",
+                f"markdown file {slug!r} not found under PRECIS_ROOT",
                 next="get(kind='markdown') to list every known file",
             )
 
@@ -331,7 +332,7 @@ class MarkdownHandler(Handler):
         path = self._resolve_path(slug, must_exist=False)
         if path.exists():
             raise BadInput(
-                f"file already exists: {path}",
+                f"file already exists: {slug!r}",
                 next=f"edit(kind='markdown', id={slug!r}, mode='replace', text=...) if you mean to edit",
             )
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -678,7 +679,7 @@ class MarkdownHandler(Handler):
         ref = self._ensure_ingested(slug)
         if ref is None:
             raise NotFound(
-                f"markdown file {slug!r} not found under {self.root}",
+                f"markdown file {slug!r} not found under PRECIS_ROOT",
                 next="get(kind='markdown') to list every known file",
             )
         return slug, ref.id
@@ -757,6 +758,19 @@ class MarkdownHandler(Handler):
 
     # ── ingest pipeline ────────────────────────────────────────────
 
+    # Flag tag auto-applied to every ingested ref so the LLM can scope
+    # ``search(tags=['workspace'])`` to its ``PRECIS_ROOT``. See
+    # :meth:`PlaintextHandler._apply_workspace_tag` for the contract
+    # (idempotent INSERT, ``set_by='system'``).
+    _WORKSPACE_FLAG: ClassVar[str] = "workspace"
+
+    def _apply_workspace_tag(self, ref: Ref) -> None:
+        self.store.add_tag(
+            ref.id,
+            Tag.flag(self._WORKSPACE_FLAG),
+            set_by="system",
+        )
+
     def _ensure_ingested(self, slug: str, *, force: bool = False) -> Ref | None:
         """Materialize the file at ``slug`` into the store if needed.
 
@@ -779,6 +793,7 @@ class MarkdownHandler(Handler):
         meta = (ref.meta if ref is not None else {}) or {}
 
         if not force and ref is not None and meta.get("mtime_ns") == mtime_ns:
+            self._apply_workspace_tag(ref)
             return ref
 
         # Slow path — re-read and re-hash.
@@ -788,6 +803,7 @@ class MarkdownHandler(Handler):
         if not force and ref is not None and meta.get("sha256") == sha:
             # Same content, just touched. Bump mtime in meta and bail.
             self.store.update_ref(ref.id, meta_patch={"mtime_ns": mtime_ns})
+            self._apply_workspace_tag(ref)
             return ref
 
         # Re-parse and replace blocks.
@@ -825,6 +841,8 @@ class MarkdownHandler(Handler):
 
         # Re-fetch to pick up the patched meta + new title.
         refreshed = self.store.get_ref(kind="markdown", id=slug)
+        if refreshed is not None:
+            self._apply_workspace_tag(refreshed)
         return refreshed
 
     # ── render helpers ─────────────────────────────────────────────
@@ -847,12 +865,12 @@ class MarkdownHandler(Handler):
         if not seen:
             return Response(
                 body=(
-                    f"no markdown files found under {self.root}\n"
-                    f"create one with put(kind='markdown', id='SLUG', text='# Title\\n...', mode='create')"
+                    "no markdown files found under PRECIS_ROOT\n"
+                    "create one with put(kind='markdown', id='SLUG', text='# Title\\n...', mode='create')"
                 )
             )
 
-        lines = [f"# {len(seen)} markdown file(s) under {self.root}"]
+        lines = [f"# {len(seen)} markdown file(s) under PRECIS_ROOT"]
         max_w = max(len(s) for s in seen)
         for slug in sorted(seen):
             lines.append(f"  {slug:<{max_w}}  {seen[slug]}")
@@ -1005,7 +1023,7 @@ class MarkdownHandler(Handler):
             ) from exc
         if must_exist and not path.exists():
             raise NotFound(
-                f"markdown file not found on disk: {path}",
+                f"markdown file {slug!r} not found on disk",
                 next="put(kind='markdown', id='<slug>', text='...', mode='create')",
             )
         return path

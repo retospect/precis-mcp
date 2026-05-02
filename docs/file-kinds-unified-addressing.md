@@ -5,6 +5,16 @@
 > navigator) start. The goal is to lock down one address grammar
 > that every kind backed by an on-disk file (or directory of files)
 > agrees on, so the agent has a single mental model.
+>
+> **2026-05 amendment:** the per-kind multi-root proposal
+> (`PRECIS_MARKDOWN_ROOTS`, `PRECIS_PLAINTEXT_ROOTS`, etc.) was
+> dropped. Markdown / plaintext / tex now share **one** env var,
+> `PRECIS_ROOT`, walked separately by extension. The "multi-root with
+> alias" design lives only in `PRECIS_PYTHON_ROOTS` (where it makes
+> semantic sense — code repos are inherently distinct workspaces).
+> The address grammar (`~`, `~L`, `--` separators, etc.) is
+> unchanged. Sections referring to `PRECIS_*_ROOTS` for prose-file
+> kinds are obsolete.
 
 ## Why
 

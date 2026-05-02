@@ -37,35 +37,30 @@ class PrecisConfig(BaseSettings):
       (heavy; requires the optional `paper` extra). Use for production.
     """
 
-    markdown_root: str | None = None
-    """Root directory for the ``markdown`` kind (phase 6).
+    root: str | None = None
+    """The single root directory for **all** prose-file kinds:
+    ``markdown``, ``plaintext``, ``tex``.
 
-    Files under this path are addressable as ``markdown:<slug>`` where
-    the slug encodes the file's relative path (``foo/bar.md`` becomes
-    ``foo--bar``). When unset, the ``markdown`` kind is hidden.
-    Set via ``PRECIS_MARKDOWN_ROOT`` in the env.
-    """
+    Each kind walks this tree and filters by its file extensions:
 
-    plaintext_root: str | None = None
-    """Root directory for the ``plaintext`` kind.
+    - ``markdown`` → ``.md``
+    - ``plaintext`` → ``.txt``, ``.log``
+    - ``tex`` → ``.tex``
 
-    Files ending in ``.txt`` or ``.log`` under this path are addressable
-    as ``plaintext:<slug>`` with the same path-encoding rule as
-    ``markdown`` (``foo/bar.txt`` → ``foo--bar``). When unset, the
-    ``plaintext`` kind is hidden. Set via ``PRECIS_PLAINTEXT_ROOT``
-    in the env.
-    """
+    Slugs encode the file's relative path under this root
+    (``chapters/intro.tex`` → ``chapters--intro``). The handlers
+    treat this directory as the **only** writable area: every read
+    and write is normalised through ``Path.resolve()`` and validated
+    with ``Path.relative_to(self.root)``, which rejects ``../``
+    traversal and symlink escapes alike.
 
-    tex_root: str | None = None
-    """Root directory for the ``tex`` kind.
+    When ``PRECIS_ROOT`` is unset, **none** of the three file kinds
+    register. Set via ``PRECIS_ROOT`` in the env.
 
-    Files ending in ``.tex`` under this path are addressable as
-    ``tex:<slug>`` with the same path-encoding rule as ``plaintext``
-    (``chapters/intro.tex`` → ``chapters--intro``). The first-cut
-    handler reuses the plaintext block grammar (paragraphs separated
-    by blank lines) — LaTeX sectioning is not parsed yet. When unset,
-    the ``tex`` kind is hidden. Set via ``PRECIS_TEX_ROOT`` in the
-    env.
+    Named ``root`` (not ``precis_root``) so pydantic-settings with
+    ``env_prefix='PRECIS_'`` derives the expected env var
+    ``PRECIS_ROOT``. The earlier name ``precis_root`` was
+    double-prefixed and silently no-op'd on every deployment.
     """
 
     python_roots: str | None = None

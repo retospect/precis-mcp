@@ -14,10 +14,10 @@ For shared concepts (address grammar, two-track addressing, multi-
 root config, write modes, reverse lookups), read `precis-files-help`
 first. This skill covers what's specific to `plaintext`.
 
-> **Status:** shipped, gated on `PRECIS_PLAINTEXT_ROOT`. Use for
-> the long tail: `.txt` notes, `.log` captures, pasted fragments,
-> lab notebooks — files that have no block grammar and don't need
-> one. If you're writing markdown-flavoured notes, use
+> **Status:** shipped, gated on `PRECIS_ROOT` (shared with `markdown`
+> and `tex`). Use for the long tail: `.txt` notes, `.log` captures,
+> pasted fragments, lab notebooks — files that have no block grammar
+> and don't need one. If you're writing markdown-flavoured notes, use
 > `kind='markdown'` instead — the block structure is genuinely
 > useful for headings, code blocks, tables.
 
@@ -61,7 +61,7 @@ put(kind='plaintext', id='captures/session-2026-05-01',
     text='''Opened laptop at 09:15.
 
 Investigated the markdown kind registration issue —
-the skill docs advertise markdown but PRECIS_MARKDOWN_ROOT
+the skill docs advertise markdown but PRECIS_ROOT
 wasn't set in this deployment.
 
 Fixed the skill docs; plaintext kind is shipping in
@@ -103,8 +103,7 @@ search(kind='plaintext', q='deployment issue',
 
 Blocks are embedded (same embedder as the rest of the server), so
 semantic search works — `q='markdown gating'` will surface the
-paragraph about `PRECIS_MARKDOWN_ROOT` without needing the exact
-phrase.
+paragraph about `PRECIS_ROOT` without needing the exact phrase.
 
 ## Limits
 

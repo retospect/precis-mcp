@@ -8,31 +8,144 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ## Unreleased
 
-### `tex` kind — first-cut LaTeX file handler (2026-05-02)
+### `PRECIS_ROOT` consolidation — single root for prose-file kinds (2026-05-02)
 
-- **`TexHandler`** — new R/W file kind for `.tex` files, gated on
-  `PRECIS_TEX_ROOT`. Subclasses `PlaintextHandler` and inherits the
-  paragraph-block grammar verbatim — LaTeX sectioning (`\section`,
-  `\begin{...}`) is **not** parsed yet. Storing raw LaTeX source
-  means `edit(mode='find-replace')` works against literal source and
-  `bge-m3` semantic search picks up LaTeX fluently. Owner:
-  `src/precis/handlers/tex.py` (~60 LOC).
-- **`PlaintextHandler` refactored** to expose `_KIND` /
-  `_EXTENSIONS` / `_DEFAULT_EXT` ClassVars + `_strip_ext()` and
-  `_walk_files()` methods. Sibling kinds reuse the entire pipeline
-  by overriding the four ClassVars; no instance methods need re-
-  implementing. Plaintext behaviour unchanged (all 31 plaintext
-  tests pass); error messages now interpolate `self._KIND` so
-  TexHandler errors say "tex file" rather than "plaintext file".
-- New skill: `precis-tex-help.md`. Cross-references added to
+`PRECIS_MARKDOWN_ROOT`, `PRECIS_PLAINTEXT_ROOT`, and the just-shipped
+`PRECIS_TEX_ROOT` have been collapsed into a **single** env var,
+`PRECIS_ROOT`. The three handlers walk the same tree and filter by
+extension. Hard cut — no backward-compat fallback (the package is
+pre-PyPI, only used internally).
+
+- **`PrecisConfig.precis_root`** replaces `markdown_root` /
+  `plaintext_root` / `tex_root`. Env: `PRECIS_ROOT`.
+- **`dispatch.boot(precis_root=...)`** registers all three file
+  handlers under the same root. Whole trio hidden when unset.
+- **`runtime.build()`** threads `config.precis_root` through.
+- `precis jobs ingest-md` falls back to `PRECIS_ROOT` instead of
+  `PRECIS_MARKDOWN_ROOT`.
+- **Write-access boundary documented** in `precis-files-help`:
+  `PRECIS_ROOT` is the only writable area for the prose-file trio.
+  Every read/write goes through `Path.resolve()` +
+  `Path.relative_to(self.root)` — rejects `../` traversal **and**
+  symlink escapes (since `resolve()` follows symlinks). This was
+  always the behaviour; the consolidation makes the boundary
+  explicit and named.
+- **No absolute paths in LLM-visible output.** The LLM sees
+  `PRECIS_ROOT` as `./` — it doesn't know (and shouldn't see) the
+  absolute filesystem path of the configured root. Every error
+  message and rendered listing in the markdown / plaintext / tex
+  handlers now names the symbolic `PRECIS_ROOT`, never `self.root`.
+  Affected sites: `NotFound("... not found under PRECIS_ROOT")`,
+  `_render_index` header + empty-state message, `BadInput("file
+  already exists: '<slug>'")` (was leaking the absolute path).
+  Pinned by `tests/test_plaintext_handler.py::test_*_does_not_leak_absolute_*`
+  (4 tests covering index, empty index, NotFound, put-on-existing).
+- **Auto-applied `workspace` flag tag.** Every ref ingested via the
+  prose-file handlers (markdown / plaintext / tex) is stamped with
+  the `workspace` flag on ingest, with `set_by='system'`. Gives the
+  LLM a simple filter for "things in my working directory":
+  ```python
+  search(q='kinetics', tags=['workspace'])   # scope to PRECIS_ROOT
+  ```
+  Refs outside `PRECIS_ROOT` (papers, web caches, memories, todos)
+  stay un-stamped. The tag is registered in `flag_names` via
+  migration `0008_workspace_flag.sql`. Idempotent:
+  `ON CONFLICT DO NOTHING` means re-ingest doesn't duplicate rows.
+  Pinned by 5 tests in `test_plaintext_handler.py::test_workspace_flag_*`
+  (first-ingest, idempotent, survives mtime-bump, survives content
+  change, `set_by='system'`).
+- **New CLI: `precis jobs ingest`** — walks `PRECIS_ROOT` and
+  pre-warms every prose-file kind into the store. The handlers are
+  lazy by default (so the MCP handshake doesn't trip the ~7s
+  bge-m3 load timeout); running this command before `precis serve`
+  means the LLM finds every workspace file via `search` from the
+  first query.
+  ```bash
+  precis jobs ingest                  # md + plaintext + tex
+  precis jobs ingest --kinds tex      # scope to one kind
+  precis jobs ingest --force          # re-embed even unchanged files
+  precis jobs ingest && precis serve  # launcher-script prefix
+  ```
+  Mtime-gated (cheap re-runs), per-kind summary output. The old
+  `ingest-md` command stays one release cycle as a deprecation
+  shim that forwards to `ingest --kinds md`. Pinned by 8 tests in
+  `tests/test_cli.py::test_ingest_*`.
+- Skill docs updated: `precis-files-help`, `precis-overview`,
+  `precis-edit-protocol`, `precis-plaintext-help`, `precis-tex-help`.
+  README env var table simplified.
+- **Migration**: rename `PRECIS_MARKDOWN_ROOT` (and / or
+  `PRECIS_PLAINTEXT_ROOT` / `PRECIS_TEX_ROOT`) to `PRECIS_ROOT`.
+  If you had separate trees, pick one shared parent — the kinds
+  filter by extension, so they coexist cleanly.
+
+### `tex` kind — section-aware LaTeX file handler (2026-05-02)
+
+A new R/W file kind for `.tex` files with section-aware block
+boundaries and a recursive `/toc` view that expands `\input{}` /
+`\include{}` across files. Gated on `PRECIS_ROOT` (shared with
+`markdown` and `plaintext`).
+
+- **Section-aware block grammar** — `\part`, `\chapter`, `\section`,
+  `\subsection`, `\subsubsection`, `\paragraph`, `\subparagraph`
+  (and their starred forms with optional short titles) drive block
+  boundaries alongside blank lines. The sectioning command line is
+  always its own one-line block, so an agent can edit a heading
+  without touching the body. Each block records `section_level` /
+  `section_title` (when it's a heading) and `section_path` (its
+  ancestor stack) in `meta`. Search-result rendering can show "hit
+  in Methods > Kinetics" without re-parsing. Parser:
+  `src/precis/utils/tex_parse.py`.
+- **`/toc` view** — `get(kind='tex', id='main/toc')` walks the
+  file's section blocks in source order and recursively expands
+  `\input{path}` / `\include{path}`, inlining each child file's
+  sections at the correct indent. Cycles (`a → b → a`) terminate
+  with a `⇺` marker rather than recursing forever. `\input{}`
+  targets are resolved relative to the parent file's directory and
+  passed through the same `Path.resolve()` + `relative_to(self.root)`
+  gate as every other read — paths that escape `PRECIS_ROOT` are
+  reported as `not found`, not followed.
+- **`PlaintextHandler` refactored** to make the parsing pipeline
+  subclass-extensible:
+    - `_KIND` / `_EXTENSIONS` / `_DEFAULT_EXT` ClassVars + the
+      `spec` define kind identity.
+    - `_parse_blocks(content)` / `_block_meta(block)` are
+      overrideable hooks. The base implementation just delegates to
+      `parse_plaintext` and stores `line_start` / `line_end`;
+      `TexHandler` overrides both to inject section metadata.
+    - `_SUPPORTED_VIEWS` + `_render_view(view, ref, slug=...)`
+      dispatch any `view=` argument. Base supports `raw`; `TexHandler`
+      adds `toc` by overriding the dispatcher.
+    - `_walk_files()` now canonicalises every candidate via
+      `Path.resolve()` + `relative_to(self.root)` so a symlink whose
+      target lives outside the root no longer surfaces in the index
+      (it would have failed at read time anyway; this just makes
+      the listing match reachability).
+- **Write-access boundary documented** — `precis-files-help` now
+  spells out the `Path.resolve()` + `relative_to(PRECIS_ROOT)`
+  contract that gates every read and write (rejects `../` traversal
+  *and* symlink escapes). Pinned by new regression tests:
+    - `test_symlink_inside_root_targeting_outside_is_invisible` —
+      a symlink whose target escapes the root must not appear in
+      the index and must `BadInput` on direct access.
+    - `test_input_outside_root_silently_dropped` — same gate
+      applied to `\input{../escape}` in the recursive TOC walker.
+- New skill: `precis-tex-help.md`. Cross-references updated in
   `precis-files-help`, `precis-overview`, `precis-edit-protocol`,
   `precis-plaintext-help`.
-- Wired through `config.tex_root`, `dispatch.boot(tex_root=...)`,
-  `runtime.build()`. Pinned by `tests/test_tex_handler.py` (17
-  tests covering construction, walker scoping, kind routing, basic
-  CRUD, slug + extension boundary).
-- **Deferred** (next refinement): LaTeX sectioning awareness,
-  `\input{}` resolution, `\cite{}` cross-link to `paper` kind.
+- Pinned by:
+    - `tests/test_tex_parse.py` — 17 tests for the parser
+      (sectioning levels, ancestry stack, `\input{}` extraction,
+      slug stability, line spans).
+    - `tests/test_tex_handler.py` — 30 tests including ingest with
+      section meta, `/toc` rendering, `\input{}` recursion, cycle
+      detection, path-traversal escape attempts.
+    - `tests/test_plaintext_handler.py` — 33 tests including the
+      new symlink-escape regressions (apply to all prose-file
+      kinds via the shared `_walk_files` / `_resolve_path`
+      contract).
+- **Deferred** (next refinement): macro expansion, environment
+  grouping, `\subfile{}` package, `\cite{}` cross-link to `paper`
+  kind.
 
 ### Cache-backed bookmarking + nightly maintenance (2026-05-02)
 

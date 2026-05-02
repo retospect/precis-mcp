@@ -2,7 +2,7 @@
 
 > Status: **draft spec**. Not yet scheduled. Sized as a single phase, optional
 > deps group (`voice`), no new MCP package. Hidden when deps are absent
-> (same gating pattern as `markdown` without `PRECIS_MARKDOWN_ROOT`).
+> (same gating pattern as `markdown` without `PRECIS_ROOT`).
 
 ## Why
 

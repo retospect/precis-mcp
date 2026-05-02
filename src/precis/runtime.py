@@ -542,6 +542,19 @@ class PrecisRuntime:
                 ),
             )
 
+        # Canonicalise the tag filter once at the dispatch boundary.
+        # ``Tag.normalize_filter`` round-trips each tag through
+        # ``parse_strict`` (validates vocabulary, rejects typos) and
+        # returns its canonical string form so the post-filter below
+        # can match by string equality regardless of namespace.
+        # ``kind=None`` because cross-kind doesn't know which axes
+        # apply where — per-kind axis enforcement lives on writes.
+        normalized_tags: list[str] | None = None
+        if tags:
+            from precis.store.types import Tag
+
+            normalized_tags = Tag.normalize_filter(tags, kind=None)
+
         streams: list[list[SearchHit]] = []
         for k in kinds:
             handler = self.hub.handler_for(k)
@@ -560,6 +573,17 @@ class PrecisRuntime:
             except Exception:
                 log.exception("cross-kind search_hits failed for %s", k)
                 continue
+            # Defensive post-filter: handler search_hits
+            # implementations have inconsistent ``tags=`` support
+            # (numeric-ref kinds honour the filter via
+            # ``Tag.normalize_filter`` + SQL; most slug-ref and
+            # block-level handlers accept it via ``**_kw`` and
+            # silently ignore it). The dispatcher re-applies the
+            # filter here so a caller who passed
+            # ``tags=['workspace']`` never sees cross-kind hits
+            # from kinds that can't carry that tag.
+            if normalized_tags:
+                hits = self._filter_hits_by_tags(list(hits), normalized_tags)
             streams.append(list(hits))
 
         return merge_and_render(
@@ -570,6 +594,58 @@ class PrecisRuntime:
             mode="rrf",
             empty_body=(f"no matches across {', '.join(kinds)} for {q!r}"),
         )
+
+    def _filter_hits_by_tags(
+        self,
+        hits: list[SearchHit],
+        required_tag_strings: list[str],
+    ) -> list[SearchHit]:
+        """Drop hits whose refs don't carry every required tag.
+
+        Correctness backstop for cross-kind fan-out. The fan-out
+        passes ``tags=`` to each handler's ``search_hits``, but most
+        handlers' signatures take ``**_kw`` and silently ignore
+        unknown kwargs — so ``tags=['workspace']`` was effectively a
+        no-op for every kind except numeric refs. That made the
+        advertised ``search(tags=['workspace'])`` scope-to-workspace
+        filter return hits from kinds (``think``, ``websearch``,
+        …) that can't carry the tag at all.
+
+        This method runs after every stream is collected: for each
+        hit it resolves ``ref_id`` (looking up via ``slug`` when
+        needed), fetches the ref-level tag set, and keeps only hits
+        whose tags are a superset of the required ones. Comparison
+        is on the canonical string form (``__str__``) so a flag
+        ``workspace`` and an open tag ``workspace`` are treated as
+        equivalent matches — there's no practical reason the agent
+        should care about the namespace of the tag they're
+        filtering by.
+
+        Cost: one extra ``tags_for`` DB hit per surviving hit.
+        Acceptable for this axis (tag filters are relatively rare
+        in cross-kind search; correctness dwarfs throughput).
+        """
+        if self.hub.store is None or not required_tag_strings:
+            return hits
+        required = set(required_tag_strings)
+        kept: list[SearchHit] = []
+        for hit in hits:
+            ref_id = hit.ref_id
+            if ref_id is None and hit.slug:
+                ref = self.hub.store.get_ref(kind=hit.kind, id=hit.slug)
+                if ref is None:
+                    continue
+                ref_id = ref.id
+            if ref_id is None:
+                # Producer provided neither ref_id nor slug — can't
+                # check tags. Drop rather than leak an unfiltered
+                # hit.
+                continue
+            tags_have = self.hub.store.tags_for(ref_id)
+            have_strings = {str(t) for t in tags_have}
+            if required.issubset(have_strings):
+                kept.append(hit)
+        return kept
 
     def _kinds_for_verb(self, verb: str) -> list[str]:
         """Return the active kinds whose KindSpec supports ``verb``.
@@ -648,9 +724,7 @@ def build_runtime(
     hub = boot(
         store=store,
         embedder=embedder,
-        markdown_root=config.markdown_root,
-        plaintext_root=config.plaintext_root,
-        tex_root=config.tex_root,
+        precis_root=config.root,
         python_roots=config.python_roots,
     )
     return PrecisRuntime(config=config, hub=hub)

@@ -10,11 +10,13 @@ last-updated: 2026-05-01
 
 > **Status:** `markdown`, `plaintext`, `tex`, and `python` ship today
 > (read + write, including the `mode='edit'` / `mode='insert'`
-> surface). **Each is gated on an env var** — `PRECIS_MARKDOWN_ROOT`,
-> `PRECIS_PLAINTEXT_ROOT`, `PRECIS_TEX_ROOT`, `PRECIS_PYTHON_ROOTS`
-> — so a build that doesn't set them won't register the corresponding
-> kind. Use `get(kind='skill', id='precis-help')` to see which of
-> these are live in the server you're talking to.
+> surface). The first three share **one** env var — `PRECIS_ROOT`
+> — a single directory under which all `.md`, `.txt`, `.log`, and
+> `.tex` files live. `python` has its own multi-repo `PRECIS_PYTHON_ROOTS`
+> (alias-prefixed paths). A build that doesn't set the relevant var
+> won't register the corresponding kind(s). Use
+> `get(kind='skill', id='precis-help')` to see which kinds are live
+> in the server you're talking to.
 
 # precis-files-help — file-rooted kinds, shared concepts
 
@@ -22,17 +24,84 @@ This skill covers what's the **same** across every file-rooted kind:
 
 | Kind | Files | Env var |
 |---|---|---|
-| `markdown` | `.md` | `PRECIS_MARKDOWN_ROOT` |
-| `plaintext` | `.txt`, `.log` | `PRECIS_PLAINTEXT_ROOT` |
-| `tex` | `.tex` (first-cut: paragraph block grammar, no sectioning yet) | `PRECIS_TEX_ROOT` |
+| `markdown` | `.md` | `PRECIS_ROOT` (shared) |
+| `plaintext` | `.txt`, `.log` | `PRECIS_ROOT` (shared) |
+| `tex` | `.tex` | `PRECIS_ROOT` (shared) |
 | `python` | `.py` (Python codebases) | `PRECIS_PYTHON_ROOTS` |
+
+`PRECIS_ROOT` is the **single writable boundary** for the prose-file
+trio. Every read and write goes through `Path.resolve()` followed by
+`Path.relative_to(PRECIS_ROOT)` — a check that rejects `../` traversal
+**and** symlink escapes (since `resolve()` follows symlinks). Files
+from outside this directory are unreachable; writes outside it are
+rejected with `BadInput: path traversal not allowed`.
+
+The LLM sees `PRECIS_ROOT` as `./` — it doesn't know (and isn't told)
+the absolute filesystem path of the root. Every error message and
+index listing names the symbolic `PRECIS_ROOT`, never the absolute
+path.
 
 For kind-specific rules (block grammar, views, edits) see:
 
 - `precis-markdown-help` — `.md` files
 - `precis-plaintext-help` — `.txt` / `.log` files
-- `precis-tex-help` — `.tex` files (paragraph block grammar, first cut)
+- `precis-tex-help` — `.tex` files (section-aware blocks + recursive `/toc`)
 - `precis-python-help` — Python codebases
+
+## The `workspace` flag (auto-applied)
+
+Every ref ingested via the prose-file handlers (`markdown`,
+`plaintext`, `tex`) is stamped with the **`workspace` flag tag** on
+ingest. The LLM uses it to scope searches to its working directory:
+
+```python
+# Everything in my working directory, no external refs.
+search(q='kinetics',       tags=['workspace'])
+
+# Restricted to a single file-kind.
+search(kind='markdown', q='meeting', tags=['workspace'])
+```
+
+The tag is applied with `set_by='system'` (not `agent`) so audit
+queries can distinguish the machine-applied scope tag from tags the
+LLM or the user added themselves. It's idempotent — re-ingesting
+the same file doesn't duplicate the tag.
+
+Refs **outside** `PRECIS_ROOT` (papers, web caches, patents,
+memories, todos, etc.) are not stamped, so `tags=['workspace']` is
+an effective filter for "stuff in my working directory right now."
+
+## Pre-warming the store (`precis jobs ingest`)
+
+By default, handlers ingest files **lazily** — a `.md` / `.txt` /
+`.tex` file doesn't enter the DB until the LLM opens it via
+`get()` or touches it via `search(scope=...)`. That means on a
+freshly-mounted `PRECIS_ROOT`, `search(kind='tex', q='…')` returns
+nothing until each file has been individually read.
+
+To pre-warm the store, run the CLI before starting the MCP server:
+
+```bash
+precis jobs ingest                           # all three prose kinds under $PRECIS_ROOT
+precis jobs ingest /path/to/root             # override root
+precis jobs ingest --kinds tex,plaintext     # scope to some kinds
+precis jobs ingest --force                   # re-embed even unchanged files
+
+precis jobs ingest && precis serve           # launcher-script prefix
+```
+
+The walker is **mtime-gated** — unchanged files are skipped (cheap
+stat call). Run it as often as you like.
+
+Output:
+
+```
+  ok    [md       ] notes--meeting  (8 blocks)
+  ok    [tex      ] chapters--intro  (12 blocks)
+  ok    [plaintext] logs--run-2026-05  (47 blocks)
+ingest: total ingested=3  skipped=0  failed=0
+  per-kind: md=1/1, plaintext=1/1, tex=1/1
+```
 
 ## Two tracks of addressing
 
@@ -101,28 +170,31 @@ get(kind='markdown', id='/Users/bots/notes/meeting.md')
 # → resolved to notes/meeting.md
 ```
 
-## Multi-root configuration
+## Root configuration
 
-Each kind can have multiple roots, named by alias:
+The prose-file trio (`markdown`, `plaintext`, `tex`) shares a single
+root:
 
 ```
-PRECIS_MARKDOWN_ROOTS=notes:/Users/bots/notes,work:/Users/bots/work-docs
+PRECIS_ROOT=/Users/bots/notes
+```
+
+All three kinds walk the same tree and filter by extension. A file
+laid out as `chapters/intro.tex` becomes `tex:chapters--intro`;
+`meeting.md` becomes `markdown:meeting`; `log/2026-05.txt` becomes
+`plaintext:log--2026-05`. The directory layout is yours to choose —
+the handlers don't care whether you organise by kind, by topic, or
+flat.
+
+The Python kind is different: code lives in real repos with their
+own roots, so `PRECIS_PYTHON_ROOTS` is alias-prefixed and supports
+multiple entries:
+
+```
 PRECIS_PYTHON_ROOTS=precis:/path/to/precis,cluster:/path/to/cluster
 ```
 
-When **only one root is configured**, the alias is implicit:
-
-```python
-get(kind='markdown', id='meeting.md')          # alias inferred
-get(kind='markdown', id='notes/meeting.md')    # also valid
-```
-
-When **multiple roots** are configured, the alias is required:
-
-```python
-get(kind='markdown', id='notes/meeting.md')    # required
-get(kind='markdown', id='meeting.md')          # BadInput: ambiguous
-```
+The alias becomes the prefix in addresses (`precis::pkg.mod:func`).
 
 ## Read
 

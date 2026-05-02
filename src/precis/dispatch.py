@@ -445,9 +445,7 @@ def boot(
     *,
     store: Store | None = None,
     embedder: Embedder | None = None,
-    markdown_root: str | None = None,
-    plaintext_root: str | None = None,
-    tex_root: str | None = None,
+    precis_root: str | None = None,
     python_roots: str | None = None,
 ) -> Hub:
     """Build and return a fully-populated :class:`Hub`.
@@ -555,29 +553,21 @@ def boot(
 
         _try(WebHandler, hub=hub)
 
-        # File handlers — markdown / plaintext are hidden when no root
-        # is configured; the handler __init__ raises InitError for a
-        # missing / non-existent / non-directory root.
-        if markdown_root:
+        # File handlers — markdown / plaintext / tex all walk the same
+        # PRECIS_ROOT, scoped by extension. The whole trio is hidden
+        # when no root is configured. Each handler's __init__ raises
+        # InitError for a missing / non-existent / non-directory root.
+        if precis_root:
             from pathlib import Path
 
             from precis.handlers.markdown import MarkdownHandler
-
-            _try(MarkdownHandler, hub=hub, root=Path(markdown_root))
-
-        if plaintext_root:
-            from pathlib import Path
-
             from precis.handlers.plaintext import PlaintextHandler
-
-            _try(PlaintextHandler, hub=hub, root=Path(plaintext_root))
-
-        if tex_root:
-            from pathlib import Path
-
             from precis.handlers.tex import TexHandler
 
-            _try(TexHandler, hub=hub, root=Path(tex_root))
+            root = Path(precis_root)
+            _try(MarkdownHandler, hub=hub, root=root)
+            _try(PlaintextHandler, hub=hub, root=root)
+            _try(TexHandler, hub=hub, root=root)
 
         # Perplexity Sonar trio. Each raises InitError independently
         # when httpx or the API key is missing.

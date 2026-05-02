@@ -153,10 +153,10 @@ class TestSkillIndexFiltering:
         fm = _parse_frontmatter(text)
         assert fm.get("status") == "active"
         # The status banner inside the skill must still warn readers
-        # that each file kind is gated on an env var — that's the
-        # honesty clause.
-        assert "PRECIS_MARKDOWN_ROOT" in text
-        assert "PRECIS_PLAINTEXT_ROOT" in text
+        # that file kinds are gated on env vars — that's the honesty
+        # clause. After the consolidation, ``PRECIS_ROOT`` gates the
+        # markdown / plaintext / tex trio; python keeps its own var.
+        assert "PRECIS_ROOT" in text
         assert "PRECIS_PYTHON_ROOTS" in text
 
     def test_availability_gap_filters_unregistered_kind_help(

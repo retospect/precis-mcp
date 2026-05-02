@@ -279,9 +279,12 @@ def test_overview_kinds_table_names_env_gates() -> None:
         .read_text("utf-8")
     )
     # Every shipped file-backed kind row names its env-var gate.
+    # ``markdown`` / ``plaintext`` / ``tex`` all share ``PRECIS_ROOT``
+    # after the May 2026 consolidation; ``python`` keeps its own var.
     for kind, env in (
-        ("markdown", "PRECIS_MARKDOWN_ROOT"),
-        ("plaintext", "PRECIS_PLAINTEXT_ROOT"),
+        ("markdown", "PRECIS_ROOT"),
+        ("plaintext", "PRECIS_ROOT"),
+        ("tex", "PRECIS_ROOT"),
         ("python", "PRECIS_PYTHON_ROOTS"),
     ):
         # Look for a line containing both the kind name and the env var.

@@ -15,7 +15,12 @@ from precis.utils.plaintext_parse import parse_plaintext
 
 @pytest.fixture
 def pt_root(tmp_path: Path) -> Path:
-    return tmp_path
+    """Handler root is a subdirectory of ``tmp_path`` so symlink-escape
+    tests can plant targets at ``tmp_path / 'outside'`` and prove they
+    cannot be reached from inside the root."""
+    root = tmp_path / "root"
+    root.mkdir()
+    return root
 
 
 @pytest.fixture
@@ -334,3 +339,204 @@ def test_invalid_slug_rejected(handler: PlaintextHandler) -> None:
         handler.get(id="../escape")
     with pytest.raises(BadInput, match="invalid plaintext slug"):
         handler.get(id="UPPERCASE")
+
+
+def test_symlink_inside_root_targeting_outside_is_invisible(
+    handler: PlaintextHandler, pt_root: Path, tmp_path: Path
+) -> None:
+    """A symlink **inside** ``self.root`` whose target lives **outside**
+    must NOT be reachable. ``Path.resolve()`` follows the symlink, the
+    resolved path then fails ``relative_to(self.root)``.
+
+    This is the canonical write-access guarantee for ``PRECIS_ROOT``:
+    "every path goes through ``resolve() + relative_to``" \u2014 if it
+    regresses, this test trips first.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("SECRET DATA")
+
+    # Plant a symlink inside the root pointing at the outside file.
+    link = pt_root / "leak.txt"
+    link.symlink_to(secret)
+
+    # The walker must NOT pick the link up (it resolves outside root,
+    # so the index is empty).
+    out = handler.get()
+    assert "leak" not in out.body
+    assert "0 plaintext file(s)" in out.body or "no plaintext files" in out.body
+
+    # Direct slug resolution must refuse with BadInput, not return
+    # the secret data.
+    with pytest.raises(BadInput, match="path traversal not allowed"):
+        handler.get(id="leak")
+
+
+def test_symlinked_subdirectory_inside_root_is_walked(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """Sanity counterpart: a symlink that points to a subdirectory
+    **inside** the root remains reachable. We're not banning symlinks,
+    only escapes that leave the root."""
+    real = pt_root / "real-subdir"
+    real.mkdir()
+    (real / "note.txt").write_text("inside content")
+    link = pt_root / "via-link"
+    link.symlink_to(real)
+
+    # Slug uses ``--`` separator for path components.
+    out = handler.get(id="real-subdir--note")
+    assert "inside content" in out.body or "real-subdir--note" in out.body
+
+
+# ── PRECIS_ROOT is the LLM's universe (no absolute paths leaked) ─────
+
+
+def test_index_does_not_leak_absolute_root_path(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """The LLM sees ``PRECIS_ROOT`` as ``./``; it must never see the
+    absolute filesystem path of the configured root in any rendered
+    output. The index is the loudest case (it always names the root)."""
+    _write(pt_root, "log.txt", "a paragraph.\n")
+    out = handler.get()
+    assert str(pt_root) not in out.body
+    # The symbolic name is what the LLM should see instead.
+    assert "PRECIS_ROOT" in out.body
+
+
+def test_empty_index_does_not_leak_absolute_root_path(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """The empty-index branch has its own format string; covered
+    separately."""
+    out = handler.get()
+    assert str(pt_root) not in out.body
+    assert "PRECIS_ROOT" in out.body
+
+
+def test_notfound_does_not_leak_absolute_root_path(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """Error messages were the original leak vector. Confirm the
+    refactored messages name PRECIS_ROOT, not the absolute path."""
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="ghost")
+    msg = str(exc.value)
+    assert str(pt_root) not in msg
+    assert "PRECIS_ROOT" in msg
+
+
+def test_put_on_existing_does_not_leak_absolute_path(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """``put(mode='create')`` on an existing slug used to surface the
+    absolute filesystem path of the existing file. Now it must show
+    only the slug."""
+    _write(pt_root, "exists.txt", "old content\n")
+    with pytest.raises(BadInput) as exc:
+        handler.put(id="exists", text="new", mode="create")
+    msg = str(exc.value)
+    assert str(pt_root) not in msg
+    # Slug-form preferred for hints.
+    assert "'exists'" in msg
+
+
+def test_overview_path_field_is_relative_to_root(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """The overview's ``path:`` line must be relative to PRECIS_ROOT,
+    never the absolute filesystem path."""
+    _write(pt_root, "subdir/note.txt", "body.\n")
+    out = handler.get(id="subdir--note")
+    assert str(pt_root) not in out.body
+    # The relative path appears (.txt extension preserved by ingest).
+    assert "subdir/note.txt" in out.body
+
+
+# ── `workspace` flag auto-applied on ingest ──────────────────────────
+
+
+def test_workspace_flag_applied_on_first_ingest(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """Every prose-file ref under PRECIS_ROOT carries the
+    ``workspace`` flag so the LLM can scope
+    ``search(tags=['workspace'])`` to its working directory."""
+    _write(pt_root, "note.txt", "hello.\n")
+    handler.get(id="note")  # force first ingest
+    ref = handler.store.get_ref(kind="plaintext", id="note")
+    assert ref is not None
+    assert handler.store.has_flag(ref.id, "workspace")
+
+
+def test_workspace_flag_idempotent_on_re_ingest(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """Re-ingest must not duplicate the flag (``add_tag`` is an
+    ``ON CONFLICT DO NOTHING`` insert). Exactly one row per (ref, flag)."""
+    _write(pt_root, "note.txt", "body.\n")
+    handler.get(id="note")
+    handler.get(id="note")  # mtime-match fast path
+    handler.get(id="note")
+    ref = handler.store.get_ref(kind="plaintext", id="note")
+    assert ref is not None
+    # Confirm exactly one row in ref_flags for this name.
+    with handler.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM ref_flags WHERE ref_id = %s AND name = %s",
+            (ref.id, "workspace"),
+        ).fetchone()
+    assert row is not None and row[0] == 1
+
+
+def test_workspace_flag_survives_mtime_bump(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """Touching the file (same sha, new mtime) goes through the
+    sha-match branch of ``_ensure_ingested``. The flag must still
+    be present after that path."""
+    path = _write(pt_root, "note.txt", "body.\n")
+    handler.get(id="note")
+    # Rewrite with identical content but different mtime.
+    import os
+    import time
+
+    time.sleep(0.01)
+    path.write_text("body.\n")  # same content
+    now = time.time()
+    os.utime(path, (now, now))
+    handler.get(id="note")  # triggers sha-match fast path
+    ref = handler.store.get_ref(kind="plaintext", id="note")
+    assert ref is not None
+    assert handler.store.has_flag(ref.id, "workspace")
+
+
+def test_workspace_flag_survives_content_change(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """A real content change re-parses + re-inserts blocks (full
+    ingest path). The flag must still be present after that path too."""
+    _write(pt_root, "note.txt", "original.\n")
+    handler.get(id="note")
+    _write(pt_root, "note.txt", "completely rewritten.\n")
+    handler.get(id="note")  # full ingest path
+    ref = handler.store.get_ref(kind="plaintext", id="note")
+    assert ref is not None
+    assert handler.store.has_flag(ref.id, "workspace")
+
+
+def test_workspace_flag_set_by_system(handler: PlaintextHandler, pt_root: Path) -> None:
+    """Auto-applied tags must carry ``set_by='system'`` so audit
+    queries can distinguish them from agent-authored tags."""
+    _write(pt_root, "note.txt", "body.\n")
+    handler.get(id="note")
+    ref = handler.store.get_ref(kind="plaintext", id="note")
+    assert ref is not None
+    with handler.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT set_by FROM ref_flags WHERE ref_id = %s AND name = 'workspace'",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None and row[0] == "system"

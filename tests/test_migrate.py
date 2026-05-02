@@ -36,6 +36,7 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
                 "0005_",
                 "0006_",
                 "0007_",
+                "0008_",
             )
         )
         for v in applied
