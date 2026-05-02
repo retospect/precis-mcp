@@ -35,6 +35,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
+from precis.utils.slug import slug_from_text
 
 log = logging.getLogger(__name__)
 
@@ -100,8 +101,6 @@ class _PerplexityBase(CacheBackedHandler):
         # deriving a human-readable slug — the model is recorded in
         # cache_state.model already.
         _, _, q = key.partition(":")
-        from precis.utils.slug import slug_from_text
-
         return slug_from_text(q, max_len=60) or "perplexity-query"
 
     def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]

@@ -32,6 +32,11 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers._link_tag_ops import (
+    apply_link_ops,
+    apply_tag_ops,
+    format_link_tag_ack,
+)
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
@@ -46,6 +51,12 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
+from precis.utils.file_id import (
+    canonicalize_path_id,
+    format_write_result,
+    nearest_slugs,
+    parse_line_range,
+)
 from precis.utils.md_parse import (
     file_slug_from_path,
     is_valid_file_slug,
@@ -56,7 +67,7 @@ from precis.utils.plaintext_parse import (
     PlaintextBlock,
     parse_plaintext,
 )
-from precis.utils.search_header import format_search_headline
+from precis.utils.search_header import detect_score_cliff, format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
 
@@ -129,6 +140,64 @@ class PlaintextHandler(Handler):
         """
         return {"line_start": block.line_start, "line_end": block.line_end}
 
+    def _derive_title(self, blocks: Sequence[Any], *, fallback: str) -> str:
+        """Pick a title for a freshly-ingested ref.
+
+        Plaintext: first line of the first paragraph, truncated at 80
+        characters. :class:`MarkdownHandler` overrides to prefer the
+        first H1 heading. Subclasses override to inject kind-specific
+        title grammar without re-implementing the full ingest
+        pipeline.
+        """
+        return _derive_title(list(blocks), fallback=fallback)
+
+    def _block_miss_options(self, blocks: Sequence[Any], sel: _BlockSel) -> list[str]:
+        """Options list for a block NotFound error.
+
+        Prefers ambiguous prefix-shorthand matches (the caller typed
+        a shared prefix of several slugs; every candidate is a valid
+        answer) and falls back to difflib nearest-match hinting for
+        a one-character typo. Returns ``[]`` on pos-selector misses
+        — integer pos errors don't benefit from slug suggestions.
+        """
+        if sel.is_pos:
+            return []
+        prefix_hits = _prefix_shorthand_matches(blocks, sel.value)
+        if prefix_hits:
+            return prefix_hits
+        candidates = [b.slug for b in blocks if b.slug]
+        return nearest_slugs(sel.value, candidates)
+
+    def _block_noun(self) -> str:
+        """Word used for a single block in error messages and responses.
+
+        Plaintext: ``paragraph`` (only block kind the grammar
+        produces). Markdown override: ``block`` (the file has
+        headings / paragraphs / code / lists / tables so the
+        generic noun is more accurate). Tex inherits
+        ``paragraph`` — the noun is cosmetic and already distinct
+        from ``block`` so cross-kind responses don't collide.
+        """
+        return "paragraph"
+
+    def _overview_body_extras(self, ref: Ref, blocks: Sequence[Any]) -> list[str]:
+        """Extra lines spliced into the overview after the header.
+
+        Plaintext default: first-5-paragraph preview so the agent has
+        something to drill into without fetching ``/raw``. Markdown
+        overrides to show a heading-TOC preview.
+        """
+        lines: list[str] = []
+        if blocks:
+            lines.append("")
+            lines.append("## Paragraphs (first few)")
+            for b in blocks[:5]:
+                preview = _excerpt(b.text, limit=60)
+                lines.append(f"- ~{b.slug or b.pos}: {preview}")
+            if len(blocks) > 5:
+                lines.append(f"  … and {len(blocks) - 5} more (see /raw)")
+        return lines
+
     @classmethod
     def _strip_ext(cls, rel_path: str) -> tuple[str, str]:
         """Return ``(base_without_extension, extension)`` for one of
@@ -188,7 +257,7 @@ class PlaintextHandler(Handler):
         if id is None or (isinstance(id, str) and id.startswith("/")):
             return self._render_index()
 
-        slug, sel, path_view = _parse_pt_id(str(id))
+        slug, sel, path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
         effective_view = path_view or view
 
         ref = self._ensure_ingested(slug)
@@ -286,12 +355,20 @@ class PlaintextHandler(Handler):
         total = self.store.count_blocks_lexical(
             q=q, kind=self._KIND, scope_ref_id=scope_ref_id
         )
+        # Detect a score cliff — unique-literal queries
+        # (PROBE_MARKER_ZX7Q-style) produce one dominant hit and a
+        # long tail of low-confidence neighbours. Surfacing that in
+        # the header saves the agent token cost on tail pagination.
+        # MCP critic MINOR-$ 2026-05-02.
+        hit_scores = [score for _block, _ref, score in hits]
+        n_strong = detect_score_cliff(hit_scores)
         lines = [
             format_search_headline(
                 n_returned=len(hits),
                 total=total,
                 noun="block hit",
                 query=q,
+                n_strong=n_strong,
             )
         ]
         for block, ref, score in hits:
@@ -377,7 +454,7 @@ class PlaintextHandler(Handler):
                 "put requires id= (the file path / slug)",
                 next=f"put(kind='{self._KIND}', id='foo', text='...', mode='create')",
             )
-        slug, _sel, _path_view = _parse_pt_id(str(id))
+        slug, _sel, _path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
         return self._put_create(slug, text)
 
     # ── put helpers ────────────────────────────────────────────────
@@ -385,11 +462,23 @@ class PlaintextHandler(Handler):
     def _put_create(self, slug: str, text: str | None) -> Response:
         path = self._resolve_path(slug, must_exist=False)
         if path.exists():
+            # Previously the hint pointed at
+            # ``edit(..., mode='replace', text=...)`` with no
+            # selector — which rejects at the edit layer with a hint
+            # back at put(mode='replace'), which put also rejects.
+            # Unrecoverable triangle (MCP critic CRITICAL-C
+            # 2026-05-02). Break it by landing the hint on calls
+            # that actually run end-to-end.
             raise BadInput(
                 f"file already exists: {slug!r}",
                 next=(
-                    f"edit(kind='{self._KIND}', id={slug!r}, mode='replace', "
-                    "text=...) if you mean to edit"
+                    f"get(kind='{self._KIND}', id='{slug}/toc') to list "
+                    "block slugs, then "
+                    f"edit(kind='{self._KIND}', id='{slug}~<block>', "
+                    "mode='replace', text='...') to rewrite one block, or "
+                    f"edit(kind='{self._KIND}', id={slug!r}, "
+                    "mode='find-replace', find='old', text='new') for a "
+                    "surgical splice"
                 ),
             )
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -405,7 +494,7 @@ class PlaintextHandler(Handler):
             raise BadInput(
                 "append requires text=",
                 next=(
-                    f"put(kind='{self._KIND}', id={slug!r}, text='...', mode='append')"
+                    f"edit(kind='{self._KIND}', id={slug!r}, text='...', mode='append')"
                 ),
             )
         path = self._resolve_path(slug, must_exist=True)
@@ -417,40 +506,98 @@ class PlaintextHandler(Handler):
             sep = "\n\n"
         new_content = existing.rstrip() + sep + text.rstrip() + "\n"
         _atomic_write(path, new_content)
-        self._ensure_ingested(slug, force=True)
-        return Response(body=f"appended to {self._KIND} {slug!r}")
+        ref = self._ensure_ingested(slug, force=True)
+        assert ref is not None
+        # Unified response — name slug, block pos, block slug, and
+        # line range so chained edits don't need a follow-up
+        # /toc round-trip (MCP critic MAJOR-C 2026-05-02).
+        last = _last_block(self.store.list_blocks_for_ref(ref.id))
+        return Response(
+            body=format_write_result(
+                verb="appended",
+                file_slug=slug,
+                block_pos=last.pos if last else None,
+                block_slug=last.slug if last else None,
+                line_start=(last.meta or {}).get("line_start") if last else None,
+                line_end=(last.meta or {}).get("line_end") if last else None,
+            )
+        )
 
     def _put_replace(
         self, slug: str, sel: _BlockSel | None, text: str | None
     ) -> Response:
         if sel is None:
+            # Previously suggested put(mode='replace'), which put
+            # rejects for file kinds — feeding the CRITICAL-C
+            # hint triangle (MCP critic 2026-05-02).
             raise BadInput(
-                "replace requires a block selector — id='slug~BLOCK'",
+                "mode='replace' requires a block selector — "
+                "id='slug~BLOCK' (or id='slug~L42-58' for a line range)",
                 next=(
-                    f"put(kind='{self._KIND}', id='{slug}~BLOCK', "
-                    "text='...', mode='replace')"
+                    f"get(kind='{self._KIND}', id='{slug}/toc') to list "
+                    "block slugs, then "
+                    f"edit(kind='{self._KIND}', id='{slug}~<block>', "
+                    "mode='replace', text='...')"
                 ),
             )
         if text is None:
             raise BadInput(
                 "replace requires text=",
                 next=(
-                    f"put(kind='{self._KIND}', id='{slug}~...', "
-                    "text='...', mode='replace')"
+                    f"edit(kind='{self._KIND}', id='{slug}~{sel.value}', "
+                    "mode='replace', text='...')"
                 ),
             )
         path = self._resolve_path(slug, must_exist=True)
         blocks = self._parse_blocks(path.read_text(encoding="utf-8"))
         target = _find_block(blocks, sel)
         if target is None:
+            options = self._block_miss_options(blocks, sel)
+            msg = f"{self._block_noun()} {sel.value!r} not found in {slug!r}"
+            if (
+                sel.is_pos is False
+                and len(options) > 1
+                and not any(b.slug == sel.value for b in blocks)
+            ):
+                # The options came from prefix shorthand and the
+                # query is ambiguous — tell the caller so they can
+                # pick one.
+                prefix_hits = _prefix_shorthand_matches(blocks, sel.value)
+                if len(prefix_hits) > 1:
+                    msg += (
+                        f" \u2014 prefix {sel.value!r} matches "
+                        f"{len(prefix_hits)} blocks; disambiguate"
+                    )
             raise NotFound(
-                f"paragraph {sel.value!r} not found in {slug!r}",
+                msg,
+                options=options or None,
                 next=f"get(kind='{self._KIND}', id='{slug}')",
             )
         new_lines = text.rstrip("\n").split("\n")
         _replace_lines(path, target.line_start, target.line_end, new_lines)
-        self._ensure_ingested(slug, force=True)
-        return Response(body=f"replaced paragraph {target.slug!r} in {slug!r}")
+        ref = self._ensure_ingested(slug, force=True)
+        assert ref is not None
+        # Recover (slug, pos, lines) of the post-replace block —
+        # line_start survives equal/shorter splices; pos is the
+        # fallback.
+        fresh = self.store.list_blocks_for_ref(ref.id)
+        new_block = _block_at_line(fresh, target.line_start) or _block_at_pos(
+            fresh, target.pos
+        )
+        return Response(
+            body=format_write_result(
+                verb="replaced",
+                file_slug=slug,
+                block_pos=new_block.pos if new_block else target.pos,
+                block_slug=new_block.slug if new_block else target.slug,
+                line_start=(new_block.meta or {}).get("line_start")
+                if new_block
+                else target.line_start,
+                line_end=(new_block.meta or {}).get("line_end")
+                if new_block
+                else target.line_start + len(new_lines) - 1,
+            )
+        )
 
     def _put_delete(self, slug: str, sel: _BlockSel | None) -> Response:
         if sel is None:
@@ -462,13 +609,49 @@ class PlaintextHandler(Handler):
         blocks = self._parse_blocks(path.read_text(encoding="utf-8"))
         target = _find_block(blocks, sel)
         if target is None:
+            options = self._block_miss_options(blocks, sel)
             raise NotFound(
-                f"paragraph {sel.value!r} not found in {slug!r}",
+                f"{self._block_noun()} {sel.value!r} not found in {slug!r}",
+                options=options or None,
                 next=f"get(kind='{self._KIND}', id='{slug}')",
             )
+        deleted_pos = target.pos
+        deleted_slug = target.slug
+        deleted_line_start = target.line_start
+        deleted_line_end = target.line_end
         _replace_lines(path, target.line_start, target.line_end, [])
         self._ensure_ingested(slug, force=True)
-        return Response(body=f"deleted paragraph {target.slug!r} from {slug!r}")
+        return Response(
+            body=format_write_result(
+                verb="deleted",
+                file_slug=slug,
+                block_pos=deleted_pos,
+                block_slug=deleted_slug,
+                line_start=deleted_line_start,
+                line_end=deleted_line_end,
+            )
+        )
+
+    def _delete_file(self, slug: str) -> Response:
+        """Remove a whole file + its ref.
+
+        Symmetry with ``put(mode='create')``: anything the handler
+        can create via the API, it can also delete via the API
+        (MCP critic MINOR-C 2026-05-02). Gated behind an explicit
+        confirm string encoding the slug (see :meth:`delete`).
+        """
+        path = self._resolve_path(slug, must_exist=False)
+        ref = self.store.get_ref(kind=self._KIND, id=slug)
+        if not path.exists() and ref is None:
+            raise NotFound(
+                f"{self._KIND} file {slug!r} not found under PRECIS_ROOT",
+                next=f"get(kind='{self._KIND}') to list every known file",
+            )
+        if path.exists():
+            os.remove(path)
+        if ref is not None:
+            self.store.soft_delete_ref(ref.id)
+        return Response(body=format_write_result(verb="deleted file", file_slug=slug))
 
     def _put_anchored(
         self,
@@ -526,8 +709,10 @@ class PlaintextHandler(Handler):
             blocks = self._parse_blocks(full)
             target = _find_block(blocks, sel)
             if target is None:
+                options = self._block_miss_options(blocks, sel)
                 raise NotFound(
-                    f"paragraph {sel.value!r} not found in {slug!r}",
+                    f"{self._block_noun()} {sel.value!r} not found in {slug!r}",
+                    options=options or None,
                     next=f"get(kind='{self._KIND}', id='{slug}')",
                 )
             op = EditOp(
@@ -572,17 +757,35 @@ class PlaintextHandler(Handler):
             ) from exc
 
         _atomic_write(path, new_full)
-        self._ensure_ingested(slug, force=True)
+        ref = self._ensure_ingested(slug, force=True)
+        assert ref is not None
 
+        # Unified response — first edited span's (slug, pos, lines)
+        # so chained edits don't need a follow-up /toc round-trip.
+        # ``[N spans]`` suffix signals when match='all' produced
+        # multiple locations that may cross block boundaries.
         spans = result.edited_spans or ()
-        span_str = ", ".join(f"L{a}-{b}" if a != b else f"L{a}" for a, b in spans)
         verb = "edited" if op_kind == "edit" else "inserted"
-        scope = f"{slug}~{sel.value}" if sel else slug
-        summary = (
-            f"{verb} {len(spans)} span{'s' if len(spans) != 1 else ''} "
-            f"in {scope} ({span_str})"
+        fresh = self.store.list_blocks_for_ref(ref.id)
+        if spans:
+            first_line = spans[0][0]
+            last_line = spans[-1][1]
+            anchor_block = _block_at_line(fresh, first_line)
+        else:
+            first_line = 0
+            last_line = 0
+            anchor_block = None
+        return Response(
+            body=format_write_result(
+                verb=verb,
+                file_slug=slug,
+                block_pos=anchor_block.pos if anchor_block else None,
+                block_slug=anchor_block.slug if anchor_block else None,
+                line_start=first_line or None,
+                line_end=last_line or None,
+                span_count=len(spans),
+            )
         )
-        return Response(body=summary)
 
     def _render_dry_run(
         self,
@@ -663,7 +866,7 @@ class PlaintextHandler(Handler):
                     "find='old', text='new')"
                 ),
             )
-        slug, sel, _path_view = _parse_pt_id(str(id))
+        slug, sel, _path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
         if mode == "append":
             return self._put_append(slug, text)
         if mode == "replace":
@@ -683,29 +886,48 @@ class PlaintextHandler(Handler):
             dry_run=dry_run,
         )
 
-    def delete(self, *, id: str | int, **_kw: Any) -> Response:  # type: ignore[override]
-        """Delete a paragraph / region from a paragraph-block file.
+    def delete(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        confirm: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Delete a paragraph / region, or the whole file.
 
-        Requires a selector in ``id`` (``slug~SLUG`` or
-        ``slug~Lstart-Lend``). Whole-file delete is not exposed.
+        - Block-level (default): requires a selector in ``id``
+          (``slug~SLUG`` / ``slug~Lstart-Lend``).
+        - File-level: pass ``confirm='delete-file-<slug>'`` with no
+          selector. Unlinks the file under ``PRECIS_ROOT`` and
+          soft-deletes the ref. The confirm string encodes the
+          slug so a stray ``confirm=True`` can't delete the wrong
+          file. Matches the file-level ``put(mode='create')`` so
+          ``put`` and ``delete`` are symmetric (MCP critic MINOR-C
+          2026-05-02).
         """
-        slug, sel, _path_view = _parse_pt_id(str(id))
+        slug, sel, _path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
         if sel is None:
-            raise BadInput(
-                (
-                    f"delete on {self._KIND} requires a block selector — "
-                    f"id={slug!r}~SLUG"
-                ),
-                next=(
-                    f"delete(kind='{self._KIND}', id='{slug}~SLUG') to remove "
-                    "a paragraph, or use the OS to remove the whole file"
-                ),
-            )
+            expected_confirm = f"delete-file-{slug}"
+            if confirm != expected_confirm:
+                raise BadInput(
+                    (
+                        f"delete on {self._KIND} requires a block selector — "
+                        f"id='{slug}~SLUG' — or confirm={expected_confirm!r} "
+                        "to remove the whole file"
+                    ),
+                    next=(
+                        f"delete(kind='{self._KIND}', id='{slug}~SLUG') "
+                        "to remove a paragraph, or "
+                        f"delete(kind='{self._KIND}', id={slug!r}, "
+                        f"confirm={expected_confirm!r}) to remove the file"
+                    ),
+                )
+            return self._delete_file(slug)
         return self._put_delete(slug, sel)
 
     def _resolve_pt_ref(self, id: str | int) -> tuple[str, int]:
         """Coerce an id to (slug, ref_id), ingesting the file if needed."""
-        slug, sel, path_view = _parse_pt_id(str(id))
+        slug, sel, path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
         if sel is not None or path_view is not None:
             raise BadInput(
                 (
@@ -736,8 +958,6 @@ class PlaintextHandler(Handler):
                 f"tag(kind='{self._KIND}', id=...) requires add= or remove=",
                 next=f"tag(kind='{self._KIND}', id='<slug>', add=['draft'])",
             )
-        from precis.handlers._link_tag_ops import apply_tag_ops, format_link_tag_ack
-
         slug, ref_id = self._resolve_pt_ref(id)
         n_added, n_removed = apply_tag_ops(
             self.store, self._KIND, ref_id, tags=add, untags=remove
@@ -773,8 +993,6 @@ class PlaintextHandler(Handler):
                 f"link mode must be 'add' or 'remove', got {mode!r}",
                 options=["add", "remove"],
             )
-        from precis.handlers._link_tag_ops import apply_link_ops, format_link_tag_ack
-
         slug, ref_id = self._resolve_pt_ref(id)
         n_added, n_removed = apply_link_ops(
             self.store,
@@ -845,7 +1063,7 @@ class PlaintextHandler(Handler):
             return ref
 
         pt_blocks = self._parse_blocks(content)
-        title = _derive_title(pt_blocks, fallback=slug)
+        title = self._derive_title(pt_blocks, fallback=slug)
         # Preserve the original extension in meta so the handler can
         # rebuild the real file path even when several extensions map
         # to the same slug shape (e.g. plaintext: .txt vs .log).
@@ -934,46 +1152,55 @@ class PlaintextHandler(Handler):
         n_blocks = self.store.count_blocks(ref.id)
         rel = meta.get("path", "?")
         size = meta.get("size") or "?"
+        # "paragraphs" is the plaintext-native noun. Subclasses that
+        # use a different block grammar (markdown = blocks, tex =
+        # section-scoped blocks) override :meth:`_overview_blocks_label`
+        # for the right word.
         lines = [
             f"# {ref.slug}",
             f"_{ref.title}_",
             "",
             f"path:        {rel}",
-            f"paragraphs:  {n_blocks}",
+            f"{self._overview_blocks_label():<12} {n_blocks}",
             f"bytes:       {size}",
         ]
         if meta.get("mtime_iso"):
             lines.append(f"mtime:       {meta['mtime_iso']}")
 
-        # Show the first couple of paragraph slugs so the agent has
-        # something to drill into without fetching /raw.
+        # Block-preview pane — subclasses can inject headings / TOC.
         blocks = self.store.list_blocks_for_ref(ref.id)
-        if blocks:
-            lines.append("")
-            lines.append("## Paragraphs (first few)")
-            for b in blocks[:5]:
-                preview = _excerpt(b.text, limit=60)
-                lines.append(f"- ~{b.slug or b.pos}: {preview}")
-            if len(blocks) > 5:
-                lines.append(f"  … and {len(blocks) - 5} more (see /raw)")
+        lines.extend(self._overview_body_extras(ref, blocks))
 
         body = "\n".join(lines)
-        body += render_next_section(
-            [
-                (f"get(kind='{self._KIND}', id='{ref.slug}/raw')", "full source"),
-                (
-                    f"get(kind='{self._KIND}', id='{ref.slug}~SLUG')",
-                    "read one paragraph by slug",
-                ),
-                (
-                    f"search(kind='{self._KIND}', q='...', scope='{ref.slug}')",
-                    "search inside this file",
-                ),
-            ]
-        )
+        body += render_next_section(self._overview_next_hints(ref))
         return Response(body=body)
 
+    def _overview_blocks_label(self) -> str:
+        """Label for the block-count line in the overview.
+
+        Plaintext: ``paragraphs:``. Markdown override: ``blocks:``.
+        The trailing padding is handled by the f-string format spec
+        in :meth:`_render_overview` so every entry aligns visually.
+        """
+        return "paragraphs:"
+
+    def _overview_next_hints(self, ref: Ref) -> list[tuple[str, str]]:
+        """Next: hint list for the overview response."""
+        return [
+            (f"get(kind='{self._KIND}', id='{ref.slug}/raw')", "full source"),
+            (
+                f"get(kind='{self._KIND}', id='{ref.slug}~SLUG')",
+                "read one paragraph by slug",
+            ),
+            (
+                f"search(kind='{self._KIND}', q='...', scope='{ref.slug}')",
+                "search inside this file",
+            ),
+        ]
+
     def _render_block(self, ref: Ref, sel: _BlockSel) -> Response:
+        if sel.is_line_range:
+            return self._render_line_range(ref, sel.line_start, sel.line_end)
         if sel.is_pos:
             try:
                 pos = int(sel.value)
@@ -985,16 +1212,42 @@ class PlaintextHandler(Handler):
             block = self.store.get_block(ref.id, pos=pos)
             if block is None:
                 raise NotFound(
-                    f"no paragraph at ~{pos} in {ref.slug!r}",
+                    f"no {self._block_noun()} at ~{pos} in {ref.slug!r}",
                     next=f"get(kind='{self._KIND}', id='{ref.slug}')",
                 )
         else:
             block = self.store.get_block(ref.id, slug=sel.value)
             if block is None:
-                raise NotFound(
-                    f"no paragraph with slug {sel.value!r} in {ref.slug!r}",
-                    next=f"get(kind='{self._KIND}', id='{ref.slug}')",
-                )
+                # Fallback 1: unique prefix shorthand — recover from
+                # ``inserted-by-probe-marker`` → full hash-suffixed
+                # slug (MCP critic MINOR-C 2026-05-02).
+                all_blocks = self.store.list_blocks_for_ref(ref.id)
+                prefix_hits = _prefix_shorthand_matches(all_blocks, sel.value)
+                if len(prefix_hits) == 1:
+                    block = next(b for b in all_blocks if b.slug == prefix_hits[0])
+                else:
+                    # Fallback 2: difflib nearest-match hinting so a
+                    # one-character typo doesn't force a /toc round-
+                    # trip (MCP critic MAJOR-C 2026-05-02). Prefer
+                    # ambiguous prefix matches when there are
+                    # several, since those are exactly what the
+                    # caller asked for.
+                    candidates = [b.slug for b in all_blocks if b.slug]
+                    options = prefix_hits or nearest_slugs(sel.value, candidates)
+                    msg = (
+                        f"no {self._block_noun()} with slug "
+                        f"{sel.value!r} in {ref.slug!r}"
+                    )
+                    if len(prefix_hits) > 1:
+                        msg += (
+                            f" — prefix {sel.value!r} matches "
+                            f"{len(prefix_hits)} blocks; disambiguate"
+                        )
+                    raise NotFound(
+                        msg,
+                        options=options or None,
+                        next=f"get(kind='{self._KIND}', id='{ref.slug}')",
+                    )
         handle = f"{ref.slug}~{block.slug or block.pos}"
         body = f"# {handle}\n{block.text}"
         body += render_next_section(
@@ -1023,6 +1276,57 @@ class PlaintextHandler(Handler):
         if not path.exists():
             return Response(body=f"{ref.slug}: file no longer on disk")
         return Response(body=path.read_text(encoding="utf-8"))
+
+    def _render_line_range(self, ref: Ref, line_start: int, line_end: int) -> Response:
+        """Render every block that intersects 1-indexed
+        ``[line_start, line_end]`` on disk.
+
+        The skill advertises Track-A line-range addressing — a
+        caller arriving from a stack trace, grep, or IDE should be
+        able to address blocks by line directly (MCP critic MAJOR-C
+        2026-05-02). Each matching block's header cites the
+        canonical slug so follow-up calls can move to Track B.
+        """
+        all_blocks = self.store.list_blocks_for_ref(ref.id)
+        matched: list[Any] = []
+        for b in all_blocks:
+            meta = b.meta or {}
+            b_start = meta.get("line_start")
+            b_end = meta.get("line_end")
+            if b_start is None or b_end is None:
+                continue
+            if _intersects(int(b_start), int(b_end), line_start, line_end):
+                matched.append(b)
+        if not matched:
+            raise NotFound(
+                (f"no block intersects L{line_start}-{line_end} in {ref.slug!r}"),
+                next=f"get(kind='{self._KIND}', id='{ref.slug}')",
+            )
+        pieces: list[str] = []
+        for b in matched:
+            meta = b.meta or {}
+            b_start = int(meta.get("line_start") or 0)
+            b_end = int(meta.get("line_end") or 0)
+            name = b.slug or str(b.pos)
+            line_str = f"L{b_start}-{b_end}" if b_end != b_start else f"L{b_start}"
+            handle = f"{ref.slug}~{name}"
+            pieces.append(f"# {handle}  (block {b.pos}, {line_str})\n{b.text}")
+        body = "\n\n".join(pieces)
+        first = matched[0]
+        first_name = first.slug or str(first.pos)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='{self._KIND}', id='{ref.slug}~{first_name}')",
+                    "re-fetch the first matched block by slug",
+                ),
+                (
+                    f"get(kind='{self._KIND}', id='{ref.slug}/raw')",
+                    "full source",
+                ),
+            ]
+        )
+        return Response(body=body)
 
     # ── path resolution ────────────────────────────────────────────
 
@@ -1080,24 +1384,52 @@ class PlaintextHandler(Handler):
 
 @dataclass(frozen=True, slots=True)
 class _BlockSel:
+    """Parsed form of the ``~…`` portion of a file-kind id.
+
+    Three variants, discriminated by the booleans:
+
+    - ``is_pos=True``  → ``value`` is a digit string.
+    - ``is_line_range=True`` → ``line_start`` / ``line_end`` are
+      1-indexed inclusive; ``value`` is the raw ``L<a>-<b>`` form
+      so error messages can quote the original input.
+    - Both False → ``value`` is a content-derived block slug.
+    """
+
     value: str
-    is_pos: bool
+    is_pos: bool = False
+    is_line_range: bool = False
+    line_start: int = 0
+    line_end: int = 0
 
 
 _INT_RE = re.compile(r"^\d+$")
 
 
-def _parse_pt_id(raw: str) -> tuple[str, _BlockSel | None, str | None]:
-    """Parse a plaintext id into ``(file_slug, block_sel, view)``.
+def _parse_file_id(
+    raw: str, *, extensions: tuple[str, ...]
+) -> tuple[str, _BlockSel | None, str | None]:
+    """Parse a prose-file id into ``(file_slug, block_sel, view)``.
 
-    Accepts the same shapes as markdown:
+    Accepts both slug-form and path-form (the latter is advertised
+    in ``precis-files-help`` and was previously silently mis-parsed —
+    MCP critic CRITICAL-C, 2026-05-02)::
 
-        slug
-        slug~BLOCK     — paragraph by slug
-        slug~N         — paragraph by pos
-        slug/raw       — view path
+        slug                            — slug-form
+        slug~BLOCK                      — paragraph / block by slug
+        slug~N                          — block by 0-indexed pos
+        slug~L42-58                     — line range (Track A)
+        slug~L42                        — single line (Track A)
+        slug/raw                        — view path
+        notes/meeting.md                — path-form, canonicalised
+        notes/meeting.md~conclusion     — path-form with selector
+        notes/meeting.md/toc            — path-form with view
+
+    ``extensions`` is the handler's ``_EXTENSIONS`` tuple; only those
+    extensions trigger path-form canonicalisation so a plaintext
+    handler can't mis-parse a ``.md`` id as a plaintext file path
+    (and vice versa).
     """
-    s = raw.strip()
+    s = canonicalize_path_id(raw.strip(), extensions=extensions)
     sel: _BlockSel | None = None
     view: str | None = None
 
@@ -1111,8 +1443,18 @@ def _parse_pt_id(raw: str) -> tuple[str, _BlockSel | None, str | None]:
         if not after:
             raise BadInput(
                 f"empty block selector in {raw!r}",
-                next="slug~SLUG  or  slug~N",
+                next="slug~SLUG  or  slug~N  or  slug~L42-58",
             )
+        # Track A: line range / single line (~L42-58, ~L42).
+        lr = parse_line_range(after, raw_id=raw)
+        if lr is not None:
+            sel = _BlockSel(
+                value=lr.value,
+                is_line_range=True,
+                line_start=lr.line_start,
+                line_end=lr.line_end,
+            )
+            return slug, sel, view
         is_pos = bool(_INT_RE.match(after))
         sel = _BlockSel(value=after, is_pos=is_pos)
         return slug, sel, view
@@ -1120,9 +1462,41 @@ def _parse_pt_id(raw: str) -> tuple[str, _BlockSel | None, str | None]:
     return s, sel, view
 
 
-def _find_block(
-    blocks: Sequence[PlaintextBlock], sel: _BlockSel
-) -> PlaintextBlock | None:
+# Back-compat alias — historical callers use ``_parse_pt_id``. The
+# new function takes an extensions tuple so subclasses (tex, markdown)
+# can canonicalise against their own extensions.
+def _parse_pt_id(raw: str) -> tuple[str, _BlockSel | None, str | None]:
+    """Legacy signature: assumes ``.txt`` / ``.log``. Prefer
+    :func:`_parse_file_id` which accepts ``extensions=``."""
+    return _parse_file_id(raw, extensions=(".txt", ".log"))
+
+
+def _find_block(blocks: Sequence[Any], sel: _BlockSel) -> Any | None:
+    """Find a block matching ``sel`` in ``blocks``.
+
+    Accepts any block dataclass with ``pos`` / ``slug`` / ``line_start`` /
+    ``line_end`` fields (``PlaintextBlock``, ``TexBlock``,
+    :class:`precis.utils.md_parse.MdBlock`) so the same helper covers
+    every prose-file subclass.
+
+    Slug resolution order (shortest-works-first for small models):
+
+    1. Exact slug match (the durable Track-B form).
+    2. Unique prefix shorthand — ``inserted-by-probe-marker`` resolves
+       to ``inserted-by-probe-marker-c33c61`` when exactly one block's
+       slug starts with the query followed by ``-``. Heading slugs
+       (clean) and paragraph slugs (hash-suffixed) mix in the same
+       file, so a 7B caller copying the clean form of a hash-suffixed
+       slug used to get NotFound; prefix shorthand unblocks them
+       (MCP critic MINOR-C 2026-05-02).
+    3. Multiple prefix matches → ``None``, deferring to the caller's
+       ``options=`` rendering (which lists every candidate).
+    """
+    if sel.is_line_range:
+        for b in blocks:
+            if _intersects(b.line_start, b.line_end, sel.line_start, sel.line_end):
+                return b
+        return None
     if sel.is_pos:
         try:
             target_pos = int(sel.value)
@@ -1132,8 +1506,67 @@ def _find_block(
             if b.pos == target_pos:
                 return b
         return None
+    # Exact slug first.
     for b in blocks:
         if b.slug == sel.value:
+            return b
+    # Unique prefix shorthand — anchor on ``query + '-'`` so
+    # ``section-one`` doesn't accidentally match ``section-ones``
+    # (the ambient ``-`` segment boundary disambiguates).
+    anchor = sel.value + "-"
+    prefix_matches = [b for b in blocks if b.slug and b.slug.startswith(anchor)]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    return None
+
+
+def _prefix_shorthand_matches(blocks: Sequence[Any], query: str) -> list[str]:
+    """Every block slug for which ``query`` is a valid prefix shorthand.
+
+    Returned in document order so the caller's ``options=`` list
+    surfaces the candidates the way they appear in the file.
+    """
+    anchor = query + "-"
+    return [b.slug for b in blocks if b.slug and b.slug.startswith(anchor)]
+
+
+def _intersects(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    """True iff 1-indexed inclusive spans share at least one line."""
+    return a_start <= b_end and b_start <= a_end
+
+
+# ── block-lookup helpers for unified write-result formatting ─────
+
+
+def _last_block(blocks: Sequence[Any]) -> Any | None:
+    """Highest-pos block, or ``None`` if the list is empty."""
+    if not blocks:
+        return None
+    return max(blocks, key=lambda b: b.pos)
+
+
+def _block_at_line(blocks: Sequence[Any], line: int) -> Any | None:
+    """First block whose ``meta.line_start..line_end`` contains ``line``.
+
+    Used after an atomic write to recover the (slug, pos, lines)
+    tuple of the block that landed on the edited location, so the
+    response can surface it without a ``/toc`` round-trip.
+    """
+    for b in blocks:
+        meta = getattr(b, "meta", None) or {}
+        start = meta.get("line_start")
+        end = meta.get("line_end")
+        if start is None or end is None:
+            continue
+        if int(start) <= line <= int(end):
+            return b
+    return None
+
+
+def _block_at_pos(blocks: Sequence[Any], pos: int) -> Any | None:
+    """Block with exact ``pos``, or ``None``."""
+    for b in blocks:
+        if b.pos == pos:
             return b
     return None
 

@@ -1,7 +1,7 @@
 """Shared render + search helpers for slug-addressed ref kinds.
 
 Slug-addressed kinds (``oracle``, ``conv``, ``quest``, plus slices of
-``paper`` / ``patent``) repeatedly hand-roll the same three pieces:
+``paper`` / ``patent``) repeatedly hand-roll the same four pieces:
 
 1. A ref-level lexical search that calls ``search_refs_lexical`` +
    ``count_refs_lexical`` and renders ``# N match(es) for 'q'``
@@ -10,6 +10,9 @@ Slug-addressed kinds (``oracle``, ``conv``, ``quest``, plus slices of
    for cross-kind merge.
 3. A bare ``# {N} {kind}(s)`` list view rendered from
    ``list_refs(kind=..., limit=50)``.
+4. A "coerce (kind, slug) → live :class:`Ref` or raise ``NotFound``"
+   step that every ``get`` / ``tag`` / ``link`` / ``delete`` entry
+   point repeats — ``resolve_live_slug_ref`` is that step.
 
 These helpers factor each piece into a free-standing function so the
 per-handler methods become thin wrappers. Kept free-standing (no
@@ -24,16 +27,17 @@ wording without forking the helper.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.response import Response
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 
 if TYPE_CHECKING:
-    from precis.store import Store
+    from precis.store import Ref, Store
 
 
 def search_slug_refs(
@@ -187,8 +191,67 @@ def _resolve_count_plural(label: str, *, n: int) -> str:
     return label
 
 
+def resolve_live_slug_ref(
+    store: Store,
+    *,
+    kind: str,
+    id: str | int,
+    next_hint: str | None = None,
+    options: Sequence[str] | None = None,
+) -> Ref:
+    """Coerce a ``(kind, slug)`` pair to a live :class:`Ref` or raise.
+
+    Canonicalises the pattern that every slug-addressed handler
+    (quest, oracle, paper, patent, conv, markdown, plaintext)
+    repeats in its ``get`` / ``tag`` / ``link`` / ``delete`` entry
+    points::
+
+        ref = store.get_ref(kind=kind, id=slug)
+        if ref is None:
+            raise NotFound(f"{kind} slug {slug!r} not found", next=...)
+
+    Returns the live :class:`Ref` (``.id``, ``.slug``, ``.title``,
+    ``.meta``, …) so callers destructure whatever they need. Note
+    that :meth:`Store.get_ref` already filters out soft-deleted
+    rows, so the returned ref is always live — callers handling
+    tombstones should use the lower-level store API directly.
+
+    Args:
+        store: Store instance to probe.
+        kind: Kind slug, used both for the DB lookup and to shape
+              the default error message.
+        id:   The slug the caller passed in. Coerced to :class:`str`
+              and stripped of surrounding whitespace.
+        next_hint: Optional override for the error's ``next:``
+              hint. Defaults to the canonical
+              ``search(kind=..., q='...') to find existing``.
+              Pass a richer hint when the handler already has a
+              concrete path (``_suggest_paper_slugs``-style fuzzy
+              matches belong in ``options=`` instead).
+        options: Optional spelling suggestions forwarded into the
+              :class:`NotFound` envelope so the agent sees
+              ``options: [...]`` in the error body. Falsy values
+              (empty list / ``None``) are normalised to ``None``
+              so the envelope stays tidy.
+
+    Raises:
+        NotFound: the ref does not exist (or was soft-deleted and
+                  is therefore unreachable through ``get_ref``).
+    """
+    slug = str(id).strip()
+    ref = store.get_ref(kind=kind, id=slug)
+    if ref is None:
+        raise NotFound(
+            f"{kind} slug {slug!r} not found",
+            next=next_hint or f"search(kind={kind!r}, q='...') to find existing",
+            options=list(options) if options else None,
+        )
+    return ref
+
+
 __all__ = [
     "render_slug_ref_list",
+    "resolve_live_slug_ref",
     "search_hits_slug_refs",
     "search_slug_refs",
 ]

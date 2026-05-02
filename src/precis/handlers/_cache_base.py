@@ -36,16 +36,17 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
 )
+from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR
-from precis.store.types import BlockInsert
+from precis.store.types import BlockInsert, Tag
 from precis.utils.block_ingest import to_block_inserts
 from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.next_block import render_next_section
@@ -186,12 +187,10 @@ class CacheBackedHandler(Handler):
         # the agent with a paid-for cache row but no bookmark and
         # no clear way to retry. (gripe:3681 phase 2.)
         if tags or untags:
-            from precis.store.types import Tag as _Tag
-
             for s in tags or []:
-                _Tag.parse_strict(s, kind=self.spec.kind)
+                Tag.parse_strict(s, kind=self.spec.kind)
             for s in untags or []:
-                _Tag.parse_strict(s, kind=self.spec.kind)
+                Tag.parse_strict(s, kind=self.spec.kind)
 
         # Slug round-trip: ``/recent`` listings advertise slugs and
         # ``tag`` / ``link`` accept them; without this fallback,
@@ -546,15 +545,15 @@ class CacheBackedHandler(Handler):
                     f"tag(kind={self.spec.kind!r}, id='<slug>', add=['CACHE:pinned'])"
                 ),
             )
-        ref = self.store.get_ref(kind=self.spec.kind, id=slug)
-        if ref is None:
-            raise NotFound(
-                f"{self.spec.kind} slug {slug!r} not found",
-                next=(
-                    f"get(kind={self.spec.kind!r}, id='<query>') first to "
-                    "populate the cache, then tag/link the resulting slug"
-                ),
-            )
+        ref = resolve_live_slug_ref(
+            self.store,
+            kind=self.spec.kind,
+            id=slug,
+            next_hint=(
+                f"get(kind={self.spec.kind!r}, id='<query>') first to "
+                "populate the cache, then tag/link the resulting slug"
+            ),
+        )
         return slug, ref.id
 
     def tag(  # type: ignore[override]

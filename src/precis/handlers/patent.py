@@ -37,6 +37,7 @@ from precis.handlers._patent_ops import (
 )
 from precis.handlers._patent_slug import parse_docdb_id
 from precis.handlers._patent_xml import OpsHit, parse_search_response
+from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
@@ -197,12 +198,12 @@ class PatentHandler(Handler):
 
         scope_ref_id: int | None = None
         if scope is not None:
-            scope_ref = self.store.get_ref(kind="patent", id=scope)
-            if scope_ref is None:
-                raise NotFound(
-                    f"patent slug {scope!r} not found",
-                    next="search(kind='patent', q='...') to find one",
-                )
+            scope_ref = resolve_live_slug_ref(
+                self.store,
+                kind="patent",
+                id=scope,
+                next_hint="search(kind='patent', q='...') to find one",
+            )
             scope_ref_id = scope_ref.id
 
         # Local leg: hybrid (lex + semantic) over patent blocks.

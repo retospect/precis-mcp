@@ -34,6 +34,7 @@ from precis.handlers._link_tag_ops import (
 )
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
+    resolve_live_slug_ref,
     search_hits_slug_refs,
     search_slug_refs,
 )
@@ -100,12 +101,7 @@ class OracleHandler(Handler):
             )
         effective_view = view or path_view
 
-        ref = self.store.get_ref(kind="oracle", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"oracle slug {slug!r} not found",
-                next="search(kind='oracle', q='...') to find existing",
-            )
+        ref = resolve_live_slug_ref(self.store, kind="oracle", id=slug)
         blocks = self.store.list_blocks_for_ref(ref.id)
 
         # Empty oracle — no blocks, body lives in the title only.
@@ -185,14 +181,13 @@ class OracleHandler(Handler):
 
     def _resolve_oracle_slug(self, id: str | int) -> tuple[str, int]:
         """Coerce an agent-facing id to a (slug, ref_id) pair."""
-        slug = str(id).strip()
-        ref = self.store.get_ref(kind="oracle", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"oracle slug {slug!r} not found",
-                next="search(kind='oracle', q='...') to find existing slugs",
-            )
-        return slug, ref.id
+        ref = resolve_live_slug_ref(
+            self.store,
+            kind="oracle",
+            id=id,
+            next_hint="search(kind='oracle', q='...') to find existing slugs",
+        )
+        return ref.slug or "", ref.id
 
     def tag(  # type: ignore[override]
         self,

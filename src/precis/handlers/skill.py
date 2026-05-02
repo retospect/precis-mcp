@@ -31,6 +31,7 @@ runtime — that's by design (skills are versioned with code).
 
 from __future__ import annotations
 
+import importlib
 import logging
 import re
 from importlib import resources
@@ -38,7 +39,7 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
-from precis.protocol import Handler, KindSpec
+from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
@@ -143,7 +144,38 @@ class SkillHandler(Handler):
         gap = _availability_gap(slug, hub=self.hub)
         if gap is not None:
             text = f"> **Heads up:** {gap}\n\n" + text
+        # Append a live-registry footer so cross-cutting skills
+        # (precis-overview, precis-files-help) that mention kinds in
+        # tables can't drift against the active build. Each skill
+        # gets a one-line summary of the registered kinds so the
+        # reader can cross-check their plan against reality.
+        # MCP critic MAJOR-C 2026-05-02.
+        text = text.rstrip() + "\n\n" + self._live_registry_footer()
         return Response(body=text)
+
+    def _live_registry_footer(self) -> str:
+        """Markdown footer listing active kinds on this build.
+
+        Rendered from ``self.hub.kinds`` at serve time so it can't
+        drift against the registry. Appended to every non-synth
+        skill response; the synth ``precis-help`` already renders
+        its own kind table so it doesn't get a redundant footer
+        (synth skills don't flow through this code path).
+        """
+        if self.hub is None:
+            return ""
+        try:
+            kinds = sorted(self.hub.kinds)
+        except (AttributeError, TypeError):
+            return ""
+        if not kinds:
+            return ""
+        return (
+            "---\n"
+            f"**Active kinds on this build:** {', '.join(kinds)}. "
+            "See `get(kind='skill', id='precis-help')` for a verb "
+            "table generated from the live registry."
+        )
 
     # ── search ─────────────────────────────────────────────────────
 
@@ -306,8 +338,6 @@ class SkillHandler(Handler):
         # renderer never goes stale when a new verb is added — every
         # kind's row reflects exactly what the live dispatch table
         # advertises via ``Hub.verbs_for(kind)``.
-        from precis.protocol import _ALL_VERBS
-
         rows: list[tuple[str, str, str]] = []  # (kind, verbs, desc)
         for kind in sorted(self.hub.kinds):
             handler = self.hub.handler_for(kind)
@@ -353,8 +383,6 @@ class SkillHandler(Handler):
         MISSING / ERROR.  Adding a new probe is one row in
         ``_OPTIONAL_DEP_PROBES``.
         """
-        import importlib
-
         lines = [
             "# precis-status",
             "",

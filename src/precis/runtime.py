@@ -24,10 +24,13 @@ from precis.dispatch import Hub
 from precis.errors import (
     BadInput,
     Internal,
+    NotFound,
     PrecisError,
+    Unsupported,
 )
 from precis.protocol import _ALL_VERBS, Handler, Verb
 from precis.response import Response
+from precis.store.types import Tag
 from precis.utils.search_merge import SearchHit, merge_and_render
 
 if TYPE_CHECKING:
@@ -247,17 +250,13 @@ class PrecisRuntime:
         """
         handler = self.hub.handler_for(kind)
         if handler is None:
-            from precis.errors import NotFound as _NF
-
-            raise _NF(
+            raise NotFound(
                 f"unknown kind: {kind}",
                 options=self._kinds_for_verb(verb),
                 next="see precis-overview for the kind list",
             )
 
         if not handler.spec.supports(verb):  # type: ignore[arg-type]
-            from precis.errors import Unsupported
-
             verbs = [v for v in _VERBS if handler.spec.supports(v)]
             # ``options`` enumerates the supported verbs as the
             # recovery vocabulary; ``next`` gives a concrete
@@ -551,8 +550,6 @@ class PrecisRuntime:
         # apply where — per-kind axis enforcement lives on writes.
         normalized_tags: list[str] | None = None
         if tags:
-            from precis.store.types import Tag
-
             normalized_tags = Tag.normalize_filter(tags, kind=None)
 
         streams: list[list[SearchHit]] = []

@@ -31,6 +31,7 @@ from precis.handlers._link_tag_ops import (
     format_link_tag_ack,
 )
 from precis.handlers._paper_toc import build_toc, filter_toc_to_range, render_toc
+from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
@@ -151,13 +152,13 @@ class PaperHandler(Handler):
             return self._render_list_papers()
         slug, chunk_spec, path_view = _parse_paper_id(str(id))
 
-        ref = self.store.get_ref(kind="paper", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"paper slug {slug!r} not found",
-                next="search(kind='paper', q='your query') to find existing",
-                options=_suggest_paper_slugs(slug, store=self.store) or None,
-            )
+        ref = resolve_live_slug_ref(
+            self.store,
+            kind="paper",
+            id=slug,
+            next_hint="search(kind='paper', q='your query') to find existing",
+            options=_suggest_paper_slugs(slug, store=self.store),
+        )
 
         # Path view (`slug/cite/bib`) takes precedence over kwarg `view`,
         # because the agent is being explicit in the id. Whatever wins,
@@ -220,13 +221,13 @@ class PaperHandler(Handler):
 
         scope_ref_id: int | None = None
         if scope is not None:
-            scope_ref = self.store.get_ref(kind="paper", id=scope)
-            if scope_ref is None:
-                raise NotFound(
-                    f"paper slug {scope!r} not found",
-                    next="search(kind='paper', q='...') to find one",
-                    options=_suggest_paper_slugs(scope, store=self.store) or None,
-                )
+            scope_ref = resolve_live_slug_ref(
+                self.store,
+                kind="paper",
+                id=scope,
+                next_hint="search(kind='paper', q='...') to find one",
+                options=_suggest_paper_slugs(scope, store=self.store),
+            )
             scope_ref_id = scope_ref.id
 
         query_vec: list[float] | None = None
@@ -413,13 +414,13 @@ class PaperHandler(Handler):
                 "selector / path view from id=",
                 next=f"tag(kind='paper', id={slug!r}, ...) or link(kind='paper', id={slug!r}, ...)",
             )
-        ref = self.store.get_ref(kind="paper", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"paper slug {slug!r} not found",
-                next="search(kind='paper', q='...') to find existing slugs",
-                options=_suggest_paper_slugs(slug, store=self.store) or None,
-            )
+        ref = resolve_live_slug_ref(
+            self.store,
+            kind="paper",
+            id=slug,
+            next_hint="search(kind='paper', q='...') to find existing slugs",
+            options=_suggest_paper_slugs(slug, store=self.store),
+        )
         return slug, ref.id
 
     def tag(  # type: ignore[override]

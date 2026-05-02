@@ -17,8 +17,10 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, Unsupported
+from precis.handlers._link_tag_ops import apply_link_ops, apply_tag_ops
 from precis.handlers._slug_ref_shared import (
+    resolve_live_slug_ref,
     search_hits_slug_refs,
     search_slug_refs,
 )
@@ -72,12 +74,7 @@ class QuestHandler(Handler):
             return self._list_view("recent")
 
         slug = str(id).strip()
-        ref = self.store.get_ref(kind="quest", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"quest slug {slug!r} not found",
-                next="search(kind='quest', q='...') to find existing",
-            )
+        ref = resolve_live_slug_ref(self.store, kind="quest", id=slug)
         tags = self.store.tags_for(ref.id)
         out = [f"# quest {slug}", "", ref.title]
         if tags:
@@ -212,12 +209,7 @@ class QuestHandler(Handler):
                 next="delete(kind='quest', id='<slug>')",
             )
         slug = str(id).strip()
-        existing = self.store.get_ref(kind="quest", id=slug)
-        if existing is None:
-            raise NotFound(
-                f"quest slug {slug!r} not found",
-                next="search(kind='quest', q='...') to find existing",
-            )
+        existing = resolve_live_slug_ref(self.store, kind="quest", id=slug)
         self.store.soft_delete_ref(existing.id)
         return Response(body=f"deleted quest {slug!r}")
 
@@ -250,16 +242,9 @@ class QuestHandler(Handler):
                 ),
             )
         slug = str(id).strip()
-        existing = self.store.get_ref(kind="quest", id=slug)
-        if existing is None:
-            raise NotFound(
-                f"quest slug {slug!r} not found",
-                next="search(kind='quest', q='...') to find existing",
-            )
+        existing = resolve_live_slug_ref(self.store, kind="quest", id=slug)
         # Reuse the shared tag-ops helper so the validate-then-write
         # transactional shape matches every other kind.
-        from precis.handlers._link_tag_ops import apply_tag_ops
-
         apply_tag_ops(self.store, "quest", existing.id, tags=add, untags=remove)
         return Response(body=f"tagged quest {slug!r}")
 
@@ -284,14 +269,7 @@ class QuestHandler(Handler):
                 options=["add", "remove"],
             )
         slug = str(id).strip()
-        existing = self.store.get_ref(kind="quest", id=slug)
-        if existing is None:
-            raise NotFound(
-                f"quest slug {slug!r} not found",
-                next="search(kind='quest', q='...') to find existing",
-            )
-        from precis.handlers._link_tag_ops import apply_link_ops
-
+        existing = resolve_live_slug_ref(self.store, kind="quest", id=slug)
         if mode == "add":
             apply_link_ops(self.store, existing.id, link=target, unlink=None, rel=rel)
             return Response(body=f"linked quest {slug!r} → {target}")
@@ -317,8 +295,6 @@ class QuestHandler(Handler):
         elif view in ("doing", "blocked", "done"):
             wanted = frozenset({view})
         else:
-            from precis.errors import Unsupported
-
             raise Unsupported(
                 f"unknown quest list view {view!r}",
                 options=["recent", "open", "doing", "blocked", "done"],

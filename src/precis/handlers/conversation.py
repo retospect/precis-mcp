@@ -23,7 +23,10 @@ from precis.handlers._link_tag_ops import (
     apply_tag_ops,
     format_link_tag_ack,
 )
-from precis.handlers._slug_ref_shared import render_slug_ref_list
+from precis.handlers._slug_ref_shared import (
+    render_slug_ref_list,
+    resolve_live_slug_ref,
+)
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.utils.next_block import render_next_section
@@ -69,12 +72,7 @@ class ConversationHandler(Handler):
             return self._render_list()
 
         slug, chunk, path_view = _parse_conv_id(str(id))
-        ref = self.store.get_ref(kind="conv", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"conv slug {slug!r} not found",
-                next="search(kind='conv', q='...') to find existing",
-            )
+        ref = resolve_live_slug_ref(self.store, kind="conv", id=slug)
 
         effective_view = path_view or view
         if chunk is not None:
@@ -104,12 +102,12 @@ class ConversationHandler(Handler):
             )
         scope_ref_id: int | None = None
         if scope is not None:
-            scope_ref = self.store.get_ref(kind="conv", id=scope)
-            if scope_ref is None:
-                raise NotFound(
-                    f"conv slug {scope!r} not found",
-                    next="search(kind='conv', q='...')",
-                )
+            scope_ref = resolve_live_slug_ref(
+                self.store,
+                kind="conv",
+                id=scope,
+                next_hint="search(kind='conv', q='...')",
+            )
             scope_ref_id = scope_ref.id
         hits = self.store.search_blocks_fused(
             q=q,
@@ -179,12 +177,12 @@ class ConversationHandler(Handler):
                 "selector / path view from id=",
                 next=f"tag(kind='conv', id={slug!r}, ...) or link(kind='conv', id={slug!r}, ...)",
             )
-        ref = self.store.get_ref(kind="conv", id=slug)
-        if ref is None:
-            raise NotFound(
-                f"conv slug {slug!r} not found",
-                next="search(kind='conv', q='...') to find existing slugs",
-            )
+        ref = resolve_live_slug_ref(
+            self.store,
+            kind="conv",
+            id=slug,
+            next_hint="search(kind='conv', q='...') to find existing slugs",
+        )
         return slug, ref.id
 
     def tag(  # type: ignore[override]
