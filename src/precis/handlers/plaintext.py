@@ -1,7 +1,10 @@
-"""PlaintextHandler — read/write ``.txt`` / ``.log`` files under a root.
+"""PlaintextHandler — read/write ``.txt`` / ``.log`` / ``.bib`` files under a root.
 
 Sibling of :class:`precis.handlers.markdown.MarkdownHandler` with a
 simpler block grammar: paragraphs only, no headings or fenced code.
+BibTeX ``.bib`` files fit that grammar naturally — each ``@entry{…}``
+is its own paragraph — so the plaintext handler covers them without
+a dedicated bib kind.
 Writes go to disk verbatim after a UTF-8 encode check — there is no
 AST or re-parse gate beyond what markdown already does.
 
@@ -81,15 +84,15 @@ _SUPPORTED_PUT_MODES = ("create",)
 
 
 class PlaintextHandler(Handler):
-    """Slug-addressed read/write handler for ``.txt`` / ``.log`` files."""
+    """Slug-addressed read/write handler for ``.txt`` / ``.log`` / ``.bib`` files."""
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="plaintext",
         title="Plaintext",
         description=(
-            "Read and edit local plaintext files (.txt, .log) under a "
-            "configured root. Lazy re-ingest on stale mtime; paragraph "
-            "slugs are content-stable."
+            "Read and edit local plaintext files (.txt, .log, .bib) "
+            "under a configured root. Lazy re-ingest on stale mtime; "
+            "paragraph slugs are content-stable."
         ),
         supports_get=True,
         supports_search=True,
@@ -110,7 +113,7 @@ class PlaintextHandler(Handler):
     # pipeline by overriding these ClassVars + the ``spec`` above.
     # No instance methods need re-implementing.
     _KIND: ClassVar[str] = "plaintext"
-    _EXTENSIONS: ClassVar[tuple[str, ...]] = (".txt", ".log")
+    _EXTENSIONS: ClassVar[tuple[str, ...]] = (".txt", ".log", ".bib")
     _DEFAULT_EXT: ClassVar[str] = ".txt"
 
     #: Views accepted by :meth:`get` (in addition to the no-view
@@ -454,13 +457,27 @@ class PlaintextHandler(Handler):
                 "put requires id= (the file path / slug)",
                 next=f"put(kind='{self._KIND}', id='foo', text='...', mode='create')",
             )
-        slug, _sel, _path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
-        return self._put_create(slug, text)
+        # Extension hint: the caller's raw id (e.g. ``./references.bib``)
+        # tells us which extension they want. ``_parse_file_id`` strips
+        # the extension during canonicalisation, so we sniff it here
+        # before the strip and pass it down. Without this hint,
+        # ``_resolve_path`` falls back to ``_DEFAULT_EXT`` on a fresh
+        # file, silently producing e.g. ``references.txt`` when the
+        # caller asked for ``references.bib``.
+        raw_id = str(id)
+        preferred_ext: str | None = None
+        for ext in self._EXTENSIONS:
+            if raw_id.lower().endswith(ext):
+                preferred_ext = ext
+                break
+        slug, _sel, _path_view = _parse_file_id(raw_id, extensions=self._EXTENSIONS)
+        return self._put_create(slug, text, preferred_ext=preferred_ext)
 
     # ── put helpers ────────────────────────────────────────────────
 
-    def _put_create(self, slug: str, text: str | None) -> Response:
-        path = self._resolve_path(slug, must_exist=False)
+    def _put_create(self, slug: str, text: str | None,
+                    *, preferred_ext: str | None = None) -> Response:
+        path = self._resolve_path(slug, must_exist=False, preferred_ext=preferred_ext)
         if path.exists():
             # Previously the hint pointed at
             # ``edit(..., mode='replace', text=...)`` with no
@@ -1330,7 +1347,8 @@ class PlaintextHandler(Handler):
 
     # ── path resolution ────────────────────────────────────────────
 
-    def _resolve_path(self, slug: str, *, must_exist: bool) -> Path:
+    def _resolve_path(self, slug: str, *, must_exist: bool,
+                      preferred_ext: str | None = None) -> Path:
         if not is_valid_file_slug(slug):
             raise BadInput(
                 f"invalid {self._KIND} slug: {slug!r}",
@@ -1344,10 +1362,15 @@ class PlaintextHandler(Handler):
         existing = self.store.get_ref(kind=self._KIND, id=slug)
         if existing is not None:
             ext = (existing.meta or {}).get("ext") or self._DEFAULT_EXT
+        elif preferred_ext and preferred_ext in self._EXTENSIONS:
+            # Caller explicitly asked for a specific extension
+            # (e.g. ``put(id='./references.bib', ...)``). Honour it
+            # over both on-disk probe and ``_DEFAULT_EXT``.
+            ext = preferred_ext
         else:
-            # On first touch, probe disk for any registered extension
-            # and prefer whichever exists. Ties fall back to the
-            # default.
+            # On first touch with no hint, probe disk for any registered
+            # extension and prefer whichever exists. Ties fall back to
+            # the default.
             rel_base = path_from_file_slug(slug, ext="").rstrip(".")
             for candidate_ext in self._EXTENSIONS:
                 candidate = (self.root / (rel_base + candidate_ext)).resolve()
