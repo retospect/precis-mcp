@@ -47,6 +47,7 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
+from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 
 log = logging.getLogger(__name__)
@@ -429,7 +430,44 @@ class PythonHandler(Handler):
                         hits.append((score, alias, sym))
 
         if not hits:
-            return Response(body=f"no python symbols match {q!r}")
+            # Empty-search recovery (MCP critic round 2): a bare
+            # "no matches" body leaves the caller without a next
+            # step. Build a small `Next:` trailer that suggests
+            # widening scope (when ``scope=`` narrowed it) and
+            # browsing entry points (which frequently host the kind
+            # of ``main`` the caller is actually hunting for).
+            #
+            # List the aliases we could suggest for entries browsing
+            # — prefer the scoped alias if scope= pinned one, else
+            # an arbitrary-but-deterministic pick. Only name one so
+            # the trailer doesn't explode on multi-repo setups.
+            first_alias = sorted(roots.keys())[0]
+            hints: list[tuple[str, str]] = []
+            if scope is not None:
+                # Widen scope suggestion first — the most common fix
+                # when a scoped search misses is that the scope was
+                # too narrow (typo in alias or qualname prefix).
+                hints.append(
+                    (
+                        f"search(kind='python', q={q!r})",
+                        "widen to all repos (drop scope=)",
+                    )
+                )
+            hints.append(
+                (
+                    f"get(kind='python', id={first_alias!r}, view='entries')",
+                    "browse console scripts + __main__ guards",
+                )
+            )
+            hints.append(
+                (
+                    f"get(kind='python', id={first_alias!r})",
+                    "list files in this repo",
+                )
+            )
+            body = f"no python symbols match {q!r}\n\n"
+            body += render_next_section(hints)
+            return Response(body=body)
 
         hits.sort(key=lambda h: -h[0])
         total = len(hits)
@@ -1238,10 +1276,27 @@ class PythonHandler(Handler):
                 a: self.cache.get(p) for a, p in self.roots.items() if a != parsed.alias
             }
 
+        # Console-script resolution (MCP critic round 2): if ``entry``
+        # is a bare word (no ``.`` and no ``:``), it's almost certainly
+        # the *name* of a console script from pyproject.toml —
+        # ``precis``, ``pytest``, ``my-cli`` — not a dotted qualname.
+        # Look it up in the entries report and rewrite to the
+        # underlying ``module:func`` so the caller doesn't have to
+        # know the internal plumbing. Collisions across scripts with
+        # the same name don't happen (pyproject names are unique per
+        # project), so the first (and only) hit wins.
+        resolved_entry = entry
+        if "." not in entry and ":" not in entry:
+            report = entries_mod.find_entries(idx)
+            for script in report.console_scripts:
+                if script.name == entry:
+                    resolved_entry = script.entry
+                    break
+
         try:
             tree = cgraph.build_callgraph(
                 idx,
-                entry=entry,
+                entry=resolved_entry,
                 max_depth=depth,
                 other_repos=other_repos or None,
                 cross_repo=cross_repo,
@@ -1256,7 +1311,7 @@ class PythonHandler(Handler):
         body = cgraph.render_callgraph(
             tree,
             alias=parsed.alias,
-            entry=entry,
+            entry=resolved_entry,
             max_depth=depth,
             cross_repo=cross_repo,
         )

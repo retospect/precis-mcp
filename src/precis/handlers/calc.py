@@ -68,6 +68,21 @@ class CalcHandler(Handler):
                 next="get(kind='calc', q='2+3*4')",
             ) from e
 
+        # Some sympy functions — notably ``solve`` and ``factor_list``
+        # — run eagerly inside ``sympify`` and return plain Python
+        # containers (list / tuple / dict) rather than sympy objects.
+        # The rest of the pipeline (``.is_number``, ``.doit()``,
+        # ``.free_symbols``, ``simplify``) assumes a sympy Basic, so
+        # without this short-circuit ``solve(Eq(x+1, 3), x)``
+        # AttributeErrored with the cryptic ``'list' object has no
+        # attribute 'is_number'`` that the next clause then masked as
+        # "unsupported expression". sympy's own container kinds
+        # (``FiniteSet``, ``ImmutableMatrix``, ``Tuple``) are Basic
+        # subclasses and keep the fast path. (MCP critic round 2 —
+        # calc solve unwired.)
+        if isinstance(expr, (list, tuple, dict, set, frozenset)):
+            return Response(body=f"{expr_str} = {_humanise(expr)}")
+
         try:
             result = expr if expr.is_number else expr.doit()
         except (AttributeError, TypeError, ValueError, sympy.SympifyError) as e:

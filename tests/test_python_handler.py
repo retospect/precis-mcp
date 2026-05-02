@@ -354,6 +354,48 @@ def test_search_no_match(handler: PythonHandler) -> None:
     assert "no python symbols match" in out.body
 
 
+def test_search_no_match_includes_recovery_next_section(
+    handler: PythonHandler,
+) -> None:
+    """Regression for MCP critic round 2: the empty-search response
+    used to be a bare 'no matches' line. It now carries a ``Next:``
+    section pointing at ``view='entries'`` (for browsing main
+    functions) and the repo listing view.
+    """
+    out = handler.search(q="zzzfrobnicate-nothing")
+    # Headline first.
+    assert "no python symbols match" in out.body
+    # Structured recovery trailer must be present.
+    assert "Next:" in out.body
+    assert "view='entries'" in out.body
+    # Without a scope= the "widen to all repos" hint must NOT show —
+    # we're already searching all repos.
+    assert "widen to all repos" not in out.body
+
+
+def test_search_no_match_with_scope_suggests_widening(
+    handler: PythonHandler,
+) -> None:
+    """When ``scope=`` narrowed the search, the first recovery hint
+    must be 'widen to all repos' — the most common cause of a
+    scoped-search miss is a typo in the scope itself."""
+    # Scope to a file that doesn't contain the query.
+    out = handler.search(q="zzznothing", scope="r/pkg/m.py")
+    assert "no python symbols match" in out.body
+    assert "Next:" in out.body
+    assert "widen to all repos" in out.body
+    # The widened-call itself (the ``search(kind='python', q=...)``
+    # LHS, before the ``—`` separator) must drop the ``scope=``
+    # argument — the *description* on the RHS does mention ``drop
+    # scope=`` in prose, so we split on the separator to only check
+    # the call form.
+    widen_line = next(
+        ln for ln in out.body.splitlines() if "widen to all repos" in ln
+    )
+    call_part, _, _ = widen_line.partition("—")
+    assert "scope=" not in call_part
+
+
 def test_search_requires_q(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="search requires"):
         handler.search()

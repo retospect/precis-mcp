@@ -325,3 +325,86 @@ def test_handler_callgraph_renders_end_to_end(handler: PythonHandler) -> None:
     assert "pkg.m.b" in out.body
     assert "pkg.m.helper" in out.body
     assert "Next:" in out.body
+
+
+# ---------------------------------------------------------------------------
+# Console-script alias resolution (MCP critic round 2)
+# ---------------------------------------------------------------------------
+
+
+def test_handler_callgraph_resolves_console_script_name(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Regression for MCP critic round 2: ``entry='my-cli'`` (a bare
+    word matching a ``[project.scripts]`` name) used to surface a
+    ``NotFound — callgraph entry 'my-cli' not found in repo`` because
+    ``build_callgraph`` saw a qualname without dots. The handler now
+    looks up bare-word entries in ``find_entries(idx).console_scripts``
+    and rewrites them to the underlying ``module:func`` before
+    dispatch, so the agent can trace the script by its user-facing
+    name without knowing the pyproject plumbing.
+    """
+    # Add a pyproject.toml declaring a console script ``my-cli`` that
+    # points at pkg.m:main (the root of our chain fixture).
+    _write(
+        repo,
+        "pyproject.toml",
+        """
+        [project]
+        name = "demo"
+        version = "0.1.0"
+
+        [project.scripts]
+        my-cli = "pkg.m:main"
+        """,
+    )
+    handler = PythonHandler(hub=Hub(), roots={"r": repo})
+
+    out = handler.get(id="r", view="callgraph", entry="my-cli", depth=3)
+    # The body should render the underlying qualname, not the script
+    # name — the alias is a lookup key, not a render target.
+    assert "pkg.m.main" in out.body
+    assert "pkg.m.a" in out.body
+    assert "pkg.m.helper" in out.body
+
+
+def test_handler_callgraph_bare_word_without_pyproject_match_still_errors(
+    handler: PythonHandler,
+) -> None:
+    """A bare-word entry that is NOT a declared console script must
+    still raise ``NotFound`` — we don't silently treat every bare
+    word as "resolve harder". The existing error path (with its
+    search-kind-python recovery hint) stays intact."""
+    with pytest.raises(NotFound, match="callgraph entry"):
+        handler.get(id="r", view="callgraph", entry="not-a-script")
+
+
+def test_handler_callgraph_dotted_entry_bypasses_console_script_lookup(
+    repo: Path,
+) -> None:
+    """Dotted / colon entries are passed through unchanged — the
+    console-script resolution is ONLY for ambiguous bare words.
+    This pins the gate condition (``"." not in entry and ":" not
+    in entry``) so dotted entries keep their direct-lookup fast
+    path even when a same-named console script exists."""
+    _write(
+        repo,
+        "pyproject.toml",
+        """
+        [project]
+        name = "demo"
+        version = "0.1.0"
+
+        [project.scripts]
+        main = "pkg.m:helper"
+        """,
+    )
+    handler = PythonHandler(hub=Hub(), roots={"r": repo})
+    # 'pkg.m.main' is a real qualname AND 'main' is a console script
+    # pointing at helper. The dotted form must resolve to the real
+    # qualname (main), not get rewritten to helper.
+    out = handler.get(id="r", view="callgraph", entry="pkg.m.main", depth=2)
+    assert "pkg.m.main" in out.body
+    # main calls a() and b(); helper does not.
+    assert "pkg.m.a" in out.body
+    assert "pkg.m.b" in out.body
