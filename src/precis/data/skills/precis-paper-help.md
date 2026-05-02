@@ -4,8 +4,8 @@ title: precis — find, read, cite papers
 status: phase-7
 tier: 1
 floor: any
-applies-to: get/search (kind='paper')
-last-updated: 2026-04-28
+applies-to: get/search/tag/link (kind='paper')
+last-updated: 2026-05-02
 ---
 
 # precis-paper-help — find, read, cite papers

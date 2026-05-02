@@ -1,11 +1,11 @@
 ---
 id: precis-patent-power
 title: precis — patent search, the power-user CQL surface
-status: draft
+status: active
 tier: 2
 floor: power-user
 applies-to: search (kind='patent', q=<CQL>)
-last-updated: 2026-04-29
+last-updated: 2026-05-02
 ---
 
 # precis-patent-power — raw CQL for `kind='patent'`

@@ -4,8 +4,8 @@ title: precis — create, prioritise, complete todos
 status: phase-7
 tier: 1
 floor: any
-applies-to: get/search (kind='todo'), put (kind='todo')
-last-updated: 2026-04-28
+applies-to: get/search/put/delete/tag/link (kind='todo')
+last-updated: 2026-05-02
 ---
 
 # precis-todo-help — create, prioritise, complete todos

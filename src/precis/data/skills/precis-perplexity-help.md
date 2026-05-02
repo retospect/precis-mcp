@@ -4,8 +4,8 @@ title: precis — Perplexity (websearch / think / research)
 status: phase-5
 tier: 1
 floor: any
-applies-to: get (kind='websearch' | 'think' | 'research'), put (mode='import')
-last-updated: 2026-04-27
+applies-to: get/search/put/tag/link (kind='websearch' | 'think' | 'research'); put accepts mode='import'
+last-updated: 2026-05-02
 ---
 
 # precis-perplexity-help — Perplexity Sonar tiers

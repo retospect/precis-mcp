@@ -5,7 +5,7 @@ status: phase-10
 tier: 1
 floor: any
 applies-to: all
-last-updated: 2026-05-01
+last-updated: 2026-05-02
 ---
 
 # precis-overview — seven verbs, one address scheme
@@ -77,15 +77,31 @@ on a `(provider, request_hash)` key.
 | `calc`      | Local SymPy: arithmetic, algebra    | `2+3*4`, `integrate(sin(x), x)` | free |
 | `math`      | Wolfram Alpha: facts, world data    | `population of Ireland`      | paid |
 | `youtube`   | Fetch a transcript                  | `dQw4w9WgXcQ`                | free |
-| `web`       | Fetch + extract one URL             | `https://example.com/page`   | free |
+| `web`       | Fetch + extract a URL; also `search` / bookmark-`tag` / cross-`link` over cached pages | `https://example.com/page`   | free |
 | `websearch` | Perplexity Sonar: fast factual      | `latest perovskite results`  | paid |
 | `think`     | Perplexity Sonar Reasoning Pro      | `compare DAC and BECCS`      | paid |
 | `research`  | Perplexity Sonar Deep Research      | `mechanism of NOxRR`         | paid |
 
 Paid tools cache automatically.  Pro subscribers can also
 `put(mode='import')` a free web-UI answer into any of the three
-Perplexity kinds at $0 — see `precis-perplexity-help`. See
-`precis-cache` for TTLs and freshness.
+Perplexity kinds at $0 — see `precis-perplexity-help`. Cache-backed
+kinds all carry body blocks embedded per-paragraph, so `search`,
+`tag`, and `link` work across cached entries (see
+`precis-perplexity-help`, `precis-web-help`). See `precis-cache`
+for TTLs and freshness.
+
+## Kinds — discovery
+
+One special kind for stumbling into content when you don't know
+what to ask for:
+
+| Kind     | What                                          | Needs |
+|----------|-----------------------------------------------|-------|
+| `random` | Pick a random undeleted embedded block; returns its canonical handle with a drill-down hint so you can `get` it next | store |
+
+See `precis-random-help` — no arguments, one pick per call, CSPRNG-
+backed. Useful for warm-up, inspiration, sanity-checking a fresh
+corpus.
 
 ## Examples
 
@@ -112,5 +128,7 @@ get(kind='math', q='speed of light in km/h')  # → 1.079e9 km/h (paid)
 - `precis-paper-help` — paper views, citation export
 - `precis-todo-help` — todo lifecycle, priority, due dates, blocking
 - `precis-memory-help` — memory sub-kinds via `kind:`
+- `precis-web-help` — fetch, bookmark, search web pages
+- `precis-random-help` — random corpus pick for discovery
 - `precis-python-help` — Python code navigation, callgraph + runtrace, AST-gated edits
 - `precis-files-help` — shared address grammar for file-backed kinds (markdown, plaintext, python)
