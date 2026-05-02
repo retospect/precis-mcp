@@ -17,24 +17,29 @@ from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
 from precis.utils.slug import _first_author, mint_slug
 
-# ── CRITICAL: search no longer surfaces a misleading score=0.016X ────
+# ── shape consistency: paper search renders score like every block kind ────
 
 
-def test_search_render_omits_misleading_score(store: Store) -> None:
-    """The MCP critic showed search exposing query-independent
-    ``score=0.0164/0.0161/0.0159`` values that were just ``1/(k+rank)``.
-    The render now uses position only — no numeric should leak."""
+def test_paper_search_renders_score_like_block_kinds(store: Store) -> None:
+    """The MCP critic 2026-05-02 flagged search-render shape drift:
+    web/think/markdown/plaintext/conversation/python all annotate
+    block hits with ``(score=X.XXXX)`` while paper alone omitted it,
+    forcing agents into kind-specific parsing. The earlier rationale
+    (RRF scores are query-independent) applies symmetrically to
+    every block-level kind, so paper now aligns with the other
+    six rather than standing alone — at the cost of one
+    potentially-misleading float per hit, balanced by uniform
+    downstream parsing.
+    """
     from precis.handlers.paper import PaperHandler
 
     handler = PaperHandler(hub=Hub(store=store))
-    # Direct grep against the source — the format string is the
-    # behaviour. Don't need a real corpus to assert it.
     import inspect
 
     src = inspect.getsource(handler.search)
-    assert "score=" not in src, (
-        "score= must not appear in the search render — RRF scores are "
-        "rank-based and query-independent, so showing them mislead agents"
+    assert "score=" in src, (
+        "paper search must annotate hits with (score=X.XXXX) like every "
+        "other block-level handler — drift causes kind-specific parsing"
     )
 
 
@@ -145,25 +150,35 @@ def test_cross_kind_search_default_fans_out_when_store_is_empty(
         assert k in out, f"expected {k!r} listed in the no-matches body"
 
 
-def test_search_defaults_to_most_recent_kind(
+def test_search_defaults_to_cross_kind_fanout(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """When the caller omits ``kind=`` and the store has at least
-    one live ref in a search-supporting kind, the runtime defaults
-    to the most recently touched kind and echoes the choice back
-    in a ``(searched kind=...)`` annotation. This is the user-
-    requested affordance for 7B callers that forget the kwarg.
+    """When the caller omits ``kind=`` and the build has ≥2
+    search-hits-capable kinds, the runtime fans out across every
+    kind via reciprocal-rank fusion — not the most-recently-
+    touched single kind. The MCP critic flagged the old default
+    as a 7B affordance that hid useful answers in the other
+    kinds (gripe:3681 #2, 2026-05-01); the new default is "what
+    do I know about X" semantics. The single-kind annotation is
+    now reserved for the single-kind fallback path
+    (≤1 eligible kind).
     """
-    # Create a memory ref so 'memory' becomes the most recently
-    # touched search-supporting kind.
     runtime_with_store.dispatch("put", {"kind": "memory", "text": "default-kind probe"})
     out = runtime_with_store.dispatch("search", {"q": "default-kind probe"})
-    # The annotation must surface — the agent has to know which
-    # kind we picked so it can override on retry.
-    assert "(searched kind='memory')" in out
-    # It actually ran the search (i.e. the response isn't a
-    # BadInput about missing kind=).
     assert "[error:BadInput]" not in out
+    # Cross-kind fan-out: no single-kind annotation, hits tagged
+    # with their source kind, and the body names the kinds it
+    # searched (matching the empty-cross-kind regression above).
+    assert "(searched kind=" not in out
+    search_hits_kinds = [
+        k
+        for k in sorted(runtime_with_store.hub.kinds)
+        if runtime_with_store.hub.handler_for(k).spec.supports_search_hits
+    ]
+    assert len(search_hits_kinds) >= 2, (
+        "this test only meaningfully exercises the new default when ≥2 "
+        "kinds are search-hits-capable in the test fixture"
+    )
 
 
 def test_comma_list_kind_dispatches_cross_kind_merge(
@@ -192,6 +207,26 @@ def test_wildcard_kind_dispatches_cross_kind_merge(
     """``kind='*'`` is the canonical "search every kind" form."""
     out = runtime_with_store.dispatch("search", {"kind": "*", "q": "qabsentword"})
     assert "[error:BadInput]" not in out
+
+
+@pytest.mark.parametrize("alias", ["all", "All", "ALL", "any", "*", "", "  all  "])
+def test_kind_all_aliases_dispatch_cross_kind_merge(
+    runtime_with_store: PrecisRuntime, alias: str
+) -> None:
+    """English shortcuts (``'all'`` / ``'any'``) and the empty
+    string MUST behave identically to the canonical ``'*'`` —
+    they expand to every search-hits-capable kind. The MCP critic
+    flagged the missing alias as MAJOR-C 2026-05-02: a 7B caller
+    hitting ``kind='all'`` previously got an unhelpful
+    ``unknown kind: all`` error pointing at the kinds list.
+    """
+    out = runtime_with_store.dispatch("search", {"kind": alias, "q": "qabsentword"})
+    assert "[error:BadInput]" not in out, (
+        f"alias {alias!r} must dispatch as cross-kind, not error"
+    )
+    assert "[error:NotFound]" not in out, (
+        f"alias {alias!r} must not be treated as an unknown kind"
+    )
 
 
 def test_cross_kind_unknown_kind_lists_eligible_options(
@@ -385,9 +420,9 @@ def test_precis_overview_skill_no_dead_kinds() -> None:
     # policy). If one of these lands, wire the handler AND re-add
     # the kind mention in the same commit.
     for reserved in ("`book`", "`docx`", "`tex`", "`rmk`"):
-        assert (
-            reserved not in text
-        ), f"precis-overview reintroduces unwired kind {reserved!r}"
+        assert reserved not in text, (
+            f"precis-overview reintroduces unwired kind {reserved!r}"
+        )
 
 
 def test_precis_overview_skill_has_no_wang2020state_example() -> None:
@@ -504,9 +539,7 @@ class TestSoftDeleteGoneEnvelope:
         ref_id = int(m.group(1))
         runtime_with_store.dispatch("delete", {"kind": "memory", "id": ref_id})
 
-        out_get = runtime_with_store.dispatch(
-            "get", {"kind": "memory", "id": ref_id}
-        )
+        out_get = runtime_with_store.dispatch("get", {"kind": "memory", "id": ref_id})
         assert "[error:Gone]" in out_get
         assert "[error:NotFound]" not in out_get
         assert "soft-deleted" in out_get
@@ -950,17 +983,17 @@ def test_search_error_path_survives_fastmcp_convert_result(
 def test_search_default_kind_annotates_error_path(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """When ``search()`` is called without ``kind=`` and the chosen
-    default kind's handler raises, the rendered error must still
-    name the kind we tried.  Without this, a caller can't tell
-    which kind to retry against, whether the touch-default is
-    sticky, or whether the default has rolled to a kind that will
-    never succeed in this deployment.  (MCP critic MAJOR — search
-    with no kind= does not preface the chosen kind on failure.)
+    """When ``search(kind='memory')`` is called and the handler
+    raises, the rendered error must name the kind we tried — the
+    annotation is the agent's only signal about which kind to
+    retry against. The 2026-05-02 default flip moved kind-less
+    ``search()`` to cross-kind fan-out (gripe:3681 #2), so this
+    test now passes ``kind='memory'`` explicitly and verifies
+    the annotation still surfaces on the explicit-single-kind
+    error path. The cross-kind variant is covered by
+    :func:`test_cross_kind_search_default_fans_out_when_store_is_empty`
+    (no annotation needed — every hit is already source-tagged).
     """
-    # Make 'memory' the most recently touched search-supporting
-    # kind so the runtime defaults to it.
-    runtime_with_store.dispatch("put", {"kind": "memory", "text": "default-kind probe"})
     # Force a failure inside the memory handler's search() by
     # monkeypatching the bound method to raise.  We exercise the
     # PrecisError branch first…
@@ -972,29 +1005,29 @@ def test_search_default_kind_annotates_error_path(
 
     try:
         handler.search = _boom  # type: ignore[method-assign]
-        out = runtime_with_store.dispatch("search", {"q": "anything"})
+        out = runtime_with_store.dispatch("search", {"kind": "memory", "q": "anything"})
     finally:
         handler.search = original  # type: ignore[method-assign]
 
     assert "[error:BadInput]" in out, f"expected error envelope, got: {out!r}"
-    assert "(searched kind='memory')" in out, (
-        "the chosen-kind annotation must surface on error paths so the "
-        "agent knows which kind we tried"
+    assert "synthetic search failure" in out, (
+        "error envelope must surface the handler's message"
     )
 
     # …and the non-Precis branch (gets wrapped as Internal but the
-    # annotation still has to land).
+    # rendered envelope must still preserve the kind context).
     def _explode(**_kw):  # type: ignore[no-untyped-def]
         raise RuntimeError("synthetic non-precis failure")
 
     try:
         handler.search = _explode  # type: ignore[method-assign]
-        out2 = runtime_with_store.dispatch("search", {"q": "anything"})
+        out2 = runtime_with_store.dispatch(
+            "search", {"kind": "memory", "q": "anything"}
+        )
     finally:
         handler.search = original  # type: ignore[method-assign]
 
     assert "[error:Internal]" in out2
-    assert "(searched kind='memory')" in out2
 
 
 # ── MINOR (Apr 2026): calc recovery hint uses q=, not id= ─────────────

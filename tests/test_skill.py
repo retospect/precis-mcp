@@ -84,6 +84,25 @@ def test_search_no_match(skill: SkillHandler) -> None:
     assert "no skills mention" in out.body
 
 
+def test_search_hyphen_space_equivalence(skill: SkillHandler) -> None:
+    """A 7B caller's natural phrasing ``spaced repetition`` must
+    find ``spaced-repetition`` in the corpus, and vice versa. The
+    MCP critic flagged the punctuation-specific false negative as
+    MAJOR-C 2026-05-02; the substring search now folds hyphen and
+    whitespace runs to a single space on both needle and haystack.
+    """
+    # ``precis-fc-help`` titles itself "spaced-repetition flashcards"
+    # — the hyphenated form is what's actually in the corpus.
+    out_natural = skill.search(q="spaced repetition")
+    out_hyphen = skill.search(q="spaced-repetition")
+    assert "precis-fc-help" in out_natural.body, (
+        "natural-language query must find the hyphenated corpus term"
+    )
+    assert "precis-fc-help" in out_hyphen.body, (
+        "hyphenated query must find the hyphenated corpus term"
+    )
+
+
 def test_search_requires_query(skill: SkillHandler) -> None:
     with pytest.raises(BadInput):
         skill.search()
@@ -174,9 +193,7 @@ def test_precis_help_lists_active_kinds(skill: SkillHandler) -> None:
 
     handlers = [
         _FakeHandler(_FakeSpec("calc", description="Math expressions")),
-        _FakeHandler(
-            _FakeSpec("todo", description="Tasks with status tracking")
-        ),
+        _FakeHandler(_FakeSpec("todo", description="Tasks with status tracking")),
         _FakeHandler(_FakeSpec("paper", description="Research papers")),
     ]
     # Mirror the live spec for each kind via the seven-verb table.
@@ -396,4 +413,38 @@ def test_skills_use_seven_verb_surface() -> None:
     assert not failures, (
         "seven-verb regression: legacy four-verb patterns found in skills:\n  "
         + "\n  ".join(failures)
+    )
+
+
+# ── precis-overview drift detection ───────────────────────────────────
+
+
+def test_precis_overview_kind_table_covers_live_registry(hub: Hub) -> None:
+    """Every live ``hub.kinds`` entry must appear in ``precis-overview``.
+
+    ``precis-overview`` is the tier-1 discovery skill — if a kind is
+    active in the registry but not documented here, a caller reading
+    the canonical discovery doc learns a wrong set of kinds and
+    concludes a working feature doesn't exist. This happened with the
+    ``patent`` kind (MCP critic MAJOR-C, 2026-05-02).
+
+    The test asserts the *markdown file* on disk mentions every live
+    kind by its inline-code slug (``\u0060kind\u0060``).  Hand-maintained
+    table is fine — what matters is drift detection.
+
+    Takes the ``hub`` fixture (Postgres-backed, the same one
+    handler tests use) so every store-gated kind shows up — calling
+    bare ``boot()`` would register only ``calc`` and miss the whole
+    refs surface.
+    """
+    from precis.handlers.skill import _load_skill
+
+    text = _load_skill("precis-overview")
+    assert text is not None, "precis-overview.md missing from package data"
+    missing = [k for k in sorted(hub.kinds) if f"`{k}`" not in text]
+    assert not missing, (
+        "precis-overview drifts from live registry — "
+        f"missing kinds: {missing}. "
+        "Add a row to the refs/tools/discovery table for each, "
+        "or mark explicitly as env-gated in the Needs column."
     )

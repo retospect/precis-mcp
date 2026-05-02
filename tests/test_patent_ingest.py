@@ -252,6 +252,70 @@ class TestIngestErrors:
         assert (d / "biblio.xml").exists()
         assert not (d / "description.xml").exists()
 
+        # ``has_description`` flag reflects the 404 so the sweep job
+        # can pick this ref up for retry.
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        assert ref.meta.get("has_description") is False
+        assert ref.meta.get("has_claims") is True
+
+        # Awaiting-fulltext tag + retry schedule landed in meta.
+        tag_values = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
+        assert "awaiting-fulltext" in tag_values
+        assert isinstance(ref.meta.get("fulltext_retry_at"), str)
+        assert ref.meta.get("fulltext_retry_count") == 0
+
+    def test_missing_both_fulltext_endpoints(
+        self,
+        store: Store,
+        biblio_xml: bytes,
+        raw_root: Path,
+    ) -> None:
+        # Recent US application: biblio OK, description + claims
+        # both 404. The patent still ingests (searchable by biblio
+        # + abstract), both flags are False, and the sweep job
+        # will pick it up via the awaiting-fulltext tag.
+        ops = FakeOpsClient(biblio={"ep1234567b1": biblio_xml})
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        result = ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+        assert result.block_count == 0
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        assert ref.meta.get("has_description") is False
+        assert ref.meta.get("has_claims") is False
+        tag_values = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
+        assert "awaiting-fulltext" in tag_values
+        assert isinstance(ref.meta.get("fulltext_retry_at"), str)
+
+    def test_full_ingest_has_no_retry_bookkeeping(
+        self,
+        store: Store,
+        fake_ops: FakeOpsClient,
+        raw_root: Path,
+    ) -> None:
+        # Happy-path ingest (all three endpoints served) — no
+        # awaiting-fulltext tag, no retry timestamp in meta.
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=fake_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        tag_values = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
+        assert "awaiting-fulltext" not in tag_values
+        assert "fulltext_retry_at" not in ref.meta
+        assert "fulltext_retry_count" not in ref.meta
+
 
 # ---------------------------------------------------------------------------
 # DocDbId input

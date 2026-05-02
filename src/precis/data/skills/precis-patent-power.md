@@ -1,7 +1,7 @@
 ---
 id: precis-patent-power
 title: precis — patent search, the power-user CQL surface
-status: active
+status: shipped
 tier: 2
 floor: power-user
 applies-to: search (kind='patent', q=<CQL>)

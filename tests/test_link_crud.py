@@ -110,6 +110,34 @@ class TestParseLinkTarget:
         with pytest.raises(BadInput, match="unknown kind 'banana'"):
             parse_link_target("banana:something", store=store)
 
+    def test_unknown_kind_options_excludes_handler_less_kinds(
+        self, store: Store
+    ) -> None:
+        """The MCP critic 2026-05-02 flagged that the ``options:``
+        list on the unknown-kind error path enumerated every row in
+        the ``kinds`` schema table, including file kinds (markdown,
+        plaintext, tex, docx, book, rmk) whose env-gated handler
+        wasn't registered. A 7B caller picking ``markdown:foo`` from
+        the options got a contradictory ``unknown kind: markdown``
+        error from ``get(kind='markdown')``. The fix lists only
+        kinds that have at least one live ref — the realistic link
+        targets in this build — with the schema-table fallback only
+        when no refs exist anywhere.
+        """
+        # Seed a paper so it shows up; nothing in the file kinds
+        # schema rows.
+        _seed_paper(store)
+        with pytest.raises(BadInput) as exc:
+            parse_link_target("does-not-exist:42", store=store)
+        opts = exc.value.options or []
+        # ``paper`` should appear (we seeded a ref).
+        assert "paper" in opts
+        # ``markdown`` is in the kinds table but has no refs in this
+        # build — must NOT appear.
+        assert "markdown" not in opts, (
+            "options must filter to kinds with at least one live ref"
+        )
+
     def test_numeric_kind_rejects_slug_id(self, store: Store) -> None:
         with pytest.raises(BadInput, match="numeric — identifier must be an integer"):
             parse_link_target("memory:not-an-int", store=store)
@@ -318,7 +346,9 @@ class TestMemoryHandlerLink:
         memory_handler.link(id=new_id, target="paper:wang2020state", rel="contradicts")
         assert len(store.links_for(new_id, direction="out")) == 2
 
-        memory_handler.link(id=new_id, target="paper:wang2020state", mode="remove", rel="cites")
+        memory_handler.link(
+            id=new_id, target="paper:wang2020state", mode="remove", rel="cites"
+        )
         remaining = store.links_for(new_id, direction="out")
         assert len(remaining) == 1
         assert remaining[0].relation == "contradicts"

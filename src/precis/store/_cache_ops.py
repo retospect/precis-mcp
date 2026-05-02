@@ -85,6 +85,42 @@ class CacheMixin:
         cache = _row_to_cache_entry(row[10:18])
         return (ref, cache)
 
+    def get_cache_entry_by_slug(
+        self,
+        *,
+        kind: str,
+        slug: str,
+    ) -> tuple[Ref, CacheEntry] | None:
+        """Look up a cached ref + freshness row by ``(kind, slug)``.
+
+        Symmetrical to :meth:`get_cache_entry` but addressed by the
+        agent-facing slug rather than the internal request hash. Used
+        by cache-backed handlers' ``get`` to honour the slugs that
+        ``/recent`` listings advertise — without this lookup,
+        ``get(kind='web', id='example-com')`` falls through to the
+        URL canonicaliser and rejects a slug it just printed (MCP
+        critic MAJOR-C, 2026-05-02).
+        """
+        sql = """
+            SELECT r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider,
+                   r.meta, r.created_at, r.updated_at, r.deleted_at,
+                   c.ref_id, c.provider, c.request_hash, c.model,
+                   c.fetched_at, c.fresh_until, c.cost_usd, c.meta
+            FROM cache_state c
+            JOIN refs r ON r.id = c.ref_id
+            WHERE r.kind = %s
+              AND r.slug = %s
+              AND r.deleted_at IS NULL
+            LIMIT 1
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (kind, slug)).fetchone()
+        if row is None:
+            return None
+        ref = _row_to_ref(row[:10])
+        cache = _row_to_cache_entry(row[10:18])
+        return (ref, cache)
+
     def put_cache_entry(
         self,
         *,

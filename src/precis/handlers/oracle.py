@@ -110,9 +110,7 @@ class OracleHandler(Handler):
 
         # Empty oracle — no blocks, body lives in the title only.
         if not blocks:
-            return Response(
-                body=f"# oracle {slug}\n_{ref.title}_\n\n(empty tradition)"
-            )
+            return Response(body=f"# oracle {slug}\n_{ref.title}_\n\n(empty tradition)")
 
         # Explicit view takes precedence over the selector.
         if effective_view is not None:
@@ -280,6 +278,20 @@ class OracleHandler(Handler):
                     "learn about the kind list",
                 ),
             ],
+            populated_next=[
+                (
+                    "get(kind='oracle', id='<slug>')",
+                    "consult one tradition (random pick)",
+                ),
+                (
+                    "get(kind='oracle', id='<slug>/index')",
+                    "see all entries in a tradition",
+                ),
+                (
+                    "search(kind='oracle', q='your query')",
+                    "search across all traditions",
+                ),
+            ],
         )
 
     # ── per-entry rendering ─────────────────────────────────────────
@@ -296,11 +308,7 @@ class OracleHandler(Handler):
         block = blocks[idx]
         slug = ref.slug or "???"
         title = _entry_title(block) or f"entry {block.pos}"
-        body = (
-            f"# oracle {slug}~{block.pos}\n"
-            f"_{ref.title} — {title}_\n\n"
-            f"{block.text}"
-        )
+        body = f"# oracle {slug}~{block.pos}\n_{ref.title} — {title}_\n\n{block.text}"
         body += render_next_section(
             [
                 (
@@ -320,24 +328,28 @@ class OracleHandler(Handler):
         return Response(body=body)
 
     def _render_entry(self, ref: Ref, blocks: list[Block], pos: int) -> Response:
-        """Render the entry at ``pos`` (deterministic)."""
+        """Render the entry at ``pos`` (deterministic).
+
+        Block positions are **1-indexed** for the ``oracle`` kind
+        (see ``ingest_oracles.py``) so I-Ching ``iching~49`` maps
+        to Hexagram 49 verbatim. The valid-range hint is derived
+        from the actual min/max ``pos`` rather than hard-coded so
+        any future tradition with a sparse or offset numbering
+        scheme keeps an honest error message.
+        """
         block = next((b for b in blocks if b.pos == pos), None)
         slug = ref.slug or "???"
         if block is None:
+            lo = min(b.pos for b in blocks)
+            hi = max(b.pos for b in blocks)
+            range_hint = f"{lo}..{hi}" if lo != hi else f"{lo}"
             raise NotFound(
                 f"oracle {slug!r} has no entry at position {pos} "
-                f"(valid range: 0..{len(blocks) - 1})",
-                next=(
-                    f"get(kind='oracle', id='{slug}/index') "
-                    "to list entry positions"
-                ),
+                f"(valid range: {range_hint})",
+                next=(f"get(kind='oracle', id='{slug}/index') to list entry positions"),
             )
         title = _entry_title(block) or f"entry {pos}"
-        body = (
-            f"# oracle {slug}~{pos}\n"
-            f"_{ref.title} — {title}_\n\n"
-            f"{block.text}"
-        )
+        body = f"# oracle {slug}~{pos}\n_{ref.title} — {title}_\n\n{block.text}"
         # Prev/next affordances are cheap and obvious.
         nav: list[tuple[str, str]] = []
         if pos > 0 and any(b.pos == pos - 1 for b in blocks):
@@ -400,7 +412,7 @@ class OracleHandler(Handler):
                 ),
                 (
                     f"get(kind='oracle', id='{slug}~N')",
-                    "fetch entry N (0-indexed)",
+                    "fetch entry N (1-indexed; matches inherent numbering for I-Ching)",
                 ),
             ]
         )

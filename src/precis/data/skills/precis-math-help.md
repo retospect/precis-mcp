@@ -1,7 +1,7 @@
 ---
 id: precis-math-help
 title: precis — math via Wolfram Alpha
-status: phase-4
+status: shipped
 tier: 1
 floor: any
 applies-to: get (kind='math')

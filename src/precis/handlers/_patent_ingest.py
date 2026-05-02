@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from precis.embedder import Embedder
@@ -45,6 +46,47 @@ from precis.store import Store, Tag
 from precis.store.types import BlockInsert
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Deferred full-text retry schedule
+# ---------------------------------------------------------------------------
+
+#: Open tag applied when OPS 404s description or claims at ingest.
+#: The sweep job (``precis.jobs.patent_fulltext_sweep``) polls for this
+#: tag and retries the missing endpoints on the schedule below.
+AWAITING_FULLTEXT_TAG: str = "awaiting-fulltext"
+
+#: Open tag applied when the sweep job has exhausted its retry budget
+#: (publication older than :data:`FULLTEXT_GIVEUP_DAYS`). EPO rarely
+#: back-fills full text after six months, so we stop polling to
+#: preserve OPS quota for live work.
+FULLTEXT_UNAVAILABLE_TAG: str = "fulltext-unavailable"
+
+#: Base delay in days before the first retry after an ingest 404.
+FULLTEXT_RETRY_BASE_DAYS: int = 7
+
+#: Cap on the exponential-backoff window, in days. The sequence is
+#: 7d → 14d → 28d → 56d and then stays at 56d.
+FULLTEXT_RETRY_MAX_DAYS: int = 56
+
+#: If the patent is this many days past its publication date and OPS
+#: is *still* 404-ing, swap the awaiting tag for
+#: :data:`FULLTEXT_UNAVAILABLE_TAG` and stop scheduling retries.
+FULLTEXT_GIVEUP_DAYS: int = 183  # ~6 months
+
+
+def next_fulltext_retry_at(*, now: datetime, retry_count: int) -> datetime:
+    """Return the next retry timestamp given the current attempt count.
+
+    ``retry_count`` is 0 on first scheduling (i.e. right after the
+    ingest itself returned 404). The delay doubles each failed retry
+    up to :data:`FULLTEXT_RETRY_MAX_DAYS`.
+    """
+    days = FULLTEXT_RETRY_BASE_DAYS * (2**retry_count)
+    if days > FULLTEXT_RETRY_MAX_DAYS:
+        days = FULLTEXT_RETRY_MAX_DAYS
+    return now + timedelta(days=days)
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +248,28 @@ def ingest_patent(
     # ``fair_use_bytes`` lets the watch runner sum a rolling 7-day
     # window via SQL without needing a side table — see
     # ``precis.jobs.patent_watch.compute_rolling_fair_use_bytes``.
-    meta = _build_meta(parsed, parsed_id, fair_use_bytes=bytes_fetched)
+    # ``has_description`` / ``has_claims`` record whether OPS served
+    # the full-text endpoints; some recent US / CN applications 404
+    # on those until indexing completes (weeks to months post-
+    # publication). When either is missing we schedule an automatic
+    # retry via the awaiting-fulltext tag + sweep job (see
+    # ``precis.jobs.patent_fulltext_sweep``).
+    fulltext_missing = not description_xml or not claims_xml
+    fulltext_retry_at: str | None = None
+    if fulltext_missing:
+        fulltext_retry_at = next_fulltext_retry_at(
+            now=datetime.now(UTC),
+            retry_count=0,
+        ).isoformat()
+    meta = _build_meta(
+        parsed,
+        parsed_id,
+        fair_use_bytes=bytes_fetched,
+        has_description=bool(description_xml),
+        has_claims=bool(claims_xml),
+        fulltext_retry_at=fulltext_retry_at,
+        fulltext_retry_count=0 if fulltext_missing else None,
+    )
 
     with store.tx() as conn:
         cid = store.ensure_corpus(corpus_slug)
@@ -236,6 +299,26 @@ def ingest_patent(
     # store/types.py::Tag.open() for the storage rule.
     _apply_auto_tags(store, ref.id, parsed, parsed_id)
 
+    # Queue an automatic full-text retry if either endpoint 404'd.
+    # The sweep job (``precis.jobs.patent_fulltext_sweep``) picks
+    # these up on its schedule, fetches the missing endpoints, and
+    # replaces the placeholder blocks + tag on success.
+    if fulltext_missing:
+        try:
+            store.add_tag(
+                ref.id,
+                Tag.open(AWAITING_FULLTEXT_TAG),
+                set_by="system",
+            )
+        except Exception:
+            # Best-effort — a failed tag write shouldn't roll back an
+            # otherwise-successful ingest. The sweep job falls back to
+            # a meta-only scan if the tag table is empty.
+            log.warning(
+                "patent ingest: failed to apply awaiting-fulltext tag to %s",
+                slug,
+            )
+
     return PatentIngestResult(
         ref_id=ref.id,
         slug=slug,
@@ -256,6 +339,10 @@ def _build_meta(
     docdb: DocDbId,
     *,
     fair_use_bytes: int = 0,
+    has_description: bool = True,
+    has_claims: bool = True,
+    fulltext_retry_at: str | None = None,
+    fulltext_retry_count: int | None = None,
 ) -> dict:
     """Compose the ``refs.meta`` payload.
 
@@ -267,8 +354,20 @@ def _build_meta(
         fair_use_bytes: total raw OPS body bytes consumed to ingest
             this patent. Persisted so the watch runner can compute a
             rolling 7-day fair-use total via a single SQL aggregate.
+        has_description: True when OPS served the description
+            endpoint. Renderers use this to explain an otherwise-
+            opaque "0 blocks" on recent applications.
+        has_claims: True when OPS served the claims endpoint.
+        fulltext_retry_at: ISO-8601 timestamp at which the sweep job
+            should next retry the missing full-text endpoints.
+            ``None`` when full text is already present (no retry
+            needed).
+        fulltext_retry_count: Number of retries already attempted for
+            this patent's full text. Drives the exponential backoff
+            in :func:`next_fulltext_retry_at`. ``None`` when full
+            text is already present.
     """
-    return {
+    meta: dict = {
         "country": docdb.country,
         "kind_code": docdb.kind_full,
         "doc_number": docdb.number,
@@ -281,7 +380,16 @@ def _build_meta(
         "ipc_classes": parsed.ipc_classes,
         "abstract": parsed.abstract,
         "fair_use_bytes": fair_use_bytes,
+        "has_description": has_description,
+        "has_claims": has_claims,
     }
+    # Retry bookkeeping only lands in meta when relevant — keeps the
+    # row compact for fully-ingested patents (the common case).
+    if fulltext_retry_at is not None:
+        meta["fulltext_retry_at"] = fulltext_retry_at
+    if fulltext_retry_count is not None:
+        meta["fulltext_retry_count"] = fulltext_retry_count
+    return meta
 
 
 def _apply_auto_tags(
@@ -324,4 +432,13 @@ def _apply_auto_tags(
             log.warning("patent ingest: skipped malformed tag %r", tag_str)
 
 
-__all__ = ["PatentIngestResult", "ingest_patent"]
+__all__ = [
+    "AWAITING_FULLTEXT_TAG",
+    "FULLTEXT_GIVEUP_DAYS",
+    "FULLTEXT_RETRY_BASE_DAYS",
+    "FULLTEXT_RETRY_MAX_DAYS",
+    "FULLTEXT_UNAVAILABLE_TAG",
+    "PatentIngestResult",
+    "ingest_patent",
+    "next_fulltext_retry_at",
+]

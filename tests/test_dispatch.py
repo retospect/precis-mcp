@@ -13,6 +13,7 @@ import logging
 import pytest
 
 from precis.dispatch import (
+    PLUGIN_GROUP,
     DuplicateRegistration,
     Hub,
     InitError,
@@ -312,3 +313,233 @@ def test_duplicate_handler_registration_raises() -> None:
     second = CalcHandler(hub=r)
     with pytest.raises(DuplicateRegistration, match="duplicate handler"):
         second._register_with(r)
+
+
+# ---------------------------------------------------------------------------
+# Third-party plugin discovery via entry-points
+# ---------------------------------------------------------------------------
+
+
+class _FakeEP:
+    """Stand-in for ``importlib.metadata.EntryPoint`` in tests.
+
+    Exposes only the two attributes ``_load_plugins`` actually reads:
+    ``name`` (for log messages) and ``load()`` (returns the class).
+    """
+
+    def __init__(self, name: str, loader: object) -> None:
+        self.name = name
+        self._loader = loader
+
+    def load(self) -> object:
+        if callable(self._loader) and not isinstance(self._loader, type):
+            # Allow passing a zero-arg factory that raises to simulate
+            # import-time failure.
+            return self._loader()
+        return self._loader
+
+
+def _patch_entry_points(monkeypatch: pytest.MonkeyPatch, eps: list[_FakeEP]) -> None:
+    """Stub ``precis.dispatch._entry_points`` to return ``eps`` for our group.
+
+    Other groups return an empty list so we don't pollute unrelated
+    importlib.metadata consumers.
+    """
+    from precis import dispatch as _d
+
+    def _fake(*, group: str) -> list[_FakeEP]:
+        return list(eps) if group == PLUGIN_GROUP else []
+
+    monkeypatch.setattr(_d, "_entry_points", _fake)
+
+
+class _PluginGood(Handler):
+    """A plugin handler that works. Registers a fresh kind."""
+
+    spec = KindSpec(
+        kind="plugin-demo",
+        title="Plugin demo",
+        description="Test plugin loaded via entry-points.",
+        supports_get=True,
+    )
+
+    def __init__(self, *, hub: Hub) -> None:
+        _ = hub
+
+    def get(self, **kw: object) -> Response:  # type: ignore[override]
+        return Response(body="plugin ok")
+
+
+class _PluginNeedsDep(Handler):
+    """A plugin that raises ``InitError`` (missing dep path)."""
+
+    spec = KindSpec(
+        kind="plugin-needsdep",
+        title="Plugin needing a dep",
+        description="Simulates missing optional dependency.",
+        supports_get=True,
+    )
+
+    def __init__(self, *, hub: Hub) -> None:
+        _ = hub
+        raise InitError("plugin-needsdep requires 'fictional_lib'")
+
+
+class _PluginBuggy(Handler):
+    """A plugin whose ``__init__`` raises a non-InitError exception.
+
+    For *built-in* handlers this would crash boot (programmer bug).
+    For plugins we log and skip — a third-party bug must not brick
+    the MCP server.
+    """
+
+    spec = KindSpec(
+        kind="plugin-buggy",
+        title="Buggy plugin",
+        description="Simulates a third-party programmer bug.",
+        supports_get=True,
+    )
+
+    def __init__(self, *, hub: Hub) -> None:
+        _ = hub
+        raise RuntimeError("third-party programmer bug")
+
+
+class _PluginShadowsCalc(Handler):
+    """A plugin that tries to register the ``calc`` kind already
+    owned by the built-in ``CalcHandler``."""
+
+    spec = KindSpec(
+        kind="calc",
+        title="Impostor calc",
+        description="Tries to shadow the built-in calc kind.",
+        supports_get=True,
+    )
+
+    def __init__(self, *, hub: Hub) -> None:
+        _ = hub
+
+    def get(self, **kw: object) -> Response:  # type: ignore[override]
+        return Response(body="impostor")
+
+
+def test_plugin_entry_point_registers_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plugin advertised via the ``precis.handlers`` entry-point
+    group shows up in the hub alongside built-ins."""
+    _patch_entry_points(monkeypatch, [_FakeEP("plugin-demo", _PluginGood)])
+
+    hub = boot(store=None)
+    assert "plugin-demo" in hub.kinds
+    assert hub.verbs_for("plugin-demo") == {"get"}
+    ability = hub.get("plugin-demo", "get")
+    assert ability is not None
+    assert ability().body == "plugin ok"
+    # Built-ins still present — plugins augment, they don't replace.
+    assert "calc" in hub.kinds
+
+
+def test_plugin_init_error_is_logged_and_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A plugin that raises ``InitError`` during ``__init__`` is
+    logged at WARNING level; the hub otherwise boots cleanly."""
+    _patch_entry_points(monkeypatch, [_FakeEP("needs-dep", _PluginNeedsDep)])
+
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        hub = boot(store=None)
+
+    assert "plugin-needsdep" not in hub.kinds
+    assert any(
+        "precis plugin 'needs-dep'" in rec.message and "fictional_lib" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_plugin_programmer_bug_does_not_brick_boot(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Third-party plugins get wider failure tolerance than
+    built-ins: a stray ``RuntimeError`` in plugin ``__init__`` is
+    caught and logged (not propagated), so one bad plugin can't
+    brick the whole MCP server.
+
+    Contrast with ``_try`` for in-tree handlers, which propagates
+    non-InitError exceptions so programmer bugs get noticed.
+    """
+    _patch_entry_points(monkeypatch, [_FakeEP("buggy", _PluginBuggy)])
+
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        hub = boot(store=None)
+
+    # Server still booted — built-ins are present.
+    assert "calc" in hub.kinds
+    assert "plugin-buggy" not in hub.kinds
+    # Log line names the plugin, the class, and the exception type.
+    assert any(
+        "precis plugin 'buggy'" in rec.message
+        and "RuntimeError" in rec.message
+        and "third-party programmer bug" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_plugin_cannot_shadow_builtin_kind(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Built-in handlers boot first, so a plugin claiming an
+    already-registered kind hits ``DuplicateRegistration`` inside
+    ``_register_with`` and is logged. The built-in keeps the kind.
+    """
+    _patch_entry_points(monkeypatch, [_FakeEP("impostor", _PluginShadowsCalc)])
+
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        hub = boot(store=None)
+
+    from precis.handlers.calc import CalcHandler
+
+    # The built-in calc handler is still in place — not the impostor.
+    assert isinstance(hub.handler_for("calc"), CalcHandler)
+    assert any(
+        "precis plugin 'impostor'" in rec.message and "duplicate handler" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_plugin_load_import_error_is_logged(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An entry-point whose target module can't be imported (e.g.
+    missing optional dep at module scope) is logged at WARNING and
+    does not crash boot."""
+
+    def _raises_at_load() -> object:
+        raise ImportError("simulated: module not found")
+
+    _patch_entry_points(monkeypatch, [_FakeEP("broken-import", _raises_at_load)])
+
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        hub = boot(store=None)
+
+    assert "calc" in hub.kinds  # built-ins intact
+    assert any(
+        "precis plugin 'broken-import' failed to load" in rec.message
+        and "ImportError" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_plugin_empty_entry_points_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no plugins advertised, boot is indistinguishable from
+    the pre-plugin behaviour (only built-ins present)."""
+    _patch_entry_points(monkeypatch, [])
+
+    hub = boot(store=None)
+    assert hub.kinds == {"calc"}

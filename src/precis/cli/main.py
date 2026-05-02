@@ -110,6 +110,7 @@ _JOB_DISPATCH: dict[str, tuple[object, str]] = {
     "watch-patents": (patent, "run_watch"),
     "list-patent-watches": (patent, "run_list"),
     "run-patent-watches": (patent, "run_runner"),
+    "sweep-patent-fulltext": (patent, "run_fulltext_sweep_cli"),
 }
 
 

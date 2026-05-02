@@ -1,10 +1,10 @@
 ---
 id: precis-memory-help
 title: precis — capture notes, decisions, ideas, questions
-status: active
+status: shipped
 tier: 1
 floor: any
-applies-to: get/search/put/delete/tag/link (kind='memory')
+applies-to: get/search (kind='memory'), put (kind='memory')
 last-updated: 2026-05-02
 ---
 

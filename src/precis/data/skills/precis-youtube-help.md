@@ -1,7 +1,7 @@
 ---
 id: precis-youtube-help
 title: precis — YouTube transcripts
-status: phase-4
+status: shipped
 tier: 1
 floor: any
 applies-to: get (kind='youtube')
@@ -25,11 +25,15 @@ to the same cache row keyed on the 11-character video ID.
 
 ## Languages
 
-Default is English (`en`). To request a specific language:
+Default is English (`en`). To request a specific language, forward
+the handler-side `languages=` kwarg via the MCP `get` tool's `args=`
+extras dict (the agent-facing tool signature is
+`kind/id/view/q/args`; per-handler params ride inside `args`):
 
 ```python
-get(kind='youtube', id='dQw4w9WgXcQ', languages='de')
-get(kind='youtube', id='dQw4w9WgXcQ', languages='en,es')   # fallback list
+get(kind='youtube', id='dQw4w9WgXcQ', args={'languages': 'de'})
+get(kind='youtube', id='dQw4w9WgXcQ', args={'languages': 'en,es'})
+                                                       # ↑ fallback list
 ```
 
 To see what's available before committing to a fetch:

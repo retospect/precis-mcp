@@ -291,32 +291,41 @@ class TestSearchNoiseFloor:
 
 class TestCrossKindErrorOptionsFiltered:
     def test_unknown_kind_on_search_lists_only_search_kinds(
-        self, runtime: PrecisRuntime
+        self, runtime_with_store: PrecisRuntime
     ) -> None:
-        """The MCP critic flagged that ``search(kind='all', q='…')``
-        returned options including kinds (calc, math, web, …) that
-        don't actually support search. The retry then double-failed."""
-        rendered = runtime.dispatch("search", {"kind": "all", "q": "x"})
-        assert "[error:NotFound]" in rendered
-        # The options line must exist and must NOT mention search-
-        # incapable kinds. Parse the comma-separated list rather
-        # than substring-matching: ``web`` is search-incapable but
-        # ``websearch`` (perplexity tier) gained ``supports_search``
-        # in the fetch-path-embedding consolidation, so the loose
-        # ``"web" in line`` check that previously sufficed now
-        # falses-positive on ``websearch``.
+        """The MCP critic flagged that an unknown kind on a
+        cross-kind ``search`` returned options including kinds
+        (calc, math, …) that don't support search. The retry
+        then double-failed.
+
+        Note: ``web`` and the Perplexity tiers (``websearch`` /
+        ``think`` / ``research``) gained ``supports_search`` in the
+        fetch-path-embedding consolidation — their fetched pages are
+        block-parsed + embedded so search works over cached bodies.
+        Only the genuinely stateless single-shot tools (``calc``,
+        ``math``, ``youtube``) stay search-incapable.
+
+        ``kind='all'`` itself is now a wildcard alias (MCP critic
+        2026-05-02), so the test exercises the same option-filter
+        property via a comma-list whose unknown token forces the
+        BadInput path.
+        """
+        rendered = runtime_with_store.dispatch(
+            "search", {"kind": "paper,not-a-real-kind", "q": "x"}
+        )
+        assert "[error:BadInput]" in rendered
+        # Parse the options: line as a comma-separated kind list so
+        # substring-matching doesn't false-positive on siblings
+        # (``web`` vs ``websearch``).
         opt_line = next(
             (line for line in rendered.splitlines() if "options:" in line), ""
         )
         assert opt_line, "expected an options: line in the error reply"
-        opts = {
-            tok.strip()
-            for tok in opt_line.split(":", 1)[1].split(",")
-        }
-        # Search-incapable kinds must not appear.
+        opts = {tok.strip() for tok in opt_line.split(":", 1)[1].split(",")}
+        # Stateless single-shot tools must not appear in the cross-kind
+        # search options — they have nothing to search over.
         assert "calc" not in opts
         assert "math" not in opts
-        assert "web" not in opts
         assert "youtube" not in opts
 
 

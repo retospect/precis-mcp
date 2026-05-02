@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from importlib.metadata import entry_points as _entry_points
 from typing import TYPE_CHECKING, Any
 
 from precis.hints import Hint, HintBus
@@ -337,6 +338,105 @@ def _try(cls: Callable[..., Any], *, hub: Hub, **kw: Any) -> Any | None:
 
 
 # ---------------------------------------------------------------------------
+# Plugin loading (third-party kinds via entry-points)
+# ---------------------------------------------------------------------------
+
+
+PLUGIN_GROUP = "precis.handlers"
+
+
+def _load_plugins(hub: Hub) -> None:
+    """Discover and register third-party handlers via entry-points.
+
+    A plugin package advertises a handler class in its own
+    ``pyproject.toml``::
+
+        [project.entry-points."precis.handlers"]
+        wikipedia = "precis_wikipedia:WikipediaHandler"
+
+    The class must follow the same contract as a built-in handler:
+    subclass :class:`~precis.protocol.Handler`, declare a
+    :class:`~precis.protocol.KindSpec` ClassVar, accept
+    ``*, hub: Hub`` in ``__init__``, and raise
+    :class:`InitError` from ``__init__`` when it can't usefully run.
+    See ``docs/plugin-authoring.md`` for the full write-up; the
+    canonical minimal example is
+    :class:`precis.handlers.calc.CalcHandler`.
+
+    Failure semantics are deliberately **wider** than :func:`_try`:
+    built-in handlers are trusted code, so a stray ``RuntimeError``
+    in one of them crashes boot to surface the bug. Plugin code is
+    third-party — one buggy plugin must not brick the MCP server.
+    Every ``Exception`` raised during plugin load / init /
+    registration is caught and logged. Only ``BaseException``
+    subclasses (``KeyboardInterrupt``, ``SystemExit``) propagate.
+
+    Plugins load **after** built-ins, so a plugin attempting to
+    claim a built-in kind hits
+    :class:`DuplicateRegistration` and is logged; the built-in
+    wins.
+    """
+    try:
+        eps = _entry_points(group=PLUGIN_GROUP)
+    except Exception as exc:  # defensive — importlib surface is stable
+        log.warning("precis plugin discovery failed: %s", exc)
+        return
+
+    for ep in eps:
+        name = getattr(ep, "name", "<unknown>")
+        try:
+            cls = ep.load()
+        except Exception as exc:
+            log.warning(
+                "precis plugin %r failed to load (%s): %s",
+                name,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+
+        cls_name = getattr(cls, "__name__", repr(cls))
+
+        try:
+            inst = cls(hub=hub)
+        except (InitError, ImportError, ValueError) as exc:
+            log.warning(
+                "precis plugin %r (%s) init failed: %s",
+                name,
+                cls_name,
+                exc,
+            )
+            continue
+        except Exception as exc:
+            log.warning(
+                "precis plugin %r (%s) raised %s during __init__: %s",
+                name,
+                cls_name,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+
+        try:
+            inst._register_with(hub)
+        except DuplicateRegistration as exc:
+            log.warning(
+                "precis plugin %r (%s) could not register: %s",
+                name,
+                cls_name,
+                exc,
+            )
+        except Exception as exc:
+            log.warning(
+                "precis plugin %r (%s) raised %s during registration: %s",
+                name,
+                cls_name,
+                type(exc).__name__,
+                exc,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Composition root
 # ---------------------------------------------------------------------------
 
@@ -497,6 +597,13 @@ def boot(
                 raw_root=Path(epo_raw_root).expanduser(),
             )
 
+    # Third-party plugins load last. See ``docs/plugin-authoring.md``
+    # and :func:`_load_plugins` for the contract and failure modes.
+    # Built-ins win on kind-name collisions because they register
+    # first; a plugin attempting to claim an already-registered kind
+    # is logged and skipped.
+    _load_plugins(hub)
+
     log.info(
         "precis dispatch boot: %d kinds live: %s",
         len(hub.kinds),
@@ -506,6 +613,7 @@ def boot(
 
 
 __all__ = [
+    "PLUGIN_GROUP",
     "Ability",
     "AbilityKey",
     "DuplicateRegistration",

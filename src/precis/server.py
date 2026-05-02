@@ -60,7 +60,8 @@ _INSTRUCTIONS = (
 # every caller relying on serverInfo.instructions; an assertion here
 # catches future regressions at import time.
 assert all(
-    v in _INSTRUCTIONS for v in ("get", "search", "put", "edit", "delete", "tag", "link")
+    v in _INSTRUCTIONS
+    for v in ("get", "search", "put", "edit", "delete", "tag", "link")
 ), "_INSTRUCTIONS must list every agent-facing verb"
 
 
@@ -126,6 +127,10 @@ def _shutdown_runtime() -> None:
 log = logging.getLogger(__name__)
 # Server name is ``precis-mcp`` so log lines and serverInfo unambiguously
 # point at this package (the bare ``precis`` collides with other tooling).
+# MCP 2025-06-18 §initialize recommends a human-facing ``serverInfo.title``
+# too; FastMCP 1.x doesn't expose it through the constructor and the
+# attribute path has changed between revisions. Leave unset until the
+# upstream library grows a stable API for it. (Critic MINOR-C A1.)
 mcp: FastMCP = FastMCP("precis-mcp", instructions=_INSTRUCTIONS)
 
 
@@ -242,16 +247,34 @@ def search(
     kind: str | None = None,
     scope: str | None = None,
     top_k: int = 10,
+    tags: list[str] | None = None,
+    source: str | None = None,
 ) -> str:
     """Search across kinds.
 
     Args:
         q:     Free-text query (lexical + semantic, hybrid-fused).
-        kind:  Restrict to a single kind. Omit for cross-corpus search.
+        kind:  Restrict to a single kind. **Omit (or pass ``'*'`` /
+               ``'all'`` / ``'any'`` / ``''``) for cross-kind fan-out
+               across every search-hits-capable kind**, RRF-merged
+               with each hit tagged by its source kind. Comma-lists
+               like ``'paper,memory,web'`` narrow the fan-out to a
+               specific subset.
         scope: Restrict to one ref's blocks (slug or numeric id).
         top_k: Max results. Must be a positive integer ≤ 100. Larger
                values are rejected to bound response size and protect
                smaller models' context windows.
+        tags:  Kind-specific closed / open tag filters (e.g.
+               ``['cpc:B01J27/24']`` on ``kind='patent'``,
+               ``['topic-xyz']`` on any ref kind). Tag axes allowed
+               per kind follow the ``precis-tags`` matrix.
+        source: Kind-specific source selector for handlers that
+               merge multiple streams. Currently only ``kind='patent'``
+               honours this — ``'both'`` (default) merges the local
+               store and live OPS, ``'local'`` skips OPS, ``'remote'``
+               skips local and dedupes OPS hits against already-
+               fetched patents (prior-art sweep mode). Ignored by
+               handlers that don't merge streams.
     """
     # Validate top_k at the MCP boundary so internal callers (tests,
     # SDK consumers) can still pass arbitrary values when they know
@@ -280,10 +303,21 @@ def search(
                 )
             )
         )
-    return _dispatch(
-        "search",
-        {"kind": kind, "q": q, "scope": scope, "top_k": top_k},
-    )
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "q": q,
+        "scope": scope,
+        "top_k": top_k,
+    }
+    # Only forward optional kwargs when set — avoids flooding every
+    # handler with None values when its signature doesn't accept them
+    # (most kinds ignore tags= / source= today, and forwarding None
+    # via **kwargs still costs a keyword-arg check at the handler).
+    if tags is not None:
+        payload["tags"] = tags
+    if source is not None:
+        payload["source"] = source
+    return _dispatch("search", payload)
 
 
 @mcp.tool(**_TOOL_KW)

@@ -26,7 +26,11 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._patent_cql import build_cql
-from precis.handlers._patent_ingest import ingest_patent
+from precis.handlers._patent_ingest import (
+    AWAITING_FULLTEXT_TAG,
+    FULLTEXT_UNAVAILABLE_TAG,
+    ingest_patent,
+)
 from precis.handlers._patent_ops import (
     OpsClientProto,
     OpsError,
@@ -173,11 +177,23 @@ class PatentHandler(Handler):
         tags: list[str] | None = None,
         scope: str | None = None,
         top_k: int = 10,
+        source: str = "both",
         **_kw: Any,
     ) -> Response:
         # Tag normalisation. Per-kind axis enforcement: closed tags
         # outside ``{SRC, CACHE}`` raise BadInput at the agent boundary.
         normalized_tags = Tag.normalize_filter(tags, kind="patent")
+
+        # ``source=`` picks which leg(s) run. ``'remote'`` additionally
+        # filters out hits whose DOCDB id is already in the local
+        # store, so the agent sees only patents it hasn't fetched yet
+        # — the natural "prior-art sweep" mode. See
+        # ``docs/search-future-filters.md`` §7.
+        if source not in ("both", "local", "remote"):
+            raise BadInput(
+                f"invalid source={source!r} — expected 'both', 'local', or 'remote'",
+                next="search(kind='patent', q='...', source='remote')",
+            )
 
         scope_ref_id: int | None = None
         if scope is not None:
@@ -190,19 +206,25 @@ class PatentHandler(Handler):
             scope_ref_id = scope_ref.id
 
         # Local leg: hybrid (lex + semantic) over patent blocks.
-        local_hits = self._search_local(
-            q=q,
-            scope_ref_id=scope_ref_id,
-            tags=normalized_tags,
-            top_k=top_k,
-        )
+        # Skipped when the caller asked for remote-only; scope= implies
+        # local-only (searching one specific patent remotely makes no
+        # sense) so the local leg always runs when scope is set.
+        local_hits: list[tuple[Any, Ref, float]] = []
+        if source != "remote" or scope_ref_id is not None:
+            local_hits = self._search_local(
+                q=q,
+                scope_ref_id=scope_ref_id,
+                tags=normalized_tags,
+                top_k=top_k,
+            )
 
         # Remote leg: only when q= or a CQL-liftable tag is present
         # AND scope is None (scope is local-only — searching one
-        # specific patent doesn't make sense remotely).
+        # specific patent doesn't make sense remotely) AND the caller
+        # didn't ask for local-only.
         remote_hits: list[OpsHit] = []
         cql_used: str | None = None
-        if scope_ref_id is None:
+        if scope_ref_id is None and source != "local":
             try:
                 cql = build_cql(q=q, tags=tags, store=self.store)
             except BadInput:
@@ -221,6 +243,16 @@ class PatentHandler(Handler):
                     # Best-effort remote leg. If OPS is down or
                     # quota-limited we still serve the local hits.
                     remote_hits = []
+
+        # source='remote' — dedupe against local so the caller sees
+        # only patents they haven't fetched yet. One point lookup per
+        # remote hit; the OPS page size caps this at a few dozen.
+        if source == "remote" and remote_hits:
+            remote_hits = [
+                h
+                for h in remote_hits
+                if self.store.get_ref(kind="patent", id=h.docdb_id) is None
+            ]
 
         return self._render_search_response(
             q=q,
@@ -340,7 +372,6 @@ class PatentHandler(Handler):
             a.get("name", "") for a in meta.get("applicants", []) if isinstance(a, dict)
         )
         cpc = meta.get("cpc_classes") or []
-        n_blocks = self.store.count_blocks(ref.id)
 
         lines = [f"# {slug}", f"_{ref.title}_"]
         if applicants:
@@ -354,8 +385,27 @@ class PatentHandler(Handler):
             lines.append(" · ".join(bib_line))
         if cpc:
             lines.append(f"CPC: {', '.join(cpc[:5])}")
-        lines.append("")
-        lines.append(f"{n_blocks} block{'s' if n_blocks != 1 else ''}")
+        # Full-text status. Silent for fully-ingested patents —
+        # agents discover the ``~N`` chunk range via views. Surfaces
+        # one sentence only when OPS didn't serve description or
+        # claims at ingest time, so the agent knows what happened
+        # and whether to expect an auto-retry.
+        open_tags = {
+            t.value for t in self.store.tags_for(ref.id) if t.namespace == "open"
+        }
+        if FULLTEXT_UNAVAILABLE_TAG in open_tags:
+            lines.append("")
+            lines.append(
+                "_full text unavailable from OPS — "
+                "searchable by abstract + biblio only_"
+            )
+        elif AWAITING_FULLTEXT_TAG in open_tags:
+            retry_at = meta.get("fulltext_retry_at") or ""
+            when = retry_at[:10] if retry_at else "soon"
+            lines.append("")
+            lines.append(
+                f"_full text not yet indexed by OPS — queued for auto-retry on {when}_"
+            )
 
         abstract = meta.get("abstract")
         if abstract:

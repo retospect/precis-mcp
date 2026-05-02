@@ -197,6 +197,15 @@ def _kind_is_numeric(kind: str, *, store: Store) -> bool:
     Raises BadInput with the available options if the kind is not
     registered. Encapsulated here so the parser stays a single
     flat function from the caller's perspective.
+
+    The "available options" list filters to kinds that actually
+    have at least one live ref — the realistic link targets in
+    this build. The ``kinds`` schema table also carries entries
+    for handler-less kinds (file kinds whose env-gated handler
+    isn't loaded), and surfacing them led an agent into a
+    contradiction loop where the link error advertised
+    ``markdown`` but ``get(kind='markdown', ...)`` then errored
+    with ``unknown kind`` (MCP critic MAJOR-C 2026-05-02).
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -204,11 +213,24 @@ def _kind_is_numeric(kind: str, *, store: Store) -> bool:
         ).fetchone()
         if row is not None:
             return bool(row[0])
-        # Bad kind — enumerate options for the agent.
+        # Bad kind — enumerate plausible link targets for the agent.
+        # "Plausible" = kinds with at least one live ref. Empty corpora
+        # fall back to the registered-kinds list so a fresh install
+        # still gives the agent a non-empty hint.
         options = [
             r[0]
-            for r in conn.execute("SELECT slug FROM kinds ORDER BY slug").fetchall()
+            for r in conn.execute(
+                "SELECT DISTINCT k.slug FROM kinds k "
+                "JOIN refs r ON r.kind = k.slug "
+                "WHERE r.deleted_at IS NULL "
+                "ORDER BY k.slug"
+            ).fetchall()
         ]
+        if not options:
+            options = [
+                r[0]
+                for r in conn.execute("SELECT slug FROM kinds ORDER BY slug").fetchall()
+            ]
     raise BadInput(
         f"unknown kind {kind!r} in link target",
         options=options,

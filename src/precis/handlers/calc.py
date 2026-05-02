@@ -68,6 +68,36 @@ class CalcHandler(Handler):
                 next="get(kind='calc', q='2+3*4')",
             ) from e
 
+        # Sympy silently promotes unknown function names
+        # (``randint(1,6)``, ``random()``, ``foo(x)``) to
+        # :class:`AppliedUndef` — applied undefined functions. They
+        # then round-trip through ``.doit()`` / ``simplify()``
+        # unchanged, and the existing "simplifies to itself" guard
+        # doesn't fire because the expression carries no free
+        # symbols (``Function('randint')`` isn't a symbol).  The
+        # result used to be ``randint(1, 6) = randint(1, 6)`` — a
+        # silent echo that small-model callers read as success.
+        # Refuse the call instead, and name the offending functions
+        # so the caller can pick a real sympy op. (MCP critic
+        # MINOR-C — calc silently echoes unknown functions.)
+        from sympy.core.function import AppliedUndef
+
+        if hasattr(expr, "atoms"):
+            undef = expr.atoms(AppliedUndef)
+            if undef:
+                names = sorted({f.func.__name__ for f in undef})
+                names_str = ", ".join(repr(n) for n in names)
+                raise BadInput(
+                    f"unknown function(s) in expression: {names_str}. "
+                    "calc is sympy-backed; common builtins are "
+                    "integrate, diff, solve, simplify, factor, expand, "
+                    "limit, Sum, Product. Python builtins like "
+                    "randint() or random() are not wired — see "
+                    "get(kind='skill', id='precis-oracle-help') for "
+                    "randomness workflows.",
+                    next="get(kind='calc', q='solve(Eq(x+1, 3), x)')",
+                )
+
         # Some sympy functions — notably ``solve`` and ``factor_list``
         # — run eagerly inside ``sympify`` and return plain Python
         # containers (list / tuple / dict) rather than sympy objects.

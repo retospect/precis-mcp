@@ -115,6 +115,7 @@ def render_slug_ref_list(
     limit: int = 50,
     empty_body: str | None = None,
     empty_next: list[tuple[str, str]] | None = None,
+    populated_next: list[tuple[str, str]] | None = None,
     preview_len: int = 80,
     slug_col_width: int = 30,
 ) -> Response:
@@ -125,9 +126,14 @@ def render_slug_ref_list(
     single-column slug/title listing.
 
     Args:
-        label_plural: Phrasing for the headline (``"oracle(s)"``,
-            ``"conversation(s)"``, ``"quest"``). Handlers own the
-            pluralisation nuance so the helper stays layout-only.
+        label_plural: Phrasing for the headline. The legacy
+            ``"foo(s)"`` template (e.g. ``"oracle(s)"``,
+            ``"conversation(s)"``) is auto-resolved to the
+            count-correct form here — ``# 1 oracle`` /
+            ``# 9 oracles`` rather than the ungrammatical
+            ``# 9 oracle(s)`` the MCP critic flagged 2026-05-02.
+            Already-resolved labels (``"quest"``,
+            ``"conversations"``) pass through verbatim.
         limit: Row cap on ``store.list_refs``. Defaults to 50,
             which matches the existing oracle/conv values.
         empty_body: Override message shown when the corpus has no
@@ -135,6 +141,11 @@ def render_slug_ref_list(
             ``"no <kind> entries yet"``.
         empty_next: Optional ``Next:`` trailer on the empty path
             so the agent has somewhere to go from a blank list.
+        populated_next: Optional ``Next:`` trailer on the
+            non-empty path. Brings list views in line with every
+            other ``/recent`` shape that already teaches the next
+            call shape (MCP critic MINOR-C 2026-05-02 — oracle was
+            the only ``/recent`` view shipping without one).
 
     The resulting body is ASCII-aligned with a fixed slug column
     so tall listings stay readable at monospaced widths.
@@ -146,7 +157,8 @@ def render_slug_ref_list(
             body += render_next_section(empty_next)
         return Response(body=body)
 
-    lines = [f"# {len(refs)} {label_plural}"]
+    headline_label = _resolve_count_plural(label_plural, n=len(refs))
+    lines = [f"# {len(refs)} {headline_label}"]
     for r in refs:
         preview = (
             (r.title[:preview_len] + "…") if len(r.title) > preview_len else r.title
@@ -155,7 +167,24 @@ def render_slug_ref_list(
         if len(slug) > slug_col_width:
             slug = slug[: slug_col_width - 1] + "…"
         lines.append(f"  {slug:<{slug_col_width}}  {preview}")
-    return Response(body="\n".join(lines))
+    body = "\n".join(lines)
+    if populated_next:
+        body += render_next_section(populated_next)
+    return Response(body=body)
+
+
+def _resolve_count_plural(label: str, *, n: int) -> str:
+    """Resolve a count-aware label.
+
+    The legacy ``"foo(s)"`` template is replaced with ``""`` for
+    ``n == 1`` and ``"s"`` for ``n != 1`` so the headline is
+    grammatical at any cardinality. Labels without the
+    parenthetical are returned verbatim — the caller signalled
+    that they own pluralisation explicitly.
+    """
+    if "(s)" in label:
+        return label.replace("(s)", "" if n == 1 else "s")
+    return label
 
 
 __all__ = [

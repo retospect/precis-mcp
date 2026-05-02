@@ -239,9 +239,16 @@ def ingest_paper(
     else:
         embeddings = [None] * len(block_texts)
 
+    # Block positions are **1-indexed** for oracles. For traditions
+    # with an inherent numbering scheme (I-Ching: 64 hexagrams) this
+    # makes ``iching~49`` resolve to "Hexagram 49" exactly, instead
+    # of the off-by-one ``iching~48`` that 0-indexing produced.
+    # Other traditions (stoic, zen, ...) have no inherent ordering,
+    # so 1-indexing is harmless there — and uniform across the kind
+    # is cheaper to remember than per-tradition exceptions.
     inserts = [
         BlockInsert(
-            pos=i,
+            pos=i + 1,
             text=text,
             embedding=emb,
             token_count=len(text.split()),

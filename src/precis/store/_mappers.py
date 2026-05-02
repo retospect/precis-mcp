@@ -37,19 +37,28 @@ _REF_LEVEL_POS = -1
 
 # Default cosine-distance floor for semantic-only hits. pgvector's
 # `<=>` operator returns ``1 - cosine_similarity``, so a distance of
-# 0.9 means ``cos(theta) ≈ 0.1`` — the two vectors are nearly
-# perpendicular, i.e. the embedding model thinks they have almost
-# nothing to do with each other. We reject anything past this
-# threshold from the semantic CTE so a nonsense query
-# (``'xyzzy frobnicate quux'``) returns an honest empty response
-# instead of a top-K of arbitrary blocks. The MCP critic flagged
-# this as MAJOR #3: search has no relevance floor, gibberish
-# queries return ranked hits. The threshold is a default, not a
-# constraint — callers (and the eventual public ``min_score=`` knob)
-# can override per call. 0.9 is generous enough to keep weakly-
-# related but legitimately near hits, strict enough to exclude the
-# random-block tail.
-SEMANTIC_DISTANCE_FLOOR = 0.9
+# 0.65 maps to ``cos(theta) ≈ 0.35`` — the two vectors share a
+# noticeable amount of subject matter without having to be near-
+# paraphrases. We reject anything past this threshold from the
+# semantic CTE so a nonsense query (``'food'`` against a corpus
+# of chemistry patents) returns an honest empty response instead
+# of a top-K of arbitrary blocks.
+#
+# The MCP critic flagged this originally (MAJOR #3: gibberish
+# returns ranked hits).  The initial fix set the floor at 0.9 —
+# which is right for hash-based MockEmbedder vectors (cos_sim ≈
+# 0 for any two texts) but far too loose for real bge-m3
+# embeddings, where arbitrary English text pairs cluster around
+# cos_sim ≈ 0.3–0.7, i.e. distance 0.3–0.7, well under the 0.9
+# bar.  A second-pass probe in 2026-05 confirmed the loose floor
+# by showing that ``'food'`` and ``'bicycle purple alligator''``
+# both returned ranked blocks from a CO2-capture patent.
+# Tightening to 0.65 turns those queries into empty responses.
+#
+# The threshold is a default, not a constraint — callers (and
+# the eventual public ``min_score=`` knob) can override per
+# call.
+SEMANTIC_DISTANCE_FLOOR = 0.65
 
 
 # Search-time noise filters. Two predicates wrap every block-search

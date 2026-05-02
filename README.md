@@ -1,78 +1,249 @@
-# precis-mcp v2
+# precis-mcp
 
-> **Status: pre-alpha, in progress.** This branch (`v2`) is a ground-up rewrite
-> of precis-mcp. Earlier (v1) source lives in the `main` branch of
-> `retospect/precis-mcp` and locally at `../precis-mcp` (also wired as the
-> `v1-local` git remote here).
->
-> Phases done: **1 (walking skeleton)**, **2 (DB backbone + memory)**,
-> **3 (paper kind + bundle ingest)** — see `docs/v2-cutover.md`,
-> **3.5 (navigation parity: hierarchical TOC, drill-down, Next: trailers)**,
-> **4a (cache-backed kinds: `math`, `youtube`, `web` page-fetch)**,
-> **4b (Perplexity Sonar trio: `websearch` / `think` / `research`)**,
-> **5 (state kinds: `todo`, `gripe`, `fc`, `quest`, `conv`, `oracle`, `skill`)**,
-> **6a (markdown file handler with read/write + lazy re-ingest)**,
-> **7 (precis-help meta-skill synthesised from live registry)**,
-> **8 (anchored edit protocol — `mode='edit'` + `mode='insert'` on markdown + python)**,
-> **9 (python code-navigator kind — AST index, callgraph, runtrace)**.
-> Queued: web bookmark mode + Wayback (deferred), other file handlers (plaintext, rmk, docx, tex, book), polish.
+[![check](https://github.com/retospect/precis-mcp/actions/workflows/check.yml/badge.svg)](https://github.com/retospect/precis-mcp/actions/workflows/check.yml)
+[![PyPI](https://img.shields.io/pypi/v/precis-mcp.svg)](https://pypi.org/project/precis-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/precis-mcp.svg)](https://pypi.org/project/precis-mcp/)
+[![License](https://img.shields.io/github/license/retospect/precis-mcp.svg)](LICENSE)
 
-## What v2 is
+A [Model Context Protocol](https://modelcontextprotocol.io/) server that
+gives language-model agents a small, uniform API for reading, writing,
+and searching across papers, documents, personal state, code, and
+cached tool calls. Small-model-friendly (7B-class agents are the design
+target); stores content in PostgreSQL with `pgvector`.
 
-A Model Context Protocol (MCP) server that exposes a small, uniform API for
-agents to read, write, and search across:
+> **Status.** v6.0 pre-release (`6.0.0a0`). Ground-up redesign of v1.
+> Twenty-one kinds shipping across ref / tool / discovery categories,
+> seven verbs, plugin surface stable. Targeting `6.0.0` on PyPI in
+> the next release window. v5.2.6 on PyPI is the last v1-line release;
+> see [`CHANGELOG.md`](CHANGELOG.md) for the migration path.
 
-- Research papers (PDF → indexed chunks, citations, semantic search)
-- Long-form documents (DOCX, LaTeX, Markdown)
-- Personal state (todos, memories, gripes, flashcards, conversations)
-- Cached paid-tool calls (web search, math, YouTube transcripts)
-- Local computations (calc, plot, RNG)
+## What it does
 
-All under **four verbs** (`get`, `search`, `put`, `move`) and a single
-`kind=` discriminator. No URI selector strings; everything is keyword args.
+One tool surface — **seven verbs** discriminated by a single `kind=`
+argument — over three categories of content:
 
-## What v2 changes from v1
+- **Ref kinds** (content addressed by slug or integer id): `paper`,
+  `skill`, `oracle`, `quest`, `conv`, `markdown`, `plaintext`,
+  `python`, `todo`, `memory`, `gripe`, `fc` (flashcard).
+- **Tool kinds** (stateless or cache-backed; pass `q=` or `id=`, get
+  text back): `calc`, `math` (Wolfram), `youtube`, `web` (fetch +
+  search + bookmark), `websearch` / `think` / `research` (Perplexity
+  Sonar tiers), `patent` (EPO OPS).
+- **Discovery kind**: `random` — pick a random indexed block to
+  stumble into content when you don't know what to ask for.
 
-This is a redesign, not a refactor. Highlights:
+The active set depends on which optional extras and env vars are
+configured (see [Install](#install)). Run
+`get(kind='skill', id='precis-help')` against a live server for the
+live enumeration of kinds currently wired (it's a synthesised skill
+that introspects the registry); pair with
+`get(kind='skill', id='precis-overview')` for the design-rationale
+tour.
 
-- `type=` → `kind=`
-- View / subview selectors flattened into kwargs
-- Numeric IDs for ephemeral kinds (`todo`, `memory`, `gripe`, `fc`)
-- First-class link relations (`related-to`, `blocks`, `contradicts`)
-- First-class tag namespaces (`closed`, `flag`, `open`)
-- Cache freshness derived from `cache_state` table, not from tags
-- HintBus collector — any layer can emit deduped, novelty-decayed hints
-- Slim exception hierarchy carrying one `next=` "breaking hint"
-- `psycopg 3` (sync) + raw SQL throughout; no SQLAlchemy. Sync below FastMCP
-  because async was buying nothing for stdio's serial workload.
-- Forward-only numbered SQL migrations; no Alembic
-- Hybrid search (lexical tsvector + semantic pgvector, RRF fused)
-- Drops entry-point plugin discovery in favour of an in-tree `BUILTINS` list
-- Inlines what was `acatome-store`; depends on `acatome-extract` for PDF→bundle
+## Seven verbs
 
-See `docs/store_sketch.py` for the Python store interface, `docs/paper_ingest.md`
-for the bundle ingest path, and `src/precis/migrations/0001_initial.sql` for
-the schema.
+| Verb     | Use when                                            |
+|----------|-----------------------------------------------------|
+| `get`    | You know the **name** (slug, id, file path) — or you're calling a tool. |
+| `search` | You're looking for **content** by topic or phrase. Hybrid lexical (tsvector) + semantic (pgvector) with RRF fusion. |
+| `put`    | Create a new ref. Optionally tag and link on creation. |
+| `edit`   | Rewrite a region of a file-kind ref by content anchors (`find-replace`, `append`, `insert`, `replace`). |
+| `delete` | Soft-delete a numeric ref, or delete a region from a file kind by selector. |
+| `tag`    | Add and/or remove tags. Three namespaces: closed (`STATUS:done`), flag (`pinned`), open (`topic-foo`). |
+| `link`   | Add or remove a cross-link to another ref. Vocabulary: `related-to`, `blocks`, `contradicts`, `cites`, `derived-from`, `supports`, … |
 
-## Status
+Address by `id=` for names, `q=` for content. No URI selector strings
+for ids; region selectors inside files use the compact `slug~SELECTOR`
+shape (e.g. `notes--meeting~L42-58`).
 
-- [x] Schema designed (`0001_initial.sql`)
-- [x] Store interface sketched (`docs/store_sketch.py`)
-- [x] Paper ingest spec (`docs/paper_ingest.md`)
-- [x] Phase 1 — walking skeleton: four verbs + `calc` end-to-end (no DB)
-- [x] Phase 2 — DB backbone: migration runner + `memory` handler
-- [x] Phase 3 — `paper` kind: get/search, RRF block search, bundle ingest, `precis migrate` + `precis jobs ingest-bundle(s)` (see `docs/v2-cutover.md`)
-- [x] Phase 3.5 — navigation parity: hierarchical TOC, range-scoped drill-down (`~A..B/toc`), column-aligned `Next:` trailers on overview/chunk/toc views — *plan: `docs/phase3.5-plan.md`*
-- [x] Phase 4a — cache-backed kinds: `math` (Wolfram), `youtube` (transcripts), `web` (page fetch + trafilatura). Shared `CacheBackedHandler` base, `cache_state` CRUD, attribution footers + cost trailers — *plan: `docs/phase4-plan.md`*
-- [x] Phase 4b — Perplexity Sonar trio: `websearch`, `think`, `research`. Shared base, per-tier model + TTL + cost; cache key includes model so tiers don't collide. Web bookmark mode + Wayback enrichment deferred (needs `put` on `web` kind).
-- [x] Phase 5 — state kinds: `todo` (with STATUS transitions and `/open` `/done` filters), `gripe`, `fc` (with `/due` view), `quest` (slug-addressed with auto-mint), `conv` (read-only with `/transcript` and per-turn nav), `oracle`, `skill` (markdown served from package data dir). Shared `NumericRefHandler` base extracted from MemoryHandler.
-- [x] Phase 6a — `markdown` file handler. Slug-addressed (`notes/meeting.md` → `notes--meeting`); one block per heading / paragraph / fenced code / table / list. Block slugs are content-derived hashes so they survive re-ingest. Lazy re-ingest on every `get` checks mtime first, falls back to sha256 on stale mtime. `put` modes: `create`, `append`, `replace`, `delete` — all atomic. CLI: `precis jobs ingest-md <root>`. See `docs/phase6-plan.md`.
-- [x] Phase 7 — `precis-help` meta-skill synthesised from the live registry. `SkillHandler.bind_registry()` is invoked by `build_runtime()` after `Registry` construction; the help skill enumerates every active kind with verbs + description and includes a banner when a documented-but-not-wired kind is requested.
-- [x] Phase 8 — anchored edit protocol. New write modes `mode='edit'` and `mode='insert'` join `create`/`append`/`replace`/`delete` on every R/W file kind. Resolves by *content* (literal `find=` with optional `before=`/`after=` anchors and `match='unique|first|all|nth'` policy). Pure resolver in `precis.utils.edit_resolve`; sharp `BadInput` on not-found (with fuzzy nearest-line hints) and ambiguous (with disambiguation guidance). v1 ships for `markdown` and `python`. See `docs/edit-protocol-spec.md`.
-- [x] Phase 9 — `python` code-navigator kind. Multi-root, AST-indexed in-memory with mtime-invalidated cache (no DB persistence). Two-track addressing: line ranges (`alias/path/file.py~L42-58`) and qualnames (`alias::pkg.mod.Class.method`). Views: `toc`, `outline`, `source`, `entries` (pyproject console scripts + `__main__` guards), `callgraph` (entry-rooted static call tree with cycle detection + cross-repo resolution), `runtrace` (dynamic call graph captured under `sys.setprofile` in a gated subprocess, with stdlib subtree collapse and a static-only diff). Write surface: same modes as markdown plus three validation gates (`ast.parse`, qualname-drop prevention, `ruff check --fix && ruff format`). Configured via `PRECIS_PYTHON_ROOTS=alias:/path,…`; runtrace gated by `PRECIS_PYTHON_ALLOW_EXEC=1`. See `docs/python-kind-spec.md` and `precis-python-help` skill.
-- [ ] Phase 6b — remaining file handlers (`plaintext`, `rmk`, `docx`, `tex`, `book`)
-- [ ] Polish: hint channel notifications, cost footer parity across kinds, web bookmark mode + Wayback enrichment
+## Install
+
+```bash
+pip install 'precis-mcp[all]'
+```
+
+Extras (each enables its kinds; omit any you don't want):
+
+| Extra       | Enables                                           | Heavy? |
+|-------------|---------------------------------------------------|--------|
+| `paper`     | `paper` kind (sentence-transformers bge-m3 + `acatome-extract`) | yes (~2 GB model on first load) |
+| `calc`      | `calc` kind (sympy)                               | no |
+| `external`  | `math` (Wolfram), `youtube`, `web`, Perplexity trio | no |
+| `patent`    | `patent` kind (EPO Open Patent Services)          | no |
+| `docx`      | (queued — not yet wired)                          | — |
+| `tex`       | (queued — not yet wired)                          | — |
+| `plot`      | (queued — not yet wired)                          | — |
+| `all`       | All of the above.                                 | yes |
+
+A bare `pip install precis-mcp` gives you the state kinds (`todo`,
+`memory`, `gripe`, `fc`, `quest`, `conv`, `oracle`, `skill`,
+`random`) and the `markdown` / `plaintext` / `python` file kinds.
+Optional deps surface as `InitError` at boot: the kind silently drops
+off the tool surface with a WARNING, the server stays up.
+
+### Database
+
+`precis-mcp` requires PostgreSQL with the `pgvector` extension. The
+CLI `precis migrate` applies the forward-only numbered SQL migrations
+in `src/precis/migrations/`. See
+[`docs/store_sketch.py`](docs/store_sketch.py) for the Python store
+interface and `0001_initial.sql` for the schema.
+
+```bash
+createdb precis
+psql precis -c 'CREATE EXTENSION pgvector;'
+
+export PRECIS_DATABASE_URL=postgresql://localhost/precis
+export PRECIS_EMBEDDER=bge-m3   # or "mock" for tests
+precis migrate
+```
+
+## Run
+
+`precis serve` speaks MCP over stdio. Wire it into your agent's MCP
+config:
+
+```json
+{
+  "mcpServers": {
+    "precis": {
+      "command": "precis",
+      "args": ["serve"],
+      "env": {
+        "PRECIS_DATABASE_URL": "postgresql://localhost/precis",
+        "PRECIS_EMBEDDER": "bge-m3",
+        "PRECIS_MARKDOWN_ROOT": "/absolute/path/to/notes",
+        "PRECIS_PYTHON_ROOTS": "myrepo:/absolute/path/to/myrepo"
+      }
+    }
+  }
+}
+```
+
+### Environment variables
+
+| Var                           | Purpose                                          |
+|-------------------------------|--------------------------------------------------|
+| `PRECIS_DATABASE_URL`         | Postgres DSN (required for all ref kinds).       |
+| `PRECIS_EMBEDDER`             | `"mock"` (dev/tests) or `"bge-m3"` (prod).       |
+| `PRECIS_MARKDOWN_ROOT`        | Root dir for the `markdown` kind. Hidden when unset. |
+| `PRECIS_PLAINTEXT_ROOT`       | Root dir for the `plaintext` kind.               |
+| `PRECIS_PYTHON_ROOTS`         | `alias:/path,alias2:/path2` — exposed Python repos. |
+| `PRECIS_PYTHON_ALLOW_EXEC=1`  | Gate for `python` runtrace (spawns subprocess).  |
+| `EPO_OPS_CLIENT_KEY` + `_SECRET` + `PRECIS_PATENT_RAW_ROOT` | Enables `patent` kind. |
+| `WOLFRAM_APP_ID`              | Enables `math` kind.                             |
+| `PERPLEXITY_API_KEY`          | Enables `websearch` / `think` / `research`.      |
+| `LOG_LEVEL`                   | `DEBUG` / `INFO` / `WARNING` / `ERROR`.          |
+
+## Design highlights
+
+- **Seven verbs, one `kind=`**. The whole surface is
+  `get`/`search`/`put`/`edit`/`delete`/`tag`/`link`. No per-kind
+  bespoke tools. See
+  [`docs/seven-verb-surface-migration.md`](docs/seven-verb-surface-migration.md).
+- **Content-anchored edits.** `edit(find=..., before=..., after=...)`
+  resolves by literal content match; unique/first/all/nth policy;
+  fuzzy nearest-line hint on not-found. Pure resolver in
+  `precis.utils.edit_resolve`; ships for `markdown`, `plaintext`, and
+  `python`. See [`docs/edit-protocol-spec.md`](docs/edit-protocol-spec.md).
+- **Hybrid search.** Lexical `tsvector` + semantic `pgvector` (bge-m3)
+  with Reciprocal Rank Fusion. Block-level; paper chunks, markdown
+  paragraphs, Perplexity answers, web pages all searchable.
+- **Progressive disclosure.** Seven verbs and a `kind=` argument is
+  the *whole* visible surface. Behind it sits a fan-out of ~25
+  per-kind help skills, dozens of read views, an anchored edit
+  protocol, args-dict view payloads, and a tag/link vocabulary —
+  none of which the agent has to know up front. Every response can
+  emit a `next=` breadcrumb, every error names the skill that
+  explains it, and `get(kind='skill', id='precis-<kind>-help')`
+  unfolds the manual for whichever capability the agent just
+  bumped into. Think *exploding pocket knife*: the tool grows
+  blades as you reach for them, instead of advertising 20
+  unfamiliar buttons in `tools/list`. (UX literature calls this
+  pattern progressive disclosure.)
+- **HintBus.** Any layer can emit deduplicated, novelty-decayed tips
+  that are rendered after the verb's main output. Keeps slim models
+  from drowning in self-inflicted reminders.
+- **Slim exception surface.** `BadInput` / `NotFound` / `Gone` /
+  `Unsupported` / `Upstream` / `RateLimited` / `Internal`, each
+  carrying a single copy-pasteable `next=` "breaking hint".
+- **`psycopg 3` sync, raw SQL.** No SQLAlchemy, no Alembic, no async
+  below FastMCP — stdio's serial workload doesn't buy anything from
+  async.
+- **In-tree handlers, entry-point plugins.** Core kinds are
+  hand-ordered in `precis.dispatch.boot()`. Third-party kinds can
+  register themselves via the `precis.handlers` entry-point group
+  without forking — see
+  [`docs/plugin-authoring.md`](docs/plugin-authoring.md).
+
+## Extending
+
+Write a plugin handler in 3 steps — see the one-pager at
+[`docs/plugin-authoring.md`](docs/plugin-authoring.md) and the
+canonical tiny example in
+[`src/precis/handlers/calc.py`](src/precis/handlers/calc.py).
+
+```toml
+# your plugin's pyproject.toml
+[project]
+dependencies = ["precis-mcp>=6.0.0a0"]
+
+[project.entry-points."precis.handlers"]
+wikipedia = "precis_wikipedia:WikipediaHandler"
+```
+
+Plugin failures are logged and skipped — one bad plugin cannot brick
+the server.
+
+## CLI
+
+```text
+precis serve                       # Start the MCP stdio server.
+precis migrate                     # Run pending SQL migrations.
+precis jobs ingest-bundle[s] ...   # Ingest .acatome paper bundles.
+precis jobs ingest-md <root>       # Bulk-ingest markdown under root.
+precis jobs ingest-oracles ...     # Seed the oracle kind from YAML wisdom files.
+precis jobs dedupe-papers          # Collapse duplicate paper refs.
+precis jobs import-perplexity ...  # Bulk-import Perplexity web-UI answers.
+precis jobs watch-patents / run-patent-watches / sweep-patent-fulltext
+                                   # Saved CQL patent watches (patent kind).
+```
+
+Run any subcommand with `--help` for detailed options.
+
+## Roadmap
+
+- `docx`, `tex`, `book`, `rmk` file handlers (Phase 6b/c).
+- `web` bookmark mode + Wayback enrichment (gripe:3681 phase 2 + 4 — see [`OPEN-ITEMS.md`](OPEN-ITEMS.md)).
+- `voice` kind — STT/TTS bound to transcript refs (see [`docs/voice-kind-spec.md`](docs/voice-kind-spec.md)).
+- SDK extraction (`precis-core`) once the plugin API has settled.
+
+## Documentation
+
+- [`docs/plugin-authoring.md`](docs/plugin-authoring.md) — write a third-party handler.
+- [`docs/seven-verb-surface-migration.md`](docs/seven-verb-surface-migration.md) — verb surface design rationale.
+- [`docs/edit-protocol-spec.md`](docs/edit-protocol-spec.md) — anchored edits across file kinds.
+- [`docs/file-kinds-unified-addressing.md`](docs/file-kinds-unified-addressing.md) — the `slug~SELECTOR` address grammar.
+- [`docs/python-kind-spec.md`](docs/python-kind-spec.md) — python navigator design.
+- [`docs/patent-kind-spec.md`](docs/patent-kind-spec.md) — EPO OPS integration.
+- [`docs/paper_ingest.md`](docs/paper_ingest.md) — `.acatome` bundle ingest path.
+- [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each phase.
+
+## Contributing
+
+The repo lives at
+[`retospect/precis-mcp`](https://github.com/retospect/precis-mcp).
+Issues and PRs welcome. Development workflow:
+
+```bash
+uv venv && source .venv/bin/activate
+uv pip install -e '.[all]' --group dev
+pytest -q
+ruff check . && ruff format --check .
+mypy src tests
+```
 
 ## License
 
-GPL-3.0-or-later.
+GPL-3.0-or-later. See the full text at
+[gnu.org/licenses/gpl-3.0.html](https://www.gnu.org/licenses/gpl-3.0.html).

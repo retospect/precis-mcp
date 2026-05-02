@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "precis-mcp"
 version = "6.0.0a0"
-description = "MCP server for paper / document / state / tool access — V2 rewrite"
+description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
@@ -16,20 +16,27 @@ keywords = [
     "model-context-protocol",
     "llm",
     "ai-agent",
+    "agent-tools",
     "context-management",
     "token-optimization",
-    "document",
-    "docx",
-    "latex",
-    "markdown",
+    "progressive-disclosure",
+    "scientific-papers",
     "pdf",
+    "markdown",
+    "latex",
+    "docx",
     "python",
     "code-navigation",
     "ast",
     "callgraph",
-    "scientific-papers",
-    "track-changes",
     "semantic-search",
+    "pgvector",
+    "postgres",
+    "patents",
+    "wolfram-alpha",
+    "perplexity",
+    "youtube-transcripts",
+    "spaced-repetition",
     "claude",
     "cursor",
     "windsurf",

@@ -230,7 +230,17 @@ def _list_languages(video_id: str) -> Response:
     body += render_next_section(
         [
             (
-                f"get(kind='youtube', id='{video_id}', languages='LANG_CODE')",
+                # ``languages=`` is a handler-side kwarg that does NOT
+                # appear on the agent-facing MCP get tool signature
+                # (``kind/id/view/q/args`` only). The MCP critic flagged
+                # the bare ``languages='LANG_CODE'`` form as aspirational
+                # 2026-05-02 — copying the hint verbatim hits the MCP
+                # boundary's "unknown kwarg" rejection. Use ``args=`` to
+                # forward extras to the handler, which is the documented
+                # mechanism on every kind that has params beyond the
+                # five top-level kwargs.
+                f"get(kind='youtube', id='{video_id}', "
+                "args={'languages': 'LANG_CODE'})",
                 "fetch a specific transcript",
             ),
         ]

@@ -32,14 +32,20 @@ Address by **`id=` for names, `q=` for content**.
 
 For `get`/`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required.
 
-For `search`, `kind=` is conventionally required, but **omitting
-it defaults to the most recently touched search-supporting kind**
-and the response prepends `(searched kind='X')` so you can see
-the choice. This is a 7B-model affordance — cross-kind fan-out
-(`kind='all'` or comma-lists like `kind='paper,memory'`) is not
-yet implemented. To pick a different kind, name it explicitly.
+For `search`, `kind=` is **optional**. When omitted the runtime
+fans out across every search-supporting kind and merges the
+streams via reciprocal-rank fusion — each hit is tagged with its
+source kind so you can drill into the kind that answered. To
+narrow down, name a single kind explicitly (`kind='paper'`) or
+pass a comma-list (`kind='paper,memory,web'`).
+
+Wildcard shorthands all behave identically and expand to every
+search-hits-capable kind: `kind='*'`, `kind='all'`, `kind='any'`,
+or `kind=''` (the empty string is honoured for MCP clients that
+forward `kind=""` literally).
+
 Use `get(kind='skill', id='precis-help')` to discover the full
-set of search-supporting kinds.
+set of search-supporting kinds in this build.
 
 ## Kinds — refs
 
@@ -49,8 +55,9 @@ shapes — slug for canonical/named refs, integer for agent scratch:
 | Kind      | Example id            | What                              | Needs |
 |-----------|-----------------------|-----------------------------------|-------|
 | `paper`   | `abazari2024design`   | Ingested research paper           | store |
+| `patent`  | `EP1234567`           | EPO OPS patent record (cached)    | store |
 | `skill`   | `precis-overview`     | Agent how-to (you're reading one) | — |
-| `oracle`  | `precis-glossary`     | Wiki-like reference               | store |
+| `oracle`  | `stoic`               | Curated wisdom-tradition entry (decision-making aid) | store |
 | `quest`   | `ship-v2`             | A long-running goal               | store |
 | `conv`    | `2026-04-26-spec`     | Past conversation                 | store |
 | `markdown`| `notes--meeting`      | A `.md` file under the configured root | `PRECIS_MARKDOWN_ROOT` |

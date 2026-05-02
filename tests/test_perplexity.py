@@ -310,6 +310,99 @@ def test_format_response_lists_citations() -> None:
     ]
 
 
+def test_format_response_strips_paired_think_block() -> None:
+    """The canonical paired ``<think>…</think>`` form must be
+    stripped — the trace is internal scratch and the conclusion
+    follows the closing tag."""
+    body, _ = _format_perplexity_body(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "<think>scratch reasoning that the user "
+                            "should never see</think>\n"
+                            "## Answer\nThe conclusion lives here."
+                        )
+                    }
+                }
+            ],
+            "citations": [],
+        }
+    )
+    assert "scratch reasoning" not in body
+    assert "## Answer" in body
+    assert "The conclusion lives here." in body
+
+
+def test_format_response_strips_orphan_closing_think_tag() -> None:
+    """Streaming truncation can leave an orphan ``</think>`` with
+    no opener — the body the user sees must not carry the trace
+    fragment that came before it. (MCP critic MINOR-C 2026-05-02
+    — orphan closing tags leaked into the corpus.)
+    """
+    body, _ = _format_perplexity_body(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "Internal trace fragment that streamed "
+                            "before the conclusion. </think>\n"
+                            "I should keep this brief but comprehensive. "
+                            "Final answer body."
+                        )
+                    }
+                }
+            ],
+            "citations": [],
+        }
+    )
+    assert "</think>" not in body
+    assert "Internal trace fragment" not in body
+    assert "Final answer body." in body
+
+
+def test_format_response_strips_orphan_opening_think_tag() -> None:
+    """Truncation in the other direction — ``<think>`` with no
+    closer — drops everything from the tag to end-of-string
+    rather than leak the trace into the rendered answer.
+    """
+    body, _ = _format_perplexity_body(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "## Answer\nThe conclusion is brief.\n"
+                            "<think>and now scratch reasoning that "
+                            "got truncated mid-thought without a "
+                            "closing tag…"
+                        )
+                    }
+                }
+            ],
+            "citations": [],
+        }
+    )
+    assert "<think>" not in body
+    assert "scratch reasoning" not in body
+    assert "## Answer" in body
+    assert "The conclusion is brief." in body
+
+
+def test_format_response_no_think_tag_is_no_op() -> None:
+    """Most websearch / research bodies have no reasoning block;
+    the strip must be a no-op there."""
+    payload = {
+        "choices": [{"message": {"content": "## Plain answer\nNo trace here."}}],
+        "citations": [],
+    }
+    body, _ = _format_perplexity_body(payload)
+    assert "## Plain answer" in body
+    assert "No trace here." in body
+
+
 # ── per-tier metadata ────────────────────────────────────────────────
 
 
@@ -702,9 +795,7 @@ def test_fetch_path_block_parses_body(think_with_embedder: ThinkHandler) -> None
     assert len(refs) == 1
     n_blocks = h.store.count_blocks(refs[0].id)
     # Three paragraphs + three headings + the Sources trailer ≥ 4 blocks.
-    assert n_blocks >= 4, (
-        f"expected fetch path to produce ≥4 blocks, got {n_blocks}"
-    )
+    assert n_blocks >= 4, f"expected fetch path to produce ≥4 blocks, got {n_blocks}"
 
 
 def test_fetch_path_embeds_blocks(think_with_embedder: ThinkHandler) -> None:

@@ -159,18 +159,28 @@ class SkillHandler(Handler):
                 "search requires q=",
                 next="search(kind='skill', q='your query')",
             )
-        needle = q.lower()
+        # Normalise hyphens to spaces in both needle and haystack so
+        # natural phrasing (``spaced repetition``) finds hyphenated
+        # terms in the corpus (``spaced-repetition``) and vice versa.
+        # The MCP critic flagged false negatives 2026-05-02 where a
+        # 7B caller's natural phrasing missed the corpus's
+        # punctuation-specific form. Substring match still needs the
+        # punctuation collapsed on both sides; consider the query
+        # ``"foo bar"`` as a fold of ``foo bar`` / ``foo-bar`` /
+        # ``foo--bar``. (MCP critic MAJOR-C 2026-05-02.)
+        needle = _norm_for_substr(q)
         hits: list[tuple[str, int, str]] = []  # (slug, hit_count, preview)
         for slug in _list_skills():
             text = _load_skill(slug)
             if text is None:
                 continue
-            cnt = text.lower().count(needle)
+            cnt = _norm_for_substr(text).count(needle)
             if cnt > 0:
-                # Pull the first matching line as a preview.
+                # Pull the first matching line as a preview — match
+                # on the normalised form, surface the original line.
                 preview = ""
                 for line in text.splitlines():
-                    if needle in line.lower():
+                    if needle in _norm_for_substr(line):
                         preview = line.strip()
                         break
                 hits.append((slug, cnt, preview))
@@ -199,7 +209,11 @@ class SkillHandler(Handler):
             # MINOR — search surfaces unwired skills without marker.)
             gap = _availability_gap(slug, hub=self.hub)
             marker = " [unwired]" if gap is not None else ""
-            lines.append(f"\n## {slug}{marker}  ({cnt} hits)\n{preview_short}")
+            # Grammatical pluralisation: ``1 hit`` / ``N hits`` —
+            # the bare ``({cnt} hits)`` shape was ungrammatical at
+            # cnt == 1 (MCP critic MINOR-C 2026-05-02).
+            hit_word = "hit" if cnt == 1 else "hits"
+            lines.append(f"\n## {slug}{marker}  ({cnt} {hit_word})\n{preview_short}")
         return Response(body="\n".join(lines))
 
     # ── helpers ────────────────────────────────────────────────────
@@ -223,7 +237,12 @@ class SkillHandler(Handler):
             title = _skill_title(slug)
             index_entries.append((slug, title))
 
-        lines = [f"# {len(index_entries)} skill(s) available"]
+        # Grammatical pluralisation in the headline — the MCP critic
+        # flagged ``# 9 oracle(s)`` and ``# 22 skill(s)`` as
+        # ungrammatical 2026-05-02; resolve here so the headline
+        # reads naturally at any cardinality.
+        skill_word = "skill" if len(index_entries) == 1 else "skills"
+        lines = [f"# {len(index_entries)} {skill_word} available"]
         for slug, title in index_entries:
             if title:
                 lines.append(f"  {slug:<32}  {title}")
@@ -467,6 +486,30 @@ _OPTIONAL_DEP_PROBES: tuple[tuple[str, str, str, str], ...] = (
 
 
 # ---------------------------------------------------------------------------
+# Substring normalisation (hyphen ↔ space fold)
+# ---------------------------------------------------------------------------
+
+
+# Pre-compiled regex for collapsing runs of whitespace + hyphens into a
+# single space, so the substring match treats ``spaced repetition``,
+# ``spaced-repetition``, ``spaced - repetition`` and ``spaced  repetition``
+# as the same query target. Compiling at module level keeps the per-call
+# allocation cost off the hot path. (MCP critic MAJOR-C 2026-05-02.)
+_NORM_HYPHEN_WS_RE = re.compile(r"[\s\-]+")
+
+
+def _norm_for_substr(s: str) -> str:
+    """Lower-case and collapse hyphen / whitespace runs to one space.
+
+    Used by the skill substring search so a 7B caller's natural
+    phrasing finds the hyphenated form a corpus author wrote (and
+    vice versa). Keeps no allocation cost when the input has no
+    hyphens or runs of whitespace — the regex is a no-op then.
+    """
+    return _NORM_HYPHEN_WS_RE.sub(" ", s.lower()).strip()
+
+
+# ---------------------------------------------------------------------------
 # File access (importlib.resources keeps this working from a wheel)
 # ---------------------------------------------------------------------------
 
@@ -548,9 +591,16 @@ def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
     applies = fm.get("applies-to") or fm.get("applies_to") or ""
     if applies:
         kinds.extend(_APPLIES_TO_KIND_RE.findall(applies))
-    if slug.startswith("precis-") and slug.endswith("-help"):
+    # Slug-derived fallback, only when front-matter didn't name any
+    # kinds.  When the slug names an umbrella concept
+    # (``precis-perplexity-help``) while the front-matter pins the
+    # concrete kinds (``websearch`` / ``think`` / ``research``),
+    # treating the slug-derived string as authoritative produces a
+    # false "kind=perplexity not wired" banner on a valid skill.
+    # (MCP critic MINOR-C — skill-availability gate false-positive.)
+    if not kinds and slug.startswith("precis-") and slug.endswith("-help"):
         derived = slug[len("precis-") : -len("-help")]
-        if derived and derived not in kinds:
+        if derived:
             kinds.append(derived)
     return kinds
 

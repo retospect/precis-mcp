@@ -282,13 +282,16 @@ class PaperHandler(Handler):
             tags=normalized_tags,
         )
 
-        # Hits arrive sorted by RRF fused rank — best first. We do *not*
-        # surface the raw fused number because RRF is rank-based by
-        # construction (1/(k+rank_lex) + 1/(k+rank_sem)); the absolute
-        # score doesn't reflect query strength, and a misleading
-        # 0.0164/0.0161/0.0159 staircase is the same for every query.
-        # Position in this list is the only honest relevance signal,
-        # so we render position only.
+        # Hits arrive sorted by RRF fused rank — best first. The
+        # raw fused number is, in absolute terms, a 1/(k+rank)
+        # staircase that doesn't reflect query strength — but
+        # every other block-level handler (web, think, markdown,
+        # plaintext, conversation, python) renders the same value
+        # as ``(score=X.XXXX)``, so paper opting out left agents
+        # with a kind-specific shape inconsistency. The MCP critic
+        # flagged this 2026-05-02; aligning here at cost of one
+        # potentially-misleading float per hit, balanced by uniform
+        # downstream parsing across kinds.
         lines = [
             format_search_headline(
                 n_returned=len(hits),
@@ -297,7 +300,7 @@ class PaperHandler(Handler):
                 query=q,
             )
         ]
-        for i, (block, ref, _score) in enumerate(hits, 1):
+        for i, (block, ref, score) in enumerate(hits, 1):
             slug = ref.slug or "???"
             handle = f"{slug}~{block.pos}"
             # Scrub image markers + page anchors out of the preview
@@ -308,7 +311,7 @@ class PaperHandler(Handler):
             # (MCP critic re-probe MAJOR — figure marker leaks in
             # search previews.)
             preview = _excerpt(_scrub_block_text(block.text), limit=280)
-            lines.append(f"\n## {i}. {handle}")
+            lines.append(f"\n## {i}. {handle}  (score={score:.4f})")
             lines.append(f"_{_clean_inline_text(ref.title)}_")
             lines.append(preview)
 
@@ -552,7 +555,31 @@ class PaperHandler(Handler):
         if view == "abstract":
             abstract = (ref.meta or {}).get("abstract")
             if not abstract:
-                return Response(body=f"no abstract on file for {ref.slug}")
+                # Empty result still teaches the next call shape:
+                # the paper's body is reachable via TOC + chunk
+                # ranges even when the publisher's abstract metadata
+                # is missing. Without this trailer the bare
+                # "no abstract on file" was a dead end (MCP critic
+                # MINOR-C 2026-05-02).
+                slug = ref.slug or "???"
+                body = f"no abstract on file for {slug}"
+                body += render_next_section(
+                    [
+                        (
+                            f"get(kind='paper', id='{slug}', view='toc')",
+                            "hierarchical TOC — find sections to read",
+                        ),
+                        (
+                            f"get(kind='paper', id='{slug}~0..5')",
+                            "read the first chunks (often opens with the abstract)",
+                        ),
+                        (
+                            f"search(kind='paper', q='abstract', scope={slug!r})",
+                            "search blocks within this paper",
+                        ),
+                    ]
+                )
+                return Response(body=body)
             # Strip JATS XML namespace tags (<jats:title>, <jats:p>, …)
             # that some publishers leave in the metadata, then run the
             # entity unescape pipeline so ``&amp;`` lands as ``&``.

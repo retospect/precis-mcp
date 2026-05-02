@@ -130,11 +130,10 @@ class FlashcardHandler(NumericRefHandler):
         body += render_next_section(
             [
                 ("get(kind='fc', id=N)", "read the card to quiz yourself"),
-                (
-                    "tag(kind='fc', id=N, add=['REVIEW:good'])",
-                    "log a review (SM-2 grade)",
-                ),
                 ("put(kind='fc', text='knowledge statement')", "create a new card"),
             ]
         )
+        # SM-2 grader lands in a follow-up (see module docstring); the
+        # agent-facing review-grade verb is deliberately absent until
+        # then so the trailer doesn't advertise an unimplemented path.
         return Response(body=body)

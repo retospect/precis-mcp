@@ -180,10 +180,23 @@ class OpsClient:
         # ``search`` itself doesn't need anything from ``epo_ops.models``.
         client = self._client()
         try:
+            # ``constituents=['biblio']`` asks OPS to return the full
+            # biblio record for each hit — ``<invention-title>``,
+            # ``<applicants>``, publication date, CPC classes —
+            # inline, instead of just ``<publication-reference>``
+            # stubs. Without this the parser sees no title and
+            # every remote hit renders as ``_(untitled)_`` (MCP
+            # critic 2026-05). The trade-off is payload size: a
+            # biblio-enriched search response is ~5–10x larger
+            # than the bare one, but OPS quota accounting is at
+            # the "API endpoint" level and both variants charge
+            # the same. Titles are table-stakes for agents;
+            # bigger responses are the right trade.
             response = client.published_data_search(
                 cql=cql,
                 range_begin=range_start,
                 range_end=range_end,
+                constituents=["biblio"],
             )
         except Exception as e:
             raise self._wrap_exc(e) from e

@@ -273,15 +273,17 @@ class TestIngestPaper:
             embedder=embedder,
         )
         h = OracleHandler(hub=Hub(store=store))
-        # Entry 0 — deterministic fetch by position.
-        resp0 = h.get(id="minitest~0")
-        assert "oracle minitest~0" in resp0.body
-        assert "Mini Test" in resp0.body
-        assert "The first lesson." in resp0.body
-        # Entry 1 — deterministic fetch by position.
+        # Entry 1 — deterministic fetch by position. Oracles are
+        # 1-indexed at ingest so I-Ching ``iching~49`` matches
+        # Hexagram 49 verbatim (see ``ingest_oracles.ingest_paper``).
         resp1 = h.get(id="minitest~1")
         assert "oracle minitest~1" in resp1.body
-        assert "The second lesson." in resp1.body
+        assert "Mini Test" in resp1.body
+        assert "The first lesson." in resp1.body
+        # Entry 2 — deterministic fetch by position.
+        resp2 = h.get(id="minitest~2")
+        assert "oracle minitest~2" in resp2.body
+        assert "The second lesson." in resp2.body
         # Default (random) call hits one of the two entries.
         default = h.get(id="minitest")
         assert "oracle minitest~" in default.body
@@ -361,3 +363,52 @@ class TestBundledIngest:
         ref = store.get_ref(kind="oracle", id="iching")
         assert ref is not None
         assert ref.title == "I-Ching"
+
+    def test_iching_positions_are_1_indexed(self, store: Store) -> None:
+        """Block positions must run 1..64, not 0..63.
+
+        This is the contract that lets users address ``iching~49``
+        and get Hexagram 49. Off-by-one regression guard for the
+        skill's user-facing examples.
+        """
+        bundled = bundled_oracle_dir()
+        assert bundled is not None
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        ingest_paper(
+            bundled / "iching.yaml",
+            store=store,
+            embedder=embedder,
+        )
+        ref = store.get_ref(kind="oracle", id="iching")
+        assert ref is not None
+        blocks = store.list_blocks_for_ref(ref.id)
+        positions = sorted(b.pos for b in blocks)
+        assert positions == list(range(1, 65)), (
+            "I-Ching positions must be 1..64 inclusive; got "
+            f"{positions[:3]}..{positions[-3:]}"
+        )
+        # And the entry at pos=49 must be the title-named "Hexagram 49".
+        block_49 = next(b for b in blocks if b.pos == 49)
+        section_path = block_49.meta.get("section_path", [])
+        assert section_path, "block.meta.section_path missing"
+        assert "Hexagram 49" in section_path[0], (
+            f"iching~49 must title-match Hexagram 49; got {section_path[0]!r}"
+        )
+
+    def test_minitest_positions_are_1_indexed(
+        self, store: Store, yaml_dir: Path
+    ) -> None:
+        """The same 1-indexed contract holds for any ingested oracle —
+        not just I-Ching. Other traditions have no inherent numbering
+        but uniform 1-indexing is cheaper to remember than per-tradition
+        rules."""
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        ingest_paper(
+            yaml_dir / "minitest.yaml",
+            store=store,
+            embedder=embedder,
+        )
+        ref = store.get_ref(kind="oracle", id="minitest")
+        assert ref is not None
+        blocks = store.list_blocks_for_ref(ref.id)
+        assert sorted(b.pos for b in blocks) == [1, 2]

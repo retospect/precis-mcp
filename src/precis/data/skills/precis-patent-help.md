@@ -1,11 +1,11 @@
 ---
 id: precis-patent-help
 title: precis — search and read patents (EPO OPS)
-status: draft
+status: shipped
 tier: 1
 floor: any
 applies-to: get/search (kind='patent')
-last-updated: 2026-04-29
+last-updated: 2026-05-02
 ---
 
 # precis-patent-help — patents via EPO OPS
@@ -56,8 +56,9 @@ reshapes them.
 
 ## Search — find patents
 
-The `search` surface is **uniform with every other precis kind** —
-just `q=`, `tags=`, `scope=`, `top_k=`. No patent-specific kwargs.
+The `search` surface follows the cross-kind shape — `q=`, `tags=`,
+`scope=`, `top_k=` — with one patent-specific knob, `source=`, for
+picking between the local store, OPS, or both.
 
 ```python
 search(kind='patent', q='photocatalytic NOx reduction')
@@ -71,7 +72,21 @@ search(kind='patent', q='MOF synthesis',
 
 # Scope to one already-ingested patent (paper-style)
 search(kind='patent', q='Z-scheme', scope='ep4123456a1')
+
+# Force one leg
+search(kind='patent', q='amine carbon capture', source='local')
+#                                                       → only patents I've curated
+search(kind='patent', q='amine carbon capture', source='remote')
+#                                                       → only OPS hits NOT yet
+#                                                         in my local store
+search(kind='patent', q='amine carbon capture', source='both')
+#                                                       → default: merged
 ```
+
+`source='remote'` is the natural **prior-art sweep** mode — it
+dedupes the OPS results against the local store so the agent only
+sees patents it hasn't fetched yet. `source='local'` skips the OPS
+call entirely (useful offline or for reviewing curation).
 
 The handler does two passes and merges them by DOCDB id:
 
@@ -110,32 +125,72 @@ them.
 
 ```python
 get(kind='patent', id='ep1234567b1')                  # overview
+get(kind='patent', id='ep1234567b1', view='biblio')   # bib-data table
 get(kind='patent', id='ep1234567b1', view='abstract')
 get(kind='patent', id='ep1234567b1', view='claims')
 get(kind='patent', id='ep1234567b1', view='description')
-get(kind='patent', id='ep1234567b1', view='family')   # INPADOC family
-get(kind='patent', id='ep1234567b1', view='legal')    # legal-status events
-get(kind='patent', id='ep1234567b1', view='cite/bib') # BibTeX
+get(kind='patent', id='ep1234567b1', view='bibtex')   # BibTeX entry
 ```
+
+(INPADOC `family` and legal-status views are queued — see
+`docs/search-future-filters.md`.  Today, `meta.family_id` is
+carried on every stored patent and surfaced in the `biblio`
+view; the Espacenet deep-link in the footer resolves to the
+family page.)
 
 The first time you `get(id=...)` for an unknown DOCDB id, the
-handler fetches biblio + abstract + claims + description from OPS,
-parses the WIPO ST.36 XML, embeds the blocks, persists a `refs`
-row, and renders the requested view. From then on the patent is
-local — `search` lists it as `[local]`, and chunk navigation works
-exactly like papers:
+handler fetches three endpoints from OPS — biblio (which carries
+the abstract inline), description, and claims — parses the WIPO
+ST.36 XML, embeds the blocks, persists a `refs` row, and renders
+the requested view. From then on the patent is local — `search`
+lists it as `[local]`, and chunk navigation works exactly like
+papers:
 
 ```python
-get(kind='patent', id='ep1234567b1~5')           # block 5
-get(kind='patent', id='ep1234567b1~5..12')       # range
-get(kind='patent', id='ep1234567b1~5..12/toc')   # range-scoped TOC
-get(kind='patent', id='ep1234567b1', view='toc') # full hierarchical TOC
+get(kind='patent', id='ep1234567b1~5')      # block 5
+get(kind='patent', id='ep1234567b1~5..12')  # range
 ```
 
-Same path-form aliases as `paper` (`id='ep1234567b1/abstract'`).
-Re-`get`-ing within 30 days is a no-op refresh; after that the
-etag is rechecked and blocks are replaced if the publication
-changed.
+(Patent slugs only accept the `~` chunk separator — there is no
+`slug/view` path form; pass `view=` explicitly.)
+
+Stored patents are **retained perpetually**. Once a patent is
+ingested it is never auto-evicted, and re-`get`-ing the same id
+returns the local copy unchanged — patents are public-record
+documents whose body text doesn't drift, so there's no refresh
+loop to chase. The full-text sweep (`sweep-patent-fulltext`) is
+the one exception: it back-fills description / claims for refs
+that ingested with `awaiting-fulltext`. To force a fresh OPS
+fetch, soft-delete the ref and `get(...)` it again.
+
+### When OPS hasn't indexed the full text yet
+
+For recently-published US / CN applications, OPS often returns 404
+on the description and claims endpoints for weeks after
+publication. The patent still ingests successfully — biblio +
+abstract land in the local store — and the overview shows a
+single status line so you know what happened:
+
+```
+_full text not yet indexed by OPS — queued for auto-retry on 2026-05-09_
+```
+
+The handler applies the open tag **`awaiting-fulltext`** and
+schedules a retry via the `sweep-patent-fulltext` job (see
+"Background watches" below). Backoff is `7d → 14d → 28d → 56d`.
+After ~6 months past publication the sweep gives up and swaps
+the tag for **`fulltext-unavailable`**, changing the trailer to:
+
+```
+_full text unavailable from OPS — searchable by abstract + biblio only_
+```
+
+Filter by either cohort:
+
+```python
+search(kind='patent', tags=['awaiting-fulltext'])     # waiting for OPS to catch up
+search(kind='patent', tags=['fulltext-unavailable'])  # gave up — biblio-only forever
+```
 
 To list locally-stored patents:
 
@@ -165,6 +220,11 @@ ingest:
 | `country:`   | no     | `country:ep`           |
 | `kind:`      | no     | `kind:b1`              |
 | `family:`    | no     | `family:12345678`      |
+
+Two open tags also ride on patents whose full text wasn't
+available at ingest: `awaiting-fulltext` (queued for auto-retry)
+and `fulltext-unavailable` (sweep gave up after 6 months).
+See the "When OPS hasn't indexed the full text yet" section above.
 
 Plus the open `topic:` prefix (agent-applied) and any other open
 lowercase tag the agent wants to coin. See `precis-tags` for the
@@ -197,6 +257,11 @@ precis jobs list-patent-watches --show-cql
 precis jobs run-patent-watches                       # one-shot pass over due watches
 precis jobs run-patent-watches --name catalysts --dry-run
 precis jobs watch-patents --name catalysts --delete
+
+# Retry OPS description / claims for patents that 404'd at ingest.
+precis jobs sweep-patent-fulltext                    # one pass over due awaiting-fulltext refs
+precis jobs sweep-patent-fulltext --dry-run          # preview without fetching
+precis jobs sweep-patent-fulltext --limit 10         # cap attempts this pass
 ```
 
 **Watches require strict CQL.** Bare keywords like `'photocatalysis'`
@@ -256,8 +321,9 @@ agent boundary — this skill won't appear in the index and
 - All OPS calls are **free**; bandwidth counts toward 4 GB / week
   fair-use. The runner pauses ingest at 3 GB rolling.
 - Search hit-list cache TTL: 7 days.
-- Stored patents are **pinned** — re-ingest manually (or via
-  `precis jobs sweep-patent-stale`) to refresh.
+- Stored patent refs are **perpetual** — never auto-evicted. The
+  only background mutation is `sweep-patent-fulltext` back-filling
+  description / claims on `awaiting-fulltext` refs.
 - Cost trailer: `[cost: free — EPO OPS fair-use]`. Footer carries
   the Espacenet deep-link for attribution.
 
@@ -272,10 +338,6 @@ agent boundary — this skill won't appear in the index and
   `docs/search-future-filters.md`.
 - **State markers beyond `[local]`** (e.g. `[queued]`, `[stale]`)
   — also queued; see `docs/search-future-filters.md`.
-- **`source='local'` / `source='remote'` knob** — today `search`
-  always merges (with the remote leg auto-skipped if creds are
-  unset). Forcing one side is queued in
-  `docs/search-future-filters.md`.
 - **USPTO PAIR / bulk dumps** — OPS already covers US/WO/CN/JP
   via DOCDB worldwide.
 - **Image / figure retrieval** — deferred. Future `view='images'`

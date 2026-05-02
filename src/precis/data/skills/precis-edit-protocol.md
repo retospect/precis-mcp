@@ -4,8 +4,8 @@ title: precis — anchored edits across every file kind
 status: active
 tier: 2
 floor: any
-applies-to: put with mode='edit' or mode='insert' on R/W file kinds (markdown, plaintext, python)
-last-updated: 2026-05-01
+applies-to: edit (mode='find-replace'|'append'|'insert'|'replace') on R/W file kinds (kind='markdown', kind='plaintext', kind='python')
+last-updated: 2026-05-02
 ---
 
 > **Status:** v1 ships for `markdown`, `plaintext`, and `python`

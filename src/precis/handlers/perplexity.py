@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, Upstream
@@ -525,6 +526,15 @@ def _format_perplexity_body(data: dict[str, Any]) -> tuple[str, list[str]]:
 
     message = choices[0].get("message") or {}
     content = str(message.get("content") or "").strip()
+    # Sonar-reasoning-pro (``think``) interleaves a
+    # ``<think>…</think>`` scratch block inside the answer that
+    # leaks the model's internal reasoning trace.  Callers should
+    # see the conclusion, not the scratch — strip the block at
+    # render time.  The conclusion follows the closing tag.
+    # ``websearch`` / ``research`` responses never carry the tag,
+    # so the strip is a no-op there.  (MCP critic MINOR-C — think
+    # kind leaks <think>…</think> reasoning trace.)
+    content = _strip_reasoning_trace(content)
     citations: list[str] = [str(c) for c in (data.get("citations") or [])]
 
     parts: list[str] = []
@@ -543,3 +553,66 @@ def _title_for_query(query: str) -> str:
     """Short ref title — first 80 chars of the query, single line."""
     one_line = " ".join(query.split())
     return one_line[:80] + ("…" if len(one_line) > 80 else "")
+
+
+_REASONING_TAG_RE = re.compile(
+    r"<think\b[^>]*>.*?</think>\s*",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+_ORPHAN_CLOSE_THINK_RE = re.compile(r"\s*</think>\s*", flags=re.IGNORECASE)
+_ORPHAN_OPEN_THINK_RE = re.compile(
+    r"<think\b[^>]*>.*\Z",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_reasoning_trace(content: str) -> str:
+    """Remove any ``<think>…</think>`` blocks from a Perplexity body.
+
+    Sonar-reasoning-pro wraps its internal reasoning in a literal
+    ``<think>…</think>`` block before the final answer; small-model
+    callers misread the scratch trace as the conclusion and quote
+    it back.  The block is deterministic and single-top-level, so
+    a regex strip is safe.  No-op when the tag is absent.
+
+    Three forms are scrubbed:
+
+    1. **Paired** ``<think>…</think>`` — the canonical wrapper.
+    2. **Orphan closing tag** ``</think>`` with no matching opener
+       (observed in the corpus 2026-05-02 — likely from a streaming
+       upstream that truncated the opener). Drop everything before
+       it on the assumption that the conclusion lives after it,
+       falling back to deletion of just the tag if the prefix is
+       implausibly long (≥ 90 % of the body).
+    3. **Orphan opening tag** ``<think>`` with no matching closer
+       (truncation in the other direction). Drop from the tag to
+       end-of-string — better to surface a possibly-empty answer
+       than to leak the trace.
+
+    Whitespace adjacent to the strip site is swallowed so the
+    answer heading lands cleanly. (MCP critic MINOR-C 2026-05-02
+    — orphan closing tags leaked into the corpus.)
+    """
+    lower = content.lower()
+    if "<think" not in lower and "</think>" not in lower:
+        return content
+    cleaned = _REASONING_TAG_RE.sub("", content, count=1)
+    # Orphan closing tag: keep the suffix, drop everything up to
+    # and including the tag — that's the conclusion that came
+    # AFTER the leaked trace. Guard against absurd truncation
+    # ratios (where the prefix is ≥ 90 % of the body) by falling
+    # back to a simple in-place delete.
+    if "</think>" in cleaned.lower():
+        m = _ORPHAN_CLOSE_THINK_RE.search(cleaned)
+        if m is not None:
+            prefix_len = m.start()
+            suffix = cleaned[m.end() :]
+            if prefix_len <= 0.9 * len(cleaned) and suffix.strip():
+                cleaned = suffix
+            else:
+                cleaned = _ORPHAN_CLOSE_THINK_RE.sub(" ", cleaned)
+    # Orphan opening tag: drop from the tag to end-of-string. The
+    # conclusion never followed in the corpus we've seen, but
+    # callers must not see the trace.
+    cleaned = _ORPHAN_OPEN_THINK_RE.sub("", cleaned)
+    return cleaned.lstrip()

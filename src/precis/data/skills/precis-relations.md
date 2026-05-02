@@ -4,8 +4,8 @@ title: precis — link two refs
 status: phase-7
 tier: 1
 floor: any
-applies-to: link (target=, mode=, rel=), get (view='links'), put (link=, rel= on create)
-last-updated: 2026-04-28
+applies-to: link (target=, mode=, rel=), get (view='links') on numeric-ref kinds (memory/todo/gripe/fc/quest/conv), put (link=, rel= on create)
+last-updated: 2026-05-02
 ---
 
 # precis-relations — link two refs
@@ -90,6 +90,13 @@ get(kind='todo', id=141, view='links')
 
 The renderer prints both directions: `→` for outbound, `←` for
 inbound.
+
+`view='links'` is currently wired only on the **numeric-ref kinds**
+(`memory`, `todo`, `fc`, `quest`, `conv` — `gripe` is write-only).
+Slug kinds (`paper`, `patent`, `oracle`, `web`, `research`, …)
+raise `[error:Unsupported]`; query the link graph for those via
+the store-level helpers or by traversing from the linked
+numeric-ref ref.
 
 ## Remove a link
 

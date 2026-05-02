@@ -346,15 +346,61 @@ def _compose_classification(cls: ET.Element) -> str:
 def _extract_paragraphs(root: ET.Element) -> list[str]:
     """Description body — one entry per ``<p>`` paragraph.
 
-    Empty paragraphs are dropped. Long ones are kept whole; the
-    ingest layer handles further chunking if it ever wants to.
+    Empty and boilerplate paragraphs are dropped. Long ones are
+    kept whole; the ingest layer handles further chunking if it
+    ever wants to.
+
+    Boilerplate filter: OPS description XML interleaves page-header
+    fragments (``PATENT``, ``ATTORNEY DOCKET NO: …``, bare page
+    numbers) between real numbered paragraphs. Without filtering
+    these become full-fledged blocks, get embedded, and return as
+    noise top-K hits for any unrelated query (MCP critic: searching
+    ``'food'`` returns 10 ``_(PATENT)_`` rows). We strip an optional
+    ``[NNNN]`` paragraph-number prefix for the pattern check,
+    then drop the paragraph when the remainder matches known
+    boilerplate or is too short to be meaningful content.
     """
     out: list[str] = []
     for p in _findall(root, "p"):
         txt = _text(p)
-        if txt:
+        if txt and not _is_boilerplate_paragraph(txt):
             out.append(txt)
     return out
+
+
+# Paragraphs matching these patterns are page-header boilerplate,
+# not real patent content. Checked after stripping the ``[NNNN]``
+# paragraph-number prefix. Patterns are case-insensitive.
+_BOILERPLATE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^PATENT$", re.IGNORECASE),
+    re.compile(r"^ATTORNEY DOCKET NO\b.*$", re.IGNORECASE),
+    re.compile(r"^\d+$"),  # bare page number
+    re.compile(r"^page\s+\d+(\s+of\s+\d+)?$", re.IGNORECASE),
+)
+
+# Minimum meaningful paragraph length after prefix strip.  Ten chars
+# rejects isolated formula captions (``Figure 1``) but keeps short
+# real paragraphs (``[0001] Described here.``).
+_MIN_PARAGRAPH_CHARS = 10
+
+_PARA_NUM_PREFIX = re.compile(r"^\s*\[\s*\d+\s*\]\s*")
+
+
+def _is_boilerplate_paragraph(txt: str) -> bool:
+    """Return True if ``txt`` is a recognised page-header fragment.
+
+    Strips an optional ``[NNNN]`` prefix before matching so the
+    same patterns catch both numbered and unnumbered variants.
+    """
+    body = _PARA_NUM_PREFIX.sub("", txt).strip()
+    if not body:
+        return True
+    if len(body) < _MIN_PARAGRAPH_CHARS:
+        return True
+    for pat in _BOILERPLATE_PATTERNS:
+        if pat.match(body):
+            return True
+    return False
 
 
 def _extract_claims(root: ET.Element) -> list[str]:
@@ -363,6 +409,11 @@ def _extract_claims(root: ET.Element) -> list[str]:
     OPS structure: ``<claims><claim><claim-text>...</claim-text></claim>...</claims>``.
     Some variants nest a single ``<claim-text>`` per ``<claim>``;
     others put multiple. We concatenate per-claim.
+
+    Leading boilerplate is stripped from each claim — OPS inlines the
+    page-header ``PATENT ATTORNEY DOCKET NO: ... CLAIMS`` banner into
+    the first claim's text on many US / WO filings, which otherwise
+    surfaces as a search hit for unrelated queries.
     """
     out: list[str] = []
     for claim in _findall(root, "claim"):
@@ -371,7 +422,7 @@ def _extract_claims(root: ET.Element) -> list[str]:
         joined = " ".join(t for t in texts if t)
         if not joined:
             joined = _text(claim)
-        joined = joined.strip()
+        joined = _strip_claim_boilerplate(joined.strip())
         if joined:
             out.append(joined)
     if out:
@@ -379,10 +430,27 @@ def _extract_claims(root: ET.Element) -> list[str]:
     # Fallback: some OPS responses skip the wrapper and put claim-text
     # children directly under <claims>.
     for ct in _findall(root, "claim-text"):
-        txt = _text(ct)
+        txt = _strip_claim_boilerplate(_text(ct).strip())
         if txt:
             out.append(txt)
     return out
+
+
+# Page-header boilerplate that OPS glues onto the first claim's text.
+# Example seen in the wild (WO2026085320A1):
+#     "PATENT ATTORNEY DOCKET NO: 51198-064WO2 CLAIMS 1 . A system ..."
+# We strip through the ``CLAIMS`` sentinel so the claim text begins at
+# the claim number itself. Case-insensitive; tolerant of multiple
+# whitespace runs and an optional docket-number line.
+_CLAIM_HEADER_RE = re.compile(
+    r"^\s*PATENT\s+ATTORNEY\s+DOCKET\s+NO[:\s]*\S+\s+CLAIMS\s+",
+    re.IGNORECASE,
+)
+
+
+def _strip_claim_boilerplate(txt: str) -> str:
+    """Remove the ``PATENT ATTORNEY DOCKET ... CLAIMS`` prefix."""
+    return _CLAIM_HEADER_RE.sub("", txt, count=1)
 
 
 def _format_date(raw: str) -> str | None:

@@ -154,6 +154,39 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     )
     rp.add_argument("--database-url", default=None)
 
+    # ── sweep-patent-fulltext ───────────────────────────────────────────
+    sp = sub.add_parser(
+        "sweep-patent-fulltext",
+        help=(
+            "Retry OPS description / claims endpoints for patents "
+            "whose full text wasn't available at ingest time."
+        ),
+    )
+    sp.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=(
+            "Max number of patents this pass will attempt. "
+            "Overflow resurfaces on the next pass. Default: 50."
+        ),
+    )
+    sp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be retried; fetch nothing, mutate nothing.",
+    )
+    sp.add_argument(
+        "--fair-use-limit-gb",
+        type=float,
+        default=None,
+        help=(
+            "Override the rolling 7-day fair-use cap (default 3 GiB, "
+            "or PRECIS_PATENT_FAIR_USE_LIMIT_GB env var)."
+        ),
+    )
+    sp.add_argument("--database-url", default=None)
+
 
 # ---------------------------------------------------------------------------
 # watch-patents
@@ -356,9 +389,103 @@ def run_runner(args: argparse.Namespace) -> None:
         store.close()
 
 
+# ---------------------------------------------------------------------------
+# sweep-patent-fulltext
+# ---------------------------------------------------------------------------
+
+
+def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
+    """Implements ``precis jobs sweep-patent-fulltext`` — retry the
+    OPS description / claims endpoints for every awaiting-fulltext
+    patent whose retry timestamp has matured.
+    """
+    from pathlib import Path
+
+    from precis.config import load_config
+    from precis.embedder import make_embedder
+    from precis.handlers._patent_ops import OpsClient
+    from precis.jobs.patent_fulltext_sweep import (
+        DEFAULT_SWEEP_LIMIT,
+        run_fulltext_sweep,
+    )
+    from precis.jobs.patent_watch import DEFAULT_FAIR_USE_LIMIT_GB
+    from precis.store import Store
+
+    # Env vars must be set; without them OPS calls would fail
+    # immediately with auth errors.
+    epo_key = os.environ.get("EPO_OPS_CLIENT_KEY")
+    epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
+    raw_root_str = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+    if not (epo_key and epo_secret and raw_root_str):
+        print(
+            "sweep-patent-fulltext: EPO_OPS_CLIENT_KEY, "
+            "EPO_OPS_CLIENT_SECRET, and PRECIS_PATENT_RAW_ROOT must all "
+            "be set",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    cfg = load_config()
+    dsn = resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        ops = OpsClient(
+            key=epo_key,
+            secret=epo_secret,
+            user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
+        )
+
+        fair_use_limit_gb = args.fair_use_limit_gb
+        if fair_use_limit_gb is None:
+            env_lim = os.environ.get("PRECIS_PATENT_FAIR_USE_LIMIT_GB")
+            fair_use_limit_gb = float(env_lim) if env_lim else DEFAULT_FAIR_USE_LIMIT_GB
+
+        limit = args.limit if args.limit is not None else DEFAULT_SWEEP_LIMIT
+
+        summary = run_fulltext_sweep(
+            store=store,
+            ops=ops,
+            embedder=embedder,
+            raw_root=Path(raw_root_str).expanduser(),
+            limit=limit,
+            dry_run=args.dry_run,
+            fair_use_limit_gb=fair_use_limit_gb,
+        )
+
+        if summary.paused_global:
+            gb = summary.fair_use_bytes_before / (1024**3)
+            print(
+                f"sweep-patent-fulltext: paused — rolling 7d fair-use "
+                f"{gb:.2f} GiB ≥ limit {fair_use_limit_gb:.2f} GiB"
+            )
+            return
+        if not summary.outcomes:
+            print("sweep-patent-fulltext: no patents due for retry")
+            return
+        for o in summary.outcomes:
+            if o.error is not None:
+                print(f"  fail  {o.slug}  — {o.error}")
+                continue
+            if o.skipped_dry_run:
+                status = "give up" if o.given_up else "retry"
+                print(f"  dry   {o.slug}  (would {status})")
+                continue
+            if o.given_up:
+                print(f"  gave  {o.slug}  — six-month window exceeded")
+                continue
+            if o.succeeded:
+                print(f"  ok    {o.slug}  — +{o.blocks_added} blocks")
+                continue
+            print(f"  wait  {o.slug}  — still 404; retry rescheduled")
+    finally:
+        store.close()
+
+
 __all__ = [
     "_parse_interval",
     "add_parsers",
+    "run_fulltext_sweep_cli",
     "run_list",
     "run_runner",
     "run_watch",

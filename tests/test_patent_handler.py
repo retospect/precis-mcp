@@ -16,7 +16,7 @@ from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._patent_ops import FakeOpsClient
 from precis.handlers.patent import PatentHandler
-from precis.store import Store
+from precis.store import Store, Tag
 
 FIXTURES = Path(__file__).parent / "fixtures" / "patent"
 
@@ -296,6 +296,114 @@ class TestSearch:
     def test_search_scope_unknown_raises(self, handler: PatentHandler) -> None:
         with pytest.raises(NotFound, match="patent slug"):
             handler.search(q="solar", scope="ep0000000a1")
+
+
+# ---------------------------------------------------------------------------
+# source='local' / 'remote' / 'both' — prior-art sweep affordance
+# ---------------------------------------------------------------------------
+
+
+class TestSearchSourceKwarg:
+    """``source=`` picks which leg(s) run.  ``'remote'`` also dedupes
+    OPS hits against the local store so the agent sees only patents
+    it hasn't fetched yet — the natural prior-art sweep mode.
+    See ``docs/search-future-filters.md`` §7.
+    """
+
+    def test_source_invalid_raises(self, handler: PatentHandler) -> None:
+        with pytest.raises(BadInput, match="invalid source"):
+            handler.search(q="photocatalytic", source="nonsense")
+
+    def test_source_local_skips_ops_call(
+        self, handler: PatentHandler, fake_ops: FakeOpsClient
+    ) -> None:
+        # No patents locally and source='local' → no OPS call fires and
+        # the envelope reports zero matches.
+        before_searches = [c for c in fake_ops.calls if c[0] == "search"]
+        r = handler.search(q="photocatalytic", source="local")
+        assert "no patent" in r.body.lower() or "no patents match" in r.body.lower()
+        # The OPS client's search() was never called for this query.
+        after_searches = [c for c in fake_ops.calls if c[0] == "search"]
+        assert after_searches == before_searches
+
+    def test_source_remote_skips_local_leg(self, handler: PatentHandler) -> None:
+        # Ingest the fixture patent so the local store is non-empty.
+        handler.get(id="EP1234567B1")
+        # source='remote' should not render block-level local hits
+        # (the [local] marker disappears when local leg is skipped).
+        r = handler.search(q="photocatalytic", source="remote")
+        # ``wo2023123456a1`` is remote-only and NOT in the local store,
+        # so it must surface.
+        assert "wo2023123456a1" in r.body
+        # ``ep1234567b1`` IS in the local store, so source='remote'
+        # dedupes it out — the agent only sees patents it hasn't
+        # fetched yet.
+        assert "ep1234567b1" not in r.body
+
+    def test_source_both_is_default(self, handler: PatentHandler) -> None:
+        # source defaults to 'both' — local AND remote hits render.
+        handler.get(id="EP1234567B1")
+        default = handler.search(q="photocatalytic", top_k=10)
+        explicit = handler.search(q="photocatalytic", top_k=10, source="both")
+        assert default.body == explicit.body
+
+
+# ---------------------------------------------------------------------------
+# Overview affordance: missing full text is explained via a single
+# agent-facing trailer ("queued for auto-retry") and the precis-
+# internal "N blocks" jargon is suppressed entirely.
+# ---------------------------------------------------------------------------
+
+
+class TestOverviewFullTextStatus:
+    def test_awaiting_fulltext_trailer_with_retry_date(
+        self,
+        hub: Hub,
+        biblio_xml: bytes,
+        raw_root: Path,
+    ) -> None:
+        # Biblio-only OPS (no description, no claims) — typical for a
+        # fresh US application that hasn't been fully indexed yet. The
+        # overview must render a single "queued for auto-retry on <date>"
+        # sentence and MUST NOT leak the internal "N blocks" vocabulary.
+        ops = FakeOpsClient(biblio={"ep1234567b1": biblio_xml})
+        h = PatentHandler(hub=hub, ops=ops, raw_root=raw_root)
+        r = h.get(id="EP1234567B1")
+        assert "full text not yet indexed by OPS" in r.body
+        assert "queued for auto-retry on" in r.body
+        # The old "N blocks" / "OPS did not serve" lines are gone.
+        assert "0 blocks" not in r.body
+        assert "OPS did not serve" not in r.body
+
+    def test_no_trailer_on_full_patent(self, handler: PatentHandler) -> None:
+        # A patent with full text ingests cleanly and the overview
+        # says nothing about blocks, retries, or availability.
+        r = handler.get(id="EP1234567B1")
+        assert "full text not yet indexed" not in r.body
+        assert "full text unavailable" not in r.body
+        assert "0 blocks" not in r.body
+
+    def test_fulltext_unavailable_trailer(
+        self,
+        hub: Hub,
+        biblio_xml: bytes,
+        raw_root: Path,
+        store: Store,
+    ) -> None:
+        # Simulate the sweep-job-has-given-up state: biblio-only ingest
+        # plus a manual tag swap. The overview switches to the terminal
+        # "unavailable" sentence.
+        ops = FakeOpsClient(biblio={"ep1234567b1": biblio_xml})
+        h = PatentHandler(hub=hub, ops=ops, raw_root=raw_root)
+        h.get(id="EP1234567B1")  # ingest — adds awaiting-fulltext
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        store.remove_tag(ref.id, Tag.open("awaiting-fulltext"))
+        store.add_tag(ref.id, Tag.open("fulltext-unavailable"), set_by="system")
+        r = h.get(id="EP1234567B1")
+        assert "full text unavailable from OPS" in r.body
+        assert "searchable by abstract + biblio only" in r.body
+        assert "queued for auto-retry" not in r.body
 
 
 # ---------------------------------------------------------------------------

@@ -122,6 +122,37 @@ def test_second_call_hits_cache(handler: WebHandler) -> None:
     assert "different" not in resp2.body
 
 
+def test_get_by_slug_round_trips(handler: WebHandler) -> None:
+    """The slug printed in ``/recent`` (and accepted by ``tag`` /
+    ``link``) must round-trip through ``get(id=<slug>)``. Without
+    this, the listing trailer's ``Next: get(kind='web', id='<slug>')
+    to read one`` instruction ran straight into the URL canonicaliser
+    and rejected the slug as ``not a valid URL``. (MCP critic
+    MAJOR-C 2026-05-02.)
+    """
+    # Populate the cache so ``example-com-article`` becomes a known
+    # slug.
+    handler.get(id="https://example.com/article")
+
+    # Slug-form get: must return the cached body without raising.
+    resp = handler.get(id="example-com-article")
+    assert "first real paragraph" in resp.body
+    # Slug round-trip retains the same body the URL fetch produced.
+    url_resp = handler.get(id="https://example.com/article")
+    assert resp.body == url_resp.body
+
+
+def test_get_by_unknown_slug_still_raises_url_error(handler: WebHandler) -> None:
+    """Slug fallback only fires when ``_canonical_key`` raises AND
+    a stored slug matches. A bare non-URL non-slug input still
+    surfaces the original ``not a valid URL`` BadInput so 7B
+    callers see the diagnostic and recover with a real URL.
+    """
+    # No fetch — ``unknown-slug`` is neither URL nor cached slug.
+    with pytest.raises(BadInput, match="not a valid URL"):
+        handler.get(id="unknown-slug")
+
+
 def test_canonicalization_collapses_variants(handler: WebHandler) -> None:
     handler.get(id="https://Example.COM/article")
     handler.get(id="https://example.com/article?utm_source=newsletter")
@@ -369,9 +400,7 @@ def test_link_to_memory(handler: WebHandler, hub: Hub) -> None:
     store = hub.store
     assert store is not None
     cid = store.ensure_corpus("default")
-    mem = store.insert_ref(
-        corpus_id=cid, kind="memory", slug=None, title="the idea"
-    )
+    mem = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="the idea")
     # Fetch the web page.
     handler.get(id="https://example.com/article")
     # Link web → memory.
@@ -413,9 +442,7 @@ def test_unlink_removes(handler: WebHandler, hub: Hub) -> None:
     store = hub.store
     assert store is not None
     cid = store.ensure_corpus("default")
-    mem = store.insert_ref(
-        corpus_id=cid, kind="memory", slug=None, title="the idea"
-    )
+    mem = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="the idea")
     handler.get(id="https://example.com/article")
     handler.link(id="example-com-article", target=f"memory:{mem.id}")
     resp = handler.link(

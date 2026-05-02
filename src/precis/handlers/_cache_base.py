@@ -159,8 +159,33 @@ class CacheBackedHandler(Handler):
                 ),
             )
 
-        query = self._coerce_query(id, q)
-        key = self._canonical_key(query)
+        # Slug round-trip: ``/recent`` listings advertise slugs and
+        # ``tag`` / ``link`` accept them; without this fallback,
+        # ``get`` shoves the slug through ``_canonical_key`` and
+        # rejects it on kinds whose canonical key needs structure
+        # the slug doesn't carry (most painfully ``web`` where
+        # slugs aren't URLs). The fallback fires *only* when
+        # ``_canonical_key`` raises BadInput — kinds that accept
+        # any string (perplexity, youtube) keep their existing
+        # request-hash flow, preserving cache-key parameters like
+        # model and language preference. (MCP critic MAJOR-C
+        # 2026-05-02.)
+        try:
+            query = self._coerce_query(id, q)
+            key = self._canonical_key(query)
+        except BadInput as canonical_err:
+            if isinstance(id, str) and not (isinstance(q, str) and q.strip()):
+                slug = id.strip()
+                if slug:
+                    cached = self.store.get_cache_entry_by_slug(
+                        kind=self.spec.kind, slug=slug
+                    )
+                    if cached is not None:
+                        ref, cache = cached
+                        if self._is_fresh(cache):
+                            return self._render(ref, cache, hit=True)
+            raise canonical_err
+
         request_hash = self._hash(key)
 
         cached = self.store.get_cache_entry(
@@ -366,8 +391,7 @@ class CacheBackedHandler(Handler):
             raise BadInput(
                 f"{self.spec.kind} ops require id= (the slug)",
                 next=(
-                    f"tag(kind={self.spec.kind!r}, id='<slug>', "
-                    "add=['CACHE:pinned'])"
+                    f"tag(kind={self.spec.kind!r}, id='<slug>', add=['CACHE:pinned'])"
                 ),
             )
         ref = self.store.get_ref(kind=self.spec.kind, id=slug)
@@ -400,8 +424,7 @@ class CacheBackedHandler(Handler):
             raise BadInput(
                 f"tag(kind={self.spec.kind!r}, id=...) requires add= or remove=",
                 next=(
-                    f"tag(kind={self.spec.kind!r}, id='<slug>', "
-                    "add=['CACHE:pinned'])"
+                    f"tag(kind={self.spec.kind!r}, id='<slug>', add=['CACHE:pinned'])"
                 ),
             )
         slug, ref_id = self._resolve_cache_slug(id)
@@ -440,8 +463,7 @@ class CacheBackedHandler(Handler):
             raise BadInput(
                 f"link(kind={self.spec.kind!r}, id=...) requires target=",
                 next=(
-                    f"link(kind={self.spec.kind!r}, id='<slug>', "
-                    "target='memory:123')"
+                    f"link(kind={self.spec.kind!r}, id='<slug>', target='memory:123')"
                 ),
             )
         if mode not in ("add", "remove"):
@@ -592,9 +614,7 @@ class CacheBackedHandler(Handler):
             # Better than dropping content entirely.
             return [BlockInsert(pos=0, text=body)]
 
-        return to_block_inserts(
-            md_blocks, embedder=self.embedder, meta_for=block_meta
-        )
+        return to_block_inserts(md_blocks, embedder=self.embedder, meta_for=block_meta)
 
 
 def _format_cache_footer(cache: CacheEntry) -> str:

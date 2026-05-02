@@ -43,10 +43,10 @@ USPTO PAIR / bulk-XML are explicitly out of scope for v1 — see
 
 Two layers, no agent-visible tiers:
 
-| Layer | Postgres            | Created by                           | TTL    |
-|-------|---------------------|--------------------------------------|--------|
-| 1     | `cache_state`       | `search(...)` — OPS hit-list cache   | 7 days |
-| 2     | `refs` + `blocks`   | `get(id=...)` — durable, embedded    | pinned |
+| Layer | Postgres            | Created by                           | Retention |
+|-------|---------------------|--------------------------------------|-----------|
+| 1     | `cache_state`       | `search(...)` — OPS hit-list cache   | 7 days    |
+| 2     | `refs` + `blocks`   | `get(id=...)` — durable, embedded    | perpetual |
 
 `search` always returns layer 1 + layer 2 results merged by DOCDB
 id. `get(id=...)` is the **only** way to materialise a layer-2 row;
@@ -568,11 +568,15 @@ get(id='ep1234567b1')
 request and persisted to `family.json` / `legal.json` next to the
 XML, then cached in `refs.meta` for subsequent calls.
 
-Idempotency: re-`get`-ing the same id within 30 days is a no-op
-refresh. After 30 days, the etag is rechecked; on change, replace
-blocks (preserve `refs.id`, user-applied `topic:` tags, and `link`
-rows). Block slugs are content-hash deterministic so unchanged
-paragraphs survive replacement.
+Idempotency: re-`get`-ing the same id is a strict no-op — the
+existing `refs` row is returned unchanged with no OPS round-trip.
+Patents are public-record documents whose body text doesn't
+drift, so there's no etag-refresh loop to chase. To force a fresh
+fetch, soft-delete the ref first; the subsequent `get(...)` will
+re-pull from OPS. The full-text sweep
+(`precis.jobs.patent_fulltext_sweep`) is the one background path
+that mutates a stored patent — and only when it carries the
+`awaiting-fulltext` tag from an ingest-time 404.
 
 ### Lazy view depth
 
@@ -592,7 +596,7 @@ shows it matters.
 # Phase 1
 precis jobs ingest-patent <docdb_id>           # alias for get(id=...) — useful from shell
 precis jobs ingest-patent --from-search '<cql>' [--limit N] [--dry-run]
-precis jobs sweep-patent-stale                  # re-fetch refs older than 90 days
+precis jobs sweep-patent-fulltext               # back-fill description/claims for awaiting-fulltext refs
 
 # Phase 2 — watches (landed)
 precis jobs watch-patents '<cql>' --name <slug> [--every 7d] [--auto-get] [--max-per-pass N]
@@ -780,7 +784,7 @@ The footer matches the language pattern `wolframalpha` and
 7. `_patent_merge.py` + `PatentHandler.search(...)` — remote leg
    cache-backed via `_cache_base.py`, local leg paper-style fused
    search, merge with `[local]` markers.
-8. CLI: `ingest-patent`, `sweep-patent-stale`. (Watch CLI is
+8. CLI: `ingest-patent`, `sweep-patent-fulltext`. (Watch CLI is
    phase 2.)
 9. **—— phase 1 ships here ——**
 10. *Phase 2 (landed)*: `patent_watches` migration

@@ -4,8 +4,8 @@ title: precis — navigate Python codebases
 status: built (slices 1-8.5)
 tier: 1
 floor: any
-applies-to: get/search/put (kind='python'); writes are AST-validated, ruff-fixed, and ruff-formatted
-last-updated: 2026-04-29
+applies-to: get/search/edit/put/delete (kind='python'); writes are AST-validated, ruff-fixed, and ruff-formatted
+last-updated: 2026-05-02
 ---
 
 # precis-python-help — Python codebase navigation
@@ -24,12 +24,12 @@ For shared addressing (two tracks, multi-root, response shape) read
 A Python **header** (a class, function, or method) sits in a graph:
 
 ```
-Registry
-  ├── parent          : module precis.registry
-  ├── methods         : __init__, get, kinds, __contains__, __len__
+Hub
+  ├── parent          : module precis.dispatch
+  ├── methods         : register_ability, register_handler, kinds, get, __contains__, __len__
   ├── inherits        : object
-  ├── called by       : precis.runtime.build_runtime, …
-  └── calls           : precis.errors.NotFound.__init__
+  ├── called by       : precis.dispatch.boot, …
+  └── calls           : precis.dispatch.DuplicateRegistration.__init__
 ```
 
 Every header view shows these edges so you can navigate as a graph,
@@ -42,13 +42,13 @@ Python accepts three id shapes:
 
 ```python
 # 1. File path — like every other file kind. Same Track A/B rules.
-get(kind='python', id='precis/src/precis/registry.py')
-get(kind='python', id='precis/src/precis/registry.py~Registry')
-get(kind='python', id='precis/src/precis/registry.py~Registry.get')
-get(kind='python', id='precis/src/precis/registry.py~L42-100')
+get(kind='python', id='precis/src/precis/dispatch.py')
+get(kind='python', id='precis/src/precis/dispatch.py~Hub')
+get(kind='python', id='precis/src/precis/dispatch.py~Hub.register_ability')
+get(kind='python', id='precis/src/precis/dispatch.py~L96-292')
 
 # 2. Qualname shortcut — when you know the dotted name, skip the path.
-get(kind='python', id='precis::precis.registry.Registry.get')
+get(kind='python', id='precis::precis.dispatch.Hub.register_ability')
 
 # 3. Repo overview.
 get(kind='python', id='precis')
@@ -66,15 +66,15 @@ file. If the qualname is ambiguous, you get `BadInput` with
 | Track | Form | When |
 |---|---|---|
 | **A — coordinates** | `~L<a>-<b>` | from a stack trace, grep, IDE |
-| **B — headers** | `~Registry.get` or `::precis.registry.Registry.get` | durable, graph-rich |
+| **B — headers** | `~Hub.register_ability` or `::precis.dispatch.Hub.register_ability` | durable, graph-rich |
 
 ```python
 # Track A: I have a line from a traceback.
-get(kind='python', id='precis/src/precis/cli.py~L142')
-# → Resolved L142 to function _cmd_serve (lines 138-150).
+get(kind='python', id='precis/src/precis/cli/main.py~L120')
+# → Resolved L120 to function main (lines 96-130).
 
 # Track B: I have a qualname.
-get(kind='python', id='precis::precis.cli._cmd_serve')
+get(kind='python', id='precis::precis.dispatch.boot')
 ```
 
 Track B in python is **not just a slug** — every header response
@@ -158,13 +158,13 @@ exactly the symbols, not their bodies.
 ### Map a stack trace to symbols
 
 ```python
-# `Traceback … File "src/precis/cli.py", line 142 …`
-get(kind='python', id='precis/src/precis/cli.py~L142')
+# `Traceback … File "src/precis/dispatch.py", line 444 …`
+get(kind='python', id='precis/src/precis/dispatch.py~L444')
 
 # Response gives you both forms:
-#   precis/src/precis/cli.py~_cmd_serve  (function, lines 138-150)
+#   precis/src/precis/dispatch.py~boot  (function, lines 444-612)
 # Now read its callers and callees:
-get(kind='python', id='precis::precis.cli._cmd_serve')
+get(kind='python', id='precis::precis.dispatch.boot')
 ```
 
 ### Understand "how does `precis serve` boot?"
@@ -172,20 +172,24 @@ get(kind='python', id='precis::precis.cli._cmd_serve')
 ```python
 get(kind='python', id='precis', view='entries')
 # → precis console-script
-#     entry: precis.cli:main
-#     file:  precis/src/precis/cli.py:42
+#     entry: precis.cli:main           (setuptools shorthand)
+#     file:  precis/src/precis/cli/main.py:1
 
 get(kind='python', id='precis', view='callgraph',
-    args={'entry': 'precis.cli:main', 'depth': 3})
+    args={'entry': 'precis.cli.main:main', 'depth': 3})
 # → tree of static call edges from main downward
 
 # Drill into the most interesting node from the graph:
-get(kind='python', id='precis::precis.runtime.build_runtime')
+get(kind='python', id='precis::precis.dispatch.boot')
 ```
 
-The `entries` view shows entry points in **both forms** — the
-`module:function` setuptools notation (used as `entry=` in
-`callgraph`) and the file path (use as a normal python id).
+The `entries` view prints the **setuptools shorthand**
+(`precis.cli:main`) in the entry trailer, but the static call
+graph resolves on the **fully-qualified** form
+(`precis.cli.main:main`) — that's what an actual import has to
+write. If the shorthand returns a one-line stub, expand it to the
+fully-qualified form and retry; the resolver does not yet bridge
+the two notations automatically.
 
 Three calls, no `read_file`, no `grep`. The agent has the boot
 sequence mapped.
@@ -193,10 +197,10 @@ sequence mapped.
 ### Find every caller of a function
 
 ```python
-get(kind='python', id='precis::precis.registry.Registry.get')
+get(kind='python', id='precis::precis.dispatch.Hub.register_ability')
 # Response includes a "Called by:" section:
-#   precis.runtime.build_runtime               1×
-#   precis.server.PrecisServer._dispatch       3×
+#   precis.protocol.Handler._register_with     1×
+#   precis.handlers.skill.SkillHandler.__init__ 3×
 ```
 
 The default symbol view *is* the caller/callee view. No separate
@@ -206,10 +210,10 @@ view needed for this common question.
 
 ```python
 # Use TOC + outline first.
-get(kind='python', id='precis/src/precis/registry.py')
+get(kind='python', id='precis/src/precis/dispatch.py')
 
 # When you've narrowed it down, read the actual source.
-get(kind='python', id='precis::precis.registry.Registry.get', view='source')
+get(kind='python', id='precis::precis.dispatch.boot', view='source')
 ```
 
 `source` returns the function body verbatim — same content
@@ -217,14 +221,10 @@ get(kind='python', id='precis::precis.registry.Registry.get', view='source')
 
 ### Git: who last touched this and why?
 
-```python
-get(kind='python', id='precis::precis.registry.Registry.get', view='blame')
-get(kind='python', id='precis::precis.registry.Registry.get', view='log')
-get(kind='python', id='precis::precis.registry.Registry.get',
-    view='churn', days=90)
-```
-
-Symbol-scoped (not file-scoped). Renames are followed automatically.
+Git overlays (`blame` / `log` / `churn` / `owners` / `diff`) are
+**deferred** — the views are reserved but not yet wired. Use the
+shell (`git log -L :Hub:src/precis/dispatch.py`) until the
+overlay slice ships.
 
 ## Editing code
 
@@ -249,18 +249,13 @@ the next, rather than being silently corrected.
 
 ```python
 edit(kind='python',
-    id='precis::precis.registry.Registry.get',
-    text='''    def get(self, kind: str) -> Handler:
-        """Look up a handler by kind name."""
-        if kind not in self._handlers:
-            raise NotFound(
-                f"unknown kind: {kind}",
-                options=list(self._handlers),
-            )
-        return self._handlers[kind]''',
+    id='precis::precis.dispatch.Hub.handler_for',
+    text='''    def handler_for(self, kind: str) -> Any | None:
+        """Return the handler instance registered for ``kind``, or None."""
+        return self.handlers.get(kind)''',
     mode='replace')
 # Response:
-#   replaced precis.registry.Registry.get (lines 120–128 → 120–128)
+#   replaced precis.dispatch.Hub.handler_for (lines 204-206 → 204-206)
 #   ast.parse:           ok
 #   qualname preserved:  ok
 #   ruff:                no changes
@@ -278,12 +273,12 @@ Prefer this form: qualnames survive file moves and re-orderings.
 
 ```python
 edit(kind='python',
-    id='precis/src/precis/registry.py~L120-128',
-    text='        return self._handlers[kind]',
+    id='precis/src/precis/dispatch.py~L204-206',
+    text='        return self.handlers.get(kind)',
     mode='replace')
 # Response:
-#   replaced lines 120–128 → 120 in src/precis/registry.py
-#   affects symbols: precis.registry.Registry.get
+#   replaced lines 204-206 → 204 in src/precis/dispatch.py
+#   affects symbols: precis.dispatch.Hub.handler_for
 #   ast.parse:       ok
 #   ruff:            1 change
 #     - 1 whitespace adjustment (format)
@@ -300,18 +295,17 @@ failure. Otherwise prefer qualnames.
 
 ```python
 edit(kind='python',
-    id='precis/src/precis/registry.py',
+    id='precis/src/precis/dispatch.py',
     text='''
 
-def reset_registry() -> None:
-    """Clear all registered handlers."""
-    global _GLOBAL_REGISTRY
-    _GLOBAL_REGISTRY = None
+def registered_kinds(hub: Hub) -> list[str]:
+    """Snapshot of every kind currently registered on ``hub``."""
+    return sorted(hub.kinds)
 ''',
     mode='append')
 # Response:
-#   appended to src/precis/registry.py (lines 156–160 added)
-#   new symbols: precis.registry.reset_registry
+#   appended to src/precis/dispatch.py (lines 614-616 added)
+#   new symbols: precis.dispatch.registered_kinds
 ```
 
 ### Create a new file
@@ -336,9 +330,9 @@ class AuditHandler(Handler):
 
 ```python
 delete(kind='python',
-    id='precis::precis.registry.Registry.deprecated')
+    id='precis::precis.dispatch.Hub.deprecated')
 # Response:
-#   deleted precis.registry.Registry.deprecated (lines 145–152)
+#   deleted precis.dispatch.Hub.deprecated (lines 145-152)
 #   ast.parse:           ok
 #   qualname removed:    ok
 #   ruff:                2 changes
@@ -367,7 +361,7 @@ automatically.
 # Rename one call site, bounded to one function. Anchors guarantee
 # we don't touch unrelated occurrences.
 edit(kind='python',
-    id='r::precis.cli._cmd_serve',
+    id='precis::precis.dispatch.boot',
     mode='find-replace',
     find='deprecated_call(',
     text='new_call(',
@@ -375,7 +369,7 @@ edit(kind='python',
 
 # Disambiguate by surrounding context when a token appears many times.
 edit(kind='python',
-    id='r/src/precis/cli.py',
+    id='precis/src/precis/dispatch.py',
     mode='find-replace',
     find='name',
     before='len(',
@@ -385,12 +379,16 @@ edit(kind='python',
 # Insert a new function after an existing anchor. The AST gate
 # verifies the post-edit buffer parses cleanly.
 edit(kind='python',
-    id='r/src/precis/cli.py',
+    id='precis/src/precis/dispatch.py',
     mode='insert',
     find='    return x + 1\n',
     where='after',
     text='\n\ndef twice(x: int) -> int:\n    return x * 2\n')
 ```
+
+The single configured root in this build is the alias `precis`
+(see `PRECIS_PYTHON_ROOTS`). Multi-root setups address files via
+`<alias>/<relative-path>` per `precis-files-help`.
 
 Python-specific quirks:
 

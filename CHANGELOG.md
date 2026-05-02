@@ -1,7 +1,10 @@
 # Changelog
 
-All entries pre-1.0 are unreleased; v2 is in active development on the
-`v2` branch and not yet on PyPI.
+The v6.0 line is the ground-up redesign that started as the `v2`
+branch and merged into `main` 2026-04-30. The last v1 release on
+PyPI is `5.2.6`; everything below `## v6.0.0` represents the
+post-merge state. Phases pre-merge are kept here as historical
+context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ## `python` code-navigator kind (April 2026)
 

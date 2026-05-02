@@ -43,6 +43,12 @@ _VERBS: tuple[Verb, ...] = _ALL_VERBS
 # of every kind whose ``KindSpec.supports_search_hits`` is True.
 _CROSS_KIND_WILDCARD = "*"
 
+# English aliases for the wildcard, accepted from agent callers who
+# write the most natural shorthand they know. Every entry behaves
+# identically to ``_CROSS_KIND_WILDCARD``: it expands to every
+# search-hits-capable kind.
+_CROSS_KIND_ALIASES: frozenset[str] = frozenset({"*", "", "all", "any", "*all*"})
+
 #: Sentinel key used by `precis.server` to forward the MCP tool's
 #: ``args={...}`` payload through to the dispatcher without colliding
 #: with the explicit positional kwargs. The dispatcher pops it before
@@ -186,21 +192,23 @@ class PrecisRuntime:
         if verb != "search":
             raise BadInput("missing kind=", options=sorted(self.hub.kinds))
 
-        # 7B callers routinely forget ``kind=``. Pick the most
-        # recently touched search-supporting kind as a sensible
-        # default and echo the choice back. Falls back to wildcard
-        # cross-kind dispatch when the hub has >=2 search-hits-
-        # capable kinds and the store can't narrow further (stateless
-        # deployment, empty corpus).
+        # ``search()`` without ``kind=`` defaults to cross-kind
+        # fan-out across every search-hits-capable kind. Earlier
+        # versions defaulted to the most-recently-touched single
+        # kind as a 7B affordance, but a "what do I know about X"
+        # query is the natural shape of an unscoped search and
+        # the user should see hits from every corner of the corpus
+        # — biasing toward the last-touched kind hid useful answers
+        # in the other kinds. The MCP critic flagged the gap as a
+        # design hole (gripe:3681 #2, 2026-05-01); this commit
+        # closes it by reversing the precedence: cross-kind first,
+        # single-kind fallback only when the hub has <2 eligible
+        # kinds. (MCP critic MAJOR-C 2026-05-02.)
         search_kinds = [
             k
             for k in sorted(self.hub.kinds)
             if self.hub.handler_for(k).spec.supports_search
         ]
-        defaulted = self._default_search_kind(search_kinds)
-        if defaulted is not None:
-            return defaulted, True, None
-
         cross_kind = self._cross_kind_kinds()
         if len(cross_kind) >= 2:
             return (
@@ -209,12 +217,19 @@ class PrecisRuntime:
                 self._dispatch_cross_kind(_CROSS_KIND_WILDCARD, dict(args)),
             )
 
+        # ≤1 search-hits-capable kind in this build: fall back to
+        # the most-recently-touched kind so a single-kind deployment
+        # still works without forcing the agent to spell ``kind=``.
+        defaulted = self._default_search_kind(search_kinds)
+        if defaulted is not None:
+            return defaulted, True, None
+
         raise BadInput(
             "missing kind= and no defensible default available",
             options=search_kinds,
             next=(
                 "pass kind=<one of the listed kinds>, or use "
-                "kind='*' / kind='paper,memory' for cross-kind merge"
+                "kind='*' / kind='all' / kind='paper,memory' for cross-kind merge"
             ),
         )
 
@@ -408,10 +423,11 @@ class PrecisRuntime:
     def _is_cross_kind_request(self, kind: Any) -> bool:
         """True iff ``kind`` asks for a cross-kind merge.
 
-        Three forms count:
+        Forms accepted (case-insensitive on aliases):
 
-        - the wildcard ``'*'``;
-        - any comma-list (``'paper,memory'`` or even ``'paper, memory'``);
+        - the wildcard ``'*'`` and its English aliases ``'all'`` /
+          ``'any'`` (see :data:`_CROSS_KIND_ALIASES`);
+        - any comma-list (``'paper,memory'`` or ``'paper, memory'``);
         - an explicit empty string (``''``) is treated like the
           wildcard for symmetry with MCP clients that send ``kind=""``.
 
@@ -422,7 +438,7 @@ class PrecisRuntime:
         """
         if not isinstance(kind, str):
             return False
-        if kind == _CROSS_KIND_WILDCARD:
+        if kind.strip().lower() in _CROSS_KIND_ALIASES:
             return True
         if "," in kind:
             return True
@@ -452,7 +468,7 @@ class PrecisRuntime:
         raise ``BadInput`` with the recoverable list as ``options``.
         """
         eligible = self._cross_kind_kinds()
-        if kind.strip() in (_CROSS_KIND_WILDCARD, ""):
+        if kind.strip().lower() in _CROSS_KIND_ALIASES:
             return eligible
 
         requested = [tok.strip() for tok in kind.split(",")]

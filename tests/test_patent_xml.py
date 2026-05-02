@@ -105,6 +105,71 @@ class TestDescription:
         assert "Z-scheme heterojunction" in p.description_paragraphs[2]
 
 
+class TestBoilerplateFilter:
+    """OPS description XML interleaves page-header fragments between
+    real paragraphs (``PATENT``, ``ATTORNEY DOCKET NO: …``, bare
+    page numbers). Without filtering they become embedded blocks
+    and surface as noise top-K hits for unrelated queries (MCP
+    critic, 2026-05).
+    """
+
+    def _parse(self, body: str) -> list[str]:
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<description xmlns="http://www.epo.org/exchange" lang="en">'
+            + body.encode("utf-8")
+            + b"</description>"
+        )
+        return list(parse_patent(description_xml=xml).description_paragraphs)
+
+    def test_plain_patent_header_dropped(self) -> None:
+        paragraphs = self._parse("<p>PATENT</p><p>[0001] Real content here.</p>")
+        assert paragraphs == ["[0001] Real content here."]
+
+    def test_numbered_patent_header_dropped(self) -> None:
+        paragraphs = self._parse(
+            "<p>[0001] PATENT</p><p>[0002] Real content paragraph.</p>"
+        )
+        assert paragraphs == ["[0002] Real content paragraph."]
+
+    def test_attorney_docket_dropped(self) -> None:
+        paragraphs = self._parse(
+            "<p>ATTORNEY DOCKET NO: 51198-064WO2</p>"
+            "<p>[0001] Real paragraph about the invention.</p>"
+        )
+        assert paragraphs == ["[0001] Real paragraph about the invention."]
+
+    def test_numbered_attorney_docket_dropped(self) -> None:
+        paragraphs = self._parse(
+            "<p>[0002] ATTORNEY DOCKET NO: 51198-064WO2</p>"
+            "<p>[0003] Real content.</p>"
+            "<p>[0011] ATTORNEY DOCKET NO: 51198-064WO2</p>"
+        )
+        assert paragraphs == ["[0003] Real content."]
+
+    def test_bare_page_number_dropped(self) -> None:
+        paragraphs = self._parse(
+            "<p>4</p><p>Page 4 of 12</p><p>[0001] Substantive text here.</p>"
+        )
+        assert paragraphs == ["[0001] Substantive text here."]
+
+    def test_short_paragraphs_dropped(self) -> None:
+        # < 10 chars after [NNNN] strip — too short to be
+        # meaningful content.
+        paragraphs = self._parse(
+            "<p>[0001] x</p><p>[0002] This one is long enough.</p>"
+        )
+        assert paragraphs == ["[0002] This one is long enough."]
+
+    def test_real_paragraph_kept(self) -> None:
+        paragraphs = self._parse(
+            "<p>[0001] The invention provides a new catalyst for CO2 reduction.</p>"
+        )
+        assert paragraphs == [
+            "[0001] The invention provides a new catalyst for CO2 reduction."
+        ]
+
+
 class TestClaims:
     def test_claims_extracted(self, claims_xml: bytes) -> None:
         p = parse_patent(claims_xml=claims_xml)
@@ -115,6 +180,47 @@ class TestClaims:
         first = p.claim_texts[0]
         assert first.startswith("1. A photocatalytic system")
         assert "Z-scheme heterojunction" in first
+
+
+class TestClaimBoilerplateStrip:
+    """OPS inlines a ``PATENT ATTORNEY DOCKET NO: ... CLAIMS`` page
+    header into the first claim's text on many WO / US filings.
+    The strip runs at parse time so downstream blocks start at the
+    claim number itself (MCP critic 2026-05).
+    """
+
+    def _parse(self, body: str) -> list[str]:
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<claims xmlns="http://www.epo.org/exchange" lang="en">'
+            + body.encode("utf-8")
+            + b"</claims>"
+        )
+        return list(parse_patent(claims_xml=xml).claim_texts)
+
+    def test_claim_header_stripped(self) -> None:
+        claims = self._parse(
+            "<claim><claim-text>PATENT ATTORNEY DOCKET NO: 51198-064WO2 "
+            "CLAIMS 1. A system comprising: an electrochemical cell."
+            "</claim-text></claim>"
+        )
+        assert claims == ["1. A system comprising: an electrochemical cell."]
+
+    def test_claim_without_header_unchanged(self) -> None:
+        claims = self._parse(
+            "<claim><claim-text>1. A photocatalytic system comprising: "
+            "a Z-scheme heterojunction.</claim-text></claim>"
+        )
+        assert claims == [
+            "1. A photocatalytic system comprising: a Z-scheme heterojunction."
+        ]
+
+    def test_strip_case_insensitive(self) -> None:
+        claims = self._parse(
+            "<claim><claim-text>Patent Attorney Docket No: X-123 "
+            "Claims 1. Foo bar baz.</claim-text></claim>"
+        )
+        assert claims == ["1. Foo bar baz."]
 
 
 # ---------------------------------------------------------------------------

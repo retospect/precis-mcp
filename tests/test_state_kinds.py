@@ -22,20 +22,31 @@ from precis.handlers.quest import QuestHandler
 from precis.store import Store
 from precis.store.types import BlockInsert
 
-# ── GripeHandler — almost-pure NumericRefHandler ─────────────────────
+# ── GripeHandler — write-only complaint box ──────────────────────────
 
 
 class TestGripe:
+    """Gripe is intentionally write-only from the agent surface.
+
+    The agent files complaints via ``put``; reading happens
+    out-of-band (human triage via SQL / CLI). Anything else
+    raises ``Unsupported`` at the dispatch boundary because the
+    KindSpec flags are False.
+    """
+
     @pytest.fixture
     def gripe(self, hub: Hub) -> GripeHandler:
         return GripeHandler(hub=hub)
 
-    def test_create_and_read(self, gripe: GripeHandler) -> None:
+    def test_put_creates_a_gripe(self, gripe: GripeHandler) -> None:
         r = gripe.put(text="VS Code keeps reloading the workspace")
-        gripe_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
-        out = gripe.get(id=gripe_id)
-        assert "VS Code" in out.body
-        assert "gripe" in out.body  # header
+        # Body advertises the new ref id even though the agent can't
+        # read it back via the MCP surface — humans triaging via SQL
+        # need the row id.
+        assert "id=" in r.body
+        # Persisted in the store regardless of the read-side gating.
+        refs = gripe.store.list_refs(kind="gripe", limit=10)
+        assert any("VS Code" in r.title for r in refs)
 
     def test_no_default_tags(self, gripe: GripeHandler) -> None:
         """Unlike todos, gripes don't auto-stamp STATUS:open."""
@@ -44,12 +55,21 @@ class TestGripe:
         tags = gripe.store.tags_for(refs[0].id)
         assert not any("STATUS:" in str(t) for t in tags)
 
-    def test_search(self, gripe: GripeHandler) -> None:
-        gripe.put(text="postgres is being slow today")
-        gripe.put(text="completely unrelated")
-        r = gripe.search(q="postgres")
-        assert "postgres" in r.body
-        assert "1 gripe match" in r.body
+    def test_kindspec_is_write_only(self) -> None:
+        """The KindSpec flags are the contract that makes gripe
+        write-only at the dispatch layer. ``Handler._register_with``
+        only registers verbs whose ``supports_<verb>`` flag is True,
+        so verifying the spec directly is the cleanest regression
+        guard."""
+        spec = GripeHandler.spec
+        assert spec.supports_put is True
+        # Reading verbs are deliberately disabled.
+        assert spec.supports_get is False
+        assert spec.supports_search is False
+        assert spec.supports_search_hits is False
+        assert spec.supports_delete is False
+        assert spec.supports_tag is False
+        assert spec.supports_link is False
 
 
 # ── FlashcardHandler ────────────────────────────────────────────────
@@ -146,7 +166,9 @@ class TestOracle:
         self._seed_oracle(oracle.store, "a", "Oracle A", "body a")
         self._seed_oracle(oracle.store, "b", "Oracle B", "body b")
         out = oracle.get()
-        assert "2 oracle(s)" in out.body
+        # Headline pluralisation auto-resolves the legacy ``foo(s)``
+        # template to ``2 oracles`` (MCP critic MINOR-C 2026-05-02).
+        assert "2 oracles" in out.body
         assert "a" in out.body and "b" in out.body
 
     def test_list_empty(self, oracle: OracleHandler) -> None:
@@ -174,9 +196,12 @@ class TestOracle:
                 meta={},
                 conn=conn,
             )
+            # 1-indexed positions match the production oracle ingest
+            # path (see ``ingest_oracles.ingest_paper``) so I-Ching
+            # ``iching~49`` resolves to Hexagram 49 verbatim.
             inserts = [
                 BlockInsert(
-                    pos=i,
+                    pos=i + 1,
                     text=body,
                     meta={"section_path": [entry_title]},
                 )
@@ -185,9 +210,7 @@ class TestOracle:
             store.insert_blocks(ref.id, inserts, conn=conn)
         return ref.id
 
-    def test_multi_entry_get_returns_one_random(
-        self, oracle: OracleHandler
-    ) -> None:
+    def test_multi_entry_get_returns_one_random(self, oracle: OracleHandler) -> None:
         """Default ``get(id=<slug>)`` on a multi-entry oracle returns
         exactly ONE entry — not the whole catalog. The entry is chosen
         at random; over many draws each entry appears with roughly
@@ -223,10 +246,13 @@ class TestOracle:
         # have seen at least 2 distinct entries.
         assert len(seen) >= 2
 
-    def test_get_selector_returns_specific_entry(
-        self, oracle: OracleHandler
-    ) -> None:
-        """``get(id='<slug>~N')`` returns entry N deterministically."""
+    def test_get_selector_returns_specific_entry(self, oracle: OracleHandler) -> None:
+        """``get(id='<slug>~N')`` returns entry N deterministically.
+
+        Positions are 1-indexed at ingest, so the second entry
+        addresses as ``~2``. (Matches I-Ching hexagram numbering;
+        see ``precis-oracle-help``.)
+        """
         self._seed_multi_oracle(
             oracle.store,
             slug="eng",
@@ -236,16 +262,14 @@ class TestOracle:
                 ("Chesterton's fence", "Don't remove a fence blindly."),
             ],
         )
-        out = oracle.get(id="eng~1")
+        out = oracle.get(id="eng~2")
         assert "Chesterton's fence" in out.body
         assert "Don't remove a fence blindly." in out.body
         assert "Don't tune what isn't slow." not in out.body
         # Handle form in body.
-        assert "oracle eng~1" in out.body
+        assert "oracle eng~2" in out.body
 
-    def test_get_selector_out_of_range_raises(
-        self, oracle: OracleHandler
-    ) -> None:
+    def test_get_selector_out_of_range_raises(self, oracle: OracleHandler) -> None:
         self._seed_multi_oracle(
             oracle.store,
             slug="eng",
@@ -255,9 +279,7 @@ class TestOracle:
         with pytest.raises(NotFound, match="no entry at position 99"):
             oracle.get(id="eng~99")
 
-    def test_get_selector_non_integer_raises(
-        self, oracle: OracleHandler
-    ) -> None:
+    def test_get_selector_non_integer_raises(self, oracle: OracleHandler) -> None:
         from precis.errors import BadInput
 
         self._seed_multi_oracle(
@@ -294,9 +316,9 @@ class TestOracle:
         assert "Knuth's law" in out.body
         assert "Chesterton's fence" in out.body
         assert "2 entries" in out.body
-        # Handle hints are present.
-        assert "eng~0" in out.body
+        # Handle hints are present (1-indexed).
         assert "eng~1" in out.body
+        assert "eng~2" in out.body
         # First-line preview appears; background text does NOT.
         assert "first line of a longer entry" in out.body
         assert "Background details" not in out.body, (
@@ -304,9 +326,7 @@ class TestOracle:
             "~N to read the full body"
         )
 
-    def test_get_view_index_path_form_equivalent(
-        self, oracle: OracleHandler
-    ) -> None:
+    def test_get_view_index_path_form_equivalent(self, oracle: OracleHandler) -> None:
         """``id='<slug>/index'`` is equivalent to ``view='index'``."""
         self._seed_multi_oracle(
             oracle.store,
@@ -330,9 +350,7 @@ class TestOracle:
         with pytest.raises(BadInput, match="conflicts with view="):
             oracle.get(id="eng/index", view="nonexistent")
 
-    def test_single_block_oracle_renders_verbatim(
-        self, oracle: OracleHandler
-    ) -> None:
+    def test_single_block_oracle_renders_verbatim(self, oracle: OracleHandler) -> None:
         """Single-block oracles (short rubrics, pinpoint prompts) don't
         shuffle — there's only one entry to return. Pinning this so
         the random path is truly a multi-entry affordance."""
@@ -409,7 +427,9 @@ class TestConversation:
         self._seed_conv(conv.store, "a", "thread A", ["x"])
         self._seed_conv(conv.store, "b", "thread B", ["y"])
         out = conv.get()
-        assert "2 conversation(s)" in out.body
+        # Headline pluralisation auto-resolves to ``2 conversations``
+        # (MCP critic MINOR-C 2026-05-02).
+        assert "2 conversations" in out.body
 
 
 # ── QuestHandler — slug-addressed with auto-mint ─────────────────────
