@@ -447,6 +447,7 @@ def boot(
     embedder: Embedder | None = None,
     markdown_root: str | None = None,
     plaintext_root: str | None = None,
+    tex_root: str | None = None,
     python_roots: str | None = None,
 ) -> Hub:
     """Build and return a fully-populated :class:`Hub`.
@@ -570,6 +571,13 @@ def boot(
             from precis.handlers.plaintext import PlaintextHandler
 
             _try(PlaintextHandler, hub=hub, root=Path(plaintext_root))
+
+        if tex_root:
+            from pathlib import Path
+
+            from precis.handlers.tex import TexHandler
+
+            _try(TexHandler, hub=hub, root=Path(tex_root))
 
         # Perplexity Sonar trio. Each raises InitError independently
         # when httpx or the API key is missing.

@@ -53,8 +53,6 @@ from precis.utils.next_block import render_next_section
 from precis.utils.plaintext_parse import (
     PlaintextBlock,
     parse_plaintext,
-    plaintext_extensions,
-    strip_plaintext_ext,
 )
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -95,12 +93,41 @@ class PlaintextHandler(Handler):
         modes=_SUPPORTED_PUT_MODES,
     )
 
+    # ── subclass-extensible knobs ───────────────────────────────────
+    # Sibling kinds (e.g. ``tex``) reuse the entire paragraph-block
+    # pipeline by overriding these ClassVars + the ``spec`` above.
+    # No instance methods need re-implementing.
+    _KIND: ClassVar[str] = "plaintext"
+    _EXTENSIONS: ClassVar[tuple[str, ...]] = (".txt", ".log")
+    _DEFAULT_EXT: ClassVar[str] = ".txt"
+
+    @classmethod
+    def _strip_ext(cls, rel_path: str) -> tuple[str, str]:
+        """Return ``(base_without_extension, extension)`` for one of
+        :attr:`_EXTENSIONS`. Unrecognised extensions yield an empty
+        ``extension`` so the caller can reject them."""
+        for candidate in cls._EXTENSIONS:
+            if rel_path.lower().endswith(candidate):
+                return rel_path[: -len(candidate)], rel_path[-len(candidate) :].lower()
+        return rel_path, ""
+
+    def _walk_files(self) -> list[Path]:
+        """Yield every file under ``self.root`` whose extension is in
+        :attr:`_EXTENSIONS` (case-insensitive)."""
+        out: list[Path] = []
+        exts = tuple(e.lower() for e in self._EXTENSIONS)
+        for dirpath, _dirnames, filenames in os.walk(self.root):
+            for name in filenames:
+                if name.lower().endswith(exts):
+                    out.append(Path(dirpath) / name)
+        return out
+
     def __init__(self, *, hub: Hub, root: Path) -> None:
         if hub.store is None:
-            raise InitError("plaintext: store required")
+            raise InitError(f"{self._KIND}: store required")
         if not root.exists() or not root.is_dir():
             raise ValueError(
-                f"plaintext root {str(root)!r} does not exist or is not a directory"
+                f"{self._KIND} root {str(root)!r} does not exist or is not a directory"
             )
         self.store = hub.store
         self.embedder = hub.embedder
@@ -124,14 +151,14 @@ class PlaintextHandler(Handler):
         ref = self._ensure_ingested(slug)
         if ref is None:
             raise NotFound(
-                f"plaintext file {slug!r} not found under {self.root}",
-                next="get(kind='plaintext') to list every known file",
+                f"{self._KIND} file {slug!r} not found under {self.root}",
+                next=f"get(kind='{self._KIND}') to list every known file",
             )
 
         if sel is not None and effective_view is not None:
             raise BadInput(
                 f"cannot combine block selector with view={effective_view!r}",
-                next=f"get(kind='plaintext', id='{slug}~SLUG') or '{slug}/raw'",
+                next=f"get(kind='{self._KIND}', id='{slug}~SLUG') or '{slug}/raw'",
             )
 
         if sel is not None:
@@ -141,9 +168,9 @@ class PlaintextHandler(Handler):
             return self._render_raw(ref)
         if effective_view is not None:
             raise Unsupported(
-                f"unknown plaintext view {effective_view!r}",
+                f"unknown {self._KIND} view {effective_view!r}",
                 options=list(_SUPPORTED_VIEWS),
-                next=f"get(kind='plaintext', id='{slug}/raw')",
+                next=f"get(kind='{self._KIND}', id='{slug}/raw')",
             )
 
         return self._render_overview(ref)
@@ -161,7 +188,7 @@ class PlaintextHandler(Handler):
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",
-                next="search(kind='plaintext', q='your query')",
+                next=f"search(kind='{self._KIND}', q='your query')",
             )
 
         scope_ref_id: int | None = None
@@ -169,8 +196,8 @@ class PlaintextHandler(Handler):
             scope_ref = self._ensure_ingested(scope)
             if scope_ref is None:
                 raise NotFound(
-                    f"plaintext file {scope!r} not found",
-                    next="search(kind='plaintext', q='...') to find one",
+                    f"{self._KIND} file {scope!r} not found",
+                    next=f"search(kind='{self._KIND}', q='...') to find one",
                 )
             scope_ref_id = scope_ref.id
 
@@ -181,22 +208,22 @@ class PlaintextHandler(Handler):
         hits = self.store.search_blocks_fused(
             q=q,
             query_vec=query_vec,
-            kind="plaintext",
+            kind=self._KIND,
             scope_ref_id=scope_ref_id,
             limit=top_k,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         if not hits:
             # Canonical Next: block — c5 unified-trailer patch.
-            body = f"no plaintext blocks match {q!r}"
+            body = f"no {self._KIND} blocks match {q!r}"
             body += render_next_section(
                 [
                     (
-                        f"search(kind='plaintext', q={q!r}, top_k=50)",
+                        f"search(kind='{self._KIND}', q={q!r}, top_k=50)",
                         "widen the lexical net",
                     ),
                     (
-                        f"search(kind='plaintext', q={q!r}, scope='<file-slug>')",
+                        f"search(kind='{self._KIND}', q={q!r}, scope='<file-slug>')",
                         "search inside a specific file",
                     ),
                 ]
@@ -204,7 +231,7 @@ class PlaintextHandler(Handler):
             return Response(body=body)
 
         total = self.store.count_blocks_lexical(
-            q=q, kind="plaintext", scope_ref_id=scope_ref_id
+            q=q, kind=self._KIND, scope_ref_id=scope_ref_id
         )
         lines = [
             format_search_headline(
@@ -240,11 +267,11 @@ class PlaintextHandler(Handler):
         triples = self.store.search_blocks_fused(
             q=q,
             query_vec=query_vec,
-            kind="plaintext",
+            kind=self._KIND,
             limit=top_k,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
-        return block_hits_to_search_hits(triples, kind="plaintext")
+        return block_hits_to_search_hits(triples, kind=self._KIND)
 
     # ── put: create a new file (creation-only) ─────────────────────
 
@@ -263,7 +290,7 @@ class PlaintextHandler(Handler):
         mode: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Create a new plaintext file.
+        """Create a new paragraph-block file.
 
         Per the seven-verb surface (D6), ``put`` is creation-only on
         file kinds. Region edits live on the ``edit`` verb; region
@@ -272,27 +299,30 @@ class PlaintextHandler(Handler):
         if mode in self._LEGACY_PUT_MODES_TO_EDIT:
             new_mode = "find-replace" if mode == "edit" else mode
             raise BadInput(
-                f"mode={mode!r} is not accepted on put for kind='plaintext'",
+                f"mode={mode!r} is not accepted on put for kind={self._KIND!r}",
                 next=(
-                    f"use edit(kind='plaintext', id=..., mode={new_mode!r}, ...) "
+                    f"use edit(kind='{self._KIND}', id=..., mode={new_mode!r}, ...) "
                     "for region edits"
                 ),
             )
         if mode == "delete":
             raise BadInput(
-                "mode='delete' is not accepted on put for kind='plaintext'",
-                next="use delete(kind='plaintext', id='slug~SLUG') for region deletes",
+                f"mode='delete' is not accepted on put for kind={self._KIND!r}",
+                next=(
+                    f"use delete(kind='{self._KIND}', id='slug~SLUG') for region "
+                    "deletes"
+                ),
             )
         if mode != "create":
             raise BadInput(
                 f"mode= is required and must be 'create' (got {mode!r})",
                 options=["create"],
-                next="put(kind='plaintext', id='foo', text='...', mode='create')",
+                next=f"put(kind='{self._KIND}', id='foo', text='...', mode='create')",
             )
         if id is None:
             raise BadInput(
                 "put requires id= (the file path / slug)",
-                next="put(kind='plaintext', id='foo', text='...', mode='create')",
+                next=f"put(kind='{self._KIND}', id='foo', text='...', mode='create')",
             )
         slug, _sel, _path_view = _parse_pt_id(str(id))
         return self._put_create(slug, text)
@@ -305,7 +335,7 @@ class PlaintextHandler(Handler):
             raise BadInput(
                 f"file already exists: {path}",
                 next=(
-                    f"edit(kind='plaintext', id={slug!r}, mode='replace', "
+                    f"edit(kind='{self._KIND}', id={slug!r}, mode='replace', "
                     "text=...) if you mean to edit"
                 ),
             )
@@ -315,13 +345,15 @@ class PlaintextHandler(Handler):
         ref = self._ensure_ingested(slug)
         assert ref is not None
         n = self.store.count_blocks(ref.id)
-        return Response(body=f"created plaintext {slug!r} ({n} paragraph(s))")
+        return Response(body=f"created {self._KIND} {slug!r} ({n} paragraph(s))")
 
     def _put_append(self, slug: str, text: str | None) -> Response:
         if text is None or not text.strip():
             raise BadInput(
                 "append requires text=",
-                next=f"put(kind='plaintext', id={slug!r}, text='...', mode='append')",
+                next=(
+                    f"put(kind='{self._KIND}', id={slug!r}, text='...', mode='append')"
+                ),
             )
         path = self._resolve_path(slug, must_exist=True)
         existing = path.read_text(encoding="utf-8")
@@ -333,7 +365,7 @@ class PlaintextHandler(Handler):
         new_content = existing.rstrip() + sep + text.rstrip() + "\n"
         _atomic_write(path, new_content)
         self._ensure_ingested(slug, force=True)
-        return Response(body=f"appended to plaintext {slug!r}")
+        return Response(body=f"appended to {self._KIND} {slug!r}")
 
     def _put_replace(
         self, slug: str, sel: _BlockSel | None, text: str | None
@@ -342,7 +374,7 @@ class PlaintextHandler(Handler):
             raise BadInput(
                 "replace requires a block selector — id='slug~BLOCK'",
                 next=(
-                    f"put(kind='plaintext', id='{slug}~BLOCK', "
+                    f"put(kind='{self._KIND}', id='{slug}~BLOCK', "
                     "text='...', mode='replace')"
                 ),
             )
@@ -350,7 +382,7 @@ class PlaintextHandler(Handler):
             raise BadInput(
                 "replace requires text=",
                 next=(
-                    f"put(kind='plaintext', id='{slug}~...', "
+                    f"put(kind='{self._KIND}', id='{slug}~...', "
                     "text='...', mode='replace')"
                 ),
             )
@@ -360,7 +392,7 @@ class PlaintextHandler(Handler):
         if target is None:
             raise NotFound(
                 f"paragraph {sel.value!r} not found in {slug!r}",
-                next=f"get(kind='plaintext', id='{slug}')",
+                next=f"get(kind='{self._KIND}', id='{slug}')",
             )
         new_lines = text.rstrip("\n").split("\n")
         _replace_lines(path, target.line_start, target.line_end, new_lines)
@@ -371,7 +403,7 @@ class PlaintextHandler(Handler):
         if sel is None:
             raise BadInput(
                 "delete requires a block selector — id='slug~BLOCK'",
-                next=f"delete(kind='plaintext', id='{slug}~BLOCK')",
+                next=f"delete(kind='{self._KIND}', id='{slug}~BLOCK')",
             )
         path = self._resolve_path(slug, must_exist=True)
         blocks = parse_plaintext(path.read_text(encoding="utf-8"))
@@ -379,7 +411,7 @@ class PlaintextHandler(Handler):
         if target is None:
             raise NotFound(
                 f"paragraph {sel.value!r} not found in {slug!r}",
-                next=f"get(kind='plaintext', id='{slug}')",
+                next=f"get(kind='{self._KIND}', id='{slug}')",
             )
         _replace_lines(path, target.line_start, target.line_end, [])
         self._ensure_ingested(slug, force=True)
@@ -405,7 +437,7 @@ class PlaintextHandler(Handler):
             raise BadInput(
                 f"mode={op_kind!r} requires find= (the exact text to locate)",
                 next=(
-                    f"put(kind='plaintext', id={slug!r}, mode={op_kind!r}, "
+                    f"put(kind='{self._KIND}', id={slug!r}, mode={op_kind!r}, "
                     f"find='exact text', text='replacement')"
                 ),
             )
@@ -443,7 +475,7 @@ class PlaintextHandler(Handler):
             if target is None:
                 raise NotFound(
                     f"paragraph {sel.value!r} not found in {slug!r}",
-                    next=f"get(kind='plaintext', id='{slug}')",
+                    next=f"get(kind='{self._KIND}', id='{slug}')",
                 )
             op = EditOp(
                 op=op.op,
@@ -563,7 +595,7 @@ class PlaintextHandler(Handler):
         dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
-        """Region-edit an existing plaintext file.
+        """Region-edit an existing paragraph-block file.
 
         Same shape as :meth:`MarkdownHandler.edit`. Routes to the
         existing private helpers; ``mode='find-replace'`` is the new
@@ -574,7 +606,7 @@ class PlaintextHandler(Handler):
                 f"unknown edit mode {mode!r}",
                 options=list(self._EDIT_MODES),
                 next=(
-                    "edit(kind='plaintext', id='slug', mode='find-replace', "
+                    f"edit(kind='{self._KIND}', id='slug', mode='find-replace', "
                     "find='old', text='new')"
                 ),
             )
@@ -599,7 +631,7 @@ class PlaintextHandler(Handler):
         )
 
     def delete(self, *, id: str | int, **_kw: Any) -> Response:  # type: ignore[override]
-        """Delete a paragraph / region from a plaintext file.
+        """Delete a paragraph / region from a paragraph-block file.
 
         Requires a selector in ``id`` (``slug~SLUG`` or
         ``slug~Lstart-Lend``). Whole-file delete is not exposed.
@@ -607,9 +639,12 @@ class PlaintextHandler(Handler):
         slug, sel, _path_view = _parse_pt_id(str(id))
         if sel is None:
             raise BadInput(
-                f"delete on plaintext requires a block selector — id={slug!r}~SLUG",
+                (
+                    f"delete on {self._KIND} requires a block selector — "
+                    f"id={slug!r}~SLUG"
+                ),
                 next=(
-                    f"delete(kind='plaintext', id='{slug}~SLUG') to remove "
+                    f"delete(kind='{self._KIND}', id='{slug}~SLUG') to remove "
                     "a paragraph, or use the OS to remove the whole file"
                 ),
             )
@@ -620,15 +655,17 @@ class PlaintextHandler(Handler):
         slug, sel, path_view = _parse_pt_id(str(id))
         if sel is not None or path_view is not None:
             raise BadInput(
-                "plaintext tag/link ops operate at file level — drop the "
-                "block selector / path view from id=",
-                next=f"tag(kind='plaintext', id={slug!r}, add=[...])",
+                (
+                    f"{self._KIND} tag/link ops operate at file level — drop the "
+                    "block selector / path view from id="
+                ),
+                next=f"tag(kind='{self._KIND}', id={slug!r}, add=[...])",
             )
         ref = self._ensure_ingested(slug)
         if ref is None:
             raise NotFound(
-                f"plaintext file {slug!r} not found under {self.root}",
-                next="get(kind='plaintext') to list every known file",
+                f"{self._KIND} file {slug!r} not found under {self.root}",
+                next=f"get(kind='{self._KIND}') to list every known file",
             )
         return slug, ref.id
 
@@ -640,21 +677,21 @@ class PlaintextHandler(Handler):
         remove: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
-        """Add/remove tags on a plaintext file."""
+        """Add/remove tags on a paragraph-block file."""
         if not add and not remove:
             raise BadInput(
-                "tag(kind='plaintext', id=...) requires add= or remove=",
-                next="tag(kind='plaintext', id='<slug>', add=['draft'])",
+                f"tag(kind='{self._KIND}', id=...) requires add= or remove=",
+                next=f"tag(kind='{self._KIND}', id='<slug>', add=['draft'])",
             )
         from precis.handlers._link_tag_ops import apply_tag_ops, format_link_tag_ack
 
         slug, ref_id = self._resolve_pt_ref(id)
         n_added, n_removed = apply_tag_ops(
-            self.store, "plaintext", ref_id, tags=add, untags=remove
+            self.store, self._KIND, ref_id, tags=add, untags=remove
         )
         return Response(
             body=format_link_tag_ack(
-                kind="plaintext",
+                kind=self._KIND,
                 ref_label=slug,
                 n_links_added=0,
                 n_links_removed=0,
@@ -672,11 +709,11 @@ class PlaintextHandler(Handler):
         rel: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Add or remove a link from a plaintext file to another ref."""
+        """Add or remove a link from a paragraph-block file to another ref."""
         if target is None:
             raise BadInput(
-                "link(kind='plaintext', id=...) requires target=",
-                next="link(kind='plaintext', id='<slug>', target='paper:slug')",
+                f"link(kind='{self._KIND}', id=...) requires target=",
+                next=(f"link(kind='{self._KIND}', id='<slug>', target='paper:slug')"),
             )
         if mode not in ("add", "remove"):
             raise BadInput(
@@ -695,7 +732,7 @@ class PlaintextHandler(Handler):
         )
         return Response(
             body=format_link_tag_ack(
-                kind="plaintext",
+                kind=self._KIND,
                 ref_label=slug,
                 n_links_added=n_added,
                 n_links_removed=n_removed,
@@ -708,7 +745,7 @@ class PlaintextHandler(Handler):
 
     def _ensure_ingested(self, slug: str, *, force: bool = False) -> Ref | None:
         path = self._resolve_path(slug, must_exist=False)
-        ref = self.store.get_ref(kind="plaintext", id=slug)
+        ref = self.store.get_ref(kind=self._KIND, id=slug)
 
         if not path.exists():
             if ref is not None:
@@ -732,13 +769,13 @@ class PlaintextHandler(Handler):
         pt_blocks = parse_plaintext(content)
         title = _derive_title(pt_blocks, fallback=slug)
         # Preserve the original extension in meta so the handler can
-        # rebuild the real file path even though both .txt and .log
-        # map to the same slug shape.
+        # rebuild the real file path even when several extensions map
+        # to the same slug shape (e.g. plaintext: .txt vs .log).
         rel = str(path.relative_to(self.root))
-        _base, ext = strip_plaintext_ext(rel)
+        _base, ext = self._strip_ext(rel)
         new_meta = {
             "path": rel,
-            "ext": ext or ".txt",
+            "ext": ext or self._DEFAULT_EXT,
             "mtime_ns": mtime_ns,
             "mtime_iso": datetime.datetime.fromtimestamp(
                 st.st_mtime, tz=datetime.UTC
@@ -756,7 +793,7 @@ class PlaintextHandler(Handler):
             if ref is None:
                 ref = self.store.insert_ref(
                     corpus_id=corpus_id,
-                    kind="plaintext",
+                    kind=self._KIND,
                     slug=slug,
                     title=title,
                     meta=new_meta,
@@ -767,17 +804,17 @@ class PlaintextHandler(Handler):
 
             self.store.insert_blocks(ref.id, inserts, replace=True, conn=conn)
 
-        return self.store.get_ref(kind="plaintext", id=slug)
+        return self.store.get_ref(kind=self._KIND, id=slug)
 
     # ── render helpers ─────────────────────────────────────────────
 
     def _render_index(self) -> Response:
-        on_disk = sorted(_walk_plaintext(self.root))
+        on_disk = sorted(self._walk_files())
         seen: dict[str, str] = {}
         for path in on_disk:
             try:
                 rel = str(path.relative_to(self.root))
-                base, _ext = strip_plaintext_ext(rel)
+                base, _ext = self._strip_ext(rel)
                 slug = file_slug_from_path(base)
             except ValueError:
                 continue
@@ -788,23 +825,23 @@ class PlaintextHandler(Handler):
         if not seen:
             return Response(
                 body=(
-                    f"no plaintext files found under {self.root}\n"
-                    "create one with put(kind='plaintext', id='SLUG', "
+                    f"no {self._KIND} files found under {self.root}\n"
+                    f"create one with put(kind='{self._KIND}', id='SLUG', "
                     "text='...', mode='create')"
                 )
             )
 
-        lines = [f"# {len(seen)} plaintext file(s) under {self.root}"]
+        lines = [f"# {len(seen)} {self._KIND} file(s) under {self.root}"]
         max_w = max(len(s) for s in seen)
         for slug in sorted(seen):
             lines.append(f"  {slug:<{max_w}}  {seen[slug]}")
         body = "\n".join(lines)
         body += render_next_section(
             [
-                ("get(kind='plaintext', id='<slug>')", "open a file"),
-                ("get(kind='plaintext', id='<slug>/raw')", "full source"),
+                (f"get(kind='{self._KIND}', id='<slug>')", "open a file"),
+                (f"get(kind='{self._KIND}', id='<slug>/raw')", "full source"),
                 (
-                    "search(kind='plaintext', q='...', scope='<slug>')",
+                    f"search(kind='{self._KIND}', q='...', scope='<slug>')",
                     "search inside one file",
                 ),
             ]
@@ -842,13 +879,13 @@ class PlaintextHandler(Handler):
         body = "\n".join(lines)
         body += render_next_section(
             [
-                (f"get(kind='plaintext', id='{ref.slug}/raw')", "full source"),
+                (f"get(kind='{self._KIND}', id='{ref.slug}/raw')", "full source"),
                 (
-                    f"get(kind='plaintext', id='{ref.slug}~SLUG')",
+                    f"get(kind='{self._KIND}', id='{ref.slug}~SLUG')",
                     "read one paragraph by slug",
                 ),
                 (
-                    f"search(kind='plaintext', q='...', scope='{ref.slug}')",
+                    f"search(kind='{self._KIND}', q='...', scope='{ref.slug}')",
                     "search inside this file",
                 ),
             ]
@@ -862,32 +899,38 @@ class PlaintextHandler(Handler):
             except ValueError as exc:
                 raise BadInput(
                     f"unparseable pos selector: {sel.value!r}",
-                    next=f"get(kind='plaintext', id='{ref.slug}~SLUG')",
+                    next=f"get(kind='{self._KIND}', id='{ref.slug}~SLUG')",
                 ) from exc
             block = self.store.get_block(ref.id, pos=pos)
             if block is None:
                 raise NotFound(
                     f"no paragraph at ~{pos} in {ref.slug!r}",
-                    next=f"get(kind='plaintext', id='{ref.slug}')",
+                    next=f"get(kind='{self._KIND}', id='{ref.slug}')",
                 )
         else:
             block = self.store.get_block(ref.id, slug=sel.value)
             if block is None:
                 raise NotFound(
                     f"no paragraph with slug {sel.value!r} in {ref.slug!r}",
-                    next=f"get(kind='plaintext', id='{ref.slug}')",
+                    next=f"get(kind='{self._KIND}', id='{ref.slug}')",
                 )
         handle = f"{ref.slug}~{block.slug or block.pos}"
         body = f"# {handle}\n{block.text}"
         body += render_next_section(
             [
-                (f"get(kind='plaintext', id='{ref.slug}')", "back to overview"),
                 (
-                    f"edit(kind='plaintext', id='{handle}', text='...', mode='replace')",
+                    f"get(kind='{self._KIND}', id='{ref.slug}')",
+                    "back to overview",
+                ),
+                (
+                    (
+                        f"edit(kind='{self._KIND}', id='{handle}', "
+                        "text='...', mode='replace')"
+                    ),
                     "edit this paragraph",
                 ),
                 (
-                    f"delete(kind='plaintext', id='{handle}')",
+                    f"delete(kind='{self._KIND}', id='{handle}')",
                     "delete this paragraph",
                 ),
             ]
@@ -905,21 +948,23 @@ class PlaintextHandler(Handler):
     def _resolve_path(self, slug: str, *, must_exist: bool) -> Path:
         if not is_valid_file_slug(slug):
             raise BadInput(
-                f"invalid plaintext slug: {slug!r}",
+                f"invalid {self._KIND} slug: {slug!r}",
                 next="slugs are lowercase a-z 0-9 hyphens, segments split by '--'",
             )
         # Look up the already-ingested ref to know which extension to
-        # use. Fresh files default to .txt; re-reads honour the stored
-        # extension so opening a .log doesn't accidentally read a .txt.
-        ext = ".txt"
-        existing = self.store.get_ref(kind="plaintext", id=slug)
+        # use. Fresh files default to ``self._DEFAULT_EXT``; re-reads
+        # honour the stored extension so opening (e.g. a .log) doesn't
+        # accidentally read a .txt.
+        ext = self._DEFAULT_EXT
+        existing = self.store.get_ref(kind=self._KIND, id=slug)
         if existing is not None:
-            ext = (existing.meta or {}).get("ext") or ".txt"
+            ext = (existing.meta or {}).get("ext") or self._DEFAULT_EXT
         else:
-            # On first touch, probe disk for both extensions and prefer
-            # whichever exists. Ties fall back to ``.txt``.
+            # On first touch, probe disk for any registered extension
+            # and prefer whichever exists. Ties fall back to the
+            # default.
             rel_base = path_from_file_slug(slug, ext="").rstrip(".")
-            for candidate_ext in plaintext_extensions():
+            for candidate_ext in self._EXTENSIONS:
                 candidate = (self.root / (rel_base + candidate_ext)).resolve()
                 try:
                     candidate.relative_to(self.root)
@@ -939,8 +984,10 @@ class PlaintextHandler(Handler):
             ) from exc
         if must_exist and not path.exists():
             raise NotFound(
-                f"plaintext file not found on disk: {path}",
-                next=("put(kind='plaintext', id='<slug>', text='...', mode='create')"),
+                f"{self._KIND} file not found on disk: {path}",
+                next=(
+                    f"put(kind='{self._KIND}', id='<slug>', text='...', mode='create')"
+                ),
             )
         return path
 
@@ -1028,17 +1075,6 @@ def _derive_title(blocks: list[PlaintextBlock], *, fallback: str) -> str:
     if len(first_line) > 80:
         return first_line[:77] + "…"
     return first_line
-
-
-def _walk_plaintext(root: Path) -> list[Path]:
-    """Yield every ``.txt`` / ``.log`` file under ``root``."""
-    out: list[Path] = []
-    exts = plaintext_extensions()
-    for dirpath, _dirnames, filenames in os.walk(root):
-        for name in filenames:
-            if name.lower().endswith(exts):
-                out.append(Path(dirpath) / name)
-    return out
 
 
 def _atomic_write(path: Path, content: str) -> None:

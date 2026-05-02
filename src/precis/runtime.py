@@ -650,6 +650,7 @@ def build_runtime(
         embedder=embedder,
         markdown_root=config.markdown_root,
         plaintext_root=config.plaintext_root,
+        tex_root=config.tex_root,
         python_roots=config.python_roots,
     )
     return PrecisRuntime(config=config, hub=hub)

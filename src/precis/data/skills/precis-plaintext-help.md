@@ -121,4 +121,5 @@ phrase.
 - `precis-files-help` — shared addressing model for all file kinds
 - `precis-edit-protocol` — universal anchored-edit grammar
 - `precis-markdown-help` — markdown block grammar for structured notes
+- `precis-tex-help` — `.tex` files (subclasses this kind today)
 - `precis-python-help` — code navigation (different parser, same shape)

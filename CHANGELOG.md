@@ -8,6 +8,32 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ## Unreleased
 
+### `tex` kind — first-cut LaTeX file handler (2026-05-02)
+
+- **`TexHandler`** — new R/W file kind for `.tex` files, gated on
+  `PRECIS_TEX_ROOT`. Subclasses `PlaintextHandler` and inherits the
+  paragraph-block grammar verbatim — LaTeX sectioning (`\section`,
+  `\begin{...}`) is **not** parsed yet. Storing raw LaTeX source
+  means `edit(mode='find-replace')` works against literal source and
+  `bge-m3` semantic search picks up LaTeX fluently. Owner:
+  `src/precis/handlers/tex.py` (~60 LOC).
+- **`PlaintextHandler` refactored** to expose `_KIND` /
+  `_EXTENSIONS` / `_DEFAULT_EXT` ClassVars + `_strip_ext()` and
+  `_walk_files()` methods. Sibling kinds reuse the entire pipeline
+  by overriding the four ClassVars; no instance methods need re-
+  implementing. Plaintext behaviour unchanged (all 31 plaintext
+  tests pass); error messages now interpolate `self._KIND` so
+  TexHandler errors say "tex file" rather than "plaintext file".
+- New skill: `precis-tex-help.md`. Cross-references added to
+  `precis-files-help`, `precis-overview`, `precis-edit-protocol`,
+  `precis-plaintext-help`.
+- Wired through `config.tex_root`, `dispatch.boot(tex_root=...)`,
+  `runtime.build()`. Pinned by `tests/test_tex_handler.py` (17
+  tests covering construction, walker scoping, kind routing, basic
+  CRUD, slug + extension boundary).
+- **Deferred** (next refinement): LaTeX sectioning awareness,
+  `\input{}` resolution, `\cite{}` cross-link to `paper` kind.
+
 ### Cache-backed bookmarking + nightly maintenance (2026-05-02)
 
 Closes the remaining two phases of `gripe:3681` and lands a

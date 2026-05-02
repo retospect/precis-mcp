@@ -107,6 +107,45 @@ release. Re-enable the full suite by adding a
 image) on the ``ubuntu-latest`` matrix legs. macOS / Windows runners
 don't support GHA services and are fine staying skipped.
 
+## 🔵 Platform-specific test bugs (Windows + macOS Python 3.12)
+
+**Status**: open
+**Severity**: polish
+**Owner**: `tests/test_python_handler_writes.py`,
+`tests/test_python_runtrace.py`,
+`tests/test_python_config_wire.py`
+**CI workaround**: `continue-on-error` on the affected matrix legs
+in `.github/workflows/check.yml` (Linux + macOS-3.11/3.13 still
+gate the release).
+
+**Windows** — 27 tests fail because the python-handler write path
+opens directory FDs with `os.O_DIRECTORY` for fsync, and that
+constant is Unix-only:
+
+- `test_python_handler_writes.py::*` (26 tests) —
+  `AttributeError: module 'os' has no attribute 'O_DIRECTORY'`.
+  Fix: branch on `sys.platform`; on Windows, fall back to a
+  no-op fsync (or open the parent file by handle).
+- `test_python_config_wire.py::test_parse_expands_tilde` —
+  test asserts `~` expands to a Linux-style path; Windows expands
+  to `C:/Users/runneradmin`.  Fix: assert against
+  `os.path.expanduser("~")` instead of a hardcoded prefix.
+
+**macOS framework Python 3.12** — 5 runtrace tests fail because
+the spawned tracer subprocess raises
+`AttributeError: partially initialized module 'urllib.parse' …
+(most likely due to a circular import)`.  Reproduces only on
+`/Library/Frameworks/Python.framework/Versions/3.12/`; 3.11 and
+3.13 frameworks are fine, and Homebrew Python 3.12 is fine.
+Suspect: `sys.setprofile` hook intercepts an internal urllib
+import during a partially-initialised module state.  Likely fix:
+defer the profile install until after `urllib.parse` has been
+imported by the bootstrap, or run the tracer in a fresh
+interpreter via `-S` + explicit `site.main()`.
+
+Both clusters are tracked here so we don't lose them between
+release and the post-release patch window.
+
 ---
 
 _Last updated: 2026-05-02_

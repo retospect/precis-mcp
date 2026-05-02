@@ -4,14 +4,14 @@ title: precis — anchored edits across every file kind
 status: active
 tier: 2
 floor: any
-applies-to: edit (mode='find-replace'|'append'|'insert'|'replace') on R/W file kinds (kind='markdown', kind='plaintext', kind='python')
+applies-to: edit (mode='find-replace'|'append'|'insert'|'replace') on R/W file kinds (kind='markdown', kind='plaintext', kind='tex', kind='python')
 last-updated: 2026-05-02
 ---
 
-> **Status:** v1 ships for `markdown`, `plaintext`, and `python`
-> — each gated on its own env var (`PRECIS_MARKDOWN_ROOT`,
-> `PRECIS_PLAINTEXT_ROOT`, `PRECIS_PYTHON_ROOTS`). Use
-> `get(kind='skill', id='precis-help')` to confirm which are live
+> **Status:** v1 ships for `markdown`, `plaintext`, `tex`, and
+> `python` — each gated on its own env var (`PRECIS_MARKDOWN_ROOT`,
+> `PRECIS_PLAINTEXT_ROOT`, `PRECIS_TEX_ROOT`, `PRECIS_PYTHON_ROOTS`).
+> Use `get(kind='skill', id='precis-help')` to confirm which are live
 > in the server you're talking to.
 
 # precis-edit-protocol — sub-region anchored search/replace

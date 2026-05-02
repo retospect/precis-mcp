@@ -56,6 +56,18 @@ class PrecisConfig(BaseSettings):
     in the env.
     """
 
+    tex_root: str | None = None
+    """Root directory for the ``tex`` kind.
+
+    Files ending in ``.tex`` under this path are addressable as
+    ``tex:<slug>`` with the same path-encoding rule as ``plaintext``
+    (``chapters/intro.tex`` → ``chapters--intro``). The first-cut
+    handler reuses the plaintext block grammar (paragraphs separated
+    by blank lines) — LaTeX sectioning is not parsed yet. When unset,
+    the ``tex`` kind is hidden. Set via ``PRECIS_TEX_ROOT`` in the
+    env.
+    """
+
     python_roots: str | None = None
     """Python repos exposed to the ``python`` kind.
 

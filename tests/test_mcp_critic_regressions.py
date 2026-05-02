@@ -421,7 +421,7 @@ def test_precis_overview_skill_no_dead_kinds() -> None:
     # Reserved-but-unwired kinds (stripped under the May 2026
     # policy). If one of these lands, wire the handler AND re-add
     # the kind mention in the same commit.
-    for reserved in ("`book`", "`docx`", "`tex`", "`rmk`"):
+    for reserved in ("`book`", "`docx`", "`rmk`"):
         assert reserved not in text, (
             f"precis-overview reintroduces unwired kind {reserved!r}"
         )

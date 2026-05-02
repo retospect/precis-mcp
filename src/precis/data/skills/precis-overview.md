@@ -62,6 +62,7 @@ shapes — slug for canonical/named refs, integer for agent scratch:
 | `conv`    | `2026-04-26-spec`     | Past conversation                 | store |
 | `markdown`| `notes--meeting`      | A `.md` file under the configured root | `PRECIS_MARKDOWN_ROOT` |
 | `plaintext`| `notes--log`         | A `.txt` / `.log` file under the configured root | `PRECIS_PLAINTEXT_ROOT` |
+| `tex`     | `chapters--intro`     | A `.tex` file under the configured root (first-cut paragraph block grammar) | `PRECIS_TEX_ROOT` |
 | `python`  | `precis::precis.cli.main` | A symbol / file in a configured Python repo (alias before `::` matches `PRECIS_PYTHON_ROOTS`) | `PRECIS_PYTHON_ROOTS` |
 | `todo`    | `122` (int)           | A task                            | store |
 | `memory`  | `47` (int)            | Agent note / scratchpad           | store |

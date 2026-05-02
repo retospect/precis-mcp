@@ -8,13 +8,13 @@ applies-to: cross-cutting (file-rooted kinds)
 last-updated: 2026-05-01
 ---
 
-> **Status:** `markdown`, `plaintext`, and `python` ship today
+> **Status:** `markdown`, `plaintext`, `tex`, and `python` ship today
 > (read + write, including the `mode='edit'` / `mode='insert'`
 > surface). **Each is gated on an env var** — `PRECIS_MARKDOWN_ROOT`,
-> `PRECIS_PLAINTEXT_ROOT`, `PRECIS_PYTHON_ROOTS` — so a build that
-> doesn't set them won't register the corresponding kind. Use
-> `get(kind='skill', id='precis-help')` to see which of these are
-> live in the server you're talking to.
+> `PRECIS_PLAINTEXT_ROOT`, `PRECIS_TEX_ROOT`, `PRECIS_PYTHON_ROOTS`
+> — so a build that doesn't set them won't register the corresponding
+> kind. Use `get(kind='skill', id='precis-help')` to see which of
+> these are live in the server you're talking to.
 
 # precis-files-help — file-rooted kinds, shared concepts
 
@@ -24,12 +24,14 @@ This skill covers what's the **same** across every file-rooted kind:
 |---|---|---|
 | `markdown` | `.md` | `PRECIS_MARKDOWN_ROOT` |
 | `plaintext` | `.txt`, `.log` | `PRECIS_PLAINTEXT_ROOT` |
+| `tex` | `.tex` (first-cut: paragraph block grammar, no sectioning yet) | `PRECIS_TEX_ROOT` |
 | `python` | `.py` (Python codebases) | `PRECIS_PYTHON_ROOTS` |
 
 For kind-specific rules (block grammar, views, edits) see:
 
 - `precis-markdown-help` — `.md` files
 - `precis-plaintext-help` — `.txt` / `.log` files
+- `precis-tex-help` — `.tex` files (paragraph block grammar, first cut)
 - `precis-python-help` — Python codebases
 
 ## Two tracks of addressing
