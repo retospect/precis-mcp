@@ -27,7 +27,6 @@ from precis.handlers._cache_base import (
 )
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import BlockInsert
 from precis.utils.optional_deps import require_optional
 from precis.utils.url import canonical_url, host_of, is_http_url, slug_from_url
 
@@ -56,9 +55,16 @@ class WebHandler(CacheBackedHandler):
         description=(
             "Fetch a web page and return its readable content as markdown. "
             "Cached for 7 days; tracking params and fragments collapse "
-            "onto a single cache row."
+            "onto a single cache row. Fetched pages are block-parsed and "
+            "embedded so search(kind='web', q=...) lands hits inside "
+            "page content. Tag to bookmark (e.g. add=['bookmark']) and "
+            "link to memory / paper refs for cross-referencing."
         ),
         supports_get=True,
+        supports_search=True,
+        supports_search_hits=True,
+        supports_tag=True,
+        supports_link=True,
         is_numeric=False,
         id_required=True,
     )
@@ -153,9 +159,18 @@ class WebHandler(CacheBackedHandler):
         else:
             body_text = extracted.strip()
 
+        # Block-parse + embed via the shared cache-base helper —
+        # this is what makes ``search(kind='web', q=...)`` land
+        # lexical + semantic hits inside cached pages. Previously
+        # we stored one un-embedded monolithic block, which meant
+        # a user's bookmark corpus was opaque to both the block-
+        # level fused search and to ``random`` (which only draws
+        # from ``embedding IS NOT NULL`` rows). Paragraph-level
+        # blocks also surface more useful previews in search
+        # results and in the random-pick response body.
         return FetchResult(
             title=title,
-            body_blocks=[BlockInsert(pos=0, text=body_text)],
+            body_blocks=self._blocks_from_report(body_text),
             cost_usd=None,  # bandwidth only
             meta={
                 "url": key,

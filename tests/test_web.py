@@ -216,3 +216,241 @@ def test_slug_uses_human_readable_form(handler: WebHandler) -> None:
     assert "github" in ref.slug
     assert "modelcontextprotocol" in ref.slug
     assert "servers" in ref.slug
+
+
+# ── block-parsing + search ──────────────────────────────────────────
+#
+# Since the web-bookmark patch, ``_fetch`` routes the extracted
+# markdown through ``_blocks_from_report`` so each paragraph /
+# heading / list becomes one embedded block. That turns every
+# fetched page into a searchable corpus member — both lexical
+# (full-text index) and semantic (vector). These tests cover the
+# new plumbing end-to-end.
+
+
+def test_fetch_produces_multiple_blocks(handler: WebHandler) -> None:
+    """A real article body must land as many blocks, not one
+    monolithic row — that's what makes paragraph-level search
+    useful."""
+    handler.get(id="https://example.com/article")
+    cached = handler.store.get_cache_entry(
+        provider="web",
+        request_hash=handler._hash("https://example.com/article"),  # type: ignore[arg-type]
+    )
+    assert cached is not None
+    ref, _ = cached
+    blocks = handler.store.list_blocks_for_ref(ref.id)
+    # The sample HTML has a heading + three paragraphs → at least
+    # three text blocks (trafilatura may fold tighter, but not
+    # into one).
+    assert len(blocks) >= 2, f"only {len(blocks)} block(s); expected paragraph split"
+
+
+def test_fetched_blocks_are_embedded(handler: WebHandler) -> None:
+    """Each extracted block must carry an embedding so semantic
+    search lands hits and random() can pick from web pages."""
+    handler.get(id="https://example.com/article")
+    cached = handler.store.get_cache_entry(
+        provider="web",
+        request_hash=handler._hash("https://example.com/article"),  # type: ignore[arg-type]
+    )
+    assert cached is not None
+    ref, _ = cached
+    blocks = handler.store.list_blocks_for_ref(ref.id, with_embedding=True)
+    # At least one block must carry a vector — the fallback
+    # "couldn't parse" branch stores un-embedded blocks, so we
+    # don't require every block to be embedded (parser may drop a
+    # stub line), only that the typical path produces vectors.
+    assert any(b.embedding is not None for b in blocks), (
+        "no block carries an embedding; _blocks_from_report isn't wired"
+    )
+
+
+def test_search_finds_content_inside_fetched_page(
+    handler: WebHandler,
+) -> None:
+    """``search(kind='web', q=...)`` lands a hit on body text of a
+    previously-fetched page. This is the core capability the
+    bookmark patch unlocks."""
+    handler.get(id="https://example.com/article")
+    resp = handler.search(q="first real paragraph")
+    # The search header mentions the hit count and query echo.
+    assert "first real paragraph" in resp.body or "first-real" in resp.body
+    # Slug of the cached ref appears as a numbered hit.
+    assert "example-com-article" in resp.body
+
+
+def test_search_empty_query_raises(handler: WebHandler) -> None:
+    with pytest.raises(BadInput, match="search requires q="):
+        handler.search(q="")
+
+
+def test_search_no_hits_returns_recovery_hint(handler: WebHandler) -> None:
+    """Empty result set must include an actionable next-step so
+    the caller knows whether to widen the query or fetch first."""
+    resp = handler.search(q="nothing-will-match-this-xyzzy")
+    assert "no web blocks match" in resp.body
+    # Hint points at the example URL so agents know the cache
+    # needs populating first.
+    assert "https://example.com/article" in resp.body
+
+
+# ── tag (bookmark) ──────────────────────────────────────────────────
+#
+# Tag usage on cache-backed kinds is identical to ref-backed
+# kinds: closed prefixes are gated by the ``kinds.tags_allowed``
+# axis, open tags pass through. For web we care most about the
+# open-tag path (``add=['bookmark']``) and the ``CACHE:pinned``
+# closed tag (prevent expiry).
+
+
+def test_tag_bookmark_open_tag(handler: WebHandler) -> None:
+    """Adding an open tag like ``bookmark`` should succeed and the
+    ack should echo the count."""
+    handler.get(id="https://example.com/article")
+    resp = handler.tag(id="example-com-article", add=["bookmark"])
+    assert "+1 tag" in resp.body
+    # The tag must actually land on the ref.
+    ref = handler.store.get_ref(kind="web", id="example-com-article")
+    assert ref is not None
+    tags = handler.store.tags_for(ref.id)
+    assert any(t.value == "bookmark" for t in tags)
+
+
+def test_tag_cache_pinned_closed_tag(handler: WebHandler) -> None:
+    """``CACHE:pinned`` is a closed-axis tag allowed on every
+    cache-backed kind."""
+    handler.get(id="https://example.com/article")
+    resp = handler.tag(id="example-com-article", add=["CACHE:pinned"])
+    assert "+1 tag" in resp.body
+
+
+def test_tag_before_fetch_raises_notfound(handler: WebHandler) -> None:
+    """You can't tag a slug that isn't in the cache — NotFound
+    with a "fetch first" recovery hint."""
+    from precis.errors import NotFound
+
+    with pytest.raises(NotFound, match="not found") as exc:
+        handler.tag(id="never-fetched-slug", add=["bookmark"])
+    assert exc.value.next is not None
+    # Recovery hint tells the agent to fetch first.
+    assert "get(kind='web'" in exc.value.next
+
+
+def test_tag_requires_add_or_remove(handler: WebHandler) -> None:
+    handler.get(id="https://example.com/article")
+    with pytest.raises(BadInput, match="requires add= or remove="):
+        handler.tag(id="example-com-article")
+
+
+def test_untag_removes(handler: WebHandler) -> None:
+    handler.get(id="https://example.com/article")
+    handler.tag(id="example-com-article", add=["bookmark"])
+    resp = handler.tag(id="example-com-article", remove=["bookmark"])
+    assert "-1 tag" in resp.body
+    ref = handler.store.get_ref(kind="web", id="example-com-article")
+    assert ref is not None
+    tags = handler.store.tags_for(ref.id)
+    assert all(t.value != "bookmark" for t in tags)
+
+
+# ── link (cross-reference) ──────────────────────────────────────────
+#
+# The canonical use-case the user named: link a fetched page to a
+# memory that explains why it matters. ``target='memory:123'`` or
+# ``target='paper:slug'`` both work.
+
+
+def test_link_to_memory(handler: WebHandler, hub: Hub) -> None:
+    """Link a web ref to a memory ref — the most common bookmark
+    pattern ("I kept this page for the idea I wrote down in
+    memory 42")."""
+    # Seed a memory to link against.
+    store = hub.store
+    assert store is not None
+    cid = store.ensure_corpus("default")
+    mem = store.insert_ref(
+        corpus_id=cid, kind="memory", slug=None, title="the idea"
+    )
+    # Fetch the web page.
+    handler.get(id="https://example.com/article")
+    # Link web → memory.
+    resp = handler.link(
+        id="example-com-article",
+        target=f"memory:{mem.id}",
+    )
+    assert "+1 link" in resp.body
+    # The link must actually land.
+    web_ref = handler.store.get_ref(kind="web", id="example-com-article")
+    assert web_ref is not None
+    links = handler.store.links_for(web_ref.id, direction="out")
+    assert len(links) == 1
+    assert links[0].dst_ref_id == mem.id
+
+
+def test_link_to_paper(handler: WebHandler, hub: Hub) -> None:
+    """``target='paper:slug'`` works the same way — web pages as
+    supplementary reading for a paper."""
+    store = hub.store
+    assert store is not None
+    cid = store.ensure_corpus("default")
+    paper = store.insert_ref(
+        corpus_id=cid, kind="paper", slug="miller2000food", title="Food"
+    )
+    handler.get(id="https://example.com/article")
+    resp = handler.link(
+        id="example-com-article",
+        target="paper:miller2000food",
+    )
+    assert "+1 link" in resp.body
+    web_ref = handler.store.get_ref(kind="web", id="example-com-article")
+    assert web_ref is not None
+    links = handler.store.links_for(web_ref.id, direction="out")
+    assert any(link.dst_ref_id == paper.id for link in links)
+
+
+def test_unlink_removes(handler: WebHandler, hub: Hub) -> None:
+    store = hub.store
+    assert store is not None
+    cid = store.ensure_corpus("default")
+    mem = store.insert_ref(
+        corpus_id=cid, kind="memory", slug=None, title="the idea"
+    )
+    handler.get(id="https://example.com/article")
+    handler.link(id="example-com-article", target=f"memory:{mem.id}")
+    resp = handler.link(
+        id="example-com-article",
+        target=f"memory:{mem.id}",
+        mode="remove",
+    )
+    assert "-1 link" in resp.body
+
+
+def test_link_requires_target(handler: WebHandler) -> None:
+    handler.get(id="https://example.com/article")
+    with pytest.raises(BadInput, match="requires target="):
+        handler.link(id="example-com-article")
+
+
+def test_link_bad_mode_rejected(handler: WebHandler) -> None:
+    handler.get(id="https://example.com/article")
+    with pytest.raises(BadInput, match="link mode must be"):
+        handler.link(
+            id="example-com-article",
+            target="memory:1",
+            mode="toggle",
+        )
+
+
+# ── KindSpec advertises the new verbs ───────────────────────────────
+
+
+def test_kindspec_declares_search_tag_link() -> None:
+    """The dispatcher uses these flags to wire tools/list — if they
+    regress, ``search(kind='web')`` stops showing up in the MCP
+    surface even though the handler method still exists."""
+    spec = WebHandler.spec
+    assert spec.supports_search is True
+    assert spec.supports_search_hits is True
+    assert spec.supports_tag is True
+    assert spec.supports_link is True

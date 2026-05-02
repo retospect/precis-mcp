@@ -36,11 +36,22 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
+from precis.handlers._link_tag_ops import (
+    apply_link_ops,
+    apply_tag_ops,
+    format_link_tag_ack,
+)
 from precis.protocol import Handler
 from precis.response import Response
+from precis.store import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import BlockInsert
+from precis.utils.block_ingest import to_block_inserts
+from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.next_block import render_next_section
+from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.text import excerpt as _excerpt
 
 if TYPE_CHECKING:
     from precis.store.types import CacheEntry, Ref
@@ -115,6 +126,13 @@ class CacheBackedHandler(Handler):
         if hub.store is None:
             raise InitError(f"{self.provider}: store required")
         self.store = hub.store
+        # Embedder is optional. Cache-backed kinds that declare
+        # ``supports_search`` need it to vectorize the query leg,
+        # and ``_blocks_from_report`` needs it to embed extracted
+        # body blocks. Subclasses that don't touch either (e.g.
+        # math today) can ignore the attribute entirely. None is
+        # the valid stateless / test-before-embedder-wired shape.
+        self.embedder = hub.embedder
 
     # ── public verb (default `get` implementation) ─────────────────────
 
@@ -318,6 +336,254 @@ class CacheBackedHandler(Handler):
             f"Next: get(kind={self.spec.kind!r}, id='<slug>') to read one._"
         )
         return Response(body="\n".join(lines))
+
+    # ── seven-verb surface: search / tag / link ───────────────────────
+    #
+    # Promoted from ``_PerplexityBase`` in the web-bookmark patch:
+    # every cache-backed kind that stores embedded body blocks
+    # benefits from lexical/semantic search, tag-based bookmarking,
+    # and cross-linking to memory or papers. Subclasses opt in by
+    # flipping ``supports_search`` / ``supports_tag`` /
+    # ``supports_link`` in their ``KindSpec`` — the methods here
+    # are inert until the dispatch table wires them.
+    #
+    # Kinds that don't store per-block content (``math`` returns a
+    # single-line answer) can leave the flags off and these remain
+    # available as an opt-in when they grow richer payloads.
+
+    def _resolve_cache_slug(self, id: str | int) -> tuple[str, int]:
+        """Coerce an agent-facing id to a ``(slug, ref_id)`` pair.
+
+        Cache-backed kinds are slug-addressed; the agent sees the
+        slug in the ``/recent`` listing (and in ``search`` hits)
+        and passes it back as ``id=`` to ``tag`` / ``link``. A
+        missing cache row is ``NotFound`` with an "fetch it first"
+        hint — the slug doesn't exist until ``get(...)`` has
+        populated the cache.
+        """
+        slug = str(id).strip()
+        if not slug:
+            raise BadInput(
+                f"{self.spec.kind} ops require id= (the slug)",
+                next=(
+                    f"tag(kind={self.spec.kind!r}, id='<slug>', "
+                    "add=['CACHE:pinned'])"
+                ),
+            )
+        ref = self.store.get_ref(kind=self.spec.kind, id=slug)
+        if ref is None:
+            raise NotFound(
+                f"{self.spec.kind} slug {slug!r} not found",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id='<query>') first to "
+                    "populate the cache, then tag/link the resulting slug"
+                ),
+            )
+        return slug, ref.id
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove tags on an existing cache slug.
+
+        Primary use-case: bookmarking. ``tag(kind='web',
+        id='<slug>', add=['bookmark'])`` flags a fetched page for
+        later rediscovery via ``search`` with an open-tag filter
+        or a direct ``/recent`` scan.
+        """
+        if not add and not remove:
+            raise BadInput(
+                f"tag(kind={self.spec.kind!r}, id=...) requires add= or remove=",
+                next=(
+                    f"tag(kind={self.spec.kind!r}, id='<slug>', "
+                    "add=['CACHE:pinned'])"
+                ),
+            )
+        slug, ref_id = self._resolve_cache_slug(id)
+        n_added, n_removed = apply_tag_ops(
+            self.store, self.spec.kind, ref_id, tags=add, untags=remove
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=slug,
+                n_links_added=0,
+                n_links_removed=0,
+                n_tags_added=n_added,
+                n_tags_removed=n_removed,
+            )
+        )
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add or remove a link from this cache slug to another ref.
+
+        Canonical form for ``target``: ``kind:id[~selector]`` —
+        e.g. ``memory:158`` for "this web page is about the thing
+        I remembered there", or ``paper:wang2020state`` for
+        "supplementary reading for this paper". See
+        ``precis-relations`` for the relation vocabulary.
+        """
+        if target is None:
+            raise BadInput(
+                f"link(kind={self.spec.kind!r}, id=...) requires target=",
+                next=(
+                    f"link(kind={self.spec.kind!r}, id='<slug>', "
+                    "target='memory:123')"
+                ),
+            )
+        if mode not in ("add", "remove"):
+            raise BadInput(
+                f"link mode must be 'add' or 'remove', got {mode!r}",
+                options=["add", "remove"],
+            )
+        slug, ref_id = self._resolve_cache_slug(id)
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref_id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=slug,
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
+
+    # ── search ─────────────────────────────────────────────────────
+
+    def search(  # type: ignore[override]
+        self,
+        *,
+        q: str | None = None,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> Response:
+        """Block-level fused search across cached entries of this kind.
+
+        Hybrid lexical + semantic (when an embedder is wired) using
+        :meth:`Store.search_blocks_fused`. Subclasses whose
+        ``_fetch`` stores only a single un-embedded block (no call
+        to :meth:`_blocks_from_report`) will land lexical hits
+        only — still useful for URL / title grep.
+        """
+        if q is None or not q.strip():
+            raise BadInput(
+                f"search requires q= for kind={self.spec.kind!r}",
+                next=f"search(kind={self.spec.kind!r}, q='your query')",
+            )
+
+        query_vec: list[float] | None = None
+        if self.embedder is not None:
+            query_vec = self.embedder.embed_one(q)
+
+        hits = self.store.search_blocks_fused(
+            q=q,
+            query_vec=query_vec,
+            kind=self.spec.kind,
+            limit=top_k,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+        )
+        if not hits:
+            return Response(
+                body=(
+                    f"no {self.spec.kind} blocks match {q!r}\n"
+                    f"next: get(kind={self.spec.kind!r}, "
+                    f"id={self.example_query!r}) to populate the cache, "
+                    f"or try a broader query"
+                )
+            )
+
+        total = self.store.count_blocks_lexical(q=q, kind=self.spec.kind)
+        lines = [
+            format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun="block hit",
+                query=q,
+            )
+        ]
+        for block, ref, score in hits:
+            slug = ref.slug or "???"
+            handle = f"{slug}~{block.slug or block.pos}"
+            preview = _excerpt(block.text)
+            lines.append(f"\n## {handle}  (score={score:.4f})")
+            lines.append(f"_{ref.title}_")
+            lines.append(preview)
+        return Response(body="\n".join(lines))
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Block-level fused search as :class:`SearchHit` rows.
+
+        Used by the dispatcher for cross-kind fans
+        (``kind='*'`` / ``kind='paper,web'``). Empty queries return
+        ``[]`` rather than raising — cross-kind callers tolerate a
+        kind contributing zero rows.
+        """
+        if not (q and q.strip()):
+            return []
+        query_vec: list[float] | None = None
+        if self.embedder is not None:
+            query_vec = self.embedder.embed_one(q)
+        triples = self.store.search_blocks_fused(
+            q=q,
+            query_vec=query_vec,
+            kind=self.spec.kind,
+            limit=top_k,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+        )
+        return block_hits_to_search_hits(triples, kind=self.spec.kind)
+
+    # ── block ingestion helper ────────────────────────────────────
+
+    def _blocks_from_report(self, body: str) -> list[BlockInsert]:
+        """Parse a markdown body into embedded ``BlockInsert`` rows.
+
+        Used by subclasses whose ``_fetch`` returns markdown-shaped
+        content (Perplexity reports, trafilatura-extracted web
+        pages). Each heading / paragraph / list / table / code
+        fence becomes one block with a stable content-derived
+        slug. Embedder runs per-block so search hits land on the
+        matching chunk rather than the whole page.
+
+        The empty-input branch returns a single un-embedded block
+        wrapping the raw body so the cache row is never empty when
+        the upstream returned something we couldn't parse.
+        """
+        md_blocks = parse_markdown(body)
+        if not md_blocks:
+            # Defensive fallback: parser found no structure → store
+            # the whole text as one paragraph block (no embedding).
+            # Better than dropping content entirely.
+            return [BlockInsert(pos=0, text=body)]
+
+        return to_block_inserts(
+            md_blocks, embedder=self.embedder, meta_for=block_meta
+        )
 
 
 def _format_cache_footer(cache: CacheEntry) -> str:
