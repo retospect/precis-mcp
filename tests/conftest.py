@@ -34,6 +34,50 @@ PG_ADMIN_DSN = os.environ.get(
     "postgresql://localhost/postgres",
 )
 
+
+# Probed once per test session.  ``True`` means a postgres server is
+# reachable at ``PG_ADMIN_DSN`` and the ``fresh_db`` / ``store``
+# fixtures can run for real; ``False`` makes both fixtures call
+# ``pytest.skip`` so the suite stays useful in environments without a
+# DB (CI without a postgres service, sandboxed dev shells, …).
+_PG_AVAILABLE: bool | None = None
+
+
+def _pg_available() -> bool:
+    """Cache and return whether ``PG_ADMIN_DSN`` answers a connect."""
+    global _PG_AVAILABLE
+    if _PG_AVAILABLE is None:
+        try:
+            with psycopg.connect(PG_ADMIN_DSN, connect_timeout=2) as conn:
+                conn.execute("SELECT 1")
+            _PG_AVAILABLE = True
+        except Exception:
+            _PG_AVAILABLE = False
+    return _PG_AVAILABLE
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "db: test requires a reachable PostgreSQL server "
+        "(set via PRECIS_TEST_PG_URL, default postgresql://localhost/"
+        "postgres). Auto-skipped when unreachable.",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Auto-tag every test that uses ``fresh_db`` / ``store`` with the
+    ``db`` marker.  Lets ``-m 'not db'`` deselect the whole DB suite
+    in environments that explicitly opt out (e.g. macOS / Windows CI
+    without a postgres service)."""
+    for item in items:
+        fixturenames = getattr(item, "fixturenames", ())
+        if "store" in fixturenames or "fresh_db" in fixturenames:
+            item.add_marker(pytest.mark.db)
+
+
 MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "precis" / "migrations"
 
 
@@ -93,7 +137,15 @@ def fresh_db() -> Iterator[str]:
     The created DB has no extensions installed yet — that's the migration's
     job. So this fixture mirrors what `precis migrate` sees on a real
     fresh deploy.
+
+    Auto-skips when no postgres server is reachable at ``PG_ADMIN_DSN``
+    so the suite stays useful in DB-less environments.
     """
+    if not _pg_available():
+        pytest.skip(
+            f"postgres unreachable at {PG_ADMIN_DSN}; set PRECIS_TEST_PG_URL "
+            "or start a server to run db-tagged tests"
+        )
     db_name = f"precis_test_{uuid.uuid4().hex[:8]}"
     with psycopg.connect(PG_ADMIN_DSN, autocommit=True) as admin:
         admin.execute(f'CREATE DATABASE "{db_name}"')

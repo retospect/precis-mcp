@@ -91,6 +91,22 @@ dated review document:
 See [`CHANGELOG.md`](CHANGELOG.md) entry for 6.0.0 for the per-fix
 landing record.
 
+## 🔵 CI: wire up a real PostgreSQL service on Linux
+
+**Status**: open
+**Severity**: polish
+**Owner**: `.github/workflows/check.yml`
+**Test**: `tests/conftest.py::_pg_available`
+
+For the v6.0.0 release the test job runs without postgres and the
+`db`-tagged tests (≈ 41 % of the suite, 654 / 1594) skip
+automatically via the new ``_pg_available()`` probe in
+``conftest.py``. Lint + the 940 db-less tests still gate the
+release. Re-enable the full suite by adding a
+``services: postgres`` block (with the ``pgvector/pgvector:pg16``
+image) on the ``ubuntu-latest`` matrix legs. macOS / Windows runners
+don't support GHA services and are fine staying skipped.
+
 ---
 
 _Last updated: 2026-05-02_
