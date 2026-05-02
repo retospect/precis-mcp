@@ -94,13 +94,20 @@ class CalcHandler(Handler):
             # Keep the full traceback in error.data via ``from e``
             # for debugging, but the agent-facing message is short
             # and structural. (Critic MINOR #9.)
+            #
+            # ``cause`` carries the scope disambiguation ("calc does
+            # math, not I/O"); ``next`` is a single copy-pasteable
+            # call that works — consistent with the envelope
+            # contract in precis/errors.py (``next`` = "one
+            # copy-pasteable next action"). Earlier revisions stuffed
+            # a prose list of operator names into ``next``, which
+            # broke the copy-paste affordance. (c4 cleanup.)
             raise BadInput(
-                f"could not evaluate {expr_str!r} — unsupported expression",
-                next=(
-                    "calc handles arithmetic, calculus, simplify, and similar "
-                    "math; check operator names like integrate, diff, simplify, "
-                    "solve. For Python builtins / I/O, use a different tool."
-                ),
+                f"could not evaluate {expr_str!r} — unsupported expression. "
+                "calc handles arithmetic, calculus, simplify, solve, and "
+                "similar symbolic math; for Python builtins or I/O use a "
+                "different tool.",
+                next="get(kind='calc', q='integrate(sin(x), x)')",
             ) from e
 
         # The MCP critic flagged ``calc`` cheerfully echoing
@@ -128,14 +135,17 @@ class CalcHandler(Handler):
             str(simplified).replace(" ", "") == expr_str.replace(" ", "")
             and free_symbols
         ):
+            # See the comment above the unsupported-expression raise
+            # for the cause/next split rationale. Here ``next`` picks
+            # ``solve(Eq(...))`` because it's the concrete shape the
+            # cause text recommends (giving sympy "more structure").
+            # (c4 cleanup.)
             raise BadInput(
-                f"expression simplifies to itself: {expr_str!r}",
-                next=(
-                    "calc evaluates math expressions (2+3*4, "
-                    "integrate(sin(x), x), …). For symbolic identities "
-                    "with no operators sympy can act on, give it more "
-                    "structure (e.g. solve(Eq(x+1, 3), x))"
-                ),
+                f"expression simplifies to itself: {expr_str!r}. "
+                "calc evaluates expressions with operators; for bare "
+                "symbolic identities give sympy more structure — wrap "
+                "in solve(Eq(lhs, rhs), var) or similar.",
+                next="get(kind='calc', q='solve(Eq(x+1, 3), x)')",
             )
 
         return Response(body=f"{expr_str} = {_humanise(result)}")

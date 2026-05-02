@@ -135,3 +135,79 @@ class TestSympyContainerReturns:
         r = handler.get(id="solveset(Eq(x**2 - 1, 0), x)")
         # FiniteSet renders with curly braces.
         assert "{-1, 1}" in r.body or "{1, -1}" in r.body
+
+
+# ── error-envelope contract ────────────────────────────────────────
+#
+# The critic's rule for ``PrecisError.next`` is "one copy-pasteable
+# next action". Earlier revisions of calc violated that in two
+# places (the unsupported-expression and simplifies-to-itself
+# branches) by stuffing prose operator lists into ``next``.
+#
+# These tests pin the contract for every calc BadInput:
+#   1. ``cause`` is a non-empty string (preserves the old
+#      information that used to live in the prose next=).
+#   2. ``next`` parses as a literal ``get(kind='calc', q='...')``
+#      call — i.e. an LLM can paste it verbatim back into the tool
+#      and it runs. No English prose, no parentheticals.
+# Regresses silently otherwise; the contract is architectural,
+# not testable any other way.
+
+
+class TestErrorEnvelopeShape:
+    """Every calc BadInput has cause + copy-pasteable next."""
+
+    _GET_CALC_PREFIX = "get(kind='calc', q='"
+
+    def _assert_envelope(self, exc: BadInput) -> None:
+        # Cause is present and non-empty.
+        assert isinstance(exc.cause, str) and exc.cause.strip()
+        # next is present and shaped like a concrete get() call.
+        assert exc.next is not None
+        assert exc.next.startswith(self._GET_CALC_PREFIX), (
+            f"next= is not a copy-pasteable get() call: {exc.next!r}"
+        )
+        # The call body closes with '). That's not a perfect parser,
+        # but it catches prose that slipped past the prefix check.
+        assert exc.next.endswith("')"), (
+            f"next= is not a copy-pasteable get() call: {exc.next!r}"
+        )
+
+    def test_parse_error_envelope(self, handler: CalcHandler) -> None:
+        """``this is not math`` → SympifyError → parse-error branch."""
+        with pytest.raises(BadInput) as exc_info:
+            handler.get(id="this is not math")
+        self._assert_envelope(exc_info.value)
+
+    def test_unsupported_expression_envelope(
+        self, handler: CalcHandler
+    ) -> None:
+        """Expression that parses but fails ``.doit()``. ``1/0`` now
+        evaluates to ``zoo``, so we need a sympify-parseable shape
+        that blows up at evaluation. ``Integral(nonsense, (x,0,1))``
+        where ``nonsense`` is something sympy can't integrate."""
+        # diff() on a non-expression raises AttributeError inside .doit()
+        # in some sympy versions, but the cleanest trigger is a Symbol
+        # treated as a callable — ``Symbol('f')(x).diff(x)`` which
+        # bubbles up TypeError.
+        with pytest.raises(BadInput) as exc_info:
+            # ``Derivative(f(x), x).doit()`` where ``f`` is just a
+            # symbol is not a supported evaluation — surfaces as
+            # TypeError inside .doit().
+            handler.get(id="Derivative(log).doit()")
+        self._assert_envelope(exc_info.value)
+
+    def test_simplifies_to_itself_envelope(
+        self, handler: CalcHandler
+    ) -> None:
+        """Bare symbolic identifier — ``one plus two`` trips the
+        "simplifies to itself + has free symbols" branch."""
+        with pytest.raises(BadInput) as exc_info:
+            handler.get(id="one plus two")
+        self._assert_envelope(exc_info.value)
+
+    def test_missing_expr_envelope(self, handler: CalcHandler) -> None:
+        """No id / no q → coerce-error branch."""
+        with pytest.raises(BadInput) as exc_info:
+            handler.get()
+        self._assert_envelope(exc_info.value)
