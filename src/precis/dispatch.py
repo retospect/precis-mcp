@@ -394,6 +394,13 @@ def boot(
     from precis.handlers.calc import CalcHandler
     _try(CalcHandler, hub=hub)
 
+    # Random — stateless CSPRNG-backed dice / int / choice, plus
+    # store-backed neighbor / chunk forms that activate when a
+    # store is wired. Always registered: the store-less half of
+    # the DSL (dice / int / choice) has value standalone.
+    from precis.handlers.random import RandomHandler
+    _try(RandomHandler, hub=hub)
+
     # Python — DB-free in-memory AST index. Skipped when no roots
     # are configured or every entry is malformed (parse_python_roots
     # logs each rejection).
