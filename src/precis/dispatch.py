@@ -394,13 +394,6 @@ def boot(
     from precis.handlers.calc import CalcHandler
     _try(CalcHandler, hub=hub)
 
-    # Random — stateless CSPRNG-backed dice / int / choice, plus
-    # store-backed neighbor / chunk forms that activate when a
-    # store is wired. Always registered: the store-less half of
-    # the DSL (dice / int / choice) has value standalone.
-    from precis.handlers.random import RandomHandler
-    _try(RandomHandler, hub=hub)
-
     # Python — DB-free in-memory AST index. Skipped when no roots
     # are configured or every entry is malformed (parse_python_roots
     # logs each rejection).
@@ -420,6 +413,7 @@ def boot(
         from precis.handlers.oracle import OracleHandler
         from precis.handlers.paper import PaperHandler
         from precis.handlers.quest import QuestHandler
+        from precis.handlers.random import RandomHandler
         from precis.handlers.skill import SkillHandler
         from precis.handlers.todo import TodoHandler
 
@@ -435,6 +429,12 @@ def boot(
         _try(OracleHandler,       hub=hub)
         _try(SkillHandler,        hub=hub)
         _try(PaperHandler,        hub=hub)
+
+        # Corpus-wide random-pick. Store-backed because it reads
+        # ``blocks`` directly; no embedder needed (it uses the
+        # stored embeddings as a "has content" filter, not for
+        # similarity). Raises NotFound on an empty corpus.
+        _try(RandomHandler,       hub=hub)
 
         # Cache-backed kinds. Each declares its env / optional-dep
         # requirements inside __init__ and raises InitError when

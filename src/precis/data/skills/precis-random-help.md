@@ -1,6 +1,6 @@
 ---
 id: precis-random-help
-title: precis — random values, dice, picks, neighbors
+title: precis — random corpus pick
 status: shipped
 tier: 1
 floor: any
@@ -8,131 +8,87 @@ applies-to: get (kind='random')
 last-updated: 2026-05-02
 ---
 
-# precis-random-help — dice, picks, and random draws
+# precis-random-help — random corpus pick
 
-`random` is a stateless CSPRNG-backed value generator. Five DSL
-forms, all passed as `id=`:
+`random` is a one-shot discovery kind. Every call picks a
+**single undeleted embedded block** from the corpus at random
+and returns its canonical handle with a drill-down hint.
 
-| Form | Example | Returns |
-|---|---|---|
-| **Dice** | `get(kind='random', id='3d6+3')` | Total of 3d6 rolls plus 3 |
-| **Integer** | `get(kind='random', id='int(1..100)')` | Uniform integer in `[1, 100]` |
-| **Choice** | `get(kind='random', id='choice(red\|green\|blue)')` | One pipe-separated option |
-| **Neighbor** | `get(kind='random', id='neighbor(paper:slug~42)')` | Top-K vector-nearest blocks |
-| **Chunk** | `get(kind='random', id='chunk(paper:slug)')` | One random block from a ref |
-
-`id=` and `q=` are equivalent — both are accepted.
-
-## Dice — `NdM[±K]`
-
-Classic polyhedral notation. `N` defaults to 1 (so `d20` is
-`1d20`); `K` is an optional integer modifier.
+No arguments: one verb, one pick.
 
 ```python
-get(kind='random', id='d20')       # 1d20, no modifier
-get(kind='random', id='3d6')       # sum of three 6-sided dice
-get(kind='random', id='3d6+3')     # + a fixed 3
-get(kind='random', id='4d8-1')     # - 1
+get(kind='random')
 ```
 
-The response echoes each individual roll when `N > 1` so a GM can
-spot-check or re-roll specific dice.
+Response shape:
 
-**Caps:** up to `1000d1000000` per request. Beyond the sides cap,
-use `int(1..N)` for a single huge-range draw.
+```markdown
+# random
+`paper:miller2000food~5`
 
-## Integer — `int(LO..HI)`
+Food security depends on resilient supply chains that …
 
-Uniform inclusive integer in `[LO, HI]`. Negative bounds are fine,
-whitespace around the operators is ignored.
-
-```python
-get(kind='random', id='int(1..100)')
-get(kind='random', id='int(-5..5)')
-get(kind='random', id='int( 1 .. 10 )')  # whitespace OK
+Next:
+  get(kind='paper', id='miller2000food~5') — read this block
+  get(kind='random')                       — another random pick
 ```
 
-Reversed bounds (`int(10..1)`) are rejected with a hint to swap
-them — no silent empty pick.
+## What you get back
 
-## Choice — `choice(A|B|C)`
+- **Handle** — `kind:identifier~pos` in backticks, ready to copy
+  into any tool that accepts a link target.
+- **Preview** — first non-empty line of the block, clipped to
+  ~160 characters. The full content is one `get()` away via the
+  drill-down hint.
+- **Drill-down hint** — pre-built `get(kind=…, id=…)` call that
+  fetches the exact block. Slug kinds use `id='slug~pos'`;
+  numeric kinds (memory / todo / …) use the ref id directly.
+- **Repeat hint** — `get(kind='random')` so the agent can keep
+  stumbling until something catches its eye.
 
-Uniform pick from pipe-separated options. Whitespace around each
-option is trimmed. Empty options are filtered out; a fully empty
-list is rejected.
+## What counts as pickable
 
-```python
-get(kind='random', id='choice(heads|tails)')
-get(kind='random', id='choice(yes|no|maybe)')
-get(kind='random', id='choice( red | green | blue )')
-```
+- `refs.deleted_at IS NULL` — soft-deleted refs are excluded.
+- `blocks.embedding IS NOT NULL` — only blocks that made it
+  through the embedder are pickable. Same universe as semantic
+  search: a ref whose embed job hasn't run yet can't appear
+  until the background job lands.
 
-## Neighbor — `neighbor(kind:id~pos)`
+No other filters. `kind=` / `tag=` / date-range constraints are
+future work — if you want "a random paper" specifically, use
+the paper kind's own search surface instead.
 
-Top-K vector-nearest blocks to a given block. The selector is
-**required** — refs themselves have no embedding, only their
-blocks do. Default K is 5; override with `top_k=N` (up to 50).
+## Typical uses
 
-```python
-get(kind='random', id='neighbor(paper:wang2020state~42)')
-get(kind='random', id='neighbor(oracle:rubric-rigor~3)', top_k=10)
-```
+- **Warm-up** — agent doesn't know what's in the corpus; a few
+  `random` calls surface sample content cheaper than browsing
+  TOCs.
+- **Inspiration** — stuck on a task, spin the wheel.
+- **Sanity check** — does `random` return something sensible?
+  If yes, the corpus is alive. If it raises `NotFound: no
+  embedded blocks`, ingest hasn't run (or hasn't embedded yet).
 
-The source block is excluded from results (its distance to itself
-is always zero — not useful). Each row shows the canonical handle
-plus cosine distance so the agent can gauge similarity, not just
-rank.
+## Randomness
 
-Requires a wired store **and** embedder. Stateless deployments
-get a clear `BadInput` pointing at the forms that do work.
-
-## Chunk — `chunk(kind:id)`
-
-Pick one random block from a ref. Useful for spot-checking a
-corpus, generating quote-of-the-day style prompts, or sampling
-training data.
-
-```python
-get(kind='random', id='chunk(paper:wang2020state)')
-get(kind='random', id='chunk(oracle:iching)')
-```
-
-The body is the full block text plus a `kind:id~N` handle so the
-agent can revisit the same block deterministically if desired.
-Block-level targets (`chunk(paper:slug~0)`) are rejected — chunk
-picks *from* a ref, not from a single block.
-
-Requires a wired store.
-
-## Randomness source
-
-Every draw goes through [`secrets.randbelow`][secrets] — the
-Python standard library's CSPRNG. Consistent with `oracle`'s
-random-entry picker, and deliberately non-deterministic across
-requests: the MCP surface does not accept a `seed=` argument.
-
-Callers that need reproducible sequences should use their own
-`random.Random(seed)` outside the MCP surface; `random` itself is
-a dice-roller, not a replay tool.
-
-[secrets]: https://docs.python.org/3/library/secrets.html#secrets.randbelow
+Uses PostgreSQL's `random()` in `ORDER BY random() LIMIT 1`.
+Unbiased per-call. No `seed=` argument — the MCP surface is
+deliberately non-deterministic. Callers that need replay use
+their own `random.Random(seed)` outside the tool surface.
 
 ## When `random` fails
 
-- **Unknown form** — DSL didn't match any of the five regexes;
-  the recovery hint lists all of them.
-- **Out-of-bounds cap** — dice count or sides exceeds the DoS
-  cap; the hint suggests the closest legal shape.
-- **Reversed int range** — `int(HI..LO)` with `LO < HI`.
-- **Neighbor on ref** — `neighbor(kind:id)` without a selector.
-- **Chunk on block** — `chunk(kind:id~pos)` with a selector.
-- **Stateless + ref form** — `neighbor` / `chunk` called on a
-  deployment without a wired store.
-
-All errors carry a `next=` hint pointing at the legal form.
+- **Empty corpus** — `NotFound: corpus has no embedded blocks to
+  pick from`. Fresh deploy before any ingest. The recovery hint
+  says so.
+- **No store** — handler won't register at boot on store-less
+  deployments (calc is the only stateless kind). If you see
+  `random` in `precis-status`, the store is wired.
 
 ## See also
 
 - `precis-overview` — verbs and kinds
-- `precis-paper-help` — where most `neighbor()` / `chunk()` targets live
-- `precis-oracle` — the other CSPRNG-backed kind (random-entry default)
+- `precis-paper-help` — where most `random` picks land (papers
+  are the biggest corpus)
+- `precis-oracle-help` *(forthcoming)* — the other random-pick
+  kind; scoped to a single tradition rather than the whole
+  corpus

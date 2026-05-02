@@ -497,6 +497,45 @@ class BlocksMixin:
         assert row is not None
         return int(row[0])
 
+    def random_embedded_block(self) -> tuple[Block, Ref] | None:
+        """Pick one random undeleted block that has an embedding.
+
+        Drives ``get(kind='random')``. The join + ``ORDER BY
+        random() LIMIT 1`` pattern does a full-scan each call,
+        which is acceptable for corpora up to ~100k blocks — past
+        that the planner still picks a parallel seq-scan and it
+        stays well under 100ms. Switching to ``TABLESAMPLE
+        SYSTEM_ROWS(1)`` would need the ``tsm_system_rows``
+        extension and is a future optimisation only if this
+        becomes a hot path.
+
+        Returns ``None`` when the corpus has no embedded blocks
+        — a fresh deploy before any ingest. The handler converts
+        that to ``NotFound`` with an "ingest first" hint.
+
+        Filters are identical to :meth:`search_blocks_semantic`:
+        live ref (``deleted_at IS NULL``) and present vector
+        (``embedding IS NOT NULL``). A block with no embedding
+        can't be drawn even though its text is present — random
+        discovery is vector-search-adjacent in spirit, so we
+        keep the same universe.
+        """
+        sql = (
+            "SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count, "
+            "       NULL::vector, b.density, b.meta, "
+            "       b.created_at, b.updated_at, "
+            "       r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
+            "       r.meta, r.created_at, r.updated_at, r.deleted_at "
+            "FROM blocks b JOIN refs r ON r.id = b.ref_id "
+            "WHERE r.deleted_at IS NULL AND b.embedding IS NOT NULL "
+            "ORDER BY random() LIMIT 1"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql).fetchone()
+        if row is None:
+            return None
+        return _row_to_block(row[:11]), _row_to_ref(row[11:21])
+
     def update_block_density(self, block_id: int, density: Density) -> None:
         """Set the density bucket (sparse/medium/dense) on a block."""
         with self.pool.connection() as conn:

@@ -245,28 +245,20 @@ def test_try_swallows_import_error(caplog: pytest.LogCaptureFixture) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_boot_stateless_registers_stateless_kinds() -> None:
-    """Stateless path (no store) registers only the two stateless
-    kinds: ``calc`` and ``random``.
+def test_boot_stateless_registers_calc_only() -> None:
+    """Stateless path (no store) registers only the calc kind.
 
     This is the phase-1 "no DB" deployment mode, preserved from the
-    v1 ``registry.builtins(store=None)`` shape. The ``random`` kind
-    was added alongside ``calc`` in R3 — dice / int / choice work
-    without a store, so its registration is stateless too (the
-    neighbor / chunk forms of the DSL raise BadInput when reached
-    on a store-less deployment).
+    v1 ``registry.builtins(store=None)`` shape.
     """
     r = boot(store=None)
     assert isinstance(r, Hub)
-    assert r.kinds == {"calc", "random"}
-    # Each exposes only ``get``.
+    assert r.kinds == {"calc"}
+    # calc exposes only ``get``.
     assert r.verbs_for("calc") == {"get"}
-    assert r.verbs_for("random") == {"get"}
-    # Overview blurbs were registered.
+    # Overview blurb was registered.
     assert "calc" in r.overview
     assert r.overview["calc"]
-    assert "random" in r.overview
-    assert r.overview["random"]
 
 
 def test_boot_stateless_registers_handler_instance() -> None:
