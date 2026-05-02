@@ -189,15 +189,22 @@ def format_link_tag_ack(
     Empty operations are dropped from the line so an
     ``unlink``-only call doesn't lie about adding things.
     """
+
+    def _pluralise(n: int, noun: str) -> str:
+        # English plural-s — the previous format emitted ``+2 tag``
+        # and ``+2 link`` which read as typos to a 7B caller (MCP
+        # critic NIT 2026-05-02).
+        return f"{noun}" if n == 1 else f"{noun}s"
+
     parts: list[str] = []
     if n_links_added:
-        parts.append(f"+{n_links_added} link")
+        parts.append(f"+{n_links_added} {_pluralise(n_links_added, 'link')}")
     if n_links_removed:
-        parts.append(f"-{n_links_removed} link")
+        parts.append(f"-{n_links_removed} {_pluralise(n_links_removed, 'link')}")
     if n_tags_added:
-        parts.append(f"+{n_tags_added} tag")
+        parts.append(f"+{n_tags_added} {_pluralise(n_tags_added, 'tag')}")
     if n_tags_removed:
-        parts.append(f"-{n_tags_removed} tag")
+        parts.append(f"-{n_tags_removed} {_pluralise(n_tags_removed, 'tag')}")
     if not parts:
         # No-op — the handler should have rejected before reaching
         # this point, but render something sensible anyway.

@@ -209,7 +209,12 @@ def test_put_create_refuses_overwrite(handler: PlaintextHandler, pt_root: Path) 
 def test_put_append(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "foo.txt", "original paragraph.\n")
     out = handler.edit(id="foo", text="new paragraph", mode="append")
-    assert "appended to plaintext" in out.body
+    # New unified write-result shape: names verb, block, line range,
+    # and file slug so chained edits don't need a /toc round-trip
+    # (MCP critic MAJOR-C 2026-05-02).
+    assert out.body.startswith("appended block ")
+    assert "'foo'" in out.body
+    assert " (L" in out.body
     content = (pt_root / "foo.txt").read_text()
     assert "original paragraph" in content
     assert "new paragraph" in content
@@ -226,7 +231,8 @@ def test_put_replace_by_pos(handler: PlaintextHandler, pt_root: Path) -> None:
     # Force ingest, then replace paragraph 0.
     handler.get(id="doc")
     out = handler.edit(id="doc~0", text="FIRST (edited) paragraph.", mode="replace")
-    assert "replaced paragraph" in out.body
+    assert out.body.startswith("replaced block ")
+    assert "'doc'" in out.body
     content = (pt_root / "doc.txt").read_text()
     assert "FIRST (edited)" in content
     assert "second paragraph" in content
@@ -236,7 +242,8 @@ def test_put_delete_by_pos(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "doc.txt", "keep me.\n\ndrop me.\n\nkeep me too.\n")
     handler.get(id="doc")  # force ingest
     out = handler.delete(id="doc~1")
-    assert "deleted paragraph" in out.body
+    assert out.body.startswith("deleted block ")
+    assert "'doc'" in out.body
     content = (pt_root / "doc.txt").read_text()
     assert "keep me" in content
     assert "drop me" not in content
@@ -265,7 +272,9 @@ def test_put_edit_surgical(handler: PlaintextHandler, pt_root: Path) -> None:
         find="09:15",
         text="09:20",
     )
-    assert "edited 1 span" in out.body
+    assert out.body.startswith("edited block ")
+    assert "'log'" in out.body
+    assert " (L" in out.body
     content = (pt_root / "log.txt").read_text()
     assert "09:20" in content
     assert "09:15" not in content
@@ -286,7 +295,8 @@ def test_put_insert_before_anchor(handler: PlaintextHandler, pt_root: Path) -> N
         where="before",
         text="PREFIX: ",
     )
-    assert "inserted 1 span" in out.body
+    assert out.body.startswith("inserted block ")
+    assert "'log'" in out.body
     assert "PREFIX: end of story" in (pt_root / "log.txt").read_text()
 
 

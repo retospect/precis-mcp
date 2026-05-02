@@ -165,7 +165,10 @@ def test_edit_find_replace(handler: TexHandler, tex_root: Path) -> None:
         find="Old Title",
         text="New Title",
     )
-    assert "edited 1 span" in out.body
+    # Unified write-result shape (MCP critic MAJOR-C 2026-05-02).
+    assert out.body.startswith("edited block ")
+    assert "'paper'" in out.body
+    assert " (L" in out.body
     content = (tex_root / "paper.tex").read_text()
     assert "New Title" in content
     assert "Old Title" not in content
@@ -178,7 +181,8 @@ def test_edit_append(handler: TexHandler, tex_root: Path) -> None:
         mode="append",
         text=r"\section{Two}",
     )
-    assert "appended to tex" in out.body
+    assert out.body.startswith("appended block ")
+    assert "'doc'" in out.body
     assert r"\section{Two}" in (tex_root / "doc.tex").read_text()
 
 

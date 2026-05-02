@@ -35,6 +35,7 @@ def format_search_headline(
     total: int | None,
     noun: str,
     query: str,
+    n_strong: int | None = None,
 ) -> str:
     """Format the leading ``# N [of K] {noun}(s) for 'query'`` line.
 
@@ -48,6 +49,19 @@ def format_search_headline(
     * ``total > n_returned`` — capped by ``top_k``. Render
       ``# N of K {noun}(s) for 'q'`` so the agent knows pagination
       is in play.
+
+    ``n_strong`` semantics:
+
+    * ``None`` — no confidence information to surface.
+    * ``n_strong < n_returned`` — the caller detected a score cliff
+      (e.g. a unique literal query where the top hit dominates).
+      Append ``(N strong)`` so the agent knows most of the tail
+      matches are low-confidence and pagination isn't worth it.
+      MCP critic MINOR-$ 2026-05-02: agents checking their own
+      write with a unique marker used to pay tokens paging
+      through semantically-related hits.
+    * ``n_strong >= n_returned`` — every returned hit is
+      high-confidence; no annotation.
 
     ``noun`` is singular; the function pluralises by appending
     ``"s"`` when ``n_returned != 1``.  Pass a noun phrase like
@@ -63,8 +77,43 @@ def format_search_headline(
     else:
         plural = "s"
     if total is None or total <= n_returned:
-        return f"# {n_returned} {noun}{plural} for {query!r}"
-    return f"# {n_returned} of {total} {noun}{plural} for {query!r}"
+        base = f"# {n_returned} {noun}{plural} for {query!r}"
+    else:
+        base = f"# {n_returned} of {total} {noun}{plural} for {query!r}"
+    if n_strong is not None and 0 < n_strong < n_returned:
+        base += f"  ({n_strong} strong)"
+    return base
 
 
-__all__ = ["format_search_headline"]
+def detect_score_cliff(scores: list[float], *, ratio: float = 0.5) -> int | None:
+    """Return the count of ``scores`` ≥ ``ratio × scores[0]``, else ``None``.
+
+    A "cliff" is a score gap where the top hit clearly dominates
+    — typical of exact-literal queries where one block contains
+    the token and every other match is a distant semantic
+    neighbour. The function returns ``None`` when there's no cliff
+    to report (no scores, single hit, or every score is above the
+    threshold) so callers can pass the result straight to
+    ``format_search_headline(n_strong=...)`` without a branch.
+
+    ``ratio=0.5`` is deliberately generous — we want to surface a
+    confidence cue even when the top hit is only 2× the tail,
+    which is common for good literal matches inside fused lexical +
+    semantic rankings.
+    """
+    if not scores or len(scores) <= 1:
+        return None
+    top = scores[0]
+    if top <= 0:
+        return None
+    threshold = top * ratio
+    n_strong = sum(1 for s in scores if s >= threshold)
+    # Only report when there's a meaningful cliff — every score
+    # above threshold means "no cliff, agent should treat all hits
+    # as equally strong."
+    if n_strong >= len(scores):
+        return None
+    return n_strong
+
+
+__all__ = ["detect_score_cliff", "format_search_headline"]

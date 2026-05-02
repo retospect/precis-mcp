@@ -240,26 +240,51 @@ edit(kind='markdown', id='notes/meeting.md',
     text='Final thought.', mode='append')
 
 # Replace one region — by slug, lines, or pos. Same op, three forms.
-edit(kind='markdown', id='notes/meeting.md~conclusion',
-    text='Updated content.', mode='replace')
+edit(kind='markdown', id='notes/meeting.md~note-on-reagents',
+    text='Rewritten paragraph content.', mode='replace')
 edit(kind='markdown', id='notes/meeting.md~L42-58',
-    text='Updated content.', mode='replace')
+    text='Rewritten paragraph content.', mode='replace')
 
 # Delete one region — same selector forms.
-delete(kind='markdown', id='notes/meeting.md~conclusion')
+delete(kind='markdown', id='notes/meeting.md~note-on-reagents')
 ```
+
+> **Block = one paragraph, one heading, one fenced code, one table,
+> one list — whichever unit the parser found.** `~<heading-slug>`
+> names the *heading paragraph*, not the section that follows it.
+> `mode='replace'` on a heading slug rewrites the heading line only
+> and leaves the section body in place. To replace a whole section,
+> delete every block in the range and append new content, or use
+> `mode='find-replace'` against a literal anchor. The response
+> line always names the exact block you wrote (verb, block N,
+> line range, file slug) so you can verify the scope.
 
 All writes are **atomic** (tmpfile + rename). After every write the
-file is re-ingested so the next `get` sees the new state. The
-response includes the **resolved stable name** of what was edited:
+file is re-ingested so the next `get` sees the new state. Every
+write verb (`append`, `replace`, `find-replace`, `insert`, `delete`)
+returns the same unified shape — slug, block pos, block slug,
+line range — so chained edits don't need a follow-up `/toc`
+round-trip:
 
 ```
-replaced block 'conclusion' (now lines 42-62) in notes/meeting.md
+appended block 7 'final-thought-90d11a' (L82-85) in 'notes--meeting'
+replaced block 5 'conclusion'             (L42-62) in 'notes--meeting'
+edited    block 3 'first-body-7ec401'     (L17)    in 'notes--meeting'  [2 spans]
+deleted   block 5 'conclusion'            (L42-48) in 'notes--meeting'
 ```
 
 If you addressed by line range, the response gives you the slug.
 If you addressed by slug, the response gives you the line range.
 Round-trip is free.
+
+Whole-file delete is gated behind an explicit confirm string so
+it can't fire on a typo (`confirm=True` never deletes — the
+string must name the exact slug):
+
+```python
+delete(kind='markdown', id='notes--meeting',
+    confirm='delete-file-notes--meeting')
+```
 
 ## Anchored edits
 
