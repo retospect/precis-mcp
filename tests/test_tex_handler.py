@@ -70,7 +70,7 @@ def test_kind_classvars_overridden() -> None:
     assert TexHandler._DEFAULT_EXT == ".tex"
     # Sanity: parent class still says plaintext.
     assert PlaintextHandler._KIND == "plaintext"
-    assert PlaintextHandler._EXTENSIONS == (".txt", ".log")
+    assert PlaintextHandler._EXTENSIONS == (".txt", ".log", ".bib")
 
 
 def test_spec_advertises_tex_kind() -> None:
