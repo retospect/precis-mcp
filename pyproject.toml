@@ -55,6 +55,13 @@ dependencies = [
     "pydantic-settings>=2.0",
     "platformdirs>=4.0",
     "pyyaml>=6.0",
+    # Defense-in-depth mojibake repair on bundle ingest. acatome-extract
+    # >= 0.6.2 already runs this on the source side (chemistry-safe
+    # config; see ``acatome_extract.marker._FTFY_CONFIG``), but bundles
+    # produced by older versions still arrive in some users' caches —
+    # we re-run a matching config here so what's stored in the DB is
+    # always clean regardless of which extractor produced the bundle.
+    "ftfy>=6.3",
 ]
 
 [project.urls]

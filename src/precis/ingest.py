@@ -25,12 +25,62 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import ftfy
+
 from precis.embedder import Embedder
 from precis.errors import BadInput, Upstream
 from precis.store.types import Density
 from precis.utils.slug import mint_slug
 
 log = logging.getLogger(__name__)
+
+
+# Defense-in-depth mojibake repair config for bundle ingest. **MUST**
+# match the chemistry-safe config in
+# ``acatome_extract.marker._FTFY_CONFIG`` (see that module for the
+# rationale on every switch — the short version: NEVER turn on
+# ``unescape_html``, ``uncurl_quotes``, ``fix_character_width``, or
+# NFKC normalization on a scientific corpus). Duplicated here rather
+# than imported because:
+#
+#   1. ``acatome-extract`` is an optional dep on precis-mcp (installs
+#      via the ``[paper]`` extra). Importing from it at module load
+#      would crash plain installs that just want the MCP server with
+#      no PDF-extraction pipeline.
+#   2. The config is small enough that drift is easy to spot in code
+#      review, and the per-switch rationale lives in the upstream
+#      module's docstring — we cite it here.
+#
+# If you change either side of this duplication, change both.
+_FTFY_CONFIG = ftfy.TextFixerConfig(
+    fix_encoding=True,
+    fix_c1_controls=True,
+    fix_surrogates=True,
+    decode_inconsistent_utf8=True,
+    replace_lossy_sequences=True,
+    restore_byte_a0=True,
+    fix_line_breaks=True,
+    remove_terminal_escapes=True,
+    fix_latin_ligatures=False,
+    fix_character_width=False,
+    uncurl_quotes=False,
+    unescape_html=False,
+    normalization="NFC",
+    remove_control_chars=False,
+    explain=False,
+)
+
+
+def _sanitize(text: str) -> str:
+    """Run the chemistry-safe ftfy config on a single string.
+
+    Idempotent — calling on already-clean text is a no-op (and ftfy
+    fast-paths "looks fine" inputs anyway, so the cost is negligible
+    on bundles produced by recent ``acatome-extract`` versions).
+    """
+    if not text:
+        return text
+    return ftfy.fix_text(text, config=_FTFY_CONFIG)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +158,15 @@ def parse_bundle(
             next="bundle should match acatome-extract's v1 schema",
         )
 
-    title = str(header.get("title") or "").strip()
+    # Mojibake repair on display-facing fields. Block text is the
+    # high-volume offender — old bundles can carry "Î±-helix" forward
+    # into search and embeddings — but title / abstract / journal are
+    # rendered to humans in list and overview views, so they need the
+    # same treatment. Authors come from CrossRef / S2 metadata which is
+    # already UTF-8 in our corpus, so we skip the per-name walk for
+    # speed; if a future ingest source changes that, extend
+    # ``_normalize_author_list`` to call ``_sanitize`` per entry.
+    title = _sanitize(str(header.get("title") or "")).strip()
     if not title:
         raise BadInput(
             "bundle has empty title — refusing to ingest",
@@ -117,7 +175,7 @@ def parse_bundle(
 
     blocks: list[ParsedBlock] = []
     for raw in blocks_raw:
-        text = str(raw.get("text") or "").strip()
+        text = _sanitize(str(raw.get("text") or "")).strip()
         if not text:
             continue
         emb = _pick_embedding(raw, expected_dim=embedding_dim)
@@ -132,8 +190,8 @@ def parse_bundle(
         year=_normalize_year(header.get("year")),
         doi=_or_none(header.get("doi")),
         arxiv_id=_or_none(header.get("arxiv_id")),
-        journal=_or_none(header.get("journal")),
-        abstract=_or_none(header.get("abstract")),
+        journal=_sanitize(_or_none(header.get("journal")) or "") or None,
+        abstract=_sanitize(_or_none(header.get("abstract")) or "") or None,
         bundle_slug=_or_none(header.get("slug")),
         pdf_hash=_or_none(header.get("pdf_hash")),
         provider=_map_provider(header.get("source")),

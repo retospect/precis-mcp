@@ -159,6 +159,109 @@ class TestParseBundle:
             parse_bundle({"header": "not a dict", "blocks": []}, embedding_dim=1024)
 
 
+# ── Defense-in-depth mojibake repair on ingest ─────────────────────
+
+
+class TestParseBundleSanitizesMojibake:
+    """Regression for round-2 critic finding: bundles produced by older
+    ``acatome-extract`` versions (pre-v0.6.2) carry mojibake forward
+    into our DB unless we re-run a chemistry-safe ``ftfy`` pass on
+    ingest. Upstream landed the same fix in v0.6.2 (see
+    ``acatome_extract.marker._FTFY_CONFIG``); this layer is the
+    backstop that protects bundles already produced.
+
+    The ``_FTFY_CONFIG`` here MUST match the upstream config switch-
+    for-switch — duplicated rather than imported because acatome-extract
+    is an optional dep on plain installs. If you change one, change
+    both. (See the comment block in :mod:`precis.ingest` for the full
+    list of switches that stay off — NFKC, ``unescape_html``,
+    ``uncurl_quotes``, ``fix_character_width``.)
+    """
+
+    def test_block_text_mojibake_repaired(self) -> None:
+        """The smoking gun: a block carrying ``Î±-helix`` arrives
+        with ``α-helix`` after parse."""
+        data = _bundle_dict(
+            blocks=[
+                {"text": "The \u00ce\u00b1-helix wraps the catalyst surface."}
+            ]
+        )
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert len(parsed.blocks) == 1
+        assert "\u03b1-helix" in parsed.blocks[0].text
+        assert "\u00ce\u00b1" not in parsed.blocks[0].text
+
+    def test_title_mojibake_repaired(self) -> None:
+        """Titles render in every list view; mojibake here is highly
+        visible. ``Mu\u0308ller`` (combining diaeresis) is canonical
+        but ``MÃ¼ller`` (mojibake) must not survive."""
+        data = _bundle_dict(title="Solid-state NMR study by M\u00c3\u00bcller et al.")
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert "M\u00fcller" in parsed.title
+        assert "M\u00c3\u00bc" not in parsed.title
+
+    def test_abstract_mojibake_repaired(self) -> None:
+        data = _bundle_dict(
+            abstract=(
+                "We report \u00ce\u00b2-sheet content of 30% and a "
+                "0.5\u00e2\u20ac\u201d1.0 nm pore distribution."
+            )
+        )
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.abstract is not None
+        assert "\u03b2-sheet" in parsed.abstract
+        assert "0.5\u20141.0 nm" in parsed.abstract
+
+    def test_journal_mojibake_repaired(self) -> None:
+        data = _bundle_dict(journal="J. Mat\u00c3\u00a9riaux")
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.journal == "J. Mat\u00e9riaux"
+
+    def test_clean_chemistry_corpus_unchanged(self) -> None:
+        """The chemistry-safety contract: repairing mojibake must NOT
+        corrupt intentional Unicode. Same load-bearing assertion as
+        upstream's ``test_full_chemistry_paragraph_preserved``, retested
+        here so a config drift in either repo gets caught at the
+        precis-mcp ingest boundary."""
+        clean_paragraph = (
+            "The \u03b4-MnO\u2082 catalyst (\u226599.9%) was tested at "
+            "25 \u00b0C \u00b1 0.5 \u00b0C. "
+            "Reaction: 2H\u2082O \u2192 O\u2082 + 4H\u207a + 4e\u207b. "
+            "Greek constants used: \u03b1 = 0.1, \u03b2 = 0.05. "
+            "The 3\u2032 end of the primer aligns with motif "
+            "\u03bc\u2082 (\u03a3 symmetry)."
+        )
+        data = _bundle_dict(blocks=[{"text": clean_paragraph}])
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.blocks[0].text == clean_paragraph, (
+            "ingest-side ftfy corrupted clean chemistry text; check "
+            "that uncurl_quotes / unescape_html / fix_character_width "
+            "/ NFKC have not been re-enabled in _FTFY_CONFIG"
+        )
+
+    def test_html_entity_in_block_text_preserved(self) -> None:
+        """Same ``&lt;1 nm`` clause as upstream — must NOT auto-unescape."""
+        data = _bundle_dict(blocks=[{"text": "Pore size &lt;1 nm in TEM."}])
+        parsed = parse_bundle(data, embedding_dim=1024)
+        assert parsed.blocks[0].text == "Pore size &lt;1 nm in TEM."
+
+    def test_idempotent_on_already_clean_bundle(self) -> None:
+        """Re-ingesting a bundle that's already been through the pipeline
+        once must produce identical text on the second pass. A subtle
+        mutation would silently shift embeddings on every re-ingest and
+        break dedup."""
+        data = _bundle_dict()
+        first = parse_bundle(data, embedding_dim=1024)
+        # Re-construct a "bundle" from first's text to mimic re-ingest.
+        round_trip = _bundle_dict(
+            title=first.title,
+            blocks=[{"text": b.text} for b in first.blocks],
+        )
+        second = parse_bundle(round_trip, embedding_dim=1024)
+        assert second.title == first.title
+        assert [b.text for b in second.blocks] == [b.text for b in first.blocks]
+
+
 class TestProviderMapping:
     def test_embedded_maps_to_manual(self) -> None:
         data = _bundle_dict()

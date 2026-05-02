@@ -402,7 +402,7 @@ def render_toc(
         total_blocks:   block count for the *whole* paper (header line)
         blocks_by_pos:  optional ``{pos: Block}`` lookup so we can
                         render a short preview from the *first body
-                        block* of each section. When ``None``, sections
+                        block of each section. When ``None``, sections
                         render with title only.
         range_label:    e.g. ``"~46..105"``; appears in the header to
                         signal a drilled-down view.
@@ -417,6 +417,15 @@ def render_toc(
             ~43..53 (11)   Physics-Informed Program Synthesis [PIPS]
             ~54..58 (5)    Calculation Details
             ...
+
+    Sparse-fallback notice (MCP critic round 2): if the paper has no
+    detectable headings, ``build_toc`` returns a single implicit
+    "untitled" section spanning all blocks. Rendering that as a
+    one-row TOC silently misled agents into thinking the paper had
+    real structure called "untitled". The output now prepends an
+    explicit notice in that case so the agent knows heading detection
+    failed and pivots to chunk-range reading (``~0..N``) instead of
+    chasing a non-existent TOC.
     """
     # Header
     n_sections = sum(_count_sections(s) for s in toc)
@@ -425,6 +434,17 @@ def render_toc(
         f"# {slug} — TOC{rl} ({total_blocks} blocks, {n_sections} sections)",
         "",
     ]
+
+    # Sparse-fallback notice — see docstring for the rationale. We
+    # detect the case structurally (one section, level=0, empty title,
+    # no children) rather than by heading count so the test for it
+    # stays decoupled from the heading-detection regexes.
+    if _is_sparse_fallback(toc):
+        lines.append(
+            "_(no headings detected — paper renders as one implicit section. "
+            "Read by chunk range instead.)_"
+        )
+        lines.append("")
 
     # Compute column widths so ranges line up.
     rows: list[tuple[int, str, str, str]] = []  # (depth, range, count, label)
@@ -476,6 +496,25 @@ def render_toc(
 
 def _count_sections(s: Section) -> int:
     return 1 + sum(_count_sections(c) for c in s.children)
+
+
+def _is_sparse_fallback(toc: list[Section]) -> bool:
+    """True when ``toc`` is the no-headings-found degenerate case.
+
+    Specifically: exactly one top-level section that is the implicit
+    "untitled" wrapper (``level=0``, empty title, no children).
+    :func:`build_toc` emits this when no block in the paper matches
+    any heading pattern.
+
+    The ``filter_toc_to_range`` drill-down can also leave a single
+    section in the result, but those will have a non-empty title or
+    a non-zero level (because they came from a real heading), so
+    they don't trigger the notice.
+    """
+    if len(toc) != 1:
+        return False
+    s = toc[0]
+    return s.level == 0 and not s.title and not s.children
 
 
 def _format_block_range(lo: int, hi: int) -> str:

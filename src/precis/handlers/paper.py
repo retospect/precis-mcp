@@ -18,6 +18,7 @@ v2:
 
 from __future__ import annotations
 
+import difflib
 import html
 import re
 from typing import Any, ClassVar
@@ -43,6 +44,60 @@ from precis.utils.text import excerpt as _excerpt
 # ---------------------------------------------------------------------------
 
 _SUPPORTED_VIEWS = ("bibtex", "ris", "endnote", "abstract", "toc")
+
+
+# Tunable knobs for the nearest-match suggester. The cutoff (0.6 of
+# difflib's SequenceMatcher ratio) is deliberately conservative — it
+# accepts ``wang2020stat`` → ``wang2020state`` (one missing char,
+# ratio≈0.96) but rejects ``foo`` → ``wang2020state`` (ratio≈0.05),
+# avoiding spurious "did you mean?" prompts when the agent is querying
+# an obviously-different slug.
+_SUGGEST_TOP_N = 3
+_SUGGEST_CUTOFF = 0.6
+# Hard cap on how many slugs we pull into memory for the close-match
+# scan. At 30 chars per slug × 5K papers, that's ~150 KB of strings —
+# well within the budget for an error path. If the corpus grows past
+# this, the suggester silently truncates to the most-recent N papers
+# (``list_refs`` orders by ``updated_at DESC``); that's a reasonable
+# locality bias and keeps the worst-case cost bounded.
+_SUGGEST_CORPUS_CAP = 5000
+
+
+def _suggest_paper_slugs(slug: str, *, store: Any) -> list[str]:
+    """Return up to ``_SUGGEST_TOP_N`` paper slugs that look like ``slug``.
+
+    Uses :func:`difflib.get_close_matches` with a ratio cutoff that
+    rejects far-off matches — see ``_SUGGEST_CUTOFF`` for the rationale.
+    Returns an empty list when:
+
+    - the corpus is empty (no papers ingested yet),
+    - no slug clears the cutoff (typical when the user types a topic
+      string into the slug slot, e.g. ``id='nitrate reduction'``),
+    - the typed slug exists exactly (caller should have resolved
+      already; defensive no-op).
+
+    The helper does **not** raise; callers always pass the result
+    straight into the ``options=`` field of a ``NotFound``. Empty list
+    → no ``options:`` line in the rendered envelope, which is exactly
+    what we want when there's nothing useful to suggest.
+
+    Why a free function (not a method): keeping this off the handler
+    makes it independently testable without spinning up a Hub fixture
+    and means the same logic could be reused by patent/oracle/conv
+    handlers if they grow nearest-match support too.
+    """
+    if not slug:
+        return []
+    refs = store.list_refs(kind="paper", limit=_SUGGEST_CORPUS_CAP)
+    candidates = [r.slug for r in refs if r.slug]
+    if not candidates:
+        return []
+    return difflib.get_close_matches(
+        slug,
+        candidates,
+        n=_SUGGEST_TOP_N,
+        cutoff=_SUGGEST_CUTOFF,
+    )
 
 
 class PaperHandler(Handler):
@@ -101,6 +156,7 @@ class PaperHandler(Handler):
             raise NotFound(
                 f"paper slug {slug!r} not found",
                 next="search(kind='paper', q='your query') to find existing",
+                options=_suggest_paper_slugs(slug, store=self.store) or None,
             )
 
         # Path view (`slug/cite/bib`) takes precedence over kwarg `view`,
@@ -169,6 +225,7 @@ class PaperHandler(Handler):
                 raise NotFound(
                     f"paper slug {scope!r} not found",
                     next="search(kind='paper', q='...') to find one",
+                    options=_suggest_paper_slugs(scope, store=self.store) or None,
                 )
             scope_ref_id = scope_ref.id
 
@@ -345,6 +402,7 @@ class PaperHandler(Handler):
             raise NotFound(
                 f"paper slug {slug!r} not found",
                 next="search(kind='paper', q='...') to find existing slugs",
+                options=_suggest_paper_slugs(slug, store=self.store) or None,
             )
         return slug, ref.id
 

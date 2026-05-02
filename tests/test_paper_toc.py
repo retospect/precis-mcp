@@ -384,3 +384,93 @@ class TestRenderToc:
         # from block 0.
         assert "<untitled>" in out
         assert "Lorem ipsum" in out
+
+
+# ── Sparse-fallback notice (no headings detected) ──────────────────
+
+
+class TestSparseFallbackNotice:
+    """Round-2 critic finding: a paper with no detectable headings used
+    to render as a single useless TOC row labelled "<untitled>",
+    silently misleading the agent into treating it as real structure.
+    Render now prepends an explicit notice so the agent pivots to
+    chunk-range reading.
+    """
+
+    def test_notice_present_when_no_headings_detected(self) -> None:
+        """Pure body paragraphs → fallback notice + chunk-range hint."""
+        blocks = [
+            _make_block(i, f"body paragraph number {i}") for i in range(5)
+        ]
+        toc = build_toc(blocks)
+        # Sanity: build_toc returned the implicit-untitled wrapper.
+        assert len(toc) == 1
+        assert toc[0].title == "" and toc[0].level == 0
+        # Render should announce the fallback.
+        out = render_toc(slug="opaque-paper", toc=toc, total_blocks=5)
+        assert "no headings detected" in out
+        assert "chunk range" in out
+
+    def test_notice_absent_when_paper_has_real_headings(self) -> None:
+        """A paper with even one real heading must NOT show the
+        fallback notice — that would be a false-alarm and train the
+        agent to ignore real structure cues."""
+        blocks = [
+            _make_block(0, "■ **INTRODUCTION**"),
+            _make_block(1, "intro body"),
+            _make_block(2, "■ **METHODS**"),
+            _make_block(3, "methods body"),
+        ]
+        toc = build_toc(blocks)
+        out = render_toc(slug="x", toc=toc, total_blocks=4)
+        assert "no headings detected" not in out
+
+    def test_notice_absent_when_paper_has_one_heading_plus_untitled_lead(
+        self,
+    ) -> None:
+        """An implicit "untitled" leading section (blocks before the
+        first heading) plus at least one real heading must not trigger
+        the fallback. There IS structure — only some content is above
+        the first heading."""
+        blocks = [
+            _make_block(0, "preamble"),
+            _make_block(1, "■ **METHODS**"),
+            _make_block(2, "methods body"),
+        ]
+        toc = build_toc(blocks)
+        # The TOC has 2 sections (untitled + METHODS), so the
+        # structural check rules out the sparse case.
+        assert len(toc) == 2
+        out = render_toc(slug="x", toc=toc, total_blocks=3)
+        assert "no headings detected" not in out
+
+    def test_notice_absent_on_drilled_down_single_section(self) -> None:
+        """``filter_toc_to_range`` can leave a single section in the
+        result when the agent drills into one specific section. That
+        section came from a real heading so we do NOT show the
+        fallback notice — the user is looking at structure, just
+        narrowly scoped."""
+        blocks = [
+            _make_block(0, "■ **METHODS**"),
+            _make_block(1, "methods body"),
+            _make_block(2, "■ **RESULTS**"),
+            _make_block(3, "results body"),
+        ]
+        full_toc = build_toc(blocks)
+        # Drill into the METHODS range only.
+        clipped = filter_toc_to_range(full_toc, lo=0, hi=1)
+        assert len(clipped) == 1
+        assert clipped[0].title == "METHODS"
+        out = render_toc(
+            slug="x", toc=clipped, total_blocks=4, range_label="~0..1"
+        )
+        assert "no headings detected" not in out
+
+    def test_notice_includes_chunk_range_pivot_hint(self) -> None:
+        """The notice must point the caller at a concrete recovery
+        path (``Read by chunk range``) — a bare "no headings" message
+        is information without a remedy."""
+        blocks = [_make_block(i, f"body {i}") for i in range(3)]
+        toc = build_toc(blocks)
+        out = render_toc(slug="x", toc=toc, total_blocks=3)
+        assert "Read by chunk range" in out

@@ -450,3 +450,122 @@ class TestSearch:
         # Two-line nav must still be present.
         assert "narrow to blocks inside" in resp.body
         assert "tighten the query with a hit-specific token" in resp.body
+
+
+# ── NotFound nearest-match suggestions ─────────────────────────────
+
+
+class TestNearestMatchSuggestions:
+    """Round-2 critic finding: a typo in a paper slug used to surface
+    a bare ``[error:NotFound] paper slug 'wang2020stat' not found`` —
+    no breadcrumb back to the real slug. The handler now runs a
+    ``difflib`` close-match scan over the paper corpus and surfaces
+    the top suggestions in the error envelope's ``options:`` line so
+    the agent can recover in one step.
+
+    These tests pin three properties:
+
+      1. **Plausible typos surface suggestions.** One-char drops /
+         transpositions / single-letter mistakes get a useful ``options:``
+         list.
+      2. **Far-off queries get NO suggestions.** When the user types a
+         topic phrase ("nitrate reduction") into the slug slot, we don't
+         clutter the error with random noise. Empty options → no
+         ``options:`` line.
+      3. **The suggestion path covers all three NotFound emission sites
+         (get, search-scope, tag/link).** All three resolve through
+         ``_suggest_paper_slugs`` so the experience is uniform.
+    """
+
+    def test_typo_in_get_surfaces_close_match(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, slug="wang2020state", title="A")
+        with pytest.raises(NotFound) as exc_info:
+            handler.get(id="wang2020stat")  # one char short
+        # Suggestions appear on the .options field of the error.
+        assert exc_info.value.options is not None
+        assert "wang2020state" in exc_info.value.options
+
+    def test_typo_in_search_scope_surfaces_close_match(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(
+            store, slug="wang2020state", title="A", blocks=["nitrate reduction"]
+        )
+        with pytest.raises(NotFound) as exc_info:
+            handler.search(q="nitrate", scope="wang2020stat")
+        assert exc_info.value.options is not None
+        assert "wang2020state" in exc_info.value.options
+
+    def test_typo_in_tag_target_surfaces_close_match(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, slug="wang2020state", title="A")
+        with pytest.raises(NotFound) as exc_info:
+            handler.tag(id="wang2020stat", add=["topic:foo"])
+        assert exc_info.value.options is not None
+        assert "wang2020state" in exc_info.value.options
+
+    def test_far_off_query_emits_no_suggestions(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """When the agent types something that looks like a search query
+        rather than a slug typo, we emit NO ``options=`` so the error
+        envelope stays clean."""
+        _seed_paper(store, slug="wang2020state", title="A")
+        with pytest.raises(NotFound) as exc_info:
+            handler.get(id="completely-unrelated-topic-string")
+        # No spurious suggestions when nothing clears the cutoff.
+        assert exc_info.value.options is None
+
+    def test_empty_corpus_emits_no_suggestions(self, handler: PaperHandler) -> None:
+        """Defensive: don't crash or fabricate suggestions on an empty
+        corpus. The error must still raise cleanly."""
+        with pytest.raises(NotFound) as exc_info:
+            handler.get(id="anything")
+        assert exc_info.value.options is None
+
+    def test_suggestions_capped_to_top_n(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Even with many close-match candidates we surface no more
+        than ``_SUGGEST_TOP_N`` (default 3) so the error envelope
+        doesn't bloat into a corpus dump."""
+        # Seed several slugs that all start with the same prefix.
+        for n in range(8):
+            _seed_paper(store, slug=f"smith2020paper{n}", title=f"Paper {n}")
+        with pytest.raises(NotFound) as exc_info:
+            handler.get(id="smith2020paper")  # 8 close matches
+        assert exc_info.value.options is not None
+        assert len(exc_info.value.options) <= 3
+
+    def test_suggestion_renders_in_error_envelope(
+        self, store: Store, hub: Hub, handler: PaperHandler
+    ) -> None:
+        """End-to-end: the rendered envelope (the string the LLM
+        actually sees) must contain the ``options:`` line populated
+        with the suggested slug. Regression for the case where the
+        suggestion silently lands on .options but then never renders.
+
+        We use the canonical :meth:`PrecisRuntime.render_error` here
+        rather than rebuilding the format inline — that's the same
+        method the MCP transport layer calls, so testing through it
+        catches any future format drift in one place.
+        """
+        from precis.config import PrecisConfig
+        from precis.runtime import PrecisRuntime
+
+        _seed_paper(store, slug="wang2020state", title="A")
+        # Build a minimal runtime — we only need the render_error()
+        # method, which doesn't touch the hub or config beyond
+        # construction. ``PrecisConfig()`` reads env vars / defaults.
+        runtime = PrecisRuntime(config=PrecisConfig(), hub=hub)
+        try:
+            handler.get(id="wang2020stat")
+        except NotFound as err:
+            envelope = runtime.render_error(err)
+        else:
+            pytest.fail("expected NotFound")
+        assert "options:" in envelope
+        assert "wang2020state" in envelope
