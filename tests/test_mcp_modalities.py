@@ -237,7 +237,11 @@ def test_resource_read_dispatches_to_runtime(
         "get", {"kind": "skill", "id": "precis-overview"}
     )
     contents = asyncio.run(server.read_resource("precis://skill/precis-overview"))
-    bodies = "".join(c.content for c in contents if hasattr(c, "content"))
+    bodies = "".join(
+        c.content
+        for c in contents
+        if hasattr(c, "content") and isinstance(c.content, str)
+    )
     # Pick a stable substring from the canonical body and assert it
     # surfaces in the resource read.
     assert any(line.strip() in bodies for line in expected.splitlines() if line.strip())
@@ -269,7 +273,11 @@ def test_resource_read_numeric_id_kind_coerces(
 
     # Calling the template fn directly: it should str→int coerce.
     contents = asyncio.run(server.read_resource(f"precis://memory/{mid}"))
-    bodies = "".join(c.content for c in contents if hasattr(c, "content"))
+    bodies = "".join(
+        c.content
+        for c in contents
+        if hasattr(c, "content") and isinstance(c.content, str)
+    )
     assert "modality probe" in bodies
 
 

@@ -104,6 +104,24 @@ class _PerplexityBase(CacheBackedHandler):
 
         return slug_from_text(q, max_len=60) or "perplexity-query"
 
+    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+        """Reconstruct ``<model>:<query>`` from cached meta.
+
+        Cache meta stores the original ``query`` and ``model`` so a
+        slug-only refresh (typically from the maintenance driver
+        iterating ``WATCH:weekly`` research notes) can re-fetch
+        without the caller having to remember the original prompt.
+        Falls back to the handler's pinned ``self.model`` if meta
+        was written before the model was tracked.
+        (gripe:3681 phase 4.)
+        """
+        meta = cache.meta or {}
+        query = meta.get("query")
+        if not query:
+            return None
+        model = meta.get("model") or self.model
+        return f"{model}:{query}"
+
     # ── auth + transport ──────────────────────────────────────────────
 
     @staticmethod

@@ -92,6 +92,16 @@ class MathHandler(CacheBackedHandler):
 
     # ── canonicalization & cache key ──────────────────────────────────
 
+    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+        """Return the input query stored in cache meta.
+
+        Lets ``mode='refresh'`` work when the caller addressed by
+        slug. Math doesn't carry a ``WATCH`` axis (Wolfram results
+        don't drift), but manual refresh by slug stays useful for
+        retried calls. (gripe:3681 phase 4.)
+        """
+        return (cache.meta or {}).get("input_query")
+
     def _canonical_key(self, query: str) -> str:
         """Lowercase + collapse internal whitespace.
 

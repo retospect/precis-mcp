@@ -17,9 +17,7 @@ if TYPE_CHECKING:
 
 # Default location of the inbox watched by `paper-monitor-ingest-dir`.
 # Override with `--dir` on the command line.
-DEFAULT_INGEST_DIR = Path(
-    "/Users/bots/Documents/openclaw-cluster/paper-ingest"
-)
+DEFAULT_INGEST_DIR = Path("/Users/bots/Documents/openclaw-cluster/paper-ingest")
 
 # Default DSN baked into the wrapper scripts; overridable via
 # `PRECIS_DATABASE_URL` in the environment. Matches the canonical
@@ -27,7 +25,7 @@ DEFAULT_INGEST_DIR = Path(
 DEFAULT_DSN = "postgresql://acatome:acatome@127.0.0.1:5432/precis"
 
 
-def open_store() -> tuple[Any, "PrecisConfig"]:
+def open_store() -> tuple[Any, PrecisConfig]:
     """Connect to the precis store. Returns ``(store, cfg)``.
 
     Caller is responsible for `store.close()`.
@@ -41,7 +39,7 @@ def open_store() -> tuple[Any, "PrecisConfig"]:
     return store, cfg
 
 
-def make_embedder_for(store: Any, cfg: "PrecisConfig") -> "Embedder":
+def make_embedder_for(store: Any, cfg: PrecisConfig) -> Embedder:
     """Build the active embedder, sized to the store's vector dim."""
     from precis.embedder import make_embedder
 

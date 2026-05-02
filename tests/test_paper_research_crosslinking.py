@@ -90,7 +90,9 @@ class TestPaperPutAcceptedOps:
             dst_ref_id=_seed_id_of(store, "paper-b"),
             relation="cites",
         )
-        out = paper.link(id="paper-a", target="paper:paper-b", mode="remove", rel="cites")
+        out = paper.link(
+            id="paper-a", target="paper:paper-b", mode="remove", rel="cites"
+        )
         assert "-1 link" in out.body
         assert store.links_for(a_id, relation="cites", direction="out") == []
 
@@ -249,9 +251,7 @@ class TestPerplexityLinkTagOps:
         from precis.handlers.perplexity import ResearchHandler
 
         research = ResearchHandler(hub=Hub(store=store))
-        with pytest.raises(
-            BadInput, match=r"tags=/untags= are not accepted on put"
-        ):
+        with pytest.raises(BadInput, match=r"tags=/untags= are not accepted on put"):
             research.put(id="q", text="body", mode="import", tags=["CACHE:pinned"])
 
     def test_link_unknown_slug(self, store: Store) -> None:

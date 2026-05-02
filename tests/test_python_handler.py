@@ -389,9 +389,7 @@ def test_search_no_match_with_scope_suggests_widening(
     # argument — the *description* on the RHS does mention ``drop
     # scope=`` in prose, so we split on the separator to only check
     # the call form.
-    widen_line = next(
-        ln for ln in out.body.splitlines() if "widen to all repos" in ln
-    )
+    widen_line = next(ln for ln in out.body.splitlines() if "widen to all repos" in ln)
     call_part, _, _ = widen_line.partition("—")
     assert "scope=" not in call_part
 

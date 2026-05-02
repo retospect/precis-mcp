@@ -105,6 +105,15 @@ class WebHandler(CacheBackedHandler):
         slug = slug_from_url(key)
         return slug or "web-fetch"
 
+    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+        """Return the canonical URL stored in cache meta.
+
+        Lets ``mode='refresh'`` work when the caller addressed by
+        slug (e.g. the maintenance driver iterating ``WATCH:daily``
+        web bookmarks). (gripe:3681 phase 4.)
+        """
+        return (cache.meta or {}).get("url")
+
     # ── upstream fetch + extract ──────────────────────────────────────
 
     def _fetch(self, key: str) -> FetchResult:

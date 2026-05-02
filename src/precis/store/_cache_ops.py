@@ -121,6 +121,121 @@ class CacheMixin:
         cache = _row_to_cache_entry(row[10:18])
         return (ref, cache)
 
+    def update_cache_entry(
+        self,
+        *,
+        ref_id: int,
+        title: str,
+        body_blocks: list[BlockInsert],
+        ttl_seconds: int | None,
+        request_hash: str | None = None,
+        model: str | None = None,
+        cost_usd: float | None = None,
+        cache_meta: dict[str, Any] | None = None,
+    ) -> tuple[Ref, CacheEntry]:
+        """Refresh body + cache_state for an existing cached ref, **in-place**.
+
+        Distinct from :meth:`put_cache_entry`:
+
+        * preserves ``ref.id``, ``ref.slug``, ``ref.created_at`` and
+          every tag / link attached to the ref (no DELETE on the row),
+        * replaces ``blocks`` (DELETE FROM blocks WHERE ref_id) with
+          the freshly-fetched body,
+        * UPDATEs ``cache_state`` for the ref so freshness, cost,
+          model, and meta reflect the new fetch.
+
+        Use this for ``mode='refresh'`` and for routine stale-cache
+        re-fetches, so a ``bookmark`` / ``WATCH:daily`` tag set
+        survives upstream re-fetches. (gripe:3681 phase 4.)
+
+        ``request_hash=None`` keeps the existing hash on the
+        cache_state row — useful for "the canonical key didn't
+        change, just the body". Pass an explicit hash if the canonical
+        key shifted (e.g. canonicalisation rules updated).
+        """
+        fresh_until_sql = (
+            "now() + (%s || ' seconds')::interval"
+            if ttl_seconds is not None
+            else "NULL"
+        )
+        cache_meta_json = Jsonb(cache_meta or {})
+
+        with self.tx() as conn:
+            # Update the ref title (rare but possible — page titles
+            # change). Touch updated_at so /recent listings reflect
+            # the refresh.
+            row = conn.execute(
+                "UPDATE refs SET title = %s, updated_at = now() "
+                "WHERE id = %s AND deleted_at IS NULL "
+                "RETURNING id, corpus_id, kind, slug, title, provider, meta, "
+                "          created_at, updated_at, deleted_at",
+                (title, ref_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    f"update_cache_entry: ref_id={ref_id} not found or deleted"
+                )
+            ref = _row_to_ref(row)
+
+            # Replace the blocks. Tags/links live on the ref row, not
+            # on blocks, so they're untouched.
+            conn.execute("DELETE FROM blocks WHERE ref_id = %s", (ref_id,))
+            if body_blocks:
+                self.insert_blocks(ref_id, body_blocks, conn=conn)
+
+            # Update cache_state. Keep existing request_hash unless
+            # caller passed a new one. fresh_until rewinds; cost +
+            # model + meta refresh from the new FetchResult.
+            if request_hash is None:
+                cache_sql = (
+                    "UPDATE cache_state SET "
+                    "  model = %s, fetched_at = now(), "
+                    f"  fresh_until = {fresh_until_sql}, "
+                    "  cost_usd = %s, meta = %s "
+                    "WHERE ref_id = %s "
+                    "RETURNING ref_id, provider, request_hash, model, "
+                    "          fetched_at, fresh_until, cost_usd, meta"
+                )
+                params: tuple[Any, ...] = (model,)
+                if ttl_seconds is not None:
+                    params = params + (
+                        str(ttl_seconds),
+                        cost_usd,
+                        cache_meta_json,
+                        ref_id,
+                    )
+                else:
+                    params = params + (cost_usd, cache_meta_json, ref_id)
+            else:
+                cache_sql = (
+                    "UPDATE cache_state SET "
+                    "  request_hash = %s, model = %s, fetched_at = now(), "
+                    f"  fresh_until = {fresh_until_sql}, "
+                    "  cost_usd = %s, meta = %s "
+                    "WHERE ref_id = %s "
+                    "RETURNING ref_id, provider, request_hash, model, "
+                    "          fetched_at, fresh_until, cost_usd, meta"
+                )
+                params = (request_hash, model)
+                if ttl_seconds is not None:
+                    params = params + (
+                        str(ttl_seconds),
+                        cost_usd,
+                        cache_meta_json,
+                        ref_id,
+                    )
+                else:
+                    params = params + (cost_usd, cache_meta_json, ref_id)
+
+            cache_row = conn.execute(cache_sql, params).fetchone()
+            if cache_row is None:
+                raise ValueError(
+                    f"update_cache_entry: cache_state row for ref_id={ref_id} missing"
+                )
+            cache = _row_to_cache_entry(cache_row)
+
+        return (ref, cache)
+
     def put_cache_entry(
         self,
         *,

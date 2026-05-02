@@ -31,7 +31,8 @@ from precis.response import Response
 def test_register_ability_records_key_and_callable() -> None:
     r = Hub()
 
-    def fn(**kw): return "ok"
+    def fn(**kw):
+        return "ok"
 
     r.register_ability("demo", "get", None, fn)
 
@@ -43,8 +44,11 @@ def test_register_ability_records_key_and_callable() -> None:
 def test_register_ability_with_mode() -> None:
     r = Hub()
 
-    def create(**kw): return "c"
-    def replace(**kw): return "r"
+    def create(**kw):
+        return "c"
+
+    def replace(**kw):
+        return "r"
 
     r.register_ability("demo", "put", "create", create)
     r.register_ability("demo", "put", "replace", replace)
@@ -181,7 +185,9 @@ def test_try_returns_instance_on_success() -> None:
     # both resolve to the same underlying function + instance.
     assert r.get("good", "get") == inst.get
     # The stored callable actually fires on the right instance.
-    assert r.get("good", "get")().body == "good"
+    fn = r.get("good", "get")
+    assert fn is not None
+    assert fn().body == "good"
     # ``_register_with`` stashed the hub on the handler.
     assert inst.hub is r
     # And registered the handler itself for metadata queries.

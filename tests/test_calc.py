@@ -117,18 +117,14 @@ class TestSympyContainerReturns:
         assert "x - 1" in r.body or "(x - 1" in r.body
         assert "x + 1" in r.body or "(x + 1" in r.body
 
-    def test_solve_no_solutions_renders_empty_list(
-        self, handler: CalcHandler
-    ) -> None:
+    def test_solve_no_solutions_renders_empty_list(self, handler: CalcHandler) -> None:
         """``solve(Eq(x+1, x+2), x)`` has no solutions — sympy returns
         ``[]``. The handler must render that cleanly rather than
         re-entering the "simplifies to itself" branch."""
         r = handler.get(id="solve(Eq(x+1, x+2), x)")
         assert "[]" in r.body
 
-    def test_finiteset_still_uses_fast_path(
-        self, handler: CalcHandler
-    ) -> None:
+    def test_finiteset_still_uses_fast_path(self, handler: CalcHandler) -> None:
         """``solveset`` returns a sympy ``FiniteSet`` — a ``Basic``
         subclass — which must NOT hit the container short-circuit.
         Regression in case someone tightens the isinstance check."""
@@ -179,9 +175,7 @@ class TestErrorEnvelopeShape:
             handler.get(id="this is not math")
         self._assert_envelope(exc_info.value)
 
-    def test_unsupported_expression_envelope(
-        self, handler: CalcHandler
-    ) -> None:
+    def test_unsupported_expression_envelope(self, handler: CalcHandler) -> None:
         """Expression that parses but fails ``.doit()``. ``1/0`` now
         evaluates to ``zoo``, so we need a sympify-parseable shape
         that blows up at evaluation. ``Integral(nonsense, (x,0,1))``
@@ -197,9 +191,7 @@ class TestErrorEnvelopeShape:
             handler.get(id="Derivative(log).doit()")
         self._assert_envelope(exc_info.value)
 
-    def test_simplifies_to_itself_envelope(
-        self, handler: CalcHandler
-    ) -> None:
+    def test_simplifies_to_itself_envelope(self, handler: CalcHandler) -> None:
         """Bare symbolic identifier — ``one plus two`` trips the
         "simplifies to itself + has free symbols" branch."""
         with pytest.raises(BadInput) as exc_info:

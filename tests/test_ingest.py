@@ -182,9 +182,7 @@ class TestParseBundleSanitizesMojibake:
         """The smoking gun: a block carrying ``Î±-helix`` arrives
         with ``α-helix`` after parse."""
         data = _bundle_dict(
-            blocks=[
-                {"text": "The \u00ce\u00b1-helix wraps the catalyst surface."}
-            ]
+            blocks=[{"text": "The \u00ce\u00b1-helix wraps the catalyst surface."}]
         )
         parsed = parse_bundle(data, embedding_dim=1024)
         assert len(parsed.blocks) == 1

@@ -43,7 +43,7 @@ Key choices
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from precis.embedder import Embedder
 from precis.store.types import BlockInsert
@@ -63,11 +63,19 @@ class ParsedTextBlock(Protocol):
     text: str
 
 
+# Bound TypeVar so ``meta_for`` stays in agreement with the concrete
+# block type passed in.  Without this, ``Callable[[ParsedTextBlock],
+# ...]`` is contravariant on input and *rejects* per-kind closures
+# like ``Callable[[MdBlock], ...]`` even though every MdBlock *is* a
+# ParsedTextBlock.
+_BlockT = TypeVar("_BlockT", bound=ParsedTextBlock)
+
+
 def to_block_inserts(
-    blocks: Sequence[ParsedTextBlock],
+    blocks: Sequence[_BlockT],
     *,
     embedder: Embedder | None,
-    meta_for: Callable[[ParsedTextBlock], dict[str, Any]] | None = None,
+    meta_for: Callable[[_BlockT], dict[str, Any]] | None = None,
 ) -> list[BlockInsert]:
     """Convert parsed text blocks into :class:`BlockInsert` payloads.
 

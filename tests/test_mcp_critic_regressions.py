@@ -8,6 +8,8 @@ matching changelog entry.
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 
 from precis.dispatch import Hub, boot
@@ -800,9 +802,12 @@ def test_bibtex_unescapes_html_entities() -> None:
     """Carbon Capture Science &amp; Technology should land as
     ``Carbon Capture Science \\& Technology`` in the BibTeX output —
     not the verbatim HTML entity. (MCP critic MINOR.)"""
+    from datetime import datetime
+
     from precis.handlers.paper import _format_citation
     from precis.store.types import Ref
 
+    _now = datetime(2026, 1, 1, tzinfo=UTC)
     ref = Ref(
         id=1,
         corpus_id=1,
@@ -814,8 +819,8 @@ def test_bibtex_unescapes_html_entities() -> None:
             "journal": "Carbon Capture Science &amp; Technology",
             "year": 2025,
         },
-        created_at=None,
-        updated_at=None,
+        created_at=_now,
+        updated_at=_now,
         deleted_at=None,
     )
     bibtex = _format_citation(ref, style="bibtex")

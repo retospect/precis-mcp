@@ -11,10 +11,9 @@ and searching across papers, documents, personal state, code, and
 cached tool calls. Small-model-friendly (7B-class agents are the design
 target); stores content in PostgreSQL with `pgvector`.
 
-> **Status.** v6.0 pre-release (`6.0.0a0`). Ground-up redesign of v1.
-> Twenty-one kinds shipping across ref / tool / discovery categories,
-> seven verbs, plugin surface stable. Targeting `6.0.0` on PyPI in
-> the next release window. v5.2.6 on PyPI is the last v1-line release;
+> **Status.** v6.0.0 — ground-up redesign of v1. Twenty-one kinds
+> shipping across ref / tool / discovery categories, seven verbs,
+> plugin surface stable. v5.2.6 on PyPI is the last v1-line release;
 > see [`CHANGELOG.md`](CHANGELOG.md) for the migration path.
 
 ## What it does
@@ -186,7 +185,7 @@ canonical tiny example in
 ```toml
 # your plugin's pyproject.toml
 [project]
-dependencies = ["precis-mcp>=6.0.0a0"]
+dependencies = ["precis-mcp>=6.0.0"]
 
 [project.entry-points."precis.handlers"]
 wikipedia = "precis_wikipedia:WikipediaHandler"

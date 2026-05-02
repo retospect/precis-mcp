@@ -6,6 +6,113 @@ PyPI is `5.2.6`; everything below `## v6.0.0` represents the
 post-merge state. Phases pre-merge are kept here as historical
 context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
+## Unreleased
+
+### Cache-backed bookmarking + nightly maintenance (2026-05-02)
+
+Closes the remaining two phases of `gripe:3681` and lands a
+cron-driver to compose them into a daily-driver loop.
+
+- **`get(kind=<cache>, ..., tags=['bookmark'])`** — one-call
+  bookmark for every cache-backed kind (`web`, `youtube`, `math`,
+  Perplexity tiers). Tags + untags pre-validated **before** the
+  upstream fetch, so a bad axis no longer pays the API cost
+  before failing. Apply on cache hit OR miss; idempotent.
+  Owner: `src/precis/handlers/_cache_base.CacheBackedHandler.get`.
+  Pinned by `tests/test_cache_base.py::test_get_with_tags_*`.
+- **`get(kind=<cache>, ..., mode='refresh')`** — bypass cache
+  freshness and re-fetch upstream **in place**, preserving
+  ref id, slug, tags, and links. New
+  `Store.update_cache_entry()` does an `UPDATE refs` + replace-
+  blocks rather than the previous `DELETE FROM refs` cascade
+  that destroyed annotations on every TTL-expired re-fetch.
+  Stale-cache re-fetches now also flow through this path, so
+  a `bookmark` survives expiry without `mode='refresh'` being
+  explicitly requested. Per-kind `_recover_key(ref, cache)`
+  hook lets a slug-only refresh call (e.g. from cron) re-derive
+  the canonical fetch input from `cache.meta` — implemented for
+  `web`, `youtube`, `math`, Perplexity tiers.
+  Pinned by `tests/test_cache_base.py::test_mode_refresh_*` and
+  `test_stale_cache_refetch_preserves_tags`.
+- **`WATCH:<interval>` closed-axis tag** — closed vocabulary
+  `{hourly, daily, weekly, monthly}` enforced via
+  `Tag.parse_strict`. Allowed on cache-backed kinds only
+  (`web`, `youtube`, `research`, `think`, `websearch`).
+  `math` is intentionally excluded (Wolfram results don't
+  drift). A typo (`WATCH:dialy`) fails loud at write time
+  with the four valid intervals listed in `options=`.
+- **`precis maintenance run`** — top-level CLI for the
+  nightly cron. Three phases, each independently togglable:
+  - **WATCH refresh sweep** — iterates
+    `search(tags=['WATCH:<interval>'])` shortest-interval-
+    first, calls `get(..., mode='refresh')` on each match
+    whose `cache.fetched_at` exceeds the interval cutoff.
+    Per-pass cap (`--max-refresh-per-pass=200`) bounds API
+    spend; remaining work resumes on the next tick.
+  - **Soft-delete purge** — hard-deletes `deleted_at`-
+    tombstoned refs older than `--purge-after-days=30`
+    (cascades blocks / cache_state / tags / links via the
+    schema's `ON DELETE CASCADE`).
+  - **`VACUUM ANALYZE`** on the hot tables (`refs`,
+    `blocks`, `cache_state`, `ref_tags_*`, `ref_flags`,
+    `ref_links`) so pgvector + tsvector planner stats stay
+    fresh after large ingest passes.
+
+  Suggested cron: `17 3 * * *  precis maintenance run` (one
+  invocation per day; `--intervals=hourly` separately wired
+  for an hourly tick if needed).
+  Implementation: `src/precis/cli/maintenance.py`.
+
+### Open backlog cleanup
+
+- **`OPEN-ITEMS.md`** introduced as the canonical durable
+  backlog. Replaces the per-issue gripe trail (gripes 3667 +
+  3681 retired 2026-05-02 after the seven-verb surface
+  refactor closed their original framing).
+- **`docs/precis-bench/`** moved out of `openclaw-cluster` into
+  its own package skeleton at `pips/packages/precis-bench/`.
+
+## v6.0.0 — seven-verb surface, twenty-one kinds (2026-05-02)
+
+First stable release of the v6 line. The package surface is now
+**seven verbs** (`get`, `search`, `put`, `edit`, `delete`, `tag`,
+`link`) discriminated by a single `kind=` argument, replacing the
+v1 era's per-kind bespoke tools. Twenty-one kinds ship across ref /
+tool / discovery categories; help skills are surfaced via
+progressive disclosure (`get(kind='skill', id='precis-help')` for
+the live registry dump, plus a `precis-<kind>-help` per kind).
+
+Highlights since `5.2.6`:
+
+- **Seven-verb tool surface** — see
+  [`docs/seven-verb-surface-migration.md`](docs/seven-verb-surface-migration.md)
+  for the design rationale.
+- **New kinds**: `python` (AST navigator), `patent` (EPO OPS),
+  `random` (discovery), `fc` (flashcards / spaced repetition),
+  `oracle` (curated wisdom), `quest`, `conv`, `plaintext`,
+  Perplexity tiers (`websearch` / `think` / `research`).
+- **Anchored edits** (`mode='edit'`, `mode='insert'`) on every
+  R/W file kind, with content-anchored resolution and `dry_run`.
+- **Hybrid search** — lexical `tsvector` + semantic `pgvector`
+  (`bge-m3`) RRF fusion at block level. Cross-kind fan-out via
+  `kind='*'` or `kind='paper,memory'`.
+- **In-tree handler registry** + entry-point plugin surface —
+  third-party kinds register via `precis.handlers` group; one bad
+  plugin cannot brick the server.
+- **MCP critic-driven hardening** — multiple review passes pinned
+  by regression tests; latest in
+  [`docs/mcp-critic-review-2026-05-02.md`](docs/mcp-critic-review-2026-05-02.md).
+- **Attribution footers** on every external-data handler
+  (Wolfram, YouTube, Perplexity, web, EPO patents) — legal
+  compliance, not UX polish.
+- **Open backlog** moved to [`OPEN-ITEMS.md`](OPEN-ITEMS.md)
+  (durable replacement for the per-issue gripe trail).
+
+Migration from v5.x: there is none. v6 is a clean break — different
+schema, different verbs, different config surface. Pin `<6` if you
+need to stay on the v1 line. The README's *Install* and *Run*
+sections cover the fresh-start path.
+
 ## `python` code-navigator kind (April 2026)
 
 **New kind** `python` joins the file-handler family: a multi-root,

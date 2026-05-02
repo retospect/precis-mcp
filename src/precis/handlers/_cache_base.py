@@ -142,6 +142,9 @@ class CacheBackedHandler(Handler):
         id: str | int | None = None,
         q: str | None = None,
         view: str | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Bare get / "/" / "/recent" → listing of the most recent refs.
@@ -158,6 +161,37 @@ class CacheBackedHandler(Handler):
                     f"get(kind={self.spec.kind!r}, id='/recent') to list recent refs"
                 ),
             )
+
+        # ``mode=`` validation. Today only ``refresh`` is honoured —
+        # bypass the freshness check, force ``_fetch``, write the
+        # new body in-place via ``update_cache_entry`` so tags/links
+        # survive. (gripe:3681 phase 4.)
+        force_refresh = False
+        if mode is not None:
+            if mode != "refresh":
+                raise BadInput(
+                    f"unknown mode={mode!r} for kind={self.spec.kind!r}",
+                    options=["refresh"],
+                    next=(
+                        "drop mode= or pass mode='refresh' to bypass cache "
+                        "freshness and re-fetch in place"
+                    ),
+                )
+            force_refresh = True
+
+        # Validate ``tags=`` / ``untags=`` BEFORE any upstream call so a
+        # bad axis fails the call without paying the API cost. The
+        # MCP critic flagged the symmetric bug where a fetch happened,
+        # body was cached, and then the tag write failed — leaving
+        # the agent with a paid-for cache row but no bookmark and
+        # no clear way to retry. (gripe:3681 phase 2.)
+        if tags or untags:
+            from precis.store.types import Tag as _Tag
+
+            for s in tags or []:
+                _Tag.parse_strict(s, kind=self.spec.kind)
+            for s in untags or []:
+                _Tag.parse_strict(s, kind=self.spec.kind)
 
         # Slug round-trip: ``/recent`` listings advertise slugs and
         # ``tag`` / ``link`` accept them; without this fallback,
@@ -182,7 +216,26 @@ class CacheBackedHandler(Handler):
                     )
                     if cached is not None:
                         ref, cache = cached
+                        if force_refresh:
+                            recovered = self._recover_key(ref, cache)
+                            if recovered is None:
+                                raise BadInput(
+                                    f"refresh by slug not supported on "
+                                    f"kind={self.spec.kind!r} — pass q= "
+                                    f"with the original query",
+                                    next=(
+                                        f"get(kind={self.spec.kind!r}, "
+                                        f"q=<original query>, mode='refresh')"
+                                    ),
+                                ) from canonical_err
+                            return self._refetch_in_place(
+                                ref=ref,
+                                key=recovered,
+                                tags=tags,
+                                untags=untags,
+                            )
                         if self._is_fresh(cache):
+                            self._apply_tag_ops_if_any(ref.id, tags, untags)
                             return self._render(ref, cache, hit=True)
             raise canonical_err
 
@@ -191,11 +244,37 @@ class CacheBackedHandler(Handler):
         cached = self.store.get_cache_entry(
             provider=self.provider, request_hash=request_hash
         )
-        if cached is not None and self._is_fresh(cached[1]):
+        if cached is not None and self._is_fresh(cached[1]) and not force_refresh:
             ref, cache = cached
+            self._apply_tag_ops_if_any(ref.id, tags, untags)
             return self._render(ref, cache, hit=True)
 
-        # Miss or stale — call upstream.
+        # Miss, stale, or refresh — call upstream. If a cached row
+        # exists for this slug or hash, refresh it in place so any
+        # tags/links the agent attached survive. Without this guard
+        # ``put_cache_entry`` would DELETE the existing ref (and its
+        # annotations) before re-inserting. (gripe:3681 phase 4.)
+        existing_ref = cached[0] if cached is not None else None
+        if existing_ref is None:
+            # Look up by slug as well — covers the case where the
+            # canonicalised key hashed differently from a previous
+            # write but the human-facing slug is the same.
+            slug_lookup = self.store.get_cache_entry_by_slug(
+                kind=self.spec.kind, slug=self._slug_for(key)
+            )
+            if slug_lookup is not None:
+                existing_ref = slug_lookup[0]
+
+        if existing_ref is not None:
+            return self._refetch_in_place(
+                ref=existing_ref,
+                key=key,
+                request_hash=request_hash,
+                tags=tags,
+                untags=untags,
+            )
+
+        # True miss — fresh ref creation.
         result = self._fetch(key)
         ref, cache = self.store.put_cache_entry(
             corpus_id=self.store.ensure_corpus(self.corpus_slug),
@@ -210,7 +289,80 @@ class CacheBackedHandler(Handler):
             cost_usd=result.cost_usd,
             cache_meta=result.meta,
         )
+        self._apply_tag_ops_if_any(ref.id, tags, untags)
         return self._render(ref, cache, hit=False)
+
+    # ── refresh / tag helpers ─────────────────────────────────────────
+
+    def _refetch_in_place(
+        self,
+        *,
+        ref: Ref,
+        key: str,
+        request_hash: str | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+    ) -> Response:
+        """Re-fetch the upstream body and update the cache row in-place.
+
+        Preserves the ref id, slug, and every annotation (tags / links)
+        the agent has attached. The previous flow (``DELETE FROM refs``
+        in :meth:`Store.put_cache_entry`) destroyed those annotations on
+        every TTL-expired re-fetch, silently invalidating bookmark
+        workflows. (gripe:3681 phase 4.)
+        """
+        result = self._fetch(key)
+        new_ref, cache = self.store.update_cache_entry(
+            ref_id=ref.id,
+            title=result.title,
+            body_blocks=result.body_blocks,
+            request_hash=request_hash if request_hash is not None else self._hash(key),
+            ttl_seconds=self.ttl_seconds,
+            model=result.model,
+            cost_usd=result.cost_usd,
+            cache_meta=result.meta,
+        )
+        self._apply_tag_ops_if_any(new_ref.id, tags, untags)
+        return self._render(new_ref, cache, hit=False)
+
+    def _apply_tag_ops_if_any(
+        self,
+        ref_id: int,
+        tags: list[str] | None,
+        untags: list[str] | None,
+    ) -> None:
+        """Apply ``tags=`` / ``untags=`` from a ``get`` call, if any.
+
+        One-call bookmark plumbing — ``get(kind='web', q=URL,
+        tags=['bookmark'])`` writes the cache row AND the tag in a
+        single round trip instead of forcing the agent to chain a
+        separate ``tag()`` call. Idempotent on cache hits.
+        (gripe:3681 phase 2.)
+        """
+        if not tags and not untags:
+            return
+        apply_tag_ops(
+            self.store,
+            self.spec.kind,
+            ref_id,
+            tags=tags,
+            untags=untags,
+        )
+
+    def _recover_key(self, ref: Ref, cache: CacheEntry) -> str | None:
+        """Return the canonical fetch key for an existing cached ref.
+
+        Used by ``mode='refresh'`` when the caller addressed by slug
+        and we need to re-derive the original fetch input. Subclasses
+        with structured ``cache.meta`` (``web`` stores the URL,
+        ``perplexity`` stores the prompt) override this to return a
+        string that ``_fetch`` understands. The base returns ``None``,
+        signalling that refresh requires the caller to pass ``q=``
+        explicitly. The maintenance driver relies on this hook so a
+        ``WATCH:daily`` cron sweep can refresh by slug alone.
+        (gripe:3681 phase 4.)
+        """
+        return None
 
     @staticmethod
     def _is_listing_request(id: str | int | None, q: str | None) -> bool:

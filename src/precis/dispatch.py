@@ -125,8 +125,8 @@ class Hub:
     """
 
     abilities: dict[AbilityKey, Ability] = field(default_factory=dict)
-    skills:    dict[str, str]            = field(default_factory=dict)
-    overview:  dict[str, str]            = field(default_factory=dict)
+    skills: dict[str, str] = field(default_factory=dict)
+    overview: dict[str, str] = field(default_factory=dict)
     #: Handler instances keyed by kind. Holds the object that owns
     #: the bound methods in ``abilities``. Runtime reads these for
     #: per-kind metadata (``KindSpec`` today; dropped once everything
@@ -136,7 +136,7 @@ class Hub:
     #: Database-backed store. ``None`` for stateless deployments —
     #: store-backed handlers (memory, paper, todo, …) won't be
     #: registered in that case. Set once at boot; read freely.
-    store:    Any = None  # precis.store.Store | None
+    store: Any = None  # precis.store.Store | None
     #: Vector embedder. ``None`` when no embedder is configured —
     #: handlers that need vectors should call :meth:`embed_one`,
     #: which raises a clean error in that case rather than crashing
@@ -483,6 +483,7 @@ def boot(
     # hub for an embedder gets the same instance.
     if store is not None and embedder is None:
         from precis.embedder import MockEmbedder
+
         embedder = MockEmbedder(dim=store.embedding_dim())
 
     hub = Hub(store=store, embedder=embedder)
@@ -492,6 +493,7 @@ def boot(
     # Calc — local sympy-backed calculator. The handler raises
     # InitError when sympy isn't installed.
     from precis.handlers.calc import CalcHandler
+
     _try(CalcHandler, hub=hub)
 
     # Python — DB-free in-memory AST index. Skipped when no roots
@@ -499,6 +501,7 @@ def boot(
     # logs each rejection).
     if python_roots:
         from precis.handlers.python import PythonHandler, parse_python_roots
+
         roots = parse_python_roots(python_roots)
         if roots:
             _try(PythonHandler, hub=hub, roots=roots)
@@ -520,33 +523,36 @@ def boot(
         # Numeric- and slug-addressed refs. Cheap; always available
         # when the store is up. Each handler reads ``hub.store`` /
         # ``hub.embedder`` directly — boot only threads the hub.
-        _try(MemoryHandler,       hub=hub)
-        _try(TodoHandler,         hub=hub)
-        _try(GripeHandler,        hub=hub)
-        _try(FlashcardHandler,    hub=hub)
-        _try(QuestHandler,        hub=hub)
+        _try(MemoryHandler, hub=hub)
+        _try(TodoHandler, hub=hub)
+        _try(GripeHandler, hub=hub)
+        _try(FlashcardHandler, hub=hub)
+        _try(QuestHandler, hub=hub)
         _try(ConversationHandler, hub=hub)
-        _try(OracleHandler,       hub=hub)
-        _try(SkillHandler,        hub=hub)
-        _try(PaperHandler,        hub=hub)
+        _try(OracleHandler, hub=hub)
+        _try(SkillHandler, hub=hub)
+        _try(PaperHandler, hub=hub)
 
         # Corpus-wide random-pick. Store-backed because it reads
         # ``blocks`` directly; no embedder needed (it uses the
         # stored embeddings as a "has content" filter, not for
         # similarity). Raises NotFound on an empty corpus.
-        _try(RandomHandler,       hub=hub)
+        _try(RandomHandler, hub=hub)
 
         # Cache-backed kinds. Each declares its env / optional-dep
         # requirements inside __init__ and raises InitError when
         # they aren't met.
         from precis.handlers.math import MathHandler
-        _try(MathHandler,    hub=hub)
+
+        _try(MathHandler, hub=hub)
 
         from precis.handlers.youtube import YouTubeHandler
+
         _try(YouTubeHandler, hub=hub)
 
         from precis.handlers.web import WebHandler
-        _try(WebHandler,     hub=hub)
+
+        _try(WebHandler, hub=hub)
 
         # File handlers — markdown / plaintext are hidden when no root
         # is configured; the handler __init__ raises InitError for a
@@ -555,12 +561,14 @@ def boot(
             from pathlib import Path
 
             from precis.handlers.markdown import MarkdownHandler
+
             _try(MarkdownHandler, hub=hub, root=Path(markdown_root))
 
         if plaintext_root:
             from pathlib import Path
 
             from precis.handlers.plaintext import PlaintextHandler
+
             _try(PlaintextHandler, hub=hub, root=Path(plaintext_root))
 
         # Perplexity Sonar trio. Each raises InitError independently
@@ -570,9 +578,10 @@ def boot(
             ThinkHandler,
             WebsearchHandler,
         )
+
         _try(WebsearchHandler, hub=hub)
-        _try(ThinkHandler,     hub=hub)
-        _try(ResearchHandler,  hub=hub)
+        _try(ThinkHandler, hub=hub)
+        _try(ResearchHandler, hub=hub)
 
         # Patent — EPO OPS. Hidden unless the env trio is set; the
         # ``OpsClient`` construction (and thus the ``epo_ops`` import)
@@ -586,6 +595,7 @@ def boot(
 
             from precis.handlers._patent_ops import OpsClient
             from precis.handlers.patent import PatentHandler
+
             _try(
                 PatentHandler,
                 hub=hub,

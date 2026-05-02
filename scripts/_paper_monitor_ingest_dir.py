@@ -28,7 +28,7 @@ from pathlib import Path
 # Make `_common` importable regardless of CWD.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import DEFAULT_INGEST_DIR, make_embedder_for, open_store  # noqa: E402
+from _common import DEFAULT_INGEST_DIR, make_embedder_for, open_store
 
 
 def _list_pdfs(base: Path) -> list[Path]:
@@ -107,7 +107,7 @@ _should_stop = False
 
 
 def _install_signal_handlers() -> None:
-    def _handler(signum, _frame):  # noqa: ANN001
+    def _handler(signum, _frame):
         global _should_stop
         _should_stop = True
         print(f"\nreceived signal {signum}, draining and exiting...")

@@ -333,6 +333,13 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     "PRIO": frozenset({"low", "normal", "high", "urgent"}),
     "SRC": frozenset({"primary", "secondary"}),
     "CACHE": frozenset({"fresh", "stale", "pinned"}),
+    # ``WATCH:<interval>`` marks cache-backed refs that should be
+    # auto-refreshed by the nightly maintenance driver. The cron
+    # scans ``search(tags=['WATCH:daily'])`` and re-fetches each
+    # match via ``get(..., mode='refresh')``. Closed vocabulary so
+    # a typo (``WATCH:dialy``) fails loud at write time instead of
+    # silently dropping the row from the sweep. (gripe:3681 phase 4.)
+    "WATCH": frozenset({"hourly", "daily", "weekly", "monthly"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as
@@ -376,12 +383,19 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # vs re-ingested). STATUS doesn't apply — papers don't have a
     # workflow state.
     "paper": frozenset({"SRC", "CACHE"}),
-    # Research caches use CACHE exclusively.
-    "research": frozenset({"CACHE"}),
-    "think": frozenset({"CACHE"}),
-    "websearch": frozenset({"CACHE"}),
-    "web": frozenset({"CACHE"}),
-    "youtube": frozenset({"CACHE"}),
+    # Cache-backed kinds use CACHE (freshness state) and WATCH
+    # (refresh interval for the nightly maintenance driver). The
+    # MCP critic gripe:3681 phase 4 motivated WATCH — a closed-vocab
+    # interval tag lets the cron sweep enumerate
+    # ``search(tags=['WATCH:daily'])`` and refresh each match
+    # without per-kind plumbing. ``math`` is intentionally left off
+    # the WATCH axis: Wolfram results are deterministic and don't
+    # drift, so refreshing them wastes API budget.
+    "research": frozenset({"CACHE", "WATCH"}),
+    "think": frozenset({"CACHE", "WATCH"}),
+    "websearch": frozenset({"CACHE", "WATCH"}),
+    "web": frozenset({"CACHE", "WATCH"}),
+    "youtube": frozenset({"CACHE", "WATCH"}),
     # Oracle refs (curated prompts/rubrics) are read-only references
     # with no workflow state.
     "oracle": frozenset(),

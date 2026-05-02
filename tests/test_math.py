@@ -46,7 +46,7 @@ class _Doc:
         *,
         success: Any = True,
         timedout: Any = None,
-        pods: list[_Pod] | None = None,
+        pods: list[Any] | None = None,
         didyoumeans: Any = None,
     ) -> None:
         # ``wolframalpha.Document`` decodes ``@success`` as a real bool

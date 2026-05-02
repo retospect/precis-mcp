@@ -61,7 +61,7 @@ def test_embedder_called_in_one_batch(monkeypatch: Any) -> None:
 
     blocks = parse_markdown("# A\n\nFirst.\n\nSecond.\n\nThird.\n")
     to_block_inserts(blocks, embedder=embedder)
-    assert n_calls == 1, "expected one batched embed call, got " f"{n_calls}"
+    assert n_calls == 1, f"expected one batched embed call, got {n_calls}"
 
 
 def test_pos_slug_text_propagate_from_parsed_block() -> None:

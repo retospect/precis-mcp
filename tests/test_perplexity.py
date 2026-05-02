@@ -69,8 +69,9 @@ class _StubClient:
         type(self).last_payload = json
         if type(self).raise_on_post is not None:
             raise type(self).raise_on_post  # type: ignore[misc]
-        assert type(self).response is not None
-        return type(self).response
+        resp = type(self).response
+        assert resp is not None
+        return resp
 
 
 _SAMPLE_RESPONSE = {

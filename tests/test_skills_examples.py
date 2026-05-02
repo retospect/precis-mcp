@@ -25,7 +25,9 @@ import pytest
 
 from precis.store.types import _KIND_ALLOWED_AXES
 
-_SKILLS_DIR = Path(__file__).resolve().parent.parent / "src" / "precis" / "data" / "skills"
+_SKILLS_DIR = (
+    Path(__file__).resolve().parent.parent / "src" / "precis" / "data" / "skills"
+)
 
 # ``# rejected`` / ``# raises`` / ``# error`` / ``# not currently legal``
 # / ``# would error`` markers — lines tagged like this are deliberately
@@ -119,9 +121,7 @@ _TAGS_RE = re.compile(
 _CLOSED_TAG_RE = re.compile(r"['\"](?P<prefix>[A-Z]+):(?P<value>[^'\"]+)['\"]")
 
 
-def _check_kind_axis_pairing(
-    block: str, *, file: str
-) -> list[str]:
+def _check_kind_axis_pairing(block: str, *, file: str) -> list[str]:
     """Yield error messages when a ``kind=X`` call uses a closed
     prefix the kind isn't allowed to carry.
 

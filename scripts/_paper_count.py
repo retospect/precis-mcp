@@ -20,7 +20,7 @@ from pathlib import Path
 # Make `_common` importable regardless of CWD.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import open_store  # noqa: E402
+from _common import open_store
 
 
 def main() -> None:
@@ -48,7 +48,7 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    store, cfg = open_store()
+    store, _cfg = open_store()
     try:
         n_papers = store.count_refs(kind="paper")
         print(f"papers: {n_papers}")

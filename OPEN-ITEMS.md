@@ -34,50 +34,6 @@ and no `title` field. One-line fix once `FastMCP` accepts
 - https://github.com/modelcontextprotocol/python-sdk/issues — file
   the request when the next mcp-critic pass surfaces it again.
 
-##  gripe:3681 phase 2 — `tags=` on `get` for cache-backed kinds
-
-**Status**: deferred
-**Severity**: feature
-**Owner**: `src/precis/handlers/_cache_base.CacheBackedHandler.get`
-**Test**: `tests/test_cache_base.py::test_get_with_tags_applies_on_create`
-
-One-call bookmark: `get(kind='web', q=URL, tags=['bookmark'])`
-should fetch, cache, AND apply `bookmark` tag in a single round
-trip. Today's pattern is two calls (`get` to cache, then `tag` to
-annotate the auto-assigned slug). The slug round-trip already
-works (fixed in 6.0.0 — see CHANGELOG), so the missing piece is
-just the `tags=` kwarg flowing into `_cache_base.get` and being
-applied on the cache-row write.
-
-The original gripe (`refs.id = 3681`, soft-deleted 2026-05-02)
-proposed this as part of a four-fold registry-driven change.
-Phase 1 (search on cache-backed kinds) and phase 3 (cross-kind
-fan-out) shipped. Phases 2 and 4 remain — see this entry and
-the next.
-
-## 🟢 gripe:3681 phase 4 — `mode='refresh'` + `watch:<interval>` axis
-
-**Status**: deferred
-**Severity**: feature
-**Owner**: `src/precis/handlers/_cache_base.py`, `src/precis/store/types.py` (closed-axis tag), external cron driver
-**Test**: `tests/test_cache_base.py::test_refresh_mode_bypasses_cache_preserves_tags`
-
-Refresh-pinned-things affordance. Two parts:
-
-1. **`mode='refresh'`** on `get` for cache-backed kinds — bypass
-   cache, re-fetch upstream, **preserve** existing tags / links /
-   slug. Today's only refresh path is `delete()` + `get()`, which
-   loses annotations on the slug.
-2. **`watch:<interval>`** as a closed-vocabulary tag axis —
-   `watch:hourly`, `watch:daily`, `watch:weekly`, `watch:monthly`.
-   External cron driver iterates `search(tags=['watch:daily'])`
-   and calls `get(..., mode='refresh')` on each result. No new
-   verb; composition of two existing primitives.
-
-The pattern generalises the patent-watch CLI machinery that
-already exists for `kind='patent'`, lifting it to every
-cache-backed kind for free.
-
 ## 🔴 acatome `\ufffd` mojibake in served paper bodies
 
 **Status**: open (different package — `acatome-extract`)
@@ -105,7 +61,7 @@ package has one. Until then, this entry is the canonical record.
 
 ## Recently retired (kept here briefly for grep-ability)
 
-The mcp-critic 2026-05-02 deep pass logged 14 findings; 11 are now
+The mcp-critic 2026-05-02 deep pass logged 14 findings; 13 are now
 closed. Removed from the open list, traceable via git log + the
 dated review document:
 
@@ -120,6 +76,17 @@ dated review document:
 - web search-options listing unregistered kinds → fixed
 - web slug not round-tripping through `get` → fixed
 - paper search omitting score annotation → fixed (consistency with block-level kinds)
+- gripe:3681 phase 2 — `tags=` on cache-backed `get` → **shipped 2026-05-02**
+  (one-call bookmark; pre-validates so a bad axis no longer pays the
+  upstream API cost before failing)
+- gripe:3681 phase 4 — `mode='refresh'` + `WATCH:<interval>` axis →
+  **shipped 2026-05-02**
+  (`Store.update_cache_entry` preserves tags/links across re-fetches;
+  `WATCH:hourly|daily|weekly|monthly` closed vocabulary on cache-backed
+  kinds; `precis maintenance run` cron driver composes both)
+- "eager skill cache" critic finding → **retracted** (was based on
+  incorrect storage-model assumption; skill kind is file-backed,
+  not DB-backed, so there's no async tsvector to make eager)
 
 See [`CHANGELOG.md`](CHANGELOG.md) entry for 6.0.0 for the per-fix
 landing record.

@@ -260,9 +260,7 @@ class QuestHandler(Handler):
         # transactional shape matches every other kind.
         from precis.handlers._link_tag_ops import apply_tag_ops
 
-        apply_tag_ops(
-            self.store, "quest", existing.id, tags=add, untags=remove
-        )
+        apply_tag_ops(self.store, "quest", existing.id, tags=add, untags=remove)
         return Response(body=f"tagged quest {slug!r}")
 
     def link(  # type: ignore[override]
@@ -295,9 +293,7 @@ class QuestHandler(Handler):
         from precis.handlers._link_tag_ops import apply_link_ops
 
         if mode == "add":
-            apply_link_ops(
-                self.store, existing.id, link=target, unlink=None, rel=rel
-            )
+            apply_link_ops(self.store, existing.id, link=target, unlink=None, rel=rel)
             return Response(body=f"linked quest {slug!r} → {target}")
         n_added, n_removed = apply_link_ops(
             self.store, existing.id, link=None, unlink=target, rel=rel

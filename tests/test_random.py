@@ -69,9 +69,7 @@ def _seed_memory(store: Store, hub: Hub, text: str) -> int:
     embedder = hub.embedder
     assert embedder is not None
     cid = store.ensure_corpus("default")
-    ref = store.insert_ref(
-        corpus_id=cid, kind="memory", slug=None, title=text[:40]
-    )
+    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title=text[:40])
     store.insert_blocks(
         ref.id,
         [
@@ -222,17 +220,11 @@ def test_numeric_kind_handle_is_ref_id(
 # ---------------------------------------------------------------------------
 
 
-def test_deleted_refs_excluded(
-    store: Store, hub: Hub, handler: RandomHandler
-) -> None:
+def test_deleted_refs_excluded(store: Store, hub: Hub, handler: RandomHandler) -> None:
     """Soft-deleted refs must not be pickable — the pool excludes
     ``deleted_at IS NOT NULL`` rows."""
-    live_id = _seed_oracle_with_embeddings(
-        store, hub, "live", ["live block"]
-    )
-    tombstone_id = _seed_oracle_with_embeddings(
-        store, hub, "dead", ["dead block"]
-    )
+    live_id = _seed_oracle_with_embeddings(store, hub, "live", ["live block"])
+    tombstone_id = _seed_oracle_with_embeddings(store, hub, "dead", ["dead block"])
     # Soft-delete the second ref.
     store.soft_delete_ref(tombstone_id)
 
@@ -254,9 +246,7 @@ def test_blocks_without_embeddings_excluded(
     same universe as semantic search. Re-ingests use this gate
     too."""
     cid = store.ensure_corpus("default")
-    ref = store.insert_ref(
-        corpus_id=cid, kind="oracle", slug="mixed", title="Mixed"
-    )
+    ref = store.insert_ref(corpus_id=cid, kind="oracle", slug="mixed", title="Mixed")
     embedder = hub.embedder
     assert embedder is not None
     store.insert_blocks(
@@ -321,9 +311,7 @@ def test_distribution_covers_every_pickable_block(
 # ---------------------------------------------------------------------------
 
 
-def test_ignores_unknown_kwargs(
-    store: Store, hub: Hub, handler: RandomHandler
-) -> None:
+def test_ignores_unknown_kwargs(store: Store, hub: Hub, handler: RandomHandler) -> None:
     """Agents that pass defaults through every call (``id=None``,
     ``view=None``, ``q=None``) must not trip over ``random``'s
     no-argument surface. Extra kwargs are silently ignored."""

@@ -97,7 +97,7 @@ Pair it with:
 [project]
 name = "precis-wikipedia"
 version = "0.1.0"
-dependencies = ["precis-mcp>=6.0.0a0", "wikipedia>=1.4"]
+dependencies = ["precis-mcp>=6.0.0", "wikipedia>=1.4"]
 
 [project.entry-points."precis.handlers"]
 wikipedia = "precis_wikipedia:WikipediaHandler"
@@ -207,9 +207,10 @@ repo for the full pattern — the `_FakeEP` helper and
 
 The plugin surface — `Handler`, `KindSpec`, `Hub.embed_one`,
 `Hub.emit_hint`, `Response`, `InitError`, the seven verb signatures
-— is intentionally small and slow-moving. Pin `precis-mcp>=6.0.0a0`
-in your plugin's dependencies for now; once `precis-mcp` ships 1.0,
-we'll commit to semver guarantees on this surface.
+— is intentionally small and slow-moving. Pin `precis-mcp>=6.0.0,<7`
+in your plugin's dependencies; v6 is the first release with the
+surface frozen. Major-version bumps will be the only event that
+breaks plugin contracts.
 
 Breaking changes to the handler contract will be called out in
 `precis-mcp`'s `CHANGELOG.md` under a `[plugin-surface]` heading.

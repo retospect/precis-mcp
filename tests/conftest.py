@@ -149,6 +149,7 @@ def hub(store: Store) -> Hub:
     rebinding this fixture.
     """
     from precis.embedder import MockEmbedder
+
     return Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
 
 

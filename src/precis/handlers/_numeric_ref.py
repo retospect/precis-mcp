@@ -95,9 +95,7 @@ class NumericRefHandler(Handler):
         if ref is not None:
             return ref
         # Second probe: does the row exist but is soft-deleted?
-        tombstone = self.store.get_ref(
-            kind=self.kind, id=ref_id, include_deleted=True
-        )
+        tombstone = self.store.get_ref(kind=self.kind, id=ref_id, include_deleted=True)
         if tombstone is not None:
             raise Gone(
                 f"{self._sense()} id={ref_id} was soft-deleted "
@@ -421,8 +419,7 @@ class NumericRefHandler(Handler):
             raise BadInput(
                 f"link(kind={self.kind!r}, id=...) requires target=",
                 next=(
-                    f"link(kind={self.kind!r}, id=N, target='paper:slug', "
-                    "rel='cites')"
+                    f"link(kind={self.kind!r}, id=N, target='paper:slug', rel='cites')"
                 ),
             )
         if mode not in ("add", "remove"):

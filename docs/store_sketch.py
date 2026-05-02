@@ -24,13 +24,13 @@ design checkpoint before phase-1 walking-skeleton code lands.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, AsyncIterator, Literal, Self
+from typing import Any, Literal, Self
 
 import asyncpg
-
 
 # =============================================================================
 # Row types
@@ -49,10 +49,10 @@ ActorSlug = Literal["agent", "user", "system"]
 class Ref:
     id: int
     corpus_id: int
-    kind: str                       # FK to kinds.slug
-    slug: str | None                # NULL for numeric kinds
+    kind: str  # FK to kinds.slug
+    slug: str | None  # NULL for numeric kinds
     title: str
-    provider: str | None            # FK to providers.slug
+    provider: str | None  # FK to providers.slug
     meta: dict[str, Any]
     created_at: datetime
     updated_at: datetime
@@ -68,11 +68,11 @@ class Ref:
 class Block:
     id: int
     ref_id: int
-    pos: int                        # 0-based, renumberable
-    slug: str | None                # stable citation handle
+    pos: int  # 0-based, renumberable
+    slug: str | None  # stable citation handle
     text: str
     token_count: int | None
-    embedding: list[float] | None   # populated only when fetched explicitly
+    embedding: list[float] | None  # populated only when fetched explicitly
     density: Density | None
     meta: dict[str, Any]
     created_at: datetime
@@ -95,9 +95,10 @@ class Link:
 @dataclass(frozen=True, slots=True)
 class Tag:
     """Unified tag. The three-table split (closed/flag/open) is hidden."""
+
     namespace: Namespace
-    prefix: str | None              # closed only; None for flag/open
-    value: str                      # closed value, flag name, or open value
+    prefix: str | None  # closed only; None for flag/open
+    value: str  # closed value, flag name, or open value
 
     @classmethod
     def closed(cls, prefix: str, value: str) -> Tag:
@@ -141,7 +142,7 @@ class CacheEntry:
     request_hash: str
     model: str | None
     fetched_at: datetime
-    fresh_until: datetime | None    # NULL = pinned
+    fresh_until: datetime | None  # NULL = pinned
     cost_usd: float | None
     meta: dict[str, Any]
 
@@ -150,12 +151,12 @@ class CacheEntry:
 class SearchHit:
     block_id: int
     ref_id: int
-    score: float                    # RRF fused score
+    score: float  # RRF fused score
     kind: str
     slug: str | None
-    ref_id_public: str              # slug or str(id)
+    ref_id_public: str  # slug or str(id)
     title: str
-    text_excerpt: str               # first ~280 chars of block.text
+    text_excerpt: str  # first ~280 chars of block.text
     pos: int
     block_slug: str | None
 
@@ -163,6 +164,7 @@ class SearchHit:
 # =============================================================================
 # Store
 # =============================================================================
+
 
 class Store:
     """Async postgres-backed storage layer. Single instance per server."""
@@ -210,7 +212,7 @@ class Store:
         self,
         *,
         kind: str,
-        id: int | str,                       # int for numeric kinds, str for slug
+        id: int | str,  # int for numeric kinds, str for slug
         corpus_id: int | None = None,
         include_deleted: bool = False,
     ) -> Ref | None: ...
@@ -432,7 +434,7 @@ class Store:
         kinds: list[str] | None = None,
         corpus_id: int | None = None,
         scope_ref_id: int | None = None,
-        cache: bool | None = None,        # True/False/None = include cache refs
+        cache: bool | None = None,  # True/False/None = include cache refs
         top_k: int = 10,
     ) -> list[SearchHit]:
         """Hybrid search via reciprocal rank fusion.
@@ -453,6 +455,7 @@ class Store:
 # Insert payload types (mutable; not stored)
 # =============================================================================
 
+
 @dataclass
 class BlockInsert:
     pos: int
@@ -467,6 +470,7 @@ class BlockInsert:
 # =============================================================================
 # Migration runner (separate concern)
 # =============================================================================
+
 
 class Migrator:
     """Forward-only migration runner. Reads numbered .sql files from

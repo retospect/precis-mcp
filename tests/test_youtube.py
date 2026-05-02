@@ -84,13 +84,25 @@ def _patch_yt(monkeypatch: pytest.MonkeyPatch) -> None:
         pass
 
     class TranscriptsDisabled(_Boom):
-        pass
+        def __init__(self, video_id: str = "") -> None:
+            super().__init__(video_id)
 
     class NoTranscriptFound(_Boom):
-        pass
+        # Mirror the real youtube-transcript-api signature so tests can
+        # raise it with the same args the library uses (the handler's
+        # ``except NoTranscriptFound`` clause doesn't read these but the
+        # caller-side raise needs them to type-check + run).
+        def __init__(
+            self,
+            video_id: str = "",
+            requested_language_codes: Any = None,
+            transcript_data: Any = None,
+        ) -> None:
+            super().__init__(video_id)
 
     class VideoUnavailable(_Boom):
-        pass
+        def __init__(self, video_id: str = "") -> None:
+            super().__init__(video_id)
 
     fake_errors.TranscriptsDisabled = TranscriptsDisabled  # type: ignore[attr-defined]
     fake_errors.NoTranscriptFound = NoTranscriptFound  # type: ignore[attr-defined]
@@ -190,7 +202,9 @@ def test_no_transcript_raises_not_found(
 
     class Bad(_StubApi):
         def fetch(self, video_id: str, languages: list[str]) -> Any:
-            raise NoTranscriptFound("no track")
+            raise NoTranscriptFound(
+                video_id, requested_language_codes=languages, transcript_data=[]
+            )
 
     sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = Bad  # type: ignore[attr-defined]
     h = YouTubeHandler(hub=Hub(store=store))

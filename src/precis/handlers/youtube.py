@@ -98,6 +98,9 @@ class YouTubeHandler(CacheBackedHandler):
         q: str | None = None,
         view: str | None = None,
         languages: str | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         if view == "languages":
@@ -116,9 +119,35 @@ class YouTubeHandler(CacheBackedHandler):
         # thread pool).
         token = _LANG_PREF.set(tuple(_parse_languages(languages or "")))
         try:
-            return super().get(id=id, q=q, view=view)
+            return super().get(
+                id=id,
+                q=q,
+                view=view,
+                tags=tags,
+                untags=untags,
+                mode=mode,
+            )
         finally:
             _LANG_PREF.reset(token)
+
+    # ── refresh-by-slug support ───────────────────────────────────────
+
+    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+        """Reconstruct ``<video_id>:<lang_part>`` from cached meta.
+
+        Cache meta stores ``video_id`` and ``languages`` from the
+        original fetch; rebuild the canonical key so a slug-only
+        refresh (e.g. from the maintenance driver iterating
+        ``WATCH:daily`` tags) can re-fetch without the caller having
+        to remember the original URL. (gripe:3681 phase 4.)
+        """
+        meta = cache.meta or {}
+        video_id = meta.get("video_id") or ref.slug
+        if not video_id:
+            return None
+        langs = meta.get("languages") or ["en"]
+        lang_part = "+".join(sorted(langs))
+        return f"{video_id}:{lang_part}"
 
     # ── canonicalization & cache key ──────────────────────────────────
 

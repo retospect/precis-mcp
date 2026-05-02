@@ -399,9 +399,7 @@ class TestSparseFallbackNotice:
 
     def test_notice_present_when_no_headings_detected(self) -> None:
         """Pure body paragraphs → fallback notice + chunk-range hint."""
-        blocks = [
-            _make_block(i, f"body paragraph number {i}") for i in range(5)
-        ]
+        blocks = [_make_block(i, f"body paragraph number {i}") for i in range(5)]
         toc = build_toc(blocks)
         # Sanity: build_toc returned the implicit-untitled wrapper.
         assert len(toc) == 1
@@ -461,9 +459,7 @@ class TestSparseFallbackNotice:
         clipped = filter_toc_to_range(full_toc, lo=0, hi=1)
         assert len(clipped) == 1
         assert clipped[0].title == "METHODS"
-        out = render_toc(
-            slug="x", toc=clipped, total_blocks=4, range_label="~0..1"
-        )
+        out = render_toc(slug="x", toc=clipped, total_blocks=4, range_label="~0..1")
         assert "no headings detected" not in out
 
     def test_notice_includes_chunk_range_pivot_hint(self) -> None:
