@@ -282,8 +282,21 @@ def test_put_edit_surgical(handler: PlaintextHandler, pt_root: Path) -> None:
 
 def test_put_edit_requires_find(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "log.txt", "x.\n")
-    with pytest.raises(BadInput, match="requires find"):
+    with pytest.raises(BadInput, match="requires find") as exc:
         handler.edit(id="log", mode="find-replace", text="y")
+    # Error echoes the user's wire-level mode name, not the internal
+    # alias. See test_python_handler_writes::test_edit_requires_text
+    # for the rationale.
+    assert "find-replace" in str(exc.value)
+    assert "mode='edit'" not in str(exc.value)
+
+
+def test_put_edit_requires_text(handler: PlaintextHandler, pt_root: Path) -> None:
+    _write(pt_root, "log.txt", "x.\n")
+    with pytest.raises(BadInput, match="requires text=") as exc:
+        handler.edit(id="log", mode="find-replace", find="x")
+    assert "find-replace" in str(exc.value)
+    assert "mode='edit'" not in str(exc.value)
 
 
 def test_put_insert_before_anchor(handler: PlaintextHandler, pt_root: Path) -> None:

@@ -803,18 +803,22 @@ class PythonHandler(Handler):
         spliced buffer goes through the same three gates as
         ``mode='replace'``: ``ast.parse``, qualname-drop, ruff.
         """
+        # See plaintext._put_anchored — ``op_kind='edit'`` is the
+        # internal alias for the wire-level ``mode='find-replace'``;
+        # error strings echo the user's name, not the alias.
+        user_mode = "find-replace" if op_kind == "edit" else op_kind
         if find is None or not find:
             raise BadInput(
-                f"mode={op_kind!r} requires find= (the exact text to locate)",
+                f"mode={user_mode!r} requires find= (the exact text to locate)",
                 next=(
-                    f"put(kind='python', id={parsed.alias}/{parsed.file or '...'}, "
-                    f"mode={op_kind!r}, find='exact text', text='replacement')"
+                    f"edit(kind='python', id={parsed.alias}/{parsed.file or '...'}, "
+                    f"mode={user_mode!r}, find='exact text', text='replacement')"
                 ),
             )
         if text is None:
             raise BadInput(
-                f"mode={op_kind!r} requires text= ('' is allowed for delete-by-edit)",
-                next="add text='...'",
+                f"mode={user_mode!r} requires text= ('' is allowed for delete-by-edit)",
+                next="add text='...' to the call",
             )
 
         # Resolve the search region. Same logic as replace/delete:

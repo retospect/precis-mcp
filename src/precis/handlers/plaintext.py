@@ -686,22 +686,29 @@ class PlaintextHandler(Handler):
         nth: int | None,
         dry_run: bool | str = False,
     ) -> Response:
+        # ``op_kind`` is the post-translation internal name (``edit`` for
+        # the wire-level ``find-replace`` mode, ``insert`` for ``insert``).
+        # The agent never sees ``edit`` on this verb — surfacing it in
+        # errors used to make a 7B caller correct ``mode='find-replace'``
+        # to ``mode='edit'`` and re-loop on a fresh BadInput. Echo the
+        # name they actually wrote.
+        user_mode = "find-replace" if op_kind == "edit" else op_kind
         dry_mode = normalize_dry_run(dry_run)
         if find is None or not find:
             raise BadInput(
-                f"mode={op_kind!r} requires find= (the exact text to locate)",
+                f"mode={user_mode!r} requires find= (the exact text to locate)",
                 next=(
-                    f"put(kind='{self._KIND}', id={slug!r}, mode={op_kind!r}, "
+                    f"edit(kind='{self._KIND}', id={slug!r}, mode={user_mode!r}, "
                     f"find='exact text', text='replacement')"
                 ),
             )
         if text is None:
             raise BadInput(
-                f"mode={op_kind!r} requires text= "
+                f"mode={user_mode!r} requires text= "
                 "(the replacement / inserted text; '' is allowed for delete-by-edit)",
                 next=(
-                    "add text='...'  (use text='' on mode='edit' to delete "
-                    "the matched span)"
+                    f"add text='...' to the call (use text='' on "
+                    f"mode={user_mode!r} to delete the matched span)"
                 ),
             )
         op = EditOp(

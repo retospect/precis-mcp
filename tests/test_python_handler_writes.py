@@ -627,8 +627,15 @@ def test_edit_requires_find(handler: PythonHandler) -> None:
 
 
 def test_edit_requires_text(handler: PythonHandler) -> None:
-    with pytest.raises(BadInput, match="requires text="):
+    with pytest.raises(BadInput, match="requires text=") as exc:
         handler.edit(id="r/pkg/m.py", mode="find-replace", find="def helper")
+    # Error must echo the wire-level mode name the agent wrote
+    # (``'find-replace'``), not the internal alias (``'edit'``) — a 7B
+    # caller looking at the error tries to "fix" the mode and re-loops
+    # forever otherwise. Regression for the dopamine-modulation sortie
+    # hitting 33 identical retries before being killed.
+    assert "find-replace" in str(exc.value)
+    assert "mode='edit'" not in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
