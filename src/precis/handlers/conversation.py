@@ -39,7 +39,7 @@ class ConversationHandler(Handler):
         kind="conv",
         title="Conversation",
         description=(
-            "Durable conversation transcript — slug-addressed, one "
+            "Durable conversation transcript - slug-addressed, one "
             "block per message turn. Body is capture-on-write; use "
             "tag / link to cross-link to papers, memory, todos."
         ),
@@ -82,7 +82,7 @@ class ConversationHandler(Handler):
         if effective_view is not None:
             raise Unsupported(
                 f"unknown conv view {effective_view!r}",
-                next="see precis-conv-help — try '/transcript' or '~N'",
+                next="see precis-conv-help - try '/transcript' or '~N'",
             )
         # Default: overview.
         return self._render_overview(slug, ref)
@@ -173,7 +173,7 @@ class ConversationHandler(Handler):
         slug, chunk, path_view = _parse_conv_id(str(id))
         if chunk is not None or path_view is not None:
             raise BadInput(
-                "conv ops operate at ref level — drop the turn "
+                "conv ops operate at ref level - drop the turn "
                 "selector / path view from id=",
                 next=f"tag(kind='conv', id={slug!r}, ...) or link(kind='conv', id={slug!r}, ...)",
             )
@@ -302,7 +302,7 @@ class ConversationHandler(Handler):
         blocks = self.store.list_blocks_for_ref(ref.id)
         if not blocks:
             return Response(body=f"{slug}: no turns")
-        lines = [f"# {slug} — transcript", f"_{ref.title}_", ""]
+        lines = [f"# {slug} - transcript", f"_{ref.title}_", ""]
         for b in blocks:
             lines.append(f"## turn ~{b.pos}")
             lines.append(b.text)

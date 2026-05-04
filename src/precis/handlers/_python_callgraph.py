@@ -240,7 +240,7 @@ def render_callgraph(
         lines.append("")
         lines.append("Legend:")
         lines.append("  [ext]         unresolved (stdlib / third-party / dynamic)")
-        lines.append("  [cycle]       already on path to root — recursion stopped")
+        lines.append("  [cycle]       already on path to root - recursion stopped")
         lines.append("  [see above]   already expanded earlier in the tree")
         lines.append("  [truncated]   depth limit reached")
 

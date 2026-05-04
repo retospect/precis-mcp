@@ -385,12 +385,13 @@ def test_search_no_match_with_scope_suggests_widening(
     assert "Next:" in out.body
     assert "widen to all repos" in out.body
     # The widened-call itself (the ``search(kind='python', q=...)``
-    # LHS, before the ``—`` separator) must drop the ``scope=``
-    # argument — the *description* on the RHS does mention ``drop
-    # scope=`` in prose, so we split on the separator to only check
-    # the call form.
+    # LHS, before the ``-`` separator) must drop the ``scope=``
+    # argument. The *description* on the RHS does mention ``drop
+    # scope=`` in prose, so we split on the separator (now ASCII
+    # ``  - ``, post 2026-05-04 em-dash purge) to only check the
+    # call form.
     widen_line = next(ln for ln in out.body.splitlines() if "widen to all repos" in ln)
-    call_part, _, _ = widen_line.partition("—")
+    call_part, _, _ = widen_line.partition("  - ")
     assert "scope=" not in call_part
 
 

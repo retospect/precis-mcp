@@ -176,7 +176,7 @@ def run(args: argparse.Namespace) -> None:
     store = runtime.store
     if store is None:
         print(
-            "maintenance: no database configured — set PRECIS_DATABASE_URL",
+            "maintenance: no database configured - set PRECIS_DATABASE_URL",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -273,7 +273,7 @@ def _refresh_due_watches(
 
         cutoff_seconds = _INTERVAL_SECONDS[interval]
         log.info(
-            "maintenance: %s sweep — %d candidate ref(s) (cutoff=%ds)",
+            "maintenance: %s sweep - %d candidate ref(s) (cutoff=%ds)",
             interval,
             len(refs),
             cutoff_seconds,
@@ -411,11 +411,11 @@ def _purge_soft_deleted(
         n = int(row[0]) if row else 0
 
     if n == 0:
-        log.info("maintenance: purge — no tombstones older than %dd", older_than_days)
+        log.info("maintenance: purge - no tombstones older than %dd", older_than_days)
         return 0
     if dry_run:
         log.info(
-            "maintenance: purge — would hard-delete %d ref(s) older than %dd",
+            "maintenance: purge - would hard-delete %d ref(s) older than %dd",
             n,
             older_than_days,
         )
@@ -454,7 +454,7 @@ def _vacuum_analyze(*, store: Store, dry_run: bool) -> None:
     """
     if dry_run:
         log.info(
-            "maintenance: vacuum — would run VACUUM ANALYZE on %s",
+            "maintenance: vacuum - would run VACUUM ANALYZE on %s",
             ", ".join(_VACUUM_TABLES),
         )
         return

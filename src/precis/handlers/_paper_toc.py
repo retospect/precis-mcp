@@ -431,7 +431,7 @@ def render_toc(
     n_sections = sum(_count_sections(s) for s in toc)
     rl = f" {range_label}" if range_label else ""
     lines = [
-        f"# {slug} — TOC{rl} ({total_blocks} blocks, {n_sections} sections)",
+        f"# {slug} - TOC{rl} ({total_blocks} blocks, {n_sections} sections)",
         "",
     ]
 
@@ -441,7 +441,7 @@ def render_toc(
     # stays decoupled from the heading-detection regexes.
     if _is_sparse_fallback(toc):
         lines.append(
-            "_(no headings detected — paper renders as one implicit section. "
+            "_(no headings detected - paper renders as one implicit section. "
             "Read by chunk range instead.)_"
         )
         lines.append("")

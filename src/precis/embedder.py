@@ -200,7 +200,7 @@ def make_embedder(name: str, *, dim: int = 1024) -> Embedder:
         return MockEmbedder(dim=dim)
     if name == "bge-m3":
         return BgeM3Embedder()
-    raise ValueError(f"unknown embedder name: {name!r} — expected 'mock' or 'bge-m3'")
+    raise ValueError(f"unknown embedder name: {name!r} - expected 'mock' or 'bge-m3'")
 
 
 __all__ = ["BgeM3Embedder", "Embedder", "MockEmbedder", "make_embedder"]

@@ -94,22 +94,22 @@ def parse_python_roots(raw: str | None) -> dict[str, Path]:
             continue
         if ":" not in entry:
             log.warning(
-                "PRECIS_PYTHON_ROOTS: skipping %r — missing ':' separator", entry
+                "PRECIS_PYTHON_ROOTS: skipping %r - missing ':' separator", entry
             )
             continue
         alias, _, path_str = entry.partition(":")
         alias = alias.strip()
         path_str = path_str.strip()
         if not alias or not path_str:
-            log.warning("PRECIS_PYTHON_ROOTS: skipping %r — empty alias or path", entry)
+            log.warning("PRECIS_PYTHON_ROOTS: skipping %r - empty alias or path", entry)
             continue
         if alias in out:
-            log.warning("PRECIS_PYTHON_ROOTS: duplicate alias %r — first wins", alias)
+            log.warning("PRECIS_PYTHON_ROOTS: duplicate alias %r - first wins", alias)
             continue
         path = Path(path_str).expanduser().resolve()
         if not path.is_dir():
             log.warning(
-                "PRECIS_PYTHON_ROOTS: skipping %r — not a directory: %s",
+                "PRECIS_PYTHON_ROOTS: skipping %r - not a directory: %s",
                 alias,
                 path,
             )
@@ -1105,10 +1105,10 @@ class PythonHandler(Handler):
             )
         )
         extras = [
-            ("ast.parse:", "ok" if ast_gate.ok else f"FAILED — {ast_gate.detail}"),
+            ("ast.parse:", "ok" if ast_gate.ok else f"FAILED - {ast_gate.detail}"),
             (
                 "qualname-drop:",
-                "ok" if qn_gate.ok else f"FAILED — dropped {qn_gate.dropped!r}",
+                "ok" if qn_gate.ok else f"FAILED - dropped {qn_gate.dropped!r}",
             ),
             ("ruff:", ruff_note),
         ]
@@ -1128,7 +1128,7 @@ class PythonHandler(Handler):
         else:
             file_label = f"{parsed.alias}/{parsed.file or path.name}"
             diff = format_unified_diff(pre, post, file_label=file_label).rstrip("\n")
-            body = diff or "(no diff — pre and post are identical)"
+            body = diff or "(no diff - pre and post are identical)"
         return Response(body="\n".join([*header, "", body]))
 
     # ── helpers ────────────────────────────────────────────────────
@@ -1628,7 +1628,7 @@ def _render_put_response(
     )
 
     if not ruff_changes.ok:
-        lines.append(f"  ruff:                skipped — {ruff_changes.error}")
+        lines.append(f"  ruff:                skipped - {ruff_changes.error}")
     elif not ruff_changes.changed:
         lines.append("  ruff:                no changes")
     else:

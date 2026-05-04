@@ -131,7 +131,7 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
             ref_id_or_slug = int(identifier)
         except ValueError as exc:
             raise BadInput(
-                f"kind {kind!r} is numeric — identifier must be an integer, "
+                f"kind {kind!r} is numeric - identifier must be an integer, "
                 f"got {identifier!r}",
                 next=f"link='{kind}:42' (numeric id)",
             ) from exc
@@ -172,7 +172,7 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
         block = store.get_block(ref.id, pos=candidate)
         if block is None:
             raise NotFound(
-                f"link target {target!r} — no block at pos={candidate} in {kind}:{identifier}",
+                f"link target {target!r} - no block at pos={candidate} in {kind}:{identifier}",
                 next=f"check available blocks: get(kind={kind!r}, id={identifier!r})",
             )
         pos = candidate
@@ -182,7 +182,7 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
         block = store.get_block(ref.id, slug=selector)
         if block is None:
             raise NotFound(
-                f"link target {target!r} — no block with slug={selector!r} "
+                f"link target {target!r} - no block with slug={selector!r} "
                 f"in {kind}:{identifier}",
                 next=f"check available blocks: get(kind={kind!r}, id={identifier!r})",
             )

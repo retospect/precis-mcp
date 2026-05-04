@@ -729,7 +729,7 @@ def test_imported_entry_cost_reads_imported_on_hit(
     h = research_with_embedder
     h.put(id="badged query", text="# x\n\ny", mode="import")
     resp = h.get(id="badged query")
-    assert resp.cost == "[cost: free — imported]"
+    assert resp.cost == "[cost: free - imported]"
 
 
 def test_fetched_cache_hit_keeps_cached_badge(

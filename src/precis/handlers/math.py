@@ -66,7 +66,7 @@ class MathHandler(CacheBackedHandler):
         kind="math",
         title="Math (Wolfram Alpha)",
         description=(
-            "Compute via Wolfram|Alpha — population/orbital/conversion "
+            "Compute via Wolfram|Alpha - population/orbital/conversion "
             "facts, calculus, linear algebra, world data. Pass a "
             "natural-language or mathematical expression as `id` or `q`."
         ),

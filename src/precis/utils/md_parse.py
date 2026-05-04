@@ -73,7 +73,7 @@ class MdBlock:
     """What this block is."""
 
     heading_level: int | None = None
-    """For headings only — the H-level (1..6)."""
+    """For headings only - the H-level (1..6)."""
 
     line_start: int = 0
     """1-indexed source line where this block starts."""

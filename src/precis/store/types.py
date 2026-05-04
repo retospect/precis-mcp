@@ -266,7 +266,7 @@ class Tag:
                             options=sorted(kind_allowed),
                             next=(
                                 f"kind={kind!r} accepts closed axes "
-                                f"{sorted(kind_allowed)} — for {prefix.lower()} "
+                                f"{sorted(kind_allowed)} - for {prefix.lower()} "
                                 f"semantics write this as a lowercase open tag "
                                 f"(e.g. tags=['{prefix.lower()}:{value}'])"
                             ),

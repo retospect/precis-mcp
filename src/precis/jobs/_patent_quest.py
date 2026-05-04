@@ -75,7 +75,7 @@ def open_quest_for_hits(
     """
     if not hits:
         raise ValueError(
-            "open_quest_for_hits called with empty hit list — "
+            "open_quest_for_hits called with empty hit list - "
             "skip this pass, don't create an empty quest"
         )
 
@@ -161,7 +161,7 @@ def _format_quest_body(
         meta_parts = [p for p in (applicants, h.publication_date or "") if p]
         meta_line = f" · {' · '.join(meta_parts)}" if meta_parts else ""
         title = h.title or "(untitled)"
-        lines.append(f"  - {h.docdb_id.upper()} — {title}{meta_line}")
+        lines.append(f"  - {h.docdb_id.upper()} - {title}{meta_line}")
         lines.append(f"    {_espacenet_url(h.docdb_id)}")
     lines.append("")
     lines.append(

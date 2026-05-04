@@ -92,7 +92,7 @@ class CalcHandler(Handler):
                     "calc is sympy-backed; common builtins are "
                     "integrate, diff, solve, simplify, factor, expand, "
                     "limit, Sum, Product. Python builtins like "
-                    "randint() or random() are not wired — see "
+                    "randint() or random() are not wired - see "
                     "get(kind='skill', id='precis-oracle-help') for "
                     "randomness workflows.",
                     next="get(kind='calc', q='solve(Eq(x+1, 3), x)')",
@@ -133,7 +133,7 @@ class CalcHandler(Handler):
             # a prose list of operator names into ``next``, which
             # broke the copy-paste affordance. (c4 cleanup.)
             raise BadInput(
-                f"could not evaluate {expr_str!r} — unsupported expression. "
+                f"could not evaluate {expr_str!r} - unsupported expression. "
                 "calc handles arithmetic, calculus, simplify, solve, and "
                 "similar symbolic math; for Python builtins or I/O use a "
                 "different tool.",
@@ -173,7 +173,7 @@ class CalcHandler(Handler):
             raise BadInput(
                 f"expression simplifies to itself: {expr_str!r}. "
                 "calc evaluates expressions with operators; for bare "
-                "symbolic identities give sympy more structure — wrap "
+                "symbolic identities give sympy more structure - wrap "
                 "in solve(Eq(lhs, rhs), var) or similar.",
                 next="get(kind='calc', q='solve(Eq(x+1, 3), x)')",
             )

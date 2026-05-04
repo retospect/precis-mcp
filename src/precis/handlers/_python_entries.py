@@ -245,7 +245,7 @@ def _summarise_body(body: list[ast.stmt]) -> str:
 
 def render_entries(alias: str, report: EntriesReport) -> str:
     """Format an `EntriesReport` for the agent."""
-    lines = [f"# {alias} — entry points\n"]
+    lines = [f"# {alias} - entry points\n"]
 
     if report.console_scripts:
         lines.append("  Console scripts:")
@@ -255,7 +255,7 @@ def render_entries(alias: str, report: EntriesReport) -> str:
             if group_name != "scripts":
                 lines.append(f"    [{group_name}]")
             for s in entries:
-                file_col = f"file: {s.file}:{s.line}" if s.file else "file: —"
+                file_col = f"file: {s.file}:{s.line}" if s.file else "file: -"
                 lines.append(f"    {s.name:<24}entry: {s.entry:<32}{file_col}")
         lines.append("")
     elif report.pyproject_path is None:

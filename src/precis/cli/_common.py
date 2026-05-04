@@ -29,7 +29,7 @@ def resolve_dsn(override: str | None, *, cfg: Any = None) -> str:
     if cfg.database_url:
         return cfg.database_url
     print(
-        "no database_url configured — set PRECIS_DATABASE_URL or pass --database-url",
+        "no database_url configured - set PRECIS_DATABASE_URL or pass --database-url",
         file=sys.stderr,
     )
     sys.exit(2)

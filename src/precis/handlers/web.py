@@ -162,7 +162,7 @@ class WebHandler(CacheBackedHandler):
             # (login walls, JS shells). Fall back to a stub note rather
             # than caching nothing.
             body_text = (
-                f"(no readable content extracted from {key} — "
+                f"(no readable content extracted from {key} - "
                 f"page may require JS, login, or have non-article shape)"
             )
         else:

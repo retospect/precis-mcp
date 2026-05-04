@@ -193,7 +193,7 @@ class PatentHandler(Handler):
         # ``docs/search-future-filters.md`` §7.
         if source not in ("both", "local", "remote"):
             raise BadInput(
-                f"invalid source={source!r} — expected 'both', 'local', or 'remote'",
+                f"invalid source={source!r} - expected 'both', 'local', or 'remote'",
                 next="search(kind='patent', q='...', source='remote')",
             )
 
@@ -320,7 +320,7 @@ class PatentHandler(Handler):
         if not refs:
             return Response(
                 body=(
-                    "no patents ingested yet — "
+                    "no patents ingested yet - "
                     "use `get(kind='patent', id='ep1234567b1')` to ingest one"
                 )
             )
@@ -395,7 +395,7 @@ class PatentHandler(Handler):
         if FULLTEXT_UNAVAILABLE_TAG in open_tags:
             lines.append("")
             lines.append(
-                "_full text unavailable from OPS — "
+                "_full text unavailable from OPS - "
                 "searchable by abstract + biblio only_"
             )
         elif AWAITING_FULLTEXT_TAG in open_tags:
@@ -403,7 +403,7 @@ class PatentHandler(Handler):
             when = retry_at[:10] if retry_at else "soon"
             lines.append("")
             lines.append(
-                f"_full text not yet indexed by OPS — queued for auto-retry on {when}_"
+                f"_full text not yet indexed by OPS - queued for auto-retry on {when}_"
             )
 
         abstract = meta.get("abstract")
@@ -413,7 +413,7 @@ class PatentHandler(Handler):
 
         # Espacenet attribution footer (legal-attribution rule).
         lines.append("")
-        lines.append(f"_Source: EPO OPS — {_espacenet_url(slug, family_id=family)}_")
+        lines.append(f"_Source: EPO OPS - {_espacenet_url(slug, family_id=family)}_")
         return Response(body="\n".join(lines))
 
     def _render_view(self, ref: Ref, view: str) -> Response:
@@ -439,7 +439,7 @@ class PatentHandler(Handler):
             # (description in the early third, claims in the last);
             # for now the pure dump matches what the ingester labels.
             section = "Description" if view == "description" else "Claims"
-            lines = [f"# {slug} — {section}"]
+            lines = [f"# {slug} - {section}"]
             for b in blocks:
                 lines.append(b.text)
                 lines.append("")
@@ -451,7 +451,7 @@ class PatentHandler(Handler):
         raise Unsupported(
             f"unknown view {view!r} for kind='patent'",
             options=list(_SUPPORTED_VIEWS),
-            next=f"see precis-patent-help — try views: {', '.join(_SUPPORTED_VIEWS)}",
+            next=f"see precis-patent-help - try views: {', '.join(_SUPPORTED_VIEWS)}",
         )
 
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
@@ -641,7 +641,7 @@ def _ops_hit_to_search_hit(hit: OpsHit) -> SearchHit:
 
 def _format_biblio(ref: Ref, meta: dict[str, Any]) -> str:
     slug = ref.slug or "?"
-    lines = [f"# {slug} — Bibliographic data", f"_{ref.title}_", ""]
+    lines = [f"# {slug} - Bibliographic data", f"_{ref.title}_", ""]
     pairs: list[tuple[str, str]] = []
     pairs.append(("DOCDB id", slug.upper()))
     if meta.get("publication_date"):

@@ -77,7 +77,7 @@ def handler(hub: Hub) -> _FakeCacheKindAsMath:
 def test_first_call_is_a_miss(handler: _FakeCacheKindAsMath) -> None:
     resp = handler.get(q="population of Ireland")
     assert "the population of ireland answer" in resp.body
-    assert "— Computed by FakeCorp." in resp.body
+    assert "- Computed by FakeCorp." in resp.body
     assert "[cost: ~$0.0020]" in (resp.cost or "")
     assert "cached" not in (resp.cost or "")
     assert handler.fetch_calls == ["population of ireland"]
@@ -89,7 +89,7 @@ def test_second_call_hits_cache(handler: _FakeCacheKindAsMath) -> None:
     # Same body
     assert "the population of ireland answer" in resp2.body
     # Cached marker on cost trailer
-    assert resp2.cost == "[cost: ~$0.0020 — cached]"
+    assert resp2.cost == "[cost: ~$0.0020 - cached]"
     # Upstream still only called once.
     assert handler.fetch_calls == ["population of ireland"]
 
@@ -113,8 +113,8 @@ def test_attribution_renders_on_hit_and_miss(
 ) -> None:
     miss = handler.get(q="x")
     hit = handler.get(q="x")
-    assert "— Computed by FakeCorp." in miss.body
-    assert "— Computed by FakeCorp." in hit.body
+    assert "- Computed by FakeCorp." in miss.body
+    assert "- Computed by FakeCorp." in hit.body
 
 
 # ── input validation ─────────────────────────────────────────────────

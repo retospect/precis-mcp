@@ -141,7 +141,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     io.add_argument(
         "--dry-run",
         action="store_true",
-        help="Don't write — show what would be ingested.",
+        help="Don't write - show what would be ingested.",
     )
 
 
@@ -211,10 +211,10 @@ def run_bundles(args: argparse.Namespace) -> None:
                 parse_bundle(raw, embedding_dim=1024)
                 ok += 1
             except PrecisError as e:
-                print(f"  FAIL  {path}  — {e.cause}", file=sys.stderr)
+                print(f"  FAIL  {path}  - {e.cause}", file=sys.stderr)
                 bad += 1
             except Exception as e:
-                print(f"  FAIL  {path}  — {e}", file=sys.stderr)
+                print(f"  FAIL  {path}  - {e}", file=sys.stderr)
                 bad += 1
         print(f"ingest-bundles: dry-run  ok={ok}  failed={bad}")
         if bad:
@@ -230,12 +230,12 @@ def run_bundles(args: argparse.Namespace) -> None:
             try:
                 result = store.ingest_bundle(path, embedder=embedder)
             except PrecisError as e:
-                print(f"  FAIL  {path.name}  — {e.cause}", file=sys.stderr)
+                print(f"  FAIL  {path.name}  - {e.cause}", file=sys.stderr)
                 failed += 1
                 continue
             except Exception as e:
                 log.exception("unexpected error ingesting %s", path)
-                print(f"  FAIL  {path.name}  — {e}", file=sys.stderr)
+                print(f"  FAIL  {path.name}  - {e}", file=sys.stderr)
                 failed += 1
                 continue
 
@@ -329,18 +329,18 @@ def _ingest_one_kind(
                 rel = str(p.relative_to(root))
             except ValueError:
                 failed += 1
-                print(f"  fail  {p}  — outside root")
+                print(f"  fail  {p}  - outside root")
                 continue
             slug = slug_for(rel)
             if slug is None:
                 failed += 1
-                print(f"  fail  {rel}  — invalid slug for path")
+                print(f"  fail  {rel}  - invalid slug for path")
                 continue
             ref_before = store.get_ref(kind=handler_kind, id=slug)  # type: ignore[attr-defined]
             ref = handler._ensure_ingested(slug, force=force)  # type: ignore[attr-defined]
             if ref is None:
                 failed += 1
-                print(f"  fail  {rel}  — ingest returned None")
+                print(f"  fail  {rel}  - ingest returned None")
                 continue
             if ref_before is None:
                 ingested += 1
@@ -451,7 +451,7 @@ def run_md(args: argparse.Namespace) -> None:
     :func:`run_ingest` with ``--kinds md``.
     """
     print(
-        "ingest-md: deprecated — use `precis jobs ingest --kinds md` instead",
+        "ingest-md: deprecated - use `precis jobs ingest --kinds md` instead",
         file=sys.stderr,
     )
     args.kinds = "md"

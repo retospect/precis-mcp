@@ -294,7 +294,7 @@ class TestRenderToc:
         toc = build_toc(blocks)
         out = render_toc(slug="test2026paper", toc=toc, total_blocks=4)
         # Header
-        assert "# test2026paper — TOC (4 blocks, 2 sections)" in out
+        assert "# test2026paper - TOC (4 blocks, 2 sections)" in out
         # Section markers + ranges + counts
         assert "~0..1" in out
         assert "~2..3" in out

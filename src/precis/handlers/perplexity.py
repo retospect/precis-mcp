@@ -47,7 +47,7 @@ _SONAR_URL = "https://api.perplexity.ai/chat/completions"
 # verbose to defend against silent embedding by downstream agents.
 _PERPLEXITY_ATTRIBUTION_TEMPLATE = (
     "Source: Perplexity AI ({model}). Perplexity is **not** a primary "
-    "source — the numbered [N] citations in the answer link the actual "
+    "source - the numbered [N] citations in the answer link the actual "
     "sources; verify them before citing in publications. Per Perplexity's "
     "Terms of Service: disclose AI use in any public output; Standard/Pro "
     "tiers are restricted to personal / non-commercial use."
@@ -268,10 +268,10 @@ class _PerplexityBase(CacheBackedHandler):
                 f"{heading}\n\n"
                 f"_(no {self.spec.kind} refs yet.)_\n\n"
                 f"Next:\n"
-                f"- `get(kind={self.spec.kind!r}, id='<query>')` — "
+                f"- `get(kind={self.spec.kind!r}, id='<query>')` - "
                 f"run a fresh query (paid API)\n"
                 f"- `put(kind={self.spec.kind!r}, id='<query>', "
-                f"text='<report>', mode='import')` — "
+                f"text='<report>', mode='import')` - "
                 f"register a pre-generated answer at $0\n"
             )
             return Response(body=body)
@@ -279,11 +279,11 @@ class _PerplexityBase(CacheBackedHandler):
         lines: list[str] = [heading, ""]
         for ref in refs:
             source = (ref.meta or {}).get("source") or "fetched"
-            day = ref.updated_at.strftime("%Y-%m-%d") if ref.updated_at else "—"
+            day = ref.updated_at.strftime("%Y-%m-%d") if ref.updated_at else "-"
             title = ref.title
             if len(title) > 80:
                 title = title[:77] + "..."
-            lines.append(f"- `{ref.slug}` — {title}  _({source}, {day})_")
+            lines.append(f"- `{ref.slug}` - {title}  _({source}, {day})_")
         lines.append("")
         lines.append(
             f"_showing {len(refs)} of at most {limit}. "
@@ -299,7 +299,7 @@ class _PerplexityBase(CacheBackedHandler):
         rather than just ``[cost: free]`` — agents can then tell at a
         glance that the body is user-supplied rather than API-cached."""
         if hit and (cache.meta or {}).get("source") == "imported":
-            return "[cost: free — imported]"
+            return "[cost: free - imported]"
         return super()._cost_str(cache, hit=hit)
 
     # ── put: import a pre-generated report as a $0 cache entry ───────
@@ -432,7 +432,7 @@ class WebsearchHandler(_PerplexityBase):
         kind="websearch",
         title="Web search (Perplexity Sonar)",
         description=(
-            "PAID (~$0.001/call): Perplexity Sonar — fast factual web "
+            "PAID (~$0.001/call): Perplexity Sonar - fast factual web "
             "search with inline citations (2–5s). Use for definitions, "
             "current events, quick lookups. Also accepts "
             "put(mode='import') to register a free, web-UI-generated "
@@ -463,7 +463,7 @@ class ThinkHandler(_PerplexityBase):
         kind="think",
         title="Think (Perplexity Sonar Reasoning Pro)",
         description=(
-            "PAID (~$0.005/call): Perplexity Sonar Reasoning Pro — "
+            "PAID (~$0.005/call): Perplexity Sonar Reasoning Pro - "
             "detailed analysis with explicit reasoning (5–30s). Use "
             "for comparisons, nuanced questions, multi-source synthesis. "
             "Also accepts put(mode='import') to register a free, "
@@ -497,7 +497,7 @@ class ResearchHandler(_PerplexityBase):
         title="Deep research (Perplexity Sonar Deep Research)",
         description=(
             "PAID (~$0.50/call, 2–10 MIN): Perplexity Sonar Deep "
-            "Research — multi-step investigation with extensive "
+            "Research - multi-step investigation with extensive "
             "citation. Use only when the question justifies the wait "
             "and spend. Pro subscribers can run the same query free "
             "in the web UI, then put(mode='import') the result here "

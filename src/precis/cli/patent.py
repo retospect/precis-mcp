@@ -48,13 +48,13 @@ def _parse_interval(spec: str) -> int:
     unit = s[-1]
     head = s[:-1]
     if not head.isdigit():
-        raise ValueError(f"invalid interval {spec!r} — expected like '7d', '1h', '1w'")
+        raise ValueError(f"invalid interval {spec!r} - expected like '7d', '1h', '1w'")
     n = int(head)
     if n <= 0:
-        raise ValueError(f"invalid interval {spec!r} — must be positive")
+        raise ValueError(f"invalid interval {spec!r} - must be positive")
     multipliers = {"h": 3600, "d": 86_400, "w": 604_800}
     if unit not in multipliers:
-        raise ValueError(f"invalid interval unit {unit!r} — use 'h', 'd', or 'w'")
+        raise ValueError(f"invalid interval unit {unit!r} - use 'h', 'd', or 'w'")
     return n * multipliers[unit]
 
 
@@ -360,7 +360,7 @@ def run_runner(args: argparse.Namespace) -> None:
         if summary.paused_global:
             gb = summary.fair_use_bytes_before / (1024**3)
             print(
-                f"run-patent-watches: paused — rolling 7d fair-use "
+                f"run-patent-watches: paused - rolling 7d fair-use "
                 f"{gb:.2f} GiB ≥ limit {fair_use_limit_gb:.2f} GiB"
             )
             return
@@ -369,7 +369,7 @@ def run_runner(args: argparse.Namespace) -> None:
             return
         for r in summary.results:
             if r.error is not None:
-                print(f"  fail  {r.watch_name}  — {r.error}")
+                print(f"  fail  {r.watch_name}  - {r.error}")
                 continue
             if r.skipped_dry_run:
                 print(
@@ -456,7 +456,7 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
         if summary.paused_global:
             gb = summary.fair_use_bytes_before / (1024**3)
             print(
-                f"sweep-patent-fulltext: paused — rolling 7d fair-use "
+                f"sweep-patent-fulltext: paused - rolling 7d fair-use "
                 f"{gb:.2f} GiB ≥ limit {fair_use_limit_gb:.2f} GiB"
             )
             return
@@ -465,19 +465,19 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
             return
         for o in summary.outcomes:
             if o.error is not None:
-                print(f"  fail  {o.slug}  — {o.error}")
+                print(f"  fail  {o.slug}  - {o.error}")
                 continue
             if o.skipped_dry_run:
                 status = "give up" if o.given_up else "retry"
                 print(f"  dry   {o.slug}  (would {status})")
                 continue
             if o.given_up:
-                print(f"  gave  {o.slug}  — six-month window exceeded")
+                print(f"  gave  {o.slug}  - six-month window exceeded")
                 continue
             if o.succeeded:
-                print(f"  ok    {o.slug}  — +{o.blocks_added} blocks")
+                print(f"  ok    {o.slug}  - +{o.blocks_added} blocks")
                 continue
-            print(f"  wait  {o.slug}  — still 404; retry rescheduled")
+            print(f"  wait  {o.slug}  - still 404; retry rescheduled")
     finally:
         store.close()
 

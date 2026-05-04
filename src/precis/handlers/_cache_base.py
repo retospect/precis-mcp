@@ -220,7 +220,7 @@ class CacheBackedHandler(Handler):
                             if recovered is None:
                                 raise BadInput(
                                     f"refresh by slug not supported on "
-                                    f"kind={self.spec.kind!r} — pass q= "
+                                    f"kind={self.spec.kind!r} - pass q= "
                                     f"with the original query",
                                     next=(
                                         f"get(kind={self.spec.kind!r}, "
@@ -452,7 +452,7 @@ class CacheBackedHandler(Handler):
         lines.append("")
         lines.append(body_text)
         lines.append("")
-        lines.append(f"— {self.attribution}")
+        lines.append(f"- {self.attribution}")
 
         cost = self._cost_str(cache, hit=hit)
         return Response(body="\n".join(lines), cost=cost)
@@ -466,7 +466,7 @@ class CacheBackedHandler(Handler):
         """
         if cache.cost_usd is None or cache.cost_usd == 0:
             return "[cost: free]"
-        suffix = " — cached" if hit else ""
+        suffix = " - cached" if hit else ""
         return f"[cost: ~${cache.cost_usd:.4f}{suffix}]"
 
     # ── /recent listing — shared across cache-backed kinds ─────────────
@@ -501,11 +501,11 @@ class CacheBackedHandler(Handler):
 
         lines: list[str] = [heading, ""]
         for ref in refs:
-            day = ref.updated_at.strftime("%Y-%m-%d") if ref.updated_at else "—"
+            day = ref.updated_at.strftime("%Y-%m-%d") if ref.updated_at else "-"
             title = ref.title
             if len(title) > 80:
                 title = title[:77] + "..."
-            lines.append(f"- `{ref.slug}` — {title}  _({day})_")
+            lines.append(f"- `{ref.slug}` - {title}  _({day})_")
         lines.append("")
         lines.append(
             f"_showing {len(refs)} of at most {limit}. "

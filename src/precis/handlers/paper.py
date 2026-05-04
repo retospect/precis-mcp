@@ -413,7 +413,7 @@ class PaperHandler(Handler):
         slug, chunk_spec, path_view = _parse_paper_id(raw_id)
         if chunk_spec is not None or path_view is not None:
             raise BadInput(
-                "paper ops operate at ref level — drop the chunk "
+                "paper ops operate at ref level - drop the chunk "
                 "selector / path view from id=",
                 next=f"tag(kind='paper', id={slug!r}, ...) or link(kind='paper', id={slug!r}, ...)",
             )
@@ -571,7 +571,7 @@ class PaperHandler(Handler):
                     [
                         (
                             f"get(kind='paper', id='{slug}', view='toc')",
-                            "hierarchical TOC — find sections to read",
+                            "hierarchical TOC - find sections to read",
                         ),
                         (
                             f"get(kind='paper', id='{slug}~0..5')",
@@ -595,7 +595,7 @@ class PaperHandler(Handler):
             cleaned = _clean_inline_text(_strip_jats(str(abstract)))
             slug = ref.slug or "???"
             title = _clean_inline_text(ref.title)
-            body = f"# {slug} — abstract\n_{title}_\n\n{cleaned}"
+            body = f"# {slug} - abstract\n_{title}_\n\n{cleaned}"
             body += render_next_section(
                 [
                     (
@@ -627,7 +627,7 @@ class PaperHandler(Handler):
                 f"figure view {view!r} not implemented for kind='paper'",
                 options=list(_SUPPORTED_VIEWS),
                 next=(
-                    "figure binaries aren't served — figures live as legend "
+                    "figure binaries aren't served - figures live as legend "
                     "blocks inside the body. Find the figure number via "
                     "view='toc', then read the legend block "
                     "(e.g. 'Figure 3. …' on a ~N block). See the "
@@ -650,7 +650,7 @@ class PaperHandler(Handler):
                 options=list(_SUPPORTED_VIEWS),
                 next=(
                     "view='fig/<N>' is documented in precis-paper-help as "
-                    "reserved — figure-binary serving isn't wired yet.  "
+                    "reserved - figure-binary serving isn't wired yet.  "
                     "Until then, find the figure number via view='toc' "
                     "and read the legend block on the matching ~N "
                     "(e.g. 'Figure 3. …')."
@@ -659,7 +659,7 @@ class PaperHandler(Handler):
         raise Unsupported(
             f"unknown view {view!r} for kind='paper'",
             options=list(_SUPPORTED_VIEWS),
-            next=f"see precis-paper-help — try views: {', '.join(_SUPPORTED_VIEWS)}",
+            next=f"see precis-paper-help - try views: {', '.join(_SUPPORTED_VIEWS)}",
         )
 
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
@@ -727,13 +727,13 @@ class PaperHandler(Handler):
                 (
                     f"search(kind='paper', q='your query', scope='{ref.slug}')",
                     "search inside this paper "
-                    "(fused lexical+embedding) — usually beats paging",
+                    "(fused lexical+embedding) - usually beats paging",
                 )
             )
             nav.append(
                 (
                     f"get(kind='paper', id='{ref.slug}', view='toc')",
-                    "TOC — structural map of the paper",
+                    "TOC - structural map of the paper",
                 )
             )
 
@@ -818,7 +818,7 @@ class PaperHandler(Handler):
         if not refs:
             return Response(
                 body=(
-                    "no papers ingested yet — "
+                    "no papers ingested yet - "
                     "use `precis jobs ingest-bundles <dir>` to populate"
                 )
             )
@@ -948,10 +948,10 @@ def _parse_paper_id(
     # the id=, papers list via the bare get". (Critic MINOR #7.)
     if isinstance(raw, str) and raw.startswith("/"):
         raise BadInput(
-            f"paper has no list view {raw!r} — list-view paths are "
+            f"paper has no list view {raw!r} - list-view paths are "
             "specific to numeric kinds (memory/todo/fc/...)",
             next=(
-                "papers don't accept '/recent' — use the bare list shape: "
+                "papers don't accept '/recent' - use the bare list shape: "
                 "get(kind='paper')"
             ),
         )
@@ -977,7 +977,7 @@ def _parse_paper_id(
             raise BadInput(
                 f"paper slug contains '_' (illegal): {raw!r}",
                 next=(
-                    "paper slugs are lowercase a-z + digits + '-' only — "
+                    "paper slugs are lowercase a-z + digits + '-' only - "
                     "no underscores. Most slugs look like 'wang2020state'"
                 ),
             )
@@ -1037,7 +1037,7 @@ def _parse_paper_id(
                     f"figure view path {raw!r} not implemented",
                     options=list(_SUPPORTED_VIEWS),
                     next=(
-                        "figure binaries aren't served — figures live as "
+                        "figure binaries aren't served - figures live as "
                         "legend blocks inside the body. Use view='toc' to "
                         "locate the figure number, then read the legend "
                         "block. See 'Figures' in precis-paper-help."
@@ -1377,7 +1377,7 @@ def _render_block_body(slug: str, pos: int, text: str) -> str:
 
     def _replace(_m: re.Match[str]) -> str:
         return (
-            f"[figure: {slug}~{pos} — image not served; "
+            f"[figure: {slug}~{pos} - image not served; "
             f"caption on adjacent block (~{pos + 1})]"
         )
 

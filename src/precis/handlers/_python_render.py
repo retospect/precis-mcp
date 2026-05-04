@@ -29,12 +29,12 @@ def render_index(roots: dict[str, Path]) -> str:
     """
     if not roots:
         return (
-            "# python — no repos configured\n\n"
+            "# python - no repos configured\n\n"
             "Set `PRECIS_PYTHON_ROOTS=alias:/abs/path,alias2:/abs/path` to "
             "register one or more Python repos.\n"
         )
 
-    lines = [f"# python — {len(roots)} repo{'s' if len(roots) != 1 else ''}\n"]
+    lines = [f"# python - {len(roots)} repo{'s' if len(roots) != 1 else ''}\n"]
     for alias, root in roots.items():
         lines.append(f"  {alias:<24} {root}")
     lines.append("")
@@ -60,7 +60,7 @@ def render_repo_overview(alias: str, idx: RepoIndex) -> str:
     for qn in idx.modules:
         top_packages[qn.split(".", 1)[0]] += 1
 
-    lines = [f"# {alias} — Python repo overview\n"]
+    lines = [f"# {alias} - Python repo overview\n"]
     lines.append(f"  Root:     {idx.root}")
     lines.append(f"  Modules:  {n_modules}")
     lines.append(f"  Symbols:  {n_symbols}")
@@ -104,7 +104,7 @@ def render_toc(alias: str, idx: RepoIndex) -> str:
     packages = sum(1 for m in idx.modules.values() if m.file.endswith("__init__.py"))
 
     lines = [
-        f"# {alias} — TOC ({n_modules} module{'s' if n_modules != 1 else ''}, "
+        f"# {alias} - TOC ({n_modules} module{'s' if n_modules != 1 else ''}, "
         f"{packages} package{'s' if packages != 1 else ''})\n"
     ]
 
@@ -148,7 +148,7 @@ def _counts_for_file(mod: ModuleIndex) -> str:
 
 def render_file_outline(alias: str, mod: ModuleIndex) -> str:
     """Outline of one file: imports, top-level functions, classes + methods."""
-    lines = [f"# {mod.file} — outline\n"]
+    lines = [f"# {mod.file} - outline\n"]
 
     if mod.parse_error:
         lines.append(f"  Parse error: {mod.parse_error}")

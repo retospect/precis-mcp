@@ -149,7 +149,7 @@ class Store(
         """
         v = self.get_setting("embedding_dim")
         if v is None:
-            raise RuntimeError("embedding_dim setting missing — did migrations run?")
+            raise RuntimeError("embedding_dim setting missing - did migrations run?")
         return int(v)
 
     # -- corpus --------------------------------------------------------------
@@ -207,12 +207,12 @@ class Store(
         is_numeric = row[0]
         if is_numeric and slug is not None:
             raise BadInput(
-                f"kind={kind!r} is numeric — slug must be None",
+                f"kind={kind!r} is numeric - slug must be None",
                 next=f"insert_ref(kind={kind!r}, slug=None, ...)",
             )
         if not is_numeric and slug is None:
             raise BadInput(
-                f"kind={kind!r} is slug-addressed — slug is required",
+                f"kind={kind!r} is slug-addressed - slug is required",
                 next=f"insert_ref(kind={kind!r}, slug='...', ...)",
             )
 

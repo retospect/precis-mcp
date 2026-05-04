@@ -250,7 +250,7 @@ def _list_languages(video_id: str) -> Response:
         mark = "auto" if t.is_generated else "human"
         lines.append(f"  {t.language_code:<6} {t.language:<30} [{mark}]")
     lines.append("")
-    lines.append(f"— {_YT_BASE_ATTRIBUTION}")
+    lines.append(f"- {_YT_BASE_ATTRIBUTION}")
     lines.append(f"  Watch: https://www.youtube.com/watch?v={video_id}")
     body = "\n".join(lines)
     # Canonical Next: block — c5 unified-trailer patch. Previously

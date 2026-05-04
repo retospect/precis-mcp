@@ -169,7 +169,7 @@ def parse_bundle(
     title = _sanitize(str(header.get("title") or "")).strip()
     if not title:
         raise BadInput(
-            "bundle has empty title — refusing to ingest",
+            "bundle has empty title - refusing to ingest",
             next="rerun acatome-extract with --rescue or fix the source PDF",
         )
 

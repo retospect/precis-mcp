@@ -55,7 +55,7 @@ class OracleHandler(Handler):
         kind="oracle",
         title="Oracle",
         description=(
-            "Authoritative reference node — slug-addressed, curated "
+            "Authoritative reference node - slug-addressed, curated "
             "prompt or rubric. Read-only body; use tag / link to "
             "cross-link to papers, memory, etc."
         ),
@@ -303,7 +303,7 @@ class OracleHandler(Handler):
         block = blocks[idx]
         slug = ref.slug or "???"
         title = _entry_title(block) or f"entry {block.pos}"
-        body = f"# oracle {slug}~{block.pos}\n_{ref.title} — {title}_\n\n{block.text}"
+        body = f"# oracle {slug}~{block.pos}\n_{ref.title} - {title}_\n\n{block.text}"
         body += render_next_section(
             [
                 (
@@ -344,7 +344,7 @@ class OracleHandler(Handler):
                 next=(f"get(kind='oracle', id='{slug}/index') to list entry positions"),
             )
         title = _entry_title(block) or f"entry {pos}"
-        body = f"# oracle {slug}~{pos}\n_{ref.title} — {title}_\n\n{block.text}"
+        body = f"# oracle {slug}~{pos}\n_{ref.title} - {title}_\n\n{block.text}"
         # Prev/next affordances are cheap and obvious.
         nav: list[tuple[str, str]] = []
         if pos > 0 and any(b.pos == pos - 1 for b in blocks):
@@ -395,7 +395,7 @@ class OracleHandler(Handler):
             preview = _first_line(block.text)
             handle = f"{slug}~{block.pos}"
             if preview and preview != title:
-                lines.append(f"- **{block.pos}. {title}** — {preview}  `{handle}`")
+                lines.append(f"- **{block.pos}. {title}** - {preview}  `{handle}`")
             else:
                 lines.append(f"- **{block.pos}. {title}**  `{handle}`")
         body = "\n".join(lines)

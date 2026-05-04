@@ -37,7 +37,7 @@ class QuestHandler(Handler):
         kind="quest",
         title="Quest",
         description=(
-            "Request queue item — slug-addressed work unit. Status "
+            "Request queue item - slug-addressed work unit. Status "
             "tracked via STATUS:open|doing|blocked|done|won't-do."
         ),
         supports_get=True,

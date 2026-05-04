@@ -169,7 +169,7 @@ def run_one_pass(
     if summary.fair_use_bytes_before >= summary.fair_use_limit_bytes:
         summary.paused_global = True
         log.warning(
-            "patent_watch: paused — rolling 7d fair-use %.2f GiB ≥ limit %.2f GiB",
+            "patent_watch: paused - rolling 7d fair-use %.2f GiB ≥ limit %.2f GiB",
             summary.fair_use_bytes_before / (1024**3),
             fair_use_limit_gb,
         )
@@ -235,7 +235,7 @@ def _run_one_watch(
     if dry_run:
         result.skipped_dry_run = True
         log.info(
-            "patent_watch[%s]: dry-run — %d new (auto_get=%s)",
+            "patent_watch[%s]: dry-run - %d new (auto_get=%s)",
             watch.name,
             len(new_pn),
             watch.auto_get,
@@ -352,7 +352,7 @@ def _auto_get_with_overflow(
         rolling = compute_rolling_fair_use_bytes(store)
         if rolling >= fair_use_limit_bytes:
             log.warning(
-                "patent_watch[%s]: pausing mid-pass — rolling %.2f GiB hit",
+                "patent_watch[%s]: pausing mid-pass - rolling %.2f GiB hit",
                 watch_name,
                 rolling / (1024**3),
             )

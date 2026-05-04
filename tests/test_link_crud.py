@@ -139,7 +139,7 @@ class TestParseLinkTarget:
         )
 
     def test_numeric_kind_rejects_slug_id(self, store: Store) -> None:
-        with pytest.raises(BadInput, match="numeric — identifier must be an integer"):
+        with pytest.raises(BadInput, match="numeric - identifier must be an integer"):
             parse_link_target("memory:not-an-int", store=store)
 
     def test_missing_ref_raises_notfound(self, store: Store) -> None:

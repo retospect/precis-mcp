@@ -616,7 +616,7 @@ def render_dry_run_header(
     if not span_str:
         span_str = "(none)"
     lines = [
-        f"DRY RUN — would edit {region_label}",
+        f"DRY RUN - would edit {region_label}",
         f"spans:        {n_spans}   ({span_str})  match={match_policy!r}",
     ]
     if extras:
@@ -643,7 +643,7 @@ def render_dry_run_full(
     pointing the caller at ``view='raw'`` to see the full result.
     """
     if not edited_spans:
-        return "(no edited spans — use view='raw' to see the post-edit file)"
+        return "(no edited spans - use view='raw' to see the post-edit file)"
     lines = post_buffer.splitlines()
     out: list[str] = []
     for i, (start, end) in enumerate(edited_spans):

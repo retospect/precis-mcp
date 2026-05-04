@@ -549,7 +549,7 @@ class PlaintextHandler(Handler):
             # rejects for file kinds — feeding the CRITICAL-C
             # hint triangle (MCP critic 2026-05-02).
             raise BadInput(
-                "mode='replace' requires a block selector — "
+                "mode='replace' requires a block selector - "
                 "id='slug~BLOCK' (or id='slug~L42-58' for a line range)",
                 next=(
                     f"get(kind='{self._KIND}', id='{slug}/toc') to list "
@@ -620,7 +620,7 @@ class PlaintextHandler(Handler):
     def _put_delete(self, slug: str, sel: _BlockSel | None) -> Response:
         if sel is None:
             raise BadInput(
-                "delete requires a block selector — id='slug~BLOCK'",
+                "delete requires a block selector - id='slug~BLOCK'",
                 next=f"delete(kind='{self._KIND}', id='{slug}~BLOCK')",
             )
         path = self._resolve_path(slug, must_exist=True)
@@ -848,7 +848,7 @@ class PlaintextHandler(Handler):
             )
         else:
             diff = format_unified_diff(pre, post, file_label=slug).rstrip("\n")
-            body = diff or "(no diff — pre and post are identical)"
+            body = diff or "(no diff - pre and post are identical)"
         return Response(body="\n".join([*header, "", body]))
 
     # ── seven-verb surface ─────────────────────────────────────────
@@ -936,8 +936,8 @@ class PlaintextHandler(Handler):
             if confirm != expected_confirm:
                 raise BadInput(
                     (
-                        f"delete on {self._KIND} requires a block selector — "
-                        f"id='{slug}~SLUG' — or confirm={expected_confirm!r} "
+                        f"delete on {self._KIND} requires a block selector - "
+                        f"id='{slug}~SLUG' - or confirm={expected_confirm!r} "
                         "to remove the whole file"
                     ),
                     next=(
@@ -956,7 +956,7 @@ class PlaintextHandler(Handler):
         if sel is not None or path_view is not None:
             raise BadInput(
                 (
-                    f"{self._KIND} tag/link ops operate at file level — drop the "
+                    f"{self._KIND} tag/link ops operate at file level - drop the "
                     "block selector / path view from id="
                 ),
                 next=f"tag(kind='{self._KIND}', id={slug!r}, add=[...])",
@@ -1265,7 +1265,7 @@ class PlaintextHandler(Handler):
                     )
                     if len(prefix_hits) > 1:
                         msg += (
-                            f" — prefix {sel.value!r} matches "
+                            f" - prefix {sel.value!r} matches "
                             f"{len(prefix_hits)} blocks; disambiguate"
                         )
                     raise NotFound(

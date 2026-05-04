@@ -280,7 +280,7 @@ def validate_strict_cql(cql: str) -> str:
         raise BadInput(
             f"watch CQL must be explicit, not a bare keyword: {cql!r}",
             next=(
-                "watches run unattended for years — meaning shouldn't "
+                "watches run unattended for years - meaning shouldn't "
                 "drift if auto-promote rules change. Use explicit CQL "
                 "fields, e.g. "
                 '\'ti="photocatalysis" or ab="photocatalysis"\', '

@@ -102,7 +102,7 @@ class Migrator:
                         f"checksum mismatch for already-applied migration "
                         f"{f.version!r}: file has {f.checksum[:12]}, "
                         f"DB has {applied[f.version][:12]}. "
-                        f"Refusing to run — sealed migrations must not be edited."
+                        f"Refusing to run - sealed migrations must not be edited."
                     )
 
             for f in files:

@@ -184,7 +184,7 @@ def run_fulltext_sweep(
     if summary.fair_use_bytes_before >= summary.fair_use_limit_bytes:
         summary.paused_global = True
         log.warning(
-            "patent_fulltext_sweep: paused — rolling 7d fair-use "
+            "patent_fulltext_sweep: paused - rolling 7d fair-use "
             "%.2f GiB ≥ limit %.2f GiB",
             summary.fair_use_bytes_before / (1024**3),
             fair_use_limit_gb,
@@ -245,7 +245,7 @@ def _retry_one_ref(
             outcome.skipped_dry_run = True
             outcome.given_up = True
             log.info(
-                "patent_fulltext_sweep[%s]: dry-run — would give up (%s)",
+                "patent_fulltext_sweep[%s]: dry-run - would give up (%s)",
                 slug,
                 pub_date_raw,
             )
@@ -253,13 +253,13 @@ def _retry_one_ref(
         _mark_unavailable(store, ref_id=ref_id)
         outcome.given_up = True
         log.info(
-            "patent_fulltext_sweep[%s]: gave up — published %s", slug, pub_date_raw
+            "patent_fulltext_sweep[%s]: gave up - published %s", slug, pub_date_raw
         )
         return outcome
 
     if dry_run:
         outcome.skipped_dry_run = True
-        log.info("patent_fulltext_sweep[%s]: dry-run — would retry", slug)
+        log.info("patent_fulltext_sweep[%s]: dry-run - would retry", slug)
         return outcome
 
     # Retry the two full-text endpoints.
@@ -390,7 +390,7 @@ def _retry_one_ref(
 
     outcome.blocks_added = len(inserts)
     log.info(
-        "patent_fulltext_sweep[%s]: %s — +%d blocks",
+        "patent_fulltext_sweep[%s]: %s - +%d blocks",
         slug,
         "done" if outcome.succeeded else "partial",
         outcome.blocks_added,

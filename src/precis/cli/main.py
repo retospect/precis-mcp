@@ -84,7 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="precis",
-        description="precis-mcp v2 — paper, document, state, and tool access.",
+        description="precis-mcp v2 - paper, document, state, and tool access.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve", help="Run the MCP server (stdio).")

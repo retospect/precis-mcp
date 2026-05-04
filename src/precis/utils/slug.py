@@ -144,7 +144,7 @@ def mint_slug(
         if not existing(candidate):
             return candidate
     raise RuntimeError(
-        f"slug minting exceeded 1000 collisions for base={base!r} — "
+        f"slug minting exceeded 1000 collisions for base={base!r} - "
         "is the existence predicate buggy?"
     )
 

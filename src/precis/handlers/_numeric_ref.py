@@ -101,7 +101,7 @@ class NumericRefHandler(Handler):
                 f"{self._sense()} id={ref_id} was soft-deleted "
                 "(row retained for audit; no MCP undo)",
                 next=(
-                    "post-mortem only — soft-deleted refs are "
+                    "post-mortem only - soft-deleted refs are "
                     "recoverable at the SQL layer by setting "
                     "deleted_at=NULL on the row"
                 ),
@@ -545,7 +545,7 @@ class NumericRefHandler(Handler):
         except (ValueError, TypeError):
             raise BadInput(
                 f"{cls._sense()} id must be an integer, got {id!r}",
-                next=f"{cls._sense()} ids are integers — see search(kind={cls.kind!r}, q='...')",
+                next=f"{cls._sense()} ids are integers - see search(kind={cls.kind!r}, q='...')",
             ) from None
 
     # ── rendering hooks (subclasses may override) ─────────────────
@@ -566,7 +566,7 @@ class NumericRefHandler(Handler):
         out_links = self.store.links_for(ref.id, direction="out")
         in_links = self.store.links_for(ref.id, direction="in")
 
-        lines = [f"# {self._sense()} {ref.id} — links"]
+        lines = [f"# {self._sense()} {ref.id} - links"]
         if not out_links and not in_links:
             lines.append("")
             lines.append("(no links)")

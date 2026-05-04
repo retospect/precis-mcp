@@ -241,7 +241,7 @@ class TestViews:
         # italics, and a Next: trailer so the caller knows which paper
         # they're reading and where to drill next. (MCP critic NIT.)
         assert "A long-form abstract here." in resp.body
-        assert resp.body.startswith("# wang2020state — abstract")
+        assert resp.body.startswith("# wang2020state - abstract")
         assert "Next:" in resp.body
 
     def test_abstract_missing(self, store: Store, handler: PaperHandler) -> None:

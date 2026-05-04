@@ -496,7 +496,7 @@ class PrecisRuntime:
                     next=(
                         "the listed kinds opt into the merge via "
                         "supports_search_hits; the others keep their "
-                        "single-kind search() contract — call them one at a time"
+                        "single-kind search() contract - call them one at a time"
                     ),
                 )
         # Preserve caller order (first-occurrence) so the output
@@ -524,7 +524,7 @@ class PrecisRuntime:
             raise BadInput(
                 "cross-kind search requires q=",
                 next=(
-                    f"search(kind={kind!r}, q='your query') — cross-kind merge "
+                    f"search(kind={kind!r}, q='your query') - cross-kind merge "
                     "fans out via search_hits, which needs a non-empty query"
                 ),
             )

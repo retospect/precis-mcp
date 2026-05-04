@@ -56,7 +56,7 @@ class SkillHandler(Handler):
         kind="skill",
         title="Skill",
         description=(
-            "Agent skill — markdown documentation served from the "
+            "Agent skill - markdown documentation served from the "
             "package data dir. Read-only; ships with code."
         ),
         supports_get=True,
@@ -283,7 +283,7 @@ class SkillHandler(Handler):
         if hidden_slugs:
             lines.append("")
             lines.append(
-                f"_(+ {len(hidden_slugs)} non-active skills hidden — "
+                f"_(+ {len(hidden_slugs)} non-active skills hidden - "
                 "documenting kinds not wired in this build, or marked "
                 "status: planned. Reach them by exact slug if you need "
                 "to.)_"
@@ -324,7 +324,7 @@ class SkillHandler(Handler):
         lines = [
             "# precis-help",
             "",
-            "What this server can do **right now** — active kinds",
+            "What this server can do **right now** - active kinds",
             "and supported verbs, generated from the live hub.",
             "",
         ]
@@ -665,7 +665,7 @@ def _availability_gap(slug: str, *, hub: Any) -> str | None:
     status = fm.get("status", "active").lower()
     if status in ("planned", "aspirational"):
         return (
-            f"this skill is marked status: {status} — its examples "
+            f"this skill is marked status: {status} - its examples "
             "describe a planned API, not the live runtime. Treat as "
             "design notes, not as recipes."
         )
@@ -675,7 +675,7 @@ def _availability_gap(slug: str, *, hub: Any) -> str | None:
             if not _hub_has_kind(hub, kind):
                 return (
                     f"this skill documents kind={kind!r} which is **not "
-                    "wired** in this build — its examples will return "
+                    "wired** in this build - its examples will return "
                     "[error:NotFound] unknown kind."
                 )
 

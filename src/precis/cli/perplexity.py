@@ -120,18 +120,18 @@ def run(args: argparse.Namespace) -> None:
                 text = p.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
                 failed += 1
-                print(f"  fail  {rel}  — read error: {exc}", file=sys.stderr)
+                print(f"  fail  {rel}  - read error: {exc}", file=sys.stderr)
                 continue
             if not text.strip():
                 failed += 1
-                print(f"  fail  {rel}  — empty file", file=sys.stderr)
+                print(f"  fail  {rel}  - empty file", file=sys.stderr)
                 continue
             query = _derive_query(p, strategy=args.query_from, base=base)
             try:
                 handler.put(id=query, text=text, mode="import")
             except Exception as exc:
                 failed += 1
-                print(f"  fail  {rel}  — {exc}", file=sys.stderr)
+                print(f"  fail  {rel}  - {exc}", file=sys.stderr)
                 continue
             imported += 1
             print(f"  ok    {rel}  -> {query!r}")

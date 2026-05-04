@@ -50,7 +50,7 @@ _ToolReturn = Any  # documents runtime: str on success, CallToolResult on error
 _TOOL_KW: dict[str, Any] = {"structured_output": False}
 
 _INSTRUCTIONS = (
-    "precis-mcp v2 — seven-verb agent tool surface.\n\n"
+    "precis-mcp v2 - seven-verb agent tool surface.\n\n"
     "Verbs: get, search, put, edit, delete, tag, link.  Discriminator: kind=.\n"
     "Read the `precis-overview` skill (get(kind='skill', id='precis-overview'))\n"
     "for the full mental model: kind topology, addressing, views, modes,\n"
@@ -148,7 +148,7 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
             "Editable sandbox under PRECIS_ROOT is empty. Create a file with\n"
             "  put(kind='markdown'|'plaintext'|'tex', id='<slug>',\n"
             "      text='...', mode='create')\n"
-            "Everything here carries the `workspace` tag — scope search with:\n"
+            "Everything here carries the `workspace` tag - scope search with:\n"
             "  search(q='<keyword>', tags=['workspace'])\n\n"
         )
     else:
@@ -157,7 +157,7 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
         preamble = (
             f"Editable sandbox under PRECIS_ROOT ({summary}). List with:\n"
             f"{by_kind}\n"
-            "Everything here carries the `workspace` tag — scope search with:\n"
+            "Everything here carries the `workspace` tag - scope search with:\n"
             "  search(q='<keyword>', tags=['workspace'])\n\n"
         )
     return preamble + core
@@ -169,7 +169,7 @@ _runtime: PrecisRuntime | None = None
 def _rt() -> PrecisRuntime:
     if _runtime is None:
         raise RuntimeError(
-            "precis runtime not initialised — call _init_runtime() first"
+            "precis runtime not initialised - call _init_runtime() first"
         )
     return _runtime
 
