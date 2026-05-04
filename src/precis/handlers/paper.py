@@ -823,7 +823,7 @@ class PaperHandler(Handler):
 # selector; the rest of the string is parsed as a path of `view/sub`
 # segments.
 _SLUG_RE = re.compile(r"^([a-z0-9][a-z0-9\-]*)(.*)$")
-_RANGE_RE = re.compile(r"^(\d+)\.\.(\d+)$")
+_RANGE_RE = re.compile(r"^(\d+)(?:\.\.|-)(\d+)$")
 _CHUNK_RE = re.compile(r"^(\d+)$")
 
 # A DOI-form paper id. DOIs start with ``10.<registrant>/<suffix>`` per

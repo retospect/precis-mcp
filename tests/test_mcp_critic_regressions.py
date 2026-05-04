@@ -265,6 +265,47 @@ def test_view_kwarg_aliases_to_bibtex() -> None:
     assert _normalise_view(None) is None
 
 
+def test_chunk_range_accepts_dash_form() -> None:
+    """``slug~N-M`` is accepted as a synonym for ``slug~N..M``.
+
+    Workers reach for the dash form (``~20-30``) as the obvious
+    range syntax. Until 2026-05-04 this hit ``BadInput: unparseable
+    chunk selector after ~: '20-30'``. The handler still parses
+    ``~N..M`` canonically; the dash is just an accepted variant.
+    """
+    from precis.handlers.paper import _RANGE_RE
+
+    assert _RANGE_RE.match("20..30") is not None
+    m = _RANGE_RE.match("20-30")
+    assert m is not None
+    assert (int(m.group(1)), int(m.group(2))) == (20, 30)
+    # Single number still parsed by _CHUNK_RE, not _RANGE_RE.
+    assert _RANGE_RE.match("20") is None
+    # Trailing garbage still rejected.
+    assert _RANGE_RE.match("20-30-40") is None
+
+
+def test_edit_op_error_uses_external_mode_name() -> None:
+    """``where=`` validation echoes ``mode='find-replace'``, not
+    internal ``op='edit'``.
+
+    Pre-fix, the error said ``got mode='edit'``, which made 7B
+    callers retry with literal ``mode='edit'`` and hit
+    ``unknown edit mode 'edit'`` from the handler dispatcher —
+    a self-perpetuating error loop.
+    """
+    import pytest
+
+    from precis.errors import BadInput
+    from precis.utils.edit_resolve import EditOp
+
+    with pytest.raises(BadInput) as exc_info:
+        EditOp(op="edit", find="x", text="y", where="before")
+    msg = str(exc_info.value)
+    assert "find-replace" in msg
+    assert "got mode='edit'" not in msg
+
+
 def test_view_text_body_full_alias_to_default() -> None:
     """``view='text'`` (and 'body', 'full') is a no-op — same as no view.
 

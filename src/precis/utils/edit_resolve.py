@@ -119,14 +119,26 @@ class EditOp:
     region_label: str = ""
     base_line: int = 1
 
+    @property
+    def _user_mode(self) -> str:
+        """External mode name for error messages.
+
+        Internally ``op='edit'`` is the find-replace operation, but the
+        user-facing surface advertises it as ``mode='find-replace'``.
+        Echoing 'edit' confuses callers who never wrote that string —
+        7B models then retry with literal ``mode='edit'`` and hit
+        ``unknown edit mode 'edit'`` from the handler dispatcher.
+        """
+        return "find-replace" if self.op == "edit" else self.op
+
     def __post_init__(self) -> None:
         # We're frozen so we have to validate via object.__setattr__ -
         # but we don't actually mutate, just check.
         if self.op not in ("edit", "insert"):
             raise BadInput(
                 f"unknown edit op {self.op!r}",
-                options=["edit", "insert"],
-                next="mode='edit' or mode='insert'",
+                options=["find-replace", "insert"],
+                next="mode='find-replace' or mode='insert'",
             )
         if not self.find:
             raise BadInput(
@@ -167,10 +179,11 @@ class EditOp:
                     "(would insert at every occurrence)",
                     next="use match='unique' (default) or match='nth' with nth=N",
                 )
-        else:  # op == "edit"
+        else:  # op == "edit"  (user-facing: mode='find-replace')
             if self.where is not None:
                 raise BadInput(
-                    f"where= is only valid for mode='insert' (got mode={self.op!r})",
+                    f"where= is only valid for mode='insert' "
+                    f"(got mode={self._user_mode!r})",
                     next="drop where=",
                 )
 
