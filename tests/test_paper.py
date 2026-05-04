@@ -397,6 +397,38 @@ class TestChunks:
         assert "next chunk" in resp.body  # matches "next chunk" or "next chunk range"
         assert "TOC of this range" in resp.body
 
+    def test_single_chunk_promotes_search_toc_and_range(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Single-block reads (the typical landing from a search hit)
+        must NOT advertise ``next chunk: ~N+1`` as the primary
+        follow-up.
+
+        Pre-fix, the trailer's first hint was ``next chunk: ~N+1``,
+        which trained a linear ~N → ~N+1 → ~N+2 paging scan. Observed
+        in the dopamine-modulation runner on 2026-05-04: the worker
+        read gerfen2011~13 through ~21 across ~10 LLM turns
+        (~3 min/turn = 30 min wall-clock) when a single
+        ``search(scope=...)`` or ``view='toc'`` would have finished
+        in one turn.
+
+        Post-fix, single-block trailers lead with:
+          1. in-paper ``search(scope=...)`` — fused lexical+embedding
+          2. ``view='toc'`` — structural map
+          3. forward range (``~N+1..N+5``), NOT single ``~N+1``
+        """
+        _seed_paper(store, blocks=[f"para {i}" for i in range(20)])
+        resp = handler.get(id="wang2020state~3")
+        assert "Next:" in resp.body
+        # Promoted: in-paper semantic search.
+        assert "search(kind='paper', q='your query', scope='wang2020state')" in resp.body
+        # Promoted: TOC.
+        assert "view='toc'" in resp.body
+        # Forward read is a 5-block range, not bare ~4.
+        assert "~4..8" in resp.body
+        # And the bare-block hint is NOT the primary follow-up.
+        assert "next chunk: get(kind='paper', id='wang2020state~4')" not in resp.body
+
     def test_chunk_out_of_range_404s(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, blocks=["a"])
         with pytest.raises(NotFound):

@@ -697,16 +697,64 @@ class PaperHandler(Handler):
         # wrong call shape — agents who saw a "range" hint then
         # extrapolated ``~5..5`` for unrelated singletons later. The
         # canonical single-block form is ``~N``. (Critic MINOR m6.)
+        #
+        # Single-block reads also widen the forward suggestion into a
+        # range so a "next chunk" hint doesn't train a linear ~N → ~N+1
+        # → ~N+2 sequential scan (observed pattern: agent reading
+        # gerfen2011~13 through ~21 one-by-one across ~10 LLM turns
+        # @ ~3min/turn when a single ~13..21 range read would have
+        # finished in one).  The promoted "navigate via TOC" hint
+        # comes first in single-block mode, since paging-by-block is
+        # almost never the right strategy when scanning a paper.
         total = self.store.count_blocks(ref.id)
         nav: list[tuple[str, str]] = []
+        single_block = lo == hi
+
+        # In single-block mode, lead with the two structural reads
+        # that are almost always more useful than paging linearly:
+        #
+        # 1. In-paper semantic search — when looking for a specific
+        #    quote/section, scoped search beats reading sequentially.
+        #    The same fused lexical+embedding index used by
+        #    cross-paper search applies here, just narrowed to one
+        #    paper.
+        # 2. TOC — structural map of the whole paper, ~50 lines.
+        #
+        # In range mode these stay available but at lower priority
+        # than the next/prev range hints.
+        if single_block:
+            nav.append(
+                (
+                    f"search(kind='paper', q='your query', scope='{ref.slug}')",
+                    "search inside this paper "
+                    "(fused lexical+embedding) — usually beats paging",
+                )
+            )
+            nav.append(
+                (
+                    f"get(kind='paper', id='{ref.slug}', view='toc')",
+                    "TOC — structural map of the paper",
+                )
+            )
+
         if hi + 1 < total:
             nxt_lo = hi + 1
-            nxt_hi = min(total - 1, hi + (hi - lo + 1))
+            if single_block:
+                # Suggest a 5-block forward range, not the bare next
+                # block — encourages wider reading on follow-up.
+                nxt_hi = min(total - 1, hi + 5)
+                hint = "next 5 chunks" if nxt_hi > nxt_lo else "next chunk"
+            else:
+                # Range read — same-sized forward window.
+                nxt_hi = min(total - 1, hi + (hi - lo + 1))
+                hint = (
+                    "next chunk" if nxt_lo == nxt_hi else "next chunk range"
+                )
             sel = f"~{nxt_lo}" if nxt_lo == nxt_hi else f"~{nxt_lo}..{nxt_hi}"
             nav.append(
                 (
                     f"get(kind='paper', id='{ref.slug}{sel}')",
-                    "next chunk" if nxt_lo == nxt_hi else "next chunk range",
+                    hint,
                 )
             )
         if lo > 0:
@@ -719,18 +767,21 @@ class PaperHandler(Handler):
                     "previous chunk" if prev_lo == prev_hi else "previous chunk range",
                 )
             )
-        nav.append(
-            (
-                f"get(kind='paper', id='{ref.slug}', view='toc')",
-                "full TOC",
+        if not single_block:
+            # Range mode: full TOC is still useful but lower priority
+            # than the next/prev range hints.
+            nav.append(
+                (
+                    f"get(kind='paper', id='{ref.slug}', view='toc')",
+                    "full TOC",
+                )
             )
-        )
-        nav.append(
-            (
-                f"get(kind='paper', id='{ref.slug}~{lo}..{hi}/toc')",
-                "TOC of this range",
+            nav.append(
+                (
+                    f"get(kind='paper', id='{ref.slug}~{lo}..{hi}/toc')",
+                    "TOC of this range",
+                )
             )
-        )
         nav.append(
             (
                 f"get(kind='paper', id='{ref.slug}', view='bibtex')",
