@@ -17,9 +17,9 @@ class TestFormatNextBlock:
             ]
         )
         assert len(out) == 2
-        # Both lines should put their em-dash at the same column.
-        em_positions = [line.index("—") for line in out]
-        assert em_positions[0] == em_positions[1]
+        # Both lines should put their separator at the same column.
+        sep_positions = [line.index(" - ") for line in out]
+        assert sep_positions[0] == sep_positions[1]
 
     def test_indent_default(self) -> None:
         out = format_next_block([("c", "d")])
@@ -29,9 +29,14 @@ class TestFormatNextBlock:
         out = format_next_block([("c", "d")], indent="    ")
         assert out[0].startswith("    c")
 
-    def test_em_dash_present(self) -> None:
+    def test_separator_is_ascii_hyphen(self) -> None:
+        """Renamed from ``test_em_dash_present`` 2026-05-04: separator
+        is ASCII ``-`` (not em-dash) for tokeniser safety on small
+        models. See :func:`format_next_block` for the rationale.
+        """
         out = format_next_block([("get(x)", "describe")])
-        assert "—" in out[0]
+        assert " - " in out[0]
+        assert "—" not in out[0]
         assert " describe" in out[0]
 
     def test_empty_input(self) -> None:
@@ -39,7 +44,7 @@ class TestFormatNextBlock:
 
     def test_single_entry(self) -> None:
         out = format_next_block([("get(x)", "do x")])
-        assert out == ["  get(x)  — do x"]
+        assert out == ["  get(x)  - do x"]
 
     def test_descriptions_not_truncated(self) -> None:
         long_desc = "a very long description that should be preserved verbatim"

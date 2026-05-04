@@ -30,16 +30,21 @@ def format_next_block(
 
     Output looks like::
 
-        get(kind='paper', id='X~46..105/toc')   — drill into theory
-        get(kind='paper', id='X', view='bibtex') — BibTeX citation
+        get(kind='paper', id='X~46..105/toc')   - drill into theory
+        get(kind='paper', id='X', view='bibtex') - BibTeX citation
 
-    The widest call sets the column for everyone so the em-dashes line
+    The widest call sets the column for everyone so the separators line
     up. Empty list returns ``[]``.
+
+    The separator is ASCII ``-`` (not em-dash). Em-dash is 3 UTF-8
+    bytes and tokenises as 2-3 tokens in some smaller / quantised
+    model tokenisers; ASCII hyphen is universally one token and
+    one byte. Loses the typographic polish, gains tokeniser safety.
     """
     if not calls:
         return []
     width = max(len(call) for call, _ in calls)
-    return [f"{indent}{call:<{width}}  — {desc}" for call, desc in calls]
+    return [f"{indent}{call:<{width}}  - {desc}" for call, desc in calls]
 
 
 def render_next_section(calls: list[tuple[str, str]]) -> str:
