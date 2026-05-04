@@ -388,14 +388,17 @@ class TestChunks:
         # Block 3 is NOT rendered as a body chunk — only referenced in
         # the Next: hint as the suggested next-range to read.
         assert "# wang2020state~3" not in resp.body
-        # Phase 3.5: Next: trailer offers adjacent ranges + TOC. The
-        # adjacent suggestion may render as a degenerate single-block
-        # ``~N`` (label "next chunk") or a multi-block ``~N..M``
-        # ("next chunk range"); either is fine here. (MCP critic
-        # MINOR m6 — single-block trailers no longer emit ``~N..N``.)
+        # Trimmed trailer (2026-05-04 token-budget fix): forward
+        # range + full TOC + BibTeX. ``previous chunk`` and
+        # ``TOC of this range`` were dropped — the former is rarely
+        # the right move when reading forward; the latter is usually
+        # one section header for a small range and wastes tokens in
+        # every chunk response.
         assert "Next:" in resp.body
-        assert "next chunk" in resp.body  # matches "next chunk" or "next chunk range"
-        assert "TOC of this range" in resp.body
+        assert "next chunk" in resp.body  # matches "next chunk" or "next N chunks"
+        assert "full TOC" in resp.body
+        assert "TOC of this range" not in resp.body
+        assert "previous chunk" not in resp.body
 
     def test_single_chunk_promotes_search_toc_and_range(
         self, store: Store, handler: PaperHandler

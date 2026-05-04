@@ -737,49 +737,33 @@ class PaperHandler(Handler):
                 )
             )
 
+        # Forward read is always a range — never advertise a bare
+        # ``~N+1`` single-block hint. Single-block reads widen to a
+        # 5-block window; range reads widen to the same size as the
+        # current read. Backward navigation ("previous chunk") and
+        # range-scoped TOC are dropped: the former is rarely the
+        # right next move when reading forward, and a TOC scoped to
+        # a small range usually has at most one section header — both
+        # waste tokens in every chunk response.
         if hi + 1 < total:
             nxt_lo = hi + 1
-            if single_block:
-                # Suggest a 5-block forward range, not the bare next
-                # block — encourages wider reading on follow-up.
-                nxt_hi = min(total - 1, hi + 5)
-                hint = "next 5 chunks" if nxt_hi > nxt_lo else "next chunk"
-            else:
-                # Range read — same-sized forward window.
-                nxt_hi = min(total - 1, hi + (hi - lo + 1))
-                hint = (
-                    "next chunk" if nxt_lo == nxt_hi else "next chunk range"
-                )
-            sel = f"~{nxt_lo}" if nxt_lo == nxt_hi else f"~{nxt_lo}..{nxt_hi}"
+            span = 5 if single_block else (hi - lo + 1)
+            nxt_hi = min(total - 1, hi + span)
+            sel = f"~{nxt_lo}..{nxt_hi}" if nxt_hi > nxt_lo else f"~{nxt_lo}"
             nav.append(
                 (
                     f"get(kind='paper', id='{ref.slug}{sel}')",
-                    hint,
-                )
-            )
-        if lo > 0:
-            prev_hi = lo - 1
-            prev_lo = max(0, lo - (hi - lo + 1))
-            sel = f"~{prev_lo}" if prev_lo == prev_hi else f"~{prev_lo}..{prev_hi}"
-            nav.append(
-                (
-                    f"get(kind='paper', id='{ref.slug}{sel}')",
-                    "previous chunk" if prev_lo == prev_hi else "previous chunk range",
+                    f"next {nxt_hi - nxt_lo + 1} chunks"
+                    if nxt_hi > nxt_lo
+                    else "next chunk",
                 )
             )
         if not single_block:
-            # Range mode: full TOC is still useful but lower priority
-            # than the next/prev range hints.
+            # Range mode: full TOC is the structural escape hatch.
             nav.append(
                 (
                     f"get(kind='paper', id='{ref.slug}', view='toc')",
                     "full TOC",
-                )
-            )
-            nav.append(
-                (
-                    f"get(kind='paper', id='{ref.slug}~{lo}..{hi}/toc')",
-                    "TOC of this range",
                 )
             )
         nav.append(
