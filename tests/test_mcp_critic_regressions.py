@@ -265,6 +265,20 @@ def test_view_kwarg_aliases_to_bibtex() -> None:
     assert _normalise_view(None) is None
 
 
+def test_view_text_body_full_alias_to_default() -> None:
+    """``view='text'`` (and 'body', 'full') is a no-op — same as no view.
+
+    Workers naturally reach for ``view='text'`` to ask for chunk
+    bytes, e.g. ``get(kind='paper', id='gerfen2011~13', view='text')``.
+    Without this alias, that pattern raises BadInput ('cannot combine
+    chunk selector with view='text''), which the worker then retries
+    with view='toc' — burning two cycles per chunk read.
+    """
+    assert _normalise_view("text") is None
+    assert _normalise_view("body") is None
+    assert _normalise_view("full") is None
+
+
 # ── MAJOR: <jats:*> tags stripped from abstract bodies ──────────────
 
 

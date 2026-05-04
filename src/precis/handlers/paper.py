@@ -1208,6 +1208,9 @@ _VIEW_KWARG_ALIASES: dict[str, str] = {
 }
 
 
+_VIEW_NOOP_ALIASES: frozenset[str] = frozenset({"text", "body", "full"})
+
+
 def _normalise_view(view: str | None) -> str | None:
     """Canonicalise the ``view`` argument.
 
@@ -1215,8 +1218,18 @@ def _normalise_view(view: str | None) -> str | None:
     (``'cite/bib'``). Returns the canonical bare name. Unknown views
     pass through verbatim so the renderer can produce its own
     ``Unsupported`` error with the supported-options list.
+
+    ``view='text'``, ``'body'``, ``'full'`` are treated as no-ops —
+    they map to ``None``. Workers reach for ``view='text'`` as the
+    natural way to ask for chunk bytes (``id='slug~13', view='text'``);
+    rather than fight that mental model and emit ``Unsupported``,
+    accept it as a synonym for "render the addressed scope using the
+    default renderer". With a chunk selector this gives the chunk
+    text; without one it gives the paper overview.
     """
     if view is None:
+        return None
+    if view in _VIEW_NOOP_ALIASES:
         return None
     return _VIEW_KWARG_ALIASES.get(view, view)
 
