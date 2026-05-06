@@ -320,3 +320,109 @@ def test_ignores_unknown_kwargs(store: Store, hub: Hub, handler: RandomHandler) 
     # to random, but none should raise either.
     r = handler.get(id=None, q=None, view=None, top_k=None)
     assert "`oracle:kw~0`" in r.body
+
+
+# ---------------------------------------------------------------------------
+# view='slug' — random short identifier minting
+# ---------------------------------------------------------------------------
+
+
+def test_slug_view_default_4_chars_crockford(handler: RandomHandler) -> None:
+    """``view='slug'`` mints a 4-char Crockford-alphabet slug by default."""
+    from precis.handlers.random import _CROCKFORD_ALPHABET
+    r = handler.get(view="slug")
+    slug = r.body
+    assert len(slug) == 4
+    assert all(c in _CROCKFORD_ALPHABET for c in slug), (
+        f"slug {slug!r} contains chars outside Crockford alphabet"
+    )
+
+
+def test_slug_view_no_corpus_dependency(handler: RandomHandler) -> None:
+    """Slug minting is stateless — works even when corpus is empty
+    (the default block-pick path raises NotFound on empty corpus)."""
+    # No fixtures seeded; corpus is empty.
+    r = handler.get(view="slug")
+    assert len(r.body) == 4   # still works
+
+
+def test_slug_view_freshly_random(handler: RandomHandler) -> None:
+    """Successive calls return different slugs (with overwhelming
+    probability — 4 chars in a 32-char alphabet = 1 in ~1M collision)."""
+    slugs = {handler.get(view="slug").body for _ in range(20)}
+    # 20 draws from 1M space — collision probability vanishingly small.
+    assert len(slugs) == 20
+
+
+def test_slug_view_custom_length(handler: RandomHandler) -> None:
+    """``args={'len': N}`` sets the slug length."""
+    r = handler.get(view="slug", args={"len": 8})
+    assert len(r.body) == 8
+
+    r = handler.get(view="slug", args={"len": 1})
+    assert len(r.body) == 1
+
+    r = handler.get(view="slug", args={"len": 64})
+    assert len(r.body) == 64
+
+
+def test_slug_view_length_out_of_range(handler: RandomHandler) -> None:
+    """Length must be in [1, 64]; outside that range raises BadInput."""
+    from precis.errors import BadInput
+    with pytest.raises(BadInput, match="must be in"):
+        handler.get(view="slug", args={"len": 0})
+    with pytest.raises(BadInput, match="must be in"):
+        handler.get(view="slug", args={"len": 65})
+    with pytest.raises(BadInput, match="must be in"):
+        handler.get(view="slug", args={"len": -1})
+
+
+def test_slug_view_non_integer_length(handler: RandomHandler) -> None:
+    """Non-integer length is BadInput, not a TypeError."""
+    from precis.errors import BadInput
+    with pytest.raises(BadInput, match="must be an integer"):
+        handler.get(view="slug", args={"len": "four"})
+
+
+def test_slug_view_named_alphabets(handler: RandomHandler) -> None:
+    """``alphabet='lower' / 'alnum' / 'crockford'`` select the named
+    alphabets."""
+    r = handler.get(view="slug", args={"len": 20, "alphabet": "lower"})
+    assert all(c in "abcdefghijklmnopqrstuvwxyz" for c in r.body)
+
+    r = handler.get(view="slug", args={"len": 20, "alphabet": "alnum"})
+    assert all(c.isalnum() and c.islower() or c.isdigit() for c in r.body)
+
+
+def test_slug_view_custom_alphabet_literal(handler: RandomHandler) -> None:
+    """A literal alphabet string is accepted as-is."""
+    r = handler.get(view="slug", args={"len": 32, "alphabet": "ab"})
+    assert set(r.body) <= {"a", "b"}
+
+
+def test_slug_view_alphabet_too_short(handler: RandomHandler) -> None:
+    """Custom alphabet must have ≥ 2 distinct characters; otherwise
+    every slug is just the same char repeated, which defeats the
+    purpose."""
+    from precis.errors import BadInput
+    with pytest.raises(BadInput, match="at least 2 distinct"):
+        handler.get(view="slug", args={"alphabet": "aaa"})  # 3 chars but 1 distinct
+    with pytest.raises(BadInput, match="length ≥ 2"):
+        handler.get(view="slug", args={"alphabet": "x"})    # too short
+
+
+def test_slug_view_unknown_alphabet_name(handler: RandomHandler) -> None:
+    """Unknown alphabet name with length < 2 → not treated as literal,
+    rejected with the named-alphabet error."""
+    from precis.errors import BadInput
+    # Short non-string-like alphabet arg
+    with pytest.raises(BadInput, match="alphabet"):
+        handler.get(view="slug", args={"alphabet": 42})
+
+
+def test_unknown_view_raises_bad_input(handler: RandomHandler) -> None:
+    """An unknown view= isn't silently treated as the default — it's
+    BadInput so the agent learns the supported set."""
+    from precis.errors import BadInput
+    with pytest.raises(BadInput, match="unknown random view"):
+        handler.get(view="bogus")

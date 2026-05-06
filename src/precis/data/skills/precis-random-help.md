@@ -8,16 +8,25 @@ applies-to: get (kind='random')
 last-updated: 2026-05-02
 ---
 
-# precis-random-help — random corpus pick
+# precis-random-help — random corpus pick + slug minting
 
-`random` is a one-shot discovery kind. Every call picks a
-**single undeleted embedded block** from the corpus at random
-and returns its canonical handle with a drill-down hint.
+`random` has two modes:
 
-No arguments: one verb, one pick.
+1. **Default (no `view`)** — picks a single undeleted embedded
+   block from the corpus at random and returns its canonical
+   handle with a drill-down hint. Useful for warm-up, discovery,
+   stumbling-into-content.
+2. **`view='slug'`** — mints a fresh random short identifier
+   (default 4 chars, Crockford alphabet — lowercase letters and
+   digits with visually ambiguous chars 0/o/1/l excluded). Useful
+   for tags, correlation ids, opaque handles where a semantic
+   name isn't available.
 
 ```python
-get(kind='random')
+get(kind='random')                                       # corpus pick
+get(kind='random', view='slug')                          # 4-char slug
+get(kind='random', view='slug', args={'len': 8})         # 8 chars
+get(kind='random', view='slug', args={'alphabet': 'lower'})    # a-z only
 ```
 
 Response shape:
@@ -68,10 +77,51 @@ the paper kind's own search surface instead.
   If yes, the corpus is alive. If it raises `NotFound: no
   embedded blocks`, ingest hasn't run (or hasn't embedded yet).
 
+## Slug view (`view='slug'`)
+
+Mints a fresh random alphanumeric identifier. Pure function;
+no corpus dependency, works on stateless deploys too.
+
+```python
+get(kind='random', view='slug')                                  # → 'k7m3'
+get(kind='random', view='slug', args={'len': 8})                 # → 'k7m3pq2v'
+get(kind='random', view='slug', args={'alphabet': 'alnum'})      # a-z + 0-9
+get(kind='random', view='slug', args={'alphabet': 'lower'})      # a-z only
+get(kind='random', view='slug', args={'alphabet': 'xyz'})        # custom literal
+```
+
+Defaults: `len=4`, `alphabet='crockford'` (32 chars). Length is
+clamped to `[1, 64]`. Custom alphabets must be a string of ≥ 2
+distinct characters.
+
+Response body is the slug itself — no markdown wrapper, no
+trailer. Compose it directly into a tag value, a correlation
+id, etc.
+
+Use cases that fit:
+
+- A tag value when no semantic name applies (`topic:k7m3`).
+- A correlation id stamped onto a memory and the prose marker
+  that points at it.
+- Any opaque handle where uniqueness matters more than meaning.
+
+Where you should *not* use it:
+
+- Identifiers that humans will read (use slugs that encode
+  meaning instead — `topic:dopamine-d2-pharmacology`, not
+  `topic:k7m3`).
+- Cryptographic keys (use a longer length and the `alnum`
+  alphabet, not the 32-char Crockford).
+
 ## Randomness
 
-Uses PostgreSQL's `random()` in `ORDER BY random() LIMIT 1`.
-Unbiased per-call. No `seed=` argument — the MCP surface is
+Default block pick uses PostgreSQL's `random()` in
+`ORDER BY random() LIMIT 1`. Unbiased per-call.
+
+Slug minting uses Python's :mod:`secrets` module (CSPRNG-backed)
+for character selection.
+
+No `seed=` argument on either path — the MCP surface is
 deliberately non-deterministic. Callers that need replay use
 their own `random.Random(seed)` outside the tool surface.
 

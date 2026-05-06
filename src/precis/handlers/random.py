@@ -1,41 +1,65 @@
 """RandomHandler — random pick from the corpus.
 
-One verb, no arguments: ``get(kind='random')`` picks a single
-undeleted embedded block at random and returns its canonical
-handle with a drill-down hint. Useful for discovery,
-inspiration, stumbling-into-content, or agent warmup after a
-long dry spell.
+Default ``get(kind='random')`` picks a single undeleted embedded
+block at random and returns its canonical handle with a drill-down
+hint. Useful for discovery, inspiration, stumbling-into-content, or
+agent warmup after a long dry spell.
 
-Design notes (critic R3, revised):
+``get(kind='random', view='slug')`` returns a freshly minted random
+short slug (default 4 chars, Crockford-style alphabet — lowercase
+letters and digits with visually ambiguous chars 0/o/1/l excluded).
+Useful when an agent needs an opaque unique handle for a tag, a
+correlation id, or any "I need a unique identifier, don't care
+what it says" case. Length and alphabet are configurable via
+``args={'len': N, 'alphabet': '...'}``.
 
-- No DSL. Earlier iterations exposed a dice / int / choice /
-  neighbor / chunk mini-language; the user collapsed it back
-  to this one shape. Dice rolls are cheap to do in calc or any
-  other tool; the genuinely MCP-native thing is "show me
-  something from the corpus I might have forgotten about".
-- No filter. ``kind=`` / ``tag=`` filtering is deferred — adding
-  it later is a pure additive change.
+Design notes:
+
+- No DSL on the corpus-pick path. Earlier iterations exposed a
+  dice / int / choice / neighbor / chunk mini-language; the user
+  collapsed it back to this one shape. Dice rolls are cheap to
+  do in calc or any other tool.
+- The ``slug`` view is a deliberate exception: it's a stateless
+  string-generation helper that doesn't touch the corpus at all,
+  and adding it as a separate verb / kind would be more friction
+  than value. View-on-existing-kind keeps the surface narrow.
+- No filter on the corpus pick. ``kind=`` / ``tag=`` filtering is
+  deferred — adding it later is a pure additive change.
 - Blocks, not refs. A ref without embedded blocks is skipped.
-  This keeps the result pointing at something with real content
-  (an abstract paragraph, an oracle entry, a memory body) rather
-  than a ref shell whose body lives elsewhere.
-- CSPRNG random — consistent with :class:`OracleHandler`. No
-  ``seed=``; the MCP surface is deliberately non-deterministic.
-- Store-backed (not stateless). Boot puts this in the
-  ``if store is not None:`` block alongside the other corpus-
-  reading kinds.
+- CSPRNG random everywhere — both block picks and slug minting
+  use :mod:`secrets`. The MCP surface is deliberately
+  non-deterministic.
+- Store-backed for the corpus pick (Boot puts this in the
+  ``if store is not None:`` block); the slug view has no
+  dependency on the store and works even on a stateless deploy.
 """
 
 from __future__ import annotations
 
+import secrets
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Store
 from precis.utils.next_block import render_next_section
+
+# Crockford-style: lowercase letters + digits, minus visually
+# ambiguous characters (0/o/1/l) so a hand-typed slug is harder to
+# mis-read or mis-type. 32 characters total — exactly 5 bits of
+# entropy per char, so a 4-char slug carries 20 bits ≈ 1M space,
+# plenty for "unique within a sortie's lifetime."
+_CROCKFORD_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"
+_ALPHABETS: dict[str, str] = {
+    "crockford": _CROCKFORD_ALPHABET,
+    "lower": "abcdefghijklmnopqrstuvwxyz",
+    "alnum": "abcdefghijklmnopqrstuvwxyz0123456789",
+}
+_SLUG_LEN_MIN = 1
+_SLUG_LEN_MAX = 64
+_SLUG_LEN_DEFAULT = 4
 
 
 class RandomHandler(Handler):
@@ -43,10 +67,13 @@ class RandomHandler(Handler):
         kind="random",
         title="Random",
         description=(
-            "Random pick from the corpus. Returns the canonical "
-            "handle of one undeleted embedded block so you can "
-            "fetch it with a follow-up get(). No arguments: "
-            "every call rolls a fresh pick."
+            "Random pick from the corpus (default) or random short "
+            "slug minting (view='slug'). Default: returns the "
+            "canonical handle of one undeleted embedded block so "
+            "you can fetch it with a follow-up get(). With "
+            "view='slug': returns a fresh random alphanumeric "
+            "string (default 4 chars, Crockford alphabet) for use "
+            "as a tag, correlation id, or opaque handle."
         ),
         supports_get=True,
         is_numeric=False,
@@ -61,14 +88,24 @@ class RandomHandler(Handler):
 
     def get(  # type: ignore[override]
         self,
+        *,
+        view: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        # ``id=`` / ``q=`` / ``view=`` are deliberately ignored —
-        # accepting ``**_kw`` keeps us lenient for agents that
-        # pass defaults through every call, without teaching the
-        # DSL a shape we don't actually support. If we ever grow
-        # kind= filtering this is where it lands; revisit the
-        # signature then.
+        # ``id=`` / ``q=`` are deliberately ignored — accepting
+        # ``**_kw`` keeps us lenient for agents that pass defaults
+        # through every call.
+        if view == "slug":
+            return self._mint_slug(args or {})
+        if view not in (None, "", "block"):
+            raise BadInput(
+                f"unknown random view {view!r}",
+                next=(
+                    "supported views: '' (default — random corpus block), "
+                    "'slug' (random short identifier)"
+                ),
+            )
         picked = self.store.random_embedded_block()
         if picked is None:
             raise NotFound(
@@ -94,6 +131,54 @@ class RandomHandler(Handler):
             ]
         )
         return Response(body=body)
+
+    def _mint_slug(self, args: dict[str, Any]) -> Response:
+        """Render a fresh random short identifier.
+
+        ``args``:
+            ``len``      — slug length, default 4, range 1–64.
+            ``alphabet`` — named alphabet, default ``'crockford'``.
+                           Other choices: ``'lower'`` (a-z),
+                           ``'alnum'`` (a-z + 0-9). A literal string
+                           is also accepted as a custom alphabet.
+
+        Returns the slug as the response body — no markdown, no
+        trailer. Callers compose it into tag values, correlation
+        ids, or whatever else.
+        """
+        length = args.get("len", _SLUG_LEN_DEFAULT)
+        try:
+            length = int(length)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"random slug 'len' must be an integer, got {length!r}"
+            ) from None
+        if length < _SLUG_LEN_MIN or length > _SLUG_LEN_MAX:
+            raise BadInput(
+                f"random slug 'len' must be in "
+                f"[{_SLUG_LEN_MIN}, {_SLUG_LEN_MAX}], got {length}"
+            )
+        alphabet_arg = args.get("alphabet", "crockford")
+        if isinstance(alphabet_arg, str) and alphabet_arg in _ALPHABETS:
+            alphabet = _ALPHABETS[alphabet_arg]
+        elif isinstance(alphabet_arg, str) and len(alphabet_arg) >= 2:
+            # Treat as a custom alphabet literal. Need ≥ 2 distinct
+            # characters or every slug collapses to a single repeated
+            # char which defeats the purpose.
+            alphabet = alphabet_arg
+            if len(set(alphabet)) < 2:
+                raise BadInput(
+                    "random slug custom alphabet must contain at least 2 "
+                    f"distinct characters, got {alphabet!r}"
+                )
+        else:
+            raise BadInput(
+                f"random slug 'alphabet' must be one of "
+                f"{sorted(_ALPHABETS)} or a string of length ≥ 2, "
+                f"got {alphabet_arg!r}"
+            )
+        slug = "".join(secrets.choice(alphabet) for _ in range(length))
+        return Response(body=slug)
 
 
 # ---------------------------------------------------------------------------
