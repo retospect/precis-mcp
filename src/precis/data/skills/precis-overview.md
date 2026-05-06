@@ -118,6 +118,10 @@ corpus.
 search(kind='paper', q='photocatalytic NOx reduction', top_k=5)
 get(kind='paper', id='abazari2024design', view='abstract')
 
+# Already have a DOI? Address by DOI directly — no keyword search needed.
+get(kind='paper', id='10.1038/nature10352')                  # by DOI
+get(kind='paper', id='10.1038/nature10352', view='bibtex')   # citation form
+
 # Make a todo, mark a different one done.
 put(kind='todo', text='Review section 3 of abazari2024design.',
     tags=['PRIO:high'])

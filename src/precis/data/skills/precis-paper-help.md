@@ -16,11 +16,33 @@ Papers are slug-addressed (`abazari2024design`,
 suffix. Use `get(kind='paper')` (no id) to see what's actually
 ingested in this build before guessing slugs.
 
+**You can also address papers by bare DOI** — `get` and `search`
+both transparently resolve a DOI to its slug before any other
+lookup. If you have a DOI in hand (from a citation, a reading
+list, a `\todo{cite: 10.xxxx/...}` marker), pass it directly
+instead of trying to guess the slug or running keyword searches:
+
+```python
+get(kind='paper', id='10.1038/nature10352')           # by DOI
+get(kind='paper', id='10.1038/nature10352~38')        # DOI + chunk selector
+search(kind='paper', q='10.1038/nature10352')         # check if ingested
+```
+
+DOI form does **not** support view paths (`/abstract`, `/toc`) —
+DOI suffixes can legally contain `/`, so the parser can't tell
+"DOI literal" from "DOI + view". Use the `view=` kwarg alongside
+a DOI: `get(kind='paper', id='10.1038/nature10352', view='toc')`.
+
+When a DOI lookup misses, the error response points you at the
+sortie's `request_doi.md` queue (perplexity / fetch pipeline)
+rather than burning time on keyword searches that will also miss.
+
 ## Find
 
 ```python
 search(kind='paper', q='photocatalytic NOx reduction')
 search(kind='paper', q='photocatalytic NOx reduction', top_k=20)
+search(kind='paper', q='10.1038/nature10352')  # check if a DOI is ingested
 get(kind='paper')                              # list all papers (page of 50)
 ```
 
@@ -158,9 +180,9 @@ the closed-prefix axes.
 
 - `put(kind='paper', text=...)` — body mutation. Bodies arrive via
   `.acatome` bundle ingest; there's no API to overwrite them.
-- `get(id='doi:10.1002/...')` / `get(id='arxiv:2207.09327')` — URI
-  scheme prefixes. Resolution lives in `acatome-quest-mcp` for now;
-  inside precis you address by slug.
+- `get(id='arxiv:2207.09327')` — URI scheme prefixes other than
+  bare DOI. Resolution lives in `acatome-quest-mcp` for now.
+  (Bare DOIs *are* supported here — see the top of this file.)
 
 ## See also
 

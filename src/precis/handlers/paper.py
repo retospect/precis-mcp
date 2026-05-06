@@ -114,9 +114,12 @@ class PaperHandler(Handler):
         kind="paper",
         title="Paper",
         description=(
-            "Scientific paper. Slug-addressed; one ref per paper, blocks "
-            "per chunk. Ingested from .acatome bundles (paper bodies are "
-            "import-only). Use tag / link to classify and cross-cite."
+            "Scientific paper. Addressable by slug (e.g. 'wang2020dopamine') "
+            "OR by bare DOI (e.g. '10.1038/nature10352') — `get` and "
+            "`search` resolve DOIs transparently. One ref per paper, "
+            "blocks per chunk. Ingested from .acatome bundles (paper "
+            "bodies are import-only). Use tag / link to classify and "
+            "cross-cite."
         ),
         supports_get=True,
         supports_search=True,
@@ -258,19 +261,43 @@ class PaperHandler(Handler):
             # across kinds, and the empty-search branch was the
             # last holdout of the lowercase-prose shape. (c5
             # unified-trailer patch.)
+            #
+            # DOI-shaped queries that miss are the dominant friction
+            # case: agents fire 3-5 keyword variants trying to find a
+            # paper that isn't in the corpus. Detect the DOI shape and
+            # route directly to the request_doi.md fetch pathway
+            # instead of suggesting a wider search that will also miss.
             body = f"no paper blocks match {q!r}"
-            body += render_next_section(
-                [
-                    (
-                        f"search(kind='paper', q={q!r}, top_k=50)",
-                        "widen the lexical net",
-                    ),
-                    (
-                        "get(kind='skill', id='precis-help')",
-                        "see search tips for other kinds",
-                    ),
-                ]
-            )
+            doi_match = _DOI_RE.match(q.strip())
+            if doi_match is not None:
+                doi = doi_match.group(1)
+                body += "\n\nThis DOI is not in the local corpus. "
+                body += (
+                    "To request external retrieval (perplexity / fetch "
+                    "pipeline), append it to request_doi.md:"
+                )
+                body += render_next_section(
+                    [
+                        (
+                            "edit(kind='plaintext', id='./request_doi.md', "
+                            f"mode='append', text='{doi} - <one-line reason>\\n')",
+                            "queue this DOI for external fetch",
+                        ),
+                    ]
+                )
+            else:
+                body += render_next_section(
+                    [
+                        (
+                            f"search(kind='paper', q={q!r}, top_k=50)",
+                            "widen the lexical net",
+                        ),
+                        (
+                            "get(kind='skill', id='precis-help')",
+                            "see search tips for other kinds",
+                        ),
+                    ]
+                )
             return Response(body=body)
 
         # Total-hits header: count blocks the lexical filter would
@@ -921,8 +948,10 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
         raise NotFound(
             f"paper with DOI {doi!r} not ingested",
             next=(
-                "search(kind='paper', q='<title or authors>') to find "
-                "an existing slug, or ingest the paper first"
+                f"edit(kind='plaintext', id='./request_doi.md', mode='append', "
+                f"text='{doi} - <one-line reason>\\n')  "
+                "to queue external fetch (perplexity / fetch pipeline); "
+                "or search(kind='paper', q='<title>') for an existing slug"
             ),
         )
     return slug + selector
