@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# doilist — harvest DOIs from sources/, reconcile against precis, queue
+# the missing ones, and (optionally) slowly fetch their PDFs via Unpaywall.
+#
+# Run from the directory that contains your sources/ folder:
+#
+#   cd ~/Documents/openclaw-cluster/doilist
+#   ./pips/packages/precis-mcp/scripts/doilist scan
+#   ./pips/packages/precis-mcp/scripts/doilist scan --download
+#
+# The script only needs psycopg (already in the precis venv) — no extras.
+
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_PY="$PKG_DIR/.venv/bin/python"
+
+: "${PRECIS_DATABASE_URL:=postgresql://acatome:acatome@127.0.0.1:5432/precis}"
+export PRECIS_DATABASE_URL
+
+if [[ -x "$VENV_PY" ]]; then
+    exec "$VENV_PY" "$SCRIPT_DIR/_doilist.py" "$@"
+fi
+
+exec uv run --project "$PKG_DIR" python "$SCRIPT_DIR/_doilist.py" "$@"
