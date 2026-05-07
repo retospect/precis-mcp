@@ -529,6 +529,22 @@ def boot(
         _try(QuestHandler, hub=hub)
         _try(ConversationHandler, hub=hub)
         _try(OracleHandler, hub=hub)
+        # Oracle YAML lives in the wheel; reconcile it against the
+        # DB-recorded version on every boot so a wheel upgrade or
+        # local edit propagates without an explicit ingest run. Older
+        # peers see their version is below the stored one and skip,
+        # avoiding the cross-host stomp scenario. See
+        # ``jobs/oracle_sync.py`` for the full gating logic. Best-
+        # effort: any failure here is logged and ignored so a sync
+        # hiccup never breaks startup.
+        if "oracle" in hub.kinds:
+            from precis.jobs.oracle_sync import is_disabled_by_env, maybe_reingest
+
+            if not is_disabled_by_env():
+                try:
+                    maybe_reingest(store=hub.store, embedder=hub.embedder)
+                except Exception:  # pragma: no cover — boot must not crash
+                    log.exception("oracle_sync: boot-time reconcile failed")
         _try(SkillHandler, hub=hub)
         _try(PaperHandler, hub=hub)
 

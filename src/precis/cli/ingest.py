@@ -143,6 +143,16 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Don't write - show what would be ingested.",
     )
+    io.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Bypass the version + sha256 boot-time gate and "
+            "re-ingest unconditionally (under advisory lock). Use "
+            "after a hand-edit to bundled YAML on a single host. "
+            "Implies --overwrite."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +536,32 @@ def run_oracles(args: argparse.Namespace) -> None:
     store = Store.connect(dsn)
     try:
         embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+
+        # ``--force`` routes through the gated reconcile so the
+        # advisory lock + system-table state stay in sync. The
+        # legacy direct ``ingest_directory`` path is preserved
+        # without ``--force`` so explicit user-supplied dirs and
+        # ``--overwrite=False`` semantics keep working unchanged.
+        if args.force:
+            from precis.jobs.oracle_sync import maybe_reingest
+
+            outcome = maybe_reingest(
+                store=store, embedder=embedder, src_dir=src, force=True
+            )
+            print(
+                f"ingest-oracles: forced reconcile from {src}  "
+                f"[embedder={cfg.embedder}]\n"
+                f"  status={outcome['status']}  "
+                + " ".join(
+                    f"{k}={v}"
+                    for k, v in outcome.items()
+                    if k not in ("status", "sha256")
+                )
+            )
+            if outcome["status"] == "error":
+                sys.exit(1)
+            return
+
         try:
             agg = ingest_directory(
                 src,
