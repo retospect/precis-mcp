@@ -1,0 +1,319 @@
+"""Tests for FileCorpusIndex + chunker + cache.
+
+The index is exercised against the deterministic ``MockEmbedder`` so
+the test suite stays hermetic — no sentence-transformers, no torch,
+no model downloads. Skill-handler-level tests (``test_skill.py``)
+cover the integration with the live skill corpus.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from precis.embedder import MockEmbedder
+from precis.skill_index import FileCorpusIndex, chunk_by_h2
+from precis.skill_index.cache import EmbeddingCache, default_cache_dir
+
+
+def json_load(path: Path) -> dict[str, Any]:
+    """Tiny helper used by cache-introspection tests."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+# ── chunker ──────────────────────────────────────────────────────────
+
+
+def test_chunker_drops_front_matter() -> None:
+    text = (
+        "---\n"
+        "title: foo\n"
+        "status: active\n"
+        "---\n\n"
+        "# Heading\n\nIntro text.\n\n"
+        "## Section A\n\nA body.\n"
+    )
+    chunks = chunk_by_h2(text)
+    # Front matter not included anywhere.
+    for c in chunks:
+        assert "title: foo" not in c.text
+
+
+def test_chunker_yields_head_and_sections() -> None:
+    text = (
+        "# Top\n\n"
+        "Intro paragraph.\n\n"
+        "## First\n\n"
+        "First body.\n\n"
+        "## Second\n\n"
+        "Second body.\n"
+    )
+    chunks = chunk_by_h2(text)
+    headings = [c.heading for c in chunks]
+    assert headings == ["", "First", "Second"]
+    # Head chunk holds the H1 + intro.
+    assert "Intro paragraph" in chunks[0].text
+    # Each section keeps its H2 line.
+    assert "## First" in chunks[1].text
+    assert "First body" in chunks[1].text
+
+
+def test_chunker_no_h2_returns_single_chunk() -> None:
+    text = "# Only H1\n\nBody only.\n"
+    chunks = chunk_by_h2(text)
+    assert len(chunks) == 1
+    assert chunks[0].heading == ""
+    assert "Body only" in chunks[0].text
+
+
+def test_chunker_skips_empty_sections() -> None:
+    text = "## Empty\n\n## Has body\n\nbody.\n"
+    chunks = chunk_by_h2(text)
+    headings = [c.heading for c in chunks]
+    assert "Empty" not in headings
+    assert "Has body" in headings
+
+
+def test_chunker_handles_blank_input() -> None:
+    assert chunk_by_h2("") == []
+    assert chunk_by_h2("   \n\n  ") == []
+
+
+# ── cache ────────────────────────────────────────────────────────────
+
+
+def test_cache_round_trip(tmp_path: Path) -> None:
+    from precis.skill_index.cache import CachedChunk, CacheEntry
+
+    cache = EmbeddingCache(
+        cache_dir=tmp_path,
+        namespace="test",
+        embedder_model="mock",
+        chunker_version=1,
+    )
+    entry = CacheEntry(
+        slug="hello",
+        file_sha256="abc",
+        embedder_model="mock",
+        chunker_version=1,
+        chunks=[CachedChunk(heading="H", text="t", embedding=[0.1, 0.2, 0.3])],
+    )
+    cache.save(entry)
+    out = cache.load("hello", "abc")
+    assert out is not None
+    assert out.slug == "hello"
+    assert out.chunks[0].embedding == [0.1, 0.2, 0.3]
+
+
+def test_cache_miss_on_sha_mismatch(tmp_path: Path) -> None:
+    from precis.skill_index.cache import CachedChunk, CacheEntry
+
+    cache = EmbeddingCache(
+        cache_dir=tmp_path,
+        namespace="test",
+        embedder_model="mock",
+        chunker_version=1,
+    )
+    entry = CacheEntry(
+        slug="hello",
+        file_sha256="abc",
+        embedder_model="mock",
+        chunker_version=1,
+        chunks=[CachedChunk(heading="", text="", embedding=[])],
+    )
+    cache.save(entry)
+    assert cache.load("hello", "different-sha") is None
+
+
+def test_cache_miss_on_chunker_version_change(tmp_path: Path) -> None:
+    from precis.skill_index.cache import CachedChunk, CacheEntry
+
+    cache = EmbeddingCache(
+        cache_dir=tmp_path,
+        namespace="test",
+        embedder_model="mock",
+        chunker_version=1,
+    )
+    cache.save(
+        CacheEntry(
+            slug="x",
+            file_sha256="s",
+            embedder_model="mock",
+            chunker_version=1,
+            chunks=[CachedChunk(heading="", text="", embedding=[])],
+        )
+    )
+    # New cache instance with a bumped chunker version should not
+    # see the stale entry, even at the same path.
+    cache2 = EmbeddingCache(
+        cache_dir=tmp_path,
+        namespace="test",
+        embedder_model="mock",
+        chunker_version=2,
+    )
+    assert cache2.load("x", "s") is None
+
+
+def test_cache_corrupt_file_returns_none(tmp_path: Path) -> None:
+    cache = EmbeddingCache(
+        cache_dir=tmp_path,
+        namespace="test",
+        embedder_model="mock",
+        chunker_version=1,
+    )
+    # Manually plant a junk file at the expected path.
+    path = cache.path_for("broken")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json {{{")
+    assert cache.load("broken", "any-sha") is None
+
+
+def test_default_cache_dir_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_CACHE_DIR", "/tmp/custom-cache")
+    assert default_cache_dir() == Path("/tmp/custom-cache")
+
+
+# ── index ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def files() -> dict[str, str]:
+    """A toy 3-skill corpus for index tests.
+
+    Each ``slug`` has a unique vocabulary so MockEmbedder's hash-
+    derived vectors stay distinguishable. The mock isn't semantic,
+    but it IS deterministic — an embedded query that's a substring
+    of the chunk text will hash to a vector closer to the chunk
+    than to unrelated chunks (small probability of false ties).
+    """
+    return {
+        "alpha": "# Alpha\n\nFirst content about apples and oranges.\n",
+        "beta": "# Beta\n\n## Section\n\nSecond content about programming.\n",
+        "gamma": "# Gamma\n\nThird content about gardening.\n",
+    }
+
+
+def test_index_unavailable_without_embedder(files: dict[str, str]) -> None:
+    idx = FileCorpusIndex(files=files, embedder=None)
+    assert not idx.is_available()
+    assert idx.search("anything") == []
+
+
+def test_index_returns_hits_with_mock_embedder(
+    files: dict[str, str], tmp_path: Path
+) -> None:
+    idx = FileCorpusIndex(
+        files=files,
+        embedder=MockEmbedder(dim=64),
+        cache_dir=tmp_path,
+        cache_namespace="test",
+    )
+    assert idx.is_available()
+    hits = idx.search("First content about apples and oranges.", top_k=10)
+    assert hits, "expected at least one hit"
+    # The exact-match query should rank its source chunk above the others.
+    assert hits[0].slug == "alpha"
+    assert hits[0].score > 0
+
+
+def test_index_caches_to_disk(files: dict[str, str], tmp_path: Path) -> None:
+    embedder = MockEmbedder(dim=32)
+    idx = FileCorpusIndex(
+        files=files,
+        embedder=embedder,
+        cache_dir=tmp_path,
+        cache_namespace="test",
+    )
+    # First search builds + writes.
+    hits1 = idx.search("apples")
+    assert hits1
+    # Cache files exist on disk under the namespaced layout.
+    cache_root = tmp_path / "test" / "mock" / "v1"
+    assert cache_root.is_dir()
+    cache_files = list(cache_root.glob("*.json"))
+    assert len(cache_files) == len(files)
+
+    # Fresh index over the same files — should populate from cache,
+    # not re-embed. We can't observe re-embed cost directly, but we
+    # CAN swap the embedder for one that always raises and verify
+    # search still works (because the cache is hit before the call).
+    class _BoomEmbedder:
+        @property
+        def dim(self) -> int:  # pragma: no cover — unused
+            return 32
+
+        @property
+        def model(self) -> str:
+            return "mock"  # same model name → cache hit
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            raise RuntimeError("should not be called for cache-hit chunks")
+
+        def embed_one(self, text: str) -> list[float]:
+            # Query embedding still goes through this — keep it
+            # deterministic so cosine ranks something.
+            return MockEmbedder(dim=32).embed_one(text)
+
+    idx2 = FileCorpusIndex(
+        files=files,
+        embedder=_BoomEmbedder(),
+        cache_dir=tmp_path,
+        cache_namespace="test",
+    )
+    hits2 = idx2.search("apples")
+    assert hits2  # cache hit served us, no _BoomEmbedder.embed() call
+
+
+def test_index_invalidates_on_file_change(
+    files: dict[str, str], tmp_path: Path
+) -> None:
+    """A changed file → different sha256 → cache miss → re-embed.
+
+    We assert the invariant directly via the cache layer instead of
+    via ranking: MockEmbedder is hash-based and has no semantic
+    notion of topic, so we can't legitimately ask for "networking"
+    to rank ``alpha`` first. What we CAN check is that the new
+    content's chunk vectors land in the cache (so subsequent boots
+    don't re-embed) and that the entry's sha256 reflects the edit.
+    """
+    embedder = MockEmbedder(dim=32)
+    idx = FileCorpusIndex(
+        files=files,
+        embedder=embedder,
+        cache_dir=tmp_path,
+        cache_namespace="test",
+    )
+    idx.search("anything")  # warm cache
+
+    # Snapshot alpha's pre-edit cached entry.
+    from precis.skill_index.cache import EmbeddingCache
+
+    cache = EmbeddingCache(
+        cache_dir=tmp_path,
+        namespace="test",
+        embedder_model="mock",
+        chunker_version=1,
+    )
+    pre = json_load(cache.path_for("alpha"))
+    pre_sha = pre["file_sha256"]
+
+    # Edit alpha and rebuild a fresh index.
+    files2 = dict(files)
+    files2["alpha"] = "# Alpha\n\nCompletely different content about networking.\n"
+    idx2 = FileCorpusIndex(
+        files=files2,
+        embedder=embedder,
+        cache_dir=tmp_path,
+        cache_namespace="test",
+    )
+    idx2.search("anything")  # forces rebuild
+
+    post = json_load(cache.path_for("alpha"))
+    assert post["file_sha256"] != pre_sha
+    # Body of post-edit chunk reflects the new content.
+    assert any("networking" in c["text"] for c in post["chunks"]), (
+        "edited content should appear in the rebuilt cache entry"
+    )

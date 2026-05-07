@@ -41,6 +41,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
+from precis.skill_index import FileCorpusIndex, SearchHit
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 
@@ -49,6 +50,42 @@ log = logging.getLogger(__name__)
 
 # Slugs are conservative: lowercase ASCII alphanumerics + hyphens.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
+
+
+class _SkillSearchRow:
+    """Per-slug merged hit for the search response.
+
+    Pure presentation glue — the search method builds these from
+    semantic + lexical streams, deduplicates by slug (keeping the
+    higher-scoring source), then renders them in score order. Kept
+    as a plain class instead of a dataclass to avoid pulling extra
+    decorators in the hot path of a search call.
+    """
+
+    __slots__ = ("preview", "score", "slug", "source")
+
+    def __init__(self, *, slug: str, score: float, source: str, preview: str) -> None:
+        self.slug = slug
+        self.score = score
+        self.source = source
+        self.preview = preview
+
+
+def _format_semantic_preview(hit: SearchHit) -> str:
+    """Render a semantic hit as ``score · heading\\n  snippet``."""
+    head = hit.heading or "—"
+    snippet = hit.snippet or ""
+    score_str = f"{hit.score:.2f}"
+    if snippet:
+        return f"{score_str} · {head}\n  {snippet}"
+    return f"{score_str} · {head}"
+
+
+def _format_lexical_preview(preview: str, count: int) -> str:
+    """Render a substring-match preview, truncating long lines."""
+    short = (preview[:120] + "…") if len(preview) > 120 else preview
+    word = "hit" if count == 1 else "hits"
+    return f"{count} {word}\n  {short}" if short else f"{count} {word}"
 
 
 class SkillHandler(Handler):
@@ -105,6 +142,12 @@ class SkillHandler(Handler):
         # no work here. Accepting ``hub=`` keeps the boot-loop
         # kw-args shape uniform across every handler.
         _ = hub
+
+        # Lazy-built embedded index over ``precis.data.skills/*.md``
+        # — populated on the first ``search()`` call so cold start
+        # stays cheap. Falls back to substring search when no
+        # embedder is wired (see :meth:`_get_index`).
+        self._index: FileCorpusIndex | None = None
 
     # ── get ────────────────────────────────────────────────────────
 
@@ -209,62 +252,130 @@ class SkillHandler(Handler):
                 "search requires q=",
                 next="search(kind='skill', q='your query')",
             )
-        # Normalise hyphens to spaces in both needle and haystack so
-        # natural phrasing (``spaced repetition``) finds hyphenated
-        # terms in the corpus (``spaced-repetition``) and vice versa.
-        # The MCP critic flagged false negatives 2026-05-02 where a
-        # 7B caller's natural phrasing missed the corpus's
-        # punctuation-specific form. Substring match still needs the
-        # punctuation collapsed on both sides; consider the query
-        # ``"foo bar"`` as a fold of ``foo bar`` / ``foo-bar`` /
-        # ``foo--bar``. (MCP critic MAJOR-C 2026-05-02.)
-        needle = _norm_for_substr(q)
-        hits: list[tuple[str, int, str]] = []  # (slug, hit_count, preview)
-        for slug in _list_skills():
-            text = _load_skill(slug)
-            if text is None:
-                continue
-            cnt = _norm_for_substr(text).count(needle)
-            if cnt > 0:
-                # Pull the first matching line as a preview — match
-                # on the normalised form, surface the original line.
-                preview = ""
-                for line in text.splitlines():
-                    if needle in _norm_for_substr(line):
-                        preview = line.strip()
-                        break
-                hits.append((slug, cnt, preview))
 
-        if not hits:
+        # Two-stream search: cosine over chunk embeddings (best at
+        # natural phrasing) merged with substring matches (best at
+        # literal slugs / kind names / verbatim quotes). Each stream
+        # contributes hits; per-slug we keep the better-scoring one
+        # so ranking stays sharp. The index is silently unavailable
+        # on builds without an embedder — substring carries on alone.
+        semantic_hits = self._semantic_hits(q, top_k=top_k * 2)
+        lexical_hits = self._lexical_hits(q)
+
+        merged: dict[str, _SkillSearchRow] = {}
+        for hit in semantic_hits:
+            row = _SkillSearchRow(
+                slug=hit.slug,
+                score=hit.score,
+                source="semantic",
+                preview=_format_semantic_preview(hit),
+            )
+            existing = merged.get(hit.slug)
+            if existing is None or row.score > existing.score:
+                merged[hit.slug] = row
+        for slug, count, preview in lexical_hits:
+            # Substring counts are coerced to a [0.0, 0.5) score so
+            # they rank below any genuine semantic hit but still
+            # show up when the index missed (or returned zero).
+            lex_score = min(0.49, count / 20.0)
+            existing = merged.get(slug)
+            if existing is None:
+                merged[slug] = _SkillSearchRow(
+                    slug=slug,
+                    score=lex_score,
+                    source="lexical",
+                    preview=_format_lexical_preview(preview, count),
+                )
+
+        if not merged:
             return Response(body=f"no skills mention {q!r}")
-        hits.sort(key=lambda h: -h[1])  # most matches first
-        # Total before paging — same shape as ref/block search totals.
-        total = len(hits)
-        hits = hits[:top_k]
+
+        rows = sorted(merged.values(), key=lambda r: r.score, reverse=True)
+        total = len(rows)
+        rows = rows[:top_k]
+
         lines = [
             format_search_headline(
-                n_returned=len(hits),
+                n_returned=len(rows),
                 total=total,
                 noun="skill match",
                 query=q,
             )
         ]
-        for slug, cnt, preview in hits:
-            preview_short = (preview[:120] + "…") if len(preview) > 120 else preview
+        for row in rows:
             # Mark skills whose subject kind isn't in the live
             # registry (or whose status is planned/aspirational).
             # The index view already hides them; search has to do
             # the same honesty work or 7B callers will quote the
             # title and invoke an [error:NotFound] kind. (MCP critic
             # MINOR — search surfaces unwired skills without marker.)
-            gap = _availability_gap(slug, hub=self.hub)
+            gap = _availability_gap(row.slug, hub=self.hub)
             marker = " [unwired]" if gap is not None else ""
-            # Grammatical pluralisation: ``1 hit`` / ``N hits`` —
-            # the bare ``({cnt} hits)`` shape was ungrammatical at
-            # cnt == 1 (MCP critic MINOR-C 2026-05-02).
-            hit_word = "hit" if cnt == 1 else "hits"
-            lines.append(f"\n## {slug}{marker}  ({cnt} {hit_word})\n{preview_short}")
+            lines.append(f"\n## {row.slug}{marker}  ({row.source})\n{row.preview}")
         return Response(body="\n".join(lines))
+
+    # ── search helpers ─────────────────────────────────────────────
+
+    def _semantic_hits(self, q: str, *, top_k: int) -> list[SearchHit]:
+        """Return cosine-ranked chunk hits, or ``[]`` when no embedder."""
+        index = self._get_index()
+        if index is None:
+            return []
+        return index.search(q, top_k=top_k)
+
+    def _lexical_hits(self, q: str) -> list[tuple[str, int, str]]:
+        """Substring-match every skill body against ``q``.
+
+        Hyphens and whitespace are normalised on both sides so a
+        natural-language query (``spaced repetition``) finds the
+        corpus's hyphenated form (``spaced-repetition``) and vice
+        versa. (MCP critic MAJOR-C 2026-05-02.)
+        """
+        needle = _norm_for_substr(q)
+        out: list[tuple[str, int, str]] = []
+        for slug in _list_skills():
+            text = _load_skill(slug)
+            if text is None:
+                continue
+            count = _norm_for_substr(text).count(needle)
+            if count == 0:
+                continue
+            preview = ""
+            for line in text.splitlines():
+                if needle in _norm_for_substr(line):
+                    preview = line.strip()
+                    break
+            out.append((slug, count, preview))
+        return out
+
+    def _get_index(self) -> FileCorpusIndex | None:
+        """Lazily build and return the skill embedding index.
+
+        Returns ``None`` when no embedder is wired. The instance is
+        cached on the handler so subsequent searches reuse the
+        in-memory chunk vectors.
+        """
+        if self._index is not None:
+            return self._index if self._index.is_available() else None
+        # Use ``is not None`` explicitly: ``Hub`` defines ``__len__``
+        # (= number of live kinds), so a hub with no kinds registered
+        # yet — like the one used in unit tests that bypass
+        # ``_register_with`` — would be falsy under a bare truthy
+        # check and we'd silently skip the embedder lookup.
+        embedder = getattr(self.hub, "embedder", None) if self.hub is not None else None
+        if embedder is None:
+            return None
+        files: dict[str, str] = {}
+        for slug in _list_skills():
+            text = _load_skill(slug)
+            if text is not None:
+                files[slug] = text
+        self._index = FileCorpusIndex(
+            files=files,
+            embedder=embedder,
+            cache_namespace="skill_embeddings",
+        )
+        return self._index if self._index.is_available() else None
 
     # ── helpers ────────────────────────────────────────────────────
 

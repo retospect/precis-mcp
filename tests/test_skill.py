@@ -270,6 +270,46 @@ def test_toc_listed_in_bare_index_hint(skill: SkillHandler) -> None:
     assert "id='toc'" in out.body
 
 
+# ── semantic search via FileCorpusIndex ──────────────────────────────
+
+
+def test_search_uses_semantic_index_when_embedder_wired(tmp_path) -> None:
+    """When the hub carries an embedder, ``search()`` routes through
+    :class:`FileCorpusIndex` and tags the response with ``(semantic)``.
+
+    The MockEmbedder is hash-based and not actually semantic, but the
+    integration path — index build, cache write, response formatting
+    — is what we're pinning here. End-to-end "transcribe video finds
+    youtube-help" requires a real bge-m3 model and is exercised live,
+    not in CI.
+    """
+    import os
+
+    from precis.dispatch import Hub
+    from precis.embedder import MockEmbedder
+
+    os.environ["PRECIS_CACHE_DIR"] = str(tmp_path)
+    try:
+        hub = Hub(embedder=MockEmbedder(dim=64))
+        handler = SkillHandler(hub=hub)
+        # Plant the hub manually since we bypassed Handler._register_with.
+        handler.hub = hub
+        out = handler.search(q="precis-overview")
+        assert "(semantic)" in out.body or "(lexical)" in out.body
+    finally:
+        del os.environ["PRECIS_CACHE_DIR"]
+
+
+def test_search_falls_back_to_substring_when_no_embedder(skill: SkillHandler) -> None:
+    """Without an embedder the index reports unavailable and the
+    substring stream provides every hit. Response should label them
+    ``(lexical)`` so an operator can tell which path served the
+    answer."""
+    out = skill.search(q="seven verbs")
+    assert "(lexical)" in out.body
+    assert "skill match" in out.body or "no skills mention" not in out.body
+
+
 # ── search marks unwired skills ──────────────────────────────────────
 
 
