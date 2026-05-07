@@ -69,6 +69,15 @@ dependencies = [
     # we re-run a matching config here so what's stored in the DB is
     # always clean regardless of which extractor produced the bundle.
     "ftfy>=6.3",
+    # Transitive-dep security floor — DO NOT add Pillow>=12.2.0 or
+    # markdownify>=1.2 here without first bumping marker-pdf
+    # upstream. As of 2026-05, marker-pdf 1.10.2 (latest, pulled in
+    # via acatome-extract[embeddings]) hard-caps Pillow<11.0.0 and
+    # pulls markdownify<0.13.1; trying to pin Pillow>=12.2.0 here
+    # makes precis-mcp[all] unresolvable. The pillow alerts (PSD,
+    # FITS, PDF) and markdownify headline-DoS aren't reachable from
+    # precis-mcp directly — paper ingestion is in acatome-extract,
+    # which has its own threat model. Tracked in dependabot.
 ]
 
 [project.urls]
