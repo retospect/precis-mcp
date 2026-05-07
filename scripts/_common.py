@@ -19,6 +19,13 @@ if TYPE_CHECKING:
 # Override with `--dir` on the command line.
 DEFAULT_INGEST_DIR = Path("/Users/bots/Documents/openclaw-cluster/paper-ingest")
 
+# Default location of the inbox watched by
+# `perplexity-monitor-ingest-dir` (markdown reports from Perplexity Pro
+# web UI imported as $0 cache entries). Override with `--dir`.
+DEFAULT_PERPLEXITY_INGEST_DIR = Path(
+    "/Users/bots/Documents/openclaw-cluster/perplexity-ingest"
+)
+
 # Default DSN baked into the wrapper scripts; overridable via
 # `PRECIS_DATABASE_URL` in the environment. Matches the canonical
 # precis-mcp database configured in `~/.codeium/windsurf/mcp_config.json`.
