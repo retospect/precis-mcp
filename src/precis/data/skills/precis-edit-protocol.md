@@ -27,13 +27,18 @@ skill — this one covers what's universal.
 | You want to | Use |
 |---|---|
 | Rewrite a whole block / function / paragraph | `mode='replace'` |
-| Change one token, one cite, one literal | `mode='edit'` |
+| Change one token, one cite, one literal | `mode='find-replace'` |
+| **Delete a matched span (one line, one cite, one token)** | `mode='find-replace'` with `text=''` |
 | Add text adjacent to an existing anchor | `mode='insert'` |
-| Bulk rename one identifier | `mode='edit'` with `match='all'` |
+| Bulk rename one identifier | `mode='find-replace'` with `match='all'` |
 
 The rule of thumb: **content selects, range bounds.** The `id=`
 selector narrows where to look; the literal `find=` decides what
 to change. This survives drift after prior edits.
+
+**Every mode requires `text=`.** Span-deletes pass `text=''`;
+the `delete` verb is for whole files and whole blocks, not for
+lines or tokens.
 
 ## Schema
 
@@ -86,6 +91,21 @@ edit(kind='markdown', id='notes--foo~intro',
     mode='find-replace',
     find='the', before='over ', after=' fence',
     text='a')
+```
+
+And the span-delete case — `text=''` removes the match without
+touching the surrounding block:
+
+```python
+# Drop one 'doi' line from a bibtex entry, leave the entry's
+# surrounding fields intact. Anchors pin the match to the right
+# @article{…} block even when the same doi appears elsewhere.
+edit(kind='plaintext', id='refs.bib',
+    mode='find-replace',
+    find='doi     = {10.1111/ejn.12125}',
+    before='@article{tritsch2012dopaminergic,',
+    after='volume  = {35},',
+    text='')
 ```
 
 ## Resolution algorithm

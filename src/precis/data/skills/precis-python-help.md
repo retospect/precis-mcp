@@ -384,6 +384,16 @@ edit(kind='python',
     find='    return x + 1\n',
     where='after',
     text='\n\ndef twice(x: int) -> int:\n    return x * 2\n')
+
+# Delete one call / literal / decorator without rewriting the
+# surrounding function. text='' is the canonical span-delete idiom;
+# the AST + ruff gates still run on the post-delete buffer, so a
+# delete that leaves the file unparseable rolls back.
+edit(kind='python',
+    id='precis::precis.dispatch.Hub.handler_for',
+    mode='find-replace',
+    find='    # TODO: revisit\n',
+    text='')   # empty text = delete
 ```
 
 The single configured root in this build is the alias `precis`

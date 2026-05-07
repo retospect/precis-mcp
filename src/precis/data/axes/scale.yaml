@@ -1,0 +1,30 @@
+id: scale
+version: 1
+question: "What spatial scale does this paper investigate?"
+values: [atomic, nano, meso, micro, bulk, multi, unknown, n-a]
+default_unknown: unknown
+applies_when:
+  domain_in: [chemistry, physics, materials, eng]
+prereq: [domain]
+cost_tier: small
+prompt: |
+  You classify the spatial scale of the *thing the paper actually
+  studies*. Not the LLM's training corpus, not the broader field.
+
+  Pick exactly ONE:
+
+  - atomic   : individual atoms, single bonds, single defects
+  - nano     : < 100 nm typical dimension; nanotubes, dots, mono- to few-layer 2D
+  - meso     : 0.1–10 µm typical dimension
+  - micro    : 10 µm – 1 mm
+  - bulk     : > 1 mm; macroscopic samples; thin films treated as continuum
+  - multi    : the paper deliberately spans more than one scale
+  - unknown  : title + abstract don't pin down the scale
+  - n-a      : the paper has no spatial scale (pure theory, methodology, review)
+
+  Return JSON:
+  {"value": "<one>", "confidence": <0..1>,
+   "rationale": "<one sentence; required if confidence < 0.7>"}
+
+  Reviews and methods papers should usually be "n-a", not "unknown".
+  "Multi" is for papers that genuinely contrast scales as a finding.

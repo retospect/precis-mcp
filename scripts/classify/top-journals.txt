@@ -1,0 +1,203 @@
+# top 200 journal names by paper count
+# (use to seed src/precis/data/axes/journal_domains.yaml)
+
+  142  Nature Communications
+  135  Journal of the American Chemical Society
+  122  arXiv.org
+  100  Water Research
+   94  Fuel
+   64  Angewandte Chemie International Edition
+   63  Nature
+   54  Applied Catalysis B: Environmental
+   54  ACS Catalysis
+   53  Coordination Chemistry Reviews
+   53  Chemical Reviews
+   47  Chemical Society Reviews
+   46  Chemical Science
+   44  Science
+   43  Chem Catalysis
+   37  The Journal of Physical Chemistry C
+   34  Physical Review Letters
+   34  Proceedings of the National Academy of Sciences
+   33  Advanced Materials
+   32  Current Opinion in Chemical Engineering
+   30  ACS Applied Materials &amp; Interfaces
+   30  Small
+   28  Nano Letters
+   27  ACS Nano
+   26  Physical Review B
+   25  RSC Advances
+   24  The Journal of Chemical Physics
+   24  Angewandte Chemie
+   24  Advanced Functional Materials
+   21  Accounts of Chemical Research
+   21  Advanced Science
+   20  Nature Materials
+   19  Chemical Communications
+   19  Journal of Materials Chemistry A
+   19  International Journal of Hydrogen Energy
+   19  Chemical Engineering Journal
+   18  Chemistry of Materials
+   18  npj Computational Materials
+   17  Analytical Chemistry
+   16  Journal of Chemical Theory and Computation
+   16  Inorganic Chemistry
+   15  Chem
+   15  Nature Chemistry
+   14  Journal of Catalysis
+   14  ChemCatChem
+   13  Carbon
+   13  Electrochimica Acta
+   13  Molecules
+   13  Journal of Membrane Science
+   12  Science Advances
+   12  Journal of Chemical Information and Modeling
+   12  Physical Chemistry Chemical Physics
+   12  Energy &amp; Environmental Science
+   12  ChemSusChem
+   12  The Journal of Physical Chemistry Letters
+   11  Nature Nanotechnology
+   11  Scientific Reports
+   11  Chemistry – A European Journal
+   10  PLoS ONE
+   10  ACS Energy Letters
+   10  Environmental Science &amp; Technology
+   10  Advanced Energy Materials
+   10  ACS Applied Nano Materials
+    9  Nature Neuroscience
+    9  ACS Omega
+    9  Chem. Soc. Rev.
+    9  ACS Central Science
+    9  Journal of Computational Chemistry
+    9  Proceedings of the National Academy of Sciences of the United States of America
+    9  Nanoscale
+    8  ACS Sustainable Chemistry &amp; Engineering
+    8  Journal of Environmental Chemical Engineering
+    8  Catalysts
+    8  Biogeochemistry
+    8  Nutrients
+    8  Journal of Applied Polymer Science
+    7  Joule
+    7  Digital Discovery
+    7  Nano Research
+    7  Applied Surface Science
+    7  Small Methods
+    7  Neural Information Processing Systems
+    7  Langmuir
+    7  Environmental Science and Ecotechnology
+    7  Applied Catalysis B: Environment and Energy
+    7  Journal of Colloid and Interface Science
+    7  Journal of Power Sources
+    7  npj 2D Materials and Applications
+    7  Biosensors and Bioelectronics
+    6  Nature Synthesis
+    6  Applied Materials Today
+    6  Energies
+    6  Green Chemistry
+    6  International Conference on Machine Learning
+    6  bioRxiv
+    6  Topics in Catalysis
+    6  Catalysis Today
+    6  Journal of Cheminformatics
+    6  Plants
+    6  Nano-Micro Letters
+    6  iScience
+    6  Advanced Electronic Materials
+    6  EnergyChem
+    5  Dalton Transactions
+    5  Molecular Psychiatry
+    5  Catalysis Science &amp; Technology
+    5  Journal of Physics: Condensed Matter
+    5  Journal of Chemical Physics
+    5  Nature Machine Intelligence
+    5  Chemical Engineering Science
+    5  Computer Physics Communications
+    5  Crystal Growth &amp; Design
+    5  Applied and Environmental Microbiology
+    5  Microporous and Mesoporous Materials
+    5  Algorithmica
+    5  PLOS ONE
+    5  Proteins: Structure, Function, and Bioinformatics
+    5  Renewable and Sustainable Energy Reviews
+    5  Industrial &amp; Engineering Chemistry Research
+    5  Computational Materials Science
+    5  Nanoscale Advances
+    5  Energy &amp; Fuels
+    5  ACS Applied Energy Materials
+    5  Journal of Physical Chemistry A
+    5  Nanomaterials
+    5  Membranes
+    5  Materials
+    4  Sensors and Actuators B: Chemical
+    4  Journal of Materials Chemistry C
+    4  ACS Applied Materials and Interfaces
+    4  Small Structures
+    4  Nature Catalysis
+    4  Physical Review X
+    4  CrystEngComm
+    4  Biosensors
+    4  Journal of The Electrochemical Society
+    4  EES Catalysis
+    4  Reviews of Modern Physics
+    4  ChemPhysChem
+    4  Analytica Chimica Acta
+    4  eLife
+    4  The Journal of Physical Chemistry A
+    4  Current Opinion in Electrochemistry
+    4  National Science Review
+    4  Nature Reviews Neuroscience
+    4  ACS Engineering Au
+    4  Macromolecules
+    4  Advancement of science
+    4  Analytical and Bioanalytical Chemistry
+    4  Nanotechnology
+    4  Chinese Chemical Letters
+    4  Applied Energy
+    4  International Journal of Molecular Sciences
+    3  Lab on a Chip
+    3  Chemical Physics Letters
+    3  Brain Research
+    3  Environmental Chemistry Letters
+    3  Faraday Discussions
+    3  Sustainability
+    3  Journal of Physical Chemistry C
+    3  Journal of Physical Chemistry Letters
+    3  ACS Sensors
+    3  Neuropsychopharmacology
+    3  Communications Chemistry
+    3  Proceedings of the IEEE
+    3  Physical Review Materials
+    3  Surfaces and Interfaces
+    3  Nucleic Acids Research
+    3  Journal of Electroanalytical Chemistry
+    3  The Journal of Organic Chemistry
+    3  Polymers
+    3  Applied Physics Letters
+    3  BioTechniques
+    3  PHYSICAL REVIEW MATERIALS
+    3  Kybernetes
+    3  Frontiers in Plant Science
+    3  Catalysis Letters
+    3  Journal of CO2 Utilization
+    3  Electrochemistry Communications
+    3  Science China Materials
+    3  Materials Chemistry and Physics
+    3  Lecture Notes in Computer Science
+    3  ChemElectroChem
+    3  Nature Sustainability
+    3  JACS Au
+    3  The Journal of Physical Chemistry B
+    3  Nature Reviews Materials
+    3  Science Bulletin
+    3  Journal of Agricultural and Food Chemistry
+    3  Theranostics
+    3  Microchemical Journal
+    3  ChemPlusChem
+    3  Nano Energy
+    3  Food Chemistry
+    3  Biochemistry
+    3  Spin-Crossover Materials: Properties and Applications
+    3  Materials Today Energy
+    3  Frontiers in Microbiology
+    3  WIREs Computational Molecular Science
+    3  Atmospheric Chemistry and Physics

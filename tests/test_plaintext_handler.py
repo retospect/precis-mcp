@@ -91,7 +91,19 @@ def test_construction_fails_on_file_root(store: Store, tmp_path: Path) -> None:
 
 def test_empty_root_lists_no_files(handler: PlaintextHandler) -> None:
     out = handler.get()
-    assert "no plaintext files found" in out.body
+    assert "no plaintext files in workspace" in out.body
+
+
+def test_ls_sentinels_route_to_index(handler: PlaintextHandler, pt_root: Path) -> None:
+    """``id='.'`` / ``./`` / ``''`` all act as ``ls`` — the natural
+    invocations agents reach for to list files. Pre-fix, ``id='.'``
+    raised ``BadInput: invalid plaintext slug: '.'``.
+    """
+    _write(pt_root, "alpha.txt", "hello")
+    for sentinel in (".", "./", "", "/"):
+        out = handler.get(id=sentinel)
+        assert "1 plaintext file(s)" in out.body, f"sentinel {sentinel!r} failed"
+        assert "alpha" in out.body
 
 
 def test_index_lists_txt_and_log(handler: PlaintextHandler, pt_root: Path) -> None:
@@ -299,6 +311,78 @@ def test_put_edit_requires_text(handler: PlaintextHandler, pt_root: Path) -> Non
     assert "mode='edit'" not in str(exc.value)
 
 
+def test_missing_text_error_leads_with_delete_idiom(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """MCP critic 2026-05-03: small-model retry loop regression.
+
+    The previous error message buried ``text=''`` as a parenthetical,
+    which a 7B caller couldn't see past. The replacement must lead
+    with the two explicit options — DELETE vs REPLACE — so even a
+    truncated render (the common sortie log line caps the body at
+    ~200B) carries the actionable idiom.
+    """
+    _write(pt_root, "log.txt", "x.\n")
+    with pytest.raises(BadInput) as exc:
+        handler.edit(id="log", mode="find-replace", find="x")
+    body = str(exc.value)
+    # Delete idiom must appear in the first ~200B so truncation
+    # preserves it.
+    head = body[:200]
+    assert "text=''" in head
+    assert "DELETE" in head or "delete" in head
+
+
+def test_missing_text_error_includes_full_recipe(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """The ``next:`` hint must be a copy-pasteable ``edit(...)`` call
+    echoing every kwarg the caller supplied.
+
+    Previous hint was ``"add text='...' to the call"`` — actionable
+    in prose but impossible to copy-paste when the caller had already
+    sent a 10-kwarg invocation. Small models retried byte-identical
+    instead of reconstructing.
+    """
+    _write(pt_root, "log.txt", "hello world doi\n")
+    with pytest.raises(BadInput) as exc:
+        handler.edit(
+            id="log",
+            mode="find-replace",
+            find="doi",
+            before="hello ",
+            after="",
+            match="unique",
+        )
+    recipe = exc.value.next or ""
+    # Recipe is a complete edit() call with every supplied kwarg
+    # echoed verbatim.
+    assert "edit(" in recipe
+    assert "kind='plaintext'" in recipe
+    assert "id='log'" in recipe
+    assert "mode='find-replace'" in recipe
+    assert "find='doi'" in recipe
+    assert "before='hello '" in recipe
+    assert "text=''" in recipe
+
+
+def test_missing_find_error_includes_full_recipe(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """Symmetric to the text-missing case. Previous recipe was already
+    fully-formed; this test pins it so the find branch doesn't regress
+    while the text branch is refactored.
+    """
+    _write(pt_root, "log.txt", "x\n")
+    with pytest.raises(BadInput) as exc:
+        handler.edit(id="log", mode="find-replace", text="y")
+    recipe = exc.value.next or ""
+    assert "edit(" in recipe
+    assert "kind='plaintext'" in recipe
+    assert "id='log'" in recipe
+    assert "mode='find-replace'" in recipe
+
+
 def test_put_insert_before_anchor(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "log.txt", "end of story.\n")
     out = handler.edit(
@@ -358,7 +442,7 @@ def test_log_write_preserves_extension(
 
 
 def test_invalid_slug_rejected(handler: PlaintextHandler) -> None:
-    with pytest.raises(BadInput, match="invalid plaintext slug"):
+    with pytest.raises(BadInput, match="path traversal"):
         handler.get(id="../escape")
     with pytest.raises(BadInput, match="invalid plaintext slug"):
         handler.get(id="UPPERCASE")
@@ -419,14 +503,16 @@ def test_symlinked_subdirectory_inside_root_is_walked(
 def test_index_does_not_leak_absolute_root_path(
     handler: PlaintextHandler, pt_root: Path
 ) -> None:
-    """The LLM sees ``PRECIS_ROOT`` as ``./``; it must never see the
-    absolute filesystem path of the configured root in any rendered
-    output. The index is the loudest case (it always names the root)."""
+    """The agent sees the root as the abstract "workspace"; it must
+    never see the absolute filesystem path of the configured root in
+    any rendered output. The index is the loudest case (it always
+    names the root)."""
     _write(pt_root, "log.txt", "a paragraph.\n")
     out = handler.get()
     assert str(pt_root) not in out.body
-    # The symbolic name is what the LLM should see instead.
-    assert "PRECIS_ROOT" in out.body
+    # Neutral agent-facing terminology — never the ops env-var name.
+    assert "PRECIS_ROOT" not in out.body
+    assert "workspace" in out.body
 
 
 def test_empty_index_does_not_leak_absolute_root_path(
@@ -436,19 +522,22 @@ def test_empty_index_does_not_leak_absolute_root_path(
     separately."""
     out = handler.get()
     assert str(pt_root) not in out.body
-    assert "PRECIS_ROOT" in out.body
+    assert "PRECIS_ROOT" not in out.body
+    assert "workspace" in out.body
 
 
 def test_notfound_does_not_leak_absolute_root_path(
     handler: PlaintextHandler, pt_root: Path
 ) -> None:
     """Error messages were the original leak vector. Confirm the
-    refactored messages name PRECIS_ROOT, not the absolute path."""
+    refactored messages stay agent-facing — neither the absolute path
+    nor the ops env-var name."""
     with pytest.raises(NotFound) as exc:
         handler.get(id="ghost")
     msg = str(exc.value)
     assert str(pt_root) not in msg
-    assert "PRECIS_ROOT" in msg
+    assert "PRECIS_ROOT" not in msg
+    assert "workspace" in msg
 
 
 def test_put_on_existing_does_not_leak_absolute_path(

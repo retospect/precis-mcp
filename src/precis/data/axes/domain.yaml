@@ -1,0 +1,29 @@
+id: domain
+version: 1
+question: "What broad subject area does this paper belong to?"
+values: [chemistry, physics, bio, materials, eng, other, unknown]
+default_unknown: unknown
+applies_when:
+  always: true
+prereq: []
+cost_tier: small
+prompt: |
+  You classify a scientific paper into one of seven broad subject
+  areas based on its title and abstract.
+
+  Pick exactly ONE:
+
+  - chemistry  : chemistry, electrochem, photocatalysis, organic, inorganic
+  - physics    : condensed matter, optics, atomic, plasma, particle
+  - bio        : biology, medicine, neuroscience, psychology, biochem
+  - materials  : materials science, nanomaterials, composites, alloys
+  - eng        : engineering, devices, systems, control, manufacturing
+  - other      : clearly outside the above five (e.g. economics, history)
+  - unknown    : title + abstract genuinely ambiguous
+
+  Return JSON:
+  {"value": "<one of the seven>",
+   "confidence": <0..1>,
+   "rationale": "<one sentence; required if confidence < 0.7>"}
+
+  Do not guess. Use "unknown" if the abstract doesn't make the area clear.

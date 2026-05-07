@@ -638,6 +638,36 @@ def test_edit_requires_text(handler: PythonHandler) -> None:
     assert "mode='edit'" not in str(exc.value)
 
 
+def test_missing_text_error_leads_with_delete_idiom(handler: PythonHandler) -> None:
+    """MCP critic 2026-05-03 — small-model retry loop regression on
+    kind='python'. See plaintext twin for full rationale."""
+    with pytest.raises(BadInput) as exc:
+        handler.edit(id="r/pkg/m.py", mode="find-replace", find="def helper")
+    head = str(exc.value)[:200]
+    assert "text=''" in head
+    assert "DELETE" in head or "delete" in head
+
+
+def test_missing_text_error_includes_full_recipe(handler: PythonHandler) -> None:
+    """``next:`` hint is a copy-pasteable ``edit(...)`` echoing every
+    supplied kwarg so a 7B caller can replay it verbatim."""
+    with pytest.raises(BadInput) as exc:
+        handler.edit(
+            id="r/pkg/m.py",
+            mode="find-replace",
+            find="def helper",
+            before="",
+            after=":",
+            match="unique",
+        )
+    recipe = exc.value.next or ""
+    assert "edit(" in recipe
+    assert "kind='python'" in recipe
+    assert "mode='find-replace'" in recipe
+    assert "find='def helper'" in recipe
+    assert "text=''" in recipe
+
+
 # ---------------------------------------------------------------------------
 # mode='insert' — anchored insert
 # ---------------------------------------------------------------------------

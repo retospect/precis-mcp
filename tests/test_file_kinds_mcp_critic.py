@@ -154,12 +154,47 @@ def test_canonicalize_path_id_unit() -> None:
     )
     # Slug form is unchanged.
     assert canonicalize_path_id("notes--meeting", extensions=exts) == "notes--meeting"
-    # Unknown extension is not canonicalised (don't collide with
-    # another kind's file grammar).
+    # Unknown extension (not in handler list or common list) is not
+    # canonicalised — don't collide with another kind's file grammar.
     assert (
-        canonicalize_path_id("notes/meeting.txt", extensions=exts)
-        == "notes/meeting.txt"
+        canonicalize_path_id("notes/meeting.py", extensions=exts) == "notes/meeting.py"
     )
+
+
+def test_canonicalize_path_id_leading_dot_slash() -> None:
+    """MCP critic CRITICAL-C 2026-05-03: ``./`` prefix should not
+    collapse to slug ``.`` — strip it and canonicalise the rest."""
+    exts = (".md", ".markdown")
+    # ./ prefix stripped, then path-form canonicalised.
+    assert canonicalize_path_id("./request_doi.md", extensions=exts) == "request_doi"
+    # With selector preserved.
+    assert (
+        canonicalize_path_id("./notes/meeting.md~conclusion", extensions=exts)
+        == "notes--meeting~conclusion"
+    )
+    # ../ is rejected (path traversal guard).
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput):
+        canonicalize_path_id("../escape.md", extensions=exts)
+
+
+def test_canonicalize_path_id_common_extensions() -> None:
+    """Common prose extensions (.md, .txt, .bib, .tex) are recognised
+    even when the handler's own extensions don't include them — so
+    plaintext can accept ``./request_doi.md`` and ``request_doi.md``."""
+    # Plaintext only knows .txt/.log/.bib, but .md should still canonicalise.
+    plaintext_exts = (".txt", ".log", ".bib")
+    assert (
+        canonicalize_path_id("./request_doi.md", extensions=plaintext_exts)
+        == "request_doi"
+    )
+    assert (
+        canonicalize_path_id("request_doi.md", extensions=plaintext_exts)
+        == "request_doi"
+    )
+    # .tex also works.
+    assert canonicalize_path_id("./paper.tex", extensions=plaintext_exts) == "paper"
 
 
 # ── MAJOR-C: Track-A line-range addressing ─────────────────────────

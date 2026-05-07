@@ -136,7 +136,7 @@ def section_path(entry: dict[str, Any]) -> list[str]:
     out = [head] if head else []
     for x in extras:
         s = str(x).strip()
-        if s and s not in out and s != "—":
+        if s and s not in out and s not in ("—", "-"):
             out.append(s)
     return out
 

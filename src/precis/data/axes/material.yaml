@@ -1,0 +1,33 @@
+id: material
+version: 1
+question: "What primary material class does this paper investigate?"
+values: [cnt, graphene, nanobud, fullerene, mof, metal-oxide, polymer, other, unknown, n-a]
+default_unknown: unknown
+applies_when:
+  domain_in: [chemistry, materials, eng]
+prereq: [domain]
+cost_tier: small
+prompt: |
+  Classify the *primary material class* studied. Use "other" when
+  the material is specific but doesn't match the listed buckets.
+
+  Pick exactly ONE:
+
+  - cnt         : carbon nanotubes (SWCNT, MWCNT, CNF)
+  - graphene    : graphene, GO, rGO, few-layer graphene
+  - nanobud     : carbon nanobuds (graphene/CNT + fullerene fusion)
+  - fullerene   : C60, C70, endohedral fullerenes
+  - mof         : metal-organic frameworks
+  - metal-oxide : TiO2, ZnO, Cu2O, perovskite oxides
+  - polymer     : conducting and structural polymers
+  - other       : specific material outside the above
+  - unknown     : title + abstract don't pin down the material
+  - n-a         : no specific material (pure theory, methodology, review)
+
+  Return JSON:
+  {"value": "<one>", "confidence": <0..1>,
+   "rationale": "<one sentence; required if confidence < 0.7>"}
+
+  A graphene/CNT/fullerene composite is whichever the paper claims
+  is the new contribution. If multiple are equally weighted, pick
+  the most novel — usually nanobud > fullerene > cnt > graphene.

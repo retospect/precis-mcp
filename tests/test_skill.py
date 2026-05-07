@@ -224,6 +224,52 @@ def test_precis_help_listed_in_index(skill: SkillHandler) -> None:
     assert "active kinds" in out.body
 
 
+# ── synthesized precis-toc skill ─────────────────────────────────────
+
+
+def test_toc_alias_dispatches_to_precis_toc(skill: SkillHandler) -> None:
+    """Both ``id='toc'`` and ``id='precis-toc'`` render the same body.
+
+    The alias is registered in ``_SYNTH_ALIASES`` so a 7B caller
+    typing the natural ``toc`` lands on the same TOC view as the
+    canonical slug.
+    """
+    short = skill.get(id="toc").body
+    full = skill.get(id="precis-toc").body
+    assert short == full
+
+
+def test_toc_lists_every_skill_with_synopsis(skill: SkillHandler) -> None:
+    """The TOC names every shipping skill plus the synth meta-skills.
+
+    Synopsis is best-effort — we only assert that at least one
+    real skill renders with both its slug and its title (the
+    multi-line ``- **slug** — title`` shape).
+    """
+    out = skill.get(id="toc")
+    body = out.body
+    # Headings.
+    assert "precis-toc" in body
+    assert "Meta-skills" in body
+    assert "Skills (" in body  # Skills (NN)
+    # Every synth meta-skill appears in the meta block.
+    assert "precis-help" in body
+    assert "precis-status" in body
+    assert "precis-toc" in body
+    # At least the canonical entry-point skill is listed.
+    assert "precis-overview" in body
+    # Discovery footer.
+    assert "search(kind='skill'" in body
+
+
+def test_toc_listed_in_bare_index_hint(skill: SkillHandler) -> None:
+    """``get(kind='skill')`` (no id) hints at ``id='toc'`` in the
+    Next-Up trailer so an agent navigating the index lands on the
+    TOC immediately rather than scrolling the raw slug list."""
+    out = skill.get()
+    assert "id='toc'" in out.body
+
+
 # ── search marks unwired skills ──────────────────────────────────────
 
 

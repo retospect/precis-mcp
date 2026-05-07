@@ -134,6 +134,14 @@ edit(kind='markdown', id='notes--foo',
     mode='insert',
     find='## Conclusion', where='before',
     text='\n## TL;DR\n\nQuick summary here.\n\n')
+
+# Delete a matched span without rewriting the surrounding block.
+# text='' is the canonical span-delete idiom — `delete` is for
+# whole files and whole blocks, not single lines or tokens.
+edit(kind='markdown', id='notes--foo~intro',
+    mode='find-replace',
+    find='(draft) ',
+    text='')   # empty text = delete
 ```
 
 Markdown-specific quirks:

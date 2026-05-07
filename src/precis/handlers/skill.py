@@ -78,6 +78,16 @@ class SkillHandler(Handler):
     _SYNTHESIZED_SKILLS: ClassVar[dict[str, str]] = {
         "precis-help": ("active kinds + verbs (auto-generated from this server)"),
         "precis-status": ("optional dependencies + runtime health probe"),
+        "precis-toc": ("table of contents - every skill with a one-line summary"),
+        "toc": ("alias for precis-toc"),
+    }
+
+    #: Synth slugs that map to the same renderer as another synth slug.
+    #: Avoids duplicating ``_render_*`` methods for short aliases like
+    #: ``toc`` → ``precis-toc``. Keys and values are slugs from
+    #: :data:`_SYNTHESIZED_SKILLS`.
+    _SYNTH_ALIASES: ClassVar[dict[str, str]] = {
+        "toc": "precis-toc",
     }
 
     #: Backwards-compat alias for the original single-slug attribute.
@@ -119,7 +129,15 @@ class SkillHandler(Handler):
         # optional deps, …  Each entry in ``_SYNTHESIZED_SKILLS``
         # dispatches to ``_render_<slug-stem>``.
         if slug in self._SYNTHESIZED_SKILLS:
-            method_name = "_render_" + slug.split("-", 1)[1].replace("-", "_")
+            # Resolve aliases first so e.g. ``toc`` dispatches to the
+            # same renderer as ``precis-toc``.
+            target = self._SYNTH_ALIASES.get(slug, slug)
+            # Strip the ``precis-`` prefix when present; bare slugs
+            # (``toc``) dispatch via their whole name. The stem
+            # produces ``_render_<stem>`` with hyphens folded to
+            # underscores so multi-word stems work too.
+            stem = target.split("-", 1)[1] if "-" in target else target
+            method_name = "_render_" + stem.replace("-", "_")
             renderer = getattr(self, method_name, None)
             if renderer is None:  # pragma: no cover — registry typo
                 raise NotFound(
@@ -292,6 +310,10 @@ class SkillHandler(Handler):
         body += render_next_section(
             [
                 (
+                    "get(kind='skill', id='toc')",
+                    "table of contents - every skill with a one-liner",
+                ),
+                (
                     "get(kind='skill', id='precis-help')",
                     "what this server can do (active kinds)",
                 ),
@@ -311,6 +333,70 @@ class SkillHandler(Handler):
             ]
         )
         return Response(body=body)
+
+    def _render_toc(self) -> str:
+        """Render the synthesised ``precis-toc`` (alias: ``toc``) skill.
+
+        Lists every available skill with its title and a one-line
+        synopsis pulled from the first paragraph after front-matter.
+        Filtered the same way the index is — skills whose subject
+        kind isn't wired or whose status is ``planned`` are listed
+        in a separate "Hidden" section so an agent scanning the TOC
+        sees the live set first.
+
+        This is the embedding-search-poor-cousin: substring match
+        on titles + summaries gets close enough for a 25-skill
+        corpus, and the user can always
+        ``search(kind='skill', q=...)`` for fuzzier lookup.
+        """
+        lines = ["# precis-toc — every skill at a glance", ""]
+        skills = sorted(_list_skills())
+
+        active: list[tuple[str, str, str]] = []  # slug, title, synopsis
+        hidden: list[tuple[str, str, str]] = []
+        for slug in skills:
+            title = _skill_title(slug) or slug
+            synopsis = _skill_synopsis(slug)
+            row = (slug, title, synopsis)
+            if _availability_gap(slug, hub=self.hub) is not None:
+                hidden.append(row)
+            else:
+                active.append(row)
+
+        # Synth meta-skills go first — they're the discovery
+        # primitives an agent uses to navigate the TOC itself.
+        if self._SYNTHESIZED_SKILLS:
+            lines.append("## Meta-skills (synthesised)")
+            lines.append("")
+            for slug, desc in self._SYNTHESIZED_SKILLS.items():
+                lines.append(f"- **{slug}** — {desc}")
+            lines.append("")
+
+        lines.append(f"## Skills ({len(active)})")
+        lines.append("")
+        for slug, title, synopsis in active:
+            if synopsis:
+                lines.append(f"- **{slug}** — {title}")
+                lines.append(f"  {synopsis}")
+            else:
+                lines.append(f"- **{slug}** — {title}")
+        lines.append("")
+
+        if hidden:
+            lines.append(
+                f"## Hidden ({len(hidden)} — kind not wired or status: planned)"
+            )
+            lines.append("")
+            for slug, title, _synopsis in hidden:
+                lines.append(f"- {slug} — {title}")
+            lines.append("")
+
+        lines.append("---")
+        lines.append(
+            "**Discover:** `search(kind='skill', q='your goal')` or "
+            "`get(kind='skill', id='<slug>')`."
+        )
+        return "\n".join(lines)
 
     def _render_help(self) -> str:
         """Render the synthesized ``precis-help`` skill.
@@ -699,6 +785,40 @@ def _hub_has_kind(hub: Any, kind: str) -> bool:
     except (AttributeError, KeyError):
         return False
     return kind in kinds
+
+
+def _skill_synopsis(slug: str) -> str:
+    """Pull a one-line synopsis from a skill's body.
+
+    Strategy:
+      1. First non-blank line after the front-matter that isn't an
+         H1/H2 header, blockquote, or HTML comment.
+      2. Trim to ~140 chars.
+      3. Strip surrounding whitespace and trailing punctuation.
+
+    Empty string if nothing usable. Used by the ``precis-toc``
+    renderer so each TOC entry carries a sentence's worth of context
+    without committing to the full skill body.
+    """
+    text = _load_skill(slug)
+    if text is None:
+        return ""
+    body = text
+    # Skip front-matter.
+    if body.startswith("---"):
+        end = body.find("\n---", 3)
+        if end != -1:
+            body = body[end + 4 :]
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(("#", ">", "<!--", "---", "|")):
+            continue
+        if len(line) > 140:
+            line = line[:137].rstrip() + "…"
+        return line
+    return ""
 
 
 def _skill_title(slug: str) -> str:

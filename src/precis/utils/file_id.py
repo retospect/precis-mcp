@@ -93,6 +93,9 @@ def canonicalize_path_id(raw: str, *, extensions: Sequence[str]) -> str:
     file-slug via :func:`file_slug_from_path` and the unchanged
     remainder (``~...`` or ``/...``) is re-attached.
 
+    Also handles leading ``./`` (current directory) which would
+    otherwise split into slug ``.`` (MCP critic CRITICAL-C 2026-05-03).
+
     Inputs that are already in slug-form (no ``/``, or a ``/`` that
     isn't preceded by a known extension) are returned unchanged.
     ``ValueError`` from :func:`file_slug_from_path` and a
@@ -100,19 +103,45 @@ def canonicalize_path_id(raw: str, *, extensions: Sequence[str]) -> str:
     fall-through to the original string; the downstream path
     resolver will raise a clearer error than this helper can.
     """
-    if "/" not in raw:
-        return raw
-    m = _path_ext_pattern(extensions).search(raw)
+    # Strip leading ./ (and collapse ../ traversal to avoid escape)
+    s = raw.removeprefix("./")
+    if s.startswith("../"):
+        raise BadInput(
+            f"path traversal not allowed: {raw!r}",
+            next="use a simple slug or a path under the configured root",
+        )
+
+    # Accept handler-specific extensions plus common prose extensions
+    # so e.g. plaintext can accept ./request_doi.md → request-doi
+    common_exts = (".md", ".markdown", ".txt", ".log", ".bib", ".tex")
+    all_exts = tuple(dict.fromkeys(tuple(extensions) + common_exts))
+    m = _path_ext_pattern(all_exts).search(s)
     if m is None:
-        return raw
-    path_part = raw[: m.end()]
-    rest = raw[m.end() :]
+        return s if s != raw else raw
+
+    # If there's no / but we matched an extension (e.g., "file.md"),
+    # canonicalise to slug form (e.g., "file") as long as the result
+    # is a valid slug.
+    if "/" not in s:
+        path_part = s[: m.end()]
+        rest = s[m.end() :]
+        try:
+            slug = file_slug_from_path(path_part)
+        except ValueError:
+            return s if s != raw else raw
+        if is_valid_file_slug(slug):
+            return slug + rest
+        return s if s != raw else raw
+
+    # Path contains / — split and canonicalise the path portion
+    path_part = s[: m.end()]
+    rest = s[m.end() :]
     try:
         slug = file_slug_from_path(path_part)
     except ValueError:
-        return raw
+        return s if s != raw else raw
     if not is_valid_file_slug(slug):
-        return raw
+        return s if s != raw else raw
     return slug + rest
 
 

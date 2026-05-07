@@ -323,6 +323,15 @@ edit(kind='python', id='r/src/precis/cli.py',
     find='X.legacy_method(',
     text='X.method(',
     match='all')
+
+# Delete a matched span without rewriting the surrounding block.
+# text='' is the canonical span-delete idiom — use it to drop one
+# line, one cite, or one decorator; use `delete` only for whole
+# files and whole blocks.
+edit(kind='markdown', id='notes--foo~intro',
+    mode='find-replace',
+    find='(draft) ',
+    text='')
 ```
 
 The rule of thumb: **content selects, range bounds.** Use the `id`

@@ -34,6 +34,7 @@ from precis.handlers import _python_entries as entries_mod
 from precis.handlers import _python_render as render
 from precis.handlers import _python_runtrace as rtrace
 from precis.handlers import _python_write as write
+from precis.handlers.plaintext import _recipe
 from precis.protocol import Handler, KindSpec
 from precis.python_index import ModuleIndex, RepoCache, RepoIndex, Symbol
 from precis.python_index.indexer import _qualname_for_file
@@ -807,18 +808,47 @@ class PythonHandler(Handler):
         # internal alias for the wire-level ``mode='find-replace'``;
         # error strings echo the user's name, not the alias.
         user_mode = "find-replace" if op_kind == "edit" else op_kind
+        # Reconstruct the caller's id as they'd have written it; used in
+        # the error-recovery recipes below.
+        py_id = f"{parsed.alias}/{parsed.file or '...'}"
         if find is None or not find:
             raise BadInput(
                 f"mode={user_mode!r} requires find= (the exact text to locate)",
-                next=(
-                    f"edit(kind='python', id={parsed.alias}/{parsed.file or '...'}, "
-                    f"mode={user_mode!r}, find='exact text', text='replacement')"
+                next=_recipe(
+                    kind="python",
+                    slug=py_id,
+                    mode=user_mode,
+                    find="'exact text'",
+                    text="'replacement'",
+                    before=before,
+                    after=after,
+                    where=where,
+                    match=match,
+                    nth=nth,
                 ),
             )
         if text is None:
+            # MCP critic 2026-05-03: see plaintext._put_anchored for
+            # rationale. Lead with the two choices (delete vs replace),
+            # echo every supplied arg in the recipe so small callers
+            # can copy-paste.
             raise BadInput(
-                f"mode={user_mode!r} requires text= ('' is allowed for delete-by-edit)",
-                next="add text='...' to the call",
+                f"mode={user_mode!r} requires text=. "
+                f"Pass text='' to DELETE the matched span; "
+                f"pass text='<replacement>' to REPLACE it.",
+                next=_recipe(
+                    kind="python",
+                    slug=py_id,
+                    mode=user_mode,
+                    find=find,
+                    text="''",
+                    before=before,
+                    after=after,
+                    where=where,
+                    match=match,
+                    nth=nth,
+                    trailing_comment="# delete",
+                ),
             )
 
         # Resolve the search region. Same logic as replace/delete:

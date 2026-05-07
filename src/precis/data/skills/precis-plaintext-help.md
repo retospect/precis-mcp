@@ -93,6 +93,24 @@ The `id` selector bounds the search region: pass `~<slug>` to
 scope the edit to one paragraph so you don't accidentally match
 the same word elsewhere in the file.
 
+### Delete one line (or one matched span) in place
+
+Use `mode='find-replace'` with `text=''`. That's the canonical
+span-delete idiom for every R/W file kind — `delete` is for
+whole files and whole blocks, not lines.
+
+```python
+# Drop one doi= line from a bibtex entry, leaving the rest of
+# the @article{…} block intact. Anchors disambiguate even if the
+# same doi text appears elsewhere.
+edit(kind='plaintext', id='refs.bib',
+     mode='find-replace',
+     find='doi     = {10.1111/ejn.12125}',
+     before='@article{tritsch2012dopaminergic,',
+     after='volume  = {35},',
+     text='')   # empty text = delete
+```
+
 ### Search across all plaintext
 
 ```python

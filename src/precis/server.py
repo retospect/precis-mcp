@@ -54,7 +54,9 @@ _INSTRUCTIONS = (
     "Verbs: get, search, put, edit, delete, tag, link.  Discriminator: kind=.\n"
     "Read the `precis-overview` skill (get(kind='skill', id='precis-overview'))\n"
     "for the full mental model: kind topology, addressing, views, modes,\n"
-    "tags, links, and cache."
+    "tags, links, and cache.\n\n"
+    "Discover skills: get(kind='skill', id='toc') for the full table of\n"
+    "contents, or search(kind='skill', q='your goal') for fuzzy lookup."
 )
 
 # Sanity check the instructions actually advertise every verb. The MCP
@@ -532,16 +534,19 @@ def edit(
 
     Distinct from ``put`` — ``put`` creates new refs (or rewrites a
     whole-file ref); ``edit`` rewrites a region within an existing one.
-    The mode menu is kind-specific:
+    Each mode has a **fixed** required-argument set; the JSON Schema
+    encodes the coupling so a call with the wrong shape is rejected
+    before dispatch.
 
-    - ``find-replace`` (default): anchor-based string replace. Pair
-      ``find=`` with ``text=`` plus ``before=`` / ``after=`` /
-      ``where=`` / ``match=`` / ``nth=`` to disambiguate. ``allow_rename``
-      and ``dry_run`` keep the same semantics as today's
-      ``put(mode='edit')``.
-    - ``append`` / ``insert`` / ``replace``: file-kind region edits.
-      ``id=`` carries a selector (``slug~SLUG`` or ``slug~Lstart-Lend``);
-      ``text=`` is the new region content.
+    - ``find-replace`` (default): anchor-based string replace. Requires
+      ``find=`` AND ``text=``. Optional ``before=`` / ``after=`` /
+      ``match=`` / ``nth=`` disambiguate. Pass ``text=''`` to **delete
+      the matched span** — this is the canonical span-delete idiom.
+    - ``insert``: insert ``text=`` adjacent to a ``find=`` anchor.
+      Requires ``find=``, ``text=``, ``where='before'|'after'``.
+    - ``append`` / ``replace``: whole-region region edits. Requires
+      ``text=``. ``replace`` with ``id='slug~selector'`` rewrites one
+      block; ``append`` adds to the end of the file.
     - ``reorder``: structured-file rearrangement (deferred — not yet
       wired). See migration doc D5.
 
@@ -553,13 +558,21 @@ def edit(
         id:   Existing ref id, optionally with selector for region edits.
         mode: ``find-replace`` (default), ``append``, ``insert``,
               ``replace``, ``reorder``.
-        text: Replacement / inserted content (mode-dependent).
-        find: Anchor string for ``find-replace`` mode.
-        before / after / where: Disambiguation anchors.
-        match: ``unique`` (default) or ``nth``.
+        text: Replacement / inserted content. **Required** for every
+              mode except ``reorder``. Pass ``text=''`` on
+              ``mode='find-replace'`` to delete the matched span.
+        find: Literal anchor string. **Required** for ``find-replace``
+              and ``insert``.
+        before / after: Optional literal bytes immediately preceding /
+              following ``find=``. Disambiguate when the same ``find``
+              appears more than once.
+        where: ``'before'`` or ``'after'``. **Required** for ``insert``.
+        match: ``'unique'`` (default), ``'first'``, ``'all'``, ``'nth'``.
         nth:   1-based index when ``match='nth'``.
-        allow_rename: For find-replace edits that change a symbol name.
-        dry_run: Preview the edit without writing.
+        allow_rename: For find-replace edits that change a Python symbol
+              name; opt in to the qualname-drop gate override.
+        dry_run: Preview the edit without writing (``True`` / ``'diff'``
+              / ``'full'``).
     """
     payload: dict[str, Any] = {
         "kind": kind,
@@ -578,6 +591,79 @@ def edit(
     return _dispatch("edit", payload)
 
 
+def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
+    """Rewrite ``edit``'s inputSchema to encode per-mode required args.
+
+    Pydantic generates a flat schema where ``text``, ``find`` and
+    ``where`` are all optional (because the Python-level defaults
+    are ``None``). That's a lie — **every** wire-level mode requires
+    ``text=``, ``find-replace`` and ``insert`` additionally require
+    ``find=``, and ``insert`` also requires ``where=``. Small models
+    read the schema's ``required`` array at face value; burying the
+    coupling in prose cost a retry loop on qwen3:8b (MCP critic
+    MAJOR-C, 2026-05-03 — small models called ``edit(... mode=
+    'find-replace', find=..., before=..., after=...)`` repeatedly
+    with no ``text=`` and did not recover from the runtime error).
+
+    The mutation runs once at module import. FastMCP's ``list_tools``
+    copies ``tool.parameters`` into the wire ``inputSchema`` on every
+    call, so the constraint surfaces to every client. Runtime
+    validation is pydantic-backed and still accepts missing fields —
+    the handler's ``BadInput`` path remains the fallback when a client
+    ignores the schema.
+    """
+    tool = mcp_app._tool_manager.get_tool("edit")
+    if tool is None:  # pragma: no cover — edit always registers above
+        return
+    params = tool.parameters
+    # Sentinel keeps the mutation idempotent: multiple imports or a
+    # second call from a test harness must not duplicate ``allOf``
+    # clauses or re-append ``text`` to ``required``.
+    if params.get("x-precis-edit-constraints-installed"):
+        return
+
+    # ``text`` is required on every wire-level mode. Top-level
+    # ``required`` is the field small models read first.
+    required = list(params.get("required", []))
+    if "text" not in required:
+        required.append("text")
+    params["required"] = required
+
+    # ``find`` and ``where`` are mode-conditional; express via
+    # ``allOf`` + ``if/then``. Draft 2020-12 semantics: the ``if``
+    # schema is evaluated against the instance; if it validates,
+    # the ``then`` schema must also validate.
+    mode_requires_find = {"find-replace", "insert"}
+    conditions: list[dict[str, Any]] = [
+        {
+            "if": {
+                "properties": {"mode": {"enum": sorted(mode_requires_find)}},
+                "required": ["mode"],
+            },
+            "then": {"required": ["find"]},
+        },
+        {
+            "if": {
+                "properties": {"mode": {"const": "insert"}},
+                "required": ["mode"],
+            },
+            "then": {"required": ["where"]},
+        },
+        # When ``mode`` is omitted, pydantic defaults to 'find-replace'
+        # — so ``find`` is still required.
+        {
+            "if": {"not": {"required": ["mode"]}},
+            "then": {"required": ["find"]},
+        },
+    ]
+    existing = list(params.get("allOf", []))
+    params["allOf"] = existing + conditions
+    params["x-precis-edit-constraints-installed"] = True
+
+
+_install_edit_schema_constraints(mcp)
+
+
 @mcp.tool(**_TOOL_KW)
 def delete(
     kind: str,
@@ -592,8 +678,10 @@ def delete(
       it just stops appearing in list views and search.
     - File kinds with a selector in ``id=`` (markdown, plaintext,
       python): delete the addressed block / symbol / line range.
-      Without a selector → ``BadInput`` (use ``edit(mode='replace',
-      text='')`` to clear a whole file).
+      Without a selector → ``BadInput`` — use
+      ``edit(mode='replace', text='')`` to clear a whole file, or
+      ``edit(mode='find-replace', find='…', text='')`` to delete a
+      matched span without touching the surrounding block.
     - Cache-backed and read-only kinds (calc, math, web, youtube,
       research, think, websearch, paper): ``Unsupported``.
 

@@ -1,0 +1,29 @@
+id: transport
+version: 1
+question: "What is the geometry of the conduction / current path?"
+values: [point-contact, few-atom, thin-film, bulk-3d, interfacial, n-a]
+default_unknown: n-a
+applies_when:
+  domain_in: [physics, materials, eng]
+prereq: [domain, property]
+cost_tier: small
+prompt: |
+  When a paper studies electrical conduction, what is the geometry
+  of the current path?
+
+  Pick exactly ONE:
+
+  - point-contact : single tip / single junction (STM, break-junction)
+  - few-atom      : ballistic over ≤ ~10 atoms; quantum point contacts
+  - thin-film     : planar 2D film; sheet conduction
+  - bulk-3d       : 3D current path through a bulk sample
+  - interfacial   : conduction localised at interface or grain boundary
+  - n-a           : paper does not measure or compute electrical transport
+
+  Return JSON:
+  {"value": "<one>", "confidence": <0..1>,
+   "rationale": "<one sentence; required if confidence < 0.7>"}
+
+  Use "n-a" liberally — most papers don't study transport. STM-IV
+  curves on a single molecule are "point-contact". Hall measurements
+  on a graphene sheet are "thin-film". A bulk MOF pellet is "bulk-3d".

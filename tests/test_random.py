@@ -330,6 +330,7 @@ def test_ignores_unknown_kwargs(store: Store, hub: Hub, handler: RandomHandler) 
 def test_slug_view_default_4_chars_crockford(handler: RandomHandler) -> None:
     """``view='slug'`` mints a 4-char Crockford-alphabet slug by default."""
     from precis.handlers.random import _CROCKFORD_ALPHABET
+
     r = handler.get(view="slug")
     slug = r.body
     assert len(slug) == 4
@@ -343,7 +344,7 @@ def test_slug_view_no_corpus_dependency(handler: RandomHandler) -> None:
     (the default block-pick path raises NotFound on empty corpus)."""
     # No fixtures seeded; corpus is empty.
     r = handler.get(view="slug")
-    assert len(r.body) == 4   # still works
+    assert len(r.body) == 4  # still works
 
 
 def test_slug_view_freshly_random(handler: RandomHandler) -> None:
@@ -369,6 +370,7 @@ def test_slug_view_custom_length(handler: RandomHandler) -> None:
 def test_slug_view_length_out_of_range(handler: RandomHandler) -> None:
     """Length must be in [1, 64]; outside that range raises BadInput."""
     from precis.errors import BadInput
+
     with pytest.raises(BadInput, match="must be in"):
         handler.get(view="slug", args={"len": 0})
     with pytest.raises(BadInput, match="must be in"):
@@ -380,6 +382,7 @@ def test_slug_view_length_out_of_range(handler: RandomHandler) -> None:
 def test_slug_view_non_integer_length(handler: RandomHandler) -> None:
     """Non-integer length is BadInput, not a TypeError."""
     from precis.errors import BadInput
+
     with pytest.raises(BadInput, match="must be an integer"):
         handler.get(view="slug", args={"len": "four"})
 
@@ -391,7 +394,7 @@ def test_slug_view_named_alphabets(handler: RandomHandler) -> None:
     assert all(c in "abcdefghijklmnopqrstuvwxyz" for c in r.body)
 
     r = handler.get(view="slug", args={"len": 20, "alphabet": "alnum"})
-    assert all(c.isalnum() and c.islower() or c.isdigit() for c in r.body)
+    assert all((c.isalnum() and c.islower()) or c.isdigit() for c in r.body)
 
 
 def test_slug_view_custom_alphabet_literal(handler: RandomHandler) -> None:
@@ -405,16 +408,18 @@ def test_slug_view_alphabet_too_short(handler: RandomHandler) -> None:
     every slug is just the same char repeated, which defeats the
     purpose."""
     from precis.errors import BadInput
+
     with pytest.raises(BadInput, match="at least 2 distinct"):
         handler.get(view="slug", args={"alphabet": "aaa"})  # 3 chars but 1 distinct
     with pytest.raises(BadInput, match="length ≥ 2"):
-        handler.get(view="slug", args={"alphabet": "x"})    # too short
+        handler.get(view="slug", args={"alphabet": "x"})  # too short
 
 
 def test_slug_view_unknown_alphabet_name(handler: RandomHandler) -> None:
     """Unknown alphabet name with length < 2 → not treated as literal,
     rejected with the named-alphabet error."""
     from precis.errors import BadInput
+
     # Short non-string-like alphabet arg
     with pytest.raises(BadInput, match="alphabet"):
         handler.get(view="slug", args={"alphabet": 42})
@@ -424,5 +429,6 @@ def test_unknown_view_raises_bad_input(handler: RandomHandler) -> None:
     """An unknown view= isn't silently treated as the default — it's
     BadInput so the agent learns the supported set."""
     from precis.errors import BadInput
+
     with pytest.raises(BadInput, match="unknown random view"):
         handler.get(view="bogus")

@@ -97,7 +97,7 @@ def test_index_lists_tex_files_only(handler: TexHandler, tex_root: Path) -> None
 
 def test_empty_root_lists_no_tex_files(handler: TexHandler) -> None:
     out = handler.get()
-    assert "no tex files found" in out.body
+    assert "no tex files" in out.body
 
 
 # ── overview + block reads route via kind='tex' ──────────────────────
@@ -207,7 +207,7 @@ def test_search_empty_corpus(handler: TexHandler) -> None:
 
 
 def test_invalid_slug_rejected(handler: TexHandler) -> None:
-    with pytest.raises(BadInput, match="invalid tex slug"):
+    with pytest.raises(BadInput, match="path traversal"):
         handler.get(id="../escape")
 
 

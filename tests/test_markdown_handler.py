@@ -51,7 +51,7 @@ def test_construction_fails_on_file_root(store: Store, tmp_path: Path) -> None:
 
 def test_empty_root_lists_no_files(handler: MarkdownHandler) -> None:
     out = handler.get()
-    assert "no markdown files found" in out.body
+    assert "no markdown files" in out.body
 
 
 def test_index_lists_files(handler: MarkdownHandler, md_root: Path) -> None:
@@ -376,7 +376,7 @@ def test_put_bad_mode(handler: MarkdownHandler) -> None:
 
 
 def test_invalid_slug_blocked(handler: MarkdownHandler) -> None:
-    with pytest.raises(BadInput, match="invalid markdown slug"):
+    with pytest.raises(BadInput, match="path traversal"):
         handler.get(id="../etc/passwd")
     with pytest.raises(BadInput, match="invalid markdown slug"):
         handler.get(id="UPPERCASE")

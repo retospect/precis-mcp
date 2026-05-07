@@ -111,6 +111,19 @@ edit(kind='tex', id='chapters/intro',
      text=r'\citep{Smith2020,Jones2021}')
 ```
 
+### Delete a matched span in place
+
+`text=''` is the canonical span-delete idiom. Use it to strip one
+cite, one footnote, or one `\todo{...}` without rewriting the
+surrounding paragraph.
+
+```python
+edit(kind='tex', id='chapters/intro',
+     mode='find-replace',
+     find=r'\todo{check this}',
+     text='')   # empty text = delete
+```
+
 ### Search across the project
 
 ```python

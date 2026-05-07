@@ -1,0 +1,31 @@
+id: property
+version: 1
+question: "What primary property does this paper investigate?"
+values: [electrical, mechanical, thermal, optical, chemical, magnetic, multi, unknown, n-a]
+default_unknown: unknown
+applies_when:
+  domain_in: [chemistry, physics, materials, eng]
+prereq: [domain]
+cost_tier: small
+prompt: |
+  Classify the *primary measured or computed property* of the paper.
+
+  Pick exactly ONE:
+
+  - electrical  : conductivity, resistance, transport, I-V, mobility
+  - mechanical  : strength, stiffness, fracture, fatigue, deformation
+  - thermal     : thermal conductivity, heat capacity, expansion
+  - optical     : absorption, emission, plasmonics, Raman, reflectance
+  - chemical    : catalysis, adsorption, reactivity, selectivity, kinetics
+  - magnetic    : magnetism, spintronics, susceptibility
+  - multi       : two or more properties investigated in depth
+  - unknown     : title + abstract don't reveal the property
+  - n-a         : no measured property (pure synthesis, review, method)
+
+  Return JSON:
+  {"value": "<one>", "confidence": <0..1>,
+   "rationale": "<one sentence; required if confidence < 0.7>"}
+
+  Photocatalysis is "chemical" (catalysis is the property), not
+  "optical", even though light is involved. Pure synthesis with no
+  property characterization is "n-a".

@@ -222,13 +222,13 @@ class MarkdownHandler(PlaintextHandler):
         if not seen:
             return Response(
                 body=(
-                    "no markdown files found under PRECIS_ROOT\n"
+                    "no markdown files in workspace\n"
                     "create one with put(kind='markdown', id='SLUG', "
                     "text='# Title\\n...', mode='create')"
                 )
             )
 
-        lines = [f"# {len(seen)} markdown file(s) under PRECIS_ROOT"]
+        lines = [f"# {len(seen)} markdown file(s) in workspace"]
         max_w = max(len(s) for s in seen)
         for slug in sorted(seen):
             lines.append(f"  {slug:<{max_w}}  {seen[slug]}")

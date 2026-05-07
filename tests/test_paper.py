@@ -93,9 +93,7 @@ class TestResolveDoi:
 
     def test_doi_translates_to_slug(self, store: Store) -> None:
         _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
-        assert (
-            _maybe_resolve_doi(store, "10.1111/jnc.13915") == "wang2020state"
-        )
+        assert _maybe_resolve_doi(store, "10.1111/jnc.13915") == "wang2020state"
 
     def test_doi_preserves_chunk_selector(self, store: Store) -> None:
         _seed_paper(store, slug="wang2020state", doi="10.1038/s41598-023-44772-6")
@@ -109,8 +107,7 @@ class TestResolveDoi:
         # reject these at the ``.`` — DOI resolution short-circuits that.
         _seed_paper(store, slug="smith2019foo", doi="10.1016/j.ejphar.2025.177633")
         assert (
-            _maybe_resolve_doi(store, "10.1016/j.ejphar.2025.177633")
-            == "smith2019foo"
+            _maybe_resolve_doi(store, "10.1016/j.ejphar.2025.177633") == "smith2019foo"
         )
 
     def test_unknown_doi_raises_notfound(self, store: Store) -> None:
@@ -118,9 +115,7 @@ class TestResolveDoi:
         with pytest.raises(NotFound, match="DOI .* not ingested"):
             _maybe_resolve_doi(store, "10.9999/nope")
 
-    def test_get_by_doi_end_to_end(
-        self, store: Store, handler: PaperHandler
-    ) -> None:
+    def test_get_by_doi_end_to_end(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
         resp = handler.get(id="10.1111/jnc.13915")
         assert "wang2020state" in resp.body
@@ -424,7 +419,9 @@ class TestChunks:
         resp = handler.get(id="wang2020state~3")
         assert "Next:" in resp.body
         # Promoted: in-paper semantic search.
-        assert "search(kind='paper', q='your query', scope='wang2020state')" in resp.body
+        assert (
+            "search(kind='paper', q='your query', scope='wang2020state')" in resp.body
+        )
         # Promoted: TOC.
         assert "view='toc'" in resp.body
         # Forward read is a 5-block range, not bare ~4.
@@ -496,6 +493,24 @@ class TestSearch:
         _seed_paper(store, blocks=["alpha"])
         resp = lex_only.search(q="zzqqxx")
         assert "no paper blocks match" in resp.body
+
+    def test_search_doi_miss_routes_to_request_doi(self, store: Store) -> None:
+        """DOI-shaped query that misses should point to request_doi.md
+        (perplexity / fetch pipeline) rather than suggest a wider
+        lexical search that will also miss. Friction fix for the
+        shotgun pattern where agents fire 3-5 keyword variants
+        trying to find a paper that isn't in the corpus.
+        """
+        lex_only = PaperHandler(hub=Hub(store=store))
+        _seed_paper(store, blocks=["alpha"])
+        resp = lex_only.search(q="10.1038/nature10352")
+        body = resp.body
+        assert "no paper blocks match" in body
+        assert "request_doi.md" in body
+        assert "10.1038/nature10352" in body
+        # The generic "widen the lexical net" hint should not appear
+        # for DOI misses - we know widening won't help.
+        assert "widen the lexical net" not in body
 
     def test_singleton_hit_no_redundant_trailer(
         self, store: Store, handler: PaperHandler

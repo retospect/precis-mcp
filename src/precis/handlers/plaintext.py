@@ -83,6 +83,62 @@ log = logging.getLogger(__name__)
 _SUPPORTED_PUT_MODES = ("create",)
 
 
+def _recipe(
+    *,
+    kind: str,
+    slug: str,
+    mode: str,
+    find: str | None,
+    text: str | None,
+    before: str = "",
+    after: str = "",
+    where: str | None = None,
+    match: str | None = None,
+    nth: int | None = None,
+    trailing_comment: str | None = None,
+) -> str:
+    """Render a copy-pasteable ``edit(...)`` call for use in error hints.
+
+    Only emits the kwargs the caller actually supplied (non-empty anchors,
+    non-default match policy, etc.) so the recipe reads like a call the
+    agent could have written — not a ten-argument straw man that
+    confuses small models more than it helps.
+
+    ``find`` and ``text`` values that start with a quote are passed
+    through verbatim (so the caller can pass sentinel strings like
+    ``"'exact text'"`` or ``"''"``). Everything else is :func:`repr`-
+    quoted so the recipe is valid Python.
+    """
+
+    def _q(v: str) -> str:
+        # Pre-quoted sentinels (``"'exact text'"``, ``"''"``) pass through
+        # unchanged so the hint reads naturally; everything else gets
+        # normal repr quoting.
+        if v.startswith(("'", '"')):
+            return v
+        return repr(v)
+
+    parts: list[str] = [f"kind={kind!r}", f"id={slug!r}", f"mode={mode!r}"]
+    if find is not None:
+        parts.append(f"find={_q(find)}")
+    if before:
+        parts.append(f"before={before!r}")
+    if after:
+        parts.append(f"after={after!r}")
+    if where:
+        parts.append(f"where={where!r}")
+    if match and match != "unique":
+        parts.append(f"match={match!r}")
+    if nth is not None:
+        parts.append(f"nth={nth}")
+    if text is not None:
+        parts.append(f"text={_q(text)}")
+    call = f"edit({', '.join(parts)})"
+    if trailing_comment:
+        call = f"{call}   {trailing_comment}"
+    return call
+
+
 class PlaintextHandler(Handler):
     """Slug-addressed read/write handler for ``.txt`` / ``.log`` / ``.bib`` files."""
 
@@ -257,18 +313,24 @@ class PlaintextHandler(Handler):
         view: str | None = None,
         **_kw: Any,
     ) -> Response:
-        if id is None or (isinstance(id, str) and id.startswith("/")):
+        # Index/list sentinels — every form an agent might reach for
+        # to mean "show me what's here":
+        # - ``id=None`` (no id at all)
+        # - ``id='/'`` or any path starting with `/` (path-form root)
+        # - ``id='.'`` or ``id='./'`` (cwd shorthand)
+        # - ``id=''`` (empty string)
+        # All route to the same `ls` view rather than producing
+        # ``invalid {kind} slug: '.'`` from the slug validator.
+        if id is None or (
+            isinstance(id, str)
+            and (id.startswith("/") or id.strip() in ("", ".", "./"))
+        ):
             return self._render_index()
 
         slug, sel, path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
         effective_view = path_view or view
 
-        ref = self._ensure_ingested(slug)
-        if ref is None:
-            raise NotFound(
-                f"{self._KIND} file {slug!r} not found under PRECIS_ROOT",
-                next=f"get(kind='{self._KIND}') to list every known file",
-            )
+        ref = self._require_existing_file(slug)
 
         if sel is not None and effective_view is not None:
             raise BadInput(
@@ -661,10 +723,7 @@ class PlaintextHandler(Handler):
         path = self._resolve_path(slug, must_exist=False)
         ref = self.store.get_ref(kind=self._KIND, id=slug)
         if not path.exists() and ref is None:
-            raise NotFound(
-                f"{self._KIND} file {slug!r} not found under PRECIS_ROOT",
-                next=f"get(kind='{self._KIND}') to list every known file",
-            )
+            self._raise_file_not_found(slug)
         if path.exists():
             os.remove(path)
         if ref is not None:
@@ -697,18 +756,44 @@ class PlaintextHandler(Handler):
         if find is None or not find:
             raise BadInput(
                 f"mode={user_mode!r} requires find= (the exact text to locate)",
-                next=(
-                    f"edit(kind='{self._KIND}', id={slug!r}, mode={user_mode!r}, "
-                    f"find='exact text', text='replacement')"
+                next=_recipe(
+                    kind=self._KIND,
+                    slug=slug,
+                    mode=user_mode,
+                    find="'exact text'",
+                    text="'replacement'",
+                    before=before,
+                    after=after,
+                    where=where,
+                    match=match,
+                    nth=nth,
                 ),
             )
         if text is None:
+            # MCP critic 2026-05-03: small models (qwen3:8b) hitting this
+            # error were repeating the byte-identical call, not retrying
+            # with text=. Root cause: the previous message buried the
+            # delete idiom ("'' is allowed for delete-by-edit") in a
+            # parenthetical, and the `next:` hint said "add text='...'"
+            # without a copyable recipe. Invert: lead with the two
+            # choices (delete vs replace), echo every supplied arg in
+            # the recipe so the caller can copy-paste it.
             raise BadInput(
-                f"mode={user_mode!r} requires text= "
-                "(the replacement / inserted text; '' is allowed for delete-by-edit)",
-                next=(
-                    f"add text='...' to the call (use text='' on "
-                    f"mode={user_mode!r} to delete the matched span)"
+                f"mode={user_mode!r} requires text=. "
+                f"Pass text='' to DELETE the matched span; "
+                f"pass text='<replacement>' to REPLACE it.",
+                next=_recipe(
+                    kind=self._KIND,
+                    slug=slug,
+                    mode=user_mode,
+                    find=find,
+                    text="''",
+                    before=before,
+                    after=after,
+                    where=where,
+                    match=match,
+                    nth=nth,
+                    trailing_comment="# delete",
                 ),
             )
         op = EditOp(
@@ -892,6 +977,14 @@ class PlaintextHandler(Handler):
                 ),
             )
         slug, sel, _path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
+        # Gate on file existence *before* dispatching so downstream
+        # hints (e.g. "_put_replace: next=get(id='slug/toc') …") never
+        # echo a bogus slug produced by syntactic path-form canonicalisation
+        # (``work/foo.tex`` → ``work--foo`` when PRECIS_ROOT is already
+        # ``work/``). ``append`` legitimately creates-or-appends so we
+        # skip the gate for it.
+        if mode != "append":
+            self._require_existing_file(slug)
         if mode == "append":
             return self._put_append(slug, text)
         if mode == "replace":
@@ -961,12 +1054,7 @@ class PlaintextHandler(Handler):
                 ),
                 next=f"tag(kind='{self._KIND}', id={slug!r}, add=[...])",
             )
-        ref = self._ensure_ingested(slug)
-        if ref is None:
-            raise NotFound(
-                f"{self._KIND} file {slug!r} not found under PRECIS_ROOT",
-                next=f"get(kind='{self._KIND}') to list every known file",
-            )
+        ref = self._require_existing_file(slug)
         return slug, ref.id
 
     def tag(  # type: ignore[override]
@@ -1130,12 +1218,20 @@ class PlaintextHandler(Handler):
             self._apply_workspace_tag(fresh)
         return fresh
 
-    # ── render helpers ─────────────────────────────────────────────
+    # ── not-found helpers ──────────────────────────────────────────
 
-    def _render_index(self) -> Response:
-        on_disk = sorted(self._walk_files())
+    def _list_file_slugs_on_disk(self) -> dict[str, str]:
+        """Enumerate valid ``{slug: relpath}`` pairs under ``self.root``.
+
+        Shared by :meth:`_render_index` (which needs both slug and
+        relpath) and :meth:`_raise_file_not_found` (which needs only
+        the slug list for fuzzy-match suggestions). Keeps the
+        canonical "what does this handler see on disk?" answer in a
+        single place so index rendering and error hinting can't
+        drift apart.
+        """
         seen: dict[str, str] = {}
-        for path in on_disk:
+        for path in sorted(self._walk_files()):
             try:
                 rel = str(path.relative_to(self.root))
                 base, _ext = self._strip_ext(rel)
@@ -1145,17 +1241,63 @@ class PlaintextHandler(Handler):
             if not is_valid_file_slug(slug):
                 continue
             seen[slug] = rel
+        return seen
 
+    def _raise_file_not_found(self, slug: str) -> NotFound:
+        """Raise ``NotFound`` for a missing file slug, with fuzzy-match
+        suggestions drawn from actual on-disk files.
+
+        The path-form → slug canonicalisation in
+        :func:`canonicalize_path_id` is *syntactic* — it happily turns
+        ``work/foo.tex`` into ``work--foo`` even when no such file
+        exists under PRECIS_ROOT. Without fuzzy-match hints the agent
+        sees ``work--foo not found`` and has no cue that the real
+        slug is just ``foo`` (PRECIS_ROOT *is* ``work/``). This
+        helper supplies that cue via :func:`nearest_slugs`.
+
+        Never returns — always raises. Return type annotated as
+        ``NotFound`` purely so ``raise self._raise_file_not_found(...)``
+        passes the type checker.
+        """
+        candidates = list(self._list_file_slugs_on_disk())
+        suggestions = nearest_slugs(slug, candidates)
+        raise NotFound(
+            f"{self._KIND} file {slug!r} not found in workspace",
+            options=suggestions,
+            next=(
+                f"get(kind='{self._KIND}', id={suggestions[0]!r})"
+                if suggestions
+                else f"get(kind='{self._KIND}') to list every known file"
+            ),
+        )
+
+    def _require_existing_file(self, slug: str) -> Ref:
+        """Ingest + return a file ref, or raise a suggestions-rich NotFound.
+
+        Wraps :meth:`_ensure_ingested` so every read/write entry point
+        can guard against bogus slugs with one call, without each
+        site re-inventing the error shape.
+        """
+        ref = self._ensure_ingested(slug)
+        if ref is None:
+            self._raise_file_not_found(slug)
+        assert ref is not None  # _raise_file_not_found never returns
+        return ref
+
+    # ── render helpers ─────────────────────────────────────────────
+
+    def _render_index(self) -> Response:
+        seen = self._list_file_slugs_on_disk()
         if not seen:
             return Response(
                 body=(
-                    f"no {self._KIND} files found under PRECIS_ROOT\n"
+                    f"no {self._KIND} files in workspace\n"
                     f"create one with put(kind='{self._KIND}', id='SLUG', "
                     "text='...', mode='create')"
                 )
             )
 
-        lines = [f"# {len(seen)} {self._KIND} file(s) under PRECIS_ROOT"]
+        lines = [f"# {len(seen)} {self._KIND} file(s) in workspace"]
         max_w = max(len(s) for s in seen)
         for slug in sorted(seen):
             lines.append(f"  {slug:<{max_w}}  {seen[slug]}")

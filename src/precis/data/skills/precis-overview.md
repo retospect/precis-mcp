@@ -47,6 +47,19 @@ forward `kind=""` literally).
 Use `get(kind='skill', id='precis-help')` to discover the full
 set of search-supporting kinds in this build.
 
+## Lost? Skill discovery
+
+Three ways to find the right skill when you don't already know its slug:
+
+| Call                                     | When to use                                  |
+|------------------------------------------|----------------------------------------------|
+| `get(kind='skill', id='toc')`            | Browse: every skill with a one-line synopsis. |
+| `search(kind='skill', q='your goal')`    | Fuzzy lookup by topic, e.g. `q='spaced repetition'` finds `precis-fc-help`. |
+| `get(kind='skill', id='precis-help')`    | What kinds + verbs this build actually supports right now. |
+
+`get(kind='skill')` (no id) lists every active skill. `precis-toc`
+is the long-form alias for `id='toc'`.
+
 ## Kinds — refs
 
 Content you address by id, drill into chunks, link, and tag.  Two id

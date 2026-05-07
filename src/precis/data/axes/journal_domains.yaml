@@ -1,0 +1,67 @@
+# Journal-name → likely-domain prefilter.
+#
+# When a paper's `meta.journal` (case-insensitive substring) matches
+# a pattern below, the runner uses the mapped domain directly,
+# skipping the `domain:` LLM call. Anything unmapped falls through
+# to the LLM.
+#
+# Confidence threshold: only short-circuit when the pattern is
+# unambiguous. Ambiguous publishers (Nature, Science, PNAS, PLoS
+# ONE) MUST go through the LLM — they publish across all domains.
+#
+# Build this list incrementally:
+#   1. Run scripts/classify/cluster-papers --top-journals 200
+#   2. Hand-label the obvious ones here.
+#   3. Re-run; LLM handles the long tail.
+#
+# Format: list of {pattern: substring, domain: <one of the 7 domain values>}.
+# Substring match is case-insensitive.
+
+journals:
+  # --- materials / nano (carbon nanotube and related) ---
+  - {pattern: "ACS Nano",                domain: materials}
+  - {pattern: "Nano Letters",            domain: materials}
+  - {pattern: "Nano Lett",               domain: materials}
+  - {pattern: "Nanoscale",               domain: materials}
+  - {pattern: "Carbon",                  domain: materials}
+  - {pattern: "Nanotechnology",          domain: materials}
+  - {pattern: "Adv Mater",               domain: materials}
+  - {pattern: "Advanced Materials",      domain: materials}
+  - {pattern: "J Mater Chem",            domain: materials}
+  - {pattern: "npj 2D Materials",        domain: materials}
+  - {pattern: "2D Materials",            domain: materials}
+
+  # --- chemistry ---
+  - {pattern: "J Am Chem Soc",           domain: chemistry}
+  - {pattern: "JACS",                    domain: chemistry}
+  - {pattern: "Angew Chem",              domain: chemistry}
+  - {pattern: "Chem Soc Rev",            domain: chemistry}
+  - {pattern: "Chem Mater",              domain: chemistry}
+  - {pattern: "Chemistry of Materials",  domain: chemistry}
+  - {pattern: "Inorg Chem",              domain: chemistry}
+  - {pattern: "Chem Eur J",              domain: chemistry}
+
+  # --- physics ---
+  - {pattern: "Phys Rev Lett",           domain: physics}
+  - {pattern: "Phys Rev B",              domain: physics}
+  - {pattern: "Phys Rev X",              domain: physics}
+  - {pattern: "Physical Review",         domain: physics}
+  - {pattern: "Appl Phys Lett",          domain: physics}
+  - {pattern: "J Appl Phys",             domain: physics}
+
+  # --- bio / medicine ---
+  - {pattern: "J Neurosci",              domain: bio}
+  - {pattern: "Neuron",                  domain: bio}
+  - {pattern: "Nat Neurosci",            domain: bio}
+  - {pattern: "Cell",                    domain: bio}
+  - {pattern: "Lancet",                  domain: bio}
+  - {pattern: "NEJM",                    domain: bio}
+  - {pattern: "BMJ",                     domain: bio}
+  - {pattern: "Sleep Med",               domain: bio}
+
+  # --- engineering ---
+  - {pattern: "IEEE",                    domain: eng}
+  - {pattern: "ACM Trans",               domain: eng}
+
+  # --- AMBIGUOUS, do not include (LLM handles) ---
+  # Nature, Science, PNAS, Sci Adv, Nat Comm, Sci Rep, PLoS ONE

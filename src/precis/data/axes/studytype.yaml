@@ -1,0 +1,32 @@
+id: studytype
+version: 1
+question: "What kind of study is this paper?"
+values: [experimental, synthesis, characterization, theory-dft, theory-md, simulation-other, review, mixed]
+default_unknown: mixed
+applies_when:
+  always: true
+prereq: []
+cost_tier: small
+prompt: |
+  Classify the *primary contribution* of this paper.
+
+  Pick exactly ONE:
+
+  - experimental      : wet-lab measurements; physical samples; instruments
+  - synthesis         : the contribution is making the material/molecule/device
+  - characterization  : measuring already-known materials; instrument-heavy
+  - theory-dft        : DFT or ab-initio calculations dominate
+  - theory-md         : molecular dynamics dominate
+  - simulation-other  : continuum, FEA, Monte Carlo, kinetics, ML on data
+  - review            : review article, perspective, opinion, tutorial
+  - mixed             : two or more of the above contribute substantially
+
+  Return JSON:
+  {"value": "<one>", "confidence": <0..1>,
+   "rationale": "<one sentence; required if confidence < 0.7>"}
+
+  "experimental" is the bucket when measurement is the headline; use
+  "synthesis" when making something is the headline even if measurement
+  also happens. A paper that synthesizes AND does DFT is "mixed".
+  Don't use "mixed" for a single dominant contribution with minor
+  extras.
