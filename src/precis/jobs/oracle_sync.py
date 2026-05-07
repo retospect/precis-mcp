@@ -134,18 +134,29 @@ def compute_corpus_state(src_dir: Path) -> CorpusState | None:
 def _read_state(store: Any) -> tuple[int, str] | None:
     """Read ``(version, sha256)`` from the ``system`` table.
 
-    Returns ``None`` when no record exists yet, including the
-    embedder-init case where the system table doesn't have these
-    keys. Any unreadable / out-of-band value is treated as
-    ``(0, "")`` so the gate falls through to ingest — this matches
-    the failsafe semantics of :func:`wheel_version_int`.
+    Returns ``None`` when no record exists yet (first boot). DB
+    failures are logged and surfaced as ``None`` so the caller can
+    decide how to react — :func:`maybe_reingest` treats that as
+    "can't compare, skip ingest" rather than "never ingested,
+    please re-embed everything". The previous behaviour conflated
+    the two and caused a ~10 s reingest on every boot when the
+    Store API surface drifted.
+
+    A missing ``get_setting`` method is a programming error, not a
+    runtime failure — re-raise it so it shows up in tests and
+    boot logs instead of silently triggering a re-ingest loop.
     """
     try:
-        v_raw = store.get_system(_KEY_VERSION)
-        s_raw = store.get_system(_KEY_SHA256)
+        v_raw = store.get_setting(_KEY_VERSION)
+        s_raw = store.get_setting(_KEY_SHA256)
+    except AttributeError:
+        # Wrong store surface (e.g. tests passing a stub without
+        # ``get_setting``). Loud failure — never silently reingest.
+        raise
     except Exception as exc:  # pragma: no cover — DB unavailable
         log.warning("oracle_sync: cannot read system state: %s", exc)
-        return None
+        # Sentinel tuple distinct from None: "unknown, do not ingest".
+        return -1, ""
     if v_raw is None and s_raw is None:
         return None
     try:
@@ -158,7 +169,7 @@ def _read_state(store: Any) -> tuple[int, str] | None:
 def _write_state(store: Any, state: CorpusState) -> None:
     """Persist the four corpus-state rows in a best-effort sequence.
 
-    Each ``set_system`` call is idempotent (upsert). Failure to
+    Each ``set_setting`` call is idempotent (upsert). Failure to
     write any row is logged but doesn't roll back the others —
     partial state still gates correctly on the next boot via
     sha256 mismatch.
@@ -166,10 +177,10 @@ def _write_state(store: Any, state: CorpusState) -> None:
     now = datetime.now(UTC).replace(tzinfo=None).strftime("%Y-%m-%dT%H:%M:%SZ")
     host = socket.gethostname() or "unknown"
     try:
-        store.set_system(_KEY_VERSION, str(state.version))
-        store.set_system(_KEY_SHA256, state.sha256)
-        store.set_system(_KEY_INGESTED_AT, now)
-        store.set_system(_KEY_INGESTED_BY, host)
+        store.set_setting(_KEY_VERSION, str(state.version))
+        store.set_setting(_KEY_SHA256, state.sha256)
+        store.set_setting(_KEY_INGESTED_AT, now)
+        store.set_setting(_KEY_INGESTED_BY, host)
     except Exception as exc:  # pragma: no cover — DB unavailable
         log.warning("oracle_sync: cannot write system state: %s", exc)
 
@@ -215,9 +226,12 @@ def maybe_reingest(
     if local is None:
         return {"status": "no_data", "reason": "no YAML files in dir"}
 
-    # Read recorded state. Missing rows = "nothing ingested yet" =
-    # treat as ``(0, "")`` so the local version always wins.
+    # Read recorded state. ``None`` = first boot, ingest. ``(-1, "")``
+    # = transient DB failure, skip and try again next boot rather
+    # than re-embedding the whole corpus on a flaky read.
     stored = _read_state(store)
+    if stored is not None and stored[0] == -1:
+        return {"status": "error", "reason": "could not read system state"}
     stored_version = stored[0] if stored else 0
     stored_sha = stored[1] if stored else ""
 
@@ -251,6 +265,8 @@ def maybe_reingest(
         # Re-read after acquiring the lock: another worker may have
         # raced us and already done the work. Skip if so.
         post_stored = _read_state(store)
+        if post_stored is not None and post_stored[0] == -1:
+            return {"status": "error", "reason": "could not read system state"}
         post_version = post_stored[0] if post_stored else 0
         post_sha = post_stored[1] if post_stored else ""
         if not force:

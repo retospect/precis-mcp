@@ -104,11 +104,16 @@ def test_compute_corpus_state_filename_matters(tmp_path: Path) -> None:
 class FakeStore:
     """Just enough store surface to exercise the gate.
 
-    Tracks ``set_system`` / ``get_system`` calls and lets the test
+    Tracks ``set_setting`` / ``get_setting`` calls and lets the test
     pre-seed stored state. The advisory lock helpers use ``pool``,
     which we leave ``None`` so the locking degrades gracefully (the
     docstring says that's the intended behaviour for non-Postgres
     fixtures).
+
+    The method names mirror the real ``Store`` API exactly — if
+    they drift, ``test_oracle_sync_uses_real_store_api`` below trips
+    so the gate can never silently fall back to "reingest every
+    boot" again.
     """
 
     pool = None
@@ -117,10 +122,10 @@ class FakeStore:
         self._kv: dict[str, str] = {}
         self.ingest_calls = 0
 
-    def get_system(self, key: str) -> str | None:
+    def get_setting(self, key: str) -> str | None:
         return self._kv.get(key)
 
-    def set_system(self, key: str, value: str) -> None:
+    def set_setting(self, key: str, value: str) -> None:
         self._kv[key] = value
 
 
@@ -206,8 +211,8 @@ def test_up_to_date_skips_ingest(
     calls = _stub_ingest_returning(monkeypatch, fake_store)
     state = compute_corpus_state(src_dir)
     assert state is not None
-    fake_store.set_system("corpus.oracle.version", str(state.version))
-    fake_store.set_system("corpus.oracle.sha256", state.sha256)
+    fake_store.set_setting("corpus.oracle.version", str(state.version))
+    fake_store.set_setting("corpus.oracle.sha256", state.sha256)
 
     out = maybe_reingest(store=fake_store, embedder=None, src_dir=src_dir)
     assert out["status"] == "up_to_date"
@@ -224,8 +229,8 @@ def test_older_local_skips_ingest(
     state = compute_corpus_state(src_dir)
     assert state is not None
     # Pretend the DB has v9999 (newer than our wheel).
-    fake_store.set_system("corpus.oracle.version", "999999999999999")
-    fake_store.set_system("corpus.oracle.sha256", "different-sha")
+    fake_store.set_setting("corpus.oracle.version", "999999999999999")
+    fake_store.set_setting("corpus.oracle.sha256", "different-sha")
 
     out = maybe_reingest(store=fake_store, embedder=None, src_dir=src_dir)
     assert out["status"] == "older_local"
@@ -243,8 +248,8 @@ def test_same_version_different_sha_ingests(
     calls = _stub_ingest_returning(monkeypatch, fake_store)
     state = compute_corpus_state(src_dir)
     assert state is not None
-    fake_store.set_system("corpus.oracle.version", str(state.version))
-    fake_store.set_system("corpus.oracle.sha256", "old-sha-from-prior-build")
+    fake_store.set_setting("corpus.oracle.version", str(state.version))
+    fake_store.set_setting("corpus.oracle.sha256", "old-sha-from-prior-build")
 
     out = maybe_reingest(store=fake_store, embedder=None, src_dir=src_dir)
     assert out["status"] == "ingested"
@@ -261,8 +266,8 @@ def test_force_bypasses_both_gates(
     calls = _stub_ingest_returning(monkeypatch, fake_store)
     state = compute_corpus_state(src_dir)
     assert state is not None
-    fake_store.set_system("corpus.oracle.version", str(state.version))
-    fake_store.set_system("corpus.oracle.sha256", state.sha256)
+    fake_store.set_setting("corpus.oracle.version", str(state.version))
+    fake_store.set_setting("corpus.oracle.sha256", state.sha256)
 
     out = maybe_reingest(store=fake_store, embedder=None, src_dir=src_dir, force=True)
     assert out["status"] == "ingested"
@@ -281,8 +286,8 @@ def test_force_overrides_older_local(
     gate is what protects you from it.
     """
     calls = _stub_ingest_returning(monkeypatch, fake_store)
-    fake_store.set_system("corpus.oracle.version", "999999999999999")
-    fake_store.set_system("corpus.oracle.sha256", "different-sha")
+    fake_store.set_setting("corpus.oracle.version", "999999999999999")
+    fake_store.set_setting("corpus.oracle.sha256", "different-sha")
 
     out = maybe_reingest(store=fake_store, embedder=None, src_dir=src_dir, force=True)
     assert out["status"] == "ingested"
@@ -310,3 +315,52 @@ def test_disabled_by_env_one_means_enabled(
 ) -> None:
     monkeypatch.setenv("PRECIS_ORACLE_AUTO_REINGEST", "1")
     assert oracle_sync.is_disabled_by_env() is False
+
+
+# ── API-surface regression ───────────────────────────────────────────
+
+
+def test_oracle_sync_uses_real_store_api() -> None:
+    """Pin the Store method names ``oracle_sync`` depends on.
+
+    Regression for the silent ~10 s every-boot reingest: previously
+    the gate called ``store.get_system`` / ``store.set_system``,
+    which never existed on the real :class:`precis.store.Store`.
+    Every boot the read failed, was treated as "never ingested",
+    and the corpus was re-embedded from scratch — burning the
+    bge-m3 model load + 9 batches per process start.
+
+    If the Store API is renamed in the future, this test trips
+    before the gate can silently fall back to reingest.
+    """
+    from precis.store import Store
+
+    assert hasattr(Store, "get_setting"), (
+        "oracle_sync.maybe_reingest depends on Store.get_setting; "
+        "renaming it without updating oracle_sync re-introduces the "
+        "every-boot reingest bug."
+    )
+    assert hasattr(Store, "set_setting"), (
+        "oracle_sync.maybe_reingest depends on Store.set_setting."
+    )
+
+
+def test_read_state_reraises_attributeerror_loudly(
+    src_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store stub missing ``get_setting`` must raise, not silently reingest."""
+    calls = {"count": 0}
+
+    def fake_ingest(*_: Any, **__: Any) -> dict[str, Any]:
+        calls["count"] += 1
+        return {}
+
+    monkeypatch.setattr(oracle_sync, "ingest_directory", fake_ingest)
+
+    class BrokenStore:
+        pool = None
+
+    with pytest.raises(AttributeError):
+        maybe_reingest(store=BrokenStore(), embedder=None, src_dir=src_dir)
+    assert calls["count"] == 0
