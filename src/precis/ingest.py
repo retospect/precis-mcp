@@ -113,6 +113,23 @@ class ParsedBundle:
     abstract: str | None
     bundle_slug: str | None  # may exist; we mint our own from authors+year+title
     pdf_hash: str | None
+    s2_id: str | None
+    """Semantic Scholar `paperId`. Surfaced as a top-level field
+    (alongside `doi` / `arxiv_id` / `pdf_hash`) so the ingest path can
+    feed it straight into `ref_identifiers` without re-reading
+    `raw_meta`. Populated for bundles whose lookup cascade went through
+    the S2 path (most arXiv-only papers + title-search fallbacks);
+    `None` when the bundle came purely from CrossRef DOI metadata."""
+    external_ids: dict[str, str]
+    """Full Semantic Scholar `externalIds` cluster captured at extract
+    time — DOI / ArXiv / PubMed / PubMedCentralID / MAG / DBLP /
+    CorpusId / OpenAlex. Keys are S2's verbatim casing; values are the
+    raw identifier strings. Empty dict for bundles produced by older
+    `acatome-extract` versions that didn't propagate this field. The
+    ingest path translates these into normalised
+    ``ref_identifiers`` rows, complementing the four primary keys
+    (DOI / arxiv_id / s2_id / pdf_hash) above with whatever extra
+    schemes S2 happened to know about."""
     provider: str
     """Mapped from `header.source` via `_map_provider()`."""
     blocks: list[ParsedBlock]
@@ -184,6 +201,13 @@ def parse_bundle(
             density = classify_density(text)
         blocks.append(ParsedBlock(text=text, embedding=emb, density=density))
 
+    raw_external = header.get("external_ids") or {}
+    external_ids: dict[str, str] = {}
+    if isinstance(raw_external, dict):
+        for k, v in raw_external.items():
+            if isinstance(k, str) and isinstance(v, str) and v.strip():
+                external_ids[k] = v.strip()
+
     return ParsedBundle(
         title=title,
         authors=_normalize_author_list(header.get("authors")),
@@ -194,6 +218,8 @@ def parse_bundle(
         abstract=_sanitize(_or_none(header.get("abstract")) or "") or None,
         bundle_slug=_or_none(header.get("slug")),
         pdf_hash=_or_none(header.get("pdf_hash")),
+        s2_id=_or_none(header.get("s2_id")),
+        external_ids=external_ids,
         provider=_map_provider(header.get("source")),
         blocks=blocks,
         raw_meta=header,

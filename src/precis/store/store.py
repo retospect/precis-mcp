@@ -1,14 +1,15 @@
 """Sync postgres-backed store (psycopg 3). One instance per server.
 
-:class:`Store` is composed from six domain mixins, each owning one
+:class:`Store` is composed from seven domain mixins, each owning one
 slice of the persistence surface:
 
-* :class:`precis.store._refs_ops.RefsMixin`    — ref CRUD + title search
-* :class:`precis.store._blocks_ops.BlocksMixin`— block CRUD + hybrid search
-* :class:`precis.store._tags_ops.TagsMixin`    — three tag tables
-* :class:`precis.store._links_ops.LinksMixin`  — link graph
-* :class:`precis.store._cache_ops.CacheMixin`  — paid-tool cache state
-* :class:`precis.store._ingest_ops.IngestMixin`— ``.acatome`` bundle ingest
+* :class:`precis.store._refs_ops.RefsMixin`               — ref CRUD + title search
+* :class:`precis.store._blocks_ops.BlocksMixin`           — block CRUD + hybrid search
+* :class:`precis.store._tags_ops.TagsMixin`               — three tag tables
+* :class:`precis.store._links_ops.LinksMixin`             — link graph
+* :class:`precis.store._cache_ops.CacheMixin`             — paid-tool cache state
+* :class:`precis.store._identifiers_ops.IdentifiersMixin` — ``ref_identifiers`` alias lookup
+* :class:`precis.store._ingest_ops.IngestMixin`           — ``.acatome`` bundle ingest
 
 The public API is unchanged: callers that previously imported
 ``Store`` and called ``store.get_ref(...)`` / ``store.add_tag(...)``
@@ -41,6 +42,7 @@ from psycopg_pool import ConnectionPool
 from precis.errors import BadInput
 from precis.store._blocks_ops import BlocksMixin
 from precis.store._cache_ops import CacheMixin
+from precis.store._identifiers_ops import IdentifiersMixin
 from precis.store._ingest_ops import IngestMixin
 from precis.store._links_ops import LinksMixin
 from precis.store._mappers import (
@@ -73,17 +75,18 @@ class Store(
     TagsMixin,
     LinksMixin,
     CacheMixin,
+    IdentifiersMixin,
     IngestMixin,
 ):
     """High-level handle. Owns the psycopg connection pool.
 
     Composed from domain mixins — see module docstring. The MRO
     order above is alphabetical by domain except for ``IngestMixin``
-    at the bottom (it depends on Refs + Blocks + Corpus methods
-    resolved through the other mixins / this class); placing it
-    last documents that dependency even though Python's MRO will
-    happily resolve the methods in any order as long as they
-    don't collide.
+    at the bottom (it depends on Refs + Blocks + Corpus +
+    Identifiers methods resolved through the other mixins / this
+    class); placing it last documents that dependency even though
+    Python's MRO will happily resolve the methods in any order as
+    long as they don't collide.
     """
 
     def __init__(self, pool: ConnectionPool) -> None:

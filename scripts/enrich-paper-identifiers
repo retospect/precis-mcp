@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# enrich-paper-identifiers — sweep every paper ref and populate
+# `ref_identifiers` with the full Semantic Scholar externalIds
+# cluster (DOI / ArXiv / PubMed / PubMedCentralID / MAG / DBLP /
+# CorpusId / OpenAlex). One-shot, resumable via the `s2-enriched`
+# open tag (see `_enrich_paper_identifiers.py`).
+#
+# Usage:
+#   ./scripts/enrich-paper-identifiers                   # full sweep
+#   ./scripts/enrich-paper-identifiers --limit 10        # sanity check on N refs
+#   ./scripts/enrich-paper-identifiers --re-enrich       # re-query already-enriched
+#   ./scripts/enrich-paper-identifiers --dry-run         # no DB writes
+#
+# Env: PRECIS_DATABASE_URL, SEMANTIC_SCHOLAR_API_KEY (optional, raises rate cap).
+
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_PY="$PKG_DIR/.venv/bin/python"
+
+: "${PRECIS_DATABASE_URL:=postgresql://acatome:acatome@127.0.0.1:5432/precis}"
+export PRECIS_DATABASE_URL
+
+if [[ -x "$VENV_PY" ]]; then
+    exec "$VENV_PY" "$SCRIPT_DIR/_enrich_paper_identifiers.py" "$@"
+fi
+
+exec uv run --project "$PKG_DIR" python "$SCRIPT_DIR/_enrich_paper_identifiers.py" "$@"

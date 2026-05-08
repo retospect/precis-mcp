@@ -115,24 +115,38 @@ class RefsMixin:
     def find_paper_slug_by_doi(self, doi: str) -> str | None:
         """Look up a paper's slug by its DOI.
 
-        DOIs are stored in ``refs.meta->>'doi'`` at ingest time. This
-        helper is used by the paper ``get`` entry point so callers can
-        address a paper by its DOI (``10.1111/jnc.13915``) in addition
-        to its minted slug — a convenience for agents that have a
+        Used by the paper ``get`` entry point so callers can address a
+        paper by its DOI (``10.1111/jnc.13915``) in addition to its
+        minted slug — a convenience for agents that have a
         bibliography full of DOIs from an external source and haven't
         yet learned the local slug naming convention.
+
+        Since migration ``0009_ref_identifiers``, this delegates to
+        the generic ``ref_identifiers`` index. arXiv DOIs (the
+        ``10.48550/arXiv.X`` form) automatically resolve through the
+        ``arxiv`` scheme path because :func:`detect_identifier_scheme`
+        recognises that prefix and translates the DOI to the bare
+        arXiv id used as the canonical alias value.
+
+        For non-DOI identifier lookup (bare arXiv id, S2 paperId,
+        PubMed, OpenAlex, pdf_hash) callers should use
+        :meth:`IdentifiersMixin.find_paper_ref_by_identifier` directly.
 
         Returns ``None`` when no live paper carries this DOI; the
         caller decides whether that's an error (agent-facing) or a
         fall-through (internal dedupe already has its own path).
         """
+        # Use the auto-detect path so an arXiv DOI form
+        # (10.48550/arXiv.X) maps to scheme='arxiv' rather than
+        # falling off the doi-only lookup. The detector strips URL
+        # wrappers and the 'DOI:' prefix for us.
+        ref_id = self.find_paper_ref_by_identifier(doi)  # type: ignore[attr-defined]
+        if ref_id is None:
+            return None
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT slug FROM refs "
-                "WHERE kind = 'paper' AND deleted_at IS NULL "
-                "AND meta->>'doi' = %s "
-                "LIMIT 1",
-                (doi,),
+                "SELECT slug FROM refs WHERE id = %s",
+                (ref_id,),
             ).fetchone()
         return row[0] if row is not None else None
 

@@ -170,6 +170,11 @@ def _seed_paper(
             "abstract": abstract,
         },
     )
+    # Mirror the ingest path: every paper ref also lands an alias
+    # row so DOI-form ``get(id=...)`` lookups resolve via
+    # `ref_identifiers` rather than scanning `refs.meta`.
+    if doi:
+        store.insert_ref_identifiers(ref.id, [("doi", doi, "manual")])
     if blocks is None:
         blocks = ["Introduction.", "Methods.", "Results.", "Discussion."]
     store.insert_blocks(

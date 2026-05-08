@@ -37,6 +37,7 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
                 "0006_",
                 "0007_",
                 "0008_",
+                "0009_",
             )
         )
         for v in applied
@@ -62,6 +63,7 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
         "providers",
         "ref_closed_tags",
         "ref_flags",
+        "ref_identifiers",
         "ref_open_tags",
         "refs",
         "relations",

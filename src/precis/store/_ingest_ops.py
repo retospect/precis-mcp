@@ -1,9 +1,18 @@
 """Paper bundle ingest. Mixin on :class:`precis.store.Store`.
 
 Single entry point — :meth:`IngestMixin.ingest_bundle` — that reads
-a ``.acatome`` file, dedupes against existing papers via
-``(doi, pdf_hash, arxiv_id)``, mints a slug, and writes ``refs`` +
-``blocks`` + provenance tags under one transaction.
+a ``.acatome`` file, dedupes against existing papers via the
+``ref_identifiers`` alias index, mints a slug, and writes ``refs`` +
+``blocks`` + ``ref_identifiers`` rows + provenance tags under one
+transaction.
+
+Dedup: every identifier the bundle carries is checked against
+``ref_identifiers`` in a single query. Hits short-circuit the ingest
+(``IngestResult.inserted=False``); misses fall through to the
+write path. After a successful insert, the ingest writes one row
+per known ``(scheme, value)`` so future ingests of the same paper —
+even via different identifiers from a different lookup path —
+collapse to the same ref id.
 
 Split out of the main Store because the ingest path is the only
 place that depends on the top-level :mod:`precis.ingest` module;
@@ -18,6 +27,8 @@ Mixin assumes the concrete Store provides:
 * ``self.insert_ref(...)``               — RefsMixin
 * ``self.insert_blocks(...)``            — BlocksMixin
 * ``self.count_blocks(ref_id)``          — BlocksMixin
+* ``self.find_ref_by_identifier(...)``   — IdentifiersMixin
+* ``self.insert_ref_identifiers(...)``   — IdentifiersMixin
 """
 
 from __future__ import annotations
@@ -33,7 +44,70 @@ from precis.store.types import Block, BlockInsert, Ref
 
 if TYPE_CHECKING:
     from precis.embedder import Embedder
-    from precis.ingest import IngestResult
+    from precis.ingest import IngestResult, ParsedBundle
+
+
+# ---------------------------------------------------------------------------
+# Bundle -> identifier triple extraction
+# ---------------------------------------------------------------------------
+
+# Map S2's external_ids dict keys to our normalised scheme names.
+# S2's keys are case-sensitive ('DOI', 'ArXiv', 'PubMed', ...); our
+# schemes are lowercased. Unknown keys are forwarded under their
+# lowercased form so the table accepts them — adding a new S2 scheme
+# requires no code change here.
+_S2_EXTERNAL_KEY_MAP: dict[str, str] = {
+    "DOI": "doi",
+    "ArXiv": "arxiv",
+    "PubMed": "pubmed",
+    "PubMedCentralID": "pmc",
+    "MAG": "mag",
+    "DBLP": "dblp",
+    "CorpusId": "corpusid",
+    "OpenAlex": "openalex",
+}
+
+
+def _identifier_triples(parsed: ParsedBundle) -> list[tuple[str, str, str]]:
+    """Yield ``(scheme, value, source)`` triples for a bundle.
+
+    Used both for dedup lookup (we hit ``ref_identifiers`` with the
+    same set we'd write on insert) and for the post-insert write.
+    Output is deduplicated so the same identifier doesn't appear twice
+    even when the bundle reports it via two paths (e.g. ``header.doi``
+    AND ``header.external_ids['DOI']`` for a paper resolved via S2).
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, str, str]] = []
+    provider = parsed.provider or "manual"
+
+    def _push(scheme: str, value: str | None, source: str) -> None:
+        if not value:
+            return
+        key = (scheme, value.strip().lower())
+        if key in seen:
+            return
+        seen.add(key)
+        out.append((scheme, value, source))
+
+    # The four primary keys.
+    _push("doi", parsed.doi, provider)
+    _push("arxiv", parsed.arxiv_id, provider)
+    _push("s2", parsed.s2_id, provider)
+    _push("pdfsha256", parsed.pdf_hash, "local")
+
+    # Anything S2 also told us about. Unknown keys forward under
+    # lowercased name so the table grows organically as S2 adds
+    # new external schemes.
+    for raw_key, raw_val in (parsed.external_ids or {}).items():
+        if not raw_val:
+            continue
+        scheme = _S2_EXTERNAL_KEY_MAP.get(raw_key, raw_key.lower())
+        # Skip schemes whose value we already emitted under a primary key
+        # (e.g. external_ids['DOI'] duplicating header.doi).
+        _push(scheme, raw_val, "s2")
+
+    return out
 
 
 class IngestMixin:
@@ -77,6 +151,24 @@ class IngestMixin:
     def count_blocks(self, ref_id: int) -> int:
         raise NotImplementedError  # pragma: no cover — overridden by BlocksMixin
 
+    def find_ref_by_identifier(
+        self,
+        scheme: str,
+        value: str,
+        *,
+        kind: str | None = None,
+    ) -> int | None:
+        raise NotImplementedError  # pragma: no cover — overridden by IdentifiersMixin
+
+    def insert_ref_identifiers(
+        self,
+        ref_id: int,
+        identifiers: Any,  # Iterable[tuple[str, str, str]]
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        raise NotImplementedError  # pragma: no cover — overridden by IdentifiersMixin
+
     def ingest_bundle(
         self,
         path: Path,
@@ -86,11 +178,21 @@ class IngestMixin:
     ) -> IngestResult:
         """Read a ``.acatome`` bundle and write it into the v2 schema.
 
-        Idempotency: if a paper with the same DOI, pdf_hash, or
-        arxiv_id is already present (``kind='paper'``, matching the
-        first available key), the call is a no-op —
-        ``IngestResult.inserted=False``. Re-extract is a separate
-        operation handled by a future ``--force`` flag.
+        Idempotency: every identifier the bundle carries (DOI,
+        arXiv id, S2 paperId, pdf_hash, plus any extras from S2's
+        ``externalIds`` like PubMed / MAG / OpenAlex) is checked
+        against the ``ref_identifiers`` alias index in a single
+        query. A hit short-circuits to
+        ``IngestResult.inserted=False``. Re-extract / replace is a
+        separate operation (future ``--force`` flag).
+
+        Aliases-on-insert: after a successful write, the same
+        identifier set is INSERTed into ``ref_identifiers`` (with
+        ``ON CONFLICT DO NOTHING`` so a concurrent ingest can't
+        race us). This lets future ingests of the same paper —
+        even via different identifiers from a different lookup
+        path — collapse to the same ref id without scanning
+        ``refs.meta``.
 
         Block embeddings:
 
@@ -111,37 +213,40 @@ class IngestMixin:
         raw = read_bundle(Path(path))
         parsed = parse_bundle(raw, embedding_dim=embedder.dim)
 
-        # Identity dedupe: short-circuit if we already have this paper
-        # under any stable content key. Checked in order of strength:
-        #   1. DOI          — canonical publication identifier
-        #   2. pdf_hash     — sha256 of source PDF, exact content match
-        #   3. arxiv_id     — preprint identifier (DOI-less preprints)
-        # Rescued bundles (acatome-extract `text_rescue` path) often
-        # lack a DOI but still carry pdf_hash, which is what used to
-        # trigger silent duplicate re-ingest on each directory walk.
-        dedupe_keys: list[tuple[str, str]] = []
-        if parsed.doi:
-            dedupe_keys.append(("doi", parsed.doi))
-        if parsed.pdf_hash:
-            dedupe_keys.append(("pdf_hash", parsed.pdf_hash))
-        if parsed.arxiv_id:
-            dedupe_keys.append(("arxiv_id", parsed.arxiv_id))
-
-        for meta_key, value in dedupe_keys:
-            with self.pool.connection() as conn:
-                row = conn.execute(
-                    "SELECT id, slug FROM refs "
-                    "WHERE kind = 'paper' AND deleted_at IS NULL "
-                    "AND meta->>%s = %s "
-                    "LIMIT 1",
-                    (meta_key, value),
-                ).fetchone()
-            if row is not None:
-                ref_id, slug = row[0], row[1]
+        # Identity dedupe: short-circuit if any of the bundle's
+        # identifiers already point at a live paper. The alias
+        # index does the heavy lifting — one indexed lookup per
+        # scheme, sequential. We stop on the first hit.
+        #
+        # Scheme order matters for diagnostic purposes only: a hit
+        # via 'doi' is the strongest signal; 'pdfsha256' catches
+        # rescued bundles without a DOI; 'arxiv' / 's2' / extras
+        # cover the long tail.
+        triples = _identifier_triples(parsed)
+        for scheme, value, _source in triples:
+            existing_ref_id = self.find_ref_by_identifier(
+                scheme, value, kind="paper"
+            )
+            if existing_ref_id is not None:
+                with self.pool.connection() as conn:
+                    row = conn.execute(
+                        "SELECT slug FROM refs WHERE id = %s",
+                        (existing_ref_id,),
+                    ).fetchone()
+                slug = row[0] if row is not None else ""
+                # Opportunistic enrichment: if we matched on (e.g.)
+                # 'doi' but the bundle also carries an 'arxiv' id we
+                # didn't have on file, INSERT the missing alias
+                # rows. This is exactly the "cross-DOI dedup"
+                # promise — once any path identifies this ref, we
+                # absorb the rest of the cluster into the alias
+                # index so subsequent lookups by *any* member hit
+                # in O(1) without re-querying S2.
+                self.insert_ref_identifiers(existing_ref_id, triples)
                 return IngestResult(
-                    ref_id=ref_id,
+                    ref_id=existing_ref_id,
                     slug=slug,
-                    block_count=self.count_blocks(ref_id),
+                    block_count=self.count_blocks(existing_ref_id),
                     inserted=False,
                     embedding_dim=embedder.dim,
                 )
@@ -198,6 +303,13 @@ class IngestMixin:
                 "ON CONFLICT DO NOTHING",
                 (ref.id,),
             )
+
+            # Write identifier aliases inside the same transaction so
+            # the ref + its aliases land atomically — a partial-state
+            # window where the ref exists but isn't yet alias-indexed
+            # would let a concurrent ingest of the same paper insert
+            # a duplicate ref before our aliases hit the table.
+            self.insert_ref_identifiers(ref.id, triples, conn=conn)
 
         return IngestResult(
             ref_id=ref.id,

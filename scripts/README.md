@@ -55,15 +55,89 @@ Watch a directory for new top-level `*.pdf` files. For each one:
 
 `Ctrl+C` (or `SIGTERM`) drains the current PDF and exits cleanly.
 
+### `find-citing-papers`
+
+For every paper in precis with a DOI or arXiv id, fetch the citation
+list from Semantic Scholar, filter by date window and relevance, dedup
+against the corpus, and write a markdown report plus a JSONL feed of
+unique citing papers.
+
+```sh
+./scripts/find-citing-papers                              # last 180 days, default relevance gate
+./scripts/find-citing-papers --since 2026-02-01           # explicit window start
+./scripts/find-citing-papers --until 2026-07-31           # explicit window end
+./scripts/find-citing-papers --influential-only           # require S2 isInfluential=True
+./scripts/find-citing-papers --keep-background            # keep background-only intents
+./scripts/find-citing-papers --limit 100                  # only the N most recently ingested source papers
+./scripts/find-citing-papers --slug-prefix abazari        # filter source corpus by slug
+./scripts/find-citing-papers --no-fetch                   # aggregate from existing cache only
+./scripts/find-citing-papers --force                      # ignore cache, refetch every paper
+```
+
+Per-paper results are cached as JSON under
+`paper-ingest/.citing-papers-cache/<slug>.json` (override with
+`PRECIS_CITING_CACHE_DIR` or `--cache-dir`) so the sweep is
+**resumable** — re-runs reuse cache files unless `--force` is passed.
+
+Reads `SEMANTIC_SCHOLAR_API_KEY` from the environment to raise S2's
+free-tier rate limit. A full sweep on ~4k papers takes 1–3 hours
+depending on rate-limit hits and how heavily-cited each source is.
+
+The default markdown report goes to
+`paper-ingest/citing-papers-<UTC-timestamp>.md`; the JSONL feed
+sits next to it with `.jsonl` extension and is shaped for downstream
+ingest (e.g. piping through `acatome-quest submit`).
+
+### `enrich-paper-identifiers`
+
+One-shot sweep that walks every live paper ref and fully populates
+`ref_identifiers` from Semantic Scholar's `externalIds` cluster
+(DOI / ArXiv / PubMed / PubMedCentralID / MAG / DBLP / CorpusId /
+OpenAlex). Migration `0009_ref_identifiers.sql` backfilled the four
+canonical schemes (DOI, arXiv id, S2 paperId, pdf_hash) from
+existing meta JSON; this sweep adds everything else by re-asking S2.
+
+After the sweep, `doilist scan` sees the maximum-coverage alias
+index — sources/ DOIs that match ANY known identifier of any
+ingested paper get caught, not just the canonical four.
+
+```sh
+./scripts/enrich-paper-identifiers --dry-run --limit 5  # sanity check
+./scripts/enrich-paper-identifiers                       # full sweep
+./scripts/enrich-paper-identifiers --limit 500           # first 500 only
+./scripts/enrich-paper-identifiers --re-enrich           # ignore the
+                                                         # `s2-enriched`
+                                                         # tag and re-query
+```
+
+Idempotent via the `s2-enriched` open tag attached to each ref on
+completion. Re-runs of the script skip already-tagged refs unless
+`--re-enrich` is passed. Failures are logged but don't abort the
+sweep — re-run later to pick them up.
+
+Reads `SEMANTIC_SCHOLAR_API_KEY` from the environment to raise S2's
+free-tier rate limit. Without it the sweep still runs but is slower
+and more likely to hit 429 errors. Fixed soft delay of 0.4s between
+calls keeps us well under any S2 rate cap.
+
+Estimated wall-clock: ~2.5s per paper, so ~100–175 min for a 4k-paper
+corpus (S2 latency dominates the inter-call sleep).
+
 ## Layout
 
 ```
 scripts/
-  _common.py                       # shared store/embedder helpers
-  _paper_count.py                  # python impl
-  _paper_monitor_ingest_dir.py     # python impl
-  paper-count                      # bash wrapper (uv run)
-  paper-monitor-ingest-dir         # bash wrapper (uv run)
+  _common.py                          # shared store/embedder helpers
+  _paper_count.py                     # python impl
+  _paper_monitor_ingest_dir.py        # python impl
+  _find_citing_papers.py              # python impl
+  _enrich_paper_identifiers.py        # python impl
+  _doilist.py                         # python impl
+  paper-count                         # bash wrapper
+  paper-monitor-ingest-dir            # bash wrapper
+  find-citing-papers                  # bash wrapper
+  enrich-paper-identifiers            # bash wrapper
+  doilist                             # bash wrapper
   README.md
 ```
 

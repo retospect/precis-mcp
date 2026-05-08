@@ -97,31 +97,70 @@ def scan_dir(root: Path) -> set[str]:
 
 # ---------- precis lookup ----------
 
-def precis_known_dois() -> set[str]:
-    """Return all DOIs already in the precis paper store (lowercased)."""
+def precis_known_identifiers() -> set[str]:
+    """Every identifier string precis has indexed, across all schemes.
+
+    Dumps raw ``value`` from ``ref_identifiers`` for every live paper
+    ref, *regardless of scheme* — DOI, arXiv, S2 paperId, PubMed, MAG,
+    DBLP, CorpusId, OpenAlex, PubMedCentral, pdf_hash. Values are
+    already lowercased on insert.
+
+    String equality is a reliable match across schemes because the
+    forms don't collide: DOIs are ``10.x/y``, arXiv ids are ``N.N``
+    dotted digits or ``category/NNNNNNN`` old-format, S2 paperIds are
+    40-char hex, PubMed / MAG / CorpusId are pure digits, pdf_hash
+    is 64-char hex. A source-text mention of any of these forms lands
+    in the right bucket via simple membership test.
+
+    Also synthesises the arXiv DOI form (``10.48550/arxiv.<id>``) per
+    arxiv row. Post-enrichment most papers already carry the arXiv
+    DOI as ``scheme='doi'``, but the synthesis is belt-and-braces for
+    preprint-only papers whose S2 record returned only the arXiv
+    externalIds entry.
+
+    Replaces the legacy ``precis_known_dois()`` + ``meta->>'doi'``
+    scan after migration ``0009_ref_identifiers``.
+    """
     db_url = os.environ.get("PRECIS_DATABASE_URL", DEFAULT_DB)
     try:
         import psycopg  # type: ignore
     except ImportError:
         print("  ! psycopg not available; falling back to psql subprocess", file=sys.stderr)
-        return _psql_known_dois(db_url)
+        return _psql_known_identifiers(db_url)
     out: set[str] = set()
     with psycopg.connect(db_url) as conn, conn.cursor() as cur:
+        # Everything under kind='paper', no scheme filter. One scan
+        # of the indexed table; synthesis happens in Python.
         cur.execute(
-            "SELECT lower(meta->>'doi') FROM refs "
-            "WHERE kind='paper' AND deleted_at IS NULL AND meta->>'doi' IS NOT NULL"
+            "SELECT pi.scheme, pi.value FROM ref_identifiers pi "
+            "JOIN refs r ON r.id = pi.ref_id "
+            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL"
         )
-        for (doi,) in cur.fetchall():
-            if doi:
-                out.add(doi)
+        for scheme, value in cur.fetchall():
+            if not value:
+                continue
+            out.add(value)
+            if scheme == "arxiv":
+                out.add(f"10.48550/arxiv.{value}")
     return out
 
 
-def _psql_known_dois(db_url: str) -> set[str]:
+def _psql_known_identifiers(db_url: str) -> set[str]:
+    """``psql`` subprocess fallback when psycopg isn't importable.
+
+    Mirrors :func:`precis_known_identifiers`: every raw value under
+    ``kind='paper'`` plus the synthesised arXiv DOI form.
+    """
     import subprocess
     sql = (
-        "SELECT lower(meta->>'doi') FROM refs "
-        "WHERE kind='paper' AND deleted_at IS NULL AND meta->>'doi' IS NOT NULL"
+        "SELECT pi.value FROM ref_identifiers pi "
+        "JOIN refs r ON r.id = pi.ref_id "
+        "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+        "UNION "
+        "SELECT '10.48550/arxiv.' || pi.value FROM ref_identifiers pi "
+        "JOIN refs r ON r.id = pi.ref_id "
+        "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+        "AND pi.scheme = 'arxiv'"
     )
     res = subprocess.run(
         ["psql", db_url, "-At", "-c", sql],
@@ -347,9 +386,9 @@ def cmd_scan(args: argparse.Namespace) -> None:
     raw = scan_dir(SOURCES)
     log(f"  unique DOIs in sources/: {len(raw)}")
 
-    log("loading known DOIs from precis ...")
-    known = precis_known_dois()
-    log(f"  precis has: {len(known)}")
+    log("loading known identifiers from precis (all schemes) ...")
+    known = precis_known_identifiers()
+    log(f"  precis has: {len(known)} identifier strings (DOIs, arxiv ids, S2, PubMed, ...)")
 
     state = read_state()
     n_valid = sum(1 for v in state.values() if v == "valid")

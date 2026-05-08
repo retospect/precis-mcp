@@ -63,6 +63,7 @@ def _bundle_dict(
 
 
 def _write_bundle(tmp_path: Path, data: dict[str, Any]) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "fixture.acatome"
     with gzip.open(path, "wt", encoding="utf-8") as f:
         json.dump(data, f)
@@ -549,3 +550,194 @@ class TestIngestBundle:
         result = store.ingest_bundle(path, embedder=e)
         assert result.inserted is True
         assert result.slug == "wang2020nitrate-2"
+
+
+# ---------------------------------------------------------------------------
+# ref_identifiers — alias rows on insert + cross-scheme dedup
+# ---------------------------------------------------------------------------
+
+
+class TestRefIdentifiers:
+    """Verify migration ``0009_ref_identifiers`` wiring on ingest.
+
+    Covers: alias rows are written on insert, cross-scheme dedup
+    works (DOI vs arXiv-DOI form vs bare arXiv id), the agent-facing
+    ``find_paper_slug_by_doi`` honours the alias index, and the
+    "1705.02630 cross-DOI" case from the user report regression-tests
+    cleanly.
+    """
+
+    def test_alias_rows_written_on_insert(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        """Every identifier the bundle carries lands in ref_identifiers."""
+        data = _bundle_dict(doi="10.1103/PhysRevB.96.075447", arxiv_id="1705.02630")
+        data["header"]["s2_id"] = "36a5bbf08ef2682944cd21e3d6f83167bada9ade"
+        data["header"]["external_ids"] = {
+            "DOI": "10.1103/PhysRevB.96.075447",
+            "ArXiv": "1705.02630",
+            "MAG": "2615267850",
+        }
+        path = _write_bundle(tmp_path, data)
+        result = store.ingest_bundle(path, embedder=MockEmbedder(dim=1024))
+
+        rows = store.list_ref_identifiers(result.ref_id)
+        schemes = {scheme for scheme, _value, _src in rows}
+        assert schemes == {"doi", "arxiv", "s2", "pdfsha256", "mag"}
+        # All values stored canonically lowercased
+        for _scheme, value, _src in rows:
+            assert value == value.lower()
+
+    def test_dedup_via_arxiv_when_first_was_doi_only(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        """Re-ingest the same paper via the arXiv DOI form: must dedup."""
+        # First ingest: journal DOI + bare arxiv id (the realistic acatome path)
+        data1 = _bundle_dict(doi="10.1103/PhysRevB.96.075447", arxiv_id="1705.02630")
+        path1 = _write_bundle(tmp_path / "v1", data1)
+        first = store.ingest_bundle(path1, embedder=MockEmbedder(dim=1024))
+
+        # Second ingest: only the arXiv DOI form, no journal DOI yet known.
+        # This simulates the case where an arxiv-only PDF was extracted
+        # without going through CrossRef.
+        data2 = _bundle_dict(
+            doi="10.48550/arXiv.1705.02630", arxiv_id="1705.02630", title="V2"
+        )
+        path2 = _write_bundle(tmp_path / "v2", data2)
+        second = store.ingest_bundle(path2, embedder=MockEmbedder(dim=1024))
+
+        assert second.inserted is False, (
+            "second ingest should dedup against first via the shared arxiv id"
+        )
+        assert second.ref_id == first.ref_id
+
+    def test_dedup_via_external_id_cluster_member(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        """If the second bundle's PubMed id matches the first's externalIds,
+        dedup hits even though no canonical key (DOI/arxiv/pdf_hash) overlaps.
+        """
+        # First ingest: bundle carries S2 + PubMed in externalIds
+        data1 = _bundle_dict(doi="10.1/first-doi", arxiv_id=None)
+        data1["header"]["pdf_hash"] = "hash1"
+        data1["header"]["external_ids"] = {"PubMed": "12345678"}
+        path1 = _write_bundle(tmp_path / "v1", data1)
+        first = store.ingest_bundle(path1, embedder=MockEmbedder(dim=1024))
+
+        # Second ingest: different DOI + different pdf_hash, but same PubMed
+        data2 = _bundle_dict(doi="10.1/different-doi", arxiv_id=None, title="Same paper")
+        data2["header"]["pdf_hash"] = "hash2"
+        data2["header"]["external_ids"] = {"PubMed": "12345678"}
+        path2 = _write_bundle(tmp_path / "v2", data2)
+        second = store.ingest_bundle(path2, embedder=MockEmbedder(dim=1024))
+
+        assert second.inserted is False
+        assert second.ref_id == first.ref_id
+
+    def test_opportunistic_alias_enrichment_on_dedup(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        """When a re-ingest dedupes, missing aliases from the bundle are
+        absorbed into ref_identifiers so future lookups by *any* member hit.
+        """
+        # First ingest: only DOI + pdf_hash known
+        data1 = _bundle_dict(doi="10.1/dedup-test", arxiv_id=None)
+        path1 = _write_bundle(tmp_path / "v1", data1)
+        first = store.ingest_bundle(path1, embedder=MockEmbedder(dim=1024))
+
+        before = {scheme for scheme, _v, _s in store.list_ref_identifiers(first.ref_id)}
+        assert "arxiv" not in before
+        assert "pubmed" not in before
+
+        # Second ingest of the same paper now carries arxiv + pubmed too
+        data2 = _bundle_dict(
+            doi="10.1/dedup-test", arxiv_id="2401.12345", title="V2"
+        )
+        data2["header"]["external_ids"] = {"PubMed": "99999999"}
+        path2 = _write_bundle(tmp_path / "v2", data2)
+        second = store.ingest_bundle(path2, embedder=MockEmbedder(dim=1024))
+        assert second.inserted is False
+        assert second.ref_id == first.ref_id
+
+        after = {scheme for scheme, _v, _s in store.list_ref_identifiers(first.ref_id)}
+        assert "arxiv" in after
+        assert "pubmed" in after
+
+    def test_find_paper_slug_by_doi_resolves_arxiv_doi_form(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        """The DOI lookup helper must accept the arXiv DOI form
+        (``10.48550/arXiv.X``) and route via the ``arxiv`` scheme alias."""
+        data = _bundle_dict(doi="10.1103/PhysRevB.96.075447", arxiv_id="1705.02630")
+        path = _write_bundle(tmp_path, data)
+        result = store.ingest_bundle(path, embedder=MockEmbedder(dim=1024))
+
+        # Journal DOI works (always did)
+        assert (
+            store.find_paper_slug_by_doi("10.1103/PhysRevB.96.075447") == result.slug
+        )
+        # arXiv DOI form works (new behaviour)
+        assert (
+            store.find_paper_slug_by_doi("10.48550/arXiv.1705.02630") == result.slug
+        )
+        # URL form works
+        assert (
+            store.find_paper_slug_by_doi(
+                "https://doi.org/10.48550/arXiv.1705.02630"
+            )
+            == result.slug
+        )
+
+    def test_find_paper_ref_by_identifier_handles_all_schemes(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        """The generic auto-detect lookup recognises every scheme shape."""
+        data = _bundle_dict(doi="10.1103/PhysRevB.96.075447", arxiv_id="1705.02630")
+        data["header"]["pdf_hash"] = "a" * 64
+        data["header"]["s2_id"] = "b" * 40
+        data["header"]["external_ids"] = {"PubMed": "12345678"}
+        path = _write_bundle(tmp_path, data)
+        result = store.ingest_bundle(path, embedder=MockEmbedder(dim=1024))
+
+        cases = [
+            "10.1103/PhysRevB.96.075447",  # journal DOI
+            "10.48550/arXiv.1705.02630",  # arXiv DOI
+            "1705.02630",  # bare arxiv id
+            "1705.02630v2",  # versioned arxiv id (stripped on lookup)
+            "S2:" + "b" * 40,  # explicit S2 prefix
+            "PMID:12345678",  # explicit PubMed prefix
+            "a" * 64,  # raw pdf_hash
+        ]
+        for value in cases:
+            assert store.find_paper_ref_by_identifier(value) == result.ref_id, (
+                f"failed for value: {value!r}"
+            )
+
+    def test_pk_blocks_one_doi_two_papers(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        """The (scheme, value) PK enforces 'one DOI cannot resolve to two
+        different papers'. Attempting to insert the same DOI alias for a
+        different ref must be a no-op (ON CONFLICT DO NOTHING)."""
+        # First ingest with DOI X
+        data1 = _bundle_dict(doi="10.1/shared-doi")
+        path1 = _write_bundle(tmp_path / "v1", data1)
+        first = store.ingest_bundle(path1, embedder=MockEmbedder(dim=1024))
+
+        # Manually create a second ref (NOT via ingest, so dedup doesn't fire)
+        cid = store.ensure_corpus("default")
+        second = store.insert_ref(
+            corpus_id=cid,
+            kind="paper",
+            slug="other-paper",
+            title="Different paper trying to claim shared DOI",
+            meta={},
+        )
+        # Now try to claim the same DOI for the second ref
+        written = store.insert_ref_identifiers(
+            second.id, [("doi", "10.1/shared-doi", "manual")]
+        )
+        # The PK conflict means no row was written
+        assert written == 0
+        # The DOI still resolves to the first ref
+        assert store.find_ref_by_identifier("doi", "10.1/shared-doi") == first.ref_id
