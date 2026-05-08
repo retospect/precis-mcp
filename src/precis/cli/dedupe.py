@@ -61,9 +61,19 @@ def run(args: argparse.Namespace) -> None:
 
         with store.pool.connection() as conn:
             for key in keys:
+                # ``lower()`` mirrors ``ref_identifiers`` PK semantics —
+                # DOIs are case-insensitive per Crossref / DOI Foundation
+                # spec, so ``10.1002/APP.45959`` and ``10.1002/app.45959``
+                # are the same identifier. Pre-fix, this comparison was
+                # case-sensitive and missed duplicate ingests where
+                # acatome-meta returned different casings on different
+                # runs (CrossRef preserves uppercase ``APP``, S2 lowercases
+                # everything). pdf_hash is already hex-lowercase by
+                # construction so the wrap is a no-op there; arxiv ids
+                # are conventionally lowercase too.
                 rows = conn.execute(
                     "WITH live AS ("
-                    "  SELECT id, slug, meta->>%s AS v "
+                    "  SELECT id, slug, lower(meta->>%s) AS v "
                     "  FROM refs "
                     "  WHERE kind = 'paper' AND deleted_at IS NULL "
                     "    AND meta ? %s AND meta->>%s <> ''"

@@ -357,7 +357,7 @@ def _validate_many(dois: list[str], workers: int, state: dict[str, str]) -> tupl
             done += 1
             try:
                 ok = fut.result()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 ok = False
             if ok:
                 state[doi.lower()] = "valid"

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# retrofit-acatome-external-ids — populate `header.external_ids` on
+# every existing `.acatome` bundle by reading the precis
+# `ref_identifiers` table (which the `enrich-paper-identifiers`
+# sweep has already populated). No S2 round-trip — precis is the
+# cache.
+#
+# Usage:
+#   ./scripts/retrofit-acatome-external-ids                  # dry-run, full corpus
+#   ./scripts/retrofit-acatome-external-ids --limit 20       # sanity check
+#   ./scripts/retrofit-acatome-external-ids --apply          # actually rewrite bundles
+#   ./scripts/retrofit-acatome-external-ids --re-retrofit    # rewrite even already-populated
+#
+# Atomic per-bundle write (tempfile + fsync + rename).
+# Idempotent — already-populated bundles are skipped without --re-retrofit.
+#
+# Env: PRECIS_DATABASE_URL (default: local cluster).
+
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_PY="$PKG_DIR/.venv/bin/python"
+
+: "${PRECIS_DATABASE_URL:=postgresql://acatome:acatome@127.0.0.1:5432/precis}"
+export PRECIS_DATABASE_URL
+
+if [[ -x "$VENV_PY" ]]; then
+    exec "$VENV_PY" "$SCRIPT_DIR/_retrofit_acatome_external_ids.py" "$@"
+fi
+
+exec uv run --project "$PKG_DIR" python "$SCRIPT_DIR/_retrofit_acatome_external_ids.py" "$@"
