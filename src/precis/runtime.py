@@ -530,6 +530,7 @@ class PrecisRuntime:
             )
         top_k = int(args.get("top_k") or 10)
         tags = args.get("tags")
+        exclude = args.get("exclude")
 
         kinds = self._resolve_cross_kind_request(kind)
         if not kinds:
@@ -552,23 +553,26 @@ class PrecisRuntime:
         if tags:
             normalized_tags = Tag.normalize_filter(tags, kind=None)
 
+        # Build the kwargs dict once so the per-kind retry chain
+        # below can drop unknown kwargs without re-listing them.
+        # ``exclude=`` is fanned out to every kind (the per-handler
+        # ``fetch_ref_ids_by_slugs`` filters by kind, so a paper
+        # slug in the list silently no-ops on memory etc.). Kinds
+        # that don't accept the kwarg fall through to the
+        # ``TypeError`` retry below.
+        base_kwargs: dict[str, Any] = {"q": q, "top_k": top_k}
+        if tags:
+            base_kwargs["tags"] = tags
+        if exclude:
+            base_kwargs["exclude"] = exclude
+
         streams: list[list[SearchHit]] = []
         for k in kinds:
             handler = self.hub.handler_for(k)
             if handler is None:
                 continue
-            try:
-                hits = handler.search_hits(q=q, tags=tags, top_k=top_k)
-            except TypeError:
-                # Handler's signature doesn't accept tags=; retry
-                # without (e.g. oracle/quest don't filter by tag).
-                try:
-                    hits = handler.search_hits(q=q, top_k=top_k)
-                except Exception:
-                    log.exception("cross-kind search_hits failed for %s", k)
-                    continue
-            except Exception:
-                log.exception("cross-kind search_hits failed for %s", k)
+            hits = self._cross_kind_invoke_search_hits(handler, k, base_kwargs)
+            if hits is None:
                 continue
             # Defensive post-filter: handler search_hits
             # implementations have inconsistent ``tags=`` support
@@ -591,6 +595,59 @@ class PrecisRuntime:
             mode="rrf",
             empty_body=(f"no matches across {', '.join(kinds)} for {q!r}"),
         )
+
+    def _cross_kind_invoke_search_hits(
+        self,
+        handler: Handler,
+        kind: str,
+        base_kwargs: dict[str, Any],
+    ) -> list[SearchHit] | None:
+        """Call ``handler.search_hits`` with progressive-degradation retries.
+
+        Handlers' ``search_hits`` signatures vary in which optional
+        kwargs they accept (``tags=``, ``exclude=``, …). Rather than
+        introspect the signature ahead of time, we try the full
+        kwargs set first and drop unknown kwargs on ``TypeError``,
+        most-recent-addition first (``exclude``, then ``tags``). Any
+        non-TypeError exception is logged and degraded to ``None``
+        so one slow / broken kind doesn't crash the whole query.
+        """
+        # Try the full set first.
+        try:
+            return list(handler.search_hits(**base_kwargs))
+        except TypeError:
+            pass
+        except Exception:
+            log.exception("cross-kind search_hits failed for %s", kind)
+            return None
+
+        # Drop ``exclude=`` (most recent kwarg addition) and retry.
+        if "exclude" in base_kwargs:
+            without_exclude = {
+                k: v for k, v in base_kwargs.items() if k != "exclude"
+            }
+            try:
+                return list(handler.search_hits(**without_exclude))
+            except TypeError:
+                pass
+            except Exception:
+                log.exception("cross-kind search_hits failed for %s", kind)
+                return None
+        else:
+            without_exclude = base_kwargs
+
+        # Drop ``tags=`` too (oracle / quest don't filter by tag).
+        if "tags" in without_exclude:
+            minimal = {k: v for k, v in without_exclude.items() if k != "tags"}
+            try:
+                return list(handler.search_hits(**minimal))
+            except Exception:
+                log.exception("cross-kind search_hits failed for %s", kind)
+                return None
+
+        # Already minimal (q + top_k only) and still failing.
+        log.exception("cross-kind search_hits failed for %s", kind)
+        return None
 
     def _filter_hits_by_tags(
         self,

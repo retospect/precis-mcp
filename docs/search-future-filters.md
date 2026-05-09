@@ -4,10 +4,24 @@
 > `scope=` / `top_k=` surface stays the canonical agent contract
 > across kinds. Revisit per item once usage demands it.
 
+## Shipped (was on this list)
+
+- **`exclude=` for ref-level pagination** — coarse skip-list of slugs
+  pushed down to both lex and sem CTEs in `search_blocks_fused`, so
+  `LIMIT` runs after exclusion and `top_k=10, exclude=[5 slugs]`
+  returns the next ten hits. Wired on `kind='paper'` (paper.search +
+  paper.search_hits); cross-kind dispatch forwards it via the new
+  `_cross_kind_invoke_search_hits` retry chain so handlers can opt
+  in by adding the kwarg. Documented in `precis-paper-help.md`,
+  surfaced in the Next: trailer with the continuation list pre-
+  filled. Closes the "I already saw the top 5, give me 6..N" gap.
+
+## Still deferred
+
 The current cross-kind `Handler.search` signature is uniform:
 
 ```python
-search(*, q, scope, tags, top_k, **_kw) -> Response
+search(*, q, scope, tags, top_k, exclude, **_kw) -> Response
 ```
 
 Per-kind specialisation lives **inside** that surface — typically by

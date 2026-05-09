@@ -43,6 +43,7 @@ class BlocksMixin:
         kind: str | None = None,
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> int:
         """Count blocks matching the lexical filter (no LIMIT).
 
@@ -58,6 +59,11 @@ class BlocksMixin:
         ``search_blocks_semantic`` callers, semantic search has no
         meaningful "total" since every embedded block is a hit at
         some distance — those handlers should not display a total.
+
+        ``exclude_ref_ids`` drops blocks belonging to the listed
+        refs from the count. Mirrors the same kwarg on
+        :meth:`search_blocks_fused` / :meth:`search_blocks_lexical`
+        so the ``N of K`` header stays honest under exclusion.
         """
         clauses = [
             "r.deleted_at IS NULL",
@@ -75,6 +81,9 @@ class BlocksMixin:
         if tag_frag:
             clauses.append(tag_frag.removeprefix(" AND "))
             params.extend(tag_params)
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("b.ref_id <> ALL(%s)")
         sql = (
             "SELECT count(*) FROM blocks b JOIN refs r ON r.id = b.ref_id, "
             "     websearch_to_tsquery('english', %s) qq(qq) "
@@ -93,6 +102,7 @@ class BlocksMixin:
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        exclude_ref_ids: list[int] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Lexical search over ``blocks.tsv``.
 
@@ -105,6 +115,11 @@ class BlocksMixin:
         or other formatting artefacts whose embeddings cluster near
         the noise floor. Returning them dilutes results with hits an
         agent can't quote. (MCP critic MAJOR #11.)
+
+        ``exclude_ref_ids`` drops blocks whose owning ref is in the
+        list. Applied as a WHERE predicate so ``LIMIT`` operates
+        post-exclude — ``limit=10`` with five excluded refs returns
+        ten remaining hits, not five.
         """
         clauses = [
             "r.deleted_at IS NULL",
@@ -122,6 +137,9 @@ class BlocksMixin:
         if tag_frag:
             clauses.append(tag_frag.removeprefix(" AND "))
             params.extend(tag_params)
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("b.ref_id <> ALL(%s)")
         params.append(limit)
 
         sql = (
@@ -243,6 +261,7 @@ class BlocksMixin:
         limit: int = 20,
         k: int = 60,
         max_distance: float | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Hybrid search via reciprocal rank fusion.
 
@@ -258,11 +277,25 @@ class BlocksMixin:
         without this, gibberish queries surface semantic-only hits
         because pgvector ``<=>`` always returns *something*. (Critic
         MAJOR #3.)
+
+        ``exclude_ref_ids`` drops blocks whose owning ref is in the
+        list before fusion. Applied via the shared ``where_extra``
+        clause so the predicate inlines into both CTEs (otherwise
+        RRF would fuse a filtered set against an unfiltered one and
+        the final ranking would skew toward the unfiltered side —
+        same reasoning as the tag filter). The outer ``LIMIT`` then
+        runs over the post-exclusion universe, so ``limit=10`` with
+        five excluded refs returns the next ten hits.
         """
         if query_vec is None:
             # Lex only, returning ts_rank as the score for shape parity.
             return self.search_blocks_lexical(
-                q=q, kind=kind, scope_ref_id=scope_ref_id, tags=tags, limit=limit
+                q=q,
+                kind=kind,
+                scope_ref_id=scope_ref_id,
+                tags=tags,
+                limit=limit,
+                exclude_ref_ids=exclude_ref_ids,
             )
 
         clauses = [
@@ -285,6 +318,12 @@ class BlocksMixin:
         if tag_frag:
             clauses.append(tag_frag.removeprefix(" AND "))
             params.extend(tag_params)
+        # exclude_ref_ids: same both-CTE rule as the tag filter — drop
+        # blocks belonging to seen refs before either leg ranks them so
+        # the fused ``LIMIT`` operates over the post-exclusion universe.
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("b.ref_id <> ALL(%s)")
 
         # We assemble the WHERE-clause prefix once and inline it into the
         # two CTEs (lex / sem) below.

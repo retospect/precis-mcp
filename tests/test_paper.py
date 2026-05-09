@@ -572,6 +572,219 @@ class TestSearch:
         assert "narrow to blocks inside" in resp.body
         assert "tighten the query with a hit-specific token" in resp.body
 
+    # ── exclude= ──────────────────────────────────────────────────
+
+    def test_search_exclude_drops_listed_papers(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``exclude=['slug']`` drops every block of that paper from
+        the result set, surfacing the next papers in the rank order.
+        This is the canonical "show me hits 6-N" pagination idiom."""
+        for slug in ("paper-a", "paper-b", "paper-c"):
+            _seed_paper(
+                store, slug=slug, title=f"Paper {slug}",
+                blocks=[f"photocatalytic reduction in {slug}"], doi=f"10.1/{slug}",
+            )
+        # Without exclude: all three papers.
+        full = handler.search(q="photocatalytic", top_k=10)
+        assert "paper-a" in full.body
+        assert "paper-b" in full.body
+        assert "paper-c" in full.body
+        # With exclude: paper-a drops out.
+        excluded = handler.search(
+            q="photocatalytic", top_k=10, exclude=["paper-a"]
+        )
+        assert "paper-a~" not in excluded.body
+        assert "paper-b" in excluded.body
+        assert "paper-c" in excluded.body
+
+    def test_search_exclude_accepts_slug_with_selector(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A copy-pasted hit handle (``slug~38``) in ``exclude=`` is
+        normalised to the bare slug. Coarse-only by design — the
+        whole paper drops, not just the one block."""
+        _seed_paper(
+            store, slug="paper-a", title="A",
+            blocks=["photocatalytic copper", "photocatalytic zinc"],
+            doi="10.1/paper-a",
+        )
+        _seed_paper(
+            store, slug="paper-b", title="B",
+            blocks=["photocatalytic iron"],
+            doi="10.1/paper-b",
+        )
+        resp = handler.search(
+            q="photocatalytic", top_k=10,
+            exclude=["paper-a~0"],  # copy-pasted handle
+        )
+        assert "paper-a~" not in resp.body
+        assert "paper-b~" in resp.body
+
+    def test_search_exclude_accepts_doi(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``exclude=['10.1234/x']`` resolves the DOI to a slug before
+        the SQL filter, so DOI-form exclude entries work the same as
+        slug-form ones."""
+        _seed_paper(
+            store, slug="paper-a", title="A",
+            blocks=["alpha topic"],
+            doi="10.1111/jnc.13915",
+        )
+        _seed_paper(
+            store, slug="paper-b", title="B",
+            blocks=["alpha topic"],
+            doi="10.1/b",
+        )
+        resp = handler.search(
+            q="alpha", top_k=10,
+            exclude=["10.1111/jnc.13915"],
+        )
+        assert "paper-a~" not in resp.body
+        assert "paper-b~" in resp.body
+
+    def test_search_exclude_silently_drops_stale_slugs(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """An unknown slug in ``exclude=`` is silently dropped — the
+        agent's exclude list may carry slugs that no longer resolve
+        (renamed, soft-deleted, or just typos), and we'd rather
+        quietly skip than fail the whole search.
+
+        Mixed list (one stale + one valid) still excludes the valid
+        one, proving the stale entry isn't poisoning the call.
+        """
+        _seed_paper(
+            store, slug="paper-a", title="A",
+            blocks=["alpha topic"], doi="10.1/a",
+        )
+        _seed_paper(
+            store, slug="paper-b", title="B",
+            blocks=["alpha topic"], doi="10.1/b",
+        )
+        resp = handler.search(
+            q="alpha", top_k=10,
+            exclude=["does-not-exist", "paper-a"],
+        )
+        # Valid slug still drops; stale slug is no-op (no error).
+        assert "paper-a~" not in resp.body
+        assert "paper-b~" in resp.body
+
+    def test_search_exclude_total_header_reflects_remainder(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The ``N of K`` header reports the *remaining* universe
+        after exclusion, not the global count. A 7B caller seeing
+        ``# 2 of 3`` after dropping one paper knows there's one
+        more page worth; ``# 2 of 4`` would over-count and bait the
+        agent into a paginate that can't move forward.
+
+        Seeds 4 matching papers so ``top_k=2`` triggers the ``N of K``
+        form in both branches (the format collapses to ``# N`` when
+        ``total == n_returned``).
+        """
+        for slug in ("paper-a", "paper-b", "paper-c", "paper-d"):
+            _seed_paper(
+                store, slug=slug, title=f"Paper {slug}",
+                blocks=[f"alpha topic in {slug}"], doi=f"10.1/{slug}",
+            )
+        # Without exclude: 2 of 4.
+        full = handler.search(q="alpha", top_k=2)
+        assert " of 4" in full.body
+        # With one excluded: 2 of 3 — header subtracts the dropped ref.
+        excluded = handler.search(
+            q="alpha", top_k=2, exclude=["paper-a"]
+        )
+        assert " of 3" in excluded.body
+        # And specifically NOT "of 4" — would lie about how much
+        # is still paginate-able.
+        assert " of 4" not in excluded.body
+
+    def test_search_next_trailer_prefills_exclude_continuation(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """When ``total > len(hits)``, the multi-hit Next: block
+        renders an ``exclude=[...]`` continuation pre-filled with
+        the slugs of refs returned in this response. Agent reads
+        the trailer, copy-pastes, and gets hits 6..N without
+        having to track state itself."""
+        # Seed 5 papers all matching, ask for top_k=2 so 3 are paginated.
+        for slug in ("paper-a", "paper-b", "paper-c", "paper-d", "paper-e"):
+            _seed_paper(
+                store, slug=slug, title=f"Paper {slug}",
+                blocks=[f"photocatalytic reduction in {slug}"],
+                doi=f"10.1/{slug}",
+            )
+        resp = handler.search(q="photocatalytic", top_k=2)
+        body = resp.body
+        # Trailer carries an exclude= continuation.
+        assert "exclude=[" in body
+        # The slugs of the returned hits appear in the exclude list.
+        # We don't pin exact ranking (RRF) — just that both top-2
+        # slugs end up in the trailer's exclude list.
+        # Find the exclude=[...] segment and check it includes 2 slugs.
+        idx = body.index("exclude=[")
+        end = body.index("]", idx)
+        exclude_segment = body[idx:end + 1]
+        slug_count = sum(
+            exclude_segment.count(f"'paper-{ch}'")
+            for ch in "abcde"
+        )
+        assert slug_count == 2
+
+    def test_search_next_trailer_unions_prior_exclude(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The Next: continuation list = prior exclude UNION new
+        slugs. An agent paginating through 5 papers in pages of 2
+        sees the exclude list grow from [a,b] → [a,b,c,d] → [a,b,c,d,e]
+        without ever doing the bookkeeping itself."""
+        for slug in ("paper-a", "paper-b", "paper-c", "paper-d"):
+            _seed_paper(
+                store, slug=slug, title=f"Paper {slug}",
+                blocks=[f"photocatalytic reduction in {slug}"],
+                doi=f"10.1/{slug}",
+            )
+        # Continuation: caller already excluded paper-a; hit page
+        # returns paper-b and one more — trailer should suggest
+        # excluding [paper-a, paper-b, <other>].
+        resp = handler.search(
+            q="photocatalytic", top_k=2,
+            exclude=["paper-a"],
+        )
+        body = resp.body
+        assert "exclude=[" in body
+        idx = body.index("exclude=[")
+        end = body.index("]", idx)
+        seg = body[idx:end + 1]
+        # Prior exclude survives.
+        assert "'paper-a'" in seg
+        # And one of the new returned slugs is also in there.
+        new_count = sum(
+            seg.count(f"'paper-{ch}'") for ch in "bcd"
+        )
+        assert new_count >= 1
+
+    def test_search_exclude_trailer_singleton_keeps_widen(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Singleton-hit branch (``len(hits) == 1``) keeps the
+        existing ``top_k=10`` widen hint and does NOT render an
+        exclude-continuation — widening is the right next step
+        when only one match was returned."""
+        for slug in ("paper-a", "paper-b", "paper-c"):
+            _seed_paper(
+                store, slug=slug, title=f"Paper {slug}",
+                blocks=[f"alpha topic in {slug}"],
+                doi=f"10.1/{slug}",
+            )
+        resp = handler.search(q="alpha", top_k=1)
+        body = resp.body
+        assert "top_k=10" in body
+        # Singleton branch must not render an exclude continuation.
+        assert "exclude=[" not in body
+
 
 # ── NotFound nearest-match suggestions ─────────────────────────────
 

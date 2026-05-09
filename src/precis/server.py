@@ -373,6 +373,7 @@ def search(
     top_k: int = 10,
     tags: list[str] | None = None,
     source: str | None = None,
+    exclude: list[str] | None = None,
 ) -> str:
     """Search across kinds.
 
@@ -399,6 +400,15 @@ def search(
                skips local and dedupes OPS hits against already-
                fetched patents (prior-art sweep mode). Ignored by
                handlers that don't merge streams.
+        exclude: List of ref slugs to omit from results. Coarse / ref-
+               level — ``exclude=['wang2020state']`` drops every block
+               of that paper. Use to paginate ("show me hits 6-10"):
+               pass back the slugs of hits 1-5 from the prior call.
+               The ``LIMIT`` applies after exclusion so ``top_k`` stays
+               meaningful — ``top_k=10, exclude=[5 slugs]`` returns the
+               next 10 hits, not 5. Stale / unknown slugs are silently
+               dropped. Currently honoured by ``kind='paper'``; other
+               block-level kinds ignore it.
     """
     # Validate top_k at the MCP boundary so internal callers (tests,
     # SDK consumers) can still pass arbitrary values when they know
@@ -435,12 +445,15 @@ def search(
     }
     # Only forward optional kwargs when set — avoids flooding every
     # handler with None values when its signature doesn't accept them
-    # (most kinds ignore tags= / source= today, and forwarding None
-    # via **kwargs still costs a keyword-arg check at the handler).
+    # (most kinds ignore tags= / source= / exclude= today, and
+    # forwarding None via **kwargs still costs a keyword-arg check
+    # at the handler).
     if tags is not None:
         payload["tags"] = tags
     if source is not None:
         payload["source"] = source
+    if exclude is not None:
+        payload["exclude"] = exclude
     return _dispatch("search", payload)
 
 

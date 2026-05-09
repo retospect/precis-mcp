@@ -8,6 +8,53 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ## Unreleased
 
+### `search(... exclude=[slugs])` — ref-level pagination (2026-05-09)
+
+New `exclude=` kwarg on the agent-facing `search` tool. Coarse / ref-
+level skip-list of slugs (or DOIs, or copy-pasted hit handles like
+`'wang2020~38'`) pushed down to both lex and sem CTEs in
+`search_blocks_fused` so `LIMIT` runs **after** exclusion. The
+canonical "I saw the top 5, give me hits 6..N" pagination idiom now
+works without hacks.
+
+- **`server.py::search`** — new `exclude: list[str] | None = None`
+  kwarg, forwarded only when set (matches the `tags=` / `source=`
+  conventions). Docstring teaches the shape; that's the cold-start
+  discovery channel.
+- **`paper.search` / `paper.search_hits`** — accept `exclude=`,
+  resolve via the new `Store.fetch_ref_ids_by_slugs` bulk helper,
+  forward `exclude_ref_ids=` to the store. Stale slugs are silent
+  no-ops (the agent's exclude list may carry ids that no longer
+  resolve; failing the whole call would be unfriendly).
+- **`Store.search_blocks_fused` / `search_blocks_lexical` /
+  `count_blocks_lexical`** — new `exclude_ref_ids=` kwarg. Applied
+  via the shared `where_extra` clause so the predicate inlines into
+  both CTEs in `search_blocks_fused` (otherwise RRF would fuse a
+  filtered set against an unfiltered one — same reasoning as the
+  existing tag filter). Total-count helper honours it too so the
+  `N of K` header reflects the post-exclude universe.
+- **`runtime._dispatch_cross_kind`** — forwards `exclude=` through
+  the cross-kind fan-out via a new `_cross_kind_invoke_search_hits`
+  helper that retries on `TypeError` (drops `exclude`, then `tags`)
+  so handlers with smaller signatures degrade cleanly. Per-kind
+  slug collisions are non-issues: `fetch_ref_ids_by_slugs` filters
+  by kind, so a paper slug in the exclude list silently no-ops on
+  memory et al.
+- **`Next:` trailer** — multi-hit responses now render an
+  `exclude=[...]` continuation pre-filled with the slugs of refs
+  returned this page UNION'd with any prior `exclude=` the caller
+  passed. The agent copy-pastes; no client-side bookkeeping. The
+  singleton-hit branch keeps the existing `top_k=10` widen hint.
+- **Docs** — new "Skip what you've seen" section in
+  `precis-paper-help.md`, one-line example in `precis-overview.md`,
+  shipped entry in `docs/search-future-filters.md`.
+- **Tests** — 4 store-level (`test_block_search.py`: drops listed
+  refs, `LIMIT` post-exclude, lex-only fallback path, count-lex
+  honours exclude) and 8 handler-level (`test_paper.py`: drops
+  paper, slug-with-selector accepted, DOI accepted, stale slugs
+  silent, header reflects remainder, trailer pre-fills, trailer
+  unions prior exclude, singleton branch keeps widen).
+
 ### `PRECIS_ROOT` consolidation — single root for prose-file kinds (2026-05-02)
 
 `PRECIS_MARKDOWN_ROOT`, `PRECIS_PLAINTEXT_ROOT`, and the just-shipped

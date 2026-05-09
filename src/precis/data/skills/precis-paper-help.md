@@ -59,6 +59,45 @@ Scope to one paper:
 search(kind='paper', q='Z-scheme', scope='abazari2024design')
 ```
 
+## Skip what you've seen (`exclude=`)
+
+To paginate ("show me hits 6-N"), pass back the slugs of the papers
+you already saw:
+
+```python
+# First page.
+search(kind='paper', q='photocatalytic NOx reduction', top_k=5)
+# → 5 of 47 paper blocks for 'photocatalytic NOx reduction'
+#   ## 1. wang2020state~12 ...
+#   ## 2. kim2024electro~7  ...
+#   ...
+
+# Next page — drop those 5, get the next 5.
+search(kind='paper', q='photocatalytic NOx reduction', top_k=5,
+       exclude=['wang2020state','kim2024electro','liu2022zscheme',
+                'park2023nitrate','choi2021hybrid'])
+# → 5 of 42 paper blocks for 'photocatalytic NOx reduction'
+```
+
+Notes:
+
+- **Coarse / ref-level.** `exclude=['wang2020state']` drops every
+  block of that paper. Selectors and view paths are stripped, so a
+  copy-pasted hit handle (`'wang2020~12'`) and a DOI
+  (`'10.1111/jnc.13915'`) both resolve to the bare slug.
+- **The `LIMIT` applies after exclusion** — `top_k=5` with five
+  excluded papers really does return five new hits, not zero. Same
+  for the `N of K` header: it reports the *remaining* universe,
+  not the global count.
+- **Stale slugs are silent no-ops.** Unknown / soft-deleted slugs
+  in the exclude list don't fail the call; the filter just skips
+  them.
+- **The `Next:` trailer pre-fills the continuation list for you.**
+  When `total > len(hits)`, the response ends with a copy-pasteable
+  `search(... exclude=[...])` line that already merges your prior
+  exclude list with the slugs of refs returned this page — paste
+  and go.
+
 ## Read
 
 ```python

@@ -150,6 +150,34 @@ class RefsMixin:
             ).fetchone()
         return row[0] if row is not None else None
 
+    def fetch_ref_ids_by_slugs(
+        self,
+        slugs: Iterable[str],
+        *,
+        kind: str,
+    ) -> list[int]:
+        """Bulk slug→ref_id resolver. Live refs only.
+
+        Returns the ref ids for slugs that resolve in this kind;
+        unknown / deleted slugs are silently dropped. Used by the
+        search ``exclude=`` path so an agent passing back the slugs
+        from a prior response gets a "skip these" filter without
+        N round-trips and without a ``BadInput`` on a stale slug.
+
+        Order of the input is not preserved — callers that care
+        should map results back via the returned set membership.
+        """
+        unique = list({s for s in slugs if s})
+        if not unique:
+            return []
+        sql = (
+            "SELECT id FROM refs "
+            "WHERE kind = %s AND slug = ANY(%s) AND deleted_at IS NULL"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (kind, unique)).fetchall()
+        return [int(r[0]) for r in rows]
+
     def fetch_refs_by_ids(
         self,
         ref_ids: Iterable[int],

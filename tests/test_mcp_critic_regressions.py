@@ -244,6 +244,60 @@ def test_cross_kind_unknown_kind_lists_eligible_options(
     assert "nosuchkind" in out
 
 
+def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """Cross-kind dispatch forwards ``exclude=`` to handlers that
+    accept it (paper today) and degrades cleanly for handlers that
+    don't (memory) via the ``TypeError`` retry chain in
+    ``_cross_kind_invoke_search_hits``.
+
+    Pins the user-facing contract: ``search(kind='*',
+    exclude=[paper-slug])`` drops the paper from the merged stream
+    without crashing on memory's smaller signature. Without the
+    retry chain, the whole fan-out would die on the first
+    TypeError.
+    """
+    from precis.embedder import MockEmbedder
+    from precis.store import BlockInsert
+
+    e = MockEmbedder(dim=store.embedding_dim())
+    cid = store.ensure_corpus("default")
+    # Paper that will match the query.
+    paper = store.insert_ref(
+        corpus_id=cid, kind="paper", slug="paper-a", title="A",
+    )
+    store.insert_blocks(paper.id, [
+        BlockInsert(pos=0, text="qabsent unique-marker xyz",
+                    embedding=e.embed_one("qabsent unique-marker xyz")),
+    ])
+    # Memory with the same query word — proves the merge actually
+    # crosses kinds, and that exclude doesn't blow up memory's path.
+    runtime_with_store.dispatch(
+        "put", {"kind": "memory", "text": "qabsent unique-marker memory side"}
+    )
+
+    # Cross-kind search without exclude: paper-a appears.
+    out_full = runtime_with_store.dispatch(
+        "search", {"kind": "*", "q": "unique-marker"}
+    )
+    assert "[error:" not in out_full
+    assert "paper-a" in out_full
+
+    # With exclude=['paper-a']: paper drops from the merged result;
+    # memory side still appears (handler ignores the kwarg via the
+    # TypeError fallback).
+    out_excl = runtime_with_store.dispatch(
+        "search",
+        {"kind": "*", "q": "unique-marker", "exclude": ["paper-a"]},
+    )
+    assert "[error:" not in out_excl
+    assert "paper-a" not in out_excl
+    # Memory hit should still be there — exclude= is silently ignored
+    # by handlers without the kwarg, not poisoning the whole call.
+    assert "memory side" in out_excl
+
+
 # ── MAJOR: paper view aliases (cite/bib ⇄ bibtex) symmetric ─────────
 
 

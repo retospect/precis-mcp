@@ -64,6 +64,43 @@ _SUGGEST_CUTOFF = 0.6
 _SUGGEST_CORPUS_CAP = 5000
 
 
+def _normalise_exclude_slug(raw: str, *, store: Any) -> str | None:
+    """Coerce one ``exclude=`` entry to a bare paper slug.
+
+    The exclude list is coarse-only (ref-level): ``wang2020state`` and
+    ``wang2020state~38`` both drop every block of the paper. We
+    therefore strip any chunk selector or view path the caller may
+    have copy-pasted from a hit handle, then DOI-resolve so
+    ``exclude=['10.1111/jnc.13915']`` is equivalent to passing the
+    matching slug.
+
+    Returns ``None`` when the input is empty / whitespace / unresolvable
+    DOI — the caller silently drops nones so a stale slug in the
+    exclude list never poisons the whole search call.
+    """
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    # Coarse-only: trim the first ``~`` (chunk selector) or ``/``
+    # (view path). DOI-form ids carry ``/`` in the suffix, but
+    # _maybe_resolve_doi runs first and replaces the whole DOI with
+    # a bare slug, so by the time we reach the split there's no DOI
+    # ``/`` to confuse with a view path.
+    try:
+        resolved = _maybe_resolve_doi(store, cleaned)
+    except Exception:
+        # Unknown DOI raises NotFound from _maybe_resolve_doi; treat
+        # the same as a stale slug in the exclude list — silent drop.
+        return None
+    for sep in ("~", "/"):
+        if sep in resolved:
+            resolved = resolved.split(sep, 1)[0]
+    resolved = resolved.strip()
+    return resolved or None
+
+
 def _suggest_paper_slugs(slug: str, *, store: Any) -> list[str]:
     """Return up to ``_SUGGEST_TOP_N`` paper slugs that look like ``slug``.
 
@@ -205,6 +242,7 @@ class PaperHandler(Handler):
         scope: str | None = None,
         tags: list[str] | None = None,
         top_k: int = 10,
+        exclude: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         if q is None or not q.strip():
@@ -235,6 +273,34 @@ class PaperHandler(Handler):
             )
             scope_ref_id = scope_ref.id
 
+        # ``exclude=['slug1', 'slug2']`` drops every block of the
+        # listed papers from the result set. Coarse / ref-level: a
+        # ``slug~38`` entry is treated as ``slug``. Stale slugs are
+        # silently dropped — the agent's exclude list may carry
+        # ids that no longer resolve, and we'd rather quietly skip
+        # than fail the whole search. The canonical use case is the
+        # "show me hits 6..N" continuation rendered in the Next:
+        # trailer below.
+        excluded_slugs_in: list[str] = []
+        exclude_ref_ids: list[int] = []
+        if exclude:
+            normalised: list[str] = []
+            for raw in exclude:
+                slug = _normalise_exclude_slug(str(raw), store=self.store)
+                if slug is not None:
+                    normalised.append(slug)
+            # Dedup while preserving order so the trailer's "previous
+            # exclude" cross-reference reads predictably.
+            seen: set[str] = set()
+            for s in normalised:
+                if s not in seen:
+                    seen.add(s)
+                    excluded_slugs_in.append(s)
+            if excluded_slugs_in:
+                exclude_ref_ids = self.store.fetch_ref_ids_by_slugs(
+                    excluded_slugs_in, kind="paper"
+                )
+
         query_vec: list[float] | None = None
         if self.embedder is not None:
             query_vec = self.embedder.embed_one(q)
@@ -253,6 +319,7 @@ class PaperHandler(Handler):
             tags=normalized_tags,
             limit=top_k,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
+            exclude_ref_ids=exclude_ref_ids or None,
         )
         if not hits:
             # Use the canonical Next: block shape rather than an
@@ -305,11 +372,20 @@ class PaperHandler(Handler):
         # paginated. RRF only re-ranks lexically-matching rows, so
         # the lexical count is the meaningful "K". (MCP critic
         # MAJOR #10b.)
+        #
+        # ``exclude_ref_ids`` is forwarded so the K reported in the
+        # header is the *remaining* universe — i.e. when the caller
+        # already excluded 5 papers, "10 of 42" tells them how many
+        # hits are still left after their skip-list. Without this,
+        # the header would lie ("10 of 47") and a 7B model would
+        # think they had more to paginate through than actually
+        # exist.
         total = self.store.count_blocks_lexical(
             q=q,
             kind="paper",
             scope_ref_id=scope_ref_id,
             tags=normalized_tags,
+            exclude_ref_ids=exclude_ref_ids or None,
         )
 
         # Hits arrive sorted by RRF fused rank — best first. The
@@ -375,6 +451,32 @@ class PaperHandler(Handler):
             else:
                 top_slug = (hits[0][1].slug or "???") if hits else None
                 nav: list[tuple[str, str]] = []
+
+                # Exclude-continuation: pre-fill the slugs of refs we
+                # just returned (UNION'd with the caller's prior
+                # exclude list) so the agent can paste the call
+                # straight back to get the next page. Pushed down to
+                # SQL so ``LIMIT`` operates post-exclusion — the next
+                # call really does return the next ``top_k`` hits,
+                # not ``top_k - len(exclude)``. Order: this hint
+                # comes first because it's the most actionable.
+                seen_slugs: set[str] = set(excluded_slugs_in)
+                continuation: list[str] = list(excluded_slugs_in)
+                for _b, ref, _s in hits:
+                    s = ref.slug
+                    if s and s not in seen_slugs:
+                        seen_slugs.add(s)
+                        continuation.append(s)
+                if continuation:
+                    nav.append(
+                        (
+                            f"search(kind='paper', q={q!r}, "
+                            f"exclude={continuation!r})",
+                            f"see the next {top_k} hits "
+                            f"(skipping {len(continuation)} already shown)",
+                        )
+                    )
+
                 if scope is None and top_slug is not None:
                     nav.append(
                         (
@@ -400,6 +502,7 @@ class PaperHandler(Handler):
         q: str,
         tags: list[str] | None = None,
         top_k: int = 10,
+        exclude: list[str] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search returned as ``SearchHit``s.
@@ -409,10 +512,25 @@ class PaperHandler(Handler):
         cross-kind dispatcher can RRF-fuse them with hits from
         other kinds.  ``scope=`` is intentionally omitted — cross-
         kind merge has no per-paper scope.
+
+        ``exclude=`` mirrors the ``search`` shape (coarse, ref-level
+        slug list). Cross-kind callers can pass it through so
+        pagination works across the merged stream.
         """
         if not (q and q.strip()):
             return []
         normalized_tags = Tag.normalize_filter(tags, kind="paper")
+        exclude_ref_ids: list[int] = []
+        if exclude:
+            normalised: list[str] = []
+            for raw in exclude:
+                slug = _normalise_exclude_slug(str(raw), store=self.store)
+                if slug is not None:
+                    normalised.append(slug)
+            if normalised:
+                exclude_ref_ids = self.store.fetch_ref_ids_by_slugs(
+                    normalised, kind="paper"
+                )
         query_vec: list[float] | None = None
         if self.embedder is not None:
             query_vec = self.embedder.embed_one(q)
@@ -423,6 +541,7 @@ class PaperHandler(Handler):
             tags=normalized_tags,
             limit=top_k,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
+            exclude_ref_ids=exclude_ref_ids or None,
         )
         return block_hits_to_search_hits(triples, kind="paper")
 

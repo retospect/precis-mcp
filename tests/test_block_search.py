@@ -261,3 +261,108 @@ class TestSearchBlocksFused:
             q="nitrate", query_vec=qv, kind="paper", scope_ref_id=rid_a
         )
         assert all(ref.id == rid_a for _, ref, _ in hits)
+
+    def test_exclude_ref_ids_drops_listed_refs(self, store: Store) -> None:
+        """``exclude_ref_ids`` drops the listed refs from both CTEs so
+        the fused ``LIMIT`` operates over the post-exclusion universe.
+
+        Pins the user-visible guarantee from the agent surface: a
+        caller passing back the slugs of the top 5 they already saw
+        gets the *next* 5 hits, not 5 minus 5 = 0. Without the
+        push-down, the WHERE-after-LIMIT semantics would lose hits.
+        """
+        e = MockEmbedder(dim=1024)
+        rid_a = _seed_paper(
+            store, slug="a", title="A",
+            blocks=["nitrate reduction copper"], embedder=e,
+        )
+        rid_b = _seed_paper(
+            store, slug="b", title="B",
+            blocks=["nitrate reduction zinc"], embedder=e,
+        )
+        rid_c = _seed_paper(
+            store, slug="c", title="C",
+            blocks=["nitrate reduction iron"], embedder=e,
+        )
+        qv = e.embed_one("nitrate reduction")
+        # No exclude: all three refs surface.
+        hits_all = store.search_blocks_fused(
+            q="nitrate", query_vec=qv, kind="paper", limit=10,
+        )
+        slugs_all = {ref.slug for _b, ref, _s in hits_all}
+        assert slugs_all == {"a", "b", "c"}
+        # Exclude two; only the third remains.
+        hits_excluded = store.search_blocks_fused(
+            q="nitrate", query_vec=qv, kind="paper", limit=10,
+            exclude_ref_ids=[rid_a, rid_b],
+        )
+        slugs_excluded = {ref.slug for _b, ref, _s in hits_excluded}
+        assert slugs_excluded == {"c"}
+        # Sanity: the excluded ref's id does not appear in the row set.
+        assert rid_a not in {ref.id for _b, ref, _s in hits_excluded}
+        assert rid_b not in {ref.id for _b, ref, _s in hits_excluded}
+        assert rid_c in {ref.id for _b, ref, _s in hits_excluded}
+
+    def test_exclude_limit_applies_post_exclusion(self, store: Store) -> None:
+        """``limit=N`` with M excluded refs returns up to N
+        *remaining* hits, not ``N - M``. Pins the
+        ``WHERE-inside-CTE`` push-down — if exclusion ran post-LIMIT
+        instead, ``limit=2`` with one excluded ref would return one.
+        """
+        e = MockEmbedder(dim=1024)
+        rid_a = _seed_paper(
+            store, slug="a", title="A",
+            blocks=["nitrate one"], embedder=e,
+        )
+        _seed_paper(
+            store, slug="b", title="B",
+            blocks=["nitrate two"], embedder=e,
+        )
+        _seed_paper(
+            store, slug="c", title="C",
+            blocks=["nitrate three"], embedder=e,
+        )
+        qv = e.embed_one("nitrate")
+        hits = store.search_blocks_fused(
+            q="nitrate", query_vec=qv, kind="paper", limit=2,
+            exclude_ref_ids=[rid_a],
+        )
+        # limit=2 with rid_a excluded returns the next 2 (b, c), not 1.
+        assert len(hits) == 2
+        assert {ref.slug for _b, ref, _s in hits} == {"b", "c"}
+
+    def test_exclude_ref_ids_lex_only_path(self, store: Store) -> None:
+        """``exclude_ref_ids`` flows through the ``query_vec=None``
+        fallback to :meth:`search_blocks_lexical` (no embedder
+        path)."""
+        rid_a = _seed_paper(
+            store, slug="a", title="A",
+            blocks=["alpha topic"], embed=False,
+        )
+        _seed_paper(
+            store, slug="b", title="B",
+            blocks=["alpha topic"], embed=False,
+        )
+        hits = store.search_blocks_fused(
+            q="alpha", kind="paper", exclude_ref_ids=[rid_a]
+        )
+        assert {ref.slug for _b, ref, _s in hits} == {"b"}
+
+    def test_exclude_count_lexical_post_exclude(self, store: Store) -> None:
+        """``count_blocks_lexical`` honours ``exclude_ref_ids`` so the
+        ``N of K`` header in handler renderings stays honest under
+        exclusion."""
+        rid_a = _seed_paper(
+            store, slug="a", title="A",
+            blocks=["alpha topic"], embed=False,
+        )
+        _seed_paper(
+            store, slug="b", title="B",
+            blocks=["alpha topic"], embed=False,
+        )
+        total_full = store.count_blocks_lexical(q="alpha", kind="paper")
+        total_excl = store.count_blocks_lexical(
+            q="alpha", kind="paper", exclude_ref_ids=[rid_a]
+        )
+        assert total_full == 2
+        assert total_excl == 1

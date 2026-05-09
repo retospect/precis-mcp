@@ -131,6 +131,12 @@ corpus.
 search(kind='paper', q='photocatalytic NOx reduction', top_k=5)
 get(kind='paper', id='abazari2024design', view='abstract')
 
+# Paginate ("show me hits 6-N") by passing back the slugs already seen.
+search(kind='paper', q='photocatalytic NOx reduction', top_k=5,
+       exclude=['abazari2024design', '<other-slug>', ...])
+# The Next: trailer of every multi-hit search pre-fills this list
+# for you — copy-paste, no bookkeeping. See `precis-paper-help`.
+
 # Already have a DOI? Address by DOI directly — no keyword search needed.
 get(kind='paper', id='10.1038/nature10352')                  # by DOI
 get(kind='paper', id='10.1038/nature10352', view='bibtex')   # citation form
