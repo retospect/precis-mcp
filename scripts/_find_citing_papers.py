@@ -388,6 +388,7 @@ class AggregatedHit:
     cited_sources: set[str] = field(default_factory=set)
     influential_for: set[str] = field(default_factory=set)
     intents: set[str] = field(default_factory=set)
+    similarity: float | None = None  # bge-m3 cosine, max across cited sources
 
 
 def _hit_key(c: dict[str, Any]) -> str | None:
@@ -406,8 +407,18 @@ def _aggregate(
     influential_only: bool,
     keep_background: bool,
     known_dois: set[str],
+    min_citing_citations: int = 0,
+    min_co_cites: int = 1,
 ) -> tuple[dict[str, AggregatedHit], int, int]:
-    """Walk cache files, apply filters, dedup, return ``(hits, scanned, kept)``."""
+    """Walk cache files, apply filters, dedup, return ``(hits, scanned, kept)``.
+
+    Filter ordering matters for cost. Per-row filters (date, relevance,
+    citing-paper own citation count) run inside the scan loop and discard
+    rows before they hit the dedup dict. The aggregate-level filter
+    (``min_co_cites``) can only be applied AFTER the full scan because we
+    don't know the final co-citation count for any citing paper until we've
+    walked every cache file.
+    """
     hits: dict[str, AggregatedHit] = {}
     scanned = 0
     kept = 0
@@ -429,6 +440,9 @@ def _aggregate(
             if not _passes_relevance(
                 c, influential_only=influential_only, keep_background=keep_background
             ):
+                continue
+            cc = c.get("citationCount")
+            if min_citing_citations > 0 and (cc is None or cc < min_citing_citations):
                 continue
 
             key = _hit_key(c)
@@ -458,7 +472,285 @@ def _aggregate(
                 agg.intents.add(intent)
             kept += 1
 
+    if min_co_cites > 1:
+        hits = {k: h for k, h in hits.items() if len(h.cited_sources) >= min_co_cites}
+
     return hits, scanned, kept
+
+
+# ---------------------------------------------------------------------------
+# bge-m3 similarity rerank
+# ---------------------------------------------------------------------------
+#
+# Optional gate: drop citing papers whose abstract+title doesn't look
+# topically similar to ANY of the source papers it cites. Computes
+# cosine similarity using the same bge-m3 model that precis already
+# loads for its own embeddings — vectors are L2-normalized so cosine
+# == dot product.
+
+
+def _load_source_paper_text(slugs: set[str]) -> dict[str, str]:
+    """Pull title + abstract for each source paper from precis.
+
+    Returns ``{slug: "title abstract"}`` ready for embedding. Slugs
+    with neither title nor abstract are omitted (we can't score
+    against them).
+    """
+    if not slugs:
+        return {}
+    store, _cfg = open_store()
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT slug, title, meta->>'abstract' "
+                "FROM refs WHERE kind='paper' AND deleted_at IS NULL "
+                "AND slug = ANY(%s)",
+                (list(slugs),),
+            ).fetchall()
+    finally:
+        store.close()
+
+    out: dict[str, str] = {}
+    for slug, title, abstract in rows:
+        text = " ".join(p for p in (title, abstract) if p).strip()
+        if text:
+            out[slug] = text
+    return out
+
+
+def _dot(a: list[float], b: list[float]) -> float:
+    """Cosine similarity for normalized vectors == dot product."""
+    return sum(x * y for x, y in zip(a, b, strict=True))
+
+
+def _apply_similarity_gate(
+    hits: dict[str, AggregatedHit],
+    *,
+    min_similarity: float,
+) -> dict[str, AggregatedHit]:
+    """Embed surviving citing papers + their cited sources, gate by cosine.
+
+    Each surviving citing paper gets a ``similarity`` score equal to
+    the *maximum* cosine across the source papers it cites. The gate
+    drops anything below ``min_similarity``. Source-paper texts come
+    from precis (title + abstract); citing-paper texts come from the
+    cache (title + abstract from S2).
+    """
+    if not hits or min_similarity <= 0:
+        return hits
+
+    # Lazy imports — bge-m3 pulls in sentence-transformers + torch
+    # which take ~7s to load. Worth deferring until we actually need it.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from precis.embedder import make_embedder
+
+    # Collect source slugs we need text for. Drop anything we can't score.
+    needed_slugs: set[str] = set()
+    for h in hits.values():
+        needed_slugs.update(h.cited_sources)
+
+    print(f"[bge-m3] loading source texts for {len(needed_slugs)} papers...")
+    src_texts = _load_source_paper_text(needed_slugs)
+    missing_src = needed_slugs - set(src_texts.keys())
+    if missing_src:
+        print(
+            f"[bge-m3] {len(missing_src)} source papers have no title/abstract — "
+            f"citing papers that ONLY cite those will fall through ungated"
+        )
+
+    print(f"[bge-m3] loading model + embedding {len(src_texts)} source papers...")
+    embedder = make_embedder("bge-m3")
+    src_keys = list(src_texts.keys())
+    src_vecs_list = embedder.embed([src_texts[k] for k in src_keys])
+    src_vecs = dict(zip(src_keys, src_vecs_list, strict=True))
+
+    # Build embedding queue for citing papers. Skip ones with empty text —
+    # they'll fall through ungated (similarity=None).
+    cit_keys: list[str] = []
+    cit_texts: list[str] = []
+    for k, h in hits.items():
+        text = " ".join(p for p in (h.title, h.abstract) if p).strip()
+        if text:
+            cit_keys.append(k)
+            cit_texts.append(text)
+
+    print(f"[bge-m3] embedding {len(cit_texts)} citing papers (this is the slow bit)...")
+    t0 = time.monotonic()
+    cit_vecs_list = embedder.embed(cit_texts)
+    elapsed = time.monotonic() - t0
+    print(
+        f"[bge-m3] embedded {len(cit_texts)} in {elapsed:.1f}s "
+        f"({len(cit_texts) / elapsed:.0f}/s)"
+    )
+    cit_vecs = dict(zip(cit_keys, cit_vecs_list, strict=True))
+
+    # Score + gate.
+    out: dict[str, AggregatedHit] = {}
+    n_no_text = 0
+    n_no_src_text = 0
+    n_dropped = 0
+    for k, h in hits.items():
+        cv = cit_vecs.get(k)
+        if cv is None:
+            # No citing-paper text. Pass through ungated — better to
+            # show ungated than silently drop, since the user may have
+            # other filters on.
+            n_no_text += 1
+            out[k] = h
+            continue
+        scores = [
+            _dot(cv, src_vecs[s]) for s in h.cited_sources if s in src_vecs
+        ]
+        if not scores:
+            n_no_src_text += 1
+            out[k] = h  # all cited sources lacked text; pass through
+            continue
+        max_sim = max(scores)
+        h.similarity = max_sim
+        if max_sim >= min_similarity:
+            out[k] = h
+        else:
+            n_dropped += 1
+
+    print(
+        f"[bge-m3] kept {len(out)}/{len(hits)} "
+        f"(threshold={min_similarity}, dropped={n_dropped}, "
+        f"ungated_no_text={n_no_text + n_no_src_text})"
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Per-source top-K mode
+# ---------------------------------------------------------------------------
+#
+# Alternative output: instead of one global ranking, group citing papers
+# by which source paper they cite, and surface the top K most-recent /
+# most-influential citations per source. Useful for "what's new for paper
+# X" digests rather than corpus-wide topic surveys.
+
+
+def _aggregate_per_source(
+    cache_files: list[Path],
+    *,
+    since: str | None,
+    until: str | None,
+    influential_only: bool,
+    keep_background: bool,
+    known_dois: set[str],
+    min_citing_citations: int,
+    top_k: int,
+) -> tuple[dict[str, list[dict[str, Any]]], int, int]:
+    """Build ``{source_slug: [top_k citations]}`` ranked per source.
+
+    Within each source paper, citations are sorted by:
+      1. ``isInfluential`` (True first)
+      2. publication date (DESC)
+      3. citing paper's own citation count (DESC)
+    """
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    scanned = 0
+    kept = 0
+
+    for path in cache_files:
+        try:
+            blob = json.loads(path.read_text())
+        except Exception:
+            continue
+        src_slug = blob.get("slug") or path.stem
+        bucket: list[dict[str, Any]] = []
+
+        for c in blob.get("citations", []):
+            scanned += 1
+            doi_lc = (c.get("doi") or "").lower()
+            if doi_lc and doi_lc in known_dois:
+                continue
+            if not _passes_date(c, since, until):
+                continue
+            if not _passes_relevance(
+                c, influential_only=influential_only, keep_background=keep_background
+            ):
+                continue
+            cc = c.get("citationCount")
+            if min_citing_citations > 0 and (cc is None or cc < min_citing_citations):
+                continue
+            bucket.append(c)
+            kept += 1
+
+        if not bucket:
+            continue
+        bucket.sort(
+            key=lambda c: (
+                0 if c.get("isInfluential") else 1,
+                -_date_to_int(
+                    c.get("publicationDate")
+                    or (f"{c.get('year')}-01-01" if c.get("year") else "")
+                ),
+                -(c.get("citationCount") or 0),
+            )
+        )
+        by_source[src_slug] = bucket[:top_k]
+
+    return by_source, scanned, kept
+
+
+def _write_per_source_markdown(
+    by_source: dict[str, list[dict[str, Any]]],
+    *,
+    out: Path,
+    since: str | None,
+    until: str | None,
+    n_sources: int,
+    n_scanned: int,
+    n_kept: int,
+    influential_only: bool,
+    keep_background: bool,
+    min_citing_citations: int,
+    top_k: int,
+) -> None:
+    lines: list[str] = []
+    lines.append("# Latest citations per source paper")
+    lines.append("")
+    lines.append(f"- Generated: {datetime.now(UTC).isoformat()}")
+    lines.append(f"- Source papers with hits: {len(by_source)}/{n_sources}")
+    lines.append(f"- Citations scanned: {n_scanned}, kept: {n_kept}")
+    lines.append(f"- Date window: {since or '*'} → {until or '*'}")
+    lines.append(
+        f"- Filters: influential_only={influential_only}, "
+        f"keep_background={keep_background}, "
+        f"min_citing_citations={min_citing_citations}, top_k={top_k}"
+    )
+    lines.append("")
+
+    sources_sorted = sorted(by_source.items(), key=lambda kv: -len(kv[1]))
+    for slug, cites in sources_sorted:
+        lines.append(f"## `{slug}` ({len(cites)} hit{'s' if len(cites) != 1 else ''})")
+        lines.append("")
+        for c in cites:
+            title = c.get("title") or "(untitled)"
+            mark = " ★" if c.get("isInfluential") else ""
+            lines.append(f"- **{title}**{mark}")
+            meta_bits: list[str] = []
+            pd = c.get("publicationDate") or (str(c.get("year")) if c.get("year") else "")
+            if pd:
+                meta_bits.append(pd)
+            if c.get("venue"):
+                meta_bits.append(c["venue"])
+            if c.get("citationCount") is not None:
+                meta_bits.append(f"{c['citationCount']} cites")
+            if c.get("intents"):
+                meta_bits.append("/".join(c["intents"]))
+            if meta_bits:
+                lines.append(f"  *{' · '.join(meta_bits)}*")
+            if c.get("doi"):
+                lines.append(f"  DOI: <https://doi.org/{c['doi']}>")
+            elif c.get("paperId"):
+                lines.append(
+                    f"  S2: <https://www.semanticscholar.org/paper/{c['paperId']}>"
+                )
+        lines.append("")
+
+    out.write_text("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -467,12 +759,19 @@ def _aggregate(
 
 
 def _sort_hits(hits: dict[str, AggregatedHit]) -> list[AggregatedHit]:
-    def key(h: AggregatedHit) -> tuple[int, int, str]:
-        # Primary: how many of our papers it cites (DESC).
-        # Secondary: pub date (DESC).
+    """Best-first ordering for the report.
+
+    Sort precedence:
+    1. Co-citation count (DESC) — papers citing many of ours go first.
+    2. Similarity score (DESC) — ties broken by topical alignment.
+    3. Publication date (DESC) — most recent within ties.
+    4. Title — deterministic final tiebreak.
+    """
+
+    def key(h: AggregatedHit) -> tuple[int, float, int, str]:
         pd = h.publication_date or (f"{h.year}-01-01" if h.year else "0000-00-00")
-        # invert lexicographically by negating via comparison in sorted(reverse=False)
-        return (-len(h.cited_sources), -_date_to_int(pd), h.title.lower())
+        sim = h.similarity if h.similarity is not None else -1.0
+        return (-len(h.cited_sources), -sim, -_date_to_int(pd), h.title.lower())
 
     return sorted(hits.values(), key=key)
 
@@ -510,6 +809,9 @@ def _write_jsonl(hits: list[AggregatedHit], path: Path) -> None:
                         "citedSources": sorted(h.cited_sources),
                         "influentialFor": sorted(h.influential_for),
                         "intents": sorted(h.intents),
+                        "similarity": (
+                            round(h.similarity, 4) if h.similarity is not None else None
+                        ),
                     },
                     ensure_ascii=False,
                 )
@@ -528,6 +830,10 @@ def _write_markdown(
     n_kept: int,
     influential_only: bool,
     keep_background: bool,
+    min_co_cites: int,
+    min_citing_citations: int,
+    min_similarity: float,
+    top_n: int | None,
 ) -> None:
     lines: list[str] = []
     lines.append("# Papers citing the precis corpus")
@@ -537,13 +843,22 @@ def _write_markdown(
     lines.append(f"- Citations scanned: {n_scanned}")
     lines.append(f"- Unique citing papers after filters: {len(hits)}")
     lines.append(f"- Date window: {since or '*'} → {until or '*'}")
-    lines.append(
-        f"- Filters: "
-        f"influential_only={influential_only}, "
-        f"keep_background={keep_background}"
-    )
+    filter_parts = [
+        f"influential_only={influential_only}",
+        f"keep_background={keep_background}",
+        f"min_co_cites={min_co_cites}",
+        f"min_citing_citations={min_citing_citations}",
+        f"min_similarity={min_similarity}",
+    ]
+    if top_n:
+        filter_parts.append(f"top_n={top_n}")
+    lines.append(f"- Filters: {', '.join(filter_parts)}")
     lines.append("")
-    lines.append("Sorted by: number of our papers cited (DESC), publication date (DESC).")
+    sort_desc = "co-citations (DESC)"
+    if min_similarity > 0:
+        sort_desc += ", bge-m3 similarity (DESC)"
+    sort_desc += ", publication date (DESC)"
+    lines.append(f"Sorted by: {sort_desc}.")
     lines.append("")
 
     for i, h in enumerate(hits, start=1):
@@ -558,6 +873,8 @@ def _write_markdown(
             meta_bits.append(h.venue)
         if h.citation_count is not None:
             meta_bits.append(f"{h.citation_count} cites")
+        if h.similarity is not None:
+            meta_bits.append(f"sim {h.similarity:.2f}")
         if meta_bits:
             lines.append(f"*{' · '.join(meta_bits)}*")
         if h.authors:
@@ -626,6 +943,51 @@ def main() -> None:
         "--keep-background",
         action="store_true",
         help="Don't drop citations whose only intent is 'background'.",
+    )
+    p.add_argument(
+        "--min-co-cites",
+        type=int,
+        default=1,
+        help=(
+            "Drop citing papers that cite fewer than N of our papers (default 1). "
+            "Strongest signal — set 2-5 to cut noise dramatically."
+        ),
+    )
+    p.add_argument(
+        "--min-citing-citations",
+        type=int,
+        default=0,
+        help=(
+            "Drop citing papers with fewer than N citations themselves "
+            "(default 0). Set >0 to filter out fresh preprints with no traction."
+        ),
+    )
+    p.add_argument(
+        "--min-similarity",
+        type=float,
+        default=0.0,
+        help=(
+            "bge-m3 cosine threshold (default 0.0 = off). Citing papers "
+            "whose title+abstract scores below this against ALL of their "
+            "cited source papers are dropped. Typical usable threshold: "
+            "0.50-0.65."
+        ),
+    )
+    p.add_argument(
+        "--top-n",
+        type=int,
+        default=None,
+        help="Hard cap on output: keep only the top N hits after sort.",
+    )
+    p.add_argument(
+        "--per-source-top",
+        type=int,
+        default=0,
+        help=(
+            "Switch to per-source mode: emit the top K citations PER source "
+            "paper instead of the global aggregate. Useful for 'what's new "
+            "for paper X' digests. 0 = global mode (default)."
+        ),
     )
     p.add_argument(
         "--limit",
@@ -766,6 +1128,51 @@ def main() -> None:
         wanted = {s.slug for s in sources}
         cache_files = [p for p in cache_files if p.stem in wanted]
 
+    if args.per_source_top > 0:
+        # --- Per-source-top-K mode (alternative aggregation) ---
+        by_source, scanned, kept = _aggregate_per_source(
+            cache_files,
+            since=args.since,
+            until=args.until,
+            influential_only=args.influential_only,
+            keep_background=args.keep_background,
+            known_dois=known_dois,
+            min_citing_citations=args.min_citing_citations,
+            top_k=args.per_source_top,
+        )
+        _write_per_source_markdown(
+            by_source,
+            out=out_md,
+            since=args.since,
+            until=args.until,
+            n_sources=len(cache_files),
+            n_scanned=scanned,
+            n_kept=kept,
+            influential_only=args.influential_only,
+            keep_background=args.keep_background,
+            min_citing_citations=args.min_citing_citations,
+            top_k=args.per_source_top,
+        )
+        # JSONL: one line per (source, citation) pair so downstream
+        # consumers can join either way.
+        with out_jsonl.open("w") as f:
+            for slug, cites in by_source.items():
+                for c in cites:
+                    f.write(
+                        json.dumps({"sourceSlug": slug, **c}, ensure_ascii=False)
+                        + "\n"
+                    )
+        total_hits = sum(len(v) for v in by_source.values())
+        print(
+            f"\nAggregation (per-source-top-{args.per_source_top}): "
+            f"scanned={scanned} kept={kept} sources_with_hits={len(by_source)} "
+            f"total_emitted={total_hits}"
+        )
+        print(f"Markdown: {out_md}")
+        print(f"JSONL:    {out_jsonl}")
+        return
+
+    # --- Global aggregate mode ---
     hits, scanned, kept = _aggregate(
         cache_files,
         since=args.since,
@@ -773,10 +1180,18 @@ def main() -> None:
         influential_only=args.influential_only,
         keep_background=args.keep_background,
         known_dois=known_dois,
+        min_citing_citations=args.min_citing_citations,
+        min_co_cites=args.min_co_cites,
     )
-    sorted_hits = _sort_hits(hits)
+    print(f"\nAggregation: scanned={scanned} kept={kept} unique={len(hits)}")
 
-    # 4. Write outputs.
+    if args.min_similarity > 0:
+        hits = _apply_similarity_gate(hits, min_similarity=args.min_similarity)
+
+    sorted_hits = _sort_hits(hits)
+    if args.top_n is not None:
+        sorted_hits = sorted_hits[: args.top_n]
+
     _write_markdown(
         sorted_hits,
         out=out_md,
@@ -787,13 +1202,14 @@ def main() -> None:
         n_kept=kept,
         influential_only=args.influential_only,
         keep_background=args.keep_background,
+        min_co_cites=args.min_co_cites,
+        min_citing_citations=args.min_citing_citations,
+        min_similarity=args.min_similarity,
+        top_n=args.top_n,
     )
     _write_jsonl(sorted_hits, out_jsonl)
 
-    print(
-        f"\nAggregation: scanned={scanned} kept={kept} "
-        f"unique citing papers={len(sorted_hits)}"
-    )
+    print(f"Final report: {len(sorted_hits)} citing papers")
     print(f"Markdown: {out_md}")
     print(f"JSONL:    {out_jsonl}")
 

@@ -18,6 +18,8 @@ Loops forever (default poll = 10s). Pass `--once` for a single sweep.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import re
 import shutil
 import signal
 import sys
@@ -29,6 +31,118 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _common import DEFAULT_INGEST_DIR, make_embedder_for, open_store
+
+# arXiv id embedded in a filename, e.g. ``1705.02630.pdf``,
+# ``1705.02630v3.pdf``, ``cond-mat-0211262.pdf``. Matches both the
+# post-2007 ``YYMM.NNNN`` form and the pre-2007 ``archive/YYMMNNN`` form
+# (the slash often becomes a dash when used as a filename).
+_ARXIV_FILENAME_RE = re.compile(
+    r"(?:^|[/\-_])(\d{4}\.\d{4,5}|[a-z\-]+[\-/]\d{7})(?:v\d+)?\.pdf$",
+    re.IGNORECASE,
+)
+
+
+def _sha256_file(path: Path) -> str:
+    """Stream-hash a file. ~50 ms for a typical 5 MB PDF."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _slug_for_ref_id(store, ref_id: int) -> str | None:
+    """Resolve a paper ``refs.id`` back to its slug for log output."""
+    ref = store.get_ref(kind="paper", id=ref_id)
+    return ref.slug if ref is not None else None
+
+
+def _arxiv_id_from_filename(pdf: Path) -> str | None:
+    """Best-effort arxiv id pull from the filename. Cheap (regex only)."""
+    m = _ARXIV_FILENAME_RE.search(pdf.name)
+    if m is None:
+        return None
+    # Normalise pre-2007 dash-form back to slash-form for the lookup
+    # path (``cond-mat-0211262`` -> ``cond-mat/0211262``).
+    raw = m.group(1)
+    if "/" not in raw and re.match(r"^[a-z\-]+\-\d{7}$", raw, re.IGNORECASE):
+        prefix, num = raw.rsplit("-", 1)
+        raw = f"{prefix}/{num}"
+    return raw
+
+
+def _pre_flight_known_slug(
+    pdf: Path,
+    *,
+    store,
+) -> tuple[str | None, str | None]:
+    """Cheap dedup probe before the slow extract+ingest path.
+
+    Returns ``(slug, hit_reason)``. ``slug=None`` means "not in
+    precis — run the full pipeline". On a hit, the caller should
+    move the PDF to ``completed/`` and skip extraction entirely.
+
+    Cost ordering — bail out at the first hit:
+    1. PDF SHA-256 (~50 ms; bit-exact ⇒ same paper).
+    2. arXiv id parsed from filename (free; ~0 ms).
+    3. Embedded DOI via ``acatome_meta.pdf.extract_pdf_meta``
+       (~150–300 ms; PyMuPDF info + first-5-pages regex).
+
+    The CrossRef/Semantic-Scholar ``lookup()`` cascade is **not**
+    invoked here — that's 1–5 s and would defeat the purpose for
+    genuinely-new papers.
+    """
+    # --- Check 1: PDF SHA-256 ---
+    print("  pre-flight: hashing PDF...", flush=True)
+    try:
+        pdf_hash = _sha256_file(pdf)
+    except Exception as exc:
+        print(f"  pre-flight: hash failed ({exc}) — falling through", flush=True)
+        return None, None
+    print(f"  pre-flight: hash={pdf_hash[:12]} — checking precis", flush=True)
+    ref_id = store.find_ref_by_identifier("pdfsha256", pdf_hash, kind="paper")
+    if ref_id is not None:
+        slug = _slug_for_ref_id(store, ref_id)
+        if slug is not None:
+            return slug, f"pdfsha256={pdf_hash[:12]}"
+
+    # --- Check 2: arXiv id from filename (free) ---
+    arxiv_fn = _arxiv_id_from_filename(pdf)
+    if arxiv_fn is not None:
+        print(
+            f"  pre-flight: arxiv id {arxiv_fn!r} parsed from filename — checking precis",
+            flush=True,
+        )
+        ref_id = store.find_ref_by_identifier("arxiv", arxiv_fn, kind="paper")
+        if ref_id is not None:
+            slug = _slug_for_ref_id(store, ref_id)
+            if slug is not None:
+                return slug, f"arxiv={arxiv_fn} (filename)"
+
+    # --- Check 3: embedded DOI via PyMuPDF + first-pages regex ---
+    print("  pre-flight: reading embedded PDF metadata for DOI...", flush=True)
+    try:
+        from acatome_meta.pdf import extract_pdf_meta
+
+        pdf_meta = extract_pdf_meta(pdf)
+    except Exception as exc:
+        print(
+            f"  pre-flight: embedded-meta read failed ({exc}) — falling through",
+            flush=True,
+        )
+        return None, None
+    doi = pdf_meta.get("doi") or ""
+    if not doi:
+        print("  pre-flight: no embedded DOI found", flush=True)
+        return None, None
+    print(f"  pre-flight: embedded doi={doi} — checking precis", flush=True)
+    ref_id = store.find_ref_by_identifier("doi", doi, kind="paper")
+    if ref_id is not None:
+        slug = _slug_for_ref_id(store, ref_id)
+        if slug is not None:
+            return slug, f"doi={doi}"
+
+    return None, None
 
 
 def _list_pdfs(base: Path) -> list[Path]:
@@ -66,6 +180,24 @@ def _process_one(
 ) -> tuple[str, str]:
     """Returns ``(status, detail)`` where status is ``"ok" | "error"``."""
     from acatome_extract.pipeline import extract
+
+    # --- Pre-flight: cheap dedup probe before the expensive marker pass ---
+    # Hash + filename arxiv id + embedded DOI cost ~250 ms total; running
+    # marker on a paper precis already has costs 60–300 s. The probe
+    # short-circuits the common "user re-dropped the same PDF" case.
+    pre_slug, pre_reason = _pre_flight_known_slug(pdf, store=store)
+    if pre_slug is not None:
+        print(
+            f"  pre-flight: HIT — {pre_slug} via {pre_reason}; skipping extract",
+            flush=True,
+        )
+        _move(pdf, completed)
+        # Move companion .acatome bundle if the user dropped one alongside.
+        companion = pdf.with_suffix(".acatome")
+        if companion.is_file():
+            _move(companion, completed)
+        return "ok", f"skipped (pre-flight, {pre_reason}) {pre_slug}"
+    print("  pre-flight: miss — running full extract+ingest", flush=True)
 
     bundle_path: Path | None = None
     try:

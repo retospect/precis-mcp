@@ -74,6 +74,42 @@ unique citing papers.
 ./scripts/find-citing-papers --force                      # ignore cache, refetch every paper
 ```
 
+**Noise reduction** (the full corpus returns ~900k unique citing
+papers — these flags are how you make a digestible report):
+
+```sh
+# Co-citation density: drop papers that cite fewer than N of ours.
+# Strongest, cheapest signal. 909k → 212k @ 2; → 25k @ 5; → ~3k @ 10.
+./scripts/find-citing-papers --no-fetch --min-co-cites 5
+
+# Drop fresh preprints that haven't been cited yet (signal: traction).
+./scripts/find-citing-papers --no-fetch --min-citing-citations 5
+
+# Hard cap on output: top N after sort.
+./scripts/find-citing-papers --no-fetch --top-n 200
+
+# bge-m3 cosine rerank (the gold standard relevance gate). Loads
+# the embedder once, embeds source corpus + surviving citing papers'
+# title+abstract, drops anything below cosine similarity threshold.
+# Adds ~80-100s per ~2.5k surviving citing papers on Apple Silicon.
+./scripts/find-citing-papers --no-fetch --min-co-cites 5 --min-similarity 0.55
+
+# Per-source-top-K: emit top K most-recent citations PER OUR paper
+# (separate output mode, useful for "what's new for paper X" digests).
+./scripts/find-citing-papers --no-fetch --per-source-top 5
+
+# Recommended starting digest combo:
+./scripts/find-citing-papers --no-fetch \
+    --since 2026-01-01 \
+    --min-co-cites 3 \
+    --min-citing-citations 1 \
+    --min-similarity 0.55 \
+    --top-n 200
+```
+
+Sort precedence in global mode: co-citations DESC, similarity DESC
+(when computed), publication date DESC, title.
+
 Per-paper results are cached as JSON under
 `paper-ingest/.citing-papers-cache/<slug>.json` (override with
 `PRECIS_CITING_CACHE_DIR` or `--cache-dir`) so the sweep is
