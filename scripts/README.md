@@ -2,9 +2,18 @@
 
 Operator utilities that wrap the precis-mcp package without going
 through the `precis` CLI. Each command is a thin Bash wrapper that
-re-execs under `uv run --project=<precis-mcp>` so the package's venv
-(with `acatome-extract` + `sentence-transformers`) is active regardless
-of the caller's CWD or shell.
+picks an interpreter in this order:
+
+1. **Shared workspace venv** at `pips/.venv` — the default since the
+   single-venv migration. The workspace root's `dev` dependency group
+   pulls `precis-mcp[paper]` (acatome-extract + sentence-transformers)
+   into this venv, so no per-package venv is required.
+2. **Legacy per-package venv** at `packages/precis-mcp/.venv` — kept
+   as a fallback for checkouts that pre-date the migration.
+3. **`uv run --project <workspace>`** — last resort, on-demand sync.
+
+The wrapper resolves these paths itself so scripts work regardless of
+the caller's CWD or shell.
 
 ## Environment
 
@@ -158,6 +167,53 @@ calls keeps us well under any S2 rate cap.
 
 Estimated wall-clock: ~2.5s per paper, so ~100–175 min for a 4k-paper
 corpus (S2 latency dominates the inter-call sleep).
+
+### `doilist`
+
+DOI triage / fetching / rewriting. Subcommands:
+
+- `doilist scan` — extract DOIs from `sources/`, dedupe against
+  precis (across every alias scheme), validate via doi.org, write
+  `dois_to_get.md` plus `.doi_status.json`. `--download` to also
+  fetch the resulting OA PDFs via Unpaywall.
+- `doilist download` — fetch PDFs for the queue file, slowly.
+- `doilist recheck` — re-clean and re-validate previously-invalid
+  DOIs.
+- `doilist skip <doi> --reason <tag>` / `doilist unskip <doi>` —
+  mark DOIs as retracted / paywalled / out-of-scope without dropping
+  them from the cache.
+- `doilist convert-doi-to-slugs <dir>` — see below.
+
+#### `doilist convert-doi-to-slugs`
+
+Walk a directory and rewrite known DOIs to `[slug]` in text files,
+in place. Best-effort: any DOI not in precis is left untouched.
+
+Useful for the perplexity-summary triage workflow: drop a directory
+of summaries into a paper outline, then collapse every DOI string
+into the precis paper slug so downstream tools (LaTeX bib generation,
+agent prompts, search) can work with native identifiers instead of
+opaque DOI URLs.
+
+```sh
+# default: cwd, recurse, rewrite *.md and *.txt in place
+./scripts/doilist convert-doi-to-slugs
+
+# explicit directory + dry-run (counts only, no writes)
+./scripts/doilist convert-doi-to-slugs --dry-run path/to/dir
+
+# also rewrite .tex sources
+./scripts/doilist convert-doi-to-slugs --ext md --ext txt --ext tex .
+```
+
+Both URL-form (`https://doi.org/10.x/y`) and bare (`10.x/y`) DOIs are
+matched; URL prefixes are consumed alongside the DOI so no broken
+links remain. arXiv DOI form (`10.48550/arXiv.<id>`) maps to the
+same slug as the bare arXiv id.
+
+One bulk SQL JOIN over `ref_identifiers × refs (kind='paper')` builds
+the slug map at startup and is reused across all files — typical
+runtime is well under a second for a directory of markdown notes.
 
 ## Layout
 

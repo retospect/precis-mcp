@@ -70,8 +70,10 @@ def main() -> None:
     except ImportError as e:
         print(
             f"error: missing dependency ({e}). "
-            "Run from the precis-mcp .venv (carries scikit-learn via "
-            "sentence-transformers).",
+            "Run from the shared workspace venv at pips/.venv — it carries "
+            "scikit-learn via sentence-transformers (pulled in by the "
+            "workspace dev group's precis-mcp[paper] extra). "
+            "Sync with `uv sync --all-packages` from pips/.",
             file=sys.stderr,
         )
         sys.exit(1)

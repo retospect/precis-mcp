@@ -1,8 +1,11 @@
 """Shared helpers for `precis-mcp/scripts/` utilities.
 
-Each `paper-*` shell wrapper re-exec's itself with `uv run --project=<pkg>`,
-so by the time these helpers run, the `precis` package and its `[paper]`
-extras (acatome-extract, sentence-transformers, …) are importable.
+Each ``paper-*`` shell wrapper dispatches to the shared workspace venv
+at ``pips/.venv`` (which carries the ``precis-mcp[paper]`` extras via
+the workspace root's ``dev`` dependency group), falling back to a
+legacy per-package venv or ``uv run`` when needed. By the time these
+helpers run, the ``precis`` package and its ``[paper]`` extras
+(acatome-extract, sentence-transformers, …) are importable.
 """
 
 from __future__ import annotations

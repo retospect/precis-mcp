@@ -211,6 +211,23 @@ precis jobs watch-patents / run-patent-watches / sweep-patent-fulltext
 
 Run any subcommand with `--help` for detailed options.
 
+### Utility scripts
+
+The `scripts/` dir holds workspace-side utilities that run *against*
+a precis store but live outside the published CLI surface. See
+[`scripts/README.md`](scripts/README.md) for full coverage; the
+high-traffic ones:
+
+- **`paper-monitor-ingest-dir`** — drop-and-go PDF ingest watcher.
+- **`perplexity-monitor-ingest-dir`** — bulk-import Perplexity
+  markdown exports.
+- **`find-citing-papers`** — sweep S2 for new papers citing the
+  precis corpus, with bge-m3 cosine rerank and several noise-
+  reduction filters; reports land in
+  [`paper-ingest/`](../../../paper-ingest/README.md).
+- **`enrich-paper-identifiers`** / **`retrofit-acatome-external-ids`**
+  — backfill DOI / arXiv ids on legacy refs.
+
 ## Roadmap
 
 - `docx`, `tex`, `book`, `rmk` file handlers (Phase 6b/c).

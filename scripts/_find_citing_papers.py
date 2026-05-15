@@ -7,24 +7,48 @@ against the corpus, and write a markdown report plus a JSONL feed.
 Per-paper results are cached as JSON under
 ``$PRECIS_CITING_CACHE_DIR`` (default
 ``paper-ingest/.citing-papers-cache/``) so the sweep is resumable —
-re-runs reuse cache files unless ``--force`` is passed.
+re-runs reuse cache files unless ``--force`` is passed. A full sweep
+across the ~4k corpus returns ~900k unique citing papers; the noise-
+reduction flags below are how you turn that into a digestible report.
 
 Usage (via the ``find-citing-papers`` shell wrapper):
 
+  Sweep + cache control
     find-citing-papers                              # last 180 days, relevance gate on
     find-citing-papers --since 2026-02-01           # explicit window start
     find-citing-papers --until 2026-07-31           # explicit window end
-    find-citing-papers --influential-only           # require S2 isInfluential=True
-    find-citing-papers --keep-background            # don't drop background-only intents
-    find-citing-papers --min-similarity 0.55        # bge-m3 cosine gate vs source paper
     find-citing-papers --limit 100                  # only the N most-recent source papers
     find-citing-papers --slug-prefix abazari        # filter source corpus by slug prefix
     find-citing-papers --force                      # ignore cache, re-fetch every paper
+    find-citing-papers --no-fetch                   # aggregate from existing cache only
     find-citing-papers --out citing.md              # report path (default: timestamped)
+
+  Noise-reduction filters (stack freely)
+    --influential-only                              # S2 isInfluential=True only (~3.5%)
+    --keep-background                               # keep background-only intents
+    --min-co-cites N                                # citing paper must cite ≥N of ours
+                                                    # (909k → 212k @ 2; → 25k @ 5)
+    --min-citing-citations N                        # drop low-traction citing papers
+    --min-similarity X                              # bge-m3 cosine gate vs source text
+                                                    # (typical usable threshold: 0.50-0.65)
+    --top-n N                                       # hard cap after sort
+    --per-source-top K                              # alt mode: top K citations per OUR paper
+
+  Recommended starter digest:
+    find-citing-papers --no-fetch \\
+        --since 2026-01-01 --min-co-cites 3 \\
+        --min-citing-citations 1 --min-similarity 0.55 \\
+        --top-n 200
+
+Sort precedence in global mode: co-citations DESC, similarity DESC
+(when computed), publication date DESC, title.
 
 Reads ``SEMANTIC_SCHOLAR_API_KEY`` from the environment (raises S2's
 free-tier rate limit). Without it the script still runs but is slower
 and more likely to hit 429.
+
+See ``scripts/README.md`` for tuning guidance and
+``paper-ingest/README.md`` for the cache + report layout.
 """
 
 from __future__ import annotations

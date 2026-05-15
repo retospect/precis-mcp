@@ -8,6 +8,45 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ## Unreleased
 
+### `find-citing-papers` — noise-reduction filters + bge-m3 rerank (2026-05-09)
+
+The full sweep across the ~4k corpus surfaces ~900k unique citing
+papers from S2 — way past human-readable. Five new aggregation flags
+let you stack cheap filters into a digestible report without re-
+fetching. All run in `--no-fetch` mode against the existing
+`paper-ingest/.citing-papers-cache/` so iteration is seconds, not
+hours.
+
+- **`--min-co-cites N`** — drop citing papers that cite fewer than N
+  of ours. Strongest single signal: 909k → 212k @ N=2; → 25k @ N=5;
+  → ~3k @ N=10. The 294-of-our-papers review naturally floats to
+  the top of the global sort.
+- **`--min-citing-citations N`** — drop citing papers with fewer
+  than N citations of their own. Filters out the 18% zero-cite
+  fresh-preprint tail when you want "stuff that already got
+  traction."
+- **`--min-similarity X`** — bge-m3 cosine gate. Embeds the source
+  corpus' title+abstract once, embeds surviving citing papers'
+  title+abstract, drops anything whose max cosine across cited
+  sources is below X. Typical usable threshold 0.50–0.65; ~30
+  citing papers/sec on Apple Silicon. Uses the same
+  `precis.embedder.make_embedder("bge-m3")` contract the rest of
+  the package lives on.
+- **`--top-n N`** — hard cap after sort.
+- **`--per-source-top K`** — alternative aggregation: emit the top
+  K most-recent / most-influential citations PER OUR paper instead
+  of the global aggregate. Useful for "what's new for paper X"
+  digests rather than corpus-wide topic surveys.
+
+Sort precedence in global mode: co-citations DESC, similarity DESC
+(when computed), publication date DESC, title. The
+`AggregatedHit.similarity` field is surfaced both in the markdown
+header (`sim 0.75` per-row meta) and in the JSONL feed
+(`"similarity": 0.7501`) so downstream consumers can re-rank.
+
+Files: `scripts/_find_citing_papers.py`, `scripts/README.md`,
+`paper-ingest/README.md` (new).
+
 ### `search(... exclude=[slugs])` — ref-level pagination (2026-05-09)
 
 New `exclude=` kwarg on the agent-facing `search` tool. Coarse / ref-

@@ -7,6 +7,7 @@ Usage (run from your triage workspace, e.g. doilist/):
     doilist download                  # just fetch from existing queue
     doilist download --interval 90    # custom seconds between fetches
     doilist recheck                   # re-clean + re-validate prior invalids
+    doilist convert-doi-to-slugs DIR  # rewrite known DOIs to [slug] in DIR
 
 Env:
     PRECIS_DATABASE_URL   default postgresql://acatome:acatome@127.0.0.1:5432/precis
@@ -38,6 +39,13 @@ LEGACY_INVALID = ROOT / "invalid_dois.md"
 LEGACY_VALID = ROOT / ".valid_dois.md"
 
 DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>)\]}]+", re.IGNORECASE)
+# Same DOI shape, but anchored to a doi.org URL so the URL prefix can be
+# consumed alongside the DOI when rewriting (avoids leaving a dangling
+# `https://doi.org/[slug]` link).
+URL_DOI_RE = re.compile(
+    r"https?://(?:dx\.)?doi\.org/(10\.\d{4,9}/[^\s\"'<>)\]}]+)",
+    re.IGNORECASE,
+)
 TRAILING_PUNCT = ".,;:)\u201d\u2019]"
 # extra junk that commonly trails a DOI extracted from prose
 TRAILING_JUNK_RE = re.compile(
@@ -174,22 +182,45 @@ def _psql_known_identifiers(db_url: str) -> set[str]:
 
 # ---------- DOI validation ----------
 
-def validate_doi(doi: str, timeout: float = 5.0) -> bool:
-    """Hit the doi.org handle API. True iff the handle resolves."""
+# Errors that indicate the connection died mid-flight (TLS handshake
+# timeouts, TCP resets, DNS hiccups, truncated JSON). These are worth
+# retrying with backoff and MUST NOT poison the .doi_status.json cache —
+# a transient network blip should not look like a permanent "invalid"
+# verdict.
+_TRANSIENT_EXCS = (urllib.error.URLError, TimeoutError,
+                   json.JSONDecodeError, ConnectionError)
+
+
+def validate_doi(
+    doi: str, timeout: float = 5.0, attempts: int = 2,
+) -> bool | None:
+    """Hit the doi.org handle API.
+
+    Returns ``True`` if the handle resolves, ``False`` if doi.org
+    returns 404, or ``None`` if every attempt died with a transport
+    error. The caller MUST NOT cache ``None`` — it just means the
+    network was uncooperative; the next scan should try again.
+    """
     url = f"https://doi.org/api/handles/{urllib.parse.quote(doi, safe='/')}"
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read())
-            return data.get("responseCode") == 1
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
+    last_err: Exception | None = None
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read())
+                return data.get("responseCode") == 1
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+            print(f"  ? validate {doi}: HTTP {e.code}", file=sys.stderr)
             return False
-        print(f"  ? validate {doi}: HTTP {e.code}", file=sys.stderr)
-        return False
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
-        print(f"  ? validate {doi}: {e}", file=sys.stderr)
-        return False
+        except _TRANSIENT_EXCS as e:
+            last_err = e
+            if i < attempts - 1:
+                time.sleep(1.5 * (2 ** i))  # 1.5s, 3s, ...
+    print(f"  ? validate {doi} (transient, gave up after {attempts}): {last_err}",
+          file=sys.stderr)
+    return None
 
 
 _RETRACT_TITLE_RE = re.compile(
@@ -198,55 +229,77 @@ _RETRACT_TITLE_RE = re.compile(
 )
 
 
-def classify_doi(doi: str, timeout: float = 8.0) -> str:
+def _interpret_crossref_msg(msg: dict) -> str:
+    """Map a Crossref ``message`` dict to ``valid``/``skip:retracted``."""
+    if (msg.get("subtype") or "").lower() == "retraction":
+        return "skip:retracted"
+    for t in (msg.get("title") or []):
+        if _RETRACT_TITLE_RE.search(t or ""):
+            return "skip:retracted"
+    for upd in (msg.get("update-to") or []):
+        if (upd.get("type") or "").lower() == "retraction":
+            return "skip:retracted"
+    return "valid"
+
+
+def classify_doi(
+    doi: str, timeout: float = 8.0, attempts: int = 2,
+) -> str | None:
     """Classify a DOI via Crossref + doi.org fallback.
 
-    Returns one of: ``"valid"``, ``"invalid"``, or ``"skip:retracted"``.
-    Crossref title prefix ("RETRACTED ARTICLE", "Retracted:", "WITHDRAWN")
-    is the primary retraction signal; subtype=='retraction' (the notice
-    itself) and update-to retraction relations are also caught.
+    Returns one of ``"valid"``, ``"invalid"``, or ``"skip:retracted"``,
+    or ``None`` if every Crossref + doi.org attempt hit a transport
+    error (TLS handshake timeout, connection reset, DNS, etc). The
+    caller MUST NOT cache ``None``; the next scan should retry.
+
+    Retraction detection: Crossref title prefix ("RETRACTED ARTICLE",
+    "Retracted:", "WITHDRAWN") is the primary signal;
+    ``subtype=='retraction'`` (the notice itself) and ``update-to``
+    retraction relations are also caught.
     """
     url = f"https://api.crossref.org/works/{urllib.parse.quote(doi, safe='/')}"
     email = os.environ.get("UNPAYWALL_EMAIL", "doilist@example.invalid")
     req = urllib.request.Request(
         url, headers={"User-Agent": f"doilist/0.2 (mailto:{email})"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            msg = json.loads(r.read()).get("message") or {}
-        if (msg.get("subtype") or "").lower() == "retraction":
-            return "skip:retracted"
-        for t in (msg.get("title") or []):
-            if _RETRACT_TITLE_RE.search(t or ""):
-                return "skip:retracted"
-        for upd in (msg.get("update-to") or []):
-            if (upd.get("type") or "").lower() == "retraction":
-                return "skip:retracted"
-        return "valid"
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return "valid" if validate_doi(doi, timeout=timeout) else "invalid"
-        if e.code == 429:
-            # Crossref polite-pool throttle. One short backoff retry.
-            time.sleep(2.0)
-            try:
-                with urllib.request.urlopen(req, timeout=timeout) as r:
-                    msg = json.loads(r.read()).get("message") or {}
-                if (msg.get("subtype") or "").lower() == "retraction":
-                    return "skip:retracted"
-                for t in (msg.get("title") or []):
-                    if _RETRACT_TITLE_RE.search(t or ""):
-                        return "skip:retracted"
-                for upd in (msg.get("update-to") or []):
-                    if (upd.get("type") or "").lower() == "retraction":
-                        return "skip:retracted"
-                return "valid"
-            except Exception:
-                # Give up, fall through to doi.org fallback below.
-                return "valid" if validate_doi(doi, timeout=timeout) else "invalid"
-        print(f"  ? classify {doi}: HTTP {e.code}", file=sys.stderr)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
-        print(f"  ? classify {doi}: {e}", file=sys.stderr)
-    return "valid" if validate_doi(doi, timeout=timeout) else "invalid"
+
+    last_err: Exception | None = None
+    fallback = False  # set when Crossref gives up but doi.org might still know
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return _interpret_crossref_msg(
+                    json.loads(r.read()).get("message") or {})
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                # Crossref polite-pool throttle. Back off harder than the
+                # transient retry — and keep the slot in the loop.
+                last_err = e
+                time.sleep(2.0 + 2.0 * i)
+                continue
+            if e.code == 404:
+                fallback = True
+                last_err = e
+                break  # Crossref doesn't index this; defer to doi.org.
+            print(f"  ? classify {doi}: HTTP {e.code}", file=sys.stderr)
+            fallback = True
+            last_err = e
+            break
+        except _TRANSIENT_EXCS as e:
+            last_err = e
+            if i < attempts - 1:
+                time.sleep(1.5 * (2 ** i))  # 1.5s, 3s, ...
+
+    if fallback:
+        fb = validate_doi(doi, timeout=timeout, attempts=attempts)
+        if fb is True:
+            return "valid"
+        if fb is False:
+            return "invalid"
+        return None  # doi.org also unreachable; retry next run.
+
+    print(f"  ? classify {doi} (transient, gave up after {attempts}): {last_err}",
+          file=sys.stderr)
+    return None
 
 
 # ---------- queue I/O ----------
@@ -448,15 +501,55 @@ def download_loop(interval: float) -> None:
 
 # ---------- top-level ----------
 
-def _validate_many(dois: list[str], workers: int, state: dict[str, str]) -> tuple[int, int]:
-    """Validate a list of DOIs in parallel, mutating `state` in place.
+def _validate_many(
+    dois: list[str], workers: int, state: dict[str, str],
+) -> tuple[int, int, int, int]:
+    """Validate a list of DOIs, mutating ``state`` in place.
 
-    Returns (newly_valid, newly_invalid).
+    With ``workers > 1`` Crossref/doi.org tend to drop TLS handshakes,
+    so the default is ``1`` (see ``cmd_scan``). Use a thread pool only
+    when bumping ``--workers``.
+
+    Transient transport errors (``classify_doi`` returns ``None``) are
+    NOT cached — those DOIs stay unclassified so the next scan retries.
+
+    Returns ``(newly_valid, newly_invalid, newly_skipped, transient)``.
     """
     if not dois:
-        return 0, 0, 0
-    nv = ni = nr = done = 0
+        return 0, 0, 0, 0
+    nv = ni = nr = nt = done = 0
     t0 = time.time()
+
+    def _absorb(doi: str, status: str | None) -> None:
+        nonlocal nv, ni, nr, nt
+        if status is None:
+            nt += 1
+            return
+        state[doi.lower()] = status
+        if status == "valid":
+            nv += 1
+        elif status.startswith("skip"):
+            nr += 1
+        else:
+            ni += 1
+
+    if workers <= 1:
+        # Serial path: one TLS connection at a time, friendly to doi.org.
+        for doi in dois:
+            try:
+                status = classify_doi(doi)
+            except Exception:  # noqa: BLE001 — defensive: never abort the loop
+                status = None
+            _absorb(doi, status)
+            done += 1
+            if done % 10 == 0 or done == len(dois):
+                rate = done / max(time.time() - t0, 0.001)
+                log(f"  classified {done}/{len(dois)} ({rate:.1f}/s)  "
+                    f"valid+={nv} invalid+={ni} retracted+={nr} transient={nt}")
+            if done % 25 == 0:
+                write_state(state)  # checkpoint
+        return nv, ni, nr, nt
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {ex.submit(classify_doi, d): d for d in dois}
         for fut in concurrent.futures.as_completed(futures):
@@ -464,22 +557,16 @@ def _validate_many(dois: list[str], workers: int, state: dict[str, str]) -> tupl
             done += 1
             try:
                 status = fut.result()
-            except Exception:
-                status = "invalid"
-            state[doi.lower()] = status
-            if status == "valid":
-                nv += 1
-            elif status.startswith("skip"):
-                nr += 1
-            else:
-                ni += 1
+            except Exception:  # noqa: BLE001
+                status = None
+            _absorb(doi, status)
             if done % 10 == 0 or done == len(dois):
                 rate = done / max(time.time() - t0, 0.001)
                 log(f"  classified {done}/{len(dois)} ({rate:.1f}/s)  "
-                    f"valid+={nv} invalid+={ni} retracted+={nr}")
+                    f"valid+={nv} invalid+={ni} retracted+={nr} transient={nt}")
             if done % 25 == 0:
                 write_state(state)  # checkpoint
-    return nv, ni, nr
+    return nv, ni, nr, nt
 
 
 def cmd_scan(args: argparse.Namespace) -> None:
@@ -512,11 +599,16 @@ def cmd_scan(args: argparse.Namespace) -> None:
     # already in precis — those are implicitly valid).
     candidates = sorted({d for d in raw
                          if d.lower() not in known and d.lower() not in state})
-    log(f"new candidates to validate: {len(candidates)}")
-    if candidates:
-        log(f"validating against doi.org ({args.workers} workers) ...")
-        nv, ni, nr = _validate_many(candidates, args.workers, state)
-        log(f"  done. valid+={nv} invalid+={ni} retracted+={nr}")
+    if args.no_validate:
+        log(f"--no-validate: skipping doi.org check for {len(candidates)} DOI(s)")
+    else:
+        log(f"new candidates to validate: {len(candidates)}")
+        if candidates:
+            log(f"validating against doi.org ({args.workers} workers) ...")
+            nv, ni, nr, nt = _validate_many(candidates, args.workers, state)
+            log(f"  done. valid+={nv} invalid+={ni} retracted+={nr} transient={nt}")
+            if nt:
+                log(f"  ({nt} transient failure(s) NOT cached — re-run scan to retry)")
 
     # Harvest user-written annotations from the existing queue file before
     # we overwrite it. e.g. a line `- https://doi.org/10.x/y RETRACTED` flips
@@ -536,9 +628,17 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
     # Queue = sources ∩ valid − precis. Rebuilt from scratch (annotations
     # are already absorbed above; everything else gets thrown away).
-    queue = sorted({d for d in raw
-                    if state.get(d.lower()) == "valid"
-                    and d.lower() not in known})
+    #
+    # With --no-validate the filter relaxes: include any DOI not in precis
+    # whose state is either "valid" or unknown (i.e. unclassified). Cached
+    # "invalid"/"skip:*" entries from prior runs still drop out.
+    if args.no_validate:
+        queue = sorted({d for d in raw if d.lower() not in known
+                        and state.get(d.lower(), "valid") == "valid"})
+    else:
+        queue = sorted({d for d in raw
+                        if state.get(d.lower()) == "valid"
+                        and d.lower() not in known})
     write_queue(queue)
 
     n_valid_final = sum(1 for v in state.values() if v == "valid")
@@ -580,10 +680,12 @@ def cmd_recheck(args: argparse.Namespace) -> None:
     # Don't re-check anything already 'valid' under the cleaned form.
     candidates = sorted({orig for cl, orig in re_cleaned.items() if state.get(cl) != "valid"})
     log(f"  re-validating {len(candidates)} DOI(s) ...")
-    nv, ni, nr = _validate_many(candidates, args.workers, state)
+    nv, ni, nr, nt = _validate_many(candidates, args.workers, state)
 
     write_state(state)
-    log(f"recheck done. valid+={nv} still-invalid={ni} retracted+={nr}")
+    log(f"recheck done. valid+={nv} still-invalid={ni} retracted+={nr} transient={nt}")
+    if nt:
+        log(f"  ({nt} transient failure(s) NOT cached — re-run recheck to retry)")
     log("  (run `doilist scan` to refresh the queue)")
 
 
@@ -646,6 +748,214 @@ def cmd_download(args: argparse.Namespace) -> None:
     download_loop(args.interval)
 
 
+# ---------- DOI -> slug rewrite ----------
+
+DEFAULT_CONVERT_EXTS = ("md", "txt")
+
+
+def precis_doi_to_slug_map() -> dict[str, str]:
+    """Map every DOI (and synthesised arXiv DOI form) to its paper slug.
+
+    One JOIN over ``ref_identifiers`` and ``refs`` for ``kind='paper'``,
+    restricted to the two schemes that carry DOI-shaped values:
+
+    * ``scheme='doi'``   - stored value is the canonical DOI.
+    * ``scheme='arxiv'`` - stored value is the bare arXiv id; we also
+      synthesise the ``10.48550/arxiv.<id>`` DOI form so source text
+      that cites the arXiv DOI rather than the journal DOI still maps.
+
+    Both keys and values are lowercased on insert in precis, so the
+    returned dict is keyed by lowercased DOI and ready for case-
+    insensitive lookup.
+    """
+    db_url = os.environ.get("PRECIS_DATABASE_URL", DEFAULT_DB)
+    try:
+        import psycopg  # type: ignore
+    except ImportError:
+        print("  ! psycopg not available; falling back to psql subprocess", file=sys.stderr)
+        return _psql_doi_to_slug_map(db_url)
+    out: dict[str, str] = {}
+    with psycopg.connect(db_url) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT pi.scheme, pi.value, r.slug "
+            "FROM ref_identifiers pi "
+            "JOIN refs r ON r.id = pi.ref_id "
+            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+            "  AND pi.scheme IN ('doi', 'arxiv')"
+        )
+        for scheme, value, slug in cur.fetchall():
+            if not value or not slug:
+                continue
+            if scheme == "doi":
+                out[value] = slug
+            elif scheme == "arxiv":
+                out[f"10.48550/arxiv.{value}"] = slug
+    return out
+
+
+def _psql_doi_to_slug_map(db_url: str) -> dict[str, str]:
+    """``psql`` subprocess fallback when psycopg isn't importable."""
+    import subprocess
+    sql = (
+        "SELECT pi.scheme || E'\t' || pi.value || E'\t' || r.slug "
+        "FROM ref_identifiers pi "
+        "JOIN refs r ON r.id = pi.ref_id "
+        "WHERE r.kind='paper' AND r.deleted_at IS NULL "
+        "  AND pi.scheme IN ('doi', 'arxiv')"
+    )
+    res = subprocess.run(
+        ["psql", db_url, "-At", "-c", sql],
+        capture_output=True, text=True, check=False,
+    )
+    if res.returncode != 0:
+        print(f"  ! psql failed: {res.stderr}", file=sys.stderr)
+        return {}
+    out: dict[str, str] = {}
+    for line in res.stdout.splitlines():
+        parts = line.strip().split("\t", 2)
+        if len(parts) != 3:
+            continue
+        scheme, value, slug = parts
+        if scheme == "doi":
+            out[value] = slug
+        elif scheme == "arxiv":
+            out[f"10.48550/arxiv.{value}"] = slug
+    return out
+
+
+def _preserved_tail(tail: str) -> str:
+    """Return the prefix of ``tail`` that should be re-emitted after the slug.
+
+    The DOI regex over-captures because its char class allows trailing
+    formatting characters (``*``, backtick, ``.``, etc.). :func:`clean_doi`
+    strips all of these from the canonical DOI, but a literal substitution
+    with ``[slug]`` would lose them — so prose like ``**DOI:** 10.x/y``
+    becomes ``**DOI: [slug]`` (unclosed bold) and ``...as in 10.x/y.``
+    loses its sentence-final period.
+
+    This helper restores the *typographic* tail (markdown bold/italic,
+    backticks, footnote refs, one final punctuation char) while still
+    dropping URL-suffix junk (``.full``, ``?utm=...``, ``...``, ellipsis).
+    """
+    if not tail:
+        return ""
+    out: list[str] = []
+    i, n = 0, len(tail)
+    # Markdown formatting closes (``**``, ``*``, backticks) and footnote
+    # refs (``[^N]``), in any order, repeated.
+    while i < n:
+        c = tail[i]
+        if c in "*`":
+            j = i + 1
+            while j < n and tail[j] == c:
+                j += 1
+            out.append(tail[i:j])
+            i = j
+            continue
+        if c == "[" and i + 1 < n and tail[i + 1] == "^":
+            close = tail.find("]", i + 2)
+            if close == -1:
+                # The DOI regex stops at ``]`` (it's in the exclude class),
+                # so for ``...zsag065[^9].`` the regex match ends at ``[^9``
+                # and the ``]`` is in the surrounding text. Re-emit the
+                # ``[^N`` prefix; the ``]`` follows naturally from the source.
+                out.append(tail[i:])
+                i = n
+                continue
+            out.append(tail[i:close + 1])
+            i = close + 1
+            continue
+        break
+    # Anything still remaining is either a single sentence-punctuation char
+    # to keep, or URL-suffix junk (``.full``, ``?utm=...``, ``..``) to drop.
+    rest = tail[i:]
+    if len(rest) == 1 and rest in ".,;:!?":
+        out.append(rest)
+    return "".join(out)
+
+
+def _rewrite_dois_in_text(text: str, mapping: dict[str, str]) -> tuple[str, int, int]:
+    """Replace known DOIs in ``text`` with ``[slug]``.
+
+    URL-form DOIs (``https://doi.org/10.x/y``) are matched first so the
+    URL prefix is consumed alongside the DOI when a slug is found.
+    Bare DOIs are matched on a second pass. Unknown DOIs are left
+    untouched (best-effort). Trailing markdown formatting and a single
+    sentence-punctuation char are preserved via :func:`_preserved_tail`.
+
+    Returns ``(new_text, replaced, seen)``.
+    """
+    counts = {"replaced": 0, "seen": 0}
+
+    def _replace(match: re.Match[str], doi_group: int) -> str:
+        counts["seen"] += 1
+        raw = match.group(doi_group)
+        cleaned = clean_doi(raw)
+        slug = mapping.get(cleaned.lower())
+        if slug is None:
+            return match.group(0)
+        counts["replaced"] += 1
+        # raw == cleaned + tail since clean_doi only strips suffix chars.
+        tail = raw[len(cleaned):] if raw.startswith(cleaned) else ""
+        return f"[{slug}]{_preserved_tail(tail)}"
+
+    text = URL_DOI_RE.sub(lambda m: _replace(m, 1), text)
+    text = DOI_RE.sub(lambda m: _replace(m, 0), text)
+    return text, counts["replaced"], counts["seen"]
+
+
+def cmd_convert_doi_to_slugs(args: argparse.Namespace) -> None:
+    """Walk a directory and rewrite known DOIs to ``[slug]`` in text files.
+
+    Best-effort: any DOI not in precis is left untouched. The slug
+    map is fetched once via a single SQL JOIN and reused across all
+    files.
+    """
+    target = Path(args.directory).resolve()
+    if not target.is_dir():
+        print(f"! not a directory: {target}", file=sys.stderr)
+        sys.exit(2)
+
+    exts = {e.lstrip(".").lower() for e in (args.ext or list(DEFAULT_CONVERT_EXTS))}
+
+    log("loading DOI -> slug map from precis ...")
+    mapping = precis_doi_to_slug_map()
+    log(f"  {len(mapping)} DOIs known")
+    if not mapping:
+        log("  (nothing to rewrite; aborting)")
+        return
+
+    log(f"scanning {target} (extensions: {sorted(exts)}) ...")
+    files_seen = files_changed = total_replaced = total_seen = 0
+    for p in sorted(target.rglob("*")):
+        if not p.is_file():
+            continue
+        if p.suffix.lstrip(".").lower() not in exts:
+            continue
+        files_seen += 1
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            log(f"  ! could not read {p}: {e}")
+            continue
+        new_text, n_replaced, n_seen = _rewrite_dois_in_text(text, mapping)
+        total_replaced += n_replaced
+        total_seen += n_seen
+        if n_replaced == 0:
+            continue
+        rel = p.relative_to(target)
+        if args.dry_run:
+            log(f"  {rel}: would replace {n_replaced}/{n_seen} DOI(s)")
+        else:
+            p.write_text(new_text, encoding="utf-8")
+            log(f"  {rel}: replaced {n_replaced}/{n_seen} DOI(s)")
+            files_changed += 1
+
+    verb = "would change" if args.dry_run else "changed"
+    log(f"done. files: {files_seen} scanned, {files_changed} {verb}. "
+        f"DOIs: {total_replaced}/{total_seen} replaced.")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -653,9 +963,15 @@ def main() -> None:
     s = sub.add_parser("scan", help="extract DOIs, dedupe against precis, write queue")
     s.add_argument("--download", action="store_true", help="after scanning, slowly fetch PDFs")
     s.add_argument("--interval", type=float, default=60.0, help="seconds between fetches (default 60)")
-    s.add_argument("--workers", type=int, default=16, help="parallel doi.org validators (default 16)")
+    s.add_argument("--workers", type=int, default=1,
+                   help="parallel doi.org validators (default 1; bump only if "
+                        "you see no handshake timeouts)")
     s.add_argument("--revalidate", action="store_true",
                    help="re-check DOIs previously logged as invalid")
+    s.add_argument("--no-validate", action="store_true",
+                   help="skip the doi.org/Crossref handshake entirely; queue "
+                        "every well-formed DOI not already in precis. Cached "
+                        "invalid/skip entries from prior runs still drop out.")
     s.set_defaults(func=cmd_scan)
 
     d = sub.add_parser("download", help="fetch PDFs for queued DOIs, slowly")
@@ -663,7 +979,9 @@ def main() -> None:
     d.set_defaults(func=cmd_download)
 
     r = sub.add_parser("recheck", help="re-clean and re-validate previously-invalid DOIs")
-    r.add_argument("--workers", type=int, default=16, help="parallel doi.org validators (default 16)")
+    r.add_argument("--workers", type=int, default=1,
+                   help="parallel doi.org validators (default 1; bump only if "
+                        "you see no handshake timeouts)")
     r.set_defaults(func=cmd_recheck)
 
     sk = sub.add_parser(
@@ -680,6 +998,28 @@ def main() -> None:
     us = sub.add_parser("unskip", help="clear skip status on DOI(s)")
     us.add_argument("dois", nargs="+")
     us.set_defaults(func=cmd_unskip)
+
+    cv = sub.add_parser(
+        "convert-doi-to-slugs",
+        help="rewrite known DOIs to [slug] in text files (best-effort)",
+        description=(
+            "Walk a directory recursively, find DOI strings in text files, "
+            "and replace each one that precis already knows with `[slug]`. "
+            "Both URL-form (https://doi.org/10.x/y) and bare (10.x/y) "
+            "DOIs are handled. arXiv DOI form (10.48550/arXiv.<id>) maps "
+            "to the same slug as the bare arXiv id. Unknown DOIs are left "
+            "untouched. One bulk SQL query fetches the slug map; files "
+            "are rewritten in place unless --dry-run is given."
+        ),
+    )
+    cv.add_argument("directory", nargs="?", default=".",
+                    help="directory to walk recursively (default: cwd)")
+    cv.add_argument("--ext", action="append", default=None,
+                    help="file extension to include; repeatable. "
+                         f"Default: {', '.join(DEFAULT_CONVERT_EXTS)}.")
+    cv.add_argument("--dry-run", action="store_true",
+                    help="report changes without writing")
+    cv.set_defaults(func=cmd_convert_doi_to_slugs)
 
     args = p.parse_args()
     args.func(args)
