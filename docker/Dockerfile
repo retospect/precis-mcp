@@ -85,11 +85,15 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["precis", "serve"]
 
 # =============================================================================
-# Stage 3 (dev): runtime + developer tooling
+# Stage 3 (dev): runtime + developer tooling + editable source
 # =============================================================================
 FROM runtime AS dev
 
 USER root
+
+# Tell uv to reuse /opt/venv as the project env (instead of creating
+# /app/.venv, which would pollute the bind-mounted host repo).
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 
 # Dev system tools
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -124,6 +128,18 @@ RUN pip install --no-cache-dir "uv==${UV_VERSION}" && \
 # compose will override this so it's just a sane fallback.
 COPY --chown=precis:precis . /app
 WORKDIR /app
+
+# Editable install of precis-mcp itself. Replaces the snapshot from the
+# builder stage. The resulting .pth file in /opt/venv references
+# /app/src/precis — at runtime the bind mount makes /app live, so
+# `import precis` resolves to the host source. Edit and re-run; no
+# container rebuild.
+RUN uv pip install --python /opt/venv --no-deps -e /app
+
+# Hand /opt/venv to the precis user. uv run's sync pass needs write
+# access at runtime to refresh metadata; in the runtime stage the venv
+# stays root-owned for safety.
+RUN chown -R precis:precis /opt/venv
 
 USER precis
 
