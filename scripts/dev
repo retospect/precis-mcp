@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# scripts/dev — run a command inside the precis-dev container.
+#
+# Host has Git + Docker + the IDE. Every other dev tool (pytest, ruff,
+# mypy, uv, plantuml, psql, …) lives inside the precis-dev container.
+# This wrapper is the standard way to invoke them.
+#
+# Usage:
+#   scripts/dev                         # interactive bash shell
+#   scripts/dev pytest tests/           # run a single tool
+#   scripts/dev uv run ruff check .     # uv-driven invocation
+#   scripts/dev bash -lc 'ruff && mypy && pytest'   # compound check
+#
+# The container bind-mounts this repo at /app, so file edits on the host
+# are visible inside the container immediately (no rebuild needed).
+#
+# See: docs/decisions/0009-dockerfile-relocation-container-first.md
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+if [[ ! -f "${INFRA_COMPOSE}" ]]; then
+    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
+    echo "     set PRECIS_COMPOSE=/path/to/compose.yaml to override" >&2
+    exit 1
+fi
+
+# `--no-deps` skips bringing up any depends_on services. precis-dev has
+# none right now, but make it explicit so we never accidentally spin up
+# heavier siblings (acatome-watch, corpus-server).
+exec docker compose -f "${INFRA_COMPOSE}" --profile dev run --rm --no-deps precis-dev "$@"

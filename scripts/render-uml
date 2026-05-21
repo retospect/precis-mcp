@@ -4,20 +4,14 @@
 # Usage:
 #   scripts/render-uml                       # render every .puml
 #   scripts/render-uml schema-v2.puml        # render one file
+#   scripts/render-uml -p schema-v2.puml     # also produce PNG
 #
 # Output: <name>.svg next to the source. PNG also produced when -p is passed.
+# Delegates the actual `plantuml` invocation to scripts/dev so we keep one
+# consistent "run X in the dev container" pattern.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-
-INFRA_COMPOSE="${HOME}/work/infrastructure/compose.yaml"
-if [[ ! -f "${INFRA_COMPOSE}" ]]; then
-    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
-    exit 1
-fi
-
-# The precis-dev container bind-mounts this repo at /app. PlantUML resolves
-# paths inside the container; everything below /app maps to host files.
 
 format=svg
 if [[ "${1:-}" == "-p" ]]; then
@@ -49,15 +43,15 @@ if [[ ${#puml_files[@]} -eq 0 ]]; then
     exit 0
 fi
 
-# Map host paths (relative to repo root) → container paths (/app/...)
+# The precis-dev container bind-mounts this repo at /app. PlantUML resolves
+# paths inside the container; everything below /app maps to host files.
 container_paths=()
 for f in "${puml_files[@]}"; do
     container_paths+=("/app/${f}")
 done
 
 echo "rendering ${#container_paths[@]} file(s) as ${format}..."
-docker compose -f "${INFRA_COMPOSE}" --profile dev run --rm --no-deps precis-dev \
-    plantuml -t"${format}" "${container_paths[@]}"
+"$(dirname "$0")/dev" plantuml -t"${format}" "${container_paths[@]}"
 
 echo "done. output:"
 for f in "${puml_files[@]}"; do

@@ -7,3 +7,7 @@ build/
 .ruff_cache/
 .pytest_cache/
 .venv/
+
+# OS junk
+.DS_Store
+**/.DS_Store
