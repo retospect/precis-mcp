@@ -50,7 +50,7 @@ So the merge is:
 | `figures.py` | `precis/ingest/figures.py` | move | figure extraction |
 | `ids.py` | drop | — | thin wrapper; replaced by `precis.identity` |
 | `marker.py` | `precis/ingest/marker.py` | move | core block extraction |
-| `opener.py` | `precis/cli/show.py` | move + integrate | "open PDF by slug or pub_id" |
+| `opener.py` | `precis/cli/show.py` | move + integrate | "open PDF by cite_key or pub_id" |
 | `pdf_metadata.py` | `precis/ingest/pdf_metadata.py` | move | PDF metadata read/write |
 | `pipeline.py` | `precis/ingest/pipeline.py` | rewrite | drop bundle write step; emit DB rows |
 | `watch.py` | `precis/cli/watch.py` | move + simplify | becomes thin wrapper |
@@ -63,7 +63,7 @@ So the merge is:
 | `citations.py` | `precis/ingest/citations.py` | move | citation parsing |
 | `config.py` | merge into `precis/config.py` | partial | unify config surface |
 | `crossref.py` | `precis/ingest/crossref.py` | move | DOI lookup client |
-| `literature.py` | split | partial | `make_slug` → `precis.identity`; rest → `precis/ingest/literature.py` |
+| `literature.py` | split | partial | `make_cite_key` → `precis.identity`; rest → `precis/ingest/literature.py` (no `make_slug`; dropped per ADR 0008) |
 | `lookup.py` | `precis/ingest/lookup.py` | move | unified lookup over crossref/S2/arxiv |
 | `pdf.py` | `precis/ingest/pdf_sidecar.py` | move | `.meta.json` sidecar handling |
 | `semantic_scholar.py` | `precis/ingest/semantic_scholar.py` | move | S2 client |
@@ -95,7 +95,7 @@ def make_paper_id(*, doi: str | None = None, arxiv_id: str | None = None,
 def make_pub_id(paper_id: str) -> str: ...           # 6-char base32 lowercase
 def make_cite_key(authors: Any, year: int | None,
                   taken: set[str]) -> str: ...       # miller23a (ADR 0006)
-def make_slug(authors: Any, year: int | None, title: str) -> str: ...
+# (no make_slug; dropped per ADR 0008)
 def make_node_id(paper_id: str, page: int, block_index: int) -> str: ...
 def make_pdf_hash(pdf_bytes: bytes) -> str: ...      # sha256 hex
 def make_content_hash(normalized_text: str) -> str: ...   # sha256 hex
@@ -137,9 +137,12 @@ first, so subsequent commits can target it.
    - delete `src/precis/migrations/0001_initial.sql` through
      `0009_*.sql`; replace with one `0001_initial.sql` defining
      the v2 schema:
-     - refs (pub_id, cite_key, slug, kind-agnostic, retraction +
-       human-verified columns)
-     - ref_identifiers (alias index over all id_kinds)
+     - refs (identifier-free hub, kind FK, retraction +
+       human-verified columns; per ADR 0008)
+     - ref_identifiers (THE identifier table: pub_id, cite_key,
+       paper_id, DOI, arxiv, s2, pubmed, openalex, pdf_sha256,
+       content_hash)
+     - v_refs view (exposes pub_id/cite_key/paper_id as columns)
      - pdfs (normalized; multi-paper-per-PDF)
      - chunks (kind-agnostic; NULL-able page_first/last;
        broadened chunk_kind enum per storage-v2.md)
@@ -152,8 +155,8 @@ first, so subsequent commits can target it.
    - rewrite tests that asserted intermediate schema states
 3. **B2 — `precis.identity`**
    - new module with `make_paper_id`, `make_pub_id`,
-     `make_cite_key`, `make_slug`, `make_node_id`,
-     `make_pdf_hash`, `make_content_hash` (ADR 0006)
+     `make_cite_key`, `make_node_id`, `make_pdf_hash`,
+     `make_content_hash` (ADRs 0006 + 0008; no `make_slug`)
    - tests: `tests/test_identity.py` — deterministic outputs,
      ASCII safety, collision-suffix progression
      (`miller23` → `miller23a` → `miller23b`)
@@ -161,7 +164,9 @@ first, so subsequent commits can target it.
 4. **B3 — vendor `precis.ingest.*` (no behaviour change)**
    - copy over module files from `acatome_extract` and
      `acatome_meta`, adjust imports, fix references to
-     `acatome_meta.literature.make_slug` → `precis.identity.make_slug`
+     `acatome_meta.literature.make_slug` →
+     `precis.identity.make_cite_key` (slug callers switch to
+     cite_key per ADR 0008)
    - copy tests under `tests/ingest/`
    - register the new package in `src/precis/__init__.py`
    - existing `precis.store._ingest_ops` (bundle ingest) keeps
@@ -175,7 +180,7 @@ first, so subsequent commits can target it.
 6. **B5 — `precis watch` CLI command**
    - new `precis/cli/watch.py` (vendored from `acatome_extract.watch`)
    - calls `precis_add()` directly; on success moves the file to
-     `corpus/<letter>/<slug>.pdf`; on failure to
+     `corpus/<letter>/<cite_key>.pdf`; on failure to
      `errors/<timestamp>/<filename>` with a `.error.txt` next to it
    - tests adapted from `acatome_extract.tests.test_watch`
 7. **B6 — `precis worker` skeleton (derived queue, ADR 0007)**

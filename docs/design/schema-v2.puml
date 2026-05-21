@@ -1,9 +1,15 @@
 @startuml schema-v2
 
-' precis-mcp v2 schema — captured during the design discussion of 2026-05-21.
-' Render via the dev container:
-'   scripts/render-uml schema-v2.puml      (or  -p  for PNG)
-
+' precis-mcp v2 schema — LOCKED design as of 2026-05-21.
+' Render via:  scripts/render-uml schema-v2.puml   (-p for PNG)
+'
+' Companion docs:
+'   docs/design/storage-v2.md            — prose + worker pipeline
+'   docs/decisions/0005-greenfield-migrations.md
+'   docs/decisions/0006-tri-identifier-scheme.md  (slug section superseded by 0008)
+'   docs/decisions/0007-derived-queue-no-block-jobs.md
+'   docs/decisions/0008-drop-slug-identifier-normalisation.md
+'
 hide circle
 skinparam linetype ortho
 skinparam classBackgroundColor #FAFAFA
@@ -18,7 +24,7 @@ skinparam defaultFontName "Helvetica"
 skinparam defaultFontSize 11
 
 ' ============================================================================
-' Controlled vocabulary (closed sets, FK targets)
+' Controlled vocabulary (closed sets; FK targets; seeded in 0001_initial.sql)
 ' ============================================================================
 package "controlled vocab" as vocab {
 
@@ -28,16 +34,21 @@ package "controlled vocab" as vocab {
     is_numeric : bool
     title : text
     description : text
+    deprecated_at : timestamptz
+    * created_at : timestamptz
     ..seeded..
     paper, book, oracle, conv, skill, quest,
     todo, memory, gripe, fc, web, youtube, math,
-    code, decision, design, patent
+    code, decision, design, patent,
+    project, tool, research_report,
+    meeting, email, repo, issue
   }
 
   entity "actors" as actors <<vocab>> {
     * slug : text <<PK>>
     --
     description : text
+    * created_at : timestamptz
     ..seeded..
     agent, user, system
   }
@@ -47,80 +58,137 @@ package "controlled vocab" as vocab {
     --
     is_symmetric : bool
     inverse_slug : text
+    description : text
+    * created_at : timestamptz
     ..seeded..
-    related-to, blocks, blocked-by,
-    contradicts, contradicted-by,
-    cites, cited-by, supersedes, superseded-by
+    related-to, blocks/blocked-by,
+    contradicts/contradicted-by,
+    cites/cited-by, supersedes/superseded-by
   }
 
   entity "providers" as providers <<vocab>> {
     * slug : text <<PK>>
     --
     description : text
+    * created_at : timestamptz
     ..seeded..
     arxiv, crossref, s2, pubmed, openalex,
     unpaywall, perplexity, wolfram, youtube,
     manual, local
+  }
+
+  entity "chunk_kinds" as chunk_kinds <<vocab>> {
+    * slug : text <<PK>>
+    --
+    is_card : bool <<NN, DEFAULT FALSE>>
+    description : text
+    * created_at : timestamptz
+    ..seeded (cards, is_card=true)..
+    card_combined, card_title, card_authors,
+    card_abstract, card_meta, card_keywords
+    ..seeded (generic body)..
+    paragraph, figure, equation, caption,
+    heading, references, code_symbol
+    ..seeded (per ref kind)..
+    memory_body, gripe_body, todo_body,
+    quest_body, fc_claim, fc_evidence,
+    conv_message, qa_pair,
+    skill_overview, skill_input, skill_output,
+    skill_example,
+    tool_overview, tool_input_schema,
+    tool_output_schema, tool_example,
+    web_paragraph, web_section, web_citation,
+    youtube_segment,
+    wolfram_query, wolfram_response,
+    decision_section, design_section,
+    patent_claim, patent_section,
+    project_goal, project_constraint,
+    project_decision_log, project_status,
+    project_open_question, project_milestone,
+    meeting_segment, action_item, meeting_decision,
+    email_message, email_attachment_ref,
+    readme_section, commit_message,
+    issue_comment, issue_label_change,
+    issue_milestone,
+    research_report_summary,
+    research_report_citation
   }
 }
 
 note bottom of actors
   **App-level audit, not PG roles.**
   `set_by` columns record intent: which
-  agent triggered an action. Database-level
+  actor triggered an action. Database-level
   access control (PG GRANTs / `precis_rw`,
   `precis_ro`) is a separate concern.
 end note
 
+' ============================================================================
+' Model registries
+' ============================================================================
 package "model registries" as registries {
 
   entity "embedders" as embedders {
     * name : text <<PK>>
     --
     * dim : int
-    is_default : bool
+    is_default : bool <<NN, DEFAULT FALSE>>
     description : text
+    deprecated_at : timestamptz
     * created_at : timestamptz
     ..seeded..
-    bge-m3 (1024)
+    bge-m3 (dim=1024, is_default=TRUE)
+    ..invariant..
+    partial UNIQUE INDEX where is_default=TRUE
   }
 
   entity "summarizers" as summarizers {
     * name : text <<PK>>
     --
     prompt_template : text
-    is_default : bool
+    config : jsonb <<NN, DEFAULT '{}'>>
+    is_default : bool <<NN, DEFAULT FALSE>>
     description : text
+    deprecated_at : timestamptz
     * created_at : timestamptz
     ..seeded..
-    rake (extractive)
+    rake-lemma (is_default=TRUE)
+      config: {lemmatizer:'scispacy',
+               model:'en_core_sci_sm',
+               max_keywords:50}
+    ..invariant..
+    partial UNIQUE INDEX where is_default=TRUE
   }
 }
 
+note left of embedders
+  **One active embedder at a time.**
+  `is_default=TRUE` marks the row used
+  by default search. Partial UNIQUE
+  ensures only one. Schema supports
+  multiple registered embedders (same
+  dim today; partition by name when we
+  add a different-dim embedder).
+end note
+
 ' ============================================================================
-' Hub: refs
+' Hub: refs (identifier-free; ALL identifiers live in ref_identifiers)
 ' ============================================================================
 entity "refs" as refs {
   * ref_id : bigserial <<PK>>
   --
-  ' identity (ADR 0006)
-  * paper_id : text <<UK>>
-  * pub_id : char(6) <<UK>>       ' base32 — machines
-  * cite_key : text <<UK>>         ' miller23a — bib
-  * slug : text <<UK>>             ' miller2023dopamine — humans
-  ' classification
-  * kind : text <<FK kinds>>
-  set_by : text <<FK actors>>
+  * kind : text <<FK kinds.slug>>
+  set_by : text <<FK actors.slug>>
   * title : text
   authors : jsonb
   year : int
   ' provenance
-  provider : text <<FK providers>>
+  provider : text <<FK providers.slug>>
   ' verification
   human_verified_at : timestamptz
   human_verified_by : text
   human_verified_note : text
-  ' retraction
+  ' retraction (this ref is retracted)
   retraction_status : text
   retracted_at : timestamptz
   retraction_reason : text
@@ -129,21 +197,37 @@ entity "refs" as refs {
   ' physical artifact (NULL for non-paper)
   pdf_sha256 : char(64) <<FK pdfs>>
   pdf_pages : int4range
-  pdf_role : text                 ' main, supplement, appendix, ...
+  pdf_role : text
+    ' main | supplement | appendix |
+    ' front_matter | back_matter
   ' bookkeeping
-  meta : jsonb
+  meta : jsonb <<NN, DEFAULT '{}'>>
   deleted_at : timestamptz
   * created_at : timestamptz
   * updated_at : timestamptz
 }
 note right of refs
-  **No `title_tsv` here.**
-  The card chunk (chunk_kind='card_combined')
-  carries title+authors+abstract+keywords+
-  cite_key with its own generated tsv. One
-  source of truth; queries JOIN to chunks.
+  **No identifier columns.**
+  pub_id / cite_key / paper_id all live in
+  `ref_identifiers`. Use the `v_refs` view
+  to expose them as columns for ergonomics.
+  Rationale: single uniform lookup;
+  cross-kind uniqueness; no duplication.
+  See ADR 0008.
+
+  **Retraction:**
+  - direct: this ref retracted →
+    `retraction_status` populated;
+    `card_combined` text includes
+    "RETRACTED YYYY-MM-DD: ..."
+  - indirect: ref cites retracted ref →
+    derived from `links` + dst retraction;
+    cache as a chunk_tag if useful.
 end note
 
+' ============================================================================
+' Identifier alias table (now THE place for ALL identifiers)
+' ============================================================================
 entity "ref_identifiers" as ref_ids {
   * id_kind : text <<PK>>
   * id_value : text <<PK>>
@@ -151,16 +235,22 @@ entity "ref_identifiers" as ref_ids {
   * ref_id : bigint <<FK refs>>
   source : text
   * created_at : timestamptz
-  ..id_kinds..
-  pub_id, cite_key, slug,
+  ..seeded id_kinds..
+  pub_id, cite_key, paper_id (legacy),
   doi, arxiv, s2, pubmed, openalex,
   pdf_sha256, content_hash
+  ..ergonomic view..
+  `v_refs` LEFT JOINs pub_id, cite_key,
+  paper_id back as columns
 }
 
+' ============================================================================
+' PDFs (normalized)
+' ============================================================================
 entity "pdfs" as pdfs {
-  * pdf_sha256 : char(64) <<PK>>      ' SHA-256 of file bytes
+  * pdf_sha256 : char(64) <<PK>>
   --
-  * content_hash : char(64)           ' SHA-256 of normalized text
+  * content_hash : char(64)
   * page_count : int
   * size_bytes : bigint
   * storage_path : text
@@ -168,81 +258,111 @@ entity "pdfs" as pdfs {
 }
 note bottom of pdfs
   **Two SHA-256 hashes by design**
-  • `pdf_sha256` (file bytes) — dedupe
+  - `pdf_sha256` (file bytes) — dedup
     the binary; PK.
-  • `content_hash` (normalized text) —
+  - `content_hash` (normalized text) —
     detect "same paper, different file"
     across publishers / preprint servers.
-  Both hex-64 (sha256). MD5 not used —
-  collision risk vs. trivial space saving.
+  Both hex-64 (sha256). MD5 not used.
 end note
 
 ' ============================================================================
-' Chunks layer (kind-agnostic, including synthetic 'card' chunks at ord<0)
+' Chunks layer (kind-agnostic; cards at ord<0, body at ord>=0)
 ' ============================================================================
 entity "chunks" as chunks {
   * chunk_id : bigserial <<PK>>
   --
   * ref_id : bigint <<FK refs>>
-  set_by : text <<FK actors>>
-  * ord : int                     ' <0 = synthetic card, >=0 = body
-  * chunk_kind : text             ' card_*, paragraph, figure, equation,
-                                 ' caption, heading, code_symbol,
-                                 ' qa_pair, skill_section, references
+  set_by : text <<FK actors.slug>>
+  * ord : int
+    ' <0 = synthetic card (ref-level)
+    ' >=0 = body chunk
+  * chunk_kind : text <<FK chunk_kinds.slug>>
   * text : text
-  block_ids : bigint[]            ' Marker blocks (papers); empty otherwise
+  block_ids : bigint[] <<DEFAULT '{}'>>
   token_count : int
-  section_path : text[]
-  page_first : int                ' NULL for non-paper / for cards
-  page_last : int                 ' NULL for non-paper / for cards
-  meta : jsonb
+  section_path : text[] <<DEFAULT '{}'>>
+  page_first : int
+  page_last : int
+  meta : jsonb <<NN, DEFAULT '{}'>>
   * created_at : timestamptz
   --
-  tsv : tsvector (generated)
+  tsv : tsvector (GENERATED)
   ..unique..
   (ref_id, ord)
+  ..CHECK..
+  (ord<0  AND chunk_kind LIKE 'card_%')
+   OR
+  (ord>=0 AND chunk_kind NOT LIKE 'card_%')
+  ..indexes..
+  GIN(tsv) for full-text search
+  btree(ref_id, ord)
+  btree(chunk_kind)
 }
 note left of chunks
   **Cards: multi-vector retrieval**
   Synthetic chunks at ord<0 give different
   ref-level views, each with its own
   embedding neighbourhood:
-   ord=-1  card_combined   default; title+
-                          authors+abstract+
-                          kw+cite_key
+   ord=-1  card_combined   title+authors+
+                          abstract+kw+
+                          cite_key
    ord=-2  card_title      title only
    ord=-3  card_authors    author list
    ord=-4  card_abstract   abstract only
    ord=-5  card_meta       DOI/journal/year
-   ord=-6  card_keywords   keywords/tags
-  Body chunks (paragraph, figure, ...)
-  start at ord=0. Default ingest creates
-  card_combined only; others opt-in.
+   ord=-6  card_keywords   RAKE-extracted,
+                          lemmatised
+  Body chunks (paragraph, figure, ...) at
+  ord>=0. **Default ingest creates ALL
+  card variants** when source data permits.
+  `card_keywords` is derived from RAKE
+  summaries of body chunks.
+
+  Same chunks/embeddings/summaries pipeline
+  for all kinds — no new tables.
 end note
 
 entity "chunk_embeddings" as chunk_embeds {
   * chunk_id : bigint <<PK FK chunks>>
   * embedder : text <<PK FK embedders>>
   --
-  vector : vector                 ' NULL on failure
-  * status : text                 ' ok | failed
-  * attempts : int
+  vector : vector
+  * status : text
+    ' ok | failed
+  * attempts : int <<NN, DEFAULT 1>>
   last_error : text
   * created_at : timestamptz
+  ..ANN index..
+  HNSW(vector vector_cosine_ops)
+   WITH (m=16, ef_construction=64)
+   per embedder partition
 }
 
 entity "chunk_summaries" as chunk_summ {
   * chunk_id : bigint <<PK FK chunks>>
   * summarizer : text <<PK FK summarizers>>
   --
-  text : text                     ' NULL on failure
+  text : text
   prompt_hash : char(64)
   token_count : int
   * status : text
-  * attempts : int
+  * attempts : int <<NN, DEFAULT 1>>
   last_error : text
   * created_at : timestamptz
 }
+
+note bottom of chunk_embeds
+  **Search strategy (application layer)**
+  - Default: single embedder per query
+    (the `is_default` one).
+  - Opt-in fusion: query multiple
+    embedders, combine via RRF.
+  - Two-stage: card_combined first, then
+    body chunks of top refs.
+  - Hybrid: ts_rank_cd on chunks.tsv +
+    vector cosine, RRF-combined.
+end note
 
 ' ============================================================================
 ' Graph (links) — endpoints can be ref-level OR chunk-level
@@ -251,25 +371,30 @@ entity "links" as links {
   * link_id : bigserial <<PK>>
   --
   * src_ref_id : bigint <<FK refs>>
-  src_chunk_id : bigint <<FK chunks>>     ' NULL = ref-level
+  src_chunk_id : bigint <<FK chunks>>
   * dst_ref_id : bigint <<FK refs>>
-  dst_chunk_id : bigint <<FK chunks>>     ' NULL = ref-level
-  * relation : text <<FK relations>>
-  * set_by : text <<FK actors>>
-  meta : jsonb                            ' confidence, notes, ...
+  dst_chunk_id : bigint <<FK chunks>>
+  * relation : text <<FK relations.slug>>
+  * set_by : text <<FK actors.slug>>
+  meta : jsonb <<NN, DEFAULT '{}'>>
   * created_at : timestamptz
-  ..constraints..
-  no self-loops at same precision
-  unique (src, dst, relation)
+  ..CHECK..
+  no self-loop at same precision
+  ..unique..
+  (src_ref_id, src_chunk_id,
+   dst_ref_id, dst_chunk_id,
+   relation)
 }
 
 ' ============================================================================
-' Tags (polymorphic via per-target tables)
+' Tags (polymorphic via per-target tables; no link_tags)
 ' ============================================================================
 entity "tags" as tags {
   * tag_id : bigserial <<PK>>
   --
-  * namespace : text              ' SRC, CACHE, STATUS, PRIO, ...
+  * namespace : text
+    ' SRC, CACHE, STATUS, PRIO,
+    ' RETRACTION, ASPECT, ...
   * value : text
   * created_at : timestamptz
   ..unique..
@@ -279,29 +404,73 @@ entity "tags" as tags {
 entity "ref_tags" as ref_tags {
   * ref_id : bigint <<PK FK refs>>
   * tag_id : bigint <<PK FK tags>>
-  set_by : text <<FK actors>>
+  set_by : text <<FK actors.slug>>
   * created_at : timestamptz
 }
 
 entity "chunk_tags" as chunk_tags {
   * chunk_id : bigint <<PK FK chunks>>
   * tag_id : bigint <<PK FK tags>>
-  set_by : text <<FK actors>>
+  set_by : text <<FK actors.slug>>
   * created_at : timestamptz
 }
+
 note bottom of tags
   **No link_tags.** Links are highly typed
   via `relation` FK; secondary annotation
   (confidence, status) goes in `links.meta`
-  JSONB. Add link_tags later if a real
-  query surfaces.
+  JSONB. Add later if a real query surfaces.
 end note
 
 ' ============================================================================
-' (No `system` singleton: defaults live in registry rows
-'  (embedders.is_default, summarizers.is_default); schema_epoch lives in
-'  the migrations ledger; transient global state belongs in env / config.)
+' Views (read-only convenience; defined in 0001_initial.sql)
 ' ============================================================================
+note as Views #DAEDFD
+  **Views**
+   **v_refs**
+   = refs LEFT JOIN ref_identifiers thrice
+     to expose pub_id, cite_key, paper_id
+     as columns. Most application queries
+     use this; refs is for INSERTs and
+     index hints.
+
+   **v_ref_tags_all**
+   = ref_tags ∪ (chunk_tags via chunks)
+     "all tags touching this ref, direct
+     or via its chunks". `via` column
+     marks 'direct' vs 'chunk'.
+
+   **v_chunk_tags_all**
+   = chunk_tags ∪ (ref_tags via parent)
+     "all tags touching this chunk, direct
+     or inherited from parent ref".
+end note
+
+' ============================================================================
+' Design notes block
+' ============================================================================
+note as Decisions #F0F0F0
+  **Locked decisions**
+  - ADR 0005: greenfield migrations
+  - ADR 0006: pub_id + cite_key
+    (slug section superseded by 0008)
+  - ADR 0007: derived queue, no jobs table
+  - ADR 0008: drop slug, ALL identifiers
+    in ref_identifiers
+
+  **Open / future**
+  - chunk_kind hierarchy (parent/child)
+    if we want grouped queries
+  - corpuses table for multi-tenant
+    (currently single-corpus)
+  - chunk_embeddings partition by
+    embedder for cross-dim support
+  - link_tags if secondary edge
+    annotation grows
+  - PG roles: precis_rw / precis_ro
+  - cite_key disambiguator algorithm
+    (a/b/c vs deterministic hash)
+end note
 
 ' ============================================================================
 ' Relationships
@@ -314,6 +483,7 @@ actors      ||..o{ links      : set_by
 actors      ||..o{ ref_tags   : set_by
 actors      ||..o{ chunk_tags : set_by
 relations   ||..o{ links      : relation
+chunk_kinds ||..o{ chunks     : chunk_kind
 embedders   ||..o{ chunk_embeds : registry
 summarizers ||..o{ chunk_summ   : registry
 

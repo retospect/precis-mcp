@@ -1,13 +1,17 @@
 # storage-v2 — design plan
 
-- **Status**: revised (2026-05-21)
+- **Status**: locked (2026-05-21)
 - **Authors**: Reto + agent
+- **Canonical schema visual**: [`schema-v2.puml`](./schema-v2.puml) /
+  [`schema-v2.svg`](./schema-v2.svg) — rendered via
+  `scripts/render-uml schema-v2.puml`
 - **Related ADRs**:
   - [`0001-merge-acatome-into-precis.md`](../decisions/0001-merge-acatome-into-precis.md)
-  - [`0002-pub-id-and-toon.md`](../decisions/0002-pub-id-and-toon.md) (TOON portion still in force; identifier section superseded)
+  - [`0002-pub-id-and-toon.md`](../decisions/0002-pub-id-and-toon.md) (TOON portion in force; identifier section superseded by 0006, then 0008)
   - [`0005-greenfield-migrations.md`](../decisions/0005-greenfield-migrations.md)
-  - [`0006-tri-identifier-scheme.md`](../decisions/0006-tri-identifier-scheme.md)
+  - [`0006-tri-identifier-scheme.md`](../decisions/0006-tri-identifier-scheme.md) (slug section superseded by 0008)
   - [`0007-derived-queue-no-block-jobs.md`](../decisions/0007-derived-queue-no-block-jobs.md)
+  - [`0008-drop-slug-identifier-normalisation.md`](../decisions/0008-drop-slug-identifier-normalisation.md)
 - **Sub-plans**: [`pip-merge.md`](./pip-merge.md) (the file-by-file mapping for step B)
 
 ## Goals
@@ -42,30 +46,40 @@ Out of scope (separate plans):
 - Migration of pre-v2 ref data — we wipe and re-ingest from
   `~/work/new_papers/` and `~/work/corpus/`.
 - Content-addressed PDF blob filesystem layout (we'll keep
-  slug-based filenames for v2; revisit when corpus exceeds 100 K
+  cite_key-based filenames for v2; revisit when corpus exceeds 100 K
   refs).
 - Backwards-compat shims for `acatome-extract` / `acatome-store`
   imports.
 
 ## Identity & naming (recap)
 
-Per ADR 0006, three user-visible identifiers plus internals:
+Per ADRs 0006 + 0008, **two user-visible identifiers** plus the
+synthetic source `paper_id` plus PDF hashes:
 
 | Identifier | Where | Format | Audience | Properties |
 |---|---|---|---|---|
-| `paper_id` | `refs.paper_id` | `arxiv:..` / `doi:..` / `sha256:..` | internal | priority arxiv > doi > sha256 of pdf bytes |
-| `pub_id` | `refs.pub_id` | 6-char base32 lowercase | machines (DB, MCP, URLs) | `base32(sha256(paper_id))[:6].lower()`; pinned at first ingest |
-| `cite_key` | `refs.cite_key` | `miller23a` (firstauthor + 2-digit year + collision suffix) | LaTeX writers | minted at first ingest with collision-letter suffix |
-| `slug` | `refs.slug` | `<surname><year><word>` | human readers | filename, `precis show` output, optional URL alias |
+| `paper_id` | `ref_identifiers (id_kind='paper_id')` | `arxiv:..` / `doi:..` / `sha256:..` | internal | priority arxiv > doi > sha256 of pdf bytes |
+| `pub_id` | `ref_identifiers (id_kind='pub_id')` | 6-char base32 lowercase | machines (DB, MCP, URLs) | `base32(sha256(paper_id))[:6].lower()`; pinned at first ingest |
+| `cite_key` | `ref_identifiers (id_kind='cite_key')` | `miller23a` (firstauthor + 2-digit year + collision suffix) | humans (LaTeX, filenames, CLI) | minted at first ingest with collision-letter suffix |
 | `ref_id` | `refs.ref_id` | bigserial | internal FK | not surfaced to clients |
-| `pdf_sha256` | `pdfs.pdf_sha256` | hex SHA-256 of file bytes | internal | dedup key for binary identity |
-| `content_hash` | `pdfs.content_hash` | hex SHA-256 of normalized text | internal | dedup key for "same paper, different bytes" |
+| `pdf_sha256` | `pdfs.pdf_sha256` (and `ref_identifiers`) | hex SHA-256 of file bytes | internal | dedup key for binary identity |
+| `content_hash` | `pdfs.content_hash` (and `ref_identifiers`) | hex SHA-256 of normalized text | internal | dedup key for "same paper, different bytes" |
 
-`pub_id` is **pinned at first ingest** and never changes. `cite_key`
-and `slug` are also immutable for new mints. All three resolve via
-`ref_identifiers`. Re-ingest of the same `paper_id` produces the
-same `pub_id` (deterministic). See ADR 0006 for the full rationale
-and ADR 0002 for the unchanged `pub_id` derivation.
+**All identifiers live in `ref_identifiers`** — there are no
+identifier columns on `refs`. The `v_refs` view exposes `pub_id`,
+`cite_key`, `paper_id` as virtual columns for ergonomic SELECTs.
+Lookup-by-any-handle is one query:
+
+```sql
+SELECT r.* FROM refs r
+  JOIN ref_identifiers ri USING (ref_id)
+  WHERE ri.id_value = $1;
+```
+
+`pub_id` is **pinned at first ingest** and never changes; re-ingest
+of the same `paper_id` produces the same `pub_id`. `cite_key` is
+immutable except for collision-suffix resolution. See ADR 0008 for
+the full rationale and the deprecation of `slug`.
 
 ## Schema v2
 
@@ -76,69 +90,100 @@ sections below describe the schema in logical groupings (refs, pdfs,
 chunks, embeddings, summaries, queue-via-derived-state, graph). The
 actual SQL is one file — see B1 in `pip-merge.md`.
 
-### `refs` table
+### `refs` table — identifier-free hub
 
-Carries all three user-visible identifiers (`pub_id`, `cite_key`,
-`slug`) plus internals, verification flags, and retraction columns.
+Carries no identifier columns (per ADR 0008). All identifiers
+live in `ref_identifiers`; ergonomic access via `v_refs` view.
 
 ```sql
 CREATE TABLE refs (
   ref_id              BIGSERIAL PRIMARY KEY,
-  -- identifiers (ADR 0006)
-  paper_id            TEXT     NOT NULL UNIQUE,    -- arxiv:.. / doi:.. / sha256:..
-  pub_id              CHAR(6)  NOT NULL UNIQUE,    -- base32(sha256(paper_id))[:6].lower()
-  cite_key            TEXT     NOT NULL UNIQUE,    -- miller23a — bibtex-friendly
-  slug                TEXT     NOT NULL UNIQUE,    -- miller2023dopamine — long human form
+  -- classification
+  kind                TEXT     NOT NULL REFERENCES kinds(slug),
+  set_by              TEXT     REFERENCES actors(slug),
   -- core metadata
-  kind                TEXT     NOT NULL,           -- 'paper', 'note', 'code', 'patent', 'skill', 'decision', …
   title               TEXT     NOT NULL,
-  authors             JSONB    NOT NULL,           -- list of {family, given, ...}
+  authors             JSONB,                       -- list of {family, given, ...}
   year                INT,
+  -- provenance
+  provider            TEXT     REFERENCES providers(slug),
   -- human verification
   human_verified_at   TIMESTAMPTZ,
   human_verified_by   TEXT,
   human_verified_note TEXT,
-  -- retraction tracking (populated by worker; cited-paper propagation deferred)
+  -- retraction tracking (this ref retracted; cited-paper retraction is derived)
   retraction_status   TEXT
     CHECK (retraction_status IS NULL OR
            retraction_status IN ('retracted', 'corrected', 'expression_of_concern')),
   retracted_at        TIMESTAMPTZ,
   retraction_reason   TEXT,
-  retraction_source   TEXT,
   retraction_url      TEXT,
+  retraction_checked_at TIMESTAMPTZ,
   -- multi-paper-per-PDF
   pdf_sha256          CHAR(64) REFERENCES pdfs(pdf_sha256),
-  pdf_pages           INT4RANGE,                   -- NULL = whole PDF; e.g. '[3,8)'
-  pdf_role            TEXT,                        -- 'main', 'comment', 'reply', 'letter'
+  pdf_pages           INT4RANGE,                   -- NULL = whole PDF
+  pdf_role            TEXT,                        -- 'main' | 'supplement' | 'appendix' | 'front_matter' | 'back_matter'
   -- bookkeeping
   meta                JSONB    NOT NULL DEFAULT '{}',
+  deleted_at          TIMESTAMPTZ,                 -- soft delete
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX refs_kind_idx          ON refs (kind);
-CREATE INDEX refs_year_idx          ON refs (year) WHERE year IS NOT NULL;
-CREATE INDEX refs_retraction_idx    ON refs (retraction_status) WHERE retraction_status IS NOT NULL;
+CREATE INDEX refs_kind_idx           ON refs (kind);
+CREATE INDEX refs_year_idx           ON refs (year) WHERE year IS NOT NULL;
+CREATE INDEX refs_retraction_idx     ON refs (retraction_status) WHERE retraction_status IS NOT NULL;
 CREATE INDEX refs_human_verified_idx ON refs (human_verified_at) WHERE human_verified_at IS NOT NULL;
+CREATE INDEX refs_alive_idx          ON refs (kind, year) WHERE deleted_at IS NULL;
 ```
 
-### `ref_identifiers` table — alias index
+N.B. there is no `refs.title_tsv`. Full-text search on titles
+happens through the `card_combined` chunk's generated `tsv`
+column (which carries title + authors + abstract + keywords).
+Single source of truth.
 
-All identifier lookups go through here. A single resolver handles
-`pub_id`, `cite_key`, `slug`, DOI, arXiv id, S2 paperId, pdf_sha256,
-content_hash — same query, same index, same code path.
+### `ref_identifiers` table — THE identifier table
+
+All identifiers live here (per ADR 0008): primary handles
+(`pub_id`, `cite_key`, `paper_id`) and external aliases (`doi`,
+`arxiv`, `s2`, `pubmed`, `openalex`, `pdf_sha256`, `content_hash`).
+One resolver, one index, one code path.
 
 ```sql
 CREATE TABLE ref_identifiers (
-  id_kind   TEXT NOT NULL,    -- 'pub_id', 'cite_key', 'slug', 'doi', 'arxiv', 's2', 'pdf_sha256', 'content_hash'
+  id_kind   TEXT NOT NULL,    -- 'pub_id' | 'cite_key' | 'paper_id'
+                              --  | 'doi' | 'arxiv' | 's2' | 'pubmed' | 'openalex'
+                              --  | 'pdf_sha256' | 'content_hash'
   id_value  TEXT NOT NULL,
   ref_id    BIGINT NOT NULL REFERENCES refs(ref_id) ON DELETE CASCADE,
-  source    TEXT,             -- 'crossref', 'semantic_scholar', 'manual', …
+  source    TEXT,             -- 'crossref' | 'semantic_scholar' | 'manual' | …
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (id_kind, id_value)
 );
 CREATE INDEX ref_identifiers_ref_id_idx ON ref_identifiers (ref_id);
 ```
+
+Every ref gets two rows at insert (`pub_id`, `cite_key`); legacy
+refs from acatome migration get a third (`paper_id`). External
+aliases land as they're discovered (during identity resolution
+from CrossRef / S2 / arXiv).
+
+### `v_refs` view — ergonomic access
+
+```sql
+CREATE VIEW v_refs AS
+SELECT r.*,
+       (SELECT id_value FROM ref_identifiers
+         WHERE ref_id = r.ref_id AND id_kind = 'pub_id')   AS pub_id,
+       (SELECT id_value FROM ref_identifiers
+         WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
+       (SELECT id_value FROM ref_identifiers
+         WHERE ref_id = r.ref_id AND id_kind = 'paper_id') AS paper_id
+FROM refs r;
+```
+
+Application code generally SELECTs from `v_refs`; the three
+correlated subqueries are indexed lookups.
 
 ### `pdfs` table — normalized PDF storage
 
@@ -162,50 +207,70 @@ CREATE INDEX pdfs_content_hash_idx ON pdfs (content_hash);
 of start, exclusive of end. NULL = the whole PDF. Refs that have no
 PDF (notes, code symbols, oracle Q&A) leave `pdf_sha256` NULL.
 
-### `chunks` layer (kind-agnostic)
+### `chunks` layer (kind-agnostic; cards at `ord < 0`)
 
-Chunks are the unit of embedding and search. Derived from raw
-`blocks` for papers, but kind-agnostic: any text-bearing ref
-(skill, code symbol, decision, note, oracle Q&A) becomes chunks.
-The `chunks` table doesn't know whether its parent ref is a paper.
+Chunks are the unit of embedding, summarisation, and search.
+Kind-agnostic: any text-bearing ref (paper, skill, code symbol,
+decision, memory, project) becomes chunks.
 
-Key design choices:
-- `page_first` / `page_last` are NULL-able — only papers have pages.
-- `block_ids` is empty for non-paper refs (no Marker blocks).
-- `chunk_kind` enum covers paper structures **and** other ref types.
-  Adding a new kind is one line in the CHECK constraint plus a
-  follow-up ADR.
+**Two-tier ord scheme:**
+- `ord < 0` — synthetic ref-level cards (`chunk_kind LIKE 'card_%'`).
+  Each card variant gives a different ref-level embedding
+  neighbourhood. Default ingest creates **all applicable variants**.
+- `ord >= 0` — body chunks (`paragraph`, `figure`, `code_symbol`, …).
+  Derived from source content (Marker blocks for PDFs; per-kind for
+  others).
 
 ```sql
 CREATE TABLE chunks (
   chunk_id     BIGSERIAL PRIMARY KEY,
   ref_id       BIGINT NOT NULL REFERENCES refs(ref_id) ON DELETE CASCADE,
-  ord          INT    NOT NULL,                  -- ordering within ref
-  block_ids    BIGINT[] NOT NULL DEFAULT '{}',   -- Marker blocks (papers only); empty otherwise
+  set_by       TEXT   REFERENCES actors(slug),
+  ord          INT    NOT NULL,                  -- <0 = card, >=0 = body
+  chunk_kind   TEXT   NOT NULL REFERENCES chunk_kinds(slug),
   text         TEXT   NOT NULL,
-  token_count  INT,                              -- approximate, for budgeting
+  block_ids    BIGINT[] NOT NULL DEFAULT '{}',   -- Marker blocks; empty otherwise
+  token_count  INT,
   section_path TEXT[] NOT NULL DEFAULT '{}',
-  page_first   INT,                              -- NULL for non-paper refs
-  page_last    INT,                              -- NULL for non-paper refs
-  chunk_kind   TEXT   NOT NULL
-    CHECK (chunk_kind IN (
-      -- paper-structural
-      'paragraph', 'figure', 'table', 'equation', 'caption', 'heading',
-      -- prose / general
-      'body', 'abstract',
-      -- non-paper kinds (B12 self-ingest)
-      'code_symbol', 'qa_pair', 'skill_section', 'decision_section',
-      -- skipped from default search
-      'references'
-    )),
+  page_first   INT,                              -- NULL for cards / non-paper
+  page_last    INT,                              -- NULL for cards / non-paper
   meta         JSONB  NOT NULL DEFAULT '{}',
+  tsv          TSVECTOR GENERATED ALWAYS AS (
+                 to_tsvector('english', text)) STORED,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (ref_id, ord)
+  UNIQUE (ref_id, ord),
+  CHECK (
+    (ord <  0 AND chunk_kind LIKE 'card_%') OR
+    (ord >= 0 AND chunk_kind NOT LIKE 'card_%')
+  )
 );
 CREATE INDEX chunks_ref_id_idx       ON chunks (ref_id);
 CREATE INDEX chunks_chunk_kind_idx   ON chunks (chunk_kind);
 CREATE INDEX chunks_section_path_idx ON chunks USING GIN (section_path);
+CREATE INDEX chunks_tsv_idx          ON chunks USING GIN (tsv);
 ```
+
+**Card variants** (all generated at default ingest when source data
+permits):
+
+| `ord` | `chunk_kind` | text source |
+|---|---|---|
+| `-1` | `card_combined` | title + authors + abstract + keywords + cite_key |
+| `-2` | `card_title` | title only |
+| `-3` | `card_authors` | normalised author list |
+| `-4` | `card_abstract` | abstract only |
+| `-5` | `card_meta` | DOI / journal / year / venue |
+| `-6` | `card_keywords` | RAKE keywords (scispacy-lemmatised, top-50) |
+
+`card_keywords` is derived: the worker waits for body chunks to
+have RAKE summaries (`chunk_summaries WHERE summarizer='rake-lemma'`),
+then aggregates the top-K keywords across the ref's body and
+emits the `card_keywords` chunk. Embedding follows automatically
+via the derived queue.
+
+Full-text search uses `chunks.tsv` (GIN-indexed). Hybrid retrieval
+combines `ts_rank_cd(tsv, q)` with vector similarity via RRF (see
+"Search strategy" below).
 
 ### `chunk_embeddings` — many vectors per chunk
 
@@ -252,18 +317,54 @@ CREATE TABLE chunk_summaries (
 );
 ```
 
-### `embedders` — registry of active embedding models
+### `embedders` and `summarizers` registries
 
 ```sql
 CREATE TABLE embedders (
-  name       TEXT PRIMARY KEY,                   -- 'bge-m3' (default)
-  dim        INT  NOT NULL,
-  is_default BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  name          TEXT PRIMARY KEY,
+  dim           INT  NOT NULL,
+  is_default    BOOLEAN NOT NULL DEFAULT FALSE,
+  description   TEXT,
+  deprecated_at TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO embedders (name, dim, is_default)
-  VALUES ('bge-m3', 1024, TRUE);
+CREATE UNIQUE INDEX one_default_embedder ON embedders (is_default) WHERE is_default = TRUE;
+
+INSERT INTO embedders (name, dim, is_default, description) VALUES
+  ('bge-m3', 1024, TRUE, 'BAAI/bge-m3, dense; 1024-dim; multilingual');
+
+CREATE TABLE summarizers (
+  name            TEXT PRIMARY KEY,
+  prompt_template TEXT,
+  config          JSONB NOT NULL DEFAULT '{}',
+  is_default      BOOLEAN NOT NULL DEFAULT FALSE,
+  description     TEXT,
+  deprecated_at   TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX one_default_summarizer ON summarizers (is_default) WHERE is_default = TRUE;
+
+INSERT INTO summarizers (name, config, is_default, description) VALUES
+  ('rake-lemma',
+   '{"lemmatizer": "scispacy", "model": "en_core_sci_sm", "max_keywords": 50,
+     "min_phrase_words": 1, "max_phrase_words": 4}'::jsonb,
+   TRUE,
+   'RAKE phrase extraction + scispacy lemmatisation');
 ```
+
+**Active embedder = `embedders.is_default=TRUE`.** Exactly one row
+is active (partial UNIQUE index enforces). Default search uses
+this row; users never specify an embedder unless opting out.
+Changing the active embedder is one `UPDATE … is_default` in a
+transaction; worker re-embeds chunks lazily.
+
+**Multi-embedder support:** the schema allows multiple registered
+embedders. Today all must share the dim of the default (1024) so
+`chunk_embeddings.vector` is `vector(1024)`. When a different-dim
+embedder is needed (e.g., SPECTER2 at 768 for paper-specific
+search), partition `chunk_embeddings` by `embedder` (LIST
+partitioning) and give each partition its own dim. Migration is
+straightforward; defer until needed.
 
 (There is no legacy `blocks.embedding` to drop — greenfield.)
 
@@ -333,14 +434,14 @@ INPUT ───►    │  parse_input()                              │
               ┌────────────────────────────────────────────┐
               │  resolve_identity()                         │
               │   - lookup S2 / CrossRef / arXiv            │
-              │   - compute paper_id, pub_id, slug          │
+              │   - compute paper_id, pub_id, cite_key      │
               │   - dedup via ref_identifiers               │
               └────────────────────────────────────────────┘
                               │
                               ▼
               ┌────────────────────────────────────────────┐
               │  store_pdf()  (if any)                      │
-              │   - copy to corpus/<letter>/<slug>.pdf      │
+              │   - copy to corpus/<letter>/<cite_key>.pdf  │
               │   - INSERT INTO pdfs ON CONFLICT DO NOTHING │
               └────────────────────────────────────────────┘
                               │
@@ -546,7 +647,7 @@ precis watch <dir>       # daemon: directory watch
 precis worker            # queue consumer
 precis serve             # MCP server (existing)
 precis search <query>    # MCP-equivalent CLI search
-precis show <handle>     # ref detail (handle = pub_id | slug)
+precis show <handle>     # ref detail (handle = pub_id | cite_key | DOI | arxiv | ...)
 precis verify <handle>   # toggle human_verified_at
 precis health <handle>   # diagnostics: retractions, broken links, …
 precis migrate           # SQL migrations (existing)
@@ -618,9 +719,9 @@ messages and the plan stay in sync.
 - **B1** Greenfield `0001_initial.sql` — single SQL file with the
   whole v2 schema. Replaces `0001`–`0009`.
 - **B2** `precis.identity` module — `make_paper_id`,
-  `make_pub_id`, `make_cite_key`, `make_slug`, `make_node_id`,
-  `make_pdf_hash`, `make_content_hash`. Pure functions, fully
-  unit-tested.
+  `make_pub_id`, `make_cite_key`, `make_node_id`, `make_pdf_hash`,
+  `make_content_hash`. Pure functions, fully unit-tested. (No
+  `make_slug`; dropped per ADR 0008.)
 - **B3** Vendor `precis.ingest.*` from `acatome-extract` and
   `acatome-meta`. Imports adjusted; legacy bundle ingest path
   still works.
@@ -645,101 +746,24 @@ messages and the plan stay in sync.
 Each step ships its own commit with tests. Schema-touching steps
 run `precis migrate --dry-run` against a fresh DB.
 
-## Schema diagram (Mermaid ER)
+## Schema diagram
 
-```mermaid
-erDiagram
-    refs ||--o{ ref_identifiers : "aliases"
-    refs }o--o| pdfs : "pdf_sha256 (NULL for non-paper kinds)"
-    refs ||--o{ chunks : "1..N chunks"
-    refs ||--o{ ref_tags : "tagging"
-    refs ||--o{ links : "src/dst"
-    chunks ||--o{ chunk_embeddings : "by embedder"
-    chunks ||--o{ chunk_summaries : "by summarizer"
-    embedders ||--o{ chunk_embeddings : "registry"
-    tags ||--o{ ref_tags : "applied"
-    refs {
-        bigserial ref_id PK
-        text paper_id UK
-        char pub_id UK "6-char base32"
-        text cite_key UK "miller23a"
-        text slug UK "miller2023dopamine"
-        text kind "paper, note, code, skill, ..."
-        text title
-        jsonb authors
-        int year
-        timestamptz human_verified_at
-        text retraction_status
-        char pdf_sha256 FK "NULL for non-paper"
-        int4range pdf_pages
-        text pdf_role
-    }
-    ref_identifiers {
-        text id_kind PK "pub_id, cite_key, doi, arxiv, ..."
-        text id_value PK
-        bigint ref_id FK
-    }
-    pdfs {
-        char pdf_sha256 PK
-        char content_hash
-        int page_count
-        bigint size_bytes
-        text storage_path
-    }
-    chunks {
-        bigserial chunk_id PK
-        bigint ref_id FK
-        int ord
-        text text
-        text chunk_kind "paragraph, figure, code_symbol, ..."
-        int page_first "NULL for non-paper"
-        int page_last
-        text_array section_path
-    }
-    chunk_embeddings {
-        bigint chunk_id PK_FK
-        text embedder PK_FK
-        vector vector "NULL on failure"
-        text status "ok, failed"
-        int attempts
-        text last_error
-    }
-    chunk_summaries {
-        bigint chunk_id PK_FK
-        text summarizer PK
-        text text "NULL on failure"
-        text status "ok, failed"
-        int attempts
-        text last_error
-    }
-    embedders {
-        text name PK "bge-m3"
-        int dim
-        boolean is_default
-    }
-    tags {
-        bigserial tag_id PK
-        text tag_kind
-        text tag_value
-    }
-    ref_tags {
-        bigint ref_id FK
-        bigint tag_id FK
-    }
-    links {
-        bigserial link_id PK
-        bigint src_ref_id FK
-        bigint dst_ref_id FK
-        text relation
-    }
-```
+The canonical schema visual is
+[`schema-v2.puml`](./schema-v2.puml) (PlantUML source) rendered to
+[`schema-v2.svg`](./schema-v2.svg) and `.png`. Regenerate via
+`scripts/render-uml schema-v2.puml` after edits.
 
-Notation: `||--o{` = one-to-many; `}o--o|` = many-to-zero-or-one;
-`PK` = primary key; `FK` = foreign key; `UK` = unique. The
-diagram lives in this design doc and gets updated alongside
-schema changes; once B1 lands, `scripts/refresh-db-uml.sh` (a
-follow-up) regenerates this section from the live DB so it can't
-drift.
+The PUML carries all 16 entities (vocab + registries + hub +
+chunks + graph + tags), all relationships, and inline notes
+explaining card pattern, two-hash PDF dedup, identifier
+normalisation, search strategy, and design decisions. It is the
+spec; the SQL in `migrations/0001_initial.sql` is its
+realisation.
+
+Once B1 lands, `scripts/refresh-db-uml` (a follow-up) will
+introspect the live DB and regenerate a second PUML
+(`schema-actual.puml`) so spec-vs-reality drift is caught
+automatically.
 
 ## Open questions
 
@@ -754,18 +778,26 @@ drift.
   periodic job. Derived-queue worker re-embeds the new chunks
   naturally.
 - **`pub_id` collisions**: birthday at ~46 K refs. Detection is
-  trivial (UNIQUE constraint). Resolution policy: extend to 7
-  characters for the colliding ref, log a warning. Document in a
-  follow-up ADR before the first collision.
+  trivial (UNIQUE constraint on `ref_identifiers (id_kind, id_value)`).
+  Resolution policy: extend to 7 characters for the colliding ref,
+  log a warning. Document in a follow-up ADR before the first
+  collision.
 - **`cite_key` collisions**: ADR 0006 specifies letter suffixes
   (`miller23a`, `miller23b`). Open: deterministic suffix (hashed)
   vs. insertion-order suffix. Start with insertion-order; upgrade
   if a real workflow surfaces.
-- **Embedder dim mismatch**: `embedders.dim` declares the expected
-  vector size. Worker rejects vectors of wrong dim. If a user
-  changes the model behind an `embedder` name (e.g., bge-m3 v2
-  with different dim), the name must change too. User-facing rule
-  worth documenting in `docs/conventions/`.
+- **`chunk_kind` hierarchy**: should the vocab table grow a
+  `parent_kind` column so we can ask "all card variants" or "all
+  per-kind body chunks" without LIKE matching? Currently the
+  `is_card` boolean covers the most common partition; defer
+  hierarchy until a real query needs it.
+- **Multi-embedder different-dim**: when SPECTER2 (768) or
+  NV-Embed (4096) gets registered, partition `chunk_embeddings`
+  by `embedder` (LIST partitioning) and give each partition its
+  own `vector(N)` column. Defer.
+- **Tag rollup views performance**: `v_ref_tags_all` and
+  `v_chunk_tags_all` are plain views; if hot paths emerge,
+  promote to MATERIALIZED with REFRESH on a cron. Defer.
 - **Multi-paper PDF auto-split**: the heuristic is fragile. v2
   ships only the manual `--pages` flag. Auto-split is a follow-up.
 - **Self-ingest scope (B12)**: which directories beyond
@@ -777,13 +809,13 @@ drift.
 
 - [ ] `0001_initial.sql` applies cleanly to a fresh DB; no other
       migration files exist.
-- [ ] `precis add file.pdf` produces a `refs` row with `pub_id`,
-      `cite_key`, `slug`, plus `blocks` and `chunks`. No bundle
-      file is written.
+- [ ] `precis add file.pdf` produces a `refs` row, two
+      `ref_identifiers` rows (`pub_id`, `cite_key`), and
+      `chunks` (card variants + body). No bundle file is written.
 - [ ] `precis worker` drains derived queues: every chunk has a
       `chunk_embeddings` row (`embedder='bge-m3'`, `status='ok'`)
-      and a `chunk_summaries` row (`summarizer='rake'`). Failures
-      have `status='failed'` rows and are not retried.
+      and a `chunk_summaries` row (`summarizer='rake-lemma'`).
+      Failures have `status='failed'` rows and are not retried.
 - [ ] `precis search` returns TOON, agent confirms it parses.
 - [ ] `precis watch` ingests an inbox dir end-to-end; on failure,
       PDFs go to `errors/` not `corpus/`.
@@ -794,6 +826,6 @@ drift.
       (renamed `acatome-watch` → `precis-watch`).
 - [ ] OPEN-ITEMS.md `\ufffd` mojibake item closed (re-ingestion
       passes the new ftfy roundtrip in the chunker).
-- [ ] Mermaid ER diagram in this doc matches the live schema
-      (manual check pre-cutover; automated by
-      `scripts/refresh-db-uml.sh` post-cutover).
+- [ ] `schema-v2.puml` matches the live schema (manual check
+      pre-cutover; automated by `scripts/refresh-db-uml`
+      post-cutover).
