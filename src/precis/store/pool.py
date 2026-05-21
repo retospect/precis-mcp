@@ -42,6 +42,7 @@ def create_pool(
     *,
     min_size: int = 2,
     max_size: int = 10,
+    open_timeout: float = 10.0,
     **kwargs: Any,
 ) -> ConnectionPool:
     """Create a psycopg connection pool with pgvector codec registered.
@@ -49,6 +50,10 @@ def create_pool(
     The pool is opened immediately so callers can use it without a
     separate ``open()`` call. Caller owns the pool — close with
     ``pool.close()`` on shutdown.
+
+    Fail-fast: ``open_timeout`` bounds how long ``pool.open(wait=True)``
+    will block waiting for ``min_size`` healthy connections. If the DB
+    is unreachable we raise ``PoolTimeout`` instead of hanging forever.
     """
     pool = ConnectionPool(
         conninfo=dsn,
@@ -58,5 +63,5 @@ def create_pool(
         open=False,
         **kwargs,
     )
-    pool.open(wait=True)
+    pool.open(wait=True, timeout=open_timeout)
     return pool
