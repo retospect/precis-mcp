@@ -87,19 +87,24 @@ From `acatome-meta/tests/`:
 
 ## New `precis.identity` module
 
-Single source of truth for IDs. Public surface:
+Single source of truth for IDs (per ADR 0006). Public surface:
 
 ```python
 def make_paper_id(*, doi: str | None = None, arxiv_id: str | None = None,
                   pdf_hash: str | None = None) -> str: ...
-def make_pub_id(paper_id: str) -> str: ...        # 6-char base32 lowercase
+def make_pub_id(paper_id: str) -> str: ...           # 6-char base32 lowercase
+def make_cite_key(authors: Any, year: int | None,
+                  taken: set[str]) -> str: ...       # miller23a (ADR 0006)
 def make_slug(authors: Any, year: int | None, title: str) -> str: ...
 def make_node_id(paper_id: str, page: int, block_index: int) -> str: ...
-def make_pdf_hash(pdf_bytes: bytes) -> str: ...   # sha256 hex
-def make_content_hash(normalized_text: str) -> str: ...
+def make_pdf_hash(pdf_bytes: bytes) -> str: ...      # sha256 hex
+def make_content_hash(normalized_text: str) -> str: ...   # sha256 hex
 ```
 
 All ID derivation lives here. Deterministic, no I/O, no model loads.
+The `taken` argument to `make_cite_key` is the set of cite_keys
+already in the corpus that share the prefix (e.g. all rows with
+`cite_key LIKE 'miller23%'`); pass an empty set on first ingest.
 
 ## Greenfield migration question
 
@@ -131,15 +136,27 @@ first, so subsequent commits can target it.
 2. **B1 — greenfield schema**
    - delete `src/precis/migrations/0001_initial.sql` through
      `0009_*.sql`; replace with one `0001_initial.sql` defining
-     the v2 schema (refs/pub_id, ref_identifiers, blocks, chunks,
-     chunk_embeddings, chunk_summaries, embedders, block_jobs,
-     pdfs, links, tags, ref_tags, cache state)
+     the v2 schema:
+     - refs (pub_id, cite_key, slug, kind-agnostic, retraction +
+       human-verified columns)
+     - ref_identifiers (alias index over all id_kinds)
+     - pdfs (normalized; multi-paper-per-PDF)
+     - chunks (kind-agnostic; NULL-able page_first/last;
+       broadened chunk_kind enum per storage-v2.md)
+     - chunk_embeddings, chunk_summaries (status / attempts /
+       last_error — derived queue per ADR 0007; **no**
+       block_jobs table)
+     - embedders (registry, seeded with bge-m3)
+     - links, tags, ref_tags, cache_state
    - update `src/precis/store/migrate.py` if any logic changes
    - rewrite tests that asserted intermediate schema states
 3. **B2 — `precis.identity`**
-   - new module with `make_paper_id`, `make_pub_id`, `make_slug`,
-     `make_node_id`, `make_pdf_hash`, `make_content_hash`
-   - tests: `tests/test_identity.py`
+   - new module with `make_paper_id`, `make_pub_id`,
+     `make_cite_key`, `make_slug`, `make_node_id`,
+     `make_pdf_hash`, `make_content_hash` (ADR 0006)
+   - tests: `tests/test_identity.py` — deterministic outputs,
+     ASCII safety, collision-suffix progression
+     (`miller23` → `miller23a` → `miller23b`)
    - no consumers wired yet
 4. **B3 — vendor `precis.ingest.*` (no behaviour change)**
    - copy over module files from `acatome_extract` and
@@ -161,11 +178,18 @@ first, so subsequent commits can target it.
      `corpus/<letter>/<slug>.pdf`; on failure to
      `errors/<timestamp>/<filename>` with a `.error.txt` next to it
    - tests adapted from `acatome_extract.tests.test_watch`
-7. **B6 — `precis worker` skeleton**
+7. **B6 — `precis worker` skeleton (derived queue, ADR 0007)**
    - new `precis/cli/worker.py`
-   - polls `block_jobs`; runs `embed:bge-m3` and `summarize:rake`
-     handlers
-   - tests with an in-memory queue stub
+   - per-artifact claim queries:
+     `LEFT JOIN chunk_embeddings WHERE chunk_id IS NULL` etc.
+     with `FOR UPDATE OF chunks SKIP LOCKED`
+   - handlers for `embed:bge-m3` and `summarize:rake`; failure
+     path writes `status='failed'` row so the chunk is not
+     re-picked
+   - `--status` flag aggregates over output tables and prints
+     `(total | ok | failed | pending)` per artifact
+   - tests use a real Postgres in the precis-dev container
+     (psycopg pool against test DB), no in-memory stub
 8. **B7 — drop legacy ingest path**
    - delete `src/precis/store/_ingest_ops.py` (bundle ingest)
    - delete `src/precis/ingest.py` (the legacy bundle dispatcher)
