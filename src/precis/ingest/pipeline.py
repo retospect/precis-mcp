@@ -71,17 +71,18 @@ _SKIPPED_BLOCK_TYPES: frozenset[str] = frozenset(
     {"junk", "page_header", "page_footer", "title", "author"}
 )
 
-# DoiProvenance → providers.slug mapping for the ``refs.provider``
-# column. Defaults to ``embedded`` when nothing else fits — the
-# providers seed in the migration covers the common cases.
+# Maps the metadata-extraction provenance to the ``providers.slug``
+# value the migration seeds (see ``0001_initial.sql``). Anything
+# without an external lookup hit lands on ``local`` — the seed entry
+# for "local computation / no external source".
 _PROVIDER_MAP: dict[DoiProvenance | None, str] = {
     DoiProvenance.SECONDARY_VALIDATOR: "crossref",
-    DoiProvenance.SIDECAR_META: "embedded",
-    DoiProvenance.EXISTING_PDF_METADATA: "embedded",
-    DoiProvenance.INTERNAL_EXTRACTOR: "embedded",
-    DoiProvenance.PDF2DOI_FALLBACK: "embedded",
-    DoiProvenance.FILENAME_PATTERN: "embedded",
-    None: "embedded",
+    DoiProvenance.SIDECAR_META: "local",
+    DoiProvenance.EXISTING_PDF_METADATA: "local",
+    DoiProvenance.INTERNAL_EXTRACTOR: "local",
+    DoiProvenance.PDF2DOI_FALLBACK: "local",
+    DoiProvenance.FILENAME_PATTERN: "local",
+    None: "local",
 }
 
 
@@ -387,9 +388,7 @@ def fetch_paper_by_arxiv(
     # S2 frequently has the DOI for the published version; pick it up
     # so future ingests via DOI dedupe to the same ref.
     doi = result.get("doi") or None
-    return _paper_from_lookup(
-        result, doi=doi, arxiv_id=normalised, provider="semantic_scholar"
-    )
+    return _paper_from_lookup(result, doi=doi, arxiv_id=normalised, provider="s2")
 
 
 # ---------------------------------------------------------------------------

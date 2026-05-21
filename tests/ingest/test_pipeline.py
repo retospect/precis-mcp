@@ -362,7 +362,7 @@ class TestFetchPaperByArxiv:
         assert paper.arxiv_id == "2401.12345"
         assert paper.doi == "10.1038/preprint"  # S2's DOI carried through
         assert paper.s2_id == "abc123"
-        assert paper.provider == "semantic_scholar"
+        assert paper.provider == "s2"
         assert paper.cite_key_prefix.startswith("wei24")
 
 

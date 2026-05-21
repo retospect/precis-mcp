@@ -23,7 +23,17 @@ import argparse
 import logging
 import sys
 
-from precis.cli import dedupe, gripe, ingest, maintenance, migrate, patent, perplexity, tools
+from precis.cli import (
+    add,
+    dedupe,
+    gripe,
+    ingest,
+    maintenance,
+    migrate,
+    patent,
+    perplexity,
+    tools,
+)
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +72,10 @@ def main() -> None:
         gripe.run(args)
         return
 
+    if args.cmd == "add":
+        add.run(args)
+        return
+
     if args.cmd == "jobs":
         _dispatch_job(args)
         return
@@ -96,6 +110,7 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_parser(sub)
     maintenance.add_parser(sub)
     gripe.add_parser(sub)
+    add.add_parser(sub)
     tools.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
