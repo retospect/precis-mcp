@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Render PlantUML diagrams in docs/design/ via the precis-dev container.
+#
+# Usage:
+#   scripts/render-uml                       # render every .puml
+#   scripts/render-uml schema-v2.puml        # render one file
+#
+# Output: <name>.svg next to the source. PNG also produced when -p is passed.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+INFRA_COMPOSE="${HOME}/work/infrastructure/compose.yaml"
+if [[ ! -f "${INFRA_COMPOSE}" ]]; then
+    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
+    exit 1
+fi
+
+# The precis-dev container bind-mounts this repo at /app. PlantUML resolves
+# paths inside the container; everything below /app maps to host files.
+
+format=svg
+if [[ "${1:-}" == "-p" ]]; then
+    format=png
+    shift
+fi
+
+# Build the list of files (host paths). Translate to container paths (/app/...).
+if [[ $# -eq 0 ]]; then
+    mapfile -t puml_files < <(find docs/design -name '*.puml' -type f | sort)
+else
+    puml_files=()
+    for f in "$@"; do
+        if [[ "${f}" == /* ]]; then
+            puml_files+=("${f}")
+        elif [[ -f "docs/design/${f}" ]]; then
+            puml_files+=("docs/design/${f}")
+        elif [[ -f "${f}" ]]; then
+            puml_files+=("${f}")
+        else
+            echo "ERR: cannot find ${f}" >&2
+            exit 1
+        fi
+    done
+fi
+
+if [[ ${#puml_files[@]} -eq 0 ]]; then
+    echo "no .puml files to render"
+    exit 0
+fi
+
+# Map host paths (relative to repo root) → container paths (/app/...)
+container_paths=()
+for f in "${puml_files[@]}"; do
+    container_paths+=("/app/${f}")
+done
+
+echo "rendering ${#container_paths[@]} file(s) as ${format}..."
+docker compose -f "${INFRA_COMPOSE}" --profile dev run --rm --no-deps precis-dev \
+    plantuml -t"${format}" "${container_paths[@]}"
+
+echo "done. output:"
+for f in "${puml_files[@]}"; do
+    echo "  ${f%.puml}.${format}"
+done

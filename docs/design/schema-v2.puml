@@ -1,0 +1,294 @@
+@startuml schema-v2
+
+' precis-mcp v2 schema — captured during the design discussion of 2026-05-21.
+' Render via the dev container:
+'   docker compose -f infrastructure/compose.yaml --profile dev run --rm precis-dev \
+'       plantuml -tsvg /app/docs/design/schema-v2.puml
+' Output lands at docs/design/schema-v2.svg.
+
+hide circle
+skinparam linetype ortho
+skinparam classBackgroundColor #FAFAFA
+skinparam classBorderColor #333
+skinparam classArrowColor #555
+skinparam classHeaderBackgroundColor #E0E8F0
+skinparam packageBackgroundColor #F8F8F8
+skinparam packageBorderColor #888
+skinparam defaultFontName "Helvetica"
+skinparam defaultFontSize 11
+
+' ============================================================================
+' Controlled vocabulary
+' ============================================================================
+package "controlled vocab" as vocab {
+
+  entity "kinds" as kinds <<vocab>> {
+    * slug : text <<PK>>
+    --
+    is_numeric : bool
+    title : text
+    description : text
+    ..seeded..
+    paper, book, oracle, conv, skill, quest,
+    todo, memory, gripe, fc, web, youtube, math,
+    code, decision, design, patent
+  }
+
+  entity "actors" as actors <<vocab>> {
+    * slug : text <<PK>>
+    --
+    description : text
+    ..seeded..
+    agent, user, system
+  }
+
+  entity "relations" as relations <<vocab>> {
+    * slug : text <<PK>>
+    --
+    is_symmetric : bool
+    inverse_slug : text
+    ..seeded..
+    related-to, blocks, blocked-by,
+    contradicts, contradicted-by,
+    cites, cited-by, supersedes, superseded-by
+  }
+}
+
+package "model registries" as registries {
+
+  entity "embedders" as embedders {
+    * name : text <<PK>>
+    --
+    * dim : int
+    is_default : bool
+    description : text
+    ..seeded..
+    bge-m3 (1024)
+  }
+
+  entity "summarizers" as summarizers {
+    * name : text <<PK>>
+    --
+    prompt_template : text
+    is_default : bool
+    description : text
+    ..seeded..
+    rake (extractive)
+  }
+}
+
+' ============================================================================
+' Hub: refs
+' ============================================================================
+entity "refs" as refs {
+  * ref_id : bigserial <<PK>>
+  --
+  ' identity (ADR 0006)
+  * paper_id : text <<UK>>
+  * pub_id : char(6) <<UK>>      ' base32 — machines
+  * cite_key : text <<UK>>        ' miller23a — LaTeX writers
+  * slug : text <<UK>>            ' miller2023dopamine — humans
+  ' classification
+  * kind : text <<FK kinds>>
+  set_by : text <<FK actors>>
+  * title : text
+  authors : jsonb
+  year : int
+  ' provenance
+  provider : text                 ' arxiv, crossref, manual, ... (free text)
+  ' verification
+  human_verified_at : timestamptz
+  human_verified_by : text
+  human_verified_note : text
+  ' retraction
+  retraction_status : text
+  retracted_at : timestamptz
+  retraction_reason : text
+  retraction_url : text
+  retraction_checked_at : timestamptz
+  ' physical artifact (NULL for non-paper)
+  pdf_sha256 : char(64) <<FK pdfs>>
+  pdf_pages : int4range
+  pdf_role : text
+  ' bookkeeping
+  meta : jsonb
+  deleted_at : timestamptz
+  created_at : timestamptz
+  updated_at : timestamptz
+  --
+  title_tsv : tsvector (generated)
+}
+
+entity "ref_identifiers" as ref_ids {
+  * id_kind : text <<PK>>
+  * id_value : text <<PK>>
+  --
+  * ref_id : bigint <<FK refs>>
+  source : text
+  created_at : timestamptz
+  ..id_kinds..
+  pub_id, cite_key, slug,
+  doi, arxiv, s2, pubmed,
+  pdf_sha256, content_hash
+}
+
+entity "pdfs" as pdfs {
+  * pdf_sha256 : char(64) <<PK>>
+  --
+  * content_hash : char(64)       ' SHA-256 of normalized text
+  * page_count : int
+  * size_bytes : bigint
+  * storage_path : text
+  ingested_at : timestamptz
+}
+
+' ============================================================================
+' Chunks layer (kind-agnostic, including the per-ref "card" chunk)
+' ============================================================================
+entity "chunks" as chunks {
+  * chunk_id : bigserial <<PK>>
+  --
+  * ref_id : bigint <<FK refs>>
+  set_by : text <<FK actors>>
+  * ord : int                     ' 0 = card; 1..N = body chunks
+  * chunk_kind : text             ' card, paragraph, figure, equation,
+                                 ' caption, heading, code_symbol,
+                                 ' qa_pair, skill_section, references
+  * text : text
+  block_ids : bigint[]            ' Marker blocks (papers); empty otherwise
+  token_count : int
+  section_path : text[]
+  page_first : int                ' NULL for non-paper
+  page_last : int                 ' NULL for non-paper
+  meta : jsonb
+  created_at : timestamptz
+  --
+  tsv : tsvector (generated)
+}
+note right of chunks
+  **Card pattern (two-stage retrieval)**
+  Every ref has exactly one chunk at
+  ord=0 with chunk_kind='card':
+   text = title + authors + abstract
+        + cite_key + keywords
+  Coarse search filters chunk_kind='card'.
+  Fine search uses the rest.
+end note
+
+entity "chunk_embeddings" as chunk_embeds {
+  * chunk_id : bigint <<PK FK chunks>>
+  * embedder : text <<PK FK embedders>>
+  --
+  vector : vector                 ' NULL on failure
+  * status : text                 ' ok | failed
+  * attempts : int
+  last_error : text
+  created_at : timestamptz
+}
+
+entity "chunk_summaries" as chunk_summ {
+  * chunk_id : bigint <<PK FK chunks>>
+  * summarizer : text <<PK FK summarizers>>
+  --
+  text : text                     ' NULL on failure
+  prompt_hash : char(64)
+  token_count : int
+  * status : text
+  * attempts : int
+  last_error : text
+  created_at : timestamptz
+}
+
+' ============================================================================
+' Graph (links) — endpoints can be ref-level OR chunk-level
+' ============================================================================
+entity "links" as links {
+  * link_id : bigserial <<PK>>
+  --
+  * src_ref_id : bigint <<FK refs>>
+  src_chunk_id : bigint <<FK chunks>>     ' NULL = ref-level
+  * dst_ref_id : bigint <<FK refs>>
+  dst_chunk_id : bigint <<FK chunks>>     ' NULL = ref-level
+  * relation : text <<FK relations>>
+  * set_by : text <<FK actors>>
+  meta : jsonb                            ' confidence, notes, ...
+  created_at : timestamptz
+  ..constraints..
+  no self-loops at same precision
+  unique (src, dst, relation)
+}
+
+' ============================================================================
+' Tags (polymorphic via per-target tables)
+' ============================================================================
+entity "tags" as tags {
+  * tag_id : bigserial <<PK>>
+  --
+  * namespace : text              ' SRC, CACHE, STATUS, PRIO, CONFIDENCE, DENSITY, ...
+  * value : text
+  created_at : timestamptz
+  ..unique..
+  (namespace, value)
+}
+
+entity "ref_tags" as ref_tags {
+  * ref_id : bigint <<PK FK refs>>
+  * tag_id : bigint <<PK FK tags>>
+  set_by : text <<FK actors>>
+  created_at : timestamptz
+}
+
+entity "chunk_tags" as chunk_tags {
+  * chunk_id : bigint <<PK FK chunks>>
+  * tag_id : bigint <<PK FK tags>>
+  set_by : text <<FK actors>>
+  created_at : timestamptz
+}
+note bottom of tags
+  **No link_tags.** Links are highly typed
+  via `relation` FK; secondary annotation
+  goes in `links.meta` JSONB. Add link_tags
+  later if a real query surfaces.
+end note
+
+' ============================================================================
+' System singleton
+' ============================================================================
+entity "system" as system {
+  * key : text <<PK>>
+  --
+  * value : text
+  updated_at : timestamptz
+  ..keys..
+  embedding_model, embedding_dim,
+  schema_epoch, default_summarizer
+}
+
+' ============================================================================
+' Relationships
+' ============================================================================
+kinds       ||..o{ refs       : kind
+actors      ||..o{ refs       : set_by
+actors      ||..o{ chunks     : set_by
+actors      ||..o{ links      : set_by
+actors      ||..o{ ref_tags   : set_by
+actors      ||..o{ chunk_tags : set_by
+relations   ||..o{ links      : relation
+embedders   ||..o{ chunk_embeds : registry
+summarizers ||..o{ chunk_summ   : registry
+
+refs ||--o{ ref_ids   : aliases
+refs }o..o| pdfs      : "pdf_sha256\n(NULL for non-paper)"
+refs ||--o{ chunks    : owns
+refs ||--o{ ref_tags  : tagged
+refs ||--o{ links     : "src/dst (ref-level)"
+
+chunks ||--o{ chunk_embeds : embedded
+chunks ||--o{ chunk_summ   : summarized
+chunks ||--o{ chunk_tags   : tagged
+chunks ||--o{ links        : "src/dst (chunk-level)"
+
+tags ||--o{ ref_tags   : applied
+tags ||--o{ chunk_tags : applied
+
+@enduml
