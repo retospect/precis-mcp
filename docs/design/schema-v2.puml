@@ -2,9 +2,7 @@
 
 ' precis-mcp v2 schema — captured during the design discussion of 2026-05-21.
 ' Render via the dev container:
-'   docker compose -f infrastructure/compose.yaml --profile dev run --rm precis-dev \
-'       plantuml -tsvg /app/docs/design/schema-v2.puml
-' Output lands at docs/design/schema-v2.svg.
+'   scripts/render-uml schema-v2.puml      (or  -p  for PNG)
 
 hide circle
 skinparam linetype ortho
@@ -14,11 +12,13 @@ skinparam classArrowColor #555
 skinparam classHeaderBackgroundColor #E0E8F0
 skinparam packageBackgroundColor #F8F8F8
 skinparam packageBorderColor #888
+skinparam noteBackgroundColor #FFFEDB
+skinparam noteBorderColor #B0A055
 skinparam defaultFontName "Helvetica"
 skinparam defaultFontSize 11
 
 ' ============================================================================
-' Controlled vocabulary
+' Controlled vocabulary (closed sets, FK targets)
 ' ============================================================================
 package "controlled vocab" as vocab {
 
@@ -52,7 +52,25 @@ package "controlled vocab" as vocab {
     contradicts, contradicted-by,
     cites, cited-by, supersedes, superseded-by
   }
+
+  entity "providers" as providers <<vocab>> {
+    * slug : text <<PK>>
+    --
+    description : text
+    ..seeded..
+    arxiv, crossref, s2, pubmed, openalex,
+    unpaywall, perplexity, wolfram, youtube,
+    manual, local
+  }
 }
+
+note bottom of actors
+  **App-level audit, not PG roles.**
+  `set_by` columns record intent: which
+  agent triggered an action. Database-level
+  access control (PG GRANTs / `precis_rw`,
+  `precis_ro`) is a separate concern.
+end note
 
 package "model registries" as registries {
 
@@ -62,6 +80,7 @@ package "model registries" as registries {
     * dim : int
     is_default : bool
     description : text
+    * created_at : timestamptz
     ..seeded..
     bge-m3 (1024)
   }
@@ -72,6 +91,7 @@ package "model registries" as registries {
     prompt_template : text
     is_default : bool
     description : text
+    * created_at : timestamptz
     ..seeded..
     rake (extractive)
   }
@@ -85,9 +105,9 @@ entity "refs" as refs {
   --
   ' identity (ADR 0006)
   * paper_id : text <<UK>>
-  * pub_id : char(6) <<UK>>      ' base32 — machines
-  * cite_key : text <<UK>>        ' miller23a — LaTeX writers
-  * slug : text <<UK>>            ' miller2023dopamine — humans
+  * pub_id : char(6) <<UK>>       ' base32 — machines
+  * cite_key : text <<UK>>         ' miller23a — bib
+  * slug : text <<UK>>             ' miller2023dopamine — humans
   ' classification
   * kind : text <<FK kinds>>
   set_by : text <<FK actors>>
@@ -95,7 +115,7 @@ entity "refs" as refs {
   authors : jsonb
   year : int
   ' provenance
-  provider : text                 ' arxiv, crossref, manual, ... (free text)
+  provider : text <<FK providers>>
   ' verification
   human_verified_at : timestamptz
   human_verified_by : text
@@ -109,15 +129,20 @@ entity "refs" as refs {
   ' physical artifact (NULL for non-paper)
   pdf_sha256 : char(64) <<FK pdfs>>
   pdf_pages : int4range
-  pdf_role : text
+  pdf_role : text                 ' main, supplement, appendix, ...
   ' bookkeeping
   meta : jsonb
   deleted_at : timestamptz
-  created_at : timestamptz
-  updated_at : timestamptz
-  --
-  title_tsv : tsvector (generated)
+  * created_at : timestamptz
+  * updated_at : timestamptz
 }
+note right of refs
+  **No `title_tsv` here.**
+  The card chunk (chunk_kind='card_combined')
+  carries title+authors+abstract+keywords+
+  cite_key with its own generated tsv. One
+  source of truth; queries JOIN to chunks.
+end note
 
 entity "ref_identifiers" as ref_ids {
   * id_kind : text <<PK>>
@@ -125,54 +150,74 @@ entity "ref_identifiers" as ref_ids {
   --
   * ref_id : bigint <<FK refs>>
   source : text
-  created_at : timestamptz
+  * created_at : timestamptz
   ..id_kinds..
   pub_id, cite_key, slug,
-  doi, arxiv, s2, pubmed,
+  doi, arxiv, s2, pubmed, openalex,
   pdf_sha256, content_hash
 }
 
 entity "pdfs" as pdfs {
-  * pdf_sha256 : char(64) <<PK>>
+  * pdf_sha256 : char(64) <<PK>>      ' SHA-256 of file bytes
   --
-  * content_hash : char(64)       ' SHA-256 of normalized text
+  * content_hash : char(64)           ' SHA-256 of normalized text
   * page_count : int
   * size_bytes : bigint
   * storage_path : text
-  ingested_at : timestamptz
+  * ingested_at : timestamptz
 }
+note bottom of pdfs
+  **Two SHA-256 hashes by design**
+  • `pdf_sha256` (file bytes) — dedupe
+    the binary; PK.
+  • `content_hash` (normalized text) —
+    detect "same paper, different file"
+    across publishers / preprint servers.
+  Both hex-64 (sha256). MD5 not used —
+  collision risk vs. trivial space saving.
+end note
 
 ' ============================================================================
-' Chunks layer (kind-agnostic, including the per-ref "card" chunk)
+' Chunks layer (kind-agnostic, including synthetic 'card' chunks at ord<0)
 ' ============================================================================
 entity "chunks" as chunks {
   * chunk_id : bigserial <<PK>>
   --
   * ref_id : bigint <<FK refs>>
   set_by : text <<FK actors>>
-  * ord : int                     ' 0 = card; 1..N = body chunks
-  * chunk_kind : text             ' card, paragraph, figure, equation,
+  * ord : int                     ' <0 = synthetic card, >=0 = body
+  * chunk_kind : text             ' card_*, paragraph, figure, equation,
                                  ' caption, heading, code_symbol,
                                  ' qa_pair, skill_section, references
   * text : text
   block_ids : bigint[]            ' Marker blocks (papers); empty otherwise
   token_count : int
   section_path : text[]
-  page_first : int                ' NULL for non-paper
-  page_last : int                 ' NULL for non-paper
+  page_first : int                ' NULL for non-paper / for cards
+  page_last : int                 ' NULL for non-paper / for cards
   meta : jsonb
-  created_at : timestamptz
+  * created_at : timestamptz
   --
   tsv : tsvector (generated)
+  ..unique..
+  (ref_id, ord)
 }
-note right of chunks
-  **Card pattern (two-stage retrieval)**
-  Every ref has exactly one chunk at
-  ord=0 with chunk_kind='card':
-   text = title + authors + abstract
-        + cite_key + keywords
-  Coarse search filters chunk_kind='card'.
-  Fine search uses the rest.
+note left of chunks
+  **Cards: multi-vector retrieval**
+  Synthetic chunks at ord<0 give different
+  ref-level views, each with its own
+  embedding neighbourhood:
+   ord=-1  card_combined   default; title+
+                          authors+abstract+
+                          kw+cite_key
+   ord=-2  card_title      title only
+   ord=-3  card_authors    author list
+   ord=-4  card_abstract   abstract only
+   ord=-5  card_meta       DOI/journal/year
+   ord=-6  card_keywords   keywords/tags
+  Body chunks (paragraph, figure, ...)
+  start at ord=0. Default ingest creates
+  card_combined only; others opt-in.
 end note
 
 entity "chunk_embeddings" as chunk_embeds {
@@ -183,7 +228,7 @@ entity "chunk_embeddings" as chunk_embeds {
   * status : text                 ' ok | failed
   * attempts : int
   last_error : text
-  created_at : timestamptz
+  * created_at : timestamptz
 }
 
 entity "chunk_summaries" as chunk_summ {
@@ -196,7 +241,7 @@ entity "chunk_summaries" as chunk_summ {
   * status : text
   * attempts : int
   last_error : text
-  created_at : timestamptz
+  * created_at : timestamptz
 }
 
 ' ============================================================================
@@ -212,7 +257,7 @@ entity "links" as links {
   * relation : text <<FK relations>>
   * set_by : text <<FK actors>>
   meta : jsonb                            ' confidence, notes, ...
-  created_at : timestamptz
+  * created_at : timestamptz
   ..constraints..
   no self-loops at same precision
   unique (src, dst, relation)
@@ -224,9 +269,9 @@ entity "links" as links {
 entity "tags" as tags {
   * tag_id : bigserial <<PK>>
   --
-  * namespace : text              ' SRC, CACHE, STATUS, PRIO, CONFIDENCE, DENSITY, ...
+  * namespace : text              ' SRC, CACHE, STATUS, PRIO, ...
   * value : text
-  created_at : timestamptz
+  * created_at : timestamptz
   ..unique..
   (namespace, value)
 }
@@ -235,39 +280,34 @@ entity "ref_tags" as ref_tags {
   * ref_id : bigint <<PK FK refs>>
   * tag_id : bigint <<PK FK tags>>
   set_by : text <<FK actors>>
-  created_at : timestamptz
+  * created_at : timestamptz
 }
 
 entity "chunk_tags" as chunk_tags {
   * chunk_id : bigint <<PK FK chunks>>
   * tag_id : bigint <<PK FK tags>>
   set_by : text <<FK actors>>
-  created_at : timestamptz
+  * created_at : timestamptz
 }
 note bottom of tags
   **No link_tags.** Links are highly typed
   via `relation` FK; secondary annotation
-  goes in `links.meta` JSONB. Add link_tags
-  later if a real query surfaces.
+  (confidence, status) goes in `links.meta`
+  JSONB. Add link_tags later if a real
+  query surfaces.
 end note
 
 ' ============================================================================
-' System singleton
+' (No `system` singleton: defaults live in registry rows
+'  (embedders.is_default, summarizers.is_default); schema_epoch lives in
+'  the migrations ledger; transient global state belongs in env / config.)
 ' ============================================================================
-entity "system" as system {
-  * key : text <<PK>>
-  --
-  * value : text
-  updated_at : timestamptz
-  ..keys..
-  embedding_model, embedding_dim,
-  schema_epoch, default_summarizer
-}
 
 ' ============================================================================
 ' Relationships
 ' ============================================================================
 kinds       ||..o{ refs       : kind
+providers   ||..o{ refs       : provider
 actors      ||..o{ refs       : set_by
 actors      ||..o{ chunks     : set_by
 actors      ||..o{ links      : set_by
