@@ -23,7 +23,7 @@ import argparse
 import logging
 import sys
 
-from precis.cli import dedupe, gripe, ingest, maintenance, migrate, patent, perplexity
+from precis.cli import dedupe, gripe, ingest, maintenance, migrate, patent, perplexity, tools
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +66,10 @@ def main() -> None:
         _dispatch_job(args)
         return
 
+    if args.cmd == "tools":
+        tools.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -92,6 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_parser(sub)
     maintenance.add_parser(sub)
     gripe.add_parser(sub)
+    tools.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)
