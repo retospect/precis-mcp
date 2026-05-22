@@ -33,6 +33,7 @@ from precis.cli import (
     patent,
     perplexity,
     tools,
+    watch,
 )
 
 log = logging.getLogger(__name__)
@@ -76,6 +77,10 @@ def main() -> None:
         add.run(args)
         return
 
+    if args.cmd == "watch":
+        watch.run(args)
+        return
+
     if args.cmd == "jobs":
         _dispatch_job(args)
         return
@@ -111,6 +116,7 @@ def _build_parser() -> argparse.ArgumentParser:
     maintenance.add_parser(sub)
     gripe.add_parser(sub)
     add.add_parser(sub)
+    watch.add_parser(sub)
     tools.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
