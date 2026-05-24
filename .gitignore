@@ -7,6 +7,7 @@ build/
 .ruff_cache/
 .pytest_cache/
 .venv/
+.zsh_history
 
 # OS junk
 .DS_Store

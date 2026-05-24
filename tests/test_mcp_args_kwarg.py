@@ -5,10 +5,12 @@ view-specific parameters (e.g. python's callgraph `entry`/`depth`,
 runtrace `argv`/`timeout`) cross the MCP boundary without bloating
 the four-tool surface.
 
-These tests exercise `precis.server.get` end-to-end with a runtime
-backing it. They mount the runtime onto the module-level `_runtime`
-slot for the duration of each test, mirroring how the FastMCP loop
-would set it up via `_init_runtime`.
+These tests exercise the shared ``get`` callable end-to-end with a
+runtime backing it. They mount the runtime onto the module-level
+``_runtime`` slot in :mod:`precis.tools.core` (where the verb lives
+after the shared-tool-registry refactor) for the duration of each
+test, mirroring how the FastMCP loop wires it up via
+``server._init_runtime`` at boot.
 """
 
 from __future__ import annotations
@@ -20,11 +22,11 @@ from typing import Any
 import pytest
 from mcp.types import CallToolResult
 
-from precis import server
 from precis.dispatch import Hub
 from precis.handlers.python import PythonHandler
 from precis.python_index import RepoCache
 from precis.runtime import PrecisRuntime
+from precis.tools import core as tools_core
 
 
 def _body(out: Any) -> str:
@@ -55,9 +57,10 @@ def _is_error(out: Any) -> bool:
 
 @pytest.fixture
 def server_runtime(tmp_path: Path, runtime: PrecisRuntime) -> Iterator[PrecisRuntime]:
-    """Mount a `runtime` instance into `precis.server._runtime` and add
-    a python handler pointing at a fixture repo, so `server.get(...)`
-    can be invoked directly the way FastMCP would call it.
+    """Mount a `runtime` instance into ``precis.tools.core._runtime``
+    and add a python handler pointing at a fixture repo, so
+    ``tools_core.get(...)`` can be invoked directly the way FastMCP
+    would call it.
 
     The fixture repo carries a single module so callgraph + outline
     paths have something to render.
@@ -78,11 +81,14 @@ def server_runtime(tmp_path: Path, runtime: PrecisRuntime) -> Iterator[PrecisRun
     py = PythonHandler(hub=Hub(), roots={"demo": tmp_path / "demo"}, cache=RepoCache())
     py._register_with(runtime.hub)
 
-    server._runtime = runtime
+    # ``tools.core._get_runtime()`` reads this module-level slot;
+    # mounting our test runtime here makes every verb-call below
+    # use the seeded runtime instead of lazy-building a real one.
+    tools_core._runtime = runtime
     try:
         yield runtime
     finally:
-        server._runtime = None
+        tools_core._runtime = None
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +105,7 @@ def test_args_rejects_reserved_keys(
 ) -> None:
     """Passing kind/id/view/q inside args= is a programming mistake;
     surface it at the MCP boundary so the recovery hint is sharp."""
-    out = server.get(kind="python", id="demo", args=shadowed)
+    out = tools_core.get(kind="python", id="demo", args=shadowed)
     assert _is_error(out)
     body = _body(out)
     assert "[error:BadInput]" in body
@@ -110,7 +116,7 @@ def test_args_reserved_check_lists_all_overlaps(
     server_runtime: PrecisRuntime,
 ) -> None:
     """Multiple overlapping keys all surface in the message."""
-    out = server.get(kind="python", id="demo", args={"id": "x", "view": "outline"})
+    out = tools_core.get(kind="python", id="demo", args={"id": "x", "view": "outline"})
     assert _is_error(out)
     body = _body(out)
     assert "'id'" in body and "'view'" in body
@@ -126,7 +132,7 @@ def test_args_passes_through_to_python_callgraph(
 ) -> None:
     """The whole point: `entry=` and `depth=` reach the python handler
     via args= and produce a real callgraph response."""
-    out = server.get(
+    out = tools_core.get(
         kind="python",
         id="demo",
         view="callgraph",
@@ -141,7 +147,7 @@ def test_args_pass_through_supports_cross_repo_flag(
     server_runtime: PrecisRuntime,
 ) -> None:
     """`cross_repo=True` is a bool that must survive JSON-ish transport."""
-    out = server.get(
+    out = tools_core.get(
         kind="python",
         id="demo",
         view="callgraph",
@@ -153,8 +159,8 @@ def test_args_pass_through_supports_cross_repo_flag(
 def test_args_none_is_noop(server_runtime: PrecisRuntime) -> None:
     """`args=None` (the default) leaves the dispatch payload identical
     to the no-args code path."""
-    with_none = server.get(kind="python", id="demo", view="toc")
-    explicit_none = server.get(kind="python", id="demo", view="toc", args=None)
+    with_none = tools_core.get(kind="python", id="demo", view="toc")
+    explicit_none = tools_core.get(kind="python", id="demo", view="toc", args=None)
     assert with_none == explicit_none
     assert "demopkg" in with_none
 
@@ -162,7 +168,7 @@ def test_args_none_is_noop(server_runtime: PrecisRuntime) -> None:
 def test_args_empty_dict_is_noop(server_runtime: PrecisRuntime) -> None:
     """An empty dict shouldn't cause any reserved-key error or change
     behaviour. Treat it the same as no args."""
-    out = server.get(kind="python", id="demo", view="toc", args={})
+    out = tools_core.get(kind="python", id="demo", view="toc", args={})
     assert "[error:" not in out
     assert "demopkg" in out
 
@@ -178,7 +184,7 @@ def test_args_with_bad_value_surfaces_handler_error(
     """If the handler rejects an arg (e.g. callgraph depth out of range),
     the error round-trips back through the runtime's error renderer
     rather than crashing."""
-    out = server.get(
+    out = tools_core.get(
         kind="python",
         id="demo",
         view="callgraph",
@@ -193,7 +199,7 @@ def test_args_with_bad_value_surfaces_handler_error(
 def test_args_callgraph_unknown_entry_returns_not_found(
     server_runtime: PrecisRuntime,
 ) -> None:
-    out = server.get(
+    out = tools_core.get(
         kind="python",
         id="demo",
         view="callgraph",
@@ -211,11 +217,11 @@ def test_args_callgraph_unknown_entry_returns_not_found(
 
 
 def test_get_without_args_still_works(server_runtime: PrecisRuntime) -> None:
-    out = server.get(kind="python", id="demo", view="outline")
+    out = tools_core.get(kind="python", id="demo", view="outline")
     assert "demopkg" in out
     assert "[error:" not in out
 
 
 def test_calc_through_get_tool_unchanged(server_runtime: PrecisRuntime) -> None:
-    out = server.get(kind="calc", id="2+3*4")
+    out = tools_core.get(kind="calc", id="2+3*4")
     assert "14" in out

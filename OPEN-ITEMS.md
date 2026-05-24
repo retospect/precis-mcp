@@ -131,21 +131,35 @@ constant is Unix-only:
   to `C:/Users/runneradmin`.  Fix: assert against
   `os.path.expanduser("~")` instead of a hardcoded prefix.
 
-**macOS framework Python 3.12** — 5 runtrace tests fail because
-the spawned tracer subprocess raises
+**Python 3.12 setprofile + urllib.parse circular import** — 5
+runtrace tests fail because the spawned tracer subprocess raises
 `AttributeError: partially initialized module 'urllib.parse' …
-(most likely due to a circular import)`.  Reproduces only on
-`/Library/Frameworks/Python.framework/Versions/3.12/`; 3.11 and
-3.13 frameworks are fine, and Homebrew Python 3.12 is fine.
-Suspect: `sys.setprofile` hook intercepts an internal urllib
-import during a partially-initialised module state.  Likely fix:
-defer the profile install until after `urllib.parse` has been
-imported by the bootstrap, or run the tracer in a fresh
-interpreter via `-S` + explicit `site.main()`.
+(most likely due to a circular import)`.  First spotted on
+`/Library/Frameworks/Python.framework/Versions/3.12/`; as of
+2026-05-22 also reproduces in the Linux ``precis-dev`` container's
+Python 3.12.  3.11 and 3.13 are unaffected; Homebrew Python 3.12
+also works.  Suspect: `sys.setprofile` hook intercepts an internal
+``urllib.parse`` import during a partially-initialised module
+state when the user entry triggers ``argparse`` (which lazy-imports
+urllib for help-text fallbacks).  Likely fix: defer the profile
+install until after ``urllib.parse`` has been imported by the
+bootstrap, or run the tracer in a fresh interpreter via ``-S`` +
+explicit ``site.main()``.
+
+The five subprocess-spawning tests carry
+``@pytest.mark.xfail(strict=False)`` gated on Python 3.12 so they
+still execute (we notice an XPASS on a non-bugged interpreter)
+but don't fail the suite on bugged ones:
+
+- ``tests/test_python_runtrace.py::test_runtrace_captures_call_tree``
+- ``tests/test_python_runtrace.py::test_runtrace_argv_is_forwarded``
+- ``tests/test_python_runtrace.py::test_runtrace_collapses_stdlib_by_default``
+- ``tests/test_python_runtrace.py::test_runtrace_expand_stdlib_keeps_full_tree``
+- ``tests/test_python_runtrace.py::test_runtrace_max_events_truncates``
 
 Both clusters are tracked here so we don't lose them between
 release and the post-release patch window.
 
 ---
 
-_Last updated: 2026-05-02_
+_Last updated: 2026-05-22_

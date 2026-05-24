@@ -372,9 +372,12 @@ class TestCalcRejectsGibberish:
 
 class TestTopKCap:
     def test_top_k_max_constant(self) -> None:
-        """The cap lives in server.py as a module constant — pin
-        the value so changes are deliberate."""
-        from precis.server import _SEARCH_TOP_K_MAX
+        """The cap lives next to the ``search`` tool implementation
+        as a module constant — pin the value so changes are
+        deliberate. Moved out of ``precis.server`` and into
+        ``precis.tools.core`` when the seven verbs migrated to the
+        shared tool registry."""
+        from precis.tools.core import _SEARCH_TOP_K_MAX
 
         assert _SEARCH_TOP_K_MAX == 100
 

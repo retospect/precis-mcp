@@ -2,8 +2,6 @@
 
 Related ingest jobs share this module:
 
-- ``ingest-bundle`` / ``ingest-bundles`` — ``.acatome`` paper bundles
-  (single file / directory walk).
 - ``ingest`` — pre-warm prose-file ingest (md, plaintext, tex) under
   ``PRECIS_ROOT``. Mtime-gated so warm restarts are cheap. Used by
   operators as the "launch script prefix" so the LLM finds every
@@ -12,6 +10,11 @@ Related ingest jobs share this module:
   one release cycle for back-compat.
 - ``ingest-oracles`` — seed the ``oracle`` kind from YAML wisdom
   files (defaults to the bundled ``data/oracle/`` directory).
+
+The legacy ``.acatome`` bundle ingest path (``ingest-bundle`` /
+``ingest-bundles``) was removed in B7; paper ingest now goes
+through :func:`precis.ingest.add.precis_add` via the top-level
+``precis add`` command.
 
 Kept together because they all share the DSN resolution + embedder
 construction + per-file stats output shape; splitting them further
@@ -37,32 +40,7 @@ log = logging.getLogger(__name__)
 
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
-    """Register ingest-{bundle,bundles,md,oracles} on ``sub``."""
-    ib = sub.add_parser(
-        "ingest-bundle",
-        help="Ingest a single .acatome bundle.",
-    )
-    ib.add_argument("path", help="Path to .acatome file.")
-    ib.add_argument("--database-url", default=None)
-
-    ibs = sub.add_parser(
-        "ingest-bundles",
-        help="Walk a directory of .acatome bundles.",
-    )
-    ibs.add_argument("dir", help="Directory containing .acatome files.")
-    ibs.add_argument("--database-url", default=None)
-    ibs.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate bundle parsing without writing.",
-    )
-    ibs.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Stop after N bundles (sorted lexicographically).",
-    )
-
+    """Register ingest-{md,oracles} + the prose-file ``ingest`` parser."""
     # Phase 6 — prose-file ingest. The handlers ingest lazily on every
     # `get`, but this command lets the operator pre-warm a directory
     # so the LLM can `search` from the first query. Meant to be run
@@ -153,116 +131,6 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
             "Implies --overwrite."
         ),
     )
-
-
-# ---------------------------------------------------------------------------
-# ingest-bundle
-# ---------------------------------------------------------------------------
-
-
-def run_bundle(args: argparse.Namespace) -> None:
-    """Implements ``precis jobs ingest-bundle`` — ingest a single file."""
-    from precis.config import load_config
-    from precis.embedder import make_embedder
-    from precis.store import Store
-
-    path = Path(args.path)
-    if not path.is_file():
-        print(f"ingest-bundle: file not found: {path}", file=sys.stderr)
-        sys.exit(2)
-
-    cfg = load_config()
-    dsn = resolve_dsn(args.database_url, cfg=cfg)
-    store = Store.connect(dsn)
-    try:
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
-        result = store.ingest_bundle(path, embedder=embedder)
-        verb = "inserted" if result.inserted else "skipped (already present)"
-        print(
-            f"ingest-bundle: {verb} {result.slug} "
-            f"({result.block_count} blocks) [embedder={cfg.embedder}]"
-        )
-    finally:
-        store.close()
-
-
-# ---------------------------------------------------------------------------
-# ingest-bundles
-# ---------------------------------------------------------------------------
-
-
-def run_bundles(args: argparse.Namespace) -> None:
-    """Implements ``precis jobs ingest-bundles`` — walk a directory."""
-    from precis.config import load_config
-    from precis.embedder import make_embedder
-    from precis.errors import PrecisError
-    from precis.ingest import parse_bundle, read_bundle
-    from precis.store import Store
-
-    base = Path(args.dir)
-    if not base.is_dir():
-        print(f"ingest-bundles: not a directory: {base}", file=sys.stderr)
-        sys.exit(2)
-
-    bundles = sorted(base.rglob("*.acatome"))
-    if args.limit is not None:
-        bundles = bundles[: args.limit]
-    if not bundles:
-        print(f"ingest-bundles: no .acatome files under {base}")
-        return
-
-    cfg = load_config()
-
-    if args.dry_run:
-        ok = bad = 0
-        for path in bundles:
-            try:
-                raw = read_bundle(path)
-                parse_bundle(raw, embedding_dim=1024)
-                ok += 1
-            except PrecisError as e:
-                print(f"  FAIL  {path}  - {e.cause}", file=sys.stderr)
-                bad += 1
-            except Exception as e:
-                print(f"  FAIL  {path}  - {e}", file=sys.stderr)
-                bad += 1
-        print(f"ingest-bundles: dry-run  ok={ok}  failed={bad}")
-        if bad:
-            sys.exit(1)
-        return
-
-    dsn = resolve_dsn(args.database_url, cfg=cfg)
-    store = Store.connect(dsn)
-    try:
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
-        inserted = skipped = failed = 0
-        for path in bundles:
-            try:
-                result = store.ingest_bundle(path, embedder=embedder)
-            except PrecisError as e:
-                print(f"  FAIL  {path.name}  - {e.cause}", file=sys.stderr)
-                failed += 1
-                continue
-            except Exception as e:
-                log.exception("unexpected error ingesting %s", path)
-                print(f"  FAIL  {path.name}  - {e}", file=sys.stderr)
-                failed += 1
-                continue
-
-            if result.inserted:
-                inserted += 1
-                print(f"  ok    {result.slug}  ({result.block_count} blocks)")
-            else:
-                skipped += 1
-                print(f"  skip  {result.slug}  (already present)")
-        print(
-            f"ingest-bundles: inserted={inserted}  skipped={skipped}  "
-            f"failed={failed}  [embedder={cfg.embedder}]"
-        )
-        if failed:
-            sys.exit(1)
-    finally:
-        store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -595,8 +463,6 @@ def run_oracles(args: argparse.Namespace) -> None:
 
 __all__ = [
     "add_parsers",
-    "run_bundle",
-    "run_bundles",
     "run_ingest",
     "run_md",
     "run_oracles",

@@ -15,16 +15,30 @@ try:
     _MCP_AVAILABLE = True
 except ImportError:
     _MCP_AVAILABLE = False
-    # Create dummy classes for type checking when MCP is not available
-    class CallToolResult:
+    # Create dummy classes for type checking when MCP is not available.
+    # mypy can't see the mutually-exclusive paths through the try/except
+    # so it flags these as redefinitions of the imported names; the
+    # ``no-redef`` ignores are the standard escape hatch for the
+    # conditional-import pattern.
+    class CallToolResult:  # type: ignore[no-redef]
         def __init__(self, content, isError=False):
             self.content = content
             self.isError = isError
-    
-    class TextContent:
+
+    class TextContent:  # type: ignore[no-redef]
         def __init__(self, type, text):
             self.type = type
             self.text = text
+
+# FastMCP refuses ``str | CallToolResult`` return annotations on tool
+# functions (it bans ``CallToolResult`` inside unions; see upstream
+# ``func_metadata.py``). We still return ``CallToolResult`` at runtime
+# on errors — FastMCP's ``FuncMetadata.convert_result`` passes
+# ``CallToolResult`` instances through verbatim so the MCP protocol-
+# level ``isError`` flag is preserved. Each verb's wire annotation
+# therefore stays ``-> str``; this alias documents the actual runtime
+# contract and lets mypy accept the dual-shape returns.
+_ToolReturn = Any  # documents runtime: str on success, CallToolResult on error.
 
 # Runtime access - these will be imported when needed
 _runtime = None
@@ -39,12 +53,14 @@ def _get_runtime():
     return _runtime
 
 
-def _dispatch(verb: str, payload: dict[str, Any]) -> str | CallToolResult:
+def _dispatch(verb: str, payload: dict[str, Any]) -> _ToolReturn:
     """Dispatch one verb call and shape the result.
-    
+
     On success, returns the rendered string.
-    On error, returns a CallToolResult with isError=True for MCP compatibility.
-    CLI callers should check isinstance(result, CallToolResult) to detect errors.
+    On error, returns a ``CallToolResult`` with ``isError=True`` for
+    MCP compatibility. CLI callers should run the result through
+    :func:`precis.tools.cli_adapter._is_call_tool_result` to detect
+    errors before treating the value as text.
     """
     runtime = _get_runtime()
     try:
@@ -64,22 +80,48 @@ def _dispatch(verb: str, payload: dict[str, Any]) -> str | CallToolResult:
         )
 
 
+def _validation_error(body: str) -> _ToolReturn:
+    """Wrap a pre-dispatch validation error string in a ``CallToolResult``.
+
+    The MCP protocol distinguishes successful tool results from errors
+    via the ``isError`` flag on ``CallToolResult``. Pre-dispatch
+    validation paths (e.g. ``_check_reserved_args``, the ``search``
+    ``top_k`` cap) build the rendered text via
+    ``runtime.render_error`` but must surface it through the same
+    error-flag-bearing envelope the runtime uses for handler-side
+    failures — otherwise MCP wrappers see a successful response with
+    error-shaped text and never trigger their retry / recovery logic.
+    (MCP critic MAJOR — errors-as-strings without ``isError``.)
+    """
+    return CallToolResult(
+        content=[TextContent(type="text", text=body)],
+        isError=True,
+    )
+
+
 def _check_reserved_args(
     args: dict[str, Any], *, reserved: tuple[str, ...]
-) -> str | None:
-    """Return a rendered error string if `args` shadows positional kwargs."""
+) -> _ToolReturn:
+    """Return a ``CallToolResult`` error if ``args`` shadows positional kwargs.
+
+    Returns ``None`` when the args dict is clean. Returning the
+    error envelope (rather than a bare string) preserves the MCP
+    ``isError`` flag through the tool boundary so wrappers can
+    detect and recover from the protocol error.
+    """
     overlap = sorted(k for k in args if k in reserved)
     if not overlap:
         return None
 
     from precis.errors import BadInput
 
-    return _get_runtime().render_error(
+    body = _get_runtime().render_error(
         BadInput(
             f"args={overlap!r} shadows the explicit kwargs {list(reserved)!r}",
             next="pass these as top-level keyword arguments, not inside args=",
         )
     )
+    return _validation_error(body)
 
 
 # Hard cap on top_k for search tool
@@ -115,11 +157,14 @@ def get(
         if err is not None:
             return err
         payload["__extras__"] = dict(args)
-    
-    result = _dispatch("get", payload)
-    if isinstance(result, CallToolResult):
-        return result.content[0].text  # CLI gets the error message
-    return result
+
+    # ``_dispatch`` returns ``str`` on success and ``CallToolResult``
+    # with ``isError=True`` on failure. We propagate both verbatim;
+    # FastMCP's ``FuncMetadata.convert_result`` passes
+    # ``CallToolResult`` through unchanged so the protocol
+    # ``isError`` flag is preserved. CLI consumers unwrap via
+    # :func:`precis.tools.cli_adapter.run_tool_from_cli`.
+    return _dispatch("get", payload)
 
 
 def search(
@@ -166,29 +211,34 @@ def search(
                dropped. Currently honoured by ``kind='paper'``; other
                block-level kinds ignore it.
     """
-    # Validate top_k at the boundary
+    # Validate top_k at the boundary. Errors round-trip via
+    # ``_validation_error`` so the MCP ``isError`` flag survives.
     from precis.errors import BadInput
 
     if not isinstance(top_k, int) or top_k <= 0:
         runtime = _get_runtime()
-        return runtime.render_error(
-            BadInput(
-                f"top_k must be a positive integer, got {top_k!r}",
-                next="search(kind='paper', q='...', top_k=10)",
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    f"top_k must be a positive integer, got {top_k!r}",
+                    next="search(kind='paper', q='...', top_k=10)",
+                )
             )
         )
     if top_k > _SEARCH_TOP_K_MAX:
         runtime = _get_runtime()
-        return runtime.render_error(
-            BadInput(
-                f"top_k={top_k} exceeds maximum {_SEARCH_TOP_K_MAX}",
-                next=(
-                    f"narrow with scope= or paginate; "
-                    f"max top_k is {_SEARCH_TOP_K_MAX}"
-                ),
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    f"top_k={top_k} exceeds maximum {_SEARCH_TOP_K_MAX}",
+                    next=(
+                        f"narrow with scope= or paginate; "
+                        f"max top_k is {_SEARCH_TOP_K_MAX}"
+                    ),
+                )
             )
         )
-    
+
     payload: dict[str, Any] = {
         "kind": kind,
         "q": q,
@@ -203,11 +253,9 @@ def search(
         payload["source"] = source
     if exclude is not None:
         payload["exclude"] = exclude
-    
-    result = _dispatch("search", payload)
-    if isinstance(result, CallToolResult):
-        return result.content[0].text
-    return result
+
+    # See ``get`` for the ``str | CallToolResult`` return contract.
+    return _dispatch("search", payload)
 
 
 def put(
@@ -264,7 +312,7 @@ def put(
                 supports, …). Required when adding non-default
                 relations.
     """
-    result = _dispatch(
+    return _dispatch(
         "put",
         {
             "kind": kind,
@@ -278,9 +326,6 @@ def put(
             "rel": rel,
         },
     )
-    if isinstance(result, CallToolResult):
-        return result.content[0].text
-    return result
 
 
 def edit(
@@ -355,10 +400,8 @@ def edit(
         "allow_rename": allow_rename,
         "dry_run": dry_run,
     }
-    result = _dispatch("edit", payload)
-    if isinstance(result, CallToolResult):
-        return result.content[0].text
-    return result
+    # See ``get`` for the ``str | CallToolResult`` return contract.
+    return _dispatch("edit", payload)
 
 
 def delete(
@@ -389,10 +432,7 @@ def delete(
         id:   Ref id (or ``slug~SELECTOR`` for region deletes on file
               kinds).
     """
-    result = _dispatch("delete", {"kind": kind, "id": id})
-    if isinstance(result, CallToolResult):
-        return result.content[0].text
-    return result
+    return _dispatch("delete", {"kind": kind, "id": id})
 
 
 def tag(
@@ -445,10 +485,7 @@ def tag(
         add:    Tags to add.
         remove: Tags to remove.
     """
-    result = _dispatch("tag", {"kind": kind, "id": id, "add": add, "remove": remove})
-    if isinstance(result, CallToolResult):
-        return result.content[0].text
-    return result
+    return _dispatch("tag", {"kind": kind, "id": id, "add": add, "remove": remove})
 
 
 def link(
@@ -475,10 +512,7 @@ def link(
                 (``cites``, ``blocks``, ``contradicts``, ``derived-from``,
                 ``supports``, …).
     """
-    result = _dispatch(
+    return _dispatch(
         "link",
         {"kind": kind, "id": id, "target": target, "mode": mode, "rel": rel},
     )
-    if isinstance(result, CallToolResult):
-        return result.content[0].text
-    return result

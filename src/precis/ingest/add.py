@@ -11,11 +11,22 @@ If the writer raises, the transaction rolls back and no rows
 land. Caller (CLI / watch / future MCP tool) just sees the
 exception.
 
-Idempotent: every identifier the pipeline assembled — paper_id,
-DOI, arXiv, S2, pdf_sha256, content_hash — is probed against
-``ref_identifiers`` before any write. A hit short-circuits to
-``IngestResult(inserted=False, ref_id=...)`` without touching the
-DB further.
+Idempotent on two layers:
+
+1. **Fast path** — for :class:`PdfInput`, the cheap ``pdf_sha256``
+   is computed from bytes and probed against ``ref_identifiers``
+   *before* Marker runs. A hit short-circuits without invoking
+   the pipeline at all (saves ~30–60 s/PDF on duplicates). See
+   ``docs/design/extract-once.md``.
+2. **Slow path** — every identifier the pipeline assembled
+   (paper_id, DOI, arXiv, S2, content_hash, …) is probed again
+   after extraction. Catches "same paper, different bytes" cases
+   that the fast path misses.
+
+In either case a hit yields ``IngestResult(inserted=False,
+ref_id=...)`` with identifiers re-fetched from ``ref_identifiers``
+(so the result reflects what's actually stored, not what the
+pipeline freshly computed).
 """
 
 from __future__ import annotations
@@ -24,17 +35,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from precis.identity import make_pdf_sha256
 from precis.ingest.db_writer import (
     PaperToWrite,
     probe_existing,
     write_paper,
 )
-from precis.ingest.pipeline import (
-    extract_paper,
-    fetch_paper_by_arxiv,
-    fetch_paper_by_doi,
-)
 from precis.store import Store
+
+# NOTE: ``precis.ingest.pipeline`` imports are deferred into
+# :func:`_build_paper` because that module pulls in the paper-extra
+# deps (habanero, semanticscholar, rapidfuzz, pymupdf, marker-pdf).
+# Keeping the import lazy here means ``precis serve`` /
+# ``precis migrate`` / ``precis worker`` keep working on a bare
+# install without the ``[paper]`` extra; only ``precis add`` /
+# ``precis watch`` ever actually call into the pipeline and they
+# fail with a clean ``ModuleNotFoundError`` at runtime if the
+# extra is missing.
 
 # ---------------------------------------------------------------------------
 # Tagged-union input + result types
@@ -98,7 +115,10 @@ def precis_add(
     Dispatches on the input type:
 
     * :class:`PdfInput` — runs Marker + the metadata cascade via
-      :func:`precis.ingest.pipeline.extract_paper`.
+      :func:`precis.ingest.pipeline.extract_paper`. The cheap
+      ``pdf_sha256`` is probed against ``ref_identifiers`` *before*
+      Marker so re-ingesting a known file short-circuits without
+      paying for extraction (see ``docs/design/extract-once.md``).
     * :class:`DoiInput` — CrossRef-only fetch via
       :func:`precis.ingest.pipeline.fetch_paper_by_doi`.
     * :class:`ArxivInput` — Semantic Scholar via
@@ -110,6 +130,16 @@ def precis_add(
     probe ``ref_identifiers`` for any pre-existing match, and
     either short-circuit or run the INSERT cascade in one tx.
     """
+    # Fast path: PDF inputs get a pre-Marker probe on pdf_sha256.
+    # The hash is bytes-cheap (~1 ms/PDF); the probe is one round
+    # trip. A hit here skips both extraction and the slow-path
+    # probe entirely — that's the whole point of the optimisation.
+    if isinstance(input, PdfInput):
+        existing_ref_id = _probe_pdf_sha256(input.pdf_path, store=store)
+        if existing_ref_id is not None:
+            with store.pool.connection() as conn:
+                return _hit_result_from_db(existing_ref_id, conn=conn)
+
     paper = _build_paper(
         input,
         use_pdf2doi=use_pdf2doi,
@@ -130,7 +160,7 @@ def precis_add(
             conn=conn,
         )
         if existing is not None:
-            return _hit_result(paper, ref_id=existing, conn=conn)
+            return _hit_result_from_db(existing, conn=conn, fallback=paper)
 
         result = write_paper(paper, conn=conn)
         conn.commit()
@@ -160,7 +190,20 @@ def _build_paper(
     crossref_mailto: str,
     s2_api_key: str,
 ) -> PaperToWrite:
-    """Dispatch on the input variant and run the matching pipeline producer."""
+    """Dispatch on the input variant and run the matching pipeline producer.
+
+    The pipeline producers live in :mod:`precis.ingest.pipeline` and
+    pull in the paper-extra dep tree (marker-pdf, pymupdf, habanero,
+    semanticscholar, rapidfuzz). Import is deferred to here so the
+    rest of the CLI keeps loading on a bare install — see the
+    module-level note.
+    """
+    from precis.ingest.pipeline import (
+        extract_paper,
+        fetch_paper_by_arxiv,
+        fetch_paper_by_doi,
+    )
+
     if isinstance(input, PdfInput):
         return extract_paper(input.pdf_path, use_pdf2doi=use_pdf2doi)
     if isinstance(input, DoiInput):
@@ -170,24 +213,73 @@ def _build_paper(
     raise TypeError(f"Unsupported input type: {type(input).__name__}")
 
 
-def _hit_result(paper: PaperToWrite, *, ref_id: int, conn: Any) -> IngestResult:
+def _probe_pdf_sha256(pdf_path: Path, *, store: Store) -> int | None:
+    """Compute ``pdf_sha256`` for ``pdf_path`` and probe ``ref_identifiers``.
+
+    Returns the existing ``ref_id`` if the hash is already known,
+    else ``None``. Read fully + hashed in-process; on bytes that
+    can't be read (missing / permission denied) the function
+    returns ``None`` and lets the slow path surface the error from
+    :func:`precis.ingest.pipeline.extract_paper` so the diagnostic
+    is consistent regardless of whether the file was known.
+
+    The connection lifetime is bounded by this function; we don't
+    hold it across the Marker run because the pool is sized for
+    short-lived tx.
+    """
+    try:
+        pdf_bytes = Path(pdf_path).read_bytes()
+    except OSError:
+        return None
+    sha256 = make_pdf_sha256(pdf_bytes)
+    with store.pool.connection() as conn:
+        return probe_existing(pdf_sha256=sha256, conn=conn)
+
+
+def _hit_result_from_db(
+    ref_id: int,
+    *,
+    conn: Any,
+    fallback: PaperToWrite | None = None,
+) -> IngestResult:
     """Build an ``inserted=False`` result by re-fetching the existing
-    ref's identifiers from the DB. The values returned reflect what's
-    already stored, not what the pipeline freshly computed (the latter
-    might disagree on cite_key suffix, etc.)."""
+    ref's identifiers from the DB.
+
+    The values returned reflect what's already stored, not what the
+    pipeline freshly computed (the latter might disagree on
+    cite_key suffix, etc.). ``fallback`` is consulted only for the
+    rare case where ``ref_identifiers`` is missing a row we expect
+    (e.g. ``paper_id`` was never written) — defensive belt-and-
+    braces for the slow path. The fast path passes ``fallback=None``
+    because no pipeline has run yet.
+    """
     rows = conn.execute(
         "SELECT id_kind, id_value FROM ref_identifiers WHERE ref_id = %s",
         (ref_id,),
     ).fetchall()
     identifiers: dict[str, str] = {kind: value for kind, value in rows}
+
+    if fallback is not None:
+        paper_id = identifiers.get("paper_id", fallback.paper_id)
+        pub_id = identifiers.get("pub_id", fallback.pub_id)
+        cite_key = identifiers.get("cite_key", fallback.cite_key_prefix)
+        pdf_sha256 = identifiers.get("pdf_sha256", fallback.pdf_sha256)
+        content_hash = identifiers.get("content_hash", fallback.content_hash)
+    else:
+        paper_id = identifiers.get("paper_id", "")
+        pub_id = identifiers.get("pub_id")
+        cite_key = identifiers.get("cite_key", "")
+        pdf_sha256 = identifiers.get("pdf_sha256")
+        content_hash = identifiers.get("content_hash")
+
     return IngestResult(
         ref_id=ref_id,
         inserted=False,
-        paper_id=identifiers.get("paper_id", paper.paper_id),
-        pub_id=identifiers.get("pub_id", paper.pub_id),
-        cite_key=identifiers.get("cite_key", paper.cite_key_prefix),
-        pdf_sha256=identifiers.get("pdf_sha256", paper.pdf_sha256),
-        content_hash=identifiers.get("content_hash", paper.content_hash),
+        paper_id=paper_id,
+        pub_id=pub_id,
+        cite_key=cite_key,
+        pdf_sha256=pdf_sha256,
+        content_hash=content_hash,
         chunks_written=0,
         identifiers=identifiers,
     )

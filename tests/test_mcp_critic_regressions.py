@@ -565,11 +565,11 @@ def test_tag_tool_description_documents_per_kind_gating() -> None:
     """
     import inspect
 
-    from precis import server
+    # The seven verbs moved into the shared tool registry; the
+    # function FastMCP serialises into ``tools/list`` lives at
+    # :mod:`precis.tools.core`. Reach for it there.
+    from precis.tools.core import tag as tag_fn
 
-    # ``server.tag`` is the decorated function; its __doc__ is what
-    # FastMCP serialises into the tools/list manifest.
-    tag_fn = server.tag
     doc = inspect.getdoc(tag_fn) or ""
     # The gating phrase ("axis not allowed on kind") is the exact
     # error string the runtime emits — a docstring ↔ error pair.

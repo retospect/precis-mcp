@@ -41,7 +41,7 @@ from precis.handlers._patent_ops import (
 )
 from precis.handlers._patent_slug import DocDbId, parse_docdb_id
 from precis.handlers._patent_xml import ParsedPatent, parse_patent
-from precis.ingest import ParsedBlock, classify_density, fill_embeddings
+from precis.ingest.blocks import ParsedBlock, classify_density, fill_embeddings
 from precis.store import Store, Tag
 from precis.store.types import BlockInsert
 

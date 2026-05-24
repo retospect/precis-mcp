@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "6.0.0"
+version = "7.0.0"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -62,22 +62,24 @@ dependencies = [
     "pydantic-settings>=2.0",
     "platformdirs>=4.0",
     "pyyaml>=6.0",
-    # Defense-in-depth mojibake repair on bundle ingest. acatome-extract
-    # >= 0.6.2 already runs this on the source side (chemistry-safe
-    # config; see ``acatome_extract.marker._FTFY_CONFIG``), but bundles
-    # produced by older versions still arrive in some users' caches —
-    # we re-run a matching config here so what's stored in the DB is
-    # always clean regardless of which extractor produced the bundle.
+    # Mojibake repair on Marker / fitz output. Used both by the paper
+    # ingest pipeline (vendored from acatome-extract in B3/B4) and the
+    # patent ingest path. Direct dep so the package keeps resolving
+    # without the optional ``[paper]`` extra installed.
     "ftfy>=6.3",
+    # File-system watcher backing ``precis watch``. Used to be pulled
+    # in transitively via acatome-extract[embeddings]; promoted to a
+    # direct dep in B8 now that the watch loop lives in this package
+    # (`precis/cli/watch.py`).
+    "watchdog>=4.0",
     # Transitive-dep security floor — DO NOT add Pillow>=12.2.0 or
-    # markdownify>=1.2 here without first bumping marker-pdf
-    # upstream. As of 2026-05, marker-pdf 1.10.2 (latest, pulled in
-    # via acatome-extract[embeddings]) hard-caps Pillow<11.0.0 and
+    # markdownify>=1.2 here without first bumping marker-pdf upstream.
+    # As of 2026-05, marker-pdf 1.10.2 hard-caps Pillow<11.0.0 and
     # pulls markdownify<0.13.1; trying to pin Pillow>=12.2.0 here
     # makes precis-mcp[all] unresolvable. The pillow alerts (PSD,
     # FITS, PDF) and markdownify headline-DoS aren't reachable from
-    # precis-mcp directly — paper ingestion is in acatome-extract,
-    # which has its own threat model. Tracked in dependabot.
+    # precis-mcp directly — paper ingestion sandboxes Marker behind
+    # the ``[paper]`` extra. Tracked in dependabot.
 ]
 
 [project.urls]
@@ -85,16 +87,29 @@ Homepage = "https://github.com/retospect/precis-mcp"
 Repository = "https://github.com/retospect/precis-mcp"
 
 [project.optional-dependencies]
-# Paper ingest — depends on acatome-extract for PDF → .acatome bundle
-# and sentence-transformers for the bge-m3 embedder used at search
-# time. Without sentence-transformers the search() verb on every
+# Paper ingest — PDF → layout (marker-pdf) → chunks + metadata
+# lookup (CrossRef / Semantic Scholar) → embeddings (bge-m3). The
+# full pipeline lives in :mod:`precis.ingest` as of the v7 rewrite
+# (was previously farmed out to ``acatome-extract``).
+#
+# Without ``sentence-transformers`` the ``search()`` verb on every
 # embedder-backed kind crashes with -32603 even though tools/list
-# advertises it as supported. (MCP critic CRITICAL — search(kind=
-# 'paper', …) is broken in this deployment.) The hint surfaced by
-# `BgeM3Embedder._ensure_loaded` says `pip install 'precis-mcp
-# [paper]'`, so this extra has to actually carry the dep.
+# advertises it as supported (MCP critic CRITICAL — search(kind=
+# 'paper', …) is broken in this deployment). The hint surfaced by
+# ``BgeM3Embedder._ensure_loaded`` says ``pip install
+# 'precis-mcp[paper]'``, so this extra has to actually carry it.
+#
+# ``marker-pdf`` is gated on ``sys_platform != 'win32'`` because
+# Marker's surya / torch stack doesn't support Windows; on Windows
+# the install resolves but PDF layout extraction will error out at
+# call time with a clear ``ModuleNotFoundError: marker``.
 paper = [
-    "acatome-extract[embeddings]>=0.1",
+    "marker-pdf>=1.0; sys_platform != 'win32'",
+    "pymupdf>=1.24",        # ``fitz`` — page-level PDF text + metadata
+    "rapidfuzz>=3.0",       # title/author fuzzy match in verify_metadata
+    "habanero>=2.0",        # CrossRef REST client
+    "semanticscholar>=0.8", # Semantic Scholar REST client
+    "tenacity>=8.0",        # retry decorator on the S2 + CrossRef paths
     "sentence-transformers>=3.0",
 ]
 # DOCX file handler.

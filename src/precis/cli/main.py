@@ -7,7 +7,7 @@ parser registration and implementation live in a sibling module:
 - :mod:`precis.cli.migrate`   — ``precis migrate``
 - :mod:`precis.cli.maintenance` — ``precis maintenance run`` (nightly cron)
 - :mod:`precis.cli.gripe`     — ``precis gripes`` (human-only triage dump)
-- :mod:`precis.cli.ingest`    — ``precis jobs ingest-{bundle,bundles,md,oracles}``
+- :mod:`precis.cli.ingest`    — ``precis jobs ingest{,-md,-oracles}``
 - :mod:`precis.cli.dedupe`    — ``precis jobs dedupe-papers``
 - :mod:`precis.cli.perplexity`— ``precis jobs import-perplexity``
 - :mod:`precis.cli.patent`    — ``precis jobs {watch,list,run}-patent-watches``
@@ -34,6 +34,7 @@ from precis.cli import (
     perplexity,
     tools,
     watch,
+    worker,
 )
 
 log = logging.getLogger(__name__)
@@ -81,6 +82,10 @@ def main() -> None:
         watch.run(args)
         return
 
+    if args.cmd == "worker":
+        worker.run(args)
+        return
+
     if args.cmd == "jobs":
         _dispatch_job(args)
         return
@@ -117,6 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
     gripe.add_parser(sub)
     add.add_parser(sub)
     watch.add_parser(sub)
+    worker.add_parser(sub)
     tools.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
@@ -140,8 +146,6 @@ def _build_parser() -> argparse.ArgumentParser:
 #: here plus one handler in the owning module.
 _JOB_DISPATCH: dict[str, tuple[object, str]] = {
     "ingest": (ingest, "run_ingest"),
-    "ingest-bundle": (ingest, "run_bundle"),
-    "ingest-bundles": (ingest, "run_bundles"),
     "ingest-md": (ingest, "run_md"),
     "ingest-oracles": (ingest, "run_oracles"),
     "dedupe-papers": (dedupe, "run"),

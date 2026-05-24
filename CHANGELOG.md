@@ -8,6 +8,81 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed
+
+- **`BgeM3Embedder.model` now returns the precis registry key
+  (`bge-m3`) rather than the HuggingFace id (`BAAI/bge-m3`).**
+  The previous behaviour caused a ``ForeignKeyViolation`` on
+  every ``chunk_embeddings`` insert because the column FKs
+  against ``embedders.name`` (seeded as ``bge-m3``), and the
+  worker wrote ``embedder.model`` straight into the column.
+  HF id is now an internal constant (``_BGE_M3_HF_ID``) used
+  only when ``SentenceTransformer`` actually loads weights;
+  the registry key (``_BGE_M3_REGISTRY_KEY``) is what flows
+  through ``EmbedHandler.write_ok``. Test
+  ``tests/test_embedder.py::test_bge_m3_construction_is_lazy``
+  updated to assert the registry-key contract.
+
+- **`Store.embedding_dim()` no longer reads from the absent
+  `system` table.** The method now sources the dim from
+  ``embedders.dim WHERE is_default = TRUE`` — the migration
+  already seeds that row (``bge-m3, 1024``). Search via
+  ``precis tools search`` and ``precis serve`` were both
+  failing on every fresh DB with ``UndefinedTable: relation
+  "system" does not exist``. The companion ``get_setting`` /
+  ``set_setting`` methods are unchanged and remain effectively
+  dead until the ``system`` table is added by a follow-up
+  migration; ``oracle_sync.py`` already swallows their
+  ``AttributeError`` / ``Exception`` and re-ingests on miss,
+  so its observable behaviour is unchanged.
+
+### Changed
+
+- **New `precis-worker` compose service** in
+  ``infrastructure/compose.yaml``: continuously drains the
+  derived-artifact queue (``chunk_embeddings`` +
+  ``chunk_summaries``). Same image as ``precis-watch``, no
+  ``/inbox`` or ``/data/corpus`` mounts, command
+  ``precis worker --batch-size 32 --idle-seconds 5``. Bring
+  up with ``docker compose up -d precis-worker``. The watcher
+  writes chunks; the worker turns them into vectors +
+  summaries. See ADR 0007.
+
+- **`precis-mcp:latest` ships with model weights baked in.** A new
+  ``models`` stage between ``builder`` and ``runtime`` in
+  ``docker/Dockerfile`` runs ``marker.models.create_model_dict()``
+  and ``SentenceTransformer('BAAI/bge-m3')`` at build time and
+  COPYs the resulting caches into the runtime image at
+  ``/opt/precis/models/`` (``HF_HOME=/opt/precis/models/hf``,
+  ``MODEL_CACHE_DIR=/opt/precis/models/datalab/models``). First
+  ``precis add`` / ``precis watch`` start no longer downloads
+  ~3 GB from HuggingFace + datalab. Image grows from ~6.4 GB to
+  ~10 GB; RAM behaviour unchanged (lazy mmap on first use).
+  The GoNoto font ``marker`` writes to ``site-packages/static/
+  fonts/`` is pre-populated in the ``builder`` stage so the
+  read-only venv at runtime never trips on it. See
+  ``docs/design/bake-models-into-image.md``.
+- **`infrastructure/compose.yaml`: `precis-watch` no longer mounts
+  `precis-cache:/home/precis/.cache`.** Models live in the image
+  now; the named volume is retired. On hosts where it already
+  exists, free it with
+  ``docker volume rm precis-infra_precis-cache``.
+
+### Fixed
+
+- **Ingest fast-path: re-ingesting a known PDF no longer re-runs
+  Marker.** :func:`precis.ingest.add.precis_add` now probes
+  ``ref_identifiers (id_kind='pdf_sha256')`` for ``PdfInput``
+  *before* invoking the extraction pipeline. A hit short-circuits
+  to ``IngestResult(inserted=False, ref_id=...)`` without paying
+  for the ~30–60 s Marker run. The slow-path probe (paper_id /
+  DOI / arXiv / content_hash) still runs after extraction to
+  catch "same paper, different bytes" collisions. No behavioural
+  change for fresh ingests. Regression test:
+  ``tests/ingest/test_add.py::TestPrecisAddIdempotent::test_fast_path_skips_marker_when_pdf_sha256_known``.
+  See ``docs/design/extract-once.md``.
+
+
 ### `find-citing-papers` — noise-reduction filters + bge-m3 rerank (2026-05-09)
 
 The full sweep across the ~4k corpus surfaces ~900k unique citing

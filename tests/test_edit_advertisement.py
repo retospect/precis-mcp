@@ -23,7 +23,14 @@ from pathlib import Path
 
 import pytest
 
-from precis import server
+# The seven verbs moved out of ``precis.server`` into the shared
+# tool registry (``precis.tools.core``) so the MCP server and the
+# CLI consume the same callable. The advertisement tests pin the
+# function-level docstring contract; importing the function from
+# its definition site is the most direct way to access the same
+# object FastMCP serialises into ``tools/list``.
+from precis.tools.core import delete as delete_tool
+from precis.tools.core import edit as edit_tool
 
 _SKILLS_DIR = Path(__file__).parent.parent / "src" / "precis" / "data" / "skills"
 
@@ -50,7 +57,7 @@ def test_edit_docstring_mentions_empty_text_as_delete_idiom() -> None:
     """The ``edit`` tool docstring must advertise ``text=''`` as the
     span-delete idiom in its text param block — small models read the
     per-field prose before the allOf schema."""
-    doc = server.edit.__doc__ or ""
+    doc = edit_tool.__doc__ or ""
     assert "text=''" in doc, (
         "edit() docstring must contain the literal `text=''` so the "
         "delete idiom is discoverable from the tool signature alone"
@@ -59,7 +66,7 @@ def test_edit_docstring_mentions_empty_text_as_delete_idiom() -> None:
 
 def test_edit_docstring_marks_text_as_required() -> None:
     """The text param entry must name the per-mode required coupling."""
-    doc = server.edit.__doc__ or ""
+    doc = edit_tool.__doc__ or ""
     # Accept any of the explicit phrasings the author might pick.
     assert "**Required**" in doc, (
         "edit() docstring must call out required params explicitly; "
@@ -69,7 +76,7 @@ def test_edit_docstring_marks_text_as_required() -> None:
 
 def test_edit_docstring_has_no_hedges() -> None:
     """Hedge phrases signal 'optional' to 7B models. Strike on sight."""
-    doc = (server.edit.__doc__ or "").lower()
+    doc = (edit_tool.__doc__ or "").lower()
     bad_phrases = (
         "(mode-dependent)",
         "can sometimes",
@@ -88,7 +95,7 @@ def test_delete_docstring_lists_both_delete_idioms() -> None:
     """The ``delete`` tool docstring must point span-delete callers at
     ``edit(mode='find-replace', text='')`` — not only at the whole-file
     ``edit(mode='replace', text='')`` recipe."""
-    doc = server.delete.__doc__ or ""
+    doc = delete_tool.__doc__ or ""
     assert "mode='replace', text=''" in doc, (
         "delete() docstring must mention the whole-file clear recipe "
         "(`edit(mode='replace', text='')`)"

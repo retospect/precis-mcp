@@ -55,7 +55,7 @@ from precis.handlers._patent_ingest import (
 from precis.handlers._patent_ops import OpsClientProto, OpsError, OpsNotFound
 from precis.handlers._patent_slug import parse_docdb_id
 from precis.handlers._patent_xml import parse_patent
-from precis.ingest import ParsedBlock, classify_density, fill_embeddings
+from precis.ingest.blocks import ParsedBlock, classify_density, fill_embeddings
 from precis.jobs.patent_watch import (
     DEFAULT_FAIR_USE_LIMIT_GB,
     _gb_to_bytes,

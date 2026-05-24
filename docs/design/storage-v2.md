@@ -733,8 +733,8 @@ messages and the plan stay in sync.
 - **B8** `pyproject.toml` cleanup — drop `acatome-extract`, add
   direct deps (`marker-pdf`, `httpx`, …).
 - **B9** Compose update (in `infrastructure/`) — rename
-  `acatome-watch` to `precis-watch`.
-- **B10** TOON output (`precis.format.toon`).
+  `acatome-watch` to `precis-watch`. ✅ done
+- **B10** TOON output (`precis.format.toon`). ✅ done
 - **B11** Cutover — apply `0001_initial.sql` to a fresh DB,
   archive old corpus, re-ingest via `precis watch`.
 - **B12** *(deferred)* `precis ingest-self` — walk

@@ -136,19 +136,59 @@ def convert_args_to_payload(tool_name: str, args: argparse.Namespace) -> dict[st
 
 
 def run_tool_from_cli(tool_name: str, args: argparse.Namespace) -> str:
-    """Execute a tool from parsed CLI arguments."""
+    """Execute a tool from parsed CLI arguments.
+
+    Tool functions in :mod:`precis.tools.core` return ``str`` on
+    success and ``mcp.types.CallToolResult`` (with
+    ``isError=True``) on failure — the shape FastMCP needs to set
+    the MCP protocol-level error flag. CLI consumers don't have a
+    protocol envelope; they get the rendered text directly. This
+    adapter unwraps the ``CallToolResult`` so operators see the
+    same ``[error:Class] cause / next`` body without any wrapper
+    glyphs.
+    """
     from precis.tools import TOOL_REGISTRY
-    
+
     # Convert CLI args to tool payload
     payload = convert_args_to_payload(tool_name, args)
-    
+
     # Get and call the tool function
     tool_func = TOOL_REGISTRY[tool_name]["func"]
-    
+
     # Call the tool with the converted arguments
     try:
         result = tool_func(**payload)
-        return result
     except Exception as e:
         # Return error message in a consistent format
         return f"[error:Exception] {type(e).__name__}: {e}"
+
+    # Unwrap the MCP error envelope for CLI display. The
+    # ``CallToolResult`` carries the ``isError`` flag plus a single
+    # ``TextContent`` block; the operator wants the body text.
+    if _is_call_tool_result(result):
+        return result.content[0].text  # type: ignore[union-attr]
+    return result
+
+
+def _is_call_tool_result(value: Any) -> bool:
+    """Return True if *value* is an MCP ``CallToolResult`` envelope.
+
+    Imported lazily — ``mcp.types`` may not be installed in every
+    environment that consumes the tools (CLI-only builds, tests
+    that monkey-patch the dummy ``CallToolResult`` from
+    ``precis.tools.core``). Falling back on duck-typing
+    (``content[0].text`` + ``isError``) covers both paths without
+    a hard dep.
+    """
+    try:
+        from mcp.types import CallToolResult
+
+        if isinstance(value, CallToolResult):
+            return True
+    except ImportError:
+        pass
+    return (
+        hasattr(value, "isError")
+        and hasattr(value, "content")
+        and bool(getattr(value, "content", None))
+    )

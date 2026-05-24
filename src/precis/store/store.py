@@ -1,6 +1,6 @@
 """Sync postgres-backed store (psycopg 3). One instance per server.
 
-:class:`Store` is composed from seven domain mixins, each owning one
+:class:`Store` is composed from six domain mixins, each owning one
 slice of the persistence surface:
 
 * :class:`precis.store._refs_ops.RefsMixin`               — ref CRUD + title search
@@ -9,7 +9,6 @@ slice of the persistence surface:
 * :class:`precis.store._links_ops.LinksMixin`             — link graph
 * :class:`precis.store._cache_ops.CacheMixin`             — paid-tool cache state
 * :class:`precis.store._identifiers_ops.IdentifiersMixin` — ``ref_identifiers`` alias lookup
-* :class:`precis.store._ingest_ops.IngestMixin`           — ``.acatome`` bundle ingest
 
 The public API is unchanged: callers that previously imported
 ``Store`` and called ``store.get_ref(...)`` / ``store.add_tag(...)``
@@ -43,7 +42,6 @@ from precis.errors import BadInput
 from precis.store._blocks_ops import BlocksMixin
 from precis.store._cache_ops import CacheMixin
 from precis.store._identifiers_ops import IdentifiersMixin
-from precis.store._ingest_ops import IngestMixin
 from precis.store._links_ops import LinksMixin
 from precis.store._mappers import (
     _AGENT_WRITABLE_PREFIXES,
@@ -76,17 +74,12 @@ class Store(
     LinksMixin,
     CacheMixin,
     IdentifiersMixin,
-    IngestMixin,
 ):
     """High-level handle. Owns the psycopg connection pool.
 
-    Composed from domain mixins — see module docstring. The MRO
-    order above is alphabetical by domain except for ``IngestMixin``
-    at the bottom (it depends on Refs + Blocks + Corpus +
-    Identifiers methods resolved through the other mixins / this
-    class); placing it last documents that dependency even though
-    Python's MRO will happily resolve the methods in any order as
-    long as they don't collide.
+    Composed from domain mixins — see module docstring. Mixin order
+    is alphabetical by domain; Python's MRO resolves cleanly because
+    none of them collide on method names.
     """
 
     def __init__(self, pool: ConnectionPool) -> None:
@@ -146,14 +139,27 @@ class Store(
     def embedding_dim(self) -> int:
         """Return the configured embedding dimension as an ``int``.
 
-        Raises :class:`RuntimeError` when the setting is missing —
-        every migration seeds it, so a missing row indicates the
-        DB was never initialised correctly.
+        Source of truth: ``embedders.dim`` for the row with
+        ``is_default = TRUE``. The migration seeds exactly one such
+        row (``bge-m3, 1024``); when a second default-flagged row
+        is added we will need a unique partial index, but until
+        then ``LIMIT 1`` plus a stable ``ORDER BY name`` makes the
+        query deterministic without a schema change.
+
+        Raises :class:`RuntimeError` when no default embedder is
+        registered — that indicates a botched migration, not a
+        runtime condition the caller can recover from.
         """
-        v = self.get_setting("embedding_dim")
-        if v is None:
-            raise RuntimeError("embedding_dim setting missing - did migrations run?")
-        return int(v)
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT dim FROM embedders WHERE is_default = TRUE "
+                "ORDER BY name LIMIT 1"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                "no default embedder registered - did migrations run?"
+            )
+        return int(row[0])
 
     # -- corpus --------------------------------------------------------------
 

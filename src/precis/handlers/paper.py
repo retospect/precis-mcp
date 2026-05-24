@@ -1,8 +1,9 @@
-"""PaperHandler — read scientific papers ingested from .acatome bundles.
+"""PaperHandler — read scientific papers from the v2 store.
 
-Phase 3: read-only via ``get`` / ``search``. Ingest happens out-of-band
-via ``Store.ingest_bundle()`` (or the ``precis jobs ingest-bundles``
-CLI). ``put`` lands in a later phase when paper edits are scoped.
+Read-only via ``get`` / ``search``. Ingest happens out-of-band via
+:func:`precis.ingest.add.precis_add` (or the top-level ``precis
+add`` / ``precis watch`` CLI). ``put`` lands in a later phase when
+paper edits are scoped.
 
 Slug parsing supports the canonical slug-with-chunk syntax used across
 v2:
@@ -470,8 +471,7 @@ class PaperHandler(Handler):
                 if continuation:
                     nav.append(
                         (
-                            f"search(kind='paper', q={q!r}, "
-                            f"exclude={continuation!r})",
+                            f"search(kind='paper', q={q!r}, exclude={continuation!r})",
                             f"see the next {top_k} hits "
                             f"(skipping {len(continuation)} already shown)",
                         )

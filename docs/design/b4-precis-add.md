@@ -46,6 +46,16 @@ def precis_add(
     """
 ```
 
+> **Implementation note (post-B5 fix-up)**: the "without
+> re-extracting" promise above is satisfied for PDF inputs by the
+> fast-path probe on `pdf_sha256` documented in
+> `docs/design/extract-once.md`. The plan diagram below draws
+> Marker before the dedup probe — that was the B4d shape and is
+> still correct for content-hash / DOI / arxiv-only collisions
+> where the identifier is *produced by* extraction. The fast path
+> sits one stage earlier so the common "same file re-ingested"
+> case no longer pays the Marker cost.
+
 `PrecisAddInput` is a tagged union:
 
 ```python

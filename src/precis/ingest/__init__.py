@@ -1,42 +1,32 @@
 """Ingest pipeline: PDF → refs → chunks → derived queue.
 
-Vendored from ``acatome-extract`` (B3 of the v2 storage rewrite).
-See ``docs/design/pip-merge.md`` for the file-by-file mapping.
+Public surface mirrors the pipeline stages:
 
-Public surface is built up incrementally:
+* :func:`precis.ingest.add.precis_add` — the v2 ingest entry point
+  (PDF / DOI / arXiv). See :mod:`precis.ingest.add` for the
+  three-way dispatch.
+* :class:`precis.ingest.add.IngestResult` — outcome of a single
+  ``precis_add`` call (success or idempotent skip).
+* :func:`precis.ingest.blocks.classify_density` and
+  :func:`precis.ingest.blocks.fill_embeddings` — reusable block
+  helpers shared by paper and patent ingest pipelines.
 
-- B3a: leaf modules (citations, crossref, semantic_scholar,
-  text_chunker, figures, annotations)
-- B3b: coordination modules (literature, pdf_sidecar,
-  verify_metadata, lookup, marker, pdf_metadata)
-- B4: pipeline (rewritten for direct DB writes)
-
-Legacy bundle parser (the pre-B3 ``src/precis/ingest.py``) lives in
-``_legacy.py`` for the duration of the rewrite. Its public names
-are re-exported here so existing callers keep working until B7
-deletes the legacy bundle ingest path entirely.
+The legacy ``.acatome`` bundle parser that this package re-exported
+through B6 was deleted in B7. Callers that still need bundle
+parsing should pin to ``precis<0.7``; otherwise migrate to the
+direct ingest path via :func:`precis_add`.
 """
 
-from precis.ingest._legacy import (
-    IngestResult,
+from precis.ingest.add import IngestResult
+from precis.ingest.blocks import (
     ParsedBlock,
-    ParsedBundle,
-    author_strings,
     classify_density,
     fill_embeddings,
-    mint_paper_slug,
-    parse_bundle,
-    read_bundle,
 )
 
 __all__ = [
     "IngestResult",
     "ParsedBlock",
-    "ParsedBundle",
-    "author_strings",
     "classify_density",
     "fill_embeddings",
-    "mint_paper_slug",
-    "parse_bundle",
-    "read_bundle",
 ]
