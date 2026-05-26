@@ -52,12 +52,12 @@ _TOOL_KW: dict[str, Any] = {"structured_output": False}
 
 _INSTRUCTIONS = (
     "precis-mcp v2 - seven-verb agent tool surface.\n\n"
-    "Verbs: get, search, put, edit, delete, tag, link.  Discriminator: kind=.\n"
-    "Read the `precis-overview` skill (get(kind='skill', id='precis-overview'))\n"
-    "for the full mental model: kind topology, addressing, views, modes,\n"
-    "tags, links, and cache.\n\n"
-    "Discover skills: get(kind='skill', id='toc') for the full table of\n"
-    "contents, or search(kind='skill', q='your goal') for fuzzy lookup."
+    "First action on any non-trivial request:\n"
+    "  search(kind='skill', q='<your goal in 2-5 words>')\n"
+    "This returns ranked help skills (verb mechanics, kind specifics,\n"
+    "tag axes, edit protocol, ...). For the full index:\n"
+    "  get(kind='skill', id='toc').\n\n"
+    "Verbs: get, search, put, edit, delete, tag, link.  Discriminator: kind=."
 )
 
 # Sanity check the instructions actually advertise every verb. The MCP
@@ -110,21 +110,48 @@ def _file_kind_counts(root: str, kinds: list[str]) -> dict[str, int]:
     return counts
 
 
+def _kinds_loaded_line(runtime: PrecisRuntime) -> str:
+    """Render the ``Kinds loaded: ...`` summary appended to every banner.
+
+    Sourced from ``runtime.hub.kinds`` (a set of every kind with at
+    least one registered ability) sorted for stable rendering across
+    boots. Empty registries render as ``Kinds loaded: (none)``; a
+    stateless build with no handlers wired still produces a
+    well-formed line rather than a dangling ``Kinds loaded: ``.
+
+    Phase 4 will extend this with a sibling ``Kinds unavailable:``
+    line carrying prohibition / missing-resource reasons. Phase 2
+    ships only the live set so an agent always sees the truthful
+    surface from the cold-start banner.
+    """
+    kinds = sorted(getattr(runtime.hub, "kinds", ()) or ())
+    if not kinds:
+        return "Kinds loaded: (none)"
+    return "Kinds loaded: " + ", ".join(kinds) + "."
+
+
 def _build_instructions(runtime: PrecisRuntime) -> str:
-    """Static verb blurb plus a workspace preamble when ``PRECIS_ROOT`` is set.
+    """Static verb blurb plus a workspace preamble plus a live-kinds summary.
 
-    Prepends, not appends — the sandbox banner is the first thing a
-    cold-start agent should read. The static core (``_INSTRUCTIONS``)
-    stays byte-for-byte identical, so
-    ``test_instructions_advertises_every_verb`` and the import-time
-    assertion continue to pin it.
+    Composition (top to bottom):
 
-    Branches:
+    1. Optional sandbox preamble — when ``PRECIS_ROOT`` is set AND a
+       file-rooted handler is registered. Names file counts and the
+       ``get(kind='…')`` index calls a cold-start agent would
+       otherwise not know to try.
+    2. Static core (:data:`_INSTRUCTIONS`) — the discovery CTA plus
+       the seven-verb list. Pinned by the import-time assertion at
+       :data:`_INSTRUCTIONS` and by
+       ``test_instructions_advertises_every_verb``.
+    3. ``Kinds loaded:`` line — sorted live registry. Always appended;
+       the empty case renders as ``Kinds loaded: (none)`` rather than
+       a dangling colon.
 
-    - No ``root`` configured (``PRECIS_ROOT`` unset): return the static
-      core unchanged.
+    Branches for the preamble specifically:
+
+    - No ``root`` configured (``PRECIS_ROOT`` unset): no preamble.
     - ``root`` set but no file-rooted handler registered (e.g. store-
-      only build that somehow has the env var): static core. The
+      only build that somehow has the env var): no preamble — the
       preamble would lie.
     - ``root`` set, at least one file kind registered, tree empty:
       preamble invites the agent to create a file.
@@ -137,13 +164,15 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     that actually runs.
     """
     core = _INSTRUCTIONS
+    kinds_line = _kinds_loaded_line(runtime)
+    tail = f"\n\n{kinds_line}"
     root = getattr(runtime.config, "root", None)
     if not root:
-        return core
+        return core + tail
     registered_kinds = runtime.hub.kinds
     file_kinds = [k for k in _FILE_KIND_EXTS if k in registered_kinds]
     if not file_kinds:
-        return core
+        return core + tail
     counts = _file_kind_counts(root, file_kinds)
     total = sum(counts.values())
     if total == 0:
@@ -163,7 +192,7 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
             "Everything here carries the `workspace` tag - scope search with:\n"
             "  search(q='<keyword>', tags=['workspace'])\n\n"
         )
-    return preamble + core
+    return preamble + core + tail
 
 
 _runtime: PrecisRuntime | None = None
@@ -300,24 +329,6 @@ def _validation_error(body: str) -> _ToolReturn:
 # Tool functions are now imported from shared registry
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # Tool registration from shared registry
 # ---------------------------------------------------------------------------
@@ -327,8 +338,8 @@ def _register_tools_from_registry() -> None:
     """Register all tools from the shared registry with FastMCP."""
     for tool_name, tool_info in TOOL_REGISTRY.items():
         # Register the tool function with FastMCP
-        mcp.tool(**_TOOL_KW)(tool_info['func'])
-        
+        mcp.tool(**_TOOL_KW)(tool_info["func"])
+
         # Apply special schema constraints for edit tool
         if tool_name == "edit":
             _install_edit_schema_constraints(mcp)

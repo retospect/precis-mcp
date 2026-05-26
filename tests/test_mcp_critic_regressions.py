@@ -265,12 +265,21 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
     cid = store.ensure_corpus("default")
     # Paper that will match the query.
     paper = store.insert_ref(
-        corpus_id=cid, kind="paper", slug="paper-a", title="A",
+        corpus_id=cid,
+        kind="paper",
+        slug="paper-a",
+        title="A",
     )
-    store.insert_blocks(paper.id, [
-        BlockInsert(pos=0, text="qabsent unique-marker xyz",
-                    embedding=e.embed_one("qabsent unique-marker xyz")),
-    ])
+    store.insert_blocks(
+        paper.id,
+        [
+            BlockInsert(
+                pos=0,
+                text="qabsent unique-marker xyz",
+                embedding=e.embed_one("qabsent unique-marker xyz"),
+            ),
+        ],
+    )
     # Memory with the same query word — proves the merge actually
     # crosses kinds, and that exclude doesn't blow up memory's path.
     runtime_with_store.dispatch(
@@ -792,6 +801,37 @@ def test_instructions_advertises_every_verb() -> None:
         )
 
 
+def test_instructions_lead_with_skill_search_cta() -> None:
+    """Phase 2 banner CTA (docs/design/mcp-cold-start-token-budget.md):
+    the cold-start banner pushes agents to ``search(kind='skill', ...)``
+    as the first action on a non-trivial request. Pin the CTA shape
+    so future edits don't silently regress the discoverability story.
+    """
+    from precis import server
+
+    text = server._INSTRUCTIONS
+    assert "First action" in text
+    assert "search(kind='skill', q=" in text
+    # Full-index pointer remains so an agent can list rather than
+    # search when it doesn't have a query in mind.
+    assert "get(kind='skill', id='toc')" in text
+
+
+def test_kinds_loaded_line_renders_sorted_set() -> None:
+    """Phase-2 ``Kinds loaded:`` summary: the helper sorts the live
+    set, joins with commas, and renders ``(none)`` when nothing is
+    registered (stateless build / boot bug). Pin the shape so the
+    agent always sees the truthful surface.
+    """
+    from precis import server
+
+    rt_full = _runtime_with_root(None, file_kinds=("todo", "paper", "memory"))
+    assert server._kinds_loaded_line(rt_full) == "Kinds loaded: memory, paper, todo."
+
+    rt_empty = _runtime_with_root(None, file_kinds=())
+    assert server._kinds_loaded_line(rt_empty) == "Kinds loaded: (none)"
+
+
 # ── cold-start discoverability: sandbox preamble in serverInfo.instructions ─
 
 
@@ -822,15 +862,19 @@ def _runtime_with_root(
 
 def test_build_instructions_returns_static_core_when_root_unset() -> None:
     """MCP critic MAJOR-C (cold-start discoverability): when
-    ``PRECIS_ROOT`` is unset, the instructions fall back to the
-    pinned static verb blurb. No stray sandbox prose, no changes to
-    the existing-test invariants.
+    ``PRECIS_ROOT`` is unset, the instructions still carry the
+    pinned static verb blurb verbatim and a ``Kinds loaded:``
+    summary, with no sandbox preamble (which would lie without a
+    root).
     """
     from precis import server
 
     runtime = _runtime_with_root(None, file_kinds=())
     out = server._build_instructions(runtime)
-    assert out == server._INSTRUCTIONS
+    assert server._INSTRUCTIONS in out
+    assert out.startswith(server._INSTRUCTIONS)
+    # Phase-2 tail: live-kind summary appended to every banner.
+    assert "Kinds loaded:" in out
 
 
 def test_build_instructions_returns_static_core_when_root_set_but_no_file_kind_registered() -> (
@@ -838,13 +882,15 @@ def test_build_instructions_returns_static_core_when_root_set_but_no_file_kind_r
 ):
     """If ``root`` is set but no file-rooted handler registered, the
     preamble would lie (there's no ``get(kind='markdown')`` to call).
-    Fall back to the static core rather than advertise a dead surface.
+    Fall back to the static core + ``Kinds loaded:`` tail rather than
+    advertise a dead file-surface.
     """
     from precis import server
 
     runtime = _runtime_with_root("/nonexistent", file_kinds=("paper", "todo"))
     out = server._build_instructions(runtime)
-    assert out == server._INSTRUCTIONS
+    assert out.startswith(server._INSTRUCTIONS)
+    assert "Kinds loaded: paper, todo." in out
 
 
 def test_build_instructions_announces_sandbox_when_root_has_files(tmp_path) -> None:
@@ -870,9 +916,10 @@ def test_build_instructions_announces_sandbox_when_root_has_files(tmp_path) -> N
     )
     out = server._build_instructions(runtime)
 
-    # Preamble prepends the static core.
-    assert out.endswith(server._INSTRUCTIONS)
+    # Preamble prepends the static core; the live-kind summary trails it.
+    assert server._INSTRUCTIONS in out
     assert out != server._INSTRUCTIONS
+    assert "Kinds loaded: markdown, plaintext, tex." in out
 
     # Counts are visible.
     assert "2 markdown" in out
@@ -904,12 +951,14 @@ def test_build_instructions_handles_empty_sandbox(tmp_path) -> None:
     )
     out = server._build_instructions(runtime)
 
-    assert out.endswith(server._INSTRUCTIONS)
+    assert server._INSTRUCTIONS in out
     assert "empty" in out
     assert "mode='create'" in out
     # The concrete search example lands in the empty branch too so
     # an agent starting from zero knows how to verify its first write.
     assert "search(q='<keyword>', tags=['workspace'])" in out
+    # Phase-2 tail.
+    assert "Kinds loaded: markdown, plaintext, tex." in out
 
 
 def test_build_instructions_ignores_unregistered_kinds(tmp_path) -> None:
@@ -942,8 +991,9 @@ def test_build_instructions_handles_missing_root_directory() -> None:
     out = server._build_instructions(runtime)
 
     # Graceful: render the empty-sandbox preamble, never raise.
-    assert out.endswith(server._INSTRUCTIONS)
+    assert server._INSTRUCTIONS in out
     assert "empty" in out
+    assert "Kinds loaded: markdown." in out
 
 
 def test_apply_instructions_mutates_underlying_mcp_server(tmp_path) -> None:
@@ -967,7 +1017,8 @@ def test_apply_instructions_mutates_underlying_mcp_server(tmp_path) -> None:
     assert fastmcp.instructions is not None
     assert "Editable sandbox" in fastmcp.instructions
     assert "1 markdown" in fastmcp.instructions
-    assert fastmcp.instructions.endswith(server._INSTRUCTIONS)
+    assert server._INSTRUCTIONS in fastmcp.instructions
+    assert "Kinds loaded: markdown." in fastmcp.instructions
 
 
 def test_server_name_is_precis_mcp() -> None:
