@@ -105,6 +105,26 @@ class PrecisConfig(BaseSettings):
     Set via ``PRECIS_STARTUP_SKILLS_CAP_KB`` in the env.
     """
 
+    kinds_disabled: str | None = None
+    """Comma-separated list of kinds to prohibit at boot.
+
+    A prohibited kind is skipped entirely during
+    :func:`precis.dispatch.boot` — its handler is never constructed,
+    no abilities are registered, and the cold-start banner surfaces
+    it on the ``Kinds unavailable:`` line with reason ``prohibited``.
+    Resource gating (env vars declared on
+    :class:`precis.protocol.KindSpec.requires_env`, store / embedder
+    presence, file root) is orthogonal and applies independently.
+
+    Format: ``patent,wolfram`` (whitespace tolerated, duplicates
+    dropped). The default empty list keeps every resource-available
+    kind loaded — matching today's behaviour. Unknown kind names are
+    accepted (they're a no-op against the live registry); see
+    ``precis-kinds-disabled-help`` for the operator workflow.
+
+    Set via ``PRECIS_KINDS_DISABLED`` in the env.
+    """
+
 
 def load_config() -> PrecisConfig:
     return PrecisConfig()

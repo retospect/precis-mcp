@@ -147,6 +147,18 @@ class Hub:
     #: contextvar plumbing.
     hints: HintBus = field(default_factory=HintBus)
 
+    #: Per-kind boot-time verdicts. Populated by :func:`_try` for
+    #: every kind it considered — loaded or skipped. Kinds skipped
+    #: because their outer if-guard short-circuits in :func:`boot`
+    #: (e.g. file kinds when ``PRECIS_ROOT`` is unset) do not appear.
+    #: :func:`precis.server._build_instructions` reads this to render
+    #: the cold-start ``Kinds unavailable:`` banner line. Schema is
+    #: a free-form :class:`precis.kind_gate.Loadability` so handlers
+    #: that aren't ``KindSpec``-shaped (plugin entry-points, etc.)
+    #: can also surface verdicts without dragging the protocol layer
+    #: into ``dispatch``.
+    loadabilities: dict[str, Any] = field(default_factory=dict)
+
     # ----- registration primitives (called from handler __init__) -----
 
     def register_ability(
@@ -297,20 +309,42 @@ class Hub:
 # ---------------------------------------------------------------------------
 
 
-def _try(cls: Callable[..., Any], *, hub: Hub, **kw: Any) -> Any | None:
+def _try(
+    cls: Callable[..., Any],
+    *,
+    hub: Hub,
+    disabled: frozenset[str] = frozenset(),
+    **kw: Any,
+) -> Any | None:
     """Construct a handler, auto-register it, swallow missing-dep errors.
 
-    Caught exceptions:
+    Pre-construction the kind-enablement gate
+    (:func:`precis.kind_gate.gate`) runs against ``cls.spec`` to:
+
+    - **Skip prohibited kinds** (listed in ``PRECIS_KINDS_DISABLED``,
+      parsed into ``disabled``). The handler module is not imported.
+    - **Skip kinds with missing declared envs** (every name in
+      ``cls.spec.requires_env`` must be set non-empty). Today only
+      ``math`` (``WOLFRAM_APP_ID``) declares envs this way; Phase-4
+      convergence moves the patent's inline boot-site env check into
+      its ``KindSpec.requires_env`` too.
+
+    For both skip paths we record a :class:`precis.kind_gate.Loadability`
+    on ``hub.loadabilities`` and return ``None`` without importing
+    or constructing the handler.
+
+    Caught construction-time exceptions:
 
     - :class:`InitError` — the handler's own ``__init__`` decided it
-      can't usefully run. The canonical path.
+      can't usefully run. The canonical path for store / embedder /
+      file-root unavailability.
     - ``ImportError`` — optional-dep handlers (math/sympy,
       patent/epo_ops) surface here when their module-level imports
-      blow up. Treated as a missing dep, not a programmer bug.
+      blow up.
     - ``ValueError`` — file-root handlers (markdown/plaintext/python)
       raise this from their existing ``__init__`` for malformed /
       non-existent roots. Legacy behaviour, preserved for now;
-      eventually those paths convert to ``InitError``.
+      eventually those paths convert to :class:`InitError`.
 
     Anything else propagates — a stray ``KeyError`` /
     ``AttributeError`` is a programmer bug and should crash boot so
@@ -328,11 +362,29 @@ def _try(cls: Callable[..., Any], *, hub: Hub, **kw: Any) -> Any | None:
     specific extras like ``root=`` / ``ops=``). Boot sites pass only
     ``hub=hub`` plus those extras; the rest comes off the hub itself.
     """
+    from precis.kind_gate import Loadability, gate, loadability_from_exception
+
+    spec = getattr(cls, "spec", None)
+    if spec is not None:
+        verdict = gate(spec, disabled=disabled)
+        if not verdict.loaded:
+            hub.loadabilities[spec.kind] = verdict
+            log.info(
+                "precis dispatch boot: skipped kind=%s (%s)",
+                spec.kind,
+                verdict.reason,
+            )
+            return None
+
     try:
         inst = cls(hub=hub, **kw)
     except (InitError, ImportError, ValueError) as exc:
         log.warning("%s init failed: %s", getattr(cls, "__name__", cls), exc)
+        if spec is not None:
+            hub.loadabilities[spec.kind] = loadability_from_exception(spec, exc)
         return None
+    if spec is not None:
+        hub.loadabilities[spec.kind] = Loadability(kind=spec.kind, loaded=True)
     inst._register_with(hub)
     return inst
 
@@ -447,6 +499,7 @@ def boot(
     embedder: Embedder | None = None,
     precis_root: str | None = None,
     python_roots: str | None = None,
+    kinds_disabled: frozenset[str] = frozenset(),
 ) -> Hub:
     """Build and return a fully-populated :class:`Hub`.
 
@@ -474,8 +527,6 @@ def boot(
     See ``docs/seven-verb-surface-migration.md`` D7/D8 for the design
     rationale and rejected alternatives.
     """
-    import os  # local import; dispatch shouldn't own env reading above
-
     # If a store is wired but no embedder was provided, fall back to
     # the deterministic mock at the right dim. Doing this here —
     # rather than per-handler — means every handler that asks the
@@ -487,13 +538,18 @@ def boot(
 
     hub = Hub(store=store, embedder=embedder)
 
+    def _gated(cls: Callable[..., Any], **kw: Any) -> Any | None:
+        """Local _try alias capturing ``hub`` + the parsed prohibition
+        set. Each call site keeps only its handler-specific kwargs."""
+        return _try(cls, hub=hub, disabled=kinds_disabled, **kw)
+
     # --- Stateless handlers (no store) ---------------------------------
 
     # Calc — local sympy-backed calculator. The handler raises
     # InitError when sympy isn't installed.
     from precis.handlers.calc import CalcHandler
 
-    _try(CalcHandler, hub=hub)
+    _gated(CalcHandler)
 
     # Python — DB-free in-memory AST index. Skipped when no roots
     # are configured or every entry is malformed (parse_python_roots
@@ -503,7 +559,7 @@ def boot(
 
         roots = parse_python_roots(python_roots)
         if roots:
-            _try(PythonHandler, hub=hub, roots=roots)
+            _gated(PythonHandler, roots=roots)
 
     # --- Store-backed handlers ------------------------------------------
 
@@ -522,13 +578,13 @@ def boot(
         # Numeric- and slug-addressed refs. Cheap; always available
         # when the store is up. Each handler reads ``hub.store`` /
         # ``hub.embedder`` directly — boot only threads the hub.
-        _try(MemoryHandler, hub=hub)
-        _try(TodoHandler, hub=hub)
-        _try(GripeHandler, hub=hub)
-        _try(FlashcardHandler, hub=hub)
-        _try(QuestHandler, hub=hub)
-        _try(ConversationHandler, hub=hub)
-        _try(OracleHandler, hub=hub)
+        _gated(MemoryHandler)
+        _gated(TodoHandler)
+        _gated(GripeHandler)
+        _gated(FlashcardHandler)
+        _gated(QuestHandler)
+        _gated(ConversationHandler)
+        _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the
         # DB-recorded version on every boot so a wheel upgrade or
         # local edit propagates without an explicit ingest run. Older
@@ -545,29 +601,29 @@ def boot(
                     maybe_reingest(store=hub.store, embedder=hub.embedder)
                 except Exception:  # pragma: no cover — boot must not crash
                     log.exception("oracle_sync: boot-time reconcile failed")
-        _try(SkillHandler, hub=hub)
-        _try(PaperHandler, hub=hub)
+        _gated(SkillHandler)
+        _gated(PaperHandler)
 
         # Corpus-wide random-pick. Store-backed because it reads
         # ``blocks`` directly; no embedder needed (it uses the
         # stored embeddings as a "has content" filter, not for
         # similarity). Raises NotFound on an empty corpus.
-        _try(RandomHandler, hub=hub)
+        _gated(RandomHandler)
 
         # Cache-backed kinds. Each declares its env / optional-dep
         # requirements inside __init__ and raises InitError when
         # they aren't met.
         from precis.handlers.math import MathHandler
 
-        _try(MathHandler, hub=hub)
+        _gated(MathHandler)
 
         from precis.handlers.youtube import YouTubeHandler
 
-        _try(YouTubeHandler, hub=hub)
+        _gated(YouTubeHandler)
 
         from precis.handlers.web import WebHandler
 
-        _try(WebHandler, hub=hub)
+        _gated(WebHandler)
 
         # File handlers — markdown / plaintext / tex all walk the same
         # PRECIS_ROOT, scoped by extension. The whole trio is hidden
@@ -581,9 +637,9 @@ def boot(
             from precis.handlers.tex import TexHandler
 
             root = Path(precis_root)
-            _try(MarkdownHandler, hub=hub, root=root)
-            _try(PlaintextHandler, hub=hub, root=root)
-            _try(TexHandler, hub=hub, root=root)
+            _gated(MarkdownHandler, root=root)
+            _gated(PlaintextHandler, root=root)
+            _gated(TexHandler, root=root)
 
         # Perplexity Sonar trio. Each raises InitError independently
         # when httpx or the API key is missing.
@@ -593,33 +649,21 @@ def boot(
             WebsearchHandler,
         )
 
-        _try(WebsearchHandler, hub=hub)
-        _try(ThinkHandler, hub=hub)
-        _try(ResearchHandler, hub=hub)
+        _gated(WebsearchHandler)
+        _gated(ThinkHandler)
+        _gated(ResearchHandler)
 
-        # Patent — EPO OPS. Hidden unless the env trio is set; the
-        # ``OpsClient`` construction (and thus the ``epo_ops`` import)
-        # is deferred so missing env vars don't even reach the
-        # handler.
-        epo_key = os.environ.get("EPO_OPS_CLIENT_KEY")
-        epo_secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
-        epo_raw_root = os.environ.get("PRECIS_PATENT_RAW_ROOT")
-        if epo_key and epo_secret and epo_raw_root:
-            from pathlib import Path
+        # Patent — EPO OPS. ``PatentHandler.spec.requires_env``
+        # declares EPO_OPS_CLIENT_KEY / EPO_OPS_CLIENT_SECRET /
+        # PRECIS_PATENT_RAW_ROOT, so the kind_gate skips the handler
+        # cleanly when any of the three is missing (and surfaces it
+        # on the cold-start ``Kinds unavailable:`` banner). The
+        # ``epo_ops`` import is deferred inside the handler's
+        # ``__init__`` so a missing optional dep doesn't take down
+        # other handlers' boot path.
+        from precis.handlers.patent import PatentHandler
 
-            from precis.handlers._patent_ops import OpsClient
-            from precis.handlers.patent import PatentHandler
-
-            _try(
-                PatentHandler,
-                hub=hub,
-                ops=OpsClient(
-                    key=epo_key,
-                    secret=epo_secret,
-                    user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
-                ),
-                raw_root=Path(epo_raw_root).expanduser(),
-            )
+        _gated(PatentHandler)
 
     # Third-party plugins load last. See ``docs/plugin-authoring.md``
     # and :func:`_load_plugins` for the contract and failure modes.

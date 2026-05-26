@@ -108,13 +108,39 @@ class PatentHandler(Handler):
         self,
         *,
         hub: Hub,
-        ops: OpsClientProto,
-        raw_root: Path,
+        ops: OpsClientProto | None = None,
+        raw_root: Path | None = None,
     ) -> None:
         if hub.store is None:
             raise InitError("patent: store required")
         self.store = hub.store
         self.embedder = hub.embedder
+        # Production path: read the env trio that this handler
+        # declares in :data:`_REQUIRED_ENV`. The kind_gate has
+        # already enforced presence before we land here, but a
+        # defensive raise prevents silent drift between the gate's
+        # requires_env tuple and what __init__ actually consumes.
+        # Test path: callers pass explicit ``ops=`` / ``raw_root=``
+        # so a fake OPS client can stand in for the network.
+        if ops is None or raw_root is None:
+            import os
+
+            from precis.handlers._patent_ops import OpsClient
+
+            key = os.environ.get("EPO_OPS_CLIENT_KEY")
+            secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
+            raw = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+            if not (key and secret and raw):
+                missing = [e for e in _REQUIRED_ENV if not os.environ.get(e)]
+                raise InitError("patent: missing env vars " + ", ".join(missing))
+            if ops is None:
+                ops = OpsClient(
+                    key=key,
+                    secret=secret,
+                    user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
+                )
+            if raw_root is None:
+                raw_root = Path(raw).expanduser()
         self.ops = ops
         self.raw_root = raw_root
 

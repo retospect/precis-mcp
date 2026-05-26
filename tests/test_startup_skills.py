@@ -307,6 +307,77 @@ def test_skill_prompt_tags_default_excludes_pinned() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_resolve_buckets_kind_unavailable_slugs() -> None:
+    """Phase 4 cross-check: a pinned slug whose front-matter targets
+    an unavailable kind moves from ``pinned`` to ``kind_unavailable``.
+    """
+    body_with_kind = (
+        "---\ntitle: Patent help\napplies-to: search (kind='patent', q=...)\n---\nbody"
+    )
+    loader, known = _fake_loader_factory(
+        {
+            "precis-patent-help": body_with_kind,
+            "precis-search-help": "---\ntitle: Search\n---\nbody",
+        }
+    )
+    result = startup_skills.resolve(
+        ["precis-patent-help", "precis-search-help"],
+        cap_kb=10,
+        unavailable_kinds=frozenset({"patent"}),
+        loader=loader,
+        known=known,
+    )
+    assert result.pinned == ("precis-search-help",)
+    assert result.kind_unavailable == ("precis-patent-help",)
+
+
+def test_resolve_no_cross_check_when_kind_set_empty() -> None:
+    """No unavailable_kinds → all valid slugs flow into ``pinned``
+    regardless of their front-matter. Backwards-compatible default."""
+    body_with_kind = "---\napplies-to: get (kind='patent', id='ep1234567b1')\n---\n"
+    loader, known = _fake_loader_factory({"precis-patent-help": body_with_kind})
+    result = startup_skills.resolve(
+        ["precis-patent-help"], cap_kb=10, loader=loader, known=known
+    )
+    assert result.pinned == ("precis-patent-help",)
+    assert result.kind_unavailable == ()
+
+
+def test_format_banner_surfaces_kind_unavailable() -> None:
+    """The banner gets a fourth notice line when a pinned skill
+    targets an unavailable kind."""
+    out = startup_skills.format_banner(
+        Resolution(kind_unavailable=("precis-patent-help",))
+    )
+    assert "targets unavailable kinds: precis-patent-help" in out
+
+
+def test_build_instructions_surfaces_pinned_skill_kind_unavailable() -> None:
+    """End-to-end: PRECIS_STARTUP_SKILLS pins a skill whose subject
+    kind is in PRECIS_KINDS_DISABLED → banner carries the warning."""
+    from precis import server
+    from precis.config import PrecisConfig
+    from precis.kind_gate import Loadability
+    from precis.runtime import PrecisRuntime
+
+    config = PrecisConfig(
+        startup_skills="precis-patent-help",
+        startup_skills_cap_kb=50,
+        kinds_disabled="patent",
+    )
+
+    class _FakeHub:
+        kinds: set[str] = set()
+        loadabilities = {
+            "patent": Loadability("patent", False, "prohibited"),
+        }
+
+    rt = PrecisRuntime(config=config, hub=_FakeHub())  # type: ignore[arg-type]
+    out = server._build_instructions(rt)
+    assert "Kinds unavailable: patent (prohibited)." in out
+    assert "targets unavailable kinds: precis-patent-help" in out
+
+
 @pytest.mark.parametrize(
     "slug",
     [

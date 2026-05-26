@@ -623,9 +623,7 @@ class PrecisRuntime:
 
         # Drop ``exclude=`` (most recent kwarg addition) and retry.
         if "exclude" in base_kwargs:
-            without_exclude = {
-                k: v for k, v in base_kwargs.items() if k != "exclude"
-            }
+            without_exclude = {k: v for k, v in base_kwargs.items() if k != "exclude"}
             try:
                 return list(handler.search_hits(**without_exclude))
             except TypeError:
@@ -775,10 +773,13 @@ def build_runtime(
         store = Store.connect(config.database_url)
         embedder = make_embedder(config.embedder, dim=store.embedding_dim())
 
+    from precis.kind_gate import parse_disabled
+
     hub = boot(
         store=store,
         embedder=embedder,
         precis_root=config.root,
         python_roots=config.python_roots,
+        kinds_disabled=parse_disabled(config.kinds_disabled),
     )
     return PrecisRuntime(config=config, hub=hub)

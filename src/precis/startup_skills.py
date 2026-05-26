@@ -51,6 +51,13 @@ class Resolution:
     #: exceeded :attr:`cap_kb`. Drop-tail: the first slug that
     #: trips the cap and every slug after it lands here.
     truncated: tuple[str, ...] = ()
+    #: Slugs whose subject kind isn't loaded on this server
+    #: (prohibited via ``PRECIS_KINDS_DISABLED``, missing resources,
+    #: or otherwise gated out by :mod:`precis.kind_gate`). The skill
+    #: body would still load but its recipes would fail when the
+    #: agent tries to call the kind, so we surface a warning notice
+    #: rather than silently teaching unusable knowledge.
+    kind_unavailable: tuple[str, ...] = ()
     #: The cap that was in force at resolution time, in KB. Echoed
     #: into the banner notice so an operator can correlate the
     #: trimming with their config without grepping their .env.
@@ -82,6 +89,7 @@ def resolve(
     slugs: list[str],
     *,
     cap_kb: int = 50,
+    unavailable_kinds: frozenset[str] = frozenset(),
     loader: Callable[[str], str | None] = _load_skill,
     known: Callable[[], list[str]] = _list_skills,
 ) -> Resolution:
@@ -90,11 +98,27 @@ def resolve(
     ``cap_kb <= 0`` disables the cap. ``loader`` / ``known`` are
     injectable so tests can stand a fake catalogue without touching
     the package data.
+
+    ``unavailable_kinds`` is the set of kinds gated out by
+    :mod:`precis.kind_gate` (typically derived from
+    ``hub.loadabilities``). A pinned slug whose front-matter
+    ``applies-to:`` (or ``precis-<kind>-help`` slug pattern) names
+    *any* unavailable kind is moved from :attr:`Resolution.pinned`
+    to :attr:`Resolution.kind_unavailable` and surfaced via a
+    warning notice — the body would load fine, but its recipes
+    would fail when the agent calls the kind, so we'd rather not
+    teach unusable knowledge.
     """
+    from precis.handlers.skill import (
+        _kinds_referenced_by_skill,
+        _parse_frontmatter,
+    )
+
     known_set = set(known())
     pinned: list[str] = []
     unknown: list[str] = []
     truncated: list[str] = []
+    kind_unavailable: list[str] = []
     cap_bytes = cap_kb * 1024 if cap_kb > 0 else None
     used = 0
     over_cap = False
@@ -115,6 +139,11 @@ def resolve(
             over_cap = True
             truncated.append(slug)
             continue
+        if unavailable_kinds:
+            referenced = _kinds_referenced_by_skill(slug, _parse_frontmatter(body))
+            if any(k in unavailable_kinds for k in referenced):
+                kind_unavailable.append(slug)
+                continue
         used += size
         pinned.append(slug)
     if unknown:
@@ -128,10 +157,16 @@ def resolve(
             cap_kb,
             ", ".join(truncated),
         )
+    if kind_unavailable:
+        log.warning(
+            "PRECIS_STARTUP_SKILLS targets unavailable kinds: %s",
+            ", ".join(kind_unavailable),
+        )
     return Resolution(
         pinned=tuple(pinned),
         unknown=tuple(unknown),
         truncated=tuple(truncated),
+        kind_unavailable=tuple(kind_unavailable),
         cap_kb=cap_kb,
     )
 
@@ -160,5 +195,11 @@ def format_banner(result: Resolution) -> str:
         lines.append(
             f"\u26a0 PRECIS_STARTUP_SKILLS truncated to cap "
             f"({result.cap_kb} KB): omitted " + ", ".join(result.truncated) + "."
+        )
+    if result.kind_unavailable:
+        lines.append(
+            "\u26a0 PRECIS_STARTUP_SKILLS targets unavailable kinds: "
+            + ", ".join(result.kind_unavailable)
+            + "."
         )
     return "\n".join(lines)

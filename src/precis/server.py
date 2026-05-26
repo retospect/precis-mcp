@@ -127,7 +127,13 @@ def _startup_skills_banner(runtime: PrecisRuntime) -> str:
     slugs = startup_skills.parse(raw)
     if not slugs:
         return ""
-    return startup_skills.format_banner(startup_skills.resolve(slugs, cap_kb=cap_kb))
+    verdicts = getattr(runtime.hub, "loadabilities", None) or {}
+    unavailable = frozenset(
+        v.kind for v in verdicts.values() if not getattr(v, "loaded", True)
+    )
+    return startup_skills.format_banner(
+        startup_skills.resolve(slugs, cap_kb=cap_kb, unavailable_kinds=unavailable)
+    )
 
 
 def _kinds_loaded_line(runtime: PrecisRuntime) -> str:
@@ -138,16 +144,28 @@ def _kinds_loaded_line(runtime: PrecisRuntime) -> str:
     boots. Empty registries render as ``Kinds loaded: (none)``; a
     stateless build with no handlers wired still produces a
     well-formed line rather than a dangling ``Kinds loaded: ``.
-
-    Phase 4 will extend this with a sibling ``Kinds unavailable:``
-    line carrying prohibition / missing-resource reasons. Phase 2
-    ships only the live set so an agent always sees the truthful
-    surface from the cold-start banner.
     """
     kinds = sorted(getattr(runtime.hub, "kinds", ()) or ())
     if not kinds:
         return "Kinds loaded: (none)"
     return "Kinds loaded: " + ", ".join(kinds) + "."
+
+
+def _kinds_unavailable_line(runtime: PrecisRuntime) -> str:
+    """Render the ``Kinds unavailable: ...`` summary, or ``""``.
+
+    Sourced from ``runtime.hub.loadabilities``: every kind boot
+    *attempted* and gated out (prohibited / missing-env / init-failed)
+    gets a one-entry. Kinds we never even tried (no store, no
+    PRECIS_ROOT, no python roots) intentionally don't appear — they
+    aren't ``unavailable``, they're ``not configured``, and surfacing
+    them would dwarf the banner. The boot-time log line names them
+    for the operator who wants to audit.
+    """
+    from precis.kind_gate import format_unavailable
+
+    verdicts = getattr(runtime.hub, "loadabilities", None) or {}
+    return format_unavailable(verdicts)
 
 
 def _build_instructions(runtime: PrecisRuntime) -> str:
@@ -166,7 +184,10 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     3. ``Kinds loaded:`` line — sorted live registry. Always appended;
        the empty case renders as ``Kinds loaded: (none)`` rather than
        a dangling colon.
-    4. Optional ``PRECIS_STARTUP_SKILLS`` banner — pinned-skill ids,
+    4. Optional ``Kinds unavailable:`` line — emitted only when boot
+       attempted at least one kind and gated it out (prohibited,
+       missing env var, init failure). Zero bytes on a clean boot.
+    5. Optional ``PRECIS_STARTUP_SKILLS`` banner — pinned-skill ids,
        plus warning lines for unknown slugs and cap truncation. Zero
        bytes when the env var is unset and no errors occurred.
 
@@ -188,8 +209,11 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     """
     core = _INSTRUCTIONS
     kinds_line = _kinds_loaded_line(runtime)
+    unavailable_line = _kinds_unavailable_line(runtime)
     startup = _startup_skills_banner(runtime)
     tail = f"\n\n{kinds_line}"
+    if unavailable_line:
+        tail += f"\n{unavailable_line}"
     if startup:
         tail += f"\n{startup}"
     root = getattr(runtime.config, "root", None)
