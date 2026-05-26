@@ -83,6 +83,72 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
   See ``docs/design/extract-once.md``.
 
 
+### MCP session ergonomics — cold-start token budget + kind enablement + default tags (2026-05-26)
+
+Six-phase rollout (`docs/design/mcp-cold-start-token-budget.md`)
+that shrinks the unconditional cold-start cost on a fresh MCP
+session and adds three operator-controlled env vars for session
+context. Every byte saved on the cold-start banner / `tools/list`
+is a byte the agent gets to spend on the user's actual request.
+
+- **Per-verb docstrings trimmed** (Phase 1). Each of the seven
+  verbs (get, search, put, edit, delete, tag, link) keeps a
+  ~5-line docstring that points at `precis-<verb>-help.md` for
+  detail. The detail moved into ten new skill files in
+  `src/precis/data/skills/` so it's still discoverable via
+  `search(kind='skill', q=...)` — just not on every connecting
+  agent's cold-start budget. CLI `--help` shows the same trimmed
+  shape with per-arg help strings threaded through the CLI
+  adapter. `precis-edit-protocol` renamed to `precis-edit-help`.
+- **Cold-start banner re-framed** (Phase 2). `serverInfo.instructions`
+  now leads with "First action: `search(kind='skill', q='<topic>')`"
+  instead of a verb cheat sheet. Trailing `Kinds loaded:` line
+  summarises the live registry so the agent sees what's actually
+  wired without an exploratory call.
+- **`PRECIS_STARTUP_SKILLS`** (Phase 3) — comma list of skill
+  slugs to pin at session start. Cumulative body size capped at
+  `PRECIS_STARTUP_SKILLS_CAP_KB` (default 50). Drop-tail truncation
+  at the cap; banner notice surfaces both invalid ids and the
+  truncation event. Pinned skills are tagged on the `prompts/list`
+  response so MCP clients with server-pinned-prompt support can
+  render them at handshake.
+- **`PRECIS_KINDS_DISABLED`** (Phase 4) — comma list of kind names
+  to prohibit at boot. Prohibition wins over resource availability
+  (a disabled kind is hidden even when its env requirements are
+  met). The patent handler's inline `EPO_OPS_KEY` / `EPO_OPS_SECRET`
+  env gate moved into `PatentHandler.__init__` to converge with
+  the gate machinery. Banner now carries a `Kinds unavailable:`
+  line with distinct reasons (`prohibited` vs the specific
+  `missing <ENV_VAR>`).
+- **`PRECIS_DEFAULT_TAGS`** (Phase 5) — comma list of tags merged
+  into every `put` on note-like kinds. `KindSpec.note_like: bool`
+  flag (default False) opts kinds into the merge; nine handlers
+  flipped to `True` (memory, todo, gripe, flashcard, quest,
+  conversation, markdown, plaintext, tex); ingested / cache /
+  generator kinds (paper, patent, web, youtube, math, oracle,
+  skill, calc) stay False so they don't accumulate session tags.
+  The `tag` verb emits a non-mutating suggestion hint listing
+  defaults not yet present rather than auto-mutating — operator-
+  explicit calls stay operator-explicit.
+- **Regression guards** (Phase 6). `tests/test_token_budget.py`
+  pins `tools/list` JSON < 12 KB (measured ~9 KB baseline),
+  per-verb description < 1 KB, `serverInfo.instructions` < 2 KB
+  on clean / < 4 KB with every Phase-3-5 feature engaged.
+  Anchor strings (`First action`, skill-search CTA, `Kinds loaded:`)
+  pinned. Cross-cutting test pins the shared comma-list parse
+  semantics across `startup_skills.parse`, `kind_gate.parse_disabled`,
+  and `default_tags.parse`.
+
+New modules: `src/precis/startup_skills.py`, `src/precis/kind_gate.py`,
+`src/precis/default_tags.py`. New config fields: `startup_skills`,
+`startup_skills_cap_kb`, `kinds_disabled`, `default_tags`. New
+hint topics: `default_tags.merged`, `default_tags.suggested`.
+
+Test coverage: 88 new tests across `test_startup_skills.py`,
+`test_kind_gate.py`, `test_default_tags.py`, `test_token_budget.py`,
+plus extensions to `test_mcp_critic_regressions.py` for the new
+banner shape. Suite: 1718 passed, 829 skipped, 5 xfailed.
+
 ### `find-citing-papers` — noise-reduction filters + bge-m3 rerank (2026-05-09)
 
 The full sweep across the ~4k corpus surfaces ~900k unique citing

@@ -272,9 +272,9 @@ def _runtime_with_loadabilities(verdicts: dict[str, Loadability]):
         def __init__(self, loadabilities: dict[str, Loadability]) -> None:
             self.loadabilities = loadabilities
 
-    return PrecisRuntime(  # type: ignore[arg-type]
+    return PrecisRuntime(
         config=PrecisConfig(),
-        hub=_FakeHub(verdicts),
+        hub=_FakeHub(verdicts),  # type: ignore[arg-type]
     )
 
 

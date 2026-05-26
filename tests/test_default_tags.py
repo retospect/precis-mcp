@@ -188,7 +188,7 @@ def test_note_like_kinds_are_flipped() -> None:
     from precis.handlers.tex import TexHandler
     from precis.handlers.todo import TodoHandler
 
-    note_like_handlers = [
+    note_like_handlers: list[type[Handler]] = [
         MemoryHandler,
         TodoHandler,
         GripeHandler,
@@ -219,7 +219,7 @@ def test_non_note_like_kinds_remain_default() -> None:
     from precis.handlers.web import WebHandler
     from precis.handlers.youtube import YouTubeHandler
 
-    not_note_like = [
+    not_note_like: list[type[Handler]] = [
         PaperHandler,
         PatentHandler,
         WebHandler,
