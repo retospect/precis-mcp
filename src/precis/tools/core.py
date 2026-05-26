@@ -12,9 +12,11 @@ from typing import Any
 # Conditional imports for MCP types (not available in all environments)
 try:
     from mcp.types import CallToolResult, TextContent
+
     _MCP_AVAILABLE = True
 except ImportError:
     _MCP_AVAILABLE = False
+
     # Create dummy classes for type checking when MCP is not available.
     # mypy can't see the mutually-exclusive paths through the try/except
     # so it flags these as redefinitions of the imported names; the
@@ -29,6 +31,7 @@ except ImportError:
         def __init__(self, type, text):
             self.type = type
             self.text = text
+
 
 # FastMCP refuses ``str | CallToolResult`` return annotations on tool
 # functions (it bans ``CallToolResult`` inside unions; see upstream
@@ -49,6 +52,7 @@ def _get_runtime():
     global _runtime
     if _runtime is None:
         from precis.runtime import build_runtime
+
         _runtime = build_runtime()
     return _runtime
 
@@ -137,19 +141,14 @@ def get(
 ) -> str:
     """Read a ref or compute a value.
 
-    Args:
-        kind: Which kind to read from (e.g. 'calc', 'paper', 'memory').
-        id:   Identifier — string slug for slug kinds, int for numeric kinds.
-        view: Display variant (kind-specific; e.g. 'bibtex' for paper).
-        q:    Free-text query (used by some kinds in lieu of id).
-        args: Kind- and view-specific extra parameters as a dict. Used
-              for views that need typed payloads beyond `id`/`view`/`q`,
-              e.g. python's callgraph (``{'entry': 'pkg.mod:func',
-              'depth': 3}``) or runtrace (``{'entry': '...', 'argv':
-              [...], 'timeout': 10}``). See each kind's help skill for
-              the accepted shape. Reserved key names (``kind``, ``id``,
-              ``view``, ``q``) are rejected to prevent confusion with
-              the explicit positional kwargs.
+    `id=` is the slug / numeric id. `view=` picks a display variant
+    (kind-specific, e.g. 'abstract', 'bibtex'). `q=` is a free-text
+    query for compute-style kinds. `args=` is a dict of typed extras
+    for views that need them (callgraph, runtrace, ...); reserved
+    keys (`kind`, `id`, `view`, `q`) inside `args=` are rejected.
+
+    Full reference: search(kind='skill', q='get <kind>') or
+    get(kind='skill', id='precis-get-help').
     """
     payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
     if args:
@@ -176,40 +175,16 @@ def search(
     source: str | None = None,
     exclude: list[str] | None = None,
 ) -> str:
-    """Search across kinds.
+    """Hybrid lexical + semantic search across kinds.
 
-    Args:
-        q:     Free-text query (lexical + semantic, hybrid-fused).
-        kind:  Restrict to a single kind. **Omit (or pass ``'*'`` /
-               ``'all'`` / ``'any'`` / ``''``) for cross-kind fan-out
-               across every search-hits-capable kind**, RRF-merged
-               with each hit tagged by its source kind. Comma-lists
-               like ``'paper,memory,web'`` narrow the fan-out to a
-               specific subset.
-        scope: Restrict to one ref's blocks (slug or numeric id).
-        top_k: Max results. Must be a positive integer ≤ 100. Larger
-               values are rejected to bound response size and protect
-               smaller models' context windows.
-        tags:  Kind-specific closed / open tag filters (e.g.
-               ``['cpc:B01J27/24']`` on ``kind='patent'``,
-               ``['topic-xyz']`` on any ref kind). Tag axes allowed
-               per kind follow the ``precis-tags`` matrix.
-        source: Kind-specific source selector for handlers that
-               merge multiple streams. Currently only ``kind='patent'``
-               honours this — ``'both'`` (default) merges the local
-               store and live OPS, ``'local'`` skips OPS, ``'remote'``
-               skips local and dedupes OPS hits against already-
-               fetched patents (prior-art sweep mode). Ignored by
-               handlers that don't merge streams.
-        exclude: List of ref slugs to omit from results. Coarse / ref-
-               level — ``exclude=['wang2020state']`` drops every block
-               of that paper. Use to paginate ("show me hits 6-10"):
-               pass back the slugs of hits 1-5 from the prior call.
-               The ``LIMIT`` applies after exclusion so ``top_k`` stays
-               meaningful — ``top_k=10, exclude=[5 slugs]`` returns the
-               next 10 hits, not 5. Stale / unknown slugs are silently
-               dropped. Currently honoured by ``kind='paper'``; other
-               block-level kinds ignore it.
+    `top_k` must be a positive int ≤ 100. Omit `kind` (or pass `'*'`)
+    for cross-kind fan-out. `exclude=` takes ref slugs to drop — use
+    to paginate by passing back prior-page slugs. `source=` is
+    patent-only (`'both'`/`'local'`/`'remote'`); ignored elsewhere.
+
+    Full reference: search(kind='skill', q='search <kind>') or
+    get(kind='skill', id='precis-search-help'). For per-kind nuances
+    (e.g. patent's prior-art sweep) search the skill index by topic.
     """
     # Validate top_k at the boundary. Errors round-trip via
     # ``_validation_error`` so the MCP ``isError`` flag survives.
@@ -245,7 +220,7 @@ def search(
         "scope": scope,
         "top_k": top_k,
     }
-    
+
     # Only forward optional kwargs when set
     if tags is not None:
         payload["tags"] = tags
@@ -269,48 +244,17 @@ def put(
     unlink: str | None = None,
     rel: str | None = None,
 ) -> str:
-    """Write or annotate.
+    """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    Args:
-        kind:   Which kind to write to.
-        mode:   Operation hint. Kind-specific:
-                - File kinds (``markdown``, ``plaintext``, ``tex``,
-                  ``python``): ``put`` is **creation-only** since the
-                  seven-verb cutover — ``mode='create'`` is required
-                  and is the only accepted value. Region edits
-                  (``append`` / ``insert`` / ``replace`` /
-                  ``find-replace``) live on the ``edit`` verb;
-                  whole-file deletes live on ``delete``.
-                - Numeric-ref kinds (``memory``, ``todo``, ``gripe``,
-                  ``conv``, ``fc``, ``quest``): omit ``mode=`` to
-                  create a new ref; ``mode='delete'`` soft-deletes.
-                - ``perplexity``: ``mode='import'`` ingests a
-                  pre-generated report as a $0 cache entry.
-                Unknown modes are rejected. See each kind's help skill
-                for the authoritative list.
-        id:     Target ref or block. Omit to create a new ref on
-                numeric-ref kinds; required (file path/slug) for file
-                kinds with ``mode='create'``.
-        text:   Content for create or text update.
-        tags:   Tag strings to apply (closed 'STATUS:done', flag 'pinned',
-                or open 'topic-x'). On update, the tag list is *added* —
-                use ``untags=`` to remove.
-        untags: Tag strings to remove. Closed-prefix entries (e.g.
-                'STATUS:open') match the prefix and value; flags and
-                open tags match exactly. Removing a tag the ref doesn't
-                carry is a no-op, not an error.
-        link:   Add a link to another ref. Canonical form
-                'kind:identifier[~selector]' — e.g. 'paper:wang2020',
-                'paper:wang2020~38' (block 38), 'todo:158'. The kind
-                prefix is required.
-        unlink: Remove a link. Same canonical form as ``link=``. With
-                ``rel=`` it removes one specific (target, relation)
-                pair; without it removes every link to the target.
-        rel:    Relation slug for ``link=`` / ``unlink=``. Defaults to
-                'related-to'. See ``precis-relations`` for the full
-                vocabulary (cites, blocks, contradicts, derived-from,
-                supports, …). Required when adding non-default
-                relations.
+    File kinds (`markdown`, `plaintext`, `tex`, `python`) require
+    `mode='create'` (only accepted value; region edits live on `edit`,
+    whole-file deletes on `delete`). Numeric-ref kinds (`memory`,
+    `todo`, `gripe`, `conv`, `fc`, `quest`) omit `mode=` to create.
+    `tags=` adds, `untags=` removes. `link=`/`unlink=` use canonical
+    `kind:identifier[~selector]` form; `rel=` defaults to `related-to`.
+
+    Full reference: search(kind='skill', q='put <kind>') or
+    get(kind='skill', id='precis-put-help').
     """
     return _dispatch(
         "put",
@@ -342,49 +286,23 @@ def edit(
     allow_rename: bool | None = None,
     dry_run: bool | None = None,
 ) -> str:
-    """Edit a region within an existing ref's content.
+    """Edit a region within an existing ref's content (anchored).
 
-    Distinct from ``put`` — ``put`` creates new refs (or rewrites a
-    whole-file ref); ``edit`` rewrites a region within an existing one.
-    Each mode has a **fixed** required-argument set; the JSON Schema
-    encodes the coupling so a call with the wrong shape is rejected
-    before dispatch.
+    Distinct from `put` (which creates new refs). Each mode has a
+    fixed required-argument set encoded in the JSON Schema:
 
-    - ``find-replace`` (default): anchor-based string replace. Requires
-      ``find=`` AND ``text=``. Optional ``before=`` / ``after=`` /
-      ``match=`` / ``nth=`` disambiguate. Pass ``text=''`` to **delete
-      the matched span** — this is the canonical span-delete idiom.
-    - ``insert``: insert ``text=`` adjacent to a ``find=`` anchor.
-      Requires ``find=``, ``text=``, ``where='before'|'after'``.
-    - ``append`` / ``replace``: whole-region region edits. Requires
-      ``text=``. ``replace`` with ``id='slug~selector'`` rewrites one
-      block; ``append`` adds to the end of the file.
-    - ``reorder``: structured-file rearrangement (deferred — not yet
-      wired). See migration doc D5.
+    - `find-replace` (default): **Required** `find=` AND `text=`.
+      Pass `text=''` to delete the matched span (canonical idiom).
+    - `insert`: **Required** `find=`, `text=`, `where='before'|'after'`.
+    - `append` / `replace`: **Required** `text=`. `replace` with
+      `id='slug~selector'` rewrites one block.
 
-    See each kind's help skill (``get(kind='skill', id='precis-edit-
-    protocol')``) for the per-kind menu.
+    Optional anchors: `before=` / `after=` / `match=` (`unique`
+    default | `first` | `all` | `nth`) / `nth=`. `dry_run=True`
+    previews without writing.
 
-    Args:
-        kind: Which kind to edit.
-        id:   Existing ref id, optionally with selector for region edits.
-        mode: ``find-replace`` (default), ``append``, ``insert``,
-              ``replace``, ``reorder``.
-        text: Replacement / inserted content. **Required** for every
-              mode except ``reorder``. Pass ``text=''`` on
-              ``mode='find-replace'`` to delete the matched span.
-        find: Literal anchor string. **Required** for ``find-replace``
-              and ``insert``.
-        before / after: Optional literal bytes immediately preceding /
-              following ``find=``. Disambiguate when the same ``find``
-              appears more than once.
-        where: ``'before'`` or ``'after'``. **Required** for ``insert``.
-        match: ``'unique'`` (default), ``'first'``, ``'all'``, ``'nth'``.
-        nth:   1-based index when ``match='nth'``.
-        allow_rename: For find-replace edits that change a Python symbol
-              name; opt in to the qualname-drop gate override.
-        dry_run: Preview the edit without writing (``True`` / ``'diff'``
-              / ``'full'``).
+    Full reference: search(kind='skill', q='edit') or
+    get(kind='skill', id='precis-edit-help').
     """
     payload: dict[str, Any] = {
         "kind": kind,
@@ -408,29 +326,22 @@ def delete(
     kind: str,
     id: str | int,
 ) -> str:
-    """Delete a ref or region.
+    """Delete a ref or addressed region.
 
-    Behaviour is kind-specific:
+    Numeric-ref kinds (memory, todo, gripe, fc, quest, conv):
+    soft-delete the ref (recoverable at SQL layer).
 
-    - Numeric-ref kinds (memory, todo, gripe, fc, quest, oracle, conv):
-      soft-delete the ref. The row is retained for audit / undelete;
-      it just stops appearing in list views and search.
-    - File kinds with a selector in ``id=`` (markdown, plaintext,
-      python): delete the addressed block / symbol / line range.
-      Without a selector → ``BadInput`` — use
-      ``edit(mode='replace', text='')`` to clear a whole file, or
-      ``edit(mode='find-replace', find='…', text='')`` to delete a
-      matched span without touching the surrounding block.
-    - Cache-backed and read-only kinds (calc, math, web, youtube,
-      research, think, websearch, paper): ``Unsupported``.
+    File kinds with selector in `id=` (markdown, plaintext, tex,
+    python): delete the addressed block/symbol/line range.
+    Without a selector → BadInput. Use `edit(mode='replace', text='')`
+    to clear a whole file, or `edit(mode='find-replace', find='…',
+    text='')` to delete a matched span.
 
-    No undo — soft-delete is recoverable at the SQL layer; selector
-    deletes write the file out without the deleted region.
+    Cache-backed / read-only kinds (calc, math, web, youtube,
+    research, think, websearch, paper, patent): Unsupported.
 
-    Args:
-        kind: Which kind to delete from.
-        id:   Ref id (or ``slug~SELECTOR`` for region deletes on file
-              kinds).
+    Full reference: search(kind='skill', q='delete') or
+    get(kind='skill', id='precis-delete-help').
     """
     return _dispatch("delete", {"kind": kind, "id": id})
 
@@ -441,49 +352,21 @@ def tag(
     add: list[str] | None = None,
     remove: list[str] | None = None,
 ) -> str:
-    """Add and/or remove tags on an existing ref.
+    """Add and/or remove tags on an existing ref (atomic).
 
-    Both ``add`` and ``remove`` are accepted in the same call so a
-    transactional STATUS bump (``add=['STATUS:done'], remove=['STATUS:open']``)
-    happens atomically.
+    Closed UPPERCASE prefixes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`)
+    replace within the prefix on add; flag tags toggle; open tags
+    are free-form. Bad axis on a kind raises
+    `[error:BadInput] axis not allowed on kind 'K'`.
 
-    Tag vocabulary mirrors ``put(tags=...)``:
+    Per-kind closed-prefix gating (summary):
+    todo/gripe/quest: STATUS+PRIO. memory/fc/conv: none.
+    paper/patent: SRC+CACHE. web/research/think/websearch/youtube:
+    CACHE only. oracle/skill: none. python/calc/math: tag unsupported.
 
-    - **Closed UPPERCASE prefixes** (``STATUS:``, ``PRIO:``, ``SRC:``,
-      ``CACHE:``) replace within the prefix when added — adding
-      ``STATUS:done`` implicitly removes any existing ``STATUS:*``.
-      **Gated per-kind** (see matrix below): a closed prefix rejected
-      on one kind with ``[error:BadInput] axis not allowed on kind 'K'``
-      is the expected response, not a bug. Re-read ``get(kind='skill',
-      id='precis-tags')`` for the axis matrix.
-    - **Flag tags** (bare lowercase like ``pinned``, ``draft``)
-      toggle on / off.
-    - **Open tags** (``topic-co2-capture``, ``namespace:value``) add
-      and remove freely on every kind.
-
-    **Per-kind closed-prefix gating (summary)**:
-
-    - ``todo`` / ``gripe`` / ``quest``: ``STATUS`` + ``PRIO`` (workflow
-      kinds — both axes allowed)
-    - ``memory`` / ``fc`` / ``conv``: no closed axes (use open tags like
-      ``confidence-strong``, ``topic-noxrr`` — memories intentionally
-      have no ``PRIO:`` axis)
-    - ``paper`` / ``patent``: ``SRC`` + ``CACHE`` (provenance +
-      cache-freshness)
-    - ``web`` / ``research`` / ``think`` / ``websearch`` / ``youtube``:
-      ``CACHE`` only (agent-applied workflow axes rejected)
-    - ``oracle`` / ``skill``: no closed axes (read-only references)
-    - ``python`` / ``calc`` / ``math``: tag verb unsupported (read-only
-      or stateless kinds)
-
-    See ``get(kind='skill', id='precis-tags')`` for the authoritative
-    axis matrix; this docstring is a summary that may lag.
-
-    Args:
-        kind:   Kind owning the ref.
-        id:     Ref id (slug for slug kinds, int for numeric kinds).
-        add:    Tags to add.
-        remove: Tags to remove.
+    Full reference: search(kind='skill', q='tag') or
+    get(kind='skill', id='precis-tag-help'); `precis-tags` is the
+    authoritative axis matrix.
     """
     return _dispatch("tag", {"kind": kind, "id": id, "add": add, "remove": remove})
 
@@ -495,24 +378,111 @@ def link(
     mode: str = "add",
     rel: str | None = None,
 ) -> str:
-    """Add or remove a link between two refs.
+    """Add or remove a typed link between two refs.
 
-    Args:
-        kind:   Kind owning the source ref.
-        id:     Source ref id.
-        target: Canonical link target ``kind:id[~selector]`` —
-                e.g. ``paper:wang2020``, ``paper:wang2020~38`` (block
-                38), ``todo:158``. The ``kind:`` prefix is required.
-        mode:   ``add`` (default) creates the edge. ``remove`` deletes
-                it. With ``rel=`` on remove, removes the specific
-                (target, relation) pair; without, removes every link
-                to the target.
-        rel:    Relation slug. Defaults to ``related-to`` on add. See
-                ``precis-relations`` for the full vocabulary
-                (``cites``, ``blocks``, ``contradicts``, ``derived-from``,
-                ``supports``, …).
+    `target=` uses canonical `kind:identifier[~selector]` form
+    (kind prefix required). `mode='add'` (default) creates;
+    `mode='remove'` with `rel=` removes one (target, rel) pair,
+    without `rel=` removes every link to the target. `rel=` defaults
+    to `related-to` on add.
+
+    Full reference: search(kind='skill', q='link') or
+    get(kind='skill', id='precis-link-help'); `precis-relations`
+    has the full vocabulary (cites, blocks, contradicts, ...).
     """
     return _dispatch(
         "link",
         {"kind": kind, "id": id, "target": target, "mode": mode, "rel": rel},
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI per-arg help strings.
+#
+# The MCP-facing tool descriptions (verb docstrings above) carry only a
+# tight summary + wire-level constraints + a pointer to the per-verb help
+# skill (see docs/design/mcp-cold-start-token-budget.md). The CLI surface
+# still benefits from explicit per-arg ``--help`` strings, so we keep
+# them here adjacent to the functions rather than scraping the trimmed
+# docstrings. The CLI argparse adapter in :mod:`precis.tools.cli_adapter`
+# reads these via :data:`TOOL_REGISTRY[<verb>]['cli_help']`.
+# ---------------------------------------------------------------------------
+
+_GET_HELP: dict[str, str] = {
+    "kind": "Which kind to read from (e.g. 'paper', 'memory', 'calc').",
+    "id": "Identifier — slug for slug kinds, int for numeric kinds.",
+    "view": "Display variant (kind-specific; e.g. 'abstract', 'bibtex').",
+    "q": "Free-text query (compute-style kinds in lieu of id).",
+    "args": "Typed extras as a dict (callgraph, runtrace, ...). "
+    "Reserved keys (kind/id/view/q) rejected.",
+}
+
+_SEARCH_HELP: dict[str, str] = {
+    "q": "Free-text query (lexical + semantic, hybrid-fused).",
+    "kind": "Restrict to a kind (or comma-list, '*', omit for fan-out).",
+    "scope": "Restrict to one ref's blocks (slug or numeric id).",
+    "top_k": "Max results. Positive int ≤ 100.",
+    "tags": "Per-kind tag filters (closed-vocab axes + open tags).",
+    "source": "Patent only: 'both' (default) | 'local' | 'remote'.",
+    "exclude": "Ref slugs to drop from results (use to paginate).",
+}
+
+_PUT_HELP: dict[str, str] = {
+    "kind": "Which kind to write to.",
+    "mode": "Operation hint. File kinds: 'create' (only). "
+    "Numeric-ref kinds: omit to create.",
+    "id": "Target ref. Omit to create on numeric-ref kinds.",
+    "text": "Content for create.",
+    "tags": "Tags to add.",
+    "untags": "Tags to remove.",
+    "link": "Add a link 'kind:identifier[~selector]'.",
+    "unlink": "Remove a link. Same canonical form as link=.",
+    "rel": "Relation slug for link/unlink. Defaults to 'related-to'.",
+}
+
+_EDIT_HELP: dict[str, str] = {
+    "kind": "Which kind to edit.",
+    "id": "Existing ref id, optionally with selector for region edits.",
+    "mode": "'find-replace' (default) | 'append' | 'insert' | 'replace'.",
+    "text": "Replacement / inserted content. Required for every mode "
+    "except 'reorder'. Pass text='' on find-replace to delete "
+    "the matched span.",
+    "find": "Literal anchor string. Required for find-replace and insert.",
+    "before": "Literal bytes immediately preceding find=.",
+    "after": "Literal bytes immediately following find=.",
+    "where": "'before' or 'after'. Required for insert.",
+    "match": "'unique' (default) | 'first' | 'all' | 'nth'.",
+    "nth": "1-based index when match='nth'.",
+    "allow_rename": "Opt in to qualname-drop gate override (Python).",
+    "dry_run": "Preview without writing (True | 'diff' | 'full').",
+}
+
+_DELETE_HELP: dict[str, str] = {
+    "kind": "Which kind to delete from.",
+    "id": "Ref id (or 'slug~SELECTOR' for region deletes on file kinds).",
+}
+
+_TAG_HELP: dict[str, str] = {
+    "kind": "Kind owning the ref.",
+    "id": "Ref id.",
+    "add": "Tags to add.",
+    "remove": "Tags to remove.",
+}
+
+_LINK_HELP: dict[str, str] = {
+    "kind": "Kind owning the source ref.",
+    "id": "Source ref id.",
+    "target": "Canonical link target 'kind:id[~selector]'.",
+    "mode": "'add' (default) | 'remove'.",
+    "rel": "Relation slug. Defaults to 'related-to' on add.",
+}
+
+CLI_HELP: dict[str, dict[str, str]] = {
+    "get": _GET_HELP,
+    "search": _SEARCH_HELP,
+    "put": _PUT_HELP,
+    "edit": _EDIT_HELP,
+    "delete": _DELETE_HELP,
+    "tag": _TAG_HELP,
+    "link": _LINK_HELP,
+}

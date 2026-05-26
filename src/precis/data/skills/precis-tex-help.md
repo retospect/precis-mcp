@@ -101,7 +101,7 @@ window from 5 to 25 bar.''',
 
 ### Surgical edit against literal LaTeX
 
-Same protocol as `plaintext` — see `precis-edit-protocol`. The `find=`
+Same protocol as `plaintext` — see `precis-edit-help`. The `find=`
 anchor is a literal substring match, so `\citep{...}` works.
 
 ```python
@@ -187,6 +187,6 @@ Each handle in backticks is a real address — paste it back to
 
 - `precis-files-help` — shared addressing model for all file kinds
 - `precis-plaintext-help` — block grammar superset (tex extends it)
-- `precis-edit-protocol` — universal anchored-edit grammar
+- `precis-edit-help` — universal anchored-edit grammar
 - `precis-paper-help` — citation-graph navigation for cited papers
 - `precis-markdown-help` — markdown block grammar for prose notes

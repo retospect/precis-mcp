@@ -119,7 +119,7 @@ This is the first cut.
 For changes smaller than a whole block (one citation, one date, one
 typo), use `mode='edit'` with a literal `find=` plus optional
 `before=` / `after=` anchors. The schema is identical across every
-file kind; the universal grammar lives in `precis-edit-protocol`.
+file kind; the universal grammar lives in `precis-edit-help`.
 
 ```python
 # Swap one token. Anchors disambiguate when the same word appears
@@ -155,7 +155,7 @@ Markdown-specific quirks:
   searches the whole file; `id='notes--foo~intro'` searches just
   one block.
 - Pass `dry_run=True` (or `dry_run='full'`) to preview the edit
-  without writing — see `precis-edit-protocol`.
+  without writing — see `precis-edit-help`.
 
 ### Cross-kind: link a memory to a markdown block
 
@@ -180,6 +180,6 @@ The block becomes citable from anywhere.
 ## See also
 
 - `precis-files-help` — shared addressing model for all file kinds
-- `precis-edit-protocol` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
+- `precis-edit-help` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
 - `precis-python-help` — code navigation (different parser, same shape)
 - `precis-relations` — typed links between refs

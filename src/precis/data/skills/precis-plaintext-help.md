@@ -81,7 +81,7 @@ edit(kind='plaintext', id='captures/session-2026-05-01',
 
 Same as every R/W file kind — `edit(mode='find-replace')` with a
 literal `find=` plus optional `before=` / `after=` anchors. The
-schema lives in `precis-edit-protocol`.
+schema lives in `precis-edit-help`.
 
 ```python
 edit(kind='plaintext', id='captures/session-2026-05-01',
@@ -136,7 +136,7 @@ paragraph about `PRECIS_ROOT` without needing the exact phrase.
 ## See also
 
 - `precis-files-help` — shared addressing model for all file kinds
-- `precis-edit-protocol` — universal anchored-edit grammar
+- `precis-edit-help` — universal anchored-edit grammar
 - `precis-markdown-help` — markdown block grammar for structured notes
 - `precis-tex-help` — `.tex` files (subclasses this kind today)
 - `precis-python-help` — code navigation (different parser, same shape)

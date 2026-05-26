@@ -8,7 +8,6 @@ that stay in sync with the tool function signatures.
 from __future__ import annotations
 
 import argparse
-import shlex
 from typing import Any
 
 from precis.tools import get_tool_info, get_tool_names
@@ -16,7 +15,7 @@ from precis.tools import get_tool_info, get_tool_names
 
 def _parse_list_value(value: str) -> list[str]:
     """Parse a list value from CLI string.
-    
+
     Supports:
     - Comma-separated: "tag1,tag2,tag3"
     - Space-separated: "tag1 tag2 tag3" (quoted)
@@ -24,88 +23,109 @@ def _parse_list_value(value: str) -> list[str]:
     """
     if not value:
         return []
-    
+
     # Try comma-separated first
-    if ',' in value:
-        return [item.strip() for item in value.split(',') if item.strip()]
-    
+    if "," in value:
+        return [item.strip() for item in value.split(",") if item.strip()]
+
     # Fall back to space-separated
     return [item.strip() for item in value.split() if item.strip()]
+
+
+def _annotation_is(annotation: str, type_name: str) -> bool:
+    """True iff ``annotation`` is ``type_name``, optionally union'd with ``None``.
+
+    ``int``, ``int | None``, ``None | int`` all match ``type_name='int'``;
+    ``str | int`` does NOT — the dispatcher accepts either form, and string
+    is the safer default for opaque IDs (where the union is informational,
+    not a CLI-coercion directive).
+    """
+    parts = [p.strip() for p in annotation.split("|")]
+    non_none = [p for p in parts if p not in ("None", "type[None]")]
+    return non_none == [type_name]
 
 
 def _convert_value(value: str, param_info: dict[str, Any]) -> Any:
     """Convert CLI string value to the appropriate Python type."""
     if param_info["is_list"]:
         return _parse_list_value(value)
-    
+
     # Handle basic types
     annotation = str(param_info["annotation"])
-    
-    if "int" in annotation:
+
+    if _annotation_is(annotation, "int"):
         try:
             return int(value)
         except ValueError:
-            raise argparse.ArgumentTypeError(f"Expected integer, got: {value}")
-    
-    if "bool" in annotation:
+            raise argparse.ArgumentTypeError(
+                f"Expected integer, got: {value}"
+            ) from None
+
+    if _annotation_is(annotation, "bool"):
         if value.lower() in ("true", "1", "yes", "on"):
             return True
         elif value.lower() in ("false", "0", "no", "off"):
             return False
         else:
             raise argparse.ArgumentTypeError(f"Expected boolean, got: {value}")
-    
+
     # Default to string
     return value
 
 
 def build_parser_for_tool(
-    tool_name: str, 
-    subparsers: argparse._SubParsersAction
+    tool_name: str, subparsers: argparse._SubParsersAction
 ) -> argparse.ArgumentParser:
     """Build an argparse parser for a specific tool from its signature."""
     tool_info = get_tool_info(tool_name)
-    
+
     parser = subparsers.add_parser(
         tool_name,
-        help=tool_info["doc"].split('\n')[0] if tool_info["doc"] else f"Run {tool_name} tool",
+        help=tool_info["doc"].split("\n")[0]
+        if tool_info["doc"]
+        else f"Run {tool_name} tool",
         description=tool_info["doc"] or f"Run the {tool_name} tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
+
     # Add arguments based on function signature
+    cli_help_map: dict[str, str] = tool_info.get("cli_help") or {}
     for param_name, param_info in tool_info["parameters"].items():
         cli_flag = param_info["cli_flag"]
-        
+
         # Skip 'args' parameter for CLI - it's complex and rarely used
         if param_name == "args":
             continue
-        
-        # Build argument help from docstring if possible
-        help_text = f"Parameter {param_name}"
-        if tool_info["doc"]:
-            # Try to extract help from docstring
-            for line in tool_info["doc"].split('\n'):
+
+        # Prefer the explicit per-arg help registered next to the tool
+        # function (see :data:`precis.tools.core.CLI_HELP`); fall back
+        # to docstring extraction when a tool didn't register one (e.g.
+        # third-party plugin tools); fall back to the default last.
+        help_text = cli_help_map.get(param_name)
+        if not help_text and tool_info["doc"]:
+            for line in tool_info["doc"].split("\n"):
                 if f"{param_name}:" in line:
                     help_text = line.split(":", 1)[1].strip()
                     break
-        
+        if not help_text:
+            help_text = f"Parameter {param_name}"
+
         # Configure argument based on parameter properties
         if param_info["required"]:
             parser.add_argument(
                 cli_flag,
                 required=True,
                 help=help_text,
-                type=lambda v: _convert_value(v, param_info)
+                type=lambda v, _pi=param_info: _convert_value(v, _pi),
             )
         else:
             parser.add_argument(
                 cli_flag,
                 default=param_info["default"],
                 help=f"{help_text} (default: {param_info['default']})",
-                type=lambda v: _convert_value(v, param_info)
+                type=lambda v, _pi=param_info: _convert_value(v, _pi),
             )
-    
+
     return parser
 
 
@@ -119,19 +139,19 @@ def convert_args_to_payload(tool_name: str, args: argparse.Namespace) -> dict[st
     """Convert parsed CLI arguments to the payload format expected by tools."""
     tool_info = get_tool_info(tool_name)
     payload = {}
-    
+
     for param_name, param_info in tool_info["parameters"].items():
         if param_name == "args":
             continue  # Skip complex args parameter
-        
+
         # Get the value from parsed args (convert CLI flag name to param name)
-        cli_attr_name = param_name.replace('-', '_')
+        cli_attr_name = param_name.replace("-", "_")
         value = getattr(args, cli_attr_name, None)
-        
+
         # Only include if value is not None or if it's explicitly required
         if value is not None or param_info["required"]:
             payload[param_name] = value
-    
+
     return payload
 
 

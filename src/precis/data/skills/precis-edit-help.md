@@ -1,26 +1,37 @@
 ---
-id: precis-edit-protocol
-title: precis — anchored edits across every file kind
+id: precis-edit-help
+title: precis — the edit verb (anchored region edits)
 status: active
 tier: 2
 floor: any
 applies-to: edit (mode='find-replace'|'append'|'insert'|'replace') on R/W file kinds (kind='markdown', kind='plaintext', kind='tex', kind='python')
-last-updated: 2026-05-02
+last-updated: 2026-05-24
 ---
 
 > **Status:** v1 ships for `markdown`, `plaintext`, `tex`, and
 > `python`. The first three share `PRECIS_ROOT` (single root for all
 > prose-file kinds); `python` has its own multi-repo `PRECIS_PYTHON_ROOTS`.
-> Use `get(kind='skill', id='precis-help')` to confirm which are live
+> Use `get(kind='skill', id='toc')` to confirm which are live
 > in the server you're talking to.
 
-# precis-edit-protocol — sub-region anchored search/replace
+# precis-edit-help — anchored region edits across every file kind
 
-For changes smaller than a whole region, use `mode='edit'` instead
-of `mode='replace'`. The grammar is **identical across every file
-kind**; only the validation gates differ. Per-kind quirks (cross-
-region rules, AST gates, paragraph integrity) live in each kind's
-skill — this one covers what's universal.
+For anything smaller than creating a fresh file, use `edit`. The
+grammar is **identical across every file kind**; only the
+validation gates differ. Per-kind quirks (cross-region rules, AST
+gates, paragraph integrity) live in each kind's skill — this one
+covers what's universal.
+
+## Distinct from `put`
+
+- `put` creates new refs. On file kinds it's **creation-only**
+  (`mode='create'`); no other put mode is accepted there.
+- `edit` rewrites an existing ref. Region or whole-file, your
+  choice: `mode='replace'` with `id='slug'` (no selector) rewrites
+  the whole file; with `id='slug~selector'` it rewrites one block.
+- Each `edit` mode has a **fixed** required-argument set — the
+  JSON Schema encodes the coupling so a call with the wrong shape
+  is rejected before dispatch.
 
 ## When to reach for it
 
@@ -44,16 +55,29 @@ lines or tokens.
 
 ```python
 edit(kind='<kind>', id='<path>[~<selector>]',
-    mode='find-replace',           # or 'insert'
-    find='<exact text>',   # literal — required
+    mode='find-replace',           # or 'insert' | 'append' | 'replace'
+    find='<exact text>',   # literal — required for find-replace and insert
     before='<anchor>',     # optional: text immediately preceding find
     after='<anchor>',      # optional: text immediately following find
-    text='<new text>',     # required (use '' on edit to delete the match)
+    text='<new text>',     # required (use '' on find-replace to delete the match)
     where='before|after',  # required for mode='insert' only
     match='unique',        # unique (default) | first | all | nth
     nth=2,                 # 1-indexed when match='nth'
     dry_run=False)         # True | 'diff' | 'full' — preview without writing
 ```
+
+### Mode → required arguments
+
+- **`find-replace`** (default): anchor-based string replace.
+  Requires `find=` AND `text=`. Optional `before=` / `after=` /
+  `match=` / `nth=` disambiguate.
+- **`insert`**: insert `text=` adjacent to a `find=` anchor.
+  Requires `find=`, `text=`, `where='before'|'after'`.
+- **`append`** / **`replace`**: whole-region region edits.
+  Requires `text=`. `replace` with `id='slug~selector'` rewrites
+  one block; `append` adds to the end of the file.
+- **`reorder`**: structured-file rearrangement (deferred — not yet
+  wired). See migration doc D5.
 
 ### `dry_run` — preview without writing
 
@@ -83,6 +107,8 @@ edit(kind='markdown', id='notes--foo',
     dry_run='full')
 ```
 
+## Worked examples
+
 The motivating case from the spec:
 
 ```python
@@ -93,7 +119,7 @@ edit(kind='markdown', id='notes--foo~intro',
     text='a')
 ```
 
-And the span-delete case — `text=''` removes the match without
+The span-delete case — `text=''` removes the match without
 touching the surrounding block:
 
 ```python
@@ -207,7 +233,7 @@ are allowed; the kind's own validation gate catches the breakage
 that would result). A future version may add an opt-out
 `allow_cross_region=False` knob if data shows it's needed.
 
-## What this protocol does NOT do
+## What this verb does NOT do
 
 - **Regex.** Literal `find=` only. Considered and rejected for v2
   (escape hazards). Run regex outside the protocol (e.g. `rg`),
@@ -218,7 +244,7 @@ that would result). A future version may add an opt-out
 - **vi-style modal commands.** Not even in v2 — kept out of the
   protocol layer. If a client wants `:s/old/new/` sugar, it
   compiles to this schema before reaching the handler.
-- **Cross-file edits.** One `id` per `put`. Sequence multiple calls
+- **Cross-file edits.** One `id` per `edit`. Sequence multiple calls
   (or use `quest` / `sortie`) for multi-file refactors.
 - **Fuzzy `find`.** Exact match. Fuzzy lives only in the
   *suggestion* leg of error messages.

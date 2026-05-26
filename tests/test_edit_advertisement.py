@@ -39,7 +39,7 @@ _SKILLS_DIR = Path(__file__).parent.parent / "src" / "precis" / "data" / "skills
 #: model following the learn-path has a canonical example before
 #: its first call.
 _EDIT_CAPABLE_SKILLS = (
-    "precis-edit-protocol.md",
+    "precis-edit-help.md",
     "precis-plaintext-help.md",
     "precis-markdown-help.md",
     "precis-tex-help.md",

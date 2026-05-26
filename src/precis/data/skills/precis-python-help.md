@@ -353,7 +353,7 @@ searches on its own.
 For changes smaller than a whole symbol (rename one call site, bump
 a literal, fix one identifier), `mode='edit'` is the surgical
 primitive. The schema is identical to every other file kind; the
-universal grammar lives in `precis-edit-protocol`. Python's
+universal grammar lives in `precis-edit-help`. Python's
 validation gates (`ast.parse` + qualname-stable + ruff) all apply
 automatically.
 
@@ -418,7 +418,7 @@ Python-specific quirks:
 - Pass `dry_run=True` to preview the edit and see the gate
   results (AST, qualname-drop, ruff including any incidental
   autofixes) without writing. `dry_run='full'` emits the post-edit
-  region instead of a diff. See `precis-edit-protocol`.
+  region instead of a diff. See `precis-edit-help`.
 - Regex and multi-edit batches are deferred to v2.
 
 ### What can go wrong
@@ -496,6 +496,6 @@ logic to get wrong.
 ## See also
 
 - `precis-files-help` — shared addressing for all file kinds
-- `precis-edit-protocol` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
+- `precis-edit-help` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
 - `precis-markdown-help` — markdown-specific block grammar
 - `precis-overview` — verbs and kinds

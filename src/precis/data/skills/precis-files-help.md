@@ -298,7 +298,7 @@ is joined by two sub-region modes for surgical changes:
 
 The grammar is **identical across every R/W file kind**; per-kind
 quirks (validation gates, format steps) live in each kind's
-skill. The full universal grammar lives in `precis-edit-protocol`.
+skill. The full universal grammar lives in `precis-edit-help`.
 
 Ships today for `markdown`, `plaintext`, and `python`.
 
@@ -380,7 +380,7 @@ hit the cached blocks.
 ## See also
 
 - `precis-overview` — verbs and kinds
-- `precis-edit-protocol` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
+- `precis-edit-help` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
 - `precis-markdown-help` — `.md` block grammar and recipes
 - `precis-python-help` — Python codebase navigation
 - `precis-relations` — typed links between refs (file ↔ paper ↔ memory)

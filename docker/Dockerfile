@@ -47,7 +47,8 @@ COPY . /build/precis-mcp/
 # Install precis-mcp[all] into a fresh venv at /opt/venv. Editable install
 # is fine here because the runtime stage copies the venv but not /build,
 # so the editable path is replaced by a wheel-style install in stage 2.
-RUN uv venv /opt/venv && \
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    uv venv /opt/venv && \
     uv pip install --python /opt/venv "/build/precis-mcp[all]"
 
 # Marker writes GoNotoCurrent into site-packages/static/fonts/ on first
@@ -184,7 +185,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Install dev Python deps into the same venv
 ARG UV_VERSION
-RUN pip install --no-cache-dir "uv==${UV_VERSION}" && \
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    pip install --no-cache-dir "uv==${UV_VERSION}" && \
     uv pip install --python /opt/venv \
         pytest \
         pytest-cov \
