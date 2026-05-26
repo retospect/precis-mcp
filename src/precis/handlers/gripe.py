@@ -47,6 +47,7 @@ class GripeHandler(NumericRefHandler):
         supports_link=False,
         is_numeric=True,
         id_required=False,
+        note_like=True,
     )
 
     kind: ClassVar[str] = "gripe"

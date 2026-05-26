@@ -49,6 +49,7 @@ class QuestHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
+        note_like=True,
     )
 
     _CORPUS_SLUG = "default"

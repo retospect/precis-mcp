@@ -105,6 +105,30 @@ class PrecisConfig(BaseSettings):
     Set via ``PRECIS_STARTUP_SKILLS_CAP_KB`` in the env.
     """
 
+    default_tags: str | None = None
+    """Comma-separated list of session-context tags to merge on
+    ``put`` for note-like kinds.
+
+    A note-like kind opts in via ``KindSpec.note_like=True``
+    (today: memory, gripe, conv, fc, quest, todo, markdown,
+    plaintext, tex). A ``put`` on such a kind has its ``tags=``
+    payload union-merged with the parsed default set, preserving
+    the caller's explicit-first ordering. The dispatcher emits a
+    one-line hint listing the merged defaults so the agent sees
+    the mutation.
+
+    A ``tag`` verb call doesn't mutate — instead the dispatcher
+    emits a suggestion hint listing any defaults missing from
+    ``add=``, leaving the operator-explicit verb under operator
+    control.
+
+    Format: ``fbproj,2026-q2,team-research`` (whitespace tolerated,
+    duplicates dropped, first occurrence wins). The default empty
+    tuple is the no-op posture matching today's behaviour.
+
+    Set via ``PRECIS_DEFAULT_TAGS`` in the env.
+    """
+
     kinds_disabled: str | None = None
     """Comma-separated list of kinds to prohibit at boot.
 

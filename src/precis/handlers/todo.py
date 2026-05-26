@@ -46,6 +46,7 @@ class TodoHandler(NumericRefHandler):
         supports_link=True,
         is_numeric=True,
         id_required=False,
+        note_like=True,
     )
 
     kind: ClassVar[str] = "todo"

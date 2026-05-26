@@ -60,6 +60,18 @@ class KindSpec:
     is_numeric: bool = False  # public id is int (else str slug)
     id_required: bool = True  # False if get may omit id
 
+    #: User-authored note-like kinds opt-in to ``PRECIS_DEFAULT_TAGS``
+    #: merging on ``put`` (and tag-suggestion hints on ``tag``).
+    #: Default ``False`` so ingested kinds (paper, patent), fetched
+    #: caches (web, wolfram, youtube), and generators (oracle, random,
+    #: skill) don't accidentally accumulate session-context tags they
+    #: shouldn't carry. The flip-list is curated in
+    #: ``docs/design/mcp-cold-start-token-budget.md`` Phase 5 step 2:
+    #: memory, gripe, conversation, flashcard, quest, todo (numeric
+    #: refs) and markdown, plaintext, tex (file-rooted authored
+    #: content).
+    note_like: bool = False
+
     views: tuple[str, ...] = ()  # supported view= values
     modes: tuple[str, ...] = ()  # supported mode= values for put
 

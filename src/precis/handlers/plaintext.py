@@ -160,6 +160,7 @@ class PlaintextHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
+        note_like=True,
         views=("raw",),
         modes=_SUPPORTED_PUT_MODES,
     )

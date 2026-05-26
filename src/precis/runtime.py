@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from precis.config import PrecisConfig
@@ -74,6 +74,14 @@ class PrecisRuntime:
 
     config: PrecisConfig
     hub: Hub
+
+    #: Parsed ``PRECIS_DEFAULT_TAGS`` tuple, resolved once at runtime
+    #: build. Empty tuple when the env var is unset; the dispatch
+    #: hook short-circuits in that case so unconfigured deployments
+    #: pay zero per-call cost. Populated by :func:`build_runtime`;
+    #: tests that construct a ``PrecisRuntime`` directly use the
+    #: empty default unless they need to exercise the merge path.
+    default_tags_resolved: tuple[str, ...] = field(default_factory=tuple)
 
     # ----- delegating properties ---------------------------------------
 
@@ -320,6 +328,8 @@ class PrecisRuntime:
                 )
             args.update(extras)
 
+        self._apply_default_tags_policy(handler, verb, args)
+
         # Strip None args so handlers see absence as missing.
         clean = {k: v for k, v in args.items() if v is not None}
         try:
@@ -343,6 +353,72 @@ class PrecisRuntime:
         if kind_was_defaulted:
             response = self._tag_defaulted_kind(response, kind)
         return response
+
+    def _apply_default_tags_policy(
+        self,
+        handler: Handler,
+        verb: str,
+        args: dict[str, Any],
+    ) -> None:
+        """Apply ``PRECIS_DEFAULT_TAGS`` policy at the dispatch boundary.
+
+        Behaviour matrix:
+
+        - ``defaults`` empty (env unset): no-op for every verb.
+        - ``handler.spec.note_like`` False: no-op for every verb.
+          Ingested kinds (paper, patent), fetched caches (web,
+          wolfram, youtube), and generators (oracle, random,
+          skill) don't accumulate session-context tags.
+        - verb ``put`` on a note-like kind: merge defaults into
+          ``args['tags']`` (preserving caller's explicit-first
+          ordering) and emit an info hint listing the additions.
+          Existing tags are never duplicated.
+        - verb ``tag`` on a note-like kind: emit a suggestion hint
+          listing defaults missing from ``args.get('add')``. The
+          set is **not** mutated — ``tag`` is the agent's explicit
+          op, and silent mutation would surprise both the agent
+          and the operator. The hint surfaces the suggestion so
+          the agent can decide.
+        - Any other verb (get, search, edit, delete, link): no-op.
+          ``edit`` on note-like file kinds doesn't change tags via
+          its core surface, so default-tag interaction is moot
+          there. ``delete`` removes the ref entirely.
+
+        Mutates ``args`` in place when applicable (``put`` only).
+        Returns ``None``; observable effect is the merged ``tags``
+        and any emitted hint visible at end-of-request.
+        """
+        defaults = self.default_tags_resolved
+        if not defaults:
+            return
+        spec = handler.spec
+        if not getattr(spec, "note_like", False):
+            return
+
+        from precis import default_tags as _dt
+        from precis.hints import Hint
+
+        if verb == "put":
+            added = _dt.apply_to_put_args(args, defaults)
+            if added:
+                self.hub.emit_hint(
+                    Hint(
+                        text=("Added PRECIS_DEFAULT_TAGS to put: " + ", ".join(added)),
+                        topic="default_tags.merged",
+                    )
+                )
+        elif verb == "tag":
+            missing = _dt.suggest_missing(args.get("add"), defaults)
+            if missing:
+                self.hub.emit_hint(
+                    Hint(
+                        text=(
+                            "PRECIS_DEFAULT_TAGS suggested for tag add: "
+                            + ", ".join(missing)
+                        ),
+                        topic="default_tags.suggested",
+                    )
+                )
 
     @staticmethod
     def _accepted_kwargs(method: Any) -> set[str]:
@@ -773,6 +849,7 @@ def build_runtime(
         store = Store.connect(config.database_url)
         embedder = make_embedder(config.embedder, dim=store.embedding_dim())
 
+    from precis import default_tags as _dt
     from precis.kind_gate import parse_disabled
 
     hub = boot(
@@ -782,4 +859,8 @@ def build_runtime(
         python_roots=config.python_roots,
         kinds_disabled=parse_disabled(config.kinds_disabled),
     )
-    return PrecisRuntime(config=config, hub=hub)
+    return PrecisRuntime(
+        config=config,
+        hub=hub,
+        default_tags_resolved=_dt.parse(config.default_tags),
+    )

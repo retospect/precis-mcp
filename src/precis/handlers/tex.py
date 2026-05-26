@@ -70,6 +70,7 @@ class TexHandler(PlaintextHandler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
+        note_like=True,
         views=("raw", "toc"),
         modes=("create",),
     )
