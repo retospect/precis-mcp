@@ -160,6 +160,126 @@ but don't fail the suite on bugged ones:
 Both clusters are tracked here so we don't lose them between
 release and the post-release patch window.
 
+## 🔵 OQ-11 — verify FastMCP server-pinned-prompt support
+
+**Status**: open (verification only; design ships either way)
+**Severity**: polish
+**Owner**: `src/precis/mcp_modalities.py::register_skill_prompts`
+**Plan artefact**: `docs/design/mcp-cold-start-token-budget.md` §Open questions
+**Test**: none yet
+
+Phase 3 of the MCP session-ergonomics rollout
+(`PRECIS_STARTUP_SKILLS`) tags pinned skills on `prompts/list` and
+also surfaces them via a `Pinned skills:` line in
+`serverInfo.instructions` as a belt-and-suspenders fallback. The
+question is whether MCP 2025-06-18 + FastMCP 1.x lets a server
+flag a `prompts/list` entry as "render at session start", or
+whether the tag is purely a client-side convention.
+
+Action: read FastMCP source for `prompts/list` handler shape,
+read MCP 2025-06-18 §prompts. Either way the design ships — the
+banner notice carries the discovery channel — but the answer
+determines whether we can stop carrying the redundant banner
+line in a future cleanup.
+
+## 🔵 OQ-16 — `KindSpec.requires_env` convergence (non-patent)
+
+**Status**: open
+**Severity**: polish
+**Owner**: `src/precis/handlers/{oracle,math,web,youtube}.py`
+**Plan artefact**: `docs/design/mcp-cold-start-token-budget.md` §Open questions
+**ADR**: `docs/decisions/0013-mcp-session-context-env-vars.md` (mentions as deferred)
+**Test**: none yet
+
+Phase 4 of the MCP session-ergonomics rollout converted
+`PatentHandler`'s inline `EPO_OPS_KEY` / `EPO_OPS_SECRET` env
+gate from a boot-site if-block in `precis.dispatch.boot()` to a
+declarative `KindSpec.requires_env` plus an `__init__`-time
+`InitError`. The other env-gated handlers still read their env
+vars inline:
+
+- `oracle.py` — `OPENAI_API_KEY` (or whichever provider key).
+- `math.py` — `WOLFRAM_APP_ID`.
+- `web.py` — `FIRECRAWL_API_KEY`.
+- `youtube.py` — `YOUTUBE_API_KEY`.
+
+Each conversion is small (two-line spec + four-line `__init__`)
+but each wants its own review since the existing code paths have
+subtle differences (some swallow the missing-env case to a
+`KindSpec.supports_*=False` shape; others raise inline). Track
+as one ticket; convert one handler per follow-up commit.
+
+When all four are done, the boot-site gate machinery in
+`precis.dispatch.boot()` collapses to a single
+`_gated(handler_cls)` call per handler regardless of env shape,
+which is the design's "convergence" pay-off.
+
+## 🔵 OQ-17 — `PRECIS_DEFAULT_TAGS` × `workspace` auto-tag layering test
+
+**Status**: open
+**Severity**: polish
+**Owner**: `tests/test_default_tags.py` (new test) +
+`src/precis/handlers/{markdown,plaintext,tex}.py` (verify behaviour)
+**Plan artefact**: `docs/design/mcp-cold-start-token-budget.md` §Open questions
+**ADR**: `docs/decisions/0013-mcp-session-context-env-vars.md` (mentions as deferred)
+**Test**: none yet
+
+The prose-file handlers (markdown / plaintext / tex) auto-stamp
+every ref with the `workspace` flag tag on ingest (set by
+`precis.handlers._common.note.NoteHandler.put` via the pre-
+existing workspace-tag layer). Phase 5 of the MCP session-
+ergonomics rollout added `PRECIS_DEFAULT_TAGS` which merges
+operator-stated tags into every `put` on note-like kinds —
+which includes the prose-file trio.
+
+Tentative resolution from the design (OQ-17): the two layer.
+A markdown ref ingested with `PRECIS_DEFAULT_TAGS=fbproj` set
+should carry **both** `workspace` and `fbproj`. `workspace`
+identifies file-rooted-ness; `fbproj` identifies project
+context; both true simultaneously is the right semantics.
+
+But no test pins this today. The Phase 5 dispatch hook
+(`PrecisRuntime._apply_default_tags_policy`) merges defaults
+*before* the handler runs, and the workspace-tag layer fires
+*inside* the handler's `put`, so they shouldn't collide — but
+"shouldn't" wants a regression test before a future refactor
+silently breaks the layering.
+
+Test shape: parametrise on
+`(handler_cls in {Markdown, Plaintext, Tex},
+PRECIS_DEFAULT_TAGS in {None, "fbproj", "fbproj,scratch"})`,
+ingest a fixture, assert both workspace and the defaults are
+on the resulting ref's tag list.
+
+## 🔵 mypy errors on `tests/test_toon_roundtrip.py` + `tests/test_initial_migration.py`
+
+**Status**: open (pre-existing on `feat/storage-v2-step-b`)
+**Severity**: polish
+**Owner**: tests as named
+**Test**: `uv run mypy src tests` (currently 18 errors in 2 files)
+
+Surfaced during the MCP session-ergonomics DoD pass when running
+`uv run mypy src tests`. All 18 errors come from
+`15a025b "B1: greenfield v2 schema in a single 0001_initial.sql"`
+on this branch, not from any of the session-ergonomics work.
+
+Two clusters:
+
+- `tests/format/test_toon_roundtrip.py:86,92,100` — three calls
+  pass `list[dict[str, str]]` to a function expecting
+  `list[Mapping[str, Any]] | Mapping[str, Any]`. List invariance
+  on a covariant payload. Fix: change the call-site annotation
+  to `Sequence[Mapping[str, Any]]`, or cast.
+- `tests/test_initial_migration.py:241..442` — 15 sites that
+  iterate over `cur.fetchone()` results without checking for
+  `None`. The driver returns `None` if no row matched; mypy is
+  flagging the implicit `None`-iteration. Fix: assertion or
+  defensive-`is not None` per call site.
+
+Neither cluster gates merging the v7.1.0 release — they pre-date
+this work and are scoped to a different branch's intended-clean-up.
+Tracked here so they don't get lost between releases.
+
 ---
 
-_Last updated: 2026-05-22_
+_Last updated: 2026-05-26_
