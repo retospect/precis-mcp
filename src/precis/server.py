@@ -110,6 +110,26 @@ def _file_kind_counts(root: str, kinds: list[str]) -> dict[str, int]:
     return counts
 
 
+def _startup_skills_banner(runtime: PrecisRuntime) -> str:
+    """Render the ``PRECIS_STARTUP_SKILLS`` notice (or empty string).
+
+    Wraps :mod:`precis.startup_skills` so the server module owns the
+    config-to-banner translation and `_build_instructions` stays
+    declarative. Returns ``""`` when the env var is unset / empty
+    and no errors occurred — the design's "zero unconditional bytes
+    paid by operators who don't opt in" guarantee.
+    """
+    from precis import startup_skills
+
+    config = runtime.config
+    raw = getattr(config, "startup_skills", None)
+    cap_kb = getattr(config, "startup_skills_cap_kb", 50)
+    slugs = startup_skills.parse(raw)
+    if not slugs:
+        return ""
+    return startup_skills.format_banner(startup_skills.resolve(slugs, cap_kb=cap_kb))
+
+
 def _kinds_loaded_line(runtime: PrecisRuntime) -> str:
     """Render the ``Kinds loaded: ...`` summary appended to every banner.
 
@@ -146,6 +166,9 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     3. ``Kinds loaded:`` line — sorted live registry. Always appended;
        the empty case renders as ``Kinds loaded: (none)`` rather than
        a dangling colon.
+    4. Optional ``PRECIS_STARTUP_SKILLS`` banner — pinned-skill ids,
+       plus warning lines for unknown slugs and cap truncation. Zero
+       bytes when the env var is unset and no errors occurred.
 
     Branches for the preamble specifically:
 
@@ -165,7 +188,10 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     """
     core = _INSTRUCTIONS
     kinds_line = _kinds_loaded_line(runtime)
+    startup = _startup_skills_banner(runtime)
     tail = f"\n\n{kinds_line}"
+    if startup:
+        tail += f"\n{startup}"
     root = getattr(runtime.config, "root", None)
     if not root:
         return core + tail

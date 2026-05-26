@@ -75,6 +75,36 @@ class PrecisConfig(BaseSettings):
     hidden. Set via ``PRECIS_PYTHON_ROOTS`` in the env.
     """
 
+    startup_skills: str | None = None
+    """Comma-separated list of skill ids to pin at cold-start.
+
+    The bodies are reachable via the existing ``prompts/list`` wiring
+    (every available skill registers as a prompt). Pinning **also**
+    surfaces them in ``serverInfo.instructions`` so an agent sees the
+    operator's recommended starting set on the first connect, even
+    when the MCP client doesn't auto-render prompts at session start.
+
+    Format: ``precis-search-help,precis-paper-help`` (whitespace
+    around commas tolerated; duplicates ignored). Unknown slugs are
+    logged and surfaced via a one-line banner notice. The default
+    empty list keeps cold-start lean by design.
+
+    Set via ``PRECIS_STARTUP_SKILLS`` in the env. See
+    ``precis-startup-skills-help`` for the full discovery model.
+    """
+
+    startup_skills_cap_kb: int = 50
+    """Cap on the total resolved-body size of pinned startup skills.
+
+    Defensive guard against operator misconfiguration (pinning the
+    entire skill corpus inflates context for every connecting agent).
+    Skills whose cumulative body bytes would exceed the cap are
+    dropped from the tail with a banner notice. Set to ``0`` to
+    disable the cap (not recommended — leaves the budget unbounded).
+
+    Set via ``PRECIS_STARTUP_SKILLS_CAP_KB`` in the env.
+    """
+
 
 def load_config() -> PrecisConfig:
     return PrecisConfig()

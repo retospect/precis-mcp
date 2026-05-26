@@ -92,7 +92,9 @@ def _enumerate_prompt_skills(runtime: PrecisRuntime) -> list[str]:
     return deduped
 
 
-def _skill_prompt_tags(slug: str) -> set[str]:
+def _skill_prompt_tags(
+    slug: str, *, pinned_slugs: frozenset[str] = frozenset()
+) -> set[str]:
     """Pull tier/kind tags from a skill's front-matter for the prompt.
 
     Synthesised skills get a fixed ``synth`` tag; on-disk skills get
@@ -100,8 +102,15 @@ def _skill_prompt_tags(slug: str) -> set[str]:
     for every kind referenced in their slug or ``applies-to:``
     front-matter.  Modern clients use these for grouping / filtering
     in their prompt UI.
+
+    Skills listed in ``PRECIS_STARTUP_SKILLS`` and surviving
+    resolution (passed in via ``pinned_slugs``) additionally carry a
+    ``pinned`` tag so a modern client can prioritise the operator-
+    recommended starting set in its prompt picker.
     """
     base: set[str] = {"precis", "skill"}
+    if slug in pinned_slugs:
+        base.add("pinned")
     if slug in SkillHandler._SYNTHESIZED_SKILLS:
         base.add("synth")
         return base
@@ -144,6 +153,26 @@ def _make_skill_prompt_fn(runtime: PrecisRuntime, slug: str):
     return _fn
 
 
+def _resolved_pinned_slugs(runtime: PrecisRuntime) -> frozenset[str]:
+    """Resolve ``PRECIS_STARTUP_SKILLS`` to the surviving pinned set.
+
+    Honours the cap and silently drops unknowns — the banner notice
+    from :mod:`precis.startup_skills.format_banner` already surfaces
+    those errors. Resolution runs once per ``register_skill_prompts``
+    call; the returned set is immutable so callers can use it as a
+    membership-test only.
+    """
+    from precis import startup_skills
+
+    config = runtime.config
+    slugs = startup_skills.parse(getattr(config, "startup_skills", None))
+    if not slugs:
+        return frozenset()
+    cap_kb = getattr(config, "startup_skills_cap_kb", 50)
+    result = startup_skills.resolve(slugs, cap_kb=cap_kb)
+    return frozenset(result.pinned)
+
+
 def register_skill_prompts(mcp: FastMCP, runtime: PrecisRuntime) -> int:
     """Register every available skill as an MCP prompt.
 
@@ -156,8 +185,14 @@ def register_skill_prompts(mcp: FastMCP, runtime: PrecisRuntime) -> int:
     on ``prompts/get`` is the same markdown the corresponding
     ``get(kind='skill', id=<slug>)`` returns.  No skill text is
     duplicated.
+
+    Skills listed in ``PRECIS_STARTUP_SKILLS`` and surviving the
+    cap-and-lookup resolution land with a ``pinned`` tag so modern
+    MCP clients can prioritise the operator-recommended starting
+    set.
     """
     count = 0
+    pinned_slugs = _resolved_pinned_slugs(runtime)
     for slug in _enumerate_prompt_skills(runtime):
         title = SkillHandler._SYNTHESIZED_SKILLS.get(slug) or _skill_title(slug) or slug
         prompt = Prompt.from_function(
@@ -169,7 +204,7 @@ def register_skill_prompts(mcp: FastMCP, runtime: PrecisRuntime) -> int:
         # construction kwargs; ``Prompt.from_function`` doesn't take
         # tags directly so set them post-hoc.  Skipped on older
         # versions that ignore the field — best-effort.
-        tags = _skill_prompt_tags(slug)
+        tags = _skill_prompt_tags(slug, pinned_slugs=pinned_slugs)
         try:
             object.__setattr__(prompt, "tags", tags)
         except Exception:  # pragma: no cover — pydantic strictness
