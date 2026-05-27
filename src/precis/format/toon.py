@@ -48,7 +48,7 @@ The implementation is pure Python with no external dependency.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 # Cells containing any of these characters need wrapping; without
@@ -61,7 +61,7 @@ _QUOTE_TRIGGERS_FIXED = ("\n", "\r")
 
 
 def dump(
-    data: list[Mapping[str, Any]] | Mapping[str, Any],
+    data: Sequence[Mapping[str, Any]] | Mapping[str, Any],
     *,
     sep: str = "\t",
     schema: list[str] | None = None,

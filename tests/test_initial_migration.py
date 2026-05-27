@@ -103,6 +103,17 @@ def _query_all(dsn: str, sql: str, params: tuple = ()) -> list[tuple]:
         return list(cur.fetchall())
 
 
+def _one(cur: psycopg.Cursor) -> tuple:
+    """Fetch one row that the surrounding INSERT...RETURNING / SELECT
+    guarantees exists. Centralises the ``is not None`` assertion so the
+    call sites stay readable and mypy's ``"None" object is not iterable``
+    on the unpacking pattern no longer fires.
+    """
+    row = cur.fetchone()
+    assert row is not None, "_one(cur) returned None unexpectedly"
+    return row
+
+
 # ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------
@@ -238,7 +249,7 @@ def test_chunks_card_requires_negative_ord(fresh_db: str) -> None:
         cur.execute(
             "INSERT INTO refs (kind, title) VALUES ('paper', 'T') RETURNING ref_id"
         )
-        (ref_id,) = cur.fetchone()
+        (ref_id,) = _one(cur)
         with pytest.raises(psycopg.errors.CheckViolation):
             cur.execute(
                 "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
@@ -254,7 +265,7 @@ def test_chunks_body_requires_non_negative_ord(fresh_db: str) -> None:
         cur.execute(
             "INSERT INTO refs (kind, title) VALUES ('paper', 'T') RETURNING ref_id"
         )
-        (ref_id,) = cur.fetchone()
+        (ref_id,) = _one(cur)
         with pytest.raises(psycopg.errors.CheckViolation):
             cur.execute(
                 "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
@@ -269,7 +280,7 @@ def test_links_reject_ref_level_self_loop(fresh_db: str) -> None:
         cur.execute(
             "INSERT INTO refs (kind, title) VALUES ('paper', 'T') RETURNING ref_id"
         )
-        (ref_id,) = cur.fetchone()
+        (ref_id,) = _one(cur)
         with pytest.raises(psycopg.errors.CheckViolation):
             cur.execute(
                 "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by) "
@@ -289,15 +300,15 @@ def test_links_allow_chunk_level_self_link_across_chunks(
         cur.execute(
             "INSERT INTO refs (kind, title) VALUES ('paper', 'T') RETURNING ref_id"
         )
-        (ref_id,) = cur.fetchone()
+        (ref_id,) = _one(cur)
         cur.execute(
             "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
             "VALUES (%s, 0, 'paragraph', 'a'), (%s, 1, 'paragraph', 'b') "
             "RETURNING chunk_id",
             (ref_id, ref_id),
         )
-        chunk_a = cur.fetchone()[0]
-        chunk_b = cur.fetchone()[0]
+        chunk_a = _one(cur)[0]
+        chunk_b = _one(cur)[0]
         cur.execute(
             "INSERT INTO links "
             "(src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
@@ -318,7 +329,7 @@ def test_cascade_delete_from_refs_clears_dependents(fresh_db: str) -> None:
         cur.execute(
             "INSERT INTO refs (kind, title) VALUES ('paper', 'T') RETURNING ref_id"
         )
-        (ref_id,) = cur.fetchone()
+        (ref_id,) = _one(cur)
         cur.execute(
             "INSERT INTO ref_identifiers (id_kind, id_value, ref_id) "
             "VALUES ('pub_id', 'abc123', %s)",
@@ -344,7 +355,7 @@ def test_cascade_delete_from_refs_clears_dependents(fresh_db: str) -> None:
 
         for table in ("ref_identifiers", "chunks", "chunk_embeddings"):
             cur.execute(f"SELECT count(*) FROM {table}")
-            (n,) = cur.fetchone()
+            (n,) = _one(cur)
             assert n == 0, f"{table} not cascaded: {n} rows remain"
 
         assert chunks  # quiet linter; chunks variable is referenced
@@ -357,7 +368,7 @@ def test_v_refs_exposes_identifier_columns(fresh_db: str) -> None:
             "INSERT INTO refs (kind, title, year) "
             "VALUES ('paper', 'Test', 2024) RETURNING ref_id"
         )
-        (ref_id,) = cur.fetchone()
+        (ref_id,) = _one(cur)
         cur.execute(
             "INSERT INTO ref_identifiers (id_kind, id_value, ref_id) VALUES "
             "('pub_id',   'a3f7k1',    %s), "
@@ -369,7 +380,7 @@ def test_v_refs_exposes_identifier_columns(fresh_db: str) -> None:
             "FROM v_refs WHERE ref_id = %s",
             (ref_id,),
         )
-        pub_id, cite_key, paper_id, title, year = cur.fetchone()
+        pub_id, cite_key, paper_id, title, year = _one(cur)
         assert pub_id == "a3f7k1"
         assert cite_key == "miller24a"
         assert paper_id is None  # not inserted
@@ -388,14 +399,14 @@ def test_chunks_tsv_is_populated_on_insert(fresh_db: str) -> None:
         cur.execute(
             "INSERT INTO refs (kind, title) VALUES ('paper', 'T') RETURNING ref_id"
         )
-        (ref_id,) = cur.fetchone()
+        (ref_id,) = _one(cur)
         cur.execute(
             "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
             "VALUES (%s, 0, 'paragraph', 'the quick brown fox jumps over') "
             "RETURNING tsv::text",
             (ref_id,),
         )
-        (tsv,) = cur.fetchone()
+        (tsv,) = _one(cur)
         # ts_vector for that text contains lemmatised tokens
         assert "quick" in tsv
         assert "brown" in tsv
@@ -407,13 +418,13 @@ def test_chunk_embeddings_accepts_1024_vector(fresh_db: str) -> None:
         cur.execute(
             "INSERT INTO refs (kind, title) VALUES ('paper', 'T') RETURNING ref_id"
         )
-        (ref_id,) = cur.fetchone()
+        (ref_id,) = _one(cur)
         cur.execute(
             "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
             "VALUES (%s, 0, 'paragraph', 'x') RETURNING chunk_id",
             (ref_id,),
         )
-        (chunk_id,) = cur.fetchone()
+        (chunk_id,) = _one(cur)
         cur.execute(
             "INSERT INTO chunk_embeddings (chunk_id, embedder, vector) "
             "VALUES (%s, 'bge-m3', array_fill(0.01::real, ARRAY[1024])::vector)",
@@ -423,7 +434,7 @@ def test_chunk_embeddings_accepts_1024_vector(fresh_db: str) -> None:
             "SELECT vector_dims(vector) FROM chunk_embeddings WHERE chunk_id = %s",
             (chunk_id,),
         )
-        (dims,) = cur.fetchone()
+        (dims,) = _one(cur)
         assert dims == 1024
 
 
@@ -433,13 +444,13 @@ def test_chunk_embeddings_rejects_wrong_dim_vector(fresh_db: str) -> None:
         cur.execute(
             "INSERT INTO refs (kind, title) VALUES ('paper', 'T') RETURNING ref_id"
         )
-        (ref_id,) = cur.fetchone()
+        (ref_id,) = _one(cur)
         cur.execute(
             "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
             "VALUES (%s, 0, 'paragraph', 'x') RETURNING chunk_id",
             (ref_id,),
         )
-        (chunk_id,) = cur.fetchone()
+        (chunk_id,) = _one(cur)
         with pytest.raises(psycopg.errors.DataException):
             cur.execute(
                 "INSERT INTO chunk_embeddings (chunk_id, embedder, vector) "

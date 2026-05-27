@@ -81,6 +81,19 @@ dated review document:
   bge-m3's tendency to embed tiny chunks near the centroid where
   short generic queries also land; regression test in
   `tests/ingest/test_marker.py::TestMergeSmallBlocks`)
+- OQ-16 — `KindSpec.requires_env` convergence → **retracted 2026-05-27**
+  (description was stale: math already had `requires_env`; oracle has no
+  env reads at all; web uses trafilatura, not Firecrawl; youtube has no
+  env reads. The planned `OPENAI_API_KEY` / `FIRECRAWL_API_KEY` /
+  `YOUTUBE_API_KEY` gates never materialised because the implementation
+  went with free/local alternatives or doesn't need API access for those
+  kinds. No work needed.)
+- mypy errors on `test_toon_roundtrip.py` + `test_initial_migration.py` →
+  **shipped 2026-05-27** (`dump()` parameter relaxed from `list[Mapping]`
+  to `Sequence[Mapping]` to honour covariance; the 15 `cur.fetchone()`
+  unpacking sites route through a new `_one(cur)` helper that asserts
+  not-None. `mypy src tests` clean. All 24 migration tests still pass
+  against postgres.)
 
 See [`CHANGELOG.md`](CHANGELOG.md) entry for 6.0.0 for the per-fix
 landing record.
@@ -176,68 +189,8 @@ banner notice carries the discovery channel — but the answer
 determines whether we can stop carrying the redundant banner
 line in a future cleanup.
 
-## 🔵 OQ-16 — `KindSpec.requires_env` convergence (non-patent)
-
-**Status**: open
-**Severity**: polish
-**Owner**: `src/precis/handlers/{oracle,math,web,youtube}.py`
-**Plan artefact**: `docs/design/mcp-cold-start-token-budget.md` §Open questions
-**ADR**: `docs/decisions/0013-mcp-session-context-env-vars.md` (mentions as deferred)
-**Test**: none yet
-
-Phase 4 of the MCP session-ergonomics rollout converted
-`PatentHandler`'s inline `EPO_OPS_KEY` / `EPO_OPS_SECRET` env
-gate from a boot-site if-block in `precis.dispatch.boot()` to a
-declarative `KindSpec.requires_env` plus an `__init__`-time
-`InitError`. The other env-gated handlers still read their env
-vars inline:
-
-- `oracle.py` — `OPENAI_API_KEY` (or whichever provider key).
-- `math.py` — `WOLFRAM_APP_ID`.
-- `web.py` — `FIRECRAWL_API_KEY`.
-- `youtube.py` — `YOUTUBE_API_KEY`.
-
-Each conversion is small (two-line spec + four-line `__init__`)
-but each wants its own review since the existing code paths have
-subtle differences (some swallow the missing-env case to a
-`KindSpec.supports_*=False` shape; others raise inline). Track
-as one ticket; convert one handler per follow-up commit.
-
-When all four are done, the boot-site gate machinery in
-`precis.dispatch.boot()` collapses to a single
-`_gated(handler_cls)` call per handler regardless of env shape,
-which is the design's "convergence" pay-off.
-
-
-## 🔵 mypy errors on `tests/test_toon_roundtrip.py` + `tests/test_initial_migration.py`
-
-**Status**: open (pre-existing on `feat/storage-v2-step-b`)
-**Severity**: polish
-**Owner**: tests as named
-**Test**: `uv run mypy src tests` (currently 18 errors in 2 files)
-
-Surfaced during the MCP session-ergonomics DoD pass when running
-`uv run mypy src tests`. All 18 errors come from
-`15a025b "B1: greenfield v2 schema in a single 0001_initial.sql"`
-on this branch, not from any of the session-ergonomics work.
-
-Two clusters:
-
-- `tests/format/test_toon_roundtrip.py:86,92,100` — three calls
-  pass `list[dict[str, str]]` to a function expecting
-  `list[Mapping[str, Any]] | Mapping[str, Any]`. List invariance
-  on a covariant payload. Fix: change the call-site annotation
-  to `Sequence[Mapping[str, Any]]`, or cast.
-- `tests/test_initial_migration.py:241..442` — 15 sites that
-  iterate over `cur.fetchone()` results without checking for
-  `None`. The driver returns `None` if no row matched; mypy is
-  flagging the implicit `None`-iteration. Fix: assertion or
-  defensive-`is not None` per call site.
-
-Neither cluster gates merging the v7.1.0 release — they pre-date
-this work and are scoped to a different branch's intended-clean-up.
-Tracked here so they don't get lost between releases.
 
 ---
 
-_Last updated: 2026-05-27 (OQ-17 + acatome mojibake + merge-forward closed)_
+_Last updated: 2026-05-27 (OQ-17 + acatome mojibake + merge-forward + mypy
+closed; OQ-16 retracted as stale)_
