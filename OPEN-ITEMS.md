@@ -34,31 +34,6 @@ and no `title` field. One-line fix once `FastMCP` accepts
 - https://github.com/modelcontextprotocol/python-sdk/issues — file
   the request when the next mcp-critic pass surfaces it again.
 
-## 🔴 acatome `\ufffd` mojibake in served paper bodies
-
-**Status**: open (different package — `acatome-extract`)
-**Severity**: critical (paper bodies advertised as "clean markdown
-safe to quote" but aren't, for affected papers)
-**Owner**: `pips/packages/acatome-extract/src/acatome_extract/pipeline.py`
-**Test**: `pips/packages/precis-mcp/tests/test_paper_blocks.py::test_no_replacement_chars_in_blocks`
-
-`\ufffd` (`�`) replacement chars appear in some paper block
-bodies — em-dash bytes lost during PDF→markdown extraction.
-Live-probed 2026-05-02 in `acheson2026automated~118` and
-`xie2016dissecting~1283`. Other papers ingest cleanly.
-
-Fix lives in `acatome-extract`'s post-Marker pipeline: add a
-UTF-8 round-trip check; replace `\ufffd` with em-dash when context
-is `alpha-space-alpha`, else fail the bundle with a clear
-diagnostic. Regression test stays in `precis-mcp` because that's
-where the user-visible symptom lands — scan every served block,
-assert `\ufffd` absent.
-
-Cross-repo: file in `acatome-extract`'s issue tracker once the
-package has one. Until then, this entry is the canonical record.
-
----
-
 ## Recently retired (kept here briefly for grep-ability)
 
 The mcp-critic 2026-05-02 deep pass logged 14 findings; 13 are now
@@ -93,6 +68,19 @@ dated review document:
   merge actually lands on prose-file refs alongside the
   `workspace` flag; regression test in
   `tests/test_default_tags.py::test_default_tags_layer_with_workspace_on_prose_handlers`)
+- acatome U+FFFD mojibake → **shipped 2026-05-27**
+  (`precis.ingest.pipeline._repair_or_fail_mojibake` auto-repairs the
+  alpha-space-FFFD-space-alpha em-dash loss pattern and fails the
+  bundle with paper_id + page + 60-char context on any other FFFD;
+  mirrored upstream in `acatome_extract.pipeline`; regression test in
+  `tests/ingest/test_pipeline.py::TestRepairOrFailMojibake`)
+- ingest: tiny-block embedding noise → **shipped 2026-05-27**
+  (`marker._merge_small_blocks` absorbs `section_header` blocks
+  forward into the next body block and merges adjacent same-type
+  small blocks within a `(section_path, page)` window; addresses
+  bge-m3's tendency to embed tiny chunks near the centroid where
+  short generic queries also land; regression test in
+  `tests/ingest/test_marker.py::TestMergeSmallBlocks`)
 
 See [`CHANGELOG.md`](CHANGELOG.md) entry for 6.0.0 for the per-fix
 landing record.
@@ -252,4 +240,4 @@ Tracked here so they don't get lost between releases.
 
 ---
 
-_Last updated: 2026-05-26 (OQ-17 closed)_
+_Last updated: 2026-05-27 (OQ-17 + acatome mojibake + merge-forward closed)_
