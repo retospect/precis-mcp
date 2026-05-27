@@ -192,13 +192,17 @@ _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 def extract_blocks_marker(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
     """Extract structured blocks from a PDF using Marker.
 
-    Falls back to fitz page-level extraction if Marker fails.
+    Falls back to fitz page-level extraction if Marker fails. Both
+    paths feed into :func:`_merge_small_blocks` so the embedding-
+    quality fix lands regardless of which extractor produced the
+    blocks.
     """
     try:
-        return _marker_extract(pdf_path, paper_id)
+        blocks = _marker_extract(pdf_path, paper_id)
     except Exception as exc:
         log.warning("Marker failed on %s (%s), using fitz fallback", pdf_path.name, exc)
-        return _fitz_fallback(pdf_path, paper_id)
+        blocks = _fitz_fallback(pdf_path, paper_id)
+    return _merge_small_blocks(blocks, paper_id=paper_id)
 
 
 def _patch_text_config_ambiguity() -> None:
@@ -544,6 +548,125 @@ def _mark_junk(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 block["type"] = "junk"
 
     return blocks
+
+
+# Target combined length for the merge pass — set to ``DEFAULT_CHUNK_SIZE``
+# so a merged chunk never re-triggers ``split_text``. The splitter and
+# the merger meet at the same waterline: anything over this size gets
+# split, anything under has the chance to absorb a neighbour, the steady
+# state is "as close to ``DEFAULT_CHUNK_SIZE`` as the source allows".
+_MERGE_TARGET_CHARS = DEFAULT_CHUNK_SIZE
+
+
+def _merge_small_blocks(
+    blocks: list[dict[str, Any]],
+    *,
+    paper_id: str,
+) -> list[dict[str, Any]]:
+    """Reduce tiny-block noise that degrades embedding quality.
+
+    bge-m3 (and dense retrievers generally) embeds very short text
+    near the centroid of the embedding space — exactly where short
+    generic queries also land. Standalone ``section_header`` blocks
+    ("Methods", "Discussion") and one-sentence ``text`` fragments
+    therefore produce mid-score false positives across most queries
+    rather than being harmless dead weight. Two passes here address
+    the worst offenders:
+
+    1. **Headers absorb forward.** Walk in order; accumulate
+       consecutive ``section_header`` blocks; when the next non-header
+       non-junk block appears, prepend the headers' text into its body
+       (blank-line separated) and inherit the body block's type. The
+       heading now embeds with semantic context instead of as a bare
+       label; the resulting chunk's ``section_path`` stays the body
+       block's value (which already names the heading).
+    2. **Adjacent same-type small blocks merge.** Consecutive
+       ``text``+``text`` or ``list``+``list`` blocks under identical
+       ``section_path`` and ``page`` merge while combined length stays
+       at or under :data:`_MERGE_TARGET_CHARS`. Tables, figures, and
+       equations remain standalone — they either have useful
+       standalone addressability or are content-rich enough that a
+       short variant is still a meaningful retrieval anchor.
+
+    Pass-through guarantees:
+
+    - Junk blocks never merge with anything (would pollute kept
+      content with frontmatter noise).
+    - Pending headers immediately preceding a junk block flush as
+      standalone — we don't fold meaningful headings into garbage.
+    - After both passes, per-page block indices are renumbered and
+      ``node_id`` is recomputed so the output list is self-consistent
+      for downstream chunk INSERT. This is a one-time breaking change
+      for ``node_id`` stability across the merge introduction; all
+      papers need re-ingestion after this ships. Indices remain stable
+      thereafter (the merge is deterministic on identical input).
+    """
+    if not blocks:
+        return blocks
+
+    # Pass 1: section_header absorption.
+    pass1: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    for block in blocks:
+        btype = block.get("type", "")
+        if btype == "section_header":
+            pending.append(block)
+            continue
+        if btype == "junk" or not pending:
+            # Flush any pending headers as standalone — folding into
+            # junk content would propagate frontmatter pollution into
+            # the heading's semantic representation.
+            pass1.extend(pending)
+            pending = []
+            pass1.append(block)
+            continue
+        header_text = "\n\n".join(h.get("text", "") for h in pending)
+        merged = dict(block)
+        merged["text"] = f"{header_text}\n\n{block.get('text', '')}".strip()
+        pending = []
+        pass1.append(merged)
+    # Trailing headers with no following body — rare in practice (a
+    # final heading just before EOF) but keep them standalone rather
+    # than dropping content silently.
+    pass1.extend(pending)
+
+    # Pass 2: adjacent same-type small block merge.
+    mergeable_types = {"text", "list"}
+    pass2: list[dict[str, Any]] = []
+    for block in pass1:
+        if not pass2:
+            pass2.append(block)
+            continue
+        prev = pass2[-1]
+        btype = block.get("type", "")
+        combined_len = (
+            len(prev.get("text", ""))
+            + len(block.get("text", ""))
+            + 2  # blank-line separator added on merge
+        )
+        if (
+            btype in mergeable_types
+            and prev.get("type") == btype
+            and block.get("section_path") == prev.get("section_path")
+            and block.get("page") == prev.get("page")
+            and combined_len <= _MERGE_TARGET_CHARS
+        ):
+            prev["text"] = f"{prev.get('text', '')}\n\n{block.get('text', '')}"
+        else:
+            pass2.append(block)
+
+    # Renumber per-page block indices and rewrite ``node_id`` so the
+    # (page, idx, node_id) triple stays self-consistent. When no
+    # merges actually fired this is a no-op — the counter walks the
+    # same sequence the original emitter walked.
+    per_page_idx: dict[int, int] = {}
+    for block in pass2:
+        page = block.get("page", 0) or 0
+        idx = per_page_idx.get(page, 0)
+        per_page_idx[page] = idx + 1
+        block["node_id"] = make_node_id(paper_id, page, idx)
+
+    return pass2
 
 
 _HEADING_PATTERN = re.compile(r"^(\d+[\.\s]\s*\S|[A-Z][A-Z\s]{2,}$)", re.MULTILINE)

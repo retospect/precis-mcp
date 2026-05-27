@@ -1,4 +1,5 @@
-"""Tests for marker.py post-processing: junk detection and link stripping."""
+"""Tests for marker.py post-processing: junk detection, link stripping,
+and the small-block merge pass."""
 
 from __future__ import annotations
 
@@ -7,8 +8,10 @@ import pytest
 from precis.ingest.marker import (
     _JUNK_HEADING_RE,
     _MD_LINK_RE,
+    _MERGE_TARGET_CHARS,
     _clean_text,
     _mark_junk,
+    _merge_small_blocks,
 )
 
 
@@ -182,6 +185,235 @@ class TestMarkJunk:
         result = _mark_junk(blocks)
         assert result[0]["text"] == "COPYRIGHT"
         assert result[1]["text"] == "© 2025 Authors"
+
+
+class TestMergeSmallBlocks:
+    """Pins the merge-forward pass.
+
+    Two rules under test:
+
+    1. ``section_header`` blocks absorb forward into the next non-header
+       non-junk block; the merged block inherits the body's type.
+    2. Adjacent same-type small blocks (text+text, list+list) merge
+       within a (section_path, page) window while combined length
+       stays at or under ``_MERGE_TARGET_CHARS``.
+
+    Pass-through guarantees: junk blocks never absorb headers; tables /
+    figures / equations stay standalone; per-page indices renumber after
+    merging so ``node_id`` stays self-consistent.
+    """
+
+    @staticmethod
+    def _b(
+        btype: str,
+        text: str,
+        *,
+        section_path: list[str] | None = None,
+        page: int = 0,
+        node_id: str = "00000000",
+    ) -> dict[str, object]:
+        return {
+            "node_id": node_id,
+            "page": page,
+            "type": btype,
+            "text": text,
+            "section_path": section_path or [],
+        }
+
+    def test_section_header_absorbed_into_next_text(self):
+        blocks = [
+            self._b("section_header", "Methods", section_path=["Methods"]),
+            self._b("text", "We used GC-MS.", section_path=["Methods"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 1
+        assert result[0]["type"] == "text"
+        assert result[0]["text"] == "Methods\n\nWe used GC-MS."
+        assert result[0]["section_path"] == ["Methods"]
+
+    def test_stacked_headers_absorb_together(self):
+        blocks = [
+            self._b("section_header", "Results", section_path=["Results"]),
+            self._b(
+                "section_header",
+                "3.2 Yield",
+                section_path=["Results", "3.2 Yield"],
+            ),
+            self._b(
+                "text",
+                "Yield was 92%.",
+                section_path=["Results", "3.2 Yield"],
+            ),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 1
+        assert result[0]["text"] == "Results\n\n3.2 Yield\n\nYield was 92%."
+        assert result[0]["type"] == "text"
+
+    def test_trailing_header_kept_standalone(self):
+        blocks = [
+            self._b("text", "Body.", section_path=["Intro"]),
+            self._b("section_header", "End", section_path=["End"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 2
+        assert result[1]["type"] == "section_header"
+        assert result[1]["text"] == "End"
+
+    def test_header_above_junk_flushes_as_standalone(self):
+        """Heading just before a junk block must not fold into junk."""
+        blocks = [
+            self._b("section_header", "Methods", section_path=["Methods"]),
+            self._b(
+                "junk",
+                "© 2025 ...",
+                section_path=["COPYRIGHT"],
+            ),
+            self._b("text", "Body.", section_path=["Methods"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        # Heading stays as standalone (flushed before junk).
+        assert result[0]["type"] == "section_header"
+        assert result[0]["text"] == "Methods"
+        assert result[1]["type"] == "junk"
+        # Body stays standalone — no header pending when it arrives.
+        assert result[2]["type"] == "text"
+        assert result[2]["text"] == "Body."
+
+    def test_adjacent_text_blocks_merge_within_section(self):
+        blocks = [
+            self._b("text", "First sentence.", section_path=["Intro"]),
+            self._b("text", "Second sentence.", section_path=["Intro"]),
+            self._b("text", "Third sentence.", section_path=["Intro"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 1
+        assert (
+            result[0]["text"]
+            == "First sentence.\n\nSecond sentence.\n\nThird sentence."
+        )
+
+    def test_text_does_not_merge_across_section_path(self):
+        blocks = [
+            self._b("text", "End of intro.", section_path=["Intro"]),
+            self._b("text", "Start of methods.", section_path=["Methods"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 2
+
+    def test_text_does_not_merge_across_page(self):
+        blocks = [
+            self._b("text", "Page one.", section_path=["Intro"], page=0),
+            self._b("text", "Page two.", section_path=["Intro"], page=1),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 2
+
+    def test_text_does_not_merge_across_type(self):
+        """text + list shouldn't merge — heterogeneous grammar."""
+        blocks = [
+            self._b("text", "Para.", section_path=["X"]),
+            self._b("list", "- item one\n- item two", section_path=["X"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 2
+
+    def test_merge_stops_at_target_size(self):
+        """Combined length must stay at or under _MERGE_TARGET_CHARS."""
+        big = "x" * (_MERGE_TARGET_CHARS - 50)
+        small = "y" * 100  # combined > target
+        blocks = [
+            self._b("text", big, section_path=["X"]),
+            self._b("text", small, section_path=["X"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 2  # no merge — combined would exceed target
+
+    def test_tables_stay_standalone(self):
+        blocks = [
+            self._b("section_header", "Data", section_path=["Data"]),
+            self._b(
+                "table",
+                "| col1 | col2 |\n|---|---|\n| 1 | 2 |",
+                section_path=["Data"],
+            ),
+            self._b("table", "| a |\n|---|\n| b |", section_path=["Data"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        # Header absorbed into first table; second table stays standalone.
+        assert len(result) == 2
+        assert result[0]["type"] == "table"
+        assert result[0]["text"].startswith("Data\n\n| col1")
+        assert result[1]["type"] == "table"
+
+    def test_figures_absorb_headers_but_dont_merge_with_each_other(self):
+        blocks = [
+            self._b("section_header", "Results", section_path=["Results"]),
+            self._b(
+                "figure",
+                "Figure 1. Yield curve.",
+                section_path=["Results"],
+            ),
+            self._b("figure", "Figure 2. Time series.", section_path=["Results"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 2
+        assert result[0]["type"] == "figure"
+        assert result[0]["text"] == "Results\n\nFigure 1. Yield curve."
+        assert result[1]["type"] == "figure"
+        assert result[1]["text"] == "Figure 2. Time series."
+
+    def test_node_id_renumbered_per_page_after_merge(self):
+        from precis.identity import make_node_id
+
+        blocks = [
+            self._b("section_header", "H", section_path=["H"], page=0),
+            self._b("text", "Body one.", section_path=["H"], page=0),
+            self._b("text", "Body two.", section_path=["H"], page=0),
+            self._b("text", "Body three.", section_path=["H"], page=1),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        # Page 0: heading + body1 + body2 → all merge to one block.
+        # Page 1: body3 standalone.
+        assert len(result) == 2
+        assert result[0]["node_id"] == make_node_id("p1", 0, 0)
+        assert result[1]["node_id"] == make_node_id("p1", 1, 0)
+
+    def test_empty_input_returns_empty(self):
+        assert _merge_small_blocks([], paper_id="p1") == []
+
+    def test_only_headers_kept_standalone(self):
+        """A page that's nothing but headings (rare) keeps every heading."""
+        blocks = [
+            self._b("section_header", "A", section_path=["A"]),
+            self._b("section_header", "B", section_path=["B"]),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 2
+        assert all(b["type"] == "section_header" for b in result)
+
+    def test_no_merges_preserves_indices(self):
+        """When no merge fires, node_ids match the original per-page sequence."""
+        from precis.identity import make_node_id
+
+        blocks = [
+            self._b(
+                "table",
+                "| a |\n|---|\n| b |",
+                section_path=["X"],
+                page=0,
+            ),
+            self._b(
+                "table",
+                "| c |\n|---|\n| d |",
+                section_path=["X"],
+                page=0,
+            ),
+        ]
+        result = _merge_small_blocks(blocks, paper_id="p1")
+        assert len(result) == 2
+        assert result[0]["node_id"] == make_node_id("p1", 0, 0)
+        assert result[1]["node_id"] == make_node_id("p1", 0, 1)
 
 
 class TestMdLinkStrip:
