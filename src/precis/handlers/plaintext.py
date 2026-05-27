@@ -484,6 +484,7 @@ class PlaintextHandler(Handler):
         id: str | int | None = None,
         text: str | None = None,
         mode: str | None = None,
+        tags: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         """Create a new paragraph-block file.
@@ -491,6 +492,15 @@ class PlaintextHandler(Handler):
         Per the seven-verb surface (D6), ``put`` is creation-only on
         file kinds. Region edits live on the ``edit`` verb; region
         deletes live on ``delete``.
+
+        ``tags=`` is the D3 shortcut for "create then tag": the new
+        ref carries the listed tags in addition to the auto-stamped
+        ``workspace`` flag. The runtime also layers
+        ``PRECIS_DEFAULT_TAGS`` into this list via
+        :meth:`PrecisRuntime._apply_default_tags_policy` before the
+        handler runs (see ADR 0013 / OQ-17), so an operator-stated
+        session-context tag set lands on every prose-file ref
+        without per-call wiring on the agent side.
         """
         if mode in self._LEGACY_PUT_MODES_TO_EDIT:
             new_mode = "find-replace" if mode == "edit" else mode
@@ -534,12 +544,19 @@ class PlaintextHandler(Handler):
                 preferred_ext = ext
                 break
         slug, _sel, _path_view = _parse_file_id(raw_id, extensions=self._EXTENSIONS)
-        return self._put_create(slug, text, preferred_ext=preferred_ext)
+        return self._put_create(
+            slug, text, preferred_ext=preferred_ext, tags=tags
+        )
 
     # ── put helpers ────────────────────────────────────────────────
 
     def _put_create(
-        self, slug: str, text: str | None, *, preferred_ext: str | None = None
+        self,
+        slug: str,
+        text: str | None,
+        *,
+        preferred_ext: str | None = None,
+        tags: list[str] | None = None,
     ) -> Response:
         path = self._resolve_path(slug, must_exist=False, preferred_ext=preferred_ext)
         if path.exists():
@@ -567,6 +584,10 @@ class PlaintextHandler(Handler):
         _atomic_write(path, body)
         ref = self._ensure_ingested(slug)
         assert ref is not None
+        if tags:
+            apply_tag_ops(
+                self.store, self._KIND, ref.id, tags=tags, untags=None
+            )
         n = self.store.count_blocks(ref.id)
         return Response(body=f"created {self._KIND} {slug!r} ({n} paragraph(s))")
 

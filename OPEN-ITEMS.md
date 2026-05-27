@@ -87,6 +87,12 @@ dated review document:
 - "eager skill cache" critic finding → **retracted** (was based on
   incorrect storage-model assumption; skill kind is file-backed,
   not DB-backed, so there's no async tsvector to make eager)
+- OQ-17 — `PRECIS_DEFAULT_TAGS` × `workspace` auto-tag layering →
+  **shipped 2026-05-26** (`PlaintextHandler.put` now accepts and
+  applies `tags=` via `apply_tag_ops`, so the runtime's default-tags
+  merge actually lands on prose-file refs alongside the
+  `workspace` flag; regression test in
+  `tests/test_default_tags.py::test_default_tags_layer_with_workspace_on_prose_handlers`)
 
 See [`CHANGELOG.md`](CHANGELOG.md) entry for 6.0.0 for the per-fix
 landing record.
@@ -214,42 +220,6 @@ When all four are done, the boot-site gate machinery in
 `_gated(handler_cls)` call per handler regardless of env shape,
 which is the design's "convergence" pay-off.
 
-## 🔵 OQ-17 — `PRECIS_DEFAULT_TAGS` × `workspace` auto-tag layering test
-
-**Status**: open
-**Severity**: polish
-**Owner**: `tests/test_default_tags.py` (new test) +
-`src/precis/handlers/{markdown,plaintext,tex}.py` (verify behaviour)
-**Plan artefact**: `docs/design/mcp-cold-start-token-budget.md` §Open questions
-**ADR**: `docs/decisions/0013-mcp-session-context-env-vars.md` (mentions as deferred)
-**Test**: none yet
-
-The prose-file handlers (markdown / plaintext / tex) auto-stamp
-every ref with the `workspace` flag tag on ingest (set by
-`precis.handlers._common.note.NoteHandler.put` via the pre-
-existing workspace-tag layer). Phase 5 of the MCP session-
-ergonomics rollout added `PRECIS_DEFAULT_TAGS` which merges
-operator-stated tags into every `put` on note-like kinds —
-which includes the prose-file trio.
-
-Tentative resolution from the design (OQ-17): the two layer.
-A markdown ref ingested with `PRECIS_DEFAULT_TAGS=fbproj` set
-should carry **both** `workspace` and `fbproj`. `workspace`
-identifies file-rooted-ness; `fbproj` identifies project
-context; both true simultaneously is the right semantics.
-
-But no test pins this today. The Phase 5 dispatch hook
-(`PrecisRuntime._apply_default_tags_policy`) merges defaults
-*before* the handler runs, and the workspace-tag layer fires
-*inside* the handler's `put`, so they shouldn't collide — but
-"shouldn't" wants a regression test before a future refactor
-silently breaks the layering.
-
-Test shape: parametrise on
-`(handler_cls in {Markdown, Plaintext, Tex},
-PRECIS_DEFAULT_TAGS in {None, "fbproj", "fbproj,scratch"})`,
-ingest a fixture, assert both workspace and the defaults are
-on the resulting ref's tag list.
 
 ## 🔵 mypy errors on `tests/test_toon_roundtrip.py` + `tests/test_initial_migration.py`
 
@@ -282,4 +252,4 @@ Tracked here so they don't get lost between releases.
 
 ---
 
-_Last updated: 2026-05-26_
+_Last updated: 2026-05-26 (OQ-17 closed)_

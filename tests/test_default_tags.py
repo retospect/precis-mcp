@@ -12,12 +12,20 @@ Phase 5 of the cold-start token budget design
   on ``put`` for note-like kinds, emits a hint, and is a no-op for
   non-note-like kinds and for verbs other than ``put`` / ``tag``.
 - ``tag`` verb gets a suggestion hint without mutation.
+- End-to-end: ``PRECIS_DEFAULT_TAGS`` layered with the ``workspace``
+  auto-tag on prose-file kinds (markdown / plaintext / tex) — OQ-17
+  from the design / ADR 0013. Both layers must land on the resulting
+  ref: ``workspace`` for file-rooted-ness, defaults for session
+  context.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+
+import pytest
 
 from precis import default_tags
 from precis.hints import Hint
@@ -405,3 +413,134 @@ def test_build_runtime_default_tags_default_empty(monkeypatch) -> None:
     )
     rt = build_runtime(config=config)
     assert rt.default_tags_resolved == ()
+
+
+# ---------------------------------------------------------------------------
+# OQ-17: PRECIS_DEFAULT_TAGS × workspace auto-tag layering on prose-file kinds
+# ---------------------------------------------------------------------------
+#
+# Background (ADR 0013, OQ-17 in OPEN-ITEMS.md): the prose-file handlers
+# (markdown / plaintext / tex) auto-stamp every ingested ref with the
+# ``workspace`` flag tag — useful so an agent can scope
+# ``search(tags=['workspace'])`` to file-rooted content. Phase 5 added the
+# ``PRECIS_DEFAULT_TAGS`` env var, which the runtime layers into every
+# ``put`` on note-like kinds (markdown / plaintext / tex are note-like).
+# The design's tentative position was that the two layers cooperate:
+# ``workspace`` identifies file-rooted-ness, defaults identify session
+# context; both true simultaneously is the right semantics.
+#
+# This section pins the layering end-to-end through ``runtime.dispatch``
+# so the runtime's ``_apply_default_tags_policy`` hook actually fires
+# (the unit tests above stub the handler — they don't catch the case
+# where the handler's ``put`` silently drops the merged ``tags=``).
+
+
+_PROSE_FIXTURES: list[tuple[str, str, str]] = [
+    ("plaintext", "notes.txt", "para one.\n\npara two.\n"),
+    ("markdown", "notes.md", "# Heading\n\npara one.\n\npara two.\n"),
+    ("tex", "notes.tex", "\\section{intro}\n\nbody paragraph.\n"),
+]
+
+
+def _register_prose_handlers(hub: Any, root: Path) -> None:
+    """Construct + register the three prose-file handlers against ``hub``.
+
+    Mirrors what :func:`precis.dispatch.boot` does for the file-handler
+    trio, minus the gating bookkeeping. Calling ``_register_with``
+    directly is the supported way to wire a handler into a hand-built
+    hub for tests (see ``protocol.Handler._register_with``).
+    """
+    from precis.handlers.markdown import MarkdownHandler
+    from precis.handlers.plaintext import PlaintextHandler
+    from precis.handlers.tex import TexHandler
+
+    for cls in (PlaintextHandler, MarkdownHandler, TexHandler):
+        handler = cls(hub=hub, root=root)
+        handler._register_with(hub)
+
+
+def _tag_string_set(tags: list[Any]) -> set[str]:
+    """Flatten ``store.tags_for`` rows into a canonical string set.
+
+    Open / flag namespaces collapse to their bare value (``fbproj`` /
+    ``workspace``); closed-prefix tags use ``prefix:value`` so any
+    closed-axis defaults remain distinguishable. Matches the agent-
+    facing rendering used everywhere else in the codebase.
+    """
+    out: set[str] = set()
+    for tag in tags:
+        if tag.namespace == "closed":
+            out.add(f"{tag.prefix}:{tag.value}")
+        else:
+            out.add(tag.value)
+    return out
+
+
+@pytest.mark.parametrize(("kind", "filename", "body"), _PROSE_FIXTURES)
+@pytest.mark.parametrize(
+    ("default_tags_env", "expected_defaults"),
+    [
+        (None, ()),
+        ("fbproj", ("fbproj",)),
+        ("fbproj,scratch", ("fbproj", "scratch")),
+    ],
+)
+def test_default_tags_layer_with_workspace_on_prose_handlers(
+    store: Any,
+    tmp_path: Path,
+    kind: str,
+    filename: str,
+    body: str,
+    default_tags_env: str | None,
+    expected_defaults: tuple[str, ...],
+) -> None:
+    """``workspace`` and ``PRECIS_DEFAULT_TAGS`` layer on every prose-file
+    ``put``. ADR 0013 OQ-17.
+
+    Pins the design's tentative contract: a fresh markdown / plaintext /
+    tex ref carries the auto-stamped ``workspace`` flag plus every
+    operator-stated default. Regression guard against a future refactor
+    that drops one layer (handler signature drift, dispatch-hook
+    re-routing, ``note_like`` flag flip, etc.).
+    """
+    from precis import default_tags as _dt
+    from precis.config import PrecisConfig
+    from precis.dispatch import Hub
+    from precis.embedder import MockEmbedder
+    from precis.runtime import PrecisRuntime
+
+    root = tmp_path / "root"
+    root.mkdir()
+
+    hub = Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
+    _register_prose_handlers(hub, root)
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(),
+        hub=hub,
+        default_tags_resolved=_dt.parse(default_tags_env),
+    )
+
+    slug = filename.rsplit(".", 1)[0]
+    out = rt.dispatch(
+        "put",
+        {"kind": kind, "id": slug, "text": body, "mode": "create"},
+    )
+    assert f"created {kind} '{slug}'" in out, (
+        f"put({kind=}) failed: {out!r}"
+    )
+
+    ref = store.get_ref(kind=kind, id=slug)
+    assert ref is not None, f"{kind}: ref not found after put"
+
+    tag_strs = _tag_string_set(store.tags_for(ref.id))
+
+    assert "workspace" in tag_strs, (
+        f"{kind}: workspace flag missing after put with "
+        f"PRECIS_DEFAULT_TAGS={default_tags_env!r}; got {sorted(tag_strs)}"
+    )
+    for default in expected_defaults:
+        assert default in tag_strs, (
+            f"{kind}: default tag {default!r} missing after put with "
+            f"PRECIS_DEFAULT_TAGS={default_tags_env!r}; got {sorted(tag_strs)}"
+        )
