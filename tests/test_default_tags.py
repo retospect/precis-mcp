@@ -526,9 +526,7 @@ def test_default_tags_layer_with_workspace_on_prose_handlers(
         "put",
         {"kind": kind, "id": slug, "text": body, "mode": "create"},
     )
-    assert f"created {kind} '{slug}'" in out, (
-        f"put({kind=}) failed: {out!r}"
-    )
+    assert f"created {kind} '{slug}'" in out, f"put({kind=}) failed: {out!r}"
 
     ref = store.get_ref(kind=kind, id=slug)
     assert ref is not None, f"{kind}: ref not found after put"

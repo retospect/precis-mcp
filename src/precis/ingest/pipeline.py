@@ -99,6 +99,7 @@ def _repair_or_fail_mojibake(
 
     return blocks
 
+
 # ---------------------------------------------------------------------------
 # Marker block type → chunks.chunk_kind mapping
 # ---------------------------------------------------------------------------
@@ -331,9 +332,7 @@ def extract_paper(
     )
 
     blocks = extract_blocks_marker(pdf_path, paper_id)
-    blocks = _repair_or_fail_mojibake(
-        blocks, paper_id=paper_id, pdf_path=pdf_path
-    )
+    blocks = _repair_or_fail_mojibake(blocks, paper_id=paper_id, pdf_path=pdf_path)
     body_chunks = _blocks_to_chunks(blocks)
     cards = _build_cards(
         title=metadata.title,

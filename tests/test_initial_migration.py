@@ -180,9 +180,7 @@ def test_all_expected_views_present(fresh_db: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "table, expected", sorted(EXPECTED_SEED_COUNTS.items())
-)
+@pytest.mark.parametrize("table, expected", sorted(EXPECTED_SEED_COUNTS.items()))
 def test_seed_counts(fresh_db: str, table: str, expected: int) -> None:
     _apply_migration(fresh_db)
     (count,) = _query_one(fresh_db, f"SELECT count(*) FROM {table}")
@@ -232,8 +230,7 @@ def test_only_one_default_summarizer(fresh_db: str) -> None:
         with pytest.raises(psycopg.errors.UniqueViolation):
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO summarizers (name, is_default) "
-                    "VALUES ('dupe', TRUE)"
+                    "INSERT INTO summarizers (name, is_default) VALUES ('dupe', TRUE)"
                 )
 
 

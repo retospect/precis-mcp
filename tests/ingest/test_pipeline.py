@@ -471,10 +471,7 @@ class TestRepairOrFailMojibake:
 
     def test_empty_input_returns_empty(self) -> None:
         assert (
-            _repair_or_fail_mojibake(
-                [], paper_id="p1", pdf_path=Path("p1.pdf")
-            )
-            == []
+            _repair_or_fail_mojibake([], paper_id="p1", pdf_path=Path("p1.pdf")) == []
         )
 
     def test_regex_does_not_match_digit_or_punctuation(self) -> None:

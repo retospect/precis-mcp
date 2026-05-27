@@ -544,9 +544,7 @@ class PlaintextHandler(Handler):
                 preferred_ext = ext
                 break
         slug, _sel, _path_view = _parse_file_id(raw_id, extensions=self._EXTENSIONS)
-        return self._put_create(
-            slug, text, preferred_ext=preferred_ext, tags=tags
-        )
+        return self._put_create(slug, text, preferred_ext=preferred_ext, tags=tags)
 
     # ── put helpers ────────────────────────────────────────────────
 
@@ -585,9 +583,7 @@ class PlaintextHandler(Handler):
         ref = self._ensure_ingested(slug)
         assert ref is not None
         if tags:
-            apply_tag_ops(
-                self.store, self._KIND, ref.id, tags=tags, untags=None
-            )
+            apply_tag_ops(self.store, self._KIND, ref.id, tags=tags, untags=None)
         n = self.store.count_blocks(ref.id)
         return Response(body=f"created {self._KIND} {slug!r} ({n} paragraph(s))")
 

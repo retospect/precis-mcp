@@ -167,10 +167,7 @@ def load(text: str, *, sep: str = "\t") -> list[dict[str, str]]:
         return []
 
     return [
-        {
-            header[i]: row[i] if i < len(row) else ""
-            for i in range(len(header))
-        }
+        {header[i]: row[i] if i < len(row) else "" for i in range(len(header))}
         for row in rows
     ]
 
