@@ -18,8 +18,11 @@ import pytest
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
 from precis.ingest.pdf_metadata import DoiProvenance, PdfMetadata
 from precis.ingest.pipeline import (
+    _EM_DASH_LOST_RE,
+    _REPLACEMENT_CHAR,
     _blocks_to_chunks,
     _build_cards,
+    _repair_or_fail_mojibake,
     _resolve_identity,
     extract_paper,
     fetch_paper_by_arxiv,
@@ -396,3 +399,87 @@ class TestPaperToWriteContract:
                 assert c.chunk_kind.startswith("card_")
             else:
                 assert not c.chunk_kind.startswith("card_")
+
+
+# ---------------------------------------------------------------------------
+# _repair_or_fail_mojibake — U+FFFD survival check
+# ---------------------------------------------------------------------------
+
+
+class TestRepairOrFailMojibake:
+    """Pins the U+FFFD repair / fail-fast pass.
+
+    OPEN-ITEMS.md `acatome \\ufffd mojibake` regression test. Mirrors
+    the upstream test in ``acatome-extract/tests/test_pipeline.py``;
+    repeated here because precis-mcp replaced the upstream's bundle-
+    writing path with direct DB inserts, so the cleanup lives at this
+    layer too.
+    """
+
+    @staticmethod
+    def _block(text: str, *, page: int = 0, btype: str = "text") -> dict:
+        return {"page": page, "type": btype, "text": text}
+
+    def test_repairs_em_dash_between_words(self) -> None:
+        blocks = [self._block(f"compound {_REPLACEMENT_CHAR} silver")]
+        result = _repair_or_fail_mojibake(
+            blocks, paper_id="p1", pdf_path=Path("p1.pdf")
+        )
+        assert result[0]["text"] == "compound — silver"
+
+    def test_passes_through_text_without_fffd(self) -> None:
+        blocks = [
+            self._block("normal prose"),
+            self._block("already has — em-dash"),
+        ]
+        result = _repair_or_fail_mojibake(
+            blocks, paper_id="p1", pdf_path=Path("p1.pdf")
+        )
+        assert result[0]["text"] == "normal prose"
+        assert result[1]["text"] == "already has — em-dash"
+
+    def test_fails_on_unrepairable_fffd(self) -> None:
+        """FFFD inside numbers / next to punctuation / without flanking
+        spaces all fail — we don't know what was lost."""
+        for bad in (
+            f"value{_REPLACEMENT_CHAR}, then more",
+            f"page 1{_REPLACEMENT_CHAR}2 of report",
+            f"compound{_REPLACEMENT_CHAR}silver",
+        ):
+            with pytest.raises(ValueError, match="unrepairable U\\+FFFD"):
+                _repair_or_fail_mojibake(
+                    [self._block(bad)],
+                    paper_id="p1",
+                    pdf_path=Path("p1.pdf"),
+                )
+
+    def test_error_message_includes_paper_page_and_pdf(self) -> None:
+        blocks = [
+            self._block("ok"),
+            self._block(f"bad{_REPLACEMENT_CHAR}context", page=7),
+        ]
+        with pytest.raises(ValueError) as excinfo:
+            _repair_or_fail_mojibake(
+                blocks,
+                paper_id="acheson2026automated",
+                pdf_path=Path("acheson2026.pdf"),
+            )
+        msg = str(excinfo.value)
+        assert "acheson2026automated" in msg
+        assert "7" in msg
+        assert "acheson2026.pdf" in msg
+
+    def test_empty_input_returns_empty(self) -> None:
+        assert (
+            _repair_or_fail_mojibake(
+                [], paper_id="p1", pdf_path=Path("p1.pdf")
+            )
+            == []
+        )
+
+    def test_regex_does_not_match_digit_or_punctuation(self) -> None:
+        # Direct regex assertions — useful for diagnosing future failures.
+        assert _EM_DASH_LOST_RE.search(f"a {_REPLACEMENT_CHAR} b")
+        assert not _EM_DASH_LOST_RE.search(f"1 {_REPLACEMENT_CHAR} 2")
+        assert not _EM_DASH_LOST_RE.search(f"a{_REPLACEMENT_CHAR}b")
+        assert not _EM_DASH_LOST_RE.search(f"a {_REPLACEMENT_CHAR} ,")

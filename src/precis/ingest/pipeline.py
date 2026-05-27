@@ -24,6 +24,7 @@ when the PDF is added via :func:`extract_paper`.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,62 @@ from precis.ingest.lookup import lookup_doi
 from precis.ingest.marker import extract_blocks_marker
 from precis.ingest.pdf_metadata import DoiProvenance, extract_metadata_from_sources
 from precis.ingest.semantic_scholar import lookup_s2
+
+# U+FFFD — Unicode "replacement character." PDFs whose ToUnicode map is
+# incomplete or contradicts the embedded cmap leak FFFD bytes through
+# Marker (and through ftfy, which can repair byte-level mojibake but
+# not characters that already arrived as the canonical replacement).
+# Em-dashes are by far the most common loss vector in scientific PDFs;
+# the alpha-space-FFFD-space-alpha pattern below auto-repairs that
+# specific high-precision case. Other FFFD contexts cannot be guessed
+# safely — those fail the bundle with a diagnostic so the operator
+# inspects rather than ships garbled text. Mirrors the same logic in
+# upstream ``acatome_extract.pipeline``.
+_REPLACEMENT_CHAR = "�"
+_EM_DASH_LOST_RE = re.compile(rf"([a-zA-Z]) {_REPLACEMENT_CHAR} ([a-zA-Z])")
+
+
+def _repair_or_fail_mojibake(
+    blocks: list[dict[str, Any]],
+    *,
+    paper_id: str,
+    pdf_path: Path,
+) -> list[dict[str, Any]]:
+    """Auto-repair lost em-dashes; fail-fast on other U+FFFD leaks.
+
+    See the analogous function in upstream ``acatome_extract.pipeline``
+    for the design rationale. Repeated here because precis-mcp's
+    ingest pipeline replaced the upstream's bundle-writing path with
+    direct DB inserts, so the upstream cleanup doesn't run in this
+    process and the check must live at this layer.
+
+    Raises:
+        ValueError: when any U+FFFD survives the em-dash repair pass.
+            The message includes ``paper_id``, the block's page, and
+            a 60-char context window so the operator can locate the
+            exact loss in the source PDF without re-running ingest.
+    """
+    for block in blocks:
+        text = block.get("text", "")
+        if _REPLACEMENT_CHAR not in text:
+            continue
+        block["text"] = _EM_DASH_LOST_RE.sub(r"\1 — \2", text)
+
+    for block in blocks:
+        text = block.get("text", "")
+        if _REPLACEMENT_CHAR not in text:
+            continue
+        idx = text.index(_REPLACEMENT_CHAR)
+        context = text[max(0, idx - 30) : idx + 31]
+        raise ValueError(
+            f"precis ingest: unrepairable U+FFFD in paper {paper_id!r} "
+            f"on page {block.get('page')!r}: ...{context!r}... "
+            f"(PDF {pdf_path.name!r} has a ToUnicode-map gap that ftfy "
+            "and the em-dash heuristic could not recover; inspect the "
+            "source PDF or re-extract with a different reader)"
+        )
+
+    return blocks
 
 # ---------------------------------------------------------------------------
 # Marker block type → chunks.chunk_kind mapping
@@ -274,6 +331,9 @@ def extract_paper(
     )
 
     blocks = extract_blocks_marker(pdf_path, paper_id)
+    blocks = _repair_or_fail_mojibake(
+        blocks, paper_id=paper_id, pdf_path=pdf_path
+    )
     body_chunks = _blocks_to_chunks(blocks)
     cards = _build_cards(
         title=metadata.title,
