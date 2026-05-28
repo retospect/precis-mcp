@@ -59,6 +59,7 @@ EXPECTED_TABLES = {
     "tags",
     "ref_tags",
     "chunk_tags",
+    "cache_state",
 }
 
 EXPECTED_VIEWS = {
@@ -71,8 +72,12 @@ EXPECTED_VIEWS = {
 EXPECTED_SEED_COUNTS = {
     "actors": 3,
     "kinds": 24,
-    "relations": 9,
-    "providers": 11,
+    # 9 v1 relations + 7 Phase-7 vocabulary additions (derived-from /
+    # derived-into / supports / supported-by / generalises / specialises /
+    # see-also). See migration header for the rationale.
+    "relations": 16,
+    # 11 v1 providers + 'web' (added for the WebHandler cache provider).
+    "providers": 12,
     "chunk_kinds": 57,
     "embedders": 1,
     "summarizers": 1,

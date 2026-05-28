@@ -302,19 +302,24 @@ def _row_to_ref(row: tuple) -> Ref:
 
 
 def _row_to_link(row: tuple) -> Link:
-    """Map a links row tuple in the order:
+    """Map a v2 links row tuple in the order:
     (id, src_ref_id, src_pos, dst_ref_id, dst_pos,
      relation, set_by, meta, created_at)
 
-    The DB sentinel ``pos = -1`` is converted back to ``None`` at the
-    boundary so callers always see "ref-level" as Pythonic ``None``.
+    v2 schema uses ``links.link_id`` (aliased to id in the SELECT)
+    and ``src_chunk_id``/``dst_chunk_id`` FKs. The link queries
+    LEFT JOIN ``chunks`` to translate chunk_id back to ord (the
+    historical ``pos`` field). When the chunk_id is NULL (ref-level
+    link), the LEFT JOIN yields NULL for ord, which arrives here as
+    ``None`` directly — no -1 sentinel translation needed (v2
+    dropped the sentinel in favour of NULL).
     """
     return Link(
         id=row[0],
         src_ref_id=row[1],
-        src_pos=row[2] if row[2] != _REF_LEVEL_POS else None,
+        src_pos=row[2],
         dst_ref_id=row[3],
-        dst_pos=row[4] if row[4] != _REF_LEVEL_POS else None,
+        dst_pos=row[4],
         relation=row[5],
         set_by=row[6],
         meta=row[7] or {},

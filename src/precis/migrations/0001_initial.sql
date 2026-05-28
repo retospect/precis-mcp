@@ -123,7 +123,19 @@ INSERT INTO relations (slug, is_symmetric, inverse_slug, description) VALUES
     ('cites',           FALSE, 'cited-by',        'Source cites target'),
     ('cited-by',        FALSE, 'cites',           'Source is cited by target'),
     ('supersedes',      FALSE, 'superseded-by',   'Source supersedes target'),
-    ('superseded-by',   FALSE, 'supersedes',      'Source is superseded by target');
+    ('superseded-by',   FALSE, 'supersedes',      'Source is superseded by target'),
+    -- Phase-7 link CRUD vocabulary additions (mirrors precis.store.types.Relation
+    -- Literal). See ADR 0007 / migration history. The asymmetric pairs are
+    -- linked via inverse_slug for the read-time "who Xs me?" rewrite in
+    -- LinksMixin.links_for; see-also is asymmetric without an inverse (one-way
+    -- "for context" pointer, no reverse semantic).
+    ('derived-from',    FALSE, 'derived-into',    'Source is derived from target (cause/origin)'),
+    ('derived-into',    FALSE, 'derived-from',    'Source is the origin from which target derives'),
+    ('supports',        FALSE, 'supported-by',    'Source provides evidence for target'),
+    ('supported-by',    FALSE, 'supports',        'Source is supported by target'),
+    ('generalises',     FALSE, 'specialises',     'Source is a generalisation of target'),
+    ('specialises',     FALSE, 'generalises',     'Source is a specialisation of target'),
+    ('see-also',        FALSE, NULL,              'One-way "for context" pointer (no inverse)');
 
 
 CREATE TABLE providers (
@@ -144,6 +156,8 @@ INSERT INTO providers (slug, description) VALUES
     ('perplexity', 'Perplexity (web / research / think)'),
     ('wolfram',    'Wolfram Alpha math'),
     ('youtube',    'YouTube transcript'),
+    -- web fetch (trafilatura via the WebHandler — kind=web)
+    ('web',        'Direct web fetch / trafilatura extraction'),
     -- other
     ('manual', 'Manually uploaded'),
     ('local',  'Local computation / no external source');
@@ -480,7 +494,30 @@ CREATE INDEX chunk_tags_tag_id_idx ON chunk_tags (tag_id);
 
 
 -- ===========================================================================
--- 11. Views
+-- 11. Cache state — paid-tool API cache freshness tracking
+-- ===========================================================================
+-- One row per cached ref. Referenced from cache-backed kinds
+-- (web / youtube / math / perplexity).  Cache hits look up by
+-- (provider, request_hash); freshness is derived at read time
+-- from fresh_until vs now(). ``fresh_until = NULL`` pins the row
+-- (never expires — used for explicit user bookmarks).
+CREATE TABLE cache_state (
+    ref_id        BIGINT PRIMARY KEY REFERENCES refs(ref_id) ON DELETE CASCADE,
+    provider      TEXT        NOT NULL REFERENCES providers(slug) ON UPDATE CASCADE,
+    request_hash  TEXT        NOT NULL,
+    model         TEXT,
+    fetched_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    fresh_until   TIMESTAMPTZ,
+    cost_usd      NUMERIC,
+    meta          JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (provider, request_hash)
+);
+CREATE INDEX cache_state_provider_idx     ON cache_state (provider);
+CREATE INDEX cache_state_fresh_until_idx  ON cache_state (fresh_until) WHERE fresh_until IS NOT NULL;
+
+
+-- ===========================================================================
+-- 12. Views
 -- ===========================================================================
 
 -- v_refs: ergonomic access to refs with pub_id, cite_key, paper_id exposed
