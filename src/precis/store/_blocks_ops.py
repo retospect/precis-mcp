@@ -1,16 +1,36 @@
-"""Block-level CRUD + hybrid search. Mixin on :class:`precis.store.Store`.
+"""Block-level CRUD against the v2 ``chunks`` table. Mixin on
+:class:`precis.store.Store`.
 
-Blocks are the chunked body rows — one per paragraph / section /
-turn / flashcard payload, keyed by ``(ref_id, pos)``. This module
-owns the lexical + semantic + fused search paths and the small
-CRUD surface (insert, get, list, density/embedding updates).
+"Blocks" is the original (v1) name; v2 calls them ``chunks``. The
+public Python surface keeps the historical name to avoid churning
+~150 handler call sites:
 
-The fused search is the main engine behind cross-kind agent
-queries: ``search_blocks_fused`` runs a lexical ``tsvector`` leg
-and a pgvector semantic leg side by side and RRF-merges the
-rankings. Both legs share the same noise-filter predicates
-(``_block_noise_clauses``) so an unusable block can't sneak in
-from one side.
+- ``Block.id``           maps to ``chunks.chunk_id``
+- ``Block.pos``          maps to ``chunks.ord``
+- ``Block.slug``         comes from ``chunks.meta->>'slug'``
+- ``Block.embedding``    populated via LEFT JOIN ``chunk_embeddings``
+                         on the default embedder (see Phase 4)
+- ``Block.density``      populated via LEFT JOIN ``chunk_tags`` + ``tags``
+                         filtered on ``namespace='DENSITY'``
+
+Two columns the v2 schema requires that v1 didn't have:
+
+- ``chunks.chunk_kind``  required FK to ``chunk_kinds.slug``;
+                         :meth:`insert_blocks` defaults to ``'paragraph'``
+                         when the BlockInsert payload doesn't carry a
+                         hint. v2 ingesters that want richer typing
+                         (cards, figures, equations) write directly via
+                         ``precis.ingest.db_writer`` rather than through
+                         this mixin.
+- ``chunks.section_path``  TEXT[]; populated from ``BlockInsert.meta
+                            ['section_path']`` when present, else ``{}``.
+
+**Phase 2 scope**: insert / get / list / count / density+embedding
+update / random / blocks_missing_embeddings.
+
+**Phase 3 (not yet implemented)**: the four lexical+semantic+fused
+search paths still hold v1 SQL and raise NotImplementedError when
+called.
 
 Mixin assumes the concrete Store provides ``self.pool``.
 """
@@ -24,394 +44,74 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
-from precis.store._mappers import _block_noise_clauses, _row_to_block, _row_to_ref
-from precis.store._tag_filter import build_tag_filter
+from precis.store._mappers import (
+    _CHUNKS_COLS,
+    _REFS_COLS_ALIASED,
+    _row_to_block,
+    _row_to_ref,
+)
 from precis.store.types import Block, BlockInsert, Density, Ref
+
+# Default chunk_kind for inserts via this mixin. Phase 2 keeps the
+# block surface kind-agnostic; ingesters that want richer typing
+# (cards at ord<0, figures, equations) bypass insert_blocks and use
+# precis.ingest.db_writer directly.
+_DEFAULT_CHUNK_KIND = "paragraph"
 
 
 class BlocksMixin:
-    """Block insert / get / list + lexical / semantic / fused search."""
+    """Block insert / get / list + (phase 3) lexical / semantic / fused search."""
 
     pool: ConnectionPool
 
-    # -- search ---------------------------------------------------------------
+    # -- helpers ------------------------------------------------------------
 
-    def count_blocks_lexical(
-        self,
-        *,
-        q: str,
-        kind: str | None = None,
-        scope_ref_id: int | None = None,
-        tags: list[str] | None = None,
-        exclude_ref_ids: list[int] | None = None,
-    ) -> int:
-        """Count blocks matching the lexical filter (no LIMIT).
+    def _default_embedder_name(self, conn: Connection) -> str:
+        """Resolve the registered default embedder name (FK target).
 
-        Companion to :meth:`search_blocks_lexical` for pagination
-        headers. Same WHERE clause (including the
-        ``char_length(btrim(text)) >= 4`` noise-floor guard) so the
-        "you're seeing N of K" header reflects the exact universe
-        the search would return at infinite limit.
-
-        For ``search_blocks_fused``, this lexical count is the
-        primary number agents care about (the semantic CTE only
-        affects ranking among lexically-matching rows). For
-        ``search_blocks_semantic`` callers, semantic search has no
-        meaningful "total" since every embedded block is a hit at
-        some distance — those handlers should not display a total.
-
-        ``exclude_ref_ids`` drops blocks belonging to the listed
-        refs from the count. Mirrors the same kwarg on
-        :meth:`search_blocks_fused` / :meth:`search_blocks_lexical`
-        so the ``N of K`` header stays honest under exclusion.
+        The migration seeds exactly one row in ``embedders`` with
+        ``is_default = TRUE`` (``bge-m3``); a partial unique index
+        keeps that invariant. We resolve lazily on the assumption
+        that the embedder set rarely changes during a process
+        lifetime; callers that need it on a hot path can cache.
         """
-        clauses = [
-            "r.deleted_at IS NULL",
-            "b.tsv @@ qq.qq",
-            *_block_noise_clauses(),
-        ]
-        params: list[Any] = [q]
-        if kind is not None:
-            params.append(kind)
-            clauses.append("r.kind = %s")
-        if scope_ref_id is not None:
-            params.append(scope_ref_id)
-            clauses.append("b.ref_id = %s")
-        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
-        if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
-            params.extend(tag_params)
-        if exclude_ref_ids:
-            params.append(list(exclude_ref_ids))
-            clauses.append("b.ref_id <> ALL(%s)")
-        sql = (
-            "SELECT count(*) FROM blocks b JOIN refs r ON r.id = b.ref_id, "
-            "     websearch_to_tsquery('english', %s) qq(qq) "
-            f"WHERE {' AND '.join(clauses)}"
-        )
-        with self.pool.connection() as conn:
-            row = conn.execute(sql, params).fetchone()
-        assert row is not None
-        return int(row[0])
-
-    def search_blocks_lexical(
-        self,
-        *,
-        q: str,
-        kind: str | None = None,
-        scope_ref_id: int | None = None,
-        tags: list[str] | None = None,
-        limit: int = 20,
-        exclude_ref_ids: list[int] | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
-        """Lexical search over ``blocks.tsv``.
-
-        Returns ``(block, ref, rank)`` tuples sorted by
-        ``ts_rank_cd DESC``. Only live (non-deleted) refs are
-        considered.
-
-        Blocks whose text strips to fewer than 4 characters are
-        excluded — they're punctuation (".", ","), section markers,
-        or other formatting artefacts whose embeddings cluster near
-        the noise floor. Returning them dilutes results with hits an
-        agent can't quote. (MCP critic MAJOR #11.)
-
-        ``exclude_ref_ids`` drops blocks whose owning ref is in the
-        list. Applied as a WHERE predicate so ``LIMIT`` operates
-        post-exclude — ``limit=10`` with five excluded refs returns
-        ten remaining hits, not five.
-        """
-        clauses = [
-            "r.deleted_at IS NULL",
-            "b.tsv @@ qq.qq",
-            *_block_noise_clauses(),
-        ]
-        params: list[Any] = [q]
-        if kind is not None:
-            params.append(kind)
-            clauses.append("r.kind = %s")
-        if scope_ref_id is not None:
-            params.append(scope_ref_id)
-            clauses.append("b.ref_id = %s")
-        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
-        if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
-            params.extend(tag_params)
-        if exclude_ref_ids:
-            params.append(list(exclude_ref_ids))
-            clauses.append("b.ref_id <> ALL(%s)")
-        params.append(limit)
-
-        sql = (
-            "SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count, "
-            "       NULL::vector, b.density, b.meta, "
-            "       b.created_at, b.updated_at, "
-            "       r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
-            "       r.meta, r.created_at, r.updated_at, r.deleted_at, "
-            "       ts_rank_cd(b.tsv, qq.qq) AS rank "
-            "FROM blocks b JOIN refs r ON r.id = b.ref_id, "
-            "     websearch_to_tsquery('english', %s) qq(qq) "
-            f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY rank DESC LIMIT %s"
-        )
-        with self.pool.connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [
-            (_row_to_block(r[:11]), _row_to_ref(r[11:21]), float(r[21])) for r in rows
-        ]
-
-    def search_blocks_semantic(
-        self,
-        *,
-        query_vec: list[float],
-        kind: str | None = None,
-        scope_ref_id: int | None = None,
-        tags: list[str] | None = None,
-        limit: int = 20,
-        max_distance: float | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
-        """Cosine-distance semantic search via pgvector.
-
-        Returns ``(block, ref, distance)`` tuples sorted by
-        distance ASC. Excludes blocks that have no embedding
-        *and* blocks whose text strips to <4 characters — see
-        :meth:`search_blocks_lexical` for the rationale (MCP
-        critic MAJOR #11).
-
-        ``max_distance`` is a relevance floor on the cosine distance
-        column. Without it, a nonsense query (``'xyzzy frobnicate'``)
-        still returns the top-K closest embedded blocks because every
-        embedded row is "a hit at some distance" — semantic search
-        has no natural zero. The default
-        :data:`precis.store._mappers.SEMANTIC_DISTANCE_FLOOR` rejects
-        anything more than a loose semantic neighbour, which is the
-        right behaviour for the agent surface: a 7B caller asking
-        "is there a paper on xyzzy?" should get an empty response,
-        not the top-20 random blocks. Pass ``max_distance=None`` to
-        opt out (e.g. recommendation / exploration queries that
-        genuinely want the closest match regardless of similarity).
-        (Critic MAJOR #3.)
-        """
-        clauses = [
-            "r.deleted_at IS NULL",
-            "b.embedding IS NOT NULL",
-            *_block_noise_clauses(),
-        ]
-        where_params: list[Any] = []
-        if kind is not None:
-            where_params.append(kind)
-            clauses.append("r.kind = %s")
-        if scope_ref_id is not None:
-            where_params.append(scope_ref_id)
-            clauses.append("b.ref_id = %s")
-        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
-        if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
-            where_params.extend(tag_params)
-
-        # Optional distance floor — applied as a HAVING-style filter
-        # on the SELECT-side distance expression. We use the same
-        # ``b.embedding <=> %s::vector`` form here as in the SELECT
-        # column so the planner can hoist the index scan.
-        distance_clause = ""
-        distance_params: list[Any] = []
-        if max_distance is not None:
-            distance_clause = " AND (b.embedding <=> %s::vector) < %s"
-            distance_params = [query_vec, float(max_distance)]
-
-        # Param order in the SQL below:
-        #   1. %s::vector for the SELECT distance column
-        #   2. WHERE clause params (kind, scope_ref_id, tag-filter params)
-        #   3. distance-clause params (query_vec + max_distance) [optional]
-        #   4. %s::vector for ORDER BY
-        #   5. LIMIT %s
-        params: list[Any] = [
-            query_vec,
-            *where_params,
-            *distance_params,
-            query_vec,
-            limit,
-        ]
-
-        sql = (
-            "SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count, "
-            "       NULL::vector, b.density, b.meta, "
-            "       b.created_at, b.updated_at, "
-            "       r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
-            "       r.meta, r.created_at, r.updated_at, r.deleted_at, "
-            "       (b.embedding <=> %s::vector) AS dist "
-            "FROM blocks b JOIN refs r ON r.id = b.ref_id "
-            f"WHERE {' AND '.join(clauses)}{distance_clause} "
-            "ORDER BY b.embedding <=> %s::vector ASC LIMIT %s"
-        )
-        with self.pool.connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [
-            (_row_to_block(r[:11]), _row_to_ref(r[11:21]), float(r[21])) for r in rows
-        ]
-
-    def search_blocks_fused(
-        self,
-        *,
-        q: str,
-        query_vec: list[float] | None = None,
-        kind: str | None = None,
-        scope_ref_id: int | None = None,
-        tags: list[str] | None = None,
-        limit: int = 20,
-        k: int = 60,
-        max_distance: float | None = None,
-        exclude_ref_ids: list[int] | None = None,
-    ) -> list[tuple[Block, Ref, float]]:
-        """Hybrid search via reciprocal rank fusion.
-
-        If ``query_vec`` is None, falls back to lexical-only and
-        returns tuples in the same shape (so callers don't branch).
-
-        Score: ``1/(k + lex_rank) + 1/(k + sem_rank)``. Higher is
-        better. ``k=60`` is the standard RRF constant.
-
-        ``max_distance`` is forwarded to the semantic CTE so semantic
-        rows past the relevance floor are dropped before the fusion
-        UNION. See :meth:`search_blocks_semantic` for the rationale —
-        without this, gibberish queries surface semantic-only hits
-        because pgvector ``<=>`` always returns *something*. (Critic
-        MAJOR #3.)
-
-        ``exclude_ref_ids`` drops blocks whose owning ref is in the
-        list before fusion. Applied via the shared ``where_extra``
-        clause so the predicate inlines into both CTEs (otherwise
-        RRF would fuse a filtered set against an unfiltered one and
-        the final ranking would skew toward the unfiltered side —
-        same reasoning as the tag filter). The outer ``LIMIT`` then
-        runs over the post-exclusion universe, so ``limit=10`` with
-        five excluded refs returns the next ten hits.
-        """
-        if query_vec is None:
-            # Lex only, returning ts_rank as the score for shape parity.
-            return self.search_blocks_lexical(
-                q=q,
-                kind=kind,
-                scope_ref_id=scope_ref_id,
-                tags=tags,
-                limit=limit,
-                exclude_ref_ids=exclude_ref_ids,
+        row = conn.execute(
+            "SELECT name FROM embedders WHERE is_default = TRUE LIMIT 1"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                "no default embedder registered — "
+                "migrations/0001_initial.sql seeds bge-m3; check schema"
             )
+        return str(row[0])
 
-        clauses = [
-            "r.deleted_at IS NULL",
-            *_block_noise_clauses(),  # MCP critic MAJOR #11 + MINOR #10
-        ]
-        params: list[Any] = []
-        if kind is not None:
-            params.append(kind)
-            clauses.append("r.kind = %s")
-        if scope_ref_id is not None:
-            params.append(scope_ref_id)
-            clauses.append("b.ref_id = %s")
-        # The tag filter has to apply to BOTH CTEs (lex + sem). Otherwise
-        # RRF would fuse a filtered set against an unfiltered set and the
-        # final ranking would skew toward the unfiltered side. The
-        # ``where_extra`` mechanism below already inlines into both, so
-        # appending here is enough.
-        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
-        if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
-            params.extend(tag_params)
-        # exclude_ref_ids: same both-CTE rule as the tag filter — drop
-        # blocks belonging to seen refs before either leg ranks them so
-        # the fused ``LIMIT`` operates over the post-exclusion universe.
-        if exclude_ref_ids:
-            params.append(list(exclude_ref_ids))
-            clauses.append("b.ref_id <> ALL(%s)")
+    # -- search (Phase 3 — still on v1 schema) -----------------------------
 
-        # We assemble the WHERE-clause prefix once and inline it into the
-        # two CTEs (lex / sem) below.
-        where_extra = (" AND " + " AND ".join(clauses)) if clauses else ""
+    def count_blocks_lexical(self, **_kw: Any) -> int:
+        raise NotImplementedError(
+            "count_blocks_lexical: phase 3 (search + tags v2 rewrite) "
+            "not yet implemented; see /Users/reto/.claude/plans/lively-yawning-kahn.md"
+        )
 
-        # Sem-only relevance floor. If max_distance is set, the sem CTE
-        # adds an extra predicate ``(b.embedding <=> %s::vector) < %s``
-        # so distant rows never reach RRF. Lex is unaffected — a lexical
-        # tsquery already has its own zero (rows that don't match
-        # @@ qq.qq are excluded by definition).
-        sem_distance_clause = ""
-        if max_distance is not None:
-            sem_distance_clause = " AND (b.embedding <=> %s::vector) < %s"
+    def search_blocks_lexical(self, **_kw: Any) -> list[tuple[Block, Ref, float]]:
+        raise NotImplementedError(
+            "search_blocks_lexical: phase 3 (search + tags v2 rewrite) "
+            "not yet implemented; see /Users/reto/.claude/plans/lively-yawning-kahn.md"
+        )
 
-        sql = f"""
-            WITH lex AS (
-                SELECT b.id AS bid,
-                       row_number() OVER (
-                           ORDER BY ts_rank_cd(b.tsv, qq.qq) DESC
-                       ) AS rnk
-                FROM blocks b JOIN refs r ON r.id = b.ref_id,
-                     websearch_to_tsquery('english', %s) qq(qq)
-                WHERE b.tsv @@ qq.qq
-                      {where_extra}
-                LIMIT %s
-            ),
-            sem AS (
-                SELECT b.id AS bid,
-                       row_number() OVER (
-                           ORDER BY b.embedding <=> %s::vector ASC
-                       ) AS rnk
-                FROM blocks b JOIN refs r ON r.id = b.ref_id
-                WHERE b.embedding IS NOT NULL
-                      {where_extra}{sem_distance_clause}
-                LIMIT %s
-            ),
-            fused AS (
-                SELECT bid,
-                       coalesce(1.0/(%s + (SELECT rnk FROM lex l WHERE l.bid = u.bid)), 0)
-                       + coalesce(1.0/(%s + (SELECT rnk FROM sem s WHERE s.bid = u.bid)), 0)
-                       AS score
-                FROM (
-                    SELECT bid FROM lex
-                    UNION
-                    SELECT bid FROM sem
-                ) u
-            )
-            SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count,
-                   NULL::vector, b.density, b.meta,
-                   b.created_at, b.updated_at,
-                   r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider,
-                   r.meta, r.created_at, r.updated_at, r.deleted_at,
-                   fused.score
-            FROM fused
-            JOIN blocks b ON b.id = fused.bid
-            JOIN refs r ON r.id = b.ref_id
-            ORDER BY fused.score DESC
-            LIMIT %s
-        """
-        # Param construction sequence:
-        #   lex: q + (kind/scope) + limit
-        #   sem: query_vec + (kind/scope) + [optional: query_vec, max_distance] + limit
-        #   fused: k + k
-        #   outer: limit
-        full_params: list[Any] = []
-        # lex CTE
-        full_params.append(q)
-        full_params.extend(params)
-        full_params.append(limit)
-        # sem CTE
-        full_params.append(query_vec)
-        full_params.extend(params)
-        if max_distance is not None:
-            full_params.append(query_vec)
-            full_params.append(float(max_distance))
-        full_params.append(limit)
-        # fused CTE
-        full_params.extend([k, k])
-        # outer
-        full_params.append(limit)
+    def search_blocks_semantic(self, **_kw: Any) -> list[tuple[Block, Ref, float]]:
+        raise NotImplementedError(
+            "search_blocks_semantic: phase 3 (search + tags v2 rewrite) "
+            "not yet implemented; see /Users/reto/.claude/plans/lively-yawning-kahn.md"
+        )
 
-        with self.pool.connection() as conn:
-            rows = conn.execute(sql, full_params).fetchall()
-        return [
-            (_row_to_block(r[:11]), _row_to_ref(r[11:21]), float(r[21])) for r in rows
-        ]
+    def search_blocks_fused(self, **_kw: Any) -> list[tuple[Block, Ref, float]]:
+        raise NotImplementedError(
+            "search_blocks_fused: phase 3 (search + tags v2 rewrite) "
+            "not yet implemented; see /Users/reto/.claude/plans/lively-yawning-kahn.md"
+        )
 
-    # -- CRUD -----------------------------------------------------------------
+    # -- CRUD (Phase 2 — v2 chunks table) ----------------------------------
 
     def insert_blocks(
         self,
@@ -421,46 +121,103 @@ class BlocksMixin:
         replace: bool = False,
         conn: Connection | None = None,
     ) -> list[Block]:
-        """Bulk-insert blocks for a ref.
+        """Bulk-insert chunks (body, ord>=0) for a ref.
 
-        If ``replace=True``, deletes existing blocks for ``ref_id``
+        If ``replace=True``, deletes existing chunks for ``ref_id``
         first (re-ingest path). Caller owns ``pos`` numbering — we
         don't reorder.
 
-        Embedding dimension is enforced by the DB column type
-        (``vector(N)`` where N = ``system.embedding_dim``).
+        v2 mapping per block:
+          - ``BlockInsert.pos``    → ``chunks.ord``
+          - ``BlockInsert.text``   → ``chunks.text``
+          - ``BlockInsert.slug``   → ``chunks.meta['slug']``
+          - ``BlockInsert.meta``   → ``chunks.meta`` (merged with slug)
+          - ``BlockInsert.embedding`` (if non-None) → row in
+                                                    ``chunk_embeddings``
+          - ``BlockInsert.density`` (if non-None)   → row in
+                                                    ``tags``+``chunk_tags``
+          - ``chunk_kind``         → defaults to ``'paragraph'``;
+                                     callers can override via
+                                     ``BlockInsert.meta['chunk_kind']``.
         """
         if not blocks:
             return []
 
-        sql_insert = """
-            INSERT INTO blocks
-                (ref_id, pos, slug, text, token_count, embedding, density, meta)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, ref_id, pos, slug, text, token_count, embedding,
-                      density, meta, created_at, updated_at
-        """
-
         def _do(c: Connection) -> list[Block]:
             if replace:
-                c.execute("DELETE FROM blocks WHERE ref_id = %s", (ref_id,))
+                # v2 cascade: chunks → chunk_embeddings/chunk_summaries/
+                # chunk_tags via ON DELETE CASCADE.
+                c.execute("DELETE FROM chunks WHERE ref_id = %s", (ref_id,))
+
+            embedder_name: str | None = None
+            density_tag_ids: dict[str, int] = {}
             out: list[Block] = []
             for b in blocks:
+                # Build the chunks.meta payload: caller's meta merged
+                # with the prose slug under 'slug' so it round-trips.
+                meta = dict(b.meta or {})
+                if b.slug is not None:
+                    meta["slug"] = b.slug
+                chunk_kind = meta.pop("chunk_kind", _DEFAULT_CHUNK_KIND)
+                section_path = list(meta.pop("section_path", ()) or ())
                 row = c.execute(
-                    sql_insert,
+                    "INSERT INTO chunks "
+                    "(ref_id, ord, chunk_kind, text, token_count, "
+                    " section_path, meta) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                    f"RETURNING {_CHUNKS_COLS}",
                     (
                         ref_id,
                         b.pos,
-                        b.slug,
+                        chunk_kind,
                         b.text,
                         b.token_count,
-                        b.embedding,
-                        b.density,
-                        Jsonb(b.meta or {}),
+                        section_path,
+                        Jsonb(meta),
                     ),
                 ).fetchone()
                 assert row is not None
-                out.append(_row_to_block(row))
+                block = _row_to_block(row)
+
+                # Embedding side-table write. v2 splits embeddings out
+                # so a chunk can carry multiple vectors (one per
+                # registered embedder); we write only the default one
+                # from this mixin's API.
+                if b.embedding is not None:
+                    if embedder_name is None:
+                        embedder_name = self._default_embedder_name(c)
+                    c.execute(
+                        "INSERT INTO chunk_embeddings "
+                        "(chunk_id, embedder, vector, status, attempts) "
+                        "VALUES (%s, %s, %s, 'ok', 1) "
+                        "ON CONFLICT (chunk_id, embedder) DO UPDATE "
+                        "SET vector = EXCLUDED.vector, status = 'ok', "
+                        "    attempts = chunk_embeddings.attempts + 1",
+                        (block.id, embedder_name, b.embedding),
+                    )
+
+                # Density side-table write. v2 stores density as a
+                # tag in namespace='DENSITY'; the partial unique
+                # constraint on tags(namespace, value) gives us a
+                # natural upsert. Chunk-level via chunk_tags.
+                if b.density is not None:
+                    tag_id = density_tag_ids.get(b.density)
+                    if tag_id is None:
+                        tag_id = _upsert_tag(c, "DENSITY", b.density)
+                        density_tag_ids[b.density] = tag_id
+                    c.execute(
+                        "INSERT INTO chunk_tags (chunk_id, tag_id, set_by) "
+                        "VALUES (%s, %s, 'system') "
+                        "ON CONFLICT (chunk_id, tag_id) DO NOTHING",
+                        (block.id, tag_id),
+                    )
+
+                # Re-read so the returned Block carries the post-write
+                # density/embedding state (the initial _row_to_block
+                # row had them NULL on the SELECT projection).
+                out.append(
+                    _refetch_block(c, block.id) if (b.embedding or b.density) else block
+                )
             return out
 
         if conn is not None:
@@ -476,30 +233,23 @@ class BlocksMixin:
         slug: str | None = None,
         with_embedding: bool = False,
     ) -> Block | None:
-        """Look up a single block by ``(ref_id, pos)`` or ``(ref_id, slug)``."""
+        """Look up a single chunk by ``(ref_id, pos)`` or ``(ref_id, slug)``.
+
+        Slug lookup matches ``chunks.meta->>'slug'``.
+        """
         if (pos is None) == (slug is None):
             raise BadInput(
                 "get_block requires exactly one of pos= or slug=",
                 next="get_block(ref_id, pos=N)  or  get_block(ref_id, slug='PLXDX')",
             )
-        emb_col = "embedding" if with_embedding else "NULL::vector"
         if pos is not None:
-            sql = (
-                f"SELECT id, ref_id, pos, slug, text, token_count, {emb_col}, "
-                "       density, meta, created_at, updated_at "
-                "FROM blocks WHERE ref_id = %s AND pos = %s"
-            )
+            where = "c.ref_id = %s AND c.ord = %s"
             params: tuple[Any, ...] = (ref_id, pos)
         else:
-            sql = (
-                f"SELECT id, ref_id, pos, slug, text, token_count, {emb_col}, "
-                "       density, meta, created_at, updated_at "
-                "FROM blocks WHERE ref_id = %s AND slug = %s"
-            )
+            where = "c.ref_id = %s AND (c.meta->>'slug') = %s"
             params = (ref_id, slug)
         with self.pool.connection() as conn:
-            row = conn.execute(sql, params).fetchone()
-        return _row_to_block(row) if row is not None else None
+            return _fetch_block_one(conn, where, params, with_embedding=with_embedding)
 
     def list_blocks_for_ref(
         self,
@@ -508,87 +258,104 @@ class BlocksMixin:
         pos_range: tuple[int, int] | None = None,
         with_embedding: bool = False,
     ) -> list[Block]:
-        """List blocks for a ref, ordered by pos ASC.
+        """List chunks for a ref, ordered by ord ASC.
 
-        ``pos_range=(lo, hi)`` filters inclusively on both ends.
+        Excludes synthetic card chunks (ord < 0). ``pos_range=(lo, hi)``
+        filters inclusively on both ends.
         """
-        emb_col = "embedding" if with_embedding else "NULL::vector"
-        clauses = ["ref_id = %s"]
+        clauses = ["c.ref_id = %s", "c.ord >= 0"]
         params: list[Any] = [ref_id]
         if pos_range is not None:
             params.extend([pos_range[0], pos_range[1]])
-            clauses.append("pos BETWEEN %s AND %s")
-        sql = (
-            f"SELECT id, ref_id, pos, slug, text, token_count, {emb_col}, "
-            "       density, meta, created_at, updated_at "
-            "FROM blocks WHERE " + " AND ".join(clauses) + " ORDER BY pos ASC"
-        )
+            clauses.append("c.ord BETWEEN %s AND %s")
+        where = " AND ".join(clauses)
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [_row_to_block(r) for r in rows]
+            return _fetch_blocks(conn, where, params, with_embedding=with_embedding)
 
     def count_blocks(self, ref_id: int) -> int:
-        """Total blocks on a ref. Tiny indexed count."""
+        """Total body chunks on a ref (ord>=0). Tiny indexed count."""
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT count(*) FROM blocks WHERE ref_id = %s", (ref_id,)
+                "SELECT count(*) FROM chunks WHERE ref_id = %s AND ord >= 0",
+                (ref_id,),
             ).fetchone()
         assert row is not None
         return int(row[0])
 
     def random_embedded_block(self) -> tuple[Block, Ref] | None:
-        """Pick one random undeleted block that has an embedding.
+        """Pick one random undeleted body chunk that has an embedding.
 
-        Drives ``get(kind='random')``. The join + ``ORDER BY
-        random() LIMIT 1`` pattern does a full-scan each call,
-        which is acceptable for corpora up to ~100k blocks — past
-        that the planner still picks a parallel seq-scan and it
-        stays well under 100ms. Switching to ``TABLESAMPLE
-        SYSTEM_ROWS(1)`` would need the ``tsm_system_rows``
-        extension and is a future optimisation only if this
-        becomes a hot path.
-
-        Returns ``None`` when the corpus has no embedded blocks
-        — a fresh deploy before any ingest. The handler converts
-        that to ``NotFound`` with an "ingest first" hint.
-
-        Filters are identical to :meth:`search_blocks_semantic`:
-        live ref (``deleted_at IS NULL``) and present vector
-        (``embedding IS NOT NULL``). A block with no embedding
-        can't be drawn even though its text is present — random
-        discovery is vector-search-adjacent in spirit, so we
-        keep the same universe.
+        Drives ``get(kind='random')``. Filters mirror Phase-3
+        ``search_blocks_semantic``: live ref (``deleted_at IS NULL``),
+        body chunk (ord>=0), and a present vector in
+        ``chunk_embeddings`` for the default embedder.
         """
-        sql = (
-            "SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count, "
-            "       NULL::vector, b.density, b.meta, "
-            "       b.created_at, b.updated_at, "
-            "       r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, "
-            "       r.meta, r.created_at, r.updated_at, r.deleted_at "
-            "FROM blocks b JOIN refs r ON r.id = b.ref_id "
-            "WHERE r.deleted_at IS NULL AND b.embedding IS NOT NULL "
-            "ORDER BY random() LIMIT 1"
-        )
         with self.pool.connection() as conn:
-            row = conn.execute(sql).fetchone()
+            embedder = self._default_embedder_name(conn)
+            sql = (
+                "SELECT c.chunk_id AS id, c.ref_id, c.ord AS pos, "
+                "       (c.meta->>'slug') AS slug, c.text, c.token_count, "
+                "       NULL::vector AS embedding, NULL::text AS density, "
+                "       c.meta, c.created_at, c.created_at AS updated_at, "
+                f"       {_REFS_COLS_ALIASED} "
+                "FROM chunks c "
+                "JOIN refs r ON r.ref_id = c.ref_id "
+                "JOIN chunk_embeddings ce "
+                "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+                "  AND ce.status = 'ok' AND ce.vector IS NOT NULL "
+                "WHERE r.deleted_at IS NULL AND c.ord >= 0 "
+                "ORDER BY random() LIMIT 1"
+            )
+            row = conn.execute(sql, (embedder,)).fetchone()
         if row is None:
             return None
-        return _row_to_block(row[:11]), _row_to_ref(row[11:21])
+        return _row_to_block(row[:11]), _row_to_ref(row[11:])
 
     def update_block_density(self, block_id: int, density: Density) -> None:
-        """Set the density bucket (sparse/medium/dense) on a block."""
+        """Set the density bucket (sparse/medium/dense) on a chunk.
+
+        v2 stores density as a tag in ``namespace='DENSITY'``. Idempotent:
+        delete the prior DENSITY tag for this chunk, then insert the new
+        one. Both the tags row (namespace, value) and the chunk_tags
+        join row are upserts.
+        """
         with self.pool.connection() as conn:
-            conn.execute(
-                "UPDATE blocks SET density = %s, updated_at = now() WHERE id = %s",
-                (density, block_id),
-            )
+            with conn.transaction():
+                # Drop any prior DENSITY tag(s) for this chunk so a
+                # bump from sparse→dense doesn't leave both rows.
+                conn.execute(
+                    "DELETE FROM chunk_tags ct "
+                    "USING tags t "
+                    "WHERE ct.chunk_id = %s "
+                    "  AND ct.tag_id = t.tag_id "
+                    "  AND t.namespace = 'DENSITY'",
+                    (block_id,),
+                )
+                tag_id = _upsert_tag(conn, "DENSITY", density)
+                conn.execute(
+                    "INSERT INTO chunk_tags (chunk_id, tag_id, set_by) "
+                    "VALUES (%s, %s, 'system') "
+                    "ON CONFLICT (chunk_id, tag_id) DO NOTHING",
+                    (block_id, tag_id),
+                )
 
     def update_block_embedding(self, block_id: int, embedding: list[float]) -> None:
-        """Write a single block's embedding — used by background re-embed."""
+        """Write a single chunk's embedding — used by background re-embed.
+
+        v2: embeddings live in ``chunk_embeddings``, keyed by
+        ``(chunk_id, embedder)``. We upsert into the default embedder's
+        slot. ``status='ok'`` and ``attempts`` increment on retry.
+        """
         with self.pool.connection() as conn:
+            embedder = self._default_embedder_name(conn)
             conn.execute(
-                "UPDATE blocks SET embedding = %s, updated_at = now() WHERE id = %s",
-                (embedding, block_id),
+                "INSERT INTO chunk_embeddings "
+                "(chunk_id, embedder, vector, status, attempts) "
+                "VALUES (%s, %s, %s, 'ok', 1) "
+                "ON CONFLICT (chunk_id, embedder) DO UPDATE "
+                "SET vector = EXCLUDED.vector, status = 'ok', "
+                "    attempts = chunk_embeddings.attempts + 1",
+                (block_id, embedder, embedding),
             )
 
     def blocks_missing_embeddings(
@@ -597,27 +364,170 @@ class BlocksMixin:
         kind: str | None = None,
         limit: int = 100,
     ) -> list[Block]:
-        """Fetch blocks where ``embedding IS NULL``, optionally filtered.
+        """Fetch body chunks that lack an embedding under the default embedder.
 
-        Used by background re-embed jobs.
+        v2: ``chunk_embeddings`` is sparse; a chunk without a row for
+        the default embedder is "missing". A row with ``status='failed'``
+        also counts as missing so background re-embed retries pick it up.
         """
-        clauses = ["b.embedding IS NULL", "r.deleted_at IS NULL"]
+        clauses = [
+            "r.deleted_at IS NULL",
+            "c.ord >= 0",
+            "(ce.vector IS NULL OR ce.status = 'failed')",
+        ]
         params: list[Any] = []
         if kind is not None:
             params.append(kind)
             clauses.append("r.kind = %s")
         params.append(limit)
-        sql = (
-            "SELECT b.id, b.ref_id, b.pos, b.slug, b.text, b.token_count, "
-            "       NULL::vector, b.density, b.meta, "
-            "       b.created_at, b.updated_at "
-            "FROM blocks b JOIN refs r ON r.id = b.ref_id "
-            "WHERE " + " AND ".join(clauses) + " "
-            "ORDER BY b.id ASC LIMIT %s"
-        )
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
+            embedder = self._default_embedder_name(conn)
+            sql = (
+                "SELECT c.chunk_id AS id, c.ref_id, c.ord AS pos, "
+                "       (c.meta->>'slug') AS slug, c.text, c.token_count, "
+                "       NULL::vector AS embedding, NULL::text AS density, "
+                "       c.meta, c.created_at, c.created_at AS updated_at "
+                "FROM chunks c "
+                "JOIN refs r ON r.ref_id = c.ref_id "
+                "LEFT JOIN chunk_embeddings ce "
+                "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+                f"WHERE {' AND '.join(clauses)} "
+                "ORDER BY c.chunk_id ASC LIMIT %s"
+            )
+            rows = conn.execute(sql, [embedder, *params]).fetchall()
         return [_row_to_block(r) for r in rows]
+
+
+# -- module-level helpers ---------------------------------------------------
+
+
+def _upsert_tag(conn: Connection, namespace: str, value: str) -> int:
+    """Upsert into ``tags(namespace, value)`` and return the tag_id.
+
+    Uses an INSERT ... ON CONFLICT DO UPDATE SET namespace=excluded.namespace
+    trick so the RETURNING clause fires on both the insert and the
+    no-op conflict path. (The DO NOTHING form returns nothing on
+    conflict, forcing a follow-up SELECT.)
+    """
+    row = conn.execute(
+        "INSERT INTO tags (namespace, value) VALUES (%s, %s) "
+        "ON CONFLICT (namespace, value) "
+        "DO UPDATE SET namespace = EXCLUDED.namespace "
+        "RETURNING tag_id",
+        (namespace, value),
+    ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+# Aliased chunk projection used by the fetch helpers. Mirrors
+# ``_CHUNKS_COLS_ALIASED`` but written out inline because the
+# fetch helpers need to swap the embedding column in/out per call.
+# Density is populated via a correlated subquery against
+# ``chunk_tags`` + ``tags`` filtered on ``namespace='DENSITY'``;
+# embedding is the one slot that varies (NULL::vector when the
+# caller doesn't ask, ce.vector when LEFT JOIN'd against
+# ``chunk_embeddings``).
+_CHUNK_PROJ = (
+    "c.chunk_id AS id, c.ref_id, c.ord AS pos, "
+    "(c.meta->>'slug') AS slug, c.text, c.token_count, "
+    "{embedding} AS embedding, "
+    "(SELECT t.value FROM chunk_tags ct "
+    "   JOIN tags t ON t.tag_id = ct.tag_id "
+    "   WHERE ct.chunk_id = c.chunk_id AND t.namespace = 'DENSITY' "
+    "   LIMIT 1) AS density, "
+    "c.meta, c.created_at, c.created_at AS updated_at"
+)
+
+
+def _fetch_block_one(
+    conn: Connection,
+    where: str,
+    params: tuple[Any, ...],
+    *,
+    with_embedding: bool,
+) -> Block | None:
+    """SELECT one chunk row mapped to Block. with_embedding=True LEFT
+    JOINs the default embedder's vector into the projection."""
+    if with_embedding:
+        embedder_name = _select_default_embedder(conn)
+        proj = _CHUNK_PROJ.format(embedding="ce.vector")
+        sql = (
+            f"SELECT {proj} FROM chunks c "
+            "LEFT JOIN chunk_embeddings ce "
+            "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+            f"WHERE {where}"
+        )
+        row = conn.execute(sql, (embedder_name, *params)).fetchone()
+    else:
+        proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        sql = f"SELECT {proj} FROM chunks c WHERE {where}"
+        row = conn.execute(sql, params).fetchone()
+    return _row_to_block(row) if row is not None else None
+
+
+def _fetch_blocks(
+    conn: Connection,
+    where: str,
+    params: list[Any],
+    *,
+    with_embedding: bool,
+) -> list[Block]:
+    """SELECT many chunk rows ordered by ord ASC. Mirrors
+    :func:`_fetch_block_one` projection."""
+    if with_embedding:
+        embedder_name = _select_default_embedder(conn)
+        proj = _CHUNK_PROJ.format(embedding="ce.vector")
+        sql = (
+            f"SELECT {proj} FROM chunks c "
+            "LEFT JOIN chunk_embeddings ce "
+            "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+            f"WHERE {where} ORDER BY c.ord ASC"
+        )
+        rows = conn.execute(sql, [embedder_name, *params]).fetchall()
+    else:
+        proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        sql = f"SELECT {proj} FROM chunks c WHERE {where} ORDER BY c.ord ASC"
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_block(r) for r in rows]
+
+
+def _select_default_embedder(conn: Connection) -> str:
+    row = conn.execute(
+        "SELECT name FROM embedders WHERE is_default = TRUE LIMIT 1"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(
+            "no default embedder registered — "
+            "migrations/0001_initial.sql seeds bge-m3; check schema"
+        )
+    return str(row[0])
+
+
+def _refetch_block(conn: Connection, chunk_id: int) -> Block:
+    """Re-read a chunk row with embedding + density projected.
+
+    Used after insert_blocks writes side-table rows so the returned
+    Block carries the post-write state.
+    """
+    embedder_name = _select_default_embedder(conn)
+    sql = (
+        "SELECT c.chunk_id AS id, c.ref_id, c.ord AS pos, "
+        "       (c.meta->>'slug') AS slug, c.text, c.token_count, "
+        "       ce.vector AS embedding, "
+        "       (SELECT t.value FROM chunk_tags ct "
+        "          JOIN tags t ON t.tag_id = ct.tag_id "
+        "          WHERE ct.chunk_id = c.chunk_id "
+        "          AND t.namespace = 'DENSITY' LIMIT 1) AS density, "
+        "       c.meta, c.created_at, c.created_at AS updated_at "
+        "FROM chunks c "
+        "LEFT JOIN chunk_embeddings ce "
+        "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+        "WHERE c.chunk_id = %s"
+    )
+    row = conn.execute(sql, (embedder_name, chunk_id)).fetchone()
+    assert row is not None
+    return _row_to_block(row)
 
 
 __all__ = ["BlocksMixin"]

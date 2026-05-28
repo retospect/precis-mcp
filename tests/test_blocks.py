@@ -246,7 +246,8 @@ class TestCascade:
         ref_id = _paper_ref(store)
         store.insert_blocks(ref_id, [BlockInsert(pos=0, text="x")])
         # Use raw SQL since hard_delete_ref isn't on Store yet; test the
-        # FK ON DELETE CASCADE we declared in the migration.
+        # FK ON DELETE CASCADE we declared in the migration. v2 column
+        # is ``ref_id`` (formerly ``id``).
         with store.pool.connection() as conn:
-            conn.execute("DELETE FROM refs WHERE id = %s", (ref_id,))
+            conn.execute("DELETE FROM refs WHERE ref_id = %s", (ref_id,))
         assert store.count_blocks(ref_id) == 0

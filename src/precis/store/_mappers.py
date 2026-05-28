@@ -116,9 +116,23 @@ def _pos_to_db(pos: int | None) -> int:
 
 
 def _row_to_block(row: tuple) -> Block:
-    """Map a blocks row tuple in the order:
-    (id, ref_id, pos, slug, text, token_count, embedding, density, meta,
-     created_at, updated_at)
+    """Map a v2 chunks row tuple onto the Block dataclass.
+
+    Tuple layout (matches :data:`_CHUNKS_COLS` /
+    :data:`_CHUNKS_COLS_ALIASED`):
+      0 id           (= chunks.chunk_id)
+      1 ref_id
+      2 pos          (= chunks.ord)
+      3 slug         (= chunks.meta->>'slug', NULL for non-prose chunks)
+      4 text
+      5 token_count
+      6 embedding    (NULL unless JOINed against chunk_embeddings)
+      7 density      (NULL unless JOINed against chunk_tags / tags)
+      8 meta         (chunks.meta JSONB)
+      9 created_at
+      10 updated_at  (v2 chunks have no updated_at column; aliased to
+                     created_at by the SQL projection so the dataclass
+                     contract stays stable)
     """
     embedding = row[6]
     if embedding is not None and not isinstance(embedding, list):
@@ -138,6 +152,41 @@ def _row_to_block(row: tuple) -> Block:
         created_at=row[9],
         updated_at=row[10],
     )
+
+
+# v2 chunk-column projection. Used by every SELECT that produces a
+# tuple consumed by :func:`_row_to_block`. The slug, embedding, and
+# density columns are virtual:
+#  - slug comes from ``chunks.meta->>'slug'`` (prose handlers store
+#    their stable citation handle there; non-prose chunks just return
+#    NULL).
+#  - embedding stays NULL on the projection — methods that need it
+#    use :data:`_CHUNKS_COLS_WITH_EMBEDDING` and add the JOIN.
+#  - density stays NULL on the projection — methods that need it
+#    use :data:`_CHUNKS_COLS_WITH_DENSITY` and add the JOIN against
+#    chunk_tags + tags filtered on ``namespace='DENSITY'``.
+# Phase 2 keeps embedding/density routing simple; Phase 3 will
+# introduce the JOIN variants for the search paths.
+_CHUNKS_COLS = (
+    "chunks.chunk_id AS id, chunks.ref_id, chunks.ord AS pos, "
+    "(chunks.meta->>'slug') AS slug, chunks.text, chunks.token_count, "
+    "NULL::vector AS embedding, "
+    "(SELECT t.value FROM chunk_tags ct "
+    "   JOIN tags t ON t.tag_id = ct.tag_id "
+    "   WHERE ct.chunk_id = chunks.chunk_id AND t.namespace = 'DENSITY' "
+    "   LIMIT 1) AS density, "
+    "chunks.meta, chunks.created_at, chunks.created_at AS updated_at"
+)
+_CHUNKS_COLS_ALIASED = (
+    "c.chunk_id AS id, c.ref_id, c.ord AS pos, "
+    "(c.meta->>'slug') AS slug, c.text, c.token_count, "
+    "NULL::vector AS embedding, "
+    "(SELECT t.value FROM chunk_tags ct "
+    "   JOIN tags t ON t.tag_id = ct.tag_id "
+    "   WHERE ct.chunk_id = c.chunk_id AND t.namespace = 'DENSITY' "
+    "   LIMIT 1) AS density, "
+    "c.meta, c.created_at, c.created_at AS updated_at"
+)
 
 
 # ---------------------------------------------------------------------------
