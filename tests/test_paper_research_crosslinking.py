@@ -45,8 +45,7 @@ def paper(hub: Hub) -> PaperHandler:
 
 def _seed_paper(store: Store, slug: str, title: str = "Test Paper") -> int:
     """Insert a bare paper ref. Returns the ref id."""
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="paper", slug=slug, title=title)
+    ref = store.insert_ref(kind="paper", slug=slug, title=title)
     return ref.id
 
 

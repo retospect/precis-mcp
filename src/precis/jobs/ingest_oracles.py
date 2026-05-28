@@ -265,19 +265,17 @@ def ingest_paper(
 
     try:
         with store.tx() as conn:
-            corpus_id = store.ensure_corpus("oracle", title="Oracle")
             if existing is not None:
                 # Overwrite path: delete the existing ref outright (cascades
                 # to blocks + tags) and re-create from scratch. Simpler
                 # than a partial replace and keeps the ref-id discipline
                 # honest (ingested_at moves forward, slug stable).
-                conn.execute("DELETE FROM refs WHERE id = %s", (existing.id,))
+                conn.execute("DELETE FROM refs WHERE ref_id = %s", (existing.id,))
 
             # provider stays NULL: oracle YAMLs aren't sourced from any
             # of the registered upstream providers (arxiv, crossref, …).
             # Origin is encoded via the ``built-in`` open tag instead.
             ref = store.insert_ref(
-                corpus_id=corpus_id,
                 kind="oracle",
                 slug=slug,
                 title=title,

@@ -180,8 +180,7 @@ def test_untags_kwarg_rejected_on_put(memory: MemoryHandler) -> None:
 
 
 def test_store_remove_tag_smoke(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="x")
+    ref = store.insert_ref(kind="memory", slug=None, title="x")
     store.add_tag(ref.id, Tag.open("foo"))
     assert any(t.value == "foo" for t in store.tags_for(ref.id))
     store.remove_tag(ref.id, Tag.open("foo"))

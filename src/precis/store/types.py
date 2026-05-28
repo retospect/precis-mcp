@@ -85,18 +85,42 @@ _INVERSE_RELATIONS: dict[str, str] = {
 
 @dataclass(frozen=True, slots=True)
 class Ref:
-    """A ref row from the `refs` table."""
+    """A ref row from the v2 ``refs`` table.
+
+    ``id`` maps to the v2 ``ref_id`` column (the rename happened in
+    ``migrations/0001_initial.sql``). ``slug`` is populated by a
+    correlated subquery against ``ref_identifiers`` with
+    ``id_kind='cite_key'`` — the convention every slug-addressed kind
+    uses in v2 per ADR 0008. Numeric kinds (memory/todo/gripe/fc)
+    have no ``ref_identifiers`` row so ``slug`` is ``None``.
+    """
 
     id: int
-    corpus_id: int
     kind: str  # FK to kinds.slug
-    slug: str | None  # NULL for numeric kinds
+    slug: str | None  # populated from ref_identifiers id_kind='cite_key'
     title: str
     provider: str | None  # FK to providers.slug
     meta: dict[str, Any]
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None
+    # v2-new fields. All optional with sensible defaults so existing
+    # call sites that don't know about them (everything but the v2
+    # ingest path) continue to work unchanged.
+    set_by: str | None = None  # FK to actors.slug
+    authors: list[dict[str, Any]] | None = None
+    year: int | None = None
+    human_verified_at: datetime | None = None
+    human_verified_by: str | None = None
+    human_verified_note: str | None = None
+    retraction_status: str | None = None
+    retracted_at: datetime | None = None
+    retraction_reason: str | None = None
+    retraction_url: str | None = None
+    retraction_checked_at: datetime | None = None
+    pdf_sha256: str | None = None
+    pdf_pages: str | None = None  # PG int4range as text
+    pdf_role: str | None = None
 
     @property
     def public_id(self) -> str:

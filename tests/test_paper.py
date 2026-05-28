@@ -154,10 +154,8 @@ def _seed_paper(
     blocks: list[str] | None = None,
     embedder: MockEmbedder | None = None,
 ) -> int:
-    cid = store.ensure_corpus("default")
     e = embedder or MockEmbedder(dim=1024)
     ref = store.insert_ref(
-        corpus_id=cid,
         kind="paper",
         slug=slug,
         title=title,

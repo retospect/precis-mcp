@@ -144,44 +144,111 @@ def _row_to_block(row: tuple) -> Block:
 # Shared ``SELECT ... FROM refs`` column list.
 #
 # Every caller that wants a row :func:`_row_to_ref` can map needs the
-# same 10 columns in the same order; hand-copying the list diverges
-# over time (MCP critic: the string was duplicated in 6+ locations
-# plus a handler layering break in ``_numeric_ref._fetch_endpoints``).
+# same columns in the same order; hand-copying the list diverges over
+# time (MCP critic: the string was duplicated in 6+ locations plus a
+# handler layering break in ``_numeric_ref._fetch_endpoints``).
+#
+# v2 schema notes:
+# - ``id`` is sourced from ``ref_id`` (the column was renamed in
+#   ``migrations/0001_initial.sql``); aliased here so callers' tuple
+#   shape stays stable.
+# - ``slug`` is sourced via a correlated subquery against
+#   ``ref_identifiers`` with ``id_kind='cite_key'``. Every
+#   slug-addressed kind stores its agent-facing slug there per ADR
+#   0008. Numeric kinds (memory/todo/gripe/fc) have no row and slug
+#   comes back ``NULL``.
+# - ``corpus_id`` is gone — the v1 corpus isolation didn't survive
+#   the v2 redesign (single-corpus deployment).
+# - New v2 columns (set_by/authors/year/human_verified_*/
+#   retraction_*/pdf_*) are projected too so the Ref dataclass has
+#   the full row.
+#
 # Keep the two variants in lock-step: ``_REFS_COLS`` for unaliased
 # queries (``FROM refs``), ``_REFS_COLS_ALIASED`` for queries that
 # alias the table as ``r`` (tag-filter + joins).
 # ---------------------------------------------------------------------------
 _REFS_COLS = (
-    "id, corpus_id, kind, slug, title, provider, meta, "
-    "created_at, updated_at, deleted_at"
+    "ref_id AS id, "
+    "(SELECT id_value FROM ref_identifiers "
+    " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key') AS slug, "
+    "kind, title, provider, meta, "
+    "created_at, updated_at, deleted_at, "
+    "set_by, authors, year, "
+    "human_verified_at, human_verified_by, human_verified_note, "
+    "retraction_status, retracted_at, retraction_reason, "
+    "retraction_url, retraction_checked_at, "
+    "pdf_sha256, pdf_pages::text AS pdf_pages, pdf_role"
 )
 _REFS_COLS_ALIASED = (
-    "r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, r.meta, "
-    "r.created_at, r.updated_at, r.deleted_at"
+    "r.ref_id AS id, "
+    "(SELECT id_value FROM ref_identifiers "
+    " WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS slug, "
+    "r.kind, r.title, r.provider, r.meta, "
+    "r.created_at, r.updated_at, r.deleted_at, "
+    "r.set_by, r.authors, r.year, "
+    "r.human_verified_at, r.human_verified_by, r.human_verified_note, "
+    "r.retraction_status, r.retracted_at, r.retraction_reason, "
+    "r.retraction_url, r.retraction_checked_at, "
+    "r.pdf_sha256, r.pdf_pages::text AS pdf_pages, r.pdf_role"
 )
 
 
 def _row_to_ref(row: tuple) -> Ref:
-    """Map a refs row tuple in the order:
-    (id, corpus_id, kind, slug, title, provider, meta,
-     created_at, updated_at, deleted_at)
+    """Map a v2 refs row tuple. Column order matches :data:`_REFS_COLS`.
 
-    The column list is declared once in :data:`_REFS_COLS` /
-    :data:`_REFS_COLS_ALIASED`; every ``SELECT`` that feeds this
-    mapper should reference one of those constants so drift between
+    Layout:
+      0 id (= ref_id)
+      1 slug (from ref_identifiers correlated subquery; may be NULL)
+      2 kind
+      3 title
+      4 provider
+      5 meta
+      6 created_at
+      7 updated_at
+      8 deleted_at
+      9 set_by
+      10 authors
+      11 year
+      12 human_verified_at
+      13 human_verified_by
+      14 human_verified_note
+      15 retraction_status
+      16 retracted_at
+      17 retraction_reason
+      18 retraction_url
+      19 retraction_checked_at
+      20 pdf_sha256
+      21 pdf_pages (text)
+      22 pdf_role
+
+    Every ``SELECT`` that feeds this mapper should reference
+    :data:`_REFS_COLS` / :data:`_REFS_COLS_ALIASED` so drift between
     the SQL projection and the tuple layout can't happen.
     """
     return Ref(
         id=row[0],
-        corpus_id=row[1],
+        slug=row[1],
         kind=row[2],
-        slug=row[3],
-        title=row[4],
-        provider=row[5],
-        meta=row[6] or {},
-        created_at=row[7],
-        updated_at=row[8],
-        deleted_at=row[9],
+        title=row[3],
+        provider=row[4],
+        meta=row[5] or {},
+        created_at=row[6],
+        updated_at=row[7],
+        deleted_at=row[8],
+        set_by=row[9],
+        authors=row[10],
+        year=row[11],
+        human_verified_at=row[12],
+        human_verified_by=row[13],
+        human_verified_note=row[14],
+        retraction_status=row[15],
+        retracted_at=row[16],
+        retraction_reason=row[17],
+        retraction_url=row[18],
+        retraction_checked_at=row[19],
+        pdf_sha256=row[20],
+        pdf_pages=row[21],
+        pdf_role=row[22],
     )
 
 

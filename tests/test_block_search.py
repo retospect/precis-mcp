@@ -16,8 +16,7 @@ def _seed_paper(
     embed: bool = True,
 ) -> int:
     """Insert a paper ref + N blocks; optionally with mock embeddings."""
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="paper", slug=slug, title=title)
+    ref = store.insert_ref(kind="paper", slug=slug, title=title)
     e = embedder or MockEmbedder(dim=1024)
     rows = []
     for i, t in enumerate(blocks):
@@ -60,8 +59,7 @@ class TestSearchBlocksLexical:
             embed=False,
         )
         # Memory ref with same word — should be excluded by kind filter.
-        cid = store.ensure_corpus("default")
-        mem = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="M")
+        mem = store.insert_ref(kind="memory", slug=None, title="M")
         store.insert_blocks(
             mem.id, [BlockInsert(pos=0, text="nitrate is in memory too")]
         )
@@ -144,8 +142,7 @@ class TestSearchBlocksSemantic:
 
     def test_excludes_blocks_without_embedding(self, store: Store) -> None:
         e = MockEmbedder(dim=1024)
-        cid = store.ensure_corpus("default")
-        ref = store.insert_ref(corpus_id=cid, kind="paper", slug="p", title="P")
+        ref = store.insert_ref(kind="paper", slug="p", title="P")
         # ``has`` is 3 chars and now filtered by the noise-floor guard
         # (MCP critic MAJOR #11). Use a longer phrase so the test
         # exercises only the embedding-presence filter it cares about.

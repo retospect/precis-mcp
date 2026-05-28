@@ -276,7 +276,6 @@ class CacheBackedHandler(Handler):
         # True miss — fresh ref creation.
         result = self._fetch(key)
         ref, cache = self.store.put_cache_entry(
-            corpus_id=self.store.ensure_corpus(self.corpus_slug),
             kind=self.spec.kind,
             slug=self._slug_for(key),
             title=result.title,

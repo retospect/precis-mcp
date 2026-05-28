@@ -11,9 +11,7 @@ from precis.store import BlockInsert, Store
 
 
 def _paper_ref(store: Store, slug: str = "wang2020state") -> int:
-    cid = store.ensure_corpus("default")
     ref = store.insert_ref(
-        corpus_id=cid,
         kind="paper",
         slug=slug,
         title="Wang 2020 — State of the art",
@@ -224,9 +222,7 @@ class TestBlocksMissingEmbeddings:
     def test_skips_deleted_refs(self, store: Store) -> None:
         ref_id = _paper_ref(store, slug="alive")
         store.insert_blocks(ref_id, [BlockInsert(pos=0, text="x")])
-
-        cid = store.ensure_corpus("default")
-        dead = store.insert_ref(corpus_id=cid, kind="paper", slug="dead", title="Dead")
+        dead = store.insert_ref(kind="paper", slug="dead", title="Dead")
         store.insert_blocks(dead.id, [BlockInsert(pos=0, text="y")])
         store.soft_delete_ref(dead.id)
 
@@ -235,9 +231,8 @@ class TestBlocksMissingEmbeddings:
         assert missing[0].text == "x"
 
     def test_kind_filter(self, store: Store) -> None:
-        cid = store.ensure_corpus("default")
-        paper = store.insert_ref(corpus_id=cid, kind="paper", slug="p1", title="P")
-        memory = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="M")
+        paper = store.insert_ref(kind="paper", slug="p1", title="P")
+        memory = store.insert_ref(kind="memory", slug=None, title="M")
         store.insert_blocks(paper.id, [BlockInsert(pos=0, text="paper text")])
         store.insert_blocks(memory.id, [BlockInsert(pos=0, text="mem text")])
 

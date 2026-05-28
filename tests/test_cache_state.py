@@ -10,14 +10,8 @@ from precis.store import BlockInsert, Store
 from precis.store.types import CacheEntry, Ref
 
 
-@pytest.fixture
-def corpus_id(store: Store) -> int:
-    return store.ensure_corpus("default")
-
-
-def test_put_and_get_cache_entry_roundtrip(store: Store, corpus_id: int) -> None:
+def test_put_and_get_cache_entry_roundtrip(store: Store) -> None:
     ref, cache = store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="math",
         slug="population-of-ireland",
         title="population of Ireland",
@@ -55,9 +49,8 @@ def test_get_cache_entry_miss(store: Store) -> None:
     )
 
 
-def test_pinned_entry_has_null_fresh_until(store: Store, corpus_id: int) -> None:
+def test_pinned_entry_has_null_fresh_until(store: Store) -> None:
     ref, cache = store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="math",
         slug="pi",
         title="π",
@@ -69,10 +62,9 @@ def test_pinned_entry_has_null_fresh_until(store: Store, corpus_id: int) -> None
     assert cache.fresh_until is None  # pinned
 
 
-def test_replace_existing_cache_entry(store: Store, corpus_id: int) -> None:
+def test_replace_existing_cache_entry(store: Store) -> None:
     """Re-fetching a query (same provider + hash) replaces the body."""
     store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="math",
         slug="speed-of-light",
         title="speed of light",
@@ -85,7 +77,6 @@ def test_replace_existing_cache_entry(store: Store, corpus_id: int) -> None:
     # ref is hard-deleted and re-inserted, cascading away the old
     # blocks and old cache_state row.
     ref2, cache2 = store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="math",
         slug="speed-of-light",
         title="speed of light (revised)",
@@ -107,9 +98,8 @@ def test_replace_existing_cache_entry(store: Store, corpus_id: int) -> None:
     assert cache_found.ref_id == ref2.id
 
 
-def test_soft_deleted_ref_is_not_a_cache_hit(store: Store, corpus_id: int) -> None:
+def test_soft_deleted_ref_is_not_a_cache_hit(store: Store) -> None:
     ref, _ = store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="math",
         slug="soft-del",
         title="soft delete test",
@@ -122,7 +112,7 @@ def test_soft_deleted_ref_is_not_a_cache_hit(store: Store, corpus_id: int) -> No
     assert store.get_cache_entry(provider="wolfram", request_hash="soft-hash") is None
 
 
-def test_freshness_logic_via_view(store: Store, corpus_id: int) -> None:
+def test_freshness_logic_via_view(store: Store) -> None:
     """`fresh_until > now()` ⇒ caller treats it as fresh.
 
     The Store doesn't make the freshness decision (that's the
@@ -131,7 +121,6 @@ def test_freshness_logic_via_view(store: Store, corpus_id: int) -> None:
     the future for ttl>0.
     """
     _, fresh = store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="math",
         slug="fresh",
         title="fresh",
@@ -141,7 +130,6 @@ def test_freshness_logic_via_view(store: Store, corpus_id: int) -> None:
         ttl_seconds=3600,
     )
     _, stale = store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="math",
         slug="stale",
         title="stale",
@@ -158,10 +146,9 @@ def test_freshness_logic_via_view(store: Store, corpus_id: int) -> None:
     )
 
 
-def test_two_providers_share_request_hash(store: Store, corpus_id: int) -> None:
+def test_two_providers_share_request_hash(store: Store) -> None:
     """Same `request_hash` under different providers → distinct rows."""
     store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="math",
         slug="m1",
         title="m1",
@@ -171,7 +158,6 @@ def test_two_providers_share_request_hash(store: Store, corpus_id: int) -> None:
         ttl_seconds=3600,
     )
     store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="web",
         slug="w1",
         title="w1",
@@ -187,10 +173,9 @@ def test_two_providers_share_request_hash(store: Store, corpus_id: int) -> None:
     assert b[0].kind == "web"
 
 
-def test_blocks_persist_with_cache_entry(store: Store, corpus_id: int) -> None:
+def test_blocks_persist_with_cache_entry(store: Store) -> None:
     """`body_blocks` insert is part of the same transaction as the cache row."""
     ref, _ = store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="math",
         slug="multi",
         title="multi-block",
@@ -208,10 +193,9 @@ def test_blocks_persist_with_cache_entry(store: Store, corpus_id: int) -> None:
     assert [b.text for b in blocks] == ["line 1", "line 2", "line 3"]
 
 
-def test_cost_usd_optional(store: Store, corpus_id: int) -> None:
+def test_cost_usd_optional(store: Store) -> None:
     """Free providers (e.g. youtube) leave cost_usd null."""
     _, cache = store.put_cache_entry(
-        corpus_id=corpus_id,
         kind="youtube",
         slug="abc",
         title="t",

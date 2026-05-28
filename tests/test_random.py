@@ -40,10 +40,7 @@ def _seed_oracle_with_embeddings(
     """
     embedder = hub.embedder
     assert embedder is not None
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(
-        corpus_id=cid, kind="oracle", slug=slug, title=f"Oracle {slug}"
-    )
+    ref = store.insert_ref(kind="oracle", slug=slug, title=f"Oracle {slug}")
     embs = embedder.embed(texts)
     store.insert_blocks(
         ref.id,
@@ -68,8 +65,7 @@ def _seed_memory(store: Store, hub: Hub, text: str) -> int:
     block. Returns the ref_id."""
     embedder = hub.embedder
     assert embedder is not None
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title=text[:40])
+    ref = store.insert_ref(kind="memory", slug=None, title=text[:40])
     store.insert_blocks(
         ref.id,
         [
@@ -245,8 +241,7 @@ def test_blocks_without_embeddings_excluded(
     """Blocks with ``embedding IS NULL`` must not be pickable —
     same universe as semantic search. Re-ingests use this gate
     too."""
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="oracle", slug="mixed", title="Mixed")
+    ref = store.insert_ref(kind="oracle", slug="mixed", title="Mixed")
     embedder = hub.embedder
     assert embedder is not None
     store.insert_blocks(

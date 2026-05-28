@@ -384,16 +384,24 @@ class TestFairUse:
         # proceeds. Insert a synthetic patent ref to seed bytes.
         watch_db.create(store, name="fixed", cql="cpc=B01J27/24")
         with store.pool.connection() as conn:
-            cid = store.ensure_corpus("default")
-            conn.execute(
+            # v2 schema: drop corpus_id, drop slug column (slug lives in
+            # ref_identifiers now). Insert the ref directly with
+            # high-fair-use bytes, then register the slug in
+            # ref_identifiers so handler lookups still find it.
+            row = conn.execute(
                 """
-                INSERT INTO refs
-                  (corpus_id, kind, slug, title, provider, meta)
+                INSERT INTO refs (kind, title, provider, meta)
                 VALUES
-                  (%s, 'patent', 'ep0000001a1', 'seed', 'epo_ops',
+                  ('patent', 'seed', 'epo_ops',
                    '{"fair_use_bytes": 999999999}'::jsonb)
+                RETURNING ref_id
                 """,
-                (cid,),
+            ).fetchone()
+            assert row is not None
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('cite_key', 'ep0000001a1', %s, 'epo_ops')",
+                (row[0],),
             )
         # Now compute_rolling returns ~1GB; limit at 0.0001 GB triggers pause.
         summary = run_one_pass(

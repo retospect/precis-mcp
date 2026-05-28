@@ -180,8 +180,8 @@ class IdentifiersMixin:
         sql = (
             "SELECT pi.ref_id "
             "FROM ref_identifiers pi "
-            "JOIN refs r ON r.id = pi.ref_id "
-            "WHERE pi.scheme = %s AND pi.value = %s "
+            "JOIN refs r ON r.ref_id = pi.ref_id "
+            "WHERE pi.id_kind = %s AND pi.id_value = %s "
             "AND r.deleted_at IS NULL"
         )
         params: list[object] = [s, v]
@@ -242,7 +242,7 @@ class IdentifiersMixin:
         if not rows:
             return 0
         sql = (
-            "INSERT INTO ref_identifiers (scheme, value, ref_id, source) "
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
             "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING"
         )
         if conn is not None:
@@ -266,11 +266,11 @@ class IdentifiersMixin:
         """
         with self.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT scheme, value, source FROM ref_identifiers "
-                "WHERE ref_id = %s ORDER BY scheme, value",
+                "SELECT id_kind, id_value, source FROM ref_identifiers "
+                "WHERE ref_id = %s ORDER BY id_kind, id_value",
                 (ref_id,),
             ).fetchall()
-        return [(str(r[0]), str(r[1]), str(r[2])) for r in rows]
+        return [(str(r[0]), str(r[1]), str(r[2] or "")) for r in rows]
 
 
 __all__ = [

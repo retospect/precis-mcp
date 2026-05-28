@@ -272,9 +272,7 @@ def ingest_patent(
     )
 
     with store.tx() as conn:
-        cid = store.ensure_corpus(corpus_slug)
         ref = store.insert_ref(
-            corpus_id=cid,
             kind="patent",
             slug=slug,
             title=parsed.title,

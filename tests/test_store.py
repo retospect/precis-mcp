@@ -8,37 +8,16 @@ from precis.errors import BadInput, NotFound
 from precis.store import Store, Tag
 
 # ---------------------------------------------------------------------------
-# system
+# system / corpus
 # ---------------------------------------------------------------------------
-
-
-def test_system_get_setting(store: Store) -> None:
-    assert store.get_setting("embedding_model") == "BAAI/bge-m3"
-    assert store.get_setting("embedding_dim") == "1024"
-    assert store.embedding_dim() == 1024
-    assert store.get_setting("nonexistent") is None
-
-
-def test_system_set_setting(store: Store) -> None:
-    store.set_setting("test_key", "test_value")
-    assert store.get_setting("test_key") == "test_value"
-
-    # upsert
-    store.set_setting("test_key", "new_value")
-    assert store.get_setting("test_key") == "new_value"
-
-
-# ---------------------------------------------------------------------------
-# corpus
-# ---------------------------------------------------------------------------
-
-
-def test_corpus_ensure_idempotent(store: Store) -> None:
-    cid1 = store.ensure_corpus("default")
-    cid2 = store.ensure_corpus("default")
-    assert cid1 == cid2
-    assert store.get_corpus("default") == cid1
-    assert store.get_corpus("missing") is None
+#
+# v2 dropped both the ``system`` key-value table and the ``corpuses``
+# table. ``get_setting``/``set_setting`` are stubbed to no-op
+# (return None / pass) in v2; tests that exercised the v1 system table
+# have been removed. ``ensure_corpus``/``get_corpus`` were deleted
+# entirely. embedding_dim now reads ``embedders.dim`` directly from
+# the registry table; covered by test_embedding_dim_reads_default
+# below.
 
 
 # ---------------------------------------------------------------------------
@@ -47,9 +26,7 @@ def test_corpus_ensure_idempotent(store: Store) -> None:
 
 
 def test_insert_numeric_kind(store: Store) -> None:
-    cid = store.ensure_corpus("default")
     ref = store.insert_ref(
-        corpus_id=cid,
         kind="memory",
         slug=None,
         title="hello world",
@@ -62,10 +39,8 @@ def test_insert_numeric_kind(store: Store) -> None:
 
 
 def test_insert_numeric_kind_rejects_slug(store: Store) -> None:
-    cid = store.ensure_corpus("default")
     with pytest.raises(BadInput, match="numeric"):
         store.insert_ref(
-            corpus_id=cid,
             kind="memory",
             slug="not-allowed",
             title="x",
@@ -73,10 +48,8 @@ def test_insert_numeric_kind_rejects_slug(store: Store) -> None:
 
 
 def test_insert_slug_kind_requires_slug(store: Store) -> None:
-    cid = store.ensure_corpus("default")
     with pytest.raises(BadInput, match="slug-addressed"):
         store.insert_ref(
-            corpus_id=cid,
             kind="paper",
             slug=None,
             title="x",
@@ -84,9 +57,7 @@ def test_insert_slug_kind_requires_slug(store: Store) -> None:
 
 
 def test_insert_slug_kind(store: Store) -> None:
-    cid = store.ensure_corpus("default")
     ref = store.insert_ref(
-        corpus_id=cid,
         kind="paper",
         slug="wang2020state",
         title="Wang 2020",
@@ -98,8 +69,7 @@ def test_insert_slug_kind(store: Store) -> None:
 
 
 def test_get_ref_numeric(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="findme")
+    ref = store.insert_ref(kind="memory", slug=None, title="findme")
     fetched = store.get_ref(kind="memory", id=ref.id)
     assert fetched is not None
     assert fetched.id == ref.id
@@ -107,8 +77,7 @@ def test_get_ref_numeric(store: Store) -> None:
 
 
 def test_get_ref_slug(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    store.insert_ref(corpus_id=cid, kind="paper", slug="abc", title="Paper A")
+    store.insert_ref(kind="paper", slug="abc", title="Paper A")
     fetched = store.get_ref(kind="paper", id="abc")
     assert fetched is not None
     assert fetched.slug == "abc"
@@ -119,10 +88,7 @@ def test_get_ref_returns_none_when_missing(store: Store) -> None:
 
 
 def test_update_ref_title_and_meta(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(
-        corpus_id=cid, kind="memory", slug=None, title="v1", meta={"a": 1}
-    )
+    ref = store.insert_ref(kind="memory", slug=None, title="v1", meta={"a": 1})
     updated = store.update_ref(ref.id, title="v2", meta_patch={"b": 2})
     assert updated.title == "v2"
     assert updated.meta == {"a": 1, "b": 2}
@@ -134,8 +100,7 @@ def test_update_ref_missing_raises(store: Store) -> None:
 
 
 def test_soft_delete(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="bye")
+    ref = store.insert_ref(kind="memory", slug=None, title="bye")
     store.soft_delete_ref(ref.id)
 
     assert store.get_ref(kind="memory", id=ref.id) is None
@@ -145,10 +110,9 @@ def test_soft_delete(store: Store) -> None:
 
 
 def test_list_refs_filters(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="m1")
-    store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="m2")
-    store.insert_ref(corpus_id=cid, kind="todo", slug=None, title="t1")
+    store.insert_ref(kind="memory", slug=None, title="m1")
+    store.insert_ref(kind="memory", slug=None, title="m2")
+    store.insert_ref(kind="todo", slug=None, title="t1")
 
     memories = store.list_refs(kind="memory")
     assert len(memories) == 2
@@ -159,15 +123,12 @@ def test_list_refs_filters(store: Store) -> None:
 
 
 def test_search_refs_lexical(store: Store) -> None:
-    cid = store.ensure_corpus("default")
     store.insert_ref(
-        corpus_id=cid,
         kind="memory",
         slug=None,
         title="nitrate reduction on copper electrodes",
     )
     store.insert_ref(
-        corpus_id=cid,
         kind="memory",
         slug=None,
         title="something else entirely",
@@ -183,8 +144,7 @@ def test_search_refs_lexical(store: Store) -> None:
 
 
 def test_tags_add_and_list(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="x")
+    ref = store.insert_ref(kind="memory", slug=None, title="x")
 
     store.add_tag(ref.id, Tag.closed("STATUS", "doing"))
     store.add_tag(ref.id, Tag.flag("pinned"))
@@ -200,8 +160,7 @@ def test_tags_add_and_list(store: Store) -> None:
 
 def test_tags_replace_prefix(store: Store) -> None:
     """replace_prefix=True removes existing closed tag with same prefix."""
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="x")
+    ref = store.insert_ref(kind="memory", slug=None, title="x")
 
     store.add_tag(ref.id, Tag.closed("CONFIDENCE", "tentative"), replace_prefix=True)
     store.add_tag(ref.id, Tag.closed("CONFIDENCE", "certain"), replace_prefix=True)
@@ -215,8 +174,7 @@ def test_tags_replace_prefix(store: Store) -> None:
 
 
 def test_tags_remove(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="x")
+    ref = store.insert_ref(kind="memory", slug=None, title="x")
 
     store.add_tag(ref.id, Tag.flag("pinned"))
     assert store.has_flag(ref.id, "pinned") is True
@@ -226,8 +184,7 @@ def test_tags_remove(store: Store) -> None:
 
 
 def test_tags_idempotent_add(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="x")
+    ref = store.insert_ref(kind="memory", slug=None, title="x")
     store.add_tag(ref.id, Tag.open("dup"))
     store.add_tag(ref.id, Tag.open("dup"))  # ON CONFLICT DO NOTHING
     tags = store.tags_for(ref.id)
@@ -254,11 +211,9 @@ def test_tag_str() -> None:
 
 
 def test_tx_rolls_back(store: Store) -> None:
-    cid = store.ensure_corpus("default")
     try:
         with store.tx() as conn:
             store.insert_ref(
-                corpus_id=cid,
                 kind="memory",
                 slug=None,
                 title="will roll back",

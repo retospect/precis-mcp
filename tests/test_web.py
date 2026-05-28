@@ -400,8 +400,7 @@ def test_link_to_memory(handler: WebHandler, hub: Hub) -> None:
     # Seed a memory to link against.
     store = hub.store
     assert store is not None
-    cid = store.ensure_corpus("default")
-    mem = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="the idea")
+    mem = store.insert_ref(kind="memory", slug=None, title="the idea")
     # Fetch the web page.
     handler.get(id="https://example.com/article")
     # Link web → memory.
@@ -423,10 +422,7 @@ def test_link_to_paper(handler: WebHandler, hub: Hub) -> None:
     supplementary reading for a paper."""
     store = hub.store
     assert store is not None
-    cid = store.ensure_corpus("default")
-    paper = store.insert_ref(
-        corpus_id=cid, kind="paper", slug="miller2000food", title="Food"
-    )
+    paper = store.insert_ref(kind="paper", slug="miller2000food", title="Food")
     handler.get(id="https://example.com/article")
     resp = handler.link(
         id="example-com-article",
@@ -442,8 +438,7 @@ def test_link_to_paper(handler: WebHandler, hub: Hub) -> None:
 def test_unlink_removes(handler: WebHandler, hub: Hub) -> None:
     store = hub.store
     assert store is not None
-    cid = store.ensure_corpus("default")
-    mem = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="the idea")
+    mem = store.insert_ref(kind="memory", slug=None, title="the idea")
     handler.get(id="https://example.com/article")
     handler.link(id="example-com-article", target=f"memory:{mem.id}")
     resp = handler.link(

@@ -78,9 +78,8 @@ def _seed_two_memories(store: Store) -> tuple[int, int]:
     """Create two memory refs, tag the first with topic:co2-capture
     + PRIO:high, the second with topic:nox-reduction. Both share a
     common keyword ('precis') in their title for lexical search."""
-    cid = store.ensure_corpus("default")
-    a = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="precis on co2")
-    b = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="precis on nox")
+    a = store.insert_ref(kind="memory", slug=None, title="precis on co2")
+    b = store.insert_ref(kind="memory", slug=None, title="precis on nox")
     store.add_tag(a.id, Tag.open("topic-co2-capture"))
     store.add_tag(a.id, Tag.closed("PRIO", "high"))
     store.add_tag(b.id, Tag.open("topic-nox-reduction"))
@@ -150,10 +149,9 @@ def _seed_two_papers_with_blocks(
 ) -> tuple[int, int]:
     """Two papers, each with a block containing 'photocatalysis'.
     Paper a tagged with topic:co2-capture, paper b with topic:nox."""
-    cid = store.ensure_corpus("default")
     e = MockEmbedder(dim=1024)
-    a = store.insert_ref(corpus_id=cid, kind="paper", slug="paper-a", title="A study")
-    b = store.insert_ref(corpus_id=cid, kind="paper", slug="paper-b", title="B study")
+    a = store.insert_ref(kind="paper", slug="paper-a", title="A study")
+    b = store.insert_ref(kind="paper", slug="paper-b", title="B study")
     text = "photocatalysis under visible light improves selectivity"
     store.insert_blocks(
         a.id, [BlockInsert(pos=0, text=text, embedding=e.embed_one(text))]
@@ -290,8 +288,7 @@ class TestPosBoundary:
         find that ref. Otherwise the helper's pos-IS-NULL gate is
         broken and block-level annotations leak into ref-level
         listings."""
-        cid = store.ensure_corpus("default")
-        ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="x")
+        ref = store.insert_ref(kind="memory", slug=None, title="x")
         store.insert_blocks(ref.id, [BlockInsert(pos=0, text="x")])
         # Block-level tag on pos=0.
         store.add_tag(ref.id, Tag.open("scratch"), pos=0)

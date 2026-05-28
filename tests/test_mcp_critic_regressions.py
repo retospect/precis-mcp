@@ -262,10 +262,8 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
     from precis.store import BlockInsert
 
     e = MockEmbedder(dim=store.embedding_dim())
-    cid = store.ensure_corpus("default")
     # Paper that will match the query.
     paper = store.insert_ref(
-        corpus_id=cid,
         kind="paper",
         slug="paper-a",
         title="A",
@@ -729,8 +727,7 @@ class TestSemanticRelevanceFloor:
         from precis.store import BlockInsert
 
         e = MockEmbedder(dim=1024)
-        cid = store.ensure_corpus("default")
-        ref = store.insert_ref(corpus_id=cid, kind="paper", slug="p", title="P")
+        ref = store.insert_ref(kind="paper", slug="p", title="P")
         # Three blocks of meaningful text — none lexically or
         # semantically close to the gibberish query.
         store.insert_blocks(
@@ -1148,7 +1145,6 @@ def test_bibtex_unescapes_html_entities() -> None:
     _now = datetime(2026, 1, 1, tzinfo=UTC)
     ref = Ref(
         id=1,
-        corpus_id=1,
         kind="paper",
         slug="ahmed2025revolutionary",
         title="Revolutionary CO<sub>2</sub> capture",
@@ -1487,9 +1483,7 @@ def test_paper_search_preview_strips_image_markers(store: Store) -> None:
     # End-to-end: seed a paper with an image-only block + a caption
     # block and run the search() rendering.  Neither preview must
     # carry the marker / asset path.
-    corpus_id = store.ensure_corpus("default")
     ref = store.insert_ref(
-        corpus_id=corpus_id,
         kind="paper",
         slug="markerleak2026probe",
         title="Search-preview marker leak regression",
@@ -1537,15 +1531,12 @@ def test_paper_view_fig_n_is_reserved_not_unknown(store: Store) -> None:
     from precis.errors import Unsupported
     from precis.handlers.paper import PaperHandler
 
-    corpus_id = store.ensure_corpus("default")
     ref = store.insert_ref(
-        corpus_id=corpus_id,
         kind="paper",
         slug="testpaper2026figview",
         title="Test paper for fig/N reserved view",
         meta={},
     )
-    assert isinstance(corpus_id, int)
     assert ref.id is not None
 
     handler = PaperHandler(hub=Hub(store=store))

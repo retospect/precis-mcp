@@ -492,9 +492,7 @@ class NumericRefHandler(Handler):
         # captured at validation time, the surrounding ``tx()`` will
         # roll back the ref insert too.
         with self.store.tx() as conn:
-            corpus_id = self.store.ensure_corpus(self.corpus_slug)
             ref = self.store.insert_ref(
-                corpus_id=corpus_id,
                 kind=self.kind,
                 slug=None,
                 title=text,

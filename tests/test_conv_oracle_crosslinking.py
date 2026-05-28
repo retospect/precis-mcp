@@ -30,22 +30,19 @@ from precis.store import BlockInsert, Store
 
 
 def _seed_oracle(store: Store, slug: str, title: str = "Test Oracle") -> int:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="oracle", slug=slug, title=title)
+    ref = store.insert_ref(kind="oracle", slug=slug, title=title)
     return ref.id
 
 
 def _seed_conv(store: Store, slug: str, title: str = "Test Thread") -> int:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="conv", slug=slug, title=title)
+    ref = store.insert_ref(kind="conv", slug=slug, title=title)
     # One block so list_blocks_for_ref / chunk parsing has data to chew on.
     store.insert_blocks(ref.id, [BlockInsert(pos=0, text="hello")])
     return ref.id
 
 
 def _seed_paper(store: Store, slug: str, title: str = "P") -> int:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="paper", slug=slug, title=title)
+    ref = store.insert_ref(kind="paper", slug=slug, title=title)
     return ref.id
 
 

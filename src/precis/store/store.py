@@ -117,24 +117,27 @@ class Store(
                 yield conn
 
     # -- system table --------------------------------------------------------
+    #
+    # v2 removed the dedicated ``system`` key-value table; the only
+    # in-tree consumer is :mod:`precis.jobs.oracle_sync` which uses it
+    # to cache the oracle YAML version across boots. For now both
+    # methods are no-ops returning ``None`` — oracle_sync degrades to
+    # an always-reingest path, which is correct fallback behaviour.
+    # A v2-native replacement (likely a singleton row in ``meta`` on
+    # a sentinel ref, or a small ``app_state`` table in a follow-up
+    # migration) is deferred — see TODO in this file.
 
     def get_setting(self, key: str) -> str | None:
-        """Read a single ``system`` row. Used for embedder dim probe."""
-        with self.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT value FROM system WHERE key = %s", (key,)
-            ).fetchone()
-        return row[0] if row else None
+        """v2 stub: no persisted system table; always returns None.
+
+        Forces consumers (oracle_sync) into the unconditional re-ingest
+        path until a v2-native key/value store lands.
+        """
+        return None
 
     def set_setting(self, key: str, value: str) -> None:
-        """Upsert a single ``system`` row."""
-        with self.pool.connection() as conn:
-            conn.execute(
-                "INSERT INTO system (key, value) VALUES (%s, %s) "
-                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
-                "                              updated_at = now()",
-                (key, value),
-            )
+        """v2 stub: no persisted system table; no-op."""
+        return None
 
     def embedding_dim(self) -> int:
         """Return the configured embedding dimension as an ``int``.
@@ -158,31 +161,6 @@ class Store(
         if row is None:
             raise RuntimeError("no default embedder registered - did migrations run?")
         return int(row[0])
-
-    # -- corpus --------------------------------------------------------------
-
-    def get_corpus(self, slug: str) -> int | None:
-        """Resolve a corpus slug to its numeric id, or None if missing."""
-        with self.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT id FROM corpuses WHERE slug = %s", (slug,)
-            ).fetchone()
-        return row[0] if row else None
-
-    def ensure_corpus(self, slug: str, *, title: str | None = None) -> int:
-        """Idempotent: returns existing id, or creates a new corpus."""
-        existing = self.get_corpus(slug)
-        if existing is not None:
-            return existing
-        with self.pool.connection() as conn:
-            row = conn.execute(
-                "INSERT INTO corpuses (slug, title) VALUES (%s, %s) "
-                "ON CONFLICT (slug) DO UPDATE SET title = corpuses.title "
-                "RETURNING id",
-                (slug, title or slug),
-            ).fetchone()
-        assert row is not None
-        return row[0]
 
     # -- helpers -------------------------------------------------------------
 

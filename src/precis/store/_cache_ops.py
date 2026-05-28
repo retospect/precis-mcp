@@ -238,7 +238,6 @@ class CacheMixin:
     def put_cache_entry(
         self,
         *,
-        corpus_id: int,
         kind: str,
         slug: str,
         title: str,
@@ -253,74 +252,20 @@ class CacheMixin:
     ) -> tuple[Ref, CacheEntry]:
         """Atomically create-or-replace a cached ref + its cache_state row.
 
-        On replace (existing ref with same ``kind+slug``), all old
-        blocks are deleted via cascade and replaced with
-        ``body_blocks``. The cache_state row is upserted on
-        ``(provider, request_hash)``.
+        **Phase 4 stub** — the v1 body INSERTed against ``refs(corpus_id, …,
+        slug, …)`` and required a ``corpus_id`` param. v2 schema dropped
+        both (corpus_id is gone; slug lives in ``ref_identifiers``).
+        Rewrite slated for Phase 4 of the store-v2 rewrite (see plan).
 
-        ``ttl_seconds=None`` pins the entry (never expires).
-        ``ttl_seconds=0`` is allowed but means the entry is born
-        stale — useful only for testing.
+        For now this raises so cache-backed handlers fail loudly with a
+        message pointing at the right phase, rather than landing rows
+        against v1-shaped SQL that would just throw column-not-found
+        errors at the psycopg layer.
         """
-        fresh_until_sql = (
-            "now() + (%s || ' seconds')::interval"
-            if ttl_seconds is not None
-            else "NULL"
+        raise NotImplementedError(
+            "put_cache_entry: phase 4 (cache v2 rewrite) not yet implemented; "
+            "see /Users/reto/.claude/plans/lively-yawning-kahn.md"
         )
-        ref_meta_json = Jsonb(ref_meta or {})
-        cache_meta_json = Jsonb(cache_meta or {})
-
-        with self.tx() as conn:
-            # Upsert the ref. Any existing blocks cascade-delete because
-            # we soft-delete-then-purge; for cache entries we want hard
-            # replacement, so we DELETE the old ref outright if present
-            # (cascading to blocks + cache_state) and re-insert.
-            existing = conn.execute(
-                "SELECT id FROM refs WHERE kind = %s AND slug = %s "
-                "AND deleted_at IS NULL",
-                (kind, slug),
-            ).fetchone()
-            if existing is not None:
-                conn.execute("DELETE FROM refs WHERE id = %s", (existing[0],))
-
-            row = conn.execute(
-                "INSERT INTO refs (corpus_id, kind, slug, title, provider, meta) "
-                "VALUES (%s, %s, %s, %s, %s, %s) "
-                f"RETURNING {_REFS_COLS}",
-                (corpus_id, kind, slug, title, provider, ref_meta_json),
-            ).fetchone()
-            assert row is not None
-            ref = _row_to_ref(row)
-
-            if body_blocks:
-                # Reuse insert_blocks via conn= so we stay in the same tx.
-                self.insert_blocks(ref.id, body_blocks, conn=conn)
-
-            # Insert cache_state. PRIMARY KEY is ref_id, so ON CONFLICT
-            # is on the unique (provider, request_hash) index.
-            cache_sql = (
-                "INSERT INTO cache_state "
-                "  (ref_id, provider, request_hash, model, fetched_at, "
-                "   fresh_until, cost_usd, meta) "
-                f"VALUES (%s, %s, %s, %s, now(), {fresh_until_sql}, %s, %s) "
-                "RETURNING ref_id, provider, request_hash, model, "
-                "          fetched_at, fresh_until, cost_usd, meta"
-            )
-            params: tuple[Any, ...] = (
-                ref.id,
-                provider,
-                request_hash,
-                model,
-            )
-            if ttl_seconds is not None:
-                params = params + (str(ttl_seconds), cost_usd, cache_meta_json)
-            else:
-                params = params + (cost_usd, cache_meta_json)
-            cache_row = conn.execute(cache_sql, params).fetchone()
-            assert cache_row is not None
-            cache = _row_to_cache_entry(cache_row)
-
-        return (ref, cache)
 
 
 __all__ = ["CacheMixin"]

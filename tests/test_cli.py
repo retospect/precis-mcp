@@ -457,9 +457,7 @@ def test_ingest_md_deprecation_alias_still_works(
 
 def _insert_gripe(store, text: str) -> int:
     """Seed a gripe ref bypassing the handler (no agent-facing read)."""
-    corpus_id = store.ensure_corpus("default")
     ref = store.insert_ref(
-        corpus_id=corpus_id,
         kind="gripe",
         slug=None,
         title=text,

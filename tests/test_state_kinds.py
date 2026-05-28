@@ -135,9 +135,7 @@ class TestOracle:
     def _seed_oracle(self, store: Store, slug: str, title: str, body_text: str) -> int:
         """Insert an oracle directly via the store — there's no put() yet."""
         with store.tx() as conn:
-            corpus_id = store.ensure_corpus("default")
             ref = store.insert_ref(
-                corpus_id=corpus_id,
                 kind="oracle",
                 slug=slug,
                 title=title,
@@ -187,9 +185,7 @@ class TestOracle:
         """Seed an oracle with multiple entries (title, body) — mimics
         the real ingest shape (section_path meta on each block)."""
         with store.tx() as conn:
-            corpus_id = store.ensure_corpus("default")
             ref = store.insert_ref(
-                corpus_id=corpus_id,
                 kind="oracle",
                 slug=slug,
                 title=title,
@@ -374,9 +370,7 @@ class TestConversation:
 
     def _seed_conv(self, store: Store, slug: str, title: str, turns: list[str]) -> int:
         with store.tx() as conn:
-            corpus_id = store.ensure_corpus("default")
             ref = store.insert_ref(
-                corpus_id=corpus_id,
                 kind="conv",
                 slug=slug,
                 title=title,

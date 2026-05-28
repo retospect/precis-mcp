@@ -1216,10 +1216,8 @@ class PlaintextHandler(Handler):
         )
 
         with self.store.tx() as conn:
-            corpus_id = self.store.ensure_corpus("default")
             if ref is None:
                 ref = self.store.insert_ref(
-                    corpus_id=corpus_id,
                     kind=self._KIND,
                     slug=slug,
                     title=title,
