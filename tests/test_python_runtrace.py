@@ -23,24 +23,6 @@ from precis.errors import BadInput
 from precis.handlers import _python_runtrace as rtrace
 from precis.handlers.python import PythonHandler
 
-# The runner subprocess fails on Python 3.12 with a partially-
-# initialised ``urllib.parse`` import error when ``sys.setprofile``
-# intercepts the import machinery during a test entry that uses
-# ``argparse`` (which lazy-imports ``urllib.parse`` for help-text
-# fallbacks). First seen on macOS framework Python 3.12; now also
-# reproduces in the Linux ``precis-dev`` container's Python 3.12.
-# 3.11 and 3.13 both work. Tracked in ``OPEN-ITEMS.md`` under
-# "Platform-specific test bugs (Windows + Python 3.12 setprofile)".
-#
-# ``strict=False`` because some 3.12 builds (e.g. Homebrew) do work,
-# so an XPASS in CI on a different runtime is fine. We still want
-# pytest to *attempt* the test so we notice when the bug is fixed.
-_PY312_SETPROFILE_BUG = sys.version_info[:2] == (3, 12)
-_RUNTRACE_XFAIL_REASON = (
-    "Python 3.12 sys.setprofile + urllib.parse circular import; "
-    "see OPEN-ITEMS.md §Platform-specific test bugs."
-)
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -171,7 +153,6 @@ def test_runtrace_rejects_bad_timeout(handler: PythonHandler, gate_on: None) -> 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_captures_call_tree(handler: PythonHandler, gate_on: None) -> None:
     """End-to-end: actual subprocess, real setprofile, real events.
     The result should show main calling loop calling helper 3× plus
@@ -206,7 +187,6 @@ def test_runtrace_produces_static_only_diff(
     assert "demopkg.m.dead_code" not in body
 
 
-@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_argv_is_forwarded(repo: Path, gate_on: None) -> None:
     """Adding a script that inspects sys.argv proves argv= is forwarded
     through the runner into the entry's process."""
@@ -631,7 +611,6 @@ def test_render_no_collapsed_annotation_when_expand_stdlib() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_collapses_stdlib_by_default(repo: Path, gate_on: None) -> None:
     """End-to-end: argparse-heavy entry should NOT show every
     argparse internal in the default rendered output."""
@@ -663,7 +642,6 @@ def test_runtrace_collapses_stdlib_by_default(repo: Path, gate_on: None) -> None
     assert "expand_stdlib" in body
 
 
-@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_expand_stdlib_keeps_full_tree(repo: Path, gate_on: None) -> None:
     """With `expand_stdlib=True`, deep argparse internals are visible
     and the collapse annotations disappear."""
@@ -704,7 +682,6 @@ def test_runtrace_max_events_validation(handler: PythonHandler, gate_on: None) -
         )
 
 
-@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_max_events_truncates(repo: Path, gate_on: None) -> None:
     """A tight `max_events` cap surfaces as `truncated` in the output."""
     pkg = repo / "demopkg"

@@ -134,8 +134,20 @@ def run_trace(
     with tempfile.TemporaryDirectory(prefix="precis-runtrace-") as tmpdir:
         out_path = Path(tmpdir) / "trace.json"
 
+        # ``-P`` (Python 3.11+) disables prepending the runner script's
+        # directory to ``sys.path[0]``. Without it, the subprocess's
+        # ``sys.path[0]`` is ``src/precis/handlers/`` — the directory
+        # holding the runner. That directory also contains the precis
+        # ``math.py`` handler, which would shadow the stdlib ``math``
+        # module. Python 3.12's ``urllib/parse.py`` does ``import math``
+        # at top-level (new in 3.12); under the shadow it lands in
+        # precis's math.py, which imports back from urllib.parse before
+        # parse has finished initialising — circular import, runner
+        # subprocess dies. The previous mitigation was an xfail gate on
+        # the affected runtrace tests; this fix removes the gate.
         cmd: list[str] = [
             sys.executable,
+            "-P",
             str(_RUNNER_SCRIPT),
             "--entry",
             entry,

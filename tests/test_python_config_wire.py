@@ -88,9 +88,13 @@ def test_parse_first_alias_wins_on_duplicates(tmp_path: Path, caplog) -> None:
 
 
 def test_parse_expands_tilde(tmp_path: Path, monkeypatch) -> None:
-    """``~`` in paths is expanded against ``$HOME`` so the env var can
-    use the same shorthand the user types in their shell."""
+    """``~`` in paths is expanded against the platform's home env var
+    so the env var can use the same shorthand the user types in their
+    shell. POSIX reads ``$HOME``; Windows reads ``%USERPROFILE%``.
+    Set both so the test passes on every platform.
+    """
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     out = parse_python_roots("r:~")
     assert out == {"r": tmp_path.resolve()}
 
