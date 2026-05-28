@@ -152,6 +152,26 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/precis"]
 
+# Source distribution includes docker/ so packagers / downstream image
+# builders get the Dockerfile and entrypoint alongside the Python source
+# (`pip download --no-binary precis-mcp` lands a tarball with both).
+# tests/ ships so downstream can verify; docs/ ships so the ADRs travel
+# with the release. The wheel above stays src/precis only — Dockerfiles
+# aren't useful inside an installed package and would just bloat
+# every `pip install`.
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/",
+  "tests/",
+  "docker/",
+  "docs/",
+  "scripts/",
+  "*.md",
+  "*.toml",
+  "LICENSE",
+  "CITATION.cff",
+]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 88

@@ -26,3 +26,65 @@ jobs:
         with:
           attestations: true
 
+  publish-image:
+    # Run after the PyPI publish succeeds so a failed sdist build never
+    # races a half-published image into GHCR.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      # Action versions intentionally use major tags here so dependabot
+      # (configured in .github/dependabot.yml + the auto-merge workflow)
+      # can keep them current. The publish job above pins by SHA — once
+      # this job lands and dependabot opens its first PR against it, the
+      # auto-merge flow will rewrite these to SHAs.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Derive image tags from the git tag that triggered the workflow:
+      #   v7.1.0 → ghcr.io/<owner>/precis-mcp:{7.1.0, 7.1, latest}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/precis-mcp
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      # Build the runtime stage only — the dev stage is for the in-repo
+      # precis-dev container, not for downstream consumers. The Dockerfile
+      # is multi-stage (builder → models → runtime → dev); see
+      # docs/decisions/0004-multi-stage-dockerfile.md and
+      # docs/design/bake-models-into-image.md.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/precis-mcp
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

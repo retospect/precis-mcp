@@ -25,6 +25,7 @@ from precis.cli.watch import (
     _is_pdf,
     _move_to,
     _move_to_corpus,
+    _PdfHandler,
     _should_skip,
     _wait_stable,
     _write_error,
@@ -90,6 +91,56 @@ class TestShouldSkip:
 # ---------------------------------------------------------------------------
 # _wait_stable
 # ---------------------------------------------------------------------------
+
+
+class TestBackfillOrder:
+    """Backfill processes smallest-first so a giant OOM PDF only
+    blocks itself, not the whole queue behind it.
+    """
+
+    def _make_handler(self, tmp_path: Path) -> _PdfHandler:
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        from unittest.mock import MagicMock
+
+        return _PdfHandler(
+            watch_dir=watch_dir,
+            corpus_dir=tmp_path / "corpus",
+            errors_dir=tmp_path / "errors",
+            duplicates_dir=tmp_path / "duplicates",
+            store=MagicMock(),
+            debounce=0.0,
+            user="test",
+        )
+
+    def test_smaller_files_enqueued_first(self, tmp_path: Path) -> None:
+        handler = self._make_handler(tmp_path)
+        # Names sort alphabetically in reverse of size — proves the
+        # sort key is size, not name.
+        (handler.watch_dir / "a_huge.pdf").write_bytes(b"x" * 10_000)
+        (handler.watch_dir / "m_medium.pdf").write_bytes(b"x" * 1_000)
+        (handler.watch_dir / "z_tiny.pdf").write_bytes(b"x" * 10)
+
+        seen: list[str] = []
+        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign]
+        handler.backfill()
+
+        assert seen == ["z_tiny.pdf", "m_medium.pdf", "a_huge.pdf"]
+
+    def test_managed_dirs_still_skipped(self, tmp_path: Path) -> None:
+        handler = self._make_handler(tmp_path)
+        (handler.watch_dir / "small.pdf").write_bytes(b"x" * 10)
+        (handler.watch_dir / "errors").mkdir()
+        (handler.watch_dir / "errors" / "20240101-000000").mkdir()
+        (handler.watch_dir / "errors" / "20240101-000000" / "skip.pdf").write_bytes(
+            b"x" * 5
+        )
+
+        seen: list[str] = []
+        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign]
+        handler.backfill()
+
+        assert seen == ["small.pdf"]
 
 
 class TestWaitStable:

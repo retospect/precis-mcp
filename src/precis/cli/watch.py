@@ -288,8 +288,26 @@ class _PdfHandler(FileSystemEventHandler):
     def backfill(self) -> None:
         """Process PDFs that were already present when the watcher
         started. Called once at startup; respects the same skip rules
-        as live events."""
-        for pdf in sorted(self.watch_dir.rglob("*.pdf")):
+        as live events.
+
+        Files are processed **smallest-first** by byte size. Two
+        reasons: (1) small files clear quickly, populating the corpus
+        early so search starts working before the long tail finishes;
+        (2) if a giant PDF OOMs the watcher, only the giant blocks —
+        the small files behind it have already been ingested. Stat
+        errors (broken symlinks, race-condition deletions) sort
+        last so they fail loudly rather than aborting the whole
+        backfill.
+        """
+
+        def _size_key(p: Path) -> int:
+            try:
+                return p.stat().st_size
+            except OSError:
+                # Push errors to the end without crashing the sort.
+                return 2**63 - 1
+
+        for pdf in sorted(self.watch_dir.rglob("*.pdf"), key=_size_key):
             if _should_skip(pdf, self.watch_dir):
                 continue
             self._enqueue(pdf)

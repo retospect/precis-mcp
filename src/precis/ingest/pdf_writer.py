@@ -127,16 +127,40 @@ def patch_pdf_metadata(
         if doc.is_encrypted:
             return PatchOutcome(pre_hash, None, None, "encrypted")
 
+        if _has_signature(doc):
+            # Digitally-signed PDF — incremental save *usually*
+            # preserves the signature byte range, but "usually" isn't
+            # "always". Strict readers re-validate the trailer and
+            # warn on any append. Skip rather than risk it. See
+            # ADR 0014.
+            return PatchOutcome(pre_hash, None, None, "signed")
+
         current = doc.metadata or {}
-        if _already_matches(current, target):
+        current_xmp = doc.get_xml_metadata() or ""
+        target_xmp = _build_xmp_packet(info)
+
+        needs_info = not _already_matches(current, target)
+        needs_xmp = target_xmp is not None and not _xmp_already_carries(
+            current_xmp, info
+        )
+
+        if not needs_info and not needs_xmp:
             return PatchOutcome(pre_hash, None, None, "noop")
 
-        # Merge: keep existing fields we don't intend to set
-        # (Producer, Creator, CreationDate, etc.), overlay the
-        # fields from ``target``.
-        merged = dict(current)
-        merged.update(target)
-        doc.set_metadata(merged)
+        if needs_info:
+            # Merge: keep existing fields we don't intend to set
+            # (Producer, Creator, CreationDate, etc.), overlay the
+            # fields from ``target``.
+            merged = dict(current)
+            merged.update(target)
+            doc.set_metadata(merged)
+
+        if needs_xmp and target_xmp:
+            # XMP is the publisher-canonical home for dc:identifier
+            # (DOI). Writing here means an exiftool-driven re-ingest
+            # finds the DOI via -Identifier even if the Keywords
+            # field is stripped downstream.
+            doc.set_xml_metadata(target_xmp)
 
         try:
             # Incremental save: appends an update section instead of
@@ -241,6 +265,142 @@ def _already_matches(current: dict[str, Any], target: dict[str, str]) -> bool:
         if have != want.strip():
             return False
     return True
+
+
+def _has_signature(doc: Any) -> bool:
+    """True iff the PDF contains at least one digital signature widget.
+
+    Iterates pages only when ``is_form_pdf`` is true, so unsigned PDFs
+    (the overwhelming majority of academic corpora) pay no cost
+    beyond the AcroForm catalog lookup. Bails on the first signature
+    found.
+
+    Note: this catches the standard PDF digital-signature feature
+    (``/FT /Sig`` widgets). PDFs signed with external tooling that
+    doesn't register a widget (rare) slip through. If write-back
+    breaks such a PDF, the failure surfaces at the reader, not here.
+    """
+    if not doc.is_form_pdf:
+        return False
+    for page in doc:
+        for widget in page.widgets() or ():
+            if widget.field_type_string == "Signature":
+                return True
+    return False
+
+
+# XMP packet template — RDF/XML wrapper for the dc + prism namespaces
+# we populate. ``{inner}`` is replaced with one or more <dc:title> /
+# <dc:creator> / <dc:identifier> / <prism:doi> elements.
+_XMP_TEMPLATE = (
+    '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+    '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+    '  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+    '    <rdf:Description rdf:about=""\n'
+    '        xmlns:dc="http://purl.org/dc/elements/1.1/"\n'
+    '        xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/">\n'
+    "{inner}\n"
+    "    </rdf:Description>\n"
+    "  </rdf:RDF>\n"
+    "</x:xmpmeta>\n"
+    '<?xpacket end="w"?>'
+)
+
+
+def _build_xmp_packet(info: PatchInfo) -> str | None:
+    """Build a minimal RDF/XMP packet for the given metadata.
+
+    Returns ``None`` if every field is missing — caller treats that
+    as "nothing to write to XMP".
+
+    DOI is emitted twice: once as ``dc:identifier`` prefixed with
+    ``doi:`` (Dublin Core canonical) and once as ``prism:doi``
+    (PRISM scientific-publishing canonical). Both fields are read
+    by exiftool's ``-Identifier`` / ``-DOI`` flags and by most
+    reference managers.
+    """
+    if not (info.title or info.authors or info.doi or info.arxiv_id):
+        return None
+
+    parts: list[str] = []
+    if info.title:
+        parts.append(
+            "        <dc:title>\n"
+            "          <rdf:Alt>\n"
+            f'            <rdf:li xml:lang="x-default">{_xml_escape(info.title)}</rdf:li>\n'
+            "          </rdf:Alt>\n"
+            "        </dc:title>"
+        )
+    if info.authors:
+        author_lis = "\n".join(
+            f"            <rdf:li>{_xml_escape(a)}</rdf:li>" for a in info.authors
+        )
+        parts.append(
+            "        <dc:creator>\n"
+            "          <rdf:Seq>\n"
+            f"{author_lis}\n"
+            "          </rdf:Seq>\n"
+            "        </dc:creator>"
+        )
+    if info.doi:
+        parts.append(
+            f"        <dc:identifier>doi:{_xml_escape(info.doi)}</dc:identifier>"
+        )
+        parts.append(f"        <prism:doi>{_xml_escape(info.doi)}</prism:doi>")
+    if info.arxiv_id:
+        parts.append(
+            "        <prism:url>"
+            f"https://arxiv.org/abs/{_xml_escape(info.arxiv_id)}"
+            "</prism:url>"
+        )
+
+    return _XMP_TEMPLATE.format(inner="\n".join(parts))
+
+
+def _xmp_already_carries(current_xmp: str, info: PatchInfo) -> bool:
+    """Heuristic: does ``current_xmp`` already declare every field we'd
+    write?
+
+    We don't fully parse the RDF — substring checks on the
+    canonical forms (escaped title text, escaped author names,
+    ``<dc:identifier>doi:...</dc:identifier>``, the arXiv URL) catch
+    our own prior writes (the common idempotency case). Publisher-
+    set XMP that uses different element forms (e.g. ``prism:doi``
+    only, no ``dc:identifier``) returns False and triggers a
+    re-write — harmless, because the final-hash check at the bottom
+    of :func:`patch_pdf_metadata` recognises the bytes-equivalent
+    no-op and skips the alias insertion on the second pass.
+
+    Returns True iff ``info`` is empty (nothing to write) or every
+    populated field is already substring-present in the XMP.
+    """
+    if not (info.title or info.authors or info.doi or info.arxiv_id):
+        return True
+    if info.title and _xml_escape(info.title) not in current_xmp:
+        return False
+    if info.authors:
+        for a in info.authors:
+            if _xml_escape(a) not in current_xmp:
+                return False
+    if info.doi:
+        needle = f"<dc:identifier>doi:{info.doi}</dc:identifier>"
+        if needle not in current_xmp:
+            return False
+    if info.arxiv_id and f"https://arxiv.org/abs/{info.arxiv_id}" not in current_xmp:
+        return False
+    return True
+
+
+def _xml_escape(s: str) -> str:
+    """Minimal XML escape for text-node content. Handles the four
+    characters that change meaning inside ``<rdf:li>`` etc.
+    """
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 __all__ = [

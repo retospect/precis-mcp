@@ -10,6 +10,51 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ### Added
 
+- **XMP write + signed-PDF detection in ``pdf_writer``.** The
+  metadata write-back path now emits a minimal RDF/XMP packet
+  carrying ``dc:title``, ``dc:creator`` (authors), ``dc:identifier``
+  (DOI prefixed with ``doi:``), ``prism:doi`` (raw DOI), and
+  ``prism:url`` (arXiv URL) alongside the standard Info-dict write.
+  Exiftool's ``-Identifier`` flag now reads our DOI from the
+  canonical XMP slot rather than just the Keywords fallback.
+  Cryptographically-signed PDFs (``Signature`` widget present)
+  return ``PatchOutcome(skipped_reason="signed")`` without touching
+  the file — incremental save preserves signatures *usually*, not
+  *always*. The check is bounded to ``doc.is_form_pdf`` so unsigned
+  PDFs pay zero cost. AcroForms with only text widgets still patch
+  normally. Closes the two follow-ups noted in the initial
+  ADR 0014 cut. Tests at
+  ``tests/ingest/test_pdf_writer.py::TestXmpWrite`` and
+  ``::TestSignedPdfSkip``.
+
+### Changed
+
+- **Backfill processes smallest PDFs first.** Watcher startup
+  scan in ``src/precis/cli/watch.py:_PdfHandler.backfill`` now
+  sorts by file size before enqueueing. Small files clear quickly
+  so the corpus + search index populate early; if a giant PDF
+  OOMs the watcher container (the 12 GiB cap in
+  ``infrastructure/compose.yaml`` ``precis-watch:`` deploy section
+  is real and has been hit), only that giant is blocked rather than
+  the long tail behind it. Stat errors sort last so a broken
+  symlink doesn't abort the whole backfill. Test
+  ``tests/test_watch.py::TestBackfillOrder::test_smaller_files_enqueued_first``.
+
+## v7.1.0 — baked-in models, fast-path ingest, MCP cold-start budget (2026-05-28)
+
+First v7.x line release on PyPI. Highlights: `precis-mcp:latest` ships
+with bge-m3 + Marker weights baked in (no first-ingest download); a
+sha256-keyed fast-path skips Marker on re-ingest of a known PDF; the
+MCP cold-start banner / `tools/list` shrinks under a pinned token
+budget with three operator env vars (`PRECIS_STARTUP_SKILLS`,
+`PRECIS_KINDS_DISABLED`, `PRECIS_DEFAULT_TAGS`); new `precis-worker`
+service drains the embedding/summary queue continuously; new `tex`
+file kind; `PRECIS_ROOT` consolidates the prose-file env vars;
+`search(exclude=[...])` enables ref-level pagination; nightly
+`precis maintenance run` driver lands.
+
+### Added
+
 - **PDF metadata write-back during ingest.** New
   ``precis.ingest.pdf_writer`` module patches the resolved canonical
   Title / Author / DOI into each successfully-ingested PDF's Info

@@ -77,11 +77,22 @@ local dev gets the full pipeline."
 * `error` — any exception during open / set_metadata / save. Logged
   at WARNING with the exception text.
 
-Signed PDF detection is intentionally **not** implemented yet.
-Academic corpora rarely contain signed PDFs; incremental save
-preserves the signature byte range so existing signatures remain
-verifiable in most cases. If we see real-world breakage we'll add
-catalog-scan detection.
+Signed PDF detection landed in the same patch series via a widget
+walk (``_has_signature`` — only fires when ``doc.is_form_pdf`` is
+true, then bails on the first ``Signature``-type widget). Signed
+PDFs return ``PatchOutcome(skipped_reason="signed")`` and the file
+is not touched. AcroForms with only text widgets still patch
+normally.
+
+XMP write support also landed: ``_build_xmp_packet`` emits a
+minimal RDF/XML fragment with ``dc:title``, ``dc:creator``,
+``dc:identifier`` (DOI prefixed with ``doi:``), ``prism:doi`` (raw
+DOI), and ``prism:url`` (arXiv), called via
+``doc.set_xml_metadata()`` alongside the standard Info-dict write.
+``_xmp_already_carries`` provides the idempotency check (substring
+match on every populated field). Exiftool's ``-Identifier`` flag
+now reads our DOI from the canonical XMP slot, not just the
+Keywords fallback.
 
 ## Consequences
 
