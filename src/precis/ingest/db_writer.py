@@ -105,6 +105,13 @@ class PaperToWrite:
     pdf_storage_path: str | None = None
     pdf_page_count: int | None = None
     pdf_size_bytes: int | None = None
+    # Historical pdf_sha256 values for the same physical file — e.g.
+    # the pre-patch hash when ``precis.ingest.pdf_writer`` rewrote the
+    # PDF's Info dict to embed the resolved DOI. Each entry becomes an
+    # extra ``ref_identifiers`` row of kind ``pdf_sha256`` pointing at
+    # this ref, so re-ingesting *either* byte sequence short-circuits
+    # the fast path. See ADR 0014.
+    pdf_sha256_aliases: list[str] = field(default_factory=list)
 
     # External IDs (any combination; missing ones are skipped)
     doi: str | None = None
@@ -378,6 +385,18 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
             "VALUES (%s, %s, %s, %s) "
             "ON CONFLICT (id_kind, id_value) DO NOTHING",
             (id_kind, id_value, ref_id, paper.provider),
+        )
+
+    # Historical pdf_sha256 aliases — one extra row each. These reuse
+    # the ``pdf_sha256`` id_kind so the same probe path picks them up.
+    for alias in paper.pdf_sha256_aliases:
+        if not alias or alias == paper.pdf_sha256:
+            continue
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (id_kind, id_value) DO NOTHING",
+            ("pdf_sha256", alias, ref_id, paper.provider),
         )
 
     # 5. chunks rows

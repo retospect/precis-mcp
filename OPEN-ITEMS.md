@@ -17,6 +17,56 @@ what's still open.
 
 ---
 
+## XMP `dc:identifier` not set on PDF write-back
+
+**Status**: open
+**Severity**: polish
+**Owner**: `src/precis/ingest/pdf_writer.py:_info_dict_from_patch`
+**Test**: none yet — add when XMP path lands
+
+ADR 0014 introduced PDF metadata write-back via the standard Info
+dict (Title / Author / Subject / Keywords). DOI lands in
+``Subject`` as ``"DOI: 10.x/y"`` and in ``Keywords`` as the
+machine-readable ``"doi:10.x/y, arxiv:..."``. The publisher-canonical
+home for the DOI is XMP ``dc:identifier``, which is what
+``_read_existing_pdf_metadata`` already reads via exiftool
+``-Identifier``. Today's write path doesn't touch XMP, so:
+
+- Tools that strip the Info dict but preserve XMP (rare but real
+  — some PDF post-processors do this) lose our written DOI.
+- Round-trip "patched-PDF → fresh re-ingest" works via Keywords
+  but is one fallback short of the canonical path.
+
+Implementation: pymupdf exposes ``Document.set_xml_metadata(str)``;
+construct a minimal RDF/XMP fragment with ``dc:identifier`` set to
+``doi:10.x/y`` plus the existing fields and call that alongside
+``set_metadata()``. Roughly 30 lines + a fixture-based round-trip
+test.
+
+## Signed-PDF detection skipped on write-back
+
+**Status**: open
+**Severity**: polish
+**Owner**: `src/precis/ingest/pdf_writer.py:patch_pdf_metadata`
+**Test**: none yet — needs a signed-PDF fixture
+
+ADR 0014 documents that signed-PDF detection is intentionally not
+implemented in the initial cut. Incremental save preserves the
+existing byte range so signatures usually remain verifiable, but
+"usually" isn't "always": a reader that re-validates and rejects
+the appended trailer would surface a "signature broken" warning
+even though we didn't touch the signed content. Academic corpora
+rarely contain signed PDFs (mostly NIH grant docs and some
+government corpora), so this is documented as a known gap rather
+than a blocker.
+
+Implementation: scan the PDF catalog for ``/AcroForm/SigFlags`` or
+walk the form widgets looking for ``/FT /Sig``. PyMuPDF exposes
+``Document.pdf_catalog()`` + ``Document.xref_get_key()``. Return
+``PatchOutcome(..., skipped_reason="signed")`` on detection. ~20
+lines + a fixture (the synthetic-sig case can be built with
+pymupdf's own widget API).
+
 ## 🔵 `serverInfo.title` not set
 
 **Status**: blocked on upstream `FastMCP`

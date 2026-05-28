@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# scripts/precis-index — pre-warm the store with prose files under PRECIS_ROOT.
+#
+# Wraps `precis jobs ingest` via the precis-cli compose service. Walks
+# PRECIS_ROOT (defaults to /data/notes inside the container, which is
+# the ~/work bind mount), ingests every md/plaintext/tex file the
+# store doesn't already know about, and writes chunks/embeddings so
+# the LLM can `search` from the first query.
+#
+# Mtime-gated: warm restarts are cheap. Pass --force to re-ingest
+# everything regardless of mtime.
+#
+# Usage:
+#   scripts/precis-index                    # ingest PRECIS_ROOT (md+plaintext+tex)
+#   scripts/precis-index --kinds md         # markdown only
+#   scripts/precis-index --force            # re-ingest everything
+#   scripts/precis-index /some/other/root   # custom root (must be inside /data/notes)
+#
+# See: src/precis/cli/ingest.py
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+if [[ ! -f "${INFRA_COMPOSE}" ]]; then
+    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
+    echo "     set PRECIS_COMPOSE=/path/to/compose.yaml to override" >&2
+    exit 1
+fi
+
+exec docker compose -f "${INFRA_COMPOSE}" run --rm --no-deps \
+    precis-cli \
+    precis jobs ingest "$@"

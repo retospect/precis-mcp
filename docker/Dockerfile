@@ -110,7 +110,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libpq5 \
         ca-certificates \
         tini \
-        procps
+        procps \
+        libimage-exiftool-perl
 
 COPY --from=builder /opt/venv /opt/venv
 
@@ -123,8 +124,8 @@ COPY --from=builder /opt/venv /opt/venv
 # useradd is load-bearing: a stock python:3.12-slim-bookworm has GID 20
 # already taken (`dialout`), so without ``-o`` the build fails on macOS.
 # See docs/decisions/0011-claude-in-dev-image.md.
-ARG UID=1000
-ARG GID=1000
+ARG UID=501
+ARG GID=20
 RUN groupadd -g "${GID}" -o precis && \
     useradd -m -u "${UID}" -g "${GID}" -o -s /bin/bash precis && \
     mkdir -p /data /inbox /home/precis/.cache && \

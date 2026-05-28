@@ -8,7 +8,61 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ## Unreleased
 
+### Added
+
+- **PDF metadata write-back during ingest.** New
+  ``precis.ingest.pdf_writer`` module patches the resolved canonical
+  Title / Author / DOI into each successfully-ingested PDF's Info
+  dict (Title, Author, Subject, Keywords). Uses pymupdf's incremental
+  save so the existing content stream stays byte-identical; only an
+  update section is appended. Both the pre-patch and post-patch
+  ``pdf_sha256`` land in ``ref_identifiers`` as separate alias rows
+  pointing at the same ``ref_id``, so re-ingesting either byte
+  sequence still hits the fast-path probe. ``PaperToWrite`` grows a
+  ``pdf_sha256_aliases: list[str]`` field; ``write_paper()`` inserts
+  one extra ``ref_identifiers`` row per alias. Default ON; operator
+  off-switch ``PRECIS_PATCH_PDFS=0`` / ``false`` / ``no`` / ``off`` /
+  empty. Skip cases: ``encrypted`` (DRM), ``noop`` (fields already
+  match — keeps re-ingest of an already-patched PDF from drifting),
+  ``disabled``, ``error`` (any exception during open/save logs
+  WARNING and skips). Reverses the B4b removal of
+  ``write_pdf_metadata()`` from ``acatome_extract``; safe now because
+  v2's multi-row ``ref_identifiers`` model absorbs the hash drift
+  that motivated the original removal. New tests at
+  ``tests/ingest/test_pdf_writer.py`` (10 cases). See ADR 0014.
+
+- **Wrapper scripts in ``scripts/``** for the day-to-day Docker
+  workflow, all honouring ``PRECIS_COMPOSE`` if the infra repo
+  lives outside ``~/work/infrastructure``:
+  - ``scripts/precis-shell`` — standalone dev shell (no compose
+    dep); auto-builds ``precis-mcp:dev`` on first use, mirrors the
+    compose bind-mounts but degrades gracefully on missing host
+    paths. ``--rebuild`` forces a fresh build.
+  - ``scripts/precis-add <pdf | --doi | --arxiv>`` — one-shot ingest
+    via ``precis-cli``. Auto-mounts any positional file argument at
+    ``/inbox/<basename>``.
+  - ``scripts/precis-watch [start|stop|restart|status|logs|fg|tail]``
+    — manage the PDF ingestion daemon. Default ``tail`` brings the
+    watcher up detached and follows logs.
+  - ``scripts/precis-index [path] [--force] [--kinds md,plaintext,tex]``
+    — one-shot ``precis jobs ingest`` to pre-warm prose files
+    under ``PRECIS_ROOT``.
+  - ``scripts/precis-embed`` and ``scripts/precis-summarize`` —
+    symmetric wrappers around the worker queue. Subcommands
+    ``once`` / ``status`` / ``start`` / ``stop`` / ``logs``. Both
+    daemons share the ``precis-worker`` container (one daemon
+    handles both handlers; running two would double-claim chunks).
+
 ### Fixed
+
+- **``exiftool`` no longer warns "not found in PATH" in
+  ``precis-watch`` logs.** Runtime image now apt-installs
+  ``libimage-exiftool-perl`` in ``docker/Dockerfile`` stage 2.
+  The warning surfaced once per ingest at
+  ``src/precis/ingest/pdf_metadata.py:162`` and was non-fatal
+  (extraction falls back to ``{}``), but it noised up the daemon
+  log and reduced embedded-metadata recall on papers whose only
+  DOI signal is the publisher-set ``-Identifier`` XMP field.
 
 - **`BgeM3Embedder.model` now returns the precis registry key
   (`bge-m3`) rather than the HuggingFace id (`BAAI/bge-m3`).**

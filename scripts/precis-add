@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# scripts/precis-add — one-shot paper ingest via the precis-cli container.
+#
+# Wraps `docker compose run --rm precis-cli precis add ...`. Any
+# positional argument that's an existing file on the host is auto-
+# mounted at /inbox/<basename> and rewritten to that container path —
+# so `precis-add ./paper.pdf` Just Works. --doi / --arxiv args pass
+# through unchanged (no PDF needed).
+#
+# Usage:
+#   scripts/precis-add some.pdf
+#   scripts/precis-add /abs/path/paper.pdf
+#   scripts/precis-add --doi 10.1038/nature12345
+#   scripts/precis-add --arxiv 2401.12345
+#   scripts/precis-add --help        # shows `precis add --help` from inside
+#
+# Output (success): one line — <cite_key>\t<ref_id>\t(inserted|existed)
+# Exit codes: 0 = ingested or known, 2 = usage error, 3 = pipeline error.
+#
+# See: src/precis/cli/add.py
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+if [[ ! -f "${INFRA_COMPOSE}" ]]; then
+    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
+    echo "     set PRECIS_COMPOSE=/path/to/compose.yaml to override" >&2
+    exit 1
+fi
+
+# Walk args; any existing file gets bind-mounted at /inbox/<basename>.
+mounts=()
+new_args=()
+for arg in "$@"; do
+    if [[ -f "${arg}" ]]; then
+        abs=$(cd "$(dirname "${arg}")" && pwd)/$(basename "${arg}")
+        base=$(basename "${abs}")
+        mounts+=(--volume "${abs}:/inbox/${base}:ro")
+        new_args+=("/inbox/${base}")
+    else
+        new_args+=("${arg}")
+    fi
+done
+
+exec docker compose -f "${INFRA_COMPOSE}" run --rm --no-deps \
+    "${mounts[@]}" \
+    precis-cli \
+    precis add "${new_args[@]}"

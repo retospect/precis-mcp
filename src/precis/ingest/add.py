@@ -31,7 +31,7 @@ pipeline freshly computed).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,7 @@ from precis.ingest.db_writer import (
     probe_existing,
     write_paper,
 )
+from precis.ingest.pdf_writer import PatchInfo, patch_pdf_metadata
 from precis.store import Store
 
 # NOTE: ``precis.ingest.pipeline`` imports are deferred into
@@ -162,6 +163,14 @@ def precis_add(
         if existing is not None:
             return _hit_result_from_db(existing, conn=conn, fallback=paper)
 
+        # Write-back: for PdfInput, patch the on-disk file with the
+        # resolved canonical metadata so a re-ingest from a clean DB
+        # still finds the right DOI via embedded metadata. Pre- and
+        # post-patch hashes both land in ref_identifiers (see ADR
+        # 0014). Honours ``PRECIS_PATCH_PDFS=0`` off-switch.
+        if isinstance(input, PdfInput):
+            paper = _maybe_patch_pdf(input.pdf_path, paper)
+
         result = write_paper(paper, conn=conn)
         conn.commit()
 
@@ -211,6 +220,62 @@ def _build_paper(
     if isinstance(input, ArxivInput):
         return fetch_paper_by_arxiv(input.arxiv_id, s2_api_key=s2_api_key)
     raise TypeError(f"Unsupported input type: {type(input).__name__}")
+
+
+def _maybe_patch_pdf(pdf_path: Path, paper: PaperToWrite) -> PaperToWrite:
+    """Run the PDF metadata write-back and return an updated
+    ``PaperToWrite`` reflecting whichever hash is now canonical.
+
+    If the patch ran and produced new bytes, the file on disk now
+    carries the resolved canonical identifiers (title / authors /
+    DOI), the post-patch hash becomes the canonical
+    ``pdf_sha256``, and the pre-patch hash is prepended to
+    ``pdf_sha256_aliases`` so re-ingest of either byte sequence
+    still hits the fast-path probe.
+
+    If the patch was skipped (signed PDF, encrypted, no-op, env
+    off-switch, error), ``paper`` is returned unchanged — the
+    pre-existing ``paper.pdf_sha256`` stays canonical and there's
+    nothing to alias.
+    """
+    info = PatchInfo(
+        title=paper.title or None,
+        authors=_format_authors_for_pdf(paper.authors),
+        doi=paper.doi,
+        arxiv_id=paper.arxiv_id,
+    )
+    outcome = patch_pdf_metadata(pdf_path, info, pre_hash=paper.pdf_sha256)
+    if outcome.post_hash is None:
+        return paper
+    return replace(
+        paper,
+        pdf_sha256=outcome.post_hash,
+        pdf_size_bytes=outcome.post_size,
+        pdf_sha256_aliases=[outcome.pre_hash, *paper.pdf_sha256_aliases],
+    )
+
+
+def _format_authors_for_pdf(authors: list[dict[str, Any]] | None) -> list[str]:
+    """Pull a flat list of surname strings out of the ref's authors
+    JSON for the PDF ``Author`` field. Different pipelines (CrossRef,
+    S2, Marker) use different key names, so we probe a small set.
+    """
+    if not authors:
+        return []
+    out: list[str] = []
+    for entry in authors:
+        if not isinstance(entry, dict):
+            continue
+        name = (
+            entry.get("family")
+            or entry.get("last")
+            or entry.get("name")
+            or entry.get("full")
+            or ""
+        ).strip()
+        if name:
+            out.append(name)
+    return out
 
 
 def _probe_pdf_sha256(pdf_path: Path, *, store: Store) -> int | None:

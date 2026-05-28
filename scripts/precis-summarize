@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# scripts/precis-summarize — drain the summary queue (one-shot or daemon).
+#
+# The summarizer lives inside the long-running `precis worker` loop,
+# which also handles embeddings. This wrapper exposes the summarize
+# slice in three useful shapes:
+#
+# Usage:
+#   scripts/precis-summarize             # one-shot drain (one batch, then exit)
+#   scripts/precis-summarize status      # queue depth: total / ok / failed / pending
+#   scripts/precis-summarize start       # start the always-on precis-worker daemon
+#                                        # (handles BOTH embed + summarize)
+#   scripts/precis-summarize stop        # stop the daemon
+#   scripts/precis-summarize logs        # tail daemon logs
+#
+# One-shot uses the precis-cli compose service. Daemon ops manage the
+# precis-worker compose service. The daemon is the production path;
+# the one-shot is for ad-hoc backfills and smoke tests.
+#
+# Pass extra flags after a `--` separator for the one-shot path, e.g.:
+#   scripts/precis-summarize -- --batch-size 8 --summarizer-model rake-lemma
+#
+# See: src/precis/cli/worker.py, infra compose `precis-worker:` service.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+if [[ ! -f "${INFRA_COMPOSE}" ]]; then
+    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
+    echo "     set PRECIS_COMPOSE=/path/to/compose.yaml to override" >&2
+    exit 1
+fi
+
+DC=(docker compose -f "${INFRA_COMPOSE}")
+
+cmd="${1:-once}"
+[[ $# -gt 0 ]] && shift
+# Strip a leading -- so callers can pass flags through.
+[[ "${1:-}" == "--" ]] && shift
+
+case "${cmd}" in
+    once)
+        exec "${DC[@]}" run --rm --no-deps precis-cli \
+            precis worker --once --only summarize "$@" ;;
+    status)
+        exec "${DC[@]}" run --rm --no-deps precis-cli \
+            precis worker --status "$@" ;;
+    start)    exec "${DC[@]}" up -d precis-worker ;;
+    stop)     exec "${DC[@]}" stop precis-worker ;;
+    logs)     exec "${DC[@]}" logs -f --tail=100 precis-worker ;;
+    -h|--help|help)
+        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0 ;;
+    *)
+        echo "precis-summarize: unknown command '${cmd}'" >&2
+        echo "try: once | status | start | stop | logs" >&2
+        exit 2 ;;
+esac
