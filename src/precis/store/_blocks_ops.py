@@ -47,9 +47,11 @@ from precis.errors import BadInput
 from precis.store._mappers import (
     _CHUNKS_COLS,
     _REFS_COLS_ALIASED,
+    _block_noise_clauses,
     _row_to_block,
     _row_to_ref,
 )
+from precis.store._tag_filter import build_tag_filter
 from precis.store.types import Block, BlockInsert, Density, Ref
 
 # Default chunk_kind for inserts via this mixin. Phase 2 keeps the
@@ -85,31 +87,341 @@ class BlocksMixin:
             )
         return str(row[0])
 
-    # -- search (Phase 3 — still on v1 schema) -----------------------------
+    # -- search (Phase 3 — v2 chunks/chunk_embeddings) ---------------------
+    #
+    # SELECT projection across all four search methods is:
+    #   row[0:11]  — chunk columns (matches _row_to_block; embedding
+    #                column projected as NULL::vector, density via
+    #                correlated subquery on chunk_tags)
+    #   row[11:34] — ref columns from _REFS_COLS_ALIASED (23 cols incl.
+    #                ref_id-aliased-to-id, slug-via-ref_identifiers,
+    #                and the v2-new authors/year/retraction_*/pdf_*)
+    #   row[34]    — score (ts_rank for lexical, cosine distance for
+    #                semantic, RRF sum for fused)
+    #
+    # ord >= 0 excludes synthetic card chunks (cards are ref-level
+    # introducers; agents searching for content don't want them in
+    # the hit list).
 
-    def count_blocks_lexical(self, **_kw: Any) -> int:
-        raise NotImplementedError(
-            "count_blocks_lexical: phase 3 (search + tags v2 rewrite) "
-            "not yet implemented; see /Users/reto/.claude/plans/lively-yawning-kahn.md"
-        )
+    def count_blocks_lexical(
+        self,
+        *,
+        q: str,
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+    ) -> int:
+        """Count chunks matching the lexical filter (no LIMIT).
 
-    def search_blocks_lexical(self, **_kw: Any) -> list[tuple[Block, Ref, float]]:
-        raise NotImplementedError(
-            "search_blocks_lexical: phase 3 (search + tags v2 rewrite) "
-            "not yet implemented; see /Users/reto/.claude/plans/lively-yawning-kahn.md"
+        Companion to :meth:`search_blocks_lexical` for pagination
+        headers. Same WHERE clause (including the noise-floor guard)
+        so the "you're seeing N of K" header reflects the exact
+        universe the search would return at infinite limit.
+        """
+        clauses = [
+            "r.deleted_at IS NULL",
+            "c.ord >= 0",
+            "c.tsv @@ qq.qq",
+            *_block_noise_clauses(text_alias="c.text"),
+        ]
+        params: list[Any] = [q]
+        if kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("c.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("c.ref_id <> ALL(%s)")
+        sql = (
+            "SELECT count(*) FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id, "
+            "websearch_to_tsquery('english', %s) qq(qq) "
+            f"WHERE {' AND '.join(clauses)}"
         )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return int(row[0])
 
-    def search_blocks_semantic(self, **_kw: Any) -> list[tuple[Block, Ref, float]]:
-        raise NotImplementedError(
-            "search_blocks_semantic: phase 3 (search + tags v2 rewrite) "
-            "not yet implemented; see /Users/reto/.claude/plans/lively-yawning-kahn.md"
-        )
+    def search_blocks_lexical(
+        self,
+        *,
+        q: str,
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+        exclude_ref_ids: list[int] | None = None,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Lexical search over ``chunks.tsv``.
 
-    def search_blocks_fused(self, **_kw: Any) -> list[tuple[Block, Ref, float]]:
-        raise NotImplementedError(
-            "search_blocks_fused: phase 3 (search + tags v2 rewrite) "
-            "not yet implemented; see /Users/reto/.claude/plans/lively-yawning-kahn.md"
+        Returns ``(block, ref, rank)`` tuples sorted by
+        ``ts_rank_cd DESC``. Only live (non-deleted) refs and body
+        chunks (``ord >= 0``) are considered.
+
+        Chunks whose text strips to fewer than 4 characters are
+        excluded — they're punctuation, section markers, or other
+        formatting artefacts that pollute results with hits agents
+        can't quote (MCP critic MAJOR #11).
+        """
+        clauses = [
+            "r.deleted_at IS NULL",
+            "c.ord >= 0",
+            "c.tsv @@ qq.qq",
+            *_block_noise_clauses(text_alias="c.text"),
+        ]
+        params: list[Any] = [q]
+        if kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("c.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("c.ref_id <> ALL(%s)")
+        params.append(limit)
+
+        proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        sql = (
+            f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
+            "       ts_rank_cd(c.tsv, qq.qq) AS rank "
+            "FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id, "
+            "websearch_to_tsquery('english', %s) qq(qq) "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY rank DESC LIMIT %s"
         )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            (_row_to_block(r[:11]), _row_to_ref(r[11:34]), float(r[34])) for r in rows
+        ]
+
+    def search_blocks_semantic(
+        self,
+        *,
+        query_vec: list[float],
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+        max_distance: float | None = None,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Cosine-distance semantic search via ``chunk_embeddings``.
+
+        Returns ``(block, ref, distance)`` tuples sorted by distance
+        ASC. Excludes chunks that have no embedding under the
+        default embedder, chunks with ``ord < 0`` (synthetic cards),
+        and chunks whose text strips to <4 characters.
+
+        ``max_distance`` is a relevance floor on the cosine distance
+        column. Without it, a nonsense query still returns the top-K
+        closest embedded chunks. Pass ``max_distance=None`` to opt
+        out (exploration queries that want the closest match
+        regardless of similarity).
+        """
+        with self.pool.connection() as conn:
+            embedder = self._default_embedder_name(conn)
+
+        clauses = [
+            "r.deleted_at IS NULL",
+            "c.ord >= 0",
+            "ce.vector IS NOT NULL",
+            "ce.status = 'ok'",
+            *_block_noise_clauses(text_alias="c.text"),
+        ]
+        where_params: list[Any] = []
+        if kind is not None:
+            where_params.append(kind)
+            clauses.append("r.kind = %s")
+        if scope_ref_id is not None:
+            where_params.append(scope_ref_id)
+            clauses.append("c.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            where_params.extend(tag_params)
+
+        distance_clause = ""
+        distance_params: list[Any] = []
+        if max_distance is not None:
+            distance_clause = " AND (ce.vector <=> %s::vector) < %s"
+            distance_params = [query_vec, float(max_distance)]
+
+        params: list[Any] = [
+            query_vec,
+            embedder,
+            *where_params,
+            *distance_params,
+            query_vec,
+            limit,
+        ]
+
+        proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        sql = (
+            f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
+            "       (ce.vector <=> %s::vector) AS dist "
+            "FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id "
+            "JOIN chunk_embeddings ce "
+            "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+            f"WHERE {' AND '.join(clauses)}{distance_clause} "
+            "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            (_row_to_block(r[:11]), _row_to_ref(r[11:34]), float(r[34])) for r in rows
+        ]
+
+    def search_blocks_fused(
+        self,
+        *,
+        q: str,
+        query_vec: list[float] | None = None,
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+        k: int = 60,
+        max_distance: float | None = None,
+        exclude_ref_ids: list[int] | None = None,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Hybrid search via reciprocal rank fusion over lex + sem.
+
+        If ``query_vec`` is None, falls back to lexical-only and
+        returns tuples in the same shape (so callers don't branch).
+
+        Score: ``1/(k + lex_rank) + 1/(k + sem_rank)``. Higher is
+        better. ``k=60`` is the standard RRF constant.
+        """
+        if query_vec is None:
+            return self.search_blocks_lexical(
+                q=q,
+                kind=kind,
+                scope_ref_id=scope_ref_id,
+                tags=tags,
+                limit=limit,
+                exclude_ref_ids=exclude_ref_ids,
+            )
+
+        with self.pool.connection() as conn:
+            embedder = self._default_embedder_name(conn)
+
+        clauses = [
+            "r.deleted_at IS NULL",
+            "c.ord >= 0",
+            *_block_noise_clauses(text_alias="c.text"),
+        ]
+        params: list[Any] = []
+        if kind is not None:
+            params.append(kind)
+            clauses.append("r.kind = %s")
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("c.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag.removeprefix(" AND "))
+            params.extend(tag_params)
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("c.ref_id <> ALL(%s)")
+
+        where_extra = (" AND " + " AND ".join(clauses)) if clauses else ""
+
+        sem_distance_clause = ""
+        if max_distance is not None:
+            sem_distance_clause = " AND (ce.vector <=> %s::vector) < %s"
+
+        proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        sql = f"""
+            WITH lex AS (
+                SELECT c.chunk_id AS cid,
+                       row_number() OVER (
+                           ORDER BY ts_rank_cd(c.tsv, qq.qq) DESC
+                       ) AS rnk
+                FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
+                     websearch_to_tsquery('english', %s) qq(qq)
+                WHERE c.tsv @@ qq.qq
+                      {where_extra}
+                LIMIT %s
+            ),
+            sem AS (
+                SELECT c.chunk_id AS cid,
+                       row_number() OVER (
+                           ORDER BY ce.vector <=> %s::vector ASC
+                       ) AS rnk
+                FROM chunks c
+                JOIN refs r ON r.ref_id = c.ref_id
+                JOIN chunk_embeddings ce
+                  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s
+                WHERE ce.vector IS NOT NULL
+                      AND ce.status = 'ok'
+                      {where_extra}{sem_distance_clause}
+                LIMIT %s
+            ),
+            fused AS (
+                SELECT cid,
+                       coalesce(
+                           1.0 / (%s + (SELECT rnk FROM lex l WHERE l.cid = u.cid)),
+                           0
+                       )
+                       + coalesce(
+                           1.0 / (%s + (SELECT rnk FROM sem s WHERE s.cid = u.cid)),
+                           0
+                       ) AS score
+                FROM (
+                    SELECT cid FROM lex
+                    UNION
+                    SELECT cid FROM sem
+                ) u
+            )
+            SELECT {proj}, {_REFS_COLS_ALIASED}, fused.score
+            FROM fused
+            JOIN chunks c ON c.chunk_id = fused.cid
+            JOIN refs r ON r.ref_id = c.ref_id
+            ORDER BY fused.score DESC
+            LIMIT %s
+        """
+
+        # Param construction sequence:
+        #   lex: q + WHERE params + limit
+        #   sem: query_vec + embedder + WHERE params
+        #        + [optional: query_vec, max_distance] + limit
+        #   fused: k + k
+        #   outer: limit
+        full_params: list[Any] = []
+        full_params.append(q)
+        full_params.extend(params)
+        full_params.append(limit)
+        full_params.append(query_vec)
+        full_params.append(embedder)
+        full_params.extend(params)
+        if max_distance is not None:
+            full_params.append(query_vec)
+            full_params.append(float(max_distance))
+        full_params.append(limit)
+        full_params.extend([k, k])
+        full_params.append(limit)
+
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, full_params).fetchall()
+        return [
+            (_row_to_block(r[:11]), _row_to_ref(r[11:34]), float(r[34])) for r in rows
+        ]
 
     # -- CRUD (Phase 2 — v2 chunks table) ----------------------------------
 

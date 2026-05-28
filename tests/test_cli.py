@@ -420,7 +420,7 @@ def test_ingest_auto_applies_workspace_tag(
     for kind, slug in [("markdown", "note"), ("plaintext", "log"), ("tex", "p")]:
         ref = store.get_ref(kind=kind, id=slug)
         assert ref is not None, f"{kind}:{slug} not ingested"
-        assert store.has_flag(ref.id, "workspace"), (
+        assert store.has_tag(ref.id, "FLAG", "workspace"), (
             f"{kind}:{slug} missing workspace flag"
         )
 

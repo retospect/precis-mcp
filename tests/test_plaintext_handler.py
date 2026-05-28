@@ -580,7 +580,7 @@ def test_workspace_flag_applied_on_first_ingest(
     handler.get(id="note")  # force first ingest
     ref = handler.store.get_ref(kind="plaintext", id="note")
     assert ref is not None
-    assert handler.store.has_flag(ref.id, "workspace")
+    assert handler.store.has_tag(ref.id, "FLAG", "workspace")
 
 
 def test_workspace_flag_idempotent_on_re_ingest(
@@ -622,7 +622,7 @@ def test_workspace_flag_survives_mtime_bump(
     handler.get(id="note")  # triggers sha-match fast path
     ref = handler.store.get_ref(kind="plaintext", id="note")
     assert ref is not None
-    assert handler.store.has_flag(ref.id, "workspace")
+    assert handler.store.has_tag(ref.id, "FLAG", "workspace")
 
 
 def test_workspace_flag_survives_content_change(
@@ -636,7 +636,7 @@ def test_workspace_flag_survives_content_change(
     handler.get(id="note")  # full ingest path
     ref = handler.store.get_ref(kind="plaintext", id="note")
     assert ref is not None
-    assert handler.store.has_flag(ref.id, "workspace")
+    assert handler.store.has_tag(ref.id, "FLAG", "workspace")
 
 
 def test_workspace_flag_set_by_system(handler: PlaintextHandler, pt_root: Path) -> None:

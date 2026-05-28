@@ -48,27 +48,40 @@ class TestBuildTagFilter:
     def test_single_tag(self) -> None:
         frag, params = build_tag_filter(["STATUS:open"])
         assert frag.startswith(" AND ")
-        assert "r.id IN" in frag
+        # v2 references refs.ref_id (the v1 ``refs.id`` column was
+        # renamed in migrations/0001_initial.sql).
+        assert "r.ref_id IN" in frag
+        # v2 unified tags model: ref_tags is the join table; tags
+        # holds (namespace, value).
         assert "ref_tags" in frag
-        assert "pos IS NULL" in frag
-        # AND semantics: HAVING COUNT(DISTINCT tag) = N where N = 1.
-        assert "HAVING COUNT(DISTINCT tag) = %s" in frag
-        assert params == ["STATUS:open", 1]
+        assert "tags t" in frag
+        # AND semantics: HAVING COUNT(DISTINCT t.tag_id) = N where N=1.
+        assert "HAVING COUNT(DISTINCT t.tag_id) = %s" in frag
+        # Two params per tag (namespace, value) + the count.
+        assert params == ["STATUS", "open", 1]
 
     def test_multi_tag_AND(self) -> None:
         frag, params = build_tag_filter(["STATUS:open", "PRIO:high"])
-        # Two placeholders + the count param.
-        assert frag.count("%s") == 3
-        assert params == ["STATUS:open", "PRIO:high", 2]
+        # v2 uses (ns, val) tuples in IN list: 2 placeholders per tag
+        # + the trailing count = 5 placeholders for 2 tags.
+        assert frag.count("%s") == 5
+        assert params == ["STATUS", "open", "PRIO", "high", 2]
 
-    def test_block_level_uses_pos_not_null(self) -> None:
+    def test_block_level_uses_chunk_tags(self) -> None:
+        """v2 block-level filter routes through ``chunks`` +
+        ``chunk_tags`` instead of v1's ``pos IS NOT NULL`` predicate
+        against the v1 ref_tags view."""
         frag, _ = build_tag_filter(["topic:co2"], block_level=True)
-        assert "pos IS NOT NULL" in frag
+        assert "chunk_tags" in frag
+        assert "chunks c" in frag
+        # No pos sentinels in v2.
+        assert "pos IS NOT NULL" not in frag
         assert "pos IS NULL" not in frag
 
     def test_alias_pluggable(self) -> None:
         frag, _ = build_tag_filter(["x"], ref_alias="ref")
-        assert "ref.id IN" in frag
+        # v2 references ref.ref_id (column renamed).
+        assert "ref.ref_id IN" in frag
 
 
 # ── store-level: ref-search filter ──────────────────────────────────
@@ -284,22 +297,22 @@ class TestPosBoundary:
     def test_block_level_tag_does_not_match_ref_level_filter(
         self, store: Store
     ) -> None:
-        """If we tag a *block* (pos=N), a ref-level filter must NOT
-        find that ref. Otherwise the helper's pos-IS-NULL gate is
-        broken and block-level annotations leak into ref-level
-        listings."""
+        """If we tag a *chunk* (pos=N), a ref-level filter must NOT
+        find that ref. v2 enforces this via the table boundary itself:
+        chunk-level tags live in ``chunk_tags``; the ref-level filter
+        routes through ``ref_tags`` and therefore can't see them."""
         ref = store.insert_ref(kind="memory", slug=None, title="x")
         store.insert_blocks(ref.id, [BlockInsert(pos=0, text="x")])
-        # Block-level tag on pos=0.
+        # Chunk-level tag on pos=0 (writes ``chunk_tags`` only).
         store.add_tag(ref.id, Tag.open("scratch"), pos=0)
-        # Ref-level filter should NOT find this ref.
+        # Ref-level filter (routes through ``ref_tags``) must NOT
+        # find this ref.
         refs = store.list_refs(kind="memory", tags=["scratch"])
         assert refs == []
-        # But block-level filter SHOULD find it (via the helper's
-        # block_level=True path — note the store doesn't yet expose
-        # this kwarg through any agent surface, which is fine).
+        # Block-level filter (routes through ``chunk_tags``) SHOULD
+        # find it. v2 uses chunk_tags, not v1's pos sentinel.
         frag, params = build_tag_filter(["scratch"], block_level=True)
-        assert "pos IS NOT NULL" in frag
+        assert "chunk_tags" in frag
         # Smoke-execute the fragment to make sure the SQL is valid.
         with store.pool.connection() as conn:
             row = conn.execute(
