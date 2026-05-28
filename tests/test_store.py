@@ -141,54 +141,15 @@ def test_search_refs_lexical(store: Store) -> None:
 # ---------------------------------------------------------------------------
 # tags
 # ---------------------------------------------------------------------------
-
-
-def test_tags_add_and_list(store: Store) -> None:
-    ref = store.insert_ref(kind="memory", slug=None, title="x")
-
-    store.add_tag(ref.id, Tag.closed("STATUS", "doing"))
-    store.add_tag(ref.id, Tag.flag("pinned"))
-    store.add_tag(ref.id, Tag.open("topic-x"))
-
-    tags = store.tags_for(ref.id)
-    by_ns = {t.namespace: t for t in tags}
-    assert by_ns["closed"].prefix == "STATUS"
-    assert by_ns["closed"].value == "doing"
-    assert by_ns["flag"].value == "pinned"
-    assert by_ns["open"].value == "topic-x"
-
-
-def test_tags_replace_prefix(store: Store) -> None:
-    """replace_prefix=True removes existing closed tag with same prefix."""
-    ref = store.insert_ref(kind="memory", slug=None, title="x")
-
-    store.add_tag(ref.id, Tag.closed("CONFIDENCE", "tentative"), replace_prefix=True)
-    store.add_tag(ref.id, Tag.closed("CONFIDENCE", "certain"), replace_prefix=True)
-
-    tags = store.tags_for(ref.id)
-    confidences = [
-        t for t in tags if t.namespace == "closed" and t.prefix == "CONFIDENCE"
-    ]
-    assert len(confidences) == 1
-    assert confidences[0].value == "certain"
-
-
-def test_tags_remove(store: Store) -> None:
-    ref = store.insert_ref(kind="memory", slug=None, title="x")
-
-    store.add_tag(ref.id, Tag.flag("pinned"))
-    assert store.has_flag(ref.id, "pinned") is True
-
-    store.remove_tag(ref.id, Tag.flag("pinned"))
-    assert store.has_flag(ref.id, "pinned") is False
-
-
-def test_tags_idempotent_add(store: Store) -> None:
-    ref = store.insert_ref(kind="memory", slug=None, title="x")
-    store.add_tag(ref.id, Tag.open("dup"))
-    store.add_tag(ref.id, Tag.open("dup"))  # ON CONFLICT DO NOTHING
-    tags = store.tags_for(ref.id)
-    assert len([t for t in tags if t.value == "dup"]) == 1
+#
+# Tag CRUD tests live in tests/test_phase_boundary.py for now —
+# Phase 3 of the storage-v2 rewrite has not yet ported add_tag /
+# remove_tag / tags_for / has_tag / find_first_meta_for_open_tag
+# from the v1 three-table model to the v2 unified tags+ref_tags/
+# chunk_tags model. The boundary test pins which methods raise
+# NotImplementedError so we notice when Phase 3 finishes; the
+# real CRUD tests get rewritten alongside that work (using
+# has_tag, the v2 unified probe, in place of v1 has_flag).
 
 
 def test_tag_parse() -> None:
