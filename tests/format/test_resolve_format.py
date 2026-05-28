@@ -85,15 +85,11 @@ class TestResolveFormat:
 
     def test_override_default_tty(self):
         with _stdout(isatty=True):
-            assert (
-                resolve_format(self._ns(None), default_tty="toon") == "toon"
-            )
+            assert resolve_format(self._ns(None), default_tty="toon") == "toon"
 
     def test_override_default_pipe(self):
         with _stdout(isatty=False):
-            assert (
-                resolve_format(self._ns(None), default_pipe="json") == "json"
-            )
+            assert resolve_format(self._ns(None), default_pipe="json") == "json"
 
     def test_namespace_without_format_attribute_defaults(self):
         # A subcommand that forgot to call `add_format_argument`

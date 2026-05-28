@@ -582,8 +582,11 @@ class TestSearch:
         This is the canonical "show me hits 6-N" pagination idiom."""
         for slug in ("paper-a", "paper-b", "paper-c"):
             _seed_paper(
-                store, slug=slug, title=f"Paper {slug}",
-                blocks=[f"photocatalytic reduction in {slug}"], doi=f"10.1/{slug}",
+                store,
+                slug=slug,
+                title=f"Paper {slug}",
+                blocks=[f"photocatalytic reduction in {slug}"],
+                doi=f"10.1/{slug}",
             )
         # Without exclude: all three papers.
         full = handler.search(q="photocatalytic", top_k=10)
@@ -591,9 +594,7 @@ class TestSearch:
         assert "paper-b" in full.body
         assert "paper-c" in full.body
         # With exclude: paper-a drops out.
-        excluded = handler.search(
-            q="photocatalytic", top_k=10, exclude=["paper-a"]
-        )
+        excluded = handler.search(q="photocatalytic", top_k=10, exclude=["paper-a"])
         assert "paper-a~" not in excluded.body
         assert "paper-b" in excluded.body
         assert "paper-c" in excluded.body
@@ -605,17 +606,22 @@ class TestSearch:
         normalised to the bare slug. Coarse-only by design — the
         whole paper drops, not just the one block."""
         _seed_paper(
-            store, slug="paper-a", title="A",
+            store,
+            slug="paper-a",
+            title="A",
             blocks=["photocatalytic copper", "photocatalytic zinc"],
             doi="10.1/paper-a",
         )
         _seed_paper(
-            store, slug="paper-b", title="B",
+            store,
+            slug="paper-b",
+            title="B",
             blocks=["photocatalytic iron"],
             doi="10.1/paper-b",
         )
         resp = handler.search(
-            q="photocatalytic", top_k=10,
+            q="photocatalytic",
+            top_k=10,
             exclude=["paper-a~0"],  # copy-pasted handle
         )
         assert "paper-a~" not in resp.body
@@ -628,17 +634,22 @@ class TestSearch:
         the SQL filter, so DOI-form exclude entries work the same as
         slug-form ones."""
         _seed_paper(
-            store, slug="paper-a", title="A",
+            store,
+            slug="paper-a",
+            title="A",
             blocks=["alpha topic"],
             doi="10.1111/jnc.13915",
         )
         _seed_paper(
-            store, slug="paper-b", title="B",
+            store,
+            slug="paper-b",
+            title="B",
             blocks=["alpha topic"],
             doi="10.1/b",
         )
         resp = handler.search(
-            q="alpha", top_k=10,
+            q="alpha",
+            top_k=10,
             exclude=["10.1111/jnc.13915"],
         )
         assert "paper-a~" not in resp.body
@@ -656,15 +667,22 @@ class TestSearch:
         one, proving the stale entry isn't poisoning the call.
         """
         _seed_paper(
-            store, slug="paper-a", title="A",
-            blocks=["alpha topic"], doi="10.1/a",
+            store,
+            slug="paper-a",
+            title="A",
+            blocks=["alpha topic"],
+            doi="10.1/a",
         )
         _seed_paper(
-            store, slug="paper-b", title="B",
-            blocks=["alpha topic"], doi="10.1/b",
+            store,
+            slug="paper-b",
+            title="B",
+            blocks=["alpha topic"],
+            doi="10.1/b",
         )
         resp = handler.search(
-            q="alpha", top_k=10,
+            q="alpha",
+            top_k=10,
             exclude=["does-not-exist", "paper-a"],
         )
         # Valid slug still drops; stale slug is no-op (no error).
@@ -686,16 +704,17 @@ class TestSearch:
         """
         for slug in ("paper-a", "paper-b", "paper-c", "paper-d"):
             _seed_paper(
-                store, slug=slug, title=f"Paper {slug}",
-                blocks=[f"alpha topic in {slug}"], doi=f"10.1/{slug}",
+                store,
+                slug=slug,
+                title=f"Paper {slug}",
+                blocks=[f"alpha topic in {slug}"],
+                doi=f"10.1/{slug}",
             )
         # Without exclude: 2 of 4.
         full = handler.search(q="alpha", top_k=2)
         assert " of 4" in full.body
         # With one excluded: 2 of 3 — header subtracts the dropped ref.
-        excluded = handler.search(
-            q="alpha", top_k=2, exclude=["paper-a"]
-        )
+        excluded = handler.search(q="alpha", top_k=2, exclude=["paper-a"])
         assert " of 3" in excluded.body
         # And specifically NOT "of 4" — would lie about how much
         # is still paginate-able.
@@ -712,7 +731,9 @@ class TestSearch:
         # Seed 5 papers all matching, ask for top_k=2 so 3 are paginated.
         for slug in ("paper-a", "paper-b", "paper-c", "paper-d", "paper-e"):
             _seed_paper(
-                store, slug=slug, title=f"Paper {slug}",
+                store,
+                slug=slug,
+                title=f"Paper {slug}",
                 blocks=[f"photocatalytic reduction in {slug}"],
                 doi=f"10.1/{slug}",
             )
@@ -726,11 +747,8 @@ class TestSearch:
         # Find the exclude=[...] segment and check it includes 2 slugs.
         idx = body.index("exclude=[")
         end = body.index("]", idx)
-        exclude_segment = body[idx:end + 1]
-        slug_count = sum(
-            exclude_segment.count(f"'paper-{ch}'")
-            for ch in "abcde"
-        )
+        exclude_segment = body[idx : end + 1]
+        slug_count = sum(exclude_segment.count(f"'paper-{ch}'") for ch in "abcde")
         assert slug_count == 2
 
     def test_search_next_trailer_unions_prior_exclude(
@@ -742,7 +760,9 @@ class TestSearch:
         without ever doing the bookkeeping itself."""
         for slug in ("paper-a", "paper-b", "paper-c", "paper-d"):
             _seed_paper(
-                store, slug=slug, title=f"Paper {slug}",
+                store,
+                slug=slug,
+                title=f"Paper {slug}",
                 blocks=[f"photocatalytic reduction in {slug}"],
                 doi=f"10.1/{slug}",
             )
@@ -750,20 +770,19 @@ class TestSearch:
         # returns paper-b and one more — trailer should suggest
         # excluding [paper-a, paper-b, <other>].
         resp = handler.search(
-            q="photocatalytic", top_k=2,
+            q="photocatalytic",
+            top_k=2,
             exclude=["paper-a"],
         )
         body = resp.body
         assert "exclude=[" in body
         idx = body.index("exclude=[")
         end = body.index("]", idx)
-        seg = body[idx:end + 1]
+        seg = body[idx : end + 1]
         # Prior exclude survives.
         assert "'paper-a'" in seg
         # And one of the new returned slugs is also in there.
-        new_count = sum(
-            seg.count(f"'paper-{ch}'") for ch in "bcd"
-        )
+        new_count = sum(seg.count(f"'paper-{ch}'") for ch in "bcd")
         assert new_count >= 1
 
     def test_search_exclude_trailer_singleton_keeps_widen(
@@ -775,7 +794,9 @@ class TestSearch:
         when only one match was returned."""
         for slug in ("paper-a", "paper-b", "paper-c"):
             _seed_paper(
-                store, slug=slug, title=f"Paper {slug}",
+                store,
+                slug=slug,
+                title=f"Paper {slug}",
                 blocks=[f"alpha topic in {slug}"],
                 doi=f"10.1/{slug}",
             )

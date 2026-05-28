@@ -76,7 +76,9 @@ def detect_identifier_scheme(value: str) -> str | None:
     # arXiv DOI form: short-circuit to scheme='arxiv' so a query for
     # `10.48550/arXiv.1705.02630` resolves the same as `1705.02630`.
     # We also accept the URL-form `https://doi.org/10.48550/arXiv.X`.
-    arxiv_doi = re.match(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$", v, re.IGNORECASE)
+    arxiv_doi = re.match(
+        r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$", v, re.IGNORECASE
+    )
     if arxiv_doi:
         return "arxiv"
     # Explicit prefixes win.
@@ -84,13 +86,17 @@ def detect_identifier_scheme(value: str) -> str | None:
         return "s2"
     if v.startswith(("PMID:", "pmid:", "PubMed:", "pubmed:")):
         return "pubmed"
-    if v.startswith(("OpenAlex:", "openalex:", "W") if v[:1] in "Ww" else ("OpenAlex:", "openalex:")):
+    if v.startswith(
+        ("OpenAlex:", "openalex:", "W") if v[:1] in "Ww" else ("OpenAlex:", "openalex:")
+    ):
         return "openalex"
     if v.startswith(("MAG:", "mag:")):
         return "mag"
     if v.startswith(("DBLP:", "dblp:")):
         return "dblp"
-    if v.startswith(("DOI:", "doi:", "https://doi.org/", "http://doi.org/", "https://dx.doi.org/")):
+    if v.startswith(
+        ("DOI:", "doi:", "https://doi.org/", "http://doi.org/", "https://dx.doi.org/")
+    ):
         return "doi"
     # Shape-based detection.
     if _DOI_RE.match(v):
@@ -123,7 +129,9 @@ def _normalise_identifier(scheme: str, value: str) -> str:
         v = re.sub(r"^doi:\s*", "", v, flags=re.IGNORECASE)
     elif scheme == "arxiv":
         # arXiv DOI form (10.48550/arXiv.X) -> bare arxiv id
-        m = re.match(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$", v, re.IGNORECASE)
+        m = re.match(
+            r"^(?:https?://(?:dx\.)?doi\.org/)?10\.48550/arxiv\.(.+)$", v, re.IGNORECASE
+        )
         if m:
             v = m.group(1)
         # Strip versions (v1, v2, ...) — bare id is canonical

@@ -69,9 +69,7 @@ def serialize(data: Any, *, format: str = "toon", **kwargs: Any) -> str:
         fn = SERIALIZERS[format]
     except KeyError:
         known = ", ".join(sorted(SERIALIZERS))
-        raise ValueError(
-            f"unknown output format {format!r}; known: {known}"
-        ) from None
+        raise ValueError(f"unknown output format {format!r}; known: {known}") from None
     return fn(data, **kwargs)
 
 

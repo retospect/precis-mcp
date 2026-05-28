@@ -156,9 +156,7 @@ class Store(
                 "ORDER BY name LIMIT 1"
             ).fetchone()
         if row is None:
-            raise RuntimeError(
-                "no default embedder registered - did migrations run?"
-            )
+            raise RuntimeError("no default embedder registered - did migrations run?")
         return int(row[0])
 
     # -- corpus --------------------------------------------------------------

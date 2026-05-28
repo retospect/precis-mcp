@@ -171,9 +171,7 @@ def test_runtrace_rejects_bad_timeout(handler: PythonHandler, gate_on: None) -> 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    _PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False
-)
+@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_captures_call_tree(handler: PythonHandler, gate_on: None) -> None:
     """End-to-end: actual subprocess, real setprofile, real events.
     The result should show main calling loop calling helper 3× plus
@@ -208,9 +206,7 @@ def test_runtrace_produces_static_only_diff(
     assert "demopkg.m.dead_code" not in body
 
 
-@pytest.mark.xfail(
-    _PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False
-)
+@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_argv_is_forwarded(repo: Path, gate_on: None) -> None:
     """Adding a script that inspects sys.argv proves argv= is forwarded
     through the runner into the entry's process."""
@@ -635,9 +631,7 @@ def test_render_no_collapsed_annotation_when_expand_stdlib() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    _PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False
-)
+@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_collapses_stdlib_by_default(repo: Path, gate_on: None) -> None:
     """End-to-end: argparse-heavy entry should NOT show every
     argparse internal in the default rendered output."""
@@ -669,9 +663,7 @@ def test_runtrace_collapses_stdlib_by_default(repo: Path, gate_on: None) -> None
     assert "expand_stdlib" in body
 
 
-@pytest.mark.xfail(
-    _PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False
-)
+@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_expand_stdlib_keeps_full_tree(repo: Path, gate_on: None) -> None:
     """With `expand_stdlib=True`, deep argparse internals are visible
     and the collapse annotations disappear."""
@@ -712,9 +704,7 @@ def test_runtrace_max_events_validation(handler: PythonHandler, gate_on: None) -
         )
 
 
-@pytest.mark.xfail(
-    _PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False
-)
+@pytest.mark.xfail(_PY312_SETPROFILE_BUG, reason=_RUNTRACE_XFAIL_REASON, strict=False)
 def test_runtrace_max_events_truncates(repo: Path, gate_on: None) -> None:
     """A tight `max_events` cap surfaces as `truncated` in the output."""
     pkg = repo / "demopkg"
