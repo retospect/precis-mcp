@@ -228,6 +228,29 @@ YearMatch = Literal["match", "off_by_one", "mismatch", "unchecked"]
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateMatch:
+    """One Crossref candidate match for a 404 DOI with bibliographic hints.
+
+    Surfaced in the report's Unknown DOI section as an *advisory*
+    hint. Phase 5 deliberately does NOT substitute the supplied DOI
+    with any candidate — the caller (human or LLM) reads the
+    candidates and decides whether one of them is the citation they
+    actually meant. See ``docs/provenance-kind-plan.md`` §
+    "Rejected: fuzzy DOI auto-resolution" for the rationale.
+
+    ``score`` is Crossref's opaque ranking value. It's emitted so
+    downstream tooling can apply its own threshold, but the
+    rendering layer treats it as advisory only.
+    """
+
+    doi: str
+    score: float | None
+    title: str | None
+    first_author: str | None  # surname only
+    year: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class TransitiveCiteFinding:
     """One Phase 4 finding: a paper we checked *cites* something that
     has its own retraction or expression-of-concern notice.
@@ -312,6 +335,13 @@ class ProvenanceResult:
     # paper has a 🔴/🟠 notice. Already-filtered to severity ≥ review
     # — a paper that cites a corrected-only work is too noisy.
     cited_findings: list[TransitiveCiteFinding] = field(default_factory=list)
+    # Phase 5: candidate Crossref matches for a 404 DOI when
+    # BibEntry hints were supplied. Empty when not requested, when
+    # the DOI resolved, or when no candidates ranked. ADVISORY ONLY
+    # — the result's ``status`` stays ``unknown`` regardless; no
+    # auto-substitution happens. See plan § "Rejected: fuzzy DOI
+    # auto-resolution".
+    candidates: list[CandidateMatch] = field(default_factory=list)
     # Error message when status='check_failed'
     error: str | None = None
 
@@ -703,6 +733,106 @@ def _fetch_crossref_message(doi: str, mailto: str | None) -> dict[str, Any] | No
     return result["message"]
 
 
+def _search_crossref_works(
+    *,
+    title: str | None,
+    author: str | None,
+    mailto: str | None,
+    rows: int = 5,
+) -> list[dict[str, Any]]:
+    """Issue a Crossref ``/works`` query and return the ranked items.
+
+    Phase 5 helper for the candidate-hint path. ``query.bibliographic``
+    gets the title (Crossref's recommended field for "I have a
+    citation, find the DOI"); ``query.author`` narrows by surname.
+    Both are optional but at least one must be supplied — without
+    them the query returns a global ranking and is useless here.
+
+    Returns the raw ``items`` array from the response. Caller wraps
+    each into a ``CandidateMatch``. Returns ``[]`` on any transport
+    error — candidate hints are advisory, never load-bearing.
+    """
+    if not title and not author:
+        return []
+    from habanero import Crossref  # noqa: PLC0415 — lazy optional dep
+
+    cr = Crossref(mailto=mailto) if mailto else Crossref()
+    kwargs: dict[str, Any] = {"limit": rows}
+    if title:
+        kwargs["query_bibliographic"] = title
+    if author:
+        kwargs["query_author"] = author
+    try:
+        result = cr.works(**kwargs)
+    except Exception:  # noqa: BLE001 — never propagate; hints are advisory
+        return []
+    if not result or "message" not in result:
+        return []
+    items = result["message"].get("items") or []
+    if not isinstance(items, list):
+        return []
+    return items
+
+
+def _first_author_surname_from_authors(
+    authors: list[dict[str, Any]] | None,
+) -> str | None:
+    """Same logic as ``_first_author_surname`` but takes already-extracted authors."""
+    if not authors:
+        return None
+    first = authors[0]
+    name = (first.get("name") or "").strip()
+    if not name:
+        return None
+    return name.split(",")[0].strip()
+
+
+def candidate_search(
+    *,
+    bib_entry: BibEntry,
+    mailto: str | None,
+    rows: int = 5,
+) -> list[CandidateMatch]:
+    """Phase 5: search Crossref for candidate matches given bib hints.
+
+    Used when a supplied DOI returns 404 *and* the caller passed a
+    ``BibEntry`` with bibliographic metadata. The result is attached
+    to the parent's ``candidates`` field as an advisory hint —
+    we never substitute the supplied DOI based on the result.
+
+    Requires at least a title; queries by surname alone are too
+    broad to surface useful candidates and would burn Crossref
+    quota for noise.
+    """
+    if not bib_entry.title:
+        return []
+    author = bib_entry.authors[0] if bib_entry.authors else None
+    items = _search_crossref_works(
+        title=bib_entry.title,
+        author=author,
+        mailto=mailto,
+        rows=rows,
+    )
+    out: list[CandidateMatch] = []
+    for item in items:
+        doi_raw = item.get("DOI")
+        if not isinstance(doi_raw, str) or not doi_raw:
+            continue
+        canonical = validate_doi(doi_raw) or doi_raw.lower()
+        out.append(
+            CandidateMatch(
+                doi=canonical,
+                score=item.get("score"),
+                title=_extract_title(item),
+                first_author=_first_author_surname_from_authors(
+                    _extract_authors(item)
+                ),
+                year=_extract_year(item),
+            )
+        )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Slug helpers (DB-backed)
 # ---------------------------------------------------------------------------
@@ -1067,6 +1197,7 @@ def check_doi(
     mailto: str | None = None,
     bib_entry: BibEntry | None = None,
     transitive: bool = False,
+    suggest_candidates: bool = False,
     _cite_cache: CiteCache | None = None,
 ) -> ProvenanceResult:
     """Run a single-DOI provenance check.
@@ -1109,7 +1240,17 @@ def check_doi(
         return ProvenanceResult(doi=canonical, status="check_failed", error=str(exc))
 
     if msg is None:
-        return ProvenanceResult(doi=canonical, status="unknown")
+        # Phase 5: when the caller supplied a BibEntry AND opted in to
+        # candidate hints, surface Crossref's ranked matches for the
+        # bib metadata. Status stays ``unknown`` — we never substitute.
+        candidates: list[CandidateMatch] = []
+        if suggest_candidates and bib_entry is not None:
+            candidates = candidate_search(bib_entry=bib_entry, mailto=mailto)
+        return ProvenanceResult(
+            doi=canonical,
+            status="unknown",
+            candidates=candidates,
+        )
 
     paper_title = _extract_title(msg)
     paper_authors = _extract_authors(msg)
@@ -1275,6 +1416,7 @@ def check_dois(
     max_workers: int = _DEFAULT_MAX_WORKERS,
     bib_entries: list[BibEntry] | None = None,
     transitive: bool = False,
+    suggest_candidates: bool = False,
 ) -> list[ProvenanceResult]:
     """Run ``check_doi`` over a batch of DOIs concurrently.
 
@@ -1328,6 +1470,7 @@ def check_dois(
             mailto=mailto,
             bib_entry=_entry_for(0),
             transitive=transitive,
+            suggest_candidates=suggest_candidates,
             _cite_cache=cite_cache,
         )
         return [replace(r, input_index=1)]
@@ -1342,6 +1485,7 @@ def check_dois(
                 mailto=mailto,
                 bib_entry=_entry_for(i),
                 transitive=transitive,
+                suggest_candidates=suggest_candidates,
                 _cite_cache=cite_cache,
             ): i
             for i, doi in enumerate(inputs)
@@ -1370,6 +1514,7 @@ def check_dois(
 
 __all__ = [
     "BibEntry",
+    "CandidateMatch",
     "LinkRelation",
     "MetadataVerification",
     "Notice",
@@ -1378,6 +1523,7 @@ __all__ = [
     "Severity",
     "TransitiveCiteFinding",
     "YearMatch",
+    "candidate_search",
     "check_doi",
     "check_dois",
     "classify_update_type",

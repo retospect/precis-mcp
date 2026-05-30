@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from precis.ingest.provenance import (
+    CandidateMatch,
     MetadataVerification,
     Notice,
     ProvenanceResult,
@@ -30,9 +31,9 @@ from precis.ingest.provenance import (
     TransitiveCiteFinding,
 )
 
-View = Literal["default", "blockers", "json", "verify"]
+View = Literal["default", "blockers", "json", "verify", "exists"]
 
-_VALID_VIEWS: tuple[View, ...] = ("default", "blockers", "json", "verify")
+_VALID_VIEWS: tuple[View, ...] = ("default", "blockers", "json", "verify", "exists")
 
 _SEVERITY_GLYPH: dict[Severity, str] = {
     "blocker": "🔴",
@@ -129,10 +130,11 @@ def render_single(result: ProvenanceResult) -> str:
     if result.status == "unknown":
         lines.append(
             "**Status**: unknown — Crossref has no record for this DOI. "
-            "Likely a hallucinated or mistyped identifier. (Fuzzy "
-            "resolution from bibliographic hints lands in Phase 5; "
-            "until then, check the DOI source.)"
+            "Likely a hallucinated or mistyped identifier."
         )
+        if result.candidates:
+            lines.append("")
+            lines.extend(_render_candidate_hints(result.candidates))
         return "\n".join(lines) + "\n"
 
     if result.status == "check_failed":
@@ -211,6 +213,35 @@ def render_single(result: ProvenanceResult) -> str:
             "persist the retraction graph."
         )
 
+    return "\n".join(lines) + "\n"
+
+
+def render_exists(results: list[ProvenanceResult]) -> str:
+    """Render the ``view='exists'`` compact existence check.
+
+    Phase 5 / Step 4: cheap "is this DOI real?" output without any
+    of the retraction / notice processing in the default view.
+    One line per DOI, with a tick/cross glyph. Useful when an agent
+    just wants to validate a list before doing real work with it.
+    """
+    if not results:
+        return "_No DOIs to check._\n"
+
+    ok = sum(1 for r in results if r.status == "ok")
+    n = len(results)
+    lines: list[str] = [f"# DOI existence check — {ok}/{n} resolve", ""]
+    for r in results:
+        prefix = _index_prefix(r)
+        if r.status == "ok":
+            title = f" — _{r.paper_title}_" if r.paper_title else ""
+            lines.append(f"- ✓ {prefix}`{r.doi}`{title}")
+        elif r.status == "unknown":
+            lines.append(f"- ✗ {prefix}`{r.doi}` — unknown (Crossref 404)")
+        elif r.status == "malformed":
+            lines.append(f"- ✗ {prefix}`{r.doi}` — malformed")
+        else:
+            err = f" — {r.error}" if r.error else ""
+            lines.append(f"- ⚠️ {prefix}`{r.doi}` — check failed{err}")
     return "\n".join(lines) + "\n"
 
 
@@ -303,6 +334,12 @@ def render_batch(results: list[ProvenanceResult], view: View = "default") -> str
             if r.status == "check_failed" and r.error:
                 note = f" — {r.error}"
             lines.append(f"- {_index_prefix(r)}`{r.doi}`{note}")
+            # Phase 5: when candidate hints are present, list them
+            # beneath the unknown DOI. ADVISORY ONLY — the supplied
+            # DOI's status is still ``unknown``; we never silently
+            # rewrite it. See plan § "Rejected: fuzzy DOI auto-resolution".
+            if r.candidates:
+                lines.extend(_render_candidate_hints(r.candidates))
         lines.append("")
 
     # Clean papers — single condensed line at the bottom of the
@@ -491,6 +528,33 @@ def _index_prefix(r: ProvenanceResult) -> str:
     return f"**#{r.input_index}** · " if r.input_index else ""
 
 
+def _render_candidate_hints(candidates: list[CandidateMatch]) -> list[str]:
+    """Render Phase 5 candidate-DOI hints under an Unknown DOI bullet.
+
+    Indented two spaces so they nest under the unknown DOI bullet.
+    Each candidate shows the DOI, Crossref score, title, first author,
+    year. The opening line names this as advisory — the report
+    consumer is meant to read the candidates and decide, not to
+    treat them as auto-applied fixes.
+    """
+    lines: list[str] = []
+    lines.append(
+        "  Possible matches from Crossref (advisory only — verify before using):"
+    )
+    for c in candidates:
+        parts: list[str] = []
+        parts.append(f"`{c.doi}`")
+        if c.score is not None:
+            parts.append(f"score {c.score:.1f}")
+        if c.first_author:
+            parts.append(c.first_author)
+        if c.year is not None:
+            parts.append(str(c.year))
+        title = f" — _{c.title}_" if c.title else ""
+        lines.append(f"    - {' · '.join(parts)}{title}")
+    return lines
+
+
 def _render_cited_findings_section(
     findings: list[TransitiveCiteFinding],
 ) -> list[str]:
@@ -611,4 +675,4 @@ def _render_json(results: list[ProvenanceResult]) -> str:
     return json.dumps(payload, indent=2, default=encode) + "\n"
 
 
-__all__ = ["View", "render_batch", "render_single"]
+__all__ = ["View", "render_batch", "render_exists", "render_single"]

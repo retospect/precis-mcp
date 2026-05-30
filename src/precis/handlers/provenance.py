@@ -45,6 +45,7 @@ from precis.errors import BadInput
 from precis.handlers._provenance_report import (
     _VALID_VIEWS,
     render_batch,
+    render_exists,
     render_single,
 )
 from precis.ingest.provenance import (
@@ -57,7 +58,13 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 
 
-_SUPPORTED_VIEWS: tuple[str, ...] = ("default", "blockers", "json", "verify")
+_SUPPORTED_VIEWS: tuple[str, ...] = (
+    "default",
+    "blockers",
+    "json",
+    "verify",
+    "exists",
+)
 
 
 def _parse_structured_input(raw: str) -> list[BibEntry] | None:
@@ -196,6 +203,7 @@ class ProvenanceHandler(Handler):
         view: str | None = None,
         q: str | None = None,
         transitive: bool = False,
+        suggest_candidates: bool = False,
         **_kw: Any,
     ) -> Response:
         # Accept id= as primary; q= as a synonym. Tool kinds across
@@ -261,6 +269,19 @@ class ProvenanceHandler(Handler):
                 ),
             )
 
+        # view='exists' is a cheap shortcut — runs check_doi with
+        # store=None so no write-through happens, then renders only
+        # the format/resolve outcome (no notice processing). Phase 5.
+        if v == "exists":
+            results = check_dois(
+                dois,
+                store=None,  # pure existence check; no DB writes
+                mailto=self._mailto,
+                bib_entries=bib_entries,
+                transitive=False,  # exists view ignores cite-walk
+            )
+            return Response(body=render_exists(results))
+
         # Single-DOI path keeps the rich per-paper markdown layout when
         # the caller didn't ask for a structured view. Everything else
         # goes through the batch renderer.
@@ -272,6 +293,7 @@ class ProvenanceHandler(Handler):
                 mailto=self._mailto,
                 bib_entry=entry,
                 transitive=transitive,
+                suggest_candidates=suggest_candidates,
             )
             return Response(body=render_single(result))
 
@@ -281,6 +303,7 @@ class ProvenanceHandler(Handler):
             mailto=self._mailto,
             bib_entries=bib_entries,
             transitive=transitive,
+            suggest_candidates=suggest_candidates,
         )
         return Response(body=render_batch(results, view=v))  # type: ignore[arg-type]
 

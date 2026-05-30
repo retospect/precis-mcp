@@ -45,7 +45,7 @@ from precis.utils.text import excerpt as _excerpt
 # Public spec
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_VIEWS = ("bibtex", "ris", "endnote", "abstract", "toc")
+_SUPPORTED_VIEWS = ("bibtex", "ris", "endnote", "abstract", "toc", "health")
 
 
 # Tunable knobs for the nearest-match suggester. The cutoff (0.6 of
@@ -762,6 +762,9 @@ class PaperHandler(Handler):
         if view in ("bibtex", "ris", "endnote"):
             return Response(body=_format_citation(ref, style=view))
 
+        if view == "health":
+            return self._render_health(ref)
+
         # The MCP critic flagged ``view='figures'`` as a silent
         # failure — the agent had no signal that figure retrieval
         # is unsupported. Surface a sharper hint pointing at the
@@ -807,6 +810,56 @@ class PaperHandler(Handler):
             options=list(_SUPPORTED_VIEWS),
             next=f"see precis-paper-help - try views: {', '.join(_SUPPORTED_VIEWS)}",
         )
+
+    def _render_health(self, ref: Ref) -> Response:
+        """Phase 5 shim: ``view='health'`` on a paper ref.
+
+        Looks up the paper's DOI from ``ref_identifiers``, then
+        delegates to the provenance kind's ``check_doi`` so agents
+        that already have a slug don't have to do the slug→DOI
+        lookup themselves. The full markdown report comes back via
+        ``render_single`` — same shape as
+        ``get(kind='provenance', id='<doi>')``.
+
+        Edge cases:
+        - **Paper has no DOI on file** (preprints from venues
+          Crossref doesn't index, book chapters, hand-ingested
+          records). We surface a clear error rather than silently
+          succeeding — provenance is meaningless without a DOI.
+        """
+        from precis.handlers._provenance_report import render_single
+        from precis.ingest.provenance import check_doi
+
+        # Pull all known identifiers for this ref; pick the DOI.
+        try:
+            aliases = self.store.list_ref_identifiers(ref.id)
+        except Exception as exc:  # noqa: BLE001 — surface clean error
+            raise BadInput(
+                f"paper view='health': cannot read identifiers for {ref.slug}: {exc}",
+                next=f"get(kind='paper', id='{ref.slug}', view='bibtex')",
+            ) from exc
+
+        doi: str | None = None
+        for scheme, value, _source in aliases:
+            if scheme == "doi" and value:
+                doi = value
+                break
+
+        if doi is None:
+            slug = ref.slug or "???"
+            raise BadInput(
+                f"paper view='health': no DOI on file for {slug} — "
+                "provenance checks require a DOI",
+                next=f"get(kind='paper', id='{slug}', view='abstract')",
+            )
+
+        # Inherit the mailto convention from the env, same as the
+        # provenance handler does at boot.
+        import os
+
+        mailto = os.environ.get("PRECIS_CROSSREF_MAILTO") or None
+        result = check_doi(doi, store=self.store, mailto=mailto)
+        return Response(body=render_single(result))
 
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
         lo, hi = chunk
