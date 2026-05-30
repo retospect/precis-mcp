@@ -463,10 +463,11 @@ paper itself; it's a "review and judge" signal).
 | **2** | Batch (`q='doi1,doi2'`), CLI (`precis jobs check-provenance`), `view='blockers'`, `view='json'`, async fan-out with semaphore. | ~0.5 day |
 | **2.5** | Citation metadata verification (`view='verify'`). Token-set Jaccard against Crossref metadata. New report section "Metadata mismatch". | ~0.5 day |
 | **3** | Retraction Watch cache. `jobs/provenance_rw_sync.py` monthly cron (wired into existing `precis maintenance run`). Join into report. | ~1 day |
+| **3.5** | Numbered-result rendering across all views, matching the project's standardised LLM-output convention (`utils/search_merge.py:208`). | ~0.5 day |
 | **4** | Transitive cite-check (depth=1). Reuse `ingest/citations.py`. Skill `precis-preflight.md`. | ~0.5 day |
 | **5** | `paper` `view='health'` shim. Fuzzy DOI resolution (step 3 of verification). `view='exists'` shortcut. | ~0.5 day |
 
-Total: ~4.5 days. Phase 1 alone is shippable and answers the original
+Total: ~5 days. Phase 1 alone is shippable and answers the original
 ask for any DOI you can name.
 
 ---
@@ -621,6 +622,96 @@ a retraction:
   passed
 - The JSON view exposes per-field raw scores; nothing in the pipeline
   hardcodes a pass/fail threshold
+
+---
+
+## Phase 3.5: numbered-result rendering (standardised LLM output)
+
+### Motivation
+
+The Phase 2 batch renderer groups results by severity. That reads well
+to a human but creates an off-by-one hazard for an LLM: when 250 DOIs
+go in and a severity-sorted report comes out, the model can't easily
+say *"the 47th paper in your bib is retracted"* — the visual grouping
+breaks the input-order correspondence.
+
+The codebase already has a standardised solution for this in
+`utils/search_merge.py:208`: every rendered hit gets a 1-based index
+via `enumerate(rendered, 1)` so downstream consumers (LLM or human)
+can quote `result #7` unambiguously. Provenance reports need the same
+discipline.
+
+### Scope
+
+Apply to all three views (`default`, `blockers`, `json`). The input
+position — *not* the position within a severity group — is the
+authoritative index. A 🔴 blocker at input line 47 reads as
+`#47` in every view; the blockers view simply hides the in-between
+entries, but never renumbers.
+
+**Default view (markdown):**
+
+```
+## 🔴 Blocker (1)
+- **#47** · `10.5678/bad` — B 2022 · _Bad paper_
+  - 🔴 **retraction** · 2022-08-14 · notice DOI: `10.5678/bad-r1`
+
+## 🟢 Clean (1)
+- **#1**   · `10.1234/clean` — A 2020 · _Clean paper_
+- **#3**   · `10.9999/eoc`   — — · _Concerned_ (now 🟠, see above)
+```
+
+**Blockers view:** same numbering, but only 🔴/🟠 entries appear.
+The suppression note becomes informational only; the LLM can still
+reference `#47` from the surrounding prose without re-counting.
+
+```
+_view='blockers' — entries #1 and #3 hidden (🟡/🟢)._
+## 🔴 Blocker (1)
+- **#47** · `10.5678/bad` …
+```
+
+**JSON view:** add an `input_index` field (1-based) on each result
+object, alongside the existing fields. Downstream tooling parsing
+the JSON can apply its own severity rule without losing the bib-line
+mapping.
+
+```json
+{
+  "count": 250,
+  "results": [
+    {"input_index": 1, "doi": "10.1234/clean", "status": "ok", ...},
+    {"input_index": 2, "doi": "10.5678/bad", "status": "ok",
+     "overall_severity": "blocker", ...},
+    ...
+  ]
+}
+```
+
+### Implementation
+
+- Thread `input_index` through `check_dois`: assign at the point where
+  the result list is built (currently in `_provenance/check_dois`
+  results slot index). Cheapest: add an `input_index: int` field to
+  `ProvenanceResult` (default `0`), populated by the batch wrapper.
+- `render_batch` reads `.input_index` instead of recomputing from
+  enumeration order; the severity-grouped sections lose nothing
+  because they render the index alongside the DOI.
+- `_provenance_report._render_per_doi_block` prefixes each block with
+  `**#{r.input_index}**`.
+- Single-DOI path (`render_single`) doesn't show the index — there's
+  only one result, the ambiguity doesn't exist.
+
+### Acceptance criteria for Phase 3.5
+
+- `check_dois(["10.x/a", "10.x/b", "10.x/c"])` returns three results
+  with `input_index in (1, 2, 3)` regardless of completion order from
+  the thread pool.
+- A model can reproduce the original input order from the JSON view
+  via `sorted(results, key=lambda r: r["input_index"])`.
+- Re-running `view='blockers'` with the same input never renumbers
+  surviving entries — `#47` in the default view is `#47` in the
+  blockers view.
 
 ---
 

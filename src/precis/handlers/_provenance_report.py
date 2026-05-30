@@ -5,11 +5,14 @@ Renders the four-severity-tier report described in
 no DB access, no I/O. Takes one ``ProvenanceResult`` (single-DOI
 path) or a list of them (Phase 2 batch path) and returns a string.
 
-Views shipping in Phase 2:
+Views:
 
 - (default) — full triaged markdown report
 - ``blockers`` — only 🔴 + 🟠 entries; other tiers collapsed to a count
 - ``json``    — structured payload for downstream tooling
+- ``verify``  — default report PLUS a Metadata mismatch section
+  surfacing supplied-vs-Crossref diffs from the Phase 2.5
+  verification step
 """
 
 from __future__ import annotations
@@ -20,14 +23,15 @@ from datetime import datetime
 from typing import Any, Literal
 
 from precis.ingest.provenance import (
+    MetadataVerification,
     Notice,
     ProvenanceResult,
     Severity,
 )
 
-View = Literal["default", "blockers", "json"]
+View = Literal["default", "blockers", "json", "verify"]
 
-_VALID_VIEWS: tuple[View, ...] = ("default", "blockers", "json")
+_VALID_VIEWS: tuple[View, ...] = ("default", "blockers", "json", "verify")
 
 _SEVERITY_GLYPH: dict[Severity, str] = {
     "blocker": "🔴",
@@ -217,6 +221,26 @@ def render_batch(results: list[ProvenanceResult], view: View = "default") -> str
     lines.append(summary)
     lines.append("")
 
+    # Metadata mismatch — surface first, ahead of severity sections,
+    # because a wrong-paper citation is the same hazard class as a
+    # retraction (you can't ship with either). Only shown when at
+    # least one result carries verification data with a mismatch.
+    if view == "verify":
+        mismatches = [r for r in results if r.has_metadata_mismatch]
+        verified = [r for r in results if r.verification is not None]
+        if verified:
+            lines.append(
+                f"_Metadata verification ran on {len(verified)}/{len(results)} "
+                "entries._"
+            )
+            lines.append("")
+        if mismatches:
+            lines.append(f"## ⚠️ Metadata mismatch ({len(mismatches)})")
+            lines.append("")
+            for r in mismatches:
+                lines.extend(_render_verification_block(r))
+            lines.append("")
+
     visible_severities: tuple[Severity, ...]
     if view == "blockers":
         visible_severities = ("blocker", "review")
@@ -360,6 +384,67 @@ def _format_summary(results: list[ProvenanceResult]) -> str:
     if counts["check_failed"]:
         parts.append(f"⚠️ failed: {counts['check_failed']}")
     return " · ".join(parts)
+
+
+def _render_verification_block(r: ProvenanceResult) -> list[str]:
+    """Render the supplied-vs-Crossref diff for one result.
+
+    Caller only invokes when ``r.verification is not None`` and the
+    heuristic flagged it as a mismatch (see
+    ``ProvenanceResult.has_metadata_mismatch``). Format is per-field:
+    each row shows the *supplied* form and the *Crossref* form so the
+    reader can decide whether it's a typo or a wrong-paper citation.
+    """
+    v = r.verification
+    assert v is not None  # caller invariant
+    lines: list[str] = []
+    crossref_authors = _format_authors(r.paper_authors)
+    crossref_summary = (
+        f"_{r.paper_title or '(no title)'}"
+        f"{' — ' + crossref_authors if r.paper_authors else ''}_"
+    )
+    lines.append(f"### `{r.doi}`")
+    lines.append(f"Crossref says: {crossref_summary}")
+    lines.append("")
+    # Title diff — show raw score + added/removed tokens
+    if v.title_score is not None:
+        lines.append(f"- **Title**: Jaccard score `{v.title_score:.2f}`")
+        if v.title_supplied:
+            lines.append(f"  - supplied: _{v.title_supplied}_")
+        if v.title_crossref:
+            lines.append(f"  - Crossref: _{v.title_crossref}_")
+        if v.title_added_tokens:
+            joined = ", ".join(f"`{t}`" for t in v.title_added_tokens[:8])
+            extra = "…" if len(v.title_added_tokens) > 8 else ""
+            lines.append(f"  - in Crossref but not supplied: {joined}{extra}")
+        if v.title_removed_tokens:
+            joined = ", ".join(f"`{t}`" for t in v.title_removed_tokens[:8])
+            extra = "…" if len(v.title_removed_tokens) > 8 else ""
+            lines.append(f"  - in supplied but not Crossref: {joined}{extra}")
+    # First author diff
+    if v.first_author_match is False:
+        lines.append(
+            f"- **First author**: mismatch — supplied "
+            f"`{v.first_author_supplied}` vs Crossref "
+            f"`{v.first_author_crossref}`"
+        )
+    elif v.first_author_match is True:
+        lines.append(
+            f"- **First author**: match (`{v.first_author_supplied}`)"
+        )
+    # Year diff
+    if v.year_match == "mismatch":
+        lines.append(
+            f"- **Year**: mismatch — supplied `{v.year_supplied}` "
+            f"vs Crossref `{v.year_crossref}`"
+        )
+    elif v.year_match == "off_by_one":
+        lines.append(
+            f"- **Year**: off-by-one — supplied `{v.year_supplied}` "
+            f"vs Crossref `{v.year_crossref}` (likely online-first vs print)"
+        )
+    lines.append("")
+    return lines
 
 
 def _render_per_doi_block(

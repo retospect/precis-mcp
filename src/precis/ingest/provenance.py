@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable, Literal
 
+from precis.ingest._text_norm import best_jaccard, surname_matches
 from precis.store import Store, Tag
 
 
@@ -188,6 +189,64 @@ class Notice:
 
 
 @dataclass(frozen=True, slots=True)
+class BibEntry:
+    """Caller-supplied bibliographic metadata for one citation.
+
+    Used by Phase 2.5 verification to check that the supplied
+    metadata actually corresponds to the DOI's Crossref record.
+    All fields except ``doi`` are optional — missing fields are
+    skipped in the verification step rather than treated as
+    mismatches.
+
+    ``authors`` is a list of surname strings (no given names; given
+    names are commonly mangled and don't reliably distinguish
+    papers). Pass the first author at minimum; the second-author
+    and beyond are recorded for the report but not checked in
+    Phase 2.5.
+    """
+
+    doi: str
+    title: str | None = None
+    authors: list[str] | None = None
+    year: int | None = None
+    journal: str | None = None  # display only, no verification
+    pages: str | None = None  # display only, no verification
+
+
+YearMatch = Literal["match", "off_by_one", "mismatch", "unchecked"]
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataVerification:
+    """Per-field comparison of a supplied ``BibEntry`` against Crossref.
+
+    Each field captures both the supplied and Crossref forms, plus a
+    structural outcome. Scores stay raw — no pass/fail threshold is
+    hardcoded; the report-rendering model applies common-sense
+    judgement (see plan §"Phase 2.5: per-field thresholds").
+    """
+
+    # Title comparison via token-set Jaccard on the normalised form.
+    # Score range [0, 1]; ``None`` when title wasn't supplied.
+    title_score: float | None = None
+    title_supplied: str | None = None
+    title_crossref: str | None = None
+    title_added_tokens: list[str] = field(default_factory=list)
+    title_removed_tokens: list[str] = field(default_factory=list)
+
+    # First-author surname comparison under both normalised forms.
+    # ``None`` when authors weren't supplied.
+    first_author_match: bool | None = None
+    first_author_supplied: str | None = None
+    first_author_crossref: str | None = None
+
+    # Year comparison with ±1 tolerance for online-first vs print.
+    year_match: YearMatch = "unchecked"
+    year_supplied: int | None = None
+    year_crossref: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ProvenanceResult:
     """Outcome of ``check_doi`` for a single DOI."""
 
@@ -204,6 +263,9 @@ class ProvenanceResult:
     paper_ref_id: int | None = None
     # Hint for the caller: was the parent paper in the local store?
     paper_in_store: bool = False
+    # Phase 2.5: populated when the caller supplied a BibEntry to
+    # verify against Crossref. ``None`` for the plain DOI-check path.
+    verification: MetadataVerification | None = None
     # Error message when status='check_failed'
     error: str | None = None
 
@@ -219,6 +281,122 @@ class ProvenanceResult:
             "info":    1,
         }
         return max(self.notices, key=lambda n: order[n.severity]).severity
+
+    @property
+    def has_metadata_mismatch(self) -> bool:
+        """True when the verification step found a substantive disagreement.
+
+        Used by the renderer to decide whether to include this result
+        in the ⚠️ Metadata mismatch section. ``None`` verification (no
+        BibEntry supplied) returns False — nothing to flag.
+        """
+        v = self.verification
+        if v is None:
+            return False
+        if v.first_author_match is False:
+            return True
+        if v.title_score is not None and v.title_score < 0.6:
+            return True
+        if v.year_match == "mismatch":
+            return True
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Metadata verification (Phase 2.5)
+# ---------------------------------------------------------------------------
+
+
+def _first_author_surname(authors: list[dict[str, Any]] | None) -> str | None:
+    """Pluck the first author's surname from Crossref's author list shape."""
+    if not authors:
+        return None
+    first = authors[0]
+    # ``ingest/crossref.py`` normalises into ``{"name": "Family, Given"}``;
+    # the comma split gives us the surname back.
+    name = (first.get("name") or "").strip()
+    if not name:
+        return None
+    return name.split(",")[0].strip()
+
+
+def _classify_year_match(supplied: int, crossref: int) -> YearMatch:
+    """``match`` for ==, ``off_by_one`` for |Δ|==1, ``mismatch`` otherwise."""
+    diff = abs(supplied - crossref)
+    if diff == 0:
+        return "match"
+    if diff == 1:
+        return "off_by_one"
+    return "mismatch"
+
+
+def verify_against_crossref(
+    crossref_msg: dict[str, Any],
+    bib_entry: BibEntry,
+) -> MetadataVerification:
+    """Produce a per-field ``MetadataVerification`` between supplied and Crossref.
+
+    The caller (``check_doi``) decides whether to run this — it only
+    fires when the kind API received a BibEntry alongside the DOI.
+    Missing fields on the supplied side cause that field to be skipped
+    (``unchecked`` / ``None``), not flagged. Missing fields on the
+    Crossref side (rare but happens for thin records) likewise skip.
+
+    Scoring choices:
+
+    - **Title**: token-set Jaccard under both normalised forms
+      (NFKD-strip and German-phonetic). Best of the two scores wins.
+      The added/removed token lists are computed from the NFKD form
+      only — phonetic-form diffs would be confusing in the report.
+    - **First author**: exact match on a normalised single-token
+      surname (no Jaccard — too few tokens for it to be meaningful).
+    - **Year**: ±1 tolerance covers online-first vs print publication
+      drift; anything beyond is a mismatch.
+    - **Journal / pages**: surfaced in the report for display but not
+      part of the structural comparison.
+    """
+    cr_title = _extract_title(crossref_msg)
+    cr_authors_list = _extract_authors(crossref_msg)
+    cr_year = _extract_year(crossref_msg)
+    cr_first_author = _first_author_surname(cr_authors_list)
+
+    title_score: float | None = None
+    title_added: list[str] = []
+    title_removed: list[str] = []
+    if bib_entry.title and cr_title:
+        score, supplied_tokens, crossref_tokens = best_jaccard(
+            bib_entry.title, cr_title
+        )
+        title_score = score
+        title_added = sorted(crossref_tokens - supplied_tokens)
+        title_removed = sorted(supplied_tokens - crossref_tokens)
+
+    first_author_match: bool | None = None
+    supplied_first: str | None = None
+    if bib_entry.authors:
+        supplied_first = bib_entry.authors[0]
+        if cr_first_author:
+            first_author_match = surname_matches(supplied_first, cr_first_author)
+        else:
+            first_author_match = None  # nothing on the Crossref side to check
+
+    year_match: YearMatch = "unchecked"
+    if bib_entry.year is not None and cr_year is not None:
+        year_match = _classify_year_match(bib_entry.year, cr_year)
+
+    return MetadataVerification(
+        title_score=title_score,
+        title_supplied=bib_entry.title,
+        title_crossref=cr_title,
+        title_added_tokens=title_added,
+        title_removed_tokens=title_removed,
+        first_author_match=first_author_match,
+        first_author_supplied=supplied_first,
+        first_author_crossref=cr_first_author,
+        year_match=year_match,
+        year_supplied=bib_entry.year,
+        year_crossref=cr_year,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +767,7 @@ def check_doi(
     *,
     store: Store | None = None,
     mailto: str | None = None,
+    bib_entry: BibEntry | None = None,
 ) -> ProvenanceResult:
     """Run a single-DOI provenance check.
 
@@ -598,6 +777,13 @@ def check_doi(
     notice refs are created for 🔴/🟠 notices, links are attached, the
     ``refs.retraction_*`` columns are updated, and a closed-namespace
     ``STATUS:*`` tag is applied.
+
+    ``bib_entry`` is the Phase 2.5 metadata-verification hook. When
+    supplied, the function compares the caller's bibliographic claim
+    against the Crossref record and populates
+    ``ProvenanceResult.verification`` with per-field results. When
+    ``None``, verification is skipped and the result.verification
+    stays ``None`` (no extra cost).
 
     Failure modes:
     - DOI doesn't match the format → ``status='malformed'``
@@ -620,6 +806,10 @@ def check_doi(
     paper_title = _extract_title(msg)
     paper_authors = _extract_authors(msg)
     paper_year = _extract_year(msg)
+
+    verification: MetadataVerification | None = None
+    if bib_entry is not None:
+        verification = verify_against_crossref(msg, bib_entry)
 
     notices: list[Notice] = []
     for entry in msg.get("update-to") or []:
@@ -673,6 +863,7 @@ def check_doi(
         applied_status=applied,
         paper_ref_id=paper_ref_id,
         paper_in_store=paper_in_store,
+        verification=verification,
     )
 
 
@@ -749,6 +940,7 @@ def check_dois(
     store: Store | None = None,
     mailto: str | None = None,
     max_workers: int = _DEFAULT_MAX_WORKERS,
+    bib_entries: list[BibEntry] | None = None,
 ) -> list[ProvenanceResult]:
     """Run ``check_doi`` over a batch of DOIs concurrently.
 
@@ -760,6 +952,13 @@ def check_dois(
     ``max_workers=8`` a 250-DOI batch finishes in ~30s warm / ~90s cold
     against the Crossref polite pool.
 
+    ``bib_entries`` is the Phase 2.5 metadata-verify hook. When
+    supplied, it must have the same length as ``dois`` (positional
+    pairing — entry[i] verifies dois[i]). When ``None``, no
+    verification runs. Mismatched lengths raise ``ValueError`` because
+    the alternative — silently dropping entries or DOIs — would mask
+    a caller bug into a meaningless report.
+
     Failure isolation: any per-DOI exception surfaces as
     ``status='check_failed'`` on that result (already true for the
     single-DOI path), so a single transport hiccup doesn't kill the
@@ -769,14 +968,37 @@ def check_dois(
     if not inputs:
         return []
 
+    if bib_entries is not None and len(bib_entries) != len(inputs):
+        raise ValueError(
+            f"check_dois: bib_entries length {len(bib_entries)} != dois "
+            f"length {len(inputs)} — positional pairing requires equal "
+            "lengths; pad with BibEntry(doi=...) for unchecked entries"
+        )
+
+    def _entry_for(i: int) -> BibEntry | None:
+        return bib_entries[i] if bib_entries is not None else None
+
     # Single-DOI fast path — skip the thread-pool overhead.
     if len(inputs) == 1:
-        return [check_doi(inputs[0], store=store, mailto=mailto)]
+        return [
+            check_doi(
+                inputs[0],
+                store=store,
+                mailto=mailto,
+                bib_entry=_entry_for(0),
+            )
+        ]
 
     results: list[ProvenanceResult | None] = [None] * len(inputs)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         future_to_idx = {
-            ex.submit(check_doi, doi, store=store, mailto=mailto): i
+            ex.submit(
+                check_doi,
+                doi,
+                store=store,
+                mailto=mailto,
+                bib_entry=_entry_for(i),
+            ): i
             for i, doi in enumerate(inputs)
         }
         for fut in as_completed(future_to_idx):
@@ -798,11 +1020,14 @@ def check_dois(
 
 
 __all__ = [
+    "BibEntry",
     "LinkRelation",
+    "MetadataVerification",
     "Notice",
     "ProvenanceResult",
     "RetractionStatus",
     "Severity",
+    "YearMatch",
     "check_doi",
     "check_dois",
     "classify_update_type",
@@ -810,4 +1035,5 @@ __all__ = [
     "make_notice_slug",
     "parse_doi_list",
     "validate_doi",
+    "verify_against_crossref",
 ]

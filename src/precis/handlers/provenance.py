@@ -38,6 +38,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+import json
+
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
 from precis.handlers._provenance_report import (
@@ -45,12 +47,92 @@ from precis.handlers._provenance_report import (
     render_batch,
     render_single,
 )
-from precis.ingest.provenance import check_doi, check_dois, parse_doi_list
+from precis.ingest.provenance import (
+    BibEntry,
+    check_doi,
+    check_dois,
+    parse_doi_list,
+)
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 
 
-_SUPPORTED_VIEWS: tuple[str, ...] = ("default", "blockers", "json")
+_SUPPORTED_VIEWS: tuple[str, ...] = ("default", "blockers", "json", "verify")
+
+
+def _parse_structured_input(raw: str) -> list[BibEntry] | None:
+    """Try to parse ``raw`` as a JSON-shaped BibEntry batch.
+
+    Accepts a list of objects ``[{doi, title?, authors?, year?, ...}]``
+    or a single object. Returns ``None`` if the input doesn't look
+    like JSON (so the caller can fall back to plain DOI parsing).
+
+    Raises ``BadInput`` when the input *does* look like JSON but
+    parses to something other than a BibEntry shape — that's a
+    caller bug worth surfacing loudly rather than silently dropping
+    fields.
+    """
+    stripped = raw.strip()
+    if not stripped or stripped[0] not in ("[", "{"):
+        return None
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as e:
+        raise BadInput(
+            f"provenance: input looks like JSON but won't parse: {e}",
+            next=(
+                "get(kind='provenance', "
+                "q='[{\"doi\":\"10.x/foo\",\"title\":\"...\"}]', "
+                "view='verify')"
+            ),
+        ) from e
+
+    items = payload if isinstance(payload, list) else [payload]
+    out: list[BibEntry] = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise BadInput(
+                f"provenance: structured input entry {i} is not an object",
+                next="each entry must be {doi, title?, authors?, year?}",
+            )
+        doi = item.get("doi")
+        if not isinstance(doi, str) or not doi.strip():
+            raise BadInput(
+                f"provenance: structured input entry {i} missing 'doi' field",
+                next="each entry must carry a 'doi' string",
+            )
+        authors = item.get("authors")
+        # Accept either ['Smith', 'Doe'] or [{name: 'Smith, J.'}, ...]
+        normalised_authors: list[str] | None = None
+        if isinstance(authors, list):
+            normalised_authors = []
+            for a in authors:
+                if isinstance(a, str):
+                    normalised_authors.append(a)
+                elif isinstance(a, dict):
+                    n = a.get("name") or a.get("family") or ""
+                    if isinstance(n, str) and n:
+                        # Take the surname (before the comma if present)
+                        normalised_authors.append(n.split(",")[0].strip())
+            if not normalised_authors:
+                normalised_authors = None
+        year = item.get("year")
+        if year is not None and not isinstance(year, int):
+            try:
+                year = int(year)
+            except (TypeError, ValueError):
+                year = None
+        out.append(
+            BibEntry(
+                doi=doi.strip(),
+                title=item.get("title") or None,
+                authors=normalised_authors,
+                year=year,
+                journal=item.get("journal") or None,
+                pages=item.get("pages") or None,
+            )
+        )
+    return out
 
 
 class ProvenanceHandler(Handler):
@@ -141,23 +223,62 @@ class ProvenanceHandler(Handler):
                 next="get(kind='provenance', id='10.x/foo', view='blockers')",
             )
 
-        dois = parse_doi_list(raw)
-        if not dois:
-            # ``parse_doi_list`` strips empty / comment-only inputs;
-            # we surface a clear error rather than running an empty batch.
+        # Phase 2.5: detect JSON-shaped structured input. When present,
+        # each entry carries a BibEntry that gets verified against
+        # Crossref. Plain DOI input still works — the verify view just
+        # has nothing to verify against, so the mismatch section will
+        # show a "ran on 0/N entries" note.
+        bib_entries: list[BibEntry] | None = _parse_structured_input(raw)
+        if bib_entries is not None:
+            if not bib_entries:
+                raise BadInput(
+                    "provenance: structured input parsed to an empty list",
+                    next="pass at least one {doi: '...'} entry",
+                )
+            dois = [e.doi for e in bib_entries]
+        else:
+            dois = parse_doi_list(raw)
+            if not dois:
+                raise BadInput(
+                    "provenance: no DOIs found in input after parsing",
+                    next="get(kind='provenance', id='10.1038/nature05095')",
+                )
+
+        # The verify view is only meaningful with structured input. If
+        # the caller asked for it but passed bare DOIs, that's almost
+        # certainly a mistake — surface it cleanly rather than running
+        # a normal report under a misleading name.
+        if v == "verify" and bib_entries is None:
             raise BadInput(
-                "provenance: no DOIs found in input after parsing",
-                next="get(kind='provenance', id='10.1038/nature05095')",
+                "provenance: view='verify' requires structured input "
+                "(JSON list of {doi, title, authors, year}). Plain DOI "
+                "input has nothing to verify against.",
+                next=(
+                    "get(kind='provenance', "
+                    "q='[{\"doi\":\"10.x/foo\",\"title\":\"…\",\"year\":2020}]', "
+                    "view='verify')"
+                ),
             )
 
         # Single-DOI path keeps the rich per-paper markdown layout when
         # the caller didn't ask for a structured view. Everything else
         # goes through the batch renderer.
         if len(dois) == 1 and v == "default":
-            result = check_doi(dois[0], store=self.store, mailto=self._mailto)
+            entry = bib_entries[0] if bib_entries else None
+            result = check_doi(
+                dois[0],
+                store=self.store,
+                mailto=self._mailto,
+                bib_entry=entry,
+            )
             return Response(body=render_single(result))
 
-        results = check_dois(dois, store=self.store, mailto=self._mailto)
+        results = check_dois(
+            dois,
+            store=self.store,
+            mailto=self._mailto,
+            bib_entries=bib_entries,
+        )
         return Response(body=render_batch(results, view=v))  # type: ignore[arg-type]
 
 
