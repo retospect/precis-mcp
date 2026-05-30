@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -156,6 +157,14 @@ class PrecisRuntime:
         """
         kind = args.pop("kind", None)
 
+        # Broad usability pass 2026-05-30 (#6): when an agent passes a
+        # tag-shaped string as ``q=`` with no ``tags=`` filter, the
+        # semantic search is statistically guaranteed to drown the
+        # intended tagged refs in unrelated paper hits. Catch the
+        # likely intent at the boundary and emit a deduplicated tip.
+        if verb == "search":
+            self._maybe_hint_tag_shaped_q(args)
+
         # Cross-kind: ``kind='*'`` or comma-list. Other verbs keep the
         # single-kind contract — multi-kind get is meaningless and
         # multi-kind put would silently scatter writes.
@@ -248,20 +257,54 @@ class PrecisRuntime:
         """Look up the handler for ``kind`` and verify it supports ``verb``.
 
         Raises:
-            NotFound: ``kind`` is not registered. Options carries
-                only the verb-supporting kinds so an agent retrying
-                against a suggested kind doesn't cascade into a
-                second error (MCP critic MAJOR #12).
-            Unsupported: handler exists but does not implement
-                ``verb``. The reply enumerates the verbs this kind
-                *does* support so the recovery hint is sharp.
+            NotFound: ``kind`` is not registered at all (unknown name).
+                Options carries only the verb-supporting kinds so an
+                agent retrying against a suggested kind doesn't
+                cascade into a second error (MCP critic MAJOR #12).
+            Unsupported: handler is registered-but-disabled for this
+                build (missing env var, missing optional dep), OR
+                handler exists but does not implement ``verb``. The
+                first variant names the missing precondition so the
+                agent can route to the operator instead of guessing
+                — see broad usability pass 2026-05-30 (#8). The
+                second variant enumerates the verbs this kind *does*
+                support so the recovery hint is sharp.
         """
         handler = self.hub.handler_for(kind)
         if handler is None:
+            # Distinguish "registered-but-disabled in this build" from
+            # "unknown kind". The hub records every gated-out kind in
+            # ``loadabilities``; if ``kind`` is in there, the right
+            # error class is ``Unsupported`` (the agent can't fix it
+            # by retrying — the operator has to enable the kind),
+            # and the breadcrumb should name the missing precondition.
+            verdict = getattr(self.hub, "loadabilities", {}).get(kind)
+            if verdict is not None and not verdict.loaded:
+                reason = verdict.reason or "disabled"
+                raise Unsupported(
+                    f"kind {kind!r} is registered but disabled in this build "
+                    f"({reason})",
+                    next=(
+                        f"see get(kind='skill', id='precis-kinds-disabled-help') "
+                        f"and precis-overview Needs column"
+                    ),
+                )
+            # Broad usability pass 2026-05-30 (#10): the previous
+            # ``options:`` trailer silently filtered to kinds that
+            # support the calling verb — agents reading the list
+            # could conclude the omitted kinds didn't exist at all
+            # (precis-help shows 17 total; the options here show
+            # 12 for search). Name the filter in ``next:`` so a
+            # reader knows the list is verb-scoped, not the full
+            # registry.
             raise NotFound(
                 f"unknown kind: {kind}",
                 options=self._kinds_for_verb(verb),
-                next="see precis-overview for the kind list",
+                next=(
+                    f"options above are kinds that support verb={verb!r}; "
+                    f"get(kind='skill', id='precis-help') for the complete "
+                    f"kind table"
+                ),
             )
 
         if not handler.spec.supports(verb):  # type: ignore[arg-type]
@@ -492,6 +535,56 @@ class PrecisRuntime:
         """
         annotated = f"(searched kind={kind!r})\n{response.body}"
         return Response(body=annotated, cost=response.cost)
+
+    # ── tag-shaped q hint ──────────────────────────────────────────────
+
+    # Tag tokens are lowercase (or UPPERCASE for closed prefixes) with
+    # no whitespace, no quotes, and either a single ``:`` separating
+    # the axis from the value (``STATUS:done``, ``topic:co2-capture``)
+    # or a bare flag (``pinned``). The pattern below catches both — if
+    # ``q='exercise-mcp-throwaway'`` or ``q='STATUS:done'`` arrives
+    # with no ``tags=`` filter, that's almost always a user who meant
+    # to filter rather than search semantically.
+    _TAG_SHAPED_Q_RE = re.compile(
+        r"^(?:[A-Z][A-Z0-9_]*:[A-Za-z0-9][\w.'-]*|[a-z][\w.-]*(?::[\w.'-]+)?)$"
+    )
+
+    def _maybe_hint_tag_shaped_q(self, args: dict[str, Any]) -> None:
+        """Emit a HintBus tip when ``q=`` looks like a tag string.
+
+        Fires only when the call provides ``q=`` but no ``tags=`` —
+        semantic search on a single tag-shaped token tends to match
+        the substring against unrelated bodies (the broad usability
+        pass saw ``q='exercise-mcp-throwaway'`` return paper-block
+        hits about "exercise"). The hint is a HintBus tip rather
+        than an error so the call still runs; agents that genuinely
+        wanted the semantic match are not blocked.
+        """
+        q = args.get("q")
+        if not isinstance(q, str):
+            return
+        token = q.strip()
+        if not token or " " in token:
+            return
+        if args.get("tags"):
+            return
+        if not self._TAG_SHAPED_Q_RE.match(token):
+            return
+        from precis.hints import Hint
+
+        self.hub.emit_hint(
+            Hint(
+                text=(
+                    f"q={token!r} looks like a tag — semantic search "
+                    "will match the substring against unrelated bodies. "
+                    f"If you meant the tag filter, retry with "
+                    f"tags=[{token!r}] (and pass q='...' as the topic "
+                    "to rank within, or omit q= to list by recency)."
+                ),
+                topic="search.tag_shaped_q",
+                cooldown=6,
+            )
+        )
 
     # ── cross-kind search ──────────────────────────────────────────────
 

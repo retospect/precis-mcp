@@ -147,8 +147,8 @@ def get(
     for views that need them (callgraph, runtrace, ...); reserved
     keys (`kind`, `id`, `view`, `q`) inside `args=` are rejected.
 
-    Full reference: search(kind='skill', q='get <kind>') or
-    get(kind='skill', id='precis-get-help').
+    Full reference: get(kind='skill', id='precis-get-help'), or
+    search(kind='skill', q='reading a <kind>') for a topical lookup.
     """
     payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
     if args:
@@ -182,9 +182,10 @@ def search(
     to paginate by passing back prior-page slugs. `source=` is
     patent-only (`'both'`/`'local'`/`'remote'`); ignored elsewhere.
 
-    Full reference: search(kind='skill', q='search <kind>') or
-    get(kind='skill', id='precis-search-help'). For per-kind nuances
-    (e.g. patent's prior-art sweep) search the skill index by topic.
+    Full reference: get(kind='skill', id='precis-search-help'), or
+    search(kind='skill', q='finding things by topic') for a topical
+    lookup. For per-kind nuances (e.g. patent's prior-art sweep)
+    search the skill index with a natural-language goal.
     """
     # Validate top_k at the boundary. Errors round-trip via
     # ``_validation_error`` so the MCP ``isError`` flag survives.
@@ -253,8 +254,8 @@ def put(
     `tags=` adds, `untags=` removes. `link=`/`unlink=` use canonical
     `kind:identifier[~selector]` form; `rel=` defaults to `related-to`.
 
-    Full reference: search(kind='skill', q='put <kind>') or
-    get(kind='skill', id='precis-put-help').
+    Full reference: get(kind='skill', id='precis-put-help'), or
+    search(kind='skill', q='saving a note') for a topical lookup.
     """
     return _dispatch(
         "put",
@@ -301,8 +302,9 @@ def edit(
     default | `first` | `all` | `nth`) / `nth=`. `dry_run=True`
     previews without writing.
 
-    Full reference: search(kind='skill', q='edit') or
-    get(kind='skill', id='precis-edit-help').
+    Full reference: get(kind='skill', id='precis-edit-help'), or
+    search(kind='skill', q='changing existing content') for a topical
+    lookup.
     """
     payload: dict[str, Any] = {
         "kind": kind,
@@ -340,8 +342,8 @@ def delete(
     Cache-backed / read-only kinds (calc, math, web, youtube,
     research, think, websearch, paper, patent): Unsupported.
 
-    Full reference: search(kind='skill', q='delete') or
-    get(kind='skill', id='precis-delete-help').
+    Full reference: get(kind='skill', id='precis-delete-help'), or
+    search(kind='skill', q='removing a ref') for a topical lookup.
     """
     return _dispatch("delete", {"kind": kind, "id": id})
 
@@ -364,9 +366,9 @@ def tag(
     paper/patent: SRC+CACHE. web/research/think/websearch/youtube:
     CACHE only. oracle/skill: none. python/calc/math: tag unsupported.
 
-    Full reference: search(kind='skill', q='tag') or
-    get(kind='skill', id='precis-tag-help'); `precis-tags` is the
-    authoritative axis matrix.
+    Full reference: get(kind='skill', id='precis-tag-help'), or
+    search(kind='skill', q='classifying refs') for a topical lookup.
+    `precis-tags` is the authoritative axis matrix.
     """
     return _dispatch("tag", {"kind": kind, "id": id, "add": add, "remove": remove})
 
@@ -386,9 +388,10 @@ def link(
     without `rel=` removes every link to the target. `rel=` defaults
     to `related-to` on add.
 
-    Full reference: search(kind='skill', q='link') or
-    get(kind='skill', id='precis-link-help'); `precis-relations`
-    has the full vocabulary (cites, blocks, contradicts, ...).
+    Full reference: get(kind='skill', id='precis-link-help'), or
+    search(kind='skill', q='connecting refs') for a topical lookup.
+    `precis-relations` has the full vocabulary (cites, blocks,
+    contradicts, ...).
     """
     return _dispatch(
         "link",

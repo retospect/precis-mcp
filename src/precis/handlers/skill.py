@@ -799,6 +799,19 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
 #: skill alongside its ``-help`` sibling when the kind is missing.
 _APPLIES_TO_KIND_RE = re.compile(r"""kind\s*=\s*['"]([a-z][a-z0-9_-]*)['"]""")
 
+# Slug stems that look like ``precis-<X>-help`` but X is *not* a kind.
+# Without this set, ``precis-get-help`` derives ``'get'`` from its slug,
+# the availability gate finds no kind ``'get'`` in the hub, and every
+# verb-help skill gets a misleading "kind='get' not wired" banner —
+# the same banner cascades into the TOC's Hidden section. We treat the
+# seven verbs as non-kinds explicitly so the slug-derived fallback
+# only fires for genuine kind-help skills (``precis-markdown-help``,
+# ``precis-paper-help``, etc.) where the gate is actually meaningful.
+# Broad-pass usability finding 2026-05-30 (#1 + #2).
+_NON_KIND_SLUG_STEMS = frozenset(
+    {"get", "search", "put", "edit", "delete", "tag", "link"}
+)
+
 
 def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
     """Return every kind the skill claims to apply to.
@@ -807,7 +820,9 @@ def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
       1. Front-matter ``applies-to:`` — extract every ``kind='X'``.
       2. Slug suffix ``precis-<kind>-help`` — derived as a fallback
          so existing ``-help`` skills without explicit front-matter
-         still gate correctly.
+         still gate correctly. Slugs whose stem names a *verb*
+         (``precis-get-help`` etc.) are not treated as kind-targeted
+         — see ``_NON_KIND_SLUG_STEMS``.
 
     Returns an empty list for cross-cutting skills (``precis-overview``,
     ``precis-tags``, …) that don't reference any specific kind.
@@ -825,7 +840,7 @@ def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
     # (MCP critic MINOR-C — skill-availability gate false-positive.)
     if not kinds and slug.startswith("precis-") and slug.endswith("-help"):
         derived = slug[len("precis-") : -len("-help")]
-        if derived:
+        if derived and derived not in _NON_KIND_SLUG_STEMS:
             kinds.append(derived)
     return kinds
 

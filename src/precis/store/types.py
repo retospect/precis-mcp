@@ -40,6 +40,14 @@ Relation = Literal[
     "generalises",
     "specialises",
     "see-also",
+    # Provenance migration (0002). Notice references attach to
+    # the retracted/corrected/concerning paper via these.
+    "retracted-by",
+    "retracts",
+    "corrected-by",
+    "corrects",
+    "concern-raised-by",
+    "raises-concern-about",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -75,6 +83,12 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "supported-by": "supports",
     "generalises": "specialises",
     "specialises": "generalises",
+    "retracted-by": "retracts",
+    "retracts": "retracted-by",
+    "corrected-by": "corrects",
+    "corrects": "corrected-by",
+    "concern-raised-by": "raises-concern-about",
+    "raises-concern-about": "concern-raised-by",
 }
 
 
@@ -266,22 +280,24 @@ class Tag:
                             f"(e.g. tags=['{prefix.lower()}:{value}'])"
                         ),
                     )
-                if value not in allowed:
-                    raise BadInput(
-                        f"invalid {prefix} value: {value!r}",
-                        options=sorted(allowed),
-                        next=(f"{prefix}: must be one of {sorted(allowed)}"),
-                    )
-                # Per-kind axis enforcement. The MCP critic noted
-                # that ``STATUS:open`` on a ``memory`` is a smell —
-                # memories have no workflow state, so the tag is
-                # decorative at best and misleading at worst (a
-                # filter query for open todos shouldn't return
-                # memory rows). When ``kind=`` is provided and the
-                # kind is in ``_KIND_ALLOWED_AXES``, we require the
-                # closed prefix to be in that kind's allowed axis
-                # set. Kinds not in the map are unrestricted
-                # (backwards-compatible).
+                # Per-kind axis enforcement runs *before* the value
+                # check, because the kind-axis verdict is unconditional
+                # (``STATUS:`` is wrong on ``memory`` regardless of the
+                # value) and supersedes the value vocabulary. Doing
+                # value-then-axis cost a wasted round-trip on the
+                # broad usability pass 2026-05-30 (#3): an agent told
+                # ``invalid STATUS value: 'foo' — options: open, doing,
+                # …`` would retry with ``STATUS:open`` and *then* hit
+                # the axis-not-allowed error, having burned a call. The
+                # MCP critic earlier noted that ``STATUS:open`` on a
+                # ``memory`` is a smell — memories have no workflow
+                # state, so the tag is decorative at best and
+                # misleading at worst (a filter query for open todos
+                # shouldn't return memory rows). When ``kind=`` is
+                # provided and the kind is in ``_KIND_ALLOWED_AXES``,
+                # we require the closed prefix to be in that kind's
+                # allowed axis set. Kinds not in the map are
+                # unrestricted (backwards-compatible).
                 if kind is not None:
                     kind_allowed = _KIND_ALLOWED_AXES.get(kind)
                     if kind_allowed is not None and prefix not in kind_allowed:
@@ -295,6 +311,12 @@ class Tag:
                                 f"(e.g. tags=['{prefix.lower()}:{value}'])"
                             ),
                         )
+                if value not in allowed:
+                    raise BadInput(
+                        f"invalid {prefix} value: {value!r}",
+                        options=sorted(allowed),
+                        next=(f"{prefix}: must be one of {sorted(allowed)}"),
+                    )
                 return cls.closed(prefix, value)
 
         # Bare-flag form. Reject if it collides with a registered

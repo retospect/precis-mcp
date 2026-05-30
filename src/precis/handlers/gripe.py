@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from precis.handlers._numeric_ref import NumericRefHandler
-from precis.protocol import KindSpec
+from precis.protocol import KindSpec, Response
 
 
 class GripeHandler(NumericRefHandler):
@@ -52,3 +52,19 @@ class GripeHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "gripe"
     sense: ClassVar[str] = "gripe"
+
+    def _render_create_ack(self, ref_id: int) -> Response:
+        # Broad usability pass 2026-05-30 (#5): the previous bare
+        # ``created gripe id=N`` ack gave no signal that the write was
+        # final. Agents told elsewhere to "clean up what you create"
+        # would then call ``delete(kind='gripe', ...)``, get an
+        # ``Unsupported`` error, and have no way to retract. Naming the
+        # irreversibility on the success response closes that loop
+        # without touching the write-only invariant.
+        return Response(
+            body=(
+                f"created gripe id={ref_id} (write-only — gripes cannot "
+                "be read, edited, or deleted via the MCP surface; triage "
+                "happens out-of-band)"
+            )
+        )

@@ -178,7 +178,25 @@ class RandomHandler(Handler):
                 f"got {alphabet_arg!r}"
             )
         slug = "".join(secrets.choice(alphabet) for _ in range(length))
-        return Response(body=slug)
+        # Broad usability pass 2026-05-30 (#9): the bare-token shape
+        # ("xghr\n") looked like a regression next to the default
+        # view's discovery packet. Append a one-line Next: trailer
+        # naming a representative use so a slim agent that asked for
+        # a slug knows where to plug it in.
+        body = slug + "\n"
+        body += render_next_section(
+            [
+                (
+                    f"put(kind='memory', text='...', tags=['session:{slug}'])",
+                    "use as a correlation tag",
+                ),
+                (
+                    f"get(kind='random', view='slug', args={{'len': {length}}})",
+                    "another fresh slug",
+                ),
+            ]
+        )
+        return Response(body=body)
 
 
 # ---------------------------------------------------------------------------

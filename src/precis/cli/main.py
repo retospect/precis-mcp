@@ -32,6 +32,7 @@ from precis.cli import (
     migrate,
     patent,
     perplexity,
+    provenance,
     tools,
     watch,
     worker,
@@ -137,6 +138,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dedupe.add_parser(jobs_sub)
     perplexity.add_parser(jobs_sub)
     patent.add_parsers(jobs_sub)
+    provenance.add_parser(jobs_sub)
 
     return parser
 
@@ -159,6 +161,7 @@ _JOB_DISPATCH: dict[str, tuple[object, str]] = {
     "list-patent-watches": (patent, "run_list"),
     "run-patent-watches": (patent, "run_runner"),
     "sweep-patent-fulltext": (patent, "run_fulltext_sweep_cli"),
+    "check-provenance": (provenance, "run"),
 }
 
 

@@ -551,6 +551,16 @@ def boot(
 
     _gated(CalcHandler)
 
+    # Provenance — Crossref-backed retraction / amendment check.
+    # Works with or without a store: when the parent paper is in
+    # the store, write-through persists notice refs and STATUS tags;
+    # otherwise the result is informational only. Handler raises
+    # InitError when habanero isn't installed (matches the calc →
+    # sympy missing-dep pattern).
+    from precis.handlers.provenance import ProvenanceHandler
+
+    _gated(ProvenanceHandler)
+
     # Python — DB-free in-memory AST index. Skipped when no roots
     # are configured or every entry is malformed (parse_python_roots
     # logs each rejection).

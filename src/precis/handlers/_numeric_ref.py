@@ -178,15 +178,29 @@ class NumericRefHandler(Handler):
         top_k: int = 10,
         **_kw: Any,
     ) -> Response:
-        if q is None or not q.strip():
-            raise BadInput(
-                "search requires q=",
-                next=f"search(kind={self.kind!r}, q='your query')",
-            )
         # Validate at the agent boundary — symmetric with put(tags=...).
         # Pass kind= so per-kind axis enforcement catches
         # STATUS: filter queries against kinds that don't use STATUS.
         normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
+
+        # ``q=`` is optional when ``tags=`` is supplied — broad
+        # usability pass 2026-05-30 (#7 / #13): an agent looking for
+        # "everything I tagged ``foo``" had to pass an arbitrary
+        # ``q='a'`` to make the filter fire, which then *ranked* the
+        # hits by lexical match to ``'a'``. With ``tags=`` set we
+        # degrade to a recency-ordered list, which is what the user
+        # wanted in the first place.
+        if q is None or not q.strip():
+            if normalized_tags:
+                return self._list_by_tags(normalized_tags, top_k=top_k)
+            raise BadInput(
+                "search requires q= or tags=",
+                next=(
+                    f"search(kind={self.kind!r}, q='your query') or "
+                    f"search(kind={self.kind!r}, tags=['<tag>'])"
+                ),
+            )
+
         hits = self.store.search_refs_lexical(
             q=q, kind=self.kind, tags=normalized_tags, limit=top_k
         )
@@ -238,6 +252,45 @@ class NumericRefHandler(Handler):
         ]
         for ref, rank in hits:
             lines.append(self._render_search_hit(ref, rank))
+        return Response(body="\n".join(lines))
+
+    def _list_by_tags(
+        self, tags: list[str], *, top_k: int
+    ) -> Response:
+        """Recency-ordered list of refs matching ``tags``, no ranking.
+
+        Reached when ``search(kind=K, tags=[...])`` is called without
+        ``q=`` — the right shape for "show me everything I tagged X".
+        Always emits a ``Next:`` trailer pointing at the ranked search
+        path for callers who realize they wanted ranking.
+        """
+        refs = self.store.list_refs(
+            kind=self.kind, tags=tags, limit=top_k
+        )
+        if not refs:
+            body = f"no {self._sense()} entries tagged {tags}"
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind={self.kind!r}, id='/recent')",
+                        f"recent {self._sense()} entries (no tag filter)",
+                    ),
+                    (
+                        f"search(kind={self.kind!r}, q='topic', tags={tags!r})",
+                        "rank within the tagged set",
+                    ),
+                ]
+            )
+            return Response(body=body)
+        lines = [
+            f"# {len(refs)} {self._sense()} entr"
+            f"{'y' if len(refs) == 1 else 'ies'} tagged {tags} "
+            f"(by recency)"
+        ]
+        for ref in refs:
+            # Reuse the search-hit renderer with rank=None — list mode
+            # has no score, so the hit shape degrades to slug + title.
+            lines.append(self._render_search_hit(ref, None))
         return Response(body="\n".join(lines))
 
     # ── search_hits: structured form for cross-kind merge ──────────
@@ -335,6 +388,31 @@ class NumericRefHandler(Handler):
                 next=(
                     f"put(kind={self.kind!r}, text='...', "
                     "link='paper:slug', rel='cites')"
+                ),
+            )
+        # ``put(tags=...)`` and ``put(link=...)`` are the D3 shortcut
+        # for the standalone ``tag``/``link`` verbs; if the kind
+        # doesn't expose those verbs at all (e.g. gripe — write-only
+        # by design) the put-create shortcut must reject too, otherwise
+        # the documented "no tags, no links" guarantee from the help
+        # skill is silently violated. Broad usability pass 2026-05-30
+        # (#4).
+        if tags is not None and not self.spec.supports_tag:
+            raise BadInput(
+                f"tags= is not accepted on put for kind={self.kind!r}",
+                next=(
+                    f"kind={self.kind!r} does not support tagging; "
+                    f"omit tags= or see "
+                    f"get(kind='skill', id='precis-{self.kind}-help')"
+                ),
+            )
+        if link is not None and not self.spec.supports_link:
+            raise BadInput(
+                f"link= is not accepted on put for kind={self.kind!r}",
+                next=(
+                    f"kind={self.kind!r} does not support linking; "
+                    f"omit link= or see "
+                    f"get(kind='skill', id='precis-{self.kind}-help')"
                 ),
             )
         return self._create(text=text, tags=tags, link=link, rel=rel)
@@ -659,9 +737,10 @@ class NumericRefHandler(Handler):
             out.append("tags: " + " ".join(str(t) for t in tags))
         return "\n".join(out)
 
-    def _render_search_hit(self, ref: Ref, rank: float) -> str:
+    def _render_search_hit(self, ref: Ref, rank: float | None) -> str:
         preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
-        return f"\n## {self._sense()} {ref.id}  (rank={rank:.2f})\n{preview}"
+        rank_str = f"  (rank={rank:.2f})" if rank is not None else ""
+        return f"\n## {self._sense()} {ref.id}{rank_str}\n{preview}"
 
     def _render_create_ack(self, ref_id: int) -> Response:
         """Acknowledgement returned by `put` on create. Subclasses

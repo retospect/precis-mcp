@@ -483,11 +483,51 @@ _register_tools_from_registry()
 # ---------------------------------------------------------------------------
 
 
+def _warm_embedder_background(runtime: PrecisRuntime) -> None:
+    """Best-effort: load bge-m3 weights in a background thread.
+
+    Broad usability pass 2026-05-30 (#11): the first semantic search
+    after server boot blocked for 30–50 s while ``BgeM3Embedder``
+    lazily loaded its weights, blowing past Claude Code's per-call
+    MCP timeout. ``BgeM3Embedder`` is deliberately lazy at
+    construction (the handshake-budget rationale still applies) — so
+    we trigger the load *after* ``mcp.run()`` is about to take over,
+    on a dedicated thread, so the warmup races the first agent
+    request instead of blocking it.
+
+    Failures are logged and swallowed: a degraded warmup never
+    blocks startup, and lazy loading still happens on the eventual
+    first ``embed()`` call.
+    """
+    embedder = getattr(runtime, "embedder", None)
+    if embedder is None:
+        return
+    ensure = getattr(embedder, "_ensure_loaded", None)
+    if ensure is None:
+        return  # mock embedder, third-party embedder, etc.
+
+    def _warm() -> None:
+        try:
+            log.info("warming embedder %s in background", embedder.model)
+            ensure()
+            log.info("embedder %s warm", embedder.model)
+        except Exception:
+            log.exception("background embedder warmup failed")
+
+    import threading
+
+    thread = threading.Thread(
+        target=_warm, name="precis-embedder-warmup", daemon=True
+    )
+    thread.start()
+
+
 def main() -> None:
     """Run the MCP stdio server.
 
     Build the runtime (including postgres pool) before mcp.run takes
-    over, register atexit shutdown, then hand control to FastMCP.
+    over, register atexit shutdown, kick off the background embedder
+    warmup, then hand control to FastMCP.
     """
     from precis.config import load_config
 
@@ -497,7 +537,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    _init_runtime()
+    runtime = _init_runtime()
+    _warm_embedder_background(runtime)
     mcp.run(transport="stdio")
 
 

@@ -124,28 +124,43 @@ class Store(
             with conn.transaction():
                 yield conn
 
-    # -- system table --------------------------------------------------------
+    # -- app_state table -----------------------------------------------------
     #
-    # v2 removed the dedicated ``system`` key-value table; the only
-    # in-tree consumer is :mod:`precis.jobs.oracle_sync` which uses it
-    # to cache the oracle YAML version across boots. For now both
-    # methods are no-ops returning ``None`` — oracle_sync degrades to
-    # an always-reingest path, which is correct fallback behaviour.
-    # A v2-native replacement (likely a singleton row in ``meta`` on
-    # a sentinel ref, or a small ``app_state`` table in a follow-up
-    # migration) is deferred — see TODO in this file.
+    # Small key/value surface for cross-boot bookkeeping rows that don't
+    # belong on a ref. Today's only caller is :mod:`precis.jobs.oracle_sync`
+    # caching the bundled oracle YAML version so we don't re-embed the
+    # whole oracle corpus on every boot. See migration 0003_app_state.sql
+    # for the table definition and scoping rationale.
 
     def get_setting(self, key: str) -> str | None:
-        """v2 stub: no persisted system table; always returns None.
+        """Return the value for ``key`` from ``app_state``, or ``None``.
 
-        Forces consumers (oracle_sync) into the unconditional re-ingest
-        path until a v2-native key/value store lands.
+        ``None`` means "no row" — not "row exists with empty value"; the
+        ``value`` column is NOT NULL so the distinction is meaningful for
+        callers that gate on first-boot vs. subsequent-boot.
         """
-        return None
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_state WHERE key = %s",
+                (key,),
+            ).fetchone()
+        return None if row is None else str(row[0])
 
     def set_setting(self, key: str, value: str) -> None:
-        """v2 stub: no persisted system table; no-op."""
-        return None
+        """Upsert ``(key, value)`` into ``app_state``.
+
+        ``updated_at`` defaults to ``now()`` on insert and is bumped on
+        every update so operators can see when a setting last changed
+        without a separate audit table.
+        """
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+                    "ON CONFLICT (key) DO UPDATE SET "
+                    "value = EXCLUDED.value, updated_at = now()",
+                    (key, value),
+                )
 
     def embedding_dim(self) -> int:
         """Return the configured embedding dimension as an ``int``.

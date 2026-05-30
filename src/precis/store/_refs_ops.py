@@ -326,6 +326,42 @@ class RefsMixin:
             )
         return _row_to_ref(row)
 
+    def set_retraction_status(
+        self,
+        ref_id: int,
+        *,
+        status: str | None,
+        retracted_at: Any = None,
+        reason: str | None = None,
+        url: str | None = None,
+        conn: Connection | None = None,
+    ) -> None:
+        """Set the retraction columns on a ref + touch retraction_checked_at.
+
+        ``status`` is one of ``'retracted'``, ``'corrected'``,
+        ``'expression_of_concern'`` (per the CHECK constraint in
+        ``0001_initial.sql``) or ``None`` when the paper is clean —
+        in which case we still touch ``retraction_checked_at`` so the
+        TTL gate works. See ``ingest/provenance.py`` for the caller
+        and ``docs/provenance-kind-plan.md`` for the schema rationale.
+        """
+        sql = (
+            "UPDATE refs SET "
+            "  retraction_status = %s, "
+            "  retracted_at      = %s, "
+            "  retraction_reason = %s, "
+            "  retraction_url    = %s, "
+            "  retraction_checked_at = now(), "
+            "  updated_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL"
+        )
+        params = (status, retracted_at, reason, url, ref_id)
+        if conn is not None:
+            conn.execute(sql, params)
+        else:
+            with self.pool.connection() as c:
+                c.execute(sql, params)
+
     def soft_delete_ref(self, ref_id: int) -> None:
         """Soft-delete a ref by setting ``deleted_at = now()``."""
         with self.pool.connection() as conn:

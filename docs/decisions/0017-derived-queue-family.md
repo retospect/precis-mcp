@@ -1,4 +1,4 @@
-# ADR 0009 — Derived-queue family (`*_artifacts` substrate + `artifact_kinds` registry)
+# ADR 0017 — Derived-queue family (`*_artifacts` substrate + `artifact_kinds` registry)
 
 - **Status**: accepted (2026-05-30)
 - **Deciders**: Reto + agent
@@ -12,9 +12,11 @@
 - **Triggered by**:
   [`docs/design/finding-chase.md`](../design/finding-chase.md) —
   the citation-chase work needs a per-ref output relation for
-  `chase_citation` / `resolve_citation:s2` / `check_retraction:crossmark`
-  artifacts and surfaced that the pattern was implicit, not
-  documented.
+  `chase_citation` / `resolve_citation:s2` artifacts and surfaced
+  that the pattern was implicit, not documented. (The
+  [provenance kind](../provenance-kind-plan.md) owns retraction
+  state through a synchronous tool, not a queue artifact; see
+  §"Consequences > Positive" for the cross-reference.)
 
 ## Context
 
@@ -134,10 +136,17 @@ INSERT INTO artifact_kinds (slug, target, storage, output_table, description) VA
     ('chase_citation',            'ref',   'untyped',
         'ref_artifacts',    'Citation-chase pass result'),
     ('resolve_citation:s2',       'ref',   'untyped',
-        'ref_artifacts',    'S2 metadata fill for stub ref'),
-    ('check_retraction:crossmark','ref',   'untyped',
-        'ref_artifacts',    'Crossmark retraction state');
+        'ref_artifacts',    'S2 metadata fill for stub ref');
 ```
+
+> Retraction tracking is **not** on this list. The provenance
+> kind (`docs/provenance-kind-plan.md`) handles retraction / EoC /
+> correction state through a synchronous user-triggered tool that
+> writes through to `refs.retraction_*` columns and `links`
+> directly. An earlier draft of this ADR listed a
+> `check_retraction:crossmark` artifact; that has been retracted
+> per DRY. A future periodic-backfill scanner can register here
+> if corpus-wide retraction sweeps become a real workload.
 
 `artifact_kinds` is the **handler registry** — it indexes the
 worker's view of the world, not the model's. It coexists with
@@ -250,10 +259,12 @@ five handlers today, room to grow.
   with this ADR (per finding-chase scope); `link_artifacts` /
   `pdf_artifacts` / `chunk_artifacts` land lazily when a real
   artifact needs them. Greenfield principle preserved.
-- **Future-proof for retraction propagation.** The
-  `check_retraction:crossmark` artifact already foreshadowed in
-  [storage-v2.md](../design/storage-v2.md) now has a home
-  (`ref_artifacts`) instead of bespoke columns on `refs`.
+- **Future-proof for periodic-backfill artifacts.** The substrate
+  accommodates artifacts the
+  [provenance kind](../provenance-kind-plan.md) explicitly punts
+  on — bulk corpus sweeps for retraction state, link-level
+  severity scoring, per-PDF OCR retries. None ship with this ADR;
+  they have a home for when demand surfaces.
 
 ### Negative
 
@@ -321,7 +332,7 @@ observability.
 ## Migration
 
 Lands in **the same migration as the finding-chase work** —
-`0002_finding_and_queue_family.sql`. Sequence:
+`0003_finding_and_queue_family.sql` (provenance plan owns `0002`). Sequence:
 
 1. CREATE TABLE `artifact_kinds`.
 2. INSERT the two existing artifacts (`embed:bge-m3`,
@@ -330,7 +341,7 @@ Lands in **the same migration as the finding-chase work** —
 3. CREATE TABLE `ref_artifacts` (FK to `refs`, FK to
    `artifact_kinds`).
 4. INSERT the new untyped artifacts (`chase_citation`,
-   `resolve_citation:s2`, `check_retraction:crossmark`) into
+   `resolve_citation:s2`) into
    `artifact_kinds`.
 5. (Same migration also adds `kinds.finding`, `chunk_kinds.finding_body`
    etc. — see finding-chase plan.)

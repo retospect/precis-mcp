@@ -12,9 +12,9 @@ new migration on top of `0001_initial.sql`
 - [0006 — tri-identifier scheme](../decisions/0006-tri-identifier-scheme.md)
   (we ride `cite_key` as the LaTeX/BibTeX handle)
 - [0007 — derived queue, no jobs table](../decisions/0007-derived-queue-no-block-jobs.md)
-  (extended to ref-level in 0009)
+  (extended to ref-level in 0017)
 - [0008 — drop slug, `cite_key` is canonical human form](../decisions/0008-drop-slug-identifier-normalisation.md)
-- [0009 — derived-queue family + `artifact_kinds` registry](../decisions/0009-derived-queue-family.md)
+- [0017 — derived-queue family + `artifact_kinds` registry](../decisions/0017-derived-queue-family.md)
   (the queue substrate this design depends on)
 
 ## Problem
@@ -57,8 +57,10 @@ artefact of the system. Specifically:
   `derived-from`, terminating when we hit a primary report (a paper
   that *measured* the value rather than re-citing it).
 - Missing cited papers are materialised as **stub refs**: real
-  `refs` rows with identifiers (DOI / arXiv / S2 id) and no PDF,
-  tagged `STATUS:awaiting_pdf` so the operator sees what's needed.
+  `refs` rows with identifiers (DOI / arXiv / S2 id) and
+  `pdf_sha256 IS NULL` — the column predicate alone identifies a
+  stub. `precis stats` lists them; no tag needed (the `STATUS:`
+  slot on paper refs is reserved for provenance state).
 - When a stub's PDF lands, the merge happens automatically (DOI
   hits the same `ref_id` via `ref_identifiers`;
   chunks / embeddings / summaries flow through the existing derived
@@ -71,19 +73,18 @@ artefact of the system. Specifically:
 Crucially the worker plumbing is **generally applicable** beyond
 findings — the chase, retraction checks, S2 stub-fill, and any
 future ref-level artifact share one substrate. The substrate is
-formalised in [ADR 0009](../decisions/0009-derived-queue-family.md);
+formalised in [ADR 0017](../decisions/0017-derived-queue-family.md);
 this design is the first user of it.
 
 ## Non-goals
 
 - **Automatic PDF fetching.** Sci-Hub / Unpaywall / publisher
-  login is out of scope. The chase worker creates stubs and tags
-  them `STATUS:awaiting_pdf`; the user (or a separate, opt-in
-  fetcher worker) is responsible for getting the PDF into the
-  inbox.
-- **Multi-claim finding extraction from arbitrary documents.** A
-  finding is created by an explicit caller (`put(kind='finding', …)`)
-  — not by mining every paper for every numeric value.
+  login is out of scope. The chase worker creates stubs
+  (`pdf_sha256 IS NULL`); the user (or a separate, opt-in fetcher
+  worker) is responsible for getting the PDF into the inbox.
+- **Bulk finding extraction from arbitrary documents.** A finding
+  is created by an explicit caller (`put(kind='finding', …)`) —
+  not by mining every paper for every numeric value.
 - **Disagreement resolution / contradictions between chains.** If
   fischer2013 says 2.4 kV and a separate chain says 2.6 kV, we
   record both findings and the existing `contradicts` relation can
@@ -160,7 +161,7 @@ or `precis stats`.
  │  fischer2013 not in corpus → create stub ref                 │
  │       (ref_identifiers: doi=x, s2=y; cite_key=fischer13;     │
  │        pub_id=k4j7m2)                                        │
- │  tag fischer2013 STATUS:awaiting_pdf                         │
+ │  (stub-ness implied by pdf_sha256 IS NULL — no tag written)  │
  │  link finding --derived-from--> fischer2013   (ref-level)    │
  │  finding stays STATUS:tracing                                │
  │  payload = {state:'hopped', from:..., to:..., visited:[...]} │
@@ -169,8 +170,11 @@ or `precis stats`.
                            ▼
  ┌──────────────────────────────────────────────────────────────┐
  │  precis-watch → precis_add(). DOI on PDF matches the stub's  │
- │  ref_identifier → same ref_id. PDF, chunks, embeddings land. │
- │  Post-write hook: clear STATUS:awaiting_pdf.                 │
+ │  ref_identifier → same ref_id. Stub upgrade:                 │
+ │    • UPDATE refs.pdf_sha256 (was NULL, becomes the new hash) │
+ │    • INSERT new (pdf_sha256, content_hash) ref_identifiers   │
+ │    • extract blocks/chunks for the new PDF; embed via queue. │
+ │  No tag to clear — the column predicate flipped itself.      │
  └─────────────────────────┬────────────────────────────────────┘
                            │  chase_citation worker (pass 2)
                            ▼
@@ -194,30 +198,39 @@ or `precis stats`.
 
 ADR 0007 established the chunk-level derived queue
 (`chunk_embeddings`, `chunk_summaries`).
-[ADR 0009](../decisions/0009-derived-queue-family.md) generalises
+[ADR 0017](../decisions/0017-derived-queue-family.md) generalises
 that into a family: same shape across chunk / ref / link / pdf
 targets, typed outputs for indexable values, untyped JSONB outputs
 for handler results, one `artifact_kinds` registry, one parameterised
 `WorkerHandler` base class.
 
-This design is the first user. Three new artifacts register here:
+This design is the first user. Two new artifacts register here:
 
 | Artifact slug | Target | Storage | Output table | What it does |
 | --- | --- | --- | --- | --- |
 | `chase_citation` | ref | untyped | `ref_artifacts` | one chase hop per pass |
 | `resolve_citation:s2` | ref | untyped | `ref_artifacts` | fill stub metadata via S2 |
-| `check_retraction:crossmark` | ref | untyped | `ref_artifacts` | populate retraction columns (foreshadowed in storage-v2.md, lands here) |
 
 The `ref_artifacts` table is created by this migration; the
 `artifact_kinds` registry and the `WorkerHandler` refactor land in
-the same migration per ADR 0009. Read ADR 0009 for the shape; this
+the same migration per ADR 0017. Read ADR 0017 for the shape; this
 design only specifies the *handlers*.
+
+**Retraction-checking is NOT a queue artifact in this design.** The
+[provenance kind](../provenance-kind-plan.md) handles
+retraction / EoC / correction state synchronously via
+`get(kind='provenance', ...)`, writing through to
+`refs.retraction_*` columns plus `links` directly. ADR 0017
+originally listed `check_retraction:crossmark` as a planned third
+artifact; that has been retracted (the provenance tool owns the
+work; a future periodic-backfill scanner artifact can register
+under the same family if real demand surfaces).
 
 ## Schema impact
 
 The v2 schema already supports almost everything. This migration is
 additive — no ALTER on existing tables. Single file:
-`0002_finding_and_queue_family.sql`.
+`0003_finding_and_queue_family.sql`.
 
 ### New ref kind `finding`
 
@@ -271,9 +284,12 @@ Every row the chase writes pins `set_by='chase'`. Audit query:
 ### Status tags (data, not schema)
 
 Materialised on first use via the existing `tags` INSERT path — no
-migration:
+migration. All values apply only to `kind='finding'` refs; the
+`STATUS:` namespace is closed (one value per target,
+`_tags_ops.py:147-151`), so reserving it for finding state keeps
+other ref kinds free to use the same namespace for their own
+states (e.g. provenance's `STATUS:retracted` on papers).
 
-- `STATUS:awaiting_pdf` — stub ref, identifiers known, no PDF yet.
 - `STATUS:tracing` — finding whose provenance chain is not terminal.
 - `STATUS:established` — finding whose chain terminates at a primary
   report; rendering substitution becomes safe.
@@ -284,10 +300,18 @@ migration:
 - `STATUS:cycle` — chase aborted: chain revisited a ref already on
   it.
 
+**Stubs are identified by a column predicate, not a tag.** A stub
+paper is `refs.pdf_sha256 IS NULL AND EXISTS (ref_identifiers
+WHERE ref_id = r.ref_id)` — the chase handler and `precis stats`
+both read that predicate directly. No `STATUS:awaiting_pdf` tag is
+written; the predicate flips itself the moment a PDF lands
+(see §"Stub upgrade" below). Keeps the `STATUS:` slot on `paper`
+refs free for provenance's retraction tags.
+
 ### `ref_artifacts` table
 
-Per ADR 0009 — shape is shared with future `link_artifacts` /
-`pdf_artifacts` / `chunk_artifacts`. Full SQL in ADR 0009 §1.
+Per ADR 0017 — shape is shared with future `link_artifacts` /
+`pdf_artifacts` / `chunk_artifacts`. Full SQL in ADR 0017 §1.
 
 ## Identifiers and the `cited_in` micro-syntax
 
@@ -331,7 +355,7 @@ standard BibTeX is paper-level — and renders `\cite{<cite_key>}`.
 
 ### `ChaseCitationHandler` — one hop per claim
 
-Subclasses the parameterised `WorkerHandler` from ADR 0009. Claims
+Subclasses the parameterised `WorkerHandler` from ADR 0017. Claims
 findings (`refs.kind='finding'`) lacking a terminal
 `ref_artifacts(artifact='chase_citation', payload->>'state' = 'anchored')`
 row. For each finding `F`:
@@ -370,7 +394,7 @@ to `ref_id = frontier`, top-1 with confidence threshold).
 the frontier chunk's wording about the target with the target
 chunk's actual content. If a substantive mismatch (LLM call against
 both texts, threshold-gated), write a `misattributes` link with
-`meta={"src_claims": "...", "dst_actual": "...", "severity": "..."}`.
+`meta={"src_says": "...", "dst_actual": "...", "severity": "..."}`.
 This is independent of whether the hop continues or terminates.
 
 **5. Cycle protection.** Maintain `payload.visited: [ref_id, ...]`
@@ -419,8 +443,8 @@ least one of `{DOI, arXiv id, S2 id}` plus a title. The stub:
 - Gets a minted `pub_id` (per ADR 0006 / ADR 0008 — same path as
   any real ref) and a `cite_key`.
 - Carries whatever external IDs S2 returned in `ref_identifiers`.
-- Has `pdf_sha256 IS NULL` (the dead-give-away of stub state).
-- Is tagged `STATUS:awaiting_pdf`.
+- Has `pdf_sha256 IS NULL` — **the column predicate IS the
+  stub-state signal** (no tag).
 - Gets an `ok` row in `ref_artifacts(artifact='resolve_citation:s2')`
   so the resolve handler doesn't re-run on it (the chase already
   populated the minimum).
@@ -487,6 +511,65 @@ When a stub gets chunks, the next pass's chase re-runs on the
 dependent finding and advances. Polling cost is bounded by
 (findings in flight) × (handler interval), measured in hundreds
 not millions.
+
+### Stub upgrade (multi-hash refs)
+
+`precis_add` today (`src/precis/ingest/add.py:226-227`) hits an
+existing ref via `probe_existing` and short-circuits with
+`_hit_result_from_db` — *no write-back*. For findings to resume
+their chase, the path needs to actually upgrade the matched ref
+when the new ingest has bytes the existing row lacks. Spell out
+the rule:
+
+- **Multiple hashes per ref are first-class.** A single paper can
+  legitimately have multiple PDF representations: publisher version,
+  author preprint, arXiv update, repository scan. Every distinct
+  bytes-hash is a real fact about the ref — none should overwrite
+  the others. The `pdfs` and `ref_identifiers` tables already
+  support this (the `pdfs` PK is per-file, `ref_identifiers
+  (id_kind='pdf_sha256')` is per-row).
+- **`refs.pdf_sha256` is the *primary* / canonical PDF only.** It
+  exists for cheap single-PDF reads (search hit cards, the `pdfs`
+  FK join). Multiple-PDF refs surface every hash via
+  `ref_identifiers`.
+
+Upgrade rule on `precis_add` hit:
+
+```text
+on probe_existing hit (ref already in DB):
+    INSERT INTO pdfs (pdf_sha256, content_hash, page_count, ...)
+                ON CONFLICT (pdf_sha256) DO NOTHING
+    INSERT INTO ref_identifiers (id_kind='pdf_sha256',
+                                  id_value=<new hash>, ref_id=<existing>)
+                ON CONFLICT DO NOTHING
+    INSERT INTO ref_identifiers (id_kind='content_hash', ...) ON CONFLICT ...
+
+    IF existing.pdf_sha256 IS NULL:                 -- stub upgrade
+        UPDATE refs SET pdf_sha256 = <new>,
+                        pdf_pages  = <new range or NULL>,
+                        pdf_role   = <new role>,
+                        updated_at = now()
+                 WHERE ref_id = <existing>
+        extract blocks/chunks from the new PDF;
+        derived queue picks up embeddings/summaries automatically.
+    ELSE:                                            -- alias of a known ref
+        (refs.pdf_sha256 unchanged; new hash registered as alias)
+        decision deferred to operator: extract blocks for the alias
+        PDF too, or rely on the canonical PDF's chunks?
+        v1: NO re-extract for aliases (chunks stay tied to the
+        canonical PDF). A later "re-extract this alias" verb can
+        land when demand surfaces. Document the limitation.
+```
+
+Idempotent under retry (every INSERT is ON CONFLICT). The
+"stub upgrade" branch is what re-enables the chase: the column
+predicate (`pdf_sha256 IS NULL`) that the chase reads flips to
+non-NULL, and the next chase pass advances past that stub.
+
+The chase handler does NOT need a post-write hook; it polls
+naturally. The provenance plan also benefits: a stub that gets
+retracted before its PDF arrives can carry `STATUS:retracted`
+freely (no `STATUS:awaiting_pdf` competing for the slot).
 
 ### `ResolveCitationHandler` — enrich stubs in the background
 
@@ -597,8 +680,8 @@ finding ab12c3   (cite_key: finding-ab12c3 — never goes in \cite{})
 `begat by` is the chain rendered oldest → newest (like the OT
 genealogy). `notes` lists every `misattributes` link the chase
 encountered along the chain. For `STATUS:tracing` findings, the
-chain is shown with the current frontier marked and any
-`STATUS:awaiting_pdf` stubs flagged.
+chain is shown with the current frontier marked and any stub refs
+(`pdf_sha256 IS NULL`) flagged.
 
 ### NO `cite(kind='finding', ...)`
 
@@ -673,14 +756,17 @@ Counts established-only by intent — in-flight findings are noise.
 
 `precis worker` gains two `--only` choices: `chase` and `resolve`.
 Both run by default. `precis worker --status` iterates registered
-artifacts (`artifact_kinds` per ADR 0009) and prints `(total |
+artifacts (`artifact_kinds` per ADR 0017) and prints `(total |
 ok | failed | pending)` per artifact — the two new handlers
 appear alongside existing `embed:bge-m3` / `summarize:rake-lemma`.
 
 ### Stub visibility
 
-`precis stats` (per `storage-v2.md:651`) gains an
-`awaiting_pdf` section so the operator sees the fetch backlog.
+`precis stats` (per `storage-v2.md:651`) gains a `--stubs`
+section that runs `SELECT count(*) FROM refs WHERE pdf_sha256
+IS NULL AND kind = 'paper' AND deleted_at IS NULL` plus a
+grouped breakdown by `meta.scope` if present. The operator sees
+the fetch backlog without a tag scan.
 `request_doi.md` (the plaintext-file hack at `paper.py:336-355`)
 is **deprecated, not deleted** in this release — the empty-search
 DOI suggestion is updated to point at `put(kind='finding', ...)`
@@ -871,7 +957,8 @@ Genuinely open:
    - LLM returns "no mismatch" → no link written.
 3. **Unit — `ResolveCitationHandler`.**
    - Stub with only DOI → S2 mock returns full metadata → fields
-     fill, `STATUS:awaiting_pdf` retained until PDF arrives.
+     fill on `refs`; `pdf_sha256` still NULL (stub-state predicate
+     holds) until PDF arrives.
    - S2 miss → `status='failed'`, `last_error` captures cause.
 4. **Unit — synthesis pass card re-emit.**
    - Confirm DELETE+INSERT pattern; old `chunk_id` is gone, new
@@ -880,10 +967,18 @@ Genuinely open:
 5. **Integration — `precis worker --only chase` end-to-end.**
    Seed two papers (miller23a cites fischer13 in chunk:42), create
    finding, run worker, observe terminal state and chain.
-6. **Integration — `precis_add` clears `STATUS:awaiting_pdf`.**
-   Create a stub for known DOI; drop matching PDF; assert same
-   `ref_id`; tag removed; chase handler re-claims dependent
-   finding.
+6. **Integration — `precis_add` upgrades a stub.**
+   Create a stub for known DOI (`pdf_sha256 IS NULL`); drop
+   matching PDF; assert `ref_id` unchanged; assert `refs.pdf_sha256`
+   is now the new hash; assert new `(pdf_sha256, content_hash)` rows
+   in `ref_identifiers`; assert chase handler advances the dependent
+   finding on the next pass.
+6a. **Integration — `precis_add` registers an alias hash.**
+   Take an existing ref with a `pdf_sha256` already set; drop a
+   second PDF that resolves to the same DOI; assert
+   `refs.pdf_sha256` UNCHANGED; assert new
+   `ref_identifiers(id_kind='pdf_sha256')` row added; assert no
+   block re-extract was triggered for the alias PDF (v1 contract).
 7. **MCP surface — `put(kind='finding', ...)` round-trip.**
    Create, `get`, `search`. Assert `cite(kind='finding', ...)`
    raises "kind does not support cite".
@@ -904,8 +999,8 @@ Genuinely open:
 C-step naming convention matches `storage-v2.md` so commit
 messages and the plan stay in sync.
 
-- **C0** This design doc + ADR 0009 land. ✅ in flight
-- **C1** Migration `0002_finding_and_queue_family.sql`:
+- **C0** This design doc + ADR 0017 land. ✅ in flight
+- **C1** Migration `0003_finding_and_queue_family.sql`:
   - `artifact_kinds` registry + initial inserts
   - `ref_artifacts` table
   - `kinds (finding, …)`
@@ -914,13 +1009,13 @@ messages and the plan stay in sync.
   - `actors (chase)`
   - Update PUML diagram (`docs/design/schema-v2.puml`)
 - **C2** `precis.identity` extension —
-  `make_finding_paper_id(claim_body, scope, initial_cite_pub_id)`
+  `make_finding_paper_id(body_text, scope, initial_cite_pub_id)`
   (deterministic; same skill input → same `pub_id`).
 - **C3** `precis.handlers.finding` — `NumericRefHandler` subclass,
   `put(... title, body, context, scope, cited_in)`, no `cite`
   support, card variants, search wiring with status post-filter.
   `_parse_cited_in` reference implementation.
-- **C4** `WorkerHandler` refactor per ADR 0009 — descriptor-based
+- **C4** `WorkerHandler` refactor per ADR 0017 — descriptor-based
   base class; existing `EmbedHandler` / `RakeLemmaHandler`
   unchanged in behaviour; runner reads `artifact_kinds`.
 - **C5** `ResolveCitationHandler` — S2-backed, registered in
@@ -929,8 +1024,11 @@ messages and the plan stay in sync.
   detection, mis-citation flagging, synthesis pass with LLM
   canonicalisation. Largest step; gated on unit-test coverage of
   every branch above.
-- **C7** `precis_add` post-write hook to clear
-  `STATUS:awaiting_pdf` when the merged `ref_id` matches a stub.
+- **C7** `precis_add` stub-upgrade + multi-hash alias path —
+  on `probe_existing` hit, ADD `(pdf_sha256, content_hash)` rows
+  to `ref_identifiers`; if `refs.pdf_sha256 IS NULL`, UPDATE it and
+  extract chunks for the new PDF. (No tag work — column predicate
+  flips itself.) See §"Stub upgrade" for the rule.
 - **C8** `precis resolve` CLI subcommand + skill doc
   (`finding-help.md`).
 - **C9** Deprecation pass — `paper.py` empty-search DOI hint
@@ -953,9 +1051,10 @@ Each step ships its own commit with tests. C1 runs
   failed rows accumulate, operator deletes them after S2 recovers.
   ADR 0007's "no automatic retry" rule applies.
 - **Stub explosion.** A single chase could create dozens of stubs
-  over multiple hops. Mitigation: `precis stats --awaiting-pdf`
-  surfaces the backlog; a future opt-in fetcher worker (Unpaywall
-  + IA fallback) drains it. Stubs cost ~1 KB each.
+  over multiple hops. Mitigation: `precis stats --stubs` surfaces
+  the backlog (column-predicate query, see §"Stub visibility");
+  a future opt-in fetcher worker (Unpaywall + IA fallback) drains
+  it. Stubs cost ~1 KB each.
 - **Wrong chunk localisation.** Top-1 lexical-ANN within a paper
   might pick a related-but-wrong chunk. Mitigation: confidence
   threshold + `low_confidence` payload flag; agents reading the
@@ -974,11 +1073,14 @@ Each step ships its own commit with tests. C1 runs
 
 ## Definition of done
 
-- [ ] `0002_finding_and_queue_family.sql` applies cleanly to a
+- [ ] `0003_finding_and_queue_family.sql` applies cleanly to a
       fresh DB; PUML diagram updated.
 - [ ] `artifact_kinds` registry seeded with `embed:bge-m3`,
       `summarize:rake-lemma`, `chase_citation`,
-      `resolve_citation:s2`, `check_retraction:crossmark`.
+      `resolve_citation:s2`. (Retraction work is owned by the
+      provenance kind — see
+      [`provenance-kind-plan.md`](../provenance-kind-plan.md) —
+      not a queue artifact.)
 - [ ] `WorkerHandler` refactor preserves behaviour for
       `EmbedHandler` / `RakeLemmaHandler` (existing tests
       unchanged).
@@ -987,8 +1089,11 @@ Each step ships its own commit with tests. C1 runs
       transaction.
 - [ ] `precis worker --only chase` advances findings by one hop
       per pass; `--once` mode is deterministic for the test suite.
-- [ ] Stubs get `STATUS:awaiting_pdf`; `precis_add` on a matching
-      PDF merges into the same `ref_id` and clears the tag.
+- [ ] Stubs are identified by `pdf_sha256 IS NULL` (no tag).
+      `precis_add` on a matching PDF merges into the same
+      `ref_id`, UPDATEs `refs.pdf_sha256` when it was NULL, and
+      ADDs `(pdf_sha256, content_hash)` rows to `ref_identifiers`
+      either way (multi-hash alias support).
 - [ ] `search(kind='finding', q=...)` returns hits filtered to
       `:established` by default, TOON shape `id | title | setup
       | primary_cite`.
@@ -1001,7 +1106,8 @@ Each step ships its own commit with tests. C1 runs
 - [ ] `precis resolve` substitutes established findings;
       `--strict` exits non-zero on in-flight; LaTeX output uses
       UTF-8 by default with ASCII fallback.
-- [ ] `precis worker --status` shows the three new artifacts.
+- [ ] `precis worker --status` shows the two new artifacts
+      (`chase_citation`, `resolve_citation:s2`).
 - [ ] Mis-citation links written by the chase carry severity +
       diff in `meta`.
 - [ ] `finding-help` skill installed under
