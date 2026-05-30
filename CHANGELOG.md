@@ -98,6 +98,37 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
     `tests/ingest/test_provenance{,_verify,_rw,_transitive,_phase5}.py`.
   - Design doc: `docs/provenance-kind-plan.md`.
 
+- **Phase 6.1 — RW cache as Crossref fallback.** `check_doi` now
+  always consults the local Retraction Watch cache regardless of
+  Crossref's outcome. Three concrete behaviours that the previous
+  Crossref-first flow missed:
+  - **Publisher never deposited an `update-to` relation.** Pre-CrossMark
+    retractions (notably the Hwang stem-cell paper, retracted 2006)
+    return clean from Crossref but appear in RW. We now synthesise a
+    `Notice` from the RW row (`update_type=""` + `rw_notice_nature`
+    populated) so they surface in the report with a `(RW)` source
+    label.
+  - **Crossref returned 404.** Previously `status='unknown'` and no
+    further work. Now: if RW has data for the same DOI we surface
+    the retraction with `status='ok'`, falling back the paper title
+    from the RW row.
+  - **Crossref timed out / transport error.** Previously
+    `status='check_failed'`. Now: if RW has data, the report assembles
+    from local-only data with `status='ok'`; the error string is
+    preserved on `result.error` and the renderer surfaces a
+    `⚠️ Crossref unavailable` banner so the reader knows the live
+    source wasn't consulted.
+  - The internal `_merge_crossref_and_rw_notices` helper covers both
+    enrichment (Crossref notice matched to RW row → reasons attached)
+    and synthesis (RW row with no Crossref match → new Notice). Dedup
+    by `notice_doi` so a paper with both sources doesn't double-count.
+    Renderer updated: `(RW)` label for synthesised notices, suppresses
+    the "notice DOI: \`\`" line when the DOI is empty (common for
+    older RW entries).
+  - No schema change; uses existing `provenance_rw_cache` columns.
+    Backwards-compatible with the Phase 3 enrichment-only helper via
+    `_enrich_notices_with_rw(_synthesize_rw_only=False)`.
+
 - **Postgres advisory-lock work claims for multi-host ingest**
   (`precis.ingest.claim.Claim`). Each PDF ingest opens a dedicated
   psycopg session and calls `pg_try_advisory_lock(key)` where `key`

@@ -485,11 +485,19 @@ def _check_cited_doi(
 
 @dataclass(frozen=True, slots=True)
 class _RWCacheRow:
-    """One row from ``provenance_rw_cache`` for a single paper DOI."""
+    """One row from ``provenance_rw_cache`` for a single paper DOI.
+
+    Phase 6.1: carries paper-level metadata too (``paper_title``,
+    ``journal``, ``retraction_date``) so the merge path can fall
+    back when Crossref is unavailable or doesn't have the record.
+    """
 
     notice_doi: str | None
     notice_nature: str
     reasons: list[str]
+    retraction_date: datetime | None
+    paper_title: str | None
+    journal: str | None
 
 
 def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
@@ -498,16 +506,21 @@ def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
     Multiple rows are possible: a paper with both a correction *and*
     a later retraction has one row per notice. The caller matches
     each row to the corresponding Crossref ``update-to`` Notice by
-    DOI; un-matched rows are surfaced via a fallback path so RW
+    DOI; un-matched rows are surfaced via the merge path so RW
     reasons aren't lost when Crossref's view of the paper is thin.
 
     Returns ``[]`` when the cache table doesn't exist yet (e.g. on
     a deployment that hasn't run migration 0003) — the caller
     treats the absence as "no reasons available", same as an empty
     cache. This keeps the kind usable in degraded environments.
+
+    Phase 6.1: also returns ``retraction_date``, ``paper_title``, and
+    ``journal`` so the merge path can synthesise Notices and fall
+    back paper metadata when Crossref is unavailable.
     """
     sql = (
-        "SELECT notice_doi, notice_nature, reasons "
+        "SELECT notice_doi, notice_nature, reasons, "
+        "       retraction_date, paper_title, journal "
         "FROM provenance_rw_cache WHERE paper_doi = %s"
     )
     try:
@@ -515,14 +528,95 @@ def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
             rows = conn.execute(sql, (paper_doi,)).fetchall()
     except Exception:  # noqa: BLE001 — missing table / read error
         return []
-    return [
-        _RWCacheRow(
-            notice_doi=(r[0] or None),
-            notice_nature=str(r[1] or ""),
-            reasons=list(r[2] or []),
+    out: list[_RWCacheRow] = []
+    for r in rows:
+        d = r[3]
+        # PG DATE → Python datetime.date; lift to datetime for shared type
+        date_as_dt: datetime | None = None
+        if d is not None:
+            try:
+                date_as_dt = datetime(d.year, d.month, d.day)
+            except (AttributeError, ValueError):
+                date_as_dt = None
+        out.append(
+            _RWCacheRow(
+                notice_doi=(r[0] or None),
+                notice_nature=str(r[1] or ""),
+                reasons=list(r[2] or []),
+                retraction_date=date_as_dt,
+                paper_title=(r[4] or None),
+                journal=(r[5] or None),
+            )
         )
-        for r in rows
-    ]
+    return out
+
+
+# RW's ``notice_nature`` vocabulary maps onto our internal severity
+# triple. Distinct from Crossref's ``update_type`` map because the two
+# data sources use different strings for the same concepts. See
+# docs/provenance-kind-plan.md § "Severity classification".
+_RW_NATURE_MAP: dict[str, tuple[Severity, RetractionStatus | None, LinkRelation | None]] = {
+    "retraction":            ("blocker", "retracted",             "retracted-by"),
+    "partialretraction":     ("blocker", "retracted",             "retracted-by"),
+    "withdrawal":            ("blocker", "retracted",             "retracted-by"),
+    "removal":               ("blocker", "retracted",             "retracted-by"),
+    "expressionofconcern":   ("review",  "expression_of_concern", "concern-raised-by"),
+    "correction":            ("note",    "corrected",             "corrected-by"),
+    "corrigendum":           ("note",    "corrected",             "corrected-by"),
+    "erratum":               ("note",    "corrected",             "corrected-by"),
+    # 'Reinstatement' deliberately absent — RW uses it for retractions that
+    # were later reversed. Mapping it to a notice would be misleading; the
+    # paper is currently *not* retracted. Future enhancement: surface a
+    # ``REINSTATED`` flag separately.
+}
+
+
+def _classify_rw_nature(
+    notice_nature: str,
+) -> tuple[Severity, RetractionStatus | None, LinkRelation | None] | None:
+    """Classify a Retraction Watch ``notice_nature`` string.
+
+    Returns the same triple shape as ``classify_update_type``. Returns
+    ``None`` for natures we don't recognise (e.g. ``Reinstatement``,
+    ``Unknown``), in which case the caller drops the notice rather
+    than guessing.
+    """
+    key = re.sub(r"[^a-z]", "", notice_nature.lower())
+    return _RW_NATURE_MAP.get(key)
+
+
+def _rw_row_to_notice(row: _RWCacheRow) -> Notice | None:
+    """Synthesise a ``Notice`` from a RW cache row not matched to Crossref.
+
+    Used when:
+    - Crossref returned no ``update-to`` entry for the paper (publisher
+      never backfilled — the Hwang stem-cell case)
+    - Crossref returned 404 entirely (paper not in their index)
+    - Crossref timed out and we fell back to local-only data
+
+    ``update_type`` is left empty to signal "RW-only" to the renderer;
+    ``rw_notice_nature`` carries the human-readable nature string.
+    Returns ``None`` when the RW nature doesn't classify (Reinstatement,
+    Unknown, …) — caller drops un-classified rows.
+    """
+    cls = _classify_rw_nature(row.notice_nature)
+    if cls is None:
+        return None
+    severity, status, relation = cls
+    return Notice(
+        update_type="",
+        severity=severity,
+        status=status,
+        relation=relation,
+        notice_doi=row.notice_doi or "",
+        notice_date=row.retraction_date,
+        notice_title=None,
+        notice_authors=None,
+        notice_year=None,
+        persisted_ref_id=None,
+        rw_reasons=list(row.reasons),
+        rw_notice_nature=row.notice_nature or None,
+    )
 
 
 def _enrich_notices_with_rw(
@@ -531,38 +625,63 @@ def _enrich_notices_with_rw(
 ) -> list[Notice]:
     """Match RW cache rows to Crossref notices and merge in the reasons.
 
-    Match strategy:
+    Phase 3 behaviour preserved for back-compat (single-direction
+    enrichment, no synthesis). Phase 6.1 callers use
+    :func:`_merge_crossref_and_rw_notices` instead, which extends
+    this to also synthesise notices from RW-only rows.
+    """
+    merged, _consumed = _merge_crossref_and_rw_notices(
+        notices, cache_rows, _synthesize_rw_only=False
+    )
+    return merged
 
-    1. **Exact DOI match** — cache row's ``notice_doi`` equals the
-       notice's ``notice_doi``. Strongest signal.
-    2. **Fallback by nature** — if no DOI match and there's exactly
-       one cache row of the matching nature (retraction/correction/
-       EoC), attach those reasons. Common when Crossref carries a
-       generic notice DOI and the RW row has a more specific one.
 
-    Reasons-on-no-match: returned as a synthetic notice would risk
-    surfacing data the user can't act on (no notice DOI to cite).
-    We keep it simple in Phase 3 — un-matched RW rows are dropped.
-    The sync ledger captures coverage; future phases can add a
-    "RW knows about this but Crossref doesn't" callout if useful.
+def _merge_crossref_and_rw_notices(
+    crossref_notices: list[Notice],
+    cache_rows: list[_RWCacheRow],
+    *,
+    _synthesize_rw_only: bool = True,
+) -> tuple[list[Notice], set[int]]:
+    """Phase 6.1 merge: combine Crossref-derived notices with the local RW cache.
+
+    Returns ``(merged_notices, consumed_row_indices)``:
+
+    - Every Crossref notice is preserved. If the RW cache has a matching
+      row (exact ``notice_doi`` match or single-nature fallback), the
+      Crossref notice is enriched with the RW reasons + nature string.
+    - When ``_synthesize_rw_only=True`` (the default), RW cache rows
+      that did not match any Crossref notice are converted into
+      synthesised ``Notice`` objects and appended. This is how we surface
+      retractions Crossref doesn't know about (publisher never deposited
+      the ``update-to`` relation) — the Hwang stem-cell case is the
+      canonical example.
+    - ``consumed_row_indices`` is the set of RW row indices the merge
+      "used" (either by enriching a Crossref notice or by synthesising
+      a new one). Returned so the caller can reason about coverage.
+
+    The previous Phase 3 helper ``_enrich_notices_with_rw`` is now a
+    thin wrapper around this with ``_synthesize_rw_only=False`` for
+    back-compat with any callers that wanted pure enrichment.
     """
     if not cache_rows:
-        return notices
+        return crossref_notices, set()
 
-    # Index cache rows by exact notice_doi for the fast path.
-    by_doi: dict[str, _RWCacheRow] = {
-        r.notice_doi.lower(): r for r in cache_rows if r.notice_doi
-    }
+    # Index cache rows by exact notice_doi for the fast path. ``by_doi``
+    # tracks (index, row) so the caller can mark indices as consumed.
+    by_doi: dict[str, tuple[int, _RWCacheRow]] = {}
+    for i, r in enumerate(cache_rows):
+        if r.notice_doi:
+            by_doi[r.notice_doi.lower()] = (i, r)
 
-    # Build a nature → row index for the fallback. Lowercase + collapse
-    # whitespace so "Expression of Concern" matches "expression_of_concern"
-    # off the Crossref side.
+    # Build a nature → [(index, row), …] map for the fallback. Lowercase
+    # + collapse whitespace so "Expression of Concern" matches
+    # "expression_of_concern" off the Crossref side.
     def _norm_nature(s: str) -> str:
         return re.sub(r"[^a-z]", "", s.lower())
 
-    by_nature: dict[str, list[_RWCacheRow]] = {}
-    for r in cache_rows:
-        by_nature.setdefault(_norm_nature(r.notice_nature), []).append(r)
+    by_nature: dict[str, list[tuple[int, _RWCacheRow]]] = {}
+    for i, r in enumerate(cache_rows):
+        by_nature.setdefault(_norm_nature(r.notice_nature), []).append((i, r))
 
     nature_for_status: dict[RetractionStatus, str] = {
         "retracted":             "retraction",
@@ -570,17 +689,20 @@ def _enrich_notices_with_rw(
         "corrected":             "correction",
     }
 
-    out: list[Notice] = []
-    for n in notices:
-        match: _RWCacheRow | None = by_doi.get(n.notice_doi)
+    consumed: set[int] = set()
+    merged: list[Notice] = []
+    for n in crossref_notices:
+        match: tuple[int, _RWCacheRow] | None = by_doi.get(n.notice_doi)
         if match is None and n.status is not None:
             candidates = by_nature.get(nature_for_status.get(n.status, ""), [])
             if len(candidates) == 1:
                 match = candidates[0]
         if match is None:
-            out.append(n)
+            merged.append(n)
             continue
-        out.append(
+        idx, row = match
+        consumed.add(idx)
+        merged.append(
             Notice(
                 update_type=n.update_type,
                 severity=n.severity,
@@ -592,11 +714,25 @@ def _enrich_notices_with_rw(
                 notice_authors=n.notice_authors,
                 notice_year=n.notice_year,
                 persisted_ref_id=n.persisted_ref_id,
-                rw_reasons=list(match.reasons),
-                rw_notice_nature=match.notice_nature or None,
+                rw_reasons=list(row.reasons),
+                rw_notice_nature=row.notice_nature or None,
             )
         )
-    return out
+
+    # Synthesise notices for unmatched RW rows. Skip rows whose nature
+    # we don't classify (Reinstatement, Unknown) — surfacing them as
+    # severity=info would clutter the report without actionable signal.
+    if _synthesize_rw_only:
+        for i, row in enumerate(cache_rows):
+            if i in consumed:
+                continue
+            synthesised = _rw_row_to_notice(row)
+            if synthesised is None:
+                continue
+            merged.append(synthesised)
+            consumed.add(i)
+
+    return merged, consumed
 
 
 # ---------------------------------------------------------------------------
@@ -1234,69 +1370,94 @@ def check_doi(
     if canonical is None:
         return ProvenanceResult(doi=doi.strip().lower(), status="malformed")
 
+    # Phase 6.1: try Crossref but capture failure state — we no longer
+    # short-circuit on Crossref unavailability because the local RW cache
+    # may have data for this paper. Both sources contribute to the final
+    # notice list; the report is useful as long as either has something.
+    msg: dict[str, Any] | None = None
+    crossref_error: str | None = None
     try:
         msg = _fetch_crossref_message(canonical, mailto)
-    except Exception as exc:  # noqa: BLE001 — surface any transport error uniformly
-        return ProvenanceResult(doi=canonical, status="check_failed", error=str(exc))
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully, fall through
+        crossref_error = str(exc)
 
-    if msg is None:
-        # Phase 5: when the caller supplied a BibEntry AND opted in to
-        # candidate hints, surface Crossref's ranked matches for the
-        # bib metadata. Status stays ``unknown`` — we never substitute.
+    # Always consult the local RW cache, regardless of Crossref outcome.
+    # Cheap when there's no store (no-op) or no cache row (zero rows).
+    cache_rows: list[_RWCacheRow] = []
+    if store is not None:
+        cache_rows = _lookup_rw_cache(store, canonical)
+
+    # Failure path 1: both Crossref and RW empty. Surface the right
+    # ``status`` so the caller can distinguish "DOI doesn't exist" from
+    # "we couldn't tell". Candidate hints still apply on 404.
+    if msg is None and not cache_rows:
+        if crossref_error is not None:
+            return ProvenanceResult(
+                doi=canonical, status="check_failed", error=crossref_error
+            )
         candidates: list[CandidateMatch] = []
         if suggest_candidates and bib_entry is not None:
             candidates = candidate_search(bib_entry=bib_entry, mailto=mailto)
         return ProvenanceResult(
-            doi=canonical,
-            status="unknown",
-            candidates=candidates,
+            doi=canonical, status="unknown", candidates=candidates
         )
 
-    paper_title = _extract_title(msg)
-    paper_authors = _extract_authors(msg)
-    paper_year = _extract_year(msg)
+    # We have at least one source. Extract paper metadata: Crossref
+    # preferred (more detail), RW as fallback for paper_title.
+    paper_title = _extract_title(msg) if msg else None
+    paper_authors = _extract_authors(msg) if msg else None
+    paper_year = _extract_year(msg) if msg else None
+    if paper_title is None and cache_rows:
+        paper_title = cache_rows[0].paper_title
 
+    # Phase 2.5 verification only runs against Crossref metadata (the
+    # authoritative source); when Crossref is unavailable, ``verification``
+    # stays None even with bib_entry.
     verification: MetadataVerification | None = None
-    if bib_entry is not None:
+    if msg is not None and bib_entry is not None:
         verification = verify_against_crossref(msg, bib_entry)
 
-    notices: list[Notice] = []
-    for entry in msg.get("update-to") or []:
-        parsed = _parse_update_entry(entry)
-        if parsed is None:
-            continue
-        relation, severity, status, notice_doi, notice_date = parsed
-        notices.append(
-            Notice(
-                update_type=str(entry.get("type") or ""),
-                severity=severity,
-                status=status,
-                relation=relation,
-                notice_doi=notice_doi,
-                notice_date=notice_date,
-                notice_title=entry.get("label") or None,
-                notice_authors=None,
-                notice_year=None,
+    # Parse Crossref's update-to entries when present.
+    crossref_notices: list[Notice] = []
+    if msg is not None:
+        for entry in msg.get("update-to") or []:
+            parsed = _parse_update_entry(entry)
+            if parsed is None:
+                continue
+            relation, severity, status, notice_doi, notice_date = parsed
+            crossref_notices.append(
+                Notice(
+                    update_type=str(entry.get("type") or ""),
+                    severity=severity,
+                    status=status,
+                    relation=relation,
+                    notice_doi=notice_doi,
+                    notice_date=notice_date,
+                    notice_title=entry.get("label") or None,
+                    notice_authors=None,
+                    notice_year=None,
+                )
             )
-        )
+
+    # Phase 6.1: merge Crossref notices with the RW cache. RW rows that
+    # match a Crossref notice contribute their reason codes; RW rows
+    # without a match are synthesised as notices (the publisher-never-
+    # deposited case). Pre-Phase-6.1 behaviour was enrichment only,
+    # which silently lost retractions Crossref didn't know about.
+    notices, _consumed = _merge_crossref_and_rw_notices(
+        crossref_notices, cache_rows
+    )
 
     # Sort chronologically — earliest first — so the report iterates in
     # the natural reading order.
     notices.sort(key=lambda n: (n.notice_date or datetime.min))
 
-    # Phase 3: enrich notices with Retraction Watch reasons from the
-    # local cache. Cheap when there's no store (no-op) or no cache
-    # row for this DOI (one read returning zero rows).
-    if store is not None and notices:
-        cache_rows = _lookup_rw_cache(store, canonical)
-        notices = _enrich_notices_with_rw(notices, cache_rows)
-
-    # Phase 4: shallow cite-walk. Only when explicitly enabled (the
-    # parent check still works without; transitive findings are
-    # ancillary). Uses a shared cache so a batch with many parents
-    # citing the same paper still hits Crossref once per cited DOI.
+    # Phase 4: shallow cite-walk. Only when explicitly enabled AND we
+    # have a Crossref message to pull references from (RW cache doesn't
+    # carry citation graphs). The parent check still works without —
+    # transitive findings are ancillary.
     cited_findings: list[TransitiveCiteFinding] = []
-    if transitive:
+    if transitive and msg is not None:
         cache = _cite_cache if _cite_cache is not None else {}
         for cited_doi in _extract_cited_dois(msg):
             finding = _check_cited_doi(
@@ -1326,6 +1487,10 @@ def check_doi(
                 notices=notices,
             )
 
+    # Status is ``'ok'`` whenever we returned data — even if Crossref
+    # failed and the data came entirely from RW. The error string is
+    # preserved on ``.error`` so callers / renderers can flag a
+    # degraded result.
     return ProvenanceResult(
         doi=canonical,
         status="ok",
@@ -1338,6 +1503,7 @@ def check_doi(
         paper_in_store=paper_in_store,
         verification=verification,
         cited_findings=cited_findings,
+        error=crossref_error,
     )
 
 

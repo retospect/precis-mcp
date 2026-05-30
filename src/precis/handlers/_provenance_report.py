@@ -63,19 +63,39 @@ def _format_authors(authors: list[dict[str, str]] | None) -> str:
 
 
 def _format_notice_line(notice: Notice) -> str:
-    """One bullet per notice — Crossref type, notice DOI, date, local slug.
+    """One bullet per notice — type, notice DOI, date, local slug.
 
-    When Phase 3 RW data is present (``notice.rw_reasons``), the
-    reason codes are surfaced inline so the reader sees *why*, not
-    just *that*. RW codes are typically prefixed with ``+`` (e.g.
-    ``+Falsification/Fabrication of Data``) — we render them as-is.
+    Type label resolution (Phase 6.1):
+    - ``update_type`` populated → Crossref-derived notice; use the
+      Crossref type string (``retraction``, ``corrigendum``, …)
+    - ``update_type`` empty → RW-only synthesised notice (publisher
+      never deposited a Crossref ``update-to`` relation); use the
+      RW ``notice_nature`` instead, prefixed ``(RW)`` so the reader
+      knows the source.
+
+    Notice DOI is omitted when empty — common for older retractions
+    in RW where the notice itself has no DOI on file.
+
+    When ``rw_reasons`` is non-empty, the reason codes appear
+    indented under the main line. RW codes typically start with ``+``
+    (``+Falsification/Fabrication of Data``); rendered verbatim.
     """
     parts: list[str] = []
     glyph = _SEVERITY_GLYPH[notice.severity]
-    parts.append(f"{glyph} **{notice.update_type}**")
+    if notice.update_type:
+        parts.append(f"{glyph} **{notice.update_type}**")
+    elif notice.rw_notice_nature:
+        # RW-only synthesised notice — make the source explicit so a
+        # reader knows Crossref didn't have this entry on file.
+        parts.append(f"{glyph} **{notice.rw_notice_nature}** (RW)")
+    else:
+        # Defensive: shouldn't happen (classifier dropped unrecognised
+        # natures) but keeps the line readable if it does.
+        parts.append(f"{glyph} **notice**")
     if notice.notice_date is not None:
         parts.append(notice.notice_date.strftime("%Y-%m-%d"))
-    parts.append(f"notice DOI: `{notice.notice_doi}`")
+    if notice.notice_doi:
+        parts.append(f"notice DOI: `{notice.notice_doi}`")
     if notice.persisted_ref_id is not None:
         parts.append(f"ingested as ref id={notice.persisted_ref_id}")
     main = "- " + " · ".join(parts)
@@ -150,6 +170,15 @@ def render_single(result: ProvenanceResult) -> str:
         lines.append(f"**Authors**: {_format_authors(result.paper_authors)}")
     if result.paper_year is not None:
         lines.append(f"**Year**: {result.paper_year}")
+    if result.error:
+        # Phase 6.1: Crossref failed but we still produced a report
+        # from the local RW cache. Flag the degraded source so the
+        # reader knows the live record wasn't consulted.
+        lines.append("")
+        lines.append(
+            f"_⚠️ Crossref unavailable ({result.error}); "
+            "report assembled from the local Retraction Watch cache._"
+        )
     lines.append("")
 
     overall = result.overall_severity

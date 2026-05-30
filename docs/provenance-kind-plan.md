@@ -19,6 +19,7 @@ isn't lost.
 | 3.5 | Numbered `#N` output across all views | ✓ shipped |
 | 4 | Transitive cite-walk (depth=1), per-batch dedup cache, bucket promotion | ✓ shipped |
 | 5 | `paper view='health'` shim, `view='exists'` shortcut, candidate-DOI hints (read-only, never substitutes) | ✓ shipped |
+| 6.1 | RW cache consulted regardless of Crossref outcome — synthesises notices for the publisher-never-deposited case (e.g. Hwang stem-cell); falls back paper title from RW when Crossref is unavailable | ✓ shipped |
 
 ## Goal
 
