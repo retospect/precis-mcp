@@ -10,6 +10,48 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ### Added
 
+- **Crash-lock recovery for the watcher OOM/restart loop.** Before
+  invoking Marker on a PDF, `precis watch` writes a lock file at
+  ``/inbox/.processing/<hash>.lock`` recording the absolute PDF
+  path. The lock is deleted on completion (success, dedup, or
+  exception). On container startup, any leftover lock means the
+  previous run was SIGKILL'd mid-PDF (typically OOM); the named
+  PDF is moved to ``/inbox/errors/crashed/<ts>/`` with a
+  ``.reason.txt`` sidecar, and the backfill proceeds without
+  re-attempting the file. Breaks the infinite OOM/restart loop
+  pathology that smallest-first ordering alone didn't address: a
+  single unprocessable PDF used to crash every container restart
+  forever. Tests at
+  ``tests/test_watch.py::TestCrashLock``. See ADR 0014.
+
+- **Subprocess-per-batch backfill** (`precis watch
+  --subprocess-batch-size N`). When positive, startup backfill
+  spawns ``precis _watch_batch_ingest`` subprocesses of N PDFs each
+  and waits for each before starting the next. Marker / surya /
+  transformers memory leaks accumulate inside the long-running
+  watcher process across consecutive ingests; subprocess isolation
+  reclaims them at child exit. Default 0 (in-process — legacy
+  behaviour); production `precis-watch` compose service now ships
+  with `--subprocess-batch-size 50`. Cost: 1 Marker reload (~15 s)
+  per batch. Benefit: bounded per-batch RSS rather than monotonic
+  growth into OOM. Live (watchdog) events keep the in-process
+  path since they're rate-limited by arrival. See ADR 0015.
+
+- **In-process Marker cache cleanup**
+  (`precis.ingest.marker._release_marker_caches`). Called at the
+  end of every `extract_blocks_marker` to run `gc.collect()` and
+  (when available) `torch.cuda.empty_cache()` /
+  `torch.mps.empty_cache()`. All branches import-and-feature
+  guarded; safe on CPU-only deployments without torch. ~10 ms/PDF
+  overhead. Layered on top of subprocess isolation as a no-regret
+  probe — may help with ref-cycle leaks but isn't a substitute for
+  Fix B's structural isolation. See ADR 0015.
+
+- **`python -m precis` entry point** (`src/precis/__main__.py`).
+  Mirrors the `precis` console script. Used by the subprocess
+  spawner above to avoid depending on `$PATH` resolution for the
+  child invocation.
+
 - **XMP write + signed-PDF detection in ``pdf_writer``.** The
   metadata write-back path now emits a minimal RDF/XMP packet
   carrying ``dc:title``, ``dc:creator`` (authors), ``dc:identifier``
@@ -29,16 +71,21 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ### Changed
 
-- **Backfill processes smallest PDFs first.** Watcher startup
-  scan in ``src/precis/cli/watch.py:_PdfHandler.backfill`` now
-  sorts by file size before enqueueing. Small files clear quickly
-  so the corpus + search index populate early; if a giant PDF
-  OOMs the watcher container (the 12 GiB cap in
-  ``infrastructure/compose.yaml`` ``precis-watch:`` deploy section
-  is real and has been hit), only that giant is blocked rather than
-  the long tail behind it. Stat errors sort last so a broken
-  symlink doesn't abort the whole backfill. Test
-  ``tests/test_watch.py::TestBackfillOrder::test_smaller_files_enqueued_first``.
+- **`precis-watch` memory cap raised from 12 GiB to 64 GiB.** Was
+  a backstop for single-PDF OOMs; now also absorbs cumulative
+  Marker memory leakage across long backfills until the
+  subprocess-per-batch isolation lands fully. The 16 GiB host-total
+  budget in the older comment is now stale; compose deploys
+  assume the host has enough headroom for this cap. Comment
+  updated. See ADR 0015.
+
+- **`precis-watch` backfill processes smallest PDFs first.** Sort
+  key in ``_PdfHandler.backfill`` changed from path name to file
+  size. Means a single giant PDF that OOMs the container only
+  blocks itself; the small files behind it have already been
+  ingested. Stat errors sort last so a broken symlink doesn't
+  abort the whole backfill. Test
+  ``tests/test_watch.py::TestBackfillOrder``.
 
 ## v7.1.0 — baked-in models, fast-path ingest, MCP cold-start budget (2026-05-28)
 

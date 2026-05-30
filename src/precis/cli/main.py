@@ -82,6 +82,10 @@ def main() -> None:
         watch.run(args)
         return
 
+    if args.cmd == "_watch_batch_ingest":
+        watch.run_batch(args)
+        return
+
     if args.cmd == "worker":
         worker.run(args)
         return
@@ -122,6 +126,7 @@ def _build_parser() -> argparse.ArgumentParser:
     gripe.add_parser(sub)
     add.add_parser(sub)
     watch.add_parser(sub)
+    watch.add_batch_parser(sub)
     worker.add_parser(sub)
     tools.add_parser(sub)
 

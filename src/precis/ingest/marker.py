@@ -189,6 +189,38 @@ _JUNK_HEADING_RE = re.compile(
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 
 
+def _release_marker_caches() -> None:
+    """Best-effort cleanup between PDFs in a long-running watcher.
+
+    Runs :func:`gc.collect` to break ref cycles the Marker / surya /
+    transformers stack tends to leave behind, plus ``empty_cache()``
+    on whichever torch backend is active (CUDA on GPU hosts, MPS on
+    Apple Silicon if torch is installed with MPS support, no-op on
+    CPU-only deployments). All branches are import-and-feature
+    guarded so the function is safe to call without torch installed.
+
+    Cost: ~10 ms per call. Effect: cumulative resident-set growth
+    across a long backfill is bounded rather than monotonic. Not a
+    substitute for subprocess-per-batch isolation (Fix B), which is
+    the structural fix; this is the cheap probe to layer on top.
+    """
+    import gc
+
+    try:
+        import torch  # type: ignore[import-not-found]
+    except ImportError:
+        gc.collect()
+        return
+
+    if getattr(torch, "cuda", None) is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    mps = getattr(getattr(torch, "backends", None), "mps", None)
+    if mps is not None and mps.is_available():
+        torch.mps.empty_cache()  # type: ignore[attr-defined]
+
+    gc.collect()
+
+
 def extract_blocks_marker(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
     """Extract structured blocks from a PDF using Marker.
 
@@ -202,7 +234,14 @@ def extract_blocks_marker(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]
     except Exception as exc:
         log.warning("Marker failed on %s (%s), using fitz fallback", pdf_path.name, exc)
         blocks = _fitz_fallback(pdf_path, paper_id)
-    return _merge_small_blocks(blocks, paper_id=paper_id)
+    merged = _merge_small_blocks(blocks, paper_id=paper_id)
+    # Best-effort cleanup after every ingest. The long-running watcher
+    # accumulates tensor refs across consecutive PDFs (Surya layout
+    # buffers, transformers cache) and eventually OOMs. Subprocess
+    # isolation (Fix B / ADR 0015) is the structural fix; this is a
+    # cheap probe layered on top. ~10 ms/PDF.
+    _release_marker_caches()
+    return merged
 
 
 def _patch_text_config_ambiguity() -> None:
