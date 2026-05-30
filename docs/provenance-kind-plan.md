@@ -675,92 +675,103 @@ a retraction:
 
 ---
 
-## Open issues
+## Resolved planning decisions
 
-Items below need a decision (or confirmation) before or during Phase 1.
-Proposed defaults are stated; flip them in code review if wrong.
+All items below were proposed defaults in earlier revisions of this
+doc; they have since been confirmed against the code and are now part
+of the Phase 1 spec.
 
-### Blocking — resolve before coding
+### Schema / wiring
 
-- **Notice slug generation.** The existing
-  `ingest/crossref.py:_normalize()` heuristic (first-author + year +
-  first-title-word) produces collision-prone garbage for retraction
-  notices (authors are typically `Editors` or the journal name, titles
-  are `Retraction of …`). **Proposed:** notice slugs are
-  `<retracted-paper-slug>-r<n>` for retractions, `-c<n>` for corrections,
-  `-e<n>` for EoCs (n = 1-based sequence when multiple). Slug
-  construction lives in `ingest/provenance.py`, not in the generic
-  Crossref normaliser, so the regular path is unaffected.
+- **Migration number → `0002_provenance.sql`.** `0001_initial.sql` is
+  the only on-disk migration; `store/migrate.py` applies in sorted
+  filename order. Earlier comments in `_links_ops.py` referencing
+  `0005_link_relations.sql` are from a pre-consolidation history; the
+  current state has everything in `0001`.
 
-- **RW dataset fetch URL.** Retraction Watch data is distributed via
-  Crossref since Dec 2023 but the access path isn't a single stable
-  endpoint. **Proposed:** Phase 3 fetches the CSV mirror at
+- **Notice slug rule → `<paper-slug>-r<n>` / `-c<n>` / `-e<n>`.**
+  Retraction = `r`, correction = `c`, EoC = `e`; `n` is 1-based when a
+  paper has multiple notices of the same kind. Slug construction
+  lives in `ingest/provenance.py` — not in the generic
+  `ingest/crossref.py:_normalize()` path, which keeps producing
+  first-author+year+title-word slugs for primary papers. The existing
+  Crossref normaliser is *not* re-used for notices because its
+  heuristic mangles them (authors are typically `Editors` or a journal
+  name; titles are `Retraction of …` — would collide constantly).
+
+- **CLI bib input → plain-text DOI-per-line, not bibtex.**
+  `bibtexparser` is not currently in `pyproject.toml`; adding it would
+  be a new dep for marginal value. CLI takes `--refs preflight.txt`
+  (one DOI per line, blank lines and `#` comments allowed). Bibtex
+  support can land later behind a `[bib]` extra if anyone asks. The
+  Phase 2.5 metadata-verify path takes structured input via the kind
+  API (`view='verify'` with `[{doi,title,authors,year},...]`) rather
+  than parsing bib syntax.
+
+- **STATUS-tag concurrent writes → safe as-is.**
+  `_tags_ops.py:135-202` does `DELETE ... WHERE namespace=X` followed
+  by `INSERT ... ON CONFLICT DO NOTHING`. Two concurrent provenance
+  checks on the same DOI compute the same STATUS value (deterministic
+  from the Crossref response), so last-write-wins is harmless and the
+  INSERT is idempotent. No explicit transaction wrapping needed in
+  Phase 1.
+
+### Behaviour / report shape
+
+- **Re-check cadence → TTL=7d clean / TTL=30d once
+  `retraction_status='retracted'`.** Reinstatements are rare; this
+  saves Crossref traffic on the long tail of known-retracted papers.
+  Implemented as a single `interval` lookup in the cache layer keyed
+  on the current `retraction_status` column.
+
+- **Multiple notices on one paper → full chronology in the report,
+  dominant status only in the column.** The `refs.retraction_status`
+  column is a query-index summary; the `links` table is the full
+  history (one `retracted-by` / `corrected-by` / `concern-raised-by`
+  row per notice). `_provenance_report.py` iterates all `update-to`
+  entries in date order when rendering markdown; the structured `json`
+  view emits the full list too.
+
+- **Non-DOI input → "Unchecked (n)" section in the report.** Lines
+  in `--refs` that don't parse as a DOI (comments, blanks, free-form
+  text, no-DOI entries) are surfaced in a final `## Unchecked (n)`
+  section with the reason ("no DOI on line 42", "malformed DOI", …),
+  so the user sees the coverage gap rather than silently shipping
+  with unchecked citations.
+
+- **Aggregate severity for transitive cite hits → no hardcoded
+  threshold; model judges at render time.** The classifier emits raw
+  per-cite findings (count + severity per cited retraction); the
+  report-rendering model (Opus in the agent loop) applies
+  common-sense judgement — "cites 17 retracted works, treat as
+  blocker" vs "cites one peripherally, note only." The `json` view
+  always exposes the raw counts so deterministic downstream tooling
+  can apply its own rule.
+
+### Implementation notes
+
+- **Test fixtures → hand-rolled dict + `unittest.mock.patch`.**
+  `tests/ingest/conftest.py` exposes `sample_crossref_response`;
+  `tests/ingest/test_crossref.py` patches the `Crossref` client with
+  `@patch("precis.ingest.crossref.Crossref")`. Phase 1 follows the
+  same pattern — no VCR / cassette infra to add. Capture a few real
+  Crossref responses (retracted paper, EoC paper, clean paper, 404)
+  by hand, save them as dict fixtures in
+  `tests/ingest/conftest.py`.
+
+## Still open — Phase 3 only
+
+- **Retraction Watch dataset fetch URL.** The Crossref-distributed
+  RWDB doesn't have a single canonical pinnable endpoint.
+  **Working assumption:** Phase 3 fetches the CSV mirror at
   `gitlab.com/crossref/retraction-watch-data` (stable, versioned,
-  CC-BY documented in the repo). Document the URL and last-known-good
-  schema in `provenance_rw_sync.py`. Phase 1 doesn't need this — RW
-  reasons can be NULL in the report until Phase 3 lands.
+  licensed CC-BY in the repo). Confirm the URL is still live and the
+  schema is unchanged when Phase 3 actually starts.
 
-- **Migration number.** Only `0001_initial.sql` exists on disk but
-  `store/_links_ops.py` comments reference `0005_link_relations.sql`
-  — implying older migrations were consolidated into `0001`.
-  **Proposed:** confirm by checking `_migrations` table on a live DB;
-  if 0001 is the latest applied, new migration is `0002_provenance.sql`.
-  This is a 30-second check, not a real decision.
-
-- **Bibtex parser dependency.** The CLI mentions
-  `--refs manuscript.bib` but `bibtexparser` isn't currently a dep.
-  **Proposed:** drop bib parsing from Phase 2; CLI accepts a
-  DOI-per-line text file via `--refs preflight.txt`. Bibtex support
-  can land later behind a `[bib]` extra if there's demand. Keeps the
-  dependency surface honest.
-
-### Important — resolve early but won't block start
-
-- **Re-check cadence for already-retracted papers.** Plan says
-  TTL=7d for everything. **Proposed:** TTL=7d for clean / corrected /
-  EoC papers; TTL=30d once `retraction_status='retracted'` is set
-  (reinstatements are rare; saves Crossref traffic on the long tail).
-
-- **Multiple notices on one paper.** A paper can accumulate corrigenda
-  *and* a retraction over time. `refs.retraction_status` stores only
-  the dominant one. **Proposed:** the renderer iterates all `update-to`
-  entries chronologically; the column carries the dominant status only
-  as a query index. The `links` table is the full history (one row per
-  notice). Confirm `_provenance_report.py` renders the full chronology
-  in markdown, not just the dominant entry.
-
-- **Concurrent writes.** Two agents call `provenance` on the same DOI
-  simultaneously. **Proposed:** all writes use `INSERT … ON CONFLICT
-  DO UPDATE`, idempotent under race. Need to verify the STATUS-tag
-  upsert path in `_tags_ops.py:151` is also race-safe (the
-  one-per-target invariant); if not, wrap the read-modify-write in a
-  short transaction.
-
-- **Non-DOI bib entries.** Older work / theses / books have no DOI.
-  **Proposed:** the report lists these in a final "Unchecked (n)"
-  section with the reason ("no DOI in input"), so users know the
-  coverage gap. Silent drops are misleading for the preflight
-  use case.
-
-### Worth flagging — Opus applies judgement at report time
-
-- **Aggregate severity for transitive cite hits.** A paper that cites
-  one retracted source is 🟠; one that cites thirty is effectively 🔴.
-  **Resolution:** no hardcoded threshold. The classifier emits the
-  count and per-cite severity to the report; the model rendering the
-  final markdown (Opus, in the agent loop) applies common-sense
-  judgement — "this paper cites 17 retracted works, treat as blocker"
-  vs "cites one retracted work peripherally, note only." The structured
-  `json` view always exposes the raw counts so downstream tooling can
-  apply its own rule if it wants determinism.
+## Deferred / out of scope
 
 - **Stale local title after publisher relabel.** Some publishers
   retroactively prepend `(Retracted)` to the paper title. Our
-  `refs.title` won't reflect that unless we re-fetch metadata. **Out
-  of scope:** the `STATUS:retracted` tag carries the signal where it
-  matters; the title is cosmetic.
-
-- **Test fixtures for Crossref.** Recorded responses are needed for
-  tests. **Proposed:** mirror whatever pattern `ingest/crossref.py`
-  tests already use — confirm during Phase 1 implementation; copy don't
-  invent.
+  `refs.title` won't reflect that unless we re-fetch metadata. The
+  `STATUS:retracted` tag carries the signal where it matters; the
+  title is cosmetic. Out of scope.
