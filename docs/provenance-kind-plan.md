@@ -1,8 +1,24 @@
 # `provenance` kind — retraction & amendment monitoring
 
-**Status:** plan / not yet implemented
+**Status:** Phases 1–5 implemented as of 2026-05-30. This document is
+the as-built spec — every behaviour described below is in the codebase
+and covered by tests; the few "rejected" callouts (notably "fuzzy DOI
+auto-resolution") describe roads not taken, kept here so the rationale
+isn't lost.
 **Owner:** unassigned
-**Last revised:** 2026-05-30
+**Last revised:** 2026-05-30 (post-implementation pass)
+
+## Phase status
+
+| phase | scope | status |
+|-------|-------|--------|
+| 1 | Single-DOI Crossref check, migration 0002, notice auto-ingest, write-through, skill card | ✓ shipped |
+| 2 | Batch input, CLI `check-provenance`, `view='blockers'` / `view='json'`, thread-pool fan-out | ✓ shipped |
+| 2.5 | `view='verify'` metadata verification (NFKD + German-phonetic + reverse-phonetic + token-set Jaccard) | ✓ shipped |
+| 3 | Migration 0003, Retraction Watch CSV sync job, reasons joined into report | ✓ shipped |
+| 3.5 | Numbered `#N` output across all views | ✓ shipped |
+| 4 | Transitive cite-walk (depth=1), per-batch dedup cache, bucket promotion | ✓ shipped |
+| 5 | `paper view='health'` shim, `view='exists'` shortcut, candidate-DOI hints (read-only, never substitutes) | ✓ shipped |
 
 ## Goal
 

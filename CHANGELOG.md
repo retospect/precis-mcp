@@ -10,6 +10,94 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ### Added
 
+- **New kind: `provenance`** — retraction and amendment monitoring
+  for paper DOIs. Five phases, all shipped:
+  - **Phase 1** — single-DOI Crossref check. Validates DOI shape,
+    fetches `/works/{doi}`, classifies any `update-to` notices by
+    severity (`retraction` → 🔴 blocker, `expression_of_concern` →
+    🟠 review, `corrigendum`/`erratum` → 🟡 note,
+    `addendum`/`clarification` → 🟢 info), and when the parent
+    paper is in the local store: auto-ingests retraction / EoC
+    notice DOIs as `paper` refs (slug rule:
+    `<parent>-r<n>` / `-e<n>` / `-c<n>`), writes `retracted-by` /
+    `concern-raised-by` / `corrected-by` links, sets
+    `refs.retraction_status`, applies a `STATUS:retracted` /
+    `:concern` / `:corrected` tag. Migration `0002_provenance.sql`
+    adds the six new relation slugs and the `retraction_watch`
+    provider. Notice refs carry `STATUS:notice`.
+  - **Phase 2** — batch input via `q='doi1,doi2,…'`, `view='blockers'`
+    (only 🔴/🟠 entries with a count of hidden 🟡/🟢), `view='json'`
+    (structured payload for downstream tooling),
+    `ThreadPoolExecutor(max_workers=8)` for the fan-out, order
+    preservation, per-DOI failure isolation
+    (`status='check_failed'` on transport errors never kills the
+    batch). New CLI: `precis jobs check-provenance --refs <file>
+    --view default|blockers|json --out <file>`.
+  - **Phase 2.5** — `view='verify'` metadata verification. Catches
+    "right DOI, wrong paper" — common with LLM-generated bibs.
+    Token-set Jaccard on titles with NFKD normalisation
+    (`Müller`→`muller`, `H₂O`→`h2o`, `ﬁ`→`fi`) plus German-phonetic
+    alt for surnames (`Müller`↔`Mueller`, `Schröder`↔`Schroeder`)
+    plus reverse-phonetic fold for the ASCII↔ASCII case
+    (`Mueller`↔`Muller`) — trade-off: false positives on
+    `Sue`↔`Su`, `Press`↔`Pres` accepted because the cost (a
+    suppressed warning) is bounded. Year ±1 tolerance for
+    online-first vs print drift. No hardcoded pass/fail
+    thresholds; raw scores emitted in JSON for downstream rules.
+  - **Phase 3** — Retraction Watch reason codes joined into the
+    report (`+Falsification/Fabrication of Data` etc., not just
+    "retracted"). Migration `0003_provenance_rw_cache.sql` adds
+    the cache + sync ledger tables. New job
+    `precis jobs sync-retraction-watch --mailto <email>
+    [--source auto|labs|gitlab]` — tries Crossref Labs API
+    primary, falls back to the GitLab mirror
+    (`gitlab.com/crossref/retraction-watch-data`). ~40 MB CSV,
+    ~50k rows, batched upsert in 10k-row chunks, idempotent on
+    RW Record ID. Match strategy: exact notice-DOI match, with
+    single-row-per-nature fallback.
+  - **Phase 3.5** — Numbered `#N` output across all batch views
+    matching the project's standardised LLM-output convention
+    (`utils/search_merge.py:208`). Every batch result carries a
+    1-based `input_index` reflecting *input* order (not thread-
+    pool completion order); the same `#47` appears in default,
+    blockers, and JSON views even when intervening entries are
+    hidden. Eliminates LLM off-by-one errors when generating
+    follow-up actions against a numbered report.
+  - **Phase 4** — `transitive=True` flag enables depth-1
+    cite-walk via Crossref's `message.reference` field. For each
+    parent: shallow-checks every cited DOI, surfaces only
+    ≥ 🟠 findings as `cited_findings`, skips corrigenda
+    (too noisy at depth 1). Per-batch dedup cache so a cited
+    paper shared by N parents hits Crossref once. Clean-itself
+    papers that cite retracted work are promoted into the
+    🟠 Review bucket so blockers view doesn't hide them.
+  - **Phase 5** — three additions:
+    - `paper view='health'` shim — looks up the paper's DOI from
+      `ref_identifiers` and delegates to `provenance` so agents
+      with a slug skip the manual DOI lookup.
+    - `view='exists'` shortcut — compact ✓/✗ output for "does
+      this DOI resolve?" without the retraction-classification
+      overhead. Useful for validating a DOI list before doing
+      real work.
+    - `suggest_candidates=True` — when a DOI 404s *and* a
+      `BibEntry` with bibliographic metadata is supplied, calls
+      Crossref `/works?query.bibliographic=…&query.author=…`
+      and attaches ranked candidates as **advisory hints** under
+      the Unknown DOI section. **Never substitutes** — the
+      supplied DOI's status stays `unknown`. Fuzzy
+      auto-resolution was explicitly rejected; see
+      `docs/provenance-kind-plan.md` § "Rejected: fuzzy DOI
+      auto-resolution" for the rationale.
+  - Source layout: `ingest/provenance.py`, `ingest/_text_norm.py`
+    (Phase 2.5 helpers), `ingest/_rw_csv.py` (Phase 3 parser),
+    `jobs/provenance_rw_sync.py`, `handlers/provenance.py`,
+    `handlers/_provenance_report.py`, `cli/provenance.py`. Skill
+    cards at `data/skills/precis-provenance-help.md` and
+    `data/skills/precis-preflight.md`. Migrations `0002` and
+    `0003` in `src/precis/migrations/`. Tests at
+    `tests/ingest/test_provenance{,_verify,_rw,_transitive,_phase5}.py`.
+  - Design doc: `docs/provenance-kind-plan.md`.
+
 - **Postgres advisory-lock work claims for multi-host ingest**
   (`precis.ingest.claim.Claim`). Each PDF ingest opens a dedicated
   psycopg session and calls `pg_try_advisory_lock(key)` where `key`
