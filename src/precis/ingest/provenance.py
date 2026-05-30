@@ -228,6 +228,29 @@ YearMatch = Literal["match", "off_by_one", "mismatch", "unchecked"]
 
 
 @dataclass(frozen=True, slots=True)
+class TransitiveCiteFinding:
+    """One Phase 4 finding: a paper we checked *cites* something that
+    has its own retraction or expression-of-concern notice.
+
+    Only emitted at depth=1 — we don't recurse past one hop. Only
+    severities ≥ 🟠 are surfaced (a corrigendum on a cited work is
+    too noisy a signal to attach to the citing paper). The report
+    renderer groups these under a "Cites retracted/concerning work"
+    section attached to the citing paper.
+
+    ``cited_doi`` is canonical (lowercased, no prefix).
+    """
+
+    cited_doi: str
+    severity: Severity  # 'blocker' or 'review' only (Phase 4 filter)
+    status: RetractionStatus | None
+    cited_title: str | None
+    cited_year: int | None
+    notice_doi: str | None  # the notice on the *cited* paper, if any
+    rw_reasons: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
 class MetadataVerification:
     """Per-field comparison of a supplied ``BibEntry`` against Crossref.
 
@@ -284,6 +307,11 @@ class ProvenanceResult:
     # index reflects *input* order, not thread-pool completion order.
     # See plan §"Phase 3.5: numbered-result rendering".
     input_index: int = 0
+    # Phase 4: depth-1 transitive cite findings. Empty when the
+    # caller didn't enable ``transitive=True`` or when no cited
+    # paper has a 🔴/🟠 notice. Already-filtered to severity ≥ review
+    # — a paper that cites a corrected-only work is too noisy.
+    cited_findings: list[TransitiveCiteFinding] = field(default_factory=list)
     # Error message when status='check_failed'
     error: str | None = None
 
@@ -318,6 +346,106 @@ class ProvenanceResult:
         if v.year_match == "mismatch":
             return True
         return False
+
+
+# ---------------------------------------------------------------------------
+# Transitive cite-walk (Phase 4) — shallow check + per-batch cache
+# ---------------------------------------------------------------------------
+
+
+# Sentinel: cache entry exists but the cited paper has no severity ≥ review
+# notice. Distinguishes "we checked and it's clean" from "we haven't
+# checked yet" without needing a separate ``checked`` set.
+_CITE_CLEAN = object()
+
+# Per-batch cache type. ``check_dois`` builds one and threads it
+# through every ``check_doi`` call so the same cited paper hits
+# Crossref at most once per batch even when many parents share it.
+# Values are either:
+#   - a ``TransitiveCiteFinding`` (cited paper has severity ≥ review)
+#   - ``_CITE_CLEAN`` (we checked, clean)
+#   - missing key (not yet checked)
+CiteCache = dict[str, Any]
+
+
+def _check_cited_doi(
+    cited_doi: str,
+    *,
+    mailto: str | None,
+    cache: CiteCache,
+    store: Store | None = None,
+) -> TransitiveCiteFinding | None:
+    """Shallow check on one cited DOI — Crossref only, no writes, no recursion.
+
+    Returns ``TransitiveCiteFinding`` only when the cited paper has
+    at least one ≥ 🟠 notice (retraction or expression of concern).
+    Corrections are intentionally suppressed at this depth — a paper
+    that cites a corrigendum'd work is rarely a concern, and surfacing
+    them would drown the signal.
+
+    Uses ``cache`` to dedup repeat lookups across a batch.
+    """
+    if cited_doi in cache:
+        cached = cache[cited_doi]
+        if cached is _CITE_CLEAN:
+            return None
+        assert isinstance(cached, TransitiveCiteFinding)
+        return cached
+
+    try:
+        msg = _fetch_crossref_message(cited_doi, mailto)
+    except Exception:  # noqa: BLE001 — propagation here would kill the parent
+        cache[cited_doi] = _CITE_CLEAN
+        return None
+
+    if msg is None:
+        # 404 on a cited paper: not actionable here, treat as clean
+        # so we don't keep retrying.
+        cache[cited_doi] = _CITE_CLEAN
+        return None
+
+    # Pick the highest-severity notice (matching the parent-paper rule)
+    notice_doi: str | None = None
+    severity: Severity = "info"
+    status: RetractionStatus | None = None
+    severity_rank: dict[Severity, int] = {
+        "blocker": 4,
+        "review":  3,
+        "note":    2,
+        "info":    1,
+    }
+    for entry in msg.get("update-to") or []:
+        parsed = _parse_update_entry(entry)
+        if parsed is None:
+            continue
+        rel, sev, stat, ndoi, _date = parsed
+        if severity_rank[sev] > severity_rank[severity]:
+            severity, status, notice_doi = sev, stat, ndoi
+
+    if severity not in ("blocker", "review"):
+        cache[cited_doi] = _CITE_CLEAN
+        return None
+
+    # Optional RW reasons join — same path as the parent enrichment.
+    rw_reasons: list[str] = []
+    if store is not None and notice_doi is not None:
+        cache_rows = _lookup_rw_cache(store, cited_doi)
+        for row in cache_rows:
+            if row.notice_doi and row.notice_doi.lower() == notice_doi.lower():
+                rw_reasons = list(row.reasons)
+                break
+
+    finding = TransitiveCiteFinding(
+        cited_doi=cited_doi,
+        severity=severity,
+        status=status,
+        cited_title=_extract_title(msg),
+        cited_year=_extract_year(msg),
+        notice_doi=notice_doi,
+        rw_reasons=rw_reasons,
+    )
+    cache[cited_doi] = finding
+    return finding
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +789,37 @@ def _extract_authors(msg: dict[str, Any]) -> list[dict[str, Any]] | None:
     return authors or None
 
 
+def _extract_cited_dois(msg: dict[str, Any]) -> list[str]:
+    """Pull canonical DOIs from a Crossref message's ``reference`` array.
+
+    Phase 4 cite-walk input. Each reference entry *may* carry a
+    ``DOI`` field — publisher coverage is ~60% on Crossref, so a
+    paper with 100 references typically yields ~60 cited DOIs.
+    References without a DOI (book chapters, datasets, free-text
+    citations) are silently dropped — we have no way to check them
+    against Crossref.
+
+    Returns canonical lowercase DOIs in input order, de-duplicated
+    (a paper occasionally cites the same work twice in different
+    contexts). Malformed DOI strings are filtered via
+    :func:`validate_doi` so the transitive check never makes an HTTP
+    call against garbage.
+    """
+    refs = msg.get("reference") or []
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in refs:
+        raw = r.get("DOI") or r.get("doi")
+        if not raw or not isinstance(raw, str):
+            continue
+        canonical = validate_doi(raw)
+        if canonical is None or canonical in seen:
+            continue
+        seen.add(canonical)
+        out.append(canonical)
+    return out
+
+
 def _parse_update_entry(
     entry: dict[str, Any],
 ) -> tuple[LinkRelation, Severity, RetractionStatus | None, str, datetime | None] | None:
@@ -907,6 +1066,8 @@ def check_doi(
     store: Store | None = None,
     mailto: str | None = None,
     bib_entry: BibEntry | None = None,
+    transitive: bool = False,
+    _cite_cache: CiteCache | None = None,
 ) -> ProvenanceResult:
     """Run a single-DOI provenance check.
 
@@ -923,6 +1084,14 @@ def check_doi(
     ``ProvenanceResult.verification`` with per-field results. When
     ``None``, verification is skipped and the result.verification
     stays ``None`` (no extra cost).
+
+    ``transitive=True`` enables Phase 4 cite-walking: each cited DOI
+    found in ``message.reference`` is shallow-checked against
+    Crossref (depth 1 only, no recursion). Cited papers with a
+    severity ≥ 🟠 notice are surfaced in
+    ``result.cited_findings``. ``_cite_cache`` is a per-batch dedup
+    cache; callers running multiple parent checks share one cache to
+    avoid re-fetching the same cited DOI.
 
     Failure modes:
     - DOI doesn't match the format → ``status='malformed'``
@@ -981,6 +1150,23 @@ def check_doi(
         cache_rows = _lookup_rw_cache(store, canonical)
         notices = _enrich_notices_with_rw(notices, cache_rows)
 
+    # Phase 4: shallow cite-walk. Only when explicitly enabled (the
+    # parent check still works without; transitive findings are
+    # ancillary). Uses a shared cache so a batch with many parents
+    # citing the same paper still hits Crossref once per cited DOI.
+    cited_findings: list[TransitiveCiteFinding] = []
+    if transitive:
+        cache = _cite_cache if _cite_cache is not None else {}
+        for cited_doi in _extract_cited_dois(msg):
+            finding = _check_cited_doi(
+                cited_doi,
+                mailto=mailto,
+                cache=cache,
+                store=store,
+            )
+            if finding is not None:
+                cited_findings.append(finding)
+
     paper_in_store = False
     paper_ref_id: int | None = None
     applied: RetractionStatus | None = None
@@ -1010,6 +1196,7 @@ def check_doi(
         paper_ref_id=paper_ref_id,
         paper_in_store=paper_in_store,
         verification=verification,
+        cited_findings=cited_findings,
     )
 
 
@@ -1087,6 +1274,7 @@ def check_dois(
     mailto: str | None = None,
     max_workers: int = _DEFAULT_MAX_WORKERS,
     bib_entries: list[BibEntry] | None = None,
+    transitive: bool = False,
 ) -> list[ProvenanceResult]:
     """Run ``check_doi`` over a batch of DOIs concurrently.
 
@@ -1124,6 +1312,12 @@ def check_dois(
     def _entry_for(i: int) -> BibEntry | None:
         return bib_entries[i] if bib_entries is not None else None
 
+    # Per-batch transitive cache: every parent shares this so a cited
+    # DOI cited by N parents only hits Crossref once. ``None`` when
+    # transitive=False (saves the dict allocation and keeps
+    # downstream code from accidentally caching).
+    cite_cache: CiteCache | None = {} if transitive else None
+
     # Single-DOI fast path — skip the thread-pool overhead. We still
     # set ``input_index=1`` so the result is interchangeable with
     # any other batch result (Phase 3.5: standardised LLM output).
@@ -1133,6 +1327,8 @@ def check_dois(
             store=store,
             mailto=mailto,
             bib_entry=_entry_for(0),
+            transitive=transitive,
+            _cite_cache=cite_cache,
         )
         return [replace(r, input_index=1)]
 
@@ -1145,6 +1341,8 @@ def check_dois(
                 store=store,
                 mailto=mailto,
                 bib_entry=_entry_for(i),
+                transitive=transitive,
+                _cite_cache=cite_cache,
             ): i
             for i, doi in enumerate(inputs)
         }
@@ -1178,6 +1376,7 @@ __all__ = [
     "ProvenanceResult",
     "RetractionStatus",
     "Severity",
+    "TransitiveCiteFinding",
     "YearMatch",
     "check_doi",
     "check_dois",

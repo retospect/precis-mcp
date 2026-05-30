@@ -195,6 +195,7 @@ class ProvenanceHandler(Handler):
         id: str | int | None = None,
         view: str | None = None,
         q: str | None = None,
+        transitive: bool = False,
         **_kw: Any,
     ) -> Response:
         # Accept id= as primary; q= as a synonym. Tool kinds across
@@ -270,6 +271,7 @@ class ProvenanceHandler(Handler):
                 store=self.store,
                 mailto=self._mailto,
                 bib_entry=entry,
+                transitive=transitive,
             )
             return Response(body=render_single(result))
 
@@ -278,6 +280,7 @@ class ProvenanceHandler(Handler):
             store=self.store,
             mailto=self._mailto,
             bib_entries=bib_entries,
+            transitive=transitive,
         )
         return Response(body=render_batch(results, view=v))  # type: ignore[arg-type]
 

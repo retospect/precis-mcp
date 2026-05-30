@@ -27,6 +27,7 @@ from precis.ingest.provenance import (
     Notice,
     ProvenanceResult,
     Severity,
+    TransitiveCiteFinding,
 )
 
 View = Literal["default", "blockers", "json", "verify"]
@@ -193,6 +194,9 @@ def render_single(result: ProvenanceResult) -> str:
             lines.append(_format_notice_line(n))
         lines.append("")
 
+    if result.cited_findings:
+        lines.extend(_render_cited_findings_section(result.cited_findings))
+
     if result.paper_in_store:
         lines.append("---")
         lines.append(
@@ -350,7 +354,14 @@ _BUCKET_GLYPH_LABEL: dict[str, tuple[str, str]] = {
 def _bucket_by_severity(
     results: list[ProvenanceResult],
 ) -> dict[str, list[ProvenanceResult]]:
-    """Group results by severity / status into buckets ready for rendering."""
+    """Group results by severity / status into buckets ready for rendering.
+
+    Phase 4 wrinkle: a paper that's clean *itself* but cites a
+    retracted or concerning work is promoted to the ``review``
+    bucket. The hazard isn't on the citing paper, but the citing
+    paper warrants human review — and the blockers view would
+    otherwise hide it under ``info_clean``.
+    """
     buckets: dict[str, list[ProvenanceResult]] = {}
     for r in results:
         if r.status == "malformed":
@@ -359,8 +370,11 @@ def _bucket_by_severity(
             key = "unknown"
         elif r.status == "check_failed":
             key = "check_failed"
-        elif not r.notices:
+        elif not r.notices and not r.cited_findings:
             key = "info_clean"
+        elif not r.notices and r.cited_findings:
+            # Promoted: clean paper, but cites contested work.
+            key = "review"
         else:
             sev = r.overall_severity
             key = "info_notice" if sev == "info" else sev
@@ -477,6 +491,49 @@ def _index_prefix(r: ProvenanceResult) -> str:
     return f"**#{r.input_index}** · " if r.input_index else ""
 
 
+def _render_cited_findings_section(
+    findings: list[TransitiveCiteFinding],
+) -> list[str]:
+    """Render the Phase 4 "Cites retracted/concerning work" section.
+
+    Caller checks ``result.cited_findings`` is non-empty before
+    invoking. We don't collapse the section into ``Blocker`` /
+    ``Review`` because the *citing* paper isn't itself retracted —
+    this is a distinct hazard class ("review needed; you've cited
+    something contested").
+    """
+    lines: list[str] = []
+    n = len(findings)
+    lines.append(
+        f"### 🟠 Cites retracted / concerning work ({n})"
+    )
+    lines.append(
+        "_The paper itself is clean, but it cites at least one "
+        "work with a retraction or expression of concern. Read each "
+        "cited paper and decide whether your argument depends on "
+        "the contested claim._"
+    )
+    for f in findings:
+        glyph = _SEVERITY_GLYPH[f.severity]
+        year_str = f" {f.cited_year}" if f.cited_year else ""
+        title_str = f.cited_title or "(no title)"
+        lines.append(
+            f"- {glyph} `{f.cited_doi}` — _{title_str}_{year_str}"
+        )
+        if f.notice_doi:
+            lines.append(f"  - notice DOI: `{f.notice_doi}`")
+        if f.rw_reasons:
+            shown = f.rw_reasons[:5]
+            extra = (
+                ""
+                if len(f.rw_reasons) <= 5
+                else f" (+{len(f.rw_reasons) - 5} more)"
+            )
+            lines.append("  - **Reasons:** " + "; ".join(shown) + extra)
+    lines.append("")
+    return lines
+
+
 def _render_per_doi_block(
     r: ProvenanceResult, bucket_key: str
 ) -> list[str]:
@@ -498,6 +555,24 @@ def _render_per_doi_block(
         if bucket_key in ("blocker", "review") and n.severity not in ("blocker", "review"):
             continue
         lines.append(_format_notice_line(n))
+    # Phase 4 cited findings — compact form, one bullet per cited
+    # retraction/EoC. Always shown when present, regardless of bucket;
+    # a clean citing paper can have cited-findings, which is the
+    # whole point of the transitive walk.
+    for f in r.cited_findings:
+        glyph = _SEVERITY_GLYPH[f.severity]
+        lines.append(
+            f"- {glyph} **cites retracted** `{f.cited_doi}` — "
+            f"_{f.cited_title or '(no title)'}_"
+        )
+        if f.rw_reasons:
+            shown = f.rw_reasons[:3]
+            extra = (
+                ""
+                if len(f.rw_reasons) <= 3
+                else f" (+{len(f.rw_reasons) - 3} more)"
+            )
+            lines.append("  - " + "; ".join(shown) + extra)
     lines.append("")
     return lines
 
