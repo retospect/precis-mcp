@@ -15,6 +15,8 @@ Exit codes:
 * 0 — paper ingested or already known.
 * 2 — usage error (e.g. file missing, no DSN).
 * 3 — pipeline error (lookup miss, marker failure).
+* 4 — skipped: another host holds the advisory-lock claim
+  on this PDF's content. See ADR 0016.
 """
 
 from __future__ import annotations
@@ -103,6 +105,17 @@ def run(args: argparse.Namespace) -> None:
         sys.exit(3)
     finally:
         store.close()
+
+    if result is None:
+        # Another host holds the Postgres advisory-lock claim on this
+        # PDF's pdf_sha256 (multi-host ingest). Surface it loudly —
+        # for a one-shot operator-driven ingest, this is almost
+        # certainly unintended.
+        print(
+            "add: skipped - another host holds the claim for this content",
+            file=sys.stderr,
+        )
+        sys.exit(4)
 
     status = "inserted" if result.inserted else "existed"
     # Tab-separated for easy parsing by precis watch (B5).

@@ -511,15 +511,21 @@ class TestCheckDois:
         mock_fetch,
         crossref_clean: dict,
     ) -> None:
-        """A transport error on one DOI doesn't kill the batch."""
+        """A transport error on one DOI doesn't kill the batch.
+
+        The "broken" DOI uses a 4-digit registrant (``10.5555/…``) so it
+        passes ``validate_doi`` and actually reaches the mock — an
+        earlier draft used ``10.broken/foo`` which the validator
+        rejected as malformed before the mock's side_effect could fire.
+        """
 
         def fake(doi: str, mailto):
-            if doi == "10.broken/foo":
+            if doi == "10.5555/broken":
                 raise RuntimeError("transport went sideways")
             return crossref_clean
 
         mock_fetch.side_effect = fake
-        results = check_dois(["10.1234/clean", "10.broken/foo", "10.1234/clean"])
+        results = check_dois(["10.1234/clean", "10.5555/broken", "10.1234/clean"])
         assert len(results) == 3
         assert results[0].status == "ok"
         assert results[1].status == "check_failed"

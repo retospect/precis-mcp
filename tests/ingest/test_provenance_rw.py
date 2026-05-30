@@ -23,6 +23,32 @@ from precis.ingest.provenance import (
 )
 
 
+def _rw_row(
+    *,
+    notice_doi: str | None = "10.x/foo-r1",
+    notice_nature: str = "Retraction",
+    reasons: list[str] | None = None,
+    retraction_date: datetime | None = None,
+    paper_title: str | None = None,
+    journal: str | None = None,
+) -> _RWCacheRow:
+    """Build an ``_RWCacheRow`` with Phase 6.1 fields filled in defaults.
+
+    Phase 6.1 added ``retraction_date``, ``paper_title``, ``journal``
+    to the dataclass. Tests written for the Phase 3 3-field shape now
+    go through this helper so a future column addition (Phase 7+)
+    only updates one spot.
+    """
+    return _RWCacheRow(
+        notice_doi=notice_doi,
+        notice_nature=notice_nature,
+        reasons=reasons if reasons is not None else [],
+        retraction_date=retraction_date,
+        paper_title=paper_title,
+        journal=journal,
+    )
+
+
 # ---------------------------------------------------------------------------
 # CSV parser
 # ---------------------------------------------------------------------------
@@ -97,8 +123,13 @@ class TestParseRwRows:
         assert rows == []
 
     def test_unparseable_date_is_none(self) -> None:
+        # 20 columns: 1, T, then 8 empties (Subject..ArticleType),
+        # bogus-date (RetractionDate), 10.x/n (RetractionDOI), 2 empties
+        # (PubMedID, OriginalPaperDate), 10.x/p (OriginalPaperDOI),
+        # 1 empty (OriginalPaperPubMedID), Retraction (Nature),
+        # 3 empties (Reason, Paywalled, Notes).
         lines = _csv([
-            "1,T,,,,,,,,,,bogus-date,10.x/n,,,10.x/p,,Retraction,,,",
+            "1,T,,,,,,,,,bogus-date,10.x/n,,,10.x/p,,Retraction,,,",
         ])
         rows = list(parse_rw_rows(lines))
         assert rows[0].retraction_date is None
@@ -163,9 +194,8 @@ class TestEnrichNoticesWithRw:
     def test_exact_doi_match(self) -> None:
         notices = [_make_notice("10.x/foo-r1")]
         cache = [
-            _RWCacheRow(
+            _rw_row(
                 notice_doi="10.x/foo-r1",
-                notice_nature="Retraction",
                 reasons=["+Falsification/Fabrication of Data"],
             )
         ]
@@ -176,28 +206,17 @@ class TestEnrichNoticesWithRw:
     def test_no_match_leaves_notice_alone(self) -> None:
         notices = [_make_notice("10.x/foo-r1")]
         cache = [
-            _RWCacheRow(
-                notice_doi="10.x/different",
-                notice_nature="Retraction",
-                reasons=["+Some reason"],
-            )
+            _rw_row(notice_doi="10.x/different", reasons=["+Some reason"]),
         ]
         out = _enrich_notices_with_rw(notices, cache)
         # No DOI match AND fallback finds a single-nature row → matched
-        # So actually let me test with multiple rows to force no match
+        # via the single-row-of-matching-nature fallback path.
         assert out[0].rw_reasons == ["+Some reason"]
-        # ^ this is the fallback path triggering
 
     def test_fallback_by_nature(self) -> None:
         """Single cache row of matching nature attaches even without DOI match."""
         notices = [_make_notice("10.x/missing-notice")]  # DOI not in cache
-        cache = [
-            _RWCacheRow(
-                notice_doi="10.x/different",
-                notice_nature="Retraction",
-                reasons=["+The reason"],
-            )
-        ]
+        cache = [_rw_row(notice_doi="10.x/different", reasons=["+The reason"])]
         out = _enrich_notices_with_rw(notices, cache)
         # Fallback: 1 row, matching nature → attached
         assert out[0].rw_reasons == ["+The reason"]
@@ -206,8 +225,8 @@ class TestEnrichNoticesWithRw:
         """Multiple cache rows of same nature → no fallback (ambiguous)."""
         notices = [_make_notice("10.x/missing-notice")]
         cache = [
-            _RWCacheRow(notice_doi="10.x/n1", notice_nature="Retraction", reasons=["A"]),
-            _RWCacheRow(notice_doi="10.x/n2", notice_nature="Retraction", reasons=["B"]),
+            _rw_row(notice_doi="10.x/n1", reasons=["A"]),
+            _rw_row(notice_doi="10.x/n2", reasons=["B"]),
         ]
         out = _enrich_notices_with_rw(notices, cache)
         # Two retractions cached, neither matches by DOI — too ambiguous
@@ -221,7 +240,6 @@ class TestEnrichNoticesWithRw:
 
     def test_multiple_notices_partially_matched(self) -> None:
         retraction_notice = _make_notice("10.x/r1", status="retracted")
-        correction_notice = _make_notice("10.x/c1", status="corrected")
         # correction_notice has wrong severity helper; rebuild manually
         correction_notice = Notice(
             update_type="corrigendum",
@@ -235,8 +253,8 @@ class TestEnrichNoticesWithRw:
             notice_year=None,
         )
         cache = [
-            _RWCacheRow(notice_doi="10.x/r1", notice_nature="Retraction", reasons=["R-reason"]),
-            _RWCacheRow(notice_doi="10.x/c1", notice_nature="Correction", reasons=["C-reason"]),
+            _rw_row(notice_doi="10.x/r1", reasons=["R-reason"]),
+            _rw_row(notice_doi="10.x/c1", notice_nature="Correction", reasons=["C-reason"]),
         ]
         out = _enrich_notices_with_rw([retraction_notice, correction_notice], cache)
         assert out[0].rw_reasons == ["R-reason"]

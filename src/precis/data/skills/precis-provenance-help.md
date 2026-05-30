@@ -111,13 +111,38 @@ When the local `provenance_rw_cache` is populated (via
 gains its reason codes:
 
 ```
-- 🔴 retraction · 2006-01-12 · notice DOI: 10.1126/science.1112286-r1
-  - Reasons: +Falsification/Fabrication of Data; +Investigation by
-    Journal/Publisher; +Misconduct
+- 🔴 Retraction (RW) · notice DOI: 10.1126/science.1124926
+  - Reasons: Falsification/Fabrication of Data; Investigation by
+    Company/Institution; Misconduct - Official Investigation(s) and/or
+    Finding(s); Misconduct by Author
 ```
 
-Crossref alone tells you *that* a paper was retracted; Retraction
-Watch tells you *why*. Run the sync monthly via cron.
+The `(RW)` label on a notice line means it came from the Retraction
+Watch cache rather than Crossref's `update-to` field. Run the sync
+monthly via cron.
+
+## When Crossref disagrees with Retraction Watch
+
+The two sources are consulted together. The RW cache contributes:
+
+1. **Reasons** — Crossref carries the *fact* of a retraction; RW
+   carries the *why* (the >100 reason codes maintained by the RW
+   editors).
+2. **Notices Crossref doesn't have** — pre-CrossMark retractions and
+   cases where the publisher never deposited an `update-to` relation
+   (the Hwang stem-cell paper is the canonical example: retracted by
+   Science in 2006, AAAS never backfilled the relation, so Crossref
+   alone reports the paper as clean). RW knows about it; we surface
+   it here as a synthesised notice with the `(RW)` source label.
+3. **Resilience when Crossref is down** — if the Crossref API times
+   out or returns a transport error but the local RW cache has data
+   for the DOI, the report still goes through. The renderer shows a
+   `⚠️ Crossref unavailable` banner so you know the live source
+   wasn't consulted, but you get the retraction info either way.
+
+When Crossref has data AND RW has data for the same notice DOI, the
+two are merged: Crossref's `update_type`/date drives the line, RW's
+reasons drive the "Reasons:" sub-bullet. Dedup is by `notice_doi`.
 
 ## Metadata verification (`view='verify'`)
 

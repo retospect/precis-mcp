@@ -40,13 +40,16 @@ class TestExtractCitedDois:
         assert _extract_cited_dois(msg) == ["10.1234/foo", "10.5678/bar"]
 
     def test_canonicalises_doi(self) -> None:
+        # Registrant must be 4-9 digits per validate_doi (single-letter
+        # registrants like 10.X/foo would be rejected as malformed
+        # before canonicalisation).
         msg = {
             "reference": [
-                {"DOI": "https://doi.org/10.X/Foo"},
-                {"DOI": "DOI:10.Y/Bar"},
+                {"DOI": "https://doi.org/10.1234/Foo"},
+                {"DOI": "DOI:10.5678/Bar"},
             ]
         }
-        assert _extract_cited_dois(msg) == ["10.x/foo", "10.y/bar"]
+        assert _extract_cited_dois(msg) == ["10.1234/foo", "10.5678/bar"]
 
     def test_skips_references_without_doi(self) -> None:
         msg = {
