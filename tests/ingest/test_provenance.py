@@ -647,3 +647,181 @@ class TestRenderBatch:
         out = render_batch(results, view="default")
         assert "Check failed (transport error)" in out
         assert "connection reset" in out
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.5: numbered-result rendering (standardised LLM output)
+# ---------------------------------------------------------------------------
+
+
+class TestInputIndex:
+    """``input_index`` is the 1-based input position, stable across views."""
+
+    @patch("precis.ingest.provenance._fetch_crossref_message")
+    def test_index_preserved_in_input_order(
+        self,
+        mock_fetch,
+        crossref_clean: dict,
+    ) -> None:
+        """Index reflects input order, not thread-pool completion order."""
+        mock_fetch.return_value = crossref_clean
+        dois = ["10.1234/a", "10.5678/b", "10.9999/c"]
+        results = check_dois(dois)
+        assert [r.input_index for r in results] == [1, 2, 3]
+
+    @patch("precis.ingest.provenance._fetch_crossref_message")
+    def test_single_doi_batch_gets_index_one(
+        self,
+        mock_fetch,
+        crossref_clean: dict,
+    ) -> None:
+        """Single-DOI fast path still assigns index=1 for consistency."""
+        mock_fetch.return_value = crossref_clean
+        results = check_dois(["10.1234/clean"])
+        assert len(results) == 1
+        assert results[0].input_index == 1
+
+    @patch("precis.ingest.provenance._fetch_crossref_message")
+    def test_direct_check_doi_index_zero(
+        self,
+        mock_fetch,
+        crossref_clean: dict,
+    ) -> None:
+        """Direct check_doi (not via batch) leaves input_index=0 — the
+        sentinel that says "no batch position; don't render #N"."""
+        mock_fetch.return_value = crossref_clean
+        result = check_doi("10.1234/clean")
+        assert result.input_index == 0
+
+    @patch("precis.ingest.provenance._fetch_crossref_message")
+    def test_failed_result_still_carries_index(self, mock_fetch) -> None:
+        """An exception in a worker doesn't lose the input_index — the
+        check_failed result keeps its position."""
+
+        def fake(doi: str, mailto):
+            if "broken" in doi:
+                raise RuntimeError("boom")
+            return {"title": ["Ok"], "DOI": doi}
+
+        mock_fetch.side_effect = fake
+        results = check_dois(["10.1234/ok", "10.5555/broken", "10.9999/ok"])
+        assert [r.input_index for r in results] == [1, 2, 3]
+        assert results[1].status == "check_failed"
+        assert results[1].input_index == 2
+
+    @patch("precis.ingest.provenance._fetch_crossref_message")
+    def test_malformed_input_keeps_position(self, mock_fetch) -> None:
+        """Malformed DOIs short-circuit before HTTP but still get an index."""
+        mock_fetch.return_value = {"title": ["Ok"], "DOI": "x"}
+        results = check_dois(["10.1234/a", "not-a-doi", "10.5678/b"])
+        assert [r.input_index for r in results] == [1, 2, 3]
+        assert results[1].status == "malformed"
+
+    def test_index_renders_in_default_view(self) -> None:
+        from precis.handlers._provenance_report import render_batch
+
+        results = [
+            ProvenanceResult(
+                doi="10.x/a",
+                status="ok",
+                paper_title="Title A",
+                input_index=1,
+            ),
+            ProvenanceResult(
+                doi="10.x/b",
+                status="ok",
+                paper_title="Title B",
+                input_index=2,
+            ),
+        ]
+        out = render_batch(results, view="default")
+        assert "**#1**" in out
+        assert "**#2**" in out
+
+    def test_index_renders_in_blockers_view_skipping_hidden(self) -> None:
+        """A 🔴 at position 47 shows as #47, even with #1..#46 hidden."""
+        from precis.handlers._provenance_report import render_batch
+
+        results = []
+        # 46 clean entries (will be hidden in blockers view)
+        for i in range(1, 47):
+            results.append(
+                ProvenanceResult(
+                    doi=f"10.x/clean{i}",
+                    status="ok",
+                    input_index=i,
+                )
+            )
+        # One retracted at position 47
+        results.append(
+            ProvenanceResult(
+                doi="10.x/bad",
+                status="ok",
+                input_index=47,
+                notices=[
+                    Notice(
+                        update_type="retraction",
+                        severity="blocker",
+                        status="retracted",
+                        relation="retracted-by",
+                        notice_doi="10.x/bad-r1",
+                        notice_date=None,
+                        notice_title=None,
+                        notice_authors=None,
+                        notice_year=None,
+                    ),
+                ],
+            )
+        )
+        out = render_batch(results, view="blockers")
+        assert "**#47**" in out
+        # The clean ones (#1-#46) should be hidden
+        assert "**#1** ·" not in out
+
+    def test_index_in_json_view(self) -> None:
+        import json as _json
+
+        from precis.handlers._provenance_report import render_batch
+
+        results = [
+            ProvenanceResult(
+                doi="10.x/a",
+                status="ok",
+                input_index=1,
+            ),
+            ProvenanceResult(
+                doi="10.x/b",
+                status="ok",
+                input_index=2,
+            ),
+        ]
+        payload = _json.loads(render_batch(results, view="json"))
+        # input_index is part of the dataclass; asdict picks it up
+        assert payload["results"][0]["input_index"] == 1
+        assert payload["results"][1]["input_index"] == 2
+
+    def test_index_renders_for_malformed_unknown(self) -> None:
+        from precis.handlers._provenance_report import render_batch
+
+        results = [
+            ProvenanceResult(doi="not-a-doi", status="malformed", input_index=1),
+            ProvenanceResult(doi="10.x/missing", status="unknown", input_index=2),
+        ]
+        out = render_batch(results, view="default")
+        assert "**#1**" in out  # malformed entry
+        assert "**#2**" in out  # unknown entry
+
+    def test_zero_index_renders_no_prefix(self) -> None:
+        """When ``input_index=0`` (single-result-not-in-batch), no #N shown."""
+        from precis.handlers._provenance_report import render_batch
+
+        results = [
+            ProvenanceResult(
+                doi="10.x/a",
+                status="ok",
+                paper_title="Title A",
+                input_index=0,  # sentinel
+            ),
+        ]
+        out = render_batch(results, view="default")
+        assert "**#" not in out

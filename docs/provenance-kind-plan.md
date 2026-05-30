@@ -97,29 +97,46 @@ Regex (case-insensitive): `10\.\d{4,9}/[^\s]+`. Strip leading
 This is the same call we'd make for retraction lookup, so verification
 is free — no separate verification pass.
 
-### Step 3: fuzzy resolution (opt-in)
+### Step 3: candidate hint (opt-in; never substitutes)
 
-When the agent passes a DOI that 404s *and* supplies bibliographic
-hints (title / first author / year), try:
+**Important: we deliberately do NOT auto-resolve 404 DOIs to a
+different DOI based on text similarity.** A DOI is an assertion of
+identity; silently swapping it for a same-titled paper is exactly
+the kind of citation-hygiene failure the rest of `provenance` exists
+to *detect*. We considered this in an earlier revision of the plan
+and dropped it.
+
+What we *do* support, when a 404 DOI is paired with bibliographic
+metadata in a ``BibEntry``: surface candidate Crossref matches as an
+informational hint, without acting on them. The report shows:
 
 ```
-GET /works?query.bibliographic=<title>&query.author=<surname>&rows=5
+⚪ Unknown DOI (1)
+- **#47** · `10.1234/typo` — Crossref returned 404
+  Bibliographic hints suggest possible matches:
+    - 10.5678/foo (score 94) — "Quantum error correction…" Smith 2019
+    - 10.5678/bar (score 81) — "Similar title…"            Smith 2020
+  Action: verify which (if any) is the citation you meant.
 ```
 
-Crossref returns ranked candidates with a `score` field. Take the top
-hit if score ≥ 80 (empirically a strong match), surface the alternative
-in the report:
+No auto-substitution. The candidate DOIs are NOT silently health-
+checked, NOT written through to the store, NOT matched against the
+notice graph. The caller (human or LLM) decides what to do.
 
-```
-🟢 corrected DOI
-  Supplied: 10.x/typo-doi (not found)
-  Resolved: 10.y/canonical-doi (Crossref score 94 · title matches)
-  → using resolved DOI for the rest of the check
-```
+Implementation cheap: when ``BibEntry`` hints are present and a DOI
+returns 404, issue one ``/works?query.bibliographic=…&query.author=…
+&rows=5`` call and emit the top results into the report's "Unknown
+DOI" section as text. Same opt-in shape as Phase 2.5 metadata
+verification — only fires when bibliographic hints exist.
 
-This is opt-in via `view='fuzzy'` on `get(kind='provenance', ...)` or
-`--fuzzy` on the CLI. Off by default — too risky to silently rewrite
-DOIs.
+**Why this is safe but the previous "fuzzy resolution" wasn't:**
+
+| concern | "auto-resolve" (rejected) | "candidate hint" (Phase 5) |
+|---|---|---|
+| Wrong-paper substitution | silent | impossible — never substitutes |
+| Threshold tuning | load-bearing on score≥80 | irrelevant — all candidates shown |
+| Hallucinated DOI failure mode | masked (fuzzy "finds" something) | preserved (status='unknown') |
+| Stale Crossref index | gives confidently-wrong answer | gives hint, marked as such |
 
 ### Step 4: existence as a separate kind action
 
@@ -155,9 +172,16 @@ get(kind='provenance', q='manuscript.bib', view='from-bibfile')
 | (default) | full triaged report grouped by severity, markdown |
 | `blockers` | only 🔴/🟠 (the must-act list) |
 | `exists`   | DOI existence check only (cheap) |
-| `fuzzy`    | as default + opt-in fuzzy resolution for 404 DOIs |
 | `json`     | structured payload for downstream tooling |
 | `csv`      | flat row-per-DOI |
+
+Earlier revisions of the plan included a ``view='fuzzy'`` that would
+auto-substitute 404 DOIs with their nearest-title-match. Removed —
+silent identifier substitution is the failure mode the rest of
+`provenance` is designed to *detect*. The salvageable subset (surface
+candidate matches as an informational hint, never substitute) lives
+in Phase 5 / Step 3 above, attached to the `Unknown DOI` report
+section rather than as its own view.
 
 **Other kwargs:**
 
@@ -244,7 +268,9 @@ precis jobs check-provenance \
     --slug-pattern 'smith*'              # OR live slugs from the store
     --since 7d                           # only recheck stale entries
     --transitive depth=1                 # cite-check depth (0 disables)
-    --fuzzy                              # opt-in DOI fuzzy resolution
+    --suggest-candidates                 # for 404 DOIs with bib hints,
+                                         # show possible matches (no
+                                         # substitution; advisory only)
     --format md|json|csv
     --out preflight.md
 ```
@@ -267,7 +293,9 @@ Without skills the kind is invisible to small-model agents.
 src/precis/ingest/
     provenance.py          (NEW — Crossref update-to + RW lookup + classifier)
     crossref.py            (extend — add `fetch_update_to(doi)` and
-                            `fuzzy_resolve(hints)` helpers)
+                            `candidate_search(hints)` helpers — the latter
+                            returns Crossref ranked matches as hints only,
+                            never used to substitute a 404 DOI)
 
 src/precis/handlers/
     provenance.py          (NEW — KindSpec + get() returning Response)
@@ -292,13 +320,15 @@ src/precis/data/skills/
 ### Core flow for a single DOI
 
 ```
-provenance.check_doi(doi, *, store, hub, fuzzy=False) -> ProvenanceResult:
+provenance.check_doi(doi, *, store, hub, suggest_candidates=False) -> ProvenanceResult:
     1. Validate DOI format. If malformed → return early.
     2. Look up local ref by DOI in ref_identifiers (may be absent; that's OK).
     3. GET /works/{doi} from Crossref (existing http cache, TTL=7d).
-       - 404 + fuzzy=True + hints present → try fuzzy_resolve(hints),
-         swap DOI if score ≥ 80.
-       - 404 + no fuzzy → status='unknown', return.
+       - 404 + suggest_candidates=True + BibEntry hints present →
+         call candidate_search(hints), attach top-N to result.candidate_dois
+         (advisory only; the queried DOI's status STAYS `unknown`, no
+         substitution happens, candidates are not health-checked).
+       - 404 otherwise → status='unknown', return.
     4. For each entry in message.update-to:
          - classify type → (severity, status enum)
          - GET /works/{notice_doi} for notice title/date
@@ -324,7 +354,7 @@ provenance.check_doi(doi, *, store, hub, fuzzy=False) -> ProvenanceResult:
 - HTTP responses go through `store/_cache_ops.py`:
   - `/works/{doi}` TTL = 7d
   - `/works?filter=update-to.DOI:...` TTL = 24h (reverse lookup is more dynamic)
-  - `/works?query.bibliographic=...` TTL = 30d (fuzzy resolution rarely changes)
+  - `/works?query.bibliographic=...` TTL = 30d (candidate-hint queries rarely change)
 
 ### Failure modes
 
@@ -332,7 +362,7 @@ provenance.check_doi(doi, *, store, hub, fuzzy=False) -> ProvenanceResult:
 |-----------|-----------|
 | DOI malformed | status='malformed', no HTTP call |
 | DOI 404 | status='unknown', surface in report |
-| DOI 404 + fuzzy + hints | try resolve, fall back to 'unknown' |
+| DOI 404 + suggest_candidates + hints | status STAYS unknown; candidate hint list attached for human review |
 | Crossref 429 | exponential backoff, surface remaining quota |
 | Crossref 5xx | retry 3×, then status='check_failed' |
 | RW cache stale (>45d) | still return Crossref data; mark `rw_freshness='stale'` |
@@ -429,7 +459,10 @@ Retraction Watch dataset synced: 2026-05-12 (18 days ago)
 - (3 more) …
 
 ## Unknown (3)
-- 10.x/typo-doi — Crossref returned 404 (try --fuzzy)
+- 10.x/typo-doi — Crossref returned 404
+  Possible matches (run with --suggest-candidates):
+    - 10.5678/foo (score 94) — "Quantum widgets…"
+    - 10.5678/bar (score 81) — "Similar widgets…"
 - 10.x/garbled — malformed (extra slash)
 - 10.x/missing — Crossref returned 404
 ```
@@ -465,7 +498,7 @@ paper itself; it's a "review and judge" signal).
 | **3** | Retraction Watch cache. `jobs/provenance_rw_sync.py` monthly cron (wired into existing `precis maintenance run`). Join into report. | ~1 day |
 | **3.5** | Numbered-result rendering across all views, matching the project's standardised LLM-output convention (`utils/search_merge.py:208`). | ~0.5 day |
 | **4** | Transitive cite-check (depth=1). Reuse `ingest/citations.py`. Skill `precis-preflight.md`. | ~0.5 day |
-| **5** | `paper` `view='health'` shim. Fuzzy DOI resolution (step 3 of verification). `view='exists'` shortcut. | ~0.5 day |
+| **5** | `paper` `view='health'` shim. Candidate-DOI hint for 404s with bib metadata (read-only; never substitutes). `view='exists'` shortcut. | ~0.5 day |
 
 Total: ~5 days. Phase 1 alone is shippable and answers the original
 ask for any DOI you can name.
@@ -748,8 +781,39 @@ mapping.
   distribute the RW dataset under CC-BY. RW remains the source of the
   reason taxonomy, fetched via Crossref Labs.
 - **DOI verification before treating as canonical?** Yes — format
-  validate, then existence-check via Crossref `/works/{doi}`. Fuzzy
-  resolution opt-in via `--fuzzy` / `view='fuzzy'`.
+  validate, then existence-check via Crossref `/works/{doi}`. 404
+  surfaces as `status='unknown'`; we do *not* auto-substitute a
+  different DOI based on title similarity. See "Rejected: fuzzy
+  DOI auto-resolution" below.
+- **What to do with 404 DOIs that carry bib metadata?**
+  Phase 5 emits Crossref candidate matches as an *advisory hint*
+  attached to the unknown-DOI report section. The supplied DOI's
+  status stays `unknown`; candidates are not health-checked, not
+  written through, not matched against the notice graph. The
+  caller decides whether any of them is the intended citation.
+
+## Rejected: fuzzy DOI auto-resolution
+
+An earlier plan revision had a ``view='fuzzy'`` that would auto-
+substitute a 404 DOI with its nearest Crossref title-match above a
+``score≥80`` threshold. **Dropped.** Reasons:
+
+1. **A DOI is an identity assertion.** Silently swapping it for a
+   same-titled paper is exactly the citation-hygiene failure the
+   rest of `provenance` exists to detect. Phase 2.5 flags wrong-
+   paper citations *loudly*; an auto-resolve path would do it
+   *silently* — internally inconsistent.
+2. **Score≥80 is structurally unsound.** Crossref's scoring is
+   opaque and query-dependent. The same threshold means "exact
+   match" for one query and "shared four content words" for
+   another. Tuning a single threshold is impossible.
+3. **Wrong fix for the dominant failure mode.** When an LLM
+   hallucinates a DOI, fuzzy resolution "finds" something plausible
+   and presents it as the fix — confidently masking the
+   hallucination instead of surfacing it.
+4. **The candidate-hint subset (Phase 5) preserves the useful
+   signal** (Crossref's ranked matches when bib hints exist)
+   *without* the silent substitution.
 
 ## Deferred
 
@@ -760,9 +824,11 @@ mapping.
 - Per-publisher fallbacks. Some publishers (Elsevier, PLOS) bury
   retractions in non-standard fields. For v1 trust Crossref; revisit
   only on observed misses.
-- Confidence weighting for fuzzy hits. v1 uses a fixed score≥80
-  threshold; could later use chunk-side title cosine similarity to
-  improve precision.
+- Ranking signal for candidate hints (Phase 5). v1 just shows the
+  Crossref ``/works?query.bibliographic=...`` ranked list. Could
+  later cross-reference with chunk-side title cosine similarity to
+  surface better candidates first — but only as a display order
+  change, never as an auto-substitution rule.
 
 ---
 
@@ -850,14 +916,30 @@ of the Phase 1 spec.
   by hand, save them as dict fixtures in
   `tests/ingest/conftest.py`.
 
-## Still open — Phase 3 only
+## Resolved Phase 3 source (confirmed 2026-05-30)
 
-- **Retraction Watch dataset fetch URL.** The Crossref-distributed
-  RWDB doesn't have a single canonical pinnable endpoint.
-  **Working assumption:** Phase 3 fetches the CSV mirror at
-  `gitlab.com/crossref/retraction-watch-data` (stable, versioned,
-  licensed CC-BY in the repo). Confirm the URL is still live and the
-  schema is unchanged when Phase 3 actually starts.
+- **Retraction Watch dataset fetch.** Two viable, currently-live
+  sources documented by Crossref:
+
+  - **Primary — Crossref Labs API:**
+    ``https://api.labs.crossref.org/data/retractionwatch?<email>`` —
+    note the unusual query format (email is the bare query string,
+    not ``?mailto=...``). CSV, ~40 MB, daily updates. Documented at
+    https://www.crossref.org/labs/retraction-watch/.
+
+    **Caveat:** Crossref labels this Labs/experimental:
+    *"They may disappear without warning and/or perform erratically.
+    We plan to model and support it via our REST API in future."*
+
+  - **Secondary — GitLab mirror:**
+    ``gitlab.com/crossref/retraction-watch-data`` —
+    Crossref-hosted, established September 2024 with daily updates
+    (475+ commits as of May 2026). Same data, more stable URL.
+
+  **Phase 3 implementation pattern:** try Labs API first (smaller pin,
+  official endpoint), fall back to GitLab on 404 / connection error.
+  Log clearly which source served the data so a future Crossref REST
+  migration is detectable from the sync job logs.
 
 ## Deferred / out of scope
 

@@ -61,7 +61,13 @@ def _format_authors(authors: list[dict[str, str]] | None) -> str:
 
 
 def _format_notice_line(notice: Notice) -> str:
-    """One bullet per notice — Crossref type, notice DOI, date, local slug."""
+    """One bullet per notice — Crossref type, notice DOI, date, local slug.
+
+    When Phase 3 RW data is present (``notice.rw_reasons``), the
+    reason codes are surfaced inline so the reader sees *why*, not
+    just *that*. RW codes are typically prefixed with ``+`` (e.g.
+    ``+Falsification/Fabrication of Data``) — we render them as-is.
+    """
     parts: list[str] = []
     glyph = _SEVERITY_GLYPH[notice.severity]
     parts.append(f"{glyph} **{notice.update_type}**")
@@ -70,7 +76,17 @@ def _format_notice_line(notice: Notice) -> str:
     parts.append(f"notice DOI: `{notice.notice_doi}`")
     if notice.persisted_ref_id is not None:
         parts.append(f"ingested as ref id={notice.persisted_ref_id}")
-    return "- " + " · ".join(parts)
+    main = "- " + " · ".join(parts)
+    if notice.rw_reasons:
+        # Indent the reasons under the main bullet so multi-reason
+        # notices stay visually grouped. Long lists truncated to 5
+        # to keep the report scannable; the JSON view always carries
+        # the full list.
+        shown = notice.rw_reasons[:5]
+        extra = "" if len(notice.rw_reasons) <= 5 else f" (+{len(notice.rw_reasons) - 5} more)"
+        reasons_line = "  - **Reasons:** " + "; ".join(shown) + extra
+        return main + "\n" + reasons_line
+    return main
 
 
 def _severity_action(severity: Severity) -> str:
@@ -282,7 +298,7 @@ def render_batch(results: list[ProvenanceResult], view: View = "default") -> str
             note = ""
             if r.status == "check_failed" and r.error:
                 note = f" — {r.error}"
-            lines.append(f"- `{r.doi}`{note}")
+            lines.append(f"- {_index_prefix(r)}`{r.doi}`{note}")
         lines.append("")
 
     # Clean papers — single condensed line at the bottom of the
@@ -293,7 +309,7 @@ def render_batch(results: list[ProvenanceResult], view: View = "default") -> str
         lines.append("")
         for r in clean:
             title = f" — {r.paper_title}" if r.paper_title else ""
-            lines.append(f"- `{r.doi}`{title}")
+            lines.append(f"- {_index_prefix(r)}`{r.doi}`{title}")
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -403,7 +419,7 @@ def _render_verification_block(r: ProvenanceResult) -> list[str]:
         f"_{r.paper_title or '(no title)'}"
         f"{' — ' + crossref_authors if r.paper_authors else ''}_"
     )
-    lines.append(f"### `{r.doi}`")
+    lines.append(f"### {_index_prefix(r)}`{r.doi}`")
     lines.append(f"Crossref says: {crossref_summary}")
     lines.append("")
     # Title diff — show raw score + added/removed tokens
@@ -447,6 +463,20 @@ def _render_verification_block(r: ProvenanceResult) -> list[str]:
     return lines
 
 
+def _index_prefix(r: ProvenanceResult) -> str:
+    """Render the ``#N`` index prefix for a batch result.
+
+    Phase 3.5: every batch result carries a 1-based ``input_index``
+    matching its position in the original DOI list. Showing it
+    inline gives the LLM (or human) a stable handle — "result #47"
+    means input line 47, regardless of which severity bucket the
+    renderer dropped it into. ``input_index=0`` (the
+    single-DOI-not-in-batch sentinel) prints nothing, since the
+    ambiguity it addresses doesn't exist there.
+    """
+    return f"**#{r.input_index}** · " if r.input_index else ""
+
+
 def _render_per_doi_block(
     r: ProvenanceResult, bucket_key: str
 ) -> list[str]:
@@ -456,7 +486,7 @@ def _render_per_doi_block(
     title = r.paper_title or "(no title)"
     authors_str = _format_authors(r.paper_authors)
     year_str = f" {r.paper_year}" if r.paper_year else ""
-    lines.append(f"### `{r.doi}` — {authors_str}{year_str}")
+    lines.append(f"### {_index_prefix(r)}`{r.doi}` — {authors_str}{year_str}")
     lines.append(f"_{title}_")
     if r.applied_status is not None:
         lines.append(f"- **Applied status**: `{r.applied_status}` (local ref id={r.paper_ref_id})")

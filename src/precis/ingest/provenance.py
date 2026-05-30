@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Iterable, Literal
 
@@ -186,6 +186,17 @@ class Notice:
     notice_authors: list[dict[str, Any]] | None
     notice_year: int | None
     persisted_ref_id: int | None = None  # populated when auto-ingested
+    # Phase 3: Retraction Watch reason codes joined from the local
+    # cache. Empty list means either (a) no RW data for this paper-DOI,
+    # or (b) RW data exists but the notice_doi didn't match any cached
+    # row. The renderer treats both cases identically — just no
+    # reasons surfaced.
+    rw_reasons: list[str] = field(default_factory=list)
+    # RW's own classification ("Retraction" / "Correction" / "Expression
+    # of concern" / …). Mostly redundant with ``update_type`` from
+    # Crossref but kept for cross-reference when the two disagree
+    # (rare, but informative when investigating discrepancies).
+    rw_notice_nature: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +277,13 @@ class ProvenanceResult:
     # Phase 2.5: populated when the caller supplied a BibEntry to
     # verify against Crossref. ``None`` for the plain DOI-check path.
     verification: MetadataVerification | None = None
+    # Phase 3.5: 1-based position in the original input list. ``0``
+    # for single-DOI calls (where there's no ambiguity to resolve)
+    # or when the result is constructed outside a batch context.
+    # Populated by ``check_dois`` at result-slot assignment so the
+    # index reflects *input* order, not thread-pool completion order.
+    # See plan §"Phase 3.5: numbered-result rendering".
+    input_index: int = 0
     # Error message when status='check_failed'
     error: str | None = None
 
@@ -300,6 +318,127 @@ class ProvenanceResult:
         if v.year_match == "mismatch":
             return True
         return False
+
+
+# ---------------------------------------------------------------------------
+# Retraction Watch cache lookup (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _RWCacheRow:
+    """One row from ``provenance_rw_cache`` for a single paper DOI."""
+
+    notice_doi: str | None
+    notice_nature: str
+    reasons: list[str]
+
+
+def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
+    """Return every cached RW row for ``paper_doi``, or ``[]`` if none.
+
+    Multiple rows are possible: a paper with both a correction *and*
+    a later retraction has one row per notice. The caller matches
+    each row to the corresponding Crossref ``update-to`` Notice by
+    DOI; un-matched rows are surfaced via a fallback path so RW
+    reasons aren't lost when Crossref's view of the paper is thin.
+
+    Returns ``[]`` when the cache table doesn't exist yet (e.g. on
+    a deployment that hasn't run migration 0003) — the caller
+    treats the absence as "no reasons available", same as an empty
+    cache. This keeps the kind usable in degraded environments.
+    """
+    sql = (
+        "SELECT notice_doi, notice_nature, reasons "
+        "FROM provenance_rw_cache WHERE paper_doi = %s"
+    )
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(sql, (paper_doi,)).fetchall()
+    except Exception:  # noqa: BLE001 — missing table / read error
+        return []
+    return [
+        _RWCacheRow(
+            notice_doi=(r[0] or None),
+            notice_nature=str(r[1] or ""),
+            reasons=list(r[2] or []),
+        )
+        for r in rows
+    ]
+
+
+def _enrich_notices_with_rw(
+    notices: list[Notice],
+    cache_rows: list[_RWCacheRow],
+) -> list[Notice]:
+    """Match RW cache rows to Crossref notices and merge in the reasons.
+
+    Match strategy:
+
+    1. **Exact DOI match** — cache row's ``notice_doi`` equals the
+       notice's ``notice_doi``. Strongest signal.
+    2. **Fallback by nature** — if no DOI match and there's exactly
+       one cache row of the matching nature (retraction/correction/
+       EoC), attach those reasons. Common when Crossref carries a
+       generic notice DOI and the RW row has a more specific one.
+
+    Reasons-on-no-match: returned as a synthetic notice would risk
+    surfacing data the user can't act on (no notice DOI to cite).
+    We keep it simple in Phase 3 — un-matched RW rows are dropped.
+    The sync ledger captures coverage; future phases can add a
+    "RW knows about this but Crossref doesn't" callout if useful.
+    """
+    if not cache_rows:
+        return notices
+
+    # Index cache rows by exact notice_doi for the fast path.
+    by_doi: dict[str, _RWCacheRow] = {
+        r.notice_doi.lower(): r for r in cache_rows if r.notice_doi
+    }
+
+    # Build a nature → row index for the fallback. Lowercase + collapse
+    # whitespace so "Expression of Concern" matches "expression_of_concern"
+    # off the Crossref side.
+    def _norm_nature(s: str) -> str:
+        return re.sub(r"[^a-z]", "", s.lower())
+
+    by_nature: dict[str, list[_RWCacheRow]] = {}
+    for r in cache_rows:
+        by_nature.setdefault(_norm_nature(r.notice_nature), []).append(r)
+
+    nature_for_status: dict[RetractionStatus, str] = {
+        "retracted":             "retraction",
+        "expression_of_concern": "expressionofconcern",
+        "corrected":             "correction",
+    }
+
+    out: list[Notice] = []
+    for n in notices:
+        match: _RWCacheRow | None = by_doi.get(n.notice_doi)
+        if match is None and n.status is not None:
+            candidates = by_nature.get(nature_for_status.get(n.status, ""), [])
+            if len(candidates) == 1:
+                match = candidates[0]
+        if match is None:
+            out.append(n)
+            continue
+        out.append(
+            Notice(
+                update_type=n.update_type,
+                severity=n.severity,
+                status=n.status,
+                relation=n.relation,
+                notice_doi=n.notice_doi,
+                notice_date=n.notice_date,
+                notice_title=n.notice_title,
+                notice_authors=n.notice_authors,
+                notice_year=n.notice_year,
+                persisted_ref_id=n.persisted_ref_id,
+                rw_reasons=list(match.reasons),
+                rw_notice_nature=match.notice_nature or None,
+            )
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +974,13 @@ def check_doi(
     # the natural reading order.
     notices.sort(key=lambda n: (n.notice_date or datetime.min))
 
+    # Phase 3: enrich notices with Retraction Watch reasons from the
+    # local cache. Cheap when there's no store (no-op) or no cache
+    # row for this DOI (one read returning zero rows).
+    if store is not None and notices:
+        cache_rows = _lookup_rw_cache(store, canonical)
+        notices = _enrich_notices_with_rw(notices, cache_rows)
+
     paper_in_store = False
     paper_ref_id: int | None = None
     applied: RetractionStatus | None = None
@@ -978,16 +1124,17 @@ def check_dois(
     def _entry_for(i: int) -> BibEntry | None:
         return bib_entries[i] if bib_entries is not None else None
 
-    # Single-DOI fast path — skip the thread-pool overhead.
+    # Single-DOI fast path — skip the thread-pool overhead. We still
+    # set ``input_index=1`` so the result is interchangeable with
+    # any other batch result (Phase 3.5: standardised LLM output).
     if len(inputs) == 1:
-        return [
-            check_doi(
-                inputs[0],
-                store=store,
-                mailto=mailto,
-                bib_entry=_entry_for(0),
-            )
-        ]
+        r = check_doi(
+            inputs[0],
+            store=store,
+            mailto=mailto,
+            bib_entry=_entry_for(0),
+        )
+        return [replace(r, input_index=1)]
 
     results: list[ProvenanceResult | None] = [None] * len(inputs)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -1004,7 +1151,10 @@ def check_dois(
         for fut in as_completed(future_to_idx):
             i = future_to_idx[fut]
             try:
-                results[i] = fut.result()
+                # input_index is 1-based and reflects *input* order,
+                # not thread-pool completion order — that's the whole
+                # point of Phase 3.5.
+                results[i] = replace(fut.result(), input_index=i + 1)
             except Exception as exc:  # noqa: BLE001 — preserve batch isolation
                 # ``check_doi`` already catches transport errors internally,
                 # so reaching this branch implies a bug. Surface as
@@ -1013,6 +1163,7 @@ def check_dois(
                     doi=inputs[i].strip().lower(),
                     status="check_failed",
                     error=f"unexpected error in worker: {exc}",
+                    input_index=i + 1,
                 )
 
     # ``results`` is fully populated by here (one entry per future).

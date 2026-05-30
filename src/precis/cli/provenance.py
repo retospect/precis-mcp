@@ -1,4 +1,13 @@
-"""``precis jobs check-provenance`` — DOI preflight against Crossref.
+"""``precis jobs check-provenance`` + ``precis jobs sync-retraction-watch``.
+
+Two subcommands sharing the provenance module:
+
+- ``check-provenance`` — DOI preflight against Crossref for the
+  manuscript-release workflow. One DOI per line; report grouped by
+  severity.
+- ``sync-retraction-watch`` — monthly ETL that pulls the RW dataset
+  (Crossref-distributed, CC-BY) into ``provenance_rw_cache`` so the
+  check pulls reason codes alongside notice DOIs.
 
 The preflight use case from ``docs/provenance-kind-plan.md``: an
 operator has 250 papers cited in a manuscript and wants to know
@@ -36,7 +45,13 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def add_parser(sub: argparse._SubParsersAction) -> None:
+def add_parsers(sub: argparse._SubParsersAction) -> None:
+    """Register both provenance subcommands on a shared parsers action."""
+    _add_check_parser(sub)
+    _add_sync_parser(sub)
+
+
+def _add_check_parser(sub: argparse._SubParsersAction) -> None:
     """Register ``precis jobs check-provenance``."""
     p = sub.add_parser(
         "check-provenance",
@@ -113,6 +128,41 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _add_sync_parser(sub: argparse._SubParsersAction) -> None:
+    """Register ``precis jobs sync-retraction-watch``."""
+    p = sub.add_parser(
+        "sync-retraction-watch",
+        help=(
+            "Pull the Retraction Watch dataset (CC-BY via Crossref) into "
+            "the local provenance cache. Run monthly via cron."
+        ),
+    )
+    p.add_argument(
+        "--database-url",
+        default=None,
+        help="PG DSN. Required — the sync writes into provenance_rw_cache.",
+    )
+    p.add_argument(
+        "--mailto",
+        default=None,
+        help=(
+            "Crossref polite-pool email. Required to use the Labs API "
+            "primary source; without it the job goes straight to the "
+            "GitLab mirror. Defaults to PRECIS_CROSSREF_MAILTO."
+        ),
+    )
+    p.add_argument(
+        "--source",
+        choices=("auto", "labs", "gitlab"),
+        default="auto",
+        help=(
+            "Force a specific source. 'auto' (default) tries Labs first "
+            "with --mailto, falls back to GitLab on failure. 'labs' "
+            "requires --mailto. 'gitlab' skips Labs entirely."
+        ),
+    )
+
+
 def run(args: argparse.Namespace) -> None:
     """Entry point for ``precis jobs check-provenance``."""
     from precis.handlers._provenance_report import render_batch
@@ -186,3 +236,43 @@ def run(args: argparse.Namespace) -> None:
         log.info("check-provenance: wrote %d bytes to %s", len(body), args.out)
     else:
         sys.stdout.write(body)
+
+
+def run_sync(args: argparse.Namespace) -> None:
+    """Entry point for ``precis jobs sync-retraction-watch``."""
+    from precis.jobs.provenance_rw_sync import run_sync as do_sync
+    from precis.store import Store
+
+    try:
+        dsn = resolve_dsn(args.database_url)
+    except Exception as exc:  # noqa: BLE001 — surface DSN issues cleanly
+        print(f"sync-retraction-watch: cannot resolve DSN: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    mailto = args.mailto or os.environ.get("PRECIS_CROSSREF_MAILTO") or None
+    if args.source == "labs" and not mailto:
+        print(
+            "sync-retraction-watch: --source=labs requires --mailto "
+            "or PRECIS_CROSSREF_MAILTO (Crossref polite-pool convention)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    force = None if args.source == "auto" else args.source
+
+    store = Store.connect(dsn)
+    result = do_sync(store=store, mailto=mailto, force_source=force)
+
+    log.info(
+        "sync-retraction-watch: status=%s, source=%s, rows=%d",
+        result.status,
+        result.source_url,
+        result.rows_upserted,
+    )
+    if result.status != "ok":
+        print(
+            f"sync-retraction-watch: {result.status} — "
+            f"{result.error or 'see logs'}",
+            file=sys.stderr,
+        )
+        sys.exit(1 if result.status == "failed" else 0)
