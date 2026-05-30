@@ -16,7 +16,7 @@ Two budgets, both lifted from
 
 The 12 KB ``tools/list`` ceiling reflects the post-Phase-1 measured
 baseline. The original design target (8 KB) predated the per-arg
-CLI help threading + ``edit``'s mode-specific allOf schema
+CLI help threading + ``edit``'s mode-coupling description suffixes
 constraint, both of which inflated the wire shape past the design
 estimate without adding agent-facing context cost on the cold-start
 banner side. The cap gives ~33% headroom; if the actual size ever

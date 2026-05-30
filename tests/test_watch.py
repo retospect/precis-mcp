@@ -23,14 +23,10 @@ from unittest.mock import patch
 import pytest
 
 from precis.cli.watch import (
-    _acquire_lock,
     _is_pdf,
-    _lock_path_for,
     _move_to,
     _move_to_corpus,
     _PdfHandler,
-    _recover_crashed,
-    _release_lock,
     _should_skip,
     _wait_stable,
     _write_error,
@@ -96,128 +92,6 @@ class TestShouldSkip:
 # ---------------------------------------------------------------------------
 # _wait_stable
 # ---------------------------------------------------------------------------
-
-
-class TestCrashLock:
-    """Lock-file crash detection breaks the OOM/restart loop. Each
-    test mirrors one observable property:
-
-    * acquire writes a lock containing the absolute PDF path;
-    * release deletes it;
-    * recover_crashed moves the named PDF to errors/crashed/<ts>/
-      and clears the lock;
-    * stale locks pointing at no-longer-existent PDFs are silently
-      cleared (operator-cleanup case).
-    """
-
-    def test_acquire_writes_path_then_release_deletes(self, tmp_path: Path) -> None:
-        pdf = tmp_path / "paper.pdf"
-        pdf.write_bytes(b"x")
-        lock_dir = tmp_path / ".processing"
-
-        lock = _acquire_lock(pdf, lock_dir=lock_dir)
-        assert lock.exists()
-        assert lock.parent == lock_dir
-        # First line of the lock content is the absolute path.
-        assert lock.read_text().splitlines()[0] == str(pdf.resolve())
-
-        _release_lock(lock)
-        assert not lock.exists()
-
-    def test_release_is_idempotent(self, tmp_path: Path) -> None:
-        lock = tmp_path / "fake.lock"
-        # Releasing a never-existed lock is fine.
-        _release_lock(lock)
-        # Releasing twice is fine.
-        lock.write_text("x")
-        _release_lock(lock)
-        _release_lock(lock)
-
-    def test_lock_filename_collision_resistant(self, tmp_path: Path) -> None:
-        """Same basename in different subdirs gets different lock
-        files — the hash includes the absolute path."""
-        a_dir = tmp_path / "a"
-        b_dir = tmp_path / "b"
-        a_dir.mkdir()
-        b_dir.mkdir()
-        a = a_dir / "same.pdf"
-        b = b_dir / "same.pdf"
-        a.write_bytes(b"x")
-        b.write_bytes(b"x")
-        lock_dir = tmp_path / ".processing"
-
-        assert _lock_path_for(a, lock_dir) != _lock_path_for(b, lock_dir)
-
-    def test_recover_moves_pdf_and_writes_reason(self, tmp_path: Path) -> None:
-        pdf = tmp_path / "giant.pdf"
-        pdf.write_bytes(b"x" * 100)
-        lock_dir = tmp_path / ".processing"
-        errors_dir = tmp_path / "errors"
-        errors_dir.mkdir()
-
-        # Simulate a previous crashed run: lock present, PDF still in inbox.
-        _acquire_lock(pdf, lock_dir=lock_dir)
-        assert pdf.exists()
-
-        recovered = _recover_crashed(lock_dir=lock_dir, errors_dir=errors_dir)
-        assert recovered == 1
-
-        # PDF moved out of inbox.
-        assert not pdf.exists()
-        # Landed under errors/crashed/<timestamp>/giant.pdf
-        crashed_root = errors_dir / "crashed"
-        assert crashed_root.is_dir()
-        ts_dirs = list(crashed_root.iterdir())
-        assert len(ts_dirs) == 1
-        moved = ts_dirs[0] / "giant.pdf"
-        assert moved.exists()
-        # Reason sidecar present and mentions OOM.
-        reason = ts_dirs[0] / "giant.pdf.reason.txt"
-        assert reason.exists()
-        assert "OOM" in reason.read_text()
-        # Lock is cleared.
-        assert list(lock_dir.iterdir()) == []
-
-    def test_recover_clears_stale_lock_when_pdf_gone(self, tmp_path: Path) -> None:
-        """Operator manually moved the PDF between crash and restart —
-        the lock is stale but there's nothing to recover."""
-        pdf = tmp_path / "manual.pdf"
-        pdf.write_bytes(b"x")
-        lock_dir = tmp_path / ".processing"
-        errors_dir = tmp_path / "errors"
-
-        _acquire_lock(pdf, lock_dir=lock_dir)
-        pdf.unlink()  # operator cleanup
-
-        recovered = _recover_crashed(lock_dir=lock_dir, errors_dir=errors_dir)
-        assert recovered == 0
-        assert list(lock_dir.iterdir()) == []
-        # Errors dir isn't created when there's nothing to move.
-        assert not errors_dir.exists()
-
-    def test_recover_with_no_lock_dir_returns_zero(self, tmp_path: Path) -> None:
-        """First-ever run: lock dir doesn't exist yet. Recovery is a no-op."""
-        assert (
-            _recover_crashed(
-                lock_dir=tmp_path / "never_existed",
-                errors_dir=tmp_path / "errors",
-            )
-            == 0
-        )
-
-    def test_processing_dir_is_managed(self, tmp_path: Path) -> None:
-        """The .processing dir is in _MANAGED_DIRS, so lock files
-        inside it are not picked up by the backfill scan as PDFs."""
-        watch_dir = tmp_path / "watch"
-        watch_dir.mkdir()
-        (watch_dir / ".processing").mkdir()
-        target = watch_dir / ".processing" / "abc.lock"
-        target.write_text("x")
-        # .pdf is the suffix that triggers _should_skip in the backfill
-        # path; simulate by giving it that suffix:
-        fake = watch_dir / ".processing" / "fake.pdf"
-        fake.write_bytes(b"x")
-        assert _should_skip(fake, watch_dir) is True
 
 
 class TestBackfillSubprocess:
@@ -352,7 +226,6 @@ class TestBackfillSubprocess:
                 corpus_dir=tmp_path / "corpus",
                 errors_dir=tmp_path / "errors",
                 duplicates_dir=tmp_path / "dup",
-                lock_dir=tmp_path / "lock",
                 debounce=0.5,
                 user="reto",
                 database_url="postgresql://x/y",
@@ -361,7 +234,6 @@ class TestBackfillSubprocess:
         cmd = captured["cmd"]
         assert "_watch_batch_ingest" in cmd
         assert "--corpus-dir" in cmd
-        assert "--lock-dir" in cmd
         assert "--user" in cmd and "reto" in cmd
         assert "--database-url" in cmd and "postgresql://x/y" in cmd
         # PDFs trail the flags.

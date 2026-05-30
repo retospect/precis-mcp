@@ -10,19 +10,51 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ### Added
 
-- **Crash-lock recovery for the watcher OOM/restart loop.** Before
-  invoking Marker on a PDF, `precis watch` writes a lock file at
-  ``/inbox/.processing/<hash>.lock`` recording the absolute PDF
-  path. The lock is deleted on completion (success, dedup, or
-  exception). On container startup, any leftover lock means the
-  previous run was SIGKILL'd mid-PDF (typically OOM); the named
-  PDF is moved to ``/inbox/errors/crashed/<ts>/`` with a
-  ``.reason.txt`` sidecar, and the backfill proceeds without
-  re-attempting the file. Breaks the infinite OOM/restart loop
-  pathology that smallest-first ordering alone didn't address: a
-  single unprocessable PDF used to crash every container restart
-  forever. Tests at
-  ``tests/test_watch.py::TestCrashLock``. See ADR 0014.
+- **Postgres advisory-lock work claims for multi-host ingest**
+  (`precis.ingest.claim.Claim`). Each PDF ingest opens a dedicated
+  psycopg session and calls `pg_try_advisory_lock(key)` where `key`
+  is the first 64 bits of `pdf_sha256`. If acquired, the host owns
+  the work; if busy, `precis_add` returns `None` and the watcher
+  leaves the file in place for the owning host to handle. The
+  claim auto-releases when the session closes — clean exit,
+  exception, container OOM, Mac crash, network partition. No
+  heartbeat, no stale-row reaper, no schema migration. Enables
+  multiple Macs to share a single `/inbox` (via SMB) talking to a
+  central Postgres, with no risk of two hosts running Marker on the
+  same content. See ADR 0016. Tests at
+  `tests/ingest/test_claim.py::TestKeyDerivation` (pure) and
+  `::TestClaimIntegration` (skipped without `PRECIS_DATABASE_URL`).
+
+- **`Store.dsn`** attribute exposes the original connection string
+  so callers needing a non-pooled connection (like `Claim`) can
+  open one. ``None`` when the Store was constructed from a
+  pre-built pool (tests).
+
+- **`_move_to` / `_move_to_corpus` tolerate FileNotFoundError on
+  rename**, treating it as "another host already moved this file."
+  Required for multi-host operation against a shared inbox where
+  the same physical file can be observed by N watchers
+  concurrently.
+
+### Changed
+
+- **`precis_add` may return `None`.** New return type
+  `IngestResult | None`. `None` means another host owns the
+  advisory-lock claim on this PDF's hash; the caller should not
+  touch the file. Existing single-host callers (one watcher,
+  no other hosts) never see `None` in practice.
+
+### Removed
+
+- **Filesystem-based crash locks** (`.processing/*.lock`,
+  `_acquire_lock`, `_release_lock`, `_lock_path_for`,
+  `_recover_crashed`). Superseded by the Postgres advisory-lock
+  claim above. The `--lock-dir` flag on the hidden
+  `_watch_batch_ingest` subcommand is also gone. Leftover
+  `.processing/` directories on disk from prior deployments are
+  harmless and can be deleted manually.
+
+### Added (continued)
 
 - **Subprocess-per-batch backfill** (`precis watch
   --subprocess-batch-size N`). When positive, startup backfill

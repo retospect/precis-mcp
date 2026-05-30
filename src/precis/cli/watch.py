@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import hashlib
 import logging
 import os
 import shutil
@@ -66,12 +65,7 @@ DEFAULT_POLL_INTERVAL = 1.0
 # Subdirectories of the watch dir that are managed by precis-watch
 # itself; events on these never trigger ingest. Explicit list so
 # operators can drop cooperative dirs without breaking anything.
-# ``.processing`` holds short-lived lock files written before Marker
-# runs and deleted after the ingest returns; on container restart any
-# leftover lock means the previous run crashed mid-PDF (see
-# :func:`_recover_crashed`).
-_LOCK_DIR_NAME = ".processing"
-_MANAGED_DIRS: frozenset[str] = frozenset({"errors", "completed", _LOCK_DIR_NAME})
+_MANAGED_DIRS: frozenset[str] = frozenset({"errors", "completed"})
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +178,6 @@ def add_batch_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--corpus-dir", type=Path, required=True)
     p.add_argument("--errors-dir", type=Path, required=True)
     p.add_argument("--duplicates-dir", type=Path, required=True)
-    p.add_argument("--lock-dir", type=Path, required=True)
     p.add_argument("--debounce", type=float, default=DEFAULT_DEBOUNCE)
     p.add_argument("--user", default="")
     p.add_argument("--database-url", default=None)
@@ -207,7 +200,6 @@ def run_batch(args: argparse.Namespace) -> None:
                     corpus_dir=args.corpus_dir,
                     errors_dir=args.errors_dir,
                     duplicates_dir=args.duplicates_dir,
-                    lock_dir=args.lock_dir,
                     debounce=args.debounce,
                     user=args.user or getpass.getuser(),
                 )
@@ -282,10 +274,8 @@ def watch(
 
     errors_dir = watch_dir / "errors"
     duplicates_dir = errors_dir / "duplicates"
-    lock_dir = watch_dir / _LOCK_DIR_NAME
     errors_dir.mkdir(exist_ok=True)
     duplicates_dir.mkdir(exist_ok=True)
-    lock_dir.mkdir(exist_ok=True)
     corpus_dir.mkdir(parents=True, exist_ok=True)
 
     user = user or getpass.getuser()
@@ -297,24 +287,11 @@ def watch(
         recursive,
     )
 
-    # Break the OOM/restart loop: any leftover .processing/*.lock from
-    # a previous container lifetime means we crashed mid-PDF. Move the
-    # named PDFs to errors/crashed/<ts>/ so the backfill below doesn't
-    # immediately re-attempt (and re-crash on) the same file.
-    recovered = _recover_crashed(lock_dir=lock_dir, errors_dir=errors_dir)
-    if recovered:
-        log.warning(
-            "precis watch: recovered %d PDF(s) from a previous crashed run "
-            "(see errors/crashed/ for details + .reason.txt sidecars)",
-            recovered,
-        )
-
     handler = _PdfHandler(
         watch_dir=watch_dir,
         corpus_dir=corpus_dir,
         errors_dir=errors_dir,
         duplicates_dir=duplicates_dir,
-        lock_dir=lock_dir,
         store=store,
         debounce=debounce,
         user=user,
@@ -367,7 +344,6 @@ class _PdfHandler(FileSystemEventHandler):
         store: Store,
         debounce: float,
         user: str,
-        lock_dir: Path | None = None,
         subprocess_batch_size: int = 0,
         subprocess_concurrency: int = 1,
         database_url: str | None = None,
@@ -377,10 +353,6 @@ class _PdfHandler(FileSystemEventHandler):
         self.corpus_dir = corpus_dir
         self.errors_dir = errors_dir
         self.duplicates_dir = duplicates_dir
-        # Default to ``watch_dir/.processing`` so test fixtures that
-        # construct ``_PdfHandler`` directly (without going through
-        # :func:`watch`) get sensible behaviour for free.
-        self.lock_dir = lock_dir if lock_dir is not None else watch_dir / _LOCK_DIR_NAME
         self.store = store
         self.debounce = debounce
         self.user = user
@@ -495,7 +467,6 @@ class _PdfHandler(FileSystemEventHandler):
                     corpus_dir=self.corpus_dir,
                     errors_dir=self.errors_dir,
                     duplicates_dir=self.duplicates_dir,
-                    lock_dir=self.lock_dir,
                     debounce=self.debounce,
                     user=self.user,
                     database_url=self.database_url,
@@ -521,7 +492,6 @@ class _PdfHandler(FileSystemEventHandler):
                 corpus_dir=self.corpus_dir,
                 errors_dir=self.errors_dir,
                 duplicates_dir=self.duplicates_dir,
-                lock_dir=self.lock_dir,
                 debounce=self.debounce,
                 user=self.user,
             )
@@ -537,65 +507,53 @@ def process_pdf(
     corpus_dir: Path,
     errors_dir: Path,
     duplicates_dir: Path,
-    lock_dir: Path | None = None,
     debounce: float = DEFAULT_DEBOUNCE,
     user: str = "",
 ) -> Path | None:
     """Process one PDF end-to-end. Returns the post-move path on
-    success / dedup, ``None`` on error.
+    success / dedup, ``None`` on error or when another host owns the
+    claim for this PDF's content.
 
     Order of operations:
 
     1. Wait for the file to settle (size stable across ``debounce`` s).
        Returns ``None`` if the file disappears during the wait.
-    2. Write a lock at ``lock_dir/<hash>.lock`` recording the absolute
-       PDF path. On container start, leftover locks are how
-       :func:`_recover_crashed` detects PDFs the previous run died
-       inside (typically Marker OOM on a giant PDF).
-    3. Call :func:`precis_add` with a :class:`PdfInput`.
-    4. On ``inserted=True`` move to corpus.
-    5. On ``inserted=False`` move to ``errors/duplicates``.
-    6. On exception write ``.error.txt`` next to the PDF in
-       ``errors/<ts>/`` and re-raise nothing — exceptions are
-       contained within process_pdf so the watcher loop survives
-       a single bad PDF.
-    7. In every exit path (success, dedup, exception), delete the
-       lock. SIGKILL skips the deletion — which is exactly the
-       signal that needs to reach :func:`_recover_crashed` on the
-       next start.
+    2. Call :func:`precis_add` with a :class:`PdfInput`.
+       :func:`precis_add` acquires a Postgres advisory-lock claim
+       keyed on ``pdf_sha256`` before running Marker. If the claim is
+       already held by another host, ``precis_add`` returns ``None``
+       and we leave the file in place so the owning host can finish.
+    3. On ``inserted=True`` move to corpus.
+    4. On ``inserted=False`` move to ``errors/duplicates``.
+    5. On exception write ``.error.txt`` next to the PDF in
+       ``errors/<ts>/`` and swallow — exceptions are contained
+       within process_pdf so the watcher loop survives a single
+       bad PDF.
     """
     if not _wait_stable(pdf, debounce=debounce):
         log.warning("precis watch: file disappeared before stable: %s", pdf)
         return None
 
-    lock_path: Path | None = None
-    if lock_dir is not None:
-        try:
-            lock_path = _acquire_lock(pdf, lock_dir=lock_dir)
-        except OSError as exc:
-            # Lock write failed (disk full, permission denied). Log
-            # and continue without the safety net — crash detection
-            # is a robustness layer, not a correctness one.
-            log.warning("precis watch: could not write lock for %s: %s", pdf, exc)
-
     try:
-        try:
-            result = precis_add(PdfInput(pdf_path=pdf), store=store)
-        except Exception as exc:
-            log.exception("precis watch: ingest failed for %s", pdf.name)
-            _handle_failure(pdf, exc, errors_dir=errors_dir)
-            return None
+        result = precis_add(PdfInput(pdf_path=pdf), store=store)
+    except Exception as exc:
+        log.exception("precis watch: ingest failed for %s", pdf.name)
+        _handle_failure(pdf, exc, errors_dir=errors_dir)
+        return None
 
-        return _handle_success(
-            pdf,
-            result,
-            corpus_dir=corpus_dir,
-            duplicates_dir=duplicates_dir,
-            user=user,
-        )
-    finally:
-        if lock_path is not None:
-            _release_lock(lock_path)
+    if result is None:
+        # Claim contention: another host is processing this content
+        # right now (advisory lock held in the DB). Leave the file in
+        # place — the owning host will move it on completion.
+        return None
+
+    return _handle_success(
+        pdf,
+        result,
+        corpus_dir=corpus_dir,
+        duplicates_dir=duplicates_dir,
+        user=user,
+    )
 
 
 def _handle_success(
@@ -637,7 +595,6 @@ def _spawn_batch_subprocess(
     corpus_dir: Path,
     errors_dir: Path,
     duplicates_dir: Path,
-    lock_dir: Path,
     debounce: float,
     user: str,
     database_url: str | None,
@@ -649,8 +606,9 @@ def _spawn_batch_subprocess(
     subprocess's heap before the next batch starts, which is the whole
     point. Parallelism here would defeat the leak isolation. If the
     child OOMs the kernel SIGKILLs *just the child*; the parent keeps
-    running and the per-PDF lock files left behind get cleaned up on
-    the next watcher start via :func:`_recover_crashed`.
+    running. Any per-PDF advisory-lock claims held by the dead child
+    auto-release when the Postgres session closes — no filesystem
+    recovery sweep needed.
     """
     if not pdfs:
         return
@@ -665,8 +623,6 @@ def _spawn_batch_subprocess(
         str(errors_dir),
         "--duplicates-dir",
         str(duplicates_dir),
-        "--lock-dir",
-        str(lock_dir),
         "--debounce",
         str(debounce),
     ]
@@ -676,137 +632,15 @@ def _spawn_batch_subprocess(
         cmd += ["--database-url", database_url]
     cmd += [str(p) for p in pdfs]
 
-    # ``check=False`` because a non-zero exit (including SIGKILL after
-    # OOM) is recoverable: per-PDF locks survive to be reaped by the
-    # next watcher start. We surface the exit code in the log for
-    # operator visibility, but don't abort the backfill — the next
-    # batch is likely fine.
     log.info("precis watch: spawning batch subprocess for %d PDF(s)", len(pdfs))
     result = subprocess.run(cmd, env=os.environ.copy(), check=False)
     if result.returncode != 0:
         log.warning(
             "precis watch: batch subprocess exited with code %d "
-            "(check errors/crashed/ on next start)",
+            "(advisory-lock claim auto-released; the next watcher run "
+            "will retry any unmoved files)",
             result.returncode,
         )
-
-
-def _lock_path_for(pdf: Path, lock_dir: Path) -> Path:
-    """Compute the ``.lock`` filename for ``pdf`` inside ``lock_dir``.
-
-    Hashing the absolute PDF path means the lock filename never
-    collides on arbitrary input (special chars, length limits, the
-    same basename in two subdirs of the inbox). 16 hex chars is
-    plenty — 64 bits of collision resistance against benign filenames
-    is overkill but cheap.
-    """
-    digest = hashlib.sha256(str(pdf.resolve()).encode()).hexdigest()[:16]
-    return lock_dir / f"{digest}.lock"
-
-
-def _acquire_lock(pdf: Path, *, lock_dir: Path) -> Path:
-    """Write a lock file recording ``pdf``'s absolute path.
-
-    Atomic via tmp + rename so an interrupted write doesn't leave a
-    half-locked state for the next start to misinterpret. The file
-    content is ``<abs_path>\\n<iso_timestamp>\\n``; the path is what
-    :func:`_recover_crashed` reads back, the timestamp is purely for
-    human debugging.
-    """
-    lock_dir.mkdir(exist_ok=True)
-    lock_path = _lock_path_for(pdf, lock_dir)
-    payload = f"{pdf.resolve()}\n{datetime.now(UTC).isoformat()}\n"
-    tmp = lock_path.with_suffix(".lock.tmp")
-    tmp.write_text(payload)
-    tmp.replace(lock_path)
-    return lock_path
-
-
-def _release_lock(lock_path: Path) -> None:
-    """Delete the lock file. ``missing_ok=True`` because a concurrent
-    :func:`_recover_crashed` (or operator cleanup) could have already
-    removed it, and that's not an error condition."""
-    lock_path.unlink(missing_ok=True)
-
-
-def _recover_crashed(*, lock_dir: Path, errors_dir: Path) -> int:
-    """Move any PDFs named by stale locks to ``errors/crashed/<ts>/``
-    and clear the locks. Returns the count of recovered files.
-
-    Called once at watcher startup, before backfill. A leftover lock
-    means the previous container died (SIGKILL — typically OOM)
-    between :func:`_acquire_lock` and :func:`_release_lock`, with the
-    named PDF still in ``/inbox``. Without recovery, the smallest-
-    first backfill would re-attempt the same giant PDF, re-trigger
-    the same OOM, and loop forever.
-
-    Locks whose named PDF no longer exists (e.g. the operator manually
-    moved it) are silently cleared — nothing to recover.
-    """
-    if not lock_dir.is_dir():
-        return 0
-
-    recovered = 0
-    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    crashed_dir = errors_dir / "crashed" / timestamp
-
-    for lock_path in lock_dir.iterdir():
-        if not lock_path.is_file() or lock_path.suffix != ".lock":
-            continue
-
-        try:
-            payload = lock_path.read_text()
-        except OSError as exc:
-            log.warning(
-                "precis watch: unreadable lock %s (%s) — clearing", lock_path, exc
-            )
-            lock_path.unlink(missing_ok=True)
-            continue
-
-        pdf_path_str = payload.splitlines()[0] if payload else ""
-        if not pdf_path_str:
-            lock_path.unlink(missing_ok=True)
-            continue
-
-        pdf_path = Path(pdf_path_str)
-        if not pdf_path.exists():
-            # Operator cleaned up between crash and restart.
-            lock_path.unlink(missing_ok=True)
-            continue
-
-        crashed_dir.mkdir(parents=True, exist_ok=True)
-        dest = crashed_dir / pdf_path.name
-        if dest.exists():
-            # Collision (multiple crashed locks pointing at same basename
-            # across subdirs); append a digest to disambiguate.
-            digest = lock_path.stem
-            dest = crashed_dir / f"{pdf_path.stem}.{digest}{pdf_path.suffix}"
-        pdf_path.rename(dest)
-
-        reason_path = dest.with_name(dest.name + ".reason.txt")
-        reason_path.write_text(
-            "Previous watcher run crashed while processing this file.\n"
-            f"Original path: {pdf_path}\n"
-            f"Lock content:\n{payload}\n"
-            "\nLikely causes:\n"
-            "- Marker OOM on a large PDF. The container memory cap is\n"
-            "  12 GiB in infrastructure/compose.yaml; giants exceed it.\n"
-            "- Process killed externally (kernel OOM, docker kill).\n"
-            "- Hardware / kernel issue (rare).\n"
-            "\nTo retry: move the PDF back into the inbox root.\n"
-            "To raise the cap: edit the precis-watch deploy.resources\n"
-            "block in infrastructure/compose.yaml and recreate.\n"
-        )
-
-        log.warning(
-            "precis watch: recovered crashed PDF %s → %s",
-            pdf_path.name,
-            dest,
-        )
-        lock_path.unlink(missing_ok=True)
-        recovered += 1
-
-    return recovered
 
 
 def _handle_failure(
@@ -867,13 +701,22 @@ def _wait_stable(path: Path, *, debounce: float) -> bool:
 def _move_to(src: Path, dest_dir: Path) -> Path:
     """Move ``src`` into ``dest_dir``. On filename conflict, append a
     UTC timestamp before the suffix so the original isn't clobbered.
-    Returns the post-move path."""
+    Returns the post-move path; or the destination it would have
+    taken if ``src`` was already moved (race on a shared SMB inbox
+    where two hosts both see the same file)."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / src.name
     if dest.exists():
         ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
         dest = dest_dir / f"{src.stem}_{ts}{src.suffix}"
-    shutil.move(str(src), str(dest))
+    try:
+        shutil.move(str(src), str(dest))
+    except FileNotFoundError:
+        # Race: another host moved ``src`` between our check and our
+        # move. That's exactly the multi-host case we're meant to
+        # tolerate — the other host is handling the file, just
+        # report the would-be destination.
+        log.info("precis watch: %s already moved by another host", src.name)
     return dest
 
 
@@ -881,7 +724,12 @@ def _move_to_corpus(pdf: Path, *, cite_key: str, corpus_dir: Path) -> Path:
     """Move ``pdf`` to ``<corpus_dir>/<letter>/<cite_key>.pdf``. The
     letter shard is the lower-case first character of ``cite_key``,
     or ``_`` if it isn't ASCII alphanumeric — matches the layout
-    described in ``docs/design/pip-merge.md``."""
+    described in ``docs/design/pip-merge.md``.
+
+    Tolerates ``FileNotFoundError`` on the rename: another host on a
+    shared inbox may have moved the same file between our existence
+    check and our shutil.move call (rare but possible). Logs and
+    returns the would-be destination in that case."""
     letter = cite_key[0].lower() if cite_key and cite_key[0].isalnum() else "_"
     bucket = corpus_dir / letter
     bucket.mkdir(parents=True, exist_ok=True)
@@ -889,7 +737,14 @@ def _move_to_corpus(pdf: Path, *, cite_key: str, corpus_dir: Path) -> Path:
     if dest.exists() and dest.resolve() != pdf.resolve():
         ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
         dest = bucket / f"{cite_key}_{ts}{pdf.suffix.lower()}"
-    shutil.move(str(pdf), str(dest))
+    try:
+        shutil.move(str(pdf), str(dest))
+    except FileNotFoundError:
+        log.info(
+            "precis watch: %s already moved by another host (cite_key=%s)",
+            pdf.name,
+            cite_key,
+        )
     return dest
 
 

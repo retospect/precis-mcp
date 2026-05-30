@@ -12,3 +12,6 @@ build/
 # OS junk
 .DS_Store
 **/.DS_Store
+
+# usability harness output
+scripts/exercise-mcp/out/

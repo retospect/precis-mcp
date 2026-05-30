@@ -409,20 +409,30 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
     'find-replace', find=..., before=..., after=...)`` repeatedly
     with no ``text=`` and did not recover from the runtime error).
 
+    Constraints applied:
+
+    - ``text`` is appended to top-level ``required`` (unconditional —
+      every mode needs it).
+    - The mode-conditional coupling for ``find`` / ``where`` is encoded
+      in per-property ``description`` fields. We *cannot* use top-level
+      ``allOf`` + ``if/then`` here: Anthropic's ``/v1/messages`` API
+      rejects ``oneOf``/``allOf``/``anyOf`` at the root of
+      ``tools[].custom.input_schema`` with a 400, which blocks every
+      tool call. Property descriptions are the next-best signal for
+      schema-reading clients, and the runtime ``BadInput`` path remains
+      the safety net.
+
     The mutation runs once at module import. FastMCP's ``list_tools``
     copies ``tool.parameters`` into the wire ``inputSchema`` on every
-    call, so the constraint surfaces to every client. Runtime
-    validation is pydantic-backed and still accepts missing fields —
-    the handler's ``BadInput`` path remains the fallback when a client
-    ignores the schema.
+    call, so the constraint surfaces to every client.
     """
     tool = mcp_app._tool_manager.get_tool("edit")
     if tool is None:  # pragma: no cover — edit always registers above
         return
     params = tool.parameters
     # Sentinel keeps the mutation idempotent: multiple imports or a
-    # second call from a test harness must not duplicate ``allOf``
-    # clauses or re-append ``text`` to ``required``.
+    # second call from a test harness must not re-append ``text`` to
+    # ``required`` or duplicate the coupling notes.
     if params.get("x-precis-edit-constraints-installed"):
         return
 
@@ -433,35 +443,34 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
         required.append("text")
     params["required"] = required
 
-    # ``find`` and ``where`` are mode-conditional; express via
-    # ``allOf`` + ``if/then``. Draft 2020-12 semantics: the ``if``
-    # schema is evaluated against the instance; if it validates,
-    # the ``then`` schema must also validate.
-    mode_requires_find = {"find-replace", "insert"}
-    conditions: list[dict[str, Any]] = [
-        {
-            "if": {
-                "properties": {"mode": {"enum": sorted(mode_requires_find)}},
-                "required": ["mode"],
-            },
-            "then": {"required": ["find"]},
-        },
-        {
-            "if": {
-                "properties": {"mode": {"const": "insert"}},
-                "required": ["mode"],
-            },
-            "then": {"required": ["where"]},
-        },
-        # When ``mode`` is omitted, pydantic defaults to 'find-replace'
-        # — so ``find`` is still required.
-        {
-            "if": {"not": {"required": ["mode"]}},
-            "then": {"required": ["find"]},
-        },
-    ]
-    existing = list(params.get("allOf", []))
-    params["allOf"] = existing + conditions
+    # Mode-conditional coupling, encoded as description suffixes on the
+    # affected properties. Small models scan property descriptions
+    # alongside the ``required`` array; the runtime ``BadInput`` path
+    # is the safety net when they ignore both.
+    properties = params.get("properties") or {}
+
+    _MODE_COUPLING = (
+        " REQUIRED WHEN: mode='find-replace' (default) or mode='insert'."
+    )
+    _WHERE_COUPLING = " REQUIRED WHEN: mode='insert'. Value: 'before' or 'after'."
+    _MODE_NOTE = (
+        " Per-mode required args: 'find-replace' (default) → find=, text=;"
+        " 'insert' → find=, text=, where=; 'append'/'replace' → text=."
+    )
+
+    def _append_desc(prop: str, suffix: str) -> None:
+        schema = properties.get(prop)
+        if not isinstance(schema, dict):
+            return
+        existing = schema.get("description") or ""
+        if suffix.strip() in existing:
+            return
+        schema["description"] = (existing + suffix).strip()
+
+    _append_desc("find", _MODE_COUPLING)
+    _append_desc("where", _WHERE_COUPLING)
+    _append_desc("mode", _MODE_NOTE)
+
     params["x-precis-edit-constraints-installed"] = True
 
 

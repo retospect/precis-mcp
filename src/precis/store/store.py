@@ -82,8 +82,16 @@ class Store(
     none of them collide on method names.
     """
 
-    def __init__(self, pool: ConnectionPool) -> None:
+    def __init__(self, pool: ConnectionPool, *, dsn: str | None = None) -> None:
         self.pool = pool
+        # Original DSN string — used by callers that need to open a
+        # dedicated (non-pooled) connection, e.g. for session-scoped
+        # advisory locks in ``precis.ingest.claim`` where pool-based
+        # connections aren't usable. ``None`` when the Store was
+        # constructed without going through :meth:`connect` (tests
+        # using a pre-built pool); claim acquisition falls back to a
+        # no-op in that case.
+        self.dsn = dsn
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -97,7 +105,7 @@ class Store(
     ) -> Self:
         """Create a Store from a DSN, using the shared pool factory."""
         pool = create_pool(dsn, min_size=min_size, max_size=max_size)
-        return cls(pool)
+        return cls(pool, dsn=dsn)
 
     def close(self) -> None:
         """Close the underlying connection pool."""

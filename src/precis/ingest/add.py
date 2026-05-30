@@ -31,11 +31,13 @@ pipeline freshly computed).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from precis.identity import make_pdf_sha256
+from precis.ingest.claim import Claim
 from precis.ingest.db_writer import (
     PaperToWrite,
     probe_existing,
@@ -43,6 +45,8 @@ from precis.ingest.db_writer import (
 )
 from precis.ingest.pdf_writer import PatchInfo, patch_pdf_metadata
 from precis.store import Store
+
+log = logging.getLogger(__name__)
 
 # NOTE: ``precis.ingest.pipeline`` imports are deferred into
 # :func:`_build_paper` because that module pulls in the paper-extra
@@ -110,7 +114,7 @@ def precis_add(
     use_pdf2doi: bool = False,
     crossref_mailto: str = "",
     s2_api_key: str = "",
-) -> IngestResult:
+) -> IngestResult | None:
     """Ingest one paper into the v2 schema.
 
     Dispatches on the input type:
@@ -125,22 +129,81 @@ def precis_add(
     * :class:`ArxivInput` — Semantic Scholar via
       :func:`precis.ingest.pipeline.fetch_paper_by_arxiv`.
 
-    The pipeline is run *outside* the DB transaction (it can be
-    expensive and shouldn't hold locks). Once the
-    :class:`PaperToWrite` is in hand, we open a connection,
-    probe ``ref_identifiers`` for any pre-existing match, and
-    either short-circuit or run the INSERT cascade in one tx.
+    Returns ``None`` if another host already holds a
+    :class:`precis.ingest.claim.Claim` on this PDF's ``pdf_sha256``
+    — the caller should leave the file in place so the owning host
+    can complete the work. ``None`` is *never* returned for
+    metadata-only inputs (``DoiInput`` / ``ArxivInput``) since those
+    are cheap and don't need cross-host claim coordination.
     """
     # Fast path: PDF inputs get a pre-Marker probe on pdf_sha256.
     # The hash is bytes-cheap (~1 ms/PDF); the probe is one round
     # trip. A hit here skips both extraction and the slow-path
     # probe entirely — that's the whole point of the optimisation.
     if isinstance(input, PdfInput):
-        existing_ref_id = _probe_pdf_sha256(input.pdf_path, store=store)
+        pdf_sha256 = _compute_pdf_sha256(input.pdf_path)
+        if pdf_sha256 is None:
+            # File disappeared between watcher enqueue and now;
+            # treat as a no-op so the caller doesn't fail loudly.
+            return None
+        with store.pool.connection() as conn:
+            existing_ref_id = probe_existing(pdf_sha256=pdf_sha256, conn=conn)
         if existing_ref_id is not None:
             with store.pool.connection() as conn:
                 return _hit_result_from_db(existing_ref_id, conn=conn)
 
+        # Claim before the expensive work. Advisory lock auto-releases
+        # if this host dies, so no stale-claim cleanup is needed.
+        # See ADR 0016. If ``store.dsn`` is None (unit-test path that
+        # builds Store from a pre-made pool), we degrade to no-claim
+        # — single-host correctness is preserved by the file-system
+        # mutex used by ``_PdfHandler._enqueue``.
+        if store.dsn is None:
+            return _ingest_pdf(
+                input,
+                store=store,
+                pdf_sha256=pdf_sha256,
+                use_pdf2doi=use_pdf2doi,
+                crossref_mailto=crossref_mailto,
+                s2_api_key=s2_api_key,
+            )
+
+        with Claim(store.dsn, pdf_sha256) as claim:
+            if not claim.acquired:
+                log.info(
+                    "precis_add: skipping %s — claimed by another host",
+                    input.pdf_path.name,
+                )
+                return None
+            return _ingest_pdf(
+                input,
+                store=store,
+                pdf_sha256=pdf_sha256,
+                use_pdf2doi=use_pdf2doi,
+                crossref_mailto=crossref_mailto,
+                s2_api_key=s2_api_key,
+            )
+
+    # Metadata-only paths (DOI / arXiv) — no claim needed.
+    return _ingest_metadata(
+        input,
+        store=store,
+        use_pdf2doi=use_pdf2doi,
+        crossref_mailto=crossref_mailto,
+        s2_api_key=s2_api_key,
+    )
+
+
+def _ingest_pdf(
+    input: PdfInput,
+    *,
+    store: Store,
+    pdf_sha256: str,
+    use_pdf2doi: bool,
+    crossref_mailto: str,
+    s2_api_key: str,
+) -> IngestResult:
+    """Run the slow path for a PdfInput, assuming the claim is held."""
     paper = _build_paper(
         input,
         use_pdf2doi=use_pdf2doi,
@@ -163,13 +226,58 @@ def precis_add(
         if existing is not None:
             return _hit_result_from_db(existing, conn=conn, fallback=paper)
 
-        # Write-back: for PdfInput, patch the on-disk file with the
-        # resolved canonical metadata so a re-ingest from a clean DB
-        # still finds the right DOI via embedded metadata. Pre- and
-        # post-patch hashes both land in ref_identifiers (see ADR
-        # 0014). Honours ``PRECIS_PATCH_PDFS=0`` off-switch.
-        if isinstance(input, PdfInput):
-            paper = _maybe_patch_pdf(input.pdf_path, paper)
+        # Write-back: patch the on-disk file with the resolved canonical
+        # metadata so a re-ingest from a clean DB still finds the right
+        # DOI via embedded metadata (see ADR 0014). Honours
+        # ``PRECIS_PATCH_PDFS=0`` off-switch.
+        paper = _maybe_patch_pdf(input.pdf_path, paper)
+
+        result = write_paper(paper, conn=conn)
+        conn.commit()
+
+    return IngestResult(
+        ref_id=result.ref_id,
+        inserted=True,
+        paper_id=paper.paper_id,
+        pub_id=paper.pub_id,
+        cite_key=result.cite_key,
+        pdf_sha256=paper.pdf_sha256,
+        content_hash=paper.content_hash,
+        chunks_written=result.chunks_written,
+        identifiers=result.identifiers_written,
+    )
+
+
+def _ingest_metadata(
+    input: PrecisAddInput,
+    *,
+    store: Store,
+    use_pdf2doi: bool,
+    crossref_mailto: str,
+    s2_api_key: str,
+) -> IngestResult:
+    """Slow path for DOI / arXiv inputs (no PDF, no Marker, no claim)."""
+    paper = _build_paper(
+        input,
+        use_pdf2doi=use_pdf2doi,
+        crossref_mailto=crossref_mailto,
+        s2_api_key=s2_api_key,
+    )
+
+    with store.pool.connection() as conn:
+        existing = probe_existing(
+            paper_id=paper.paper_id,
+            doi=paper.doi,
+            arxiv_id=paper.arxiv_id,
+            s2_id=paper.s2_id,
+            pubmed_id=paper.pubmed_id,
+            openalex_id=paper.openalex_id,
+            pdf_sha256=paper.pdf_sha256,
+            content_hash=paper.content_hash,
+            conn=conn,
+        )
+        if existing is not None:
+            return _hit_result_from_db(existing, conn=conn, fallback=paper)
 
         result = write_paper(paper, conn=conn)
         conn.commit()
@@ -278,27 +386,19 @@ def _format_authors_for_pdf(authors: list[dict[str, Any]] | None) -> list[str]:
     return out
 
 
-def _probe_pdf_sha256(pdf_path: Path, *, store: Store) -> int | None:
-    """Compute ``pdf_sha256`` for ``pdf_path`` and probe ``ref_identifiers``.
+def _compute_pdf_sha256(pdf_path: Path) -> str | None:
+    """Compute ``pdf_sha256`` for ``pdf_path``.
 
-    Returns the existing ``ref_id`` if the hash is already known,
-    else ``None``. Read fully + hashed in-process; on bytes that
-    can't be read (missing / permission denied) the function
-    returns ``None`` and lets the slow path surface the error from
-    :func:`precis.ingest.pipeline.extract_paper` so the diagnostic
-    is consistent regardless of whether the file was known.
-
-    The connection lifetime is bounded by this function; we don't
-    hold it across the Marker run because the pool is sized for
-    short-lived tx.
+    Returns the hex digest, or ``None`` if the bytes can't be read
+    (missing file / permission denied). The fast-path probe and the
+    cross-host claim both need this value early — keeping the read
+    in one place means we hash the file at most once per ingest.
     """
     try:
         pdf_bytes = Path(pdf_path).read_bytes()
     except OSError:
         return None
-    sha256 = make_pdf_sha256(pdf_bytes)
-    with store.pool.connection() as conn:
-        return probe_existing(pdf_sha256=sha256, conn=conn)
+    return make_pdf_sha256(pdf_bytes)
 
 
 def _hit_result_from_db(
