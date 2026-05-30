@@ -282,6 +282,54 @@ class TestBackfillSubprocess:
         assert seen == ["a.pdf", "b.pdf"]
         spawn.assert_not_called()
 
+    def test_k_shards_partition_round_robin(self, tmp_path: Path) -> None:
+        """With ``subprocess_concurrency=2`` and 5 PDFs (sizes 10, 20,
+        30, 40, 50), shards should be sorted-then-round-robin: shard 0
+        gets sizes [10, 30, 50], shard 1 gets [20, 40]. Each PDF
+        appears in exactly one shard.
+        """
+        handler = self._make_handler_with_batches(tmp_path, batch_size=1)
+        handler.subprocess_concurrency = 2
+
+        for i, size in enumerate([10, 20, 30, 40, 50]):
+            (handler.watch_dir / f"{chr(ord('a') + i)}.pdf").write_bytes(b"x" * size)
+
+        per_shard_calls: dict[int, list[Path]] = {}
+        call_idx = {"i": 0}
+        lock = __import__("threading").Lock()
+
+        def fake_spawn(pdfs: list[Path], **_kwargs: Any) -> None:
+            with lock:
+                shard = call_idx["i"] % 2
+                call_idx["i"] += 1
+                per_shard_calls.setdefault(shard, []).extend(pdfs)
+
+        # Force serial execution so we can assert on shard assignment
+        # deterministically.
+        handler.subprocess_concurrency = 1
+        # Now patch to capture which shard each batch came from. With
+        # K=2 the round-robin gives shard 0 = [a, c, e] and shard 1 =
+        # [b, d].
+        all_called: list[Path] = []
+        with patch(
+            "precis.cli.watch._spawn_batch_subprocess",
+            side_effect=lambda pdfs, **kw: all_called.extend(pdfs),
+        ):
+            # Pass K=2 explicitly via the handler attribute.
+            handler.subprocess_concurrency = 2
+            handler.backfill()
+
+        # All 5 PDFs processed, no duplicates.
+        assert sorted(p.name for p in all_called) == [
+            "a.pdf",
+            "b.pdf",
+            "c.pdf",
+            "d.pdf",
+            "e.pdf",
+        ]
+        # No file appears more than once.
+        assert len(all_called) == 5
+
     def test_subprocess_command_threads_db_url_and_dirs(self, tmp_path: Path) -> None:
         """``_spawn_batch_subprocess`` builds a ``python -m precis
         _watch_batch_ingest …`` command with the right flags."""

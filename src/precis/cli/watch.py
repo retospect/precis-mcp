@@ -145,7 +145,20 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "If positive, run startup backfill in subprocesses of N PDFs "
             "each — each subprocess exits and reclaims accumulated Marker "
             "memory before the next batch. Default 0 (in-process). "
-            "Suggested value: 20 for the long-tail-of-small-PDFs case."
+            "Suggested value: 1 for repeatable leak-isolated ingest."
+        ),
+    )
+    p.add_argument(
+        "--subprocess-concurrency",
+        type=int,
+        default=1,
+        help=(
+            "Number of parallel subprocess shards during backfill. "
+            "Candidates are partitioned round-robin by index; each shard "
+            "runs its own subprocess sequence on a dedicated thread. "
+            "K * (Marker resident ~3 GB + per-PDF leak) must fit under "
+            "the container memory cap. K * 9 cores ≤ host nproc for "
+            "Marker to stay CPU-saturated. Default 1 (serial)."
         ),
     )
 
@@ -222,6 +235,7 @@ def run(args: argparse.Namespace) -> None:
             debounce=args.debounce,
             user=user,
             subprocess_batch_size=args.subprocess_batch_size,
+            subprocess_concurrency=args.subprocess_concurrency,
             database_url=args.database_url,
         )
     finally:
@@ -245,6 +259,7 @@ def watch(
     poll_interval: float = DEFAULT_POLL_INTERVAL,
     user: str = "",
     subprocess_batch_size: int = 0,
+    subprocess_concurrency: int = 1,
     database_url: str | None = None,
 ) -> None:
     """Run the watcher in the calling process; blocks until SIGINT/SIGTERM.
@@ -304,6 +319,7 @@ def watch(
         debounce=debounce,
         user=user,
         subprocess_batch_size=subprocess_batch_size,
+        subprocess_concurrency=subprocess_concurrency,
         database_url=database_url,
     )
 
@@ -353,6 +369,7 @@ class _PdfHandler(FileSystemEventHandler):
         user: str,
         lock_dir: Path | None = None,
         subprocess_batch_size: int = 0,
+        subprocess_concurrency: int = 1,
         database_url: str | None = None,
     ) -> None:
         super().__init__()
@@ -368,6 +385,7 @@ class _PdfHandler(FileSystemEventHandler):
         self.debounce = debounce
         self.user = user
         self.subprocess_batch_size = subprocess_batch_size
+        self.subprocess_concurrency = max(1, subprocess_concurrency)
         self.database_url = database_url
         self._processing_lock = Lock()
         self._inflight: set[Path] = set()
@@ -425,15 +443,53 @@ class _PdfHandler(FileSystemEventHandler):
         ]
 
         if self.subprocess_batch_size > 0:
+            k = self.subprocess_concurrency
             log.info(
-                "precis watch: backfilling %d PDF(s) in subprocess batches of %d",
+                "precis watch: backfilling %d PDF(s) in %d parallel shard(s), "
+                "subprocess batches of %d",
                 len(candidates),
+                k,
                 self.subprocess_batch_size,
             )
-            for batch_start in range(0, len(candidates), self.subprocess_batch_size):
-                batch = candidates[
-                    batch_start : batch_start + self.subprocess_batch_size
-                ]
+            # Round-robin partition: candidates[i::k] for i in [0, k).
+            # Each path lands in exactly one shard so no two shards
+            # ever fight over the same file. Sort order (smallest-
+            # first) is preserved within each shard, so each shard
+            # also clears its small PDFs early.
+            shards = [candidates[i::k] for i in range(k)]
+            self._run_backfill_shards(shards)
+            return
+
+        for pdf in candidates:
+            self._enqueue(pdf)
+
+    def _run_backfill_shards(self, shards: list[list[Path]]) -> None:
+        """Run K shards of subprocess batches in parallel.
+
+        Each shard owns a thread that loops through its assigned PDFs,
+        spawning ``precis _watch_batch_ingest`` subprocesses
+        sequentially. Threads themselves only block on
+        ``subprocess.run``, so the GIL doesn't matter — actual work
+        happens in the child processes which run independently.
+
+        Concurrency safety relies on three properties:
+
+        * Each PDF path appears in exactly one shard (round-robin
+          partition above), so no two subprocesses race on the same
+          file move.
+        * Lock files are content-hashed from absolute path, so two
+          subprocesses can't collide on the same lock name.
+        * DB writes use ``probe_existing`` inside the transaction
+          plus ``ON CONFLICT DO NOTHING`` on ``ref_identifiers``, so
+          two shards independently discovering byte-different copies
+          of the same paper still produce one ref with both
+          ``pdf_sha256`` rows pointing at it.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _drain_shard(shard: list[Path]) -> None:
+            for start in range(0, len(shard), self.subprocess_batch_size):
+                batch = shard[start : start + self.subprocess_batch_size]
                 _spawn_batch_subprocess(
                     batch,
                     corpus_dir=self.corpus_dir,
@@ -444,10 +500,11 @@ class _PdfHandler(FileSystemEventHandler):
                     user=self.user,
                     database_url=self.database_url,
                 )
-            return
 
-        for pdf in candidates:
-            self._enqueue(pdf)
+        with ThreadPoolExecutor(max_workers=len(shards)) as pool:
+            futures = [pool.submit(_drain_shard, s) for s in shards]
+            for f in futures:
+                f.result()
 
     def _enqueue(self, path: Path) -> None:
         # Idempotent against duplicate FS events: at most one in-flight
