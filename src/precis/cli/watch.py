@@ -695,11 +695,21 @@ def _should_skip(path: Path, watch_dir: Path) -> bool:
 
 def _wait_stable(path: Path, *, debounce: float) -> bool:
     """Wait until the file's size is stable across two consecutive
-    polls. Returns ``False`` if the file disappears during the wait."""
+    polls. Returns ``False`` if the file disappears during the wait.
+
+    NFS retry: a single ``path.exists()`` miss on a network mount can
+    be a stale negative attribute cache, especially right after the
+    parent watcher just read the directory at high frequency. Sleep
+    briefly and re-check before declaring the file gone — saves the
+    "disappeared before stable" false-negative storm when running
+    backfill over an NFS inbox.
+    """
     prev_size = -1
     while True:
         if not path.exists():
-            return False
+            time.sleep(0.5)
+            if not path.exists():
+                return False
         size = path.stat().st_size
         if size == prev_size and size > 0:
             return True
