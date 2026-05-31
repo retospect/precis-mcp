@@ -32,6 +32,13 @@
 -- ============================================================================
 
 
+-- Extensions required by this migration's indexes. ``btree_gist``
+-- is needed for the mixed-type GiST index on (ref_id INT, range)
+-- used to look up "the segment containing chunk_pos for this ref"
+-- as a single index probe.
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+
 -- ---------------------------------------------------------------------------
 -- ref_segments — derived per-ref segmentation
 -- ---------------------------------------------------------------------------

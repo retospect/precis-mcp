@@ -22,6 +22,7 @@ import argparse
 import logging
 import signal
 import sys
+import time
 from typing import Literal
 
 from precis.cli._common import (
@@ -180,7 +181,6 @@ def run(args: argparse.Namespace) -> None:
                 if args.once or result["claimed"] == 0:
                     if args.once:
                         break
-                    import time
                     time.sleep(args.idle_seconds)
             return
 

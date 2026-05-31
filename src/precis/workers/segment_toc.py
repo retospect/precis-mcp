@@ -331,13 +331,18 @@ def _pick_segments(
 
 
 def _target_k(body_n: int) -> int:
-    """Choose K for DP segmentation. ~20 chunks per segment, clamped [3, 9]."""
+    """Choose K for DP segmentation. ~20 chunks per segment, clamped [3, 9].
+
+    Additionally clamped to ``body_n`` so a tiny paper (≤2 body chunks)
+    doesn't ask the DP segmenter for more segments than chunks (which
+    raises ``ValueError``).
+    """
     import math
 
     if body_n <= 0:
         return 0
     k = max(3, math.ceil(body_n / 20))
-    return min(k, 9)
+    return max(1, min(k, 9, body_n))
 
 
 def _adjacent_distances(embeddings: list[list[float]]) -> list[float]:
@@ -608,28 +613,31 @@ def _insert_segment(
     segment_id = int(row[0])
 
     if record.sentences:
-        # Batched insert via executemany for sentence rows.
-        conn.cursor().executemany(
-            """
-            INSERT INTO ref_segment_sentences
-                (segment_id, sentence_idx, text, chunk_pos, char_offset,
-                 centroid_score, embedding, sentence_splitter_version)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            [
-                (
-                    segment_id,
-                    s.sentence_idx,
-                    s.text,
-                    s.chunk_pos,
-                    s.char_offset,
-                    s.centroid_score,
-                    s.embedding,
-                    SENTENCE_SPLITTER_VERSION,
-                )
-                for s in record.sentences
-            ],
-        )
+        # Batched insert via a managed cursor so it's closed cleanly
+        # at the end of the with-block. ``executemany`` collapses the
+        # round-trips for the ~50 sentences a typical segment carries.
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO ref_segment_sentences
+                    (segment_id, sentence_idx, text, chunk_pos, char_offset,
+                     centroid_score, embedding, sentence_splitter_version)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [
+                    (
+                        segment_id,
+                        s.sentence_idx,
+                        s.text,
+                        s.chunk_pos,
+                        s.char_offset,
+                        s.centroid_score,
+                        s.embedding,
+                        SENTENCE_SPLITTER_VERSION,
+                    )
+                    for s in record.sentences
+                ],
+            )
     return segment_id
 
 

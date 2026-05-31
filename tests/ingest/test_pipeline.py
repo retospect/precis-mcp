@@ -133,21 +133,22 @@ class TestRetagReferences:
     """
 
     def _bibliography(self) -> list[str]:
-        # Boilerplate's _is_references_chunk fires on the heading +
-        # citation-style density. Use realistic patterns.
+        # Real bibliographies usually land as one chunk with many
+        # citation lines — boilerplate's density heuristic
+        # (matches >= 3 AND matches/lines >= 0.3) requires multi-line
+        # input. We test the realistic shape: one heading chunk plus
+        # one big multi-citation chunk.
         return [
             "# References",
             (
-                "1. Smith, J. et al. (2020). Metal-organic frameworks for "
-                "CO2 reduction. Nature Chem. 12, 100-110."
-            ),
-            (
-                "2. Johnson, A. & Lee, B. (2021). Cu-MOF synthesis and "
-                "characterization. JACS 143, 5000-5010."
-            ),
-            (
-                "3. Brown, C. (2022). Electrocatalysis at the nanoscale. "
-                "Chem. Rev. 122, 8000-8050."
+                "1. Smith, J. et al. (2020). Metal-organic frameworks "
+                "for CO2 reduction. Nature Chem. 12, 100-110.\n"
+                "2. Johnson, A. & Lee, B. (2021). Cu-MOF synthesis "
+                "and characterization. JACS 143, 5000-5010.\n"
+                "3. Brown, C. (2022). Electrocatalysis at the "
+                "nanoscale. Chem. Rev. 122, 8000-8050.\n"
+                "4. Chen, D. & Wang, E. (2023). Faradaic efficiency "
+                "improvements. J. Am. Chem. Soc. 145, 9000-9010."
             ),
         ]
 
@@ -169,21 +170,21 @@ class TestRetagReferences:
             ChunkToWrite(ord=2, chunk_kind="paragraph", text=body),
             ChunkToWrite(ord=3, chunk_kind="heading", text=bib[0]),
             ChunkToWrite(ord=4, chunk_kind="paragraph", text=bib[1]),
-            ChunkToWrite(ord=5, chunk_kind="paragraph", text=bib[2]),
-            ChunkToWrite(ord=6, chunk_kind="paragraph", text=bib[3]),
         ]
         out = _retag_references(chunks)
         # Body chunks unchanged.
         assert out[0].chunk_kind == "paragraph"
         assert out[1].chunk_kind == "paragraph"
         assert out[2].chunk_kind == "paragraph"
-        # At least the bibliography entries should be retagged. The
-        # heading may or may not be — boilerplate may classify it as
-        # references via the heading regex, or leave it; what matters
-        # is that the citation list itself flips.
-        assert out[-1].chunk_kind == "references", (
-            f"last bibliography entry should be retagged; "
-            f"got chunk_kind={out[-1].chunk_kind!r}"
+        # The references heading flips via the heading regex; the
+        # multi-line bibliography chunk flips via citation-density.
+        assert out[3].chunk_kind == "references", (
+            f"references heading should be retagged; "
+            f"got chunk_kind={out[3].chunk_kind!r}"
+        )
+        assert out[4].chunk_kind == "references", (
+            f"bibliography block should be retagged; "
+            f"got chunk_kind={out[4].chunk_kind!r}"
         )
 
     def test_empty_input_passes_through(self):
@@ -222,6 +223,22 @@ class TestRetagReferences:
             "references",
             "references",
         ]
+
+
+    def test_no_body_chunks_unchanged(self):
+        # Edge case: a ref with only a references-section block
+        # (e.g. metadata-only ingest that later got bibliography
+        # appended) — single-chunk papers are skipped by the
+        # boilerplate classifier (too short for the heuristic to
+        # fire), so this stays as-is.
+        bib = self._bibliography()
+        chunks = [
+            ChunkToWrite(ord=0, chunk_kind="paragraph", text=bib[1]),
+        ]
+        out = _retag_references(chunks)
+        # Boilerplate classifier returns BODY for tiny papers; no
+        # retag happens. This is by design — see classify_chunks.
+        assert out[0].chunk_kind == "paragraph"
 
 
 # ---------------------------------------------------------------------------
