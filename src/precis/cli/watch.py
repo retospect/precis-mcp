@@ -56,10 +56,13 @@ log = logging.getLogger(__name__)
 
 # Default debounce — wait this many seconds between size-stability
 # checks before declaring a file "settled" and ready to process.
-# Tuned for typical browser-download speeds where the first byte
-# arrives before the rest; ~100 ms is a reasonable trade-off
-# between responsiveness and false positives on large files.
-DEFAULT_DEBOUNCE = 0.1
+# Conservative: a 5 s window absorbs network stalls during slow
+# copies (Wi-Fi pauses, NFS/SMB retries, AirDrop ramp-up) at the
+# cost of an extra 5 s of latency between drop and ingest start.
+# That trade is right for our workflow — Marker takes minutes per
+# paper anyway, so 5 s of front-end debounce is invisible against
+# the back-end work. Bumped from 0.1 s on 2026-05-31.
+DEFAULT_DEBOUNCE = 5.0
 DEFAULT_POLL_INTERVAL = 1.0
 
 # Subdirectories of the watch dir that are managed by precis-watch
