@@ -616,6 +616,162 @@ Both are enqueued at ingest time and re-enqueued by a daily scheduler
 joins `refs` with `links` to surface "papers I cite that have been
 retracted".
 
+## Discovery layer (segments + sentences + numerics + citations)
+
+Added 2026-05-31. Migrations `0005_segments_and_sentences.sql`,
+`0006_chunk_numerics.sql`, `0007_citation_kind.sql`. See the
+design discussion threaded through this conversation for the
+full reasoning.
+
+### `ref_segments` table
+
+Persistent per-segment artifacts. The TOC renderer reads from
+here instead of recomputing DP + KeyBERT at request time.
+
+```sql
+CREATE TABLE ref_segments (
+    segment_id            BIGSERIAL PRIMARY KEY,
+    ref_id                BIGINT  NOT NULL REFERENCES refs(ref_id) ON DELETE CASCADE,
+    segment_idx           INT     NOT NULL,
+    pos_lo                INT     NOT NULL,         -- inclusive chunk.ord
+    pos_hi                INT     NOT NULL,
+    heading               TEXT,                     -- H2 mode only
+    mode                  TEXT    NOT NULL CHECK (mode IN ('h2','embedding')),
+    section_class         TEXT,                     -- intro|methods|results|… (paper-specific; nullable)
+    segmentation_version  TEXT    NOT NULL,
+    extractor_version     TEXT    NOT NULL,
+    embedder_name         TEXT    NOT NULL REFERENCES embedders(name) ON UPDATE CASCADE,
+    centroid              vector(1024),             -- segment centroid for similarity search
+    keywords              JSONB   NOT NULL DEFAULT '[]'::jsonb,
+    forms                 TEXT[]  NOT NULL DEFAULT '{}',
+    status                TEXT    NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','failed')),
+    attempts              INT     NOT NULL DEFAULT 1,
+    last_error            TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (ref_id, segment_idx),
+    CHECK (pos_lo <= pos_hi)
+);
+CREATE INDEX ref_segments_ref_id_idx  ON ref_segments (ref_id);
+CREATE INDEX ref_segments_failed_idx  ON ref_segments (ref_id) WHERE status = 'failed';
+CREATE INDEX ref_segments_section_idx ON ref_segments (section_class) WHERE section_class IS NOT NULL;
+CREATE INDEX ref_segments_forms_idx   ON ref_segments USING GIN (forms);
+CREATE INDEX ref_segments_range_idx   ON ref_segments USING GIST (ref_id, int4range(pos_lo, pos_hi, '[]'));
+```
+
+`keywords` is a JSONB list of `{long, short, aliases[], score}`
+records ordered by **distinctiveness** (most-distinctive first —
+`cos(phrase, segment_centroid) - λ·max(cos(phrase, sibling))`).
+`forms` is the denormalized GIN-indexed lookup target across every
+surface form. The GiST range index (requires `btree_gist`) supports
+the "segment containing chunk N" lookup used by the search-result
+cluster-context hint.
+
+### `ref_segment_sentences` table
+
+Every body sentence with its bge-m3 embedding. Stored exhaustively
+(not top-K) because the embedding compute happens regardless during
+sentence scoring; the marginal storage cost (~2 MB / paper) buys
+both TOC-time excerpts (`ORDER BY centroid_score DESC LIMIT 2`) and
+search-time query-aligned excerpts (`ORDER BY embedding <=> query`).
+
+```sql
+CREATE TABLE ref_segment_sentences (
+    sentence_id                BIGSERIAL PRIMARY KEY,
+    segment_id                 BIGINT  NOT NULL REFERENCES ref_segments(segment_id) ON DELETE CASCADE,
+    sentence_idx               INT     NOT NULL,
+    text                       TEXT    NOT NULL,
+    chunk_pos                  INT     NOT NULL,
+    char_offset                INT     NOT NULL,
+    centroid_score             REAL    NOT NULL,
+    embedding                  vector(1024),
+    sentence_splitter_version  TEXT    NOT NULL,
+    status                     TEXT    NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','failed')),
+    last_error                 TEXT,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (segment_id, sentence_idx),
+    CHECK (char_offset >= 0),
+    CHECK (chunk_pos >= 0)
+);
+CREATE INDEX ref_segment_sentences_segment_idx ON ref_segment_sentences (segment_id);
+CREATE INDEX ref_segment_sentences_chunk_idx   ON ref_segment_sentences (chunk_pos);
+CREATE INDEX ref_segment_sentences_score_idx   ON ref_segment_sentences (segment_id, centroid_score DESC);
+-- HNSW on embedding is a future non-breaking add when sentence-
+-- level corpus retrieval becomes a real query.
+```
+
+### Worker
+
+`precis.workers.segment_toc.build_segments(conn, ref_id, adapter)`
+runs the full pipeline per ref: boilerplate body filter →
+segmentation (H2 mode when ≥3 sections cover ≥80%; DP-uniform-cost
+otherwise) → per-paper Schwartz-Hearst abbreviations → paper-wide
+keywords → per-segment keywords with distinctiveness penalty →
+all-body sentences with per-sentence bge-m3 embeddings + centroid
+scores → idempotent DELETE+INSERT.
+
+Driven by `precis worker --only segments` which calls
+`claim_refs_without_segments` (refs LEFT JOIN ref_segments) and
+runs each through `run_paper_segments_pass`. Not a `WorkerHandler`
+subclass because it's ref-keyed, not chunk-keyed.
+
+### `chunks.numerics` lexical token index
+
+```sql
+ALTER TABLE chunks ADD COLUMN numerics TEXT[] NOT NULL DEFAULT '{}';
+CREATE INDEX chunks_numerics_idx ON chunks USING GIN (numerics);
+```
+
+`precis.utils.numerics.extract_numerics(text)` pulls every
+`<number><unit>` token from a closed unit vocab at ingest time
+(eV/V/A/Hz/cm⁻¹/%/K/°C/Pa/M/nm/cycles/s/…, longest-first match).
+Stored on the chunks row. GIN-indexed for exact lookups
+(`WHERE numerics @> ARRAY['1.523 eV']`). Path-2 from the tables
+discussion; structured `paper_facts` extraction (path-3) remains
+deferred.
+
+### References detection at ingest
+
+`pipeline._retag_references(chunks)` runs the boilerplate
+classifier over body chunks and rewrites detected references rows
+to `chunk_kind='references'` before insert. The embedder + RAKE
+workers carry `skip_chunk_kinds = ('references',)` which extends
+the claim SQL with `AND c.chunk_kind <> ALL(%s)`, so references
+never enter the work queue. Bibliography stops polluting search
+without needing per-handler filter logic on the read side.
+
+### `citation` kind
+
+Migration `0007_citation_kind.sql` seeds `kind='citation'`
+(`is_numeric=TRUE`). `CitationHandler` (extends
+`NumericRefHandler`) supports write-once `put(text=<claim>,
+source_handle, source_quote, char_offset, verifier_confidence,
+verifier_caveats, verified_at, link='paper:<slug>', rel='cites')`
+plus `get` / `search` / `delete`. Record lives in `refs.meta`;
+optional `link='paper:<slug>'` writes the `cites` graph edge.
+
+The verifier itself is client-side workflow (a subagent the
+writing thread spawns); this kind only owns the storage door.
+See `precis-citation-help` for the agent surface.
+
+### Sentence splitter + dehyphenation + chunker version
+
+`precis.utils.sentences.split_sentences` wraps pysbd 0.3.4 with
+char-offset bookkeeping. `precis.ingest.text_chunker` uses it via
+a `SENTENCE_SEPARATOR` sentinel in the recursive splitter's
+fallback chain — abbreviations like "et al.", "Fig.", "i.e."
+no longer cause mid-clause splits.
+
+`precis.ingest.marker._clean_text` gains a regex pass joining
+`-\s*\n\s*` when both sides are lowercase ASCII, preserving
+semantically-significant hyphens (Z-scheme, Cu-MOF) and never
+crossing paragraph breaks.
+
+`precis.ingest.text_chunker.CHUNKER_VERSION` is the canonical
+chunker version string (currently `2.0+pysbd-0.3-1`), surfaced
+through `PaperHandler.chunks_for_toc` so the persistent layer
+can lazy-invalidate on chunker upgrades.
+
 ## TOON output
 
 A new module `precis.format.toon` ships with:
@@ -742,6 +898,12 @@ messages and the plan stay in sync.
   `docs/design/` and ingest as `kind in (skill, code_symbol,
   decision, design)`. Re-review the `chunks.chunk_kind` enum
   before this lands.
+- **B13** *(shipped 2026-05-31)* **Discovery layer** — migrations
+  0005/0006/0007, `precis.workers.segment_toc`,
+  `precis.store._segments_ops`, `precis.utils.toc_db`,
+  `precis.handlers.citation`, pysbd integration, dehyphenation,
+  references-detection at ingest, numeric-token lexical index.
+  Detail in the **Discovery layer** section above.
 
 Each step ships its own commit with tests. Schema-touching steps
 run `precis migrate --dry-run` against a fresh DB.
@@ -804,6 +966,30 @@ automatically.
   `data/skills/` and `src/precis/` are worth ingesting? `docs/`
   yields skills + decisions + designs. `tests/` would be noisy.
   Decide alongside B12.
+- **Sentence embeddings — unified vector table?** Today
+  `chunk_embeddings.vector` (chunks) and
+  `ref_segment_sentences.embedding` (sentences) live in separate
+  tables. Same dim, same embedder; FK cascade ownership differs.
+  Unifying them would let one HNSW serve corpus-wide search at
+  any granularity. Decided **defer**: the workflow searches at
+  chunk granularity and reranks sentences within hits — the
+  unified index isn't needed yet. When it is, the path is a
+  `v_embeddings` view UNION-ALL with a `source_kind`
+  discriminator + per-table HNSW indexes (no migration needed).
+- **Structured table facts (task #63)**: Haiku-extracted
+  `(entity, property, value, unit, qualifiers)` rows would
+  enable SQL range queries like
+  `WHERE property='bandgap' AND unit='eV' AND value BETWEEN
+  1.3 AND 1.6`. Hard part is schema design (unit normalization,
+  uncertainty, qualifiers, property aliases). Defer until a
+  real quantitative-survey workflow demands it; the cheap
+  precursor (`chunks.numerics`) ships with the discovery layer.
+- **Cross-kind corpus search (task #66)**: today's search
+  requires a `kind=` filter, so noisy kinds can't pollute paper
+  search. Kind-less corpus-wide search needs per-kind weighting
+  in the rank fusion (paper > decision > skill > conversation
+  > perplexity). Defer until the "literature review across all
+  notes" workflow surfaces.
 
 ## Definition of done (the whole plan)
 

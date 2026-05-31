@@ -94,6 +94,41 @@ dated review document:
   unpacking sites route through a new `_one(cur)` helper that asserts
   not-None. `mypy src tests` clean. All 24 migration tests still pass
   against postgres.)
+- Persistent discovery layer → **shipped 2026-05-31** (ADR 0018).
+  `view='toc'` reads from `ref_segments` + `ref_segment_sentences`
+  instead of recomputing DP + KeyBERT at request time; search-result
+  rows carry indented `excerpt @ ~N: "..."` sub-lines drawn from a
+  query-aligned pgvector cosine rerank. Migrations 0005 / 0006 / 0007.
+  New worker: `precis worker --only segments`. Smoketest verified
+  end-to-end on a real paper (`butlin26` → 3 segments + 544 sentences
+  rendered as designed); test suite covered in
+  `tests/workers/test_segment_toc.py`, `tests/test_toc_db.py`.
+- `chunks.numerics TEXT[]` lexical numeric-token index →
+  **shipped 2026-05-31** (path-2 from the tables-curveball discussion;
+  ingest extracts every `<number><unit>` token from a closed unit
+  vocab. Structured `paper_facts` extraction — path-3 — remains
+  tracked separately in `docs/design/storage-v2.md § Open questions`.)
+- References pollution of search → **shipped 2026-05-31** (ingest now
+  tags bibliography blocks `chunk_kind='references'`; embed + RAKE
+  workers carry `skip_chunk_kinds=('references',)` which extends the
+  claim SQL so references never enter the queue. Bibliography stops
+  diluting search rankings.)
+- Mid-abbreviation chunk splits ("et al.", "Fig.", "i.e.") →
+  **shipped 2026-05-31** (pysbd-backed sentence splitter wired into
+  the chunker's fallback chain via a sentinel; abbreviation-aware
+  rules eliminate the naive `". "` literal split.)
+- Hyphenated line breaks corrupting verbatim quotes →
+  **shipped 2026-05-31** (regex pass in `marker._clean_text` joins
+  `-\s*\n\s*` when both sides are lowercase ASCII; preserves
+  semantically-significant compounds with uppercase boundaries.)
+- New `citation` kind (verifier-workflow scaffold) →
+  **shipped 2026-05-31** (`CitationHandler`, migration 0007;
+  `precis-citation-help` documents the agent surface.)
+- Retraction status invisible on paper views → **shipped 2026-05-31**
+  (`view='overview'`, `view='toc'`, and chunk drill-in all lead with
+  a `> [!] RETRACTED` (or EoC / corrected) banner when
+  `refs.retraction_status` is set; carries date, reason, and a
+  pointer at `get(kind='provenance', id='<doi>')`.)
 
 See [`CHANGELOG.md`](CHANGELOG.md) entry for 6.0.0 for the per-fix
 landing record.

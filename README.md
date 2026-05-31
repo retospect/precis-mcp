@@ -11,9 +11,13 @@ and searching across papers, documents, personal state, code, and
 cached tool calls. Small-model-friendly (7B-class agents are the design
 target); stores content in PostgreSQL with `pgvector`.
 
-> **Status.** v6.0.0 — ground-up redesign of v1. Twenty-one kinds
+> **Status.** v6.0.0 — ground-up redesign of v1. Twenty-two kinds
 > shipping across ref / tool / discovery categories, seven verbs,
-> plugin surface stable. v5.2.6 on PyPI is the last v1-line release;
+> plugin surface stable. The discovery layer (persistent
+> per-segment keywords + per-sentence embeddings) and the
+> verifier-workflow `citation` kind landed 2026-05-31; see
+> [`docs/design/storage-v2.md § Discovery layer`](docs/design/storage-v2.md).
+> v5.2.6 on PyPI is the last v1-line release;
 > see [`CHANGELOG.md`](CHANGELOG.md) for the migration path.
 
 ## What it does
@@ -23,7 +27,8 @@ argument — over three categories of content:
 
 - **Ref kinds** (content addressed by slug or integer id): `paper`,
   `skill`, `oracle`, `quest`, `conv`, `markdown`, `plaintext`,
-  `python`, `todo`, `memory`, `gripe`, `fc` (flashcard).
+  `python`, `todo`, `memory`, `gripe`, `fc` (flashcard),
+  `citation` (verified claim → source quote).
 - **Tool kinds** (stateless or cache-backed; pass `q=` or `id=`, get
   text back): `calc`, `math` (Wolfram), `youtube`, `web` (fetch +
   search + bookmark), `websearch` / `think` / `research` (Perplexity
@@ -147,6 +152,16 @@ config:
 - **Hybrid search.** Lexical `tsvector` + semantic `pgvector` (bge-m3)
   with Reciprocal Rank Fusion. Block-level; paper chunks, markdown
   paragraphs, Perplexity answers, web pages all searchable.
+- **Persistent discovery layer.** Papers get pre-computed per-segment
+  matryoshka-ordered keywords (distinctiveness-penalty scored against
+  sibling segments) and per-sentence bge-m3 embeddings. The TOC view
+  serves from `ref_segments` directly — no per-request DP/KeyBERT
+  recompute. Search hits carry indented `excerpt @ ~N: "..."`
+  sub-lines, picked by pgvector cosine rerank against the query
+  embedding, so result rows are actionable for triage without a
+  second fetch. The `citation` kind closes the loop: an agent's
+  writing-thread workflow can persist verified `claim → source quote`
+  records (see [`precis-citation-help`](src/precis/data/skills/precis-citation-help.md)).
 - **Progressive disclosure.** Seven verbs and a `kind=` argument is
   the *whole* visible surface. Behind it sits a fan-out of ~25
   per-kind help skills, dozens of read views, an anchored edit
@@ -244,6 +259,9 @@ high-traffic ones:
 - [`docs/python-kind-spec.md`](docs/python-kind-spec.md) — python navigator design.
 - [`docs/patent-kind-spec.md`](docs/patent-kind-spec.md) — EPO OPS integration.
 - [`docs/paper_ingest.md`](docs/paper_ingest.md) — `.acatome` bundle ingest path.
+- [`docs/design/storage-v2.md`](docs/design/storage-v2.md) — full schema + discovery-layer design.
+- [`src/precis/data/skills/precis-citation-help.md`](src/precis/data/skills/precis-citation-help.md) — `citation` kind + verifier-workflow agent surface.
+- [`src/precis/data/skills/precis-toc-help.md`](src/precis/data/skills/precis-toc-help.md) — TOC machinery (segments, sentences, matryoshka keywords).
 - [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each phase.
 
 ## Contributing

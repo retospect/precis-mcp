@@ -126,30 +126,39 @@ Supported views: `abstract`, `toc`, `bibtex` (alias `cite/bib`),
 ## Navigate
 
 The `view='toc'` output is a **TOON table** (one row per segment)
-with RAKE-extracted keywords per row. When the paper has explicit
-H1/H2 headings, those drive the segmentation; when it doesn't, the
-TOC falls back to **embedding-sequence clustering** (TextTiling-style:
-adjacent-chunk cosine drops mark topic boundaries) so even
-un-sectioned papers get 3–9 navigable segments.
+with **matryoshka-ordered keywords** (most-distinctive first) and
+an **indented query-aligned excerpt sub-line** per segment, served
+from the persistent discovery layer (`ref_segments` +
+`ref_segment_sentences`) — pre-computed at ingest by the
+`segment_toc` worker, not recomputed on request. When the paper has
+explicit H1/H2 headings the segmentation uses them; otherwise the
+TOC falls back to embedding-sequence clustering (DP-uniform-cost on
+bge-m3 chunk vectors with a distinctiveness penalty against sibling
+centroids).
 
 ```
-# cai23 — TOC (104 chunks, 5 segments via embedding clustering)
+# cai23 TOC — 5 segments via embedding clustering
 
-{handle           keywords}
-cai23~0..14       lithium-mediated nitrogen reduction, MEA design, PEO membrane, …
-cai23~15..38      BF4 salt doping, lithium salt selection, ion transport, …
-cai23~39..62      XPS characterization, ToF-SIMS depth profile, surface composition, …
-cai23~63..89      LiF formation, BO species, F 1s spectrum, …
-cai23~90..103     performance summary, scalability, comparison with literature, …
-
-Abbrevs: MEA (Membrane Electrode Assembly), XPS (X-ray Photoelectron Spectroscopy), …
-Shared across segments: lithium-mediated nitrogen reduction
+{handle	keywords}
+cai23~0..14	lithium-mediated nitrogen reduction, MEA design, PEO membrane, …
+  - excerpt @ ~3: "We design a flow MEA that mediates Li⁺ at room temperature."
+cai23~15..38	BF4 salt doping, lithium salt selection, ion transport, …
+  - excerpt @ ~22: "The LiBF4-doped PEO membrane sustains 0.12 mA cm⁻² at -0.3 V."
+cai23~39..62	XPS, ToF-SIMS depth profile, surface composition, …
+  - excerpt @ ~52: "ToF-SIMS confirms a 30 nm F-rich interphase atop the cathode."
+cai23~63..89	LiF formation, BO species, F 1s spectrum, …
+cai23~90..103	performance summary, scalability, comparison, …
 ```
 
-When H2 sections are present and informative, the TOC switches to a
-three-column shape with the heading column populated from the paper's
-own headings (the keywords column then only fills in for "stupid"
-headings like `Methods` / `Results` that don't disambiguate content).
+* Each excerpt is the **top central sentence** for the segment
+  (cosine to segment centroid, with distinctiveness penalty against
+  sibling segments).
+* When H2 sections are present and informative the TOC switches to
+  a three-column `{handle, heading, keywords}` shape with the
+  heading column populated from the paper's own headings.
+* If the worker hasn't populated `ref_segments` for a paper yet, the
+  TOC view returns a "segments not yet computed" placeholder — run
+  `precis worker --only segments` to populate.
 
 To **drill into a segment**, paste any handle from the table as
 `id=`:

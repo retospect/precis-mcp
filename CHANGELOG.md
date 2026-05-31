@@ -10,6 +10,72 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ### Added
 
+- **Discovery layer for `paper` kind** — persistent per-segment
+  artifacts now back `view='toc'` and the search-result excerpt
+  sub-lines. Two new tables (`ref_segments`,
+  `ref_segment_sentences`), a ref-level worker
+  (`precis worker --only segments`), and read-side store mixin
+  (`SegmentsMixin`). Pipeline:
+  - **DP-uniform-cost segmentation** (replaces TextTiling) on
+    bge-m3 chunk embeddings with K = `ceil(body/20)` clamped
+    `[3, 9]`.
+  - **Matryoshka-ordered keywords** per segment — scored via
+    KeyBERT-style cosine to segment centroid with a
+    distinctiveness penalty against sibling centroids (λ ≈ 0.3),
+    so `keywords[0]` is what's most-distinctive about this
+    segment rather than most-frequent. Stored as JSONB
+    `{long, short, aliases[], score}` with a denormalized
+    GIN-indexed `forms TEXT[]` for cross-paper surface-form
+    lookups.
+  - **Per-sentence bge-m3 embeddings** — every body sentence
+    gets an embedding + centroid score. TOC excerpts pick top-1
+    by centroid score; search-result excerpts rerank against the
+    query embedding via pgvector `<=>`.
+  - Migration `0005_segments_and_sentences.sql` (requires
+    `btree_gist` for the mixed-type segment-range GiST index).
+  - Documented in ADR 0018; schema diagram refreshed in
+    `docs/design/schema-v2.puml`.
+- **New kind: `citation`** — verifier-workflow scaffold for
+  writing-thread agents. Write-once `put(text=<claim>,
+  source_handle, source_quote, char_offset, verifier_confidence,
+  verifier_caveats, link='paper:<slug>', rel='cites')` persists
+  a verified claim → source-quote pointer to `refs.meta`.
+  Migration `0007_citation_kind.sql` seeds the kind; the `cites`
+  relation was already in the vocab. See
+  [`precis-citation-help`](src/precis/data/skills/precis-citation-help.md).
+- **`chunks.numerics TEXT[]` lexical numeric-token index** —
+  ingest extracts every `<number><unit>` token (eV/V/A/Hz/cm⁻¹/
+  %/K/°C/Pa/M/nm/cycles/s/…) and stores them GIN-indexed for
+  cheap exact-value lookups (path-2 from the tables-curveball
+  discussion; structured `paper_facts` remains deferred).
+  Migration `0006_chunk_numerics.sql`.
+- **References detection at ingest** — `pipeline._retag_references`
+  runs the boilerplate classifier on body chunks and rewrites
+  detected bibliography rows to `chunk_kind='references'` before
+  insert. `EmbedHandler` and `RakeLemmaHandler` carry
+  `skip_chunk_kinds=("references",)` which extends the claim SQL
+  with `AND c.chunk_kind <> ALL(%s)` — references never enter
+  the work queue, bibliography stops polluting search.
+- **pysbd-backed sentence splitter** — `precis.utils.sentences`
+  wraps pysbd 0.3.4 with char-offset bookkeeping. Wired into
+  `text_chunker` via a `SENTENCE_SEPARATOR` sentinel in the
+  recursive splitter's fallback chain, so abbreviations like
+  `"et al."`, `"Fig."`, `"i.e."`, `"e.g."`, `"vs."` no longer
+  cause mid-clause splits. `CHUNKER_VERSION = "2.0+pysbd-0.3-1"`
+  is now a real constant in `text_chunker.py`. Adds
+  `pysbd>=0.3.4` to the `[paper]` extra.
+- **Dehyphenation in the cleaner** — `marker._clean_text` gains
+  a regex pass joining `-\s*\n\s*` when both sides are lowercase
+  ASCII. Semantically-significant hyphens (`Z-scheme`, `Cu-MOF`,
+  any compound with uppercase boundaries) are preserved, and the
+  join never crosses paragraph breaks.
+- **Retraction banner on paper views** — `kind='paper'` `view=
+  'overview'`, `view='toc'`, and chunk drill-in views now lead
+  with a `> [!] RETRACTED` (or EoC / corrected) banner when
+  `refs.retraction_status` is set, with the retraction date and
+  reason inline and a pointer at
+  `get(kind='provenance', id='<doi>')` for the full notice.
+
 - **New kind: `provenance`** — retraction and amendment monitoring
   for paper DOIs. Five phases, all shipped:
   - **Phase 1** — single-DOI Crossref check. Validates DOI shape,

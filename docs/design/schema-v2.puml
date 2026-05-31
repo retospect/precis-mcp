@@ -4,11 +4,13 @@
 ' Render via:  scripts/render-uml schema-v2.puml   (-p for PNG)
 '
 ' Companion docs:
-'   docs/design/storage-v2.md            — prose + worker pipeline
+'   docs/design/storage-v2.md            — prose + worker pipeline + discovery layer
 '   docs/decisions/0005-greenfield-migrations.md
 '   docs/decisions/0006-tri-identifier-scheme.md  (slug section superseded by 0008)
 '   docs/decisions/0007-derived-queue-no-block-jobs.md
 '   docs/decisions/0008-drop-slug-identifier-normalisation.md
+'   docs/decisions/0017-derived-queue-family.md
+'   docs/decisions/0018-persistent-discovery-layer.md  (ref_segments, ref_segment_sentences)
 '
 hide circle
 skinparam linetype ortho
@@ -285,6 +287,9 @@ entity "chunks" as chunks {
   page_first : int
   page_last : int
   meta : jsonb <<NN, DEFAULT '{}'>>
+  numerics : text[] <<NN, DEFAULT '{}'>>
+    ' lexical numeric-token index
+    ' (e.g. "1.523 eV", "12%", "0.3 V")
   * created_at : timestamptz
   --
   tsv : tsvector (GENERATED)
@@ -296,6 +301,7 @@ entity "chunks" as chunks {
   (ord>=0 AND chunk_kind NOT LIKE 'card_%')
   ..indexes..
   GIN(tsv) for full-text search
+  GIN(numerics) for exact-value lookup
   btree(ref_id, ord)
   btree(chunk_kind)
 }
@@ -362,6 +368,102 @@ note bottom of chunk_embeds
     body chunks of top refs.
   - Hybrid: ts_rank_cd on chunks.tsv +
     vector cosine, RRF-combined.
+end note
+
+
+' ============================================================================
+' Discovery layer (ref-level derived state — ADR 0018)
+' ============================================================================
+entity "ref_segments" as ref_segs {
+  * segment_id : bigserial <<PK>>
+  --
+  * ref_id : bigint <<FK refs>>
+  * segment_idx : int
+  * pos_lo : int
+    ' inclusive chunk.ord
+  * pos_hi : int
+  heading : text
+    ' H2 mode only
+  * mode : text
+    ' h2 | embedding
+  section_class : text
+    ' intro|methods|results|... (paper)
+  * segmentation_version : text
+  * extractor_version : text
+  * embedder_name : text <<FK embedders>>
+  centroid : vector(1024)
+    ' segment centroid for sim search
+  keywords : jsonb <<NN, DEFAULT '[]'>>
+    ' [{long, short, aliases[], score}]
+    ' matryoshka: most-distinctive first
+  forms : text[] <<NN, DEFAULT '{}'>>
+    ' denormalized lookup keys
+  * status : text
+    ' ok | failed
+  * attempts : int <<NN, DEFAULT 1>>
+  last_error : text
+  * created_at : timestamptz
+  * updated_at : timestamptz
+  ..unique..
+  (ref_id, segment_idx)
+  ..CHECK..
+  pos_lo <= pos_hi
+  ..indexes..
+  GIN(forms) for keyword surface-form lookup
+  GIST(ref_id, int4range(pos_lo, pos_hi))
+   for "segment containing chunk N"
+}
+
+entity "ref_segment_sentences" as ref_sents {
+  * sentence_id : bigserial <<PK>>
+  --
+  * segment_id : bigint <<FK ref_segments>>
+  * sentence_idx : int
+  * text : text
+  * chunk_pos : int
+    ' source chunk's ord
+  * char_offset : int
+    ' offset within source chunk
+  * centroid_score : real
+    ' cos(sent, seg_centroid)
+    '  - λ·max(cos vs sibling)
+  embedding : vector(1024)
+  * sentence_splitter_version : text
+  * status : text
+  last_error : text
+  * created_at : timestamptz
+  ..unique..
+  (segment_id, sentence_idx)
+  ..indexes..
+  btree(segment_id, centroid_score DESC)
+   for TOC excerpt picks
+  ..future..
+  HNSW(embedding) — non-breaking add for
+   corpus-wide sentence retrieval
+}
+
+note bottom of ref_segs
+  **Discovery layer (ADR 0018)**
+  Persistent per-segment keywords +
+  per-sentence embeddings back the
+  `view='toc'` and search-result
+  excerpt sub-lines. Computed by the
+  ref-level worker
+  `precis worker --only segments`.
+  Lazy invalidation via the four
+  version columns + sentence splitter
+  version on the child rows. Cascade
+  delete from refs → segments →
+  sentences, so re-ingest just wipes
+  and the worker re-derives.
+
+  **TOC excerpt query**:
+  `ORDER BY centroid_score DESC LIMIT 2`
+  per segment.
+
+  **Search excerpt query**: rerank
+  against query embedding via
+  pgvector `<=>`.
 end note
 
 ' ============================================================================
@@ -492,11 +594,15 @@ refs }o..o| pdfs      : "pdf_sha256\n(NULL for non-paper)"
 refs ||--o{ chunks    : owns
 refs ||--o{ ref_tags  : tagged
 refs ||--o{ links     : "src/dst (ref-level)"
+refs ||--o{ ref_segs  : "discovery layer\n(ADR 0018)"
 
 chunks ||--o{ chunk_embeds : embedded
 chunks ||--o{ chunk_summ   : summarized
 chunks ||--o{ chunk_tags   : tagged
 chunks ||--o{ links        : "src/dst (chunk-level)"
+
+ref_segs    ||--o{ ref_sents : "owns sentences"
+embedders   ||..o{ ref_segs  : registry
 
 tags ||--o{ ref_tags   : applied
 tags ||--o{ chunk_tags : applied

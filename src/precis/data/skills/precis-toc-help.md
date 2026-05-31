@@ -30,47 +30,63 @@ addressing (`slug~A..B`) composes with both.
 
 ## Output shape
 
-A **TOON table** (one row per segment), optionally followed by an
-abbreviation legend and a shared-phrases footer.
+A **TOON table** (one row per segment) with **matryoshka-ordered
+keywords** (most-distinctive first) and, for papers, an indented
+**query-aligned excerpt sub-line** drawn from
+`ref_segment_sentences`.
 
 Two column shapes depending on whether the renderer is in
 **H2-driven mode** or **embedding-clustered mode**:
 
 ```
-# slug — TOC (N chunks, K segments via embedding clustering)
-{handle    keywords}
-slug~0..14    keyword1, keyword2, keyword3, keyword4, keyword5
-slug~15..38   keyword1, keyword2, keyword3, keyword4, keyword5
+# slug TOC — K segments via embedding clustering
+
+{handle	keywords}
+slug~0..14	kw1, kw2, kw3, kw4, kw5
+  - excerpt @ ~3: "Top central sentence of the segment, query-aligned."
+slug~15..38	kw1, kw2, kw3, kw4, kw5
+  - excerpt @ ~22: "Another segment's representative sentence."
 …
 ```
 
 ```
-# slug — TOC (N chunks, K H2 sections)
-{handle  heading    keywords}
-slug~0..7   Introduction
-slug~8..20  Methods
-slug~21..40 Results
+# slug TOC — K segments via H2 sections
+
+{handle	heading	keywords}
+slug~0..7	Introduction
+  - excerpt @ ~2: "..."
+slug~8..20	Methods
+  - excerpt @ ~12: "..."
+slug~21..40	Results
 …
 ```
 
 The `keywords` column is empty when the H2 heading is informative
-enough on its own; the heuristic only fills it in for "stupid"
-headings (`Methods`, `Results`, `4.2`, empty, numeric labels) that
-don't disambiguate content.
+enough on its own. Excerpt sub-lines are omitted silently when a
+segment has no stored sentences (worker hasn't run yet, or all
+sentences failed compute).
 
-## Trailers
+## Keyword ordering — matryoshka by distinctiveness
 
-* **Abbrevs legend** (`Abbrevs: FTIR (Fourier Transform Infrared), …`)
-  — Schwartz-Hearst-detected abbreviations applied to the source
-  text before RAKE. Substituting "FTIR" for "Fourier Transform
-  Infrared" keeps per-row keywords short and uses the canonical
-  short form a domain expert would write.
-* **Shared phrases** (`Shared across segments: …`) — phrases that
-  appear in ≥ 60 % of segments. Hidden from per-row keywords so
-  each row's keywords disambiguate from the others. Often the
-  paper's central topic — `lithium-mediated nitrogen reduction`
-  for a battery paper, `Z-scheme photocatalysis` for a catalysis
-  paper.
+Per-segment keywords are ordered **most-distinctive first**, not
+most-frequent: each candidate's score is
+`cos(phrase, segment_centroid) - λ·max(cos(phrase, sibling_centroids))`
+with λ ≈ 0.3. So `keywords[0]` reads as "what's unique about this
+segment vs. the rest of the paper," not "what does this paper
+overall talk about." Truncating to the top-3 still leaves you with
+the most-segment-specific picks (truncate-friendly = matryoshka).
+
+Stored keyword records carry `{long, short, aliases[], score}` —
+the display column prefers `short` (when there's a Schwartz-Hearst
+expansion in the per-paper legend) and falls back to `long`. The
+denormalized `forms TEXT[]` array on `ref_segments` (long + short +
+aliases for every keyword) is GIN-indexed so cross-paper queries
+by any surface form hit the index directly:
+
+```sql
+SELECT ref_id FROM ref_segments
+ WHERE forms @> ARRAY['MOF'];   -- matches "MOF", "MOFs", "Metal-Organic Framework", …
+```
 
 ## When H2 mode fires vs embedding mode
 
@@ -79,11 +95,11 @@ H2 mode requires:
 * H2-named ranges cover at least 80 % of the chunks.
 
 Otherwise the renderer falls back to **embedding-cluster mode**:
-TextTiling-style sequential segmentation on the bge-m3 chunk
-vectors. Adjacent-chunk cosine drops mark topic shifts; depth +
-knee-point selection picks K segments bounded to `[3, 9]`. The
-algorithm is deterministic — same input → same boundaries — and
-cached per ref.
+**DP-uniform-cost segmentation** on the bge-m3 chunk vectors —
+optimal K-segmentation minimizing within-segment cosine dispersion.
+K is `ceil(body_chunks / 20)` clamped to `[3, 9]` and further
+clamped to the body chunk count. The algorithm is deterministic
+(same input → same boundaries) and cached per ref.
 
 For papers without explicit sectioning (preprints, single-column
 LaTeX exports, anything that's body-text-only) embedding mode is
@@ -106,18 +122,29 @@ chunks — at that point each chunk becomes its own row, no
 further segmentation. Practical recursion depth: 2-3 levels
 before you're at single-chunk granularity.
 
-## Caching
+## Persistence + caching
 
-In-memory LRU keyed on `(ref_id, kind, chunker_version,
-embedder_name, SEGMENTATION_VERSION, scope)`. Capacity 256
-entries. First TOC view of a paper computes embeddings cosine +
-RAKE keywords; subsequent calls (same paper, same scope) return
-in microseconds.
+For paper kind the discovery layer is **pre-computed at ingest** by
+`precis.workers.segment_toc.build_segments` and persisted to
+`ref_segments` + `ref_segment_sentences`. The TOC renderer
+(`precis.utils.toc_db.render_from_store`) reads those rows directly
+— no per-request DP + KeyBERT recompute.
 
-The same cache powers the **cluster hint** in paper search
-trailers — after the first TOC view of a paper, finding which
-segment contains any given hit chunk is a single dictionary
-lookup. See `precis-search-help § Cluster context`.
+Versioning is lazy: every row carries `segmentation_version`,
+`extractor_version`, `embedder_name`, and (on sentences)
+`sentence_splitter_version`. A mismatch on read means "treat as
+cache-miss, recompute, overwrite." So pipeline upgrades self-heal
+without manual sweeps.
+
+Worker idempotency: re-running `build_segments(ref_id=N, ...)`
+does `DELETE FROM ref_segments WHERE ref_id = N` then re-INSERTs.
+Sentences cascade-delete via the FK. So `precis worker --only
+segments` is safe to drive repeatedly.
+
+For non-paper kinds without persistent segments yet (skills,
+decisions), `precis.utils.toc.render` is still the in-memory path
+and uses an LRU keyed on `(ref_id, kind, chunker_version,
+embedder_name, SEGMENTATION_VERSION, scope)`.
 
 ## Cross-kind support
 

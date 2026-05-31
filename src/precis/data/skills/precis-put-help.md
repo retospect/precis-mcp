@@ -43,8 +43,10 @@ Each kind family has its own `mode=` discipline:
   Region edits (`append` / `insert` / `replace` / `find-replace`)
   live on `edit`; whole-file deletes live on `delete`.
 - **Numeric-ref kinds** (`memory`, `todo`, `gripe`, `conv`, `fc`,
-  `quest`): omit `mode=` to create a new ref; `mode='delete'`
-  soft-deletes (or use the `delete` verb directly).
+  `quest`, `citation`): omit `mode=` to create a new ref;
+  `mode='delete'` soft-deletes (or use the `delete` verb directly).
+  `citation` takes additional named kwargs — see
+  `precis-citation-help`.
 - **`perplexity`**: `mode='import'` ingests a pre-generated report
   as a $0 cache entry.
 

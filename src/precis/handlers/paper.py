@@ -50,7 +50,9 @@ from precis.utils.text import excerpt as _excerpt
 # Public spec
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_VIEWS = ("bibtex", "ris", "endnote", "abstract", "toc", "health")
+_SUPPORTED_VIEWS = (
+    "bibtex", "ris", "endnote", "abstract", "toc", "health", "bibliography",
+)
 
 
 # Tunable knobs for the nearest-match suggester. The cutoff (0.6 of
@@ -871,6 +873,9 @@ class PaperHandler(Handler):
         if view == "health":
             return self._render_health(ref)
 
+        if view == "bibliography":
+            return self._render_bibliography(ref)
+
         # The MCP critic flagged ``view='figures'`` as a silent
         # failure — the agent had no signal that figure retrieval
         # is unsupported. Surface a sharper hint pointing at the
@@ -916,6 +921,81 @@ class PaperHandler(Handler):
             options=list(_SUPPORTED_VIEWS),
             next=f"see precis-paper-help - try views: {', '.join(_SUPPORTED_VIEWS)}",
         )
+
+    def _render_bibliography(self, ref: Ref) -> Response:
+        """``view='bibliography'`` — citations referencing this paper.
+
+        Walks the ``links`` table for ``cites`` edges whose
+        destination is this paper (``links_for(ref_id,
+        relation='cited-by')`` — the inverse-rewrite returns the
+        ``cites`` rows from citation→paper). For each, pulls the
+        citation ref and renders its claim, source handle, verbatim
+        quote, and verifier confidence.
+
+        Returns a "no citations on file" placeholder with recovery
+        hints when no citations exist for this paper.
+        """
+        cite_links = self.store.links_for(
+            ref.id, direction="in", relation="cites"
+        )
+        slug = ref.slug or "???"
+
+        if not cite_links:
+            body = f"# {slug} bibliography — 0 citations on file"
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind='paper', id='{slug}', view='toc')",
+                        "browse segments to find drillable claims",
+                    ),
+                    (
+                        "get(kind='skill', id='precis-citation-help')",
+                        "how to file a verified citation",
+                    ),
+                ]
+            )
+            return Response(body=body)
+
+        rows: list[dict[str, str]] = []
+        for link in cite_links:
+            citation = self.store.get_ref(kind="citation", id=link.src_ref_id)
+            if citation is None:
+                continue
+            meta = citation.meta or {}
+            handle = meta.get("source_handle") or ""
+            quote = _clean_inline_text(meta.get("source_quote") or "")
+            quote = _excerpt(quote, limit=120)
+            claim = _clean_inline_text(meta.get("claim") or citation.title or "")
+            claim = _excerpt(claim, limit=80)
+            confidence = meta.get("verifier_confidence")
+            conf_str = f"{float(confidence):.2f}" if confidence is not None else "?"
+            rows.append(
+                {
+                    "id": f"citation:{citation.id}",
+                    "claim": claim,
+                    "source": handle,
+                    "conf": conf_str,
+                    "quote": f'"{quote}"',
+                }
+            )
+
+        head = f"# {slug} bibliography — {len(rows)} citation{'s' if len(rows) != 1 else ''}"
+        body = head + "\n\n" + render_agent_table(
+            rows, schema=["id", "claim", "source", "conf", "quote"]
+        )
+        body += render_next_section(
+            [
+                (
+                    "get(kind='citation', id=<N>)",
+                    "read one citation's full record (the verifier's caveats too)",
+                ),
+                (
+                    "get(kind='skill', id='precis-citation-help')",
+                    "the verifier-workflow agent surface",
+                ),
+            ]
+        )
+        return Response(body=body)
 
     def _render_health(self, ref: Ref) -> Response:
         """Phase 5 shim: ``view='health'`` on a paper ref.
@@ -1089,7 +1169,7 @@ class PaperHandler(Handler):
         # envelope on unknown / empty ``view=`` values. ``cite`` /
         # ``bibtex`` are aliases; we list the canonical form here
         # and the alias map (``_normalise_view``) handles the rest.
-        return ["toc", "abstract", "bibtex", "slug"]
+        return ["toc", "abstract", "bibtex", "bibliography", "slug"]
 
     def chunks_for_toc(self, ref: Any) -> ChunksForToc:
         """Adapter for the generic TOC renderer.

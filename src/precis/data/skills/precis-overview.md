@@ -81,6 +81,7 @@ shapes — slug for canonical/named refs, integer for agent scratch:
 | `memory`  | `47` (int)            | Agent note / scratchpad           | store |
 | `gripe`   | `9` (int)             | Annoyance / niggle — log freely, filter later | store |
 | `fc`      | `204` (int)           | Flashcard (SM-2 spaced rep)       | store |
+| `citation`| `18` (int)            | Verified claim → source quote (writing/verifier workflow) | store |
 
 The **active** set varies by build — rows whose *Needs* column names
 an env var are only registered when that var is set. Use
@@ -143,8 +144,10 @@ handler — the address parsing and renderer are shared.
 
 The TOC itself is **embedding-aware**: papers without explicit
 section headings get clustered into 3–9 navigable segments via
-adjacent-chunk cosine drops (TextTiling); each segment row carries
-RAKE keywords + (when present) an abbreviation legend. See
+DP-uniform-cost segmentation on chunk embeddings. Each segment
+row carries **matryoshka-ordered keywords** (most-distinctive
+first) + an **indented query-aligned excerpt sub-line** drawn
+from the persistent `ref_segment_sentences` table. See
 `precis-paper-help § Navigate` for the rendered shape.
 
 ## Examples

@@ -42,13 +42,16 @@ models' context windows. To see more, paginate via `exclude=`.
 ## Result shape — TOON
 
 Search responses render hits as a **TOON table** so the agent parses
-one shape across every kind. Columns are kind-specific but consistent
-in spirit:
+one shape across every kind. For papers, each hit row is paired
+with an **indented excerpt sub-line** drawn from the persistent
+discovery layer (`ref_segment_sentences`):
 
 ```
 {handle	chunk_keywords}
 cai23~91	secondary electron image outlines, ToF-SIMS characterization, …
+  - excerpt @ ~91: "ToF-SIMS depth profiling confirms a uniform F-rich layer at 30 nm."
 cai23~45	cross-sectional SEM images, PEO membrane doped, …
+  - excerpt @ ~45: "PEO membranes doped with LiBF4 show ionic conductivity above 10⁻⁴ S cm⁻¹."
 ```
 
 * `handle` is a copy-pasteable `id=` for `get` — drilling into any
@@ -56,6 +59,18 @@ cai23~45	cross-sectional SEM images, PEO membrane doped, …
 * `chunk_keywords` is RAKE-extracted from the matched block (with
   per-paper abbreviation substitution — `FTIR` not "Fourier
   Transform Infrared Spectroscopy").
+* `- excerpt @ ~N: "..."` is the **query-aligned central sentence**
+  from the segment that contains the hit chunk. The sentence is
+  reranked against your query embedding via pgvector cosine, so the
+  sub-line shows the segment's most-on-topic sentence — not just
+  the most central one. The `~N` annotation tells you which chunk
+  the excerpt came from (often the same as the hit chunk, sometimes
+  a nearby one in the same segment).
+
+**Excerpts are triage, not citations.** They help you decide whether
+to drill in — *not* whether to cite. Always fetch the verbatim
+chunk and run the verifier before persisting a citation. See
+`precis-citation-help` for the write-side workflow.
 
 **Skill search** uses `{slug, section, keywords}` instead — slug
 prefixed with `[unwired]` when the skill documents a kind that isn't
