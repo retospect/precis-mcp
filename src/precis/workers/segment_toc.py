@@ -673,10 +673,23 @@ def build_paper_adapter(
     positions = tuple(b.pos for b in blocks)
 
     embeddings: tuple[tuple[float, ...], ...] | None
-    if all(b.embedding is not None for b in blocks):
-        embeddings = tuple(tuple(b.embedding) for b in blocks)
-    else:
+    # Some chunk kinds (e.g. ``references``) aren't embedded by the
+    # bge-m3 handler — citation lists don't need a semantic vector.
+    # The segmenter only ever indexes into ``body_indices`` anyway, so
+    # we substitute a zero-vector for the non-body holes to keep the
+    # tuple aligned with ``chunks_text``. Refs with *zero* embedded
+    # blocks (partial ingest still landing) still fall through to
+    # ``None`` and get skipped by the runner.
+    embedded = [b for b in blocks if b.embedding is not None]
+    if not embedded:
         embeddings = None
+    else:
+        emb_dim = len(embedded[0].embedding)
+        zero_vec: tuple[float, ...] = tuple([0.0] * emb_dim)
+        embeddings = tuple(
+            tuple(b.embedding) if b.embedding is not None else zero_vec
+            for b in blocks
+        )
 
     headings: list[tuple[int, str]] = []
     for b in blocks:
