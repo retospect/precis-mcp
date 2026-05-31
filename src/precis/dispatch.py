@@ -570,6 +570,25 @@ def boot(
         roots = parse_python_roots(python_roots)
         if roots:
             _gated(PythonHandler, roots=roots)
+        else:
+            # Roots configured but every entry was malformed — same
+            # deferred-kind treatment as markdown/plaintext/tex below.
+            from precis.kind_gate import Loadability
+
+            hub.loadabilities["python"] = Loadability(
+                kind="python",
+                loaded=False,
+                reason="PRECIS_PYTHON_ROOTS parsed empty",
+            )
+    else:
+        # PRECIS_PYTHON_ROOTS unset — record python as deferred so the
+        # dispatcher returns Unsupported-with-env-var. (Round-2 picky
+        # F-4 / N3.)
+        from precis.kind_gate import Loadability
+
+        hub.loadabilities["python"] = Loadability(
+            kind="python", loaded=False, reason="missing PRECIS_PYTHON_ROOTS"
+        )
 
     # --- Store-backed handlers ------------------------------------------
 
@@ -650,6 +669,21 @@ def boot(
             _gated(MarkdownHandler, root=root)
             _gated(PlaintextHandler, root=root)
             _gated(TexHandler, root=root)
+        else:
+            # PRECIS_ROOT unset — record the file kinds as deferred so
+            # the dispatcher (runtime._resolve_handler) returns
+            # ``Unsupported`` with the missing env var named, rather
+            # than ``NotFound: unknown kind``. Without this branch the
+            # short-circuit above skipped `_gated` entirely and the
+            # kinds were invisible to the loadability index. Round-2
+            # picky F-4 / N3, 2026-05-30. We avoid importing the
+            # handler modules to keep the no-root boot path lean.
+            from precis.kind_gate import Loadability
+
+            for kind in ("markdown", "plaintext", "tex"):
+                hub.loadabilities[kind] = Loadability(
+                    kind=kind, loaded=False, reason="missing PRECIS_ROOT"
+                )
 
         # Perplexity Sonar trio. Each raises InitError independently
         # when httpx or the API key is missing.

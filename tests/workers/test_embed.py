@@ -137,3 +137,37 @@ class TestEmbedHandlerWrites:
                 (chunk_id,),
             ).fetchone()
         assert row == ("ok", None, True)
+
+
+class TestEmbedHandlerReferencesSkip:
+    """Storage-v2 contract regression: chunks tagged
+    ``chunk_kind='references'`` never enter the embedder's claim
+    batch, so the bibliography stays out of search.
+    """
+
+    def test_references_chunk_not_claimed(self, store):
+        from tests.workers._helpers import seed_chunk, seed_ref
+
+        ref_id = seed_ref(store)
+        body_id = seed_chunk(
+            store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text="body text"
+        )
+        ref_chunk_id = seed_chunk(
+            store, ref_id=ref_id, ord=1, chunk_kind="references", text="[1] Smith 2020"
+        )
+        h = EmbedHandler(make_mock_bge_m3())
+        with store.pool.connection() as conn:
+            claimed = h.claim_batch(conn, limit=10)
+            conn.commit()
+
+        claimed_ids = {row.chunk_id for row in claimed}
+        assert body_id in claimed_ids, "paragraph chunk should be claimable"
+        assert ref_chunk_id not in claimed_ids, (
+            "references chunk must be filtered out by skip_chunk_kinds"
+        )
+
+    def test_skip_chunk_kinds_class_var(self):
+        # Lock the contract: EmbedHandler always carries the
+        # references skip. Removing it would silently re-pollute
+        # search with bibliography embeddings.
+        assert "references" in EmbedHandler.skip_chunk_kinds

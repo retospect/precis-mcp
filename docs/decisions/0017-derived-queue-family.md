@@ -14,8 +14,9 @@
   the citation-chase work needs a per-ref output relation for
   `chase_citation` / `resolve_citation:s2` artifacts and surfaced
   that the pattern was implicit, not documented. (The
-  [provenance kind](../provenance-kind-plan.md) owns retraction
-  state through a synchronous tool, not a queue artifact; see
+  [provenance kind](../provenance-kind-plan.md) — shipped
+  Phases 1–6 ahead of this ADR — owns retraction state through
+  a synchronous tool, not a queue artifact; see
   §"Consequences > Positive" for the cross-reference.)
 
 ## Context
@@ -140,13 +141,17 @@ INSERT INTO artifact_kinds (slug, target, storage, output_table, description) VA
 ```
 
 > Retraction tracking is **not** on this list. The provenance
-> kind (`docs/provenance-kind-plan.md`) handles retraction / EoC /
-> correction state through a synchronous user-triggered tool that
-> writes through to `refs.retraction_*` columns and `links`
-> directly. An earlier draft of this ADR listed a
-> `check_retraction:crossmark` artifact; that has been retracted
-> per DRY. A future periodic-backfill scanner can register here
-> if corpus-wide retraction sweeps become a real workload.
+> kind — shipped in `0002_provenance.sql` +
+> `0003_provenance_rw_cache.sql` + the
+> `src/precis/handlers/provenance.py` and
+> `src/precis/ingest/provenance.py` modules — handles
+> retraction / EoC / correction state through a synchronous
+> user-triggered tool that writes through to
+> `refs.retraction_*` columns and `links` directly. An earlier
+> draft of this ADR listed a `check_retraction:crossmark`
+> artifact; that has been retracted per DRY. A future
+> periodic-backfill scanner can register here if corpus-wide
+> retraction sweeps become a real workload.
 
 `artifact_kinds` is the **handler registry** — it indexes the
 worker's view of the world, not the model's. It coexists with
@@ -332,7 +337,9 @@ observability.
 ## Migration
 
 Lands in **the same migration as the finding-chase work** —
-`0003_finding_and_queue_family.sql` (provenance plan owns `0002`). Sequence:
+`0004_finding_and_queue_family.sql`. (`0002` shipped as
+`0002_provenance.sql`; `0003` is taken twice already by
+`0003_app_state.sql` and `0003_provenance_rw_cache.sql`.) Sequence:
 
 1. CREATE TABLE `artifact_kinds`.
 2. INSERT the two existing artifacts (`embed:bge-m3`,

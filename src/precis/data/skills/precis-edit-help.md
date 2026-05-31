@@ -197,21 +197,10 @@ unless you pass `allow_rename=True`).
 
 ## Why anchors instead of regex
 
-Two-anchor + literal `find` covers most cases regex covers, with
-three advantages:
-
-- **No escape hazards.** Models do not reliably escape `.`, `*`,
-  `(`, `\`. Literal anchors sidestep this.
-- **Self-documenting.** `before='over '` reads as "after the word
-  over"; `\boverthe\b` does not.
-- **Bounded ambiguity.** Regex can match in surprising places;
-  literal text + before/after cannot.
-
-Regex and multi-edit batches were considered for v2 and **rejected**
-(escape hazards / unbounded patterns; sequential `put()` + `dry_run`
-subsumes the batch use case). The v1 surface is the protocol's
-complete shape — see `docs/edit-protocol-spec.md § Considered and
-rejected` for the full rationale.
+Literal `find` + two anchors covers most regex cases without the
+escape hazards (models don't reliably escape `.`/`*`/`(`/`\`).
+See `docs/edit-protocol-spec.md § Considered and rejected` for the
+full rationale.
 
 ## Per-kind quirks
 
@@ -235,20 +224,11 @@ that would result). A future version may add an opt-out
 
 ## What this verb does NOT do
 
-- **Regex.** Literal `find=` only. Considered and rejected for v2
-  (escape hazards). Run regex outside the protocol (e.g. `rg`),
-  feed literal text back in via `find=`.
-- **Multi-edit batches.** One edit per call. Considered and
-  rejected for v2 (`dry_run` + sequential `put()` covers the use
-  case with better failure observability).
-- **vi-style modal commands.** Not even in v2 — kept out of the
-  protocol layer. If a client wants `:s/old/new/` sugar, it
-  compiles to this schema before reaching the handler.
-- **Cross-file edits.** One `id` per `edit`. Sequence multiple calls
-  (or use `quest` / `sortie`) for multi-file refactors.
-- **Fuzzy `find`.** Exact match. Fuzzy lives only in the
-  *suggestion* leg of error messages.
-- **Cursor / position state across calls.** Stateless.
+- No regex (literal `find=` only — `rg` first, then feed text back).
+- No multi-edit batches (sequence calls; pair with `dry_run`).
+- No cross-file edits (one `id=` per call).
+- No fuzzy `find=` matching (fuzzy hints appear only on errors).
+- No cursor / position state across calls (stateless).
 
 ## See also
 

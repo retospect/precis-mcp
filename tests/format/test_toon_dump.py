@@ -3,9 +3,15 @@
 The TOON shape we emit is the flat homogeneous-rows form documented
 in `docs/design/b10-toon-output.md` §"Format spec":
 
-    col1<TAB>col2<TAB>col3
+    {col1<TAB>col2<TAB>col3}
     val1<TAB>val2<TAB>val3
     val1<TAB>val2<TAB>val3
+
+Round-2 picky 2026-05-30: the header is wrapped in literal ``{`` and
+``}`` to mark it visibly. The braces are not delimiters — the column
+names are still tab-separated inside — but they let an agent (or
+``grep``) find the header without context. ``toon.load`` strips them
+on read.
 
 These tests pin the exact serialisation contract — header rendering,
 column ordering, escape semantics, scalar coercion, and separator
@@ -31,13 +37,13 @@ class TestEmpty:
         # caller is declaring the column shape even when no rows exist.
         # Useful for "search returned 0 hits" responses that should
         # still teach the agent the column names of a future hit.
-        assert dump([], schema=["a", "b"]) == "a\tb"
+        assert dump([], schema=["a", "b"]) == "{a\tb}"
 
 
 class TestHeaderAndRows:
     def test_single_row_emits_header_and_one_data_row(self):
         out = dump([{"a": "1", "b": "2"}])
-        assert out == "a\tb\n1\t2"
+        assert out == "{a\tb}\n1\t2"
 
     def test_multiple_rows_emit_header_and_one_line_each(self):
         out = dump(
@@ -47,7 +53,7 @@ class TestHeaderAndRows:
                 {"a": "5", "b": "6"},
             ]
         )
-        assert out == "a\tb\n1\t2\n3\t4\n5\t6"
+        assert out == "{a\tb}\n1\t2\n3\t4\n5\t6"
 
     def test_dict_argument_treated_as_one_row_table(self):
         # ADR 0002 lists JSON as the canonical single-record format,
@@ -55,7 +61,7 @@ class TestHeaderAndRows:
         # forcing every caller to wrap in `[...]`. The shape is the
         # same as a one-row list.
         out = dump({"x": "1", "y": "2"})
-        assert out == "x\ty\n1\t2"
+        assert out == "{x\ty}\n1\t2"
 
     def test_no_trailing_newline(self):
         # Tight output keeps the token count predictable. Callers
@@ -76,14 +82,16 @@ class TestColumnOrdering:
             ]
         )
         header = out.splitlines()[0]
-        assert header.split("\t") == ["z", "a", "m"]
+        # Strip the brace markers added by the header form.
+        assert header.startswith("{") and header.endswith("}")
+        assert header[1:-1].split("\t") == ["z", "a", "m"]
 
     def test_explicit_schema_pins_order(self):
         out = dump(
             [{"b": "2", "a": "1", "c": "3"}],
             schema=["a", "b", "c"],
         )
-        assert out == "a\tb\tc\n1\t2\t3"
+        assert out == "{a\tb\tc}\n1\t2\t3"
 
     def test_schema_omits_unlisted_columns(self):
         # A pinned schema is *the* column list; any keys absent from
@@ -100,30 +108,30 @@ class TestColumnOrdering:
         # The reverse case: schema lists a column the row lacks.
         # Render as empty cell so the column shape stays uniform.
         out = dump([{"a": "1"}], schema=["a", "b"])
-        assert out == "a\tb\n1\t"
+        assert out == "{a\tb}\n1\t"
 
 
 class TestScalarEncoding:
     def test_none_renders_as_empty_cell(self):
         out = dump([{"a": None, "b": "x"}])
-        assert out == "a\tb\n\tx"
+        assert out == "{a\tb}\n\tx"
 
     def test_true_renders_lowercase(self):
-        assert dump([{"a": True}]) == "a\ntrue"
+        assert dump([{"a": True}]) == "{a}\ntrue"
 
     def test_false_renders_lowercase(self):
-        assert dump([{"a": False}]) == "a\nfalse"
+        assert dump([{"a": False}]) == "{a}\nfalse"
 
     def test_integer_renders_with_str(self):
-        assert dump([{"a": 42}]) == "a\n42"
+        assert dump([{"a": 42}]) == "{a}\n42"
 
     def test_negative_integer(self):
-        assert dump([{"a": -7}]) == "a\n-7"
+        assert dump([{"a": -7}]) == "{a}\n-7"
 
     def test_float_round_trips_via_repr(self):
         # `repr` keeps "1.0" rather than collapsing to "1" and gives
         # full precision for irrational values.
-        assert dump([{"a": 1.0}]) == "a\n1.0"
+        assert dump([{"a": 1.0}]) == "{a}\n1.0"
         out = dump([{"a": math.pi}])
         assert out.endswith(repr(math.pi))
 
@@ -135,7 +143,7 @@ class TestScalarEncoding:
 
         path = PurePosixPath("/tmp/x")
         out = dump([{"a": path}])
-        assert out == f"a\n{path!s}"
+        assert out == f"{{a}}\n{path!s}"
 
 
 class TestEscapeRules:
@@ -153,18 +161,18 @@ class TestEscapeRules:
 
     def test_cell_with_separator_is_quoted(self):
         out = dump([{"a": "ab\tcd"}])
-        assert out == 'a\n"ab\tcd"'
+        assert out == '{a}\n"ab\tcd"'
 
     def test_cell_with_newline_is_quoted(self):
         out = dump([{"a": "line1\nline2"}])
-        assert out == 'a\n"line1\nline2"'
+        assert out == '{a}\n"line1\nline2"'
 
     def test_cell_with_double_quote_passes_through_literally(self):
         # An LLM reads bare quotes inside cells without confusion;
         # the column structure is tab-delimited, not quote-delimited.
         # Token-cheaper than wrapping + ``""``-escaping.
         out = dump([{"a": 'he said "hi"'}])
-        assert out == 'a\nhe said "hi"'
+        assert out == '{a}\nhe said "hi"'
 
     def test_cell_starting_with_double_quote_passes_through(self):
         # Cells that *start* with a quote could confuse a strict
@@ -172,31 +180,31 @@ class TestEscapeRules:
         # accept the round-trip ambiguity — see the module docstring
         # — because the LLM consumer doesn't run ``load``.
         out = dump([{"a": '"already-quoted"'}])
-        assert out == 'a\n"already-quoted"'
+        assert out == '{a}\n"already-quoted"'
 
     def test_cell_with_embedded_quotes_inside_wrapped_cell(self):
         # When a cell *does* need wrapping (because of \t / \n / \r),
         # embedded quotes inside the wrapper still follow RFC 4180:
         # double them so the closing-wrapper boundary is unambiguous.
         out = dump([{"a": 'he said "hi"\nthen left'}])
-        assert out == 'a\n"he said ""hi""\nthen left"'
+        assert out == '{a}\n"he said ""hi""\nthen left"'
 
     def test_cell_with_carriage_return_is_quoted(self):
         out = dump([{"a": "x\ry"}])
-        assert out == 'a\n"x\ry"'
+        assert out == '{a}\n"x\ry"'
 
     def test_normal_cell_not_quoted(self):
         # Sanity: a clean string passes through unmodified. Quoting
         # everything would defeat the token-saving rationale.
         out = dump([{"a": "hello world"}])
-        assert out == "a\nhello world"
+        assert out == "{a}\nhello world"
 
     def test_header_cell_with_separator_is_quoted(self):
         # Header keys can in principle contain a tab too. Unlikely
         # in our column names, but the format stays internally
         # consistent.
         out = dump([{"weird\tkey": "v"}])
-        assert out == '"weird\tkey"\nv'
+        assert out == '{"weird\tkey"}\nv'
 
 
 class TestSeparatorOverride:
@@ -204,13 +212,13 @@ class TestSeparatorOverride:
         # Not the default but supported so callers can opt into CSV-
         # adjacent output (e.g. for ad-hoc piping to spreadsheets).
         out = dump([{"a": "1", "b": "2"}], sep=",")
-        assert out == "a,b\n1,2"
+        assert out == "{a,b}\n1,2"
 
     def test_separator_drives_escape_rule(self):
         # With sep="," a cell containing a comma must be quoted but
         # a cell containing a tab is *not* quoted any more.
         out = dump([{"a": "x,y", "b": "x\ty"}], sep=",")
-        assert out == 'a,b\n"x,y",x\ty'
+        assert out == '{a,b}\n"x,y",x\ty'
 
 
 class TestErrors:

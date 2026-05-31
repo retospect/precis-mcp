@@ -10,7 +10,7 @@ The MCP server ships with a deliberately spare cold-start banner.
 The default action it teaches is **discovery**:
 
 ```python
-search(kind='skill', q='<your goal in 2-5 words>')
+search(kind='skill', q='<your goal in plain language>')
 ```
 
 If a particular deployment knows in advance which skills its agents

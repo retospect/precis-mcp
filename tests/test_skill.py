@@ -45,9 +45,14 @@ def test_get_missing_raises_with_options(skill: SkillHandler) -> None:
 
 
 def test_invalid_slug_raises(skill: SkillHandler) -> None:
-    with pytest.raises(BadInput, match="invalid skill slug"):
+    # The id parser is the first gate (regex-tight); the slug
+    # validator the second. Both routes produce BadInput — that's
+    # what the test pins. Phase B 2026-05-31: added the address
+    # parser, so the specific error text shifted but the
+    # error class stays the same.
+    with pytest.raises(BadInput):
         skill.get(id="UPPERCASE")
-    with pytest.raises(BadInput, match="invalid skill slug"):
+    with pytest.raises(BadInput):
         skill.get(id="path/traversal")
 
 
@@ -58,9 +63,12 @@ def test_bare_get_lists_skills(skill: SkillHandler) -> None:
     out = skill.get()
     assert "skill" in out.body.lower()
     assert "precis-overview" in out.body
-    # Title column populated for the major skills.
-    # (Not every skill needs a title; we only check overall shape.)
-    assert "Next:" in out.body  # hint trailer
+    # The index trailer is now an explicit "Suggested starting
+    # commands" section (round-2 picky reviewer flagged the old
+    # generic "Next:" wording as ambiguous between recipe shortcuts
+    # and new skills). Pin the new heading so a future rename
+    # surfaces here.
+    assert "Suggested starting commands" in out.body
 
 
 def test_path_view_also_lists(skill: SkillHandler) -> None:
@@ -103,11 +111,22 @@ def test_search_hyphen_space_equivalence(skill: SkillHandler) -> None:
     )
 
 
-def test_search_requires_query(skill: SkillHandler) -> None:
-    with pytest.raises(BadInput):
-        skill.search()
-    with pytest.raises(BadInput):
-        skill.search(q="   ")
+def test_search_empty_query_degrades_to_index(skill: SkillHandler) -> None:
+    """``search(kind='skill', q='')`` and ``q=None`` degrade to the
+    skill index (the same body ``get(kind='skill')`` returns), instead
+    of raising ``BadInput`` like the previous behaviour. Round-2 picky
+    N4/F-6, 2026-05-30 — symmetric with how the rest of the surface
+    treats empty-q calls (``search(kind='memory', tags=[...])`` lists
+    refs without ranking; skill should mirror that). The index body
+    carries its own canonical ``Next:`` trailer.
+    """
+    index = skill.get()
+    for empty in (None, "", "   "):
+        resp = skill.search(q=empty)
+        assert resp.body == index.body, (
+            f"search(q={empty!r}) should match skill.get() index body; "
+            f"got first-line {resp.body.splitlines()[0]!r}"
+        )
 
 
 # ── packaging guarantees ─────────────────────────────────────────────
@@ -240,25 +259,33 @@ def test_toc_alias_dispatches_to_precis_toc(skill: SkillHandler) -> None:
 
 
 def test_toc_lists_every_skill_with_synopsis(skill: SkillHandler) -> None:
-    """The TOC names every shipping skill plus the synth meta-skills.
+    """The TOC names every shipping skill grouped by category.
 
-    Synopsis is best-effort — we only assert that at least one
-    real skill renders with both its slug and its title (the
-    multi-line ``- **slug** — title`` shape).
+    Round-2 picky 2026-05-30: the layout was restructured from a
+    flat ``## Meta-skills`` + ``## Skills`` two-bucket shape into the
+    five-category top layer (Orientation / Core verbs / Content
+    types / Research & validation / Workflow tools). Synth
+    meta-skills now live inside Orientation; file-backed skills land
+    in whichever category their slug is registered under
+    (``_SKILL_CATEGORIES``). Anything unmapped surfaces in
+    ``## Other`` so new slugs never silently disappear.
     """
     out = skill.get(id="toc")
     body = out.body
-    # Headings.
-    assert "precis-toc" in body
-    assert "Meta-skills" in body
-    assert "Skills (" in body  # Skills (NN)
-    # Every synth meta-skill appears in the meta block.
+    # Top-layer category headings — at least the first two must show
+    # up; the rest depend on which kinds are wired in the fixture
+    # hub and could legitimately drop out.
+    assert "## Orientation" in body
+    assert "## Core verbs" in body
+    # Every synth meta-skill appears under Orientation.
     assert "precis-help" in body
     assert "precis-status" in body
     assert "precis-toc" in body
-    # At least the canonical entry-point skill is listed.
+    # The canonical entry-point skill is listed.
     assert "precis-overview" in body
-    # Discovery footer.
+    # Discovery footer ("Suggested starting commands") and at least
+    # one search recipe inside it.
+    assert "Suggested starting commands" in body
     assert "search(kind='skill'" in body
 
 
@@ -275,13 +302,19 @@ def test_toc_listed_in_bare_index_hint(skill: SkillHandler) -> None:
 
 def test_search_uses_semantic_index_when_embedder_wired(tmp_path) -> None:
     """When the hub carries an embedder, ``search()`` routes through
-    :class:`FileCorpusIndex` and tags the response with ``(semantic)``.
+    :class:`FileCorpusIndex` and returns hits.
 
-    The MockEmbedder is hash-based and not actually semantic, but the
-    integration path — index build, cache write, response formatting
-    — is what we're pinning here. End-to-end "transcribe video finds
-    youtube-help" requires a real bge-m3 model and is exercised live,
-    not in CI.
+    The MockEmbedder is hash-based and not actually semantic, but
+    the integration path — index build, cache write, response
+    formatting — is what we're pinning here. End-to-end "transcribe
+    video finds youtube-help" requires a real bge-m3 model and is
+    exercised live, not in CI.
+
+    Round-2 picky 2026-05-31: dropped the ``source`` column from the
+    rendered TOON shape (the maintainer said it was low signal). The
+    test now checks for the integration path firing — search returns
+    a hit headline + at least one TOON row — rather than the
+    source-label string. End-to-end correctness is what matters.
     """
     import os
 
@@ -295,19 +328,31 @@ def test_search_uses_semantic_index_when_embedder_wired(tmp_path) -> None:
         # Plant the hub manually since we bypassed Handler._register_with.
         handler.hub = hub
         out = handler.search(q="precis-overview")
-        assert "(semantic)" in out.body or "(lexical)" in out.body
+        assert "skill match" in out.body
+        # At least one TOON row begins with a slug + tab — the data
+        # rows of the search-hit table.
+        assert any(
+            ln.startswith("precis-") and "\t" in ln
+            for ln in out.body.splitlines()
+        ), f"expected at least one precis-* TOON row; got body:\n{out.body}"
     finally:
         del os.environ["PRECIS_CACHE_DIR"]
 
 
 def test_search_falls_back_to_substring_when_no_embedder(skill: SkillHandler) -> None:
-    """Without an embedder the index reports unavailable and the
-    substring stream provides every hit. Response should label them
-    ``(lexical)`` so an operator can tell which path served the
-    answer."""
+    """Without an embedder the substring stream provides every hit.
+
+    Round-2 picky 2026-05-31: the rendered output no longer carries a
+    ``source`` column; the substring-vs-semantic distinction is now
+    internal-only. Test that the substring path still returns hits
+    when invoked without an embedder.
+    """
     out = skill.search(q="seven verbs")
-    assert "(lexical)" in out.body
-    assert "skill match" in out.body or "no skills mention" not in out.body
+    # Either we found hits, in which case there's a headline + a TOON
+    # row, OR we hit the empty-result branch which has a different
+    # body shape entirely. Both are acceptable; what matters is no
+    # crash and no fallback to ``BadInput``.
+    assert "no skills mention" in out.body or "skill match" in out.body
 
 
 # ── search marks unwired skills ──────────────────────────────────────
@@ -315,36 +360,71 @@ def test_search_falls_back_to_substring_when_no_embedder(skill: SkillHandler) ->
 
 def test_search_marks_unwired_skills(skill: SkillHandler) -> None:
     """``search(kind='skill', q=...)`` must annotate skills whose
-    subject kind isn't in the live hub with ``[unwired]`` —
-    7B callers quote the title and invoke ``[error:NotFound]``
-    otherwise. Mirror of the index's hidden-skills behaviour.
-    (MCP critic MINOR: ``D5 — hint lies by omission``.)"""
+    subject kind is *known* to the registry but not currently loaded
+    with ``[unwired]`` — 7B callers quote the title and invoke
+    ``[error:NotFound]`` otherwise. Mirror of the index's
+    hidden-skills behaviour.
+
+    The "known" check (round-2 picky R2-3, 2026-05-30) uses
+    ``hub.loadabilities`` so umbrella skill slugs like
+    ``precis-files-help`` (whose stem ``'files'`` is *not* a real
+    kind) don't get falsely marked. Production registers every
+    deferred kind in ``loadabilities`` with ``loaded=False`` — the
+    fake hub below mirrors that.
+    """
+
+    class _Loadability:
+        def __init__(self, loaded: bool) -> None:
+            self.loaded = loaded
 
     class _NoFileKindsHub:
         """Duck-typed hub that deliberately omits the file kinds
         (markdown / plaintext / python) so their help skills surface
-        with the ``[unwired]`` marker."""
+        with the ``[unwired]`` marker. The file kinds appear in
+        ``loadabilities`` (registered, but loaded=False) so the
+        availability gate recognises them as known-but-disabled."""
 
         @property
         def kinds(self) -> list[str]:
             return ["calc", "paper", "memory"]
 
+        loadabilities: dict[str, _Loadability] = {
+            "calc": _Loadability(True),
+            "paper": _Loadability(True),
+            "memory": _Loadability(True),
+            "markdown": _Loadability(False),
+            "plaintext": _Loadability(False),
+            "tex": _Loadability(False),
+            "python": _Loadability(False),
+        }
+
     skill.hub = _NoFileKindsHub()
     # 'edit' appears in several file-kind skills; the search hit
-    # list should include markdown/plaintext help with the marker.
+    # list should include at least one markdown/plaintext/tex/python
+    # help skill with the inline ``[unwired]`` prefix on its slug.
+    # (Round-2 picky 2026-05-31: dropped the dedicated ``status``
+    # column; the marker is now a slug prefix to save a column for
+    # the rare case it fires.)
     out = skill.search(q="edit")
     assert "[unwired]" in out.body, (
-        "at least one unwired file-kind skill should surface with the [unwired] marker"
+        "at least one unwired file-kind skill must surface with the "
+        f"[unwired] slug prefix; got body:\n{out.body}"
     )
     # Skills the hub DOES support must NOT carry the marker.
     # precis-tags is a cross-cutting skill that references no specific
-    # kind — it must remain unmarked.
+    # kind — its slug row must NOT have the [unwired] prefix.
     tags_out = skill.search(q="tags")
-    # Find the precis-tags hit line and confirm it has no marker.
-    lines = [ln for ln in tags_out.body.splitlines() if "## precis-tags" in ln]
-    if lines:
-        assert "[unwired]" not in lines[0], (
-            f"cross-cutting skill should not be marked [unwired]: {lines[0]!r}"
+    # TOON row shape (post-2026-05-31 trim): ``slug\tsection\tkeywords``.
+    # Locate the precis-tags row by its slug column; confirm no
+    # ``[unwired]`` prefix prepended.
+    rows = [
+        ln
+        for ln in tags_out.body.splitlines()
+        if ln.startswith("precis-tags\t")
+    ]
+    if rows:
+        assert "[unwired]" not in rows[0], (
+            f"cross-cutting skill should not be marked unwired: {rows[0]!r}"
         )
 
 

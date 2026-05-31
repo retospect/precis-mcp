@@ -1116,14 +1116,37 @@ def test_cache_backed_listing_hint_uses_caller_kind() -> None:
 
 def test_skill_index_hides_power_user_skill_for_unwired_kind() -> None:
     """``precis-patent-power`` is hostile when ``kind='patent'`` isn't
-    wired (the skill examples all return [error:NotFound]); the index
-    must hide it the same way ``precis-patent-help`` is hidden.
-    (MCP critic MAJOR.)"""
+    wired (the skill examples all return [error:Unsupported]); the
+    index must hide it the same way ``precis-patent-help`` is hidden.
+    (MCP critic MAJOR.)
+
+    Round-2 picky R2-3 (2026-05-30): the availability gate now
+    requires the kind to be *known* to the registry — present in
+    either ``hub.kinds`` or ``hub.loadabilities``. The fake hub
+    below mirrors production behaviour: ``patent`` is registered as
+    a deferred kind (``loaded=False``) so the gate recognises it
+    and fires the banner. Before this change, the fake hub's lack
+    of ``loadabilities`` made ``patent`` look like an unknown name,
+    and the gate skipped the banner — producing the umbrella-skill
+    false-positive that R2-3 was meant to prevent.
+    """
     from precis.handlers.skill import _availability_gap
 
+    class _Loadability:
+        def __init__(self, loaded: bool) -> None:
+            self.loaded = loaded
+
     class _NoPatentHub:
+        @property
         def kinds(self) -> list[str]:
             return ["calc", "paper", "memory"]
+
+        loadabilities: dict[str, _Loadability] = {
+            "calc": _Loadability(True),
+            "paper": _Loadability(True),
+            "memory": _Loadability(True),
+            "patent": _Loadability(False),
+        }
 
     gap = _availability_gap("precis-patent-power", hub=_NoPatentHub())
     assert gap is not None, (

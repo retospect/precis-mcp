@@ -39,6 +39,47 @@ search(kind='*', q='topic-x')                   # explicit '*' (also: 'all', 'an
 Larger values are rejected to bound response size and protect smaller
 models' context windows. To see more, paginate via `exclude=`.
 
+## Result shape — TOON
+
+Search responses render hits as a **TOON table** so the agent parses
+one shape across every kind. Columns are kind-specific but consistent
+in spirit:
+
+```
+{handle	chunk_keywords}
+cai23~91	secondary electron image outlines, ToF-SIMS characterization, …
+cai23~45	cross-sectional SEM images, PEO membrane doped, …
+```
+
+* `handle` is a copy-pasteable `id=` for `get` — drilling into any
+  hit is a one-call follow-up (`get(kind='paper', id='cai23~91')`).
+* `chunk_keywords` is RAKE-extracted from the matched block (with
+  per-paper abbreviation substitution — `FTIR` not "Fourier
+  Transform Infrared Spectroscopy").
+
+**Skill search** uses `{slug, section, keywords}` instead — slug
+prefixed with `[unwired]` when the skill documents a kind that isn't
+loaded in this build.
+
+## Cluster context in the trailer
+
+For paper search, the `Next:` block includes a **cluster hint** for
+the top hit — pointing at the segment of the paper that contains
+the matched chunk:
+
+```
+Next:
+  get(kind='paper', id='cai23~91')                    - read the full text of any hit
+  get(kind='paper', id='cai23~41..93', view='toc')    - sub-TOC of the segment containing the top hit
+  search(kind='paper', q='tof', exclude=[…])          - next page
+  search(kind='paper', q='tof', scope='cai23')        - narrow to this paper
+```
+
+The cluster handle comes from the same embedding-cluster TOC the
+paper handler emits for `view='toc'`. So `~41..93` says "the top
+hit lives in a 53-chunk segment about XPS / surface chemistry — drill
+into that range for context."
+
 ## Cross-kind fan-out
 
 When `kind` is omitted, `'*'`, `'all'`, `'any'`, `''`, or a comma-list,
@@ -157,3 +198,4 @@ ranked list of skills is faster than reading the full TOC.
 - `precis-patent-search-help` — the `source=` matrix in detail
 - `precis-paper-tag-axes` — paper tag vocabulary
 - `precis-tags` — cross-kind tag conventions
+- `precis-toc-help` — cluster context (the trailer's "sub-TOC of the segment containing the top hit" hint)

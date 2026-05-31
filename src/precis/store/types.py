@@ -320,15 +320,41 @@ class Tag:
                 return cls.closed(prefix, value)
 
         # Bare-flag form. Reject if it collides with a registered
-        # closed-vocab value — agents that wrote `'urgent'` instead of
-        # `'PRIO:urgent'` would otherwise produce an open-tag row that
-        # never matches `tags=['PRIO:urgent']` filter queries.
+        # closed-vocab value whose axis is actually usable on this
+        # kind — agents that wrote `'urgent'` instead of
+        # `'PRIO:urgent'` on a kind that accepts ``PRIO:`` would
+        # otherwise produce an open-tag row that never matches
+        # ``tags=['PRIO:urgent']`` filter queries.
+        #
+        # **Kind-scoped collision check.** Round-2 picky N1, 2026-05-30:
+        # before the scoping, ``tags=['pinned']`` on ``kind='memory'``
+        # was rejected because ``pinned`` is a value under ``CACHE:`` —
+        # even though ``memory`` doesn't allow the ``CACHE:`` axis at
+        # all. The skill index actually *teaches*
+        # ``tag(kind='memory', add=['pinned'])`` as a canonical
+        # example, so the collision check was rejecting documented
+        # usage. The fix: a bare flag is rejected only when the kind
+        # is one that allows the colliding closed axis. Cross-kind
+        # callers (no ``kind=``) keep the strict-rejection behaviour
+        # so the type-error surface stays unambiguous for unscoped
+        # writes.
         canonical = _RESERVED_FLAGS.get(s)
         if canonical is not None:
-            raise BadInput(
-                f"bare flag {s!r} collides with closed value {canonical!r}",
-                next=f"use tags=[{canonical!r}] instead of tags=[{s!r}]",
-            )
+            colliding_prefix = canonical.split(":", 1)[0]
+            kind_blocks_collision = True
+            if kind is not None:
+                kind_allowed = _KIND_ALLOWED_AXES.get(kind)
+                if kind_allowed is not None and colliding_prefix not in kind_allowed:
+                    # The axis isn't usable on this kind — no future
+                    # ``tags=[canonical]`` filter could ever match here,
+                    # so the bare flag does not actually shadow the
+                    # closed form. Accept as an open tag.
+                    kind_blocks_collision = False
+            if kind_blocks_collision:
+                raise BadInput(
+                    f"bare flag {s!r} collides with closed value {canonical!r}",
+                    next=f"use tags=[{canonical!r}] instead of tags=[{s!r}]",
+                )
         return cls.parse(s)
 
     @classmethod

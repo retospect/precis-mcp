@@ -133,7 +133,8 @@ _SEARCH_TOP_K_MAX: int = 100
 
 
 def get(
-    kind: str,
+    # See ``search`` for the Optional-required pattern (round-2 picky N-1).
+    kind: str | None = None,
     id: str | int | None = None,
     view: str | None = None,
     q: str | None = None,
@@ -148,7 +149,7 @@ def get(
     keys (`kind`, `id`, `view`, `q`) inside `args=` are rejected.
 
     Full reference: get(kind='skill', id='precis-get-help'), or
-    search(kind='skill', q='reading a <kind>') for a topical lookup.
+    search(kind='skill', q='reading a paper') for a topical lookup.
     """
     payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
     if args:
@@ -167,7 +168,14 @@ def get(
 
 
 def search(
-    q: str,
+    # ``q`` is functionally required but declared ``Optional`` so a
+    # missing-arg call returns the runtime's canonical
+    # ``[error:BadInput]`` envelope rather than FastMCP's raw pydantic
+    # ValidationError (`Field required ... https://errors.pydantic.dev/2.13/v/missing`).
+    # Round-2 picky N-1, 2026-05-30. Handlers already gate the empty-q
+    # case (degrade to list view when ``tags=`` is supplied, raise
+    # ``BadInput`` otherwise) so the validation moves cleanly.
+    q: str | None = None,
     kind: str | None = None,
     scope: str | None = None,
     top_k: int = 10,
@@ -235,7 +243,8 @@ def search(
 
 
 def put(
-    kind: str,
+    # See ``search`` for the Optional-required pattern (round-2 picky N-1).
+    kind: str | None = None,
     mode: str | None = None,
     id: str | int | None = None,
     text: str | None = None,
@@ -274,8 +283,10 @@ def put(
 
 
 def edit(
-    kind: str,
-    id: str | int,
+    # ``kind`` and ``id`` are functionally required; see ``search`` for
+    # the Optional-required pattern (round-2 picky N-1).
+    kind: str | None = None,
+    id: str | int | None = None,
     mode: str = "find-replace",
     text: str | None = None,
     find: str | None = None,
@@ -325,8 +336,9 @@ def edit(
 
 
 def delete(
-    kind: str,
-    id: str | int,
+    # See ``search`` for the Optional-required pattern (round-2 picky N-1).
+    kind: str | None = None,
+    id: str | int | None = None,
 ) -> str:
     """Delete a ref or addressed region.
 
@@ -349,8 +361,9 @@ def delete(
 
 
 def tag(
-    kind: str,
-    id: str | int,
+    # See ``search`` for the Optional-required pattern (round-2 picky N-1).
+    kind: str | None = None,
+    id: str | int | None = None,
     add: list[str] | None = None,
     remove: list[str] | None = None,
 ) -> str:
@@ -374,8 +387,9 @@ def tag(
 
 
 def link(
-    kind: str,
-    id: str | int,
+    # See ``search`` for the Optional-required pattern (round-2 picky N-1).
+    kind: str | None = None,
+    id: str | int | None = None,
     target: str | None = None,
     mode: str = "add",
     rel: str | None = None,

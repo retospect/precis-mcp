@@ -53,7 +53,7 @@ _TOOL_KW: dict[str, Any] = {"structured_output": False}
 _INSTRUCTIONS = (
     "precis-mcp v2 - seven-verb agent tool surface.\n\n"
     "First action on any non-trivial request:\n"
-    "  search(kind='skill', q='<your goal in 2-5 words>')\n"
+    "  search(kind='skill', q='<your goal in plain language>')\n"
     "This returns ranked help skills (verb mechanics, kind specifics,\n"
     "tag axes, edit protocol, ...). For the full index:\n"
     "  get(kind='skill', id='toc').\n\n"

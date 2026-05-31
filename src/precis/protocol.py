@@ -155,6 +155,56 @@ class Handler:
         """
         raise Unsupported(f"{self.spec.kind} does not support cross-kind search")
 
+    def accepted_views(self, *, id: Any = None) -> list[str]:
+        """Per-kind list of accepted ``view=`` values.
+
+        Returned in display order — first entry is the conventional
+        default. Empty list signals "this kind has no view enum"
+        (the dispatcher then treats any non-default view as a
+        regular ``BadInput`` without listing alternatives).
+
+        ``id=`` is optional context — most kinds return the same
+        view list regardless of which ref is being viewed, but kinds
+        that vary their accepted views by ref shape (e.g. paper has
+        ``cite`` only when DOI is present) can branch on it.
+
+        Used by the runtime to wrap CLI / handler ``view=``
+        validation in a per-kind ``BadInput`` envelope: when the
+        caller passes an unknown view, the error lists what's
+        actually accepted for *this* kind, not a generic placeholder.
+        Phase F 2026-05-31.
+        """
+        return []
+
+    def chunks_for_toc(self, ref: Any) -> "ChunksForToc | None":  # noqa: F821
+        """Return ``(chunks, embeddings, h2_boundaries)`` for ``ref``.
+
+        Opt-in contract for the generic TOC renderer
+        (:mod:`precis.utils.toc`). Kinds that implement this method
+        get a smart-TOC view for free; kinds that don't are
+        ignored. Returning ``None`` is also an opt-out signal
+        (e.g. cache-only kinds with no chunk structure).
+
+        Implementations should:
+
+        * Return chunk bodies in reading order (full text per chunk
+          — the renderer feeds them to RAKE for per-segment keyword
+          extraction).
+        * Provide per-chunk embeddings *only* if the kind has them.
+          ``None`` is acceptable; the renderer falls back to H2
+          structure or a flat listing.
+        * Provide ``h2_boundaries`` as ``[(start, end, heading), ...]``
+          when the source has explicit section structure (markdown
+          H2s, paper section headings). Empty / None when no
+          structure is present.
+
+        Stable / cacheable: the TOC renderer caches outputs keyed on
+        ``(ref.id, chunker_version, embedder_name, SEGMENTATION_VERSION)``,
+        so implementations should return the same shape across calls
+        for a given ref unless the underlying chunks change.
+        """
+        raise Unsupported(f"{self.spec.kind} does not support TOC")
+
     def put(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support put")
 

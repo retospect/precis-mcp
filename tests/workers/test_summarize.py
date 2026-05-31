@@ -9,12 +9,9 @@ from __future__ import annotations
 
 import pytest
 
+from precis.utils.rake import _candidate_phrases, extract_keywords
 from precis.workers.base import ChunkRow
-from precis.workers.summarize import (
-    RakeLemmaHandler,
-    _candidate_phrases,
-    extract_keywords,
-)
+from precis.workers.summarize import RakeLemmaHandler
 
 # ---------------------------------------------------------------------------
 # extract_keywords — pure algorithm

@@ -58,6 +58,7 @@ from precis.store._mappers import (
     _row_to_ref,
 )
 from precis.store._refs_ops import RefsMixin
+from precis.store._segments_ops import SegmentsMixin
 from precis.store._tags_ops import TagsMixin
 from precis.store.pool import create_pool
 
@@ -74,6 +75,7 @@ class Store(
     LinksMixin,
     CacheMixin,
     IdentifiersMixin,
+    SegmentsMixin,
 ):
     """High-level handle. Owns the psycopg connection pool.
 

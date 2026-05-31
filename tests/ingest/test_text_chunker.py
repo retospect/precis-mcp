@@ -163,3 +163,54 @@ class TestEnforceHardMax:
             enforce_hard_max(["x"], hard_max=0)
         with pytest.raises(ValueError):
             enforce_hard_max(["x"], hard_max=-5)
+
+
+class TestSentenceAwareSplitting:
+    """Regression coverage for the pysbd-backed sentence fallback.
+
+    Before #58 the recursive splitter used a literal ``". "`` between
+    newline and clause splits — breaking mid-abbreviation on "et al.",
+    "Fig.", "i.e.". With pysbd routed through the ``SENTENCE_SEPARATOR``
+    sentinel those splits no longer happen.
+    """
+
+    def test_abbreviation_does_not_cause_split(self):
+        # Force the recursive splitter into the sentence step by
+        # providing more text than fits in chunk_size, but no
+        # paragraph/line breaks so paragraph + newline steps no-op.
+        text = (
+            "Smith et al. demonstrated the effect at length. "
+            "Cf. Fig. 3 for the spectra and details. "
+            "We then extended their analysis to MOFs."
+        )
+        result = split_text(text, chunk_size=80, chunk_overlap=0)
+        # Every chunk that mentions "et al" must keep "et al." intact
+        # — no chunk should end in bare "et al".
+        for chunk in result:
+            assert not chunk.rstrip().endswith("et al"), (
+                f"chunk should not split mid-abbreviation; got {chunk!r}"
+            )
+            assert not chunk.rstrip().endswith("Fig"), (
+                f"chunk should not split mid-abbreviation; got {chunk!r}"
+            )
+            assert not chunk.rstrip().endswith("Cf"), (
+                f"chunk should not split mid-abbreviation; got {chunk!r}"
+            )
+
+    def test_single_sentence_falls_through_to_word_split(self):
+        # One long sentence with no inter-sentence boundary should
+        # still get chunked (via the ", " or " " separators below
+        # the sentence step) rather than land in a single oversized
+        # blob.
+        long = (
+            "We synthesized Cu MOF samples with controlled crystal sizes "
+            "ranging from 50 nm to 500 nm and characterized them via XRD, "
+            "FTIR, TEM, and BET methods to confirm phase purity and "
+            "porosity throughout the batch."
+        )
+        result = split_text(long, chunk_size=100, chunk_overlap=0)
+        # Should produce multiple chunks even though there's only one
+        # sentence — falls through sentence step into clause / word.
+        assert len(result) >= 2
+        for chunk in result:
+            assert len(chunk) <= 100 + 10  # tolerance for separator

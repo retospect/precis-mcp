@@ -124,6 +124,29 @@ See `precis-random-help` — no arguments, one pick per call, CSPRNG-
 backed. Useful for warm-up, inspiration, sanity-checking a fresh
 corpus.
 
+## Address grammar — uniform across TOC-capable kinds
+
+Every kind that exposes structured content shares one address grammar:
+
+| Form                       | Meaning                                       |
+|----------------------------|-----------------------------------------------|
+| `slug`                     | the whole ref                                 |
+| `slug~N`                   | chunk N                                       |
+| `slug~A..B`                | chunk range A..B (inclusive)                  |
+| `slug/toc`                 | TOC of the ref (alias for `view='toc'`)       |
+| `slug~A..B/toc`            | sub-TOC, recursively segments the range       |
+| `slug~A..B`, `view='toc'`  | same as `slug~A..B/toc`                       |
+
+Today: `paper` and `skill`. Other TOC-capable kinds (`conv` …) will
+pick it up by implementing the `chunks_for_toc` adapter on their
+handler — the address parsing and renderer are shared.
+
+The TOC itself is **embedding-aware**: papers without explicit
+section headings get clustered into 3–9 navigable segments via
+adjacent-chunk cosine drops (TextTiling); each segment row carries
+RAKE keywords + (when present) an abbreviation legend. See
+`precis-paper-help § Navigate` for the rendered shape.
+
 ## Examples
 
 ```python
@@ -163,3 +186,4 @@ get(kind='math', q='speed of light in km/h')  # → 1.079e9 km/h (paid)
 - `precis-random-help` — random corpus pick for discovery
 - `precis-python-help` — Python code navigation, callgraph + runtrace, AST-gated edits
 - `precis-files-help` — shared address grammar for file-backed kinds (markdown, plaintext, python)
+- `precis-toc-help` — TOC machinery: smart segmentation, `slug~A..B/toc`, abbreviation legend

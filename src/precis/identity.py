@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
@@ -299,6 +300,87 @@ def make_paper_id(
     raise ValueError("make_paper_id requires at least one of arxiv / doi / pdf_sha256")
 
 
+def make_finding_paper_id(
+    body_text: str,
+    scope: Mapping[str, Any] | None,
+    initial_cite_pub_id: str,
+) -> str:
+    """Build the synthetic ``paper_id`` for a finding ref.
+
+    Findings have no external ID (no DOI, no arXiv, no PDF). Their
+    identity is derived from the empirical content the agent created:
+    the claim text plus its setup envelope plus the initial citation
+    that anchored the chase. Same inputs → same ``paper_id`` → same
+    ``pub_id`` (via :func:`make_pub_id`), which makes the skill-side
+    "search before create" rule self-correcting: two agents recording
+    the same finding under the same setup collide on insert at the
+    UNIQUE constraint on ``ref_identifiers (id_kind='pub_id')``
+    rather than spawning duplicate chases.
+
+    Returns ``f"finding:{hex}"`` where ``hex`` is the SHA-256 of a
+    canonical key derived from the three inputs. The ``finding:``
+    prefix slots into the same name space as ``arxiv:``, ``doi:``,
+    ``sha256:`` so :func:`make_pub_id` does not need to know what
+    kind of ref it's minting for.
+
+    Canonicalisation:
+
+    - ``body_text``: :func:`normalize_text_for_hash` (NFKD-fold +
+      lowercase + whitespace collapse). Idempotent under cosmetic
+      re-edits ("2.4 kV" vs "2.4 kV" with extra spaces).
+    - ``scope``: ``json.dumps`` with ``sort_keys=True`` and
+      no-whitespace separators. ``None`` and ``{}`` collapse to the
+      same canonical ``"{}"``.
+    - ``initial_cite_pub_id``: stripped, lowercased.
+
+    Args:
+        body_text: The claim text the agent supplied
+            (`finding_body` chunk). Required non-empty.
+        scope: Optional structured slice of the setup envelope, e.g.
+            ``{"electrode": "Cu", "ambient": "N2"}``. Empty / None
+            allowed (some findings carry only prose context).
+        initial_cite_pub_id: ``pub_id`` of the ref the agent cited
+            as the starting frontier (the ``cited_in`` argument on
+            ``put(kind='finding', …)``). Required non-empty — a
+            finding without an initial cite is not a finding.
+
+    Raises:
+        ValueError: when ``body_text`` or ``initial_cite_pub_id`` is
+            empty / whitespace-only.
+
+    Example:
+        >>> pid = make_finding_paper_id(
+        ...     "2.4 kV held for 30 s on Si/SiO2 MOSCAPs",
+        ...     {"electrode": "Cu", "ambient": "N2"},
+        ...     "ab12c3",
+        ... )
+        >>> pid.startswith("finding:")
+        True
+        >>> len(pid) == len("finding:") + 64
+        True
+    """
+    if not body_text or not body_text.strip():
+        raise ValueError("make_finding_paper_id requires a non-empty body_text")
+    if not initial_cite_pub_id or not initial_cite_pub_id.strip():
+        raise ValueError(
+            "make_finding_paper_id requires a non-empty initial_cite_pub_id"
+        )
+    body_canonical = normalize_text_for_hash(body_text)
+    # Sort keys so {"a":1,"b":2} and {"b":2,"a":1} hash identically; no
+    # whitespace so cosmetic JSON formatting changes don't churn the id.
+    # dict(scope) coerces Mapping/None into a plain dict json can serialise.
+    scope_canonical = json.dumps(
+        dict(scope) if scope else {},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    cite_canonical = initial_cite_pub_id.strip().lower()
+    key = f"finding|body={body_canonical}|scope={scope_canonical}|cite={cite_canonical}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return f"finding:{digest}"
+
+
 def make_pub_id(paper_id: str) -> str:
     """6-character base32 lowercase handle derived from ``paper_id``.
 
@@ -400,6 +482,7 @@ __all__ = [
     "CiteKeyOverflow",
     "make_cite_key",
     "make_content_hash",
+    "make_finding_paper_id",
     "make_node_id",
     "make_paper_id",
     "make_pdf_sha256",

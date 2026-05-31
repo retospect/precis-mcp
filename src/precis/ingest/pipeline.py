@@ -24,6 +24,7 @@ when the PDF is added via :func:`extract_paper`.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ from precis.ingest.lookup import lookup_doi
 from precis.ingest.marker import extract_blocks_marker
 from precis.ingest.pdf_metadata import DoiProvenance, extract_metadata_from_sources
 from precis.ingest.semantic_scholar import lookup_s2
+from precis.utils.boilerplate import ChunkClass, classify_chunks
 
 # U+FFFD — Unicode "replacement character." PDFs whose ToUnicode map is
 # incomplete or contradicts the embedded cmap leak FFFD bytes through
@@ -174,6 +176,37 @@ def _resolve_identity(
 # ---------------------------------------------------------------------------
 # Block / card builders
 # ---------------------------------------------------------------------------
+
+
+def _retag_references(chunks: list[ChunkToWrite]) -> list[ChunkToWrite]:
+    """Promote bibliography chunks to ``chunk_kind='references'``.
+
+    Marker reliably labels the *heading* of a references section
+    (``# References``) but tags the following bibliography paragraphs
+    as plain text. Storage-v2's contract says references should
+    arrive as ``chunk_kind='references'`` so the embedder worker
+    can skip them via its ``skip_chunk_kinds`` filter — otherwise
+    the bibliography pollutes search with citation-list noise.
+
+    We delegate the detection to
+    :func:`precis.utils.boilerplate.classify_chunks`, which already
+    has the heading + citation-density heuristics tuned for
+    scientific papers (it was previously only consulted downstream by
+    the TOC segmenter; now it informs ingest too).
+
+    Idempotent: chunks already tagged ``'references'`` pass through
+    unchanged. Non-references chunks are untouched.
+    """
+    if not chunks:
+        return chunks
+    classified = classify_chunks([c.text for c in chunks])
+    out: list[ChunkToWrite] = []
+    for chunk, klass in zip(chunks, classified.classes, strict=True):
+        if klass is ChunkClass.REFERENCES and chunk.chunk_kind != "references":
+            out.append(dataclasses.replace(chunk, chunk_kind="references"))
+        else:
+            out.append(chunk)
+    return out
 
 
 def _blocks_to_chunks(blocks: list[dict[str, Any]]) -> list[ChunkToWrite]:
@@ -334,6 +367,7 @@ def extract_paper(
     blocks = extract_blocks_marker(pdf_path, paper_id)
     blocks = _repair_or_fail_mojibake(blocks, paper_id=paper_id, pdf_path=pdf_path)
     body_chunks = _blocks_to_chunks(blocks)
+    body_chunks = _retag_references(body_chunks)
     cards = _build_cards(
         title=metadata.title,
         authors=authors_dict,

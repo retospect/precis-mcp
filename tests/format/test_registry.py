@@ -34,7 +34,7 @@ class TestSerialize:
     def test_toon_dispatches_to_toon_dump(self):
         rows = [{"a": "1", "b": "2"}]
         out = fmt.serialize(rows, format="toon")
-        assert out == "a\tb\n1\t2"
+        assert out == "{a\tb}\n1\t2"
 
     def test_json_dispatches_to_json_dumps(self):
         rows = [{"a": "1", "b": "2"}]
@@ -68,7 +68,7 @@ class TestSerialize:
         # `serialize(..., sep=",")` forwards to the toon serializer.
         rows = [{"a": "1", "b": "2"}]
         out = fmt.serialize(rows, format="toon", sep=",")
-        assert out == "a,b\n1,2"
+        assert out == "{a,b}\n1,2"
 
 
 class TestRegister:

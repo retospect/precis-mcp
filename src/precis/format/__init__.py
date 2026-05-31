@@ -14,6 +14,13 @@ Public surface
 - :func:`serialize` — the one-line dispatch shim. Call this from
   CLI subcommands; never reach into the toon / table modules
   directly so a future format lands as a single registry entry.
+- :func:`render_agent_table` — the **handler-facing** entry point.
+  MCP handlers (skill index, TOC, search hits, list views) call
+  this for every tabular response so we have a single swap point
+  for benchmarking alternative renderers. Reads
+  ``PRECIS_AGENT_TABLE_FORMAT`` (default ``"toon"``) to pick the
+  backend — flip the env var and every MCP-facing list switches
+  format in one go.
 - :func:`register` — add a new format at runtime. Tests use it;
   operators can too.
 
@@ -24,7 +31,8 @@ exercise the dump/load roundtrip).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import os
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from precis.format import _json, table, toon
@@ -37,6 +45,53 @@ SERIALIZERS: dict[str, Callable[..., str]] = {
     "json": _json.render,
     "table": table.render,
 }
+
+# Env var picking the agent-facing tabular renderer. Defaults to TOON
+# (the only LLM-tuned option today). Setting it to ``json`` or
+# ``table`` swaps every MCP-facing list to that format in one go —
+# useful for A/B benchmarking token cost or human readability.
+_AGENT_TABLE_ENV = "PRECIS_AGENT_TABLE_FORMAT"
+_AGENT_TABLE_DEFAULT = "toon"
+
+
+def render_agent_table(
+    rows: Sequence[Mapping[str, Any]] | Mapping[str, Any],
+    *,
+    schema: Sequence[str] | None = None,
+    format: str | None = None,
+) -> str:
+    """Render a tabular result for an agent-facing response.
+
+    Single chokepoint that MCP handlers call instead of reaching for
+    ``toon.dump`` (or any other serialiser) directly. This lets the
+    operator swap renderers at runtime via ``PRECIS_AGENT_TABLE_FORMAT``
+    without changing handler code — useful for benchmarking
+    alternative tabular shapes against the same agent under load.
+
+    Args:
+        rows: Either a list of row mappings or a single mapping
+            (treated as a 1-row table). Matches ``toon.dump``'s
+            contract so existing callsites port cleanly.
+        schema: Optional explicit column order. Recommended for stable
+            output across reruns.
+        format: Override the env-selected backend for this call. If
+            unset, reads ``PRECIS_AGENT_TABLE_FORMAT`` (defaulting to
+            ``"toon"``).
+
+    Returns:
+        The rendered table body. Whatever the chosen backend emits.
+
+    Raises:
+        ValueError: If the resolved format isn't in :data:`SERIALIZERS`.
+    """
+    chosen = format or os.environ.get(_AGENT_TABLE_ENV, _AGENT_TABLE_DEFAULT)
+    kwargs: dict[str, Any] = {}
+    # JSON ignores ``schema``; TOON + table both honour it. Pass it
+    # only when the backend declares the kwarg, to keep extension
+    # serialisers free to omit it.
+    if schema is not None and chosen in ("toon", "table"):
+        kwargs["schema"] = list(schema)
+    return serialize(rows, format=chosen, **kwargs)
 
 
 def serialize(data: Any, *, format: str = "toon", **kwargs: Any) -> str:
@@ -87,6 +142,7 @@ def register(name: str, fn: Callable[..., str]) -> None:
 __all__ = [
     "SERIALIZERS",
     "register",
+    "render_agent_table",
     "serialize",
     "table",
     "toon",

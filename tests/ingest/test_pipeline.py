@@ -24,6 +24,7 @@ from precis.ingest.pipeline import (
     _build_cards,
     _repair_or_fail_mojibake,
     _resolve_identity,
+    _retag_references,
     extract_paper,
     fetch_paper_by_arxiv,
     fetch_paper_by_doi,
@@ -87,6 +88,111 @@ class TestBlocksToChunks:
         ]
         chunks = _blocks_to_chunks(blocks)
         assert chunks[0].section_path == ["1", "Introduction"]
+
+
+# ---------------------------------------------------------------------------
+# _retag_references — references-section promotion
+# ---------------------------------------------------------------------------
+
+
+class TestRetagReferences:
+    """Storage-v2 contract: bibliography chunks must land with
+    ``chunk_kind='references'`` so the embedder worker can skip them
+    via ``skip_chunk_kinds``. Marker tags the heading but leaves the
+    following paragraphs as text — :func:`_retag_references` closes
+    that gap by delegating to the boilerplate classifier.
+    """
+
+    def _bibliography(self) -> list[str]:
+        # Boilerplate's _is_references_chunk fires on the heading +
+        # citation-style density. Use realistic patterns.
+        return [
+            "# References",
+            (
+                "1. Smith, J. et al. (2020). Metal-organic frameworks for "
+                "CO2 reduction. Nature Chem. 12, 100-110."
+            ),
+            (
+                "2. Johnson, A. & Lee, B. (2021). Cu-MOF synthesis and "
+                "characterization. JACS 143, 5000-5010."
+            ),
+            (
+                "3. Brown, C. (2022). Electrocatalysis at the nanoscale. "
+                "Chem. Rev. 122, 8000-8050."
+            ),
+        ]
+
+    def _body_paragraph(self) -> str:
+        return (
+            "We synthesized Cu-MOF nanocrystals via solvothermal methods "
+            "in DMF at 120 degrees Celsius for 24 hours. The resulting "
+            "crystals were characterized by powder XRD, FTIR, and SEM "
+            "to confirm phase purity and morphology. Yields exceeded "
+            "85 percent in all batches."
+        )
+
+    def test_references_chunks_retagged(self):
+        body = self._body_paragraph()
+        bib = self._bibliography()
+        chunks = [
+            ChunkToWrite(ord=0, chunk_kind="paragraph", text=body),
+            ChunkToWrite(ord=1, chunk_kind="paragraph", text=body),
+            ChunkToWrite(ord=2, chunk_kind="paragraph", text=body),
+            ChunkToWrite(ord=3, chunk_kind="heading", text=bib[0]),
+            ChunkToWrite(ord=4, chunk_kind="paragraph", text=bib[1]),
+            ChunkToWrite(ord=5, chunk_kind="paragraph", text=bib[2]),
+            ChunkToWrite(ord=6, chunk_kind="paragraph", text=bib[3]),
+        ]
+        out = _retag_references(chunks)
+        # Body chunks unchanged.
+        assert out[0].chunk_kind == "paragraph"
+        assert out[1].chunk_kind == "paragraph"
+        assert out[2].chunk_kind == "paragraph"
+        # At least the bibliography entries should be retagged. The
+        # heading may or may not be — boilerplate may classify it as
+        # references via the heading regex, or leave it; what matters
+        # is that the citation list itself flips.
+        assert out[-1].chunk_kind == "references", (
+            f"last bibliography entry should be retagged; "
+            f"got chunk_kind={out[-1].chunk_kind!r}"
+        )
+
+    def test_empty_input_passes_through(self):
+        assert _retag_references([]) == []
+
+    def test_no_references_section_no_change(self):
+        body = self._body_paragraph()
+        chunks = [
+            ChunkToWrite(ord=0, chunk_kind="paragraph", text=body),
+            ChunkToWrite(ord=1, chunk_kind="paragraph", text=body),
+            ChunkToWrite(ord=2, chunk_kind="paragraph", text=body),
+            ChunkToWrite(ord=3, chunk_kind="paragraph", text=body),
+        ]
+        out = _retag_references(chunks)
+        for c in out:
+            assert c.chunk_kind == "paragraph"
+
+    def test_already_tagged_idempotent(self):
+        # A second pass on already-correctly-tagged chunks must not
+        # rewrite or re-allocate them.
+        body = self._body_paragraph()
+        bib = self._bibliography()
+        chunks = [
+            ChunkToWrite(ord=0, chunk_kind="paragraph", text=body),
+            ChunkToWrite(ord=1, chunk_kind="paragraph", text=body),
+            ChunkToWrite(ord=2, chunk_kind="paragraph", text=body),
+            ChunkToWrite(ord=3, chunk_kind="references", text=bib[0]),
+            ChunkToWrite(ord=4, chunk_kind="references", text=bib[1]),
+        ]
+        out = _retag_references(chunks)
+        # All references entries stay references; body stays body.
+        assert [c.chunk_kind for c in out] == [
+            "paragraph",
+            "paragraph",
+            "paragraph",
+            "references",
+            "references",
+        ]
 
 
 # ---------------------------------------------------------------------------

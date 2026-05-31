@@ -297,14 +297,33 @@ class PrecisRuntime:
             # 12 for search). Name the filter in ``next:`` so a
             # reader knows the list is verb-scoped, not the full
             # registry.
-            raise NotFound(
-                f"unknown kind: {kind}",
-                options=self._kinds_for_verb(verb),
-                next=(
+            verb_kinds = self._kinds_for_verb(verb)
+            # Round-2 picky N-2, 2026-05-30: when no kinds support
+            # this verb in the current build (e.g. ``edit`` with no
+            # file kinds wired — markdown/plaintext/tex/python all
+            # need PRECIS_ROOT/PRECIS_PYTHON_ROOTS), the previous
+            # breadcrumb said *"options above are kinds that support
+            # verb='edit'"* — but no options were printed above, so
+            # the agent was told to consult a list that wasn't there.
+            # Distinguish the empty case explicitly.
+            if verb_kinds:
+                next_hint = (
                     f"options above are kinds that support verb={verb!r}; "
                     f"get(kind='skill', id='precis-help') for the complete "
                     f"kind table"
-                ),
+                )
+            else:
+                next_hint = (
+                    f"no kinds in this build support verb={verb!r}; "
+                    f"get(kind='skill', id='precis-help') lists every "
+                    f"kind and the verbs each one accepts. The most "
+                    f"likely cause is a missing env var "
+                    f"(see get(kind='skill', id='precis-kinds-disabled-help'))."
+                )
+            raise NotFound(
+                f"unknown kind: {kind}",
+                options=verb_kinds,
+                next=next_hint,
             )
 
         if not handler.spec.supports(verb):  # type: ignore[arg-type]
@@ -358,18 +377,35 @@ class PrecisRuntime:
 
         extras = args.pop(_EXTRAS_KEY, None)
         if extras:
-            unknown = self._unknown_extras(method, extras)
-            if unknown:
-                accepted = sorted(self._accepted_kwargs(method))
-                raise BadInput(
-                    f"args= keys {unknown!r} not accepted by {kind}.{verb}",
-                    options=accepted,
-                    next=(
-                        f"drop the unknown keys; {kind}.{verb} accepts "
-                        f"args= keys: {accepted or '(none)'}"
-                    ),
-                )
-            args.update(extras)
+            accepted = self._accepted_kwargs(method)
+            # Handlers that opt into an explicit ``args: dict``
+            # parameter (today: ``random.get`` — slug minting takes
+            # ``len`` / ``alphabet`` inside ``args=``) want the whole
+            # extras dict passed through, NOT flattened into top-level
+            # kwargs. Without this branch, ``get(kind='random',
+            # view='slug', args={'len': 4})`` errored with
+            # ``args= keys ['len'] not accepted by random.get`` and the
+            # error breadcrumb confusingly suggested using ``args`` or
+            # ``view`` as args-dict keys (round-2 picky F-1). Detect
+            # the opt-in by signature membership and forward extras
+            # via the ``args`` kwarg unchanged.
+            if "args" in accepted:
+                args["args"] = dict(extras)
+            else:
+                unknown = self._unknown_extras(method, extras)
+                if unknown:
+                    accepted_kwargs = sorted(
+                        k for k in accepted if k not in ("args",)
+                    )
+                    raise BadInput(
+                        f"args= keys {unknown!r} not accepted by {kind}.{verb}",
+                        options=accepted_kwargs,
+                        next=(
+                            f"drop the unknown keys; {kind}.{verb} accepts "
+                            f"top-level kwargs: {accepted_kwargs or '(none)'}"
+                        ),
+                    )
+                args.update(extras)
 
         self._apply_default_tags_policy(handler, verb, args)
 
@@ -538,15 +574,25 @@ class PrecisRuntime:
 
     # ── tag-shaped q hint ──────────────────────────────────────────────
 
-    # Tag tokens are lowercase (or UPPERCASE for closed prefixes) with
-    # no whitespace, no quotes, and either a single ``:`` separating
-    # the axis from the value (``STATUS:done``, ``topic:co2-capture``)
-    # or a bare flag (``pinned``). The pattern below catches both — if
-    # ``q='exercise-mcp-throwaway'`` or ``q='STATUS:done'`` arrives
-    # with no ``tags=`` filter, that's almost always a user who meant
-    # to filter rather than search semantically.
+    # Tag tokens are unmistakably tag-shaped: either a closed-prefix
+    # axis (UPPERCASE letters + colon + value, e.g. ``STATUS:done``),
+    # a lowercase namespace + colon + value (``topic:co2-capture``),
+    # or a kebab-case slug with multiple hyphens
+    # (``exercise-mcp-throwaway``). Bare single words — `cells`,
+    # `photocatalysis`, `pinned`, `topic` — are NOT tag-shaped for
+    # this heuristic: the round-2 picky pass found that matching any
+    # lowercase token fired the tip on basically every common
+    # English search query (F-2). Requiring a colon or ≥1 hyphen
+    # tightens the gate to actually-tag-looking strings.
     _TAG_SHAPED_Q_RE = re.compile(
-        r"^(?:[A-Z][A-Z0-9_]*:[A-Za-z0-9][\w.'-]*|[a-z][\w.-]*(?::[\w.'-]+)?)$"
+        r"^(?:"
+        # closed prefix: UPPERCASE letters/digits/_, colon, value chars
+        r"[A-Z][A-Z0-9_]*:[A-Za-z0-9][\w.'-]*"
+        # lowercase namespace + colon + value
+        r"|[a-z][a-z0-9_]*:[\w.'-]+"
+        # kebab-case slug with ≥1 hyphen
+        r"|[a-z0-9]+(?:-[a-z0-9]+)+"
+        r")$"
     )
 
     def _maybe_hint_tag_shaped_q(self, args: dict[str, Any]) -> None:
@@ -572,6 +618,14 @@ class PrecisRuntime:
             return
         from precis.hints import Hint
 
+        # Round-2 picky N-3, 2026-05-30: dedup on the *query value*
+        # rather than a static topic. The static-topic form
+        # (``topic="search.tag_shaped_q"``) suppressed the hint on
+        # every subsequent tag-shape call after the first — even when
+        # the query was different, which is genuinely new information
+        # the agent should see. Per-query dedup means the same query
+        # repeated keeps suppressing (correct), but a different
+        # tag-shape query re-fires (correct).
         self.hub.emit_hint(
             Hint(
                 text=(
@@ -581,7 +635,7 @@ class PrecisRuntime:
                     f"tags=[{token!r}] (and pass q='...' as the topic "
                     "to rank within, or omit q= to list by recency)."
                 ),
-                topic="search.tag_shaped_q",
+                topic=f"search.tag_shaped_q:{token}",
                 cooldown=6,
             )
         )
@@ -736,12 +790,15 @@ class PrecisRuntime:
             base_kwargs["exclude"] = exclude
 
         streams: list[list[SearchHit]] = []
+        per_kind_counts: list[tuple[str, int]] = []
         for k in kinds:
             handler = self.hub.handler_for(k)
             if handler is None:
+                per_kind_counts.append((k, 0))
                 continue
             hits = self._cross_kind_invoke_search_hits(handler, k, base_kwargs)
             if hits is None:
+                per_kind_counts.append((k, 0))
                 continue
             # Defensive post-filter: handler search_hits
             # implementations have inconsistent ``tags=`` support
@@ -754,9 +811,11 @@ class PrecisRuntime:
             # from kinds that can't carry that tag.
             if normalized_tags:
                 hits = self._filter_hits_by_tags(list(hits), normalized_tags)
-            streams.append(list(hits))
+            hits_list = list(hits)
+            per_kind_counts.append((k, len(hits_list)))
+            streams.append(hits_list)
 
-        return merge_and_render(
+        response = merge_and_render(
             streams,
             top_k=top_k,
             query=q,
@@ -764,6 +823,21 @@ class PrecisRuntime:
             mode="rrf",
             empty_body=(f"no matches across {', '.join(kinds)} for {q!r}"),
         )
+
+        # Round-2 picky F-8: prepend a per-kind hit-count line under the
+        # headline so the agent can see which kinds contributed and
+        # which returned empty. Without this, a comma-list call
+        # ``search(kind='paper,memory', q='...')`` that surfaces only
+        # paper hits looks identical to a single-kind paper call —
+        # the agent has no way to know memory was searched and empty.
+        if len(per_kind_counts) >= 2:
+            breakdown = ", ".join(f"{k}: {n}" for k, n in per_kind_counts)
+            lines = response.body.splitlines()
+            if lines:
+                lines.insert(1, f"_(per kind: {breakdown})_")
+                response = Response(body="\n".join(lines), cost=response.cost)
+
+        return response
 
     def _cross_kind_invoke_search_hits(
         self,

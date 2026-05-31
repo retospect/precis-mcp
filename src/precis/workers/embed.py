@@ -31,6 +31,11 @@ class EmbedHandler(WorkerHandler):
 
     output_table: ClassVar[str] = "chunk_embeddings"
     model_column: ClassVar[str] = "embedder"
+    # Storage-v2 contract: bibliographies don't earn their search
+    # weight. We tag them ``chunk_kind='references'`` at ingest (see
+    # ``precis.ingest.pipeline._retag_references``) so the worker
+    # claim query can drop them before they ever reach the embedder.
+    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references",)
 
     def __init__(self, embedder: Embedder) -> None:
         self._embedder = embedder

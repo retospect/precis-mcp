@@ -19,17 +19,26 @@ appear once in the header instead of once per row.
 ## Shape
 
 ```
-col1<TAB>col2<TAB>col3
+{col1<TAB>col2<TAB>col3}
 val1<TAB>val2<TAB>val3
 val1<TAB>val2<TAB>val3
 ```
 
-- The first non-blank line is the **header** — tab-separated
-  column names.
+- The first non-blank line is the **header**, wrapped in literal
+  `{` … `}` braces. The braces are **markers**, not delimiters —
+  the column names inside are still tab-separated. `toon.load`
+  strips them on read.
 - Every subsequent line is a **row** — tab-separated cell values
   in the same order as the header.
 - The document does not end with a trailing newline; agents
   should tolerate one anyway (pipes and `print` add one).
+
+Why the brace markers: a TOON document inside a larger response
+(MCP body with prose preamble + table + footer) needs to be
+unambiguously findable. The braces let an agent (or `grep`) locate
+the header row without context, and signal where the table starts
+when the surrounding markdown has its own headings, blockquotes,
+or `Next:` trailers.
 
 The delimiter is `\t` — paper titles routinely contain commas,
 which would otherwise force quoting on every row. Other tools

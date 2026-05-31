@@ -121,10 +121,10 @@ def dump(
     # header so downstream callers see the column shape.
     if not rows:
         if columns:
-            return sep.join(_encode_cell(c, sep) for c in columns)
+            return _braced_header(columns, sep)
         return ""
 
-    header_line = sep.join(_encode_cell(c, sep) for c in columns)
+    header_line = _braced_header(columns, sep)
     body_lines = [
         sep.join(_encode_cell(row.get(c), sep) for c in columns) for row in rows
     ]
@@ -133,6 +133,18 @@ def dump(
     # The LLM consumer doesn't care, and ``""`` would just spend
     # tokens on shape the wire format does not need to carry.
     return "\n".join([header_line, *body_lines])
+
+
+# Header form: the line is wrapped in ``{...}`` so an agent (or a
+# diff) can find the header without context. Per spec — round-2 picky
+# 2026-05-30 — the braces are *visible markers*, not delimiters; the
+# tokeniser strips them on load.
+_HEADER_OPEN = "{"
+_HEADER_CLOSE = "}"
+
+
+def _braced_header(columns: list[str], sep: str) -> str:
+    return _HEADER_OPEN + sep.join(_encode_cell(c, sep) for c in columns) + _HEADER_CLOSE
 
 
 def load(text: str, *, sep: str = "\t") -> list[dict[str, str]]:
@@ -159,7 +171,15 @@ def load(text: str, *, sep: str = "\t") -> list[dict[str, str]]:
     if not records:
         return []
 
-    header = records[0]
+    header = list(records[0])
+    # Strip the brace markers if present — they're visible header
+    # indicators, not part of the column names. Tolerate the bare form
+    # too so older snapshots / hand-typed docs keep loading.
+    if header:
+        if header[0].startswith(_HEADER_OPEN):
+            header[0] = header[0][len(_HEADER_OPEN) :]
+        if header[-1].endswith(_HEADER_CLOSE):
+            header[-1] = header[-1][: -len(_HEADER_CLOSE)]
     rows = records[1:]
 
     # Header-only docs are valid but produce no data rows.

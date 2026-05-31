@@ -125,36 +125,49 @@ Supported views: `abstract`, `toc`, `bibtex` (alias `cite/bib`),
 
 ## Navigate
 
-The `view='toc'` output is **hierarchical** — section/subsection
-ranges are detected from heading patterns and laid out as a jump
-table:
+The `view='toc'` output is a **TOON table** (one row per segment)
+with RAKE-extracted keywords per row. When the paper has explicit
+H1/H2 headings, those drive the segmentation; when it doesn't, the
+TOC falls back to **embedding-sequence clustering** (TextTiling-style:
+adjacent-chunk cosine drops mark topic boundaries) so even
+un-sectioned papers get 3–9 navigable segments.
 
 ```
-# acheson2026automated — TOC (177 blocks, 20 sections)
+# cai23 — TOC (104 chunks, 5 segments via embedding clustering)
 
-  ~0..7     (8)   <untitled>  (preview from first block)
-  ~8..20    (13)  ■ INTRODUCTION
-  ~21..40   (20)  ■ THEORY
-  ~41..73   (33)  ■ METHODS
-    ~43..53   (11)  Physics-Informed Program Synthesis [PIPS]
-    ~54..58   (5)   Calculation Details
-    ~59..63   (5)   Heterodiatomic Molecules
-    ~64..73   (10)  Alkanes
-  ~74..116  (43)  ■ RESULTS & DISCUSSION
-    …
+{handle           keywords}
+cai23~0..14       lithium-mediated nitrogen reduction, MEA design, PEO membrane, …
+cai23~15..38      BF4 salt doping, lithium salt selection, ion transport, …
+cai23~39..62      XPS characterization, ToF-SIMS depth profile, surface composition, …
+cai23~63..89      LiF formation, BO species, F 1s spectrum, …
+cai23~90..103     performance summary, scalability, comparison with literature, …
+
+Abbrevs: MEA (Membrane Electrode Assembly), XPS (X-ray Photoelectron Spectroscopy), …
+Shared across segments: lithium-mediated nitrogen reduction
 ```
 
-To **drill into a section**, use the combined chunk-range + view path
-form:
+When H2 sections are present and informative, the TOC switches to a
+three-column shape with the heading column populated from the paper's
+own headings (the keywords column then only fills in for "stupid"
+headings like `Methods` / `Results` that don't disambiguate content).
+
+To **drill into a segment**, paste any handle from the table as
+`id=`:
 
 ```python
-get(kind='paper', id='abazari2024design~74..116/toc')   # TOC of just this range
-get(kind='paper', id='abazari2024design~74..116')       # read this range
+get(kind='paper', id='cai23~63..89')              # read the LiF / surface-chemistry segment
+get(kind='paper', id='cai23~63..89', view='toc')  # sub-TOC, recursively segments the range
 ```
 
-Each response ends with a column-aligned "Next:" block that suggests
-the next likely call (next/previous range, parent TOC, citation, …)
-so the agent can keep navigating without re-reading the help.
+Recursive segmentation works on any sub-range that has enough
+chunks; below the K_MIN threshold the renderer just lists each
+chunk as its own row.
+
+Single-chunk drill-in adds a one-line `Part of segment ~A..B`
+header so the agent always knows the surrounding neighbourhood.
+Each response ends with a `Next:` block listing the most likely
+follow-up calls (drill-in, sub-TOC of the top hit's cluster,
+pagination, scope-narrow).
 
 ## Cite
 
@@ -229,3 +242,4 @@ the closed-prefix axes.
 - `precis-relations` — `related-to`, `contradicts` between papers
 - `precis-tags` — `topic:`, `SRC:`
 - `precis-memory-help` — capturing thoughts from a paper
+- `precis-toc-help` — TOC machinery: smart segmentation, sub-range zoom, abbreviation legend

@@ -132,6 +132,8 @@ class RandomHandler(Handler):
         )
         return Response(body=body)
 
+    _MINT_SLUG_ARGS: ClassVar[frozenset[str]] = frozenset({"len", "alphabet"})
+
     def _mint_slug(self, args: dict[str, Any]) -> Response:
         """Render a fresh random short identifier.
 
@@ -146,6 +148,21 @@ class RandomHandler(Handler):
         trailer. Callers compose it into tag values, correlation
         ids, or whatever else.
         """
+        # Reject unknown args-keys so misnamed knobs (``length=``,
+        # ``size=``, ``bytes=``) fail loud instead of silently
+        # producing a default-length slug. Round-2 picky R2-2,
+        # 2026-05-30: ``args={'bogus_key': 7}`` was previously accepted
+        # without warning.
+        unknown = sorted(k for k in args if k not in self._MINT_SLUG_ARGS)
+        if unknown:
+            raise BadInput(
+                f"random/slug args= keys {unknown!r} not accepted",
+                options=sorted(self._MINT_SLUG_ARGS),
+                next=(
+                    f"args= accepts only {sorted(self._MINT_SLUG_ARGS)}; "
+                    "drop the unknown keys or check spelling"
+                ),
+            )
         length = args.get("len", _SLUG_LEN_DEFAULT)
         try:
             length = int(length)

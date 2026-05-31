@@ -111,6 +111,10 @@ paper = [
     "semanticscholar>=0.8", # Semantic Scholar REST client
     "tenacity>=8.0",        # retry decorator on the S2 + CrossRef paths
     "sentence-transformers>=3.0",
+    "pysbd>=0.3.4",         # abbreviation-aware sentence splitter for
+                            # scientific prose; underpins central-sentence
+                            # extraction + replaces the naive ". "
+                            # fallback in text_chunker.
 ]
 # DOCX file handler.
 docx = ["python-docx>=1.1", "lxml>=5.0"]

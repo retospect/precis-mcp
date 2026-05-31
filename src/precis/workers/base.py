@@ -73,6 +73,13 @@ class WorkerHandler(ABC):
     #: (``embedder`` for embeddings; ``summarizer`` for summaries).
     model_column: ClassVar[str]
 
+    #: Chunk kinds this handler must *not* process. Filters the claim
+    #: query so references / boilerplate never enter the work queue
+    #: at all (storage-v2 contract: references are excluded from
+    #: default embedding to keep search clean). Empty tuple means
+    #: "process every chunk regardless of kind."
+    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ()
+
     #: Per-instance — the model identifier used in the output row
     #: (e.g. ``'bge-m3'``). Set by subclass ``__init__``.
     model_name: str
@@ -98,6 +105,16 @@ class WorkerHandler(ABC):
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
+        skip = self.skip_chunk_kinds
+        skip_clause = ""
+        params: tuple[object, ...] = (self.model_name, limit)
+        if skip:
+            # Use ``= ANY(%s)`` rather than ``IN (%s, …)`` to keep the
+            # parameter shape uniform across handlers with different
+            # skip-list lengths — psycopg adapts a Python tuple/list
+            # to a SQL array transparently.
+            skip_clause = "AND c.chunk_kind <> ALL(%s)"
+            params = (self.model_name, list(skip), limit)
         sql = f"""
             SELECT c.chunk_id, c.text
               FROM chunks c
@@ -105,11 +122,12 @@ class WorkerHandler(ABC):
                 ON o.chunk_id = c.chunk_id
                AND o.{self.model_column} = %s
              WHERE o.chunk_id IS NULL
+               {skip_clause}
              ORDER BY c.chunk_id
              LIMIT %s
                FOR UPDATE OF c SKIP LOCKED
         """
-        rows = conn.execute(sql, (self.model_name, limit)).fetchall()
+        rows = conn.execute(sql, params).fetchall()
         return [ChunkRow(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
 
     # ------------------------------------------------------------------

@@ -21,8 +21,33 @@ from __future__ import annotations
 
 import re
 
-# Default separators, tried in order (prefer paragraph → line → sentence → word)
-DEFAULT_SEPARATORS: list[str] = ["\n\n", "\n", ". ", ", ", " "]
+from precis.utils.sentences import SENTENCE_SPLITTER_VERSION, split_sentences
+
+
+# Chunker version — bump on any change that materially shifts the
+# (ord, text) shape of chunks produced from a given input. Downstream
+# tables (chunks via ``chunks.meta['chunker_version']``, the future
+# ``ref_segments`` worker, anything cached per-paper) compare stored
+# values against this constant and treat mismatch as a cache-miss
+# (the lazy-invalidation discipline). Format:
+# ``<chunker-major>.<sentence-splitter-version>``.
+CHUNKER_VERSION = f"2.0+{SENTENCE_SPLITTER_VERSION}"
+
+
+# Sentinel separator value. The recursive splitter checks for this
+# identity and dispatches to :func:`_sentence_pieces` instead of a
+# plain ``str.split``; everything else stays a vanilla string
+# separator. Using a sentinel (not a regex, not a callable) keeps
+# the rest of the splitter logic — keep-separator-prefix, merge,
+# overlap — untouched.
+SENTENCE_SEPARATOR = "<<sentence>>"
+
+# Default separators, tried in order. Paragraph → line → sentence →
+# clause → word. The sentence step uses pysbd via the sentinel so
+# abbreviations like "et al.", "Fig.", "i.e." don't trigger mid-
+# phrase splits (the previous ". " literal blindly cut on every
+# period).
+DEFAULT_SEPARATORS: list[str] = ["\n\n", "\n", SENTENCE_SEPARATOR, ", ", " "]
 
 # Reasonable defaults for academic papers
 DEFAULT_CHUNK_SIZE = 800
@@ -85,7 +110,10 @@ def _recursive_split(
 
     # Try each separator
     for i, sep in enumerate(separators):
-        pieces = _split_keeping_sep(text, sep)
+        if sep is SENTENCE_SEPARATOR:
+            pieces = _sentence_pieces(text)
+        else:
+            pieces = _split_keeping_sep(text, sep)
         if len(pieces) <= 1:
             continue  # separator not found; try next
 
@@ -127,6 +155,40 @@ def _split_keeping_sep(text: str, sep: str) -> list[str]:
     for part in parts[1:]:
         result.append(sep + part)
     return result
+
+
+def _sentence_pieces(text: str) -> list[str]:
+    """Sentence-level pieces, reconstructible to the source text.
+
+    Calls :func:`precis.utils.sentences.split_sentences` (pysbd-backed,
+    abbreviation-aware) to find sentence boundaries, then carves the
+    original ``text`` at those offsets so each returned piece carries
+    any inter-sentence whitespace as its leading prefix. Concatenating
+    the result reproduces ``text`` exactly, matching the contract of
+    :func:`_split_keeping_sep` so :func:`_merge_pieces` stays
+    splitter-agnostic.
+
+    Returns the original text in a single-element list when pysbd
+    finds <= 1 sentence, letting the recursive splitter fall through
+    to the next separator without losing characters.
+    """
+    sentences = split_sentences(text)
+    if len(sentences) <= 1:
+        return [text]
+    pieces: list[str] = []
+    cursor = 0
+    for sent in sentences:
+        end = sent.char_offset + len(sent.text)
+        # Each piece starts at the previous cursor and extends to
+        # the end of this sentence, capturing any whitespace between
+        # the prior sentence and this one as the new piece's prefix.
+        pieces.append(text[cursor:end])
+        cursor = end
+    # Trailing whitespace after the last sentence stays on the last
+    # piece so the join is lossless.
+    if cursor < len(text):
+        pieces[-1] = pieces[-1] + text[cursor:]
+    return pieces
 
 
 def _merge_pieces(

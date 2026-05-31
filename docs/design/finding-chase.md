@@ -217,20 +217,22 @@ the same migration per ADR 0017. Read ADR 0017 for the shape; this
 design only specifies the *handlers*.
 
 **Retraction-checking is NOT a queue artifact in this design.** The
-[provenance kind](../provenance-kind-plan.md) handles
-retraction / EoC / correction state synchronously via
-`get(kind='provenance', ...)`, writing through to
-`refs.retraction_*` columns plus `links` directly. ADR 0017
-originally listed `check_retraction:crossmark` as a planned third
-artifact; that has been retracted (the provenance tool owns the
-work; a future periodic-backfill scanner artifact can register
-under the same family if real demand surfaces).
+[provenance kind](../provenance-kind-plan.md) — **shipped Phases
+1–6**, see `src/precis/handlers/provenance.py` and
+`src/precis/ingest/provenance.py` — handles retraction / EoC /
+correction state synchronously via `get(kind='provenance', ...)`,
+writing through to `refs.retraction_*` columns plus `links`
+directly. ADR 0017 originally listed `check_retraction:crossmark`
+as a planned third artifact; that has been retracted (the
+provenance tool owns the work; a future periodic-backfill
+scanner artifact can register under the same family if real
+demand surfaces).
 
 ## Schema impact
 
 The v2 schema already supports almost everything. This migration is
 additive — no ALTER on existing tables. Single file:
-`0003_finding_and_queue_family.sql`.
+`0004_finding_and_queue_family.sql`.
 
 ### New ref kind `finding`
 
@@ -521,6 +523,17 @@ their chase, the path needs to actually upgrade the matched ref
 when the new ingest has bytes the existing row lacks. Spell out
 the rule:
 
+> **Reuse existing alias machinery.** `PaperToWrite.pdf_sha256_aliases`
+> (`src/precis/ingest/db_writer.py:108-114`) already supports an
+> arbitrary list of `pdf_sha256` rows per ref (provisioned by
+> ADR 0014's PDF-metadata write-back to record the pre-patch
+> hash). The insert loop at `db_writer.py:390-400` writes them
+> as `ref_identifiers(id_kind='pdf_sha256', id_value=...)`
+> rows with `ON CONFLICT DO NOTHING`. C7 should **wire the
+> stub-upgrade branch into this existing path** rather than build
+> a parallel one — the only new thing is the `UPDATE refs SET
+> pdf_sha256 = ... WHERE pdf_sha256 IS NULL` branch.
+
 - **Multiple hashes per ref are first-class.** A single paper can
   legitimately have multiple PDF representations: publisher version,
   author preprint, arXiv update, repository scan. Every distinct
@@ -567,9 +580,10 @@ predicate (`pdf_sha256 IS NULL`) that the chase reads flips to
 non-NULL, and the next chase pass advances past that stub.
 
 The chase handler does NOT need a post-write hook; it polls
-naturally. The provenance plan also benefits: a stub that gets
-retracted before its PDF arrives can carry `STATUS:retracted`
-freely (no `STATUS:awaiting_pdf` competing for the slot).
+naturally. The shipped provenance kind also benefits: a stub
+that gets retracted before its PDF arrives can carry
+`STATUS:retracted` freely (no `STATUS:awaiting_pdf` competing
+for the slot).
 
 ### `ResolveCitationHandler` — enrich stubs in the background
 
@@ -1000,7 +1014,7 @@ C-step naming convention matches `storage-v2.md` so commit
 messages and the plan stay in sync.
 
 - **C0** This design doc + ADR 0017 land. ✅ in flight
-- **C1** Migration `0003_finding_and_queue_family.sql`:
+- **C1** Migration `0004_finding_and_queue_family.sql`:
   - `artifact_kinds` registry + initial inserts
   - `ref_artifacts` table
   - `kinds (finding, …)`
@@ -1025,10 +1039,15 @@ messages and the plan stay in sync.
   canonicalisation. Largest step; gated on unit-test coverage of
   every branch above.
 - **C7** `precis_add` stub-upgrade + multi-hash alias path —
-  on `probe_existing` hit, ADD `(pdf_sha256, content_hash)` rows
-  to `ref_identifiers`; if `refs.pdf_sha256 IS NULL`, UPDATE it and
-  extract chunks for the new PDF. (No tag work — column predicate
-  flips itself.) See §"Stub upgrade" for the rule.
+  reuse the existing `PaperToWrite.pdf_sha256_aliases` machinery
+  in `src/precis/ingest/db_writer.py:108-114, 390-400` (the
+  alias-as-ref_identifier-row insert is already idempotent
+  `ON CONFLICT DO NOTHING`). On `probe_existing` hit: ADD the
+  new `(pdf_sha256, content_hash)` rows via that path; if
+  `existing.pdf_sha256 IS NULL`, ALSO `UPDATE refs SET
+  pdf_sha256 = ... WHERE ref_id = ...` and extract chunks for
+  the new PDF. (No tag work — column predicate flips itself.)
+  See §"Stub upgrade" for the rule.
 - **C8** `precis resolve` CLI subcommand + skill doc
   (`finding-help.md`).
 - **C9** Deprecation pass — `paper.py` empty-search DOI hint
@@ -1073,14 +1092,12 @@ Each step ships its own commit with tests. C1 runs
 
 ## Definition of done
 
-- [ ] `0003_finding_and_queue_family.sql` applies cleanly to a
+- [ ] `0004_finding_and_queue_family.sql` applies cleanly to a
       fresh DB; PUML diagram updated.
 - [ ] `artifact_kinds` registry seeded with `embed:bge-m3`,
       `summarize:rake-lemma`, `chase_citation`,
       `resolve_citation:s2`. (Retraction work is owned by the
-      provenance kind — see
-      [`provenance-kind-plan.md`](../provenance-kind-plan.md) —
-      not a queue artifact.)
+      shipped provenance kind, not a queue artifact.)
 - [ ] `WorkerHandler` refactor preserves behaviour for
       `EmbedHandler` / `RakeLemmaHandler` (existing tests
       unchanged).

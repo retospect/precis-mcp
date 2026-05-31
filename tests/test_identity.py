@@ -20,6 +20,7 @@ from precis.identity import (
     CiteKeyOverflow,
     make_cite_key,
     make_content_hash,
+    make_finding_paper_id,
     make_node_id,
     make_paper_id,
     make_pdf_sha256,
@@ -253,6 +254,122 @@ def test_paper_id_all_empty_raises() -> None:
         make_paper_id(arxiv="", doi="", pdf_sha256="")
     with pytest.raises(ValueError):
         make_paper_id(arxiv=None, doi=None, pdf_sha256=None)
+
+
+# ---------------------------------------------------------------------------
+# make_finding_paper_id
+# ---------------------------------------------------------------------------
+
+
+def test_finding_paper_id_shape() -> None:
+    pid = make_finding_paper_id(
+        "2.4 kV held for 30 s on Si/SiO2 MOSCAPs",
+        {"electrode": "Cu", "ambient": "N2"},
+        "ab12c3",
+    )
+    assert pid.startswith("finding:")
+    assert len(pid) == len("finding:") + 64  # sha256 hex
+    assert re.fullmatch(r"finding:[0-9a-f]{64}", pid)
+
+
+def test_finding_paper_id_deterministic() -> None:
+    args = (
+        "2.4 kV held for 30 s on Si/SiO2 MOSCAPs",
+        {"electrode": "Cu", "ambient": "N2"},
+        "ab12c3",
+    )
+    assert make_finding_paper_id(*args) == make_finding_paper_id(*args)
+
+
+def test_finding_paper_id_body_canonicalised() -> None:
+    """Whitespace + case differences in body collapse to one pub_id."""
+    a = make_finding_paper_id("2.4 kV  held  for 30 s", {}, "ab12c3")
+    b = make_finding_paper_id("2.4 KV held for 30 s", {}, "ab12c3")
+    c = make_finding_paper_id("   2.4 kV held for 30 s   ", {}, "ab12c3")
+    assert a == b == c
+
+
+def test_finding_paper_id_scope_key_order_irrelevant() -> None:
+    """Same scope under different key orderings hashes the same."""
+    a = make_finding_paper_id("x", {"electrode": "Cu", "ambient": "N2"}, "ab12c3")
+    b = make_finding_paper_id("x", {"ambient": "N2", "electrode": "Cu"}, "ab12c3")
+    assert a == b
+
+
+def test_finding_paper_id_scope_none_equals_empty() -> None:
+    """``scope=None`` and ``scope={}`` produce the same id."""
+    assert make_finding_paper_id("x", None, "ab12c3") == make_finding_paper_id(
+        "x", {}, "ab12c3"
+    )
+
+
+def test_finding_paper_id_scope_distinguishes_setups() -> None:
+    """Different setups → different findings (the load-bearing case)."""
+    cu = make_finding_paper_id("2.4 kV", {"electrode": "Cu"}, "ab12c3")
+    ag = make_finding_paper_id("2.4 kV", {"electrode": "Ag"}, "ab12c3")
+    assert cu != ag
+
+
+def test_finding_paper_id_cite_distinguishes_chains() -> None:
+    """Same claim cited from a different paper → different finding."""
+    a = make_finding_paper_id("2.4 kV", {}, "ab12c3")
+    b = make_finding_paper_id("2.4 kV", {}, "de45f6")
+    assert a != b
+
+
+def test_finding_paper_id_cite_case_insensitive() -> None:
+    """``pub_id`` handles are lowercase by convention; defensive fold."""
+    a = make_finding_paper_id("2.4 kV", {}, "ab12c3")
+    b = make_finding_paper_id("2.4 kV", {}, "AB12C3")
+    c = make_finding_paper_id("2.4 kV", {}, "  ab12c3 ")
+    assert a == b == c
+
+
+def test_finding_paper_id_empty_body_raises() -> None:
+    with pytest.raises(ValueError):
+        make_finding_paper_id("", {}, "ab12c3")
+    with pytest.raises(ValueError):
+        make_finding_paper_id("   ", {}, "ab12c3")
+
+
+def test_finding_paper_id_empty_cite_raises() -> None:
+    with pytest.raises(ValueError):
+        make_finding_paper_id("x", {}, "")
+    with pytest.raises(ValueError):
+        make_finding_paper_id("x", {}, "   ")
+
+
+def test_finding_paper_id_threads_through_pub_id() -> None:
+    """The whole point: make_pub_id over a finding paper_id yields a
+    standard 6-char base32 handle, same as any other ref."""
+    pid = make_finding_paper_id(
+        "2.4 kV held for 30 s on Si/SiO2", {"electrode": "Cu"}, "ab12c3"
+    )
+    pub = make_pub_id(pid)
+    assert len(pub) == 6
+    assert re.fullmatch(r"[a-z2-7]+", pub)
+
+
+# Regression pin — locks the formula so future refactors can't silently
+# churn paper_ids and orphan every previously-minted finding. Value is
+# computed at test author time from the (locked) algorithm; update only
+# when changing the formula via a new ADR (which would invalidate every
+# finding pub_id ever issued).
+def test_finding_paper_id_regression() -> None:
+    pid = make_finding_paper_id(
+        "2.4 kV held for 30 s on Si/SiO2 MOSCAPs",
+        {"electrode": "Cu", "ambient": "N2"},
+        "ab12c3",
+    )
+    # Computed from the locked algorithm:
+    #   body_canonical  = "2.4 kv held for 30 s on si/sio2 moscaps"
+    #   scope_canonical = '{"ambient":"N2","electrode":"Cu"}'
+    #   cite_canonical  = "ab12c3"
+    #   key             = "finding|body=...|scope=...|cite=ab12c3"
+    #   digest          = sha256(key).hexdigest()
+    assert pid == (
+        "finding:3850419c0261b98839e8c748b004e1820b8a3e105a3e6860fc1623341f1eb394"
+    )
 
 
 # ---------------------------------------------------------------------------

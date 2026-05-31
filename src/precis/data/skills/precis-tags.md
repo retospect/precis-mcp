@@ -156,7 +156,14 @@ runtime never rejects them.
 ## Common bare flags
 
 `wip`, `star`, `draft`, `private`, `pinned`. Coin new ones freely as
-long as they don't collide with the closed-vocab values above.
+long as they don't collide with the closed-vocab values above —
+*except* that the collision check is kind-scoped: a bare flag whose
+spelling matches a closed value (`pinned` → `CACHE:pinned`,
+`fresh` → `CACHE:fresh`) is accepted on kinds that don't allow the
+colliding axis. Concretely: `tag(kind='memory', add=['pinned'])`
+works (memory has no `CACHE:` axis); `tag(kind='paper',
+add=['pinned'])` is rejected with the canonical-form hint (paper
+allows `CACHE:` and the bare flag would shadow the closed form).
 
 ## Not yet implemented
 
