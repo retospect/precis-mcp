@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1.7
-# precis-mcp — multi-stage Dockerfile (builder / models / runtime / dev)
+# precis-mcp — multi-stage Dockerfile (deps / models / builder / runtime / dev)
+#
+# Layering goal: source edits → ~5-second rebuild (only Stage 3 reruns).
+# Only `pyproject.toml` / `uv.lock` / marker / bge-m3 version changes
+# trigger the 1.5 GB model re-download. See the rationale below.
 #
 # Targets:
-#   builder  — installs deps into a venv (intermediate, not used directly)
-#   models   — pre-populates the HF cache with marker + bge-m3 weights
-#              (intermediate, only consumed by runtime via COPY --from)
+#   deps     — venv populated from lockfile, no source (intermediate)
+#   models   — pre-populates marker + bge-m3 weights (intermediate)
+#   builder  — installs precis-mcp itself on top of models (intermediate)
 #   runtime  — production image; ENTRYPOINT precis (serve|watch|worker|...)
 #   dev      — adds pytest, ruff, mypy, plantuml, psql on top of runtime
 #
@@ -23,14 +27,18 @@ ARG PYTHON_DIGEST=sha256:d193c6f51a7dbd10395d6328de3a7edb0516fb0608ca138036576f5
 ARG UV_VERSION=0.11.14
 
 # =============================================================================
-# Stage 1 (builder): install dependencies into /opt/venv
+# Stage 1 (deps): install dependencies from the lockfile into /opt/venv.
+# This stage's inputs are ONLY pyproject.toml + uv.lock — touching any
+# `.py` under `src/precis/**` does NOT invalidate this layer, so the
+# ~1.5 GB model bake in Stage 2 also stays cached across source edits.
 # =============================================================================
-FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS builder
+FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS deps
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_COLOR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
 
 ARG UV_VERSION
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -41,15 +49,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         git \
     && pip install --no-cache-dir "uv==${UV_VERSION}"
 
-WORKDIR /build
-COPY . /build/precis-mcp/
+WORKDIR /build/precis-mcp
+# Copy ONLY the dep manifests — these are what invalidate the deps cache.
+COPY pyproject.toml uv.lock /build/precis-mcp/
 
-# Install precis-mcp[all] into a fresh venv at /opt/venv. Editable install
-# is fine here because the runtime stage copies the venv but not /build,
-# so the editable path is replaced by a wheel-style install in stage 2.
+# Install every locked dep into /opt/venv, but NOT precis-mcp itself
+# (--no-install-project). Stage 4 (builder) does that on top.
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv venv /opt/venv && \
-    uv pip install --python /opt/venv "/build/precis-mcp[all]"
+    uv sync --frozen --no-install-project --all-extras
 
 # Marker writes GoNotoCurrent into site-packages/static/fonts/ on first
 # converter construction (see marker/util.py:download_font). Pre-populate
@@ -59,15 +67,15 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 RUN /opt/venv/bin/python -c "from marker.util import download_font; download_font()"
 
 # =============================================================================
-# Stage 1.5 (models): pre-populate the HuggingFace cache with the model
+# Stage 2 (models): pre-populate the HuggingFace cache with the model
 # weights precis loads at runtime (Marker surya stack + BAAI/bge-m3).
 #
-# Inputs are the builder's venv plus the two model identifiers in the
-# RUN line below. Layer cache: touching src/precis/** does NOT invalidate
-# this layer — only changes to marker-pdf / sentence-transformers
-# versions or the model IDs do. See docs/design/bake-models-into-image.md.
+# Inputs: the `deps` venv only. Source edits under src/precis/** do NOT
+# invalidate this layer — only marker-pdf / sentence-transformers
+# version bumps or model ID changes force a re-download.
+# See docs/design/bake-models-into-image.md.
 # =============================================================================
-FROM builder AS models
+FROM deps AS models
 
 # Two caches to populate:
 #   * HF_HOME — sentence-transformers / huggingface_hub. Holds bge-m3.
@@ -84,6 +92,18 @@ RUN mkdir -p "${HF_HOME}" "${MODEL_CACHE_DIR}" && \
         "from marker.models import create_model_dict; create_model_dict()" && \
     /opt/venv/bin/python -c \
         "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
+
+# =============================================================================
+# Stage 3 (builder): install precis-mcp itself on top of cached deps + models.
+# This stage's inputs are the full repo, so it reruns on every source edit
+# — but the install is cheap (`--no-deps` because all deps already in the
+# venv) and the heavy marker/bge-m3 download from Stage 2 is preserved.
+# =============================================================================
+FROM models AS builder
+
+COPY . /build/precis-mcp/
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    uv pip install --python /opt/venv --no-deps "/build/precis-mcp[all]"
 
 # =============================================================================
 # Stage 2 (runtime): production image, lean
