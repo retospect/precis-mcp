@@ -100,6 +100,14 @@ def run_handler_once(
     )
 
 
+#: A ref-level pass. Same return shape as :class:`BatchResult` so
+#: the run-loop's logging path is uniform across chunk-level
+#: handlers and ref-level passes. Called with the current
+#: ``batch_size`` so callers can self-throttle the same way
+#: chunk handlers do.
+RefPass = Callable[[int], BatchResult]
+
+
 def run_loop(
     handlers: list[WorkerHandler],
     store: Store,
@@ -108,22 +116,32 @@ def run_loop(
     idle_seconds: float = 2.0,
     once: bool = False,
     should_stop: Callable[[], bool] | None = None,
+    ref_passes: list[RefPass] | None = None,
 ) -> None:
-    """Drive ``handlers`` in round-robin until stopped or drained.
+    """Drive ``handlers`` (chunk-level) and ``ref_passes`` (ref-level)
+    in round-robin until stopped or drained.
+
+    Handlers run first per cycle so the chunk-level derived queue
+    drains before the ref-level passes consume their output (in the
+    common case where ``segment_toc`` needs ``chunk_embeddings`` to
+    have landed for a paper before it can build segments).
 
     Termination:
 
     * ``once=True`` — make one full pass across all handlers and
-      return. If a handler fully drained inside that pass it is *not*
-      re-polled — "once" means literally one pass.
-    * ``once=False`` — loop forever. When every handler reports
-      ``claimed=0`` in a pass, sleep ``idle_seconds`` then re-poll.
-    * ``should_stop()`` — called between handlers; returning ``True``
-      breaks out cleanly. The CLI wires this to a SIGINT/SIGTERM
-      flag so ``Ctrl-C`` returns within one batch.
+      ref-passes and return.
+    * ``once=False`` — loop forever. When every handler AND every
+      ref-pass reports ``claimed=0`` in a pass, sleep
+      ``idle_seconds`` then re-poll.
+    * ``should_stop()`` — called between handlers and between
+      ref-passes; returning ``True`` breaks out cleanly. The CLI
+      wires this to a SIGINT/SIGTERM flag so ``Ctrl-C`` returns
+      within one batch.
     """
-    if not handlers:
-        log.warning("worker: no handlers registered; nothing to do")
+    if not handlers and not ref_passes:
+        log.warning(
+            "worker: no handlers and no ref_passes registered; nothing to do"
+        )
         return
 
     while True:
@@ -150,6 +168,25 @@ def run_loop(
             if result.claimed > 0:
                 any_work = True
 
+        for ref_pass in ref_passes or ():
+            if should_stop is not None and should_stop():
+                log.info("worker: stop signal received; exiting loop")
+                return
+            try:
+                result = ref_pass(batch_size)
+            except Exception:
+                log.exception("worker: ref-pass raised; continuing")
+                continue
+            log.info(
+                "worker: %s claimed=%d ok=%d failed=%d",
+                result.handler,
+                result.claimed,
+                result.ok,
+                result.failed,
+            )
+            if result.claimed > 0:
+                any_work = True
+
         if once:
             return
         if not any_work:
@@ -165,4 +202,4 @@ def run_loop(
                 slept += tick
 
 
-__all__ = ["BatchResult", "run_handler_once", "run_loop"]
+__all__ = ["BatchResult", "RefPass", "run_handler_once", "run_loop"]

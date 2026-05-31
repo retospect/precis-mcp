@@ -22,7 +22,6 @@ import argparse
 import logging
 import signal
 import sys
-import time
 from typing import Literal
 
 from precis.cli._common import (
@@ -98,10 +97,11 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "--only",
         choices=("embed", "summarize", "segments"),
         default=None,
-        help="Restrict to one handler kind. Default: embed + summarize "
-        "(the chunk-level pair). 'segments' drains the ref-level "
-        "segment_toc queue — runs per-paper segmentation + KeyBERT + "
-        "sentence picking and writes ref_segments + ref_segment_sentences.",
+        help="Restrict to one handler kind. Default: all three — "
+        "embed + summarize (chunk-level) AND segments (ref-level "
+        "segment_toc that builds ref_segments + ref_segment_sentences). "
+        "'segments' drains the ref-level queue alone; useful for "
+        "ad-hoc backfills.",
     )
     p.add_argument(
         "--embedder",
@@ -161,33 +161,49 @@ def run(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url)
     store = Store.connect(dsn)
     try:
-        # Segment-toc is a ref-level worker, not a chunk-level
-        # WorkerHandler subclass — its claim shape (refs LEFT JOIN
-        # ref_segments) doesn't fit the chunk-keyed run_loop. We
-        # drive it directly here when ``--only segments`` is set.
-        if args.only == "segments":
-            from precis.workers.segment_toc import run_paper_segments_pass
-
-            embedder = make_embedder(args.embedder)
-            stop_flag = _install_signal_handlers()
-            while not stop_flag["stop"]:
-                result = run_paper_segments_pass(
-                    store, embedder, limit=args.batch_size
-                )
-                log.info(
-                    "segment_toc: claimed=%d ok=%d failed=%d",
-                    result["claimed"], result["ok"], result["failed"],
-                )
-                if args.once or result["claimed"] == 0:
-                    if args.once:
-                        break
-                    time.sleep(args.idle_seconds)
-            return
-
         handlers = _build_handlers(args)
         if args.status:
             _print_status(handlers, store, format=resolve_format(args))
             return
+
+        # Ref-level passes (segment_toc) plug into ``run_loop`` via
+        # the ``ref_passes`` parameter. The default (no ``--only``)
+        # runs every chunk-level handler AND the segments pass each
+        # cycle, so new papers landing via precis-watch get their
+        # discovery layer populated without a separate worker
+        # service. ``--only segments`` drops the chunk handlers and
+        # runs the segments pass alone; ``--only embed`` /
+        # ``--only summarize`` skip segments entirely.
+        ref_passes = []
+        if args.only in (None, "segments"):
+            from precis.workers.runner import BatchResult
+            from precis.workers.segment_toc import run_paper_segments_pass
+
+            # The embedder for segment_toc is the same model registered
+            # for ``embed`` — reuse the EmbedHandler's instance when
+            # the chunk handler is also active, otherwise instantiate
+            # one. Either way bge-m3 only loads once per process.
+            embed_handler = next(
+                (h for h in handlers if h.name.startswith("embed:")), None
+            )
+            seg_embedder = (
+                embed_handler.embedder
+                if embed_handler is not None
+                else make_embedder(args.embedder)
+            )
+
+            def _segments_pass(batch_size: int) -> BatchResult:
+                r = run_paper_segments_pass(
+                    store, seg_embedder, limit=batch_size
+                )
+                return BatchResult(
+                    handler="segment_toc",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_segments_pass)
 
         stop_flag = _install_signal_handlers()
         run_loop(
@@ -197,6 +213,7 @@ def run(args: argparse.Namespace) -> None:
             idle_seconds=args.idle_seconds,
             once=args.once,
             should_stop=lambda: stop_flag["stop"],
+            ref_passes=ref_passes,
         )
     finally:
         store.close()
