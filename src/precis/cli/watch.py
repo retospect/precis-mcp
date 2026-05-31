@@ -63,7 +63,13 @@ log = logging.getLogger(__name__)
 # paper anyway, so 5 s of front-end debounce is invisible against
 # the back-end work. Bumped from 0.1 s on 2026-05-31.
 DEFAULT_DEBOUNCE = 5.0
-DEFAULT_POLL_INTERVAL = 1.0
+# Polling-observer interval — only matters when watchdog falls back
+# off inotify (network mounts, some macOS edge cases). Native inotify
+# events fire instantly regardless of this knob. 15 s is fine because
+# Marker takes minutes per paper anyway; aggressive polling just
+# clobbers the filesystem with stat() calls for zero throughput gain.
+# Bumped from 1.0 s on 2026-05-31.
+DEFAULT_POLL_INTERVAL = 15.0
 
 # Subdirectories of the watch dir that are managed by precis-watch
 # itself; events on these never trigger ingest. Explicit list so
