@@ -725,26 +725,36 @@ def run_paper_segments_pass(
 
     log = logging.getLogger(__name__)
 
-    with store.pool.connection() as conn:
-        ref_ids = claim_refs_without_segments(conn, limit=limit)
+    # One transaction per ref: claim_refs_without_segments takes
+    # pg_try_advisory_xact_lock(ref_id) which releases on commit/rollback,
+    # so processing must happen inside the same tx as the claim, and we
+    # do one ref per tx to avoid pre-locking refs we won't get to. The
+    # cost is ``limit`` round-trips; saves us a duplicate-key crash storm.
     ok = 0
     failed = 0
-    for ref_id in ref_ids:
-        try:
-            adapter = build_paper_adapter(store, embedder, ref_id)
-            if not adapter.chunks_text or adapter.embeddings is None:
-                # Nothing usable — either no body chunks, or partial
-                # ingest with missing embeddings. Skip without
-                # writing a poison-pill row.
-                continue
-            with store.pool.connection() as conn:
+    total_claimed = 0
+    for _ in range(limit):
+        with store.pool.connection() as conn:
+            rows = claim_refs_without_segments(conn, limit=1)
+            if not rows:
+                break
+            ref_id = rows[0]
+            total_claimed += 1
+            try:
+                adapter = build_paper_adapter(store, embedder, ref_id)
+                if not adapter.chunks_text or adapter.embeddings is None:
+                    # Nothing usable — either no body chunks, or partial
+                    # ingest with missing embeddings. Skip without
+                    # writing a poison-pill row.
+                    continue
                 build_segments(conn, ref_id=ref_id, adapter=adapter)
                 conn.commit()
-            ok += 1
-        except Exception as exc:  # pragma: no cover — defensive
-            log.warning("segment_toc: ref_id=%s failed: %s", ref_id, exc)
-            failed += 1
-    return {"claimed": len(ref_ids), "ok": ok, "failed": failed}
+                ok += 1
+            except Exception as exc:  # pragma: no cover — defensive
+                conn.rollback()
+                log.warning("segment_toc: ref_id=%s failed: %s", ref_id, exc)
+                failed += 1
+    return {"claimed": total_claimed, "ok": ok, "failed": failed}
 
 
 def claim_refs_without_segments(
@@ -771,6 +781,12 @@ def claim_refs_without_segments(
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
+    # Advisory-xact-lock keyed on ref_id makes the claim race-safe across
+    # workers: pg_try_advisory_xact_lock returns false (and the row is
+    # filtered out) if another worker's claim transaction already holds
+    # the lock for that ref. The lock auto-releases at end-of-tx, so the
+    # caller MUST commit/rollback this conn before opening a new one to
+    # process the rows — see run_paper_segments_pass for the dance.
     rows = conn.execute(
         """
         SELECT DISTINCT c.ref_id
@@ -779,6 +795,7 @@ def claim_refs_without_segments(
          WHERE s.ref_id IS NULL
            AND c.ord >= 0                  -- body chunks only (cards are ord<0)
            AND c.chunk_kind <> 'references'
+           AND pg_try_advisory_xact_lock(c.ref_id)
          ORDER BY c.ref_id
          LIMIT %s
         """,
