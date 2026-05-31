@@ -11,7 +11,7 @@ and searching across papers, documents, personal state, code, and
 cached tool calls. Small-model-friendly (7B-class agents are the design
 target); stores content in PostgreSQL with `pgvector`.
 
-> **Status.** v6.0.0 — ground-up redesign of v1. Twenty-two kinds
+> **Status.** v8.0.0 — ground-up redesign of v1. Twenty-two kinds
 > shipping across ref / tool / discovery categories, seven verbs,
 > plugin surface stable. The discovery layer (persistent
 > per-segment keywords + per-sentence embeddings) and the
@@ -199,7 +199,7 @@ canonical tiny example in
 ```toml
 # your plugin's pyproject.toml
 [project]
-dependencies = ["precis-mcp>=6.0.0"]
+dependencies = ["precis-mcp>=8.0.0"]
 
 [project.entry-points."precis.handlers"]
 wikipedia = "precis_wikipedia:WikipediaHandler"
