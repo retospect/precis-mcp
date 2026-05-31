@@ -89,6 +89,35 @@ class TestBlocksToChunks:
         chunks = _blocks_to_chunks(blocks)
         assert chunks[0].section_path == ["1", "Introduction"]
 
+    def test_numerics_extracted_per_chunk(self):
+        # Path-2 lexical numeric-token index: every body chunk
+        # carries a ``numerics`` array of recognized
+        # ``<number><unit>`` tokens for the chunks.numerics GIN
+        # index to consume.
+        blocks = [
+            {
+                "type": "paragraph",
+                "text": "bandgap of 1.523 eV with 12% efficiency at 25 °C",
+                "page": 1,
+                "section_path": [],
+            }
+        ]
+        chunks = _blocks_to_chunks(blocks)
+        assert "1.523 eV" in chunks[0].numerics
+        assert "12%" in chunks[0].numerics
+        assert "25 °C" in chunks[0].numerics
+
+    def test_numerics_empty_when_text_has_no_units(self):
+        blocks = [
+            {
+                "type": "paragraph",
+                "text": "just prose with no numbers",
+                "section_path": [],
+            }
+        ]
+        chunks = _blocks_to_chunks(blocks)
+        assert chunks[0].numerics == []
+
 
 # ---------------------------------------------------------------------------
 # _retag_references — references-section promotion

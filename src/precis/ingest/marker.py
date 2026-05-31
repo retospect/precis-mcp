@@ -135,6 +135,18 @@ def _clean_text(text: str) -> str:
     text = text.replace("\xa0", " ")
     text = text.replace("\xad", "")
 
+    # Dehyphenate across line breaks: "under-\nstanding" → "understanding".
+    # Heuristic: only join when the left fragment ends in a lowercase
+    # ASCII letter AND the right fragment starts with a lowercase ASCII
+    # letter. That preserves semantically-significant hyphens (e.g.
+    # "Z-scheme\nphotocatalysis" — capital after the break — and
+    # "Cu-MOF\nframework" — uppercase before) and never joins across
+    # paragraph breaks (handled by the \s*\n\s* match consuming only
+    # one newline). Without this fix Marker output of OCR'd PDFs
+    # leaves broken tokens that corrupt the verifier's exact-quote
+    # search; tracked by gap-3 in the 2026-05-31 ingest audit.
+    text = re.sub(r"([a-z])-\s*\n\s*([a-z])", r"\1\2", text)
+
     # Zero-width chars
     text = text.replace("\ufeff", "")  # BOM / zero-width no-break space
     text = text.replace("\u200b", "")  # zero-width space

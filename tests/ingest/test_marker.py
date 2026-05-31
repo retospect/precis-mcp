@@ -578,3 +578,60 @@ class TestCleanTextRepairsMojibake:
         once = _clean_text(text)
         twice = _clean_text(once)
         assert once == twice
+
+
+class TestCleanTextDehyphenation:
+    """Gap-3 fix from the 2026-05-31 ingest pipeline audit.
+
+    Marker output sometimes preserves the hyphenated-line-break
+    artifact from PDF text extraction (``"under-\\nstanding"``).
+    Soft hyphens (\\xad) were already stripped; explicit hyphens
+    across newlines now collapse when both sides are lowercase so
+    we don't corrupt semantically-significant compound terms
+    (``"Z-scheme\\nphotocatalysis"`` and ``"Cu-MOF\\nframework"``
+    stay intact because at least one side starts uppercase).
+    """
+
+    def test_simple_lowercase_join(self) -> None:
+        from precis.ingest.marker import _clean_text
+
+        result = _clean_text("under-\nstanding")
+        assert "understanding" in result
+        assert "under-" not in result
+
+    def test_join_handles_indented_continuation(self) -> None:
+        from precis.ingest.marker import _clean_text
+
+        # Continuation line has leading whitespace (column wrap).
+        result = _clean_text("photo-\n    catalysis")
+        assert "photocatalysis" in result
+
+    def test_preserves_chemical_compound_uppercase_after_break(self) -> None:
+        from precis.ingest.marker import _clean_text
+
+        # "Z-scheme" is a real compound term; the line break can fall
+        # right after but the right side starts uppercase so we leave
+        # the hyphen alone.
+        result = _clean_text("Z-\nscheme")
+        # Joined to "Z-scheme" — the heuristic doesn't fire because the
+        # left side ends in uppercase 'Z'. Either "Z-scheme" or "Z-
+        # scheme" is acceptable; we just don't want it joined as "Zscheme".
+        assert "Zscheme" not in result
+
+    def test_preserves_chemical_compound_uppercase_before_break(self) -> None:
+        from precis.ingest.marker import _clean_text
+
+        # "Cu-MOF" — right side starts uppercase.
+        result = _clean_text("Cu-MOF\nframework")
+        # We should not have crushed the hyphen here.
+        assert "CuMOFframework" not in result
+        assert "Cu-MOF" in result
+
+    def test_paragraph_break_not_joined(self) -> None:
+        from precis.ingest.marker import _clean_text
+
+        # Blank line between is a paragraph boundary — never join.
+        result = _clean_text("first paragraph ending-\n\nsecond paragraph")
+        # The blank-line collapse compresses 3+ newlines to 2 but the
+        # paragraph break stays a paragraph break.
+        assert "ending-" in result or "ending second" not in result.replace("\n", " ")

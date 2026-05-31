@@ -593,6 +593,7 @@ def boot(
     # --- Store-backed handlers ------------------------------------------
 
     if store is not None:
+        from precis.handlers.citation import CitationHandler
         from precis.handlers.conversation import ConversationHandler
         from precis.handlers.flashcard import FlashcardHandler
         from precis.handlers.gripe import GripeHandler
@@ -611,6 +612,7 @@ def boot(
         _gated(TodoHandler)
         _gated(GripeHandler)
         _gated(FlashcardHandler)
+        _gated(CitationHandler)
         _gated(QuestHandler)
         _gated(ConversationHandler)
         _gated(OracleHandler)

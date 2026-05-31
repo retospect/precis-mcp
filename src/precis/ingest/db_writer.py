@@ -68,6 +68,11 @@ class ChunkToWrite:
     page_last: int | None = None
     token_count: int | None = None
     meta: dict[str, Any] | None = None
+    #: Denormalized lexical numeric-token index — every
+    #: ``<number> <unit>`` token detected in ``text``. Populated by
+    #: the ingest pipeline via :func:`precis.utils.numerics.extract_numerics`.
+    #: Empty for cards and structural blocks.
+    numerics: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -405,8 +410,8 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
         conn.execute(
             "INSERT INTO chunks "
             "(ref_id, set_by, ord, chunk_kind, text, section_path, "
-            " page_first, page_last, token_count, meta) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " page_first, page_last, token_count, meta, numerics) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 ref_id,
                 paper.set_by,
@@ -418,6 +423,7 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
                 chunk.page_last,
                 chunk.token_count,
                 Jsonb(chunk.meta or {}),
+                chunk.numerics or [],
             ),
         )
         chunks_written += 1

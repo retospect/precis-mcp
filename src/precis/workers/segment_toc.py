@@ -633,6 +633,112 @@ def _insert_segment(
     return segment_id
 
 
+def build_paper_adapter(
+    store: Any,
+    embedder: Any,
+    ref_id: int,
+) -> ChunksForToc:
+    """Build a :class:`ChunksForToc` for a paper ref without a Hub.
+
+    Mirrors :meth:`precis.handlers.paper.PaperHandler.chunks_for_toc`
+    but takes a bare ``store`` + ``embedder`` so the runner can
+    invoke it without instantiating the full handler graph.
+
+    Block embeddings come from the LEFT JOIN on
+    :class:`chunk_embeddings` performed by
+    :meth:`list_blocks_for_ref`; H2 boundaries come from the same
+    journal-template-filtered heading detector the handler uses.
+    """
+    from precis.handlers._paper_toc import detect_heading
+    from precis.handlers.paper import _is_journal_template_heading
+    from precis.ingest.text_chunker import CHUNKER_VERSION
+
+    blocks = store.list_blocks_for_ref(ref_id, with_embedding=True)
+    if not blocks:
+        return ChunksForToc(
+            chunks_text=(),
+            embeddings=None,
+            h2_boundaries=(),
+        )
+    blocks = sorted(blocks, key=lambda b: b.pos)
+    chunks_text = tuple(b.text for b in blocks)
+    positions = tuple(b.pos for b in blocks)
+
+    embeddings: tuple[tuple[float, ...], ...] | None
+    if all(b.embedding is not None for b in blocks):
+        embeddings = tuple(tuple(b.embedding) for b in blocks)
+    else:
+        embeddings = None
+
+    headings: list[tuple[int, str]] = []
+    for b in blocks:
+        h = detect_heading(b)
+        if h is None or h.level not in (1, 2):
+            continue
+        if _is_journal_template_heading(h.title):
+            continue
+        headings.append((b.pos, h.title))
+
+    h2_boundaries: list[tuple[int, int, str]] = []
+    for i, (start, title) in enumerate(headings):
+        end = headings[i + 1][0] - 1 if i + 1 < len(headings) else blocks[-1].pos
+        h2_boundaries.append((start, end, title))
+
+    return ChunksForToc(
+        chunks_text=chunks_text,
+        embeddings=embeddings,
+        h2_boundaries=tuple(h2_boundaries),
+        positions=positions,
+        chunker_version=CHUNKER_VERSION,
+        embedder_name=getattr(embedder, "model", "unknown"),
+        embedder=embedder,
+    )
+
+
+def run_paper_segments_pass(
+    store: Any,
+    embedder: Any,
+    *,
+    limit: int = 32,
+) -> dict[str, int]:
+    """Process up to ``limit`` un-segmented paper refs.
+
+    Returns ``{"claimed": N, "ok": K, "failed": F}`` for observability.
+    Each ref runs in its own transaction so a single bad ref doesn't
+    poison the batch. Failures land as a single warning per ref —
+    poison-pill row support (``ref_segments.status='failed'``) is
+    a follow-up; today's failure mode is "skip and try next pass."
+
+    The runner only handles papers in v1; other kinds (skill,
+    decision, …) get a no-op pass once they're persisted as refs
+    and their handler exposes ``chunks_for_toc``.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    with store.pool.connection() as conn:
+        ref_ids = claim_refs_without_segments(conn, limit=limit)
+    ok = 0
+    failed = 0
+    for ref_id in ref_ids:
+        try:
+            adapter = build_paper_adapter(store, embedder, ref_id)
+            if not adapter.chunks_text or adapter.embeddings is None:
+                # Nothing usable — either no body chunks, or partial
+                # ingest with missing embeddings. Skip without
+                # writing a poison-pill row.
+                continue
+            with store.pool.connection() as conn:
+                build_segments(conn, ref_id=ref_id, adapter=adapter)
+                conn.commit()
+            ok += 1
+        except Exception as exc:  # pragma: no cover — defensive
+            log.warning("segment_toc: ref_id=%s failed: %s", ref_id, exc)
+            failed += 1
+    return {"claimed": len(ref_ids), "ok": ok, "failed": failed}
+
+
 def claim_refs_without_segments(
     conn: Connection,
     *,
@@ -675,6 +781,8 @@ def claim_refs_without_segments(
 
 __all__ = [
     "EXTRACTOR_VERSION",
+    "build_paper_adapter",
     "build_segments",
     "claim_refs_without_segments",
+    "run_paper_segments_pass",
 ]

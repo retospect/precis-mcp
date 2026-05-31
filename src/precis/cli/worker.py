@@ -47,7 +47,7 @@ _STATUS_SCHEMA: list[str] = ["handler", "total", "ok", "failed", "pending"]
 log = logging.getLogger(__name__)
 
 
-HandlerKey = Literal["embed", "summarize"]
+HandlerKey = Literal["embed", "summarize", "segments"]
 
 
 # ---------------------------------------------------------------------------
@@ -95,9 +95,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--only",
-        choices=("embed", "summarize"),
+        choices=("embed", "summarize", "segments"),
         default=None,
-        help="Restrict to one handler kind. Default: both.",
+        help="Restrict to one handler kind. Default: embed + summarize "
+        "(the chunk-level pair). 'segments' drains the ref-level "
+        "segment_toc queue — runs per-paper segmentation + KeyBERT + "
+        "sentence picking and writes ref_segments + ref_segment_sentences.",
     )
     p.add_argument(
         "--embedder",
@@ -157,6 +160,30 @@ def run(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url)
     store = Store.connect(dsn)
     try:
+        # Segment-toc is a ref-level worker, not a chunk-level
+        # WorkerHandler subclass — its claim shape (refs LEFT JOIN
+        # ref_segments) doesn't fit the chunk-keyed run_loop. We
+        # drive it directly here when ``--only segments`` is set.
+        if args.only == "segments":
+            from precis.workers.segment_toc import run_paper_segments_pass
+
+            embedder = make_embedder(args.embedder)
+            stop_flag = _install_signal_handlers()
+            while not stop_flag["stop"]:
+                result = run_paper_segments_pass(
+                    store, embedder, limit=args.batch_size
+                )
+                log.info(
+                    "segment_toc: claimed=%d ok=%d failed=%d",
+                    result["claimed"], result["ok"], result["failed"],
+                )
+                if args.once or result["claimed"] == 0:
+                    if args.once:
+                        break
+                    import time
+                    time.sleep(args.idle_seconds)
+            return
+
         handlers = _build_handlers(args)
         if args.status:
             _print_status(handlers, store, format=resolve_format(args))

@@ -446,7 +446,16 @@ class PaperHandler(Handler):
             noun="block hit",
             query=q,
         )
+        # For each hit we render a TOON row + optional indented
+        # excerpt sub-line drawn from the persistent discovery layer
+        # (``ref_segment_sentences``). The sub-line is query-aligned
+        # — sentences are reranked against ``query_vec`` via pgvector
+        # cosine — so the agent sees the segment's most-on-topic
+        # sentence inline with the hit. Falls back silently to a
+        # plain row when the worker hasn't populated segments for
+        # the ref yet (workflow design discussion 2026-05-31).
         table_rows: list[dict[str, str]] = []
+        excerpt_lines: list[str | None] = []
         for block, ref, _score in hits:
             slug = ref.slug or "???"
             handle = f"{slug}~{block.pos}"
@@ -457,14 +466,19 @@ class PaperHandler(Handler):
                     "chunk_keywords": keyword_summary(chunk_text, top_k=5),
                 }
             )
-        body = (
-            head
-            + "\n\n"
-            + render_agent_table(
-                table_rows,
-                schema=["handle", "chunk_keywords"],
+            excerpt_lines.append(
+                _query_aligned_excerpt(
+                    store=self.store,
+                    ref_id=ref.id,
+                    chunk_pos=block.pos,
+                    query_vec=query_vec,
+                )
             )
+        rendered_table = render_agent_table(
+            table_rows,
+            schema=["handle", "chunk_keywords"],
         )
+        body = head + "\n\n" + _splice_excerpt_sub_lines(rendered_table, excerpt_lines)
 
         # Pagination affordance — when the lexical total exceeds what
         # we returned, surface the narrow-with-scope path explicitly.
@@ -1280,6 +1294,74 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
 
 #: Case-insensitive exact-match strings that are journal-template
 #: chrome, not real section headings. Extend as new patterns appear.
+def _query_aligned_excerpt(
+    *,
+    store: Any,
+    ref_id: int,
+    chunk_pos: int,
+    query_vec: list[float] | None,
+) -> str | None:
+    """Markdown sub-line excerpt for one search hit.
+
+    Looks up the segment that contains ``chunk_pos``, then asks
+    :meth:`Store.top_sentences_for_segment` for the single best
+    sentence — query-aligned via pgvector cosine when
+    ``query_vec`` is available, segment-prototypical otherwise.
+    Returns ``None`` silently when no segment is stored yet
+    (worker hasn't run) so a missing discovery layer never
+    breaks search rendering.
+    """
+    try:
+        seg = store.segment_containing_chunk(ref_id, chunk_pos)
+    except Exception:  # pragma: no cover — defensive
+        return None
+    if seg is None:
+        return None
+    try:
+        sents = store.top_sentences_for_segment(
+            seg.segment_id, limit=1, query_embedding=query_vec
+        )
+    except Exception:  # pragma: no cover — defensive
+        return None
+    if not sents:
+        return None
+    sent = sents[0]
+    flat = " ".join(sent.text.split())
+    return f'  - excerpt @ ~{sent.chunk_pos}: "{flat}"'
+
+
+def _splice_excerpt_sub_lines(
+    table_body: str,
+    excerpts: list[str | None],
+) -> str:
+    """Inject an indented sub-line after each non-header table row.
+
+    ``table_body`` is the output of :func:`render_agent_table` —
+    one TOON header line followed by N data rows. Walks the lines,
+    emits each as-is, and appends ``excerpts[i]`` (when non-None)
+    after data row ``i``. ``None`` entries — ref hasn't been
+    segmented yet, or no sentence cleared the threshold — emit no
+    sub-line so the row stays silent.
+    """
+    lines = table_body.splitlines()
+    out: list[str] = []
+    data_idx = 0
+    for line in lines:
+        out.append(line)
+        # TOON header rows look like ``{handle\theading\t…}`` —
+        # skip the appendix logic for them.
+        if line.startswith("{") and line.endswith("}"):
+            continue
+        if not line.strip():
+            continue
+        if data_idx < len(excerpts):
+            sub = excerpts[data_idx]
+            if sub:
+                out.append(sub)
+            data_idx += 1
+    return "\n".join(out)
+
+
 _JOURNAL_TEMPLATE_HEADINGS: frozenset[str] = frozenset(
     {
         # Article-type labels

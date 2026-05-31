@@ -44,6 +44,7 @@ from precis.ingest.marker import extract_blocks_marker
 from precis.ingest.pdf_metadata import DoiProvenance, extract_metadata_from_sources
 from precis.ingest.semantic_scholar import lookup_s2
 from precis.utils.boilerplate import ChunkClass, classify_chunks
+from precis.utils.numerics import extract_numerics
 
 # U+FFFD — Unicode "replacement character." PDFs whose ToUnicode map is
 # incomplete or contradicts the embedded cmap leak FFFD bytes through
@@ -228,6 +229,11 @@ def _blocks_to_chunks(blocks: list[dict[str, Any]]) -> list[ChunkToWrite]:
         page = block.get("page")
         section_raw = block.get("section_path") or []
         section_path = [str(s) for s in section_raw if s]
+        # Lexical numeric-token index — every "1.523 eV" / "12%" /
+        # "0.3 V" / "1670 cm-1" detected in the chunk text. GIN-
+        # indexed downstream for cheap value lookups. See
+        # :mod:`precis.utils.numerics` for the recognized unit set.
+        numerics = extract_numerics(text)
         chunks.append(
             ChunkToWrite(
                 ord=ord_counter,
@@ -236,6 +242,7 @@ def _blocks_to_chunks(blocks: list[dict[str, Any]]) -> list[ChunkToWrite]:
                 section_path=section_path,
                 page_first=page,
                 page_last=page,
+                numerics=numerics,
             )
         )
         ord_counter += 1
