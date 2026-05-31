@@ -6,7 +6,7 @@ PyPI is `5.2.6`; everything below `## v6.0.0` represents the
 post-merge state. Phases pre-merge are kept here as historical
 context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
-## Unreleased
+## v8.0.0 — 2026-05-31
 
 ### Added
 

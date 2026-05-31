@@ -1,3 +1,3 @@
-"""precis-mcp v6 — MCP server for paper / document / state / tool access."""
+"""precis-mcp v8 — MCP server for paper / document / state / tool access."""
 
-__version__ = "6.0.0"
+__version__ = "8.0.0"
