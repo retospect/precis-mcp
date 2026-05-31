@@ -8,16 +8,41 @@ from precis.errors import BadInput, NotFound
 from precis.store import Store, Tag
 
 # ---------------------------------------------------------------------------
-# system / corpus
+# app_state (settings)
 # ---------------------------------------------------------------------------
 #
-# v2 dropped both the ``system`` key-value table and the ``corpuses``
-# table. ``get_setting``/``set_setting`` are stubbed to no-op
-# (return None / pass) in v2; tests that exercised the v1 system table
-# have been removed. ``ensure_corpus``/``get_corpus`` were deleted
-# entirely. embedding_dim now reads ``embedders.dim`` directly from
-# the registry table; covered by test_embedding_dim_reads_default
-# below.
+# v2 dropped the v1 ``system`` table and replaced it with ``app_state``
+# (migration 0003_app_state). ``get_setting``/``set_setting`` are now
+# backed by a real SELECT and an ``ON CONFLICT … DO UPDATE`` upsert.
+# The tests below exercise the round-trip against an ephemeral migrated
+# DB — the ``store`` fixture in conftest applies all migrations before
+# yielding the Store, so this also asserts the migration shipped a
+# usable table. ``ensure_corpus``/``get_corpus`` were deleted entirely
+# in v2. embedding_dim now reads ``embedders.dim`` directly from the
+# registry table; covered by test_embedding_dim_reads_default below.
+
+
+def test_get_setting_missing_returns_none(store: Store) -> None:
+    assert store.get_setting("nope.never.set") is None
+
+
+def test_set_setting_roundtrip(store: Store) -> None:
+    store.set_setting("corpus.oracle.version", "6000000000000")
+    assert store.get_setting("corpus.oracle.version") == "6000000000000"
+
+
+def test_set_setting_upserts(store: Store) -> None:
+    store.set_setting("corpus.oracle.sha256", "old-sha")
+    store.set_setting("corpus.oracle.sha256", "new-sha")
+    assert store.get_setting("corpus.oracle.sha256") == "new-sha"
+
+
+def test_set_setting_empty_string_preserved(store: Store) -> None:
+    # Empty string is a distinct value from NULL/missing — important for
+    # the "row exists with empty value" case (e.g. an oracle dir whose
+    # sha256 didn't compute). value is NOT NULL so this is the floor.
+    store.set_setting("k", "")
+    assert store.get_setting("k") == ""
 
 
 # ---------------------------------------------------------------------------

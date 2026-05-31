@@ -1,8 +1,12 @@
 # Finding chase — trace cited claims back to their primary source
 
-**Status**: draft (pre-review)
-**Owner**: `src/precis/workers/`, `src/precis/handlers/finding.py` (new),
-new migration on top of `0001_initial.sql`
+**Status**: draft (pre-review), **revised 2026-05-31 for Path B + B-ii**
+(`kind='citation'` shipped in `0007_citation_kind.sql`; this design
+recasts findings as *chain heads* over those citation hops, with a
+sibling-worker chase per ADR 0018).
+**Owner**: `src/precis/handlers/finding.py` (new),
+`src/precis/workers/chase.py` (new). Migration `0004_*.sql` already
+applied; no further schema work needed.
 **Predecessors**:
 - [`storage-v2.md`](./storage-v2.md) — establishes refs / chunks /
   links / derived queue
@@ -12,10 +16,18 @@ new migration on top of `0001_initial.sql`
 - [0006 — tri-identifier scheme](../decisions/0006-tri-identifier-scheme.md)
   (we ride `cite_key` as the LaTeX/BibTeX handle)
 - [0007 — derived queue, no jobs table](../decisions/0007-derived-queue-no-block-jobs.md)
-  (extended to ref-level in 0017)
 - [0008 — drop slug, `cite_key` is canonical human form](../decisions/0008-drop-slug-identifier-normalisation.md)
 - [0017 — derived-queue family + `artifact_kinds` registry](../decisions/0017-derived-queue-family.md)
-  (the queue substrate this design depends on)
+  (substrate tables `ref_artifacts` + `artifact_kinds` are valid;
+  §4 WorkerHandler refactor superseded — see 0018)
+- [0018 — persistent discovery layer + sibling ref-level workers](../decisions/0018-persistent-discovery-layer.md)
+  (the chase worker follows `run_paper_segments_pass`, not a base-class
+  subclass)
+**Shipped neighbour**:
+- `kind='citation'` (migration `0007_citation_kind.sql`,
+  `src/precis/handlers/citation.py`) — the *single-hop* verified
+  claim → source quote primitive. Findings are *chain heads* over
+  citations; see §"Relationship to `citation`" below.
 
 ## Problem
 
@@ -51,11 +63,17 @@ PDF lands.
 Make the citation-chase a first-class, persistent, retrievable
 artefact of the system. Specifically:
 
-- The claim becomes a `finding` ref, embedded and searchable like
-  any other ref.
+- The claim becomes a `finding` ref — chain head — embedded and
+  searchable like any other ref. Carries setup context
+  (`meta.scope`) so the same number under different setups produces
+  distinct findings.
 - Each hop of the chase is a row in `links` with relation
-  `derived-from`, terminating when we hit a primary report (a paper
-  that *measured* the value rather than re-citing it).
+  `derived-from`, walked directly between ref/chunk endpoints —
+  no per-hop record created by the worker (per Path B-ii — the
+  shipped `kind='citation'` is reserved for *user / verifier
+  subagent* records, not chase-bot records). The chain terminates
+  when we hit a primary report (a paper that *measured* the value
+  rather than re-citing it).
 - Missing cited papers are materialised as **stub refs**: real
   `refs` rows with identifiers (DOI / arXiv / S2 id) and
   `pdf_sha256 IS NULL` — the column predicate alone identifies a
@@ -65,16 +83,15 @@ artefact of the system. Specifically:
   hits the same `ref_id` via `ref_identifiers`;
   chunks / embeddings / summaries flow through the existing derived
   queue).
-- A worker handler `chase_citation` claims findings whose chain is
-  incomplete and pushes the chase one hop forward each pass.
-- A second worker handler also flags **misattributions** (paper A
-  says paper B reported X, paper B actually reported Y).
+- A **sibling worker** (`precis.workers.chase.run_finding_chase_pass`,
+  modelled on `run_paper_segments_pass` per ADR 0018) advances
+  findings whose chain is incomplete, one hop per pass.
 
-Crucially the worker plumbing is **generally applicable** beyond
-findings — the chase, retraction checks, S2 stub-fill, and any
-future ref-level artifact share one substrate. The substrate is
-formalised in [ADR 0017](../decisions/0017-derived-queue-family.md);
-this design is the first user of it.
+The substrate tables introduced by ADR 0017 (`ref_artifacts`,
+`artifact_kinds`) are *not* consumed by the chase — chase state
+lives on the finding itself (`meta.chain`, `STATUS:tracing|established`).
+The substrate remains a useful generic facility for future ref-level
+work; the chase just doesn't need persistent per-pass queue state.
 
 ## Non-goals
 
@@ -96,6 +113,49 @@ this design is the first user of it.
   `\cite{}`. While the chase is in flight, the finding's `pub_id`
   is a *placeholder* the agent drops in text; at finalisation,
   `precis resolve` substitutes the primary paper's `cite_key`.
+- **LLM passes during the chase.** No title canonicalisation, no
+  mis-citation comparison, no scope enrichment. KISS, model-light.
+  The chase walks the citation graph deterministically; LLM cost
+  per finding ends up dominated by what the *agent* did at
+  `put(...)` time, not by what the worker does.
+- **Mis-citation detection as a worker.** The
+  `relations.misattributes` / `misattributed-by` vocabulary stays
+  in the schema as an **optional curator surface** (a human or a
+  separate analysis tool can write a `misattributes` link by hand
+  via `link(rel='misattributes', …)`). The chase worker does not
+  generate them.
+- **Auto-creating `citation` records from chase hops.** Per Path
+  B-ii — the shipped `kind='citation'` is reserved for *verifier-
+  subagent* records (user-written). The chase walks `links` +
+  `chunks` directly and records the chain on the finding's
+  `meta.chain`; it does not pollute the bibliography surface with
+  bot-asserted citations.
+
+## Relationship to `citation` (shipped)
+
+Two ref kinds, two clear jobs:
+
+| Kind | Shipped? | Role | Authored by | Lifecycle |
+| --- | --- | --- | --- | --- |
+| `citation` | yes (`0007`) | one verified claim → one source quote | user / verifier subagent | write-once |
+| `finding` | this design | chain head: claim + setup + provenance chain to primary | user (initial); worker (chain extension) | `STATUS:tracing` → `STATUS:established` |
+
+A finding is the *answer* the agent reaches for when searching
+("what evidence do we have for X?"). A citation is the *atomic
+evidence record* a writer attaches to a claim they are making
+right now.
+
+The chase walks the `links` graph directly; it does **not** create
+citations as it goes (Path B-ii). The finding's
+`meta.chain = [{ref_id, chunk_id?}, …]` records the walk;
+`meta.primary_cite_key` and `meta.via_cite_keys` snapshot the
+chain in cite_key form for cheap rendering. Citations remain
+strictly user / verifier authored — when a writer pulls a finding
+into a document and `precis resolve` substitutes
+`[finding-pub_id]` → `\cite{primary_cite_key}`, the writer can
+optionally create a backing `citation` record by hand with the
+exact verbatim quote — but that's a separate step the writer
+controls, not something the chase pre-populates.
 
 ## What a finding is
 
@@ -115,16 +175,23 @@ Concretely a finding ref carries:
 
 | Field | Shape | Source |
 | --- | --- | --- |
-| `refs.title` | short claim title — *"gate-bias 2.4 kV / 30 s on Si/SiO₂"* | author at `put`; canonicalised at synthesis (LLM, high-model, RAG) |
-| `chunks` ord=0, kind=`finding_body` | the claim text incl. measurement value | author at `put` |
-| `chunks` ord=1, kind=`finding_context` | the setup envelope (instrument, electrode, ambient, technique, geometry, scope) | author at `put` |
-| `card_combined` (ord=-1) | title + body + context + primary cite_key | computed; re-emitted at synthesis |
-| `refs.meta->'scope'` JSONB | structured slice of the setup for filtering (`{"electrode": "Cu", "ambient": "N2", ...}`) | author at `put` *and* LLM-extracted at synthesis |
-| `refs.meta->'primary_cite_key'` | cite_key of the terminal ref | synthesis pass |
-| `refs.meta->'via_cite_keys'` | ordered cite_keys of intermediate refs (the begat chain) | synthesis pass |
-| `links --derived-from-->` chain | direct + indirect sources | written by the chase handler one hop at a time |
+| `refs.title` | short claim title — *"gate-bias 2.4 kV / 30 s on Si/SiO₂"* | author at `put` (no LLM rewrite) |
+| `chunks` ord=0, kind=`finding_body` | claim + setup envelope as flowing prose (one chunk; setup folded in, no separate context chunk) | author at `put` |
+| `card_combined` (ord=-1) | title + body + primary cite_key | computed; refreshed via DELETE+INSERT when the chain terminates (not an LLM pass — just text concat) |
+| `refs.meta->'scope'` JSONB | structured slice of the setup for filtering (`{"electrode": "Cu", "ambient": "N2", ...}`) | author at `put` only — no LLM extraction |
+| `refs.meta->'chain'` JSONB | ordered `[{ref_id, chunk_id?}, …]` of every hop the chase walked, primary last | chase worker, one append per pass |
+| `refs.meta->'primary_cite_key'` | cite_key of the terminal ref | chase worker on termination |
+| `refs.meta->'via_cite_keys'` | ordered cite_keys of intermediate refs (the begat chain, excluding primary) | chase worker on termination |
+| `links --derived-from-->` chain | direct + indirect sources (mirror of `meta.chain` for graph queries) | chase worker, one row per hop |
 | `STATUS:tracing` tag | in flight | initial state |
-| `STATUS:established` tag | terminal — primary source identified | replaces `tracing` at synthesis |
+| `STATUS:established` tag | terminal — primary source identified | replaces `tracing` on termination |
+
+> **Note on dormant 0004 vocab.** Migration `0004_finding_and_queue_family.sql`
+> shipped `chunk_kinds.finding_context` as a separate chunk_kind. Path B
+> folds setup prose into `finding_body` instead. The
+> `chunk_kinds.finding_context` row stays in place (forward-only
+> migrations; harmless dormant vocab; promote later if a real need
+> for a separately-embeddable setup chunk surfaces).
 
 The ref exists during the chase too — it has to, because the chain
 is attached to it. But until `STATUS:established`, it's a *claim in
@@ -141,19 +208,20 @@ or `precis stats`.
  │  "...the device was held at 2.4 kV for 30 s [miller2020]..." │
  └─────────────────────────┬────────────────────────────────────┘
                            │  put(kind='finding', title='2.4kV/30s on Si/SiO2',
-                           │       body='...', context='Cu top contact, N2 ambient',
+                           │       body='2.4 kV held for 30 s on Si/SiO2 MOSCAPs;
+                           │             Cu top contact, N2 ambient, room temp.',
                            │       scope={'electrode':'Cu','ambient':'N2'},
-                           │       cited_in='miller2020#42')
+                           │       cited_in='miller23a#42')
                            ▼
  ┌──────────────────────────────────────────────────────────────┐
  │  finding ref  (pub_id=ab12c3)                                │
- │  • chunk_kind='finding_body'    — the claim                  │
- │  • chunk_kind='finding_context' — the setup                  │
+ │  • one finding_body chunk (claim + setup as flowing prose)   │
  │  • meta.scope = {electrode:'Cu', ambient:'N2'}               │
+ │  • meta.chain = [{ref_id: miller2020, chunk_id: <42>}]       │
  │  • tag STATUS:tracing                                        │
  │  • link  --derived-from-->  miller2020 chunk:42   (frontier) │
  └─────────────────────────┬────────────────────────────────────┘
-                           │  chase_citation worker (pass 1)
+                           │  chase worker (pass 1)
                            ▼
  ┌──────────────────────────────────────────────────────────────┐
  │  reads miller2020 chunk:42; detects "[12]" inline citation;  │
@@ -163,8 +231,8 @@ or `precis stats`.
  │        pub_id=k4j7m2)                                        │
  │  (stub-ness implied by pdf_sha256 IS NULL — no tag written)  │
  │  link finding --derived-from--> fischer2013   (ref-level)    │
+ │  append to meta.chain (now 2 entries)                        │
  │  finding stays STATUS:tracing                                │
- │  payload = {state:'hopped', from:..., to:..., visited:[...]} │
  └─────────────────────────┬────────────────────────────────────┘
                            │  user drops fischer2013.pdf into inbox
                            ▼
@@ -176,47 +244,56 @@ or `precis stats`.
  │    • extract blocks/chunks for the new PDF; embed via queue. │
  │  No tag to clear — the column predicate flipped itself.      │
  └─────────────────────────┬────────────────────────────────────┘
-                           │  chase_citation worker (pass 2)
+                           │  chase worker (pass 2)
                            ▼
  ┌──────────────────────────────────────────────────────────────┐
  │  re-claims the finding (target ref now has chunks).          │
- │  Locates the chunk in fischer2013 that states the value.     │
- │  Compares miller2020's wording vs fischer2013's: detects     │
- │    "Cu foil" (miller) vs "Cu top contact, sputtered"         │
- │    (fischer). Writes misattributes link with diff.           │
- │  Frontier chunk has no further [N] cite → SYNTHESIS:         │
+ │  Locates the chunk in fischer2013 that states the value      │
+ │  (lexical + ANN top-1 within fischer2013).                   │
+ │  Frontier chunk has no further [N] cite → CHAIN TERMINATES:  │
  │    • link finding --derived-from--> fischer2013 chunk:N      │
+ │    • meta.chain extended with {fischer2013, chunk_id:N}      │
  │    • meta.primary_cite_key = 'fischer13'                     │
- │    • meta.via_cite_keys = ['miller20']                       │
- │    • LLM (high-model, RAG) canonicalises title               │
+ │    • meta.via_cite_keys = ['miller23a']                      │
  │    • re-emit card_combined (DELETE+INSERT at ord=-1)         │
  │    • tag finding STATUS:established; remove STATUS:tracing.  │
+ │  No LLM call, no misattribution writeback.                   │
  └──────────────────────────────────────────────────────────────┘
 ```
 
-## Derived-queue family (the substrate)
+## Derived-queue family (substrate present; chase doesn't use it)
 
 ADR 0007 established the chunk-level derived queue
 (`chunk_embeddings`, `chunk_summaries`).
-[ADR 0017](../decisions/0017-derived-queue-family.md) generalises
-that into a family: same shape across chunk / ref / link / pdf
-targets, typed outputs for indexable values, untyped JSONB outputs
-for handler results, one `artifact_kinds` registry, one parameterised
-`WorkerHandler` base class.
+[ADR 0017](../decisions/0017-derived-queue-family.md) introduced
+the substrate for untyped per-ref / per-link / per-pdf derived
+state (`*_artifacts` tables + `artifact_kinds` registry).
+[ADR 0018](../decisions/0018-persistent-discovery-layer.md)
+shipped the first ref-level *consumer* (`run_paper_segments_pass`)
+and explicitly chose the **sibling-worker** pattern over the
+parameterised `WorkerHandler` base class originally proposed in
+ADR 0017 §4.
 
-This design is the first user. Two new artifacts register here:
+**Path B does the same.** The chase worker
+(`precis.workers.chase.run_finding_chase_pass`) is a sibling
+function modelled on `run_paper_segments_pass` — not a subclass
+of anything, not a writer to `ref_artifacts`. Chase state lives
+on the finding itself (`meta.chain`, the `STATUS:` tag, the
+`derived-from` links). No per-pass queue rows; no
+`chase_citation` / `resolve_citation:s2` artifacts.
 
-| Artifact slug | Target | Storage | Output table | What it does |
-| --- | --- | --- | --- | --- |
-| `chase_citation` | ref | untyped | `ref_artifacts` | one chase hop per pass |
-| `resolve_citation:s2` | ref | untyped | `ref_artifacts` | fill stub metadata via S2 |
+> **Dormant 0004 vocab.** Migration `0004_finding_and_queue_family.sql`
+> seeded `artifact_kinds` with `chase_citation` and
+> `resolve_citation:s2` rows. Path B leaves them in place
+> (forward-only migrations; harmless). They become live again only
+> if a future redesign moves the chase to a queue-artifact model
+> — not planned.
 
-The `ref_artifacts` table is created by this migration; the
-`artifact_kinds` registry and the `WorkerHandler` refactor land in
-the same migration per ADR 0017. Read ADR 0017 for the shape; this
-design only specifies the *handlers*.
+The substrate remains valuable for *other* ref-level work
+(periodic retraction sweeps, link-level scoring, per-pdf OCR).
+This design just doesn't consume it.
 
-**Retraction-checking is NOT a queue artifact in this design.** The
+**Retraction-checking is NOT in this design.** The
 [provenance kind](../provenance-kind-plan.md) — **shipped Phases
 1–6**, see `src/precis/handlers/provenance.py` and
 `src/precis/ingest/provenance.py` — handles retraction / EoC /
@@ -355,58 +432,67 @@ standard BibTeX is paper-level — and renders `\cite{<cite_key>}`.
 
 ## Worker plumbing
 
-### `ChaseCitationHandler` — one hop per claim
+### `precis.workers.chase.run_finding_chase_pass` — sibling worker
 
-Subclasses the parameterised `WorkerHandler` from ADR 0017. Claims
-findings (`refs.kind='finding'`) lacking a terminal
-`ref_artifacts(artifact='chase_citation', payload->>'state' = 'anchored')`
-row. For each finding `F`:
+Modelled on `precis.workers.segment_toc.run_paper_segments_pass`
+(see ADR 0018 §"Worker"). Plain function, claims findings via the
+same `LEFT JOIN … IS NULL` shape as the segment worker uses for
+refs without segments, but the predicate here is "finding still
+tracing":
 
-**1. Pick the current frontier.** Most recent outgoing
-`derived-from` link from `F` (or the chunk reached via the chain).
-If no such link exists, the frontier is the initial `cited_in`
-passed at create-time.
+```sql
+SELECT r.ref_id
+  FROM refs r
+ WHERE r.kind = 'finding'
+   AND r.deleted_at IS NULL
+   AND EXISTS (
+         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+          WHERE rt.ref_id = r.ref_id
+            AND t.namespace = 'STATUS'
+            AND t.value = 'tracing'
+       )
+ ORDER BY r.ref_id
+ LIMIT %s
+   FOR UPDATE OF r SKIP LOCKED;
+```
+
+For each finding `F`:
+
+**1. Pick the current frontier** from `F.meta.chain` (last entry).
+If `meta.chain` is empty (shouldn't happen — `put` writes the
+initial entry), abort with `STATUS:dead_chain`.
 
 **2. Read the cited chunk.** If the frontier is chunk-scoped,
 that's the chunk. If ref-scoped, locate the chunk in the target ref
-that the finding text refers to (lexical + ANN search constrained
-to `ref_id = frontier`, top-1 with confidence threshold).
+by lexical + ANN search constrained to `ref_id = frontier`, top-1
+with confidence threshold.
 
-- If the target ref has no chunks yet (stub), emit
-  `payload={"state":"waiting_pdf", "blocker_ref_id": <target>}`
-  and return. The chase resumes when the PDF lands (see
-  *Re-enqueue on chunk arrival* below).
-- If the target ref is soft-deleted (`refs.deleted_at IS NOT NULL`),
-  emit `payload={"state":"unresolvable","reason":"target_deleted"}`
-  and tag finding `STATUS:dead_chain`. Chain preserved as-is.
+- If the target ref has no chunks yet (stub: `pdf_sha256 IS NULL`),
+  do nothing this pass (finding stays `STATUS:tracing`). Next pass
+  will re-check; the chase naturally resumes when the stub gets
+  chunks. No queue state, no waiting flag.
+- If the target ref is soft-deleted (`deleted_at IS NOT NULL`),
+  tag `STATUS:dead_chain`. Chain preserved as-is.
 
 **3. Decide: terminal or hop?**
 
 - **Terminal** if the frontier chunk has no outgoing `cites` link
   AND no inline bibliographic reference pattern (see §"Inline
-  citation detection" below). Run the **synthesis pass**
-  (§"Synthesis pass" below); chain is grounded.
-- **Hop** otherwise. Determine the next reference (§"Inline
-  citation detection"); resolve it to a `ref_id` (existing ref via
-  `ref_identifiers`, or create a stub — see §"Stub creation");
-  add link `F --derived-from--> next_ref`; write
-  `payload={"state":"hopped","from":...,"to":...,"visited":[...]}`.
+  citation detection" below). Run the **chain-snapshot pass**
+  (§"Chain-snapshot pass" below); chain is established.
+- **Hop** otherwise. Determine the next reference; resolve it to a
+  `ref_id` (existing via `ref_identifiers`, or create a stub —
+  see §"Stub creation"); append `{ref_id, chunk_id?}` to
+  `F.meta.chain`; add link `F --derived-from--> next_ref`.
 
-**4. Mis-citation check** (every hop, not just terminal). Compare
-the frontier chunk's wording about the target with the target
-chunk's actual content. If a substantive mismatch (LLM call against
-both texts, threshold-gated), write a `misattributes` link with
-`meta={"src_says": "...", "dst_actual": "...", "severity": "..."}`.
-This is independent of whether the hop continues or terminates.
+**4. Cycle protection.** `meta.chain` IS the cumulative visited
+record (no separate `visited` array). Before appending, check the
+candidate's `ref_id` against existing chain entries. Revisit →
+tag `STATUS:cycle`; chain preserved as-is.
 
-**5. Cycle protection.** Maintain `payload.visited: [ref_id, ...]`
-across passes (read → check membership → append → write).
-Revisit → emit
-`payload={"state":"unresolvable","reason":"cycle","visited":[...]}`
-and tag finding `STATUS:cycle`.
-
-The handler is idempotent. Re-running on a finding whose chain is
-`anchored` short-circuits at step 3a's first check.
+The worker is idempotent. Re-running on a finding tagged
+`STATUS:established` short-circuits at the claim query (the predicate
+demands `STATUS:tracing`).
 
 ### Inline citation detection (the hard problem)
 
@@ -428,13 +514,12 @@ extracts them in stages:
 4. **Multi-candidate.** If a chunk cites >1 reference (`[12,13]` or
    "(Miller 2020; Kumar 2018)"), attach **all** candidates as
    separate `derived-from` links with `meta={"candidate":true,
-   "score":0.x}`. Chase pauses at the finding with
-   `STATUS:multi_candidate` until disambiguated (user → `edit(...,
-   pick_candidate='miller20')`, or a later LLM-disambiguation
-   handler).
-5. **No hits.** Emit
-   `payload={"state":"unresolvable","reason":"no_inline_cite"}`.
-   Chain preserved as far as it got; operator can resolve manually.
+   "score":0.x}`. Tag finding `STATUS:multi_candidate`; chain
+   stays unappended until disambiguated (user →
+   `edit(kind='finding', id=..., pick_candidate='miller23a')`).
+5. **No hits.** Tag finding `STATUS:dead_chain` with
+   `meta.dead_reason = 'no_inline_cite'`. Chain preserved as far
+   as it got; operator can resolve manually via `edit(...)`.
 
 ### Stub creation
 
@@ -447,72 +532,63 @@ least one of `{DOI, arXiv id, S2 id}` plus a title. The stub:
 - Carries whatever external IDs S2 returned in `ref_identifiers`.
 - Has `pdf_sha256 IS NULL` — **the column predicate IS the
   stub-state signal** (no tag).
-- Gets an `ok` row in `ref_artifacts(artifact='resolve_citation:s2')`
-  so the resolve handler doesn't re-run on it (the chase already
-  populated the minimum).
+- `set_by = 'chase'` so the audit query (`SELECT * FROM refs
+  WHERE set_by='chase'`) surfaces every chase-created stub.
 
 With **only** `(authors, year, title)` from a Marker-parsed
 reference list (no external IDs), the chase fuzzy-matches against
 `ref_identifiers (id_kind='cite_key')` via the trigram index first
-— if it hits an existing ref, reuse. Else: emit
-`payload={"state":"unresolvable","reason":"no_external_id"}` and
+— if it hits an existing ref, reuse. Else: tag the *finding*
+`STATUS:dead_chain` with `meta.dead_reason = 'no_external_id'` and
 do *not* mint a blind stub. The half-known reference would never
 auto-merge with a real PDF and would clutter the corpus.
 
-### Synthesis pass
+### Chain-snapshot pass (no LLM)
 
-When step 3 reaches a terminal frontier, the chase handler runs the
-synthesis pass *before* flipping the status tag:
+When step 3 reaches a terminal frontier, the chase worker runs a
+small deterministic snapshot pass *before* flipping the status tag:
 
 1. **`meta.primary_cite_key`** = cite_key of the terminal ref.
 2. **`meta.via_cite_keys`** = ordered cite_keys of every ref on
    the chain between `F` and the terminal, excluding endpoints
    (the begat chain).
-3. **LLM title canonicalisation** (high-model, RAG over the primary
-   chunk). If the canonicalised title differs from
-   `refs.title`, update it. Old title was embedded once; new title
-   gets re-embedded automatically via the chunk re-emit (below).
-4. **LLM `meta.scope` enrichment.** Same model call extracts any
-   setup terms from the primary chunk not already in
-   `meta.scope`. Merge into the JSONB.
-5. **Re-emit `card_combined`.** `chunks (ref_id, ord)` is UNIQUE;
-   we use `DELETE FROM chunks WHERE ref_id=$F AND ord=-1` followed
-   by `INSERT INTO chunks ...`. `ON DELETE CASCADE` clears the
-   stale `chunk_embeddings` row; new `chunk_id` has no embedding
-   row → derived queue re-embeds on next pass.
+3. **Re-emit `card_combined`** as the concatenation
+   `<title> [primary=<cite_key>; via=<cite_keys…>]`. `chunks
+   (ref_id, ord)` is UNIQUE, so use
+   `DELETE FROM chunks WHERE ref_id=$F AND ord=-1` then
+   `INSERT INTO chunks …`. `ON DELETE CASCADE` clears the stale
+   `chunk_embeddings` row; new `chunk_id` has no embedding row →
+   derived queue re-embeds on next pass.
 
 > **Append-only contract on `chunks`:** chunks are append-only
-> except for `ord < 0` card variants written by registered
-> synthesis passes. The card re-emit is the *only* path that
-> mutates a chunk's text. Document this in `AGENTS.md` when this
-> ships.
+> except for `ord < 0` card variants. The card re-emit is the
+> *only* path that mutates a chunk's text. Document this in
+> `AGENTS.md` when this ships.
 
-Synthesis is idempotent: re-running computes the same `primary` /
-`via` from the chain. The card_combined re-emit no-ops if the
-text didn't change (delete + re-insert with same text — `chunk_id`
-churns but is invisible to consumers).
+The snapshot pass is **pure text concat plus a DB write** — no
+LLM call, no rewrite, no enrichment. Idempotent: re-running on
+an established finding computes the same `primary` / `via` from
+the chain and is a no-op write on `card_combined` if text matches.
+The author's original `refs.title` and `meta.scope` are preserved
+verbatim from `put()` time.
 
 ### Re-enqueue on chunk arrival
 
 Once a stub gets its PDF and chunks land, findings that were
 waiting on it should resume. **Polling, no triggers.**
 
-The chase handler's claim query treats `state='waiting_pdf'` rows
-as still claimable:
+The chase claim query selects on `STATUS:tracing` only (see the
+SQL in §"`run_finding_chase_pass`" above). When the worker hits a
+frontier whose target ref is a stub (`pdf_sha256 IS NULL`), it
+**does nothing** that pass and leaves the finding `STATUS:tracing`.
+The next pass re-tries; if the stub has chunks by then, advancement
+resumes. No queue state, no "waiting" flag.
 
-```sql
-... LEFT JOIN ref_artifacts o
-       ON o.ref_id = r.ref_id AND o.artifact = 'chase_citation'
- WHERE (o.ref_id IS NULL                          -- never run
-    OR  o.payload->>'state' = 'waiting_pdf')      -- waiting on stub
-   AND r.kind = 'finding'
-   AND r.deleted_at IS NULL
-```
-
-When a stub gets chunks, the next pass's chase re-runs on the
-dependent finding and advances. Polling cost is bounded by
-(findings in flight) × (handler interval), measured in hundreds
-not millions.
+Cost: each `STATUS:tracing` finding is re-examined every pass even
+when its stub is still pending. With a `--once` cadence per worker
+run, and findings in flight bounded by hundreds (in any realistic
+corpus), this is negligible. If it ever bites, add an exponential
+backoff on `meta.last_pass_at`.
 
 ### Stub upgrade (multi-hash refs)
 
@@ -585,25 +661,21 @@ that gets retracted before its PDF arrives can carry
 `STATUS:retracted` freely (no `STATUS:awaiting_pdf` competing
 for the slot).
 
-### `ResolveCitationHandler` — enrich stubs in the background
+### Stub enrichment — deferred
 
-Separate, opt-in handler. The chase populates the *minimum* needed
-for identity (one S2 call, set title + DOI + year). The resolve
-handler enriches a stub more thoroughly: full authors list,
-abstract, citation count, S2 references list, etc.
+Earlier drafts proposed a separate `ResolveCitationHandler`
+artifact to enrich stub refs in the background (full authors
+list, abstract, citation count). Path B drops this entirely.
+The chase populates the minimum needed for identity (one S2 call,
+`title + DOI + year`) at stub-creation time; anything richer waits
+for the actual PDF to land, at which point `precis_add` fills the
+canonical metadata from CrossRef + embedded metadata more reliably
+than S2 would.
 
-Claim shape:
-```sql
-... FROM refs r LEFT JOIN ref_artifacts o
-    ON o.ref_id = r.ref_id AND o.artifact = 'resolve_citation:s2'
-   WHERE o.ref_id IS NULL
-     AND r.pdf_sha256 IS NULL
-     AND r.deleted_at IS NULL
-```
-
-Stops itself once the PDF lands (at which point `precis_add` fills
-the same fields from CrossRef + embedded metadata, more reliably
-than S2).
+If a real need for background enrichment surfaces later, register
+a new artifact in `artifact_kinds(slug='resolve_citation:s2')`
+(already seeded, dormant) and write a sibling worker — but defer
+until measured.
 
 ## CLI / MCP surface
 
@@ -615,23 +687,25 @@ Minimum-change principle: piggyback on the seven-verb surface.
 put(kind='finding',
     title='gate-bias 2.4 kV / 30 s on Si/SiO2',
     body='Device prep: 2.4 kV applied across the 50 nm gate oxide '
-         'for 30 s.',
-    context='Cu top contact (sputtered), N2 ambient, room temp, '
-            'planar MOSCAP geometry.',
+         'for 30 s on Si/SiO2 MOSCAPs with a Cu top contact '
+         '(sputtered), N2 ambient, room temp, planar geometry.',
     scope={'electrode':'Cu','ambient':'N2','technique':'DC ramp',
            'geometry':'planar','substrate':'Si/SiO2'},
     cited_in='miller23a#42')
-    → creates finding ref, body + context chunks, initial
-      `derived-from` link to miller23a chunk:42, tag STATUS:tracing,
+    → creates finding ref, one finding_body chunk (claim + setup
+      as prose), initial `derived-from` link to miller23a chunk:42,
+      meta.chain = [{ref_id: miller2020, chunk_id: <42>}],
+      tag STATUS:tracing,
       returns pub_id (e.g. 'ab12c3')
 ```
 
 `title` is the short claim title (one line, embeddable). `body` is
-the claim text. `context` is the setup envelope (also a chunk).
-`scope` is the structured slice (JSONB, used for filtering).
-`cited_in` is the starting frontier of the chase. The finding is
-**not yet usable** for `precis resolve` substitution — it's
-`STATUS:tracing` until established.
+the claim text *plus* setup envelope as flowing prose (one chunk;
+no separate `context=` argument). `scope` is the structured slice
+of the same envelope in JSONB form, used for filtering and for
+two-agents-collapse dedup. `cited_in` is the starting frontier of
+the chase. The finding is **not yet usable** for `precis resolve`
+substitution — it's `STATUS:tracing` until established.
 
 ### `search(kind='finding', q=...)` — find established facts
 
@@ -768,11 +842,13 @@ Counts established-only by intent — in-flight findings are noise.
 
 ### Worker CLI
 
-`precis worker` gains two `--only` choices: `chase` and `resolve`.
-Both run by default. `precis worker --status` iterates registered
-artifacts (`artifact_kinds` per ADR 0017) and prints `(total |
-ok | failed | pending)` per artifact — the two new handlers
-appear alongside existing `embed:bge-m3` / `summarize:rake-lemma`.
+`precis worker` gains one `--only` choice: `chase`. Runs by default
+alongside existing handlers. Following the sibling-worker pattern
+of `--only segments` (ADR 0018), the chase worker is registered
+directly in `precis/cli/worker.py` and does not flow through the
+`artifact_kinds` registry or `precis worker --status` aggregation.
+Operator-visible progress comes from `precis stats --findings`
+(counts by `STATUS:tracing|established|dead_chain|cycle|multi_candidate`).
 
 ### Stub visibility
 
@@ -1013,31 +1089,35 @@ Genuinely open:
 C-step naming convention matches `storage-v2.md` so commit
 messages and the plan stay in sync.
 
-- **C0** This design doc + ADR 0017 land. ✅ in flight
-- **C1** Migration `0004_finding_and_queue_family.sql`:
-  - `artifact_kinds` registry + initial inserts
-  - `ref_artifacts` table
-  - `kinds (finding, …)`
-  - `chunk_kinds (finding_body, finding_context)`
-  - `relations (misattributes, misattributed-by)`
-  - `actors (chase)`
-  - Update PUML diagram (`docs/design/schema-v2.puml`)
-- **C2** `precis.identity` extension —
-  `make_finding_paper_id(body_text, scope, initial_cite_pub_id)`
-  (deterministic; same skill input → same `pub_id`).
+- **C0** ✅ This design doc + ADR 0017 (with §4 marked superseded
+  by ADR 0018). Path-B revision: 2026-05-31.
+- **C1** ✅ Migration `0004_finding_and_queue_family.sql` — applied
+  2026-05-30. `chunk_kinds.finding_context`, the two
+  `artifact_kinds` seed rows (`chase_citation`,
+  `resolve_citation:s2`), and the `relations.misattributes` pair
+  are **dormant under Path B** (kept in place per forward-only
+  migration rule; harmless).
+- **C2** ✅ `precis.identity.make_finding_paper_id(body_text, scope,
+  initial_cite_pub_id)` — deterministic; same skill input →
+  same `pub_id`. 12 unit tests passing.
 - **C3** `precis.handlers.finding` — `NumericRefHandler` subclass,
-  `put(... title, body, context, scope, cited_in)`, no `cite`
-  support, card variants, search wiring with status post-filter.
-  `_parse_cited_in` reference implementation.
-- **C4** `WorkerHandler` refactor per ADR 0017 — descriptor-based
-  base class; existing `EmbedHandler` / `RakeLemmaHandler`
-  unchanged in behaviour; runner reads `artifact_kinds`.
-- **C5** `ResolveCitationHandler` — S2-backed, registered in
-  `precis.workers.runner`.
-- **C6** `ChaseCitationHandler` — chase logic, inline-citation
-  detection, mis-citation flagging, synthesis pass with LLM
-  canonicalisation. Largest step; gated on unit-test coverage of
-  every branch above.
+  `put(title, body, scope, cited_in)`, no `cite` support, card
+  variants, search wiring with status post-filter,
+  `_parse_cited_in` reference implementation. Models on
+  `CitationHandler` (shipped) for shape. ~150 LoC.
+- **C4** ~~`WorkerHandler` refactor~~ — **dropped per ADR 0018.**
+  The chase worker is a sibling function (see C5).
+- **C5** `precis.workers.chase.run_finding_chase_pass` — sibling
+  worker modelled on `precis.workers.segment_toc.run_paper_segments_pass`.
+  Includes: claim query (`STATUS:tracing` finder), frontier
+  selection from `meta.chain`, inline-citation detection (staged
+  regex → S2 → Marker references → multi-candidate),
+  stub creation with the `set_by='chase'` audit marker, cycle
+  protection via `meta.chain` membership check, dead-chain /
+  multi-candidate tagging, chain-snapshot pass at termination
+  (no LLM). Registered in `precis/cli/worker.py` under
+  `--only chase`. ~200 LoC.
+- **C6** ~~`ChaseCitationHandler`~~ — merged into C5.
 - **C7** `precis_add` stub-upgrade + multi-hash alias path —
   reuse the existing `PaperToWrite.pdf_sha256_aliases` machinery
   in `src/precis/ingest/db_writer.py:108-114, 390-400` (the
@@ -1048,16 +1128,21 @@ messages and the plan stay in sync.
   pdf_sha256 = ... WHERE ref_id = ...` and extract chunks for
   the new PDF. (No tag work — column predicate flips itself.)
   See §"Stub upgrade" for the rule.
-- **C8** `precis resolve` CLI subcommand + skill doc
-  (`finding-help.md`).
-- **C9** Deprecation pass — `paper.py` empty-search DOI hint
-  updated; `request_doi.md` retained with a deprecation banner.
-  `cite(kind='paper')` rooted/supported counts.
+- **C8** `precis resolve` CLI subcommand + `finding-help.md`
+  skill doc. UTF-8 + ASCII LaTeX render markers.
+- **C9** Light deprecation pass — `paper.py` empty-search DOI
+  hint suggests `put(kind='finding', ...)` (plus the existing
+  citation/bibliography surfaces). `request_doi.md` retained
+  with a deprecation banner. A "findings rooted/supported here"
+  line on `get(kind='paper', view='bibliography')` is opt-in:
+  fold only if the existing bibliography view feels too narrow
+  once findings start landing.
 - **C10** CHANGELOG entry + minor version bump. README updated
-  with the `--only chase` / `--only resolve` worker flags.
+  with the `--only chase` worker flag and the `precis resolve`
+  command.
 
-Each step ships its own commit with tests. C1 runs
-`precis migrate --dry-run` against a fresh DB.
+Each step ships its own commit with tests. C1 ran
+`precis migrate --dry-run` against the live DB (verified ✅).
 
 ## Risk
 
@@ -1092,18 +1177,14 @@ Each step ships its own commit with tests. C1 runs
 
 ## Definition of done
 
-- [ ] `0004_finding_and_queue_family.sql` applies cleanly to a
-      fresh DB; PUML diagram updated.
-- [ ] `artifact_kinds` registry seeded with `embed:bge-m3`,
-      `summarize:rake-lemma`, `chase_citation`,
-      `resolve_citation:s2`. (Retraction work is owned by the
-      shipped provenance kind, not a queue artifact.)
-- [ ] `WorkerHandler` refactor preserves behaviour for
-      `EmbedHandler` / `RakeLemmaHandler` (existing tests
-      unchanged).
-- [ ] `put(kind='finding', ...)` creates ref + body chunk +
-      context chunk + initial `derived-from` link in one
-      transaction.
+- [x] `0004_finding_and_queue_family.sql` applied to live DB
+      (`9d7e85f170f7` checksum). Vocabulary present and dormant
+      where Path B doesn't consume it (`chunk_kinds.finding_context`,
+      two `artifact_kinds` seed rows, `relations.misattributes` pair).
+- [x] `make_finding_paper_id` shipped with 12 tests (C2).
+- [ ] `put(kind='finding', ...)` creates ref + one `finding_body`
+      chunk (claim + setup as prose) + initial `derived-from`
+      link in one transaction.
 - [ ] `precis worker --only chase` advances findings by one hop
       per pass; `--once` mode is deterministic for the test suite.
 - [ ] Stubs are identified by `pdf_sha256 IS NULL` (no tag).
@@ -1115,20 +1196,18 @@ Each step ships its own commit with tests. C1 runs
       `:established` by default, TOON shape `id | title | setup
       | primary_cite`.
 - [ ] `get(kind='finding', id=...)` renders the begat chain plus
-      any misattribution notes.
+      any user-curated misattribution links on the chain.
 - [ ] `cite(kind='finding', ...)` raises "kind does not support
       cite".
-- [ ] `cite(kind='paper', ...)` includes a `findings: N rooted, M
-      supported` line.
 - [ ] `precis resolve` substitutes established findings;
       `--strict` exits non-zero on in-flight; LaTeX output uses
       UTF-8 by default with ASCII fallback.
-- [ ] `precis worker --status` shows the two new artifacts
-      (`chase_citation`, `resolve_citation:s2`).
-- [ ] Mis-citation links written by the chase carry severity +
-      diff in `meta`.
+- [ ] `precis stats --findings` summarises counts per `STATUS:`
+      value; `precis stats --stubs` summarises stub backlog.
 - [ ] `finding-help` skill installed under
       `src/precis/data/skills/`.
-- [ ] Tests cover terminal, waiting, hop, cycle, dead-chain,
-      multi-candidate, mis-citation, synthesis-card-re-emit paths.
+- [ ] Tests cover: terminal, stub-waiting (does-nothing pass),
+      hop, cycle (revisit), dead-chain (no inline cite / no
+      external id / target deleted), multi-candidate, card re-emit
+      at chain termination.
 - [ ] CHANGELOG entry + minor version bump.

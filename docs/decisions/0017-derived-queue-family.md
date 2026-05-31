@@ -1,14 +1,23 @@
 # ADR 0017 — Derived-queue family (`*_artifacts` substrate + `artifact_kinds` registry)
 
-- **Status**: accepted (2026-05-30)
+- **Status**: accepted (2026-05-30), **§4 (WorkerHandler refactor)
+  superseded by [ADR 0018](./0018-persistent-discovery-layer.md)
+  §"Worker"** (2026-05-31)
 - **Deciders**: Reto + agent
 - **Extends**: [ADR 0007 — Derived queue, no `block_jobs`
   table](./0007-derived-queue-no-block-jobs.md). 0007 established
   the pattern for chunk-level *typed* derived state
   (`chunk_embeddings`, `chunk_summaries`). This ADR generalises
   the pattern into a *family* covering untyped per-ref / per-link /
-  per-pdf derived state, formalises a registry table, and pins the
-  WorkerHandler refactor.
+  per-pdf derived state and formalises a registry table.
+- **Superseded portions**: §4 originally proposed parameterising
+  `WorkerHandler` on five descriptors so chunk-level and ref-level
+  workers shared one base class. ADR 0018 ships the first ref-level
+  worker (`run_paper_segments_pass`) as a *sibling* function
+  instead, and explicitly defers extracting a shared
+  `RefWorkerHandler` base until a third ref-level user exists. The
+  substrate tables (`ref_artifacts`, `artifact_kinds`) and the
+  storage decisions in §§1–3 are unaffected.
 - **Triggered by**:
   [`docs/design/finding-chase.md`](../design/finding-chase.md) —
   the citation-chase work needs a per-ref output relation for
@@ -171,7 +180,19 @@ FKs, three slug spaces — but the slugs are aligned by convention
 (`embed:bge-m3` in `artifact_kinds` corresponds to `bge-m3` in
 `embedders`).
 
-### 4. `WorkerHandler` parameterised on five descriptors
+### 4. `WorkerHandler` parameterised on five descriptors — SUPERSEDED
+
+> **Superseded by [ADR 0018](./0018-persistent-discovery-layer.md)
+> §"Worker":** ref-level workers ship as sibling functions
+> (`precis.workers.segment_toc.run_paper_segments_pass` is the
+> first example) rather than subclasses of a parameterised base
+> class. The rationale: folding ref-level into the chunk-keyed
+> base would force polymorphism over the claim shape, and the
+> chunk-level base is already wide. A shared `RefWorkerHandler`
+> base is worth extracting once a third ref-level worker shows up;
+> until then the duplication is small enough to leave inline.
+>
+> The original proposal below is preserved for context only.
 
 ```python
 class WorkerHandler(ABC):
