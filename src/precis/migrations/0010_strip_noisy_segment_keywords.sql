@@ -14,7 +14,9 @@
 -- regenerate richer keywords from the now-corrected chunk_kind
 -- labelling — but this strips the visible noise immediately.
 
-BEGIN;
+-- (No BEGIN/COMMIT — precis migrate wraps each migration in its own
+-- transaction. Explicit blocks here trigger
+-- ``InvalidSavepointSpecification`` on commit.)
 
 -- 1. Filter the JSONB ``keywords`` array.
 UPDATE ref_segments
@@ -53,5 +55,3 @@ UPDATE ref_segments
        SELECT 1 FROM unnest(forms) f
        WHERE lower(f) ~ '^(na )*na$' OR length(f) = 1
    );
-
-COMMIT;
