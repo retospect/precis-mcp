@@ -85,7 +85,14 @@ FROM deps AS models
 # surya reads MODEL_CACHE_DIR directly off the env via pydantic-settings
 # (see surya/settings.py: `MODEL_CACHE_DIR: str = ...`).
 ENV HF_HOME=/opt/precis/models/hf \
-    MODEL_CACHE_DIR=/opt/precis/models/datalab/models
+    MODEL_CACHE_DIR=/opt/precis/models/datalab/models \
+    # transformers' from_dict path does `logger.info(f"Model config {config}")`.
+    # Formatting the config calls __repr__ → to_diff_dict → self.__class__()
+    # with no kwargs, which trips surya's SuryaOCRConfig.__init__ pop("encoder")
+    # and raises KeyError. Silencing the info log avoids the format call and
+    # the bake succeeds. The model itself loads fine at runtime where this log
+    # message isn't on the hot path.
+    TRANSFORMERS_VERBOSITY=error
 
 RUN mkdir -p "${HF_HOME}" "${MODEL_CACHE_DIR}" && \
     /opt/venv/bin/python -c \
