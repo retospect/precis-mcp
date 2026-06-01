@@ -116,7 +116,12 @@ _BLOCK_KIND_MAP: dict[str, str] = {
     "text": "paragraph",
     "paragraph": "paragraph",
     "list_item": "paragraph",
-    "table": "paragraph",
+    # ``table`` used to fall through to ``paragraph``, which made the
+    # summarize handler run RAKE on markdown table content and emit
+    # noise like ``"na na na na"`` for any table with empty cells (see
+    # the deng10 MTV-MOF paper, ord 28-29). Keep ``table`` as its own
+    # chunk_kind so summarize / future handlers can opt in or out.
+    "table": "table",
     "figure": "figure",
     "caption": "caption",
     "equation": "equation",

@@ -54,10 +54,14 @@ class RakeLemmaHandler(WorkerHandler):
 
     output_table: ClassVar[str] = "chunk_summaries"
     model_column: ClassVar[str] = "summarizer"
-    # RAKE on a citation list yields pure noise ("Smith Johnson",
-    # "Nature Chem", journal abbreviations). Filter references the
-    # same way the embedder does so card_keywords stays clean.
-    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references",)
+    # RAKE on non-prose content emits garbage:
+    #   * ``references`` — yields "Smith Johnson", "Nature Chem", and
+    #     other journal-abbreviation noise.
+    #   * ``table`` — markdown tables with empty cells produce things
+    #     like "na na na na" (see the deng10 MTV-MOF case study).
+    #     Table content is still searchable via tsvector + bge-m3; we
+    #     just skip the keyword summary.
+    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references", "table")
 
     def __init__(
         self,

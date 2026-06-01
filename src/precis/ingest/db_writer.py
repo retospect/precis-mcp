@@ -404,9 +404,26 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
             ("pdf_sha256", alias, ref_id, paper.provider),
         )
 
-    # 5. chunks rows
+    # 5. chunks rows — with text-hash dedup
+    #
+    # Marker occasionally emits two consecutive blocks with byte-identical
+    # text (tables on transition pages are the common trigger; see the
+    # deng10 MTV-MOF case where ord=28 and ord=29 had the same 1561-char
+    # table). The unique (ref_id, ord) constraint doesn't catch these
+    # because the ords differ. Skip on first-seen-wins so the corpus
+    # stays clean instead of inflating retrieval results with
+    # near-identical hits.
+    import hashlib
+
+    seen_text_hashes: set[str] = set()
     chunks_written = 0
+    chunks_skipped_dup = 0
     for chunk in paper.chunks:
+        text_hash = hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
+        if text_hash in seen_text_hashes:
+            chunks_skipped_dup += 1
+            continue
+        seen_text_hashes.add(text_hash)
         conn.execute(
             "INSERT INTO chunks "
             "(ref_id, set_by, ord, chunk_kind, text, section_path, "
