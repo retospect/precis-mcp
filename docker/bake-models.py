@@ -71,6 +71,45 @@ def _patch_surya_config() -> None:
     SuryaOCRConfig.__init__ = _patched_init  # type: ignore[method-assign]
 
 
+def _bake_bge_m3() -> None:
+    """Pre-fetch BAAI/bge-m3 with visible progress + per-shard timeout.
+
+    The previous approach of just calling ``SentenceTransformer('BAAI/bge-m3')``
+    used huggingface_hub's default downloader which prints no progress and
+    has no aggressive socket timeout. Docker builds hung for hours with
+    no visible activity. Using ``snapshot_download`` directly gives us:
+
+      * One progress bar per shard (visible in build logs)
+      * ``etag_timeout`` + per-file ``timeout`` so a stalled shard fails
+        fast and we can retry the layer instead of waiting forever
+      * ``max_workers > 1`` for parallel shard fetch
+
+    Once the cache is populated, the runtime
+    ``SentenceTransformer('BAAI/bge-m3')`` call resolves from the local
+    snapshot without touching the network at all.
+    """
+    import os
+
+    # Per-file socket timeout (sec). HF default is None = wait forever.
+    # 120 s lets a slow shard finish on a flaky connection but fails fast
+    # if the network is dead.
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+    # Show progress in the docker build log even when stdout isn't a TTY.
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(
+        repo_id="BAAI/bge-m3",
+        repo_type="model",
+        # Skip onnx + sentencepiece artefacts we don't need for the
+        # sentence-transformers path. Saves ~500 MB.
+        ignore_patterns=["onnx/*", "*.onnx", "*.onnx_data"],
+        max_workers=4,
+        etag_timeout=30,
+    )
+
+
 def main() -> None:
     _patch_get_text_config()
     _patch_surya_config()
@@ -80,7 +119,9 @@ def main() -> None:
 
     create_model_dict()
 
-    # BAAI/bge-m3 for chunk embeddings.
+    # BAAI/bge-m3 for chunk embeddings — pre-fetch with visible progress,
+    # then verify it loads through the sentence-transformers wrapper.
+    _bake_bge_m3()
     from sentence_transformers import SentenceTransformer
 
     SentenceTransformer("BAAI/bge-m3")
