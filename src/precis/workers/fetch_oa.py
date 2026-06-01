@@ -1,9 +1,24 @@
-"""run_oa_fetch_pass — sibling worker that fetches OA PDFs via Unpaywall.
+"""run_oa_fetch_pass — sibling worker that fetches OA PDFs.
 
 Closes the chase ↔ stub loop. The finding-chase worker creates
-stub paper refs (DOI known, ``pdf_sha256 IS NULL``); this worker
-walks the stub backlog and asks Unpaywall whether an open-access
-copy exists. When one does, the PDF lands in the watch inbox →
+stub paper refs (identifiers known, ``pdf_sha256 IS NULL``); this
+worker walks the stub backlog and asks **three OA sources in
+cascade** whether an open-access copy exists:
+
+1. **Unpaywall** — aggregator of 30+ OA sources, by DOI. Free;
+   TOS requires an email parameter.
+2. **arXiv** — direct PDF download by arXiv ID. Free; no key.
+3. **Semantic Scholar** — ``openAccessPdf`` field on the paper
+   object, by DOI / arXiv / S2 id. Free; no key for low volume.
+
+When the first source yields a PDF the cascade stops; later
+sources only run when earlier ones returned ``no_oa_version`` or
+``fetch_failed``. Each attempt writes its own ``ref_events`` row
+(``source='fetcher:unpaywall'`` / ``'fetcher:arxiv'`` /
+``'fetcher:s2'``) so the audit trail shows what was tried and
+what worked.
+
+When a PDF lands, it goes into the watch inbox →
 ``precis watch`` triggers ``precis_add`` → C7's
 ``register_aliases_and_maybe_upgrade`` promotes the stub →
 the chase resumes on the next pass.
@@ -12,24 +27,24 @@ Per ADR 0018 this is a sibling worker (plain function), not a
 ``WorkerHandler`` subclass — same pattern as
 ``precis.workers.segment_toc`` and ``precis.workers.chase``.
 
-Cost model: Unpaywall is **free** and **OA-only** by construction.
-Their TOS requires an email parameter for rate-limit identification;
-the worker refuses to start without ``PRECIS_UNPAYWALL_EMAIL`` set
-(or the ``email=`` kwarg explicit). Per-pass ``--limit`` caps the
-call count; 429s back off via tenacity.
-
-Audit: every attempt writes a ``ref_events`` row under
-``source='fetcher:unpaywall'`` with one of:
+Event vocabulary (same shape across all three sources):
 
 - ``fetch_ok``       — PDF downloaded; payload carries url + bytes + license
-- ``no_oa_version``  — Unpaywall says no OA copy exists
-- ``fetch_failed``   — Unpaywall returned, URL didn't download (404 etc.)
-- ``rate_limited``   — Unpaywall returned 429; backed off, will retry
-- ``api_error``      — Unpaywall returned 5xx / unexpected JSON
-- ``invalid_doi``    — DOI format Unpaywall rejected (400)
+- ``no_oa_version``  — source confirmed no OA copy
+- ``fetch_failed``   — source returned a URL but download failed
+- ``rate_limited``   — 429 / equivalent throttle
+- ``api_error``      — 5xx / network / unexpected JSON
+- ``invalid_identifier`` — the identifier failed format validation
+- ``identifier_missing`` — the ref had no usable identifier for this source
 
-``precis stubs`` (CLI subcommand, separate step) reads the latest
-event per stub to render the backlog.
+``precis stubs`` (CLI subcommand, Step 4) reads the latest event
+per stub to render the backlog.
+
+Pre-existing relative: ``scripts/_doilist.py`` (``doilist scan
+--download``) is an *operator-facing* CLI that drives Unpaywall
+fetches from a curated ``dois_to_get.md`` file. Different starting
+point (file-driven, not stub-driven); different output (``downloads/``
+dir, no DB writes); both can coexist.
 """
 
 from __future__ import annotations
@@ -54,7 +69,17 @@ from tenacity import (
 log = logging.getLogger(__name__)
 
 
-_SOURCE = "fetcher:unpaywall"
+_SOURCE_UNPAYWALL = "fetcher:unpaywall"
+_SOURCE_ARXIV = "fetcher:arxiv"
+_SOURCE_S2 = "fetcher:s2"
+
+# Convention: when this module says "source" without a qualifier
+# (e.g. the retry-window predicate), Unpaywall is the canonical
+# representative. The retry window applies across all providers in
+# practice — if one source said "no_oa_version" 6 hours ago, the
+# others probably did too. Keeping the predicate per-source would
+# triple the API budget without much coverage gain.
+_SOURCE = _SOURCE_UNPAYWALL
 
 # Unpaywall public API root. Free; requires ``email=`` per their TOS.
 # https://unpaywall.org/products/api
@@ -77,6 +102,11 @@ _RETRY_WINDOW_HOURS = 24
 # before paying for an HTTP roundtrip.
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
 
+# arXiv id shape. Accepts both new-style (``2401.12345`` /
+# ``2401.12345v2``) and old-style (``hep-th/9901001``). The
+# bare-id regex below is permissive — arXiv normalises its URL.
+_ARXIV_ID_RE = re.compile(r"^([a-z\-]+/)?\d{4}\.?\d{4,5}(v\d+)?$|^[a-z\-]+/\d{7}(v\d+)?$")
+
 
 # ── Result type ────────────────────────────────────────────────────
 
@@ -94,31 +124,55 @@ class FetchOutcome:
 # ── Claim query ────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class StubRef:
+    """Stub identifiers the cascade tries each source against.
+
+    At least one of ``doi`` / ``arxiv`` / ``s2_id`` is non-None
+    by construction of the claim query — a stub with no usable
+    identifier is excluded.
+    """
+
+    ref_id: int
+    doi: str | None
+    arxiv: str | None
+    s2_id: str | None
+    cite_key: str | None
+
+
 def claim_stubs_to_fetch(
     conn: Connection,
     *,
     limit: int,
     retry_after_hours: int = _RETRY_WINDOW_HOURS,
-) -> list[tuple[int, str]]:
-    """Lock and return up to ``limit`` stub refs needing an Unpaywall poke.
+) -> list[StubRef]:
+    """Lock and return up to ``limit`` stubs needing an OA fetch attempt.
 
-    Returns ``[(ref_id, doi), ...]`` newest-stub-first (by ref_id,
-    which monotonically increases). Excludes stubs already tried in
-    the last ``retry_after_hours`` so a transient failure doesn't
-    burn the API budget on retry-storms.
+    A stub qualifies when ``refs.pdf_sha256 IS NULL`` AND at least one
+    of {DOI, arXiv, S2 id} is registered. Excludes stubs tried by the
+    canonical ``fetcher:unpaywall`` source within ``retry_after_hours``
+    — the retry window applies cross-source by convention (if one
+    source had nothing N hours ago, the others probably won't either).
 
-    ``FOR UPDATE OF r SKIP LOCKED`` lets multiple fetchers run in
-    parallel without re-queuing the same DOI.
+    Returns newest-stub-first (``ORDER BY ref_id DESC``) so the chase
+    bottleneck shows up promptly when a chain creates many stubs.
+    ``FOR UPDATE OF r SKIP LOCKED`` lets multiple fetcher workers run
+    in parallel.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
     rows = conn.execute(
         """
-        SELECT r.ref_id, ri.id_value AS doi
+        SELECT r.ref_id,
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'doi')      AS doi,
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'arxiv')    AS arxiv,
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 's2')       AS s2_id,
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key
           FROM refs r
-          JOIN ref_identifiers ri
-            ON ri.ref_id = r.ref_id
-           AND ri.id_kind = 'doi'
           LEFT JOIN LATERAL (
                 SELECT 1 FROM ref_events e
                  WHERE e.ref_id = r.ref_id
@@ -130,60 +184,75 @@ def claim_stubs_to_fetch(
            AND r.pdf_sha256 IS NULL
            AND r.deleted_at IS NULL
            AND recent_event IS NULL
+           AND EXISTS (
+                 SELECT 1 FROM ref_identifiers ri
+                  WHERE ri.ref_id = r.ref_id
+                    AND ri.id_kind IN ('doi', 'arxiv', 's2')
+           )
          ORDER BY r.ref_id DESC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
         (_SOURCE, str(retry_after_hours), limit),
     ).fetchall()
-    return [(int(r[0]), str(r[1])) for r in rows]
+    return [
+        StubRef(
+            ref_id=int(r[0]),
+            doi=r[1],
+            arxiv=r[2],
+            s2_id=r[3],
+            cite_key=r[4],
+        )
+        for r in rows
+    ]
 
 
 # ── Per-stub logic ─────────────────────────────────────────────────
 
 
-def fetch_one(
+def _try_unpaywall(
+    stub: StubRef,
     *,
-    ref_id: int,
-    doi: str,
     inbox_dir: Path,
     email: str,
-    cite_key: str | None = None,
-) -> FetchOutcome:
-    """Try Unpaywall for one stub; download if OA URL is available.
+) -> FetchOutcome | None:
+    """Try Unpaywall for one stub.
 
-    Pure function — DB writes happen in the runner so this can be
-    called from tests / ad-hoc scripts. Returns a :class:`FetchOutcome`
-    suitable for direct ``store.append_event(...)``.
+    Returns ``None`` when there's no DOI to try (the cascade falls
+    through to the next provider). Returns a :class:`FetchOutcome`
+    otherwise — caller writes the corresponding event and stops the
+    cascade on ``fetch_ok``.
     """
+    if not stub.doi:
+        return None  # no DOI → not Unpaywall's problem
     t0 = time.perf_counter()
 
-    if not _DOI_RE.match(doi):
+    if not _DOI_RE.match(stub.doi):
         return FetchOutcome(
-            event="invalid_doi",
-            payload={"doi": doi},
-            duration_ms=int((time.perf_counter() - t0) * 1000),
+            event="invalid_identifier",
+            payload={"doi": stub.doi},
+            duration_ms=_ms(t0),
         )
 
     try:
-        data = _query_unpaywall(doi, email=email)
+        data = _query_unpaywall(stub.doi, email=email)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 429:
             return FetchOutcome(
                 event="rate_limited",
-                payload={"doi": doi, "retry_after": exc.response.headers.get("retry-after")},
-                duration_ms=int((time.perf_counter() - t0) * 1000),
+                payload={"doi": stub.doi, "retry_after": exc.response.headers.get("retry-after")},
+                duration_ms=_ms(t0),
             )
         return FetchOutcome(
             event="api_error",
-            payload={"doi": doi, "status": exc.response.status_code},
-            duration_ms=int((time.perf_counter() - t0) * 1000),
+            payload={"doi": stub.doi, "status": exc.response.status_code},
+            duration_ms=_ms(t0),
         )
     except Exception as exc:
         return FetchOutcome(
             event="api_error",
-            payload={"doi": doi, "error": str(exc)[:200]},
-            duration_ms=int((time.perf_counter() - t0) * 1000),
+            payload={"doi": stub.doi, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
         )
 
     oa = (data or {}).get("best_oa_location") or {}
@@ -192,15 +261,14 @@ def fetch_one(
         return FetchOutcome(
             event="no_oa_version",
             payload={
-                "doi": doi,
+                "doi": stub.doi,
                 "is_oa": (data or {}).get("is_oa"),
                 "oa_status": (data or {}).get("oa_status"),
             },
-            duration_ms=int((time.perf_counter() - t0) * 1000),
+            duration_ms=_ms(t0),
         )
 
-    # Download to the inbox so the watcher picks it up.
-    filename = (cite_key or _doi_to_slug(doi)) + ".pdf"
+    filename = _stub_filename(stub) + ".pdf"
     target = inbox_dir / filename
     inbox_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -208,14 +276,14 @@ def fetch_one(
     except Exception as exc:
         return FetchOutcome(
             event="fetch_failed",
-            payload={"doi": doi, "url": url, "error": str(exc)[:200]},
-            duration_ms=int((time.perf_counter() - t0) * 1000),
+            payload={"doi": stub.doi, "url": url, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
         )
 
     return FetchOutcome(
         event="fetch_ok",
         payload={
-            "doi": doi,
+            "doi": stub.doi,
             "url": url,
             "size_bytes": size_bytes,
             "license": oa.get("license"),
@@ -223,7 +291,130 @@ def fetch_one(
             "version": oa.get("version"),
             "filename": filename,
         },
-        duration_ms=int((time.perf_counter() - t0) * 1000),
+        duration_ms=_ms(t0),
+    )
+
+
+def _try_arxiv(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+) -> FetchOutcome | None:
+    """Try direct arXiv PDF fetch for one stub.
+
+    arXiv hosts every preprint as a PDF at a deterministic URL:
+    ``https://arxiv.org/pdf/<id>.pdf`` (also accepts versioned ids
+    like ``2401.12345v2``). No API key, no metadata round-trip,
+    no rate-limit issues for occasional fetches.
+
+    Returns ``None`` when the stub has no arXiv id (cascade falls
+    through). When the id is present, attempts download and writes
+    the outcome.
+    """
+    if not stub.arxiv:
+        return None
+    t0 = time.perf_counter()
+    arxiv_id = stub.arxiv.strip()
+    # Accept ``arxiv:`` prefixed values defensively.
+    arxiv_id = arxiv_id.removeprefix("arxiv:")
+    if not _ARXIV_ID_RE.match(arxiv_id):
+        return FetchOutcome(
+            event="invalid_identifier",
+            payload={"arxiv": stub.arxiv},
+            duration_ms=_ms(t0),
+        )
+
+    url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+    filename = _stub_filename(stub) + ".pdf"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        size_bytes = _download_pdf(url, target)
+    except Exception as exc:
+        return FetchOutcome(
+            event="fetch_failed",
+            payload={"arxiv": arxiv_id, "url": url, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    return FetchOutcome(
+        event="fetch_ok",
+        payload={
+            "arxiv": arxiv_id,
+            "url": url,
+            "size_bytes": size_bytes,
+            "license": "arxiv",  # whatever arXiv licence the author chose
+            "host_type": "preprint",
+            "filename": filename,
+        },
+        duration_ms=_ms(t0),
+    )
+
+
+def _try_s2(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+) -> FetchOutcome | None:
+    """Try Semantic Scholar's ``openAccessPdf`` for one stub.
+
+    Uses the existing :mod:`semanticscholar` client (already in
+    the dep tree via :mod:`precis.ingest.citations`). S2 indexes
+    OA PDFs across publishers + repositories with comparable
+    coverage to Unpaywall — useful as a fallback when Unpaywall
+    returns ``no_oa_version`` (the two sources don't agree 100%
+    on what's OA).
+
+    Identifier priority: DOI > arXiv > S2 id (any single one is
+    sufficient for ``get_paper``).
+    """
+    paper_id_for_s2 = None
+    if stub.doi:
+        paper_id_for_s2 = f"doi:{stub.doi}"
+    elif stub.arxiv:
+        paper_id_for_s2 = f"ARXIV:{stub.arxiv.removeprefix('arxiv:')}"
+    elif stub.s2_id:
+        paper_id_for_s2 = stub.s2_id
+    if paper_id_for_s2 is None:
+        return None
+
+    t0 = time.perf_counter()
+    try:
+        oa_url = _query_s2_openaccess(paper_id_for_s2)
+    except Exception as exc:
+        return FetchOutcome(
+            event="api_error",
+            payload={"paper_id": paper_id_for_s2, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+
+    if not oa_url:
+        return FetchOutcome(
+            event="no_oa_version",
+            payload={"paper_id": paper_id_for_s2},
+            duration_ms=_ms(t0),
+        )
+
+    filename = _stub_filename(stub) + ".pdf"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        size_bytes = _download_pdf(oa_url, target)
+    except Exception as exc:
+        return FetchOutcome(
+            event="fetch_failed",
+            payload={"paper_id": paper_id_for_s2, "url": oa_url, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    return FetchOutcome(
+        event="fetch_ok",
+        payload={
+            "paper_id": paper_id_for_s2,
+            "url": oa_url,
+            "size_bytes": size_bytes,
+            "host_type": "s2_openaccess",
+            "filename": filename,
+        },
+        duration_ms=_ms(t0),
     )
 
 
@@ -237,29 +428,30 @@ def run_oa_fetch_pass(
     inbox_dir: Path | str | None = None,
     email: str | None = None,
 ) -> dict[str, int]:
-    """Process up to ``limit`` stub refs through Unpaywall.
+    """Process up to ``limit`` stubs through the OA fetcher cascade.
 
-    Each stub is tried independently; failures are logged as events
-    but don't poison the batch. Returns the BatchResult shape:
-    ``{claimed, ok, failed}``. ``ok`` counts every non-exception
-    outcome (including ``no_oa_version`` — Unpaywall *did* respond
-    correctly); ``failed`` counts unhandled exceptions only.
+    Per stub: tries Unpaywall → arXiv → S2 in order. The cascade
+    stops at the first ``fetch_ok``; intermediate ``no_oa_version``
+    / ``fetch_failed`` outcomes still produce an audit event and
+    fall through to the next source. ``invalid_identifier`` /
+    ``identifier_missing`` outcomes also fall through.
 
-    ``email`` defaults to ``PRECIS_UNPAYWALL_EMAIL``. Refuses to
-    run without one — Unpaywall's TOS requires it.
+    Each stub is tried independently; an unhandled exception in
+    one provider logs ``api_error`` for that source and moves on
+    to the next. Returns the BatchResult shape: ``{claimed, ok,
+    failed}``. ``ok`` counts stubs the cascade processed without
+    a fatal exception (regardless of whether a PDF actually
+    landed); ``failed`` counts only unhandled exceptions that
+    escaped all three providers.
 
-    ``inbox_dir`` defaults to ``PRECIS_WATCH_INBOX`` (the env var
-    the watcher honours) or ``~/work/new_papers/_oa_fetched``.
+    ``email`` defaults to ``PRECIS_UNPAYWALL_EMAIL``. Without one,
+    Unpaywall is skipped (with an ``identifier_missing``-style
+    event) — arXiv and S2 still run.
+
+    ``inbox_dir`` defaults to ``PRECIS_WATCH_INBOX`` or
+    ``~/work/new_papers/_oa_fetched``.
     """
     email = email or os.environ.get("PRECIS_UNPAYWALL_EMAIL", "").strip()
-    if not email:
-        log.warning(
-            "fetch_oa: PRECIS_UNPAYWALL_EMAIL not set; skipping pass. "
-            "Unpaywall's TOS requires an email parameter — set the env "
-            "var or pass email= explicitly to enable fetching."
-        )
-        return {"claimed": 0, "ok": 0, "failed": 0}
-
     if inbox_dir is None:
         inbox_dir = (
             os.environ.get("PRECIS_WATCH_INBOX")
@@ -275,42 +467,61 @@ def run_oa_fetch_pass(
 
     ok = 0
     failed = 0
-    for ref_id, doi in stubs:
-        cite_key = _cite_key_for(store, ref_id)
+    for stub in stubs:
         try:
-            outcome = fetch_one(
-                ref_id=ref_id,
-                doi=doi,
-                inbox_dir=inbox_path,
-                email=email,
-                cite_key=cite_key,
-            )
-            store.append_event(
-                ref_id,
-                source=_SOURCE,
-                event=outcome.event,
-                payload=outcome.payload,
-                duration_ms=outcome.duration_ms,
-                cost_usd=outcome.cost_usd,
-            )
+            _run_cascade(store, stub, inbox_path, email)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             log.warning(
-                "fetch_oa: ref_id=%s doi=%s unhandled error: %s",
-                ref_id, doi, exc, exc_info=True,
+                "fetch_oa: ref_id=%s unhandled error: %s",
+                stub.ref_id, exc, exc_info=True,
             )
-            try:
-                store.append_event(
-                    ref_id,
-                    source=_SOURCE,
-                    event="api_error",
-                    payload={"doi": doi, "error": str(exc)[:200]},
-                )
-            except Exception:  # pragma: no cover
-                pass
             failed += 1
-
     return {"claimed": len(stubs), "ok": ok, "failed": failed}
+
+
+def _run_cascade(
+    store: Any, stub: StubRef, inbox_dir: Path, email: str
+) -> None:
+    """Walk providers in order; stop at first fetch_ok.
+
+    Records every attempted provider's outcome via append_event.
+    Email-less Unpaywall is silently skipped (the email gate is
+    enforced at the provider, not the cascade level, so arXiv +
+    S2 still run).
+    """
+    providers: list[tuple[str, Any]] = []
+    if email:
+        providers.append((_SOURCE_UNPAYWALL, lambda: _try_unpaywall(
+            stub, inbox_dir=inbox_dir, email=email
+        )))
+    providers.append((_SOURCE_ARXIV, lambda: _try_arxiv(stub, inbox_dir=inbox_dir)))
+    providers.append((_SOURCE_S2, lambda: _try_s2(stub, inbox_dir=inbox_dir)))
+
+    for source, runner in providers:
+        try:
+            outcome = runner()
+        except Exception as exc:
+            store.append_event(
+                stub.ref_id,
+                source=source,
+                event="api_error",
+                payload={"error": str(exc)[:200]},
+            )
+            continue
+        if outcome is None:
+            # No identifier for this source — silent skip; no event.
+            continue
+        store.append_event(
+            stub.ref_id,
+            source=source,
+            event=outcome.event,
+            payload=outcome.payload,
+            duration_ms=outcome.duration_ms,
+            cost_usd=outcome.cost_usd,
+        )
+        if outcome.event == "fetch_ok":
+            return
 
 
 # ── Internals ──────────────────────────────────────────────────────
@@ -345,43 +556,116 @@ def _download_pdf(url: str, target: Path) -> int:
     writes to ``<target>.part`` and renames on success so a crashed
     download doesn't leave a half-file the watcher would try to
     ingest.
+
+    Validates the first 5 bytes are ``%PDF-`` before keeping the
+    file — some publishers return HTML interstitial pages with 200
+    OK; saving those would poison the watcher (Marker would barf).
     """
     tmp = target.with_suffix(target.suffix + ".part")
     size = 0
-    with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_S, follow_redirects=True) as client:
+    head = b""
+    with httpx.Client(
+        timeout=_DOWNLOAD_TIMEOUT_S,
+        follow_redirects=True,
+        headers=_DOWNLOAD_HEADERS,
+    ) as client:
         with client.stream("GET", url) as resp:
             resp.raise_for_status()
             with tmp.open("wb") as fh:
                 for chunk in resp.iter_bytes(chunk_size=64 * 1024):
+                    if size == 0:
+                        head = chunk[:8]
                     fh.write(chunk)
                     size += len(chunk)
+    if not head.startswith(b"%PDF-"):
+        tmp.unlink(missing_ok=True)
+        raise ValueError(
+            f"response is not a PDF (got {size} bytes, head={head!r})"
+        )
     tmp.rename(target)
     return size
 
 
-def _doi_to_slug(doi: str) -> str:
-    """Sanitise a DOI into a filename-safe token.
+# Polite UA — publishers (PeerJ, arXiv) sometimes 403 the default
+# httpx UA. Identify ourselves and include the contact env when
+# present so an annoyed sysadmin can ping us rather than blocking.
+_USER_AGENT = (
+    "precis-mcp/8.0 (+https://github.com/retostamm/precis-mcp;"
+    " mailto:{email})"
+)
 
-    Fallback when we don't have a cite_key yet (e.g. stub minted by
-    the chase before identity resolution finishes).
+
+def _user_agent_header(email: str | None = None) -> str:
+    return _USER_AGENT.format(
+        email=email or os.environ.get("PRECIS_UNPAYWALL_EMAIL", "noreply@example.com")
+    )
+
+
+_DOWNLOAD_HEADERS = {
+    "User-Agent": _user_agent_header(),
+    # Some hosts insist on an Accept header that names PDFs explicitly.
+    "Accept": "application/pdf,*/*;q=0.8",
+}
+
+
+def _ms(t0: float) -> int:
+    """Helper: monotonic millisecond delta from ``t0``."""
+    return int((time.perf_counter() - t0) * 1000)
+
+
+def _stub_filename(stub: StubRef) -> str:
+    """Filename stem for the downloaded PDF.
+
+    Prefer the cite_key (clean, human-readable); fall back to a
+    DOI- or arXiv-derived slug; last resort, ``ref_<id>``.
     """
-    return re.sub(r"[^a-zA-Z0-9._-]", "_", doi.lower())[:80]
+    if stub.cite_key:
+        return _sanitise(stub.cite_key)
+    if stub.doi:
+        return _sanitise(stub.doi)
+    if stub.arxiv:
+        return _sanitise(stub.arxiv.removeprefix("arxiv:"))
+    return f"ref_{stub.ref_id}"
 
 
-def _cite_key_for(store: Any, ref_id: int) -> str | None:
-    """Look up the ref's cite_key for naming the downloaded file."""
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT id_value FROM ref_identifiers "
-            "WHERE ref_id = %s AND id_kind = 'cite_key'",
-            (ref_id,),
-        ).fetchone()
-    return str(row[0]) if row is not None else None
+def _sanitise(s: str) -> str:
+    """Strip a string to filename-safe characters, capped at 80 chars."""
+    return re.sub(r"[^a-zA-Z0-9._-]", "_", s.lower())[:80]
+
+
+def _query_s2_openaccess(paper_id: str) -> str | None:
+    """Look up the ``openAccessPdf`` URL for a paper via Semantic Scholar.
+
+    Uses the existing :mod:`semanticscholar` client (no API key
+    needed for low volume). Returns the URL or ``None`` when S2
+    has no OA PDF on file.
+
+    Lifted up here rather than added to
+    :mod:`precis.ingest.semantic_scholar` because the existing
+    module's ``_normalize`` shape doesn't carry the
+    ``openAccessPdf`` field — splitting the fetcher's S2 surface
+    keeps the existing metadata-lookup path untouched.
+    """
+    import os as _os
+
+    from semanticscholar import SemanticScholar
+
+    api_key = _os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
+    sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
+    paper = sch.get_paper(paper_id, fields=["openAccessPdf"])
+    if not paper:
+        return None
+    oa = getattr(paper, "openAccessPdf", None) or {}
+    if isinstance(oa, dict):
+        url = oa.get("url")
+    else:
+        url = getattr(oa, "url", None)
+    return str(url) if url else None
 
 
 __all__ = [
     "FetchOutcome",
+    "StubRef",
     "claim_stubs_to_fetch",
-    "fetch_one",
     "run_oa_fetch_pass",
 ]

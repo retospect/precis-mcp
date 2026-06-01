@@ -366,23 +366,36 @@ class PaperHandler(Handler):
             # DOI-shaped queries that miss are the dominant friction
             # case: agents fire 3-5 keyword variants trying to find a
             # paper that isn't in the corpus. Detect the DOI shape and
-            # route directly to the request_doi.md fetch pathway
-            # instead of suggesting a wider search that will also miss.
+            # route to the structured stub-fetch pathway (finding +
+            # ``precis worker --only fetch``) instead of suggesting a
+            # wider search that will also miss.
             body = f"no paper blocks match {q!r}"
             doi_match = _DOI_RE.match(q.strip())
             if doi_match is not None:
                 doi = doi_match.group(1)
                 body += "\n\nThis DOI is not in the local corpus. "
                 body += (
-                    "To request external retrieval (perplexity / fetch "
-                    "pipeline), append it to request_doi.md:"
+                    "Pull it into the corpus via the finding-chase + "
+                    "Unpaywall/arXiv/S2 fetcher pipeline:"
                 )
                 body += render_next_section(
                     [
                         (
+                            "put(kind='finding', title='<short claim>', "
+                            f"body='<claim + setup>', cited_in='doi:{doi}', "
+                            "scope={'...': '...'})",
+                            "register the DOI as a chase target; the "
+                            "fetcher will try Unpaywall/arXiv/S2 next pass",
+                        ),
+                        (
+                            "precis stubs --awaiting",
+                            "list stub backlog the fetcher will work on",
+                        ),
+                        (
                             "edit(kind='plaintext', id='./request_doi.md', "
                             f"mode='append', text='{doi} - <one-line reason>\\n')",
-                            "queue this DOI for external fetch",
+                            "(legacy) append to the plaintext queue — "
+                            "deprecated; use put(kind='finding') above",
                         ),
                     ]
                 )
@@ -1601,10 +1614,13 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
         raise NotFound(
             f"paper with DOI {doi!r} not ingested",
             next=(
-                f"edit(kind='plaintext', id='./request_doi.md', mode='append', "
-                f"text='{doi} - <one-line reason>\\n')  "
-                "to queue external fetch (perplexity / fetch pipeline); "
-                "or search(kind='paper', q='<title>') for an existing slug"
+                f"put(kind='finding', title='<short claim>', body='<...>', "
+                f"cited_in='doi:{doi}', scope={{...}})  "
+                "to register the DOI as a chase target; the fetcher "
+                "(Unpaywall/arXiv/S2) will try to pull the PDF next "
+                "pass. Alternatively: search(kind='paper', q='<title>') "
+                "for an existing slug. Legacy: append to "
+                f"./request_doi.md (deprecated)."
             ),
         )
     return slug + selector

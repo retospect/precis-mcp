@@ -34,8 +34,14 @@ DOI suffixes can legally contain `/`, so the parser can't tell
 a DOI: `get(kind='paper', id='10.1038/nature10352', view='toc')`.
 
 When a DOI lookup misses, the error response points you at the
-sortie's `request_doi.md` queue (perplexity / fetch pipeline)
-rather than burning time on keyword searches that will also miss.
+**finding-chase + fetcher pipeline**: register the DOI as a chase
+target via `put(kind='finding', cited_in='doi:<id>', ...)`, then
+`precis worker --only fetch` tries Unpaywall + arXiv + S2 in
+cascade for the PDF on its next pass. See `precis-finding-help`
+for the full flow. The legacy `request_doi.md` plaintext queue
+still works but is being phased out — prefer the structured
+finding path so the agent gets back a `pub_id` placeholder to
+drop in the draft.
 
 ## Find
 

@@ -6,6 +6,143 @@ PyPI is `5.2.6`; everything below `## v6.0.0` represents the
 post-merge state. Phases pre-merge are kept here as historical
 context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
+## v8.1.0 — finding-chase + OA fetcher cascade + event log (2026-06-01)
+
+### Added
+
+- **New ref kind: `finding`** — chain head over a citation chase to
+  a primary source. A finding carries the claim (`finding_body`
+  chunk), the setup envelope (`refs.meta.scope` JSONB), and the
+  ordered hops of the chase chain (`refs.meta.chain`). The chase
+  worker walks the chain one hop per pass, terminating at a
+  primary measurement; the chain-snapshot pass populates
+  `meta.primary_cite_key` + `meta.via_cite_keys` and re-emits the
+  `card_combined` chunk via DELETE+INSERT so search picks up the
+  established phrasing.
+  - Determinism: `make_finding_paper_id(body, scope, cited_in)` →
+    `make_pub_id` produces a stable 6-char `pub_id` so two agents
+    creating the same finding collapse at the
+    `ref_identifiers (id_kind='pub_id')` UNIQUE constraint.
+  - **Setup-context awareness**: same number under different
+    setups → distinct findings. `meta.scope` is the structured
+    slice for filtering; the skill mandates `search` before `put`
+    keyed on `(claim, scope)`.
+  - **Not externally citable**: `cite(kind='finding', ...)` raises
+    `Unsupported`. The placeholder → primary substitution via
+    `precis resolve` is the only path findings reach published text.
+  - Migration `0004_finding_and_queue_family.sql` seeds the kind,
+    two `chunk_kinds` (`finding_body`, `finding_context` — the
+    latter dormant under Path B; setup is folded into body),
+    two relations (`misattributes`/`misattributed-by`), and one
+    actor (`chase`). Design: `docs/design/finding-chase.md`.
+- **`precis.workers.chase.run_finding_chase_pass`** — sibling
+  worker per ADR 0018 that advances `STATUS:tracing` findings
+  one hop per pass. Walks the source paper's `chunks` + S2
+  references list to detect inline cites; resolves each to a
+  ref_id (existing via `ref_identifiers`, or new chase-minted
+  stub when the cited paper isn't in the corpus yet). Cycle
+  protection via `meta.chain` membership. Per-pass outcome
+  (`advanced` / `terminated` / `dead_chain` / `multi_candidate` /
+  `cycle` / `waiting`) writes to the new `ref_events` table
+  (`source='chase'`). Wired into `precis worker --only chase`.
+- **LLM hooks via `precis.utils.claude_p`** — `claude -p`
+  subprocess wrapper (project-wide reusable utility). The chase
+  uses three default-off hooks gated by `--with-llm` or env
+  `PRECIS_CHASE_LLM=1`: `_disambiguate_candidates` (multi-cite
+  picker), `_locate_chunk_in_target` (ANN top-1 confirmation),
+  `_verify_support_with_caveats` (does this chunk support the
+  claim under the setup; captures caveats + cited-others).
+  Deterministic chase is fully functional without LLM; hooks
+  improve quality where they fire.
+- **ADR 0017 — Derived-queue family** — formalises the
+  `*_artifacts` substrate + `artifact_kinds` registry as a
+  cross-cutting pattern. Migration `0004_*.sql` creates
+  `ref_artifacts` + `artifact_kinds`. §4 (WorkerHandler refactor)
+  is superseded by ADR 0018's sibling-worker decision; substrate
+  tables remain valid.
+- **Generic event log: `ref_events` table** (migration
+  `0009_ref_events.sql`) — cross-subsystem chronological audit
+  trail. One row per event with `(ref_id, ts, source, event,
+  payload, duration_ms, cost_usd)`. New `EventsMixin` on
+  `Store` exposes `append_event` / `events_for` / `recent_events`.
+  Consumers writing today: `chase`, `fetcher:unpaywall`,
+  `fetcher:arxiv`, `fetcher:s2`. Read via
+  `get(kind='finding'|'paper', view='log')` or directly.
+- **`view='log'` on `FindingHandler` and `PaperHandler`** — renders
+  the per-ref chronology with per-subsystem one-line summaries.
+  FindingHandler scopes to `source='chase'`; PaperHandler is
+  cross-source.
+- **`precis.workers.fetch_oa.run_oa_fetch_pass`** — sibling
+  worker that fetches OA PDFs for stub papers in a cascade:
+  **Unpaywall → arXiv → S2.openAccessPdf**. First `fetch_ok`
+  wins; intermediate failures (`no_oa_version` / `fetch_failed`)
+  fall through to the next provider, each writing its own audit
+  event. Downloads validate the PDF magic bytes before keeping
+  the file (publisher HTML interstitials are rejected); polite
+  User-Agent with email tag. Cost cap via per-pass `--limit`;
+  24-hour retry window per stub. Wired into `precis worker
+  --only fetch` (default `precis worker` runs alongside embed +
+  summarize + segments + chase). Requires `PRECIS_UNPAYWALL_EMAIL`
+  for the Unpaywall leg; arXiv and S2 always available.
+- **`precis_add` stub-upgrade + multi-hash alias path** — new
+  helper `register_aliases_and_maybe_upgrade` in `db_writer.py`.
+  On `probe_existing` hit: always register the new
+  `(pdf_sha256, content_hash)` rows in `ref_identifiers`
+  (multiple hashes per ref are first-class — preprint vs
+  publisher vs repository). When the existing ref is a stub
+  (`pdf_sha256 IS NULL`), additionally promote it: UPDATE
+  `refs.pdf_sha256`, insert the extracted chunks, embed via
+  derived queue. Findings waiting on the stub resume on the
+  next chase pass without any extra plumbing.
+- **`precis resolve` CLI subcommand** — substitutes
+  `[<pub_id>]` placeholders with the primary `cite_key` once
+  findings establish. Plain / markdown / latex output;
+  `--strict` exits 3 if any placeholder is still in flight
+  (CI-gate friendly); `--keep-id` keeps dead-chain placeholders
+  annotated. LaTeX `--bib` writes stub `@misc{...}` entries
+  so documents compile during the in-flight period. Visible
+  ⏳ marker (ASCII `*` via `--ascii`) so authors don't ship
+  placeholders by accident.
+- **`precis stubs` CLI subcommand** — lists paper refs with
+  `pdf_sha256 IS NULL` joined with the latest fetcher event per
+  ref. TOON-table output; `--awaiting` filters to "what would
+  the fetcher try next".
+- **New skill: `precis-finding-help`** — full workflow shape,
+  when-to-create / when-NOT-to-create, mandatory
+  search-before-create rule, FAQ on chase outcomes.
+
+### Changed
+
+- **`paper.py` empty-search DOI hint** — when a DOI lookup
+  misses, the response now offers `put(kind='finding',
+  cited_in='doi:...')` plus `precis stubs --awaiting` as the
+  preferred structured path. The legacy
+  `edit(kind='plaintext', id='./request_doi.md', ...)` queue
+  is retained as a deprecated fallback (one release of
+  warnings; remove in the next).
+- **`precis worker --only`** gains `chase` and `fetch` choices
+  alongside the existing `embed` / `summarize` / `segments`.
+  Plus `--with-llm` (chase) and `--fetch-inbox` / `--unpaywall-email`
+  (fetcher).
+- **`PaperHandler.accepted_views`** gains `log`; renders via the
+  shared `precis.handlers._event_log_render` module.
+
+### Migrations
+
+- `0004_finding_and_queue_family.sql` — finding kind + queue
+  family scaffolding (ADR 0017).
+- `0009_ref_events.sql` — cross-subsystem per-ref event log.
+
+Both are additive (no ALTER on existing tables); apply cleanly
+to a fresh DB and to a live v8.0.0 DB.
+
+### Deprecated
+
+- **`./request_doi.md` plaintext DOI queue** — superseded by
+  the finding-chase + fetcher pipeline. Still works; the
+  empty-search hint now labels the option `(legacy)`. Remove
+  in the release after next.
+
 ## v8.0.0 — 2026-05-31
 
 ### Added
