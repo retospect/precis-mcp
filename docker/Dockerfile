@@ -85,20 +85,17 @@ FROM deps AS models
 # surya reads MODEL_CACHE_DIR directly off the env via pydantic-settings
 # (see surya/settings.py: `MODEL_CACHE_DIR: str = ...`).
 ENV HF_HOME=/opt/precis/models/hf \
-    MODEL_CACHE_DIR=/opt/precis/models/datalab/models \
-    # transformers' from_dict path does `logger.info(f"Model config {config}")`.
-    # Formatting the config calls __repr__ → to_diff_dict → self.__class__()
-    # with no kwargs, which trips surya's SuryaOCRConfig.__init__ pop("encoder")
-    # and raises KeyError. Silencing the info log avoids the format call and
-    # the bake succeeds. The model itself loads fine at runtime where this log
-    # message isn't on the hot path.
-    TRANSFORMERS_VERBOSITY=error
+    MODEL_CACHE_DIR=/opt/precis/models/datalab/models
 
+# Bake via a shim script that monkeypatches surya.SuryaOCRConfig to
+# tolerate the no-arg ctor that transformers.to_diff_dict makes when
+# formatting `logger.info(f"Model config {config}")`. The f-string is
+# eager so TRANSFORMERS_VERBOSITY=error does not dodge the format call —
+# we need to make the no-arg init itself succeed. See docker/bake-models.py.
+COPY docker/bake-models.py /tmp/bake-models.py
 RUN mkdir -p "${HF_HOME}" "${MODEL_CACHE_DIR}" && \
-    /opt/venv/bin/python -c \
-        "from marker.models import create_model_dict; create_model_dict()" && \
-    /opt/venv/bin/python -c \
-        "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
+    /opt/venv/bin/python /tmp/bake-models.py && \
+    rm /tmp/bake-models.py
 
 # =============================================================================
 # Stage 3 (builder): install precis-mcp itself on top of cached deps + models.
