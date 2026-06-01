@@ -23,17 +23,53 @@ from __future__ import annotations
 
 
 def _patch_surya_config() -> None:
-    """Tolerate SuryaOCRConfig() with no kwargs."""
+    """Short-circuit transformers' debug-format path for surya configs.
+
+    transformers' ``from_dict`` does ``logger.info(f"Model config {config}")``.
+    The f-string is eager, so __repr__ runs regardless of log level.
+    __repr__ → to_json_string → to_diff_dict, and to_diff_dict needs to
+    instantiate self.__class__() with no kwargs to compute "diff vs
+    defaults". surya configs (SuryaOCRConfig, plus its encoder/decoder
+    children) require multiple structured kwargs at construction, so the
+    no-arg path can't be made safe by injecting placeholders — each
+    placeholder unblocks one ``kwargs.pop`` only for the next line to
+    trip ``decoder_config["bos_token_id"]`` etc.
+
+    Simpler fix: override ``to_diff_dict`` on surya's config classes to
+    return ``{}``. The debug log emits ``SuryaOCRConfig {}`` instead of
+    a full dump, which is fine — this only affects the once-per-load
+    info message during the bake step.
+    """
     from surya.recognition.model.config import SuryaOCRConfig
 
-    _original_init = SuryaOCRConfig.__init__
+    def _empty_diff(self):  # type: ignore[no-untyped-def]
+        return {}
 
-    def _patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-        kwargs.setdefault("encoder", {})
-        kwargs.setdefault("decoder", {})
-        return _original_init(self, *args, **kwargs)
+    SuryaOCRConfig.to_diff_dict = _empty_diff  # type: ignore[method-assign]
 
-    SuryaOCRConfig.__init__ = _patched_init  # type: ignore[method-assign]
+    # Other surya configs use the same machinery; patch the ones we know
+    # come up. Adding too few here just produces a follow-on KeyError on
+    # the next config class; adding too many is harmless.
+    try:
+        from surya.foundation.config import SuryaModelConfig
+
+        SuryaModelConfig.to_diff_dict = _empty_diff  # type: ignore[method-assign]
+    except ImportError:
+        pass
+
+    try:
+        from surya.layout.model.config import SuryaLayoutConfig
+
+        SuryaLayoutConfig.to_diff_dict = _empty_diff  # type: ignore[method-assign]
+    except ImportError:
+        pass
+
+    try:
+        from surya.table_rec.model.config import TableRecConfig
+
+        TableRecConfig.to_diff_dict = _empty_diff  # type: ignore[method-assign]
+    except ImportError:
+        pass
 
 
 def main() -> None:
