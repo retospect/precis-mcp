@@ -158,6 +158,7 @@ class BlocksMixin:
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        offset: int = 0,
         exclude_ref_ids: list[int] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
@@ -192,6 +193,7 @@ class BlocksMixin:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
         params.append(limit)
+        params.append(offset)
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
         sql = (
@@ -201,7 +203,7 @@ class BlocksMixin:
             "JOIN refs r ON r.ref_id = c.ref_id, "
             "websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY rank DESC LIMIT %s"
+            "ORDER BY rank DESC LIMIT %s OFFSET %s"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -295,6 +297,7 @@ class BlocksMixin:
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        offset: int = 0,
         k: int = 60,
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
@@ -306,6 +309,10 @@ class BlocksMixin:
 
         Score: ``1/(k + lex_rank) + 1/(k + sem_rank)``. Higher is
         better. ``k=60`` is the standard RRF constant.
+
+        ``offset`` (default 0) skips the first N fused rows for
+        pagination. The inner CTEs widen by ``offset`` to keep enough
+        candidates for the outer LIMIT/OFFSET slice to be populated.
         """
         if query_vec is None:
             return self.search_blocks_lexical(
@@ -314,6 +321,7 @@ class BlocksMixin:
                 scope_ref_id=scope_ref_id,
                 tags=tags,
                 limit=limit,
+                offset=offset,
                 exclude_ref_ids=exclude_ref_ids,
             )
 
@@ -394,28 +402,36 @@ class BlocksMixin:
             JOIN chunks c ON c.chunk_id = fused.cid
             JOIN refs r ON r.ref_id = c.ref_id
             ORDER BY fused.score DESC
-            LIMIT %s
+            LIMIT %s OFFSET %s
         """
 
+        # Widen the inner CTE LIMITs by ``offset`` so the outer fused
+        # ORDER BY ... LIMIT/OFFSET has enough rows to slice from.
+        # Without this, page=2 (offset=10) on a query with exactly 10
+        # lex hits + 10 sem hits would return nothing because both
+        # CTEs are capped at limit=10.
+        inner_limit = limit + offset
+
         # Param construction sequence:
-        #   lex: q + WHERE params + limit
+        #   lex: q + WHERE params + inner_limit
         #   sem: query_vec + embedder + WHERE params
-        #        + [optional: query_vec, max_distance] + limit
+        #        + [optional: query_vec, max_distance] + inner_limit
         #   fused: k + k
-        #   outer: limit
+        #   outer: limit + offset
         full_params: list[Any] = []
         full_params.append(q)
         full_params.extend(params)
-        full_params.append(limit)
+        full_params.append(inner_limit)
         full_params.append(query_vec)
         full_params.append(embedder)
         full_params.extend(params)
         if max_distance is not None:
             full_params.append(query_vec)
             full_params.append(float(max_distance))
-        full_params.append(limit)
+        full_params.append(inner_limit)
         full_params.extend([k, k])
         full_params.append(limit)
+        full_params.append(offset)
 
         with self.pool.connection() as conn:
             rows = conn.execute(sql, full_params).fetchall()

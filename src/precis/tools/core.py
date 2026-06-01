@@ -179,6 +179,7 @@ def search(
     kind: str | None = None,
     scope: str | None = None,
     top_k: int = 10,
+    page: int = 1,
     tags: list[str] | None = None,
     source: str | None = None,
     exclude: list[str] | None = None,
@@ -186,9 +187,11 @@ def search(
     """Hybrid lexical + semantic search across kinds.
 
     `top_k` must be a positive int ≤ 100. Omit `kind` (or pass `'*'`)
-    for cross-kind fan-out. `exclude=` takes ref slugs to drop — use
-    to paginate by passing back prior-page slugs. `source=` is
-    patent-only (`'both'`/`'local'`/`'remote'`); ignored elsewhere.
+    for cross-kind fan-out. `page=N` (default 1) returns the Nth page
+    of `top_k` results — server-side OFFSET, no need to thread
+    `exclude=` lists manually. `exclude=` is still useful for hand-
+    skipping specific slugs. `source=` is patent-only
+    (`'both'`/`'local'`/`'remote'`); ignored elsewhere.
 
     Full reference: get(kind='skill', id='precis-search-help'), or
     search(kind='skill', q='finding things by topic') for a topical
@@ -223,11 +226,18 @@ def search(
             )
         )
 
+    # Validate + default page. A positive int >=1; clamp silently
+    # rather than erroring so a stray ``page=0`` doesn't reject the
+    # whole search call.
+    if not isinstance(page, int) or page < 1:
+        page = 1
+
     payload: dict[str, Any] = {
         "kind": kind,
         "q": q,
         "scope": scope,
         "top_k": top_k,
+        "page": page,
     }
 
     # Only forward optional kwargs when set
@@ -438,10 +448,13 @@ _SEARCH_HELP: dict[str, str] = {
     "q": "Free-text query (lexical + semantic, hybrid-fused).",
     "kind": "Restrict to a kind (or comma-list, '*', omit for fan-out).",
     "scope": "Restrict to one ref's blocks (slug or numeric id).",
-    "top_k": "Max results. Positive int ≤ 100.",
+    "top_k": "Max results per page. Positive int ≤ 100.",
+    "page": "Page number (default 1). Pass page=2 to see results "
+            "top_k..2*top_k-1, etc.",
     "tags": "Per-kind tag filters (closed-vocab axes + open tags).",
     "source": "Patent only: 'both' (default) | 'local' | 'remote'.",
-    "exclude": "Ref slugs to drop from results (use to paginate).",
+    "exclude": "Ref slugs to drop from results (hand-skip; page= is "
+               "usually preferable).",
 }
 
 _PUT_HELP: dict[str, str] = {

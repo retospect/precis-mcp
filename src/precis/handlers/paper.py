@@ -276,6 +276,7 @@ class PaperHandler(Handler):
         scope: str | None = None,
         tags: list[str] | None = None,
         top_k: int = 10,
+        page: int = 1,
         exclude: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
@@ -345,6 +346,10 @@ class PaperHandler(Handler):
         # The lexical leg already has a natural zero (the tsquery
         # either matches or it doesn't); the floor is sem-only.
         # (Critic MAJOR #3.)
+        # page=N → offset = (page-1) * top_k. Clamped to >= 0 so a 7B
+        # caller passing ``page=0`` doesn't blow the query up.
+        search_offset = max(0, (int(page) - 1) * int(top_k))
+
         hits = self.store.search_blocks_fused(
             q=q,
             query_vec=query_vec,
@@ -352,6 +357,7 @@ class PaperHandler(Handler):
             scope_ref_id=scope_ref_id,
             tags=normalized_tags,
             limit=top_k,
+            offset=search_offset,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids or None,
         )
@@ -466,7 +472,7 @@ class PaperHandler(Handler):
             table_rows.append(
                 {
                     "handle": handle,
-                    "chunk_keywords": keyword_summary(chunk_text, top_k=5),
+                    "chunk_keywords": _chunk_keywords_or_caption(chunk_text),
                 }
             )
             excerpt_lines.append(
@@ -2066,6 +2072,43 @@ def _render_block_body(slug: str, pos: int, text: str) -> str:
     cleaned = _IMAGE_MARKER_RE.sub(_replace, cleaned)
     # Collapse whitespace-only artefacts left behind by the strip.
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _chunk_keywords_or_caption(text: str) -> str:
+    """Render the ``chunk_keywords`` cell for one search hit.
+
+    Most chunks are prose — RAKE produces useful summary keywords.
+    Tables (Marker emits them as markdown grids starting with ``|``)
+    poison RAKE because empty cells render as ``"na"`` and the rake
+    output collapses to ``"na na na na; na na na; ..."``. For those
+    we skip RAKE and surface a one-line caption from the table's
+    column header row instead, so the search hit still tells the
+    agent *what kind of thing* this is without the noise.
+
+    Heuristic: starts with ``|`` after lstrip, pipe density >5 %.
+    Same heuristic as migration 0009's paragraph→table backfill,
+    so this also handles legacy chunks that pre-date the
+    chunk_kind=table classification.
+    """
+    stripped = text.lstrip()
+    is_table = (
+        stripped.startswith("|")
+        and len(text) > 0
+        and (text.count("|") / len(text)) > 0.05
+    )
+    if is_table:
+        first_line = stripped.split("\n", 1)[0].strip()
+        # Drop empty cells / trim long rows so the caption fits the
+        # one-line cell budget. ``A, (A) | B, (B) | C, (C) | …`` is
+        # plenty for an agent to recognise a data table.
+        cells = [c.strip() for c in first_line.strip("|").split("|") if c.strip()]
+        if cells:
+            caption = " | ".join(cells[:6])
+            if len(cells) > 6:
+                caption += " | …"
+            return f"[table] {caption}"
+        return "[table]"
+    return keyword_summary(text, top_k=5)
 
 
 def _scrub_block_text(text: str) -> str:
