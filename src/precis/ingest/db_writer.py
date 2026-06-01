@@ -436,11 +436,138 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
     )
 
 
+def register_aliases_and_maybe_upgrade(
+    existing_ref_id: int,
+    paper: PaperToWrite,
+    *,
+    conn: Connection,
+) -> int:
+    """Apply a fresh ingest's new info to an existing ref.
+
+    Called from ``_ingest_pdf`` when ``probe_existing`` finds a match.
+    Two distinct jobs, performed in one transaction:
+
+    1. **Alias registration (always).** Every PDF representation of a
+       paper is a real fact about it. The new ``pdf_sha256`` and
+       ``content_hash`` from this ingest are inserted into
+       ``ref_identifiers`` (``ON CONFLICT DO NOTHING``); if the hash
+       isn't already in ``pdfs``, that row lands too. Subsequent
+       ingests probe the same identifiers and short-circuit to the
+       same ``ref_id``.
+
+    2. **Stub upgrade (conditional).** When the existing ref has
+       ``pdf_sha256 IS NULL`` — the stub-state predicate per the
+       finding-chase design — *and* this ingest brings PDF bytes, we
+       upgrade the row by setting the canonical ``pdf_sha256``,
+       ``pdf_pages``, ``pdf_role``, and writing the chunks the
+       pipeline extracted. The derived queue (embed / summarize)
+       picks the new chunks up on its next pass; any finding waiting
+       on this stub resumes naturally.
+
+    Returns the number of chunks written (zero on the alias-only
+    path, ``len(paper.chunks)`` on the stub-upgrade path).
+
+    Caller owns the transaction — this function does not COMMIT.
+    """
+    # ── 1. Always register the new pdf_sha256 / content_hash aliases.
+    if paper.pdf_sha256:
+        conn.execute(
+            "INSERT INTO pdfs "
+            "(pdf_sha256, content_hash, page_count, size_bytes, storage_path) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (pdf_sha256) DO NOTHING",
+            (
+                paper.pdf_sha256,
+                paper.content_hash or paper.pdf_sha256,
+                paper.pdf_page_count or 0,
+                paper.pdf_size_bytes or 0,
+                paper.pdf_storage_path or "",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (id_kind, id_value) DO NOTHING",
+            ("pdf_sha256", paper.pdf_sha256, existing_ref_id, paper.provider),
+        )
+    if paper.content_hash:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (id_kind, id_value) DO NOTHING",
+            ("content_hash", paper.content_hash, existing_ref_id, paper.provider),
+        )
+    # Historical aliases the patch-write-back path collected (ADR 0014).
+    for alias in paper.pdf_sha256_aliases:
+        if not alias or alias == paper.pdf_sha256:
+            continue
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (id_kind, id_value) DO NOTHING",
+            ("pdf_sha256", alias, existing_ref_id, paper.provider),
+        )
+
+    # ── 2. Stub upgrade — only if the ref currently has no canonical PDF.
+    existing_pdf_row = conn.execute(
+        "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+        (existing_ref_id,),
+    ).fetchone()
+    if existing_pdf_row is None or existing_pdf_row[0] is not None:
+        # Either the ref vanished (soft-deleted between probe and now,
+        # rare race) or it already carries a canonical PDF (this
+        # ingest is a multi-hash alias for a known paper). Either
+        # way, no upgrade work — return alias-only count.
+        return 0
+    if not paper.pdf_sha256:
+        # Caller hit a stub but provided no PDF bytes (e.g. a DOI
+        # path landing on a chase-created stub). Aliases registered;
+        # nothing else to do.
+        return 0
+
+    # Promote the canonical PDF + run the chunk insert. Mirror the
+    # write_paper §3 + §5 code path so the upgraded row looks
+    # identical to one written fresh.
+    pdf_pages: str | None = None
+    if paper.pdf_pages_first is not None and paper.pdf_pages_last is not None:
+        pdf_pages = f"[{paper.pdf_pages_first},{paper.pdf_pages_last}]"
+    conn.execute(
+        "UPDATE refs SET "
+        "  pdf_sha256 = %s, "
+        "  pdf_pages  = COALESCE(%s::int4range, pdf_pages), "
+        "  pdf_role   = COALESCE(%s, pdf_role), "
+        "  updated_at = now() "
+        "WHERE ref_id = %s AND deleted_at IS NULL",
+        (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
+    )
+    chunks_written = 0
+    for chunk in paper.chunks:
+        conn.execute(
+            "INSERT INTO chunks "
+            "(ref_id, set_by, ord, chunk_kind, text, section_path, "
+            " page_first, page_last, token_count, meta, numerics) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                existing_ref_id,
+                paper.set_by,
+                chunk.ord,
+                chunk.chunk_kind,
+                chunk.text,
+                chunk.section_path,
+                chunk.page_first,
+                chunk.page_last,
+                chunk.token_count,
+                Jsonb(chunk.meta or {}),
+                chunk.numerics or [],
+            ),
+        )
+        chunks_written += 1
+    return chunks_written
+
+
 __all__ = [
     "ChunkToWrite",
     "PaperToWrite",
     "WriteResult",
     "probe_existing",
+    "register_aliases_and_maybe_upgrade",
     "resolve_cite_key",
     "write_paper",
 ]

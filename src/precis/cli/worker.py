@@ -47,7 +47,7 @@ _STATUS_SCHEMA: list[str] = ["handler", "total", "ok", "failed", "pending"]
 log = logging.getLogger(__name__)
 
 
-HandlerKey = Literal["embed", "summarize", "segments"]
+HandlerKey = Literal["embed", "summarize", "segments", "chase", "fetch"]
 
 
 # ---------------------------------------------------------------------------
@@ -95,13 +95,39 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--only",
-        choices=("embed", "summarize", "segments"),
+        choices=("embed", "summarize", "segments", "chase", "fetch"),
         default=None,
-        help="Restrict to one handler kind. Default: all three — "
-        "embed + summarize (chunk-level) AND segments (ref-level "
-        "segment_toc that builds ref_segments + ref_segment_sentences). "
-        "'segments' drains the ref-level queue alone; useful for "
-        "ad-hoc backfills.",
+        help="Restrict to one handler kind. Default: all of them — "
+        "embed + summarize (chunk-level), segments (ref-level "
+        "segment_toc), chase (ref-level finding-chase), and fetch "
+        "(ref-level Unpaywall OA fetch for stub papers). Each "
+        "--only value drains its queue alone; useful for ad-hoc "
+        "backfills.",
+    )
+    p.add_argument(
+        "--with-llm",
+        action="store_true",
+        help="Enable the chase worker's LLM hooks (claude -p via "
+        "precis.utils.claude_p) for multi-candidate disambiguation, "
+        "chunk-localisation confirmation, and verifier-with-caveats. "
+        "Default: deterministic chase only (no LLM cost). Also "
+        "honoured via env PRECIS_CHASE_LLM=1.",
+    )
+    p.add_argument(
+        "--fetch-inbox",
+        default=None,
+        help="Directory where the fetcher worker drops downloaded OA "
+        "PDFs (default: PRECIS_WATCH_INBOX env, else "
+        "~/work/new_papers/_oa_fetched). The watcher should be "
+        "configured to scan this path so fetched PDFs land in the "
+        "normal ingest flow.",
+    )
+    p.add_argument(
+        "--unpaywall-email",
+        default=None,
+        help="Email to send as Unpaywall's required identification "
+        "parameter (default: PRECIS_UNPAYWALL_EMAIL env). Without "
+        "one, the fetch pass is skipped.",
     )
     p.add_argument(
         "--embedder",
@@ -204,6 +230,55 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_segments_pass)
+
+        # Finding-chase pass — same sibling-worker pattern, but for
+        # STATUS:tracing findings. Default-off LLM hooks via
+        # --with-llm or PRECIS_CHASE_LLM=1. See ADR 0018 §"Worker"
+        # for the sibling-vs-base-class rationale.
+        if args.only in (None, "chase"):
+            from precis.workers.chase import run_finding_chase_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _chase_pass(batch_size: int) -> _BatchResult:
+                r = run_finding_chase_pass(
+                    store, limit=batch_size, with_llm=args.with_llm
+                )
+                return _BatchResult(
+                    handler="finding_chase",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_chase_pass)
+
+        # Unpaywall OA fetcher — turns stub paper refs (DOI known,
+        # pdf_sha256 IS NULL) into landed PDFs by checking Unpaywall
+        # for an OA URL and downloading to the watch inbox. The
+        # watcher's existing ingest path picks the file up and C7's
+        # stub-upgrade promotes the row in place.
+        if args.only in (None, "fetch"):
+            from precis.workers.fetch_oa import run_oa_fetch_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            fetch_inbox = args.fetch_inbox  # may be None → worker uses env default
+            fetch_email = args.unpaywall_email  # same
+
+            def _fetch_pass(batch_size: int) -> _BatchResult:
+                r = run_oa_fetch_pass(
+                    store,
+                    limit=batch_size,
+                    inbox_dir=fetch_inbox,
+                    email=fetch_email,
+                )
+                return _BatchResult(
+                    handler="fetch_oa",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_fetch_pass)
 
         stop_flag = _install_signal_handlers()
         run_loop(

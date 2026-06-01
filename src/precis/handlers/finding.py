@@ -1,0 +1,549 @@
+"""FindingHandler — chain head over a citation chase to a primary source.
+
+A `finding` is the **synthesised endpoint** of a citation chase: the
+claim text + its setup context + the chain of `derived-from` links
+from the agent's initial citation down to the primary source. It is
+the agent's *answer* to "what evidence do we have for X?".
+
+This handler owns the **write door** for findings:
+
+- ``put(title, body, scope, cited_in)`` creates a new finding, the
+  ``finding_body`` chunk that holds claim + setup as flowing prose,
+  the initial ``derived-from`` link to the cited frontier, and
+  tags it ``STATUS:tracing``.
+- ``get(id)`` renders the begat-style detail (claim, setup, primary,
+  via-chain, status).
+- ``search(q, status=...)`` filters by status (default
+  ``STATUS:established``) and falls through to the base full-text
+  + ANN hybrid.
+- ``cite(...)`` is **explicitly not supported** — findings are
+  internal certainty records; they never appear in ``\\cite{}``.
+  The chase-time placeholder is the finding's ``pub_id`` which
+  ``precis resolve`` substitutes at finalisation.
+
+Storage details:
+
+* ``kind='finding'`` is seeded in migration ``0004_finding_and_queue_family.sql``.
+* The finding's deterministic ``paper_id`` comes from
+  :func:`precis.identity.make_finding_paper_id` over
+  ``(body, scope, initial_cite_handle)``; the ``pub_id`` is
+  ``make_pub_id`` over that. Two agents creating the same finding
+  from the same source collapse to one row at the
+  ``ref_identifiers (id_kind='pub_id')`` UNIQUE constraint.
+* The claim title (``title=`` on put) lives in ``refs.title`` for
+  list-view scannability; the body lives in a ``finding_body``
+  chunk at ord=0 so it embeds + full-text-searches.
+* ``meta.scope`` JSONB carries the structured setup envelope.
+* ``meta.chain`` JSONB carries the ordered list of hops the chase
+  has walked (filled by the chase worker, one append per pass).
+* ``meta.primary_cite_key`` and ``meta.via_cite_keys`` snapshot
+  the chain in cite_key form at termination.
+
+The chase worker (C5: ``precis.workers.chase``) does not live here
+— this handler only owns the storage door. The worker walks the
+``links`` graph + ``chunks`` table directly; it does **not** create
+``citation`` records under Path B (B-ii).
+"""
+
+from __future__ import annotations
+
+from typing import Any, ClassVar
+
+from psycopg.errors import UniqueViolation
+
+from precis.errors import BadInput, Unsupported
+from precis.handlers._link_target import LinkTarget, parse_link_target
+from precis.handlers._numeric_ref import NumericRefHandler
+from precis.identity import make_finding_paper_id, make_pub_id
+from precis.protocol import KindSpec
+from precis.response import Response
+from precis.store.types import BlockInsert, Ref, Tag
+
+_STATUS_NAMESPACE = "STATUS"
+_STATUS_TRACING = "tracing"
+_DERIVED_FROM = "derived-from"
+
+
+class FindingHandler(NumericRefHandler):
+    spec: ClassVar[KindSpec] = KindSpec(
+        kind="finding",
+        title="Finding",
+        description=(
+            "Chain head over a citation chase to a primary source. Carries "
+            "claim + setup context + the begat chain of derived-from links. "
+            "Read for 'what evidence do we have for X under setup Y?'; "
+            "written by put() (initial cite) and extended by the chase "
+            "worker. Never citable externally — pub_id is a placeholder "
+            "that precis resolve substitutes for the primary paper's "
+            "cite_key at finalisation."
+        ),
+        supports_put=True,
+        supports_get=True,
+        supports_search=True,
+        supports_search_hits=False,
+        supports_delete=True,
+        supports_tag=True,
+        supports_link=True,
+        is_numeric=True,
+        id_required=False,
+        note_like=False,
+    )
+    kind: ClassVar[str] = "finding"
+    sense: ClassVar[str] = "finding"
+
+    # ──────────────────────────────────────────────────────────────────
+    # put — create a new finding (idempotent on deterministic pub_id)
+    # ──────────────────────────────────────────────────────────────────
+
+    def put(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        title: str | None = None,
+        body: str | None = None,
+        scope: dict[str, Any] | None = None,
+        cited_in: str | None = None,
+        tags: list[str] | None = None,
+        link: str | None = None,
+        rel: str | None = None,
+        mode: str | None = None,
+        untags: list[str] | None = None,
+        unlink: str | None = None,
+        # ``text=`` is accepted as an alias for ``body=`` so callers
+        # that habitually pass text on every put (the seven-verb
+        # default shape) don't get bounced back.
+        text: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Create a finding.
+
+        Required: ``title`` (short claim title, ≤200 chars),
+        ``body`` (claim text + setup envelope as flowing prose),
+        ``cited_in`` (the starting frontier of the chase, in
+        ``<cite_key>[~<ord>]`` or ``kind:identifier[~<ord>]`` form).
+
+        Recommended: ``scope`` (structured setup as a dict — used
+        for filtering and for two-agents-collapse dedup; e.g.
+        ``{"electrode": "Cu", "ambient": "N2"}``).
+
+        Idempotent under identical inputs: same
+        ``(body, scope, cited_in_target)`` → same deterministic
+        ``pub_id`` → second call collides at the UNIQUE constraint
+        on ``ref_identifiers (id_kind='pub_id')`` and returns the
+        existing finding's id.
+
+        Existing-id ``put`` is rejected (mutate via tag/link/delete
+        per the seven-verb surface).
+        """
+        # Argument validation — mirrors the citation handler so
+        # mistakes return sharp errors instead of half-created rows.
+        if id is not None:
+            raise BadInput(
+                f"put on existing finding id={id!r} is not supported",
+                next=(
+                    f"to mutate id={id}: tag(kind={self.kind!r}, id=N, ...) / "
+                    f"link(kind={self.kind!r}, id=N, ...) / "
+                    f"delete(kind={self.kind!r}, id=N)"
+                ),
+            )
+        if mode is not None or untags is not None or unlink is not None:
+            raise BadInput(
+                f"only id-less create is supported on kind={self.kind!r}",
+                next="put creates a new finding; use tag/link/delete on existing",
+            )
+
+        body_text = body if body is not None else text
+        if not title or not title.strip():
+            raise BadInput(
+                "put(kind='finding') requires title=<short claim title>",
+                next=(
+                    "put(kind='finding', title='gate-bias 2.4 kV / 30 s on Si/SiO2', "
+                    "body='Device prep: 2.4 kV applied for 30 s on Si/SiO2 MOSCAPs '"
+                    "'with Cu top contact, N2 ambient.', "
+                    "scope={'electrode':'Cu','ambient':'N2'}, "
+                    "cited_in='miller23a~42')"
+                ),
+            )
+        if not body_text or not body_text.strip():
+            raise BadInput(
+                "put(kind='finding') requires body=<claim text + setup as prose>",
+                next=(
+                    "body folds the claim and the setup envelope into one chunk "
+                    "(no separate context= argument under Path B)"
+                ),
+            )
+        if not cited_in or not str(cited_in).strip():
+            raise BadInput(
+                "put(kind='finding') requires cited_in=<frontier handle>",
+                next=(
+                    "cited_in='miller23a' (ref-level) or 'miller23a~42' "
+                    "(chunk-level) or 'paper:miller23a' (explicit kind)"
+                ),
+            )
+        if scope is not None and not isinstance(scope, dict):
+            raise BadInput(
+                f"scope must be a dict, got {type(scope).__name__}",
+                next="scope={'electrode': 'Cu', 'ambient': 'N2', ...}",
+            )
+
+        # Resolve the cited target. parse_link_target handles
+        # kind:identifier and kind:identifier~N forms; bare handles
+        # (no kind prefix) default to 'paper:'.
+        target = self._resolve_cited_in(str(cited_in).strip())
+
+        # Use the target ref's stable handle (cite_key, falls back
+        # to ref_id) as the deterministic input to make_finding_paper_id.
+        # Two agents citing the same source chunk under the same setup
+        # collide on the resulting pub_id — that's the design intent.
+        target_ref = self.store.get_ref_by_id(target.ref_id) if hasattr(
+            self.store, "get_ref_by_id"
+        ) else None
+        # Fall back to a direct query when the helper isn't available.
+        if target_ref is None:
+            target_ref = self._fetch_ref_any_kind(target.ref_id)
+        target_handle = target_ref.slug or f"ref:{target.ref_id}"
+
+        paper_id = make_finding_paper_id(
+            body_text=body_text,
+            scope=scope or {},
+            initial_cite_pub_id=target_handle,
+        )
+        pub_id = make_pub_id(paper_id)
+
+        # Pre-validate tag strings and link kwarg before any DB
+        # write. Matches the contract on _create / the citation
+        # handler.
+        parsed_tags: list[Tag] = []
+        if tags:
+            parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in tags]
+        extra_target: LinkTarget | None = None
+        extra_relation: str = rel or "cites"
+        if link is not None:
+            extra_target = parse_link_target(link, store=self.store)
+
+        body_clean = body_text.strip()
+        title_clean = title.strip()[:200]
+
+        meta: dict[str, Any] = {
+            "scope": scope or {},
+            "paper_id": paper_id,  # for audit / debugging only
+            "pub_id": pub_id,
+            "chain": [
+                {
+                    "ref_id": target.ref_id,
+                    "chunk_id": None,  # ord is resolved at chase time
+                    "ord": target.pos,
+                }
+            ],
+        }
+
+        # Insert ref + identifiers + body chunk + initial link +
+        # status tag all inside one transaction. If anything fails
+        # (including the pub_id collision case), the whole thing
+        # rolls back — no half-created findings.
+        try:
+            with self.store.tx() as conn:
+                ref = self.store.insert_ref(
+                    kind=self.kind,
+                    slug=None,
+                    title=title_clean,
+                    meta=meta,
+                    conn=conn,
+                )
+                # pub_id row for collision detection + agent-facing
+                # placeholder. The UNIQUE constraint on
+                # (id_kind, id_value) is what makes repeat puts
+                # collapse: a second put with the same inputs
+                # raises UniqueViolation which we catch below.
+                conn.execute(
+                    "INSERT INTO ref_identifiers "
+                    "(id_kind, id_value, ref_id, source) "
+                    "VALUES (%s, %s, %s, %s)",
+                    ("pub_id", pub_id, ref.id, "agent"),
+                )
+                # finding_body chunk at ord=0 (Path B: one body
+                # chunk; setup folded into prose).
+                self.store.insert_blocks(
+                    ref.id,
+                    [
+                        BlockInsert(
+                            pos=0,
+                            text=body_clean,
+                            meta={"chunk_kind": "finding_body"},
+                        )
+                    ],
+                    conn=conn,
+                )
+                # STATUS:tracing — closed namespace, one value per
+                # ref. Replace any existing STATUS tag (defensive;
+                # shouldn't exist on a fresh ref).
+                self.store.add_tag(
+                    ref.id,
+                    Tag.closed(_STATUS_NAMESPACE, _STATUS_TRACING),
+                    set_by="agent",
+                    replace_prefix=True,
+                    conn=conn,
+                )
+                for tag in parsed_tags:
+                    self.store.add_tag(
+                        ref.id,
+                        tag,
+                        set_by="agent",
+                        replace_prefix=(tag.namespace == "closed"),
+                        conn=conn,
+                    )
+                # Initial derived-from link to the cited frontier.
+                # This is the chase worker's starting point.
+                self.store.add_link(
+                    src_ref_id=ref.id,
+                    dst_ref_id=target.ref_id,
+                    dst_pos=target.pos,
+                    relation=_DERIVED_FROM,
+                    conn=conn,
+                )
+                # Optional extra link from link= kwarg (D3 shortcut).
+                if extra_target is not None:
+                    self.store.add_link(
+                        src_ref_id=ref.id,
+                        dst_ref_id=extra_target.ref_id,
+                        dst_pos=extra_target.pos,
+                        relation=extra_relation,
+                        conn=conn,
+                    )
+        except UniqueViolation:
+            # Collision on pub_id: this finding already exists.
+            # Look up the existing ref_id and return it so the
+            # caller sees a deterministic "exists" result.
+            return self._collision_response(pub_id)
+
+        return Response(
+            body=(
+                f"created finding id={ref.id} pub_id={pub_id}\n"
+                f"title: {title_clean}\n"
+                f"frontier: {target.raw}\n"
+                f"status: STATUS:{_STATUS_TRACING}\n"
+                f"placeholder: [{pub_id}] (use in text; precis resolve "
+                f"substitutes the primary cite_key once STATUS:established)"
+            )
+        )
+
+    # ──────────────────────────────────────────────────────────────────
+    # view='log' — filter to chase events
+    # ──────────────────────────────────────────────────────────────────
+
+    def _event_log_source(self) -> str | None:
+        """Findings' view='log' shows the chase decision trail.
+
+        Other ref_events for the same finding (e.g. future
+        verifier-subagent runs, manual operator notes) are
+        intentionally excluded — readers want the "why is this
+        finding's status what it is?" story, not every event ever
+        attached to the row.
+        """
+        return "chase"
+
+    # ──────────────────────────────────────────────────────────────────
+    # cite — explicitly not supported
+    # ──────────────────────────────────────────────────────────────────
+
+    def cite(self, *, id: str | int | None = None, **_kw: Any) -> Response:  # type: ignore[override]
+        """Findings are not externally citable.
+
+        The finding's role in published text is the
+        ``precis resolve`` substitution: at ``put`` time the agent
+        drops ``[<pub_id>]`` in their document; at finalisation
+        ``precis resolve`` rewrites it to ``\\cite{<primary_cite_key>}``
+        once the chase tags the finding ``STATUS:established``.
+
+        Calling ``cite(kind='finding', ...)`` is therefore a
+        category error and we raise here so the agent sees a sharp
+        error instead of a silent confusion.
+        """
+        raise Unsupported(
+            "kind='finding' does not support cite — findings are "
+            "internal certainty records, not citable surfaces",
+            next=(
+                "use precis resolve <document> to substitute "
+                "[<pub_id>] placeholders with \\cite{<primary>} at "
+                "document-finalisation time"
+            ),
+        )
+
+    # ──────────────────────────────────────────────────────────────────
+    # _render_one — begat-style detail rendering
+    # ──────────────────────────────────────────────────────────────────
+
+    def _render_one(self, ref: Ref, tags: Any) -> str:  # type: ignore[override]
+        """Render one finding record in begat style.
+
+        Sections (omitted when empty):
+            title:   the short claim title (from refs.title)
+            claim:   the finding_body chunk text
+            scope:   meta.scope as key=value pairs
+            primary: meta.primary_cite_key (when established)
+            begat:   meta.via_cite_keys → primary_cite_key chain
+            status:  STATUS tag, or 'tracing' if none recorded
+            tags:    any non-STATUS tags
+        """
+        meta = ref.meta or {}
+        scope = meta.get("scope") or {}
+        chain = meta.get("chain") or []
+        primary_cite = meta.get("primary_cite_key")
+        via_cite = meta.get("via_cite_keys") or []
+        pub_id = meta.get("pub_id")
+
+        lines: list[str] = [f"# finding {ref.id}"]
+        if pub_id:
+            lines.append(f"_pub_id: {pub_id}  (placeholder for precis resolve)_")
+        lines.append("")
+        lines.append(f"title: {ref.title}")
+
+        # The claim body lives in the finding_body chunk; pull it
+        # via the standard chunks API so we don't duplicate it on
+        # the ref itself.
+        body_text = self._fetch_body(ref.id)
+        if body_text:
+            lines.append("")
+            lines.append("claim:")
+            for ln in body_text.splitlines():
+                lines.append(f"  {ln}")
+
+        if scope:
+            lines.append("")
+            lines.append("scope:")
+            for k in sorted(scope):
+                lines.append(f"  {k}: {scope[k]}")
+
+        if primary_cite:
+            lines.append("")
+            lines.append(f"primary: {primary_cite}")
+            if via_cite:
+                lines.append("begat by:                     (oldest → newest)")
+                for c in via_cite:
+                    lines.append(f"  {c}")
+                lines.append(f"  {primary_cite}  (primary)")
+        elif chain:
+            lines.append("")
+            lines.append(f"chain (in flight, {len(chain)} hop(s)):")
+            for hop in chain:
+                lines.append(
+                    f"  ref_id={hop.get('ref_id')} "
+                    f"ord={hop.get('ord')}"
+                )
+
+        status = _extract_status_tag(tags)
+        lines.append("")
+        lines.append(f"status: STATUS:{status or _STATUS_TRACING}")
+
+        non_status_tags = [
+            t for t in (tags or [])
+            if getattr(t, "namespace", None) != "closed"
+            or not str(t).startswith("STATUS:")
+        ]
+        if non_status_tags:
+            lines.append("tags: " + " ".join(str(t) for t in non_status_tags))
+
+        return "\n".join(lines)
+
+    # ──────────────────────────────────────────────────────────────────
+    # private helpers
+    # ──────────────────────────────────────────────────────────────────
+
+    def _resolve_cited_in(self, raw: str) -> LinkTarget:
+        """Parse ``cited_in=`` into a :class:`LinkTarget`.
+
+        Accepts:
+        - ``'miller23a'``               — bare cite_key, paper kind implied
+        - ``'miller23a~42'``            — bare cite_key + chunk ord
+        - ``'paper:miller23a'``         — explicit kind prefix
+        - ``'paper:miller23a~42'``      — explicit + chunk
+        - ``'doi:10.1234/xyz'`` etc.    — fully-qualified handle
+
+        Returns: :class:`LinkTarget` resolved by
+        :func:`parse_link_target`. The ``raw`` field carries the
+        original input string (useful for diagnostics + the
+        create-ack message).
+        """
+        if ":" not in raw:
+            # Bare handle → assume paper kind, the dominant case.
+            qualified = f"paper:{raw}"
+        else:
+            qualified = raw
+        try:
+            return parse_link_target(qualified, store=self.store)
+        except BadInput as exc:
+            raise BadInput(
+                f"cited_in={raw!r} could not be resolved: {exc}",
+                next=(
+                    "cited_in accepts cite_key (bare or 'paper:<key>') "
+                    "with optional '~<ord>' chunk selector"
+                ),
+            ) from exc
+
+    def _fetch_ref_any_kind(self, ref_id: int) -> Ref:
+        """Look up a ref by id without knowing its kind.
+
+        The store's get_ref API requires kind; parse_link_target
+        returns the resolved kind on the LinkTarget so callers can
+        round-trip. We re-fetch here to read the slug (cite_key)
+        for the deterministic pub_id input.
+        """
+        from precis.store._mappers import _REFS_COLS, _row_to_ref
+
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s "
+                "AND deleted_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+        if row is None:
+            raise BadInput(
+                f"cited_in target ref_id={ref_id} not found",
+                next="confirm the target ref exists and is not soft-deleted",
+            )
+        return _row_to_ref(row)
+
+    def _fetch_body(self, ref_id: int) -> str | None:
+        """Read the ``finding_body`` chunk text for ``ref_id``.
+
+        Returns ``None`` when no such chunk exists (shouldn't
+        happen for a real finding but defensive — soft-deleted-
+        and-then-undeleted cases could).
+        """
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks "
+                "WHERE ref_id = %s AND chunk_kind = 'finding_body' "
+                "ORDER BY ord LIMIT 1",
+                (ref_id,),
+            ).fetchone()
+        return row[0] if row is not None else None
+
+    def _collision_response(self, pub_id: str) -> Response:
+        """Resolve a pub_id collision back to the existing finding."""
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = 'pub_id' AND id_value = %s",
+                (pub_id,),
+            ).fetchone()
+        existing_id = int(row[0]) if row is not None else None
+        return Response(
+            body=(
+                f"existing finding id={existing_id} pub_id={pub_id}\n"
+                f"(deterministic put: same (body, scope, cited_in) → same pub_id; "
+                "no duplicate created)"
+            )
+        )
+
+
+def _extract_status_tag(tags: Any) -> str | None:
+    """Return the STATUS:* value if any, else None."""
+    for t in tags or []:
+        s = str(t)
+        if s.startswith("STATUS:"):
+            return s.split(":", 1)[1]
+    return None
+
+
+__all__ = ["FindingHandler"]

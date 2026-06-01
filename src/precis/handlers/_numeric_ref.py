@@ -46,7 +46,7 @@ from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 # additional views should override `get()` to layer their dispatch
 # on top, or — when we land per-kind view registries — extend
 # this tuple via a class-level hook.
-_BASE_VIEWS: tuple[str, ...] = ("links",)
+_BASE_VIEWS: tuple[str, ...] = ("links", "log")
 
 
 class NumericRefHandler(Handler):
@@ -165,8 +165,28 @@ class NumericRefHandler(Handler):
                 )
             if view == "links":
                 return self._render_links_view(ref)
+            if view == "log":
+                from precis.handlers._event_log_render import render_event_log
+
+                # Per-kind source filter: chase-driven kinds (finding)
+                # narrow to source='chase' so the log is the chase
+                # decision trail rather than every event ever logged
+                # against the ref. Subclasses override
+                # ``_event_log_source()`` to customise.
+                return render_event_log(
+                    self.store, ref.id, source=self._event_log_source()
+                )
         tags = self.store.tags_for(ref.id)
         return Response(body=self._render_one(ref, tags))
+
+    def _event_log_source(self) -> str | None:
+        """Subsystem to filter ``view='log'`` to, or ``None`` for all.
+
+        Default: no filter (show every event). Subclasses with a
+        natural per-subsystem identity override (e.g. ``FindingHandler``
+        returns ``'chase'``).
+        """
+        return None
 
     # ── search ─────────────────────────────────────────────────────
 

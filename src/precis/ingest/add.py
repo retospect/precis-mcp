@@ -41,6 +41,7 @@ from precis.ingest.claim import Claim
 from precis.ingest.db_writer import (
     PaperToWrite,
     probe_existing,
+    register_aliases_and_maybe_upgrade,
     write_paper,
 )
 from precis.ingest.pdf_writer import PatchInfo, patch_pdf_metadata
@@ -224,7 +225,25 @@ def _ingest_pdf(
             conn=conn,
         )
         if existing is not None:
-            return _hit_result_from_db(existing, conn=conn, fallback=paper)
+            # Existing ref hit — never re-insert, but always (a) register
+            # this ingest's pdf/content hashes as aliases and (b) when
+            # the row is a stub (``pdf_sha256 IS NULL``), upgrade it
+            # by promoting this PDF to canonical and inserting the
+            # extracted chunks. See db_writer.register_aliases_and_maybe_upgrade
+            # for the contract and docs/design/finding-chase.md
+            # §"Stub upgrade" for the rationale (chase findings
+            # waiting on this stub resume on the next chase pass
+            # without any extra plumbing).
+            chunks_written = register_aliases_and_maybe_upgrade(
+                existing, paper, conn=conn
+            )
+            conn.commit()
+            return _hit_result_from_db(
+                existing,
+                conn=conn,
+                fallback=paper,
+                chunks_written=chunks_written,
+            )
 
         # Write-back: patch the on-disk file with the resolved canonical
         # metadata so a re-ingest from a clean DB still finds the right
@@ -406,6 +425,7 @@ def _hit_result_from_db(
     *,
     conn: Any,
     fallback: PaperToWrite | None = None,
+    chunks_written: int = 0,
 ) -> IngestResult:
     """Build an ``inserted=False`` result by re-fetching the existing
     ref's identifiers from the DB.
@@ -417,6 +437,11 @@ def _hit_result_from_db(
     (e.g. ``paper_id`` was never written) — defensive belt-and-
     braces for the slow path. The fast path passes ``fallback=None``
     because no pipeline has run yet.
+
+    ``chunks_written`` is non-zero only on the stub-upgrade path
+    (see ``register_aliases_and_maybe_upgrade``); the
+    ``inserted=False`` flag still holds — the *ref* existed, we
+    just enriched it.
     """
     rows = conn.execute(
         "SELECT id_kind, id_value FROM ref_identifiers WHERE ref_id = %s",
@@ -445,7 +470,7 @@ def _hit_result_from_db(
         cite_key=cite_key,
         pdf_sha256=pdf_sha256,
         content_hash=content_hash,
-        chunks_written=0,
+        chunks_written=chunks_written,
         identifiers=identifiers,
     )
 

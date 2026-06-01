@@ -1046,6 +1046,77 @@ Genuinely open:
    are populated" (`storage-v2.md:614-617`); chase chains become an
    input to that work.
 
+## LLM hooks (`claude -p`, default-off)
+
+C5 ships **three optional LLM-driven enhancement points** that
+default off (deterministic chase only) and turn on per-worker via
+`PRECIS_CHASE_LLM=1` or `precis worker --only chase --with-llm`.
+The helper is the project-wide
+[`precis.utils.claude_p`](../../src/precis/utils/claude_p.py)
+(shipped this branch) — subprocess-based, mock-friendly,
+cost-capped, JSON-block-parsing wrapper around `claude -p`.
+
+| Hook | Default behaviour | With `--with-llm` |
+| --- | --- | --- |
+| `_disambiguate_candidates` | tag `STATUS:multi_candidate`; wait for user | LLM reads the chunk + candidate bib entries, picks the most plausible target (returns `pick_index` or `null`) |
+| `_locate_chunk_in_target` | top-1 lexical+ANN; flag low confidence | LLM confirms ANN's pick or proposes an alternate ord; lets the chase skip the wrong-chunk failure mode |
+| `_verify_support_with_caveats` | no-op | LLM reads target chunk + claim + scope; returns `{supports, support_reason, caveats[], cited_others[], terminal}`. Caveats land on `meta.chain[k].caveats`; `cited_others` surfaces as inline cites the chase can follow (but does **not** auto-spawn sibling findings — see below) |
+
+**Caveats compound up to the finding.** Each hop's verification
+JSON is stored in `meta.chain[k].verification`; the finding's
+top-level `meta.caveats` aggregates non-empty caveats across hops
+(union with provenance). Rendering in `get(kind='finding')` and
+in `precis resolve` surfaces them prominently:
+
+```
+finding ab12c3
+  ...
+  primary: fischer13
+  caveats:
+    - only for 50 nm SiO2 thickness (from fischer13)
+    - room temp only (from miller23a §3)
+  ...
+```
+
+**Caveats that reference further cites do NOT auto-spawn sibling
+findings.** Path B-ii sticks: the caveat is recorded with its
+`cited_others` token, and the user can spawn a sibling finding by
+hand (`put(kind='finding', body='...thinner films', scope=...,
+cited_in='lin98')`) to chase that specific qualification.
+Rationale: auto-branching is exponential and noisy; the user knows
+which qualifications matter for their document.
+
+**Prompts live alongside the worker** as module-level constants
+(`precis/workers/chase.py::_PROMPT_VERIFY`, etc.) so they version
+with the code rather than as separate template files. Each prompt
+ends with a JSON-shape hint; `_parse_last_json_block` in the
+helper grabs the rightmost balanced block from stdout.
+
+## Future: `claude -p` at ingest time (queued, NOT in this branch)
+
+The same `claude_p.call_claude_p` helper is the obvious tool for
+LLM-driven enhancements at ingest time. Three candidates, in
+priority order:
+
+1. **Structured fact extraction (`paper_facts` table)** — path-3
+   from ADR 0018 (the "tables curveball" discussion, task #63).
+   Per body chunk, extract `(value, unit, claim, conditions)` rows
+   that complement the existing `chunks.numerics` lexical index.
+   Feeds findings (gives the chase a strong "is this the primary
+   measurement?" hint) and the agent's structured-query surface.
+   **Queue Q1**.
+2. **LLM-driven abstract / TL;DR per paper** — incrementally
+   better search-card text than RAKE keywords. Not blocking.
+   **Queue Q2**.
+3. **Setup-context extraction from methods sections** — enables
+   scope-filtered search without the agent supplying `scope=` at
+   finding-create time. **Queue Q3**.
+
+None ship in this branch. Defer Q1 until C5 lands and we observe
+where the deterministic chase actually struggles; if the failure
+mode is "is this chunk the primary measurement?" then Q1 helps
+directly, and re-uses the same helper.
+
 ## Test plan
 
 1. **Unit — `run_finding_chase_pass` algorithm.**

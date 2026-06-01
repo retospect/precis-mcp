@@ -2138,7 +2138,7 @@ wheels = [
 
 [[package]]
 name = "precis-mcp"
-version = "7.1.0"
+version = "8.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "ftfy" },
@@ -2160,6 +2160,7 @@ all = [
     { name = "matplotlib" },
     { name = "pydantic" },
     { name = "pymupdf" },
+    { name = "pysbd" },
     { name = "python-docx" },
     { name = "python-epo-ops-client" },
     { name = "rapidfuzz" },
@@ -2188,6 +2189,7 @@ paper = [
     { name = "habanero" },
     { name = "marker-pdf", marker = "sys_platform != 'win32'" },
     { name = "pymupdf" },
+    { name = "pysbd" },
     { name = "rapidfuzz" },
     { name = "semanticscholar" },
     { name = "sentence-transformers" },
@@ -2231,6 +2233,7 @@ requires-dist = [
     { name = "pydantic", marker = "extra == 'plot'", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pymupdf", marker = "extra == 'paper'", specifier = ">=1.24" },
+    { name = "pysbd", marker = "extra == 'paper'", specifier = ">=0.3.4" },
     { name = "python-docx", marker = "extra == 'docx'", specifier = ">=1.1" },
     { name = "python-epo-ops-client", marker = "extra == 'patent'", specifier = ">=4.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -2557,6 +2560,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/91/2d517db61845698f41a2a974de90762e50faeb529201c6b3574935969045/pypdfium2-4.30.0-py3-none-musllinux_1_1_aarch64.whl", hash = "sha256:5eda3641a2da7a7a0b2f4dbd71d706401a656fea521b6b6faa0675b15d31a163", size = 6181543, upload-time = "2024-05-09T18:33:02.597Z" },
     { url = "https://files.pythonhosted.org/packages/ba/c4/ed1315143a7a84b2c7616569dfb472473968d628f17c231c39e29ae9d780/pypdfium2-4.30.0-py3-none-musllinux_1_1_i686.whl", hash = "sha256:0dfa61421b5eb68e1188b0b2231e7ba35735aef2d867d86e48ee6cab6975195e", size = 6175911, upload-time = "2024-05-09T18:33:05.376Z" },
     { url = "https://files.pythonhosted.org/packages/7a/c4/9e62d03f414e0e3051c56d5943c3bf42aa9608ede4e19dc96438364e9e03/pypdfium2-4.30.0-py3-none-musllinux_1_1_x86_64.whl", hash = "sha256:f33bd79e7a09d5f7acca3b0b69ff6c8a488869a7fab48fdf400fec6e20b9c8be", size = 6267430, upload-time = "2024-05-09T18:33:08.067Z" },
+]
+
+[[package]]
+name = "pysbd"
+version = "0.3.4"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/0a/c99fb7d7e176f8b176ef19704a32e6a9c6aafdf19ef75a187f701fc15801/pysbd-0.3.4-py3-none-any.whl", hash = "sha256:cd838939b7b0b185fcf86b0baf6636667dfb6e474743beeff878e9f42e022953", size = 71082, upload-time = "2021-02-11T16:36:33.351Z" },
 ]
 
 [[package]]

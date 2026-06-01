@@ -52,6 +52,7 @@ from precis.utils.text import excerpt as _excerpt
 
 _SUPPORTED_VIEWS = (
     "bibtex", "ris", "endnote", "abstract", "toc", "health", "bibliography",
+    "log",
 )
 
 
@@ -810,6 +811,14 @@ class PaperHandler(Handler):
         return Response(body=body)
 
     def _render_view(self, ref: Ref, view: str) -> Response:
+        if view == "log":
+            # Per-ref chronological event log across every subsystem
+            # that writes to ref_events (chase, fetcher, provenance,
+            # ingest). No source filter — for papers the cross-cutting
+            # view is the useful one ("what's happened to this paper?").
+            from precis.handlers._event_log_render import render_event_log
+
+            return render_event_log(self.store, ref.id)
         if view == "abstract":
             abstract = (ref.meta or {}).get("abstract")
             if not abstract:
@@ -1169,7 +1178,7 @@ class PaperHandler(Handler):
         # envelope on unknown / empty ``view=`` values. ``cite`` /
         # ``bibtex`` are aliases; we list the canonical form here
         # and the alias map (``_normalise_view``) handles the rest.
-        return ["toc", "abstract", "bibtex", "bibliography", "slug"]
+        return ["toc", "abstract", "bibtex", "bibliography", "log", "slug"]
 
     def chunks_for_toc(self, ref: Any) -> ChunksForToc:
         """Adapter for the generic TOC renderer.
