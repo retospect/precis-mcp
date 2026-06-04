@@ -6,6 +6,36 @@ PyPI is `5.2.6`; everything below `## v6.0.0` represents the
 post-merge state. Phases pre-merge are kept here as historical
 context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
+## Unreleased
+
+### Fixed
+
+- **Migration runner no longer masks SQL errors as
+  `InvalidSavepointSpecification`.** `Migrator.apply_all` previously
+  opened its connection with `autocommit=False`. The first `SELECT`
+  for `_applied_versions` opened an implicit transaction, so the
+  per-migration `with conn.transaction()` downgraded to a SAVEPOINT
+  instead of issuing BEGIN. When a migration aborted mid-execution,
+  the savepoint vanished and the context-manager exit raised
+  `psycopg.errors.InvalidSavepointSpecification: savepoint
+  "_pg3_1" does not exist` — burying the real error. Switched the
+  connection to `autocommit=True` so `conn.transaction()` issues a
+  real BEGIN/COMMIT and surfaces inner exceptions directly. Migration
+  0010 (the noisy-segment-keyword backfill) had been failing this
+  way; it now applies cleanly.
+- **Docker build no longer deadlocks on bge-m3 fetch.** The bake
+  stage now seeds `/opt/precis/models/` from a `precis-mcp:premodels`
+  image (BuildKit `--build-context`) before invoking
+  `bake-models.py`, and the bake script skips the download when the
+  cache directory is already populated. The verification
+  `SentenceTransformer("BAAI/bge-m3")` call runs with
+  `HF_HUB_OFFLINE=1` + `TRANSFORMERS_OFFLINE=1` so it cannot
+  fall back to the deadlock-prone xet-bridge path. Source-only
+  rebuilds dropped from "indefinite hang" to ~55 seconds. See
+  [ADR 0019](docs/decisions/0019-premodels-build-context.md) for
+  rationale and bootstrap instructions (`docker tag precis-mcp:latest
+  precis-mcp:premodels`).
+
 ## v8.1.0 — finding-chase + OA fetcher cascade + event log (2026-06-01)
 
 ### Added

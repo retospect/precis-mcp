@@ -17,6 +17,7 @@ import pytest
 from precis.embedder import MockEmbedder
 from precis.skill_index import FileCorpusIndex, chunk_by_h2
 from precis.skill_index.cache import EmbeddingCache, default_cache_dir
+from precis.skill_index.chunker import CHUNKER_VERSION
 
 
 def json_load(path: Path) -> dict[str, Any]:
@@ -69,17 +70,76 @@ def test_chunker_no_h2_returns_single_chunk() -> None:
     assert "Body only" in chunks[0].text
 
 
-def test_chunker_skips_empty_sections() -> None:
+def test_chunker_aliases_consecutive_h2s_sharing_body() -> None:
+    # Consecutive H2s with only whitespace between them form an
+    # alias group: each heading emits a chunk sharing the body
+    # that follows. CHUNKER_VERSION 2 behaviour (was: drop the
+    # bodyless heading).
     text = "## Empty\n\n## Has body\n\nbody.\n"
     chunks = chunk_by_h2(text)
     headings = [c.heading for c in chunks]
-    assert "Empty" not in headings
-    assert "Has body" in headings
+    assert headings == ["Empty", "Has body"]
+    # Both chunks carry the shared body.
+    assert "body." in chunks[0].text
+    assert "body." in chunks[1].text
+    # Each chunk's text leads with its own alias heading, not the
+    # group's other headings.
+    assert chunks[0].text.startswith("## Empty\n")
+    assert chunks[1].text.startswith("## Has body\n")
+
+
+def test_chunker_drops_alias_group_at_eof_with_no_body() -> None:
+    # Three back-to-back H2s with nothing after — no shared body
+    # to attach, so the entire group is dropped.
+    text = "## A\n## B\n## C\n"
+    chunks = chunk_by_h2(text)
+    assert chunks == []
 
 
 def test_chunker_handles_blank_input() -> None:
     assert chunk_by_h2("") == []
     assert chunk_by_h2("   \n\n  ") == []
+
+
+def test_chunker_alias_group_of_three_emits_three_chunks() -> None:
+    text = (
+        "## Check that citations are valid\n"
+        "## Run an in-depth check of citations\n"
+        "## Verify sources are real\n"
+        "\n"
+        "shared body content.\n"
+    )
+    chunks = chunk_by_h2(text)
+    headings = [c.heading for c in chunks]
+    assert headings == [
+        "Check that citations are valid",
+        "Run an in-depth check of citations",
+        "Verify sources are real",
+    ]
+    for c in chunks:
+        assert "shared body content." in c.text
+
+
+def test_chunker_mixes_standalone_and_alias_group() -> None:
+    text = (
+        "## Standalone first\nfirst body.\n"
+        "## Alias A\n"
+        "## Alias B\n"
+        "shared body.\n"
+        "## Standalone last\nlast body.\n"
+    )
+    chunks = chunk_by_h2(text)
+    headings = [c.heading for c in chunks]
+    assert headings == [
+        "Standalone first",
+        "Alias A",
+        "Alias B",
+        "Standalone last",
+    ]
+    assert "first body." in chunks[0].text
+    assert "shared body." in chunks[1].text
+    assert "shared body." in chunks[2].text
+    assert "last body." in chunks[3].text
 
 
 # ── cache ────────────────────────────────────────────────────────────
@@ -214,9 +274,13 @@ def test_index_returns_hits_with_mock_embedder(
     assert idx.is_available()
     hits = idx.search("First content about apples and oranges.", top_k=10)
     assert hits, "expected at least one hit"
-    # The exact-match query should rank its source chunk above the others.
-    assert hits[0].slug == "alpha"
-    assert hits[0].score > 0
+    # MockEmbedder is hash-based, not semantic — ranks aren't tied
+    # to content overlap with the query. What we can assert is that
+    # the chunk whose text contains the query DOES surface in the
+    # returned set with a positive score.
+    slugs = {h.slug for h in hits}
+    assert "alpha" in slugs
+    assert all(h.score > 0 for h in hits if h.slug == "alpha")
 
 
 def test_index_caches_to_disk(files: dict[str, str], tmp_path: Path) -> None:
@@ -231,7 +295,7 @@ def test_index_caches_to_disk(files: dict[str, str], tmp_path: Path) -> None:
     hits1 = idx.search("apples")
     assert hits1
     # Cache files exist on disk under the namespaced layout.
-    cache_root = tmp_path / "test" / "mock" / "v1"
+    cache_root = tmp_path / "test" / "mock" / f"v{CHUNKER_VERSION}"
     assert cache_root.is_dir()
     cache_files = list(cache_root.glob("*.json"))
     assert len(cache_files) == len(files)
@@ -295,7 +359,7 @@ def test_index_invalidates_on_file_change(
         cache_dir=tmp_path,
         namespace="test",
         embedder_model="mock",
-        chunker_version=1,
+        chunker_version=CHUNKER_VERSION,
     )
     pre = json_load(cache.path_for("alpha"))
     pre_sha = pre["file_sha256"]

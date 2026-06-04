@@ -1,6 +1,7 @@
 # ADR 0012 — Bake Marker + bge-m3 weights into `precis-mcp:latest`
 
-- **Status**: accepted (2026-05-23)
+- **Status**: accepted (2026-05-23); cold-build pathology mitigated
+  by [ADR 0019](./0019-premodels-build-context.md) (2026-06-04)
 - **Deciders**: Reto + agent
 - **Builds on**:
   - ADR 0004 — multi-stage Dockerfile (`docs/decisions/0004-multi-stage-dockerfile.md`)
@@ -8,6 +9,12 @@
     (`docs/decisions/0009-dockerfile-relocation-container-first.md`)
   - ADR 0011 — Claude Code in dev image + UID/GID
     (`docs/decisions/0011-claude-in-dev-image.md`)
+- **Followed by**:
+  - ADR 0019 — Premodels build context for cold-build avoidance
+    (`docs/decisions/0019-premodels-build-context.md`). The bake-
+    stage *cold-cache* download became unreliable after HuggingFace
+    switched to xet-bridge as the default backend; 0019 seeds the
+    cache from a prior image to keep the bake idempotent.
 - **Plan artefact**: `docs/design/bake-models-into-image.md`
 
 ## Context

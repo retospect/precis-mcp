@@ -108,29 +108,35 @@ def _patch_surya_config() -> None:
 
 
 def _bake_bge_m3() -> None:
-    """Pre-fetch BAAI/bge-m3 with visible progress + per-shard timeout.
+    """Ensure BAAI/bge-m3 is in the HF cache; download only if missing.
 
-    The previous approach of just calling ``SentenceTransformer('BAAI/bge-m3')``
-    used huggingface_hub's default downloader which prints no progress and
-    has no aggressive socket timeout. Docker builds hung for hours with
-    no visible activity. Using ``snapshot_download`` directly gives us:
+    History: previous attempts with ``snapshot_download(... max_workers=4)``
+    hung indefinitely inside the docker build — every worker thread parked
+    in ``futex_wait`` with no socket activity. The hang reproduces with
+    HF's xet-bridge protocol on at least some shards. Setting
+    ``HF_HUB_DOWNLOAD_TIMEOUT`` did not help (the threads aren't doing
+    socket I/O; they're waiting on a futex).
 
-      * One progress bar per shard (visible in build logs)
-      * ``etag_timeout`` + per-file ``timeout`` so a stalled shard fails
-        fast and we can retry the layer instead of waiting forever
-      * ``max_workers > 1`` for parallel shard fetch
-
-    Once the cache is populated, the runtime
-    ``SentenceTransformer('BAAI/bge-m3')`` call resolves from the local
-    snapshot without touching the network at all.
+    Strategy: the Dockerfile seeds ``/opt/precis/models/hf`` from a prior
+    image via the ``premodels`` build context BEFORE this script runs. If
+    the cache already has a bge-m3 snapshot, we skip the download
+    entirely. Only on a true cold build (no premodels image) do we hit
+    the network — and then we still flip ``HF_HUB_OFFLINE`` off only for
+    the duration of that one call.
     """
     import os
+    import pathlib
 
-    # Per-file socket timeout (sec). HF default is None = wait forever.
-    # 120 s lets a slow shard finish on a flaky connection but fails fast
-    # if the network is dead.
+    hf_home = pathlib.Path(os.environ.get("HF_HOME", "/opt/precis/models/hf"))
+    snapshots = hf_home / "hub" / "models--BAAI--bge-m3" / "snapshots"
+    have_cache = snapshots.is_dir() and any(snapshots.iterdir())
+
+    if have_cache:
+        print(f"[bake] bge-m3 cache already populated under {snapshots} — skipping download")
+        return
+
+    print("[bake] bge-m3 cache empty — fetching from HF")
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
-    # Show progress in the docker build log even when stdout isn't a TTY.
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "0")
 
     from huggingface_hub import snapshot_download
@@ -138,8 +144,8 @@ def _bake_bge_m3() -> None:
     snapshot_download(
         repo_id="BAAI/bge-m3",
         repo_type="model",
-        # Skip onnx + sentencepiece artefacts we don't need for the
-        # sentence-transformers path. Saves ~500 MB.
+        # Skip onnx artefacts we don't need for the sentence-transformers
+        # path. Saves ~500 MB.
         ignore_patterns=["onnx/*", "*.onnx", "*.onnx_data"],
         max_workers=4,
         etag_timeout=30,
@@ -147,6 +153,8 @@ def _bake_bge_m3() -> None:
 
 
 def main() -> None:
+    import os
+
     _patch_get_text_config()
     _patch_surya_config()
 
@@ -155,9 +163,17 @@ def main() -> None:
 
     create_model_dict()
 
-    # BAAI/bge-m3 for chunk embeddings — pre-fetch with visible progress,
-    # then verify it loads through the sentence-transformers wrapper.
+    # BAAI/bge-m3 for chunk embeddings — pre-fetch (or no-op if cache
+    # is already seeded from the `premodels` build context).
     _bake_bge_m3()
+
+    # Verify the cache resolves through sentence-transformers. Force
+    # OFFLINE mode for the verification: even when the cache is fully
+    # populated, the SentenceTransformer constructor otherwise hits
+    # HF to check for a newer revision — that's the xet-bridge path
+    # that was hanging in futex_wait for hours.
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     from sentence_transformers import SentenceTransformer
 
     SentenceTransformer("BAAI/bge-m3")

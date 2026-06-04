@@ -1,11 +1,15 @@
 # Bake Marker + bge-m3 weights into the runtime image
 
-**Status**: planned
-**Owner**: `docker/Dockerfile`, `infrastructure/compose.yaml`
+**Status**: implemented (ADR 0012, 2026-05-23); cold-build deadlock
+mitigation added (ADR 0019, 2026-06-04)
+**Owner**: `docker/Dockerfile`, `docker/bake-models.py`, `infrastructure/compose.yaml`
 **Predecessors**:
 - ADR 0004 — multi-stage Dockerfile (`docs/decisions/0004-multi-stage-dockerfile.md`)
 - ADR 0009 — Dockerfile relocation, container-first (`docs/decisions/0009-dockerfile-relocation-container-first.md`)
 - ADR 0011 — Claude Code in dev image + UID/GID alignment (`docs/decisions/0011-claude-in-dev-image.md`)
+**Successors**:
+- ADR 0019 — Premodels build context for cold-build avoidance
+  (`docs/decisions/0019-premodels-build-context.md`)
 
 ## Problem
 
@@ -309,3 +313,157 @@ the bake is to make the image self-contained.
   a marker upgrade breaks the contract; tackle then.
 - **Share the bake stage with `coding-base`?** Out of scope; the
   coding-base image is a generic Python shell with no ML deps.
+
+---
+
+## Addendum: cold-build deadlock + premodels seed (2026-06-04)
+
+### Problem
+
+The bake stage as designed above worked for ~10 days, then started
+hanging indefinitely on the bge-m3 fetch. Every cold build reached
+`Fetching 22 files: 18% (4/22)` and stopped emitting progress. Wall-
+clock build elapsed grew to 11+ hours with no further log output, no
+process exit, no error.
+
+Investigation:
+
+- `HF_HUB_DOWNLOAD_TIMEOUT=120` did not help — the deadlock is not a
+  slow socket. `lsof -i :443` showed zero active connections from the
+  buildkit container.
+- `/proc/<pid>/task/*/stack` for every one of the Python interpreter's
+  19 threads showed `futex_wait`. The process held no socket fds in
+  read state.
+- Reproduces on Apple Silicon hosts (OrbStack 1.x), across multiple
+  `huggingface_hub` versions, across multiple network paths.
+- The actual deadlock is inside HuggingFace's xet-bridge protocol
+  (`cas-bridge.xethub.hf.co`), which `huggingface_hub` adopted as
+  the default download backend at some point in 2026. Not something
+  we can patch.
+
+Meanwhile, the *exact* model weights were already present in the
+previous `precis-mcp:latest` image (which had been built before
+xet-bridge became the default). Re-baking them in every cold build
+re-paid a download that no longer terminates.
+
+### Resolution
+
+Seed the models stage from a prior image via BuildKit's
+`--build-context` mechanism, and make `bake-models.py` defensive
+against the network path entirely. Full rationale in
+[ADR 0019](../decisions/0019-premodels-build-context.md). Sketch:
+
+#### Dockerfile
+
+Add a default empty stage named `premodels` so the COPY resolves
+without configuration:
+
+```dockerfile
+ARG PYTHON_DIGEST=…
+ARG UV_VERSION=0.11.14
+
+FROM scratch AS premodels
+
+# … deps stage unchanged …
+
+FROM deps AS models
+ENV HF_HOME=… MODEL_CACHE_DIR=…
+
+# Seed the model cache from a prior image. With no premodels
+# build-context, this is a no-op (scratch has an empty FS).
+COPY --from=premodels / /tmp/premodels-root/
+RUN mkdir -p "${HF_HOME}" "${MODEL_CACHE_DIR}" && \
+    if [ -d /tmp/premodels-root/opt/precis/models ]; then \
+        cp -r /tmp/premodels-root/opt/precis/models/. /opt/precis/models/; \
+    fi && \
+    rm -rf /tmp/premodels-root
+
+COPY docker/bake-models.py /tmp/bake-models.py
+RUN /opt/venv/bin/python /tmp/bake-models.py && rm /tmp/bake-models.py
+```
+
+#### bake-models.py
+
+Skip the bge-m3 download when the cache directory already has a
+snapshot, and run the verification load with offline flags so it
+cannot fall back to the network:
+
+```python
+def _bake_bge_m3() -> None:
+    hf_home = pathlib.Path(os.environ.get("HF_HOME", "/opt/precis/models/hf"))
+    snapshots = hf_home / "hub" / "models--BAAI--bge-m3" / "snapshots"
+    if snapshots.is_dir() and any(snapshots.iterdir()):
+        print(f"[bake] bge-m3 cache already populated — skipping download")
+        return
+    # … original snapshot_download() call for the truly-cold path …
+
+def main() -> None:
+    _patch_get_text_config()
+    _patch_surya_config()
+    from marker.models import create_model_dict
+    create_model_dict()
+    _bake_bge_m3()
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    from sentence_transformers import SentenceTransformer
+    SentenceTransformer("BAAI/bge-m3")
+```
+
+#### infrastructure/compose.yaml
+
+Pass the premodels context for all three build blocks:
+
+```yaml
+  precis-watch:
+    build:
+      context: ../projects/code/precis-mcp
+      dockerfile: docker/Dockerfile
+      target: runtime
+      additional_contexts:
+        premodels: docker-image://precis-mcp:premodels
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+```
+
+(Identical block under `precis-cli` and `precis-dev`.)
+
+#### Bootstrap and maintenance
+
+```sh
+# One-off bootstrap: tag whatever image already works as the seed.
+docker tag precis-mcp:latest precis-mcp:premodels
+
+# After any successful build that you'd like to seed from later:
+docker tag precis-mcp:latest precis-mcp:premodels
+```
+
+### Measured outcome
+
+- Cold cache with seed available: ~3 minutes (Marker datalab models
+  re-download — those use a separate HTTP path that does not hit
+  xet-bridge — and bge-m3 is read from the seed).
+- Source-only rebuild (touch `src/precis/handlers/paper.py`): 54.6 s
+  (timed). All stages CACHED including Stage 2; only the
+  `precis-mcp:latest` retag fires.
+- No-seed cold build (`docker buildx ... --no-cache`, no premodels
+  tag): falls through to the original deadlock-prone path. The
+  failure mode is a long hang followed by no progress; the build
+  log explicitly says "[bake] bge-m3 cache empty — fetching from HF"
+  before the deadlock so the diagnostic is unambiguous.
+
+### Known limitations
+
+- The seed has to come from somewhere on the first-ever build of a
+  fresh host. Publishing `precis-mcp:premodels` to a registry would
+  close that gap; out of scope today (only one build host).
+- A future marker-pdf upgrade that changes the surya revisions
+  shipped in the seed produces a stale cache — `create_model_dict()`
+  detects this and downloads the newer revisions over the
+  non-xet-bridge datalab path. No xet-bridge involvement, no hang.
+- A future bge-m3 revision bump would surface as a cache miss in
+  the seed. With `HF_HUB_OFFLINE=1` we'd get a clear `OSError` at
+  the verification load rather than a deadlock. The fix is to drop
+  the seed tag and accept the cold path (which works when
+  xet-bridge happens to be healthy), or to pre-populate the cache
+  by other means.

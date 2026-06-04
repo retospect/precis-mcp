@@ -9,8 +9,9 @@
 '   docs/decisions/0006-tri-identifier-scheme.md  (slug section superseded by 0008)
 '   docs/decisions/0007-derived-queue-no-block-jobs.md
 '   docs/decisions/0008-drop-slug-identifier-normalisation.md
-'   docs/decisions/0017-derived-queue-family.md
+'   docs/decisions/0017-derived-queue-family.md  (artifact_kinds, ref_artifacts)
 '   docs/decisions/0018-persistent-discovery-layer.md  (ref_segments, ref_segment_sentences)
+'   docs/design/finding-chase.md  (kind=finding, ref_events, fetcher cascade)
 '
 hide circle
 skinparam linetype ortho
@@ -43,7 +44,8 @@ package "controlled vocab" as vocab {
     todo, memory, gripe, fc, web, youtube, math,
     code, decision, design, patent,
     project, tool, research_report,
-    meeting, email, repo, issue
+    meeting, email, repo, issue,
+    citation (0007), finding (0004)
   }
 
   entity "actors" as actors <<vocab>> {
@@ -52,7 +54,8 @@ package "controlled vocab" as vocab {
     description : text
     * created_at : timestamptz
     ..seeded..
-    agent, user, system
+    agent, user, system,
+    chase (0004)
   }
 
   entity "relations" as relations <<vocab>> {
@@ -65,7 +68,11 @@ package "controlled vocab" as vocab {
     ..seeded..
     related-to, blocks/blocked-by,
     contradicts/contradicted-by,
-    cites/cited-by, supersedes/superseded-by
+    cites/cited-by, supersedes/superseded-by,
+    retracted-by/retracts (0002),
+    corrected-by/corrects (0002),
+    concern-raised-by/raises-concern-about (0002),
+    misattributes/misattributed-by (0004)
   }
 
   entity "providers" as providers <<vocab>> {
@@ -113,7 +120,8 @@ package "controlled vocab" as vocab {
     issue_comment, issue_label_change,
     issue_milestone,
     research_report_summary,
-    research_report_citation
+    research_report_citation,
+    finding_body, finding_context (0004)
   }
 }
 
@@ -525,6 +533,74 @@ note bottom of tags
 end note
 
 ' ============================================================================
+' Derived-queue family (ADR 0017) — generic substrate for ref-level artifacts
+' ============================================================================
+entity "artifact_kinds" as artifact_kinds <<vocab>> {
+  * slug : text <<PK>>
+  --
+  * target : text  '' 'chunk' | 'ref' | 'link' | 'pdf'
+  * storage : text '' 'typed' | 'untyped'
+  * output_table : text
+  description : text
+  deprecated_at : timestamptz
+  * created_at : timestamptz
+  ..seeded (0004)..
+  embed:bge-m3 (typed → chunk_embeddings),
+  summarize:rake-lemma (typed → chunk_summaries),
+  chase_citation (untyped → ref_artifacts),
+  resolve_citation:s2 (untyped → ref_artifacts)
+}
+
+entity "ref_artifacts" as ref_artifacts {
+  * ref_id : bigint <<PK FK refs>>
+  * artifact : text <<PK FK artifact_kinds.slug>>
+  payload : jsonb
+  * status : text <<DEFAULT 'ok'>>
+    ' CHECK status IN ('ok','failed')
+  * attempts : int <<DEFAULT 1>>
+  last_error : text
+  * created_at : timestamptz
+}
+
+note bottom of ref_artifacts
+  **Generic substrate** — same shape would
+  apply to link_artifacts / pdf_artifacts /
+  chunk_artifacts (deferred). Untyped per-ref
+  derived state lives in JSONB ``payload``;
+  typed outputs (chunk_embeddings, chunk_summaries)
+  keep their dedicated tables for HNSW/FTS.
+  Note: the chase worker uses meta.chain on
+  the finding ref itself, NOT this table — it's
+  here for retraction-recheck and future
+  ref-level periodic-sweep artifacts.
+end note
+
+' ============================================================================
+' Cross-subsystem audit log (introduced 2026-06-01)
+' ============================================================================
+entity "ref_events" as ref_events {
+  * event_id : bigserial <<PK>>
+  --
+  * ref_id : bigint <<FK refs>>
+  * ts : timestamptz <<DEFAULT now()>>
+  * source : text  '' 'chase' | 'fetcher:unpaywall' | 'fetcher:arxiv' | 'fetcher:s2' | …
+  * event : text   '' 'advanced' | 'terminated' | 'fetch_ok' | 'no_oa_version' | …
+  payload : jsonb
+  duration_ms : int
+  cost_usd : numeric
+}
+
+note bottom of ref_events
+  **Cross-cutting audit trail.** One row
+  per event; readers query chronologically
+  per ref (view='log') or cross-ref by
+  (source, event) for incident timelines.
+  Retention: 90 days (trim TBD as
+  ``precis maintenance``). See migration
+  0009_ref_events.sql.
+end note
+
+' ============================================================================
 ' Views (read-only convenience; defined in 0001_initial.sql)
 ' ============================================================================
 note as Views #DAEDFD
@@ -606,5 +682,9 @@ embedders   ||..o{ ref_segs  : registry
 
 tags ||--o{ ref_tags   : applied
 tags ||--o{ chunk_tags : applied
+
+refs           ||--o{ ref_artifacts : "queue rows\n(ADR 0017)"
+artifact_kinds ||..o{ ref_artifacts : registry
+refs           ||--o{ ref_events    : "event log\n(2026-06)"
 
 @enduml

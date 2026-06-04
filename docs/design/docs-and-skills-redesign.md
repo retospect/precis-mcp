@@ -186,18 +186,25 @@ update. The cold-start banner updates the same boot.
    `slug#verify-sources`) disambiguates by intent. Implementation
    is ~20 lines extending `chunk_by_h2`; no schema change.
 
-5. **Header-tree segmentation rule.** Walk H1 → H2 → H3. Each
-   section becomes a segment if its body fits the chunk budget.
-   If not, recurse into sub-headers or DP+KeyBERT *within* the
-   section (carrying the parent header as a label prefix). **DP
-   never crosses a header boundary.** Replaces the paper-only
-   "h2 vs embedding" binary in `segment_toc.py`.
+5. **One H2 = one chunk; oversized sections hard-fail ingest.**
+   Each H2 produces exactly one chunk (and per alias group, one
+   per heading). If a chunk's body exceeds the embedder's chunk
+   budget at ingest, ingest **fails the skill** as a static gate
+   — the author is forced to split the section into multiple H2s
+   (or restructure with H3s the chunker treats as body content).
+
+   No DP+KeyBERT recursion inside skill sections, no header-tree
+   recursion in the segmenter for skills. The discipline keeps
+   the model simple: one H2 = one chunk = one embedding, always.
+   For *papers* — content we don't author, can't fail-on-import —
+   the existing DP+KeyBERT path in `segment_toc.py` stays
+   unchanged; papers route differently from skills here.
 
    Alias-group H2s (decision 4) preserve the chunk-per-H2
-   invariant: each H2 in the group is its own segment, each
-   sharing the same body content. From the segmenter's
-   perspective they're independent segments that happen to
-   carry identical body chunks.
+   invariant: each H2 in the group is its own chunk, each
+   carrying the same body content. The budget check applies to
+   the shared body, so an oversized alias group fails all of its
+   member chunks together — the author splits the body.
 
 6. **Two-tier addressing.** Numeric `~N` for casual references;
    H2-anchor `slug#h2-slug-text` for stable deep links. H2-slug
@@ -405,13 +412,12 @@ testable:
    verb signatures + docstring `Args:` blocks from
    `tools/core.py` (and equivalent for handler kindspecs).
    Standalone unit tests.
-3. **Ingest path.** Extend `chunk_by_h2` with (a) header-tree
-   recursion (oversized sections fall back to DP+KeyBERT
-   *within* the section) and (b) alias-group detection
-   (consecutive H2s share the following body, one chunk per
-   H2). Extend `segment_toc` for header-tree label propagation.
-   Wire the kind-generic boot-time scanner with the
-   advisory-lock + transactional-swap pattern. Verify one
+3. **Ingest path.** Extend `chunk_by_h2` with alias-group
+   detection (consecutive H2s share the following body, one
+   chunk per H2). Wire the kind-generic boot-time scanner
+   with the advisory-lock + transactional-swap pattern, plus
+   the chunk-size budget static gate. No segmenter changes for
+   skills — one H2 = one chunk, no recursion. Verify one
    hand-authored skill round-trips through ingest → search →
    `slug/toc` view, including an alias-group section.
 4. **Skill refactor.** Retire `FileCorpusIndex`. `SkillHandler`
@@ -484,6 +490,9 @@ stays live.
 - Schema-drift backstop (cf. Tests § "Schema-drift backstop"):
   example code blocks in `FLAVOR:reference` skills reference
   arguments that exist in the current `tools/core.py` schemas.
+- **Chunk-size budget.** No chunk's body exceeds the embedder's
+  chunk budget (decision 5). The author splits an over-budget
+  section into multiple H2s.
 
 ### LLM gates (judgment, soft-fail as gripes)
 

@@ -27,24 +27,23 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
-from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
-from precis.utils.rake import keyword_summary
-from precis.utils.toc import ChunksForToc
-from precis.utils.toc_db import render_from_store
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
 )
-from precis.handlers._paper_toc import build_toc, filter_toc_to_range, render_toc
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils.next_block import render_next_section
+from precis.utils.rake import keyword_summary
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
+from precis.utils.toc import ChunksForToc
+from precis.utils.toc_db import render_from_store
 
 # ---------------------------------------------------------------------------
 # Public spec
@@ -1047,7 +1046,7 @@ class PaperHandler(Handler):
         # Pull all known identifiers for this ref; pick the DOI.
         try:
             aliases = self.store.list_ref_identifiers(ref.id)
-        except Exception as exc:  # noqa: BLE001 — surface clean error
+        except Exception as exc:
             raise BadInput(
                 f"paper view='health': cannot read identifiers for {ref.slug}: {exc}",
                 next=f"get(kind='paper', id='{ref.slug}', view='bibtex')",

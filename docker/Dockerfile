@@ -26,6 +26,12 @@
 ARG PYTHON_DIGEST=sha256:d193c6f51a7dbd10395d6328de3a7edb0516fb0608ca138036576f574c3e07d2
 ARG UV_VERSION=0.11.14
 
+# Default empty stage for `premodels`. Override at build time with
+# --build-context premodels=docker-image://precis-mcp:premodels
+# (or similar) to seed the model cache from a prior image and skip
+# the multi-GB HF / datalab download. See Stage 2 (models) below.
+FROM scratch AS premodels
+
 # =============================================================================
 # Stage 1 (deps): install dependencies from the lockfile into /opt/venv.
 # This stage's inputs are ONLY pyproject.toml + uv.lock — touching any
@@ -92,9 +98,23 @@ ENV HF_HOME=/opt/precis/models/hf \
 # formatting `logger.info(f"Model config {config}")`. The f-string is
 # eager so TRANSFORMERS_VERBOSITY=error does not dodge the format call —
 # we need to make the no-arg init itself succeed. See docker/bake-models.py.
-COPY docker/bake-models.py /tmp/bake-models.py
+#
+# Seed marker + HF caches from a prior image via the `premodels` build
+# context BEFORE running bake-models.py. snapshot_download / create_model_dict
+# are both idempotent — they no-op when the cache is already populated.
+# This dodges the multi-hour silent hang on bge-m3 shard fetch through HF.
+# Pass `--build-context premodels=docker-image://precis-mcp:premodels`
+# (or any image with /opt/precis/models populated) to skip the download.
+# If no premodels context is provided, COPY --from is a no-op (the named
+# stage exists but holds an empty scratch tree).
+COPY --from=premodels / /tmp/premodels-root/
 RUN mkdir -p "${HF_HOME}" "${MODEL_CACHE_DIR}" && \
-    /opt/venv/bin/python /tmp/bake-models.py && \
+    if [ -d /tmp/premodels-root/opt/precis/models ]; then \
+        cp -r /tmp/premodels-root/opt/precis/models/. /opt/precis/models/; \
+    fi && \
+    rm -rf /tmp/premodels-root
+COPY docker/bake-models.py /tmp/bake-models.py
+RUN /opt/venv/bin/python /tmp/bake-models.py && \
     rm /tmp/bake-models.py
 
 # =============================================================================

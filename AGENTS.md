@@ -96,6 +96,15 @@ precis-mcp/
 ## Don'ts
 
 - **Don't edit sealed migrations.** Forward-only; a new file overrides.
+- **Don't mutate body chunks.** ``chunks`` is append-only for body
+  rows (``ord >= 0``). Only ``ord < 0`` card variants
+  (``card_combined`` and siblings) may be DELETEd and re-INSERTed
+  by a registered synthesis pass (today: the finding-chase
+  chain-snapshot pass in ``precis.workers.chase``). New code that
+  needs to "update" a chunk's text must DELETE the row and INSERT
+  a fresh one so the embedding/summary cascade re-runs cleanly;
+  in-place UPDATE of ``chunks.text`` leaves stale ``chunk_embeddings``
+  and ``chunk_summaries`` rows by construction.
 - **Don't bypass `uv`.** Bare `pip`, `pytest`, `mypy` invocations are
   not reproducible.
 - **Don't introduce a new top-level dependency** without an ADR

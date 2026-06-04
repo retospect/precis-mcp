@@ -33,6 +33,7 @@ from precis.cli import (
     patent,
     perplexity,
     provenance,
+    repl,
     resolve,
     stubs,
     tools,
@@ -109,6 +110,10 @@ def main() -> None:
         tools.run(args)
         return
 
+    if args.cmd == "repl":
+        repl.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -142,6 +147,7 @@ def _build_parser() -> argparse.ArgumentParser:
     stubs.add_parser(sub)
     resolve.add_parser(sub)
     tools.add_parser(sub)
+    repl.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)
