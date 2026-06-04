@@ -32,6 +32,17 @@ from typing import Any, Protocol
 from precis.format import render_agent_table
 from precis.store._segments_ops import SegmentRow, SentenceRow
 
+#: F5+D4: row cap for the per-chunk fallback TOC. Above this the
+#: response is hard to skim and the agent should narrow the range or
+#: use the segment-level view. Pagination is a stretch goal — for now
+#: we render the first N and append a "more" hint.
+_FALLBACK_ROW_CAP = 20
+
+#: First-N chars of chunk text shown in the per-chunk fallback. The
+#: full chunk lives one read away (``get(kind='paper', id='slug~N')``);
+#: 60 chars gives the agent enough to decide whether to drill in.
+_FALLBACK_PREVIEW_CHARS = 60
+
 #: Number of TOC excerpt sub-lines per segment. Two gives the agent
 #: enough context to triage without dominating the table row above.
 _EXCERPT_LINES_PER_SEGMENT = 1
@@ -78,10 +89,21 @@ def render_from_store(
 
     if scope is not None:
         lo, hi = scope
-        segments = [
+        scoped = [
             s for s in segments
             if s.pos_lo >= lo and s.pos_hi <= hi
         ]
+        # F5+D4: when the requested range yields zero or one segments,
+        # the segment-level table is uninformative (the caller already
+        # picked the range it cares about). Fall back to a per-chunk
+        # preview so the agent sees what's actually inside the range.
+        if len(scoped) <= 1:
+            fallback = _render_per_chunk_fallback(
+                store=store, ref_id=ref_id, slug=slug, scope=scope
+            )
+            if fallback is not None:
+                return fallback
+        segments = scoped
         if not segments:
             return f"# {slug} — no segments in scope ~{lo}..{hi}"
 
@@ -90,7 +112,6 @@ def render_from_store(
     headline = _headline(slug=slug, kind=kind, n_seg=n_seg, use_h2=use_h2, scope=scope)
 
     rows: list[dict[str, str]] = []
-    sub_lines: list[str | None] = []
     for seg in segments:
         handle = _handle_for(slug, seg.pos_lo, seg.pos_hi)
         keywords_str = _keywords_display(seg.keywords)
@@ -101,36 +122,73 @@ def render_from_store(
             )
         else:
             rows.append({"handle": handle, "keywords": keywords_str})
-        # Excerpt sub-line. Centroid-ordered top-K for TOC display.
-        top_sentences = store.top_sentences_for_segment(
-            seg.segment_id, limit=_EXCERPT_LINES_PER_SEGMENT
-        )
-        sub_lines.append(_format_excerpt(slug, top_sentences))
 
+    # F4: TOC no longer emits per-segment ``excerpt @ ~N: "..."``
+    # sub-lines. They roughly doubled the per-row token cost, the
+    # central-sentence picker produced garbage on many segments
+    # (single-token citation markers, bare headings), and the
+    # keywords already do the segment-identification job. Excerpts
+    # are still query-aligned and useful in *search* responses; the
+    # TOC view is navigation, not query-result.
     table = render_agent_table(rows)
-    # Splice the excerpt sub-line after each segment's row in the
-    # rendered table. The table is a header + N data rows; we walk
-    # the lines and inject after each non-header data row.
-    table_lines = table.splitlines()
-    out_lines = [headline, ""]
-    data_row_idx = 0
-    for line in table_lines:
-        out_lines.append(line)
-        # The first line is the TOON header (``{handle\t...}``); skip.
-        if line.startswith("{") and line.endswith("}"):
-            continue
-        if not line.strip():
-            continue
-        # Append this segment's excerpt sub-line, if any.
-        if data_row_idx < len(sub_lines):
-            sub = sub_lines[data_row_idx]
-            if sub:
-                out_lines.append(sub)
-            data_row_idx += 1
-    return "\n".join(out_lines)
+    return f"{headline}\n\n{table}"
 
 
 # ── helpers ──────────────────────────────────────────────────────────
+
+
+def _render_per_chunk_fallback(
+    *,
+    store: Any,
+    ref_id: int,
+    slug: str,
+    scope: tuple[int, int],
+) -> str | None:
+    """F5+D4: per-chunk preview when the range collapses to ≤ 1 segment.
+
+    Returns the rendered body, or ``None`` when the store doesn't
+    expose chunk access (caller falls back to the segment table or
+    placeholder). Uses :meth:`Store.list_blocks_for_ref` via duck-
+    typing so test doubles only need the segment surface unless they
+    exercise this path.
+    """
+    lo, hi = scope
+    list_blocks = getattr(store, "list_blocks_for_ref", None)
+    if list_blocks is None:
+        return None
+    blocks = list_blocks(ref_id, pos_range=(lo, hi))
+    if not blocks:
+        return None
+
+    n_total = len(blocks)
+    truncated = blocks[:_FALLBACK_ROW_CAP]
+    rows: list[dict[str, str]] = []
+    for block in truncated:
+        text = (block.text or "").strip().replace("\n", " ")
+        if len(text) > _FALLBACK_PREVIEW_CHARS:
+            preview = text[:_FALLBACK_PREVIEW_CHARS].rstrip() + "…"
+        else:
+            preview = text
+        rows.append(
+            {
+                "handle": f"{slug}~{block.pos}",
+                "preview": preview,
+            }
+        )
+
+    headline = (
+        f"# {slug} sub-TOC ~{lo}..{hi} — {n_total} chunks (segment-level "
+        f"view collapsed to one segment for this range)"
+    )
+    table = render_agent_table(rows, schema=["handle", "preview"])
+    body = f"{headline}\n\n{table}"
+    if n_total > _FALLBACK_ROW_CAP:
+        body += (
+            f"\n\n…{n_total - _FALLBACK_ROW_CAP} more chunks. "
+            f"Narrow the range or read directly: "
+            f"get(kind='paper', id='{slug}~{lo + _FALLBACK_ROW_CAP}..{hi}')"
+        )
+    return body
 
 
 def _placeholder_body(*, slug: str, kind: str) -> str:

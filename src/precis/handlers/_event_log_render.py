@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from precis.errors import Unsupported
 from precis.response import Response
 
 
@@ -39,8 +40,30 @@ def render_event_log(
 
     Empty event log → "no events recorded" placeholder so the
     rendered surface stays consistent.
+
+    Raises :class:`Unsupported` when the ``ref_events`` table is
+    missing on the database (F1) — produces a clean envelope with a
+    migration hint instead of leaking the raw ``psycopg.errors.
+    UndefinedTable`` traceback through the [error:Internal] fallback.
     """
-    events = store.events_for(ref_id, source=source, limit=limit)
+    try:
+        events = store.events_for(ref_id, source=source, limit=limit)
+    except Exception as e:
+        # Detect "ref_events table doesn't exist" without importing
+        # psycopg here (keeps this module portable for stub stores).
+        # psycopg.errors.UndefinedTable's pgcode is '42P01'; falling
+        # back to a substring match on the message catches the same
+        # condition when wrapped by other drivers.
+        msg = str(e)
+        pgcode = getattr(e, "sqlstate", None) or getattr(
+            getattr(e, "diag", None), "sqlstate", None
+        )
+        if pgcode == "42P01" or "ref_events" in msg and "does not exist" in msg:
+            raise Unsupported(
+                "view='log' requires the ref_events table (migration 0009)",
+                next="run `precis migrate` to apply pending migrations",
+            ) from e
+        raise
     if not events:
         return Response(
             body=(

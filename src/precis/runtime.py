@@ -137,11 +137,27 @@ class PrecisRuntime:
                 response = self._dispatch_inner(verb, dict(args))
                 return self._render(response), False
             except PrecisError as e:
+                self._maybe_add_skill_hint(e, verb, args)
                 return self.render_error(e), True
             except Exception as e:
+                # F10: full traceback (with SQL fragments, Python
+                # signatures, file paths) goes to the server log only.
+                # The user-visible body keeps the exception *type* —
+                # enough signal for the LLM to recover ("UndefinedTable
+                # → run migrations") — but strips the message body that
+                # leaks internals. Specific exception classes that have
+                # a clean recovery story should be caught upstream and
+                # converted to a typed PrecisError (Unavailable,
+                # NotFound, etc.) before reaching this fallback.
                 log.exception("internal error in %s", verb)
                 return (
-                    self.render_error(Internal(f"internal error: {e}")),
+                    self.render_error(
+                        Internal(
+                            f"internal error in {verb}: "
+                            f"{type(e).__name__} "
+                            f"(see server log)"
+                        )
+                    ),
                     True,
                 )
 
@@ -155,6 +171,14 @@ class PrecisRuntime:
           3. Handler invocation with extras whitelist + defaulted-kind
              error annotation.
         """
+        # D1: accept URI-style ``id='kind:slug[~sel]'`` on input. Extract
+        # the kind prefix into ``args['kind']`` (if not already set) and
+        # leave the unprefixed identifier in ``args['id']``. Validation
+        # that any explicit ``kind=`` matches the prefix lives in the
+        # helper. Output stays kind-explicit — this is an *input*
+        # convenience that mirrors the canonical ``kind:identifier``
+        # grammar already used by ``link=`` / ``unlink=``.
+        self._maybe_split_prefixed_id(args)
         kind = args.pop("kind", None)
 
         # Broad usability pass 2026-05-30 (#6): when an agent passes a
@@ -411,6 +435,26 @@ class PrecisRuntime:
 
         # Strip None args so handlers see absence as missing.
         clean = {k: v for k, v in args.items() if v is not None}
+
+        # F7: catch handler-signature-required kwargs that the caller
+        # forgot, before ``method(**clean)`` raises a raw TypeError and
+        # leaks Python signature internals through the [error:Internal]
+        # envelope. Per-handler BadInput paths (e.g. NumericRefHandler.
+        # link's "requires target=" check) still fire for *semantic*
+        # requirements like "id must be paired with target"; this gate
+        # only catches truly-missing keyword-only args with no default.
+        missing = self._missing_required_kwargs(method, clean)
+        if missing:
+            accepted_kwargs = sorted(
+                k for k in self._accepted_kwargs(method) if k != "args"
+            )
+            missing_str = ", ".join(f"{m}=" for m in missing)
+            raise BadInput(
+                f"{verb}(kind={kind!r}) requires {missing_str}",
+                options=accepted_kwargs,
+                next=f"get(kind='skill', id='precis-{verb}-help')",
+            )
+
         try:
             response = method(**clean)
         except PrecisError as exc:
@@ -524,6 +568,35 @@ class PrecisRuntime:
         """Return the args= keys that aren't on the handler's signature."""
         accepted = cls._accepted_kwargs(method)
         return sorted(k for k in extras if k not in accepted)
+
+    @staticmethod
+    def _missing_required_kwargs(method: Any, clean: dict[str, Any]) -> list[str]:
+        """Return required kwargs of ``method`` missing from ``clean``.
+
+        A parameter is required when it has no default value AND is
+        keyword-accessible (``POSITIONAL_OR_KEYWORD`` or ``KEYWORD_ONLY``).
+        ``self`` and the magic ``args`` extras-passthrough parameter
+        are excluded; ``**kw`` catch-alls don't count as required.
+
+        Used by :meth:`_invoke_handler` to convert what would have been
+        a raw ``TypeError: ... missing 1 required keyword-only
+        argument: 'id'`` into a clean ``BadInput`` envelope (F7).
+        """
+        sig = inspect.signature(method)
+        missing: list[str] = []
+        for name, p in sig.parameters.items():
+            if name in ("self", "args"):
+                continue
+            if p.kind not in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                continue
+            if p.default is not inspect.Parameter.empty:
+                continue
+            if name not in clean:
+                missing.append(name)
+        return missing
 
     def _render(self, response: Response) -> str:
         out = [response.body]
@@ -956,6 +1029,105 @@ class PrecisRuntime:
             if self.hub.handler_for(k).spec.supports(verb)  # type: ignore[arg-type]
         ]
 
+    def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
+        """D1: extract ``kind:`` prefix from ``id=`` into ``args['kind']``.
+
+        Recognises the canonical handle grammar already used by
+        ``link=`` / ``unlink=`` — ``kind:identifier[~selector]`` — when
+        passed via the ``id=`` argument. Examples:
+
+            id='paper:chung19~4'   → kind='paper', id='chung19~4'
+            id='memory:158'        → kind='memory', id=158 (coerced by handler)
+            id='todo:42'           → kind='todo', id=42
+            id='chung19~4'         → unchanged (no colon, no extraction)
+
+        Only fires when:
+          - ``id`` is a string containing exactly one ``:`` before any
+            ``/``, ``~``, or ``?`` (avoiding collision with URL-ish
+            paths a future kind might accept).
+          - The prefix is one of the live kinds in this build.
+          - If ``kind=`` is already set, it must match the prefix;
+            otherwise a clean ``BadInput`` fires (don't silently
+            override the caller's explicit choice).
+
+        Path views like ``id='/recent'`` are skipped (leading slash).
+        Anything not matching the recognition rules passes through
+        unchanged so existing callers stay unaffected.
+        """
+        ident = args.get("id")
+        if not isinstance(ident, str):
+            return
+        # Leading slash → path view (/recent etc.). Don't extract.
+        if ident.startswith("/"):
+            return
+        if ":" not in ident:
+            return
+        # Only honour a colon that comes before any selector / view
+        # path separator. ``markdown:notes/a.md`` is fine; ``foo/bar:x``
+        # is not — the colon there isn't a kind prefix.
+        for sep in ("/", "?"):
+            if sep in ident and ident.find(sep) < ident.find(":"):
+                return
+        prefix, _, rest = ident.partition(":")
+        prefix = prefix.strip()
+        if not prefix or not rest:
+            return
+        live_kinds = set(self.hub.kinds) if self.hub is not None else set()
+        if prefix not in live_kinds:
+            # Not a recognised kind prefix — leave the value alone.
+            # Better to surface a "no such kind" error downstream than
+            # eat a legitimate identifier that happens to contain ":".
+            return
+
+        existing_kind = args.get("kind")
+        if existing_kind is not None and existing_kind != prefix:
+            raise BadInput(
+                f"id={ident!r} prefix kind={prefix!r} conflicts with "
+                f"kind={existing_kind!r}",
+                next=(
+                    f"drop one: either pass id={rest!r} with "
+                    f"kind={prefix!r}, or pass id={ident!r} without kind="
+                ),
+            )
+        args["kind"] = prefix
+        args["id"] = rest
+
+    def _maybe_add_skill_hint(
+        self, err: PrecisError, verb: str, args: dict[str, Any]
+    ) -> None:
+        """F6: append a per-kind / per-verb help-skill `next:` hint.
+
+        Mutates ``err.next`` in place to add a discoverability pointer
+        without losing whatever the handler already put there. Order:
+        (1) caller-supplied hints, then (2) per-kind skill if the call
+        named one, else per-verb skill, else the overview. The LLM
+        reads top-down and grabs the most-specific recovery action
+        first; the new hint is the second-best option.
+        """
+        kind = args.get("kind") if isinstance(args, dict) else None
+        # Drop list/wildcard kinds — the help skill for "paper,patent"
+        # or "*" doesn't exist; fall through to the verb/overview hint.
+        if isinstance(kind, str) and ("," in kind or kind == "*"):
+            kind = None
+
+        live_kinds = set(self.hub.kinds) if self.hub is not None else set()
+        if isinstance(kind, str) and kind in live_kinds:
+            hint = f"get(kind='skill', id='precis-{kind}-help')"
+        elif verb in {"get", "search", "put", "edit", "delete", "tag", "link"}:
+            hint = f"get(kind='skill', id='precis-{verb}-help')"
+        else:
+            hint = "get(kind='skill', id='precis-overview')"
+
+        existing = err.next
+        if existing is None:
+            err.next = hint
+        elif isinstance(existing, str):
+            if hint not in existing:
+                err.next = [existing, hint]
+        else:
+            if hint not in existing:
+                err.next = [*existing, hint]
+
     def render_error(self, err: PrecisError) -> str:
         """Render a :class:`PrecisError` as the canonical agent-facing string.
 
@@ -970,7 +1142,16 @@ class PrecisRuntime:
         if err.options:
             parts.append(f"  options: {', '.join(map(str, err.options))}")
         if err.next:
-            parts.append(f"  next: {err.next}")
+            # F12: ``next`` may be a string (one hint) or a list of
+            # strings (multiple hints). Render each on its own
+            # ``next:`` line so the rendered envelope remains
+            # backwards-compatible — a caller scanning for "next:"
+            # finds every hint without needing to know the difference.
+            if isinstance(err.next, str):
+                parts.append(f"  next: {err.next}")
+            else:
+                for hint in err.next:
+                    parts.append(f"  next: {hint}")
         return "\n".join(parts)
 
     # Backwards-compatible alias. Internal callers that pre-date the

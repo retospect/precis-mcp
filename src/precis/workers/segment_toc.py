@@ -490,6 +490,16 @@ def _build_sentence_records(
             text = sent.text.strip()
             if not text:
                 continue
+            # F4: filter sentences that can't serve as a "central"
+            # representative — single tokens, citation fragments, bare
+            # headings. These were surfacing as the top excerpt in TOC
+            # and search responses (e.g. ``"55"``, ``"; Bhattacharyya,
+            # S."``, ``"**User Contributions."``). The picker still
+            # falls back to whatever survives if a segment has nothing
+            # substantive; the failure mode is "no excerpt" rather than
+            # "garbage excerpt".
+            if not _is_substantive_sentence(text):
+                continue
             raw.append((chunk_pos, sent.char_offset, text))
     if not raw:
         return []
@@ -525,6 +535,41 @@ def _build_sentence_records(
 
 
 # ── helpers: numerics ───────────────────────────────────────────────
+
+
+def _is_substantive_sentence(text: str) -> bool:
+    """Filter out sentence-shaped fragments unfit as a "central" excerpt.
+
+    Added in F4 after the central-sentence picker surfaced garbage on
+    many segments:
+      - ``"55"`` (single-token citation marker)
+      - ``"; Bhattacharyya, S."`` (citation-list fragment)
+      - ``"**User Contributions."`` (markdown-bold heading)
+
+    Heuristics (intentionally conservative — false negatives mean
+    "no excerpt for this segment", false positives mean "garbage
+    excerpt"; we'd rather drop a borderline sentence than render
+    noise):
+
+      - ≥4 words (filters single tokens + most citation fragments)
+      - First char not in ``;,.:-)]}}`` (filters leading punctuation)
+      - Doesn't start with markdown heading/bold markers
+      - Letters outnumber digits (filters tables, citation lists)
+    """
+    s = text.strip()
+    if not s:
+        return False
+    if len(s.split()) < 4:
+        return False
+    if s[0] in ";,.:-)]}":
+        return False
+    if s.startswith(("**", "##", "# ")):
+        return False
+    digit_chars = sum(1 for c in s if c.isdigit())
+    letter_chars = sum(1 for c in s if c.isalpha())
+    if digit_chars > letter_chars:
+        return False
+    return True
 
 
 def _normalise(vec: list[float]) -> list[float]:

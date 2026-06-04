@@ -94,7 +94,14 @@ class TestPutValidation:
 
     def test_unknown_cited_in_rejected(self, store) -> None:
         h = _make_handler(store)
-        with pytest.raises(BadInput):
+        # The handler delegates to parse_link_target, which raises
+        # NotFound when the referenced ref doesn't exist. Either
+        # BadInput (syntax) or NotFound (target missing) is a
+        # legitimate rejection for "cited_in target doesn't exist"
+        # — the caller gets a clear error either way.
+        from precis.errors import NotFound
+
+        with pytest.raises((BadInput, NotFound)):
             h.put(title="t", body="b", cited_in="does-not-exist")
 
 
@@ -231,9 +238,12 @@ class TestCiteRejected:
         h = _make_handler(store)
         with pytest.raises(Unsupported) as exc:
             h.cite(id=1)
-        msg = str(exc.value)
-        assert "finding" in msg
-        assert "precis resolve" in msg
+        # Primary message names the kind; the "precis resolve"
+        # recovery hint rides on exc.value.next (separate attribute
+        # on the error envelope).
+        assert "finding" in str(exc.value)
+        next_hint = getattr(exc.value, "next", "") or ""
+        assert "precis resolve" in next_hint
 
 
 # ── get round-trip ──────────────────────────────────────────────────

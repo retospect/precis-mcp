@@ -810,15 +810,15 @@ class PaperHandler(Handler):
             [
                 (
                     f"get(kind='paper', id='{ref.slug}', view='toc')",
-                    "hierarchical table of contents",
+                    "see the TOC",
                 ),
                 (
                     f"get(kind='paper', id='{ref.slug}~0..5')",
-                    "read first chunks",
+                    "read the first 6 chunks",
                 ),
                 (
                     f"get(kind='paper', id='{ref.slug}', view='bibtex')",
-                    "BibTeX citation",
+                    "get the BibTeX entry",
                 ),
                 (
                     f"search(kind='paper', q='...', scope='{ref.slug}')",
@@ -852,11 +852,11 @@ class PaperHandler(Handler):
                     [
                         (
                             f"get(kind='paper', id='{slug}', view='toc')",
-                            "hierarchical TOC - find sections to read",
+                            "see the TOC and pick a section",
                         ),
                         (
                             f"get(kind='paper', id='{slug}~0..5')",
-                            "read the first chunks (often opens with the abstract)",
+                            "read the first 6 chunks (often include the abstract)",
                         ),
                         (
                             f"search(kind='paper', q='abstract', scope={slug!r})",
@@ -881,11 +881,11 @@ class PaperHandler(Handler):
                 [
                     (
                         f"get(kind='paper', id='{slug}', view='toc')",
-                        "hierarchical TOC",
+                        "see the TOC",
                     ),
                     (
                         f"get(kind='paper', id='{slug}', view='bibtex')",
-                        "BibTeX citation",
+                        "get the BibTeX entry",
                     ),
                 ]
             )
@@ -1179,24 +1179,26 @@ class PaperHandler(Handler):
             nav.append(
                 (
                     f"get(kind='paper', id='{ref.slug}', view='toc')",
-                    "full TOC",
+                    "see the full TOC",
                 )
             )
         nav.append(
             (
                 f"get(kind='paper', id='{ref.slug}', view='bibtex')",
-                "BibTeX citation",
+                "get the BibTeX entry",
             )
         )
         body = "\n".join(lines).rstrip() + render_next_section(nav)
         return Response(body=body)
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
-        # Phase F 2026-05-31: per-kind view enum for the BadInput
-        # envelope on unknown / empty ``view=`` values. ``cite`` /
-        # ``bibtex`` are aliases; we list the canonical form here
-        # and the alias map (``_normalise_view``) handles the rest.
-        return ["toc", "abstract", "bibtex", "bibliography", "log", "slug"]
+        # F3: single source of truth for paper views. Was previously
+        # a hand-curated subset that contradicted ``_SUPPORTED_VIEWS``
+        # — ``slug`` was advertised here but had no dispatch arm, and
+        # ``ris``/``endnote``/``health`` were dispatched but not
+        # advertised, so the agent couldn't discover them. Mirroring
+        # ``_SUPPORTED_VIEWS`` directly removes the drift.
+        return list(_SUPPORTED_VIEWS)
 
     def chunks_for_toc(self, ref: Any) -> ChunksForToc:
         """Adapter for the generic TOC renderer.

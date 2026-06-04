@@ -22,9 +22,20 @@ Meta-commands:
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import sys
 from typing import Any
+
+# Importing ``readline`` has the side-effect of binding it to
+# ``input()`` — arrow-up / ctrl-r / line editing all start working
+# automatically. The module is best-effort: on minimal Linux images
+# without libreadline-dev it may be missing, in which case input()
+# silently falls back to the no-edit behaviour.
+try:
+    import readline  # noqa: F401
+except ImportError:
+    readline = None  # type: ignore[assignment]
 
 from precis.tools import TOOL_REGISTRY, get_tool_info, get_tool_names
 from precis.tools.cli_adapter import _convert_value, _is_call_tool_result
@@ -46,27 +57,49 @@ def run(args: argparse.Namespace) -> None:
     del args  # no flags yet
 
     _silence_tqdm()
+    _enable_history()
 
     # Force runtime construction (and bge-m3 weight load) up front so
-    # the first verb call doesn't eat the 30–50 s lazy-load. Mirrors
-    # the server's _warm_embedder_background, but synchronous: a REPL
-    # has no concurrent first request to race against.
-    print("precis repl: building runtime …", file=sys.stderr)
-    from precis.tools.core import _get_runtime
+    # the first verb call doesn't eat the 30–50 s lazy-load. The
+    # heartbeat dots cover the long silence between sentence-
+    # transformers' "Loading model …" log (start of load) and the
+    # actual end of weight deserialization. Without it, users assume
+    # the REPL has wedged and type blindly into the buffer.
+    print(
+        "precis repl: building runtime (bge-m3 cold load is ~30-50s) …",
+        file=sys.stderr,
+    )
 
-    runtime = _get_runtime()
-    embedder = getattr(runtime, "embedder", None)
-    ensure = getattr(embedder, "_ensure_loaded", None) if embedder else None
-    if ensure is not None:
-        model = getattr(embedder, "model", "?")
-        print(f"precis repl: warming embedder {model} …", file=sys.stderr)
-        try:
-            ensure()
-        except Exception as e:
-            print(
-                f"precis repl: embedder warmup failed ({e!r}); continuing lazily",
-                file=sys.stderr,
-            )
+    import threading
+
+    stop_heartbeat = threading.Event()
+
+    def _heartbeat() -> None:
+        while not stop_heartbeat.wait(5.0):
+            print(".", end="", file=sys.stderr, flush=True)
+
+    hb = threading.Thread(target=_heartbeat, name="precis-repl-heartbeat", daemon=True)
+    hb.start()
+
+    try:
+        from precis.tools.core import _get_runtime
+
+        runtime = _get_runtime()
+        embedder = getattr(runtime, "embedder", None)
+        ensure = getattr(embedder, "_ensure_loaded", None) if embedder else None
+        if ensure is not None:
+            try:
+                ensure()
+            except Exception as e:
+                print(
+                    f"\nprecis repl: embedder warmup failed ({e!r}); "
+                    "continuing lazily",
+                    file=sys.stderr,
+                )
+    finally:
+        stop_heartbeat.set()
+        hb.join(timeout=1.0)
+        print(file=sys.stderr)  # terminate the dot line
 
     print(
         "precis repl: ready. verbs: "
@@ -128,6 +161,40 @@ def run(args: argparse.Namespace) -> None:
             print(result.content[0].text)
         else:
             print(result)
+
+
+def _enable_history() -> None:
+    """Load + persist input history under ``~/.cache/precis/repl_history``.
+
+    Intra-session arrow-up works automatically once ``readline`` is
+    imported. Cross-session persistence needs an explicit load/save.
+    The cache directory is mounted as a docker volume in
+    ``scripts/precis-shell`` so history survives container restarts;
+    elsewhere it lands in the host ``~/.cache`` and is best-effort
+    (silently skipped if HOME isn't writable).
+    """
+    if readline is None:
+        return
+    histdir = os.path.expanduser("~/.cache/precis")
+    histfile = os.path.join(histdir, "repl_history")
+    try:
+        os.makedirs(histdir, exist_ok=True)
+    except OSError:
+        return
+    try:
+        readline.read_history_file(histfile)
+    except (FileNotFoundError, OSError):
+        pass
+    readline.set_history_length(1000)
+    import atexit
+
+    def _save() -> None:
+        try:
+            readline.write_history_file(histfile)
+        except OSError:
+            pass
+
+    atexit.register(_save)
 
 
 def _silence_tqdm() -> None:

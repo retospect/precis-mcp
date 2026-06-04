@@ -1,5 +1,15 @@
 -- 0009_chunk_kind_table.sql
 --
+-- F9 note (2026-06-04): shares the ``0009`` prefix with
+-- ``0009_ref_events.sql``. Not a bug — the migration runner
+-- (:class:`precis.store.migrate.Migrator`) keys on the full filename
+-- stem (``version=path.stem``), so the two files are tracked as
+-- distinct migrations. Alphabetical sort applies ``chunk_kind_table``
+-- before ``ref_events`` on a fresh DB. Existing prefix collision at
+-- ``0003`` is the same pattern (``app_state`` + ``provenance_rw_cache``)
+-- and has been live in prod without issue. Future migrations should
+-- pick a fresh prefix to avoid the visual ambiguity.
+--
 -- 1. Register ``table`` as a valid chunk_kind. Marker's pipeline now
 --    maps its ``table`` block type to this kind (was previously
 --    collapsing into ``paragraph``, which made RAKE produce noise

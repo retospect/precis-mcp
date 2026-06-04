@@ -81,6 +81,17 @@ of the same `paper_id` produces the same `pub_id`. `cite_key` is
 immutable except for collision-suffix resolution. See ADR 0008 for
 the full rationale and the deprecation of `slug`.
 
+**Numeric-ref ID stability (F13).** For the numeric-ref kinds
+(`memory`, `todo`, `gripe`, `fc`, `quest`, `conv`, `finding`,
+`citation`), the surfaced identifier is the bigserial `refs.ref_id`.
+These IDs are **permanent for the lifetime of the database** — no
+verb renumbers, and there is no maintenance path that compacts or
+re-issues them. Soft-deletion leaves the row in place with
+`deleted_at IS NOT NULL`, so the ID stays unique forever. Anything
+that records a handle like `memory:4066` (a link target, an external
+note, an exported transcript) can be treated as durable; the agent
+never has to refresh a numeric handle to keep it valid.
+
 ## Schema v2
 
 Per ADR 0005, this is **greenfield**: a single `0001_initial.sql`

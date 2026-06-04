@@ -630,10 +630,29 @@ def boot(
             from precis.jobs.oracle_sync import is_disabled_by_env, maybe_reingest
 
             if not is_disabled_by_env():
-                try:
-                    maybe_reingest(store=hub.store, embedder=hub.embedder)
-                except Exception:  # pragma: no cover — boot must not crash
-                    log.exception("oracle_sync: boot-time reconcile failed")
+                # F11: run oracle_sync on a daemon thread rather than
+                # inline. Synchronous reconcile blocked every CLI
+                # invocation behind the bge-m3 cold-start whenever the
+                # bundled YAML version was newer than the stored
+                # version — so read-only calls like ``view='bibtex'``
+                # paid 30-50 s for no reason. Backgrounding it keeps
+                # the boot path fast; the YAML changes propagate on
+                # the first read that actually completes after sync
+                # finishes (and the postgres advisory lock prevents
+                # concurrent syncs from stepping on each other).
+                import threading
+
+                def _bg_sync() -> None:
+                    try:
+                        maybe_reingest(store=hub.store, embedder=hub.embedder)
+                    except Exception:  # pragma: no cover
+                        log.exception("oracle_sync: background reconcile failed")
+
+                threading.Thread(
+                    target=_bg_sync,
+                    name="precis-oracle-sync",
+                    daemon=True,
+                ).start()
         _gated(SkillHandler)
         _gated(PaperHandler)
 
