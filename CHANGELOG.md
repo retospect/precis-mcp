@@ -8,6 +8,37 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+## v8.3.1 — migration runner: pg_dump compatibility (2026-06-05)
+
+### Fixed
+
+- **Migration runner now applies pg_dump-format files.** The
+  v8.3.0 second-greenfield `0001_initial.sql` is a verbatim
+  `pg_dump` of the cluster master, which mixes real SQL with two
+  psql-only artefacts that psycopg's simple-query `cur.execute()`
+  rejects: `\restrict` / `\unrestrict` PG-18+ dump markers
+  (parser error) and `COPY ... FROM stdin;` data blocks
+  (terminated by `\.`, requires the explicit `cur.copy()` API).
+  `Migrator.apply_all` now routes each migration through a
+  `_execute_dump_sql` preprocessor: psql `\restrict`/`\unrestrict`
+  lines are dropped, `COPY ... FROM stdin;` blocks stream their
+  tab-separated payload through `cur.copy()`, and everything else
+  buffers between blocks into one `cur.execute()` call. Hand-rolled
+  migrations (the pre-v8.3 shape) pass through unchanged because
+  they contain no backslash-prefixed lines.
+- **Migration ledger uses the schema-qualified
+  `public._migrations`.** A pg_dump body sets `search_path = ''`
+  early so its DDL is fully qualified; the same setting leaks into
+  the runner's post-apply `INSERT INTO _migrations`, so the bare
+  reference failed to resolve even though the table sat right
+  there. Qualifying the ledger reads (`_applied_versions`) and
+  writes (`apply_all`) closes the gap regardless of what the
+  migration body did to `search_path`.
+- **`store.tag_metadata` sample-refs query** referenced
+  `ref_identifiers.value`, a v1 column name that v2 renamed to
+  `id_value`. Surfaced once migrations could actually re-apply
+  cleanly; broke the four `precis-tag` get-metadata paths.
+
 ## v8.3.0 — second greenfield + deps catch-up (2026-06-05)
 
 ### Changed
