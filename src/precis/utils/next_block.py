@@ -1,24 +1,35 @@
-"""Render a column-aligned "Next:" hint block.
+"""Render a TOON "Next:" hint block (D2).
 
 Every handler view that wants to teach the agent the next useful call
 emits a "Next:" trailer. V1 had this everywhere and it was the
 brand-defining UX touch — agents learned drill-down, citations,
 alternate views just by reading these blocks.
 
-Usage:
+D2 (2026-06-04) flipped the format from column-aligned padded prose
+to a TOON table with natural-language headers:
 
-    from precis.utils.next_block import format_next_block
+    Next:
+    {if you want to	execute this call}
+    see the TOC	get(kind='paper', id='X', view='toc')
+    read first 5 chunks	get(kind='paper', id='X~0..5')
+    get the BibTeX entry	get(kind='paper', id='X', view='bibtex')
 
-    lines = format_next_block([
-        ("get(kind='paper', id='X~46..105/toc')", "drill into theory"),
-        ("get(kind='paper', id='X', view='bibtex')", "BibTeX citation"),
-    ])
-    response_body = body + "\\n\\nNext:\\n" + "\\n".join(lines)
+The header is a sentence fragment, not a schema name — column 1 is
+the agent's intent ("if you want to ..."), column 2 is the literal
+call to execute. Pairs with the active-voice wording rules in the
+storage-v2 design discussion.
+
+Backwards compat: callsites pass the same ``[(call, description)]``
+list they always did; the renderer transposes (description first,
+call second) so the audit at callsites only changes the *strings*,
+not the data shape.
 
 Pure logic — no DB, no IO. Just string formatting.
 """
 
 from __future__ import annotations
+
+from precis.format import render_agent_table
 
 
 def format_next_block(
@@ -26,25 +37,26 @@ def format_next_block(
     *,
     indent: str = "  ",
 ) -> list[str]:
-    """Render `(call, description)` pairs as column-aligned hint lines.
+    """Render ``(call, description)`` pairs as the TOON Next-block lines.
 
-    Output looks like::
+    Returns the rendered table as a list of lines (no leading
+    ``Next:`` header — :func:`render_next_section` adds that).
+    Empty list returns ``[]``.
 
-        get(kind='paper', id='X~46..105/toc')   - drill into theory
-        get(kind='paper', id='X', view='bibtex') - BibTeX citation
-
-    The widest call sets the column for everyone so the separators line
-    up. Empty list returns ``[]``.
-
-    The separator is ASCII ``-`` (not em-dash). Em-dash is 3 UTF-8
-    bytes and tokenises as 2-3 tokens in some smaller / quantised
-    model tokenisers; ASCII hyphen is universally one token and
-    one byte. Loses the typographic polish, gains tokeniser safety.
+    ``indent`` is kept in the signature for legacy callsites; D2's
+    TOON renderer doesn't indent rows (the table format takes care
+    of alignment via tabs), so the argument is now ignored.
     """
+    del indent  # legacy; TOON rows don't need indentation
     if not calls:
         return []
-    width = max(len(call) for call, _ in calls)
-    return [f"{indent}{call:<{width}}  - {desc}" for call, desc in calls]
+    rows: list[dict[str, str]] = []
+    for call, desc in calls:
+        rows.append({"if you want to": desc, "execute this call": call})
+    table = render_agent_table(
+        rows, schema=["if you want to", "execute this call"]
+    )
+    return table.splitlines()
 
 
 def render_next_section(calls: list[tuple[str, str]]) -> str:

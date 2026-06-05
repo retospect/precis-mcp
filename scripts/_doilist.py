@@ -13,6 +13,7 @@ Env:
     PRECIS_DATABASE_URL   default postgresql://acatome:acatome@127.0.0.1:5432/precis
     UNPAYWALL_EMAIL       required for --download (Unpaywall ToS)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,6 +63,7 @@ def log(msg: str) -> None:
 
 # ---------- extraction ----------
 
+
 def clean_doi(raw: str) -> str:
     """Strip trailing markdown / URL / formatting junk from an extracted DOI.
 
@@ -105,6 +107,7 @@ def scan_dir(root: Path) -> set[str]:
 
 # ---------- precis lookup ----------
 
+
 def precis_known_identifiers() -> set[str]:
     """Every identifier string precis has indexed, across all schemes.
 
@@ -133,7 +136,10 @@ def precis_known_identifiers() -> set[str]:
     try:
         import psycopg  # type: ignore
     except ImportError:
-        print("  ! psycopg not available; falling back to psql subprocess", file=sys.stderr)
+        print(
+            "  ! psycopg not available; falling back to psql subprocess",
+            file=sys.stderr,
+        )
         return _psql_known_identifiers(db_url)
     out: set[str] = set()
     with psycopg.connect(db_url) as conn, conn.cursor() as cur:
@@ -160,6 +166,7 @@ def _psql_known_identifiers(db_url: str) -> set[str]:
     ``kind='paper'`` plus the synthesised arXiv DOI form.
     """
     import subprocess
+
     sql = (
         "SELECT pi.value FROM ref_identifiers pi "
         "JOIN refs r ON r.id = pi.ref_id "
@@ -172,7 +179,9 @@ def _psql_known_identifiers(db_url: str) -> set[str]:
     )
     res = subprocess.run(
         ["psql", db_url, "-At", "-c", sql],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if res.returncode != 0:
         print(f"  ! psql failed: {res.stderr}", file=sys.stderr)
@@ -187,12 +196,18 @@ def _psql_known_identifiers(db_url: str) -> set[str]:
 # retrying with backoff and MUST NOT poison the .doi_status.json cache —
 # a transient network blip should not look like a permanent "invalid"
 # verdict.
-_TRANSIENT_EXCS = (urllib.error.URLError, TimeoutError,
-                   json.JSONDecodeError, ConnectionError)
+_TRANSIENT_EXCS = (
+    urllib.error.URLError,
+    TimeoutError,
+    json.JSONDecodeError,
+    ConnectionError,
+)
 
 
 def validate_doi(
-    doi: str, timeout: float = 5.0, attempts: int = 2,
+    doi: str,
+    timeout: float = 5.0,
+    attempts: int = 2,
 ) -> bool | None:
     """Hit the doi.org handle API.
 
@@ -217,9 +232,11 @@ def validate_doi(
         except _TRANSIENT_EXCS as e:
             last_err = e
             if i < attempts - 1:
-                time.sleep(1.5 * (2 ** i))  # 1.5s, 3s, ...
-    print(f"  ? validate {doi} (transient, gave up after {attempts}): {last_err}",
-          file=sys.stderr)
+                time.sleep(1.5 * (2**i))  # 1.5s, 3s, ...
+    print(
+        f"  ? validate {doi} (transient, gave up after {attempts}): {last_err}",
+        file=sys.stderr,
+    )
     return None
 
 
@@ -233,17 +250,19 @@ def _interpret_crossref_msg(msg: dict) -> str:
     """Map a Crossref ``message`` dict to ``valid``/``skip:retracted``."""
     if (msg.get("subtype") or "").lower() == "retraction":
         return "skip:retracted"
-    for t in (msg.get("title") or []):
+    for t in msg.get("title") or []:
         if _RETRACT_TITLE_RE.search(t or ""):
             return "skip:retracted"
-    for upd in (msg.get("update-to") or []):
+    for upd in msg.get("update-to") or []:
         if (upd.get("type") or "").lower() == "retraction":
             return "skip:retracted"
     return "valid"
 
 
 def classify_doi(
-    doi: str, timeout: float = 8.0, attempts: int = 2,
+    doi: str,
+    timeout: float = 8.0,
+    attempts: int = 2,
 ) -> str | None:
     """Classify a DOI via Crossref + doi.org fallback.
 
@@ -260,7 +279,8 @@ def classify_doi(
     url = f"https://api.crossref.org/works/{urllib.parse.quote(doi, safe='/')}"
     email = os.environ.get("UNPAYWALL_EMAIL", "doilist@example.invalid")
     req = urllib.request.Request(
-        url, headers={"User-Agent": f"doilist/0.2 (mailto:{email})"})
+        url, headers={"User-Agent": f"doilist/0.2 (mailto:{email})"}
+    )
 
     last_err: Exception | None = None
     fallback = False  # set when Crossref gives up but doi.org might still know
@@ -268,7 +288,8 @@ def classify_doi(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return _interpret_crossref_msg(
-                    json.loads(r.read()).get("message") or {})
+                    json.loads(r.read()).get("message") or {}
+                )
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 # Crossref polite-pool throttle. Back off harder than the
@@ -287,7 +308,7 @@ def classify_doi(
         except _TRANSIENT_EXCS as e:
             last_err = e
             if i < attempts - 1:
-                time.sleep(1.5 * (2 ** i))  # 1.5s, 3s, ...
+                time.sleep(1.5 * (2**i))  # 1.5s, 3s, ...
 
     if fallback:
         fb = validate_doi(doi, timeout=timeout, attempts=attempts)
@@ -297,8 +318,10 @@ def classify_doi(
             return "invalid"
         return None  # doi.org also unreachable; retry next run.
 
-    print(f"  ? classify {doi} (transient, gave up after {attempts}): {last_err}",
-          file=sys.stderr)
+    print(
+        f"  ? classify {doi} (transient, gave up after {attempts}): {last_err}",
+        file=sys.stderr,
+    )
     return None
 
 
@@ -314,7 +337,7 @@ def read_queue() -> list[str]:
     for line in QUEUE.read_text().splitlines():
         line = line.strip()
         if line.startswith("- https://doi.org/"):
-            tok = line[len("- https://doi.org/"):].split(None, 1)[0]
+            tok = line[len("- https://doi.org/") :].split(None, 1)[0]
             if tok:
                 out.append(tok)
     return out
@@ -323,12 +346,15 @@ def read_queue() -> list[str]:
 # Map free-form annotation text -> canonical skip reason. First match wins.
 # All matches case-insensitive; checked against the annotation text only.
 _ANNOTATION_RULES: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bretract", re.I),                       "retracted"),
-    (re.compile(r"\bwithdrawn\b", re.I),                   "retracted"),
+    (re.compile(r"\bretract", re.I), "retracted"),
+    (re.compile(r"\bwithdrawn\b", re.I), "retracted"),
     (re.compile(r"book\s*to\s*buy|purchase|to\s*buy", re.I), "purchase-required"),
-    (re.compile(r"\bpaywall|expensive|\$\d+", re.I),        "paywall"),
+    (re.compile(r"\bpaywall|expensive|\$\d+", re.I), "paywall"),
     (re.compile(r"abstract[-\s]?only|poster|meeting\s*abs", re.I), "abstract-only"),
-    (re.compile(r"does\s*not\s*exist|not\s*real|404|not\s*found|missing", re.I), "not-found"),
+    (
+        re.compile(r"does\s*not\s*exist|not\s*real|404|not\s*found|missing", re.I),
+        "not-found",
+    ),
     (re.compile(r"out\s*of\s*scope|irrelevant|not\s*relevant", re.I), "out-of-scope"),
 ]
 
@@ -356,7 +382,7 @@ def read_queue_annotations() -> dict[str, str]:
         line = line.strip()
         if not line.startswith("- https://doi.org/"):
             continue
-        rest = line[len("- https://doi.org/"):]
+        rest = line[len("- https://doi.org/") :]
         parts = rest.split(None, 1)
         if len(parts) < 2:
             continue
@@ -368,7 +394,11 @@ def read_queue_annotations() -> dict[str, str]:
 
 
 def write_queue(dois: list[str]) -> None:
-    body = QUEUE_HEADER + "\n".join(f"- https://doi.org/{d}" for d in sorted(set(dois))) + "\n"
+    body = (
+        QUEUE_HEADER
+        + "\n".join(f"- https://doi.org/{d}" for d in sorted(set(dois)))
+        + "\n"
+    )
     QUEUE.write_text(body)
 
 
@@ -387,8 +417,11 @@ def read_state() -> dict[str, str]:
         except json.JSONDecodeError as e:
             log(f"  ! state file corrupt ({e}); starting fresh")
             return {}
-        return {k.lower(): v for k, v in data.get("dois", {}).items()
-                if isinstance(v, str) and v}
+        return {
+            k.lower(): v
+            for k, v in data.get("dois", {}).items()
+            if isinstance(v, str) and v
+        }
 
     # Legacy migration
     state: dict[str, str] = {}
@@ -398,7 +431,7 @@ def read_state() -> dict[str, str]:
             if line.startswith("- "):
                 tok = line[2:].split(" ", 1)[0]
                 if tok.startswith("https://doi.org/"):
-                    tok = tok[len("https://doi.org/"):]
+                    tok = tok[len("https://doi.org/") :]
                 if DOI_RE.fullmatch(tok):
                     state[tok.lower()] = "valid"
     if LEGACY_INVALID.exists():
@@ -416,9 +449,9 @@ def write_state(state: dict[str, str]) -> None:
         "_comment": STATE_HEADER.strip(),
         "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "counts": {
-            "valid":   sum(1 for v in state.values() if v == "valid"),
+            "valid": sum(1 for v in state.values() if v == "valid"),
             "invalid": sum(1 for v in state.values() if v == "invalid"),
-            "skip":    sum(1 for v in state.values() if v.startswith("skip")),
+            "skip": sum(1 for v in state.values() if v.startswith("skip")),
         },
         "dois": dict(sorted(state.items())),
     }
@@ -427,13 +460,21 @@ def write_state(state: dict[str, str]) -> None:
 
 # ---------- download ----------
 
+
 def unpaywall_pdf_url(doi: str, email: str, timeout: float = 15.0) -> str | None:
     url = f"https://api.unpaywall.org/v2/{urllib.parse.quote(doi, safe='/')}?email={urllib.parse.quote(email)}"
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT.format(email=email)})
+    req = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT.format(email=email)}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read())
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        json.JSONDecodeError,
+    ) as e:
         print(f"  ? unpaywall {doi}: {e}", file=sys.stderr)
         return None
     loc = data.get("best_oa_location") or {}
@@ -452,7 +493,9 @@ def fetch_pdf(doi: str, email: str) -> Path | None:
     pdf_url = unpaywall_pdf_url(doi, email)
     if not pdf_url:
         return None
-    req = urllib.request.Request(pdf_url, headers={"User-Agent": USER_AGENT.format(email=email)})
+    req = urllib.request.Request(
+        pdf_url, headers={"User-Agent": USER_AGENT.format(email=email)}
+    )
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             data = r.read()
@@ -460,7 +503,10 @@ def fetch_pdf(doi: str, email: str) -> Path | None:
         print(f"  ! fetch {doi}: {e}", file=sys.stderr)
         return None
     if not data.startswith(b"%PDF"):
-        print(f"  ! fetch {doi}: not a PDF (got {len(data)} bytes, head={data[:8]!r})", file=sys.stderr)
+        print(
+            f"  ! fetch {doi}: not a PDF (got {len(data)} bytes, head={data[:8]!r})",
+            file=sys.stderr,
+        )
         return None
     target.write_bytes(data)
     return target
@@ -501,8 +547,11 @@ def download_loop(interval: float) -> None:
 
 # ---------- top-level ----------
 
+
 def _validate_many(
-    dois: list[str], workers: int, state: dict[str, str],
+    dois: list[str],
+    workers: int,
+    state: dict[str, str],
 ) -> tuple[int, int, int, int]:
     """Validate a list of DOIs, mutating ``state`` in place.
 
@@ -538,14 +587,16 @@ def _validate_many(
         for doi in dois:
             try:
                 status = classify_doi(doi)
-            except Exception:  # noqa: BLE001 — defensive: never abort the loop
+            except Exception:
                 status = None
             _absorb(doi, status)
             done += 1
             if done % 10 == 0 or done == len(dois):
                 rate = done / max(time.time() - t0, 0.001)
-                log(f"  classified {done}/{len(dois)} ({rate:.1f}/s)  "
-                    f"valid+={nv} invalid+={ni} retracted+={nr} transient={nt}")
+                log(
+                    f"  classified {done}/{len(dois)} ({rate:.1f}/s)  "
+                    f"valid+={nv} invalid+={ni} retracted+={nr} transient={nt}"
+                )
             if done % 25 == 0:
                 write_state(state)  # checkpoint
         return nv, ni, nr, nt
@@ -557,13 +608,15 @@ def _validate_many(
             done += 1
             try:
                 status = fut.result()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 status = None
             _absorb(doi, status)
             if done % 10 == 0 or done == len(dois):
                 rate = done / max(time.time() - t0, 0.001)
-                log(f"  classified {done}/{len(dois)} ({rate:.1f}/s)  "
-                    f"valid+={nv} invalid+={ni} retracted+={nr} transient={nt}")
+                log(
+                    f"  classified {done}/{len(dois)} ({rate:.1f}/s)  "
+                    f"valid+={nv} invalid+={ni} retracted+={nr} transient={nt}"
+                )
             if done % 25 == 0:
                 write_state(state)  # checkpoint
     return nv, ni, nr, nt
@@ -583,7 +636,9 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
     log("loading known identifiers from precis (all schemes) ...")
     known = precis_known_identifiers()
-    log(f"  precis has: {len(known)} identifier strings (DOIs, arxiv ids, S2, PubMed, ...)")
+    log(
+        f"  precis has: {len(known)} identifier strings (DOIs, arxiv ids, S2, PubMed, ...)"
+    )
 
     state = read_state()
     n_valid = sum(1 for v in state.values() if v == "valid")
@@ -597,8 +652,9 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
     # Validate anything from sources we haven't classified yet (and isn't
     # already in precis — those are implicitly valid).
-    candidates = sorted({d for d in raw
-                         if d.lower() not in known and d.lower() not in state})
+    candidates = sorted(
+        {d for d in raw if d.lower() not in known and d.lower() not in state}
+    )
     if args.no_validate:
         log(f"--no-validate: skipping doi.org check for {len(candidates)} DOI(s)")
     else:
@@ -633,18 +689,29 @@ def cmd_scan(args: argparse.Namespace) -> None:
     # whose state is either "valid" or unknown (i.e. unclassified). Cached
     # "invalid"/"skip:*" entries from prior runs still drop out.
     if args.no_validate:
-        queue = sorted({d for d in raw if d.lower() not in known
-                        and state.get(d.lower(), "valid") == "valid"})
+        queue = sorted(
+            {
+                d
+                for d in raw
+                if d.lower() not in known and state.get(d.lower(), "valid") == "valid"
+            }
+        )
     else:
-        queue = sorted({d for d in raw
-                        if state.get(d.lower()) == "valid"
-                        and d.lower() not in known})
+        queue = sorted(
+            {
+                d
+                for d in raw
+                if state.get(d.lower()) == "valid" and d.lower() not in known
+            }
+        )
     write_queue(queue)
 
     n_valid_final = sum(1 for v in state.values() if v == "valid")
     n_invalid_final = sum(1 for v in state.values() if v == "invalid")
     n_skip_final = sum(1 for v in state.values() if v.startswith("skip"))
-    log(f"cache:  valid={n_valid_final} invalid={n_invalid_final} skip={n_skip_final} -> {STATE_FILE.name}")
+    log(
+        f"cache:  valid={n_valid_final} invalid={n_invalid_final} skip={n_skip_final} -> {STATE_FILE.name}"
+    )
     log(f"queue:  {len(queue)} -> {QUEUE.name}")
 
     if args.download:
@@ -678,7 +745,9 @@ def cmd_recheck(args: argparse.Namespace) -> None:
     log(f"  cleaned: {len(re_cleaned)} candidates (dropped {dropped} junk)")
 
     # Don't re-check anything already 'valid' under the cleaned form.
-    candidates = sorted({orig for cl, orig in re_cleaned.items() if state.get(cl) != "valid"})
+    candidates = sorted(
+        {orig for cl, orig in re_cleaned.items() if state.get(cl) != "valid"}
+    )
     log(f"  re-validating {len(candidates)} DOI(s) ...")
     nv, ni, nr, nt = _validate_many(candidates, args.workers, state)
 
@@ -712,7 +781,7 @@ def cmd_skip(args: argparse.Namespace) -> None:
     for doi in args.dois:
         cleaned = clean_doi(doi)
         if cleaned.startswith("https://doi.org/"):
-            cleaned = cleaned[len("https://doi.org/"):]
+            cleaned = cleaned[len("https://doi.org/") :]
         if not DOI_RE.fullmatch(cleaned):
             log(f"  ! not a DOI: {doi!r}")
             continue
@@ -731,7 +800,7 @@ def cmd_unskip(args: argparse.Namespace) -> None:
     for doi in args.dois:
         cleaned = clean_doi(doi)
         if cleaned.startswith("https://doi.org/"):
-            cleaned = cleaned[len("https://doi.org/"):]
+            cleaned = cleaned[len("https://doi.org/") :]
         key = cleaned.lower()
         if key in state and state[key].startswith("skip"):
             del state[key]
@@ -772,7 +841,10 @@ def precis_doi_to_slug_map() -> dict[str, str]:
     try:
         import psycopg  # type: ignore
     except ImportError:
-        print("  ! psycopg not available; falling back to psql subprocess", file=sys.stderr)
+        print(
+            "  ! psycopg not available; falling back to psql subprocess",
+            file=sys.stderr,
+        )
         return _psql_doi_to_slug_map(db_url)
     out: dict[str, str] = {}
     with psycopg.connect(db_url) as conn, conn.cursor() as cur:
@@ -796,6 +868,7 @@ def precis_doi_to_slug_map() -> dict[str, str]:
 def _psql_doi_to_slug_map(db_url: str) -> dict[str, str]:
     """``psql`` subprocess fallback when psycopg isn't importable."""
     import subprocess
+
     sql = (
         "SELECT pi.scheme || E'\t' || pi.value || E'\t' || r.slug "
         "FROM ref_identifiers pi "
@@ -805,7 +878,9 @@ def _psql_doi_to_slug_map(db_url: str) -> dict[str, str]:
     )
     res = subprocess.run(
         ["psql", db_url, "-At", "-c", sql],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if res.returncode != 0:
         print(f"  ! psql failed: {res.stderr}", file=sys.stderr)
@@ -862,7 +937,7 @@ def _preserved_tail(tail: str) -> str:
                 out.append(tail[i:])
                 i = n
                 continue
-            out.append(tail[i:close + 1])
+            out.append(tail[i : close + 1])
             i = close + 1
             continue
         break
@@ -896,7 +971,7 @@ def _rewrite_dois_in_text(text: str, mapping: dict[str, str]) -> tuple[str, int,
             return match.group(0)
         counts["replaced"] += 1
         # raw == cleaned + tail since clean_doi only strips suffix chars.
-        tail = raw[len(cleaned):] if raw.startswith(cleaned) else ""
+        tail = raw[len(cleaned) :] if raw.startswith(cleaned) else ""
         return f"[{slug}]{_preserved_tail(tail)}"
 
     text = URL_DOI_RE.sub(lambda m: _replace(m, 1), text)
@@ -952,47 +1027,83 @@ def cmd_convert_doi_to_slugs(args: argparse.Namespace) -> None:
             files_changed += 1
 
     verb = "would change" if args.dry_run else "changed"
-    log(f"done. files: {files_seen} scanned, {files_changed} {verb}. "
-        f"DOIs: {total_replaced}/{total_seen} replaced.")
+    log(
+        f"done. files: {files_seen} scanned, {files_changed} {verb}. "
+        f"DOIs: {total_replaced}/{total_seen} replaced."
+    )
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("scan", help="extract DOIs, dedupe against precis, write queue")
-    s.add_argument("--download", action="store_true", help="after scanning, slowly fetch PDFs")
-    s.add_argument("--interval", type=float, default=60.0, help="seconds between fetches (default 60)")
-    s.add_argument("--workers", type=int, default=1,
-                   help="parallel doi.org validators (default 1; bump only if "
-                        "you see no handshake timeouts)")
-    s.add_argument("--revalidate", action="store_true",
-                   help="re-check DOIs previously logged as invalid")
-    s.add_argument("--no-validate", action="store_true",
-                   help="skip the doi.org/Crossref handshake entirely; queue "
-                        "every well-formed DOI not already in precis. Cached "
-                        "invalid/skip entries from prior runs still drop out.")
+    s.add_argument(
+        "--download", action="store_true", help="after scanning, slowly fetch PDFs"
+    )
+    s.add_argument(
+        "--interval",
+        type=float,
+        default=60.0,
+        help="seconds between fetches (default 60)",
+    )
+    s.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="parallel doi.org validators (default 1; bump only if "
+        "you see no handshake timeouts)",
+    )
+    s.add_argument(
+        "--revalidate",
+        action="store_true",
+        help="re-check DOIs previously logged as invalid",
+    )
+    s.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="skip the doi.org/Crossref handshake entirely; queue "
+        "every well-formed DOI not already in precis. Cached "
+        "invalid/skip entries from prior runs still drop out.",
+    )
     s.set_defaults(func=cmd_scan)
 
     d = sub.add_parser("download", help="fetch PDFs for queued DOIs, slowly")
-    d.add_argument("--interval", type=float, default=60.0, help="seconds between fetches (default 60)")
+    d.add_argument(
+        "--interval",
+        type=float,
+        default=60.0,
+        help="seconds between fetches (default 60)",
+    )
     d.set_defaults(func=cmd_download)
 
-    r = sub.add_parser("recheck", help="re-clean and re-validate previously-invalid DOIs")
-    r.add_argument("--workers", type=int, default=1,
-                   help="parallel doi.org validators (default 1; bump only if "
-                        "you see no handshake timeouts)")
+    r = sub.add_parser(
+        "recheck", help="re-clean and re-validate previously-invalid DOIs"
+    )
+    r.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="parallel doi.org validators (default 1; bump only if "
+        "you see no handshake timeouts)",
+    )
     r.set_defaults(func=cmd_recheck)
 
     sk = sub.add_parser(
         "skip",
         help="mark DOI(s) as skip (retracted/paywalled/unavailable)",
         description="Mark DOIs to be excluded from the queue. Recommended "
-                    "reason tags: retracted, purchase-required, paywall, "
-                    "abstract-only, not-found, out-of-scope.")
+        "reason tags: retracted, purchase-required, paywall, "
+        "abstract-only, not-found, out-of-scope.",
+    )
     sk.add_argument("dois", nargs="+", help="one or more DOIs (bare or as URLs)")
-    sk.add_argument("--reason", default=None,
-                    help="short tag, e.g. retracted, purchase-required, paywall")
+    sk.add_argument(
+        "--reason",
+        default=None,
+        help="short tag, e.g. retracted, purchase-required, paywall",
+    )
     sk.set_defaults(func=cmd_skip)
 
     us = sub.add_parser("unskip", help="clear skip status on DOI(s)")
@@ -1012,13 +1123,22 @@ def main() -> None:
             "are rewritten in place unless --dry-run is given."
         ),
     )
-    cv.add_argument("directory", nargs="?", default=".",
-                    help="directory to walk recursively (default: cwd)")
-    cv.add_argument("--ext", action="append", default=None,
-                    help="file extension to include; repeatable. "
-                         f"Default: {', '.join(DEFAULT_CONVERT_EXTS)}.")
-    cv.add_argument("--dry-run", action="store_true",
-                    help="report changes without writing")
+    cv.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="directory to walk recursively (default: cwd)",
+    )
+    cv.add_argument(
+        "--ext",
+        action="append",
+        default=None,
+        help="file extension to include; repeatable. "
+        f"Default: {', '.join(DEFAULT_CONVERT_EXTS)}.",
+    )
+    cv.add_argument(
+        "--dry-run", action="store_true", help="report changes without writing"
+    )
     cv.set_defaults(func=cmd_convert_doi_to_slugs)
 
     args = p.parse_args()

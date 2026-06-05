@@ -116,15 +116,50 @@ def _pos_to_db(pos: int | None) -> int:
 
 
 def _row_to_block(row: tuple) -> Block:
-    """Map a blocks row tuple in the order:
-    (id, ref_id, pos, slug, text, token_count, embedding, density, meta,
-     created_at, updated_at)
+    """Map a v2 chunks row tuple onto the Block dataclass.
+
+    Tuple layout (matches :data:`_CHUNKS_COLS` /
+    :data:`_CHUNKS_COLS_ALIASED`):
+      0 id           (= chunks.chunk_id)
+      1 ref_id
+      2 pos          (= chunks.ord)
+      3 slug         (= chunks.meta->>'slug', NULL for non-prose chunks)
+      4 text
+      5 token_count
+      6 embedding    (NULL unless JOINed against chunk_embeddings)
+      7 density      (NULL unless JOINed against chunk_tags / tags)
+      8 meta         (chunks.meta JSONB)
+      9 created_at
+      10 updated_at  (v2 chunks have no updated_at column; aliased to
+                     created_at by the SQL projection so the dataclass
+                     contract stays stable)
     """
     embedding = row[6]
     if embedding is not None and not isinstance(embedding, list):
         # pgvector returns numpy.ndarray when registered; coerce for stable
         # cross-version output.
         embedding = list(map(float, embedding))
+    # ``section_path`` lives in its own TEXT[] column on ``chunks``
+    # (v2; ADR 0018). For compatibility with code that still reads
+    # ``block.meta['section_path']`` (oracle entry-title resolver,
+    # paper TOC fallback, …), surface the array back into the meta
+    # dict so consumers don't have to learn the column split.
+    meta = dict(row[8] or {})
+    # ``section_path`` is appended to the projection by every Block-
+    # producing SELECT in this module. Defensively check the type:
+    # a caller that hand-rolls a projection without the column will
+    # pass row[:11] (no 12th elem) and the .get-style branch falls
+    # through cleanly.
+    section_path = row[11] if len(row) > 11 else None
+    if isinstance(section_path, (list, tuple)) and section_path:
+        meta.setdefault("section_path", list(section_path))
+    # F19a / F20: chunk_kind + keywords appended at the end of the
+    # projection. Optional positions (len(row) > 12 / > 13) keep
+    # legacy callers that hand-roll 11-element tuples working.
+    chunk_kind = row[12] if len(row) > 12 and row[12] else "paragraph"
+    keywords = row[13] if len(row) > 13 else None
+    if keywords is not None and not isinstance(keywords, list):
+        keywords = list(keywords)
     return Block(
         id=row[0],
         ref_id=row[1],
@@ -134,71 +169,187 @@ def _row_to_block(row: tuple) -> Block:
         token_count=row[5],
         embedding=embedding,
         density=row[7],
-        meta=row[8] or {},
+        meta=meta,
         created_at=row[9],
         updated_at=row[10],
+        chunk_kind=str(chunk_kind),
+        keywords=keywords,
     )
+
+
+# v2 chunk-column projection. Used by every SELECT that produces a
+# tuple consumed by :func:`_row_to_block`. The slug, embedding, and
+# density columns are virtual:
+#  - slug comes from ``chunks.meta->>'slug'`` (prose handlers store
+#    their stable citation handle there; non-prose chunks just return
+#    NULL).
+#  - embedding stays NULL on the projection — methods that need it
+#    use :data:`_CHUNKS_COLS_WITH_EMBEDDING` and add the JOIN.
+#  - density stays NULL on the projection — methods that need it
+#    use :data:`_CHUNKS_COLS_WITH_DENSITY` and add the JOIN against
+#    chunk_tags + tags filtered on ``namespace='DENSITY'``.
+# Phase 2 keeps embedding/density routing simple; Phase 3 will
+# introduce the JOIN variants for the search paths.
+_CHUNKS_COLS = (
+    "chunks.chunk_id AS id, chunks.ref_id, chunks.ord AS pos, "
+    "(chunks.meta->>'slug') AS slug, chunks.text, chunks.token_count, "
+    "NULL::vector AS embedding, "
+    "(SELECT t.value FROM chunk_tags ct "
+    "   JOIN tags t ON t.tag_id = ct.tag_id "
+    "   WHERE ct.chunk_id = chunks.chunk_id AND t.namespace = 'DENSITY' "
+    "   LIMIT 1) AS density, "
+    "chunks.meta, chunks.created_at, chunks.created_at AS updated_at, "
+    "chunks.section_path, chunks.chunk_kind, chunks.keywords"
+)
+_CHUNKS_COLS_ALIASED = (
+    "c.chunk_id AS id, c.ref_id, c.ord AS pos, "
+    "(c.meta->>'slug') AS slug, c.text, c.token_count, "
+    "NULL::vector AS embedding, "
+    "(SELECT t.value FROM chunk_tags ct "
+    "   JOIN tags t ON t.tag_id = ct.tag_id "
+    "   WHERE ct.chunk_id = c.chunk_id AND t.namespace = 'DENSITY' "
+    "   LIMIT 1) AS density, "
+    "c.meta, c.created_at, c.created_at AS updated_at, "
+    "c.section_path, c.chunk_kind, c.keywords"
+)
+#: Column count produced by the above projections. Slicing callers
+#: (search / random / list-blocks combined with refs) reference this
+#: constant rather than a hard-coded ``12`` so adding columns is a
+#: one-line change at the projection site.
+_CHUNKS_COLS_LEN = 14
 
 
 # ---------------------------------------------------------------------------
 # Shared ``SELECT ... FROM refs`` column list.
 #
 # Every caller that wants a row :func:`_row_to_ref` can map needs the
-# same 10 columns in the same order; hand-copying the list diverges
-# over time (MCP critic: the string was duplicated in 6+ locations
-# plus a handler layering break in ``_numeric_ref._fetch_endpoints``).
+# same columns in the same order; hand-copying the list diverges over
+# time (MCP critic: the string was duplicated in 6+ locations plus a
+# handler layering break in ``_numeric_ref._fetch_endpoints``).
+#
+# v2 schema notes:
+# - ``id`` is sourced from ``ref_id`` (the column was renamed in
+#   ``migrations/0001_initial.sql``); aliased here so callers' tuple
+#   shape stays stable.
+# - ``slug`` is sourced via a correlated subquery against
+#   ``ref_identifiers`` with ``id_kind='cite_key'``. Every
+#   slug-addressed kind stores its agent-facing slug there per ADR
+#   0008. Numeric kinds (memory/todo/gripe/fc) have no row and slug
+#   comes back ``NULL``.
+# - ``corpus_id`` is gone — the v1 corpus isolation didn't survive
+#   the v2 redesign (single-corpus deployment).
+# - New v2 columns (set_by/authors/year/human_verified_*/
+#   retraction_*/pdf_*) are projected too so the Ref dataclass has
+#   the full row.
+#
 # Keep the two variants in lock-step: ``_REFS_COLS`` for unaliased
 # queries (``FROM refs``), ``_REFS_COLS_ALIASED`` for queries that
 # alias the table as ``r`` (tag-filter + joins).
 # ---------------------------------------------------------------------------
 _REFS_COLS = (
-    "id, corpus_id, kind, slug, title, provider, meta, "
-    "created_at, updated_at, deleted_at"
+    "ref_id AS id, "
+    "(SELECT id_value FROM ref_identifiers "
+    " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key') AS slug, "
+    "kind, title, provider, meta, "
+    "created_at, updated_at, deleted_at, "
+    "set_by, authors, year, "
+    "human_verified_at, human_verified_by, human_verified_note, "
+    "retraction_status, retracted_at, retraction_reason, "
+    "retraction_url, retraction_checked_at, "
+    "pdf_sha256, pdf_pages::text AS pdf_pages, pdf_role"
 )
 _REFS_COLS_ALIASED = (
-    "r.id, r.corpus_id, r.kind, r.slug, r.title, r.provider, r.meta, "
-    "r.created_at, r.updated_at, r.deleted_at"
+    "r.ref_id AS id, "
+    "(SELECT id_value FROM ref_identifiers "
+    " WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS slug, "
+    "r.kind, r.title, r.provider, r.meta, "
+    "r.created_at, r.updated_at, r.deleted_at, "
+    "r.set_by, r.authors, r.year, "
+    "r.human_verified_at, r.human_verified_by, r.human_verified_note, "
+    "r.retraction_status, r.retracted_at, r.retraction_reason, "
+    "r.retraction_url, r.retraction_checked_at, "
+    "r.pdf_sha256, r.pdf_pages::text AS pdf_pages, r.pdf_role"
 )
 
 
 def _row_to_ref(row: tuple) -> Ref:
-    """Map a refs row tuple in the order:
-    (id, corpus_id, kind, slug, title, provider, meta,
-     created_at, updated_at, deleted_at)
+    """Map a v2 refs row tuple. Column order matches :data:`_REFS_COLS`.
 
-    The column list is declared once in :data:`_REFS_COLS` /
-    :data:`_REFS_COLS_ALIASED`; every ``SELECT`` that feeds this
-    mapper should reference one of those constants so drift between
+    Layout:
+      0 id (= ref_id)
+      1 slug (from ref_identifiers correlated subquery; may be NULL)
+      2 kind
+      3 title
+      4 provider
+      5 meta
+      6 created_at
+      7 updated_at
+      8 deleted_at
+      9 set_by
+      10 authors
+      11 year
+      12 human_verified_at
+      13 human_verified_by
+      14 human_verified_note
+      15 retraction_status
+      16 retracted_at
+      17 retraction_reason
+      18 retraction_url
+      19 retraction_checked_at
+      20 pdf_sha256
+      21 pdf_pages (text)
+      22 pdf_role
+
+    Every ``SELECT`` that feeds this mapper should reference
+    :data:`_REFS_COLS` / :data:`_REFS_COLS_ALIASED` so drift between
     the SQL projection and the tuple layout can't happen.
     """
     return Ref(
         id=row[0],
-        corpus_id=row[1],
+        slug=row[1],
         kind=row[2],
-        slug=row[3],
-        title=row[4],
-        provider=row[5],
-        meta=row[6] or {},
-        created_at=row[7],
-        updated_at=row[8],
-        deleted_at=row[9],
+        title=row[3],
+        provider=row[4],
+        meta=row[5] or {},
+        created_at=row[6],
+        updated_at=row[7],
+        deleted_at=row[8],
+        set_by=row[9],
+        authors=row[10],
+        year=row[11],
+        human_verified_at=row[12],
+        human_verified_by=row[13],
+        human_verified_note=row[14],
+        retraction_status=row[15],
+        retracted_at=row[16],
+        retraction_reason=row[17],
+        retraction_url=row[18],
+        retraction_checked_at=row[19],
+        pdf_sha256=row[20],
+        pdf_pages=row[21],
+        pdf_role=row[22],
     )
 
 
 def _row_to_link(row: tuple) -> Link:
-    """Map a links row tuple in the order:
+    """Map a v2 links row tuple in the order:
     (id, src_ref_id, src_pos, dst_ref_id, dst_pos,
      relation, set_by, meta, created_at)
 
-    The DB sentinel ``pos = -1`` is converted back to ``None`` at the
-    boundary so callers always see "ref-level" as Pythonic ``None``.
+    v2 schema uses ``links.link_id`` (aliased to id in the SELECT)
+    and ``src_chunk_id``/``dst_chunk_id`` FKs. The link queries
+    LEFT JOIN ``chunks`` to translate chunk_id back to ord (the
+    historical ``pos`` field). When the chunk_id is NULL (ref-level
+    link), the LEFT JOIN yields NULL for ord, which arrives here as
+    ``None`` directly — no -1 sentinel translation needed (v2
+    dropped the sentinel in favour of NULL).
     """
     return Link(
         id=row[0],
         src_ref_id=row[1],
-        src_pos=row[2] if row[2] != _REF_LEVEL_POS else None,
+        src_pos=row[2],
         dst_ref_id=row[3],
-        dst_pos=row[4] if row[4] != _REF_LEVEL_POS else None,
+        dst_pos=row[4],
         relation=row[5],
         set_by=row[6],
         meta=row[7] or {},

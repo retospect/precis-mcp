@@ -1,11 +1,26 @@
 """Ref-level CRUD + lexical search. Mixin on :class:`precis.store.Store`.
 
-Ref is the hub row in the schema: one row per paper / memory /
-todo / conversation / oracle / quest / ..., with a ``corpus_id``
-and a ``kind``. All domain mixins ultimately touch a ref_id;
-this module owns the ref rows themselves plus the title-level
-lexical search that powers ``search(kind=..., q=...)`` for
-slug-addressed kinds.
+Ref is the hub row in the v2 schema: one row per paper / memory / todo /
+conversation / oracle / quest / .... All domain mixins ultimately touch
+a ref_id; this module owns the ref rows themselves plus the title-level
+lexical search that powers ``search(kind=..., q=...)`` for slug-addressed
+kinds.
+
+v2 schema notes:
+
+- ``refs.id`` was renamed to ``refs.ref_id``; ``_REFS_COLS`` aliases
+  it back to ``id`` so callers' tuple shape stays stable.
+- ``refs.slug`` was removed; slugs live in ``ref_identifiers`` with
+  ``id_kind='cite_key'`` per ADR 0008. ``insert_ref`` writes the
+  identifier row when ``slug is not None``; ``get_ref`` /
+  ``fetch_ref_ids_by_slugs`` JOIN through ``ref_identifiers`` for
+  slug lookups.
+- ``refs.corpus_id`` is gone (no corpus table in v2).
+- ``refs.title_tsv`` is gone — ``search_refs_lexical`` /
+  ``count_refs_lexical`` compute the tsv inline. The v2-recommended
+  path for title search is ``chunks.tsv`` on the ``card_title`` chunk;
+  this fallback stays here so callers that don't go through chunks
+  still work, and Phase 3 will switch to the card-chunk variant.
 
 The mixin assumes the concrete Store provides:
 
@@ -54,12 +69,13 @@ class RefsMixin:
     def insert_ref(
         self,
         *,
-        corpus_id: int,
         kind: str,
         slug: str | None,
         title: str,
         provider: str | None = None,
         meta: dict[str, Any] | None = None,
+        authors: list[dict[str, Any]] | None = None,
+        year: int | None = None,
         conn: Connection | None = None,
     ) -> Ref:
         """Insert a ref. Slug rules:
@@ -69,23 +85,65 @@ class RefsMixin:
 
         Enforced at app layer (the DB ``CHECK`` can't subquery the
         ``kinds`` reference table).
+
+        ``authors`` / ``year`` are first-class ``refs`` columns in
+        the v2 schema; pass them here so renderers that read
+        ``Ref.authors`` / ``Ref.year`` (bibtex, RIS, EndNote) see
+        them. Stashing them in ``meta`` instead leaves the columns
+        NULL and the renderer with nothing to show — which was the
+        pre-fix shape and the cause of ~30 test_paper failures.
+
+        v2 inserts in two steps inside the same connection: first the
+        ``refs`` row, then (when ``slug is not None``) a row in
+        ``ref_identifiers`` with ``id_kind='cite_key'``. Both rows
+        commit together — callers pass a shared ``conn`` if they need
+        the pair to participate in an outer transaction.
         """
         self._validate_slug_for_kind(kind, slug, conn=conn)
 
-        sql = (
-            "INSERT INTO refs (corpus_id, kind, slug, title, provider, meta) "
+        insert_sql = (
+            "INSERT INTO refs (kind, title, authors, year, provider, meta) "
             "VALUES (%s, %s, %s, %s, %s, %s) "
-            f"RETURNING {_REFS_COLS}"
+            "RETURNING ref_id"
         )
-        params = (corpus_id, kind, slug, title, provider, Jsonb(meta or {}))
+        insert_params: tuple[Any, ...] = (
+            kind,
+            title,
+            Jsonb(authors) if authors is not None else None,
+            year,
+            provider,
+            Jsonb(meta or {}),
+        )
+
+        def _do(c: Connection) -> Ref:
+            row = c.execute(insert_sql, insert_params).fetchone()
+            assert row is not None
+            ref_id = int(row[0])
+            if slug is not None:
+                # Routing decision (ADR 0008 + plan): every slug-addressed
+                # kind uses id_kind='cite_key' uniformly so the
+                # correlated subquery in ``_REFS_COLS`` resolves with a
+                # single predicate.
+                c.execute(
+                    "INSERT INTO ref_identifiers "
+                    "(id_kind, id_value, ref_id, source) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (id_kind, id_value) DO NOTHING",
+                    ("cite_key", slug, ref_id, provider),
+                )
+            # Re-fetch the row with the full _REFS_COLS projection so
+            # the returned ``Ref`` carries the slug we just wrote.
+            fresh = c.execute(
+                f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            assert fresh is not None
+            return _row_to_ref(fresh)
 
         if conn is not None:
-            row = conn.execute(sql, params).fetchone()
-        else:
-            with self.pool.connection() as c:
-                row = c.execute(sql, params).fetchone()
-        assert row is not None
-        return _row_to_ref(row)
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
 
     def get_ref(
         self,
@@ -96,37 +154,53 @@ class RefsMixin:
     ) -> Ref | None:
         """Look up by (kind, public id).
 
-        Public id = slug for slug kinds, ``int(refs.id)`` for numeric
-        kinds. The caller's ``isinstance`` of ``id`` picks the column.
+        Public id = slug for slug kinds (resolved via ``ref_identifiers``
+        with ``id_kind='cite_key'``), ``int(refs.ref_id)`` for numeric
+        kinds. The caller's ``isinstance`` of ``id`` picks the path.
         """
         if isinstance(id, int):
-            sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND id = %s"
+            sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND ref_id = %s"
             params: tuple[Any, ...] = (kind, id)
-        else:
-            sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND slug = %s"
-            params = (kind, id)
-        if not include_deleted:
-            sql += " AND deleted_at IS NULL"
+            if not include_deleted:
+                sql += " AND deleted_at IS NULL"
+            with self.pool.connection() as conn:
+                row = conn.execute(sql, params).fetchone()
+            return _row_to_ref(row) if row is not None else None
 
+        # Slug lookup. Resolve via ref_identifiers first; then fetch
+        # the full ref row. Two queries beats one big JOIN here because
+        # the ref_identifiers pkey lookup is the fast path; the JOIN
+        # would force a hash join under cost-based planning.
         with self.pool.connection() as conn:
-            row = conn.execute(sql, params).fetchone()
+            ident_row = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = 'cite_key' AND id_value = %s",
+                (id,),
+            ).fetchone()
+            if ident_row is None:
+                return None
+            ref_id = int(ident_row[0])
+            sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND ref_id = %s"
+            if not include_deleted:
+                sql += " AND deleted_at IS NULL"
+            row = conn.execute(sql, (kind, ref_id)).fetchone()
         return _row_to_ref(row) if row is not None else None
 
     def find_paper_slug_by_doi(self, doi: str) -> str | None:
-        """Look up a paper's slug by its DOI.
+        """Look up a paper's slug (cite_key) by its DOI.
 
         Used by the paper ``get`` entry point so callers can address a
         paper by its DOI (``10.1111/jnc.13915``) in addition to its
-        minted slug — a convenience for agents that have a
-        bibliography full of DOIs from an external source and haven't
-        yet learned the local slug naming convention.
+        minted slug — a convenience for agents that have a bibliography
+        full of DOIs from an external source and haven't yet learned
+        the local slug naming convention.
 
-        Since migration ``0009_ref_identifiers``, this delegates to
-        the generic ``ref_identifiers`` index. arXiv DOIs (the
-        ``10.48550/arXiv.X`` form) automatically resolve through the
-        ``arxiv`` scheme path because :func:`detect_identifier_scheme`
-        recognises that prefix and translates the DOI to the bare
-        arXiv id used as the canonical alias value.
+        Delegates to the generic ``ref_identifiers`` index. arXiv DOIs
+        (the ``10.48550/arXiv.X`` form) automatically resolve through
+        the ``arxiv`` scheme path because
+        :func:`detect_identifier_scheme` recognises that prefix and
+        translates the DOI to the bare arXiv id used as the canonical
+        alias value.
 
         For non-DOI identifier lookup (bare arXiv id, S2 paperId,
         PubMed, OpenAlex, pdf_hash) callers should use
@@ -136,16 +210,14 @@ class RefsMixin:
         caller decides whether that's an error (agent-facing) or a
         fall-through (internal dedupe already has its own path).
         """
-        # Use the auto-detect path so an arXiv DOI form
-        # (10.48550/arXiv.X) maps to scheme='arxiv' rather than
-        # falling off the doi-only lookup. The detector strips URL
-        # wrappers and the 'DOI:' prefix for us.
         ref_id = self.find_paper_ref_by_identifier(doi)  # type: ignore[attr-defined]
         if ref_id is None:
             return None
+        # Reverse-lookup the cite_key for this ref_id.
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT slug FROM refs WHERE id = %s",
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'cite_key'",
                 (ref_id,),
             ).fetchone()
         return row[0] if row is not None else None
@@ -166,13 +238,22 @@ class RefsMixin:
 
         Order of the input is not preserved — callers that care
         should map results back via the returned set membership.
+
+        v2: slugs resolve via ``ref_identifiers`` (``id_kind='cite_key'``)
+        JOINed back to ``refs`` to enforce the kind filter and the
+        soft-delete predicate.
         """
         unique = list({s for s in slugs if s})
         if not unique:
             return []
         sql = (
-            "SELECT id FROM refs "
-            "WHERE kind = %s AND slug = ANY(%s) AND deleted_at IS NULL"
+            "SELECT r.ref_id FROM refs r "
+            "JOIN ref_identifiers ri "
+            "  ON ri.ref_id = r.ref_id "
+            "  AND ri.id_kind = 'cite_key' "
+            "WHERE r.kind = %s "
+            "  AND ri.id_value = ANY(%s) "
+            "  AND r.deleted_at IS NULL"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (kind, unique)).fetchall()
@@ -205,7 +286,7 @@ class RefsMixin:
         ids = list(ref_ids)
         if not ids:
             return {}
-        sql = f"SELECT {_REFS_COLS} FROM refs WHERE id = ANY(%s)"
+        sql = f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = ANY(%s)"
         if not include_deleted:
             sql += " AND deleted_at IS NULL"
         with self.pool.connection() as conn:
@@ -235,7 +316,7 @@ class RefsMixin:
                              ELSE meta || %s::jsonb
                         END,
                 updated_at = now()
-            WHERE id = %s AND deleted_at IS NULL
+            WHERE ref_id = %s AND deleted_at IS NULL
             RETURNING {_REFS_COLS}
         """
         params = (
@@ -256,12 +337,48 @@ class RefsMixin:
             )
         return _row_to_ref(row)
 
+    def set_retraction_status(
+        self,
+        ref_id: int,
+        *,
+        status: str | None,
+        retracted_at: Any = None,
+        reason: str | None = None,
+        url: str | None = None,
+        conn: Connection | None = None,
+    ) -> None:
+        """Set the retraction columns on a ref + touch retraction_checked_at.
+
+        ``status`` is one of ``'retracted'``, ``'corrected'``,
+        ``'expression_of_concern'`` (per the CHECK constraint in
+        ``0001_initial.sql``) or ``None`` when the paper is clean —
+        in which case we still touch ``retraction_checked_at`` so the
+        TTL gate works. See ``ingest/provenance.py`` for the caller
+        and ``docs/provenance-kind-plan.md`` for the schema rationale.
+        """
+        sql = (
+            "UPDATE refs SET "
+            "  retraction_status = %s, "
+            "  retracted_at      = %s, "
+            "  retraction_reason = %s, "
+            "  retraction_url    = %s, "
+            "  retraction_checked_at = now(), "
+            "  updated_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL"
+        )
+        params = (status, retracted_at, reason, url, ref_id)
+        if conn is not None:
+            conn.execute(sql, params)
+        else:
+            with self.pool.connection() as c:
+                c.execute(sql, params)
+
     def soft_delete_ref(self, ref_id: int) -> None:
         """Soft-delete a ref by setting ``deleted_at = now()``."""
         with self.pool.connection() as conn:
             cur = conn.execute(
                 "UPDATE refs SET deleted_at = now() "
-                "WHERE id = %s AND deleted_at IS NULL",
+                "WHERE ref_id = %s AND deleted_at IS NULL",
                 (ref_id,),
             )
             rowcount = cur.rowcount
@@ -307,7 +424,6 @@ class RefsMixin:
     def list_refs(
         self,
         *,
-        corpus_id: int | None = None,
         kind: str | None = None,
         provider: str | None = None,
         updated_after: datetime | None = None,
@@ -317,12 +433,9 @@ class RefsMixin:
     ) -> list[Ref]:
         """Paginated list of live refs, filter by kind/provider/tags."""
         # Aliased as ``r`` so the tag-filter helper can reference
-        # ``r.id`` uniformly across all store query shapes.
+        # ``r.ref_id`` uniformly across all store query shapes.
         clauses = ["r.deleted_at IS NULL"]
         params: list[Any] = []
-        if corpus_id is not None:
-            params.append(corpus_id)
-            clauses.append("r.corpus_id = %s")
         if kind is not None:
             params.append(kind)
             clauses.append("r.kind = %s")
@@ -371,8 +484,17 @@ class RefsMixin:
         via :meth:`Tag.parse_strict`; this method takes the
         already-canonical strings and forwards them straight to
         :func:`build_tag_filter`.
+
+        v2: ``refs.title_tsv`` was dropped; compute it inline via
+        ``to_tsvector('english', r.title)``. Slower than a precomputed
+        column but functionally identical; Phase 3 plans to switch to
+        ``chunks.tsv`` on the ``card_title`` chunk for the optimised
+        path.
         """
-        clauses = ["r.deleted_at IS NULL", "r.title_tsv @@ qq.qq"]
+        clauses = [
+            "r.deleted_at IS NULL",
+            "to_tsvector('english', r.title) @@ qq.qq",
+        ]
         params: list[Any] = [q]
         if kind is not None:
             params.append(kind)
@@ -399,13 +521,21 @@ class RefsMixin:
         tags: list[str] | None = None,
         limit: int = 20,
     ) -> list[tuple[Ref, float]]:
-        """Lexical search over ``refs.title_tsv``.
+        """Lexical search over ``refs.title``.
 
-        Returns ``(ref, rank)`` sorted by rank desc. Semantic +
-        RRF fusion happen at the block level; title-level stays
+        Returns ``(ref, rank)`` sorted by rank desc. Semantic + RRF
+        fusion happen at the block level; title-level stays
         lexical-only.
+
+        v2: ``refs.title_tsv`` was dropped; compute it inline via
+        ``to_tsvector('english', r.title)``. Phase 3 will switch this
+        to the precomputed ``chunks.tsv`` on the ``card_title`` chunk
+        for the indexed-lookup path.
         """
-        clauses = ["r.deleted_at IS NULL", "r.title_tsv @@ qq.qq"]
+        clauses = [
+            "r.deleted_at IS NULL",
+            "to_tsvector('english', r.title) @@ qq.qq",
+        ]
         params: list[Any] = [q]
         if kind is not None:
             params.append(kind)
@@ -417,7 +547,7 @@ class RefsMixin:
         params.append(limit)
         sql = (
             f"SELECT {_REFS_COLS_ALIASED}, "
-            "       ts_rank_cd(r.title_tsv, qq.qq) AS rank "
+            "       ts_rank_cd(to_tsvector('english', r.title), qq.qq) AS rank "
             "FROM refs r, websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)} "
             "ORDER BY rank DESC LIMIT %s"
@@ -425,10 +555,11 @@ class RefsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         # rows are tuples in column order; rank is the last column.
+        # _REFS_COLS projects 23 columns; rank is at index 23.
         result: list[tuple[Ref, float]] = []
         for r in rows:
-            ref = _row_to_ref(r[:10])
-            result.append((ref, float(r[10])))
+            ref = _row_to_ref(r[:23])
+            result.append((ref, float(r[23])))
         return result
 
     def count_refs(

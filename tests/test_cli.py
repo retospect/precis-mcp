@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gzip
 import json
 import sys
 from pathlib import Path
@@ -85,134 +84,6 @@ def test_migrate_without_dsn_exits(
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "no database_url" in err
-
-
-# ---------------------------------------------------------------------------
-# jobs ingest-bundle / ingest-bundles
-# ---------------------------------------------------------------------------
-
-
-def _make_bundle(path: Path, *, doi: str = "10.1/x") -> None:
-    data = {
-        "header": {
-            "title": "Sample Title On Nitrate",
-            "authors": [{"name": "Wang, Q."}],
-            "year": 2020,
-            "doi": doi,
-            "abstract": "An abstract.",
-            "journal": "Nature",
-        },
-        "blocks": [{"text": "intro"}, {"text": "methods 5 5 5 5 5"}],
-        "enrichment_meta": {},
-    }
-    with gzip.open(path, "wt", encoding="utf-8") as f:
-        json.dump(data, f)
-
-
-def test_ingest_bundle_writes_to_db(
-    store,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bundle = tmp_path / "p.acatome"
-    _make_bundle(bundle)
-    # Reach into the conftest to share the test DSN.
-    dsn = _store_dsn_from(store)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "precis",
-            "jobs",
-            "ingest-bundle",
-            str(bundle),
-            "--database-url",
-            dsn,
-        ],
-    )
-    cli.main()
-    out = capsys.readouterr().out
-    assert "inserted" in out
-    assert "wang2020" in out
-
-
-def test_ingest_bundles_directory(
-    store,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _make_bundle(tmp_path / "a.acatome", doi="10.1/a")
-    _make_bundle(tmp_path / "b.acatome", doi="10.1/b")
-    dsn = _store_dsn_from(store)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "precis",
-            "jobs",
-            "ingest-bundles",
-            str(tmp_path),
-            "--database-url",
-            dsn,
-        ],
-    )
-    cli.main()
-    out = capsys.readouterr().out
-    assert "inserted=2" in out
-    assert "skipped=0" in out
-
-
-def test_ingest_bundles_dry_run(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _make_bundle(tmp_path / "a.acatome")
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["precis", "jobs", "ingest-bundles", str(tmp_path), "--dry-run"],
-    )
-    cli.main()
-    out = capsys.readouterr().out
-    assert "dry-run" in out
-    assert "ok=1" in out
-
-
-def test_ingest_bundles_handles_corrupt(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _make_bundle(tmp_path / "good.acatome")
-    (tmp_path / "broken.acatome").write_text("not gzip")
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["precis", "jobs", "ingest-bundles", str(tmp_path), "--dry-run"],
-    )
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 1
-    out = capsys.readouterr().out
-    assert "ok=1" in out
-    assert "failed=1" in out
-
-
-def test_ingest_bundle_missing_file(
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["precis", "jobs", "ingest-bundle", "/no/such/file.acatome"],
-    )
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 2
 
 
 # ---------------------------------------------------------------------------
@@ -422,37 +293,6 @@ def test_ingest_mtime_gate_skips_unchanged_on_second_run(
     assert "skipped=2" in out
 
 
-def test_ingest_force_re_ingests_unchanged(
-    store,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``--force`` overrides the mtime/sha gates and re-embeds every
-    file. Useful after swapping the embedder."""
-    (tmp_path / "a.md").write_text("# A\n\nbody.\n")
-
-    dsn = _store_dsn_from(store)
-    argv = [
-        "precis",
-        "jobs",
-        "ingest",
-        str(tmp_path),
-        "--database-url",
-        dsn,
-    ]
-    monkeypatch.setattr(sys, "argv", argv)
-    cli.main()
-    capsys.readouterr()
-
-    monkeypatch.setattr(sys, "argv", argv + ["--force"])
-    cli.main()
-    out = capsys.readouterr().out
-    # Force path counts every match as ingested, never skipped.
-    assert "ingested=1" in out
-    assert "skipped=0" in out
-
-
 def test_ingest_scope_to_one_kind(
     store,
     tmp_path: Path,
@@ -549,7 +389,7 @@ def test_ingest_auto_applies_workspace_tag(
     for kind, slug in [("markdown", "note"), ("plaintext", "log"), ("tex", "p")]:
         ref = store.get_ref(kind=kind, id=slug)
         assert ref is not None, f"{kind}:{slug} not ingested"
-        assert store.has_flag(ref.id, "workspace"), (
+        assert store.has_tag(ref.id, "FLAG", "workspace"), (
             f"{kind}:{slug} missing workspace flag"
         )
 
@@ -586,9 +426,7 @@ def test_ingest_md_deprecation_alias_still_works(
 
 def _insert_gripe(store, text: str) -> int:
     """Seed a gripe ref bypassing the handler (no agent-facing read)."""
-    corpus_id = store.ensure_corpus("default")
     ref = store.insert_ref(
-        corpus_id=corpus_id,
         kind="gripe",
         slug=None,
         title=text,

@@ -96,6 +96,15 @@ precis-mcp/
 ## Don'ts
 
 - **Don't edit sealed migrations.** Forward-only; a new file overrides.
+- **Don't mutate body chunks.** ``chunks`` is append-only for body
+  rows (``ord >= 0``). Only ``ord < 0`` card variants
+  (``card_combined`` and siblings) may be DELETEd and re-INSERTed
+  by a registered synthesis pass (today: the finding-chase
+  chain-snapshot pass in ``precis.workers.chase``). New code that
+  needs to "update" a chunk's text must DELETE the row and INSERT
+  a fresh one so the embedding/summary cascade re-runs cleanly;
+  in-place UPDATE of ``chunks.text`` leaves stale ``chunk_embeddings``
+  and ``chunk_summaries`` rows by construction.
 - **Don't bypass `uv`.** Bare `pip`, `pytest`, `mypy` invocations are
   not reproducible.
 - **Don't introduce a new top-level dependency** without an ADR
@@ -110,18 +119,31 @@ precis-mcp/
 
 A successful `precis add <input>` MUST result in:
 
-- A `refs` row with `slug`, `paper_id`, `title`, `authors`, `year`.
+- A `refs` row with `paper_id`, `title`, `authors`, `year` and a
+  `cite_key` row in `ref_identifiers`.
 - All known external IDs in `ref_identifiers` (DOI, arXiv, S2, PubMed,
   pdf_hash) so future ingests of the same paper via any identifier
   collapse to the same `ref_id`.
-- One row per Marker block in `blocks` with `section_path`,
-  `block_type`, and `text`.
-- (Forward-looking) one row per chunk in `chunks` once that schema
-  lands; embeddings populated lazily via the worker queue.
+- One row per Marker block in `chunks` with `section_path`,
+  `chunk_kind` (propagated from the Marker classifier, including
+  `'references'` for bibliography blocks), `text`, and a populated
+  `numerics TEXT[]` array of `<number><unit>` tokens (eV/V/A/Hz/%/…).
+- Embeddings (`chunk_embeddings`) and RAKE summaries
+  (`chunk_summaries`) populated lazily via the derived queue worker
+  (`precis worker`). `chunk_kind='references'` rows are skipped from
+  both queues via the worker's `skip_chunk_kinds` filter.
+- Discovery-layer rows (`ref_segments` + `ref_segment_sentences`)
+  populated by the ref-level segment_toc worker
+  (`precis worker --only segments`) — once that drains, every
+  paper's TOC view serves from one SQL SELECT and search-result rows
+  carry per-segment query-aligned excerpts.
 
 Idempotency: re-running `precis add` against the same input MUST NOT
 duplicate rows. Conflicts are detected via `ref_identifiers` lookup; a
 hit short-circuits to `inserted=False` and updates only mutable fields.
+Re-running `build_segments` on an existing ref does
+`DELETE FROM ref_segments WHERE ref_id=N` then re-INSERTs — sentences
+cascade via FK, so the operation is atomic and idempotent.
 
 ## On-demand pointers
 

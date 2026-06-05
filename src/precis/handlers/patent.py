@@ -35,7 +35,7 @@ from precis.handlers._patent_ops import (
     OpsClientProto,
     OpsError,
 )
-from precis.handlers._patent_slug import parse_docdb_id
+from precis.handlers._patent_slug import looks_like_docdb, parse_docdb_id
 from precis.handlers._patent_xml import OpsHit, parse_search_response
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
@@ -108,13 +108,39 @@ class PatentHandler(Handler):
         self,
         *,
         hub: Hub,
-        ops: OpsClientProto,
-        raw_root: Path,
+        ops: OpsClientProto | None = None,
+        raw_root: Path | None = None,
     ) -> None:
         if hub.store is None:
             raise InitError("patent: store required")
         self.store = hub.store
         self.embedder = hub.embedder
+        # Production path: read the env trio that this handler
+        # declares in :data:`_REQUIRED_ENV`. The kind_gate has
+        # already enforced presence before we land here, but a
+        # defensive raise prevents silent drift between the gate's
+        # requires_env tuple and what __init__ actually consumes.
+        # Test path: callers pass explicit ``ops=`` / ``raw_root=``
+        # so a fake OPS client can stand in for the network.
+        if ops is None or raw_root is None:
+            import os
+
+            from precis.handlers._patent_ops import OpsClient
+
+            key = os.environ.get("EPO_OPS_CLIENT_KEY")
+            secret = os.environ.get("EPO_OPS_CLIENT_SECRET")
+            raw = os.environ.get("PRECIS_PATENT_RAW_ROOT")
+            if not (key and secret and raw):
+                missing = [e for e in _REQUIRED_ENV if not os.environ.get(e)]
+                raise InitError("patent: missing env vars " + ", ".join(missing))
+            if ops is None:
+                ops = OpsClient(
+                    key=key,
+                    secret=secret,
+                    user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
+                )
+            if raw_root is None:
+                raw_root = Path(raw).expanduser()
         self.ops = ops
         self.raw_root = raw_root
 
@@ -235,12 +261,12 @@ class PatentHandler(Handler):
             if cql is not None:
                 cql_used = cql
                 try:
-                    response = self.ops.search(
+                    ops_response = self.ops.search(
                         cql,
                         range_start=1,
                         range_end=max(top_k, _DEFAULT_REMOTE_PAGE),
                     )
-                    remote_hits, _total = parse_search_response(response.xml)
+                    remote_hits, _total = parse_search_response(ops_response.xml)
                 except OpsError:
                     # Best-effort remote leg. If OPS is down or
                     # quota-limited we still serve the local hits.
@@ -256,13 +282,43 @@ class PatentHandler(Handler):
                 if self.store.get_ref(kind="patent", id=h.docdb_id) is None
             ]
 
-        return self._render_search_response(
+        response = self._render_search_response(
             q=q,
             cql=cql_used,
             local_hits=local_hits,
             remote_hits=remote_hits,
             top_k=top_k,
         )
+
+        # DOCDB-shaped query that found nothing → mirror paper's
+        # DOI-shape branch (paper.py:397-426): the caller is hunting
+        # for a specific publication, not running a topic search.
+        # Route them at the finding-chase + OPS fetch pipeline so the
+        # next step is a single action, not 3-5 keyword retries.
+        if not local_hits and not remote_hits and q is not None and looks_like_docdb(q):
+            from precis.utils.next_block import render_next_section
+
+            docdb = re.sub(r"[\s.]", "", q.lower())
+            trailer = render_next_section(
+                [
+                    (
+                        f"get(kind='patent', id={docdb!r})",
+                        "fetch this patent from OPS directly",
+                    ),
+                    (
+                        "put(kind='finding', title='<short claim>', "
+                        f"body='<claim + setup>', cited_in='patent:{docdb}', "
+                        "scope={'...': '...'})",
+                        "register as a chase target if OPS doesn't have it",
+                    ),
+                ]
+            )
+            response = Response(
+                body=response.body + "\n\n" + trailer,
+                cost=response.cost,
+            )
+
+        return response
 
     def put(  # type: ignore[override]
         self, **_kw: Any
@@ -285,16 +341,19 @@ class PatentHandler(Handler):
         scope_ref_id: int | None,
         tags: list[str] | None,
         top_k: int,
+        query_vec: list[float] | None = None,
     ) -> list[tuple[Any, Ref, float]]:
         """Run the hybrid lex+semantic search over patent blocks.
 
         Returns an empty list when q= is empty AND no scope/tags are
         set — there's nothing to rank against.
+
+        ``query_vec=`` may be pre-supplied by the runtime cross-kind
+        dispatcher to avoid an embed_one(q) per kind in the fan-out.
         """
         if not (q and q.strip()):
             return []
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
+        if query_vec is None and self.embedder is not None:
             query_vec = self.embedder.embed_one(q)
         return self.store.search_blocks_fused(
             q=q,
@@ -345,17 +404,20 @@ class PatentHandler(Handler):
         return Response(body=body)
 
     def _list_by_publication_date(self, *, limit: int) -> list[Ref]:
-        """List patents sorted by ``meta->>'publication_date' DESC, slug ASC``.
+        """List patents sorted by ``meta->>'publication_date' DESC, cite_key ASC``.
 
-        Stable secondary sort on slug — matches the spec's confirmed
-        tie-break rule.
+        Stable secondary sort on cite_key — matches the spec's
+        confirmed tie-break rule. v2 has no ``refs.slug`` column; the
+        cite_key handle comes from ``ref_identifiers`` (ADR 0008), so
+        the ORDER BY plumbs through that lookup.
         """
         sql = f"""
             SELECT {_REFS_COLS_ALIASED}
             FROM   refs r
             WHERE  r.kind = 'patent' AND r.deleted_at IS NULL
             ORDER BY (r.meta->>'publication_date') DESC NULLS LAST,
-                     r.slug ASC
+                     (SELECT id_value FROM ref_identifiers
+                       WHERE ref_id = r.ref_id AND id_kind = 'cite_key') ASC
             LIMIT  %s
         """
         with self.store.pool.connection() as conn:
@@ -531,6 +593,7 @@ class PatentHandler(Handler):
         q: str,
         tags: list[str] | None = None,
         top_k: int = 10,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Local-only block-level search returned as ``SearchHit``s.
@@ -539,6 +602,9 @@ class PatentHandler(Handler):
         upstream calls cost money and shouldn't fire on every
         cross-kind search. Operators who want OPS hits run the
         single-kind ``search(kind='patent', q=...)`` directly.
+
+        ``query_vec=`` may be pre-supplied by the runtime cross-kind
+        dispatcher (computed once for all kinds).
         """
         if not (q and q.strip()):
             return []
@@ -548,6 +614,7 @@ class PatentHandler(Handler):
             scope_ref_id=None,
             tags=normalized_tags,
             top_k=top_k,
+            query_vec=query_vec,
         )
         return block_hits_to_search_hits(triples, kind="patent")
 

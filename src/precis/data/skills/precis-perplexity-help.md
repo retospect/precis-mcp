@@ -1,60 +1,70 @@
 ---
 id: precis-perplexity-help
 title: precis — Perplexity (websearch / think / research)
-status: phase-5
-tier: 1
-floor: any
-applies-to: get/search/put/tag/link (kind='websearch' | 'think' | 'research'); put accepts mode='import'
-last-updated: 2026-05-02
+applies-to: get/search/put/tag/link (kind='websearch' | 'think' | 'research')
+status: active
 ---
 
-# precis-perplexity-help — Perplexity Sonar tiers
+# precis-perplexity-help — Perplexity Sonar, three tiers
 
-Three cache-backed kinds wrap the Perplexity Sonar API at different
-price/latency points. All three also accept `put(mode='import')` so
-that Perplexity Pro subscribers can paste the result of a free
-web-UI query and have it cached at $0.
+Three paid, cache-backed kinds wrap Perplexity Sonar at different
+price/latency points. All three accept `put(mode='import')` so Pro
+subscribers can paste a free web-UI answer at $0.
 
-| kind         | model                  | typical latency | cost/call |
-|--------------|------------------------|-----------------|-----------|
-| `websearch`  | `sonar`                | 2–5s            | ~$0.001   |
-| `think`      | `sonar-reasoning-pro`  | 5–30s           | ~$0.005   |
-| `research`   | `sonar-deep-research`  | 2–10 min        | ~$0.50    |
+| kind        | use for                              | latency  | cost/call |
+|-------------|--------------------------------------|----------|-----------|
+| `websearch` | fast factual lookup, single question | 2–5s     | ~$0.001   |
+| `think`     | comparison, reasoning, trade-offs    | 5–30s    | ~$0.005   |
+| `research`  | long report, landscape survey        | 2–10 min | ~$0.50    |
 
-Cache TTLs: `websearch` 7 days, `think` 30 days, `research` pinned.
-
-## Get — paid API path
-
-```python
-get(kind='websearch', id='who is the CEO of Anthropic')
-get(kind='think',     id='compare DAC and BECCS for net-negative emissions')
-get(kind='research',  id='landscape of post-quantum signature schemes')
-```
-
-The response body carries the answer with inline `[N]` citations and
-a trailing `Sources:` block of underlying URLs. Cache hits return
-the same body for free; the cost trailer reads `— cached`. Imported
-entries (see below) read `— imported` so you can distinguish
-user-supplied bodies from API-cached ones at a glance.
-
-## Recent — list cached refs per kind
+## Ask Perplexity a question
+## Run a websearch / think / research call
+## I need an answer from Perplexity
 
 ```python
-get(kind='research')              # same as id='/recent'
-get(kind='research', id='/recent')
-get(kind='research', id='/')
+get(kind='websearch', q='who is the CEO of Anthropic')
+get(kind='think',     q='compare DAC and BECCS for net-negative emissions')
+get(kind='research',  q='landscape of post-quantum signature schemes')
 ```
 
-Returns up to 20 refs of this kind, newest first, with slug, title,
-provenance (`imported` vs `fetched`), and last-update date. The
-listing path never calls the Perplexity API — it works with no
-`PERPLEXITY_API_KEY` set, so pure importers can use it.
+`id=` and `q=` are equivalent. The response body carries the answer
+with inline `[N]` citations and a trailing `Sources:` block. Cache
+hits return the same body for free.
 
-## Put (mode='import') — free Pro-subscriber path
+## Pick the right kind
+## Which model do I want — websearch, think, or research?
+## When to use which tier
 
-If you have Perplexity Pro, deep research is **free in the web UI**.
-Paste the result here and the same cache row a paid `get` would have
-created is populated at $0:
+- One fact, one URL would do → `websearch`.
+- Needs reasoning across several sources, or a comparison → `think`.
+- Multi-section report, broad landscape, deep dive → `research`.
+
+Switching kinds mid-investigation re-spends — see the cache-key
+warning below.
+
+## Avoid re-spending on the same query
+## How do I not pay twice for Perplexity?
+## The cache key includes the model — what does that mean?
+
+Cache keys are `<model>:<query>`. The same `q=` under `websearch`,
+`think`, and `research` are three distinct cache rows. Switching
+kinds on the same question issues a fresh paid call each time.
+
+```python
+get(kind='websearch', q='post-quantum signature schemes')   # cached as websearch:...
+get(kind='think',     q='post-quantum signature schemes')   # NEW paid call (think:...)
+get(kind='research',  q='post-quantum signature schemes')   # NEW paid call (research:...)
+```
+
+Pick the tier first, then call. If you must escalate, accept the
+new spend — there is no upgrade path that reuses a cheaper row.
+
+## Import a free Pro web-UI answer
+## Paste a Perplexity answer I ran in the browser
+## How do I cache a free web-UI result at $0?
+
+Pro subscribers run answers free in the browser. Paste the result
+to populate the same cache row a paid `get` would create:
 
 ```python
 put(kind='research',
@@ -63,74 +73,78 @@ put(kind='research',
     mode='import')
 ```
 
-Subsequent `get(kind='research', id='landscape of post-quantum
-signature schemes')` then hits the cache for $0 — no API call.
+`get(kind='research', id='landscape of post-quantum signature
+schemes')` then hits the cache for $0.
 
-The pasted body is parsed as Markdown and split into one block per
-heading / paragraph / list / table / fenced code, so per-block
-citation handles work and `search(kind='research', q='...')` finds
-granular hits rather than the whole report.
+The `id=` you import under must match the query you later `get` —
+trim only; comparison is otherwise verbatim. Re-importing the same
+`id=` replaces the previous body atomically. Imported entries are
+pinned and carry `meta.source = 'imported'`; the cost trailer
+reads `— imported` so you can tell them apart from API-fetched rows.
 
-The `id=` you pass becomes part of the canonical cache key (combined
-with the handler's model). It must match the query you would later
-pass to `get`. Trailing/leading whitespace is trimmed, but
-otherwise the strings are compared verbatim.
+The pasted Markdown is split per heading / paragraph / list /
+table / code fence, so `search(kind='research', q='...')` returns
+granular block handles, not the whole report.
 
-Imported entries:
+## List recent calls under a kind
+## See what's already cached for websearch / think / research
+## What have I asked Perplexity lately?
 
-- are pinned (no expiry — they don't depend on web freshness),
-- record `meta.source = 'imported'` on both the ref and the cache row,
-- carry `cost_usd = 0` so the cost trailer reads `[cost: free]`.
-
-Re-importing the same query replaces the previous import atomically.
-
-## Choosing kinds across imports
-
-Match the model that produced the report:
-
-- A "Quick answer" or short factual lookup → `websearch`.
-- A "Reasoning Pro" / "Reasoning" output → `think`.
-- A long "Deep Research" report (most common for imports) → `research`.
-
-The cache key includes the model, so the same `id=` imported under
-two different kinds creates two distinct cache rows. That's by design
-— a `think` summary and a `research` deep dive on the same question
-are different artefacts.
-
-## Failure modes
-
-- `BadInput: <kind> requires a non-empty query` — empty `id=`.
-- `BadInput: <kind> only supports mode='import' for put` — `put` is
-  scoped to imports today; other modes will land in later phases.
-- `BadInput: import requires text=` — empty body.
-- `Upstream: PERPLEXITY_API_KEY not set` — raised only when a
-  cache-miss `get` actually needs to call the API. Imports,
-  `/recent`, and cache hits never trigger this.
-- `Upstream: HTTP 401 / 429 / 5xx` — paid API path only.
-
-## Required env
-
-`PERPLEXITY_API_KEY` is **only** required for the paid API path
-(cache-miss `get`). Imports, `/recent` listings, cache hits, and
-bulk CLI imports all work without a key — the kind is always
-available, and the fetch path raises `Upstream` with a clear
-error only when it actually needs the key.
-
-## Bulk CLI import
-
+```python
+get(kind='research')                # same as id='/recent'
+get(kind='research', id='/recent')
 ```
+
+Returns up to 20 refs newest-first with slug, title, provenance
+(`imported` vs `fetched`), and date. Never calls the API — works
+without `PERPLEXITY_API_KEY`.
+
+## Force a fresh call
+## Bypass the Perplexity cache for one query
+## How do I re-run a stale answer?
+
+```python
+delete(kind='think', id='<canonical-query>')
+get(kind='think', q='<query>')
+```
+
+`research` is pinned by default; `think` has a 30-day TTL;
+`websearch` has 7 days. See `precis-cache` for the full TTL table
+and the `CACHE:fresh` / `CACHE:stale` / `CACHE:pinned` axis.
+
+## Bulk-import a directory of reports
+
+```text
 precis jobs import-perplexity ./reports/ --kind research
 precis jobs import-perplexity ./reports/ --kind research --dry-run
 precis jobs import-perplexity ./reports/ --query-from filename
 ```
 
-Walks the directory for `*.md` files, derives the `id=` query from
-the first H1 heading (falling back to the filename), and bulk-calls
-`put(mode='import')` for each. `--dry-run` prints the derived query
-per file without touching the DB.
+Walks `*.md`, derives `id=` from the first H1 (or filename), and
+calls `put(mode='import')` per file. `--dry-run` prints derived
+queries without writing.
+
+## When Perplexity fails
+
+- `BadInput: <kind> requires a non-empty query` — empty `id=`.
+- `BadInput: <kind> only supports mode='import' for put` — `put` is
+  scoped to imports.
+- `BadInput: import requires text=` — empty body.
+- `Upstream: PERPLEXITY_API_KEY not set` — raised only on cache-miss
+  `get`. Imports, `/recent`, and cache hits work without a key.
+- `Upstream: HTTP 401 / 429 / 5xx` — paid API path only.
+
+## Required env
+
+`PERPLEXITY_API_KEY` is required only for paid `get` cache misses.
+Imports, `/recent`, and cache hits never need it.
 
 ## See also
 
-- `precis-overview` — verbs and kinds
-- `precis-cache` — TTL, freshness, attribution, cost trailers
-- `precis-markdown-help` — block parser + slug rules used by imports
+```python
+get(kind='skill', id='precis-overview')        # verbs and kinds
+get(kind='skill', id='precis-cache')           # TTLs, force-refresh, CACHE:* axis
+get(kind='skill', id='precis-math-help')       # facts and world data (Wolfram)
+get(kind='skill', id='precis-web-help')        # direct page fetch
+get(kind='skill', id='precis-markdown-help')   # block parser used by imports
+```

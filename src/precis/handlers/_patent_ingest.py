@@ -41,7 +41,7 @@ from precis.handlers._patent_ops import (
 )
 from precis.handlers._patent_slug import DocDbId, parse_docdb_id
 from precis.handlers._patent_xml import ParsedPatent, parse_patent
-from precis.ingest import ParsedBlock, classify_density, fill_embeddings
+from precis.ingest.blocks import ParsedBlock, classify_density
 from precis.store import Store, Tag
 from precis.store.types import BlockInsert
 
@@ -150,8 +150,12 @@ def ingest_patent(
         store:        Connected ``Store``. The caller owns its lifetime.
         ops:          Live or fake OPS client. Must implement
                       ``OpsClientProto``.
-        embedder:     If provided, blocks are embedded; otherwise they
-                      go in unembedded (semantic search will skip them).
+        embedder:     Accepted for signature compatibility but unused.
+                      Embeddings are now populated lazily by the
+                      ``embed:bge-m3`` worker (ADR 0007 derived-queue);
+                      synchronous embed during ingest blocked the verb
+                      and diverged from paper-ingest. Callers may pass
+                      ``None``; existing callers keep working.
         raw_root:     Directory where raw XML lands on disk
                       (``$PRECIS_PATENT_RAW_ROOT``).
         corpus_slug:  Corpus to insert the ref into. ``"default"``
@@ -238,10 +242,10 @@ def ingest_patent(
             )
         )
 
-    # Embed if we have an embedder. ``fill_embeddings`` is a no-op
-    # for the empty list.
-    if embedder is not None and block_seeds:
-        block_seeds = fill_embeddings(block_seeds, embedder=embedder)
+    # Embeddings are populated lazily by the embed:bge-m3 worker
+    # (ADR 0007 / AGENTS.md ingest-guarantees). Patent ingest used
+    # to call ``fill_embeddings`` inline here; the synchronous path
+    # blocked the verb and diverged from the paper-ingest flow.
 
     # Build ref meta from the parsed structure. ``raw_meta`` keeps
     # the parsed view available without re-reading XML.
@@ -272,9 +276,7 @@ def ingest_patent(
     )
 
     with store.tx() as conn:
-        cid = store.ensure_corpus(corpus_slug)
         ref = store.insert_ref(
-            corpus_id=cid,
             kind="patent",
             slug=slug,
             title=parsed.title,

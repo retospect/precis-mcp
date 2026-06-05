@@ -382,7 +382,6 @@ class _PerplexityBase(CacheBackedHandler):
         body_blocks = self._blocks_from_report(body)
 
         ref, _cache = self.store.put_cache_entry(
-            corpus_id=self.store.ensure_corpus(self.corpus_slug),
             kind=self.spec.kind,
             slug=self._slug_for(key),
             title=_title_for_query(query),

@@ -16,8 +16,7 @@ def _seed_paper(
     embed: bool = True,
 ) -> int:
     """Insert a paper ref + N blocks; optionally with mock embeddings."""
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="paper", slug=slug, title=title)
+    ref = store.insert_ref(kind="paper", slug=slug, title=title)
     e = embedder or MockEmbedder(dim=1024)
     rows = []
     for i, t in enumerate(blocks):
@@ -60,8 +59,7 @@ class TestSearchBlocksLexical:
             embed=False,
         )
         # Memory ref with same word — should be excluded by kind filter.
-        cid = store.ensure_corpus("default")
-        mem = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="M")
+        mem = store.insert_ref(kind="memory", slug=None, title="M")
         store.insert_blocks(
             mem.id, [BlockInsert(pos=0, text="nitrate is in memory too")]
         )
@@ -144,8 +142,7 @@ class TestSearchBlocksSemantic:
 
     def test_excludes_blocks_without_embedding(self, store: Store) -> None:
         e = MockEmbedder(dim=1024)
-        cid = store.ensure_corpus("default")
-        ref = store.insert_ref(corpus_id=cid, kind="paper", slug="p", title="P")
+        ref = store.insert_ref(kind="paper", slug="p", title="P")
         # ``has`` is 3 chars and now filtered by the noise-floor guard
         # (MCP critic MAJOR #11). Use a longer phrase so the test
         # exercises only the embedding-presence filter it cares about.
@@ -273,27 +270,42 @@ class TestSearchBlocksFused:
         """
         e = MockEmbedder(dim=1024)
         rid_a = _seed_paper(
-            store, slug="a", title="A",
-            blocks=["nitrate reduction copper"], embedder=e,
+            store,
+            slug="a",
+            title="A",
+            blocks=["nitrate reduction copper"],
+            embedder=e,
         )
         rid_b = _seed_paper(
-            store, slug="b", title="B",
-            blocks=["nitrate reduction zinc"], embedder=e,
+            store,
+            slug="b",
+            title="B",
+            blocks=["nitrate reduction zinc"],
+            embedder=e,
         )
         rid_c = _seed_paper(
-            store, slug="c", title="C",
-            blocks=["nitrate reduction iron"], embedder=e,
+            store,
+            slug="c",
+            title="C",
+            blocks=["nitrate reduction iron"],
+            embedder=e,
         )
         qv = e.embed_one("nitrate reduction")
         # No exclude: all three refs surface.
         hits_all = store.search_blocks_fused(
-            q="nitrate", query_vec=qv, kind="paper", limit=10,
+            q="nitrate",
+            query_vec=qv,
+            kind="paper",
+            limit=10,
         )
         slugs_all = {ref.slug for _b, ref, _s in hits_all}
         assert slugs_all == {"a", "b", "c"}
         # Exclude two; only the third remains.
         hits_excluded = store.search_blocks_fused(
-            q="nitrate", query_vec=qv, kind="paper", limit=10,
+            q="nitrate",
+            query_vec=qv,
+            kind="paper",
+            limit=10,
             exclude_ref_ids=[rid_a, rid_b],
         )
         slugs_excluded = {ref.slug for _b, ref, _s in hits_excluded}
@@ -311,20 +323,32 @@ class TestSearchBlocksFused:
         """
         e = MockEmbedder(dim=1024)
         rid_a = _seed_paper(
-            store, slug="a", title="A",
-            blocks=["nitrate one"], embedder=e,
+            store,
+            slug="a",
+            title="A",
+            blocks=["nitrate one"],
+            embedder=e,
         )
         _seed_paper(
-            store, slug="b", title="B",
-            blocks=["nitrate two"], embedder=e,
+            store,
+            slug="b",
+            title="B",
+            blocks=["nitrate two"],
+            embedder=e,
         )
         _seed_paper(
-            store, slug="c", title="C",
-            blocks=["nitrate three"], embedder=e,
+            store,
+            slug="c",
+            title="C",
+            blocks=["nitrate three"],
+            embedder=e,
         )
         qv = e.embed_one("nitrate")
         hits = store.search_blocks_fused(
-            q="nitrate", query_vec=qv, kind="paper", limit=2,
+            q="nitrate",
+            query_vec=qv,
+            kind="paper",
+            limit=2,
             exclude_ref_ids=[rid_a],
         )
         # limit=2 with rid_a excluded returns the next 2 (b, c), not 1.
@@ -336,12 +360,18 @@ class TestSearchBlocksFused:
         fallback to :meth:`search_blocks_lexical` (no embedder
         path)."""
         rid_a = _seed_paper(
-            store, slug="a", title="A",
-            blocks=["alpha topic"], embed=False,
+            store,
+            slug="a",
+            title="A",
+            blocks=["alpha topic"],
+            embed=False,
         )
         _seed_paper(
-            store, slug="b", title="B",
-            blocks=["alpha topic"], embed=False,
+            store,
+            slug="b",
+            title="B",
+            blocks=["alpha topic"],
+            embed=False,
         )
         hits = store.search_blocks_fused(
             q="alpha", kind="paper", exclude_ref_ids=[rid_a]
@@ -353,12 +383,18 @@ class TestSearchBlocksFused:
         ``N of K`` header in handler renderings stays honest under
         exclusion."""
         rid_a = _seed_paper(
-            store, slug="a", title="A",
-            blocks=["alpha topic"], embed=False,
+            store,
+            slug="a",
+            title="A",
+            blocks=["alpha topic"],
+            embed=False,
         )
         _seed_paper(
-            store, slug="b", title="B",
-            blocks=["alpha topic"], embed=False,
+            store,
+            slug="b",
+            title="B",
+            blocks=["alpha topic"],
+            embed=False,
         )
         total_full = store.count_blocks_lexical(q="alpha", kind="paper")
         total_excl = store.count_blocks_lexical(

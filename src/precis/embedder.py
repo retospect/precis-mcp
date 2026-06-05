@@ -96,6 +96,21 @@ class MockEmbedder:
 
 _BGE_M3_DIM = 1024  # documented constant for BAAI/bge-m3
 
+# Two distinct identifiers — keep them separate.
+#
+# ``_BGE_M3_HF_ID`` is what ``SentenceTransformer(...)`` loads from
+# HuggingFace. ``_BGE_M3_REGISTRY_KEY`` is the value stored in
+# ``embedders.name`` and the FK target for ``chunk_embeddings.embedder``.
+# They look similar but serve different roles: the HF id is a
+# vendor-namespaced model URL; the registry key is precis's own short
+# label, picked to match the ``--embedder`` CLI flag and the
+# ``PRECIS_EMBEDDER`` config knob. Conflating them means the worker
+# writes ``BAAI/bge-m3`` into a column that FKs against the ``bge-m3``
+# row → ``ForeignKeyViolation`` on every insert. See the 2026-05-24
+# incident note in CHANGELOG.md.
+_BGE_M3_HF_ID = "BAAI/bge-m3"
+_BGE_M3_REGISTRY_KEY = "bge-m3"
+
 # Hard ceiling on the per-text char length passed to bge-m3. The model's
 # tokenizer caps at 8192 tokens, but pathological input (corrupted-OCR
 # tables, fragmented unicode runs) can balloon attention into 70+ GiB
@@ -133,7 +148,10 @@ class BgeM3Embedder:
     download / weight load entirely.
     """
 
-    def __init__(self, *, model_name: str = "BAAI/bge-m3") -> None:
+    def __init__(self, *, model_name: str = _BGE_M3_REGISTRY_KEY) -> None:
+        # ``model_name`` is the precis registry key (FK target in
+        # ``embedders.name``) — *not* the HuggingFace id. The HF id is
+        # an internal constant only ``_ensure_loaded`` reaches for.
         self._model_name = model_name
         self._st: object | None = None  # SentenceTransformer when loaded
         # No imports here — keep startup fast for MCP clients with a
@@ -164,7 +182,10 @@ class BgeM3Embedder:
                     "Install with: pip install 'precis-mcp[paper]' "
                     "or: pip install sentence-transformers"
                 ) from exc
-            self._st = SentenceTransformer(self._model_name)
+            # Always load from the HF id — that's what the hub serves.
+            # ``self._model_name`` is the registry key and is **not**
+            # what ``SentenceTransformer`` resolves against.
+            self._st = SentenceTransformer(_BGE_M3_HF_ID)
         return self._st
 
     def embed(self, texts: list[str]) -> list[list[float]]:

@@ -62,6 +62,7 @@ class MarkdownHandler(PlaintextHandler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
+        note_like=True,
         views=("toc", "raw"),
         modes=("create",),
     )

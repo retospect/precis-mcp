@@ -242,18 +242,25 @@ class TestQuestMode:
         assert ref_id is not None
         quest = store.get_ref(kind="quest", id=ref_id)
         assert quest is not None
+        # v2 unifies the legacy ref_open_tags / ref_closed_tags into
+        # ref_tags JOIN tags discriminated by namespace ('OPEN' for
+        # open-prefix tags, anything else for closed-prefix).
         with store.pool.connection() as conn:
             tags = {
                 row[0]
                 for row in conn.execute(
-                    "SELECT value FROM ref_open_tags WHERE ref_id = %s",
+                    "SELECT t.value FROM ref_tags rt "
+                    "JOIN tags t USING (tag_id) "
+                    "WHERE rt.ref_id = %s AND t.namespace = 'OPEN'",
                     (quest.id,),
                 ).fetchall()
             }
             closed = {
                 (row[0], row[1])
                 for row in conn.execute(
-                    "SELECT prefix, value FROM ref_closed_tags WHERE ref_id = %s",
+                    "SELECT t.namespace, t.value FROM ref_tags rt "
+                    "JOIN tags t USING (tag_id) "
+                    "WHERE rt.ref_id = %s AND t.namespace <> 'OPEN'",
                     (quest.id,),
                 ).fetchall()
             }
@@ -384,16 +391,24 @@ class TestFairUse:
         # proceeds. Insert a synthetic patent ref to seed bytes.
         watch_db.create(store, name="fixed", cql="cpc=B01J27/24")
         with store.pool.connection() as conn:
-            cid = store.ensure_corpus("default")
-            conn.execute(
+            # v2 schema: drop corpus_id, drop slug column (slug lives in
+            # ref_identifiers now). Insert the ref directly with
+            # high-fair-use bytes, then register the slug in
+            # ref_identifiers so handler lookups still find it.
+            row = conn.execute(
                 """
-                INSERT INTO refs
-                  (corpus_id, kind, slug, title, provider, meta)
+                INSERT INTO refs (kind, title, provider, meta)
                 VALUES
-                  (%s, 'patent', 'ep0000001a1', 'seed', 'epo_ops',
+                  ('patent', 'seed', 'epo_ops',
                    '{"fair_use_bytes": 999999999}'::jsonb)
+                RETURNING ref_id
                 """,
-                (cid,),
+            ).fetchone()
+            assert row is not None
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('cite_key', 'ep0000001a1', %s, 'epo_ops')",
+                (row[0],),
             )
         # Now compute_rolling returns ~1GB; limit at 0.0001 GB triggers pause.
         summary = run_one_pass(

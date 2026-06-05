@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import inspect
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from precis.config import PrecisConfig
@@ -75,6 +76,14 @@ class PrecisRuntime:
     config: PrecisConfig
     hub: Hub
 
+    #: Parsed ``PRECIS_DEFAULT_TAGS`` tuple, resolved once at runtime
+    #: build. Empty tuple when the env var is unset; the dispatch
+    #: hook short-circuits in that case so unconfigured deployments
+    #: pay zero per-call cost. Populated by :func:`build_runtime`;
+    #: tests that construct a ``PrecisRuntime`` directly use the
+    #: empty default unless they need to exercise the merge path.
+    default_tags_resolved: tuple[str, ...] = field(default_factory=tuple)
+
     # ----- delegating properties ---------------------------------------
 
     @property
@@ -128,11 +137,27 @@ class PrecisRuntime:
                 response = self._dispatch_inner(verb, dict(args))
                 return self._render(response), False
             except PrecisError as e:
+                self._maybe_add_skill_hint(e, verb, args)
                 return self.render_error(e), True
             except Exception as e:
+                # F10: full traceback (with SQL fragments, Python
+                # signatures, file paths) goes to the server log only.
+                # The user-visible body keeps the exception *type* —
+                # enough signal for the LLM to recover ("UndefinedTable
+                # → run migrations") — but strips the message body that
+                # leaks internals. Specific exception classes that have
+                # a clean recovery story should be caught upstream and
+                # converted to a typed PrecisError (Unavailable,
+                # NotFound, etc.) before reaching this fallback.
                 log.exception("internal error in %s", verb)
                 return (
-                    self.render_error(Internal(f"internal error: {e}")),
+                    self.render_error(
+                        Internal(
+                            f"internal error in {verb}: "
+                            f"{type(e).__name__} "
+                            f"(see server log)"
+                        )
+                    ),
                     True,
                 )
 
@@ -146,7 +171,23 @@ class PrecisRuntime:
           3. Handler invocation with extras whitelist + defaulted-kind
              error annotation.
         """
+        # D1: accept URI-style ``id='kind:slug[~sel]'`` on input. Extract
+        # the kind prefix into ``args['kind']`` (if not already set) and
+        # leave the unprefixed identifier in ``args['id']``. Validation
+        # that any explicit ``kind=`` matches the prefix lives in the
+        # helper. Output stays kind-explicit — this is an *input*
+        # convenience that mirrors the canonical ``kind:identifier``
+        # grammar already used by ``link=`` / ``unlink=``.
+        self._maybe_split_prefixed_id(args)
         kind = args.pop("kind", None)
+
+        # Broad usability pass 2026-05-30 (#6): when an agent passes a
+        # tag-shaped string as ``q=`` with no ``tags=`` filter, the
+        # semantic search is statistically guaranteed to drown the
+        # intended tagged refs in unrelated paper hits. Catch the
+        # likely intent at the boundary and emit a deduplicated tip.
+        if verb == "search":
+            self._maybe_hint_tag_shaped_q(args)
 
         # Cross-kind: ``kind='*'`` or comma-list. Other verbs keep the
         # single-kind contract — multi-kind get is meaningless and
@@ -240,20 +281,73 @@ class PrecisRuntime:
         """Look up the handler for ``kind`` and verify it supports ``verb``.
 
         Raises:
-            NotFound: ``kind`` is not registered. Options carries
-                only the verb-supporting kinds so an agent retrying
-                against a suggested kind doesn't cascade into a
-                second error (MCP critic MAJOR #12).
-            Unsupported: handler exists but does not implement
-                ``verb``. The reply enumerates the verbs this kind
-                *does* support so the recovery hint is sharp.
+            NotFound: ``kind`` is not registered at all (unknown name).
+                Options carries only the verb-supporting kinds so an
+                agent retrying against a suggested kind doesn't
+                cascade into a second error (MCP critic MAJOR #12).
+            Unsupported: handler is registered-but-disabled for this
+                build (missing env var, missing optional dep), OR
+                handler exists but does not implement ``verb``. The
+                first variant names the missing precondition so the
+                agent can route to the operator instead of guessing
+                — see broad usability pass 2026-05-30 (#8). The
+                second variant enumerates the verbs this kind *does*
+                support so the recovery hint is sharp.
         """
         handler = self.hub.handler_for(kind)
         if handler is None:
+            # Distinguish "registered-but-disabled in this build" from
+            # "unknown kind". The hub records every gated-out kind in
+            # ``loadabilities``; if ``kind`` is in there, the right
+            # error class is ``Unsupported`` (the agent can't fix it
+            # by retrying — the operator has to enable the kind),
+            # and the breadcrumb should name the missing precondition.
+            verdict = getattr(self.hub, "loadabilities", {}).get(kind)
+            if verdict is not None and not verdict.loaded:
+                reason = verdict.reason or "disabled"
+                raise Unsupported(
+                    f"kind {kind!r} is registered but disabled in this build "
+                    f"({reason})",
+                    next=(
+                        "see get(kind='skill', id='precis-kinds-disabled-help') "
+                        "and precis-overview Needs column"
+                    ),
+                )
+            # Broad usability pass 2026-05-30 (#10): the previous
+            # ``options:`` trailer silently filtered to kinds that
+            # support the calling verb — agents reading the list
+            # could conclude the omitted kinds didn't exist at all
+            # (precis-help shows 17 total; the options here show
+            # 12 for search). Name the filter in ``next:`` so a
+            # reader knows the list is verb-scoped, not the full
+            # registry.
+            verb_kinds = self._kinds_for_verb(verb)
+            # Round-2 picky N-2, 2026-05-30: when no kinds support
+            # this verb in the current build (e.g. ``edit`` with no
+            # file kinds wired — markdown/plaintext/tex/python all
+            # need PRECIS_ROOT/PRECIS_PYTHON_ROOTS), the previous
+            # breadcrumb said *"options above are kinds that support
+            # verb='edit'"* — but no options were printed above, so
+            # the agent was told to consult a list that wasn't there.
+            # Distinguish the empty case explicitly.
+            if verb_kinds:
+                next_hint = (
+                    f"options above are kinds that support verb={verb!r}; "
+                    f"get(kind='skill', id='precis-help') for the complete "
+                    f"kind table"
+                )
+            else:
+                next_hint = (
+                    f"no kinds in this build support verb={verb!r}; "
+                    f"get(kind='skill', id='precis-help') lists every "
+                    f"kind and the verbs each one accepts. The most "
+                    f"likely cause is a missing env var "
+                    f"(see get(kind='skill', id='precis-kinds-disabled-help'))."
+                )
             raise NotFound(
                 f"unknown kind: {kind}",
-                options=self._kinds_for_verb(verb),
-                next="see precis-overview for the kind list",
+                options=verb_kinds,
+                next=next_hint,
             )
 
         if not handler.spec.supports(verb):  # type: ignore[arg-type]
@@ -307,21 +401,58 @@ class PrecisRuntime:
 
         extras = args.pop(_EXTRAS_KEY, None)
         if extras:
-            unknown = self._unknown_extras(method, extras)
-            if unknown:
-                accepted = sorted(self._accepted_kwargs(method))
-                raise BadInput(
-                    f"args= keys {unknown!r} not accepted by {kind}.{verb}",
-                    options=accepted,
-                    next=(
-                        f"drop the unknown keys; {kind}.{verb} accepts "
-                        f"args= keys: {accepted or '(none)'}"
-                    ),
-                )
-            args.update(extras)
+            accepted = self._accepted_kwargs(method)
+            # Handlers that opt into an explicit ``args: dict``
+            # parameter (today: ``random.get`` — slug minting takes
+            # ``len`` / ``alphabet`` inside ``args=``) want the whole
+            # extras dict passed through, NOT flattened into top-level
+            # kwargs. Without this branch, ``get(kind='random',
+            # view='slug', args={'len': 4})`` errored with
+            # ``args= keys ['len'] not accepted by random.get`` and the
+            # error breadcrumb confusingly suggested using ``args`` or
+            # ``view`` as args-dict keys (round-2 picky F-1). Detect
+            # the opt-in by signature membership and forward extras
+            # via the ``args`` kwarg unchanged.
+            if "args" in accepted:
+                args["args"] = dict(extras)
+            else:
+                unknown = self._unknown_extras(method, extras)
+                if unknown:
+                    accepted_kwargs = sorted(k for k in accepted if k not in ("args",))
+                    raise BadInput(
+                        f"args= keys {unknown!r} not accepted by {kind}.{verb}",
+                        options=accepted_kwargs,
+                        next=(
+                            f"drop the unknown keys; {kind}.{verb} accepts "
+                            f"top-level kwargs: {accepted_kwargs or '(none)'}"
+                        ),
+                    )
+                args.update(extras)
+
+        self._apply_default_tags_policy(handler, verb, args)
 
         # Strip None args so handlers see absence as missing.
         clean = {k: v for k, v in args.items() if v is not None}
+
+        # F7: catch handler-signature-required kwargs that the caller
+        # forgot, before ``method(**clean)`` raises a raw TypeError and
+        # leaks Python signature internals through the [error:Internal]
+        # envelope. Per-handler BadInput paths (e.g. NumericRefHandler.
+        # link's "requires target=" check) still fire for *semantic*
+        # requirements like "id must be paired with target"; this gate
+        # only catches truly-missing keyword-only args with no default.
+        missing = self._missing_required_kwargs(method, clean)
+        if missing:
+            accepted_kwargs = sorted(
+                k for k in self._accepted_kwargs(method) if k != "args"
+            )
+            missing_str = ", ".join(f"{m}=" for m in missing)
+            raise BadInput(
+                f"{verb}(kind={kind!r}) requires {missing_str}",
+                options=accepted_kwargs,
+                next=f"get(kind='skill', id='precis-{verb}-help')",
+            )
+
         try:
             response = method(**clean)
         except PrecisError as exc:
@@ -343,6 +474,72 @@ class PrecisRuntime:
         if kind_was_defaulted:
             response = self._tag_defaulted_kind(response, kind)
         return response
+
+    def _apply_default_tags_policy(
+        self,
+        handler: Handler,
+        verb: str,
+        args: dict[str, Any],
+    ) -> None:
+        """Apply ``PRECIS_DEFAULT_TAGS`` policy at the dispatch boundary.
+
+        Behaviour matrix:
+
+        - ``defaults`` empty (env unset): no-op for every verb.
+        - ``handler.spec.note_like`` False: no-op for every verb.
+          Ingested kinds (paper, patent), fetched caches (web,
+          wolfram, youtube), and generators (oracle, random,
+          skill) don't accumulate session-context tags.
+        - verb ``put`` on a note-like kind: merge defaults into
+          ``args['tags']`` (preserving caller's explicit-first
+          ordering) and emit an info hint listing the additions.
+          Existing tags are never duplicated.
+        - verb ``tag`` on a note-like kind: emit a suggestion hint
+          listing defaults missing from ``args.get('add')``. The
+          set is **not** mutated — ``tag`` is the agent's explicit
+          op, and silent mutation would surprise both the agent
+          and the operator. The hint surfaces the suggestion so
+          the agent can decide.
+        - Any other verb (get, search, edit, delete, link): no-op.
+          ``edit`` on note-like file kinds doesn't change tags via
+          its core surface, so default-tag interaction is moot
+          there. ``delete`` removes the ref entirely.
+
+        Mutates ``args`` in place when applicable (``put`` only).
+        Returns ``None``; observable effect is the merged ``tags``
+        and any emitted hint visible at end-of-request.
+        """
+        defaults = self.default_tags_resolved
+        if not defaults:
+            return
+        spec = handler.spec
+        if not getattr(spec, "note_like", False):
+            return
+
+        from precis import default_tags as _dt
+        from precis.hints import Hint
+
+        if verb == "put":
+            added = _dt.apply_to_put_args(args, defaults)
+            if added:
+                self.hub.emit_hint(
+                    Hint(
+                        text=("Added PRECIS_DEFAULT_TAGS to put: " + ", ".join(added)),
+                        topic="default_tags.merged",
+                    )
+                )
+        elif verb == "tag":
+            missing = _dt.suggest_missing(args.get("add"), defaults)
+            if missing:
+                self.hub.emit_hint(
+                    Hint(
+                        text=(
+                            "PRECIS_DEFAULT_TAGS suggested for tag add: "
+                            + ", ".join(missing)
+                        ),
+                        topic="default_tags.suggested",
+                    )
+                )
 
     @staticmethod
     def _accepted_kwargs(method: Any) -> set[str]:
@@ -369,6 +566,35 @@ class PrecisRuntime:
         """Return the args= keys that aren't on the handler's signature."""
         accepted = cls._accepted_kwargs(method)
         return sorted(k for k in extras if k not in accepted)
+
+    @staticmethod
+    def _missing_required_kwargs(method: Any, clean: dict[str, Any]) -> list[str]:
+        """Return required kwargs of ``method`` missing from ``clean``.
+
+        A parameter is required when it has no default value AND is
+        keyword-accessible (``POSITIONAL_OR_KEYWORD`` or ``KEYWORD_ONLY``).
+        ``self`` and the magic ``args`` extras-passthrough parameter
+        are excluded; ``**kw`` catch-alls don't count as required.
+
+        Used by :meth:`_invoke_handler` to convert what would have been
+        a raw ``TypeError: ... missing 1 required keyword-only
+        argument: 'id'`` into a clean ``BadInput`` envelope (F7).
+        """
+        sig = inspect.signature(method)
+        missing: list[str] = []
+        for name, p in sig.parameters.items():
+            if name in ("self", "args"):
+                continue
+            if p.kind not in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                continue
+            if p.default is not inspect.Parameter.empty:
+                continue
+            if name not in clean:
+                missing.append(name)
+        return missing
 
     def _render(self, response: Response) -> str:
         out = [response.body]
@@ -416,6 +642,74 @@ class PrecisRuntime:
         """
         annotated = f"(searched kind={kind!r})\n{response.body}"
         return Response(body=annotated, cost=response.cost)
+
+    # ── tag-shaped q hint ──────────────────────────────────────────────
+
+    # Tag tokens are unmistakably tag-shaped: either a closed-prefix
+    # axis (UPPERCASE letters + colon + value, e.g. ``STATUS:done``),
+    # a lowercase namespace + colon + value (``topic:co2-capture``),
+    # or a kebab-case slug with multiple hyphens
+    # (``exercise-mcp-throwaway``). Bare single words — `cells`,
+    # `photocatalysis`, `pinned`, `topic` — are NOT tag-shaped for
+    # this heuristic: the round-2 picky pass found that matching any
+    # lowercase token fired the tip on basically every common
+    # English search query (F-2). Requiring a colon or ≥1 hyphen
+    # tightens the gate to actually-tag-looking strings.
+    _TAG_SHAPED_Q_RE = re.compile(
+        r"^(?:"
+        # closed prefix: UPPERCASE letters/digits/_, colon, value chars
+        r"[A-Z][A-Z0-9_]*:[A-Za-z0-9][\w.'-]*"
+        # lowercase namespace + colon + value
+        r"|[a-z][a-z0-9_]*:[\w.'-]+"
+        # kebab-case slug with ≥1 hyphen
+        r"|[a-z0-9]+(?:-[a-z0-9]+)+"
+        r")$"
+    )
+
+    def _maybe_hint_tag_shaped_q(self, args: dict[str, Any]) -> None:
+        """Emit a HintBus tip when ``q=`` looks like a tag string.
+
+        Fires only when the call provides ``q=`` but no ``tags=`` —
+        semantic search on a single tag-shaped token tends to match
+        the substring against unrelated bodies (the broad usability
+        pass saw ``q='exercise-mcp-throwaway'`` return paper-block
+        hits about "exercise"). The hint is a HintBus tip rather
+        than an error so the call still runs; agents that genuinely
+        wanted the semantic match are not blocked.
+        """
+        q = args.get("q")
+        if not isinstance(q, str):
+            return
+        token = q.strip()
+        if not token or " " in token:
+            return
+        if args.get("tags"):
+            return
+        if not self._TAG_SHAPED_Q_RE.match(token):
+            return
+        from precis.hints import Hint
+
+        # Round-2 picky N-3, 2026-05-30: dedup on the *query value*
+        # rather than a static topic. The static-topic form
+        # (``topic="search.tag_shaped_q"``) suppressed the hint on
+        # every subsequent tag-shape call after the first — even when
+        # the query was different, which is genuinely new information
+        # the agent should see. Per-query dedup means the same query
+        # repeated keeps suppressing (correct), but a different
+        # tag-shape query re-fires (correct).
+        self.hub.emit_hint(
+            Hint(
+                text=(
+                    f"q={token!r} looks like a tag — semantic search "
+                    "will match the substring against unrelated bodies. "
+                    f"If you meant the tag filter, retry with "
+                    f"tags=[{token!r}] (and pass q='...' as the topic "
+                    "to rank within, or omit q= to list by recency)."
+                ),
+                topic=f"search.tag_shaped_q:{token}",
+                cooldown=6,
+            )
+        )
 
     # ── cross-kind search ──────────────────────────────────────────────
 
@@ -560,19 +854,41 @@ class PrecisRuntime:
         # slug in the list silently no-ops on memory etc.). Kinds
         # that don't accept the kwarg fall through to the
         # ``TypeError`` retry below.
+        #
+        # ``query_vec=`` is computed once here and threaded into every
+        # block-level handler that opts in. Without this the cross-
+        # kind fan-out paid one embed_one(q) per kind — for kind='*'
+        # over seven block-level handlers that's seven identical
+        # transformer forward passes on the same query string. Kinds
+        # whose ``search_hits`` signature doesn't accept ``query_vec=``
+        # fall through the same TypeError-degradation chain as
+        # ``exclude=`` / ``tags=``.
         base_kwargs: dict[str, Any] = {"q": q, "top_k": top_k}
+        embedder = getattr(self.hub, "embedder", None)
+        if embedder is not None:
+            try:
+                base_kwargs["query_vec"] = embedder.embed_one(q)
+            except Exception:
+                # An embed failure here shouldn't kill the whole
+                # cross-kind search — fall back to per-kind embed
+                # (or lex-only when the kind's embedder is also
+                # unavailable).
+                log.exception("cross-kind: query embed failed; falling back per-kind")
         if tags:
             base_kwargs["tags"] = tags
         if exclude:
             base_kwargs["exclude"] = exclude
 
         streams: list[list[SearchHit]] = []
+        per_kind_counts: list[tuple[str, int]] = []
         for k in kinds:
             handler = self.hub.handler_for(k)
             if handler is None:
+                per_kind_counts.append((k, 0))
                 continue
             hits = self._cross_kind_invoke_search_hits(handler, k, base_kwargs)
             if hits is None:
+                per_kind_counts.append((k, 0))
                 continue
             # Defensive post-filter: handler search_hits
             # implementations have inconsistent ``tags=`` support
@@ -585,9 +901,11 @@ class PrecisRuntime:
             # from kinds that can't carry that tag.
             if normalized_tags:
                 hits = self._filter_hits_by_tags(list(hits), normalized_tags)
-            streams.append(list(hits))
+            hits_list = list(hits)
+            per_kind_counts.append((k, len(hits_list)))
+            streams.append(hits_list)
 
-        return merge_and_render(
+        response = merge_and_render(
             streams,
             top_k=top_k,
             query=q,
@@ -595,6 +913,21 @@ class PrecisRuntime:
             mode="rrf",
             empty_body=(f"no matches across {', '.join(kinds)} for {q!r}"),
         )
+
+        # Round-2 picky F-8: prepend a per-kind hit-count line under the
+        # headline so the agent can see which kinds contributed and
+        # which returned empty. Without this, a comma-list call
+        # ``search(kind='paper,memory', q='...')`` that surfaces only
+        # paper hits looks identical to a single-kind paper call —
+        # the agent has no way to know memory was searched and empty.
+        if len(per_kind_counts) >= 2:
+            breakdown = ", ".join(f"{k}: {n}" for k, n in per_kind_counts)
+            lines = response.body.splitlines()
+            if lines:
+                lines.insert(1, f"_(per kind: {breakdown})_")
+                response = Response(body="\n".join(lines), cost=response.cost)
+
+        return response
 
     def _cross_kind_invoke_search_hits(
         self,
@@ -623,9 +956,7 @@ class PrecisRuntime:
 
         # Drop ``exclude=`` (most recent kwarg addition) and retry.
         if "exclude" in base_kwargs:
-            without_exclude = {
-                k: v for k, v in base_kwargs.items() if k != "exclude"
-            }
+            without_exclude = {k: v for k, v in base_kwargs.items() if k != "exclude"}
             try:
                 return list(handler.search_hits(**without_exclude))
             except TypeError:
@@ -715,6 +1046,105 @@ class PrecisRuntime:
             if self.hub.handler_for(k).spec.supports(verb)  # type: ignore[arg-type]
         ]
 
+    def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
+        """D1: extract ``kind:`` prefix from ``id=`` into ``args['kind']``.
+
+        Recognises the canonical handle grammar already used by
+        ``link=`` / ``unlink=`` — ``kind:identifier[~selector]`` — when
+        passed via the ``id=`` argument. Examples:
+
+            id='paper:chung19~4'   → kind='paper', id='chung19~4'
+            id='memory:158'        → kind='memory', id=158 (coerced by handler)
+            id='todo:42'           → kind='todo', id=42
+            id='chung19~4'         → unchanged (no colon, no extraction)
+
+        Only fires when:
+          - ``id`` is a string containing exactly one ``:`` before any
+            ``/``, ``~``, or ``?`` (avoiding collision with URL-ish
+            paths a future kind might accept).
+          - The prefix is one of the live kinds in this build.
+          - If ``kind=`` is already set, it must match the prefix;
+            otherwise a clean ``BadInput`` fires (don't silently
+            override the caller's explicit choice).
+
+        Path views like ``id='/recent'`` are skipped (leading slash).
+        Anything not matching the recognition rules passes through
+        unchanged so existing callers stay unaffected.
+        """
+        ident = args.get("id")
+        if not isinstance(ident, str):
+            return
+        # Leading slash → path view (/recent etc.). Don't extract.
+        if ident.startswith("/"):
+            return
+        if ":" not in ident:
+            return
+        # Only honour a colon that comes before any selector / view
+        # path separator. ``markdown:notes/a.md`` is fine; ``foo/bar:x``
+        # is not — the colon there isn't a kind prefix.
+        for sep in ("/", "?"):
+            if sep in ident and ident.find(sep) < ident.find(":"):
+                return
+        prefix, _, rest = ident.partition(":")
+        prefix = prefix.strip()
+        if not prefix or not rest:
+            return
+        live_kinds = set(self.hub.kinds) if self.hub is not None else set()
+        if prefix not in live_kinds:
+            # Not a recognised kind prefix — leave the value alone.
+            # Better to surface a "no such kind" error downstream than
+            # eat a legitimate identifier that happens to contain ":".
+            return
+
+        existing_kind = args.get("kind")
+        if existing_kind is not None and existing_kind != prefix:
+            raise BadInput(
+                f"id={ident!r} prefix kind={prefix!r} conflicts with "
+                f"kind={existing_kind!r}",
+                next=(
+                    f"drop one: either pass id={rest!r} with "
+                    f"kind={prefix!r}, or pass id={ident!r} without kind="
+                ),
+            )
+        args["kind"] = prefix
+        args["id"] = rest
+
+    def _maybe_add_skill_hint(
+        self, err: PrecisError, verb: str, args: dict[str, Any]
+    ) -> None:
+        """F6: append a per-kind / per-verb help-skill `next:` hint.
+
+        Mutates ``err.next`` in place to add a discoverability pointer
+        without losing whatever the handler already put there. Order:
+        (1) caller-supplied hints, then (2) per-kind skill if the call
+        named one, else per-verb skill, else the overview. The LLM
+        reads top-down and grabs the most-specific recovery action
+        first; the new hint is the second-best option.
+        """
+        kind = args.get("kind") if isinstance(args, dict) else None
+        # Drop list/wildcard kinds — the help skill for "paper,patent"
+        # or "*" doesn't exist; fall through to the verb/overview hint.
+        if isinstance(kind, str) and ("," in kind or kind == "*"):
+            kind = None
+
+        live_kinds = set(self.hub.kinds) if self.hub is not None else set()
+        if isinstance(kind, str) and kind in live_kinds:
+            hint = f"get(kind='skill', id='precis-{kind}-help')"
+        elif verb in {"get", "search", "put", "edit", "delete", "tag", "link"}:
+            hint = f"get(kind='skill', id='precis-{verb}-help')"
+        else:
+            hint = "get(kind='skill', id='precis-overview')"
+
+        existing = err.next
+        if existing is None:
+            err.next = hint
+        elif isinstance(existing, str):
+            if hint not in existing:
+                err.next = [existing, hint]
+        else:
+            if hint not in existing:
+                err.next = [*existing, hint]
+
     def render_error(self, err: PrecisError) -> str:
         """Render a :class:`PrecisError` as the canonical agent-facing string.
 
@@ -729,7 +1159,16 @@ class PrecisRuntime:
         if err.options:
             parts.append(f"  options: {', '.join(map(str, err.options))}")
         if err.next:
-            parts.append(f"  next: {err.next}")
+            # F12: ``next`` may be a string (one hint) or a list of
+            # strings (multiple hints). Render each on its own
+            # ``next:`` line so the rendered envelope remains
+            # backwards-compatible — a caller scanning for "next:"
+            # finds every hint without needing to know the difference.
+            if isinstance(err.next, str):
+                parts.append(f"  next: {err.next}")
+            else:
+                for hint in err.next:
+                    parts.append(f"  next: {hint}")
         return "\n".join(parts)
 
     # Backwards-compatible alias. Internal callers that pre-date the
@@ -775,10 +1214,18 @@ def build_runtime(
         store = Store.connect(config.database_url)
         embedder = make_embedder(config.embedder, dim=store.embedding_dim())
 
+    from precis import default_tags as _dt
+    from precis.kind_gate import parse_disabled
+
     hub = boot(
         store=store,
         embedder=embedder,
         precis_root=config.root,
         python_roots=config.python_roots,
+        kinds_disabled=parse_disabled(config.kinds_disabled),
     )
-    return PrecisRuntime(config=config, hub=hub)
+    return PrecisRuntime(
+        config=config,
+        hub=hub,
+        default_tags_resolved=_dt.parse(config.default_tags),
+    )

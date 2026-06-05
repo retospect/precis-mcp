@@ -1,0 +1,690 @@
+@startuml schema-v2
+
+' precis-mcp v2 schema — LOCKED design as of 2026-05-21.
+' Render via:  scripts/render-uml schema-v2.puml   (-p for PNG)
+'
+' Companion docs:
+'   docs/design/storage-v2.md            — prose + worker pipeline + discovery layer
+'   docs/decisions/0005-greenfield-migrations.md
+'   docs/decisions/0006-tri-identifier-scheme.md  (slug section superseded by 0008)
+'   docs/decisions/0007-derived-queue-no-block-jobs.md
+'   docs/decisions/0008-drop-slug-identifier-normalisation.md
+'   docs/decisions/0017-derived-queue-family.md  (artifact_kinds, ref_artifacts)
+'   docs/decisions/0018-persistent-discovery-layer.md  (ref_segments, ref_segment_sentences)
+'   docs/design/finding-chase.md  (kind=finding, ref_events, fetcher cascade)
+'
+hide circle
+skinparam linetype ortho
+skinparam classBackgroundColor #FAFAFA
+skinparam classBorderColor #333
+skinparam classArrowColor #555
+skinparam classHeaderBackgroundColor #E0E8F0
+skinparam packageBackgroundColor #F8F8F8
+skinparam packageBorderColor #888
+skinparam noteBackgroundColor #FFFEDB
+skinparam noteBorderColor #B0A055
+skinparam defaultFontName "Helvetica"
+skinparam defaultFontSize 11
+
+' ============================================================================
+' Controlled vocabulary (closed sets; FK targets; seeded in 0001_initial.sql)
+' ============================================================================
+package "controlled vocab" as vocab {
+
+  entity "kinds" as kinds <<vocab>> {
+    * slug : text <<PK>>
+    --
+    is_numeric : bool
+    title : text
+    description : text
+    deprecated_at : timestamptz
+    * created_at : timestamptz
+    ..seeded..
+    paper, book, oracle, conv, skill, quest,
+    todo, memory, gripe, fc, web, youtube, math,
+    code, decision, design, patent,
+    project, tool, research_report,
+    meeting, email, repo, issue,
+    citation (0007), finding (0004)
+  }
+
+  entity "actors" as actors <<vocab>> {
+    * slug : text <<PK>>
+    --
+    description : text
+    * created_at : timestamptz
+    ..seeded..
+    agent, user, system,
+    chase (0004)
+  }
+
+  entity "relations" as relations <<vocab>> {
+    * slug : text <<PK>>
+    --
+    is_symmetric : bool
+    inverse_slug : text
+    description : text
+    * created_at : timestamptz
+    ..seeded..
+    related-to, blocks/blocked-by,
+    contradicts/contradicted-by,
+    cites/cited-by, supersedes/superseded-by,
+    retracted-by/retracts (0002),
+    corrected-by/corrects (0002),
+    concern-raised-by/raises-concern-about (0002),
+    misattributes/misattributed-by (0004)
+  }
+
+  entity "providers" as providers <<vocab>> {
+    * slug : text <<PK>>
+    --
+    description : text
+    * created_at : timestamptz
+    ..seeded..
+    arxiv, crossref, s2, pubmed, openalex,
+    unpaywall, perplexity, wolfram, youtube,
+    manual, local
+  }
+
+  entity "chunk_kinds" as chunk_kinds <<vocab>> {
+    * slug : text <<PK>>
+    --
+    is_card : bool <<NN, DEFAULT FALSE>>
+    description : text
+    * created_at : timestamptz
+    ..seeded (cards, is_card=true)..
+    card_combined, card_title, card_authors,
+    card_abstract, card_meta, card_keywords
+    ..seeded (generic body)..
+    paragraph, figure, equation, caption,
+    heading, references, code_symbol
+    ..seeded (per ref kind)..
+    memory_body, gripe_body, todo_body,
+    quest_body, fc_claim, fc_evidence,
+    conv_message, qa_pair,
+    skill_overview, skill_input, skill_output,
+    skill_example,
+    tool_overview, tool_input_schema,
+    tool_output_schema, tool_example,
+    web_paragraph, web_section, web_citation,
+    youtube_segment,
+    wolfram_query, wolfram_response,
+    decision_section, design_section,
+    patent_claim, patent_section,
+    project_goal, project_constraint,
+    project_decision_log, project_status,
+    project_open_question, project_milestone,
+    meeting_segment, action_item, meeting_decision,
+    email_message, email_attachment_ref,
+    readme_section, commit_message,
+    issue_comment, issue_label_change,
+    issue_milestone,
+    research_report_summary,
+    research_report_citation,
+    finding_body, finding_context (0004)
+  }
+}
+
+note bottom of actors
+  **App-level audit, not PG roles.**
+  `set_by` columns record intent: which
+  actor triggered an action. Database-level
+  access control (PG GRANTs / `precis_rw`,
+  `precis_ro`) is a separate concern.
+end note
+
+' ============================================================================
+' Model registries
+' ============================================================================
+package "model registries" as registries {
+
+  entity "embedders" as embedders {
+    * name : text <<PK>>
+    --
+    * dim : int
+    is_default : bool <<NN, DEFAULT FALSE>>
+    description : text
+    deprecated_at : timestamptz
+    * created_at : timestamptz
+    ..seeded..
+    bge-m3 (dim=1024, is_default=TRUE)
+    ..invariant..
+    partial UNIQUE INDEX where is_default=TRUE
+  }
+
+  entity "summarizers" as summarizers {
+    * name : text <<PK>>
+    --
+    prompt_template : text
+    config : jsonb <<NN, DEFAULT '{}'>>
+    is_default : bool <<NN, DEFAULT FALSE>>
+    description : text
+    deprecated_at : timestamptz
+    * created_at : timestamptz
+    ..seeded..
+    rake-lemma (is_default=TRUE)
+      config: {lemmatizer:'scispacy',
+               model:'en_core_sci_sm',
+               max_keywords:50}
+    ..invariant..
+    partial UNIQUE INDEX where is_default=TRUE
+  }
+}
+
+note left of embedders
+  **One active embedder at a time.**
+  `is_default=TRUE` marks the row used
+  by default search. Partial UNIQUE
+  ensures only one. Schema supports
+  multiple registered embedders (same
+  dim today; partition by name when we
+  add a different-dim embedder).
+end note
+
+' ============================================================================
+' Hub: refs (identifier-free; ALL identifiers live in ref_identifiers)
+' ============================================================================
+entity "refs" as refs {
+  * ref_id : bigserial <<PK>>
+  --
+  * kind : text <<FK kinds.slug>>
+  set_by : text <<FK actors.slug>>
+  * title : text
+  authors : jsonb
+  year : int
+  ' provenance
+  provider : text <<FK providers.slug>>
+  ' verification
+  human_verified_at : timestamptz
+  human_verified_by : text
+  human_verified_note : text
+  ' retraction (this ref is retracted)
+  retraction_status : text
+  retracted_at : timestamptz
+  retraction_reason : text
+  retraction_url : text
+  retraction_checked_at : timestamptz
+  ' physical artifact (NULL for non-paper)
+  pdf_sha256 : char(64) <<FK pdfs>>
+  pdf_pages : int4range
+  pdf_role : text
+    ' main | supplement | appendix |
+    ' front_matter | back_matter
+  ' bookkeeping
+  meta : jsonb <<NN, DEFAULT '{}'>>
+  deleted_at : timestamptz
+  * created_at : timestamptz
+  * updated_at : timestamptz
+}
+note right of refs
+  **No identifier columns.**
+  pub_id / cite_key / paper_id all live in
+  `ref_identifiers`. Use the `v_refs` view
+  to expose them as columns for ergonomics.
+  Rationale: single uniform lookup;
+  cross-kind uniqueness; no duplication.
+  See ADR 0008.
+
+  **Retraction:**
+  - direct: this ref retracted →
+    `retraction_status` populated;
+    `card_combined` text includes
+    "RETRACTED YYYY-MM-DD: ..."
+  - indirect: ref cites retracted ref →
+    derived from `links` + dst retraction;
+    cache as a chunk_tag if useful.
+end note
+
+' ============================================================================
+' Identifier alias table (now THE place for ALL identifiers)
+' ============================================================================
+entity "ref_identifiers" as ref_ids {
+  * id_kind : text <<PK>>
+  * id_value : text <<PK>>
+  --
+  * ref_id : bigint <<FK refs>>
+  source : text
+  * created_at : timestamptz
+  ..seeded id_kinds..
+  pub_id, cite_key, paper_id (legacy),
+  doi, arxiv, s2, pubmed, openalex,
+  pdf_sha256, content_hash
+  ..ergonomic view..
+  `v_refs` LEFT JOINs pub_id, cite_key,
+  paper_id back as columns
+}
+
+' ============================================================================
+' PDFs (normalized)
+' ============================================================================
+entity "pdfs" as pdfs {
+  * pdf_sha256 : char(64) <<PK>>
+  --
+  * content_hash : char(64)
+  * page_count : int
+  * size_bytes : bigint
+  * storage_path : text
+  * ingested_at : timestamptz
+}
+note bottom of pdfs
+  **Two SHA-256 hashes by design**
+  - `pdf_sha256` (file bytes) — dedup
+    the binary; PK.
+  - `content_hash` (normalized text) —
+    detect "same paper, different file"
+    across publishers / preprint servers.
+  Both hex-64 (sha256). MD5 not used.
+end note
+
+' ============================================================================
+' Chunks layer (kind-agnostic; cards at ord<0, body at ord>=0)
+' ============================================================================
+entity "chunks" as chunks {
+  * chunk_id : bigserial <<PK>>
+  --
+  * ref_id : bigint <<FK refs>>
+  set_by : text <<FK actors.slug>>
+  * ord : int
+    ' <0 = synthetic card (ref-level)
+    ' >=0 = body chunk
+  * chunk_kind : text <<FK chunk_kinds.slug>>
+  * text : text
+  block_ids : bigint[] <<DEFAULT '{}'>>
+  token_count : int
+  section_path : text[] <<DEFAULT '{}'>>
+  page_first : int
+  page_last : int
+  meta : jsonb <<NN, DEFAULT '{}'>>
+  numerics : text[] <<NN, DEFAULT '{}'>>
+    ' lexical numeric-token index
+    ' (e.g. "1.523 eV", "12%", "0.3 V")
+  * created_at : timestamptz
+  --
+  tsv : tsvector (GENERATED)
+  ..unique..
+  (ref_id, ord)
+  ..CHECK..
+  (ord<0  AND chunk_kind LIKE 'card_%')
+   OR
+  (ord>=0 AND chunk_kind NOT LIKE 'card_%')
+  ..indexes..
+  GIN(tsv) for full-text search
+  GIN(numerics) for exact-value lookup
+  btree(ref_id, ord)
+  btree(chunk_kind)
+}
+note left of chunks
+  **Cards: multi-vector retrieval**
+  Synthetic chunks at ord<0 give different
+  ref-level views, each with its own
+  embedding neighbourhood:
+   ord=-1  card_combined   title+authors+
+                          abstract+kw+
+                          cite_key
+   ord=-2  card_title      title only
+   ord=-3  card_authors    author list
+   ord=-4  card_abstract   abstract only
+   ord=-5  card_meta       DOI/journal/year
+   ord=-6  card_keywords   RAKE-extracted,
+                          lemmatised
+  Body chunks (paragraph, figure, ...) at
+  ord>=0. **Default ingest creates ALL
+  card variants** when source data permits.
+  `card_keywords` is derived from RAKE
+  summaries of body chunks.
+
+  Same chunks/embeddings/summaries pipeline
+  for all kinds — no new tables.
+end note
+
+entity "chunk_embeddings" as chunk_embeds {
+  * chunk_id : bigint <<PK FK chunks>>
+  * embedder : text <<PK FK embedders>>
+  --
+  vector : vector
+  * status : text
+    ' ok | failed
+  * attempts : int <<NN, DEFAULT 1>>
+  last_error : text
+  * created_at : timestamptz
+  ..ANN index..
+  HNSW(vector vector_cosine_ops)
+   WITH (m=16, ef_construction=64)
+   per embedder partition
+}
+
+entity "chunk_summaries" as chunk_summ {
+  * chunk_id : bigint <<PK FK chunks>>
+  * summarizer : text <<PK FK summarizers>>
+  --
+  text : text
+  prompt_hash : char(64)
+  token_count : int
+  * status : text
+  * attempts : int <<NN, DEFAULT 1>>
+  last_error : text
+  * created_at : timestamptz
+}
+
+note bottom of chunk_embeds
+  **Search strategy (application layer)**
+  - Default: single embedder per query
+    (the `is_default` one).
+  - Opt-in fusion: query multiple
+    embedders, combine via RRF.
+  - Two-stage: card_combined first, then
+    body chunks of top refs.
+  - Hybrid: ts_rank_cd on chunks.tsv +
+    vector cosine, RRF-combined.
+end note
+
+
+' ============================================================================
+' Discovery layer (ref-level derived state — ADR 0018)
+' ============================================================================
+entity "ref_segments" as ref_segs {
+  * segment_id : bigserial <<PK>>
+  --
+  * ref_id : bigint <<FK refs>>
+  * segment_idx : int
+  * pos_lo : int
+    ' inclusive chunk.ord
+  * pos_hi : int
+  heading : text
+    ' H2 mode only
+  * mode : text
+    ' h2 | embedding
+  section_class : text
+    ' intro|methods|results|... (paper)
+  * segmentation_version : text
+  * extractor_version : text
+  * embedder_name : text <<FK embedders>>
+  centroid : vector(1024)
+    ' segment centroid for sim search
+  keywords : jsonb <<NN, DEFAULT '[]'>>
+    ' [{long, short, aliases[], score}]
+    ' matryoshka: most-distinctive first
+  forms : text[] <<NN, DEFAULT '{}'>>
+    ' denormalized lookup keys
+  * status : text
+    ' ok | failed
+  * attempts : int <<NN, DEFAULT 1>>
+  last_error : text
+  * created_at : timestamptz
+  * updated_at : timestamptz
+  ..unique..
+  (ref_id, segment_idx)
+  ..CHECK..
+  pos_lo <= pos_hi
+  ..indexes..
+  GIN(forms) for keyword surface-form lookup
+  GIST(ref_id, int4range(pos_lo, pos_hi))
+   for "segment containing chunk N"
+}
+
+entity "ref_segment_sentences" as ref_sents {
+  * sentence_id : bigserial <<PK>>
+  --
+  * segment_id : bigint <<FK ref_segments>>
+  * sentence_idx : int
+  * text : text
+  * chunk_pos : int
+    ' source chunk's ord
+  * char_offset : int
+    ' offset within source chunk
+  * centroid_score : real
+    ' cos(sent, seg_centroid)
+    '  - λ·max(cos vs sibling)
+  embedding : vector(1024)
+  * sentence_splitter_version : text
+  * status : text
+  last_error : text
+  * created_at : timestamptz
+  ..unique..
+  (segment_id, sentence_idx)
+  ..indexes..
+  btree(segment_id, centroid_score DESC)
+   for TOC excerpt picks
+  ..future..
+  HNSW(embedding) — non-breaking add for
+   corpus-wide sentence retrieval
+}
+
+note bottom of ref_segs
+  **Discovery layer (ADR 0018)**
+  Persistent per-segment keywords +
+  per-sentence embeddings back the
+  `view='toc'` and search-result
+  excerpt sub-lines. Computed by the
+  ref-level worker
+  `precis worker --only segments`.
+  Lazy invalidation via the four
+  version columns + sentence splitter
+  version on the child rows. Cascade
+  delete from refs → segments →
+  sentences, so re-ingest just wipes
+  and the worker re-derives.
+
+  **TOC excerpt query**:
+  `ORDER BY centroid_score DESC LIMIT 2`
+  per segment.
+
+  **Search excerpt query**: rerank
+  against query embedding via
+  pgvector `<=>`.
+end note
+
+' ============================================================================
+' Graph (links) — endpoints can be ref-level OR chunk-level
+' ============================================================================
+entity "links" as links {
+  * link_id : bigserial <<PK>>
+  --
+  * src_ref_id : bigint <<FK refs>>
+  src_chunk_id : bigint <<FK chunks>>
+  * dst_ref_id : bigint <<FK refs>>
+  dst_chunk_id : bigint <<FK chunks>>
+  * relation : text <<FK relations.slug>>
+  * set_by : text <<FK actors.slug>>
+  meta : jsonb <<NN, DEFAULT '{}'>>
+  * created_at : timestamptz
+  ..CHECK..
+  no self-loop at same precision
+  ..unique..
+  (src_ref_id, src_chunk_id,
+   dst_ref_id, dst_chunk_id,
+   relation)
+}
+
+' ============================================================================
+' Tags (polymorphic via per-target tables; no link_tags)
+' ============================================================================
+entity "tags" as tags {
+  * tag_id : bigserial <<PK>>
+  --
+  * namespace : text
+    ' SRC, CACHE, STATUS, PRIO,
+    ' RETRACTION, ASPECT, ...
+  * value : text
+  * created_at : timestamptz
+  ..unique..
+  (namespace, value)
+}
+
+entity "ref_tags" as ref_tags {
+  * ref_id : bigint <<PK FK refs>>
+  * tag_id : bigint <<PK FK tags>>
+  set_by : text <<FK actors.slug>>
+  * created_at : timestamptz
+}
+
+entity "chunk_tags" as chunk_tags {
+  * chunk_id : bigint <<PK FK chunks>>
+  * tag_id : bigint <<PK FK tags>>
+  set_by : text <<FK actors.slug>>
+  * created_at : timestamptz
+}
+
+note bottom of tags
+  **No link_tags.** Links are highly typed
+  via `relation` FK; secondary annotation
+  (confidence, status) goes in `links.meta`
+  JSONB. Add later if a real query surfaces.
+end note
+
+' ============================================================================
+' Derived-queue family (ADR 0017) — generic substrate for ref-level artifacts
+' ============================================================================
+entity "artifact_kinds" as artifact_kinds <<vocab>> {
+  * slug : text <<PK>>
+  --
+  * target : text  '' 'chunk' | 'ref' | 'link' | 'pdf'
+  * storage : text '' 'typed' | 'untyped'
+  * output_table : text
+  description : text
+  deprecated_at : timestamptz
+  * created_at : timestamptz
+  ..seeded (0004)..
+  embed:bge-m3 (typed → chunk_embeddings),
+  summarize:rake-lemma (typed → chunk_summaries),
+  chase_citation (untyped → ref_artifacts),
+  resolve_citation:s2 (untyped → ref_artifacts)
+}
+
+entity "ref_artifacts" as ref_artifacts {
+  * ref_id : bigint <<PK FK refs>>
+  * artifact : text <<PK FK artifact_kinds.slug>>
+  payload : jsonb
+  * status : text <<DEFAULT 'ok'>>
+    ' CHECK status IN ('ok','failed')
+  * attempts : int <<DEFAULT 1>>
+  last_error : text
+  * created_at : timestamptz
+}
+
+note bottom of ref_artifacts
+  **Generic substrate** — same shape would
+  apply to link_artifacts / pdf_artifacts /
+  chunk_artifacts (deferred). Untyped per-ref
+  derived state lives in JSONB ``payload``;
+  typed outputs (chunk_embeddings, chunk_summaries)
+  keep their dedicated tables for HNSW/FTS.
+  Note: the chase worker uses meta.chain on
+  the finding ref itself, NOT this table — it's
+  here for retraction-recheck and future
+  ref-level periodic-sweep artifacts.
+end note
+
+' ============================================================================
+' Cross-subsystem audit log (introduced 2026-06-01)
+' ============================================================================
+entity "ref_events" as ref_events {
+  * event_id : bigserial <<PK>>
+  --
+  * ref_id : bigint <<FK refs>>
+  * ts : timestamptz <<DEFAULT now()>>
+  * source : text  '' 'chase' | 'fetcher:unpaywall' | 'fetcher:arxiv' | 'fetcher:s2' | …
+  * event : text   '' 'advanced' | 'terminated' | 'fetch_ok' | 'no_oa_version' | …
+  payload : jsonb
+  duration_ms : int
+  cost_usd : numeric
+}
+
+note bottom of ref_events
+  **Cross-cutting audit trail.** One row
+  per event; readers query chronologically
+  per ref (view='log') or cross-ref by
+  (source, event) for incident timelines.
+  Retention: 90 days (trim TBD as
+  ``precis maintenance``). See migration
+  0009_ref_events.sql.
+end note
+
+' ============================================================================
+' Views (read-only convenience; defined in 0001_initial.sql)
+' ============================================================================
+note as Views #DAEDFD
+  **Views**
+   **v_refs**
+   = refs LEFT JOIN ref_identifiers thrice
+     to expose pub_id, cite_key, paper_id
+     as columns. Most application queries
+     use this; refs is for INSERTs and
+     index hints.
+
+   **v_ref_tags_all**
+   = ref_tags ∪ (chunk_tags via chunks)
+     "all tags touching this ref, direct
+     or via its chunks". `via` column
+     marks 'direct' vs 'chunk'.
+
+   **v_chunk_tags_all**
+   = chunk_tags ∪ (ref_tags via parent)
+     "all tags touching this chunk, direct
+     or inherited from parent ref".
+end note
+
+' ============================================================================
+' Design notes block
+' ============================================================================
+note as Decisions #F0F0F0
+  **Locked decisions**
+  - ADR 0005: greenfield migrations
+  - ADR 0006: pub_id + cite_key
+    (slug section superseded by 0008)
+  - ADR 0007: derived queue, no jobs table
+  - ADR 0008: drop slug, ALL identifiers
+    in ref_identifiers
+
+  **Open / future**
+  - chunk_kind hierarchy (parent/child)
+    if we want grouped queries
+  - corpuses table for multi-tenant
+    (currently single-corpus)
+  - chunk_embeddings partition by
+    embedder for cross-dim support
+  - link_tags if secondary edge
+    annotation grows
+  - PG roles: precis_rw / precis_ro
+  - cite_key disambiguator algorithm
+    (a/b/c vs deterministic hash)
+end note
+
+' ============================================================================
+' Relationships
+' ============================================================================
+kinds       ||..o{ refs       : kind
+providers   ||..o{ refs       : provider
+actors      ||..o{ refs       : set_by
+actors      ||..o{ chunks     : set_by
+actors      ||..o{ links      : set_by
+actors      ||..o{ ref_tags   : set_by
+actors      ||..o{ chunk_tags : set_by
+relations   ||..o{ links      : relation
+chunk_kinds ||..o{ chunks     : chunk_kind
+embedders   ||..o{ chunk_embeds : registry
+summarizers ||..o{ chunk_summ   : registry
+
+refs ||--o{ ref_ids   : aliases
+refs }o..o| pdfs      : "pdf_sha256\n(NULL for non-paper)"
+refs ||--o{ chunks    : owns
+refs ||--o{ ref_tags  : tagged
+refs ||--o{ links     : "src/dst (ref-level)"
+refs ||--o{ ref_segs  : "discovery layer\n(ADR 0018)"
+
+chunks ||--o{ chunk_embeds : embedded
+chunks ||--o{ chunk_summ   : summarized
+chunks ||--o{ chunk_tags   : tagged
+chunks ||--o{ links        : "src/dst (chunk-level)"
+
+ref_segs    ||--o{ ref_sents : "owns sentences"
+embedders   ||..o{ ref_segs  : registry
+
+tags ||--o{ ref_tags   : applied
+tags ||--o{ chunk_tags : applied
+
+refs           ||--o{ ref_artifacts : "queue rows\n(ADR 0017)"
+artifact_kinds ||..o{ ref_artifacts : registry
+refs           ||--o{ ref_events    : "event log\n(2026-06)"
+
+@enduml

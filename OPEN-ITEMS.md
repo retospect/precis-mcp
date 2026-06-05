@@ -34,31 +34,6 @@ and no `title` field. One-line fix once `FastMCP` accepts
 - https://github.com/modelcontextprotocol/python-sdk/issues — file
   the request when the next mcp-critic pass surfaces it again.
 
-## 🔴 acatome `\ufffd` mojibake in served paper bodies
-
-**Status**: open (different package — `acatome-extract`)
-**Severity**: critical (paper bodies advertised as "clean markdown
-safe to quote" but aren't, for affected papers)
-**Owner**: `pips/packages/acatome-extract/src/acatome_extract/pipeline.py`
-**Test**: `pips/packages/precis-mcp/tests/test_paper_blocks.py::test_no_replacement_chars_in_blocks`
-
-`\ufffd` (`�`) replacement chars appear in some paper block
-bodies — em-dash bytes lost during PDF→markdown extraction.
-Live-probed 2026-05-02 in `acheson2026automated~118` and
-`xie2016dissecting~1283`. Other papers ingest cleanly.
-
-Fix lives in `acatome-extract`'s post-Marker pipeline: add a
-UTF-8 round-trip check; replace `\ufffd` with em-dash when context
-is `alpha-space-alpha`, else fail the bundle with a clear
-diagnostic. Regression test stays in `precis-mcp` because that's
-where the user-visible symptom lands — scan every served block,
-assert `\ufffd` absent.
-
-Cross-repo: file in `acatome-extract`'s issue tracker once the
-package has one. Until then, this entry is the canonical record.
-
----
-
 ## Recently retired (kept here briefly for grep-ability)
 
 The mcp-critic 2026-05-02 deep pass logged 14 findings; 13 are now
@@ -87,6 +62,73 @@ dated review document:
 - "eager skill cache" critic finding → **retracted** (was based on
   incorrect storage-model assumption; skill kind is file-backed,
   not DB-backed, so there's no async tsvector to make eager)
+- OQ-17 — `PRECIS_DEFAULT_TAGS` × `workspace` auto-tag layering →
+  **shipped 2026-05-26** (`PlaintextHandler.put` now accepts and
+  applies `tags=` via `apply_tag_ops`, so the runtime's default-tags
+  merge actually lands on prose-file refs alongside the
+  `workspace` flag; regression test in
+  `tests/test_default_tags.py::test_default_tags_layer_with_workspace_on_prose_handlers`)
+- acatome U+FFFD mojibake → **shipped 2026-05-27**
+  (`precis.ingest.pipeline._repair_or_fail_mojibake` auto-repairs the
+  alpha-space-FFFD-space-alpha em-dash loss pattern and fails the
+  bundle with paper_id + page + 60-char context on any other FFFD;
+  mirrored upstream in `acatome_extract.pipeline`; regression test in
+  `tests/ingest/test_pipeline.py::TestRepairOrFailMojibake`)
+- ingest: tiny-block embedding noise → **shipped 2026-05-27**
+  (`marker._merge_small_blocks` absorbs `section_header` blocks
+  forward into the next body block and merges adjacent same-type
+  small blocks within a `(section_path, page)` window; addresses
+  bge-m3's tendency to embed tiny chunks near the centroid where
+  short generic queries also land; regression test in
+  `tests/ingest/test_marker.py::TestMergeSmallBlocks`)
+- OQ-16 — `KindSpec.requires_env` convergence → **retracted 2026-05-27**
+  (description was stale: math already had `requires_env`; oracle has no
+  env reads at all; web uses trafilatura, not Firecrawl; youtube has no
+  env reads. The planned `OPENAI_API_KEY` / `FIRECRAWL_API_KEY` /
+  `YOUTUBE_API_KEY` gates never materialised because the implementation
+  went with free/local alternatives or doesn't need API access for those
+  kinds. No work needed.)
+- mypy errors on `test_toon_roundtrip.py` + `test_initial_migration.py` →
+  **shipped 2026-05-27** (`dump()` parameter relaxed from `list[Mapping]`
+  to `Sequence[Mapping]` to honour covariance; the 15 `cur.fetchone()`
+  unpacking sites route through a new `_one(cur)` helper that asserts
+  not-None. `mypy src tests` clean. All 24 migration tests still pass
+  against postgres.)
+- Persistent discovery layer → **shipped 2026-05-31** (ADR 0018).
+  `view='toc'` reads from `ref_segments` + `ref_segment_sentences`
+  instead of recomputing DP + KeyBERT at request time; search-result
+  rows carry indented `excerpt @ ~N: "..."` sub-lines drawn from a
+  query-aligned pgvector cosine rerank. Migrations 0005 / 0006 / 0007.
+  New worker: `precis worker --only segments`. Smoketest verified
+  end-to-end on a real paper (`butlin26` → 3 segments + 544 sentences
+  rendered as designed); test suite covered in
+  `tests/workers/test_segment_toc.py`, `tests/test_toc_db.py`.
+- `chunks.numerics TEXT[]` lexical numeric-token index →
+  **shipped 2026-05-31** (path-2 from the tables-curveball discussion;
+  ingest extracts every `<number><unit>` token from a closed unit
+  vocab. Structured `paper_facts` extraction — path-3 — remains
+  tracked separately in `docs/design/storage-v2.md § Open questions`.)
+- References pollution of search → **shipped 2026-05-31** (ingest now
+  tags bibliography blocks `chunk_kind='references'`; embed + RAKE
+  workers carry `skip_chunk_kinds=('references',)` which extends the
+  claim SQL so references never enter the queue. Bibliography stops
+  diluting search rankings.)
+- Mid-abbreviation chunk splits ("et al.", "Fig.", "i.e.") →
+  **shipped 2026-05-31** (pysbd-backed sentence splitter wired into
+  the chunker's fallback chain via a sentinel; abbreviation-aware
+  rules eliminate the naive `". "` literal split.)
+- Hyphenated line breaks corrupting verbatim quotes →
+  **shipped 2026-05-31** (regex pass in `marker._clean_text` joins
+  `-\s*\n\s*` when both sides are lowercase ASCII; preserves
+  semantically-significant compounds with uppercase boundaries.)
+- New `citation` kind (verifier-workflow scaffold) →
+  **shipped 2026-05-31** (`CitationHandler`, migration 0007;
+  `precis-citation-help` documents the agent surface.)
+- Retraction status invisible on paper views → **shipped 2026-05-31**
+  (`view='overview'`, `view='toc'`, and chunk drill-in all lead with
+  a `> [!] RETRACTED` (or EoC / corrected) banner when
+  `refs.retraction_status` is set; carries date, reason, and a
+  pointer at `get(kind='provenance', id='<doi>')`.)
 
 See [`CHANGELOG.md`](CHANGELOG.md) entry for 6.0.0 for the per-fix
 landing record.
@@ -131,21 +173,59 @@ constant is Unix-only:
   to `C:/Users/runneradmin`.  Fix: assert against
   `os.path.expanduser("~")` instead of a hardcoded prefix.
 
-**macOS framework Python 3.12** — 5 runtrace tests fail because
-the spawned tracer subprocess raises
+**Python 3.12 setprofile + urllib.parse circular import** — 5
+runtrace tests fail because the spawned tracer subprocess raises
 `AttributeError: partially initialized module 'urllib.parse' …
-(most likely due to a circular import)`.  Reproduces only on
-`/Library/Frameworks/Python.framework/Versions/3.12/`; 3.11 and
-3.13 frameworks are fine, and Homebrew Python 3.12 is fine.
-Suspect: `sys.setprofile` hook intercepts an internal urllib
-import during a partially-initialised module state.  Likely fix:
-defer the profile install until after `urllib.parse` has been
-imported by the bootstrap, or run the tracer in a fresh
-interpreter via `-S` + explicit `site.main()`.
+(most likely due to a circular import)`.  First spotted on
+`/Library/Frameworks/Python.framework/Versions/3.12/`; as of
+2026-05-22 also reproduces in the Linux ``precis-dev`` container's
+Python 3.12.  3.11 and 3.13 are unaffected; Homebrew Python 3.12
+also works.  Suspect: `sys.setprofile` hook intercepts an internal
+``urllib.parse`` import during a partially-initialised module
+state when the user entry triggers ``argparse`` (which lazy-imports
+urllib for help-text fallbacks).  Likely fix: defer the profile
+install until after ``urllib.parse`` has been imported by the
+bootstrap, or run the tracer in a fresh interpreter via ``-S`` +
+explicit ``site.main()``.
+
+The five subprocess-spawning tests carry
+``@pytest.mark.xfail(strict=False)`` gated on Python 3.12 so they
+still execute (we notice an XPASS on a non-bugged interpreter)
+but don't fail the suite on bugged ones:
+
+- ``tests/test_python_runtrace.py::test_runtrace_captures_call_tree``
+- ``tests/test_python_runtrace.py::test_runtrace_argv_is_forwarded``
+- ``tests/test_python_runtrace.py::test_runtrace_collapses_stdlib_by_default``
+- ``tests/test_python_runtrace.py::test_runtrace_expand_stdlib_keeps_full_tree``
+- ``tests/test_python_runtrace.py::test_runtrace_max_events_truncates``
 
 Both clusters are tracked here so we don't lose them between
 release and the post-release patch window.
 
+## 🔵 OQ-11 — verify FastMCP server-pinned-prompt support
+
+**Status**: open (verification only; design ships either way)
+**Severity**: polish
+**Owner**: `src/precis/mcp_modalities.py::register_skill_prompts`
+**Plan artefact**: `docs/design/mcp-cold-start-token-budget.md` §Open questions
+**Test**: none yet
+
+Phase 3 of the MCP session-ergonomics rollout
+(`PRECIS_STARTUP_SKILLS`) tags pinned skills on `prompts/list` and
+also surfaces them via a `Pinned skills:` line in
+`serverInfo.instructions` as a belt-and-suspenders fallback. The
+question is whether MCP 2025-06-18 + FastMCP 1.x lets a server
+flag a `prompts/list` entry as "render at session start", or
+whether the tag is purely a client-side convention.
+
+Action: read FastMCP source for `prompts/list` handler shape,
+read MCP 2025-06-18 §prompts. Either way the design ships — the
+banner notice carries the discovery channel — but the answer
+determines whether we can stop carrying the redundant banner
+line in a future cleanup.
+
+
 ---
 
-_Last updated: 2026-05-02_
+_Last updated: 2026-05-27 (OQ-17 + acatome mojibake + merge-forward + mypy
+closed; OQ-16 retracted as stale)_

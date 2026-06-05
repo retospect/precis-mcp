@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# scripts/db — database operations inside the precis-dev container.
+#
+# Wraps psql against $PRECIS_DATABASE_URL (read from /secrets in the
+# container). For CLI subcommands like `precis migrate` use scripts/dev
+# instead — this script focuses on raw SQL access.
+#
+# Usage:
+#   scripts/db psql [psql-args]    interactive psql session
+#   scripts/db query "SQL;"        one-off SQL statement
+#   scripts/db url                 print the DB URL (host-side ad-hoc use)
+#
+# See: docs/decisions/0009-dockerfile-relocation-container-first.md
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+if [[ ! -f "${INFRA_COMPOSE}" ]]; then
+    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
+    exit 1
+fi
+
+run_in_dev() {
+    docker compose -f "${INFRA_COMPOSE}" --profile dev run --rm --no-deps precis-dev "$@"
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "${cmd}" in
+    psql)
+        # Forward any extra args to psql (e.g. -c "SELECT 1" or a SQL file)
+        run_in_dev bash -lc \
+            'psql "$(cat /secrets/PRECIS_DATABASE_URL)" "$@"' \
+            -- "$@"
+        ;;
+    query|q)
+        sql="${1:-}"
+        if [[ -z "${sql}" ]]; then
+            echo 'usage: scripts/db query "SELECT 1;"' >&2
+            exit 1
+        fi
+        run_in_dev bash -lc \
+            'psql "$(cat /secrets/PRECIS_DATABASE_URL)" -c "$1"' \
+            -- "${sql}"
+        ;;
+    url)
+        run_in_dev bash -lc 'cat /secrets/PRECIS_DATABASE_URL'
+        ;;
+    -h|--help|help)
+        cat <<'EOF'
+scripts/db — DB ops inside the precis-dev container
+
+  scripts/db psql [psql-args]    interactive psql session
+  scripts/db query "SQL;"        one-off SQL statement
+  scripts/db url                 print the DB URL
+
+For CLI ops (migrate, reset, etc.) use scripts/dev:
+  scripts/dev uv run precis migrate
+  scripts/dev uv run precis db reset
+EOF
+        ;;
+    *)
+        echo "unknown subcommand: ${cmd}" >&2
+        echo "run 'scripts/db help' for usage" >&2
+        exit 1
+        ;;
+esac

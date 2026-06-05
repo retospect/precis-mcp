@@ -251,6 +251,7 @@ def _serialize_citation(cit: Any) -> dict[str, Any]:
 #     (programmer error) — those are terminal and are cached as
 #     sentinel rows so the next sweep skips them.
 
+
 # Exception classes that warrant a retry. Imported lazily inside the
 # decorator builder so this module can be imported without installing
 # httpx in environments that just want --help.
@@ -598,7 +599,9 @@ def _apply_similarity_gate(
             cit_keys.append(k)
             cit_texts.append(text)
 
-    print(f"[bge-m3] embedding {len(cit_texts)} citing papers (this is the slow bit)...")
+    print(
+        f"[bge-m3] embedding {len(cit_texts)} citing papers (this is the slow bit)..."
+    )
     t0 = time.monotonic()
     cit_vecs_list = embedder.embed(cit_texts)
     elapsed = time.monotonic() - t0
@@ -622,9 +625,7 @@ def _apply_similarity_gate(
             n_no_text += 1
             out[k] = h
             continue
-        scores = [
-            _dot(cv, src_vecs[s]) for s in h.cited_sources if s in src_vecs
-        ]
+        scores = [_dot(cv, src_vecs[s]) for s in h.cited_sources if s in src_vecs]
         if not scores:
             n_no_src_text += 1
             out[k] = h  # all cited sources lacked text; pass through
@@ -755,7 +756,9 @@ def _write_per_source_markdown(
             mark = " ★" if c.get("isInfluential") else ""
             lines.append(f"- **{title}**{mark}")
             meta_bits: list[str] = []
-            pd = c.get("publicationDate") or (str(c.get("year")) if c.get("year") else "")
+            pd = c.get("publicationDate") or (
+                str(c.get("year")) if c.get("year") else ""
+            )
             if pd:
                 meta_bits.append(pd)
             if c.get("venue"):
@@ -902,7 +905,9 @@ def _write_markdown(
         if meta_bits:
             lines.append(f"*{' · '.join(meta_bits)}*")
         if h.authors:
-            lines.append(", ".join(h.authors[:8]) + (" *et al.*" if len(h.authors) > 8 else ""))
+            lines.append(
+                ", ".join(h.authors[:8]) + (" *et al.*" if len(h.authors) > 8 else "")
+            )
         if h.doi:
             lines.append(f"DOI: <https://doi.org/{h.doi}>")
         elif h.paper_id:
@@ -1075,9 +1080,7 @@ def main() -> None:
     out_jsonl = Path(args.jsonl_out).expanduser().resolve()
 
     # 1. Load source corpus + dedup set.
-    sources, known_dois = _load_corpus(
-        slug_prefix=args.slug_prefix, limit=args.limit
-    )
+    sources, known_dois = _load_corpus(slug_prefix=args.slug_prefix, limit=args.limit)
     print(
         f"Source papers: {len(sources)} (slug-prefix={args.slug_prefix!r}, "
         f"limit={args.limit}); corpus dedup set has {len(known_dois)} DOIs"
@@ -1183,8 +1186,7 @@ def main() -> None:
             for slug, cites in by_source.items():
                 for c in cites:
                     f.write(
-                        json.dumps({"sourceSlug": slug, **c}, ensure_ascii=False)
-                        + "\n"
+                        json.dumps({"sourceSlug": slug, **c}, ensure_ascii=False) + "\n"
                     )
         total_hits = sum(len(v) for v in by_source.values())
         print(

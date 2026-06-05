@@ -7,7 +7,7 @@ parser registration and implementation live in a sibling module:
 - :mod:`precis.cli.migrate`   — ``precis migrate``
 - :mod:`precis.cli.maintenance` — ``precis maintenance run`` (nightly cron)
 - :mod:`precis.cli.gripe`     — ``precis gripes`` (human-only triage dump)
-- :mod:`precis.cli.ingest`    — ``precis jobs ingest-{bundle,bundles,md,oracles}``
+- :mod:`precis.cli.ingest`    — ``precis jobs ingest{,-md,-oracles}``
 - :mod:`precis.cli.dedupe`    — ``precis jobs dedupe-papers``
 - :mod:`precis.cli.perplexity`— ``precis jobs import-perplexity``
 - :mod:`precis.cli.patent`    — ``precis jobs {watch,list,run}-patent-watches``
@@ -23,7 +23,24 @@ import argparse
 import logging
 import sys
 
-from precis.cli import dedupe, gripe, ingest, maintenance, migrate, patent, perplexity
+from precis.cli import (
+    add,
+    dedupe,
+    gripe,
+    ingest,
+    maintenance,
+    migrate,
+    patent,
+    perplexity,
+    provenance,
+    repl,
+    resolve,
+    stats,
+    stubs,
+    tools,
+    watch,
+    worker,
+)
 
 log = logging.getLogger(__name__)
 
@@ -62,8 +79,44 @@ def main() -> None:
         gripe.run(args)
         return
 
+    if args.cmd == "add":
+        add.run(args)
+        return
+
+    if args.cmd == "watch":
+        watch.run(args)
+        return
+
+    if args.cmd == "_watch_batch_ingest":
+        watch.run_batch(args)
+        return
+
+    if args.cmd == "worker":
+        worker.run(args)
+        return
+
+    if args.cmd == "stubs":
+        stubs.run(args)
+        return
+
+    if args.cmd == "stats":
+        stats.run(args)
+        return
+
+    if args.cmd == "resolve":
+        resolve.run(args)
+        return
+
     if args.cmd == "jobs":
         _dispatch_job(args)
+        return
+
+    if args.cmd == "tools":
+        tools.run(args)
+        return
+
+    if args.cmd == "repl":
+        repl.run(args)
         return
 
     parser.error(f"unknown command: {args.cmd!r}")
@@ -92,6 +145,15 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_parser(sub)
     maintenance.add_parser(sub)
     gripe.add_parser(sub)
+    add.add_parser(sub)
+    watch.add_parser(sub)
+    watch.add_batch_parser(sub)
+    worker.add_parser(sub)
+    stubs.add_parser(sub)
+    stats.add_parser(sub)
+    resolve.add_parser(sub)
+    tools.add_parser(sub)
+    repl.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)
@@ -100,6 +162,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dedupe.add_parser(jobs_sub)
     perplexity.add_parser(jobs_sub)
     patent.add_parsers(jobs_sub)
+    provenance.add_parsers(jobs_sub)
 
     return parser
 
@@ -114,8 +177,6 @@ def _build_parser() -> argparse.ArgumentParser:
 #: here plus one handler in the owning module.
 _JOB_DISPATCH: dict[str, tuple[object, str]] = {
     "ingest": (ingest, "run_ingest"),
-    "ingest-bundle": (ingest, "run_bundle"),
-    "ingest-bundles": (ingest, "run_bundles"),
     "ingest-md": (ingest, "run_md"),
     "ingest-oracles": (ingest, "run_oracles"),
     "dedupe-papers": (dedupe, "run"),
@@ -124,6 +185,8 @@ _JOB_DISPATCH: dict[str, tuple[object, str]] = {
     "list-patent-watches": (patent, "run_list"),
     "run-patent-watches": (patent, "run_runner"),
     "sweep-patent-fulltext": (patent, "run_fulltext_sweep_cli"),
+    "check-provenance": (provenance, "run"),
+    "sync-retraction-watch": (provenance, "run_sync"),
 }
 
 

@@ -1,11 +1,31 @@
-"""Link CRUD. Mixin on :class:`precis.store.Store`.
+"""Link CRUD against the v2 ``links`` table. Mixin on
+:class:`precis.store.Store`.
 
-One row per edge. Asymmetric relations (``cites`` / ``cited-by``)
-are stored only in the direction the agent named at write time;
-the inverse is re-derived at read time in :meth:`LinksMixin.links_for`
-via :data:`precis.store.types._INVERSE_RELATIONS`. This keeps the
-unique-edge invariant intact and lets agents query either side
-without knowing the schema-side asymmetry.
+v2 schema notes:
+
+- ``links.id`` → ``links.link_id`` (column renamed; aliased back
+  to ``id`` in SELECT so the dataclass shape stays stable)
+- ``links.src_pos`` / ``dst_pos`` (int, with v1 ``-1`` sentinel for
+  "ref-level") → ``src_chunk_id`` / ``dst_chunk_id`` (NULL for
+  ref-level; FK to ``chunks(chunk_id)``)
+- UNIQUE ``(src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id,
+  relation) NULLS NOT DISTINCT`` — NULLS NOT DISTINCT preserves
+  the v1 dedup invariant for ref-level edges (two NULL chunk_ids
+  collide as duplicates the way v1's two -1 sentinels did).
+
+API-side ``pos`` (the chunk's ord) is the agent-facing convention;
+this module translates pos↔chunk_id at the boundary:
+
+- On INSERT: ``pos!=None`` triggers ``SELECT chunk_id FROM chunks
+  WHERE ref_id = %s AND ord = %s`` lookup (raises ``BadInput`` on
+  missing chunk — caller's contract is "the chunk exists").
+- On SELECT: LEFT JOIN ``chunks`` twice (one per endpoint) and
+  project ``ord`` back as ``pos``. NULL chunk_id → NULL ord →
+  None ``pos`` directly; no sentinel translation.
+
+Inverse-relation rewrite at read time
+(``relation='cited-by'`` → match ``cites`` rows with the ref on
+the dst side) carries over unchanged from v1.
 
 Mixin assumes the concrete Store provides ``self.pool``.
 """
@@ -19,12 +39,59 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
-from precis.store._mappers import _pos_to_db, _row_to_link
+from precis.store._mappers import _row_to_link
 from precis.store.types import _INVERSE_RELATIONS, ActorSlug, Link, Relation
 
 
+def _resolve_chunk_id_for_link(
+    conn: Connection, ref_id: int, ord_: int | None
+) -> int | None:
+    """Translate ``pos`` (= ``chunks.ord``) → ``chunks.chunk_id``.
+
+    Returns ``None`` when ``ord_`` is ``None`` (ref-level link).
+    Raises ``BadInput`` when ``ord_`` is set but no chunk exists at
+    ``(ref_id, ord)`` — silently inserting NULL there would dedupe
+    against the wrong row under the NULLS NOT DISTINCT unique
+    constraint and corrupt the link graph.
+    """
+    if ord_ is None:
+        return None
+    row = conn.execute(
+        "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = %s",
+        (ref_id, ord_),
+    ).fetchone()
+    if row is None:
+        raise BadInput(
+            f"no chunk at (ref_id={ref_id}, ord={ord_}) — "
+            "can't link to a chunk that doesn't exist",
+            next=f"check chunks: get(kind=..., id={ref_id})",
+        )
+    return int(row[0])
+
+
+# Standard SELECT projection for links: maps link_id back to id and
+# resolves chunk_id endpoints back to ord via LEFT JOIN against
+# chunks. Mirrors :func:`_row_to_link`'s tuple layout.
+_LINK_SELECT_PROJ = (
+    "l.link_id AS id, "
+    "l.src_ref_id, "
+    "sc.ord AS src_pos, "
+    "l.dst_ref_id, "
+    "dc.ord AS dst_pos, "
+    "l.relation, "
+    "l.set_by, "
+    "l.meta, "
+    "l.created_at"
+)
+_LINK_SELECT_FROM = (
+    "FROM links l "
+    "LEFT JOIN chunks sc ON sc.chunk_id = l.src_chunk_id "
+    "LEFT JOIN chunks dc ON dc.chunk_id = l.dst_chunk_id"
+)
+
+
 class LinksMixin:
-    """Link insert / remove / read with inverse-relation rewrite."""
+    """v2 link insert / remove / read with inverse-relation rewrite."""
 
     pool: ConnectionPool
 
@@ -42,67 +109,80 @@ class LinksMixin:
     ) -> Link:
         """Insert a link row, idempotent on the unique tuple.
 
-        The schema's ``UNIQUE (src_ref_id, src_pos, dst_ref_id,
-        dst_pos, relation)`` means a re-insert with the same
-        arguments is a no-op. We use ``ON CONFLICT (...) DO UPDATE
-        SET set_by = links.set_by`` so the ``RETURNING`` clause
-        yields the existing row on conflict — this avoids the extra
-        SELECT that ``DO NOTHING`` would force.
+        v2 ``UNIQUE (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id,
+        relation) NULLS NOT DISTINCT`` preserves the v1 dedup invariant:
+        re-inserting the same edge is a no-op via
+        ``ON CONFLICT ... DO UPDATE SET set_by = links.set_by``, the
+        same no-op-update trick used elsewhere so RETURNING fires on
+        both insert and conflict paths.
 
-        Identity self-loops (same ref + same pos) are rejected by
-        the schema's ``CHECK`` constraint, surfaced here as a
-        ``BadInput`` because that's the right error class for an
-        agent-driven misuse.
+        Self-loop CHECK: same ref + same chunk endpoint (both NULL or
+        both same chunk_id) is rejected by the schema; app-layer
+        ``BadInput`` here so an agent mistake surfaces with a recovery
+        hint rather than a psycopg ``CheckViolation``.
 
-        Same-ref different-pos links are allowed (e.g. ``block~5 →
-        block~7`` within one long memory ref) — the check is
-        position-aware.
-
-        **One row per edge.** Asymmetric pairs (``cites`` /
-        ``cited-by``) are NOT auto-mirrored — exactly one row is
-        inserted regardless of relation. The "who cites me?"
-        filter that motivated the MCP critic's request is solved
-        at *read* time in :meth:`links_for`, which rewrites
-        ``relation='cited-by'`` into a dst-side match against
-        ``relation='cites'``. This keeps the unique-edge invariant
-        intact, avoids drift between the two sides, and matches
-        the design choice documented in
-        ``migrations/0005_link_relations.sql``.
+        One row per edge — asymmetric pairs (``cites`` / ``cited-by``)
+        are NOT auto-mirrored. The "who cites me?" filter is handled
+        at read time in :meth:`links_for`.
         """
-        if src_ref_id == dst_ref_id and _pos_to_db(src_pos) == _pos_to_db(dst_pos):
-            raise BadInput(
-                "cannot link a ref to itself at the same position",
-                next=(
-                    "use different src_pos/dst_pos if linking blocks "
-                    "within one ref, or pick a different target"
-                ),
+
+        def _do(c: Connection) -> Link:
+            src_chunk_id = _resolve_chunk_id_for_link(c, src_ref_id, src_pos)
+            dst_chunk_id = _resolve_chunk_id_for_link(c, dst_ref_id, dst_pos)
+
+            # Self-loop check: same ref + same chunk endpoint (both
+            # NULL ⇒ ref-level self-loop; both same chunk_id ⇒
+            # chunk-level self-loop).
+            if src_ref_id == dst_ref_id and src_chunk_id == dst_chunk_id:
+                raise BadInput(
+                    "cannot link a ref to itself at the same position",
+                    next=(
+                        "use different src_pos/dst_pos if linking chunks "
+                        "within one ref, or pick a different target"
+                    ),
+                )
+
+            sql = (
+                "INSERT INTO links "
+                "  (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
+                "   relation, set_by, meta) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT "
+                "  (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, relation) "
+                "DO UPDATE SET set_by = links.set_by "
+                "RETURNING link_id"
             )
-        sql = """
-            INSERT INTO links
-                (src_ref_id, src_pos, dst_ref_id, dst_pos,
-                 relation, set_by, meta)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (src_ref_id, src_pos, dst_ref_id, dst_pos, relation)
-            DO UPDATE SET set_by = links.set_by
-            RETURNING id, src_ref_id, src_pos, dst_ref_id, dst_pos,
-                      relation, set_by, meta, created_at
-        """
-        params = (
-            src_ref_id,
-            _pos_to_db(src_pos),
-            dst_ref_id,
-            _pos_to_db(dst_pos),
-            relation,
-            set_by,
-            Jsonb(meta or {}),
-        )
+            row = c.execute(
+                sql,
+                (
+                    src_ref_id,
+                    src_chunk_id,
+                    dst_ref_id,
+                    dst_chunk_id,
+                    relation,
+                    set_by,
+                    Jsonb(meta or {}),
+                ),
+            ).fetchone()
+            assert row is not None, (
+                "links INSERT returned no row — schema invariant violated"
+            )
+            link_id = int(row[0])
+
+            # Re-SELECT through the standard projection so the
+            # returned Link carries the LEFT-JOIN-translated pos
+            # fields (ord values, not chunk_id ints).
+            fetched = c.execute(
+                f"SELECT {_LINK_SELECT_PROJ} {_LINK_SELECT_FROM} WHERE l.link_id = %s",
+                (link_id,),
+            ).fetchone()
+            assert fetched is not None
+            return _row_to_link(fetched)
+
         if conn is not None:
-            row = conn.execute(sql, params).fetchone()
-        else:
-            with self.pool.connection() as c:
-                row = c.execute(sql, params).fetchone()
-        assert row is not None
-        return _row_to_link(row)
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
 
     def remove_link(
         self,
@@ -114,43 +194,43 @@ class LinksMixin:
         dst_pos: int | None = None,
         conn: Connection | None = None,
     ) -> int:
-        """Remove links matching the given ``(src, dst, [pos pair, [relation]])``.
+        """Remove links matching ``(src, dst, [chunk pair, [relation]])``.
 
         ``relation=None`` removes **all** links between the given
-        positions regardless of relation. The handler-level
-        ``unlink=`` kwarg always passes a specific relation so this
-        broader form is a Store-only escape hatch (used by tests
-        and future bulk operations). Returns the number of rows
-        deleted; missing links are a silent no-op (rowcount=0).
+        endpoints regardless of relation. Returns the number of
+        rows deleted; missing links are a silent no-op.
 
-        Asymmetric pairs (``cites`` / ``cited-by``) are stored as a
-        single row whose direction is the one the agent named at
-        write time. Removing it removes the edge regardless of
-        which inverse name is in flight at read time (see
-        :meth:`links_for` for the read-side rewrite).
+        Uses ``IS NOT DISTINCT FROM`` for the chunk_id predicates so
+        ``None`` ↔ NULL matching aligns with the UNIQUE NULLS NOT
+        DISTINCT semantics on the index.
         """
-        clauses = [
-            "src_ref_id = %s",
-            "src_pos = %s",
-            "dst_ref_id = %s",
-            "dst_pos = %s",
-        ]
-        params: list[Any] = [
-            src_ref_id,
-            _pos_to_db(src_pos),
-            dst_ref_id,
-            _pos_to_db(dst_pos),
-        ]
-        if relation is not None:
-            clauses.append("relation = %s")
-            params.append(relation)
-        sql = f"DELETE FROM links WHERE {' AND '.join(clauses)}"
+
+        def _do(c: Connection) -> int:
+            src_chunk_id = _resolve_chunk_id_for_link(c, src_ref_id, src_pos)
+            dst_chunk_id = _resolve_chunk_id_for_link(c, dst_ref_id, dst_pos)
+            clauses = [
+                "src_ref_id = %s",
+                "src_chunk_id IS NOT DISTINCT FROM %s",
+                "dst_ref_id = %s",
+                "dst_chunk_id IS NOT DISTINCT FROM %s",
+            ]
+            params: list[Any] = [
+                src_ref_id,
+                src_chunk_id,
+                dst_ref_id,
+                dst_chunk_id,
+            ]
+            if relation is not None:
+                clauses.append("relation = %s")
+                params.append(relation)
+            sql = f"DELETE FROM links WHERE {' AND '.join(clauses)}"
+            cur = c.execute(sql, params)
+            return cur.rowcount or 0
+
         if conn is not None:
-            cur = conn.execute(sql, params)
-        else:
-            with self.pool.connection() as c:
-                cur = c.execute(sql, params)
-        return cur.rowcount
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
 
     def links_for(
         self,
@@ -161,90 +241,55 @@ class LinksMixin:
     ) -> list[Link]:
         """Fetch links touching ``ref_id``.
 
-        ``direction='out'``: rows where ref_id is the source.
-        ``direction='in'``:  rows where ref_id is the destination.
-        ``direction='both'`` (default): both, no deduplication —
-        a self-link (different positions) shows up twice and that's
-        correct.
-
-        ``relation=None`` returns every relation. Inbound rows keep
-        their stored relation slug; the renderer maps to inverse
-        labels via ``relations.inverse_slug`` for human-readable
-        prose.
-
-        **Inverse-relation rewrite.** When ``relation`` is the
-        inverse half of an asymmetric pair (e.g. ``'cited-by'``,
-        which is never stored — only ``'cites'`` is) the filter
-        is rewritten so both physical encodings of the edge are
-        returned. Concretely, ``relation='cited-by',
-        direction='out'`` matches:
-
-        * literal ``cited-by`` rows where this ref is src (rare),
-          AND
-        * ``cites`` rows where this ref is dst (the canonical
-          encoding of the same edge from the cited side).
-
-        This solves the "who cites me?" filter the MCP critic
-        flagged: agents can write
-        ``links_for(B, relation='cited-by', direction='out')`` and
-        get the citation graph from B's perspective without
-        knowing the schema-side asymmetry. Returned ``Link`` rows
-        keep their *stored* relation slug — the caller compares
-        against the requested filter to label them, exactly the
-        same job the renderer already does for ``direction='both'``.
+        Inverse-relation rewrite carries over unchanged from v1:
+        ``relation='cited-by'`` matches literal ``cited-by`` rows
+        on this ref's side OR ``cites`` rows on the opposite side
+        (the v2 schema doesn't store ``cited-by`` rows — only
+        ``cites`` — so the rewrite is the only way to surface
+        "who cites me?" links).
         """
-        # The role-match logic: when the caller asks for relation X
-        # in direction D, also accept rows storing inverse(X) in
-        # the opposite direction. The two conditions are unioned.
         inverse = _INVERSE_RELATIONS.get(relation) if relation is not None else None
+
+        def _direction_clause(direction_: str) -> tuple[str, list[Any]]:
+            if direction_ == "out":
+                return "l.src_ref_id = %s", [ref_id]
+            if direction_ == "in":
+                return "l.dst_ref_id = %s", [ref_id]
+            return (
+                "(l.src_ref_id = %s OR l.dst_ref_id = %s)",
+                [ref_id, ref_id],
+            )
 
         clauses: list[str] = []
         params: list[Any] = []
 
-        def _direction_clause(direction: str) -> tuple[str, list[Any]]:
-            if direction == "out":
-                return "src_ref_id = %s", [ref_id]
-            if direction == "in":
-                return "dst_ref_id = %s", [ref_id]
-            return "(src_ref_id = %s OR dst_ref_id = %s)", [ref_id, ref_id]
-
         if inverse is None:
-            # No inverse rewrite needed — single direction clause +
-            # optional relation filter.
             d_clause, d_params = _direction_clause(direction)
             clauses.append(d_clause)
             params.extend(d_params)
             if relation is not None:
-                clauses.append("relation = %s")
+                clauses.append("l.relation = %s")
                 params.append(relation)
         else:
-            # Disjunction: literal-relation in the requested
-            # direction OR inverse-relation in the opposite
-            # direction. ``opposite`` is straightforward; for
-            # ``both``, both halves use ``both`` — every row
-            # qualifies under the relation OR inverse-relation
-            # branch. We then dedupe by id at the Python boundary.
             opposite_dir = {"out": "in", "in": "out", "both": "both"}[direction]
             d_left, p_left = _direction_clause(direction)
             d_right, p_right = _direction_clause(opposite_dir)
             clauses.append(
-                f"(({d_left} AND relation = %s) OR ({d_right} AND relation = %s))"
+                f"(({d_left} AND l.relation = %s) OR ({d_right} AND l.relation = %s))"
             )
             params.extend([*p_left, relation, *p_right, inverse])
 
         sql = (
-            "SELECT id, src_ref_id, src_pos, dst_ref_id, dst_pos, "
-            "       relation, set_by, meta, created_at "
-            f"FROM links WHERE {' AND '.join(clauses)} "
-            "ORDER BY created_at ASC"
+            f"SELECT {_LINK_SELECT_PROJ} {_LINK_SELECT_FROM} "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY l.created_at ASC"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
-        # Dedupe by id — when ``direction='both'`` and an inverse
-        # rewrite is in play, the same row could match both halves
-        # of the OR (a self-link with different positions is the
-        # only realistic case in this schema, but the dedupe is
-        # cheap and defensive).
+
+        # Dedupe by link_id — under inverse rewrite + direction='both'
+        # a row could match both halves of the OR; cheap defensive
+        # dedupe.
         seen: set[int] = set()
         out: list[Link] = []
         for r in rows:

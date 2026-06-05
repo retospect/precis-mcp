@@ -1,142 +1,117 @@
 ---
 id: precis-plaintext-help
 title: precis — read and edit plaintext files
-status: phase-6a
-tier: 1
-floor: any
-applies-to: get/search/put (kind='plaintext')
-last-updated: 2026-05-01
+applies-to: get/search/put/edit/delete (kind='plaintext')
+status: active
 ---
 
-# precis-plaintext-help — `.txt` / `.log` files
+# precis-plaintext-help — `.txt` and `.log` files
 
-For shared concepts (address grammar, two-track addressing, multi-
-root config, write modes, reverse lookups), read `precis-files-help`
-first. This skill covers what's specific to `plaintext`.
+Unstructured prose: notes, log captures, pasted fragments. No
+headings, no fenced code, no tables. For shared address grammar,
+two-track addressing, and write modes, see `precis-files-help`.
 
-> **Status:** shipped, gated on `PRECIS_ROOT` (shared with `markdown`
-> and `tex`). Use for the long tail: `.txt` notes, `.log` captures,
-> pasted fragments, lab notebooks — files that have no block grammar
-> and don't need one. If you're writing markdown-flavoured notes, use
-> `kind='markdown'` instead — the block structure is genuinely
-> useful for headings, code blocks, tables.
+If you want headings or code fences, use `kind='markdown'` instead.
 
-## Block grammar
-
-One block = one paragraph (a run of non-blank lines separated from
-its neighbours by at least one blank line). No headings, no code
-fences, no tables. That's the whole grammar.
-
-| Block kind | Recognized form | Slug shape |
-|---|---|---|
-| `paragraph` | run of non-blank lines | first ~5 words + 6-hex hash |
-
-Paragraph slugs are content-derived, so **editing one paragraph
-changes its slug** but leaves all other slugs stable. The stored
-reverse-lookup maps old → new for one re-ingest cycle, so stale
-references still resolve with a rename hint (same behaviour as
-markdown).
-
-## Address shapes
+## What does a plaintext id look like?
+## Address a `.txt` or `.log` file
+## How do I point at a paragraph in a log?
 
 ```python
-get(kind='plaintext', id='notes/log-2026')                # overview
-get(kind='plaintext', id='notes/log-2026~opened-file')    # one paragraph by slug
-get(kind='plaintext', id='notes/log-2026~3')              # one paragraph by pos
-get(kind='plaintext', id='notes/log-2026/raw')            # full source
-get(kind='plaintext')                                     # index of all files
+get(kind='plaintext', id='logs/2026-05.txt')           # path form, with extension
+get(kind='plaintext', id='logs--2026-05')              # canonical slug form
+get(kind='plaintext', id='logs/2026-05.txt~3')         # paragraph by position
+get(kind='plaintext', id='logs/2026-05.txt~opened-laptop-at-0915')  # by content slug
+get(kind='plaintext', id='logs/2026-05.txt~L42-58')    # by line range
+get(kind='plaintext', id='logs/2026-05.txt/raw')       # full source
 ```
 
-Both `.txt` and `.log` files share the same slug form (the
-extension is stripped from the relative path and stored in the
-ref's metadata). The handler auto-detects the file's extension on
-first touch; once ingested, the extension is pinned in `ref.meta`.
+Both `.txt` and `.log` share one address space. The extension can
+appear in the path form; the canonical slug strips it and replaces
+`/` with `--` (`logs/2026-05.txt` ↔ `logs--2026-05`). Either resolves.
 
-## Recipes
+`~L<n>-<m>` is the line-range selector — useful when something
+external (grep, a stack trace, the tail of a log) gave you line
+numbers.
 
-### Dump a log snippet into the corpus
+## How is a plaintext file divided into blocks?
+## What counts as a block in a `.txt` file?
+## Paragraph grammar for plaintext
+
+One block = one paragraph: a run of non-blank lines separated from
+its neighbours by at least one blank line. That is the whole
+grammar. `# foo` is a paragraph that starts with a hash — not a
+heading. Fenced code, tables, list markers are all just text.
+
+Paragraph slugs are content-derived (first few words + short hash),
+so editing a paragraph changes its slug. Stale references resolve
+for one re-ingest cycle via the rename map; the response always
+carries the new slug.
+
+## How do I read a plaintext file?
+## Open a log and see its contents
+
+```python
+get(kind='plaintext')                                  # index of all files
+get(kind='plaintext', id='logs/2026-05.txt')           # overview
+get(kind='plaintext', id='logs/2026-05.txt~3')         # one paragraph
+search(kind='plaintext', q='deployment issue')
+search(kind='plaintext', q='deployment issue',
+       scope='logs/2026-05.txt')                       # one file
+```
+
+## How do I write a plaintext file?
+## Create or append to a `.txt`
+## Drop a log capture into the corpus
 
 ```python
 put(kind='plaintext', id='captures/session-2026-05-01',
     text='''Opened laptop at 09:15.
 
-Investigated the markdown kind registration issue —
-the skill docs advertise markdown but PRECIS_ROOT
-wasn't set in this deployment.
+Investigated the PRECIS_ROOT gating issue.
 
-Fixed the skill docs; plaintext kind is shipping in
-the same PR.''',
+Wrapped up at 11:00.''',
     mode='create')
+
+edit(kind='plaintext', id='captures/session-2026-05-01',
+     text='Follow-ups filed.', mode='append')
 ```
 
-### Append a new paragraph to an existing note
+Writes go through verbatim after a UTF-8 encode check — no parse
+gate, no formatter. Whatever bytes you send are what lands on disk.
+
+## How do I make a surgical edit in a log?
+## Find-replace within one paragraph
+## Fix a timestamp without rewriting the block
 
 ```python
-edit(kind='plaintext', id='captures/session-2026-05-01',
-     text='Wrapped up the session at 11:00. Follow-ups filed.',
-     mode='append')
-```
-
-### Surgical edit
-
-Same as every R/W file kind — `edit(mode='find-replace')` with a
-literal `find=` plus optional `before=` / `after=` anchors. The
-schema lives in `precis-edit-protocol`.
-
-```python
-edit(kind='plaintext', id='captures/session-2026-05-01',
+edit(kind='plaintext', id='captures/session-2026-05-01~opened-laptop-at-0915',
      mode='find-replace',
      find='09:15', text='09:20')
-```
 
-The `id` selector bounds the search region: pass `~<slug>` to
-scope the edit to one paragraph so you don't accidentally match
-the same word elsewhere in the file.
-
-### Delete one line (or one matched span) in place
-
-Use `mode='find-replace'` with `text=''`. That's the canonical
-span-delete idiom for every R/W file kind — `delete` is for
-whole files and whole blocks, not lines.
-
-```python
-# Drop one doi= line from a bibtex entry, leaving the rest of
-# the @article{…} block intact. Anchors disambiguate even if the
-# same doi text appears elsewhere.
+# Delete one line by replacing it with empty text. Anchors disambiguate
+# in case the same find= text appears elsewhere in the file.
 edit(kind='plaintext', id='refs.bib',
      mode='find-replace',
      find='doi     = {10.1111/ejn.12125}',
      before='@article{tritsch2012dopaminergic,',
      after='volume  = {35},',
-     text='')   # empty text = delete
+     text='')
 ```
 
-### Search across all plaintext
+Scope the edit by passing `~<slug>` or `~L<n>-<m>` in `id=` so the
+match is bounded to one paragraph or line range. `delete` is for
+whole files and whole blocks; for line-level removals use
+`find-replace` with `text=''`.
 
-```python
-search(kind='plaintext', q='deployment issue')
-search(kind='plaintext', q='deployment issue',
-       scope='captures/session-2026-05-01')   # one file
-```
-
-Blocks are embedded (same embedder as the rest of the server), so
-semantic search works — `q='markdown gating'` will surface the
-paragraph about `PRECIS_ROOT` without needing the exact phrase.
-
-## Limits
-
-- ATX markdown is **not** parsed — `# foo` is just a paragraph
-  starting with a hash. Use `kind='markdown'` for real notes.
-- No front-matter, no footnotes, no inline link resolution.
-- Files larger than ~10 MB are rejected with a hint to chunk
-  externally first (same ceiling as markdown).
-- `.log` files are read whole — rotate / tail before ingesting
-  large ones.
+Full edit grammar lives in `precis-edit-help`.
 
 ## See also
 
-- `precis-files-help` — shared addressing model for all file kinds
-- `precis-edit-protocol` — universal anchored-edit grammar
-- `precis-markdown-help` — markdown block grammar for structured notes
-- `precis-tex-help` — `.tex` files (subclasses this kind today)
-- `precis-python-help` — code navigation (different parser, same shape)
+```python
+get(kind='skill', id='precis-files-help')       # shared address grammar, write modes
+get(kind='skill', id='precis-edit-help')        # find-replace + insert
+get(kind='skill', id='precis-markdown-help')    # use this for structured notes
+get(kind='skill', id='precis-tex-help')         # .tex files
+get(kind='skill', id='precis-overview')         # verbs and kinds
+```

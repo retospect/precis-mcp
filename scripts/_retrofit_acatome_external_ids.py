@@ -61,7 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--bundle-dir", type=Path, default=DEFAULT_BUNDLE_DIR)
-    ap.add_argument("--database-url", default=os.environ.get("PRECIS_DATABASE_URL", DEFAULT_DB))
+    ap.add_argument(
+        "--database-url", default=os.environ.get("PRECIS_DATABASE_URL", DEFAULT_DB)
+    )
     ap.add_argument("--limit", type=int, default=0, help="0 = no limit")
     ap.add_argument(
         "--apply",
@@ -175,12 +177,22 @@ def _process_one(
             row = cur.fetchone()
         if row:
             ref_id = int(row[0])
-            log.debug("matched %s via %s=%s -> ref %d", bundle_path.name, scheme, value, ref_id)
+            log.debug(
+                "matched %s via %s=%s -> ref %d",
+                bundle_path.name,
+                scheme,
+                value,
+                ref_id,
+            )
             break
 
     if ref_id is None:
         stats["skipped_no_ref_match"] += 1
-        log.debug("no ref match for %s (tried %s)", bundle_path.name, [c[0] for c in candidates])
+        log.debug(
+            "no ref match for %s (tried %s)",
+            bundle_path.name,
+            [c[0] for c in candidates],
+        )
         return
 
     # Pull every alias row for this ref and convert to S2 externalIds shape.
@@ -215,7 +227,9 @@ def _process_one(
     # we hit during dedup).
     s2_alias_values = {v for s, v in alias_rows if s == "s2"}
     bundle_s2 = (header.get("s2_id") or "").strip().lower()
-    if s2_paper_id and (not bundle_s2 or (s2_alias_values and bundle_s2 not in s2_alias_values)):
+    if s2_paper_id and (
+        not bundle_s2 or (s2_alias_values and bundle_s2 not in s2_alias_values)
+    ):
         changed = True
 
     if not changed:
@@ -235,7 +249,9 @@ def _process_one(
     # Apply.
     if new_external_ids:
         header["external_ids"] = new_external_ids
-    if s2_paper_id and (not bundle_s2 or (s2_alias_values and bundle_s2 not in s2_alias_values)):
+    if s2_paper_id and (
+        not bundle_s2 or (s2_alias_values and bundle_s2 not in s2_alias_values)
+    ):
         header["s2_id"] = s2_paper_id
     bundle["header"] = header
 

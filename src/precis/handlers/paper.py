@@ -1,8 +1,9 @@
-"""PaperHandler — read scientific papers ingested from .acatome bundles.
+"""PaperHandler — read scientific papers from the v2 store.
 
-Phase 3: read-only via ``get`` / ``search``. Ingest happens out-of-band
-via ``Store.ingest_bundle()`` (or the ``precis jobs ingest-bundles``
-CLI). ``put`` lands in a later phase when paper edits are scoped.
+Read-only via ``get`` / ``search``. Ingest happens out-of-band via
+:func:`precis.ingest.add.precis_add` (or the top-level ``precis
+add`` / ``precis watch`` CLI). ``put`` lands in a later phase when
+paper edits are scoped.
 
 Slug parsing supports the canonical slug-with-chunk syntax used across
 v2:
@@ -25,26 +26,43 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.format import render_agent_table
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
 )
-from precis.handlers._paper_toc import build_toc, filter_toc_to_range, render_toc
-from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.handlers._slug_ref_shared import (
+    reject_chunk_or_path_view,
+    resolve_live_slug_ref,
+)
+from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils.next_block import render_next_section
+from precis.utils.rake import keyword_summary
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
+from precis.utils.toc import ChunksForToc
+from precis.utils.toc_db import render_from_store
 
 # ---------------------------------------------------------------------------
 # Public spec
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_VIEWS = ("bibtex", "ris", "endnote", "abstract", "toc")
+_SUPPORTED_VIEWS = (
+    "bibtex",
+    "ris",
+    "endnote",
+    "abstract",
+    "toc",
+    "health",
+    "bibliography",
+    "log",
+    "abbrevs",
+)
 
 
 # Tunable knobs for the nearest-match suggester. The cutoff (0.6 of
@@ -186,8 +204,17 @@ class PaperHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # Round-2 picky 2026-05-30: ``get(kind='paper', q='...')`` was
+        # silently dropping ``q=`` and rendering the paper list,
+        # leaving callers confused why their search returned no
+        # chunks. Delegate to ``search`` when ``q=`` is present and
+        # no concrete ``id=`` was given — same UX shift as the skill
+        # handler's empty-q path, in the opposite direction.
+        if id is None and q is not None and q.strip():
+            return self.search(q=q)
         if id is None:
             return self._render_list_papers()
         raw_id = _maybe_resolve_doi(self.store, str(id))
@@ -208,6 +235,42 @@ class PaperHandler(Handler):
         # asymmetry where the path form accepted 'cite/bib' but the kwarg
         # form rejected it.
         effective_view = _normalise_view(path_view or view)
+        # Phase F 2026-05-31: validate against per-kind enum so the
+        # agent gets the accepted list back in one round-trip on a
+        # bogus or missing-arg view. ``None`` (no view requested)
+        # always passes through to the overview / chunk-resolver
+        # paths below.
+        if effective_view is not None:
+            accepted = self.accepted_views(id=ref)
+            if effective_view not in accepted:
+                # Reserved views: ``fig/<N>`` is advertised in
+                # ``precis-paper-help`` as a future-reserved
+                # affordance. Surface a dedicated "reserved" error so
+                # a caller who has read the help skill knows the
+                # shape is right but the build is early — distinct
+                # from a typo against the canonical enum.
+                if effective_view.startswith("fig/"):
+                    from precis.errors import Unsupported
+
+                    raise Unsupported(
+                        f"paper view {effective_view!r} is a reserved "
+                        f"affordance — the help advertises fig/<N> but "
+                        f"the build does not yet implement it",
+                        next=(
+                            "get(kind='skill', id='precis-paper-help') for "
+                            "the current view enum"
+                        ),
+                    )
+                from precis.errors import Unsupported
+
+                raise Unsupported(
+                    f"unknown view {effective_view!r} for kind='paper'",
+                    options=accepted,
+                    next=(
+                        f"view= for kind='paper' accepts: {accepted}; "
+                        f"omit view= for the paper overview"
+                    ),
+                )
 
         # Combined form: ``slug~A..B/toc`` → range-scoped TOC drill-down.
         # Only ``view='toc'`` is valid with a chunk_spec; other views
@@ -242,6 +305,7 @@ class PaperHandler(Handler):
         scope: str | None = None,
         tags: list[str] | None = None,
         top_k: int = 10,
+        page: int = 1,
         exclude: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
@@ -311,6 +375,10 @@ class PaperHandler(Handler):
         # The lexical leg already has a natural zero (the tsquery
         # either matches or it doesn't); the floor is sem-only.
         # (Critic MAJOR #3.)
+        # page=N → offset = (page-1) * top_k. Clamped to >= 0 so a 7B
+        # caller passing ``page=0`` doesn't blow the query up.
+        search_offset = max(0, (int(page) - 1) * int(top_k))
+
         hits = self.store.search_blocks_fused(
             q=q,
             query_vec=query_vec,
@@ -318,6 +386,7 @@ class PaperHandler(Handler):
             scope_ref_id=scope_ref_id,
             tags=normalized_tags,
             limit=top_k,
+            offset=search_offset,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids or None,
         )
@@ -332,23 +401,36 @@ class PaperHandler(Handler):
             # DOI-shaped queries that miss are the dominant friction
             # case: agents fire 3-5 keyword variants trying to find a
             # paper that isn't in the corpus. Detect the DOI shape and
-            # route directly to the request_doi.md fetch pathway
-            # instead of suggesting a wider search that will also miss.
+            # route to the structured stub-fetch pathway (finding +
+            # ``precis worker --only fetch``) instead of suggesting a
+            # wider search that will also miss.
             body = f"no paper blocks match {q!r}"
             doi_match = _DOI_RE.match(q.strip())
             if doi_match is not None:
                 doi = doi_match.group(1)
                 body += "\n\nThis DOI is not in the local corpus. "
                 body += (
-                    "To request external retrieval (perplexity / fetch "
-                    "pipeline), append it to request_doi.md:"
+                    "Pull it into the corpus via the finding-chase + "
+                    "Unpaywall/arXiv/S2 fetcher pipeline:"
                 )
                 body += render_next_section(
                     [
                         (
+                            "put(kind='finding', title='<short claim>', "
+                            f"body='<claim + setup>', cited_in='doi:{doi}', "
+                            "scope={'...': '...'})",
+                            "register the DOI as a chase target; the "
+                            "fetcher will try Unpaywall/arXiv/S2 next pass",
+                        ),
+                        (
+                            "precis stubs --awaiting",
+                            "list stub backlog the fetcher will work on",
+                        ),
+                        (
                             "edit(kind='plaintext', id='./request_doi.md', "
                             f"mode='append', text='{doi} - <one-line reason>\\n')",
-                            "queue this DOI for external fetch",
+                            "(legacy) append to the plaintext queue — "
+                            "deprecated; use put(kind='finding') above",
                         ),
                     ]
                 )
@@ -398,30 +480,51 @@ class PaperHandler(Handler):
         # flagged this 2026-05-02; aligning here at cost of one
         # potentially-misleading float per hit, balanced by uniform
         # downstream parsing across kinds.
-        lines = [
-            format_search_headline(
-                n_returned=len(hits),
-                total=total,
-                noun="block hit",
-                query=q,
-            )
-        ]
-        for i, (block, ref, score) in enumerate(hits, 1):
+        # Round-2 picky 2026-05-31: stripped to two columns —
+        # ``{handle, chunk_keywords}``. Score is internal-only
+        # (it determines RRF order, which is the row order;
+        # surfacing the float adds no signal once the rows are
+        # already sorted). Title was dropped because the agent has
+        # ``get(kind='paper', id='<handle-slug>')`` for the full
+        # title + meta; spending 30-60 chars per row on the same
+        # title for repeated hits on the same paper is wasteful.
+        # The cluster-context hint (Phase E, once segmentation
+        # lands) will be a single trailing line rather than a
+        # per-row column.
+        head = format_search_headline(
+            n_returned=len(hits),
+            total=total,
+            noun="block hit",
+            query=q,
+        )
+        # F20: each hit renders as a TOON row with its own per-chunk
+        # KeyBERT keywords (from ``chunks.keywords``). The old
+        # segment-level excerpt sub-line was removed when the static
+        # discovery layer (ref_segments + ref_segment_sentences) was
+        # retired — per-chunk keywords carry the "what's in this
+        # specific chunk" signal more directly.
+        del query_vec  # no longer used for per-hit excerpt reranking
+        table_rows: list[dict[str, str]] = []
+        for block, ref, _score in hits:
             slug = ref.slug or "???"
             handle = f"{slug}~{block.pos}"
-            # Scrub image markers + page anchors out of the preview
-            # so the search hit lines never carry the raw
-            # ``![](_page_*.jpeg)`` markdown.  The same substitution
-            # ``_render_chunks`` applies on the get path; both
-            # excerpt paths now stay on the same contract.
-            # (MCP critic re-probe MAJOR — figure marker leaks in
-            # search previews.)
-            preview = _excerpt(_scrub_block_text(block.text), limit=280)
-            lines.append(f"\n## {i}. {handle}  (score={score:.4f})")
-            lines.append(f"_{_clean_inline_text(ref.title)}_")
-            lines.append(preview)
-
-        body = "\n".join(lines)
+            kw_list = block.keywords or []
+            if kw_list:
+                kw_display = ", ".join(kw_list[:5])
+            else:
+                chunk_text = _scrub_block_text(block.text)
+                kw_display = _chunk_keywords_or_caption(chunk_text)
+            table_rows.append(
+                {
+                    "handle": handle,
+                    "chunk_keywords": kw_display,
+                }
+            )
+        rendered_table = render_agent_table(
+            table_rows,
+            schema=["handle", "chunk_keywords"],
+        )
+        body = head + "\n\n" + rendered_table
 
         # Pagination affordance — when the lexical total exceeds what
         # we returned, surface the narrow-with-scope path explicitly.
@@ -430,50 +533,58 @@ class PaperHandler(Handler):
         # hit #101. (MCP critic MAJOR — search has no pagination
         # affordance when capped.)
         #
+        # Single ``Next:`` trailer for the whole search response.
+        # Order (most actionable first):
+        #   1. Drill-into-chunk: ``get(kind='paper', id=<handle>)`` —
+        #      teaches that every handle in the table is a valid id.
+        #   2. Pagination via ``exclude=`` (when more hits remain).
+        #   3. Narrow-to-paper via ``scope=`` (multi-paper case).
+        #   4. Salient-term refinement.
+        # Round-2 picky 2026-05-30: previous code emitted two
+        # separate ``Next:`` blocks back-to-back; merging keeps the
+        # response shape consistent across kinds.
+        nav: list[tuple[str, str]] = []
+        if hits:
+            first_handle = f"{hits[0][1].slug or '???'}~{hits[0][0].pos}"
+            nav.append(
+                (
+                    f"get(kind='paper', id='{first_handle}')",
+                    "read the full text of any hit (paste any handle above)",
+                )
+            )
+            # F20: cluster-context navigation hint now uses the
+            # dynamic TOC. Pointing at view='toc' on the paper gives
+            # the agent the freshly-clustered structure for the
+            # current corpus state — no segment-containing-chunk
+            # lookup needed because clusters are computed on demand.
+
         # Singleton-hit special case (MCP critic MINOR-$): when
-        # ``len(hits) == 1`` the previous nav was 46 % of the response
+        # ``len(hits) == 1`` the original nav was 46 % of the response
         # and 100 % redundant — the scope suggestion narrowed to the
         # only hit's own paper (a no-op), and the salient-term
         # suggestion is moot when the caller already has a tight
-        # match. Replace the two-line nav with a single ``top_k=``
-        # widen hint, which is the only useful next step from a
-        # one-of-many singleton.
+        # match. Just bump ``top_k`` in that branch.
         if total > len(hits):
             if len(hits) == 1:
-                body += render_next_section(
-                    [
-                        (
-                            f"search(kind='paper', q={q!r}, top_k=10)",
-                            f"see more of the {total} matches",
-                        ),
-                    ]
+                nav.append(
+                    (
+                        f"search(kind='paper', q={q!r}, top_k=10)",
+                        f"see more of the {total} matches",
+                    )
                 )
             else:
                 top_slug = (hits[0][1].slug or "???") if hits else None
-                nav: list[tuple[str, str]] = []
 
-                # Exclude-continuation: pre-fill the slugs of refs we
-                # just returned (UNION'd with the caller's prior
-                # exclude list) so the agent can paste the call
-                # straight back to get the next page. Pushed down to
-                # SQL so ``LIMIT`` operates post-exclusion — the next
-                # call really does return the next ``top_k`` hits,
-                # not ``top_k - len(exclude)``. Order: this hint
-                # comes first because it's the most actionable.
-                seen_slugs: set[str] = set(excluded_slugs_in)
-                continuation: list[str] = list(excluded_slugs_in)
-                for _b, ref, _s in hits:
-                    s = ref.slug
-                    if s and s not in seen_slugs:
-                        seen_slugs.add(s)
-                        continuation.append(s)
-                if continuation:
+                # Pagination continuation: bump page=N. page= is the
+                # canonical pagination knob; exclude= is a hand-skip
+                # filter for known-irrelevant refs (kept available via
+                # the arg but no longer the recommended next-step
+                # because it bloats the call with a slug list).
+                if total > top_k * page:
                     nav.append(
                         (
-                            f"search(kind='paper', q={q!r}, "
-                            f"exclude={continuation!r})",
-                            f"see the next {top_k} hits "
-                            f"(skipping {len(continuation)} already shown)",
+                            f"search(kind='paper', q={q!r}, page={page + 1})",
+                            f"see the next {top_k} of {total} hits",
                         )
                     )
 
@@ -484,10 +595,16 @@ class PaperHandler(Handler):
                             f"narrow to blocks inside {top_slug}",
                         )
                     )
+                # Round-2 picky F-9, 2026-05-30: previous wording was
+                # ``q={q!r} + ' <salient term>'`` — Python-flavoured
+                # pseudo-code that a literal-paste agent would send as
+                # the verbatim string ``'cells' + ' <salient term>'``.
+                # Spell the placeholder in pure-string form instead.
                 nav.append(
                     (
-                        f"search(kind='paper', q={q!r} + ' <salient term>')",
-                        "tighten the query with a hit-specific token",
+                        f"search(kind='paper', q='{q} <salient term>')",
+                        "tighten the query with a hit-specific token "
+                        "(replace <salient term> with one)",
                     )
                 )
                 body += render_next_section(nav)
@@ -503,6 +620,7 @@ class PaperHandler(Handler):
         tags: list[str] | None = None,
         top_k: int = 10,
         exclude: list[str] | None = None,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search returned as ``SearchHit``s.
@@ -531,8 +649,10 @@ class PaperHandler(Handler):
                 exclude_ref_ids = self.store.fetch_ref_ids_by_slugs(
                     normalised, kind="paper"
                 )
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
+        # query_vec= may be pre-supplied by the runtime cross-kind
+        # dispatcher (computed once for all kinds), avoiding an
+        # extra embed_one(q) per fanned-out kind.
+        if query_vec is None and self.embedder is not None:
             query_vec = self.embedder.embed_one(q)
         triples = self.store.search_blocks_fused(
             q=q,
@@ -557,12 +677,12 @@ class PaperHandler(Handler):
         """
         raw_id = _maybe_resolve_doi(self.store, str(id))
         slug, chunk_spec, path_view = _parse_paper_id(raw_id)
-        if chunk_spec is not None or path_view is not None:
-            raise BadInput(
-                "paper ops operate at ref level - drop the chunk "
-                "selector / path view from id=",
-                next=f"tag(kind='paper', id={slug!r}, ...) or link(kind='paper', id={slug!r}, ...)",
-            )
+        reject_chunk_or_path_view(
+            kind="paper",
+            slug=slug,
+            sel=chunk_spec,
+            path_view=path_view,
+        )
         ref = resolve_live_slug_ref(
             self.store,
             kind="paper",
@@ -651,7 +771,12 @@ class PaperHandler(Handler):
         journal = _clean_inline_text(str(meta.get("journal") or ""))
         n_blocks = self.store.count_blocks(ref.id)
 
-        lines = [f"# {ref.slug}", f"_{_clean_inline_text(ref.title)}_"]
+        lines: list[str] = []
+        banner = _retraction_banner(ref)
+        if banner:
+            lines.append(banner)
+            lines.append("")
+        lines.extend([f"# {ref.slug}", f"_{_clean_inline_text(ref.title)}_"])
         if authors:
             lines.append(authors)
         venue: list[str] = []
@@ -683,15 +808,15 @@ class PaperHandler(Handler):
             [
                 (
                     f"get(kind='paper', id='{ref.slug}', view='toc')",
-                    "hierarchical table of contents",
+                    "see the TOC",
                 ),
                 (
                     f"get(kind='paper', id='{ref.slug}~0..5')",
-                    "read first chunks",
+                    "read the first 6 chunks",
                 ),
                 (
                     f"get(kind='paper', id='{ref.slug}', view='bibtex')",
-                    "BibTeX citation",
+                    "get the BibTeX entry",
                 ),
                 (
                     f"search(kind='paper', q='...', scope='{ref.slug}')",
@@ -702,6 +827,14 @@ class PaperHandler(Handler):
         return Response(body=body)
 
     def _render_view(self, ref: Ref, view: str) -> Response:
+        if view == "log":
+            # Per-ref chronological event log across every subsystem
+            # that writes to ref_events (chase, fetcher, provenance,
+            # ingest). No source filter — for papers the cross-cutting
+            # view is the useful one ("what's happened to this paper?").
+            from precis.handlers._event_log_render import render_event_log
+
+            return render_event_log(self.store, ref.id)
         if view == "abstract":
             abstract = (ref.meta or {}).get("abstract")
             if not abstract:
@@ -717,11 +850,11 @@ class PaperHandler(Handler):
                     [
                         (
                             f"get(kind='paper', id='{slug}', view='toc')",
-                            "hierarchical TOC - find sections to read",
+                            "see the TOC and pick a section",
                         ),
                         (
                             f"get(kind='paper', id='{slug}~0..5')",
-                            "read the first chunks (often opens with the abstract)",
+                            "read the first 6 chunks (often include the abstract)",
                         ),
                         (
                             f"search(kind='paper', q='abstract', scope={slug!r})",
@@ -746,11 +879,11 @@ class PaperHandler(Handler):
                 [
                     (
                         f"get(kind='paper', id='{slug}', view='toc')",
-                        "hierarchical TOC",
+                        "see the TOC",
                     ),
                     (
                         f"get(kind='paper', id='{slug}', view='bibtex')",
-                        "BibTeX citation",
+                        "get the BibTeX entry",
                     ),
                 ]
             )
@@ -760,7 +893,29 @@ class PaperHandler(Handler):
             return self._render_toc(ref, scope=None)
 
         if view in ("bibtex", "ris", "endnote"):
-            return Response(body=_format_citation(ref, style=view))
+            # F15: pre-fetch the DOI from ref_identifiers. The v2
+            # schema moved DOI off ref.meta into its own table, but
+            # _format_citation was still reading meta.get('doi') and
+            # always finding None — so every bibtex looked like a
+            # stub even when the data was fully populated.
+            doi: str | None = None
+            try:
+                for scheme, value, _src in self.store.list_ref_identifiers(ref.id):
+                    if scheme == "doi" and value:
+                        doi = value
+                        break
+            except Exception:
+                doi = None
+            return Response(body=_format_citation(ref, style=view, doi=doi))
+
+        if view == "health":
+            return self._render_health(ref)
+
+        if view == "abbrevs":
+            return self._render_abbrevs(ref)
+
+        if view == "bibliography":
+            return self._render_bibliography(ref)
 
         # The MCP critic flagged ``view='figures'`` as a silent
         # failure — the agent had no signal that figure retrieval
@@ -808,6 +963,167 @@ class PaperHandler(Handler):
             next=f"see precis-paper-help - try views: {', '.join(_SUPPORTED_VIEWS)}",
         )
 
+    def _render_bibliography(self, ref: Ref) -> Response:
+        """``view='bibliography'`` — citations referencing this paper.
+
+        Walks the ``links`` table for ``cites`` edges whose
+        destination is this paper (``links_for(ref_id,
+        relation='cited-by')`` — the inverse-rewrite returns the
+        ``cites`` rows from citation→paper). For each, pulls the
+        citation ref and renders its claim, source handle, verbatim
+        quote, and verifier confidence.
+
+        Returns a "no citations on file" placeholder with recovery
+        hints when no citations exist for this paper.
+        """
+        cite_links = self.store.links_for(ref.id, direction="in", relation="cites")
+        slug = ref.slug or "???"
+
+        if not cite_links:
+            body = f"# {slug} bibliography — 0 citations on file"
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind='paper', id='{slug}', view='toc')",
+                        "browse segments to find drillable claims",
+                    ),
+                    (
+                        "get(kind='skill', id='precis-citation-help')",
+                        "how to file a verified citation",
+                    ),
+                ]
+            )
+            return Response(body=body)
+
+        rows: list[dict[str, str]] = []
+        for link in cite_links:
+            citation = self.store.get_ref(kind="citation", id=link.src_ref_id)
+            if citation is None:
+                continue
+            meta = citation.meta or {}
+            handle = meta.get("source_handle") or ""
+            quote = _clean_inline_text(meta.get("source_quote") or "")
+            quote = _excerpt(quote, limit=120)
+            claim = _clean_inline_text(meta.get("claim") or citation.title or "")
+            claim = _excerpt(claim, limit=80)
+            confidence = meta.get("verifier_confidence")
+            conf_str = f"{float(confidence):.2f}" if confidence is not None else "?"
+            rows.append(
+                {
+                    "id": f"citation:{citation.id}",
+                    "claim": claim,
+                    "source": handle,
+                    "conf": conf_str,
+                    "quote": f'"{quote}"',
+                }
+            )
+
+        head = f"# {slug} bibliography — {len(rows)} citation{'s' if len(rows) != 1 else ''}"
+        body = (
+            head
+            + "\n\n"
+            + render_agent_table(
+                rows, schema=["id", "claim", "source", "conf", "quote"]
+            )
+        )
+        body += render_next_section(
+            [
+                (
+                    "get(kind='citation', id=<N>)",
+                    "read one citation's full record (the verifier's caveats too)",
+                ),
+                (
+                    "get(kind='skill', id='precis-citation-help')",
+                    "the verifier-workflow agent surface",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    def _render_abbrevs(self, ref: Ref) -> Response:
+        """F20: render the per-paper abbreviation legend.
+
+        Reads ``ref.meta['abbrevs']`` (populated lazily by the
+        chunk_keywords worker via Schwartz-Hearst over the body text).
+        Renders alphabetical TOON ``{short	long}``. Empty-paper case
+        gets a placeholder + a pointer at the worker.
+        """
+        slug = ref.slug or "???"
+        meta = ref.meta or {}
+        abbrevs = meta.get("abbrevs") or {}
+        if not abbrevs:
+            body = (
+                f"# {slug} — no abbreviations detected yet\n\n"
+                "Detection runs on the first chunk_keywords worker pass "
+                "over this paper. Either the worker hasn't run yet, or "
+                "the body text contains no ``long form (SHORT)`` "
+                "patterns that Schwartz-Hearst recognises."
+            )
+            return Response(body=body)
+        # Normalise: legacy entries are plain strings, newer ones
+        # may be ``{long, first_at}`` envelopes. Render to plain dict
+        # for sorting + table rendering.
+        flat: dict[str, str] = {}
+        for short, val in abbrevs.items():
+            if isinstance(val, str):
+                flat[short] = val
+            elif isinstance(val, dict) and "long" in val:
+                flat[short] = str(val["long"])
+        rows = [{"short": short, "long": flat[short]} for short in sorted(flat)]
+        head = f"# {slug} — {len(rows)} abbreviation(s)"
+        table = render_agent_table(rows, schema=["short", "long"])
+        return Response(body=f"{head}\n\n{table}")
+
+    def _render_health(self, ref: Ref) -> Response:
+        """Phase 5 shim: ``view='health'`` on a paper ref.
+
+        Looks up the paper's DOI from ``ref_identifiers``, then
+        delegates to the provenance kind's ``check_doi`` so agents
+        that already have a slug don't have to do the slug→DOI
+        lookup themselves. The full markdown report comes back via
+        ``render_single`` — same shape as
+        ``get(kind='provenance', id='<doi>')``.
+
+        Edge cases:
+        - **Paper has no DOI on file** (preprints from venues
+          Crossref doesn't index, book chapters, hand-ingested
+          records). We surface a clear error rather than silently
+          succeeding — provenance is meaningless without a DOI.
+        """
+        from precis.handlers._provenance_report import render_single
+        from precis.ingest.provenance import check_doi
+
+        # Pull all known identifiers for this ref; pick the DOI.
+        try:
+            aliases = self.store.list_ref_identifiers(ref.id)
+        except Exception as exc:
+            raise BadInput(
+                f"paper view='health': cannot read identifiers for {ref.slug}: {exc}",
+                next=f"get(kind='paper', id='{ref.slug}', view='bibtex')",
+            ) from exc
+
+        doi: str | None = None
+        for scheme, value, _source in aliases:
+            if scheme == "doi" and value:
+                doi = value
+                break
+
+        if doi is None:
+            slug = ref.slug or "???"
+            raise BadInput(
+                f"paper view='health': no DOI on file for {slug} — "
+                "provenance checks require a DOI",
+                next=f"get(kind='paper', id='{slug}', view='abstract')",
+            )
+
+        # Inherit the mailto convention from the env, same as the
+        # provenance handler does at boot.
+        import os
+
+        mailto = os.environ.get("PRECIS_CROSSREF_MAILTO") or None
+        result = check_doi(doi, store=self.store, mailto=mailto)
+        return Response(body=render_single(result))
+
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
         lo, hi = chunk
         blocks = self.store.list_blocks_for_ref(ref.id, pos_range=(lo, hi))
@@ -831,6 +1147,10 @@ class PaperHandler(Handler):
                 hi = tail[0].pos
 
         lines: list[str] = []
+        banner = _retraction_banner(ref)
+        if banner:
+            lines.append(banner)
+            lines.append("")
         for b in blocks:
             lines.append(f"# {ref.slug}~{b.pos}")
             lines.append(_render_block_body(ref.slug or "???", b.pos, b.text))
@@ -909,17 +1229,101 @@ class PaperHandler(Handler):
             nav.append(
                 (
                     f"get(kind='paper', id='{ref.slug}', view='toc')",
-                    "full TOC",
+                    "see the full TOC",
                 )
             )
         nav.append(
             (
                 f"get(kind='paper', id='{ref.slug}', view='bibtex')",
-                "BibTeX citation",
+                "get the BibTeX entry",
             )
         )
         body = "\n".join(lines).rstrip() + render_next_section(nav)
         return Response(body=body)
+
+    def accepted_views(self, *, id: Any = None) -> list[str]:
+        # F3: single source of truth for paper views. Was previously
+        # a hand-curated subset that contradicted ``_SUPPORTED_VIEWS``
+        # — ``slug`` was advertised here but had no dispatch arm, and
+        # ``ris``/``endnote``/``health`` were dispatched but not
+        # advertised, so the agent couldn't discover them. Mirroring
+        # ``_SUPPORTED_VIEWS`` directly removes the drift.
+        return list(_SUPPORTED_VIEWS)
+
+    def chunks_for_toc(self, ref: Any) -> ChunksForToc:
+        """Adapter for the generic TOC renderer.
+
+        Fetches every block of the paper (with embeddings) once,
+        plus the H1/H2 structure detected by
+        :func:`_paper_toc.detect_heading`. The TOC renderer caches
+        on ref_id + chunker/embedder versions, so this method's
+        cost amortises across repeated TOC views of the same paper.
+        """
+        from precis.handlers._paper_toc import detect_heading
+
+        blocks = self.store.list_blocks_for_ref(ref.id, with_embedding=True)
+        if not blocks:
+            return ChunksForToc(
+                chunks_text=(),
+                embeddings=None,
+                h2_boundaries=(),
+            )
+        # Sort by pos to guarantee reading order.
+        blocks = sorted(blocks, key=lambda b: b.pos)
+        chunks_text = tuple(b.text for b in blocks)
+        # Canonical positions = block.pos so TOC handles (slug~N)
+        # resolve via ``get(id='slug~<pos>')``. Skipping this would
+        # leave handles using list indices and break search-hit
+        # cluster lookups when block.pos has gaps.
+        positions = tuple(b.pos for b in blocks)
+
+        # Per-block embeddings — None when any block lacks one
+        # (mixed corpus or partial reingest). The renderer falls
+        # back to H2 / flat listing when embeddings is None.
+        if all(b.embedding is not None for b in blocks):
+            embeddings: tuple[tuple[float, ...], ...] | None = tuple(
+                tuple(b.embedding) for b in blocks
+            )
+        else:
+            embeddings = None
+
+        # H2 boundaries: detect headings in each block, then walk
+        # to assign each H1/H2 a (start, end) span. We treat both
+        # H1 and H2 as section markers for TOC purposes — the
+        # generic renderer just needs "where do natural sections
+        # start and end" not the H1-vs-H2 hierarchy.
+        #
+        # Filter out journal-template "headings" (``PAPER``, ``View
+        # Article Online``, ``Broader context``, ``Article info``,
+        # …). These come from the markdown ingester picking up
+        # journal page chrome as H1/H2 — they're not real sections
+        # and they confuse the TOC's H2-mode policy (one of them
+        # often expands to cover the entire body because the real
+        # body sections aren't marked with markdown headings).
+        # Round-2 picky #3 / cai23 verification 2026-05-31.
+        headings: list[tuple[int, str]] = []
+        for b in blocks:
+            h = detect_heading(b)
+            if h is None or h.level not in (1, 2):
+                continue
+            if _is_journal_template_heading(h.title):
+                continue
+            headings.append((b.pos, h.title))
+
+        h2_boundaries: list[tuple[int, int, str]] = []
+        for i, (start, title) in enumerate(headings):
+            end = headings[i + 1][0] - 1 if i + 1 < len(headings) else blocks[-1].pos
+            h2_boundaries.append((start, end, title))
+
+        return ChunksForToc(
+            chunks_text=chunks_text,
+            embeddings=embeddings,
+            h2_boundaries=tuple(h2_boundaries),
+            positions=positions,
+            chunker_version=_PAPER_CHUNKER_VERSION,
+            embedder_name=getattr(self.embedder, "model", "unknown"),
+            embedder=self.embedder,
+        )
 
     def _render_toc(
         self,
@@ -927,31 +1331,31 @@ class PaperHandler(Handler):
         *,
         scope: tuple[int, int] | None,
     ) -> Response:
-        """Render the hierarchical TOC, optionally scoped to a block range.
+        """Render the smart TOC, optionally scoped to a block range.
 
-        ``scope=None`` renders the whole paper. ``scope=(lo, hi)`` clips
-        the TOC to the range — used by the ``slug~A..B/toc`` drill-down
-        form for recursive navigation.
+        Phase B integration 2026-05-31: replaced the H1/H2-only
+        ``build_toc`` renderer with the unified
+        :mod:`precis.utils.toc` renderer (TextTiling-style embedding
+        segmentation, H2-first fallback, per-segment RAKE, shared-
+        phrases footer, abbreviation legend). The old ``build_toc``
+        / ``render_toc`` path is retained for callers that need
+        explicit H1-hierarchy rendering — see git log.
         """
-        # Pull every block (we need text to detect headings).
-        blocks = self.store.list_blocks_for_ref(ref.id)
-        if not blocks:
-            return Response(body=f"{ref.slug}: no blocks")
-
-        toc = build_toc(blocks)
-        range_label: str | None = None
-        if scope is not None:
-            lo, hi = scope
-            toc = filter_toc_to_range(toc, lo=lo, hi=hi)
-            range_label = f"~{lo}..{hi}"
-
-        body = render_toc(
-            slug=ref.slug or "???",
-            toc=toc,
-            total_blocks=len(blocks),
-            blocks_by_pos={b.pos: b for b in blocks},
-            range_label=range_label,
+        # Read the pre-computed discovery layer (segments + sentences)
+        # from ref_segments / ref_segment_sentences. The worker
+        # (:mod:`precis.workers.segment_toc`) populates these at ingest;
+        # this path no longer recomputes on request — see the cutover
+        # discussion in the 2026-05-31 storage-v2 design pass.
+        body = render_from_store(
+            store=self.store,
+            ref_id=ref.id,
+            slug=ref.slug or str(ref.id),
+            kind="paper",
+            scope=scope,
         )
+        banner = _retraction_banner(ref)
+        if banner:
+            body = f"{banner}\n\n{body}"
         return Response(body=body)
 
     def _render_list_papers(self) -> Response:
@@ -1030,6 +1434,138 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
 }
 
 
+# ── Journal-template heading filter ────────────────────────────────
+#
+# The markdown ingester (marker / PDFs → markdown) sometimes promotes
+# page chrome to H1 / H2: an article-type label like ``PAPER`` at the
+# top of a journal page, ``View Article Online`` from the side nav,
+# ``Broader context`` from a publisher sidebar, ``Article info``
+# blocks. None of these are real paper sections. They mislead the
+# TOC's H2-mode policy — typically one of them then expands to cover
+# the entire body because the actual Introduction / Methods / Results
+# aren't marked with markdown headings, and the agent ends up with a
+# TOC labelled "Broader context" for 85 chunks of unrelated body.
+#
+# Filter is a small allow-deny: known template strings + an "all-caps
+# short word" rule for the ``PAPER`` / ``ARTICLE`` / ``BRIEF`` class.
+# Real sections are almost never single uppercase words, so the rule
+# is conservative.
+
+#: Case-insensitive exact-match strings that are journal-template
+#: chrome, not real section headings. Extend as new patterns appear.
+_JOURNAL_TEMPLATE_HEADINGS: frozenset[str] = frozenset(
+    {
+        # Article-type labels
+        "paper",
+        "article",
+        "review",
+        "review article",
+        "research article",
+        "editorial",
+        "communication",
+        "letter",
+        "news",
+        "perspective",
+        "news & views",
+        # Journal page nav / chrome
+        "view article online",
+        "article info",
+        "article information",
+        "article history",
+        "article menu",
+        "cite this article",
+        "how to cite",
+        "download pdf",
+        "download citation",
+        "metrics",
+        "altmetric",
+        "open access",
+        # Date stamps that sometimes get heading-promoted
+        "received",
+        "accepted",
+        "revised",
+        "published",
+        "published online",
+        # Publisher sidebars
+        "broader context",
+        "graphical abstract",
+        "highlights",
+        "key points",
+        # Footer chrome
+        "permissions",
+        "reprints",
+        "supporting information",
+        "supplementary information",
+        "supplementary material",
+        "this journal is",
+    }
+)
+
+
+_RETRACTION_LABELS: dict[str, str] = {
+    "retracted": "RETRACTED",
+    "expression_of_concern": "EXPRESSION OF CONCERN",
+    "corrected": "CORRECTED",
+}
+
+
+def _retraction_banner(ref: Ref) -> str | None:
+    """One-line warning banner for retracted / EoC / corrected papers.
+
+    Returns ``None`` when ``ref.retraction_status`` is unset. Otherwise
+    returns a single Markdown line including the status label, a date
+    when ``retracted_at`` is populated, and a pointer to the provenance
+    handler for full notice details. The banner is meant to be the
+    first line of any paper view (overview / TOC / chunks).
+    """
+    status = (ref.retraction_status or "").strip().lower()
+    if not status:
+        return None
+    label = _RETRACTION_LABELS.get(status, status.upper())
+    parts = [f"> [!] **{label}**"]
+    when = ref.retracted_at
+    if when is not None:
+        parts.append(f"({when.date().isoformat()})")
+    reason = (ref.retraction_reason or "").strip()
+    if reason:
+        parts.append(f"— {_clean_inline_text(reason)}")
+    doi = (ref.meta or {}).get("doi") if ref.meta else None
+    if doi:
+        parts.append(
+            f"— see `get(kind='provenance', id={str(doi)!r})` for the full notice."
+        )
+    else:
+        parts.append("— see the provenance handler for the full notice.")
+    return " ".join(parts)
+
+
+def _is_journal_template_heading(title: str) -> bool:
+    """True when ``title`` is journal-template chrome, not a real section.
+
+    Three rules, in order:
+
+    1. Exact (case-insensitive) match against
+       :data:`_JOURNAL_TEMPLATE_HEADINGS` — known offenders from the
+       major chemistry / biology / physics publishers.
+    2. Single uppercase word ≤ 8 chars (``PAPER``, ``ARTICLE``,
+       ``NEWS``, ``BRIEF``). Real H1/H2 section titles are almost
+       never a single short ALL-CAPS word; when they are, the cost
+       of dropping one real section beats the cost of admitting
+       the chrome.
+    3. Empty / whitespace-only.
+
+    Otherwise pass through.
+    """
+    if not title or not title.strip():
+        return True
+    raw = title.strip()
+    if raw.lower() in _JOURNAL_TEMPLATE_HEADINGS:
+        return True
+    if raw.isupper() and raw.isalpha() and " " not in raw and 2 <= len(raw) <= 8:
+        return True
+    return False
+
+
 def _maybe_resolve_doi(store: Store, raw: str) -> str:
     """Translate a DOI-form paper id to its slug form.
 
@@ -1067,10 +1603,13 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
         raise NotFound(
             f"paper with DOI {doi!r} not ingested",
             next=(
-                f"edit(kind='plaintext', id='./request_doi.md', mode='append', "
-                f"text='{doi} - <one-line reason>\\n')  "
-                "to queue external fetch (perplexity / fetch pipeline); "
-                "or search(kind='paper', q='<title>') for an existing slug"
+                f"put(kind='finding', title='<short claim>', body='<...>', "
+                f"cited_in='doi:{doi}', scope={{...}})  "
+                "to register the DOI as a chase target; the fetcher "
+                "(Unpaywall/arXiv/S2) will try to pull the PDF next "
+                "pass. Alternatively: search(kind='paper', q='<title>') "
+                "for an existing slug. Legacy: append to "
+                f"./request_doi.md (deprecated)."
             ),
         )
     return slug + selector
@@ -1241,7 +1780,7 @@ def _author_names(raw: Any) -> list[str]:
     return []
 
 
-def _format_citation(ref: Ref, *, style: str) -> str:
+def _format_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
     """Render a citation in BibTeX / RIS / EndNote.
 
     All scalar metadata fields are run through :func:`_clean_inline_text`
@@ -1249,15 +1788,21 @@ def _format_citation(ref: Ref, *, style: str) -> str:
     ``&``); BibTeX additionally LaTeX-escapes ``& % _ #`` so the output
     compiles cleanly. (MCP critic MINOR — BibTeX leaks ``&amp;`` and
     paper list leaks ``<sub>``.)
+
+    F15: ``authors`` and ``year`` now read from the top-level
+    ``Ref.authors`` / ``Ref.year`` columns (v2 schema location).
+    ``doi`` is fetched from ``ref_identifiers`` by the caller and
+    passed in. ``journal`` is still in ``meta`` because it's the
+    only one of the four that v2 chose to keep there.
     """
     meta = ref.meta or {}
     slug = ref.slug or "???"
     title = _clean_inline_text(ref.title)
-    authors = [_clean_inline_text(a) for a in _author_names(meta.get("authors"))]
+    authors = [_clean_inline_text(a) for a in _author_names(ref.authors)]
     authors = [a for a in authors if a]
     journal = _clean_inline_text(str(meta.get("journal") or ""))
-    year = meta.get("year")
-    doi = _clean_inline_text(str(meta.get("doi") or ""))
+    year = ref.year
+    doi_clean = _clean_inline_text(doi or "")
 
     if style == "bibtex":
         # LaTeX-escape every scalar field that might carry a special
@@ -1267,7 +1812,7 @@ def _format_citation(ref: Ref, *, style: str) -> str:
         bx_title = _latex_escape(title)
         bx_authors = " and ".join(_latex_escape(a) for a in authors)
         bx_journal = _latex_escape(journal)
-        bx_doi = _latex_escape(doi)
+        bx_doi = _latex_escape(doi_clean)
         lines = [f"@article{{{slug},"]
         if bx_title:
             lines.append(f"  title = {{{bx_title}}},")
@@ -1292,8 +1837,8 @@ def _format_citation(ref: Ref, *, style: str) -> str:
             out.append(f"PY  - {year}")
         if journal:
             out.append(f"JO  - {journal}")
-        if doi:
-            out.append(f"DO  - {doi}")
+        if doi_clean:
+            out.append(f"DO  - {doi_clean}")
         out.append("ER  - ")
         return "\n".join(out)
 
@@ -1307,8 +1852,8 @@ def _format_citation(ref: Ref, *, style: str) -> str:
         out.append(f"%D {year}")
     if journal:
         out.append(f"%J {journal}")
-    if doi:
-        out.append(f"%R {doi}")
+    if doi_clean:
+        out.append(f"%R {doi_clean}")
     return "\n".join(out)
 
 
@@ -1532,6 +2077,43 @@ def _render_block_body(slug: str, pos: int, text: str) -> str:
     cleaned = _IMAGE_MARKER_RE.sub(_replace, cleaned)
     # Collapse whitespace-only artefacts left behind by the strip.
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _chunk_keywords_or_caption(text: str) -> str:
+    """Render the ``chunk_keywords`` cell for one search hit.
+
+    Most chunks are prose — RAKE produces useful summary keywords.
+    Tables (Marker emits them as markdown grids starting with ``|``)
+    poison RAKE because empty cells render as ``"na"`` and the rake
+    output collapses to ``"na na na na; na na na; ..."``. For those
+    we skip RAKE and surface a one-line caption from the table's
+    column header row instead, so the search hit still tells the
+    agent *what kind of thing* this is without the noise.
+
+    Heuristic: starts with ``|`` after lstrip, pipe density >5 %.
+    Same heuristic as migration 0009's paragraph→table backfill,
+    so this also handles legacy chunks that pre-date the
+    chunk_kind=table classification.
+    """
+    stripped = text.lstrip()
+    is_table = (
+        stripped.startswith("|")
+        and len(text) > 0
+        and (text.count("|") / len(text)) > 0.05
+    )
+    if is_table:
+        first_line = stripped.split("\n", 1)[0].strip()
+        # Drop empty cells / trim long rows so the caption fits the
+        # one-line cell budget. ``A, (A) | B, (B) | C, (C) | …`` is
+        # plenty for an agent to recognise a data table.
+        cells = [c.strip() for c in first_line.strip("|").split("|") if c.strip()]
+        if cells:
+            caption = " | ".join(cells[:6])
+            if len(cells) > 6:
+                caption += " | …"
+            return f"[table] {caption}"
+        return "[table]"
+    return keyword_summary(text, top_k=5)
 
 
 def _scrub_block_text(text: str) -> str:

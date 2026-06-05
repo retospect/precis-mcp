@@ -92,7 +92,15 @@ class Migrator:
             return []
 
         newly_applied: list[str] = []
-        with psycopg.connect(self.dsn, autocommit=False) as conn:
+        # autocommit=True is load-bearing: under autocommit=False the very
+        # first SELECT (or _applied_versions' fallback rollback) puts us in
+        # an implicit transaction, and ``with conn.transaction()`` then
+        # downgrades to a SAVEPOINT. If the migration SQL aborts, the
+        # savepoint disappears and the context-manager exit raises
+        # ``InvalidSavepointSpecification`` — masking the real SQL error.
+        # With autocommit=True, ``conn.transaction()`` issues a real
+        # BEGIN/COMMIT and surfaces any inner exception directly.
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
             applied = _applied_versions(conn)
 
             # Integrity check on already-applied migrations

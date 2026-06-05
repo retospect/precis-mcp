@@ -124,16 +124,32 @@ def test_untag_with_tags_combined(memory: MemoryHandler, store: Store) -> None:
 # ── validation: same shape as tags= ────────────────────────────────
 
 
-def test_untag_rejects_bare_collision(memory: MemoryHandler) -> None:
-    rid = _create_with_tags(memory, "topic-x")
+def test_untag_rejects_bare_collision(store: Store) -> None:
+    """Bare flag rejection is kind-scoped (per :data:`_KIND_ALLOWED_AXES`):
+    a bare flag only shadows the closed form on kinds that allow the
+    colliding axis. ``urgent`` collides with ``PRIO:urgent``, which is
+    accepted by ``todo`` but not by ``memory``. So the rejection only
+    fires on workflow kinds — exercise on ``todo``."""
+    from precis.handlers.todo import TodoHandler
+
+    todo = TodoHandler(hub=Hub(store=store))
+    out = todo.put(text="task", tags=["topic-x"])
+    rid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
     with pytest.raises(BadInput, match="bare flag 'urgent'"):
-        memory.tag(id=rid, remove=["urgent"])
+        todo.tag(id=rid, remove=["urgent"])
 
 
-def test_untag_rejects_unknown_status(memory: MemoryHandler) -> None:
-    rid = _create_with_tags(memory)
+def test_untag_rejects_unknown_status(store: Store) -> None:
+    """STATUS axis enforcement now happens before value validation.
+    Exercised on ``todo`` (which allows STATUS) so we reach the
+    invalid-value branch — the rejection text is what we pin."""
+    from precis.handlers.todo import TodoHandler
+
+    todo = TodoHandler(hub=Hub(store=store))
+    out = todo.put(text="task")
+    rid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
     with pytest.raises(BadInput, match="invalid STATUS value"):
-        memory.tag(id=rid, remove=["STATUS:bogus"])
+        todo.tag(id=rid, remove=["STATUS:bogus"])
 
 
 def test_untag_rejects_empty_value_form(memory: MemoryHandler) -> None:
@@ -180,8 +196,7 @@ def test_untags_kwarg_rejected_on_put(memory: MemoryHandler) -> None:
 
 
 def test_store_remove_tag_smoke(store: Store) -> None:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="x")
+    ref = store.insert_ref(kind="memory", slug=None, title="x")
     store.add_tag(ref.id, Tag.open("foo"))
     assert any(t.value == "foo" for t in store.tags_for(ref.id))
     store.remove_tag(ref.id, Tag.open("foo"))

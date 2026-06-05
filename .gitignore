@@ -7,3 +7,16 @@ build/
 .ruff_cache/
 .pytest_cache/
 .venv/
+.zsh_history
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# OS junk
+.DS_Store
+**/.DS_Store
+
+# usability harness output
+scripts/exercise-mcp/out/

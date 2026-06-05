@@ -39,10 +39,12 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
+from precis.format import render_agent_table
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
 from precis.skill_index import FileCorpusIndex, SearchHit
 from precis.utils.next_block import render_next_section
+from precis.utils.rake import keyword_summary
 from precis.utils.search_header import format_search_headline
 
 log = logging.getLogger(__name__)
@@ -50,6 +52,208 @@ log = logging.getLogger(__name__)
 
 # Slugs are conservative: lowercase ASCII alphanumerics + hyphens.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
+
+# ``slug~N`` / ``slug~A..B`` / ``slug/toc`` parse pattern. Mirrors
+# the paper handler's ``_parse_paper_id`` shape so the address
+# grammar is identical across kinds. Phase B integration 2026-05-31.
+_SKILL_ID_RE = re.compile(
+    r"^(?P<slug>[a-z0-9][a-z0-9\-]*)"
+    r"(?:~(?P<lo>\d+)(?:\.\.(?P<hi>\d+))?)?"
+    r"(?:/(?P<view>[a-z]+))?$"
+)
+
+
+def _parse_skill_id(
+    raw: str,
+) -> tuple[str, tuple[int, int] | None, str | None]:
+    """Split ``raw`` into ``(slug, chunk_spec, path_view)``.
+
+    Returns:
+        slug: lowercase slug (always present; ``BadInput`` if missing).
+        chunk_spec: ``(lo, hi)`` inclusive for ``~N`` (lo==hi) or
+            ``~A..B``. ``None`` when no chunk selector is given.
+        path_view: trailing ``/view`` suffix as a string (today only
+            ``"toc"`` is meaningful). ``None`` when absent.
+    """
+    m = _SKILL_ID_RE.match(raw)
+    if m is None:
+        raise BadInput(
+            f"unparseable skill id: {raw!r}",
+            next=(
+                "skill ids are slug, slug~N, slug~A..B, "
+                "or slug/toc — letters/digits/hyphens only"
+            ),
+        )
+    slug = m.group("slug")
+    lo = m.group("lo")
+    hi = m.group("hi")
+    chunk_spec: tuple[int, int] | None = None
+    if lo is not None:
+        lo_i = int(lo)
+        hi_i = int(hi) if hi is not None else lo_i
+        if hi_i < lo_i:
+            raise BadInput(
+                f"inverted skill chunk range: ~{lo_i}..{hi_i}",
+                next=(f"use the smaller bound first: ~{hi_i}..{lo_i}"),
+            )
+        chunk_spec = (lo_i, hi_i)
+    path_view = m.group("view")
+    if path_view is not None and path_view not in _SKILL_PATH_VIEWS:
+        raise BadInput(
+            f"unknown skill view {path_view!r}",
+            options=sorted(_SKILL_PATH_VIEWS),
+            next=f"supported path views: {sorted(_SKILL_PATH_VIEWS)}",
+        )
+    return slug, chunk_spec, path_view
+
+
+#: Path-view suffixes accepted on skill ids (``slug/toc``). Mirrors
+#: the paper handler's path-view set; today only ``toc`` is wired.
+_SKILL_PATH_VIEWS: frozenset[str] = frozenset({"toc"})
+
+
+# Skill catalogue grouped by purpose. Order matters — the categories
+# render top-to-bottom in this order so the "start here" buckets are
+# what an agent sees first. Slugs not listed below land in the
+# "Other" trailing bucket so we never silently drop a new skill from
+# the index. Updated 2026-05-30 per maintainer's top-layer sketch:
+# Orientation → Core verbs → Content types → Research & validation →
+# Workflow tools.
+#
+# Notes
+# -----
+# * ``toc`` is a synth alias of ``precis-toc`` and is omitted here
+#   (folded into ``precis-toc``'s row with an "(alias: toc)" suffix
+#   so the index doesn't list it twice).
+# * Skills documenting unwired kinds still get filtered into the
+#   "Hidden" section via ``_availability_gap``; the category they
+#   belong to only matters for the active listing.
+_SKILL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Orientation",
+        (
+            "precis-overview",
+            "precis-help",
+            "precis-toc",
+            "precis-toc-help",
+            "precis-status",
+            "precis-startup-skills-help",
+            "precis-session-context-help",
+            "precis-kinds-disabled-help",
+        ),
+    ),
+    (
+        "Core verbs",
+        (
+            "precis-get-help",
+            "precis-put-help",
+            "precis-edit-help",
+            "precis-search-help",
+            "precis-delete-help",
+            "precis-tag-help",
+            "precis-tags",
+            "precis-link-help",
+            "precis-relations",
+        ),
+    ),
+    (
+        "Content types",
+        (
+            "precis-files-help",
+            "precis-markdown-help",
+            "precis-plaintext-help",
+            "precis-tex-help",
+            "precis-python-help",
+            "precis-paper-help",
+            "precis-paper-tag-axes",
+            "precis-patent-help",
+            "precis-patent-search-help",
+            "precis-patent-power",
+            "precis-web-help",
+            "precis-youtube-help",
+            "precis-conv-help",
+        ),
+    ),
+    (
+        "Research & validation",
+        (
+            "precis-provenance-help",
+            "precis-preflight",
+            "precis-doi-resolution",
+            "precis-math-help",
+            "precis-perplexity-help",
+            "precis-oracle-help",
+        ),
+    ),
+    (
+        "Workflow tools",
+        (
+            "precis-memory-help",
+            "precis-todo-help",
+            "precis-fc-help",
+            "precis-quest-help",
+            "precis-cache",
+            "precis-random-help",
+            "precis-gripe-help",
+            "precis-toon",
+        ),
+    ),
+)
+
+
+# Inline aliases shown next to the canonical slug — keeps the index
+# from listing two rows for the same skill. ``toc`` is the only one
+# today; new aliases land here.
+_SKILL_ALIASES_INLINE: dict[str, tuple[str, ...]] = {
+    "precis-toc": ("toc",),
+}
+
+
+def _slug_with_aliases(slug: str) -> str:
+    """Return ``slug`` with any registered aliases noted inline."""
+    aliases = _SKILL_ALIASES_INLINE.get(slug)
+    if not aliases:
+        return slug
+    return f"{slug} (alias: {', '.join(aliases)})"
+
+
+def _categorise_skills(
+    slugs: list[str],
+) -> tuple[list[tuple[str, list[str]]], list[str]]:
+    """Group ``slugs`` into the top-layer categories.
+
+    Returns ``(groups, uncategorised)``:
+
+    * ``groups`` — ``[(category_name, [slug, slug, ...]), ...]`` in
+      the order defined by ``_SKILL_CATEGORIES``. Categories with
+      zero matching slugs are dropped from the output entirely;
+      they'd be visual noise.
+    * ``uncategorised`` — slugs not listed under any category,
+      preserving input order. Render these into a trailing "Other"
+      bucket so new skills don't silently disappear from the
+      catalogue.
+
+    ``slugs`` may contain any slugs — synth, file-backed, or aliases.
+    Skills aliased via :data:`_SKILL_ALIASES_INLINE` are dropped from
+    the input set on the assumption their canonical slug is rendered
+    elsewhere with the alias noted inline (see ``_slug_with_aliases``).
+    """
+    aliases_to_drop: set[str] = {
+        alias for aliases in _SKILL_ALIASES_INLINE.values() for alias in aliases
+    }
+    remaining: list[str] = [s for s in slugs if s not in aliases_to_drop]
+    remaining_set: set[str] = set(remaining)
+
+    groups: list[tuple[str, list[str]]] = []
+    placed: set[str] = set()
+    for category, members in _SKILL_CATEGORIES:
+        in_category = [s for s in members if s in remaining_set]
+        if in_category:
+            groups.append((category, in_category))
+            placed.update(in_category)
+
+    uncategorised = [s for s in remaining if s not in placed]
+    return groups, uncategorised
 
 
 class _SkillSearchRow:
@@ -60,32 +264,62 @@ class _SkillSearchRow:
     higher-scoring source), then renders them in score order. Kept
     as a plain class instead of a dataclass to avoid pulling extra
     decorators in the hot path of a search call.
+
+    The ``section`` and ``snippet`` columns surface separately so the
+    TOON render lets an agent see which H2 a hit lives under and the
+    matched text in independent columns — round-2 picky reviewer
+    flagged the previous ``score · heading\\n  snippet`` blob as
+    monolithic.
     """
 
-    __slots__ = ("preview", "score", "slug", "source")
+    __slots__ = ("score", "section", "slug", "snippet", "source")
 
-    def __init__(self, *, slug: str, score: float, source: str, preview: str) -> None:
+    def __init__(
+        self,
+        *,
+        slug: str,
+        score: float,
+        source: str,
+        section: str,
+        snippet: str,
+    ) -> None:
         self.slug = slug
         self.score = score
         self.source = source
-        self.preview = preview
+        self.section = section
+        self.snippet = snippet
 
 
-def _format_semantic_preview(hit: SearchHit) -> str:
-    """Render a semantic hit as ``score · heading\\n  snippet``."""
-    head = hit.heading or "—"
-    snippet = hit.snippet or ""
-    score_str = f"{hit.score:.2f}"
-    if snippet:
-        return f"{score_str} · {head}\n  {snippet}"
-    return f"{score_str} · {head}"
+def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
+    """Build a row from a semantic hit, normalising heading + snippet."""
+    return _SkillSearchRow(
+        slug=hit.slug,
+        score=hit.score,
+        source="semantic",
+        section=hit.heading or "",
+        snippet=(hit.snippet or "").strip(),
+    )
 
 
-def _format_lexical_preview(preview: str, count: int) -> str:
-    """Render a substring-match preview, truncating long lines."""
-    short = (preview[:120] + "…") if len(preview) > 120 else preview
+def _lexical_row(slug: str, count: int, preview: str) -> _SkillSearchRow:
+    """Build a row from a substring-match hit.
+
+    Substring hits don't carry a section; we record the match count
+    in ``section`` (``"3 substring hits"``) so the TOON column stays
+    populated and informative.
+    """
+    # Substring counts map to a [0.0, 0.5) score so they rank below
+    # any genuine semantic hit but still surface when the index missed.
+    lex_score = min(0.49, count / 20.0)
+    short = (preview[:160] + "…") if len(preview) > 160 else preview
     word = "hit" if count == 1 else "hits"
-    return f"{count} {word}\n  {short}" if short else f"{count} {word}"
+    return _SkillSearchRow(
+        slug=slug,
+        score=lex_score,
+        source="lexical",
+        section=f"{count} substring {word}",
+        snippet=short.strip(),
+    )
 
 
 class SkillHandler(Handler):
@@ -149,6 +383,18 @@ class SkillHandler(Handler):
         # embedder is wired (see :meth:`_get_index`).
         self._index: FileCorpusIndex | None = None
 
+        # Memoised view='toc' render per (slug, scope). Skill files
+        # are static disk content for the life of the process, so
+        # one DP+KeyBERT pass per (slug, scope) is enough — the
+        # per-request renderer in ``utils/toc.py`` is expensive
+        # (~hundreds of ms on a dozen-chunk skill) and was being
+        # re-run on every ``get(kind='skill', id='X/toc')``. The
+        # paper handler already cut over to the db-backed renderer
+        # (ADR 0018-superseding F20) but the skill handler still
+        # uses the on-demand path; caching avoids the worst-case
+        # cost without a schema change for skills.
+        self._toc_cache: dict[tuple[str, tuple[int, int] | None], str] = {}
+
     # ── get ────────────────────────────────────────────────────────
 
     def get(  # type: ignore[override]
@@ -156,17 +402,54 @@ class SkillHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # Round-2 picky 2026-05-30: ``get(kind='skill', q='reading a
+        # paper')`` previously dropped ``q=`` and returned the grouped
+        # index — agents searching by topic via ``get`` got a flat
+        # category list when they wanted ranked matches. Delegate to
+        # ``search`` so the verbs converge on the obvious intent.
+        if id is None and q is not None and q.strip():
+            return self.search(q=q)
         if id is None or (isinstance(id, str) and id.startswith("/")):
             return self._render_index()
 
-        slug = str(id).strip()
+        raw_id = str(id).strip()
+        # Parse the id for skill-chunk selector syntax: ``slug~N``,
+        # ``slug~A..B``, ``slug/toc``. Same shape as the paper
+        # handler's address grammar so the agent's mental model
+        # carries across kinds.
+        slug, chunk_spec, path_view = _parse_skill_id(raw_id)
+
         if not _SLUG_RE.match(slug):
             raise BadInput(
                 f"invalid skill slug: {slug!r}",
                 next="skill slugs are lowercase letters/digits/hyphens",
             )
+
+        # Path view (``slug/toc``) and explicit ``view='toc'`` both
+        # render the TOC. Chunk specs ``slug~N`` / ``slug~A..B`` go
+        # through the chunk-resolver below.
+        effective_view = path_view or view
+        # Phase F 2026-05-31: unknown views error with the per-kind
+        # accepted list so the agent learns the enum from one
+        # round-trip rather than guessing.
+        if effective_view is not None:
+            accepted = self.accepted_views(id=slug)
+            if effective_view not in accepted:
+                raise BadInput(
+                    f"unknown skill view {effective_view!r}",
+                    options=accepted,
+                    next=(
+                        f"view= for kind='skill' accepts: {accepted}; "
+                        f"omit view= for the markdown body"
+                    ),
+                )
+        if effective_view == "toc":
+            return self._render_skill_toc(slug, scope=chunk_spec)
+        if chunk_spec is not None:
+            return self._render_skill_chunks(slug, chunk_spec)
 
         # Synthesised meta-skills: enumerate active kinds, probe
         # optional deps, …  Each entry in ``_SYNTHESIZED_SKILLS``
@@ -247,11 +530,14 @@ class SkillHandler(Handler):
         top_k: int = 10,
         **_kw: Any,
     ) -> Response:
+        # ``q=`` is optional — round-2 picky N4/F-6, 2026-05-30. The
+        # rest of the surface (``search(kind='memory', tags=[...])``,
+        # for instance) degrades on empty q to a list view; doing the
+        # same here keeps the verb consistent across kinds and gives
+        # the agent a runnable second-step option that mirrors
+        # ``get(kind='skill')``'s index.
         if q is None or not q.strip():
-            raise BadInput(
-                "search requires q=",
-                next="search(kind='skill', q='your query')",
-            )
+            return self.get()
 
         # Two-stream search: cosine over chunk embeddings (best at
         # natural phrasing) merged with substring matches (best at
@@ -264,55 +550,87 @@ class SkillHandler(Handler):
 
         merged: dict[str, _SkillSearchRow] = {}
         for hit in semantic_hits:
-            row = _SkillSearchRow(
-                slug=hit.slug,
-                score=hit.score,
-                source="semantic",
-                preview=_format_semantic_preview(hit),
-            )
+            row = _semantic_row(hit)
             existing = merged.get(hit.slug)
             if existing is None or row.score > existing.score:
                 merged[hit.slug] = row
         for slug, count, preview in lexical_hits:
-            # Substring counts are coerced to a [0.0, 0.5) score so
-            # they rank below any genuine semantic hit but still
-            # show up when the index missed (or returned zero).
-            lex_score = min(0.49, count / 20.0)
-            existing = merged.get(slug)
-            if existing is None:
-                merged[slug] = _SkillSearchRow(
-                    slug=slug,
-                    score=lex_score,
-                    source="lexical",
-                    preview=_format_lexical_preview(preview, count),
-                )
+            if slug in merged:
+                continue
+            merged[slug] = _lexical_row(slug, count, preview)
 
         if not merged:
-            return Response(body=f"no skills mention {q!r}")
+            return Response(
+                body=(
+                    f"no skills mention {q!r}\n\n"
+                    "Try a different phrasing, or fall back to the index:"
+                    + render_next_section(
+                        [
+                            (
+                                "get(kind='skill')",
+                                "browse the grouped catalogue",
+                            ),
+                            (
+                                "get(kind='skill', id='toc')",
+                                "table of contents with synopses",
+                            ),
+                        ]
+                    )
+                )
+            )
 
         rows = sorted(merged.values(), key=lambda r: r.score, reverse=True)
         total = len(rows)
         rows = rows[:top_k]
 
-        lines = [
-            format_search_headline(
-                n_returned=len(rows),
-                total=total,
-                noun="skill match",
-                query=q,
-            )
-        ]
+        # Round-2 picky 2026-05-31: dropped low-signal columns
+        # (status/source/score) that the maintainer flagged as
+        # uninformative for a top-K skill search. Replaced the raw
+        # snippet with RAKE-extracted key phrases — agents scanning
+        # results want the *topic* of the matched section, not its
+        # first 140 characters of prose. Unwired skills get an
+        # ``[unwired]`` prefix on the slug instead of a dedicated
+        # column (rare enough that an inline marker beats a column
+        # that's empty 90 % of the time).
+        table_rows: list[dict[str, str]] = []
         for row in rows:
-            # Mark skills whose subject kind isn't in the live
-            # registry (or whose status is planned/aspirational).
-            # The index view already hides them; search has to do
-            # the same honesty work or 7B callers will quote the
-            # title and invoke an [error:NotFound] kind. (MCP critic
-            # MINOR — search surfaces unwired skills without marker.)
             gap = _availability_gap(row.slug, hub=self.hub)
-            marker = " [unwired]" if gap is not None else ""
-            lines.append(f"\n## {row.slug}{marker}  ({row.source})\n{row.preview}")
-        return Response(body="\n".join(lines))
+            slug_display = f"[unwired] {row.slug}" if gap is not None else row.slug
+            table_rows.append(
+                {
+                    "slug": slug_display,
+                    "section": row.section,
+                    "keywords": keyword_summary(row.snippet, top_k=5),
+                }
+            )
+
+        head = format_search_headline(
+            n_returned=len(rows),
+            total=total,
+            noun="skill match",
+            query=q,
+        )
+        body = (
+            head
+            + "\n\n"
+            + render_agent_table(
+                table_rows,
+                schema=["slug", "section", "keywords"],
+            )
+        )
+        body += render_next_section(
+            [
+                (
+                    "get(kind='skill', id='<slug-from-above>')",
+                    "read the full skill (paste any slug from the table)",
+                ),
+                (
+                    f"search(kind='skill', q={q!r}, top_k=25)",
+                    "widen to more hits",
+                ),
+            ]
+        )
+        return Response(body=body)
 
     # ── search helpers ─────────────────────────────────────────────
 
@@ -377,73 +695,274 @@ class SkillHandler(Handler):
         )
         return self._index if self._index.is_available() else None
 
+    def accepted_views(self, *, id: Any = None) -> list[str]:
+        # Phase F 2026-05-31: per-kind view enum for the BadInput
+        # envelope on unknown / empty ``view=`` values. Skills only
+        # use ``view='toc'`` today (and only when paired with a
+        # specific slug); the bare-slug get returns the markdown
+        # body, no view kwarg required.
+        return ["toc"]
+
+    # ── smart-TOC + chunk rendering (Phase B integration) ─────────
+
+    def _render_skill_toc(
+        self, slug: str, *, scope: tuple[int, int] | None
+    ) -> Response:
+        """Render the smart-TOC for a skill, optionally scoped."""
+        cache_key = (slug, scope)
+        cached = self._toc_cache.get(cache_key)
+        if cached is not None:
+            return Response(body=cached)
+
+        from precis.utils.toc import render_for_ref
+
+        adapter = self.chunks_for_toc(slug)
+        body = render_for_ref(
+            ref_id=slug,
+            slug=slug,
+            kind="skill",
+            adapter=adapter,
+            scope=scope,
+        )
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='skill', id={slug!r})",
+                    "read the skill's card + chunk overview",
+                ),
+                (
+                    f"get(kind='skill', id='{slug}~0')",
+                    "read a specific chunk (use any handle from above)",
+                ),
+            ]
+        )
+        # Memoise the fully-rendered body. Skill files are static
+        # for the life of the process; subsequent calls return the
+        # cached body without re-running DP+KeyBERT.
+        self._toc_cache[cache_key] = body
+        return Response(body=body)
+
+    def _render_skill_chunks(self, slug: str, chunk_spec: tuple[int, int]) -> Response:
+        """Render one or more H2 chunks of a skill (selector ``~N`` /
+        ``~A..B``). Single-chunk requests show the H2 heading + the
+        chunk body verbatim; range requests concatenate the body of
+        every chunk in the range with H2 markers preserved."""
+        from precis.skill_index.chunker import chunk_by_h2
+
+        text = _load_skill(slug)
+        if text is None:
+            raise NotFound(
+                f"skill {slug!r} not found",
+                next="get(kind='skill') for the catalogue",
+            )
+        chunks = chunk_by_h2(text)
+        lo, hi = chunk_spec
+        if hi >= len(chunks) or lo < 0 or lo > hi:
+            raise BadInput(
+                f"skill {slug!r} has {len(chunks)} chunks; "
+                f"range ~{lo}..{hi} is out of bounds",
+                next=(f"get(kind='skill', id='{slug}/toc') for valid handles"),
+            )
+
+        # Single chunk: heading + body. Range: concatenate.
+        if lo == hi:
+            chunk = chunks[lo]
+            header = f"# {slug}~{lo}"
+            if chunk.heading:
+                header += f" — {chunk.heading}"
+            body = f"{header}\n\n{chunk.text}"
+        else:
+            parts = [f"# {slug}~{lo}..{hi}\n"]
+            for i in range(lo, hi + 1):
+                parts.append(chunks[i].text)
+            body = "\n\n".join(parts)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='skill', id='{slug}/toc')",
+                    "table of contents for this skill",
+                ),
+                (
+                    f"get(kind='skill', id={slug!r})",
+                    "skill card + chunk overview",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    # ── chunks_for_toc adapter ─────────────────────────────────────
+
+    def chunks_for_toc(self, ref: Any) -> Any:
+        """Adapter for the generic TOC renderer.
+
+        ``ref`` here is the skill slug (string) rather than a Ref
+        object — skills are file-backed, not store-backed. Returns
+        a :class:`ChunksForToc` whose chunks/H2 boundaries come
+        from :func:`chunk_by_h2`; embeddings come from the embedded
+        index when available, else ``None`` (the renderer falls
+        back to H2 boundaries alone in that case).
+        """
+        from precis.skill_index.chunker import CHUNKER_VERSION, chunk_by_h2
+        from precis.utils.toc import ChunksForToc
+
+        slug = str(ref)
+        text = _load_skill(slug)
+        if text is None:
+            raise NotFound(f"skill {slug!r} not found")
+
+        chunks = chunk_by_h2(text)
+        chunks_text = tuple(c.text for c in chunks)
+        # Every chunk is its own H2 section; boundaries are 1:1
+        # with chunk indices. Empty heading marks the head chunk
+        # (content before the first H2) — we skip those entries
+        # since the renderer's H2-coverage threshold would gate
+        # them out anyway.
+        h2_boundaries = tuple(
+            (i, i, c.heading) for i, c in enumerate(chunks) if c.heading
+        )
+
+        # Try the embedded index for per-chunk vectors. When the
+        # embedder isn't wired, fall through with ``embeddings=None``
+        # and the renderer handles H2 fallback.
+        embeddings: tuple[tuple[float, ...], ...] | None = None
+        embedder_name = "none"
+        index = self._get_index()
+        if index is not None:
+            try:
+                index._build()
+                entry = index._entries.get(slug) if index._entries else None
+                if entry is not None and len(entry.chunks) == len(chunks):
+                    embeddings = tuple(tuple(c.embedding) for c in entry.chunks)
+                    embedder_name = entry.embedder_model
+            except Exception:  # pragma: no cover — defensive
+                embeddings = None
+
+        return ChunksForToc(
+            chunks_text=chunks_text,
+            embeddings=embeddings,
+            h2_boundaries=h2_boundaries,
+            chunker_version=str(CHUNKER_VERSION),
+            embedder_name=embedder_name,
+            embedder=getattr(self.hub, "embedder", None) if self.hub else None,
+        )
+
     # ── helpers ────────────────────────────────────────────────────
 
     def _render_index(self) -> Response:
-        skills = sorted(_list_skills())
-        # Surface every synthesised meta-skill at the top so they're
-        # the first things the agent sees, in registration order.
-        index_entries: list[tuple[str, str]] = [
-            (slug, desc) for slug, desc in self._SYNTHESIZED_SKILLS.items()
-        ]
+        # Build the candidate set: synth meta-skills + every file-
+        # backed skill that's currently available (i.e. its subject
+        # kind is wired in this build). Filtered-out skills accumulate
+        # into the trailing "Hidden" section.
+        synth = list(self._SYNTHESIZED_SKILLS.keys())
+        file_slugs = sorted(_list_skills())
+        active: list[str] = list(synth)
         hidden_slugs: list[str] = []
-        for slug in skills:
-            # Filter skills whose subject kind isn't in the registry
-            # or whose front-matter status isn't ``active``. They
-            # remain reachable via direct slug get(), but they don't
-            # clutter the index that agents use for discovery.
+        for slug in file_slugs:
             if _availability_gap(slug, hub=self.hub) is not None:
                 hidden_slugs.append(slug)
                 continue
-            title = _skill_title(slug)
-            index_entries.append((slug, title))
+            active.append(slug)
+
+        groups, uncategorised = _categorise_skills(active)
 
         # Grammatical pluralisation in the headline — the MCP critic
         # flagged ``# 9 oracle(s)`` and ``# 22 skill(s)`` as
         # ungrammatical 2026-05-02; resolve here so the headline
         # reads naturally at any cardinality.
-        skill_word = "skill" if len(index_entries) == 1 else "skills"
-        lines = [f"# {len(index_entries)} {skill_word} available"]
-        for slug, title in index_entries:
-            if title:
-                lines.append(f"  {slug:<32}  {title}")
-            else:
-                lines.append(f"  {slug}")
-        if hidden_slugs:
+        total_active = sum(len(members) for _, members in groups) + len(uncategorised)
+        skill_word = "skill" if total_active == 1 else "skills"
+        lines = [f"# {total_active} {skill_word} (grouped by purpose)"]
+
+        for category, slugs in groups:
             lines.append("")
+            lines.append(f"## {category}")
             lines.append(
-                f"_(+ {len(hidden_slugs)} non-active skills hidden - "
-                "documenting kinds not wired in this build, or marked "
-                "status: planned. Reach them by exact slug if you need "
-                "to.)_"
+                render_agent_table(
+                    [
+                        {
+                            "slug": _slug_with_aliases(slug),
+                            "title": self._index_title_for(slug),
+                        }
+                        for slug in slugs
+                    ],
+                    schema=["slug", "title"],
+                )
             )
-        body = "\n".join(lines)
-        body += render_next_section(
-            [
-                (
-                    "get(kind='skill', id='toc')",
-                    "table of contents - every skill with a one-liner",
-                ),
-                (
-                    "get(kind='skill', id='precis-help')",
-                    "what this server can do (active kinds)",
-                ),
-                (
-                    "get(kind='skill', id='precis-status')",
-                    "optional-deps + runtime health",
-                ),
-                ("get(kind='skill', id='precis-overview')", "start here"),
-                (
-                    "get(kind='skill', id='precis-tags')",
-                    "tag axes + validation rules",
-                ),
-                (
-                    "search(kind='skill', q='...')",
-                    "search across all skills",
-                ),
-            ]
+
+        if uncategorised:
+            lines.append("")
+            lines.append(f"## Other ({len(uncategorised)})")
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "slug": _slug_with_aliases(slug),
+                            "title": self._index_title_for(slug),
+                        }
+                        for slug in uncategorised
+                    ],
+                    schema=["slug", "title"],
+                )
+            )
+
+        # F17: the "Hidden" section (skills whose subject kind isn't
+        # wired in this build) was useful as a developer / operator
+        # audit but pure noise for the agent — those skills are
+        # unreachable until configuration changes, which is not the
+        # agent's concern. Dropped here; ``hidden_slugs`` stays
+        # computed in case a future operator view wants to expose
+        # it under a separate path.
+        del hidden_slugs
+
+        # Suggested starting commands — explicitly labelled as
+        # examples rather than reusing the generic "Next:" trailer.
+        # The picky reviewer (round 2) flagged the old phrasing as
+        # ambiguous (the agent couldn't tell if these were new skills
+        # or recipe shortcuts). Now they're named for what they are.
+        lines.append("")
+        lines.append("## Suggested starting commands")
+        lines.append("")
+        lines.append(
+            "These are example invocations — paste verbatim to land somewhere useful."
         )
-        return Response(body=body)
+        lines.append("")
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "command": "get(kind='skill', id='precis-overview')",
+                        "purpose": "orientation: seven verbs, one address scheme",
+                    },
+                    {
+                        "command": "get(kind='skill', id='precis-help')",
+                        "purpose": "active kinds + verbs on this server",
+                    },
+                    {
+                        "command": "get(kind='skill', id='toc')",
+                        "purpose": "table of contents with synopses",
+                    },
+                    {
+                        "command": "search(kind='skill', q='your goal in plain language')",
+                        "purpose": "fuzzy lookup by topic",
+                    },
+                ],
+                schema=["command", "purpose"],
+            )
+        )
+        return Response(body="\n".join(lines))
+
+    def _index_title_for(self, slug: str) -> str:
+        """Title to render next to ``slug`` in the index.
+
+        Prefers the synth-skill description when ``slug`` is a synth;
+        falls back to the markdown front-matter ``title:`` for file
+        skills. Empty string when both miss so the TOON column stays
+        well-formed.
+        """
+        synth_desc = self._SYNTHESIZED_SKILLS.get(slug)
+        if synth_desc is not None:
+            return synth_desc
+        return _skill_title(slug) or ""
 
     def _render_toc(self) -> str:
         """Render the synthesised ``precis-toc`` (alias: ``toc``) skill.
@@ -460,52 +979,91 @@ class SkillHandler(Handler):
         corpus, and the user can always
         ``search(kind='skill', q=...)`` for fuzzier lookup.
         """
-        lines = ["# precis-toc — every skill at a glance", ""]
-        skills = sorted(_list_skills())
-
-        active: list[tuple[str, str, str]] = []  # slug, title, synopsis
-        hidden: list[tuple[str, str, str]] = []
-        for slug in skills:
-            title = _skill_title(slug) or slug
-            synopsis = _skill_synopsis(slug)
-            row = (slug, title, synopsis)
+        # Same category-driven layout as the index, but with the
+        # synopsis column added so a skim-reading agent can decide
+        # which slug to fetch in full.
+        synth = list(self._SYNTHESIZED_SKILLS.keys())
+        file_slugs = sorted(_list_skills())
+        active: list[str] = list(synth)
+        hidden: list[tuple[str, str]] = []
+        for slug in file_slugs:
             if _availability_gap(slug, hub=self.hub) is not None:
-                hidden.append(row)
+                hidden.append((slug, _skill_title(slug) or slug))
             else:
-                active.append(row)
+                active.append(slug)
 
-        # Synth meta-skills go first — they're the discovery
-        # primitives an agent uses to navigate the TOC itself.
-        if self._SYNTHESIZED_SKILLS:
-            lines.append("## Meta-skills (synthesised)")
-            lines.append("")
-            for slug, desc in self._SYNTHESIZED_SKILLS.items():
-                lines.append(f"- **{slug}** — {desc}")
-            lines.append("")
+        groups, uncategorised = _categorise_skills(active)
+        total_active = sum(len(members) for _, members in groups) + len(uncategorised)
 
-        lines.append(f"## Skills ({len(active)})")
-        lines.append("")
-        for slug, title, synopsis in active:
-            if synopsis:
-                lines.append(f"- **{slug}** — {title}")
-                lines.append(f"  {synopsis}")
+        lines = [
+            f"# precis-toc — {total_active} skills grouped by purpose",
+            "",
+        ]
+
+        def _row_for(slug: str) -> dict[str, str]:
+            synth_desc = self._SYNTHESIZED_SKILLS.get(slug)
+            if synth_desc is not None:
+                title = synth_desc
+                synopsis = ""
             else:
-                lines.append(f"- **{slug}** — {title}")
-        lines.append("")
+                title = _skill_title(slug) or slug
+                synopsis = _skill_synopsis(slug)
+            return {
+                "slug": _slug_with_aliases(slug),
+                "title": title,
+                "synopsis": synopsis,
+            }
 
-        if hidden:
+        for category, slugs in groups:
+            lines.append(f"## {category} ({len(slugs)})")
+            lines.append("")
             lines.append(
-                f"## Hidden ({len(hidden)} — kind not wired or status: planned)"
+                render_agent_table(
+                    [_row_for(s) for s in slugs],
+                    schema=["slug", "title", "synopsis"],
+                )
             )
             lines.append("")
-            for slug, title, _synopsis in hidden:
-                lines.append(f"- {slug} — {title}")
+
+        if uncategorised:
+            lines.append(f"## Other ({len(uncategorised)})")
+            lines.append("")
+            lines.append(
+                render_agent_table(
+                    [_row_for(s) for s in uncategorised],
+                    schema=["slug", "title", "synopsis"],
+                )
+            )
             lines.append("")
 
-        lines.append("---")
+        # F17: hidden skills (subject kind not wired in this build)
+        # dropped from the agent-facing list — unreachable from the
+        # current configuration, so showing them just adds noise.
+        del hidden
+
+        # Same explicit "these are examples" framing as the index —
+        # avoids the picky reviewer's complaint that the Next: trailer
+        # blurred the line between commands and skills.
+        lines.append("## Suggested starting commands")
+        lines.append("")
         lines.append(
-            "**Discover:** `search(kind='skill', q='your goal')` or "
-            "`get(kind='skill', id='<slug>')`."
+            "These are example invocations — paste verbatim to land somewhere useful."
+        )
+        lines.append("")
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "command": "search(kind='skill', q='your goal in plain language')",
+                        "purpose": "fuzzy lookup by topic",
+                    },
+                    {
+                        "command": "get(kind='skill', id='<slug>')",
+                        "purpose": "fetch any skill from the table above",
+                    },
+                ],
+                schema=["command", "purpose"],
+            )
         )
         return "\n".join(lines)
 
@@ -551,11 +1109,15 @@ class SkillHandler(Handler):
             lines.append("_(no kinds available)_")
             return "\n".join(lines)
 
-        kind_w = max(len(r[0]) for r in rows)
-        verb_w = max(len(r[1]) for r in rows)
-        for kind, verbs, desc in rows:
-            lines.append(f"  {kind:<{kind_w}}  {verbs:<{verb_w}}  {desc}")
-
+        lines.append(
+            render_agent_table(
+                [
+                    {"kind": kind, "verbs": verbs, "description": desc}
+                    for kind, verbs, desc in rows
+                ],
+                schema=["kind", "verbs", "description"],
+            )
+        )
         lines.append("")
         lines.append(
             f"**{len(rows)} kinds active.** "
@@ -605,14 +1167,20 @@ class SkillHandler(Handler):
             version = getattr(mod, "__version__", None) or "(unknown)"
             rows.append((label, f"OK {version}", backs, ""))
 
-        label_w = max(len(r[0]) for r in rows)
-        status_w = max(len(r[1]) for r in rows)
-        for label, status, backs, hint in rows:
-            line = f"  {label:<{label_w}}  {status:<{status_w}}  {backs}"
-            lines.append(line)
-            if hint and not status.startswith("OK"):
-                lines.append(f"    └─ install: {hint}")
-
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "module": label,
+                        "status": status,
+                        "backs": backs,
+                        "install_hint": hint if not status.startswith("OK") else "",
+                    }
+                    for label, status, backs, hint in rows
+                ],
+                schema=["module", "status", "backs", "install_hint"],
+            )
+        )
         lines.append("")
         lines.append(f"**Overall: {worst}**")
         if worst == "DEGRADED":
@@ -799,6 +1367,19 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
 #: skill alongside its ``-help`` sibling when the kind is missing.
 _APPLIES_TO_KIND_RE = re.compile(r"""kind\s*=\s*['"]([a-z][a-z0-9_-]*)['"]""")
 
+# Slug stems that look like ``precis-<X>-help`` but X is *not* a kind.
+# Without this set, ``precis-get-help`` derives ``'get'`` from its slug,
+# the availability gate finds no kind ``'get'`` in the hub, and every
+# verb-help skill gets a misleading "kind='get' not wired" banner —
+# the same banner cascades into the TOC's Hidden section. We treat the
+# seven verbs as non-kinds explicitly so the slug-derived fallback
+# only fires for genuine kind-help skills (``precis-markdown-help``,
+# ``precis-paper-help``, etc.) where the gate is actually meaningful.
+# Broad-pass usability finding 2026-05-30 (#1 + #2).
+_NON_KIND_SLUG_STEMS = frozenset(
+    {"get", "search", "put", "edit", "delete", "tag", "link"}
+)
+
 
 def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
     """Return every kind the skill claims to apply to.
@@ -807,7 +1388,9 @@ def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
       1. Front-matter ``applies-to:`` — extract every ``kind='X'``.
       2. Slug suffix ``precis-<kind>-help`` — derived as a fallback
          so existing ``-help`` skills without explicit front-matter
-         still gate correctly.
+         still gate correctly. Slugs whose stem names a *verb*
+         (``precis-get-help`` etc.) are not treated as kind-targeted
+         — see ``_NON_KIND_SLUG_STEMS``.
 
     Returns an empty list for cross-cutting skills (``precis-overview``,
     ``precis-tags``, …) that don't reference any specific kind.
@@ -825,7 +1408,7 @@ def _kinds_referenced_by_skill(slug: str, fm: dict[str, str]) -> list[str]:
     # (MCP critic MINOR-C — skill-availability gate false-positive.)
     if not kinds and slug.startswith("precis-") and slug.endswith("-help"):
         derived = slug[len("precis-") : -len("-help")]
-        if derived:
+        if derived and derived not in _NON_KIND_SLUG_STEMS:
             kinds.append(derived)
     return kinds
 
@@ -841,6 +1424,16 @@ def _availability_gap(slug: str, *, hub: Any) -> str | None:
        hub, the skill is filtered — the recipes don't all run.
        Power-user companions like ``precis-patent-power`` flow through
        the front-matter side of this gate.
+
+       **Verb-help skills are exempt from this gate** (slug stem in
+       ``_NON_KIND_SLUG_STEMS``). They document a verb that applies
+       to every kind that supports it; their ``applies-to:``
+       frontmatter often lists file kinds for examples, and those
+       being unwired in the current build is *exactly* the situation
+       the skill is meant to teach you about — flagging it as "kind
+       not wired" misclassifies the skill and hides it from the
+       index. Round-2 picky F-5, 2026-05-30.
+
     2. Status gate. Front-matter ``status:`` of ``planned`` or
        ``aspirational`` flags the skill as "describes a future API,
        don't follow recipes blind". Filtered.
@@ -867,16 +1460,58 @@ def _availability_gap(slug: str, *, hub: Any) -> str | None:
             "design notes, not as recipes."
         )
 
+    # Verb-help exemption from the subject-kind gate.
+    if _is_verb_help_slug(slug):
+        return None
+
     if hub is not None:
         for kind in _kinds_referenced_by_skill(slug, fm):
+            # Only fire the banner if ``kind`` is a name the registry
+            # *recognises* (currently active, or known-but-disabled in
+            # ``loadabilities``). Slug-derived strings that don't map
+            # to any kind — like ``precis-files-help`` whose stem
+            # ``files`` is an umbrella concept for markdown/plaintext/
+            # tex/python rather than a real kind — would otherwise
+            # produce a misleading "kind='files' not wired" banner
+            # pointing at a NotFound an agent can't recover from
+            # (round-2 picky R2-3, 2026-05-30).
+            if not _kind_is_known(hub, kind):
+                continue
             if not _hub_has_kind(hub, kind):
                 return (
                     f"this skill documents kind={kind!r} which is **not "
                     "wired** in this build - its examples will return "
-                    "[error:NotFound] unknown kind."
+                    "[error:Unsupported] for missing env vars or "
+                    "[error:NotFound] for genuinely unknown kinds."
                 )
 
     return None
+
+
+def _kind_is_known(hub: Any, kind: str) -> bool:
+    """True if ``kind`` is a name the registry recognises in any state.
+
+    A name is "known" if it's currently loaded (in ``hub.kinds``) or
+    appears in the loadability map (registered-but-disabled). Names
+    that fall in neither bucket — umbrella concepts like ``files``,
+    typos, third-party plugin slugs — are unknown to the gate and
+    must not trigger a kind-not-wired banner.
+    """
+    if _hub_has_kind(hub, kind):
+        return True
+    try:
+        loadabilities = hub.loadabilities
+    except (AttributeError, KeyError):
+        return False
+    return kind in loadabilities
+
+
+def _is_verb_help_slug(slug: str) -> bool:
+    """True if ``slug`` is ``precis-<verb>-help`` for a known verb."""
+    if not (slug.startswith("precis-") and slug.endswith("-help")):
+        return False
+    stem = slug[len("precis-") : -len("-help")]
+    return stem in _NON_KIND_SLUG_STEMS
 
 
 def _hub_has_kind(hub: Any, kind: str) -> bool:

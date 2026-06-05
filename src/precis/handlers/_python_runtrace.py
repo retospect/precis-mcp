@@ -134,8 +134,20 @@ def run_trace(
     with tempfile.TemporaryDirectory(prefix="precis-runtrace-") as tmpdir:
         out_path = Path(tmpdir) / "trace.json"
 
+        # ``-P`` (Python 3.11+) disables prepending the runner script's
+        # directory to ``sys.path[0]``. Without it, the subprocess's
+        # ``sys.path[0]`` is ``src/precis/handlers/`` — the directory
+        # holding the runner. That directory also contains the precis
+        # ``math.py`` handler, which would shadow the stdlib ``math``
+        # module. Python 3.12's ``urllib/parse.py`` does ``import math``
+        # at top-level (new in 3.12); under the shadow it lands in
+        # precis's math.py, which imports back from urllib.parse before
+        # parse has finished initialising — circular import, runner
+        # subprocess dies. The previous mitigation was an xfail gate on
+        # the affected runtrace tests; this fix removes the gate.
         cmd: list[str] = [
             sys.executable,
+            "-P",
             str(_RUNNER_SCRIPT),
             "--entry",
             entry,
@@ -275,8 +287,15 @@ def build_tree(events: tuple[TraceEvent, ...]) -> TraceNode | None:
             # match the top of stack — possible with C builtins that
             # don't emit c_return on exception).
             if top_node.qualname != ev.qn:
-                # Best-effort — still record elapsed.
-                pass
+                # Unbalanced return: e.g. a C builtin that didn't
+                # emit a matching c_return on exception. Surface
+                # for diagnosis without breaking the trace — the
+                # elapsed time still lands on the popped node.
+                log.debug(
+                    "runtrace: unbalanced return: stack-top=%s event=%s",
+                    top_node.qualname,
+                    ev.qn,
+                )
             top_node.total_ns += (ev.t - call_t) * 1e9
 
     return root

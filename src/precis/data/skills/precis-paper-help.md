@@ -1,231 +1,178 @@
 ---
 id: precis-paper-help
 title: precis — find, read, cite papers
-status: phase-7
-tier: 1
-floor: any
 applies-to: get/search/tag/link (kind='paper')
-last-updated: 2026-05-02
+status: active
 ---
 
 # precis-paper-help — find, read, cite papers
 
-Papers are slug-addressed (`abazari2024design`,
-`kim2024electrocatalytic`). Slugs are deterministic on author-surname
-+ year + first content word of the title; collisions get a `-2`/`-3`
-suffix. Use `get(kind='paper')` (no id) to see what's actually
-ingested in this build before guessing slugs.
+Papers are research articles in the store. Address by slug
+(`abazari2024design`) or by bare DOI.
 
-**You can also address papers by bare DOI** — `get` and `search`
-both transparently resolve a DOI to its slug before any other
-lookup. If you have a DOI in hand (from a citation, a reading
-list, a `\todo{cite: 10.xxxx/...}` marker), pass it directly
-instead of trying to guess the slug or running keyword searches:
+## Look up a paper when I have an identifier
+## Open a paper by slug or DOI
+## I have a DOI — how do I read the paper?
 
 ```python
-get(kind='paper', id='10.1038/nature10352')           # by DOI
-get(kind='paper', id='10.1038/nature10352~38')        # DOI + chunk selector
-search(kind='paper', q='10.1038/nature10352')         # check if ingested
+get(kind='paper', id='abazari2024design')                       # full overview
+get(kind='paper', id='abazari2024design', view='toc')           # TOC — the reading entry point
+get(kind='paper', id='10.1038/nature10352')                     # bare DOI resolves via metadata
+get(kind='paper', id='10.1038/nature10352', view='abstract')    # DOI + view = kwarg only
+get(kind='paper', id='10.1038/nature10352', view='toc')
 ```
 
-DOI form does **not** support view paths (`/abstract`, `/toc`) —
-DOI suffixes can legally contain `/`, so the parser can't tell
-"DOI literal" from "DOI + view". Use the `view=` kwarg alongside
-a DOI: `get(kind='paper', id='10.1038/nature10352', view='toc')`.
+DOI suffixes can contain `/`, so DOI + view needs the `view=` kwarg
+— the `slug/view` path form is ambiguous.
 
-When a DOI lookup misses, the error response points you at the
-sortie's `request_doi.md` queue (perplexity / fetch pipeline)
-rather than burning time on keyword searches that will also miss.
+## What does a paper slug look like?
+## Slug format and uniqueness
+## Can I guess a slug from a citation?
 
-## Find
+A slug is `<surname><year><first-content-word>` — ASCII-folded,
+stopwords skipped: `abazari2024design`, `kim2024electrocatalytic`,
+`wang2020state`. Collisions append `-2`, `-3`.
+
+Don't guess. Stopword skipping (`a`, `the`, `of`, `on`, `in`, `and`,
+`for`, `with`, `to`, `by`, `is`, `are`, `from`, `into`, `as`, `at`,
+`new`) and ASCII folding make construction unreliable. Use search
+or DOI lookup instead:
+
+```python
+search(kind='paper', q='<author or topic>')        # find the slug
+get(kind='paper', id='<DOI>')                      # DOI → fetches the paper
+```
+
+## Find a paper by topic
+## Discover papers about a subject I'm researching
+## I don't know any slugs — find papers by keyword
 
 ```python
 search(kind='paper', q='photocatalytic NOx reduction')
-search(kind='paper', q='photocatalytic NOx reduction', top_k=20)
-search(kind='paper', q='10.1038/nature10352')  # check if a DOI is ingested
-get(kind='paper')                              # list all papers (page of 50)
+search(kind='paper', q='photocatalytic NOx reduction', top_k=20)   # top_k = page size (default 10)
 ```
 
-Block-level hybrid search (lexical tsvector + semantic pgvector, RRF
-fused). Returns hits as `<slug>~<pos>` with the matching block
-excerpt, ordered best-first. The fused RRF score is **rank-based**
-(it doesn't reflect query strength on its own scale), so we don't
-surface a misleading numeric — list position is the only honest
-relevance signal.
+Hybrid lexical + semantic. Results are `slug~chunk` handles; order is
+the relevance signal.
 
-Scope to one paper:
+## Find a paper that mentions an exact term
+## Grep papers for a unique token (compound, DOI, exact string)
+## Where does any paper mention this specific string?
 
 ```python
-search(kind='paper', q='Z-scheme', scope='abazari2024design')
+search(kind='paper', q='LiBF4')                  # rare tokens rank high via lexical
+search(kind='paper', q='10.1038/nature10352')    # finds papers citing this DOI in body text
 ```
 
-## Skip what you've seen (`exclude=`)
+Same hybrid search — there's no pure-lexical mode, but rare tokens
+land at the top of the result. Searching a DOI this way finds *citing*
+papers; use `get(kind='paper', id='<DOI>')` to fetch the paper itself.
 
-To paginate ("show me hits 6-N"), pass back the slugs of the papers
-you already saw:
+## See additional papers after a search
+## Page through more search results
+## What if there are more hits than I see?
 
 ```python
-# First page.
-search(kind='paper', q='photocatalytic NOx reduction', top_k=5)
-# → 5 of 47 paper blocks for 'photocatalytic NOx reduction'
-#   ## 1. wang2020state~12 ...
-#   ## 2. kim2024electro~7  ...
-#   ...
-
-# Next page — drop those 5, get the next 5.
-search(kind='paper', q='photocatalytic NOx reduction', top_k=5,
-       exclude=['wang2020state','kim2024electro','liu2022zscheme',
-                'park2023nitrate','choi2021hybrid'])
-# → 5 of 42 paper blocks for 'photocatalytic NOx reduction'
+search(kind='paper', q='photocatalytic NOx reduction', page=2)
+search(kind='paper', q='photocatalytic NOx reduction', page=3, top_k=20)
 ```
 
-Notes:
+`page=1` is the default. Bump `page=` to walk results; `top_k=` sets
+the page size (default 10, max 100).
 
-- **Coarse / ref-level.** `exclude=['wang2020state']` drops every
-  block of that paper. Selectors and view paths are stripped, so a
-  copy-pasted hit handle (`'wang2020~12'`) and a DOI
-  (`'10.1111/jnc.13915'`) both resolve to the bare slug.
-- **The `LIMIT` applies after exclusion** — `top_k=5` with five
-  excluded papers really does return five new hits, not zero. Same
-  for the `N of K` header: it reports the *remaining* universe,
-  not the global count.
-- **Stale slugs are silent no-ops.** Unknown / soft-deleted slugs
-  in the exclude list don't fail the call; the filter just skips
-  them.
-- **The `Next:` trailer pre-fills the continuation list for you.**
-  When `total > len(hits)`, the response ends with a copy-pasteable
-  `search(... exclude=[...])` line that already merges your prior
-  exclude list with the slugs of refs returned this page — paste
-  and go.
+## Read a paper or one of its sections
+## Open a paper's TOC to see what's in it
+## I have a slug — what's in this paper?
 
-## Read
+Start with the TOC — it's the entry point for any non-trivial paper.
 
 ```python
-get(kind='paper', id='abazari2024design')                  # overview
-get(kind='paper', id='abazari2024design', view='abstract') # abstract only
-get(kind='paper', id='abazari2024design', view='toc')      # hierarchical TOC
-get(kind='paper', id='abazari2024design~38')               # block 38
-get(kind='paper', id='abazari2024design~38..42')           # block range
+get(kind='paper', id='<slug>', view='toc')           # start here
+get(kind='paper', id='<slug>~63..89')                # drill into a TOC handle
+get(kind='paper', id='<slug>~63..89', view='toc')    # sub-TOC of a range
+get(kind='paper', id='<slug>', view='abstract')
+get(kind='paper', id='<slug>~38')                    # single block
+get(kind='paper', id='<slug>~38..42')                # explicit block range
+get(kind='paper', id='<slug>')                       # full overview
+get(kind='paper', id='<slug>/toc')                   # path form = view='toc'
 ```
 
-The id syntax also supports view paths — the kwarg `view=` and the
-path `id='slug/<view>'` accept the **same vocabulary** so you can
-reach any view either way:
+TOC rows are drillable: paste a handle (`slug~A..B`) as `id=`. When
+the paper has H2 headings, the table includes a `heading` column;
+otherwise segments are clustered by content. Excerpts align to your
+query when there is one.
+
+Views: `abstract`, `toc`, `bibtex` (`cite/bib`), `ris` (`cite/ris`),
+`endnote` (`cite/endnote`). The `view=` kwarg and `slug/<view>` path
+are equivalent (except for DOIs — see above).
+
+## Find a passage in a paper I have
+## Locate where a topic comes up in a specific paper
+## Where does this paper discuss X?
 
 ```python
-get(kind='paper', id='abazari2024design/abstract')
-get(kind='paper', id='abazari2024design/toc')
-get(kind='paper', id='abazari2024design/cite/bib')
-get(kind='paper', id='abazari2024design', view='cite/bib')   # equivalent
-get(kind='paper', id='abazari2024design', view='bibtex')     # also equivalent
+search(kind='paper', q='Z-scheme', scope='<slug>')
+search(kind='paper', q='Z-scheme', scope='<slug>', page=2)
 ```
 
-Supported views: `abstract`, `toc`, `bibtex` (alias `cite/bib`),
-`ris` (alias `cite/ris`), `endnote` (alias `cite/endnote`).
+Same hybrid search as cross-corpus, scoped to one paper's blocks.
 
-## Navigate
-
-The `view='toc'` output is **hierarchical** — section/subsection
-ranges are detected from heading patterns and laid out as a jump
-table:
-
-```
-# acheson2026automated — TOC (177 blocks, 20 sections)
-
-  ~0..7     (8)   <untitled>  (preview from first block)
-  ~8..20    (13)  ■ INTRODUCTION
-  ~21..40   (20)  ■ THEORY
-  ~41..73   (33)  ■ METHODS
-    ~43..53   (11)  Physics-Informed Program Synthesis [PIPS]
-    ~54..58   (5)   Calculation Details
-    ~59..63   (5)   Heterodiatomic Molecules
-    ~64..73   (10)  Alkanes
-  ~74..116  (43)  ■ RESULTS & DISCUSSION
-    …
-```
-
-To **drill into a section**, use the combined chunk-range + view path
-form:
+## Cite a paper
+## Get a BibTeX or RIS entry for a paper
+## I need to cite this in my manuscript
 
 ```python
-get(kind='paper', id='abazari2024design~74..116/toc')   # TOC of just this range
-get(kind='paper', id='abazari2024design~74..116')       # read this range
+get(kind='paper', id='<slug>', view='bibtex')
+get(kind='paper', id='<slug>', view='ris')
+get(kind='paper', id='<slug>', view='endnote')
 ```
 
-Each response ends with a column-aligned "Next:" block that suggests
-the next likely call (next/previous range, parent TOC, citation, …)
-so the agent can keep navigating without re-reading the help.
+## Cite a figure (caption only — no image binaries)
+## Reference a figure by its legend
+## How do I cite Figure 3 of this paper?
 
-## Cite
+Image files aren't served. The figure block holds a markdown image
+marker; the legend is on the next block.
 
 ```python
-get(kind='paper', id='abazari2024design', view='bibtex')
-get(kind='paper', id='abazari2024design', view='ris')
-get(kind='paper', id='abazari2024design', view='endnote')
+get(kind='paper', id='<slug>~45')
 ```
 
-Abstracts are stripped of `<jats:*>` namespace tags before render,
-so the body is clean markdown safe to quote.
+```text
+Figure 3. Schematic representation of the structure of NU-1000…
+```
 
-## Figures
+Cite as "Figure 3 of `<slug>`" and quote the legend. The
+`![](...)` marker in the body is a relative path nothing serves —
+don't invent URLs.
 
-**Figure binaries are not served.** The pipeline keeps a
-markdown image marker (`![](_page_N_Figure_M.jpeg)`) on the figure's
-own block and the legend on the next block; the image file lives
-on disk inside the `.acatome` bundle but is not exposed by `get`.
-
-To cite a figure, name it by paper slug + figure number — e.g.
-*"Figure 3 of `abazari2024design`"* — and quote the legend text.
-Do **not** invent image URLs; the image marker in the block body
-is a relative path that nothing serves.
+## Tag a paper or cross-link it
+## Annotate a paper with topic tags or relationships
+## How do I mark this paper as topic-X?
 
 ```python
-# Read figure 3's legend block (find it via search or /toc).
-get(kind='paper', id='abazari2024design~45')
-# 'Figure 3. Schematic representation of the structure of NU-1000…'
+tag(kind='paper', id='<slug>', add=['topic:photocatalysis'])
+tag(kind='paper', id='<slug>', add=['SRC:primary'])
+tag(kind='paper', id='<slug>', remove=['topic:photocatalysis'])
+
+link(kind='paper', id='<slug>',
+     target='paper:<other-slug>', rel='cites')
 ```
 
-A future view (`view='fig/<N>'`) will return both the legend and a
-resolvable image URL once the bundle's image directory is wired
-into the cluster's static-file server. Until then, treat figures
-as caption-only.
-
-## Tag and cross-link a paper
-
-Paper bodies are import-only — you can't rewrite a paper's text from
-`put`. Tag and link operations work today, however:
-
-```python
-# Tag a paper. Closed-prefix axes for paper are SRC: and CACHE:; open
-# tags (topic-x, etc.) are always allowed.
-tag(kind='paper', id='abazari2024design', add=['topic:photocatalysis'])
-tag(kind='paper', id='abazari2024design', add=['SRC:primary'])
-
-# Drop tags. STATUS:/PRIO: aren't on paper's allowed-axis list and
-# raise BadInput at validation; that's by design.
-tag(kind='paper', id='abazari2024design', remove=['topic:photocatalysis'])
-
-# Cross-cite another paper.
-link(kind='paper', id='abazari2024design',
-     target='paper:other-slug', rel='cites')
-```
-
-Chunk selectors (`~N`, `~A..B`) and view paths (`/toc`, `/cite/bib`)
-are rejected here — link/tag operates at the ref level. See
-`precis-relations` for the relation vocabulary and `precis-tags` for
-the closed-prefix axes.
-
-## Not yet
-
-- `put(kind='paper', text=...)` — body mutation. Bodies arrive via
-  `.acatome` bundle ingest; there's no API to overwrite them.
-- `get(id='arxiv:2207.09327')` — URI scheme prefixes other than
-  bare DOI. Resolution lives in `acatome-quest-mcp` for now.
-  (Bare DOIs *are* supported here — see the top of this file.)
+Closed-prefix axes for paper: `SRC:`, `CACHE:`. Open tags
+(`topic-x`, ...) always allowed. Other axes (`STATUS:`, `PRIO:`, ...)
+are rejected. Tag and link operate at the paper level — chunk
+selectors and view paths are rejected.
 
 ## See also
 
-- `precis-overview` — verbs and kinds
-- `precis-relations` — `related-to`, `contradicts` between papers
-- `precis-tags` — `topic:`, `SRC:`
-- `precis-memory-help` — capturing thoughts from a paper
+```python
+get(kind='skill', id='precis-overview')         # verbs and kinds
+get(kind='skill', id='precis-search-help')      # search mechanics
+get(kind='skill', id='precis-relations')        # related-to, contradicts between papers
+get(kind='skill', id='precis-tags')             # axis vocabulary
+get(kind='skill', id='precis-paper-tag-axes')   # paper-specific axes
+get(kind='skill', id='precis-finding-help')     # chasing un-ingested DOIs
+get(kind='skill', id='precis-citation-help')    # verifier workflow for writing
+get(kind='skill', id='precis-memory-help')      # capturing thoughts from a paper
+```

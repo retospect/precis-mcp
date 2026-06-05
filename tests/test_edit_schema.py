@@ -10,14 +10,23 @@ lie costs a retry loop on 7B / 8B callers that trust the declared
 ``src/precis/server.py::_install_edit_schema_constraints`` rewrites
 the schema at import time to encode the per-mode coupling:
 
-- ``text`` is top-level required (true for every wire mode).
-- ``find`` is required via ``allOf`` + ``if/then`` when
-  ``mode in {'find-replace', 'insert'}`` or ``mode`` is omitted
-  (pydantic default is 'find-replace').
-- ``where`` is required when ``mode='insert'``.
+- ``text`` is top-level required (true for every wire mode — schema
+  ``required`` array is the field small models read first).
+- ``find`` and ``where`` are mode-conditional; the coupling is
+  encoded in the ``description`` text of those properties (and of
+  ``mode``) so schema-reading clients still get the hint.
 
-These tests lock the schema shape so a future refactor that
-reintroduces the lie fails loudly in CI.
+The old design used ``allOf`` + ``if/then`` to encode the
+mode-conditional coupling at the JSON-Schema level. That broke
+Anthropic's ``/v1/messages`` API, which rejects
+``oneOf``/``allOf``/``anyOf`` at the root of
+``tools[].custom.input_schema`` with a 400 and blocks every tool
+call. We dropped to description-only encoding plus the runtime
+``BadInput`` safety net so the surface stays usable with the
+official API.
+
+These tests lock the new shape so a future refactor that
+re-introduces a top-level union keyword fails loudly in CI.
 """
 
 from __future__ import annotations
@@ -44,102 +53,91 @@ def test_edit_schema_lists_text_as_required() -> None:
     )
 
 
-def test_edit_schema_requires_find_when_mode_is_find_replace() -> None:
-    """When ``mode='find-replace'`` is set explicitly, ``find`` must
-    be required via ``allOf`` / ``if/then``."""
+def test_edit_schema_has_no_top_level_union_keywords() -> None:
+    """Anthropic's ``/v1/messages`` API rejects schemas whose root has
+    ``oneOf``/``allOf``/``anyOf``. Any of those at the top level breaks
+    every tool call (including unrelated tools, because the API
+    validates the whole ``tools`` array). This test guards the floor.
+    """
     schema = _edit_schema()
-    all_of = schema.get("allOf", [])
-    assert all_of, "edit schema must carry allOf clauses for per-mode coupling"
-    # Find the clause whose `if` matches `mode='find-replace'` (or a
-    # multi-enum containing it) and `then` requires `find`.
-    found = False
-    for clause in all_of:
-        if_schema = clause.get("if", {})
-        mode_prop = if_schema.get("properties", {}).get("mode", {})
-        values = mode_prop.get("enum") or [mode_prop.get("const")]
-        if "find-replace" in values and "find" in clause.get("then", {}).get(
-            "required", []
-        ):
-            found = True
-            break
-    assert found, (
-        "no allOf/if-then clause requires `find` when mode='find-replace'; "
-        f"allOf={all_of!r}"
+    for keyword in ("oneOf", "allOf", "anyOf"):
+        assert keyword not in schema, (
+            f"top-level {keyword!r} re-introduced in edit inputSchema; "
+            "Anthropic's /v1/messages API will reject the entire tools "
+            "array with a 400. Encode the constraint as property "
+            "descriptions or rely on runtime BadInput instead."
+        )
+
+
+def test_edit_schema_find_description_advertises_mode_coupling() -> None:
+    """The ``find`` property's description must call out that it is
+    required in ``find-replace`` and ``insert`` modes. With the
+    allOf-based enforcement gone, this is the principal in-schema
+    signal small models will see for the coupling."""
+    schema = _edit_schema()
+    desc = (schema.get("properties", {}).get("find", {}) or {}).get(
+        "description", ""
+    )
+    assert "find-replace" in desc and "insert" in desc, (
+        f"`find` description must name modes that require it; got {desc!r}"
     )
 
 
-def test_edit_schema_requires_find_when_mode_is_insert() -> None:
-    """Same coverage for mode='insert'."""
+def test_edit_schema_where_description_advertises_mode_coupling() -> None:
+    """``where`` is required when ``mode='insert'``."""
     schema = _edit_schema()
-    all_of = schema.get("allOf", [])
-    found = False
-    for clause in all_of:
-        if_schema = clause.get("if", {})
-        mode_prop = if_schema.get("properties", {}).get("mode", {})
-        values = mode_prop.get("enum") or [mode_prop.get("const")]
-        if "insert" in values and "find" in clause.get("then", {}).get("required", []):
-            found = True
-            break
-    assert found, "no allOf/if-then clause requires `find` when mode='insert'"
-
-
-def test_edit_schema_requires_where_when_mode_is_insert() -> None:
-    """``where`` is required for anchored inserts."""
-    schema = _edit_schema()
-    all_of = schema.get("allOf", [])
-    found = False
-    for clause in all_of:
-        if_schema = clause.get("if", {})
-        mode_prop = if_schema.get("properties", {}).get("mode", {})
-        values = mode_prop.get("enum") or [mode_prop.get("const")]
-        if "insert" in values and "where" in clause.get("then", {}).get("required", []):
-            found = True
-            break
-    assert found, "no allOf/if-then clause requires `where` when mode='insert'"
-
-
-def test_edit_schema_requires_find_when_mode_is_omitted() -> None:
-    """When the caller omits ``mode``, pydantic fills it with
-    ``'find-replace'`` — so ``find`` is still required."""
-    schema = _edit_schema()
-    all_of = schema.get("allOf", [])
-    # Look for a clause whose ``if`` says mode is absent.
-    found = False
-    for clause in all_of:
-        if_schema = clause.get("if", {})
-        if if_schema.get("not", {}).get("required") == ["mode"]:
-            if "find" in clause.get("then", {}).get("required", []):
-                found = True
-                break
-    assert found, (
-        "no allOf/if-then clause requires `find` when mode is omitted; "
-        "small models default to mode='find-replace' but a schema with "
-        "no coverage for the absent-mode case leaves them free to omit "
-        "`find` too."
+    desc = (schema.get("properties", {}).get("where", {}) or {}).get(
+        "description", ""
     )
+    assert "insert" in desc, (
+        f"`where` description must name mode='insert' as the trigger; got {desc!r}"
+    )
+
+
+def test_edit_schema_mode_description_enumerates_per_mode_required_args() -> None:
+    """The ``mode`` property's description should table the per-mode
+    required args (``find-replace`` → find=, text=; ``insert`` →
+    find=, text=, where=; ``append``/``replace`` → text=). Small
+    models reading the mode field surface should see this without
+    having to fetch the help skill."""
+    schema = _edit_schema()
+    desc = (schema.get("properties", {}).get("mode", {}) or {}).get(
+        "description", ""
+    )
+    for token in ("find-replace", "insert", "append", "replace"):
+        assert token in desc, (
+            f"mode description must enumerate mode {token!r}; got {desc!r}"
+        )
 
 
 def test_idempotent_schema_install_does_not_duplicate_clauses() -> None:
-    """Calling the installer twice must not duplicate clauses or the
-    top-level `text` requirement. Guards against repeated module
-    imports (e.g. under pytest with a reload plugin).
+    """Calling the installer twice must not duplicate the top-level
+    ``text`` requirement or re-append the description suffixes.
+    Guards against repeated module imports (e.g. under pytest with a
+    reload plugin).
     """
     schema_before = _edit_schema()
     before_required = list(schema_before.get("required", []))
-    before_allof = list(schema_before.get("allOf", []))
+    before_props = {
+        name: dict(schema_before.get("properties", {}).get(name, {}))
+        for name in ("mode", "find", "where")
+    }
 
     server._install_edit_schema_constraints(server.mcp)
 
     schema_after = _edit_schema()
     # `text` should appear exactly once.
     assert schema_after.get("required", []).count("text") == 1
-    # allOf should not grow every call. The installer appends the
-    # fixed set of conditions each call; idempotency means a second
-    # call must not add duplicates.
-    assert schema_after.get("allOf", []) == before_allof, (
-        "installer is not idempotent; re-running doubled the allOf "
-        f"clauses (before={len(before_allof)} after={len(schema_after.get('allOf', []))})"
-    )
     assert schema_after.get("required", []) == before_required, (
         "installer re-added `text` to required"
     )
+    # Property descriptions should be stable across re-runs.
+    for name, before_schema in before_props.items():
+        after_schema = schema_after.get("properties", {}).get(name, {})
+        assert after_schema.get("description") == before_schema.get(
+            "description"
+        ), (
+            f"installer re-appended description suffix on {name!r}: "
+            f"before={before_schema.get('description')!r} "
+            f"after={after_schema.get('description')!r}"
+        )

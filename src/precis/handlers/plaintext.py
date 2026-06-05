@@ -40,6 +40,7 @@ from precis.handlers._link_tag_ops import (
     apply_tag_ops,
     format_link_tag_ack,
 )
+from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
@@ -160,6 +161,7 @@ class PlaintextHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
+        note_like=True,
         views=("raw",),
         modes=_SUPPORTED_PUT_MODES,
     )
@@ -452,12 +454,14 @@ class PlaintextHandler(Handler):
         *,
         q: str,
         top_k: int = 10,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         if not (q and q.strip()):
             return []
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
+        # query_vec= may be pre-supplied by the runtime cross-kind
+        # dispatcher (computed once for all kinds).
+        if query_vec is None and self.embedder is not None:
             query_vec = self.embedder.embed_one(q)
         triples = self.store.search_blocks_fused(
             q=q,
@@ -483,6 +487,7 @@ class PlaintextHandler(Handler):
         id: str | int | None = None,
         text: str | None = None,
         mode: str | None = None,
+        tags: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         """Create a new paragraph-block file.
@@ -490,6 +495,15 @@ class PlaintextHandler(Handler):
         Per the seven-verb surface (D6), ``put`` is creation-only on
         file kinds. Region edits live on the ``edit`` verb; region
         deletes live on ``delete``.
+
+        ``tags=`` is the D3 shortcut for "create then tag": the new
+        ref carries the listed tags in addition to the auto-stamped
+        ``workspace`` flag. The runtime also layers
+        ``PRECIS_DEFAULT_TAGS`` into this list via
+        :meth:`PrecisRuntime._apply_default_tags_policy` before the
+        handler runs (see ADR 0013 / OQ-17), so an operator-stated
+        session-context tag set lands on every prose-file ref
+        without per-call wiring on the agent side.
         """
         if mode in self._LEGACY_PUT_MODES_TO_EDIT:
             new_mode = "find-replace" if mode == "edit" else mode
@@ -533,12 +547,17 @@ class PlaintextHandler(Handler):
                 preferred_ext = ext
                 break
         slug, _sel, _path_view = _parse_file_id(raw_id, extensions=self._EXTENSIONS)
-        return self._put_create(slug, text, preferred_ext=preferred_ext)
+        return self._put_create(slug, text, preferred_ext=preferred_ext, tags=tags)
 
     # ── put helpers ────────────────────────────────────────────────
 
     def _put_create(
-        self, slug: str, text: str | None, *, preferred_ext: str | None = None
+        self,
+        slug: str,
+        text: str | None,
+        *,
+        preferred_ext: str | None = None,
+        tags: list[str] | None = None,
     ) -> Response:
         path = self._resolve_path(slug, must_exist=False, preferred_ext=preferred_ext)
         if path.exists():
@@ -566,6 +585,8 @@ class PlaintextHandler(Handler):
         _atomic_write(path, body)
         ref = self._ensure_ingested(slug)
         assert ref is not None
+        if tags:
+            apply_tag_ops(self.store, self._KIND, ref.id, tags=tags, untags=None)
         n = self.store.count_blocks(ref.id)
         return Response(body=f"created {self._KIND} {slug!r} ({n} paragraph(s))")
 
@@ -1046,14 +1067,14 @@ class PlaintextHandler(Handler):
     def _resolve_pt_ref(self, id: str | int) -> tuple[str, int]:
         """Coerce an id to (slug, ref_id), ingesting the file if needed."""
         slug, sel, path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
-        if sel is not None or path_view is not None:
-            raise BadInput(
-                (
-                    f"{self._KIND} tag/link ops operate at file level - drop the "
-                    "block selector / path view from id="
-                ),
-                next=f"tag(kind='{self._KIND}', id={slug!r}, add=[...])",
-            )
+        reject_chunk_or_path_view(
+            kind=self._KIND,
+            slug=slug,
+            sel=sel,
+            path_view=path_view,
+            selector_noun="block selector",
+            level_noun="file",
+        )
         ref = self._require_existing_file(slug)
         return slug, ref.id
 
@@ -1198,10 +1219,8 @@ class PlaintextHandler(Handler):
         )
 
         with self.store.tx() as conn:
-            corpus_id = self.store.ensure_corpus("default")
             if ref is None:
                 ref = self.store.insert_ref(
-                    corpus_id=corpus_id,
                     kind=self._KIND,
                     slug=slug,
                     title=title,

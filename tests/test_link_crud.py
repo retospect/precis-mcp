@@ -38,9 +38,7 @@ def memory_handler(hub: Hub) -> MemoryHandler:
 
 
 def _seed_paper(store: Store, slug: str = "wang2020state") -> int:
-    cid = store.ensure_corpus("default")
     ref = store.insert_ref(
-        corpus_id=cid,
         kind="paper",
         slug=slug,
         title=f"Test paper {slug}",
@@ -62,8 +60,7 @@ def _seed_paper_with_blocks(
 
 
 def _seed_memory(store: Store, title: str = "test memory") -> int:
-    cid = store.ensure_corpus("default")
-    ref = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title=title)
+    ref = store.insert_ref(kind="memory", slug=None, title=title)
     return ref.id
 
 

@@ -8,6 +8,715 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ## Unreleased
 
+### Added
+
+- **`precis stats` CLI subcommand** — quick observability for the
+  finding-chase pipeline. Default prints two sections: STATUS-count
+  for `kind='finding'` ("how many findings are tracing /
+  established / multi_candidate / dead_chain?") and a stub backlog
+  count partitioned by `awaiting` vs `retry`. Flags `--findings` /
+  `--stubs` isolate one section; `--format json` produces a single
+  keyed object suitable for piping through `jq`. Complements the
+  existing row-level `precis stubs` (which lists the backlog) by
+  answering "how big is it?" without dumping every row.
+- **`FindingHandler.search` override** — status-axis filter on
+  finding searches. Default behaviour returns only
+  `STATUS:established` rows so the common "what evidence do we
+  have for X?" call doesn't surface in-flight noise. `status=` is
+  a shorthand that desugars to a tag filter (e.g.
+  `status='tracing'` ≡ `tags=['STATUS:tracing']`); `status='*'`
+  bypasses the filter to inspect every cohort. Results render as
+  a TOON table `id | title | setup | primary` matching the
+  finding-chase design's "scannable list" shape; the begat-chain
+  detail still lives behind `get(kind='finding', id=N)`. Closed-
+  vocab `_CLOSED_VOCAB['STATUS']` extended to union the original
+  todo-workflow values (`open`/`doing`/...) with the finding-chase
+  values (`tracing`/`established`/...) so filter-time validation
+  accepts both without per-kind hooks.
+- **Misattribution-link rendering on `get(kind='finding')`.** When
+  a finding carries outbound `misattributes` edges (e.g. a user
+  flagged a chain hop as wrong via `link(... rel='misattributes')`),
+  the begat detail surfaces them under a `misattributed via:`
+  block alongside the begat chain. Closes the corresponding DoD
+  bullet in `docs/design/finding-chase.md`.
+- **Chase-worker scenario tests** (`tests/workers/test_chase.py`).
+  Nine scenarios exercising `run_finding_chase_pass` against a
+  real Postgres store with `_load_s2_references` mocked: terminal,
+  stub-waiting, hop, cycle protection, three dead-chain modes
+  (no resolvable cite / target deleted / empty chain),
+  multi-candidate, and card-combined re-emit at chain termination.
+
+### Fixed
+
+- **Migration runner no longer masks SQL errors as
+  `InvalidSavepointSpecification`.** `Migrator.apply_all` previously
+  opened its connection with `autocommit=False`. The first `SELECT`
+  for `_applied_versions` opened an implicit transaction, so the
+  per-migration `with conn.transaction()` downgraded to a SAVEPOINT
+  instead of issuing BEGIN. When a migration aborted mid-execution,
+  the savepoint vanished and the context-manager exit raised
+  `psycopg.errors.InvalidSavepointSpecification: savepoint
+  "_pg3_1" does not exist` — burying the real error. Switched the
+  connection to `autocommit=True` so `conn.transaction()` issues a
+  real BEGIN/COMMIT and surfaces inner exceptions directly. Migration
+  0010 (the noisy-segment-keyword backfill) had been failing this
+  way; it now applies cleanly.
+- **Docker build no longer deadlocks on bge-m3 fetch.** The bake
+  stage now seeds `/opt/precis/models/` from a `precis-mcp:premodels`
+  image (BuildKit `--build-context`) before invoking
+  `bake-models.py`, and the bake script skips the download when the
+  cache directory is already populated. The verification
+  `SentenceTransformer("BAAI/bge-m3")` call runs with
+  `HF_HUB_OFFLINE=1` + `TRANSFORMERS_OFFLINE=1` so it cannot
+  fall back to the deadlock-prone xet-bridge path. Source-only
+  rebuilds dropped from "indefinite hang" to ~55 seconds. See
+  [ADR 0019](docs/decisions/0019-premodels-build-context.md) for
+  rationale and bootstrap instructions (`docker tag precis-mcp:latest
+  precis-mcp:premodels`).
+
+## v8.1.0 — finding-chase + OA fetcher cascade + event log (2026-06-01)
+
+### Added
+
+- **New ref kind: `finding`** — chain head over a citation chase to
+  a primary source. A finding carries the claim (`finding_body`
+  chunk), the setup envelope (`refs.meta.scope` JSONB), and the
+  ordered hops of the chase chain (`refs.meta.chain`). The chase
+  worker walks the chain one hop per pass, terminating at a
+  primary measurement; the chain-snapshot pass populates
+  `meta.primary_cite_key` + `meta.via_cite_keys` and re-emits the
+  `card_combined` chunk via DELETE+INSERT so search picks up the
+  established phrasing.
+  - Determinism: `make_finding_paper_id(body, scope, cited_in)` →
+    `make_pub_id` produces a stable 6-char `pub_id` so two agents
+    creating the same finding collapse at the
+    `ref_identifiers (id_kind='pub_id')` UNIQUE constraint.
+  - **Setup-context awareness**: same number under different
+    setups → distinct findings. `meta.scope` is the structured
+    slice for filtering; the skill mandates `search` before `put`
+    keyed on `(claim, scope)`.
+  - **Not externally citable**: `cite(kind='finding', ...)` raises
+    `Unsupported`. The placeholder → primary substitution via
+    `precis resolve` is the only path findings reach published text.
+  - Migration `0004_finding_and_queue_family.sql` seeds the kind,
+    two `chunk_kinds` (`finding_body`, `finding_context` — the
+    latter dormant under Path B; setup is folded into body),
+    two relations (`misattributes`/`misattributed-by`), and one
+    actor (`chase`). Design: `docs/design/finding-chase.md`.
+- **`precis.workers.chase.run_finding_chase_pass`** — sibling
+  worker per ADR 0018 that advances `STATUS:tracing` findings
+  one hop per pass. Walks the source paper's `chunks` + S2
+  references list to detect inline cites; resolves each to a
+  ref_id (existing via `ref_identifiers`, or new chase-minted
+  stub when the cited paper isn't in the corpus yet). Cycle
+  protection via `meta.chain` membership. Per-pass outcome
+  (`advanced` / `terminated` / `dead_chain` / `multi_candidate` /
+  `cycle` / `waiting`) writes to the new `ref_events` table
+  (`source='chase'`). Wired into `precis worker --only chase`.
+- **LLM hooks via `precis.utils.claude_p`** — `claude -p`
+  subprocess wrapper (project-wide reusable utility). The chase
+  uses three default-off hooks gated by `--with-llm` or env
+  `PRECIS_CHASE_LLM=1`: `_disambiguate_candidates` (multi-cite
+  picker), `_locate_chunk_in_target` (ANN top-1 confirmation),
+  `_verify_support_with_caveats` (does this chunk support the
+  claim under the setup; captures caveats + cited-others).
+  Deterministic chase is fully functional without LLM; hooks
+  improve quality where they fire.
+- **ADR 0017 — Derived-queue family** — formalises the
+  `*_artifacts` substrate + `artifact_kinds` registry as a
+  cross-cutting pattern. Migration `0004_*.sql` creates
+  `ref_artifacts` + `artifact_kinds`. §4 (WorkerHandler refactor)
+  is superseded by ADR 0018's sibling-worker decision; substrate
+  tables remain valid.
+- **Generic event log: `ref_events` table** (migration
+  `0009_ref_events.sql`) — cross-subsystem chronological audit
+  trail. One row per event with `(ref_id, ts, source, event,
+  payload, duration_ms, cost_usd)`. New `EventsMixin` on
+  `Store` exposes `append_event` / `events_for` / `recent_events`.
+  Consumers writing today: `chase`, `fetcher:unpaywall`,
+  `fetcher:arxiv`, `fetcher:s2`. Read via
+  `get(kind='finding'|'paper', view='log')` or directly.
+- **`view='log'` on `FindingHandler` and `PaperHandler`** — renders
+  the per-ref chronology with per-subsystem one-line summaries.
+  FindingHandler scopes to `source='chase'`; PaperHandler is
+  cross-source.
+- **`precis.workers.fetch_oa.run_oa_fetch_pass`** — sibling
+  worker that fetches OA PDFs for stub papers in a cascade:
+  **Unpaywall → arXiv → S2.openAccessPdf**. First `fetch_ok`
+  wins; intermediate failures (`no_oa_version` / `fetch_failed`)
+  fall through to the next provider, each writing its own audit
+  event. Downloads validate the PDF magic bytes before keeping
+  the file (publisher HTML interstitials are rejected); polite
+  User-Agent with email tag. Cost cap via per-pass `--limit`;
+  24-hour retry window per stub. Wired into `precis worker
+  --only fetch` (default `precis worker` runs alongside embed +
+  summarize + segments + chase). Requires `PRECIS_UNPAYWALL_EMAIL`
+  for the Unpaywall leg; arXiv and S2 always available.
+- **`precis_add` stub-upgrade + multi-hash alias path** — new
+  helper `register_aliases_and_maybe_upgrade` in `db_writer.py`.
+  On `probe_existing` hit: always register the new
+  `(pdf_sha256, content_hash)` rows in `ref_identifiers`
+  (multiple hashes per ref are first-class — preprint vs
+  publisher vs repository). When the existing ref is a stub
+  (`pdf_sha256 IS NULL`), additionally promote it: UPDATE
+  `refs.pdf_sha256`, insert the extracted chunks, embed via
+  derived queue. Findings waiting on the stub resume on the
+  next chase pass without any extra plumbing.
+- **`precis resolve` CLI subcommand** — substitutes
+  `[<pub_id>]` placeholders with the primary `cite_key` once
+  findings establish. Plain / markdown / latex output;
+  `--strict` exits 3 if any placeholder is still in flight
+  (CI-gate friendly); `--keep-id` keeps dead-chain placeholders
+  annotated. LaTeX `--bib` writes stub `@misc{...}` entries
+  so documents compile during the in-flight period. Visible
+  ⏳ marker (ASCII `*` via `--ascii`) so authors don't ship
+  placeholders by accident.
+- **`precis stubs` CLI subcommand** — lists paper refs with
+  `pdf_sha256 IS NULL` joined with the latest fetcher event per
+  ref. TOON-table output; `--awaiting` filters to "what would
+  the fetcher try next".
+- **New skill: `precis-finding-help`** — full workflow shape,
+  when-to-create / when-NOT-to-create, mandatory
+  search-before-create rule, FAQ on chase outcomes.
+
+### Changed
+
+- **`paper.py` empty-search DOI hint** — when a DOI lookup
+  misses, the response now offers `put(kind='finding',
+  cited_in='doi:...')` plus `precis stubs --awaiting` as the
+  preferred structured path. The legacy
+  `edit(kind='plaintext', id='./request_doi.md', ...)` queue
+  is retained as a deprecated fallback (one release of
+  warnings; remove in the next).
+- **`precis worker --only`** gains `chase` and `fetch` choices
+  alongside the existing `embed` / `summarize` / `segments`.
+  Plus `--with-llm` (chase) and `--fetch-inbox` / `--unpaywall-email`
+  (fetcher).
+- **`PaperHandler.accepted_views`** gains `log`; renders via the
+  shared `precis.handlers._event_log_render` module.
+
+### Migrations
+
+- `0004_finding_and_queue_family.sql` — finding kind + queue
+  family scaffolding (ADR 0017).
+- `0009_ref_events.sql` — cross-subsystem per-ref event log.
+
+Both are additive (no ALTER on existing tables); apply cleanly
+to a fresh DB and to a live v8.0.0 DB.
+
+### Deprecated
+
+- **`./request_doi.md` plaintext DOI queue** — superseded by
+  the finding-chase + fetcher pipeline. Still works; the
+  empty-search hint now labels the option `(legacy)`. Remove
+  in the release after next.
+
+## v8.0.0 — 2026-05-31
+
+### Added
+
+- **Discovery layer for `paper` kind** — persistent per-segment
+  artifacts now back `view='toc'` and the search-result excerpt
+  sub-lines. Two new tables (`ref_segments`,
+  `ref_segment_sentences`), a ref-level worker
+  (`precis worker --only segments`), and read-side store mixin
+  (`SegmentsMixin`). Pipeline:
+  - **DP-uniform-cost segmentation** (replaces TextTiling) on
+    bge-m3 chunk embeddings with K = `ceil(body/20)` clamped
+    `[3, 9]`.
+  - **Matryoshka-ordered keywords** per segment — scored via
+    KeyBERT-style cosine to segment centroid with a
+    distinctiveness penalty against sibling centroids (λ ≈ 0.3),
+    so `keywords[0]` is what's most-distinctive about this
+    segment rather than most-frequent. Stored as JSONB
+    `{long, short, aliases[], score}` with a denormalized
+    GIN-indexed `forms TEXT[]` for cross-paper surface-form
+    lookups.
+  - **Per-sentence bge-m3 embeddings** — every body sentence
+    gets an embedding + centroid score. TOC excerpts pick top-1
+    by centroid score; search-result excerpts rerank against the
+    query embedding via pgvector `<=>`.
+  - Migration `0005_segments_and_sentences.sql` (requires
+    `btree_gist` for the mixed-type segment-range GiST index).
+  - Documented in ADR 0018; schema diagram refreshed in
+    `docs/design/schema-v2.puml`.
+- **New kind: `citation`** — verifier-workflow scaffold for
+  writing-thread agents. Write-once `put(text=<claim>,
+  source_handle, source_quote, char_offset, verifier_confidence,
+  verifier_caveats, link='paper:<slug>', rel='cites')` persists
+  a verified claim → source-quote pointer to `refs.meta`.
+  Migration `0007_citation_kind.sql` seeds the kind; the `cites`
+  relation was already in the vocab. See
+  [`precis-citation-help`](src/precis/data/skills/precis-citation-help.md).
+- **`chunks.numerics TEXT[]` lexical numeric-token index** —
+  ingest extracts every `<number><unit>` token (eV/V/A/Hz/cm⁻¹/
+  %/K/°C/Pa/M/nm/cycles/s/…) and stores them GIN-indexed for
+  cheap exact-value lookups (path-2 from the tables-curveball
+  discussion; structured `paper_facts` remains deferred).
+  Migration `0006_chunk_numerics.sql`.
+- **References detection at ingest** — `pipeline._retag_references`
+  runs the boilerplate classifier on body chunks and rewrites
+  detected bibliography rows to `chunk_kind='references'` before
+  insert. `EmbedHandler` and `RakeLemmaHandler` carry
+  `skip_chunk_kinds=("references",)` which extends the claim SQL
+  with `AND c.chunk_kind <> ALL(%s)` — references never enter
+  the work queue, bibliography stops polluting search.
+- **pysbd-backed sentence splitter** — `precis.utils.sentences`
+  wraps pysbd 0.3.4 with char-offset bookkeeping. Wired into
+  `text_chunker` via a `SENTENCE_SEPARATOR` sentinel in the
+  recursive splitter's fallback chain, so abbreviations like
+  `"et al."`, `"Fig."`, `"i.e."`, `"e.g."`, `"vs."` no longer
+  cause mid-clause splits. `CHUNKER_VERSION = "2.0+pysbd-0.3-1"`
+  is now a real constant in `text_chunker.py`. Adds
+  `pysbd>=0.3.4` to the `[paper]` extra.
+- **Dehyphenation in the cleaner** — `marker._clean_text` gains
+  a regex pass joining `-\s*\n\s*` when both sides are lowercase
+  ASCII. Semantically-significant hyphens (`Z-scheme`, `Cu-MOF`,
+  any compound with uppercase boundaries) are preserved, and the
+  join never crosses paragraph breaks.
+- **Retraction banner on paper views** — `kind='paper'` `view=
+  'overview'`, `view='toc'`, and chunk drill-in views now lead
+  with a `> [!] RETRACTED` (or EoC / corrected) banner when
+  `refs.retraction_status` is set, with the retraction date and
+  reason inline and a pointer at
+  `get(kind='provenance', id='<doi>')` for the full notice.
+
+- **New kind: `provenance`** — retraction and amendment monitoring
+  for paper DOIs. Five phases, all shipped:
+  - **Phase 1** — single-DOI Crossref check. Validates DOI shape,
+    fetches `/works/{doi}`, classifies any `update-to` notices by
+    severity (`retraction` → 🔴 blocker, `expression_of_concern` →
+    🟠 review, `corrigendum`/`erratum` → 🟡 note,
+    `addendum`/`clarification` → 🟢 info), and when the parent
+    paper is in the local store: auto-ingests retraction / EoC
+    notice DOIs as `paper` refs (slug rule:
+    `<parent>-r<n>` / `-e<n>` / `-c<n>`), writes `retracted-by` /
+    `concern-raised-by` / `corrected-by` links, sets
+    `refs.retraction_status`, applies a `STATUS:retracted` /
+    `:concern` / `:corrected` tag. Migration `0002_provenance.sql`
+    adds the six new relation slugs and the `retraction_watch`
+    provider. Notice refs carry `STATUS:notice`.
+  - **Phase 2** — batch input via `q='doi1,doi2,…'`, `view='blockers'`
+    (only 🔴/🟠 entries with a count of hidden 🟡/🟢), `view='json'`
+    (structured payload for downstream tooling),
+    `ThreadPoolExecutor(max_workers=8)` for the fan-out, order
+    preservation, per-DOI failure isolation
+    (`status='check_failed'` on transport errors never kills the
+    batch). New CLI: `precis jobs check-provenance --refs <file>
+    --view default|blockers|json --out <file>`.
+  - **Phase 2.5** — `view='verify'` metadata verification. Catches
+    "right DOI, wrong paper" — common with LLM-generated bibs.
+    Token-set Jaccard on titles with NFKD normalisation
+    (`Müller`→`muller`, `H₂O`→`h2o`, `ﬁ`→`fi`) plus German-phonetic
+    alt for surnames (`Müller`↔`Mueller`, `Schröder`↔`Schroeder`)
+    plus reverse-phonetic fold for the ASCII↔ASCII case
+    (`Mueller`↔`Muller`) — trade-off: false positives on
+    `Sue`↔`Su`, `Press`↔`Pres` accepted because the cost (a
+    suppressed warning) is bounded. Year ±1 tolerance for
+    online-first vs print drift. No hardcoded pass/fail
+    thresholds; raw scores emitted in JSON for downstream rules.
+  - **Phase 3** — Retraction Watch reason codes joined into the
+    report (`+Falsification/Fabrication of Data` etc., not just
+    "retracted"). Migration `0003_provenance_rw_cache.sql` adds
+    the cache + sync ledger tables. New job
+    `precis jobs sync-retraction-watch --mailto <email>
+    [--source auto|labs|gitlab]` — tries Crossref Labs API
+    primary, falls back to the GitLab mirror
+    (`gitlab.com/crossref/retraction-watch-data`). ~40 MB CSV,
+    ~50k rows, batched upsert in 10k-row chunks, idempotent on
+    RW Record ID. Match strategy: exact notice-DOI match, with
+    single-row-per-nature fallback.
+  - **Phase 3.5** — Numbered `#N` output across all batch views
+    matching the project's standardised LLM-output convention
+    (`utils/search_merge.py:208`). Every batch result carries a
+    1-based `input_index` reflecting *input* order (not thread-
+    pool completion order); the same `#47` appears in default,
+    blockers, and JSON views even when intervening entries are
+    hidden. Eliminates LLM off-by-one errors when generating
+    follow-up actions against a numbered report.
+  - **Phase 4** — `transitive=True` flag enables depth-1
+    cite-walk via Crossref's `message.reference` field. For each
+    parent: shallow-checks every cited DOI, surfaces only
+    ≥ 🟠 findings as `cited_findings`, skips corrigenda
+    (too noisy at depth 1). Per-batch dedup cache so a cited
+    paper shared by N parents hits Crossref once. Clean-itself
+    papers that cite retracted work are promoted into the
+    🟠 Review bucket so blockers view doesn't hide them.
+  - **Phase 5** — three additions:
+    - `paper view='health'` shim — looks up the paper's DOI from
+      `ref_identifiers` and delegates to `provenance` so agents
+      with a slug skip the manual DOI lookup.
+    - `view='exists'` shortcut — compact ✓/✗ output for "does
+      this DOI resolve?" without the retraction-classification
+      overhead. Useful for validating a DOI list before doing
+      real work.
+    - `suggest_candidates=True` — when a DOI 404s *and* a
+      `BibEntry` with bibliographic metadata is supplied, calls
+      Crossref `/works?query.bibliographic=…&query.author=…`
+      and attaches ranked candidates as **advisory hints** under
+      the Unknown DOI section. **Never substitutes** — the
+      supplied DOI's status stays `unknown`. Fuzzy
+      auto-resolution was explicitly rejected; see
+      `docs/provenance-kind-plan.md` § "Rejected: fuzzy DOI
+      auto-resolution" for the rationale.
+  - Source layout: `ingest/provenance.py`, `ingest/_text_norm.py`
+    (Phase 2.5 helpers), `ingest/_rw_csv.py` (Phase 3 parser),
+    `jobs/provenance_rw_sync.py`, `handlers/provenance.py`,
+    `handlers/_provenance_report.py`, `cli/provenance.py`. Skill
+    cards at `data/skills/precis-provenance-help.md` and
+    `data/skills/precis-preflight.md`. Migrations `0002` and
+    `0003` in `src/precis/migrations/`. Tests at
+    `tests/ingest/test_provenance{,_verify,_rw,_transitive,_phase5}.py`.
+  - Design doc: `docs/provenance-kind-plan.md`.
+
+- **Phase 6.1 — RW cache as Crossref fallback.** `check_doi` now
+  always consults the local Retraction Watch cache regardless of
+  Crossref's outcome. Three concrete behaviours that the previous
+  Crossref-first flow missed:
+  - **Publisher never deposited an `update-to` relation.** Pre-CrossMark
+    retractions (notably the Hwang stem-cell paper, retracted 2006)
+    return clean from Crossref but appear in RW. We now synthesise a
+    `Notice` from the RW row (`update_type=""` + `rw_notice_nature`
+    populated) so they surface in the report with a `(RW)` source
+    label.
+  - **Crossref returned 404.** Previously `status='unknown'` and no
+    further work. Now: if RW has data for the same DOI we surface
+    the retraction with `status='ok'`, falling back the paper title
+    from the RW row.
+  - **Crossref timed out / transport error.** Previously
+    `status='check_failed'`. Now: if RW has data, the report assembles
+    from local-only data with `status='ok'`; the error string is
+    preserved on `result.error` and the renderer surfaces a
+    `⚠️ Crossref unavailable` banner so the reader knows the live
+    source wasn't consulted.
+  - The internal `_merge_crossref_and_rw_notices` helper covers both
+    enrichment (Crossref notice matched to RW row → reasons attached)
+    and synthesis (RW row with no Crossref match → new Notice). Dedup
+    by `notice_doi` so a paper with both sources doesn't double-count.
+    Renderer updated: `(RW)` label for synthesised notices, suppresses
+    the "notice DOI: \`\`" line when the DOI is empty (common for
+    older RW entries).
+  - No schema change; uses existing `provenance_rw_cache` columns.
+    Backwards-compatible with the Phase 3 enrichment-only helper via
+    `_enrich_notices_with_rw(_synthesize_rw_only=False)`.
+
+- **Postgres advisory-lock work claims for multi-host ingest**
+  (`precis.ingest.claim.Claim`). Each PDF ingest opens a dedicated
+  psycopg session and calls `pg_try_advisory_lock(key)` where `key`
+  is the first 64 bits of `pdf_sha256`. If acquired, the host owns
+  the work; if busy, `precis_add` returns `None` and the watcher
+  leaves the file in place for the owning host to handle. The
+  claim auto-releases when the session closes — clean exit,
+  exception, container OOM, Mac crash, network partition. No
+  heartbeat, no stale-row reaper, no schema migration. Enables
+  multiple Macs to share a single `/inbox` (via SMB) talking to a
+  central Postgres, with no risk of two hosts running Marker on the
+  same content. See ADR 0016. Tests at
+  `tests/ingest/test_claim.py::TestKeyDerivation` (pure) and
+  `::TestClaimIntegration` (skipped without `PRECIS_DATABASE_URL`).
+
+- **`Store.dsn`** attribute exposes the original connection string
+  so callers needing a non-pooled connection (like `Claim`) can
+  open one. ``None`` when the Store was constructed from a
+  pre-built pool (tests).
+
+- **`_move_to` / `_move_to_corpus` tolerate FileNotFoundError on
+  rename**, treating it as "another host already moved this file."
+  Required for multi-host operation against a shared inbox where
+  the same physical file can be observed by N watchers
+  concurrently.
+
+### Changed
+
+- **`precis_add` may return `None`.** New return type
+  `IngestResult | None`. `None` means another host owns the
+  advisory-lock claim on this PDF's hash; the caller should not
+  touch the file. Existing single-host callers (one watcher,
+  no other hosts) never see `None` in practice.
+
+### Removed
+
+- **Filesystem-based crash locks** (`.processing/*.lock`,
+  `_acquire_lock`, `_release_lock`, `_lock_path_for`,
+  `_recover_crashed`). Superseded by the Postgres advisory-lock
+  claim above. The `--lock-dir` flag on the hidden
+  `_watch_batch_ingest` subcommand is also gone. Leftover
+  `.processing/` directories on disk from prior deployments are
+  harmless and can be deleted manually.
+
+### Added (continued)
+
+- **Subprocess-per-batch backfill** (`precis watch
+  --subprocess-batch-size N`). When positive, startup backfill
+  spawns ``precis _watch_batch_ingest`` subprocesses of N PDFs each
+  and waits for each before starting the next. Marker / surya /
+  transformers memory leaks accumulate inside the long-running
+  watcher process across consecutive ingests; subprocess isolation
+  reclaims them at child exit. Default 0 (in-process — legacy
+  behaviour); production `precis-watch` compose service now ships
+  with `--subprocess-batch-size 50`. Cost: 1 Marker reload (~15 s)
+  per batch. Benefit: bounded per-batch RSS rather than monotonic
+  growth into OOM. Live (watchdog) events keep the in-process
+  path since they're rate-limited by arrival. See ADR 0015.
+
+- **In-process Marker cache cleanup**
+  (`precis.ingest.marker._release_marker_caches`). Called at the
+  end of every `extract_blocks_marker` to run `gc.collect()` and
+  (when available) `torch.cuda.empty_cache()` /
+  `torch.mps.empty_cache()`. All branches import-and-feature
+  guarded; safe on CPU-only deployments without torch. ~10 ms/PDF
+  overhead. Layered on top of subprocess isolation as a no-regret
+  probe — may help with ref-cycle leaks but isn't a substitute for
+  Fix B's structural isolation. See ADR 0015.
+
+- **`python -m precis` entry point** (`src/precis/__main__.py`).
+  Mirrors the `precis` console script. Used by the subprocess
+  spawner above to avoid depending on `$PATH` resolution for the
+  child invocation.
+
+- **XMP write + signed-PDF detection in ``pdf_writer``.** The
+  metadata write-back path now emits a minimal RDF/XMP packet
+  carrying ``dc:title``, ``dc:creator`` (authors), ``dc:identifier``
+  (DOI prefixed with ``doi:``), ``prism:doi`` (raw DOI), and
+  ``prism:url`` (arXiv URL) alongside the standard Info-dict write.
+  Exiftool's ``-Identifier`` flag now reads our DOI from the
+  canonical XMP slot rather than just the Keywords fallback.
+  Cryptographically-signed PDFs (``Signature`` widget present)
+  return ``PatchOutcome(skipped_reason="signed")`` without touching
+  the file — incremental save preserves signatures *usually*, not
+  *always*. The check is bounded to ``doc.is_form_pdf`` so unsigned
+  PDFs pay zero cost. AcroForms with only text widgets still patch
+  normally. Closes the two follow-ups noted in the initial
+  ADR 0014 cut. Tests at
+  ``tests/ingest/test_pdf_writer.py::TestXmpWrite`` and
+  ``::TestSignedPdfSkip``.
+
+### Changed
+
+- **`precis-watch` memory cap raised from 12 GiB to 64 GiB.** Was
+  a backstop for single-PDF OOMs; now also absorbs cumulative
+  Marker memory leakage across long backfills until the
+  subprocess-per-batch isolation lands fully. The 16 GiB host-total
+  budget in the older comment is now stale; compose deploys
+  assume the host has enough headroom for this cap. Comment
+  updated. See ADR 0015.
+
+- **`precis-watch` backfill processes smallest PDFs first.** Sort
+  key in ``_PdfHandler.backfill`` changed from path name to file
+  size. Means a single giant PDF that OOMs the container only
+  blocks itself; the small files behind it have already been
+  ingested. Stat errors sort last so a broken symlink doesn't
+  abort the whole backfill. Test
+  ``tests/test_watch.py::TestBackfillOrder``.
+
+## v7.1.0 — baked-in models, fast-path ingest, MCP cold-start budget (2026-05-28)
+
+First v7.x line release on PyPI. Highlights: `precis-mcp:latest` ships
+with bge-m3 + Marker weights baked in (no first-ingest download); a
+sha256-keyed fast-path skips Marker on re-ingest of a known PDF; the
+MCP cold-start banner / `tools/list` shrinks under a pinned token
+budget with three operator env vars (`PRECIS_STARTUP_SKILLS`,
+`PRECIS_KINDS_DISABLED`, `PRECIS_DEFAULT_TAGS`); new `precis-worker`
+service drains the embedding/summary queue continuously; new `tex`
+file kind; `PRECIS_ROOT` consolidates the prose-file env vars;
+`search(exclude=[...])` enables ref-level pagination; nightly
+`precis maintenance run` driver lands.
+
+### Added
+
+- **PDF metadata write-back during ingest.** New
+  ``precis.ingest.pdf_writer`` module patches the resolved canonical
+  Title / Author / DOI into each successfully-ingested PDF's Info
+  dict (Title, Author, Subject, Keywords). Uses pymupdf's incremental
+  save so the existing content stream stays byte-identical; only an
+  update section is appended. Both the pre-patch and post-patch
+  ``pdf_sha256`` land in ``ref_identifiers`` as separate alias rows
+  pointing at the same ``ref_id``, so re-ingesting either byte
+  sequence still hits the fast-path probe. ``PaperToWrite`` grows a
+  ``pdf_sha256_aliases: list[str]`` field; ``write_paper()`` inserts
+  one extra ``ref_identifiers`` row per alias. Default ON; operator
+  off-switch ``PRECIS_PATCH_PDFS=0`` / ``false`` / ``no`` / ``off`` /
+  empty. Skip cases: ``encrypted`` (DRM), ``noop`` (fields already
+  match — keeps re-ingest of an already-patched PDF from drifting),
+  ``disabled``, ``error`` (any exception during open/save logs
+  WARNING and skips). Reverses the B4b removal of
+  ``write_pdf_metadata()`` from ``acatome_extract``; safe now because
+  v2's multi-row ``ref_identifiers`` model absorbs the hash drift
+  that motivated the original removal. New tests at
+  ``tests/ingest/test_pdf_writer.py`` (10 cases). See ADR 0014.
+
+- **Wrapper scripts in ``scripts/``** for the day-to-day Docker
+  workflow, all honouring ``PRECIS_COMPOSE`` if the infra repo
+  lives outside ``~/work/infrastructure``:
+  - ``scripts/precis-shell`` — standalone dev shell (no compose
+    dep); auto-builds ``precis-mcp:dev`` on first use, mirrors the
+    compose bind-mounts but degrades gracefully on missing host
+    paths. ``--rebuild`` forces a fresh build.
+  - ``scripts/precis-add <pdf | --doi | --arxiv>`` — one-shot ingest
+    via ``precis-cli``. Auto-mounts any positional file argument at
+    ``/inbox/<basename>``.
+  - ``scripts/precis-watch [start|stop|restart|status|logs|fg|tail]``
+    — manage the PDF ingestion daemon. Default ``tail`` brings the
+    watcher up detached and follows logs.
+  - ``scripts/precis-index [path] [--force] [--kinds md,plaintext,tex]``
+    — one-shot ``precis jobs ingest`` to pre-warm prose files
+    under ``PRECIS_ROOT``.
+  - ``scripts/precis-embed`` and ``scripts/precis-summarize`` —
+    symmetric wrappers around the worker queue. Subcommands
+    ``once`` / ``status`` / ``start`` / ``stop`` / ``logs``. Both
+    daemons share the ``precis-worker`` container (one daemon
+    handles both handlers; running two would double-claim chunks).
+
+### Fixed
+
+- **``exiftool`` no longer warns "not found in PATH" in
+  ``precis-watch`` logs.** Runtime image now apt-installs
+  ``libimage-exiftool-perl`` in ``docker/Dockerfile`` stage 2.
+  The warning surfaced once per ingest at
+  ``src/precis/ingest/pdf_metadata.py:162`` and was non-fatal
+  (extraction falls back to ``{}``), but it noised up the daemon
+  log and reduced embedded-metadata recall on papers whose only
+  DOI signal is the publisher-set ``-Identifier`` XMP field.
+
+- **`BgeM3Embedder.model` now returns the precis registry key
+  (`bge-m3`) rather than the HuggingFace id (`BAAI/bge-m3`).**
+  The previous behaviour caused a ``ForeignKeyViolation`` on
+  every ``chunk_embeddings`` insert because the column FKs
+  against ``embedders.name`` (seeded as ``bge-m3``), and the
+  worker wrote ``embedder.model`` straight into the column.
+  HF id is now an internal constant (``_BGE_M3_HF_ID``) used
+  only when ``SentenceTransformer`` actually loads weights;
+  the registry key (``_BGE_M3_REGISTRY_KEY``) is what flows
+  through ``EmbedHandler.write_ok``. Test
+  ``tests/test_embedder.py::test_bge_m3_construction_is_lazy``
+  updated to assert the registry-key contract.
+
+- **`Store.embedding_dim()` no longer reads from the absent
+  `system` table.** The method now sources the dim from
+  ``embedders.dim WHERE is_default = TRUE`` — the migration
+  already seeds that row (``bge-m3, 1024``). Search via
+  ``precis tools search`` and ``precis serve`` were both
+  failing on every fresh DB with ``UndefinedTable: relation
+  "system" does not exist``. The companion ``get_setting`` /
+  ``set_setting`` methods are unchanged and remain effectively
+  dead until the ``system`` table is added by a follow-up
+  migration; ``oracle_sync.py`` already swallows their
+  ``AttributeError`` / ``Exception`` and re-ingests on miss,
+  so its observable behaviour is unchanged.
+
+### Changed
+
+- **New `precis-worker` compose service** in
+  ``infrastructure/compose.yaml``: continuously drains the
+  derived-artifact queue (``chunk_embeddings`` +
+  ``chunk_summaries``). Same image as ``precis-watch``, no
+  ``/inbox`` or ``/data/corpus`` mounts, command
+  ``precis worker --batch-size 32 --idle-seconds 5``. Bring
+  up with ``docker compose up -d precis-worker``. The watcher
+  writes chunks; the worker turns them into vectors +
+  summaries. See ADR 0007.
+
+- **`precis-mcp:latest` ships with model weights baked in.** A new
+  ``models`` stage between ``builder`` and ``runtime`` in
+  ``docker/Dockerfile`` runs ``marker.models.create_model_dict()``
+  and ``SentenceTransformer('BAAI/bge-m3')`` at build time and
+  COPYs the resulting caches into the runtime image at
+  ``/opt/precis/models/`` (``HF_HOME=/opt/precis/models/hf``,
+  ``MODEL_CACHE_DIR=/opt/precis/models/datalab/models``). First
+  ``precis add`` / ``precis watch`` start no longer downloads
+  ~3 GB from HuggingFace + datalab. Image grows from ~6.4 GB to
+  ~10 GB; RAM behaviour unchanged (lazy mmap on first use).
+  The GoNoto font ``marker`` writes to ``site-packages/static/
+  fonts/`` is pre-populated in the ``builder`` stage so the
+  read-only venv at runtime never trips on it. See
+  ``docs/design/bake-models-into-image.md``.
+- **`infrastructure/compose.yaml`: `precis-watch` no longer mounts
+  `precis-cache:/home/precis/.cache`.** Models live in the image
+  now; the named volume is retired. On hosts where it already
+  exists, free it with
+  ``docker volume rm precis-infra_precis-cache``.
+
+### Fixed
+
+- **Ingest fast-path: re-ingesting a known PDF no longer re-runs
+  Marker.** :func:`precis.ingest.add.precis_add` now probes
+  ``ref_identifiers (id_kind='pdf_sha256')`` for ``PdfInput``
+  *before* invoking the extraction pipeline. A hit short-circuits
+  to ``IngestResult(inserted=False, ref_id=...)`` without paying
+  for the ~30–60 s Marker run. The slow-path probe (paper_id /
+  DOI / arXiv / content_hash) still runs after extraction to
+  catch "same paper, different bytes" collisions. No behavioural
+  change for fresh ingests. Regression test:
+  ``tests/ingest/test_add.py::TestPrecisAddIdempotent::test_fast_path_skips_marker_when_pdf_sha256_known``.
+  See ``docs/design/extract-once.md``.
+
+
+### MCP session ergonomics — cold-start token budget + kind enablement + default tags (2026-05-26)
+
+Six-phase rollout (`docs/design/mcp-cold-start-token-budget.md`)
+that shrinks the unconditional cold-start cost on a fresh MCP
+session and adds three operator-controlled env vars for session
+context. Every byte saved on the cold-start banner / `tools/list`
+is a byte the agent gets to spend on the user's actual request.
+
+- **Per-verb docstrings trimmed** (Phase 1). Each of the seven
+  verbs (get, search, put, edit, delete, tag, link) keeps a
+  ~5-line docstring that points at `precis-<verb>-help.md` for
+  detail. The detail moved into ten new skill files in
+  `src/precis/data/skills/` so it's still discoverable via
+  `search(kind='skill', q=...)` — just not on every connecting
+  agent's cold-start budget. CLI `--help` shows the same trimmed
+  shape with per-arg help strings threaded through the CLI
+  adapter. `precis-edit-protocol` renamed to `precis-edit-help`.
+- **Cold-start banner re-framed** (Phase 2). `serverInfo.instructions`
+  now leads with "First action: `search(kind='skill', q='<topic>')`"
+  instead of a verb cheat sheet. Trailing `Kinds loaded:` line
+  summarises the live registry so the agent sees what's actually
+  wired without an exploratory call.
+- **`PRECIS_STARTUP_SKILLS`** (Phase 3) — comma list of skill
+  slugs to pin at session start. Cumulative body size capped at
+  `PRECIS_STARTUP_SKILLS_CAP_KB` (default 50). Drop-tail truncation
+  at the cap; banner notice surfaces both invalid ids and the
+  truncation event. Pinned skills are tagged on the `prompts/list`
+  response so MCP clients with server-pinned-prompt support can
+  render them at handshake.
+- **`PRECIS_KINDS_DISABLED`** (Phase 4) — comma list of kind names
+  to prohibit at boot. Prohibition wins over resource availability
+  (a disabled kind is hidden even when its env requirements are
+  met). The patent handler's inline `EPO_OPS_KEY` / `EPO_OPS_SECRET`
+  env gate moved into `PatentHandler.__init__` to converge with
+  the gate machinery. Banner now carries a `Kinds unavailable:`
+  line with distinct reasons (`prohibited` vs the specific
+  `missing <ENV_VAR>`).
+- **`PRECIS_DEFAULT_TAGS`** (Phase 5) — comma list of tags merged
+  into every `put` on note-like kinds. `KindSpec.note_like: bool`
+  flag (default False) opts kinds into the merge; nine handlers
+  flipped to `True` (memory, todo, gripe, flashcard, quest,
+  conversation, markdown, plaintext, tex); ingested / cache /
+  generator kinds (paper, patent, web, youtube, math, oracle,
+  skill, calc) stay False so they don't accumulate session tags.
+  The `tag` verb emits a non-mutating suggestion hint listing
+  defaults not yet present rather than auto-mutating — operator-
+  explicit calls stay operator-explicit.
+- **Regression guards** (Phase 6). `tests/test_token_budget.py`
+  pins `tools/list` JSON < 12 KB (measured ~9 KB baseline),
+  per-verb description < 1 KB, `serverInfo.instructions` < 2 KB
+  on clean / < 4 KB with every Phase-3-5 feature engaged.
+  Anchor strings (`First action`, skill-search CTA, `Kinds loaded:`)
+  pinned. Cross-cutting test pins the shared comma-list parse
+  semantics across `startup_skills.parse`, `kind_gate.parse_disabled`,
+  and `default_tags.parse`.
+
+New modules: `src/precis/startup_skills.py`, `src/precis/kind_gate.py`,
+`src/precis/default_tags.py`. New config fields: `startup_skills`,
+`startup_skills_cap_kb`, `kinds_disabled`, `default_tags`. New
+hint topics: `default_tags.merged`, `default_tags.suggested`.
+
+Test coverage: 88 new tests across `test_startup_skills.py`,
+`test_kind_gate.py`, `test_default_tags.py`, `test_token_budget.py`,
+plus extensions to `test_mcp_critic_regressions.py` for the new
+banner shape. Suite: 1718 passed, 829 skipped, 5 xfailed.
+
 ### `find-citing-papers` — noise-reduction filters + bge-m3 rerank (2026-05-09)
 
 The full sweep across the ~4k corpus surfaces ~900k unique citing

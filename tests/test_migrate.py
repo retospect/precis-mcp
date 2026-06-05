@@ -23,25 +23,11 @@ def _fetch(dsn: str, sql: str) -> list[dict]:
 def test_apply_creates_all_tables(fresh_db: str) -> None:
     migrator = Migrator(fresh_db, MIGRATIONS_DIR)
     applied = migrator.apply_all()
-    # Initial migration must be first; phase 4 added 0002. Test the
-    # first migration explicitly and any later ones loosely.
+    # Initial migration must be first; everything that follows
+    # extends it. Loose assertion on later versions — they all
+    # follow the NNNN_<name> convention.
     assert applied[0] == "0001_initial"
-    assert all(
-        v.startswith(
-            (
-                "0001_",
-                "0002_",
-                "0003_",
-                "0004_",
-                "0005_",
-                "0006_",
-                "0007_",
-                "0008_",
-                "0009_",
-            )
-        )
-        for v in applied
-    )
+    assert all(v[:4].isdigit() and v[4] == "_" for v in applied)
 
     rows = _fetch(
         fresh_db,
@@ -50,25 +36,26 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
     )
     names = {r["tablename"] for r in rows}
 
+    # v2 schema. v1 tables (blocks/corpuses/density_levels/
+    # flag_names/ref_closed_tags/ref_flags/ref_open_tags/system/
+    # tag_prefixes) were folded or removed during the v2 redesign;
+    # see ADR 0001 + storage-v2.md.
     expected = {
         "_migrations",
         "actors",
-        "blocks",
         "cache_state",
-        "corpuses",
-        "density_levels",
-        "flag_names",
+        "chunks",
+        "chunk_embeddings",
+        "chunk_summaries",
+        "chunk_tags",
         "kinds",
         "links",
         "providers",
-        "ref_closed_tags",
-        "ref_flags",
         "ref_identifiers",
-        "ref_open_tags",
+        "ref_tags",
         "refs",
         "relations",
-        "system",
-        "tag_prefixes",
+        "tags",
     }
     assert expected.issubset(names), f"missing tables: {expected - names}"
 
@@ -78,22 +65,15 @@ def test_seeds_populated(fresh_db: str) -> None:
     actors = {r["slug"] for r in _fetch(fresh_db, "SELECT slug FROM actors")}
     kinds = {r["slug"] for r in _fetch(fresh_db, "SELECT slug FROM kinds")}
     relations = {r["slug"] for r in _fetch(fresh_db, "SELECT slug FROM relations")}
-    prefixes = {
-        r["prefix"] for r in _fetch(fresh_db, "SELECT prefix FROM tag_prefixes")
-    }
-    flags = {r["name"] for r in _fetch(fresh_db, "SELECT name FROM flag_names")}
-    densities = {
-        r["level"] for r in _fetch(fresh_db, "SELECT level FROM density_levels")
-    }
 
-    assert actors == {"agent", "user", "system"}
-    # `kinds` table holds ref-backed kinds only. Stateless kinds (calc,
-    # plot, clock, rng) live in the in-tree handler registry, not the DB.
+    # v2 unified the legacy tag_prefixes / flag_names / density_levels
+    # vocabularies into the canonical ``tags`` table (namespace +
+    # value); they're no longer separate tables. The remaining
+    # vocab-table seed checks (actors / kinds / relations) still
+    # apply.
+    assert {"agent", "user", "system"}.issubset(actors)
     assert {"paper", "memory", "todo", "fc", "web", "youtube"}.issubset(kinds)
     assert {"related-to", "blocks", "contradicts"}.issubset(relations)
-    assert {"SRC", "CACHE", "DENSITY", "STATUS", "PRIO", "CONFIDENCE"} == prefixes
-    assert {"pinned", "urgent", "private"}.issubset(flags)
-    assert densities == {"sparse", "medium", "dense"}
 
 
 def test_extensions_installed(fresh_db: str) -> None:
@@ -105,12 +85,22 @@ def test_extensions_installed(fresh_db: str) -> None:
 
 
 def test_system_singleton_seeded(fresh_db: str) -> None:
+    """v2 replaced the ``system`` key/value table with two surfaces:
+
+    - ``app_state`` (migration 0003) — small KV for boot-time bookkeeping.
+    - ``embedders.dim`` — the embedding dim now lives on the embedder
+      registry row, where it belongs.
+
+    The assertion shifted accordingly.
+    """
     Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
-    rows = _fetch(fresh_db, "SELECT key, value FROM system")
-    settings = {r["key"]: r["value"] for r in rows}
-    assert settings["embedding_model"] == "BAAI/bge-m3"
-    assert settings["embedding_dim"] == "1024"
-    assert settings["schema_epoch"] == "1"
+    rows = _fetch(
+        fresh_db,
+        "SELECT name, dim FROM embedders WHERE is_default = TRUE",
+    )
+    assert len(rows) == 1
+    assert rows[0]["name"] == "bge-m3"
+    assert rows[0]["dim"] == 1024
 
 
 def test_apply_is_idempotent(fresh_db: str) -> None:

@@ -1,6 +1,6 @@
 """Sync postgres-backed store (psycopg 3). One instance per server.
 
-:class:`Store` is composed from seven domain mixins, each owning one
+:class:`Store` is composed from six domain mixins, each owning one
 slice of the persistence surface:
 
 * :class:`precis.store._refs_ops.RefsMixin`               — ref CRUD + title search
@@ -9,7 +9,6 @@ slice of the persistence surface:
 * :class:`precis.store._links_ops.LinksMixin`             — link graph
 * :class:`precis.store._cache_ops.CacheMixin`             — paid-tool cache state
 * :class:`precis.store._identifiers_ops.IdentifiersMixin` — ``ref_identifiers`` alias lookup
-* :class:`precis.store._ingest_ops.IngestMixin`           — ``.acatome`` bundle ingest
 
 The public API is unchanged: callers that previously imported
 ``Store`` and called ``store.get_ref(...)`` / ``store.add_tag(...)``
@@ -42,8 +41,8 @@ from psycopg_pool import ConnectionPool
 from precis.errors import BadInput
 from precis.store._blocks_ops import BlocksMixin
 from precis.store._cache_ops import CacheMixin
+from precis.store._events_ops import EventsMixin
 from precis.store._identifiers_ops import IdentifiersMixin
-from precis.store._ingest_ops import IngestMixin
 from precis.store._links_ops import LinksMixin
 from precis.store._mappers import (
     _AGENT_WRITABLE_PREFIXES,
@@ -76,21 +75,25 @@ class Store(
     LinksMixin,
     CacheMixin,
     IdentifiersMixin,
-    IngestMixin,
+    EventsMixin,
 ):
     """High-level handle. Owns the psycopg connection pool.
 
-    Composed from domain mixins — see module docstring. The MRO
-    order above is alphabetical by domain except for ``IngestMixin``
-    at the bottom (it depends on Refs + Blocks + Corpus +
-    Identifiers methods resolved through the other mixins / this
-    class); placing it last documents that dependency even though
-    Python's MRO will happily resolve the methods in any order as
-    long as they don't collide.
+    Composed from domain mixins — see module docstring. Mixin order
+    is alphabetical by domain; Python's MRO resolves cleanly because
+    none of them collide on method names.
     """
 
-    def __init__(self, pool: ConnectionPool) -> None:
+    def __init__(self, pool: ConnectionPool, *, dsn: str | None = None) -> None:
         self.pool = pool
+        # Original DSN string — used by callers that need to open a
+        # dedicated (non-pooled) connection, e.g. for session-scoped
+        # advisory locks in ``precis.ingest.claim`` where pool-based
+        # connections aren't usable. ``None`` when the Store was
+        # constructed without going through :meth:`connect` (tests
+        # using a pre-built pool); claim acquisition falls back to a
+        # no-op in that case.
+        self.dsn = dsn
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -99,12 +102,26 @@ class Store(
         cls,
         dsn: str,
         *,
-        min_size: int = 1,
-        max_size: int = 8,
+        min_size: int | None = None,
+        max_size: int | None = None,
     ) -> Self:
-        """Create a Store from a DSN, using the shared pool factory."""
-        pool = create_pool(dsn, min_size=min_size, max_size=max_size)
-        return cls(pool)
+        """Create a Store from a DSN, using the shared pool factory.
+
+        Defaults fall through to :mod:`precis.store.pool` so
+        ``Store.connect`` and direct ``create_pool`` calls agree on
+        one source of truth (previously they diverged at 8 vs 10).
+        """
+        from precis.store.pool import (
+            DEFAULT_POOL_MAX_SIZE,
+            DEFAULT_POOL_MIN_SIZE,
+        )
+
+        pool = create_pool(
+            dsn,
+            min_size=min_size if min_size is not None else DEFAULT_POOL_MIN_SIZE,
+            max_size=max_size if max_size is not None else DEFAULT_POOL_MAX_SIZE,
+        )
+        return cls(pool, dsn=dsn)
 
     def close(self) -> None:
         """Close the underlying connection pool."""
@@ -123,62 +140,66 @@ class Store(
             with conn.transaction():
                 yield conn
 
-    # -- system table --------------------------------------------------------
+    # -- app_state table -----------------------------------------------------
+    #
+    # Small key/value surface for cross-boot bookkeeping rows that don't
+    # belong on a ref. Today's only caller is :mod:`precis.jobs.oracle_sync`
+    # caching the bundled oracle YAML version so we don't re-embed the
+    # whole oracle corpus on every boot. See migration 0003_app_state.sql
+    # for the table definition and scoping rationale.
 
     def get_setting(self, key: str) -> str | None:
-        """Read a single ``system`` row. Used for embedder dim probe."""
+        """Return the value for ``key`` from ``app_state``, or ``None``.
+
+        ``None`` means "no row" — not "row exists with empty value"; the
+        ``value`` column is NOT NULL so the distinction is meaningful for
+        callers that gate on first-boot vs. subsequent-boot.
+        """
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT value FROM system WHERE key = %s", (key,)
+                "SELECT value FROM app_state WHERE key = %s",
+                (key,),
             ).fetchone()
-        return row[0] if row else None
+        return None if row is None else str(row[0])
 
     def set_setting(self, key: str, value: str) -> None:
-        """Upsert a single ``system`` row."""
+        """Upsert ``(key, value)`` into ``app_state``.
+
+        ``updated_at`` defaults to ``now()`` on insert and is bumped on
+        every update so operators can see when a setting last changed
+        without a separate audit table.
+        """
         with self.pool.connection() as conn:
-            conn.execute(
-                "INSERT INTO system (key, value) VALUES (%s, %s) "
-                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
-                "                              updated_at = now()",
-                (key, value),
-            )
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+                    "ON CONFLICT (key) DO UPDATE SET "
+                    "value = EXCLUDED.value, updated_at = now()",
+                    (key, value),
+                )
 
     def embedding_dim(self) -> int:
         """Return the configured embedding dimension as an ``int``.
 
-        Raises :class:`RuntimeError` when the setting is missing —
-        every migration seeds it, so a missing row indicates the
-        DB was never initialised correctly.
+        Source of truth: ``embedders.dim`` for the row with
+        ``is_default = TRUE``. The migration seeds exactly one such
+        row (``bge-m3, 1024``); when a second default-flagged row
+        is added we will need a unique partial index, but until
+        then ``LIMIT 1`` plus a stable ``ORDER BY name`` makes the
+        query deterministic without a schema change.
+
+        Raises :class:`RuntimeError` when no default embedder is
+        registered — that indicates a botched migration, not a
+        runtime condition the caller can recover from.
         """
-        v = self.get_setting("embedding_dim")
-        if v is None:
-            raise RuntimeError("embedding_dim setting missing - did migrations run?")
-        return int(v)
-
-    # -- corpus --------------------------------------------------------------
-
-    def get_corpus(self, slug: str) -> int | None:
-        """Resolve a corpus slug to its numeric id, or None if missing."""
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT id FROM corpuses WHERE slug = %s", (slug,)
+                "SELECT dim FROM embedders WHERE is_default = TRUE "
+                "ORDER BY name LIMIT 1"
             ).fetchone()
-        return row[0] if row else None
-
-    def ensure_corpus(self, slug: str, *, title: str | None = None) -> int:
-        """Idempotent: returns existing id, or creates a new corpus."""
-        existing = self.get_corpus(slug)
-        if existing is not None:
-            return existing
-        with self.pool.connection() as conn:
-            row = conn.execute(
-                "INSERT INTO corpuses (slug, title) VALUES (%s, %s) "
-                "ON CONFLICT (slug) DO UPDATE SET title = corpuses.title "
-                "RETURNING id",
-                (slug, title or slug),
-            ).fetchone()
-        assert row is not None
-        return row[0]
+        if row is None:
+            raise RuntimeError("no default embedder registered - did migrations run?")
+        return int(row[0])
 
     # -- helpers -------------------------------------------------------------
 

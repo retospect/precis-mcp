@@ -1,104 +1,98 @@
 ---
 id: precis-conv-help
-title: precis — past conversations, durable and searchable
-status: shipped
-tier: 1
-floor: any
-applies-to: get / search / tag / link (kind='conv')
-last-updated: 2026-05-02
+title: precis — find, read, tag past conversations
+applies-to: get/search/tag/link (kind='conv')
+status: active
 ---
 
-# precis-conv-help — durable conversation transcripts
+# precis-conv-help — find, read, tag past conversations
 
-`conv` is where past conversations live. One conversation per slug,
-one block per message turn. Populated by the **chat-bridge on
-capture** — the agent surface is read-only. You can't `put()` a
-transcript (that's the bridge's job), but you can search them, tag
-them, and link them to anything.
+Conversations are captured chat transcripts. One ref per conversation,
+one block per message turn. Address by date-stamped slug
+(`2026-04-26-spec`); the `conv:` prefix and numeric ref ids
+(`conv:73`) are also accepted as link targets.
 
-## Address shape
-
-Slug = date + short handle:
-
-```
-2026-04-26-spec          # 2026-04-26, "spec" as topic anchor
-2026-04-28-tag-axes
-2026-05-01-register-debug
-```
-
-Block selector addresses one message turn:
+## Read a past conversation
+## Open a conversation by slug
+## I have a date-stamped slug — show me the conversation
 
 ```python
-get(kind='conv', id='2026-04-26-spec')              # overview + TOC
-get(kind='conv', id='2026-04-26-spec~14')           # turn 14
-get(kind='conv', id='2026-04-26-spec~14..20')       # range
-get(kind='conv', id='2026-04-26-spec/toc')          # message-level TOC
+get(kind='conv', id='2026-04-26-spec')                   # overview + turn count
+get(kind='conv', id='2026-04-26-spec/transcript')        # full transcript
+get(kind='conv', id='2026-04-26-spec~14')                # single turn
+get(kind='conv', id='conv:2026-04-26-spec')              # prefix form (link-target shape)
 ```
 
-## Browse
+Turn selector is `~N` (single turn). Path view is `/transcript`. No
+range selector — for a span, fetch `/transcript` and scan.
+
+## Browse recent conversations
+## List captured transcripts
+## What conversations are in the store?
 
 ```python
-get(kind='conv')                      # recent transcripts
-get(kind='conv', id='/recent')        # same, explicit
+get(kind='conv')                  # 20 most recent
+get(kind='conv', id='/recent')    # explicit
 ```
 
-## Search
-
-Block-level hybrid search — lexical + semantic, same path as every
-other searchable kind:
+## Find a past decision or discussion
+## Search across all conversations
+## What did we decide about X?
 
 ```python
 search(kind='conv', q='why we dropped mode=')
-search(kind='conv', q='tag axis', scope='2026-04-28-tag-axes')
+search(kind='conv', q='tag axis', scope='2026-04-28-tag-axes')   # scope to one conv
+search(kind='conv', q='register endpoint', top_k=20)
 ```
 
-Cross-kind works too (`kind='*'` or `kind='conv,memory'`) — a
-question about "why did we decide X" will often land hits in both
-`conv` and `memory`.
+Lexical search over turn text. Results are `slug~pos` handles; paste
+one as `id=` to read the turn. Cross-kind search
+(`search(kind='*', q='...')`) folds conv hits in with paper / memory
+matches when a question spans both.
 
-## Typical uses
-
-- **Quote past decisions.** "We already debated this on 2026-04-26
-  — let me find the block."
-- **Recover context.** Agent returning to a long-running project
-  pulls the last few conv transcripts to re-ground.
-- **Cite in memory / quest.** When you write a decision note, link
-  the conv block where it was debated:
-
-  ```python
-  put(kind='memory', text='Dropped mode=; typed kwargs instead.',
-      tags=['kind:decision'],
-      link='conv:2026-04-26-spec~14', rel='derived-from')
-  ```
-
-- **Detect repeated patterns.** Searching `conv` for a pattern
-  ("why is error message X confusing") surfaces every prior
-  conversation where the same friction came up. Candidate gripe.
-
-## What you cannot do
-
-- **Put / edit / delete from the agent surface.** Transcripts are
-  immutable artefacts of what happened. Fix the future, not the
-  past. If a conversation needs annotation, create a `memory` and
-  link it.
-- **Reorder turns.** Block pos is the capture order; it's not
-  editable.
-- **Bulk export.** The MCP surface reads one at a time. For bulk
-  operations (export, backup), talk to the store directly.
-
-## Tag and link
-
-Open tags and closed `CACHE:` work; no `STATUS:` / `PRIO:` (conv is
-capture, not workflow). Cross-links to any kind are free:
+## Link a decision back to the conversation that produced it
+## Cite a turn from memory or a citation
+## How do I reference a past discussion?
 
 ```python
-tag(kind='conv', id='2026-04-26-spec', add=['project-precis-v2', 'pivotal'])
+put(kind='memory',
+    text='Dropped mode= in favour of typed kwargs.',
+    tags=['topic:api-design'],
+    link='conv:2026-04-26-spec~14',
+    rel='derived-from')
+
 link(kind='conv', id='2026-04-26-spec~14',
      target='memory:88', rel='derived-into')
 ```
 
+Use a turn handle (`slug~pos`) as the link target to point at a
+specific message; use the bare slug to point at the conversation.
+
+## Tag a conversation
+## Mark a conversation as pivotal or topic-X
+## Categorise a transcript
+
+```python
+tag(kind='conv', id='2026-04-26-spec', add=['topic:api-design', 'pivotal'])
+tag(kind='conv', id='2026-04-26-spec', remove=['pivotal'])
+```
+
+Open tags only. Closed workflow axes (`STATUS:`, `PRIO:`) are
+rejected — `conv` is capture, not workflow. Tag and link operate at
+the conversation level; turn selectors are rejected.
+
+## Capture a new conversation
+
+Transcripts arrive via the chat-bridge; `put(kind='conv')` is not
+exposed. To annotate a conversation in flight, create a `memory`
+and `link=` it to the turn.
+
 ## See also
 
-- `precis-memory-help` — annotate conversations with decisions / lessons
-- `precis-relations` — `derived-from` / `supports` / `cites` vocabulary
-- `precis-overview` — verbs and kinds
+```python
+get(kind='skill', id='precis-overview')         # verbs and kinds
+get(kind='skill', id='precis-search-help')      # search mechanics
+get(kind='skill', id='precis-memory-help')      # annotate a conversation
+get(kind='skill', id='precis-relations')        # derived-from, supports, cites
+get(kind='skill', id='precis-tags')             # tag vocabulary
+```

@@ -38,11 +38,21 @@ class PrecisError(Exception):
         self,
         cause: str,
         *,
-        next: str | None = None,
+        next: str | Sequence[str] | None = None,
         options: Sequence[str] | None = None,
     ) -> None:
         self.cause = cause
-        self.next = next
+        # F12: ``next=`` accepts either a single string (legacy
+        # one-line hint) or a list of strings (multiple hints, each
+        # rendered on its own ``next:`` line by ``runtime.render_error``).
+        # Existing single-string callsites keep working unchanged.
+        self.next: str | list[str] | None
+        if next is None:
+            self.next = None
+        elif isinstance(next, str):
+            self.next = next
+        else:
+            self.next = list(next)
         self.options = list(options) if options is not None else None
         super().__init__(cause)
 

@@ -79,10 +79,18 @@ def atomic_write(path: Path, content: str) -> None:
             pass
         raise
 
-    # fsync the parent directory so the rename is durable.
+    # fsync the parent directory so the rename is durable. POSIX-only:
+    # Windows has no concept of a directory file descriptor and the
+    # ``O_DIRECTORY`` flag is not exposed on ``os`` there — accessing
+    # it would raise ``AttributeError`` before we even reached the
+    # ``OSError`` guard. Skip the parent-dir fsync on non-POSIX
+    # platforms; the file fsync above plus ``os.replace``'s NTFS
+    # atomicity is the strongest guarantee Windows offers anyway.
+    if not hasattr(os, "O_DIRECTORY"):
+        return
     try:
         dir_fd = os.open(str(parent), os.O_DIRECTORY)
-    except OSError:  # pragma: no cover — Windows / unusual FS
+    except OSError:  # pragma: no cover — unusual FS
         return
     try:
         os.fsync(dir_fd)

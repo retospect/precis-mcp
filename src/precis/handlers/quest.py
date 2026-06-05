@@ -49,6 +49,7 @@ class QuestHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
+        note_like=True,
     )
 
     _CORPUS_SLUG = "default"
@@ -172,9 +173,7 @@ class QuestHandler(Handler):
                     slug = candidate
                     break
         with self.store.tx() as conn:
-            corpus_id = self.store.ensure_corpus(self._CORPUS_SLUG)
             ref = self.store.insert_ref(
-                corpus_id=corpus_id,
                 kind="quest",
                 slug=slug,
                 title=text,

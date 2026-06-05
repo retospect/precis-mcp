@@ -384,14 +384,13 @@ def test_search_no_match_with_scope_suggests_widening(
     assert "no python symbols match" in out.body
     assert "Next:" in out.body
     assert "widen to all repos" in out.body
-    # The widened-call itself (the ``search(kind='python', q=...)``
-    # LHS, before the ``-`` separator) must drop the ``scope=``
-    # argument. The *description* on the RHS does mention ``drop
-    # scope=`` in prose, so we split on the separator (now ASCII
-    # ``  - ``, post 2026-05-04 em-dash purge) to only check the
-    # call form.
+    # The widened-call itself must drop the ``scope=`` argument.
+    # The *description* mentions ``drop scope=`` in prose, so we
+    # isolate just the call column. After D2 (TOON-ified Next:
+    # blocks), the row is ``<description>\t<call>`` so the call is
+    # the right side of the tab split.
     widen_line = next(ln for ln in out.body.splitlines() if "widen to all repos" in ln)
-    call_part, _, _ = widen_line.partition("  - ")
+    _, _, call_part = widen_line.partition("\t")
     assert "scope=" not in call_part
 
 

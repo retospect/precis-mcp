@@ -47,9 +47,7 @@ from precis.store import BlockInsert, Store, Tag
 
 
 def _seed_paper(store: Store, slug: str = "wang2020state", n_blocks: int = 4) -> int:
-    cid = store.ensure_corpus("default")
     ref = store.insert_ref(
-        corpus_id=cid,
         kind="paper",
         slug=slug,
         title="Test paper",
@@ -242,9 +240,7 @@ class TestUnregisteredPrefixesRejected:
 class TestPaperOverviewStripsJats:
     def test_overview_no_jats_in_body(self, store: Store) -> None:
         h = PaperHandler(hub=Hub(store=store))
-        cid = store.ensure_corpus("default")
         store.insert_ref(
-            corpus_id=cid,
             kind="paper",
             slug="jats-test",
             title="Test",
@@ -270,8 +266,7 @@ class TestPaperOverviewStripsJats:
 
 class TestSearchNoiseFloor:
     def test_short_blocks_excluded_from_lexical(self, store: Store) -> None:
-        cid = store.ensure_corpus("default")
-        ref = store.insert_ref(corpus_id=cid, kind="paper", slug="p", title="P")
+        ref = store.insert_ref(kind="paper", slug="p", title="P")
         store.insert_blocks(
             ref.id,
             [
@@ -372,9 +367,12 @@ class TestCalcRejectsGibberish:
 
 class TestTopKCap:
     def test_top_k_max_constant(self) -> None:
-        """The cap lives in server.py as a module constant — pin
-        the value so changes are deliberate."""
-        from precis.server import _SEARCH_TOP_K_MAX
+        """The cap lives next to the ``search`` tool implementation
+        as a module constant — pin the value so changes are
+        deliberate. Moved out of ``precis.server`` and into
+        ``precis.tools.core`` when the seven verbs migrated to the
+        shared tool registry."""
+        from precis.tools.core import _SEARCH_TOP_K_MAX
 
         assert _SEARCH_TOP_K_MAX == 100
 

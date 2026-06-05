@@ -252,13 +252,23 @@ def test_section_blocks_stored_with_metadata(
 
     assert kinetics.meta["section_level"] == 1
     assert kinetics.meta["section_title"] == "Kinetics"
-    # Subsection records its parent section.
-    assert kinetics.meta["section_path"] == [[0, "Methods"]]
+    # Subsection records its parent section. The
+    # ``meta['section_path']`` key is consumed at write time by
+    # ``Store.insert_blocks`` — popped into the dedicated
+    # ``chunks.section_path`` TEXT[] column. On read, the row
+    # mapper surfaces the column back into the meta dict (so
+    # consumers like the oracle entry-title resolver don't have
+    # to learn the split). The (level, title) pairs ride alongside
+    # in ``section_path_pairs`` for any consumer that needs the
+    # nesting.
+    assert kinetics.meta["section_path"] == ["Methods"]
+    assert kinetics.meta["section_path_pairs"] == [[0, "Methods"]]
 
     # The body paragraph isn't a section heading itself but knows
     # which section ancestry it sits inside.
     assert "section_level" not in body.meta
-    assert body.meta["section_path"] == [[0, "Methods"], [1, "Kinetics"]]
+    assert body.meta["section_path"] == ["Methods", "Kinetics"]
+    assert body.meta["section_path_pairs"] == [[0, "Methods"], [1, "Kinetics"]]
 
 
 def test_inputs_stored_in_block_meta(handler: TexHandler, tex_root: Path) -> None:

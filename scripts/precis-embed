@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# scripts/precis-embed — drain the embedding queue (one-shot or daemon).
+#
+# Embeddings live in the same `precis worker` loop as summaries (the
+# worker handles both by default — see ADR 0007). This wrapper exposes
+# the embed slice; `scripts/precis-summarize` is its symmetric twin.
+#
+# NOTE on concurrency: the always-on `precis-worker` daemon already
+# processes BOTH handlers. Running embed + summarize daemons in
+# parallel would double-claim chunks and double the RAM cost (bge-m3
+# alone is ~3 GiB resident). Use one daemon; use one-shot mode for
+# ad-hoc backfills.
+#
+# Usage:
+#   scripts/precis-embed                 # one-shot drain (one batch, then exit)
+#   scripts/precis-embed status          # queue depth per handler
+#   scripts/precis-embed start           # start the always-on precis-worker daemon
+#                                        # (handles BOTH embed + summarize)
+#   scripts/precis-embed stop            # stop the daemon
+#   scripts/precis-embed logs            # tail daemon logs
+#
+# Pass extra flags after the subcommand:
+#   scripts/precis-embed once --batch-size 8 --embedder bge-m3
+#   scripts/precis-embed once --embedder mock      # skip model load (smoke test)
+#
+# See: src/precis/cli/worker.py, infra compose `precis-worker:` service.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+if [[ ! -f "${INFRA_COMPOSE}" ]]; then
+    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
+    echo "     set PRECIS_COMPOSE=/path/to/compose.yaml to override" >&2
+    exit 1
+fi
+
+DC=(docker compose -f "${INFRA_COMPOSE}")
+
+cmd="${1:-once}"
+[[ $# -gt 0 ]] && shift
+[[ "${1:-}" == "--" ]] && shift
+
+case "${cmd}" in
+    once)
+        exec "${DC[@]}" run --rm --no-deps precis-cli \
+            precis worker --once --only embed "$@" ;;
+    status)
+        exec "${DC[@]}" run --rm --no-deps precis-cli \
+            precis worker --status "$@" ;;
+    start)    exec "${DC[@]}" up -d precis-worker ;;
+    stop)     exec "${DC[@]}" stop precis-worker ;;
+    logs)     exec "${DC[@]}" logs -f --tail=100 precis-worker ;;
+    -h|--help|help)
+        sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0 ;;
+    *)
+        echo "precis-embed: unknown command '${cmd}'" >&2
+        echo "try: once | status | start | stop | logs" >&2
+        exit 2 ;;
+esac

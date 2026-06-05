@@ -1,18 +1,21 @@
 """Tag filter SQL helper — DRY across every store query that selects refs.
 
-The schema gives us a unified ``ref_tags`` view over the three
-narrow tag tables:
+v2 schema notes:
 
-    ref_closed_tags  (ref_id, prefix, value, ...)   indexed (prefix, value)
-    ref_flags        (ref_id, name, ...)            indexed (name)
-    ref_open_tags    (ref_id, value, ...)           indexed (value)
+- ``tags(tag_id, namespace, value)`` is the canonical vocabulary table
+- ``ref_tags(ref_id, tag_id, set_by, created_at)`` attaches tags to refs
+- ``chunk_tags(chunk_id, tag_id, set_by, created_at)`` attaches tags
+  to chunks
+- The mapping between agent-facing tag strings and ``(namespace,
+  value)`` mirrors :mod:`precis.store._tags_ops`:
+    ``"STATUS:open"``      → (``"STATUS"``, ``"open"``)  closed-prefix
+    ``"pinned"``           → (``"FLAG"``,   ``"pinned"``)  v1-flag-shape
+    ``"topic-x"``          → (``"OPEN"``,   ``"topic-x"``) bare word
 
-The view projects each row to a single ``tag TEXT`` column with
-``prefix || ':' || value`` for closed tags and the bare name for the
-others. We can therefore filter "ref carries all of these tags" with
-a single subquery that uses ``IN`` + ``GROUP BY`` + ``HAVING COUNT``,
-and the planner pushes the predicate through the UNION ALL into the
-narrow indexes.
+We can filter "ref carries all of these tags" with one IN-subquery
+that joins ``ref_tags``+``tags``, uses tuple-IN on ``(namespace,
+value)``, then ``GROUP BY ref_id HAVING COUNT(*) = N`` to enforce
+AND semantics.
 
 This module exposes one helper that returns a SQL fragment + params,
 which any caller in :mod:`precis.store.store` can splice into its
@@ -26,13 +29,37 @@ Why this is a perf win, not a regression:
   pull every matching todo block, then filter in Python.
 * With it, the planner narrows to the ~N ref rows that carry
   ``STATUS:open`` first, then runs the expensive ``ts_rank_cd`` on
-  the blocks of those refs only. Two orders of magnitude fewer rows
+  the chunks of those refs only. Two orders of magnitude fewer rows
   for the lexical/semantic ranking pass.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+
+def _parse_tag_string(s: str) -> list[tuple[str, str]]:
+    """Parse an agent-facing canonical tag string into one or more
+    ``(namespace, value)`` rows.
+
+    Mirrors :mod:`precis.store._tags_ops`'s canonical mapping:
+
+    - ``"PREFIX:value"`` with uppercase prefix → single ``(prefix, value)``
+    - bare string ``"workspace"``            → both ``(OPEN, "workspace")``
+                                               and ``(FLAG, "workspace")``
+
+    The bare-string expansion makes cross-kind tag filtering namespace-
+    agnostic: a caller writing ``tags=['workspace']`` doesn't have to
+    know whether the ref carries the tag in the ``OPEN`` or the
+    ``FLAG`` namespace. The SQL planner emits one combined IN-tuple
+    and counts *distinct values* (not tag_ids), so the bare tag
+    still counts once whether it matched the open or flag row.
+    """
+    if ":" in s:
+        prefix, _, value = s.partition(":")
+        if prefix and prefix.isupper():
+            return [(prefix, value)]
+    return [("OPEN", s), ("FLAG", s)]
 
 
 def build_tag_filter(
@@ -45,47 +72,80 @@ def build_tag_filter(
 
     Args:
         tags:        List of tag strings (``'STATUS:open'``,
-                     ``'topic:co2-capture'``, ``'star'``). Closed-prefix
-                     tags must be in their canonical ``PREFIX:value``
-                     form — the runtime is responsible for validating
-                     via :meth:`precis.store.Tag.parse_strict` before
+                     ``'topic:co2-capture'``, ``'pinned'``). Closed-
+                     prefix tags must be in their canonical
+                     ``PREFIX:value`` form — the runtime is
+                     responsible for validating via
+                     :meth:`precis.store.Tag.parse_strict` before
                      calling this helper.
         ref_alias:   The SQL alias used for ``refs`` in the outer
                      query (typically ``r``). The fragment references
-                     ``{ref_alias}.id``.
-        block_level: If True, match block-level tags (``pos = N``);
-                     default False matches ref-level tags only
-                     (``pos = -1``, projected as ``NULL`` by the
-                     view). Phase A only uses ref-level filtering.
+                     ``{ref_alias}.ref_id``.
+        block_level: If True, match chunk-level tags (via
+                     ``chunk_tags``); default False matches
+                     ref-level tags (via ``ref_tags``).
 
     Returns:
         ``(fragment, params)``. ``fragment`` is the empty string when
         ``tags`` is None or empty, otherwise begins with a leading
         ``" AND "`` so callers can splice it without conditional logic.
         ``params`` is a list of bind parameters in the order they
-        appear in the fragment.
+        appear in the fragment (namespace, value, namespace, value,
+        ..., N).
 
     Semantics:
         AND across all tags — a ref must carry **every** tag in
-        ``tags`` to pass. The ``HAVING COUNT(DISTINCT tag) = N``
-        clause enforces this without requiring N self-joins.
+        ``tags`` to pass. The ``HAVING COUNT(*) = N`` clause
+        enforces this without requiring N self-joins.
     """
     if not tags:
         return "", []
 
-    placeholders = ", ".join(["%s"] * len(tags))
-    pos_clause = "pos IS NOT NULL" if block_level else "pos IS NULL"
+    # Each input tag expands to one or more (namespace, value) rows.
+    # Bare tags expand into both OPEN and FLAG; closed-prefix tags
+    # stay single. We collect all rows for the IN-tuple, then count
+    # *distinct values* in the HAVING so a bare tag still counts once
+    # whether it landed in the open or the flag namespace.
+    flat: list[tuple[str, str]] = []
+    distinct_count = 0
+    for s in tags:
+        rows = _parse_tag_string(s)
+        flat.extend(rows)
+        distinct_count += 1
+    tuple_placeholders = ", ".join(["(%s, %s)"] * len(flat))
 
-    fragment = (
-        f" AND {ref_alias}.id IN ("
-        f"SELECT ref_id FROM ref_tags "
-        f"WHERE tag IN ({placeholders}) AND {pos_clause} "
-        f"GROUP BY ref_id "
-        f"HAVING COUNT(DISTINCT tag) = %s"
-        f")"
-    )
-    params: list[Any] = list(tags)
-    params.append(len(tags))
+    if block_level:
+        # Chunk-level: filter refs whose chunks collectively carry
+        # all N tags. AND semantics across distinct tags, but the
+        # tags don't have to be on the same chunk.
+        fragment = (
+            f" AND {ref_alias}.ref_id IN ("
+            f"  SELECT c.ref_id "
+            f"  FROM chunks c "
+            f"  JOIN chunk_tags ct ON ct.chunk_id = c.chunk_id "
+            f"  JOIN tags t ON t.tag_id = ct.tag_id "
+            f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
+            f"  GROUP BY c.ref_id "
+            f"  HAVING COUNT(DISTINCT t.value) = %s"
+            f")"
+        )
+    else:
+        fragment = (
+            f" AND {ref_alias}.ref_id IN ("
+            f"  SELECT rt.ref_id "
+            f"  FROM ref_tags rt "
+            f"  JOIN tags t ON t.tag_id = rt.tag_id "
+            f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
+            f"  GROUP BY rt.ref_id "
+            f"  HAVING COUNT(DISTINCT t.value) = %s"
+            f")"
+        )
+
+    params: list[Any] = []
+    for ns, val in flat:
+        params.append(ns)
+        params.append(val)
+    params.append(distinct_count)
     return fragment, params
 
 

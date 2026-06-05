@@ -46,7 +46,7 @@ from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 # additional views should override `get()` to layer their dispatch
 # on top, or — when we land per-kind view registries — extend
 # this tuple via a class-level hook.
-_BASE_VIEWS: tuple[str, ...] = ("links",)
+_BASE_VIEWS: tuple[str, ...] = ("links", "log")
 
 
 class NumericRefHandler(Handler):
@@ -165,8 +165,32 @@ class NumericRefHandler(Handler):
                 )
             if view == "links":
                 return self._render_links_view(ref)
+            if view == "log":
+                from precis.handlers._event_log_render import render_event_log
+
+                # Per-kind source filter: chase-driven kinds (finding)
+                # narrow to source='chase' so the log is the chase
+                # decision trail rather than every event ever logged
+                # against the ref. Subclasses override
+                # ``_event_log_source()`` to customise.
+                return render_event_log(
+                    self.store, ref.id, source=self._event_log_source()
+                )
         tags = self.store.tags_for(ref.id)
-        return Response(body=self._render_one(ref, tags))
+        body = self._render_one(ref, tags)
+        # F8: surface the link graph for this ref so the agent's
+        # recall step actually sees connections the write step made.
+        body += self._render_links_section(ref)
+        return Response(body=body)
+
+    def _event_log_source(self) -> str | None:
+        """Subsystem to filter ``view='log'`` to, or ``None`` for all.
+
+        Default: no filter (show every event). Subclasses with a
+        natural per-subsystem identity override (e.g. ``FindingHandler``
+        returns ``'chase'``).
+        """
+        return None
 
     # ── search ─────────────────────────────────────────────────────
 
@@ -178,15 +202,29 @@ class NumericRefHandler(Handler):
         top_k: int = 10,
         **_kw: Any,
     ) -> Response:
-        if q is None or not q.strip():
-            raise BadInput(
-                "search requires q=",
-                next=f"search(kind={self.kind!r}, q='your query')",
-            )
         # Validate at the agent boundary — symmetric with put(tags=...).
         # Pass kind= so per-kind axis enforcement catches
         # STATUS: filter queries against kinds that don't use STATUS.
         normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
+
+        # ``q=`` is optional when ``tags=`` is supplied — broad
+        # usability pass 2026-05-30 (#7 / #13): an agent looking for
+        # "everything I tagged ``foo``" had to pass an arbitrary
+        # ``q='a'`` to make the filter fire, which then *ranked* the
+        # hits by lexical match to ``'a'``. With ``tags=`` set we
+        # degrade to a recency-ordered list, which is what the user
+        # wanted in the first place.
+        if q is None or not q.strip():
+            if normalized_tags:
+                return self._list_by_tags(normalized_tags, top_k=top_k)
+            raise BadInput(
+                "search requires q= or tags=",
+                next=(
+                    f"search(kind={self.kind!r}, q='your query') or "
+                    f"search(kind={self.kind!r}, tags=['<tag>'])"
+                ),
+            )
+
         hits = self.store.search_refs_lexical(
             q=q, kind=self.kind, tags=normalized_tags, limit=top_k
         )
@@ -238,6 +276,45 @@ class NumericRefHandler(Handler):
         ]
         for ref, rank in hits:
             lines.append(self._render_search_hit(ref, rank))
+        return Response(body="\n".join(lines))
+
+    def _list_by_tags(
+        self, tags: list[str], *, top_k: int
+    ) -> Response:
+        """Recency-ordered list of refs matching ``tags``, no ranking.
+
+        Reached when ``search(kind=K, tags=[...])`` is called without
+        ``q=`` — the right shape for "show me everything I tagged X".
+        Always emits a ``Next:`` trailer pointing at the ranked search
+        path for callers who realize they wanted ranking.
+        """
+        refs = self.store.list_refs(
+            kind=self.kind, tags=tags, limit=top_k
+        )
+        if not refs:
+            body = f"no {self._sense()} entries tagged {tags}"
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind={self.kind!r}, id='/recent')",
+                        f"recent {self._sense()} entries (no tag filter)",
+                    ),
+                    (
+                        f"search(kind={self.kind!r}, q='topic', tags={tags!r})",
+                        "rank within the tagged set",
+                    ),
+                ]
+            )
+            return Response(body=body)
+        lines = [
+            f"# {len(refs)} {self._sense()} entr"
+            f"{'y' if len(refs) == 1 else 'ies'} tagged {tags} "
+            f"(by recency)"
+        ]
+        for ref in refs:
+            # Reuse the search-hit renderer with rank=None — list mode
+            # has no score, so the hit shape degrades to slug + title.
+            lines.append(self._render_search_hit(ref, None))
         return Response(body="\n".join(lines))
 
     # ── search_hits: structured form for cross-kind merge ──────────
@@ -335,6 +412,31 @@ class NumericRefHandler(Handler):
                 next=(
                     f"put(kind={self.kind!r}, text='...', "
                     "link='paper:slug', rel='cites')"
+                ),
+            )
+        # ``put(tags=...)`` and ``put(link=...)`` are the D3 shortcut
+        # for the standalone ``tag``/``link`` verbs; if the kind
+        # doesn't expose those verbs at all (e.g. gripe — write-only
+        # by design) the put-create shortcut must reject too, otherwise
+        # the documented "no tags, no links" guarantee from the help
+        # skill is silently violated. Broad usability pass 2026-05-30
+        # (#4).
+        if tags is not None and not self.spec.supports_tag:
+            raise BadInput(
+                f"tags= is not accepted on put for kind={self.kind!r}",
+                next=(
+                    f"kind={self.kind!r} does not support tagging; "
+                    f"omit tags= or see "
+                    f"get(kind='skill', id='precis-{self.kind}-help')"
+                ),
+            )
+        if link is not None and not self.spec.supports_link:
+            raise BadInput(
+                f"link= is not accepted on put for kind={self.kind!r}",
+                next=(
+                    f"kind={self.kind!r} does not support linking; "
+                    f"omit link= or see "
+                    f"get(kind='skill', id='precis-{self.kind}-help')"
                 ),
             )
         return self._create(text=text, tags=tags, link=link, rel=rel)
@@ -492,9 +594,7 @@ class NumericRefHandler(Handler):
         # captured at validation time, the surrounding ``tx()`` will
         # roll back the ref insert too.
         with self.store.tx() as conn:
-            corpus_id = self.store.ensure_corpus(self.corpus_slug)
             ref = self.store.insert_ref(
-                corpus_id=corpus_id,
                 kind=self.kind,
                 slug=None,
                 title=text,
@@ -540,8 +640,16 @@ class NumericRefHandler(Handler):
             )
         if isinstance(id, int):
             return id
+        # Accept the canonical link-target form (`<kind>:<int>`) too —
+        # an LLM that copy-pastes a link-target string into id= should
+        # not have to strip the kind prefix by hand. Mirrors paper's
+        # transparent DOI resolution and youtube's URL-form acceptance.
+        s = id.strip()
+        prefix = f"{cls.kind}:"
+        if s.startswith(prefix):
+            s = s[len(prefix):]
         try:
-            return int(id)
+            return int(s)
         except (ValueError, TypeError):
             raise BadInput(
                 f"{cls._sense()} id must be an integer, got {id!r}",
@@ -650,6 +758,135 @@ class NumericRefHandler(Handler):
             target += f"~{other_pos}"
         return f"{arrow} {target}  ({link.relation})"
 
+    # F8: rel-name → inbound-passive-form. Symmetric rels (no
+    # passive form) map to themselves; unknown rels fall through to
+    # the ``<-`` prefix rendering in :meth:`_render_links_section`.
+    _INVERSE_REL: dict[str, str] = {
+        "related-to": "related-to",
+        "cites": "cited by",
+        "refutes": "refuted by",
+        "supersedes": "superseded by",
+        "supports": "supported by",
+        "contradicts": "contradicted by",
+        "cited-by": "cites",
+        "retracted-by": "retracts",
+    }
+
+    def _render_links_section(self, ref: Ref) -> str:
+        """F8: render the Links: TOON sub-section for a single-ref get.
+
+        Three columns: ``{related to	keywords	how to get}``.
+        Column 1 holds ``<rel-marker> <target>`` — ``--`` for default
+        ``related-to`` (no semantic relation specified), the literal
+        rel name otherwise. Inbound rows use the passive form via
+        ``_INVERSE_REL`` (``cites`` → ``cited by``); unknown inbound
+        rels fall back to a ``<- <rel>`` prefix so direction stays
+        visible.
+
+        Returns an empty string when the ref has no links in either
+        direction — the caller appends unconditionally, so the empty
+        case must produce no output (not even a trailing newline).
+
+        Teaser column = first ~60 chars of the target's title. The
+        F8 design called for "keywords" but the project doesn't yet
+        expose a ``Store.top_keywords_for_ref`` helper; title is the
+        portable fallback. Upgrade path: swap the call here when a
+        keyword API lands.
+        """
+        out_links = self.store.links_for(ref.id, direction="out")
+        in_links = self.store.links_for(ref.id, direction="in")
+        if not out_links and not in_links:
+            return ""
+
+        endpoint_ids: set[int] = set()
+        for link in out_links:
+            endpoint_ids.add(link.dst_ref_id)
+        for link in in_links:
+            endpoint_ids.add(link.src_ref_id)
+        endpoints = self._fetch_endpoints(endpoint_ids)
+
+        rows: list[dict[str, str]] = []
+        combined = [(lnk, "out") for lnk in out_links] + [
+            (lnk, "in") for lnk in in_links
+        ]
+        combined.sort(key=lambda pair: pair[0].id)
+        for link, direction in combined:
+            if direction == "out":
+                other_id, other_pos = link.dst_ref_id, link.dst_pos
+                rel_marker = self._format_outbound_rel(link.relation)
+            else:
+                other_id, other_pos = link.src_ref_id, link.src_pos
+                rel_marker = self._format_inbound_rel(link.relation)
+            target = self._format_target_handle(other_id, other_pos, endpoints)
+            teaser = self._teaser_for(endpoints.get(other_id))
+            get_call = self._get_call_for(endpoints.get(other_id), other_id)
+            rows.append(
+                {
+                    "related to": f"{rel_marker} {target}".strip(),
+                    "keywords": teaser,
+                    "how to get": get_call,
+                }
+            )
+
+        from precis.format import render_agent_table
+
+        return "\n\nLinks:\n" + render_agent_table(
+            rows, schema=["related to", "keywords", "how to get"]
+        )
+
+    @classmethod
+    def _format_outbound_rel(cls, relation: str) -> str:
+        """``--`` for default ``related-to``; literal rel name otherwise."""
+        if relation == "related-to":
+            return "--"
+        return relation
+
+    @classmethod
+    def _format_inbound_rel(cls, relation: str) -> str:
+        """Inverse-form for known rels; ``<- <rel>`` fallback."""
+        if relation == "related-to":
+            return "--"
+        inv = cls._INVERSE_REL.get(relation)
+        if inv is not None:
+            return inv
+        return f"<- {relation}"
+
+    @staticmethod
+    def _format_target_handle(
+        ref_id: int, pos: int | None, endpoints: dict[int, Ref]
+    ) -> str:
+        """Build ``kind:identifier[~pos]`` for the link row."""
+        ref = endpoints.get(ref_id)
+        if ref is None:
+            handle = f"<unknown ref {ref_id}>"
+        else:
+            ident = ref.slug if ref.slug is not None else str(ref.id)
+            handle = f"{ref.kind}:{ident}"
+            if ref.deleted_at is not None:
+                handle += " (deleted)"
+        if pos is not None:
+            handle += f"~{pos}"
+        return handle
+
+    @staticmethod
+    def _teaser_for(ref: Ref | None) -> str:
+        """First ~60 chars of the target's title — the keyword stand-in."""
+        if ref is None or not ref.title:
+            return ""
+        title = ref.title.strip().replace("\n", " ")
+        if len(title) > 60:
+            return title[:60].rstrip() + "…"
+        return title
+
+    @staticmethod
+    def _get_call_for(ref: Ref | None, fallback_id: int) -> str:
+        """Render the exact ``get(...)`` call to retrieve the link target."""
+        if ref is None:
+            return f"get(id={fallback_id})"
+        ident = ref.slug if ref.slug is not None else ref.id
+        ident_repr = repr(ident) if isinstance(ident, str) else str(ident)
+        return f"get(kind={ref.kind!r}, id={ident_repr})"
+
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         """Default single-ref view: id header + body + tag line.
 
@@ -661,9 +898,10 @@ class NumericRefHandler(Handler):
             out.append("tags: " + " ".join(str(t) for t in tags))
         return "\n".join(out)
 
-    def _render_search_hit(self, ref: Ref, rank: float) -> str:
+    def _render_search_hit(self, ref: Ref, rank: float | None) -> str:
         preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
-        return f"\n## {self._sense()} {ref.id}  (rank={rank:.2f})\n{preview}"
+        rank_str = f"  (rank={rank:.2f})" if rank is not None else ""
+        return f"\n## {self._sense()} {ref.id}{rank_str}\n{preview}"
 
     def _render_create_ack(self, ref_id: int) -> Response:
         """Acknowledgement returned by `put` on create. Subclasses
@@ -713,11 +951,27 @@ class NumericRefHandler(Handler):
                     ]
                 )
                 return Response(body=body)
-            lines = [f"# recent {self._sense()} ({len(refs)})"]
+            # F14: render as TOON, with an adaptive ``tags`` column.
+            # When at least one ref carries tags, surface them so the
+            # agent sees the classification on recall; when no ref has
+            # tags, drop the column entirely to avoid noise on the
+            # common "all-default" case.
+            tags_per_ref = {r.id: self.store.tags_for(r.id) for r in refs}
+            any_tagged = any(tags_per_ref[r.id] for r in refs)
+            rows: list[dict[str, str]] = []
             for r in refs:
                 preview = (r.title[:80] + "…") if len(r.title) > 80 else r.title
-                lines.append(f"  {r.id:>4}  {preview}")
-            body = "\n".join(lines)
+                row: dict[str, str] = {"id": str(r.id), "preview": preview}
+                if any_tagged:
+                    row["tags"] = " ".join(
+                        str(t) for t in tags_per_ref[r.id]
+                    )
+                rows.append(row)
+            from precis.format import render_agent_table
+
+            schema = ["id", "preview", "tags"] if any_tagged else ["id", "preview"]
+            head = f"# recent {self._sense()} ({len(refs)})"
+            body = f"{head}\n\n" + render_agent_table(rows, schema=schema)
             body += render_next_section(
                 [
                     (

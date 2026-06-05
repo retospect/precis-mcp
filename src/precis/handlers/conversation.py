@@ -24,6 +24,7 @@ from precis.handlers._link_tag_ops import (
     format_link_tag_ack,
 )
 from precis.handlers._slug_ref_shared import (
+    reject_chunk_or_path_view,
     render_slug_ref_list,
     resolve_live_slug_ref,
 )
@@ -54,6 +55,7 @@ class ConversationHandler(Handler):
         supports_link=True,
         is_numeric=False,
         id_required=False,
+        note_like=True,
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -171,12 +173,13 @@ class ConversationHandler(Handler):
         ref-level only.
         """
         slug, chunk, path_view = _parse_conv_id(str(id))
-        if chunk is not None or path_view is not None:
-            raise BadInput(
-                "conv ops operate at ref level - drop the turn "
-                "selector / path view from id=",
-                next=f"tag(kind='conv', id={slug!r}, ...) or link(kind='conv', id={slug!r}, ...)",
-            )
+        reject_chunk_or_path_view(
+            kind="conv",
+            slug=slug,
+            sel=chunk,
+            path_view=path_view,
+            selector_noun="turn selector",
+        )
         ref = resolve_live_slug_ref(
             self.store,
             kind="conv",

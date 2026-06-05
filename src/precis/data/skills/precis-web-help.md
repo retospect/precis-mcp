@@ -1,167 +1,144 @@
 ---
 id: precis-web-help
 title: precis — fetch, bookmark, and search web pages
-status: shipped
-tier: 1
-floor: any
-applies-to: get / search / tag / link (kind='web')
-last-updated: 2026-05-02
+applies-to: get/search/tag/link (kind='web')
+status: active
 ---
 
-# precis-web-help — fetch, bookmark, and search web pages
+# precis-web-help — fetch, bookmark, search web pages
 
-`web` fetches a URL, extracts the readable article body, embeds
-it paragraph-by-paragraph, and caches the result for **7 days**.
-Free (bandwidth only). The surface is four verbs:
+`web` is the cache-backed URL kind. Pass a URL as `id=` (or `q=` to
+search) and get the readable article body back. Cache key is the
+canonical URL.
 
-| Verb | Use |
-|---|---|
-| `get` | Fetch and read a URL (cache-backed) |
-| `search` | Full-text + semantic search across previously-fetched pages |
-| `tag` | Bookmark, pin, or classify a cached page |
-| `link` | Cross-reference to `memory:` / `paper:` / `todo:` / … |
+## Fetch a URL and read it
+## Open a web page by URL
+## I have a link — how do I read it?
 
 ```python
-get(kind='web', id='https://example.com/article')
 get(kind='web', id='https://blog.langchain.com/agentic-rag/')
+get(kind='web', q='https://blog.langchain.com/agentic-rag/')      # q= also works
 get(kind='web', id='https://arxiv.org/abs/2207.09327')
 ```
 
-## Canonicalization
+Returns the article body as markdown — chrome (nav, sidebar, footer,
+ads) is stripped. Links preserved as `[text](url)`; images dropped.
+Footer carries source URL and fetch date for attribution. First call
+fetches and caches; subsequent calls hit the cache.
 
-URL variants of the same page collapse to one cache row:
+If extraction yields nothing the body is a stub
+(`(no readable content extracted from URL — page may require JS,
+login, or have non-article shape)`); the cache row is still written.
 
-- Scheme/host case (`HTTPS://Example.COM/x` → `https://example.com/x`)
-- Default ports (`:80` for http, `:443` for https are dropped)
-- Tracking params (`utm_*`, `fbclid`, `gclid`, `mc_cid`, …)
-- Trailing `/` (except the bare root)
-- Fragments (`#anchor`) — *unless* the host is a known SPA
-  (`arxiv.org`, `github.com`, `gist.github.com`, `notion.so`)
+## What does a web id look like?
+## URL canonicalisation rules
+## How are URLs normalised before caching?
 
-## What you get back
+A web id is the canonical form of an http(s) URL. The cache key is
+derived by:
 
-A markdown rendering of the **article body only** — chrome (nav,
-sidebar, footer, ads) is stripped by trafilatura. Links are preserved
-as `[text](url)`; images are dropped.
+- Lowercasing scheme and host.
+- Dropping default ports (`:80`, `:443`).
+- Stripping tracking params (`utm_*`, `fbclid`, `gclid`, `mc_cid`, …).
+- Removing trailing `/` (except the bare root).
+- Dropping `#fragment` — **except on SPA hosts** (see next section).
 
-The response footer carries the source URL and fetched-on date for
-attribution.
+After canonicalisation the URL is the id and the slug. The same page
+served from `HTTPS://Example.COM/x?utm_source=tw` and
+`https://example.com/x` is one cache row.
 
-## Failure modes
+## Why did the same URL produce different cache entries?
+## What happens to #fragments and tracking params?
+## Per-host fragment handling — the SPA gotcha
 
-- `BadInput: not a valid URL` — input wasn't an http(s) URL
-- `Upstream: HTTP 4xx / 5xx` — the page returned an error
-- `Upstream: fetch failed` — network/DNS/TLS error
-- *Stub body* `(no readable content extracted from URL — page may
-  require JS, login, or have non-article shape)` — trafilatura
-  couldn't find article-shaped content. The cache row is still
-  written so we don't pay the network round-trip again for 7 days.
+Fragments (`#anchor`) are dropped on most hosts but **preserved on
+known SPA hosts** where the fragment is part of the route:
 
-## Caching
+- `arxiv.org`
+- `github.com`, `gist.github.com`
+- `notion.so`
 
-7-day TTL; free upstream so cost is always `[cost: free]`. The agent
-can force a refresh by deleting the ref (phase 5+) or simply waiting
-out the TTL.
+Consequence: on `example.com`, `…/page#a` and `…/page#b` collapse to
+one cache entry (`…/page`). On `github.com`, `…/repo#readme` and
+`…/repo#issues` are **two different cache entries**. If you fetched
+the same URL twice and got different bodies, check whether the host
+is in the SPA list and whether your URLs differ only by `#fragment`.
 
-## Required env
-
-Optional: set `WEB_USER_AGENT` to override the default User-Agent
-header. Some sites have stricter anti-bot middleware that may need
-this.
+Tracking params (`utm_*`, `fbclid`, …) are always stripped. A URL
+with and without `?utm_source=x` is always the same cache entry.
 
 ## Search across fetched pages
-
-Fetched pages are block-parsed (paragraph / heading / list / code)
-and embedded per-block, so `search` runs the same hybrid lexical +
-semantic leg that `paper` / `memory` / `oracle` get.
+## Find a previously-cached page by content
+## Where did I read about X?
 
 ```python
 search(kind='web', q='retrieval-augmented generation')
 search(kind='web', q='dopamine D1 D2', top_k=20)
+search(kind='web', q='RAG', page=2)
 ```
 
-Result body format matches every other searchable kind: a
-`## slug~pos  (score=0.xxxx)` block per hit, with a short
-excerpt. Slugs come from the canonical URL so the same page
-always shows up under the same handle.
+Hybrid lexical + semantic over the bodies of pages already in the
+cache. Results are `<slug>~N` handles; paste into `get` to drill in.
+Only fetched pages are searchable — `search` does not crawl.
 
-Cross-kind search works too — pass `kind='*'` or
-`kind='paper,web'` to the top-level `search` tool.
-
-## Bookmark with tags
-
-Tag a fetched slug to flag it for later. Slugs appear in
-`/recent` listings and in search hit headings:
+## Search across web pages and other kinds
+## Cross-kind search including web
+## Find something across papers and bookmarked pages
 
 ```python
-# Fetch first (populates the cache + gives you a slug)
-get(kind='web', id='https://example.com/article')
-
-# Bookmark it — open tag, free vocabulary
-tag(kind='web', id='example-com-article', add=['bookmark'])
-
-# Topic classification — any open tag works
-tag(kind='web', id='example-com-article',
-    add=['topic-rag', 'read-later'])
-
-# Pin the cache so it never expires
-tag(kind='web', id='example-com-article', add=['CACHE:pinned'])
-
-# Remove a tag
-tag(kind='web', id='example-com-article', remove=['read-later'])
+search(q='Z-scheme photocatalysis')                # all kinds
+search(kind='paper,web', q='retrieval augmentation')
 ```
 
-**Closed prefixes** on `web`: only `CACHE:` (pinned / fresh /
-stale / expired) is allowed — cache provenance tracking. Use
-open tags for everything else (`bookmark`, `topic-...`,
-`read-later`, project labels, …).
+Each hit is tagged with its source kind.
 
-## Link to memory / papers / todos
-
-Cross-reference a fetched page to anything else in the corpus.
-Canonical form: `kind:identifier[~selector]`.
+## Bookmark a page with tags
+## Mark a cached page as topic-X
+## Annotate a fetched URL
 
 ```python
-# Capture a memory about why you kept this page
-put(kind='memory', text="Need this for the RAG architecture review")
+get(kind='web', id='https://example.com/article')      # fetch to populate cache
+
+tag(kind='web', id='https://example.com/article',
+    add=['bookmark', 'topic-rag', 'read-later'])
+
+tag(kind='web', id='https://example.com/article',
+    add=['CACHE:pinned'])                              # never expire
+
+tag(kind='web', id='https://example.com/article',
+    remove=['read-later'])
+```
+
+Closed-prefix axes for web: `CACHE:` only. Open tags
+(`bookmark`, `topic-x`, ...) always allowed.
+
+## Cross-link a page to a memory, paper, or todo
+## Tie a bookmarked URL to something else in the corpus
+## Connect a web page to other refs
+
+```python
+put(kind='memory', text='Need this for the RAG review')
 # → memory ref id=42
 
-# Link the web page to that memory
-link(kind='web', id='example-com-article', target='memory:42')
+link(kind='web', id='https://example.com/article',
+     target='memory:42')                              # rel defaults to related-to
 
-# Or link to a paper for supplementary reading
-link(kind='web', id='example-com-article',
-     target='paper:wang2020state')
+link(kind='web', id='https://example.com/article',
+     target='paper:wang2020state', rel='cites')
 
-# Or to a todo that this page informs
-link(kind='web', id='example-com-article',
+link(kind='web', id='https://example.com/article',
      target='todo:158', rel='supports')
 
-# Remove
-link(kind='web', id='example-com-article',
+link(kind='web', id='https://example.com/article',
      target='memory:42', mode='remove')
 ```
 
-The relation defaults to `related-to`. See `precis-relations` for
-the full vocabulary (`cites`, `contradicts`, `supports`,
-`derived-from`, …).
-
-## Typical workflow
-
-1. `get(kind='web', id='<url>')` — fetch and read.
-2. `tag(kind='web', id='<slug>', add=['bookmark', 'topic-x'])` —
-   mark for recall.
-3. `link(kind='web', id='<slug>', target='memory:N')` — tie to
-   the reason you kept it.
-4. Weeks later:
-   - `search(kind='web', q='...')` — find it by content.
-   - `get(kind='web', id='/recent')` — browse all cached pages.
-   - `get(kind='memory', id=N)` to land on the memory; its links
-     will surface the bookmarked URL.
-
 ## See also
 
-- `precis-overview` — verbs and kinds
-- `precis-cache` — TTL, freshness, attribution, cost trailers
-- `precis-tags` — closed vs. open tag vocabulary
-- `precis-relations` — link relation slugs (`cites`, `supports`, …)
+```python
+get(kind='skill', id='precis-overview')        # verbs and kinds
+get(kind='skill', id='precis-search-help')     # search mechanics
+get(kind='skill', id='precis-tags')            # axis vocabulary
+get(kind='skill', id='precis-relations')       # link relation slugs
+get(kind='skill', id='precis-memory-help')     # capturing why you kept a page
+```

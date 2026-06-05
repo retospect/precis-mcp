@@ -148,6 +148,7 @@ def _load_targets(
 def _build_s2_client(api_key: str) -> Any:
     """Construct the SemanticScholar client. Lazy import so help works."""
     from semanticscholar import SemanticScholar  # type: ignore[import-untyped]
+
     return SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
 
 
@@ -263,6 +264,7 @@ def _mark_enriched(db_url: str, ref_id: int, *, dry_run: bool) -> None:
     if dry_run:
         return
     import psycopg
+
     with psycopg.connect(db_url) as conn, conn.cursor() as cur:
         cur.execute(
             "INSERT INTO ref_open_tags (ref_id, pos, value, set_by) "

@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "precis": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--network", "precis-infra_default",
+        "--add-host", "host.docker.internal:host-gateway",
+        "-v", "/Users/reto/.secrets/pw:/secrets:ro",
+        "-v", "/Users/reto/work/corpus:/data/corpus:rw",
+        "-v", "/Users/reto/work/projects/code/precis-mcp:/app:ro",
+        "-e", "LOG_LEVEL=WARNING",
+        "-e", "PRECIS_EMBEDDER=bge-m3",
+        "-e", "PRECIS_ORACLE_AUTO_REINGEST=0",
+        "--entrypoint", "/usr/local/bin/docker-entrypoint.sh",
+        "precis-mcp:dev",
+        "precis", "serve"
+      ]
+    }
+  }
+}

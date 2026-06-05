@@ -77,7 +77,11 @@ class TestMakeEmbedder:
         # short handshake timeouts). Verifies the change in dba51f23.
         e = make_embedder("bge-m3")
         assert e.dim == 1024  # documented constant; no model load needed
-        assert e.model == "BAAI/bge-m3"
+        # ``model`` returns the precis **registry key** (FK target in
+        # the ``embedders`` table), not the HuggingFace id. The HF id
+        # ``BAAI/bge-m3`` is an internal constant the embedder uses
+        # only when actually loading weights.
+        assert e.model == "bge-m3"
 
     def test_bge_m3_clear_error_on_missing_dep(self) -> None:
         # When the optional backend is missing, the agent must get a

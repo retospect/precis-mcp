@@ -75,6 +75,80 @@ class PrecisConfig(BaseSettings):
     hidden. Set via ``PRECIS_PYTHON_ROOTS`` in the env.
     """
 
+    startup_skills: str | None = None
+    """Comma-separated list of skill ids to pin at cold-start.
+
+    The bodies are reachable via the existing ``prompts/list`` wiring
+    (every available skill registers as a prompt). Pinning **also**
+    surfaces them in ``serverInfo.instructions`` so an agent sees the
+    operator's recommended starting set on the first connect, even
+    when the MCP client doesn't auto-render prompts at session start.
+
+    Format: ``precis-search-help,precis-paper-help`` (whitespace
+    around commas tolerated; duplicates ignored). Unknown slugs are
+    logged and surfaced via a one-line banner notice. The default
+    empty list keeps cold-start lean by design.
+
+    Set via ``PRECIS_STARTUP_SKILLS`` in the env. See
+    ``precis-startup-skills-help`` for the full discovery model.
+    """
+
+    startup_skills_cap_kb: int = 50
+    """Cap on the total resolved-body size of pinned startup skills.
+
+    Defensive guard against operator misconfiguration (pinning the
+    entire skill corpus inflates context for every connecting agent).
+    Skills whose cumulative body bytes would exceed the cap are
+    dropped from the tail with a banner notice. Set to ``0`` to
+    disable the cap (not recommended — leaves the budget unbounded).
+
+    Set via ``PRECIS_STARTUP_SKILLS_CAP_KB`` in the env.
+    """
+
+    default_tags: str | None = None
+    """Comma-separated list of session-context tags to merge on
+    ``put`` for note-like kinds.
+
+    A note-like kind opts in via ``KindSpec.note_like=True``
+    (today: memory, gripe, conv, fc, quest, todo, markdown,
+    plaintext, tex). A ``put`` on such a kind has its ``tags=``
+    payload union-merged with the parsed default set, preserving
+    the caller's explicit-first ordering. The dispatcher emits a
+    one-line hint listing the merged defaults so the agent sees
+    the mutation.
+
+    A ``tag`` verb call doesn't mutate — instead the dispatcher
+    emits a suggestion hint listing any defaults missing from
+    ``add=``, leaving the operator-explicit verb under operator
+    control.
+
+    Format: ``fbproj,2026-q2,team-research`` (whitespace tolerated,
+    duplicates dropped, first occurrence wins). The default empty
+    tuple is the no-op posture matching today's behaviour.
+
+    Set via ``PRECIS_DEFAULT_TAGS`` in the env.
+    """
+
+    kinds_disabled: str | None = None
+    """Comma-separated list of kinds to prohibit at boot.
+
+    A prohibited kind is skipped entirely during
+    :func:`precis.dispatch.boot` — its handler is never constructed,
+    no abilities are registered, and the cold-start banner surfaces
+    it on the ``Kinds unavailable:`` line with reason ``prohibited``.
+    Resource gating (env vars declared on
+    :class:`precis.protocol.KindSpec.requires_env`, store / embedder
+    presence, file root) is orthogonal and applies independently.
+
+    Format: ``patent,wolfram`` (whitespace tolerated, duplicates
+    dropped). The default empty list keeps every resource-available
+    kind loaded — matching today's behaviour. Unknown kind names are
+    accepted (they're a no-op against the live registry); see
+    ``precis-kinds-disabled-help`` for the operator workflow.
+
+    Set via ``PRECIS_KINDS_DISABLED`` in the env.
+    """
+
 
 def load_config() -> PrecisConfig:
     return PrecisConfig()

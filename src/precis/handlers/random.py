@@ -132,6 +132,8 @@ class RandomHandler(Handler):
         )
         return Response(body=body)
 
+    _MINT_SLUG_ARGS: ClassVar[frozenset[str]] = frozenset({"len", "alphabet"})
+
     def _mint_slug(self, args: dict[str, Any]) -> Response:
         """Render a fresh random short identifier.
 
@@ -146,6 +148,21 @@ class RandomHandler(Handler):
         trailer. Callers compose it into tag values, correlation
         ids, or whatever else.
         """
+        # Reject unknown args-keys so misnamed knobs (``length=``,
+        # ``size=``, ``bytes=``) fail loud instead of silently
+        # producing a default-length slug. Round-2 picky R2-2,
+        # 2026-05-30: ``args={'bogus_key': 7}`` was previously accepted
+        # without warning.
+        unknown = sorted(k for k in args if k not in self._MINT_SLUG_ARGS)
+        if unknown:
+            raise BadInput(
+                f"random/slug args= keys {unknown!r} not accepted",
+                options=sorted(self._MINT_SLUG_ARGS),
+                next=(
+                    f"args= accepts only {sorted(self._MINT_SLUG_ARGS)}; "
+                    "drop the unknown keys or check spelling"
+                ),
+            )
         length = args.get("len", _SLUG_LEN_DEFAULT)
         try:
             length = int(length)
@@ -178,7 +195,25 @@ class RandomHandler(Handler):
                 f"got {alphabet_arg!r}"
             )
         slug = "".join(secrets.choice(alphabet) for _ in range(length))
-        return Response(body=slug)
+        # Broad usability pass 2026-05-30 (#9): the bare-token shape
+        # ("xghr\n") looked like a regression next to the default
+        # view's discovery packet. Append a one-line Next: trailer
+        # naming a representative use so a slim agent that asked for
+        # a slug knows where to plug it in.
+        body = slug + "\n"
+        body += render_next_section(
+            [
+                (
+                    f"put(kind='memory', text='...', tags=['session:{slug}'])",
+                    "use as a correlation tag",
+                ),
+                (
+                    f"get(kind='random', view='slug', args={{'len': {length}}})",
+                    "another fresh slug",
+                ),
+            ]
+        )
+        return Response(body=body)
 
 
 # ---------------------------------------------------------------------------

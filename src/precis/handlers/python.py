@@ -466,6 +466,18 @@ class PythonHandler(Handler):
                     "list files in this repo",
                 )
             )
+            # Fully-qualified symbol shape (`::` separator or dotted
+            # path) that missed → the relevant repo may not be in
+            # PRECIS_PYTHON_ROOTS. Surface that as a hint so the LLM
+            # can ask the user, rather than re-trying narrower variants.
+            if "::" in q or ("." in q and "/" not in q):
+                hints.append(
+                    (
+                        "# check PRECIS_PYTHON_ROOTS",
+                        "the repo for this symbol may not be configured "
+                        "— ask the user to add an alias=path entry",
+                    )
+                )
             body = f"no python symbols match {q!r}\n\n"
             body += render_next_section(hints)
             return Response(body=body)

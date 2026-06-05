@@ -102,9 +102,7 @@ def open_quest_for_hits(
                 break
 
     with store.tx() as conn:
-        corpus_id = store.ensure_corpus(_QUEST_CORPUS_SLUG)
         ref = store.insert_ref(
-            corpus_id=corpus_id,
             kind="quest",
             slug=slug,
             title=title,

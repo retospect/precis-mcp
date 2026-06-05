@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# scripts/precis-shell — standalone dev container, no compose required.
+#
+# Parallel to scripts/dev (which uses ~/work/infrastructure/compose.yaml).
+# Use this when you don't have the infra repo checked out, or want a
+# self-contained one-liner. Bind-mounts mirror the compose service so
+# both wrappers behave the same way inside the container.
+#
+# Usage:
+#   scripts/precis-shell                       # interactive bash at /app
+#   scripts/precis-shell pytest tests/         # one-off command
+#   scripts/precis-shell --rebuild             # force image rebuild, then shell
+#   scripts/precis-shell --rebuild pytest -x   # rebuild, then run command
+#
+# The image is built on first use and reused thereafter. Pass --rebuild
+# (or delete with `docker image rm precis-mcp:dev`) to refresh after
+# Dockerfile or dependency changes.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
+IMAGE="precis-mcp:dev"
+
+rebuild=0
+if [[ "${1:-}" == "--rebuild" || "${1:-}" == "--build" ]]; then
+    rebuild=1
+    shift
+fi
+
+if [[ "${rebuild}" == 1 ]] || ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+    echo "[precis-shell] building ${IMAGE} (target=dev, UID=$(id -u) GID=$(id -g))" >&2
+    docker build \
+        --target dev \
+        --build-arg "UID=$(id -u)" \
+        --build-arg "GID=$(id -g)" \
+        -t "${IMAGE}" \
+        -f docker/Dockerfile \
+        "${REPO_ROOT}"
+fi
+
+# Optional host paths — only mount if present, so the script works on
+# machines that don't have the full ~/work layout.
+mounts=(
+    -v "${REPO_ROOT}:/app:rw"
+    -v "precis-dev-cache:/home/precis/.cache"
+)
+[[ -d "${HOME}/.secrets/pw" ]]    && mounts+=(-v "${HOME}/.secrets/pw:/secrets:ro")
+[[ -d "${HOME}/work/corpus" ]]    && mounts+=(-v "${HOME}/work/corpus:/data/corpus:ro")
+[[ -d "${HOME}/work" ]]           && mounts+=(-v "${HOME}/work:/data/notes:ro")
+[[ -d "${HOME}/.claude" ]]        && mounts+=(-v "${HOME}/.claude:/home/precis/.claude")
+[[ -f "${HOME}/.claude.json" ]]   && mounts+=(-v "${HOME}/.claude.json:/home/precis/.claude.json")
+
+exec docker run --rm -it \
+    --name "precis-shell-$$" \
+    -e PRECIS_ROOT=/data/notes \
+    -e PRECIS_EMBEDDER=bge-m3 \
+    "${mounts[@]}" \
+    -w /app \
+    "${IMAGE}" \
+    "$@"

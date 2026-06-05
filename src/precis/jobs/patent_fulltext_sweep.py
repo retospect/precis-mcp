@@ -55,7 +55,7 @@ from precis.handlers._patent_ingest import (
 from precis.handlers._patent_ops import OpsClientProto, OpsError, OpsNotFound
 from precis.handlers._patent_slug import parse_docdb_id
 from precis.handlers._patent_xml import parse_patent
-from precis.ingest import ParsedBlock, classify_density, fill_embeddings
+from precis.ingest.blocks import ParsedBlock, classify_density
 from precis.jobs.patent_watch import (
     DEFAULT_FAIR_USE_LIMIT_GB,
     _gb_to_bytes,
@@ -110,21 +110,28 @@ class FulltextSweepSummary:
 
 
 def _list_due(store: Store, *, now: datetime, limit: int) -> list[tuple[int, str]]:
-    """Return ``(ref_id, slug)`` for every awaiting-fulltext ref whose
+    """Return ``(ref_id, cite_key)`` for every awaiting-fulltext ref whose
     retry timestamp is past.
 
-    The query joins ``refs`` against ``ref_open_tags`` and compares
+    The query joins ``refs`` against the v2 unified tags tables
+    (``ref_tags`` + ``tags`` with ``namespace='OPEN'``) and compares
     the ISO timestamp in ``meta->>'fulltext_retry_at'`` against
     ``now`` at the SQL boundary so we don't materialise every awaiting
     ref client-side. Ordering by ``retry_at`` ensures the oldest
-    backlog clears first.
+    backlog clears first. ``cite_key`` comes from the
+    ``ref_identifiers`` lookup the v2 schema uses for all slug-form
+    handles (legacy ``refs.slug`` column is gone — see ADR 0008).
     """
     sql = """
-        SELECT r.id, r.slug
+        SELECT r.ref_id,
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key
         FROM   refs r
-        JOIN   ref_open_tags t ON t.ref_id = r.id
+        JOIN   ref_tags rt ON rt.ref_id = r.ref_id
+        JOIN   tags t       ON t.tag_id  = rt.tag_id
         WHERE  r.kind = 'patent'
           AND  r.deleted_at IS NULL
+          AND  t.namespace = 'OPEN'
           AND  t.value = %s
           AND  (r.meta->>'fulltext_retry_at') IS NOT NULL
           AND  (r.meta->>'fulltext_retry_at')::timestamptz <= %s
@@ -133,7 +140,7 @@ def _list_due(store: Store, *, now: datetime, limit: int) -> list[tuple[int, str
     """
     with store.pool.connection() as conn:
         rows = conn.execute(sql, (AWAITING_FULLTEXT_TAG, now, limit)).fetchall()
-    return [(int(r[0]), str(r[1])) for r in rows]
+    return [(int(r[0]), str(r[1] or "")) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -329,8 +336,10 @@ def _retry_one_ref(
         seeds.append(
             ParsedBlock(text=txt, embedding=None, density=classify_density(txt))
         )
-    if embedder is not None and seeds:
-        seeds = fill_embeddings(seeds, embedder=embedder)
+    # Embeddings are populated lazily by the embed:bge-m3 worker
+    # (ADR 0007 / AGENTS.md ingest-guarantees). The previous
+    # synchronous fill_embeddings call blocked the sweep on a model
+    # forward pass and diverged from paper-ingest's deferred path.
 
     # Block positions follow the existing block count so a partial
     # earlier ingest (unlikely, but defensive) doesn't collide.

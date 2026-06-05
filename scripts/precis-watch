@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# scripts/precis-watch — manage the PDF ingestion daemon.
+#
+# Wraps the `precis-watch` compose service (always-on watcher that
+# scans ~/work/new_papers/, ingests each PDF via precis_add(), and
+# moves successes to ~/work/corpus/<letter>/<cite_key>.pdf).
+#
+# Usage:
+#   scripts/precis-watch                 # start detached + tail logs
+#   scripts/precis-watch start           # detached, return immediately
+#   scripts/precis-watch stop            # stop the container
+#   scripts/precis-watch restart         # stop + start
+#   scripts/precis-watch status          # show container status
+#   scripts/precis-watch logs            # tail logs (^C to exit)
+#   scripts/precis-watch fg              # run in foreground (^C stops)
+#
+# See: src/precis/cli/watch.py, infra compose `precis-watch:` service.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+if [[ ! -f "${INFRA_COMPOSE}" ]]; then
+    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
+    echo "     set PRECIS_COMPOSE=/path/to/compose.yaml to override" >&2
+    exit 1
+fi
+
+DC=(docker compose -f "${INFRA_COMPOSE}")
+
+cmd="${1:-tail}"
+[[ $# -gt 0 ]] && shift
+
+case "${cmd}" in
+    start)    exec "${DC[@]}" up -d precis-watch ;;
+    stop)     exec "${DC[@]}" stop precis-watch ;;
+    restart)  "${DC[@]}" stop precis-watch; exec "${DC[@]}" up -d precis-watch ;;
+    status)   exec "${DC[@]}" ps precis-watch ;;
+    logs)     exec "${DC[@]}" logs -f --tail=100 precis-watch ;;
+    fg)       exec "${DC[@]}" up precis-watch ;;
+    tail)     "${DC[@]}" up -d precis-watch; exec "${DC[@]}" logs -f --tail=20 precis-watch ;;
+    -h|--help|help)
+        sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0 ;;
+    *)
+        echo "precis-watch: unknown command '${cmd}'" >&2
+        echo "try: start | stop | restart | status | logs | fg | tail" >&2
+        exit 2 ;;
+esac

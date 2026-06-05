@@ -105,9 +105,8 @@ class TestInverseRelationRewrite:
     def _seed_citation(self, store: Store) -> tuple[int, int]:
         """Insert a citation edge A→B with relation='cites'.
         Returns (a_id, b_id)."""
-        cid = store.ensure_corpus("default")
-        a = store.insert_ref(corpus_id=cid, kind="paper", slug="paper-a", title="A")
-        b = store.insert_ref(corpus_id=cid, kind="paper", slug="paper-b", title="B")
+        a = store.insert_ref(kind="paper", slug="paper-a", title="A")
+        b = store.insert_ref(kind="paper", slug="paper-b", title="B")
         store.add_link(src_ref_id=a.id, dst_ref_id=b.id, relation="cites")
         return a.id, b.id
 
@@ -173,9 +172,8 @@ class TestInverseRelationRewrite:
     def test_symmetric_relation_no_rewrite(self, store: Store) -> None:
         """``related-to`` is symmetric — not in _INVERSE_RELATIONS,
         so links_for behaves traditionally."""
-        cid = store.ensure_corpus("default")
-        a = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="A")
-        b = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="B")
+        a = store.insert_ref(kind="memory", slug=None, title="A")
+        b = store.insert_ref(kind="memory", slug=None, title="B")
         store.add_link(src_ref_id=a.id, dst_ref_id=b.id, relation="related-to")
         # One row stored.
         out = store.links_for(b.id, direction="both")
@@ -185,9 +183,8 @@ class TestInverseRelationRewrite:
         """``see-also`` has no inverse — direction='out' from the
         target side returns nothing (as expected, since see-also
         is one-way for context)."""
-        cid = store.ensure_corpus("default")
-        a = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="A")
-        b = store.insert_ref(corpus_id=cid, kind="memory", slug=None, title="B")
+        a = store.insert_ref(kind="memory", slug=None, title="A")
+        b = store.insert_ref(kind="memory", slug=None, title="B")
         store.add_link(src_ref_id=a.id, dst_ref_id=b.id, relation="see-also")
         out = store.links_for(b.id, relation="see-also", direction="out")
         assert out == []
@@ -237,10 +234,8 @@ class TestTotalHitsHeader:
     def test_count_refs_lexical_matches_search(self, store: Store) -> None:
         """The companion count method must produce the same number
         as len(search_refs_lexical(limit=∞))."""
-        cid = store.ensure_corpus("default")
         for i in range(15):
             store.insert_ref(
-                corpus_id=cid,
                 kind="memory",
                 slug=None,
                 title=f"precis fact {i}",
@@ -252,8 +247,7 @@ class TestTotalHitsHeader:
 
     def test_count_blocks_lexical_matches_search(self, store: Store) -> None:
         """Same shape for blocks — counts must agree with searches."""
-        cid = store.ensure_corpus("default")
-        ref = store.insert_ref(corpus_id=cid, kind="paper", slug="p", title="P")
+        ref = store.insert_ref(kind="paper", slug="p", title="P")
         store.insert_blocks(
             ref.id,
             [
@@ -270,10 +264,8 @@ class TestTotalHitsHeader:
     def test_search_response_renders_total_when_capped(self, store: Store) -> None:
         """End-to-end: handler.search renders the header with 'of K'
         when top_k truncates the result set."""
-        cid = store.ensure_corpus("default")
         for i in range(5):
             store.insert_ref(
-                corpus_id=cid,
                 kind="memory",
                 slug=None,
                 title=f"precis fact {i}",
@@ -285,10 +277,8 @@ class TestTotalHitsHeader:
 
     def test_search_response_no_total_when_uncapped(self, store: Store) -> None:
         """When the agent already saw everything, no 'of K'."""
-        cid = store.ensure_corpus("default")
         for i in range(2):
             store.insert_ref(
-                corpus_id=cid,
                 kind="memory",
                 slug=None,
                 title=f"precis fact {i}",

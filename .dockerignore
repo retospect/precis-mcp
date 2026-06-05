@@ -1,0 +1,38 @@
+# .dockerignore — keep the build context lean.
+# The Dockerfile build context is the precis-mcp repo root.
+
+# Git metadata: not needed in image; pip wheel install doesn't use it.
+.git
+.gitignore
+.github
+
+# Python build/test caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# OS junk
+.DS_Store
+**/.DS_Store
+
+# Editor noise
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local config & secrets (defense in depth; should never exist anyway)
+.env
+.env.*
+.envrc
+*.pem
+secrets/
+
+# Logs
+*.log

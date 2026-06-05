@@ -27,6 +27,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
 from precis.runtime import PrecisRuntime, build_runtime
+from precis.tools import TOOL_REGISTRY
 
 # FastMCP refuses ``str | CallToolResult`` return annotations (it bans
 # CallToolResult inside unions; see ``func_metadata.py``). We still
@@ -51,12 +52,12 @@ _TOOL_KW: dict[str, Any] = {"structured_output": False}
 
 _INSTRUCTIONS = (
     "precis-mcp v2 - seven-verb agent tool surface.\n\n"
-    "Verbs: get, search, put, edit, delete, tag, link.  Discriminator: kind=.\n"
-    "Read the `precis-overview` skill (get(kind='skill', id='precis-overview'))\n"
-    "for the full mental model: kind topology, addressing, views, modes,\n"
-    "tags, links, and cache.\n\n"
-    "Discover skills: get(kind='skill', id='toc') for the full table of\n"
-    "contents, or search(kind='skill', q='your goal') for fuzzy lookup."
+    "First action on any non-trivial request:\n"
+    "  search(kind='skill', q='<your goal in plain language>')\n"
+    "This returns ranked help skills (verb mechanics, kind specifics,\n"
+    "tag axes, edit protocol, ...). For the full index:\n"
+    "  get(kind='skill', id='toc').\n\n"
+    "Verbs: get, search, put, edit, delete, tag, link.  Discriminator: kind=."
 )
 
 # Sanity check the instructions actually advertise every verb. The MCP
@@ -109,21 +110,92 @@ def _file_kind_counts(root: str, kinds: list[str]) -> dict[str, int]:
     return counts
 
 
+def _startup_skills_banner(runtime: PrecisRuntime) -> str:
+    """Render the ``PRECIS_STARTUP_SKILLS`` notice (or empty string).
+
+    Wraps :mod:`precis.startup_skills` so the server module owns the
+    config-to-banner translation and `_build_instructions` stays
+    declarative. Returns ``""`` when the env var is unset / empty
+    and no errors occurred — the design's "zero unconditional bytes
+    paid by operators who don't opt in" guarantee.
+    """
+    from precis import startup_skills
+
+    config = runtime.config
+    raw = getattr(config, "startup_skills", None)
+    cap_kb = getattr(config, "startup_skills_cap_kb", 50)
+    slugs = startup_skills.parse(raw)
+    if not slugs:
+        return ""
+    verdicts = getattr(runtime.hub, "loadabilities", None) or {}
+    unavailable = frozenset(
+        v.kind for v in verdicts.values() if not getattr(v, "loaded", True)
+    )
+    return startup_skills.format_banner(
+        startup_skills.resolve(slugs, cap_kb=cap_kb, unavailable_kinds=unavailable)
+    )
+
+
+def _kinds_loaded_line(runtime: PrecisRuntime) -> str:
+    """Render the ``Kinds loaded: ...`` summary appended to every banner.
+
+    Sourced from ``runtime.hub.kinds`` (a set of every kind with at
+    least one registered ability) sorted for stable rendering across
+    boots. Empty registries render as ``Kinds loaded: (none)``; a
+    stateless build with no handlers wired still produces a
+    well-formed line rather than a dangling ``Kinds loaded: ``.
+    """
+    kinds = sorted(getattr(runtime.hub, "kinds", ()) or ())
+    if not kinds:
+        return "Kinds loaded: (none)"
+    return "Kinds loaded: " + ", ".join(kinds) + "."
+
+
+def _kinds_unavailable_line(runtime: PrecisRuntime) -> str:
+    """Render the ``Kinds unavailable: ...`` summary, or ``""``.
+
+    Sourced from ``runtime.hub.loadabilities``: every kind boot
+    *attempted* and gated out (prohibited / missing-env / init-failed)
+    gets a one-entry. Kinds we never even tried (no store, no
+    PRECIS_ROOT, no python roots) intentionally don't appear — they
+    aren't ``unavailable``, they're ``not configured``, and surfacing
+    them would dwarf the banner. The boot-time log line names them
+    for the operator who wants to audit.
+    """
+    from precis.kind_gate import format_unavailable
+
+    verdicts = getattr(runtime.hub, "loadabilities", None) or {}
+    return format_unavailable(verdicts)
+
+
 def _build_instructions(runtime: PrecisRuntime) -> str:
-    """Static verb blurb plus a workspace preamble when ``PRECIS_ROOT`` is set.
+    """Static verb blurb plus a workspace preamble plus a live-kinds summary.
 
-    Prepends, not appends — the sandbox banner is the first thing a
-    cold-start agent should read. The static core (``_INSTRUCTIONS``)
-    stays byte-for-byte identical, so
-    ``test_instructions_advertises_every_verb`` and the import-time
-    assertion continue to pin it.
+    Composition (top to bottom):
 
-    Branches:
+    1. Optional sandbox preamble — when ``PRECIS_ROOT`` is set AND a
+       file-rooted handler is registered. Names file counts and the
+       ``get(kind='…')`` index calls a cold-start agent would
+       otherwise not know to try.
+    2. Static core (:data:`_INSTRUCTIONS`) — the discovery CTA plus
+       the seven-verb list. Pinned by the import-time assertion at
+       :data:`_INSTRUCTIONS` and by
+       ``test_instructions_advertises_every_verb``.
+    3. ``Kinds loaded:`` line — sorted live registry. Always appended;
+       the empty case renders as ``Kinds loaded: (none)`` rather than
+       a dangling colon.
+    4. Optional ``Kinds unavailable:`` line — emitted only when boot
+       attempted at least one kind and gated it out (prohibited,
+       missing env var, init failure). Zero bytes on a clean boot.
+    5. Optional ``PRECIS_STARTUP_SKILLS`` banner — pinned-skill ids,
+       plus warning lines for unknown slugs and cap truncation. Zero
+       bytes when the env var is unset and no errors occurred.
 
-    - No ``root`` configured (``PRECIS_ROOT`` unset): return the static
-      core unchanged.
+    Branches for the preamble specifically:
+
+    - No ``root`` configured (``PRECIS_ROOT`` unset): no preamble.
     - ``root`` set but no file-rooted handler registered (e.g. store-
-      only build that somehow has the env var): static core. The
+      only build that somehow has the env var): no preamble — the
       preamble would lie.
     - ``root`` set, at least one file kind registered, tree empty:
       preamble invites the agent to create a file.
@@ -136,13 +208,21 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     that actually runs.
     """
     core = _INSTRUCTIONS
+    kinds_line = _kinds_loaded_line(runtime)
+    unavailable_line = _kinds_unavailable_line(runtime)
+    startup = _startup_skills_banner(runtime)
+    tail = f"\n\n{kinds_line}"
+    if unavailable_line:
+        tail += f"\n{unavailable_line}"
+    if startup:
+        tail += f"\n{startup}"
     root = getattr(runtime.config, "root", None)
     if not root:
-        return core
+        return core + tail
     registered_kinds = runtime.hub.kinds
     file_kinds = [k for k in _FILE_KIND_EXTS if k in registered_kinds]
     if not file_kinds:
-        return core
+        return core + tail
     counts = _file_kind_counts(root, file_kinds)
     total = sum(counts.values())
     if total == 0:
@@ -162,7 +242,7 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
             "Everything here carries the `workspace` tag - scope search with:\n"
             "  search(q='<keyword>', tags=['workspace'])\n\n"
         )
-    return preamble + core
+    return preamble + core + tail
 
 
 _runtime: PrecisRuntime | None = None
@@ -296,312 +376,23 @@ def _validation_error(body: str) -> _ToolReturn:
     )
 
 
-@mcp.tool(**_TOOL_KW)
-def get(
-    kind: str,
-    id: str | int | None = None,
-    view: str | None = None,
-    q: str | None = None,
-    args: dict[str, Any] | None = None,
-) -> str:
-    """Read a ref or compute a value.
-
-    Args:
-        kind: Which kind to read from (e.g. 'calc', 'paper', 'memory').
-        id:   Identifier — string slug for slug kinds, int for numeric kinds.
-        view: Display variant (kind-specific; e.g. 'bibtex' for paper).
-        q:    Free-text query (used by some kinds in lieu of id).
-        args: Kind- and view-specific extra parameters as a dict. Used
-              for views that need typed payloads beyond `id`/`view`/`q`,
-              e.g. python's callgraph (``{'entry': 'pkg.mod:func',
-              'depth': 3}``) or runtrace (``{'entry': '...', 'argv':
-              [...], 'timeout': 10}``). See each kind's help skill for
-              the accepted shape. Reserved key names (``kind``, ``id``,
-              ``view``, ``q``) are rejected to prevent confusion with
-              the explicit positional kwargs.
-    """
-    payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
-    if args:
-        err = _check_reserved_args(args, reserved=("kind", "id", "view", "q"))
-        if err is not None:
-            return _validation_error(err)
-        payload["__extras__"] = dict(args)
-    return _dispatch("get", payload)
+# Tool functions are now imported from shared registry
 
 
-def _check_reserved_args(
-    args: dict[str, Any], *, reserved: tuple[str, ...]
-) -> str | None:
-    """Return a rendered error string if `args` shadows positional kwargs.
-
-    A model that mistakenly passes ``args={'id': 'foo'}`` instead of
-    ``id='foo'`` would otherwise silently overwrite the positional
-    `id` with the same value (or — worse — a different one). Surface
-    the mistake at the boundary so the recovery hint is sharp.
-
-    Mirrors the `search` tool's `top_k` validator: returns rendered
-    text rather than raising, so the MCP transport sees a normal
-    string response.
-    """
-    overlap = sorted(k for k in args if k in reserved)
-    if not overlap:
-        return None
-
-    from precis.errors import BadInput
-
-    return _rt().render_error(
-        BadInput(
-            f"args={overlap!r} shadows the explicit kwargs {list(reserved)!r}",
-            next="pass these as top-level keyword arguments, not inside args=",
-        )
-    )
+# ---------------------------------------------------------------------------
+# Tool registration from shared registry
+# ---------------------------------------------------------------------------
 
 
-#: Hard cap on ``top_k`` for the agent-facing search tool. The MCP
-#: critic flagged ``top_k=9999`` returning 7 326 hits in a single
-#: ~2.7 MB response, large enough to exhaust a 7B model's context
-#: window in one call. 100 is comfortably above any sensible
-#: pagination size and well below the response-size cliff.
-_SEARCH_TOP_K_MAX: int = 100
+def _register_tools_from_registry() -> None:
+    """Register all tools from the shared registry with FastMCP."""
+    for tool_name, tool_info in TOOL_REGISTRY.items():
+        # Register the tool function with FastMCP
+        mcp.tool(**_TOOL_KW)(tool_info["func"])
 
-
-@mcp.tool(**_TOOL_KW)
-def search(
-    q: str,
-    kind: str | None = None,
-    scope: str | None = None,
-    top_k: int = 10,
-    tags: list[str] | None = None,
-    source: str | None = None,
-    exclude: list[str] | None = None,
-) -> str:
-    """Search across kinds.
-
-    Args:
-        q:     Free-text query (lexical + semantic, hybrid-fused).
-        kind:  Restrict to a single kind. **Omit (or pass ``'*'`` /
-               ``'all'`` / ``'any'`` / ``''``) for cross-kind fan-out
-               across every search-hits-capable kind**, RRF-merged
-               with each hit tagged by its source kind. Comma-lists
-               like ``'paper,memory,web'`` narrow the fan-out to a
-               specific subset.
-        scope: Restrict to one ref's blocks (slug or numeric id).
-        top_k: Max results. Must be a positive integer ≤ 100. Larger
-               values are rejected to bound response size and protect
-               smaller models' context windows.
-        tags:  Kind-specific closed / open tag filters (e.g.
-               ``['cpc:B01J27/24']`` on ``kind='patent'``,
-               ``['topic-xyz']`` on any ref kind). Tag axes allowed
-               per kind follow the ``precis-tags`` matrix.
-        source: Kind-specific source selector for handlers that
-               merge multiple streams. Currently only ``kind='patent'``
-               honours this — ``'both'`` (default) merges the local
-               store and live OPS, ``'local'`` skips OPS, ``'remote'``
-               skips local and dedupes OPS hits against already-
-               fetched patents (prior-art sweep mode). Ignored by
-               handlers that don't merge streams.
-        exclude: List of ref slugs to omit from results. Coarse / ref-
-               level — ``exclude=['wang2020state']`` drops every block
-               of that paper. Use to paginate ("show me hits 6-10"):
-               pass back the slugs of hits 1-5 from the prior call.
-               The ``LIMIT`` applies after exclusion so ``top_k`` stays
-               meaningful — ``top_k=10, exclude=[5 slugs]`` returns the
-               next 10 hits, not 5. Stale / unknown slugs are silently
-               dropped. Currently honoured by ``kind='paper'``; other
-               block-level kinds ignore it.
-    """
-    # Validate top_k at the MCP boundary so internal callers (tests,
-    # SDK consumers) can still pass arbitrary values when they know
-    # what they're doing. The agent-facing surface is the place to
-    # enforce the cap. See MCP critic MAJOR #10.
-    from precis.errors import BadInput
-
-    if not isinstance(top_k, int) or top_k <= 0:
-        return _validation_error(
-            _rt().render_error(
-                BadInput(
-                    f"top_k must be a positive integer, got {top_k!r}",
-                    next="search(kind='paper', q='...', top_k=10)",
-                )
-            )
-        )
-    if top_k > _SEARCH_TOP_K_MAX:
-        return _validation_error(
-            _rt().render_error(
-                BadInput(
-                    f"top_k={top_k} exceeds maximum {_SEARCH_TOP_K_MAX}",
-                    next=(
-                        f"narrow with scope= or paginate; "
-                        f"max top_k is {_SEARCH_TOP_K_MAX}"
-                    ),
-                )
-            )
-        )
-    payload: dict[str, Any] = {
-        "kind": kind,
-        "q": q,
-        "scope": scope,
-        "top_k": top_k,
-    }
-    # Only forward optional kwargs when set — avoids flooding every
-    # handler with None values when its signature doesn't accept them
-    # (most kinds ignore tags= / source= / exclude= today, and
-    # forwarding None via **kwargs still costs a keyword-arg check
-    # at the handler).
-    if tags is not None:
-        payload["tags"] = tags
-    if source is not None:
-        payload["source"] = source
-    if exclude is not None:
-        payload["exclude"] = exclude
-    return _dispatch("search", payload)
-
-
-@mcp.tool(**_TOOL_KW)
-def put(
-    kind: str,
-    mode: str | None = None,
-    id: str | int | None = None,
-    text: str | None = None,
-    tags: list[str] | None = None,
-    untags: list[str] | None = None,
-    link: str | None = None,
-    unlink: str | None = None,
-    rel: str | None = None,
-) -> str:
-    """Write or annotate.
-
-    Args:
-        kind:   Which kind to write to.
-        mode:   Operation hint. Kind-specific:
-                - File kinds (``markdown``, ``plaintext``, ``tex``,
-                  ``python``): ``put`` is **creation-only** since the
-                  seven-verb cutover — ``mode='create'`` is required
-                  and is the only accepted value. Region edits
-                  (``append`` / ``insert`` / ``replace`` /
-                  ``find-replace``) live on the ``edit`` verb;
-                  whole-file deletes live on ``delete``.
-                - Numeric-ref kinds (``memory``, ``todo``, ``gripe``,
-                  ``conv``, ``fc``, ``quest``): omit ``mode=`` to
-                  create a new ref; ``mode='delete'`` soft-deletes.
-                - ``perplexity``: ``mode='import'`` ingests a
-                  pre-generated report as a $0 cache entry.
-                Unknown modes are rejected. See each kind's help skill
-                for the authoritative list.
-        id:     Target ref or block. Omit to create a new ref on
-                numeric-ref kinds; required (file path/slug) for file
-                kinds with ``mode='create'``.
-        text:   Content for create or text update.
-        tags:   Tag strings to apply (closed 'STATUS:done', flag 'pinned',
-                or open 'topic-x'). On update, the tag list is *added* —
-                use ``untags=`` to remove.
-        untags: Tag strings to remove. Closed-prefix entries (e.g.
-                'STATUS:open') match the prefix and value; flags and
-                open tags match exactly. Removing a tag the ref doesn't
-                carry is a no-op, not an error.
-        link:   Add a link to another ref. Canonical form
-                'kind:identifier[~selector]' — e.g. 'paper:wang2020',
-                'paper:wang2020~38' (block 38), 'todo:158'. The kind
-                prefix is required.
-        unlink: Remove a link. Same canonical form as ``link=``. With
-                ``rel=`` it removes one specific (target, relation)
-                pair; without it removes every link to the target.
-        rel:    Relation slug for ``link=`` / ``unlink=``. Defaults to
-                'related-to'. See ``precis-relations`` for the full
-                vocabulary (cites, blocks, contradicts, derived-from,
-                supports, …). Required when adding non-default
-                relations.
-    """
-    return _dispatch(
-        "put",
-        {
-            "kind": kind,
-            "id": id,
-            "text": text,
-            "mode": mode,
-            "tags": tags,
-            "untags": untags,
-            "link": link,
-            "unlink": unlink,
-            "rel": rel,
-        },
-    )
-
-
-@mcp.tool(**_TOOL_KW)
-def edit(
-    kind: str,
-    id: str | int,
-    mode: str = "find-replace",
-    text: str | None = None,
-    find: str | None = None,
-    before: str | None = None,
-    after: str | None = None,
-    where: str | None = None,
-    match: str | None = None,
-    nth: int | None = None,
-    allow_rename: bool | None = None,
-    dry_run: bool | None = None,
-) -> str:
-    """Edit a region within an existing ref's content.
-
-    Distinct from ``put`` — ``put`` creates new refs (or rewrites a
-    whole-file ref); ``edit`` rewrites a region within an existing one.
-    Each mode has a **fixed** required-argument set; the JSON Schema
-    encodes the coupling so a call with the wrong shape is rejected
-    before dispatch.
-
-    - ``find-replace`` (default): anchor-based string replace. Requires
-      ``find=`` AND ``text=``. Optional ``before=`` / ``after=`` /
-      ``match=`` / ``nth=`` disambiguate. Pass ``text=''`` to **delete
-      the matched span** — this is the canonical span-delete idiom.
-    - ``insert``: insert ``text=`` adjacent to a ``find=`` anchor.
-      Requires ``find=``, ``text=``, ``where='before'|'after'``.
-    - ``append`` / ``replace``: whole-region region edits. Requires
-      ``text=``. ``replace`` with ``id='slug~selector'`` rewrites one
-      block; ``append`` adds to the end of the file.
-    - ``reorder``: structured-file rearrangement (deferred — not yet
-      wired). See migration doc D5.
-
-    See each kind's help skill (``get(kind='skill', id='precis-edit-
-    protocol')``) for the per-kind menu.
-
-    Args:
-        kind: Which kind to edit.
-        id:   Existing ref id, optionally with selector for region edits.
-        mode: ``find-replace`` (default), ``append``, ``insert``,
-              ``replace``, ``reorder``.
-        text: Replacement / inserted content. **Required** for every
-              mode except ``reorder``. Pass ``text=''`` on
-              ``mode='find-replace'`` to delete the matched span.
-        find: Literal anchor string. **Required** for ``find-replace``
-              and ``insert``.
-        before / after: Optional literal bytes immediately preceding /
-              following ``find=``. Disambiguate when the same ``find``
-              appears more than once.
-        where: ``'before'`` or ``'after'``. **Required** for ``insert``.
-        match: ``'unique'`` (default), ``'first'``, ``'all'``, ``'nth'``.
-        nth:   1-based index when ``match='nth'``.
-        allow_rename: For find-replace edits that change a Python symbol
-              name; opt in to the qualname-drop gate override.
-        dry_run: Preview the edit without writing (``True`` / ``'diff'``
-              / ``'full'``).
-    """
-    payload: dict[str, Any] = {
-        "kind": kind,
-        "id": id,
-        "mode": mode,
-        "text": text,
-        "find": find,
-        "before": before,
-        "after": after,
-        "where": where,
-        "match": match,
-        "nth": nth,
-        "allow_rename": allow_rename,
-        "dry_run": dry_run,
-    }
-    return _dispatch("edit", payload)
+        # Apply special schema constraints for edit tool
+        if tool_name == "edit":
+            _install_edit_schema_constraints(mcp)
 
 
 def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
@@ -618,20 +409,30 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
     'find-replace', find=..., before=..., after=...)`` repeatedly
     with no ``text=`` and did not recover from the runtime error).
 
+    Constraints applied:
+
+    - ``text`` is appended to top-level ``required`` (unconditional —
+      every mode needs it).
+    - The mode-conditional coupling for ``find`` / ``where`` is encoded
+      in per-property ``description`` fields. We *cannot* use top-level
+      ``allOf`` + ``if/then`` here: Anthropic's ``/v1/messages`` API
+      rejects ``oneOf``/``allOf``/``anyOf`` at the root of
+      ``tools[].custom.input_schema`` with a 400, which blocks every
+      tool call. Property descriptions are the next-best signal for
+      schema-reading clients, and the runtime ``BadInput`` path remains
+      the safety net.
+
     The mutation runs once at module import. FastMCP's ``list_tools``
     copies ``tool.parameters`` into the wire ``inputSchema`` on every
-    call, so the constraint surfaces to every client. Runtime
-    validation is pydantic-backed and still accepts missing fields —
-    the handler's ``BadInput`` path remains the fallback when a client
-    ignores the schema.
+    call, so the constraint surfaces to every client.
     """
     tool = mcp_app._tool_manager.get_tool("edit")
     if tool is None:  # pragma: no cover — edit always registers above
         return
     params = tool.parameters
     # Sentinel keeps the mutation idempotent: multiple imports or a
-    # second call from a test harness must not duplicate ``allOf``
-    # clauses or re-append ``text`` to ``required``.
+    # second call from a test harness must not re-append ``text`` to
+    # ``required`` or duplicate the coupling notes.
     if params.get("x-precis-edit-constraints-installed"):
         return
 
@@ -642,156 +443,39 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
         required.append("text")
     params["required"] = required
 
-    # ``find`` and ``where`` are mode-conditional; express via
-    # ``allOf`` + ``if/then``. Draft 2020-12 semantics: the ``if``
-    # schema is evaluated against the instance; if it validates,
-    # the ``then`` schema must also validate.
-    mode_requires_find = {"find-replace", "insert"}
-    conditions: list[dict[str, Any]] = [
-        {
-            "if": {
-                "properties": {"mode": {"enum": sorted(mode_requires_find)}},
-                "required": ["mode"],
-            },
-            "then": {"required": ["find"]},
-        },
-        {
-            "if": {
-                "properties": {"mode": {"const": "insert"}},
-                "required": ["mode"],
-            },
-            "then": {"required": ["where"]},
-        },
-        # When ``mode`` is omitted, pydantic defaults to 'find-replace'
-        # — so ``find`` is still required.
-        {
-            "if": {"not": {"required": ["mode"]}},
-            "then": {"required": ["find"]},
-        },
-    ]
-    existing = list(params.get("allOf", []))
-    params["allOf"] = existing + conditions
+    # Mode-conditional coupling, encoded as description suffixes on the
+    # affected properties. Small models scan property descriptions
+    # alongside the ``required`` array; the runtime ``BadInput`` path
+    # is the safety net when they ignore both.
+    properties = params.get("properties") or {}
+
+    _MODE_COUPLING = (
+        " REQUIRED WHEN: mode='find-replace' (default) or mode='insert'."
+    )
+    _WHERE_COUPLING = " REQUIRED WHEN: mode='insert'. Value: 'before' or 'after'."
+    _MODE_NOTE = (
+        " Per-mode required args: 'find-replace' (default) → find=, text=;"
+        " 'insert' → find=, text=, where=; 'append'/'replace' → text=."
+    )
+
+    def _append_desc(prop: str, suffix: str) -> None:
+        schema = properties.get(prop)
+        if not isinstance(schema, dict):
+            return
+        existing = schema.get("description") or ""
+        if suffix.strip() in existing:
+            return
+        schema["description"] = (existing + suffix).strip()
+
+    _append_desc("find", _MODE_COUPLING)
+    _append_desc("where", _WHERE_COUPLING)
+    _append_desc("mode", _MODE_NOTE)
+
     params["x-precis-edit-constraints-installed"] = True
 
 
-_install_edit_schema_constraints(mcp)
-
-
-@mcp.tool(**_TOOL_KW)
-def delete(
-    kind: str,
-    id: str | int,
-) -> str:
-    """Delete a ref or region.
-
-    Behaviour is kind-specific:
-
-    - Numeric-ref kinds (memory, todo, gripe, fc, quest, oracle, conv):
-      soft-delete the ref. The row is retained for audit / undelete;
-      it just stops appearing in list views and search.
-    - File kinds with a selector in ``id=`` (markdown, plaintext,
-      python): delete the addressed block / symbol / line range.
-      Without a selector → ``BadInput`` — use
-      ``edit(mode='replace', text='')`` to clear a whole file, or
-      ``edit(mode='find-replace', find='…', text='')`` to delete a
-      matched span without touching the surrounding block.
-    - Cache-backed and read-only kinds (calc, math, web, youtube,
-      research, think, websearch, paper): ``Unsupported``.
-
-    No undo — soft-delete is recoverable at the SQL layer; selector
-    deletes write the file out without the deleted region.
-
-    Args:
-        kind: Which kind to delete from.
-        id:   Ref id (or ``slug~SELECTOR`` for region deletes on file
-              kinds).
-    """
-    return _dispatch("delete", {"kind": kind, "id": id})
-
-
-@mcp.tool(**_TOOL_KW)
-def tag(
-    kind: str,
-    id: str | int,
-    add: list[str] | None = None,
-    remove: list[str] | None = None,
-) -> str:
-    """Add and/or remove tags on an existing ref.
-
-    Both ``add`` and ``remove`` are accepted in the same call so a
-    transactional STATUS bump (``add=['STATUS:done'], remove=['STATUS:open']``)
-    happens atomically.
-
-    Tag vocabulary mirrors ``put(tags=...)``:
-
-    - **Closed UPPERCASE prefixes** (``STATUS:``, ``PRIO:``, ``SRC:``,
-      ``CACHE:``) replace within the prefix when added — adding
-      ``STATUS:done`` implicitly removes any existing ``STATUS:*``.
-      **Gated per-kind** (see matrix below): a closed prefix rejected
-      on one kind with ``[error:BadInput] axis not allowed on kind 'K'``
-      is the expected response, not a bug. Re-read ``get(kind='skill',
-      id='precis-tags')`` for the axis matrix.
-    - **Flag tags** (bare lowercase like ``pinned``, ``draft``)
-      toggle on / off.
-    - **Open tags** (``topic-co2-capture``, ``namespace:value``) add
-      and remove freely on every kind.
-
-    **Per-kind closed-prefix gating (summary)**:
-
-    - ``todo`` / ``gripe`` / ``quest``: ``STATUS`` + ``PRIO`` (workflow
-      kinds — both axes allowed)
-    - ``memory`` / ``fc`` / ``conv``: no closed axes (use open tags like
-      ``confidence-strong``, ``topic-noxrr`` — memories intentionally
-      have no ``PRIO:`` axis)
-    - ``paper`` / ``patent``: ``SRC`` + ``CACHE`` (provenance +
-      cache-freshness)
-    - ``web`` / ``research`` / ``think`` / ``websearch`` / ``youtube``:
-      ``CACHE`` only (agent-applied workflow axes rejected)
-    - ``oracle`` / ``skill``: no closed axes (read-only references)
-    - ``python`` / ``calc`` / ``math``: tag verb unsupported (read-only
-      or stateless kinds)
-
-    See ``get(kind='skill', id='precis-tags')`` for the authoritative
-    axis matrix; this docstring is a summary that may lag.
-
-    Args:
-        kind:   Kind owning the ref.
-        id:     Ref id (slug for slug kinds, int for numeric kinds).
-        add:    Tags to add.
-        remove: Tags to remove.
-    """
-    return _dispatch("tag", {"kind": kind, "id": id, "add": add, "remove": remove})
-
-
-@mcp.tool(**_TOOL_KW)
-def link(
-    kind: str,
-    id: str | int,
-    target: str | None = None,
-    mode: str = "add",
-    rel: str | None = None,
-) -> str:
-    """Add or remove a link between two refs.
-
-    Args:
-        kind:   Kind owning the source ref.
-        id:     Source ref id.
-        target: Canonical link target ``kind:id[~selector]`` —
-                e.g. ``paper:wang2020``, ``paper:wang2020~38`` (block
-                38), ``todo:158``. The ``kind:`` prefix is required.
-        mode:   ``add`` (default) creates the edge. ``remove`` deletes
-                it. With ``rel=`` on remove, removes the specific
-                (target, relation) pair; without, removes every link
-                to the target.
-        rel:    Relation slug. Defaults to ``related-to`` on add. See
-                ``precis-relations`` for the full vocabulary
-                (``cites``, ``blocks``, ``contradicts``, ``derived-from``,
-                ``supports``, …).
-    """
-    return _dispatch(
-        "link",
-        {"kind": kind, "id": id, "target": target, "mode": mode, "rel": rel},
-    )
+# Register all tools from the shared registry
+_register_tools_from_registry()
 
 
 # ---------------------------------------------------------------------------
@@ -799,11 +483,51 @@ def link(
 # ---------------------------------------------------------------------------
 
 
+def _warm_embedder_background(runtime: PrecisRuntime) -> None:
+    """Best-effort: load bge-m3 weights in a background thread.
+
+    Broad usability pass 2026-05-30 (#11): the first semantic search
+    after server boot blocked for 30–50 s while ``BgeM3Embedder``
+    lazily loaded its weights, blowing past Claude Code's per-call
+    MCP timeout. ``BgeM3Embedder`` is deliberately lazy at
+    construction (the handshake-budget rationale still applies) — so
+    we trigger the load *after* ``mcp.run()`` is about to take over,
+    on a dedicated thread, so the warmup races the first agent
+    request instead of blocking it.
+
+    Failures are logged and swallowed: a degraded warmup never
+    blocks startup, and lazy loading still happens on the eventual
+    first ``embed()`` call.
+    """
+    embedder = getattr(runtime, "embedder", None)
+    if embedder is None:
+        return
+    ensure = getattr(embedder, "_ensure_loaded", None)
+    if ensure is None:
+        return  # mock embedder, third-party embedder, etc.
+
+    def _warm() -> None:
+        try:
+            log.info("warming embedder %s in background", embedder.model)
+            ensure()
+            log.info("embedder %s warm", embedder.model)
+        except Exception:
+            log.exception("background embedder warmup failed")
+
+    import threading
+
+    thread = threading.Thread(
+        target=_warm, name="precis-embedder-warmup", daemon=True
+    )
+    thread.start()
+
+
 def main() -> None:
     """Run the MCP stdio server.
 
     Build the runtime (including postgres pool) before mcp.run takes
-    over, register atexit shutdown, then hand control to FastMCP.
+    over, register atexit shutdown, kick off the background embedder
+    warmup, then hand control to FastMCP.
     """
     from precis.config import load_config
 
@@ -813,7 +537,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    _init_runtime()
+    runtime = _init_runtime()
+    _warm_embedder_background(runtime)
     mcp.run(transport="stdio")
 
 

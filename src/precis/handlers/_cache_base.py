@@ -276,7 +276,6 @@ class CacheBackedHandler(Handler):
         # True miss — fresh ref creation.
         result = self._fetch(key)
         ref, cache = self.store.put_cache_entry(
-            corpus_id=self.store.ensure_corpus(self.corpus_slug),
             kind=self.spec.kind,
             slug=self._slug_for(key),
             title=result.title,
@@ -719,6 +718,7 @@ class CacheBackedHandler(Handler):
         *,
         q: str,
         top_k: int = 10,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search as :class:`SearchHit` rows.
@@ -727,11 +727,13 @@ class CacheBackedHandler(Handler):
         (``kind='*'`` / ``kind='paper,web'``). Empty queries return
         ``[]`` rather than raising — cross-kind callers tolerate a
         kind contributing zero rows.
+
+        ``query_vec=`` may be pre-supplied by the runtime cross-kind
+        dispatcher (computed once for all kinds).
         """
         if not (q and q.strip()):
             return []
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
+        if query_vec is None and self.embedder is not None:
             query_vec = self.embedder.embed_one(q)
         triples = self.store.search_blocks_fused(
             q=q,

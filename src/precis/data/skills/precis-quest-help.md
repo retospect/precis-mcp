@@ -1,147 +1,111 @@
 ---
 id: precis-quest-help
-title: precis — long-running goals as slug-addressed work units
-status: shipped
-tier: 1
-floor: any
-applies-to: get / search / put / delete / tag / link (kind='quest')
-last-updated: 2026-05-02
+title: precis — track long-running goals
+applies-to: get/search/put/delete/tag/link (kind='quest')
+status: active
 ---
 
-# precis-quest-help — long-running goals
+# precis-quest-help — track long-running goals
 
-`quest` is a **slug-addressed work-unit kind**. One quest = one
-goal that takes longer than a single session — something you'd
-otherwise track in a stickies file or a separate issue queue.
-Status flows on the same `STATUS:` axis as `todo`, but the unit
-of work is bigger and the slug is human-meaningful.
+A quest is a multi-session goal with a human-meaningful slug. Use it
+for work bigger than a single next-action (those are `todo`).
 
-Two things distinguish quest from todo:
-
-- **Slug, not integer id.** Auto-derived from the text on create
-  (`put(text='ingest acheson 2026')` → slug `ingest-acheson-2026`).
-  Slugs are stable references you can paste into commits and prose.
-- **Larger unit.** A todo is a discrete next-action; a quest is a
-  multi-step goal. The body holds the framing; sub-tasks belong
-  in linked `todo` refs.
-
-## Open one
+## Open a new quest
+## Start tracking a long-running goal
+## How do I create a quest?
 
 ```python
 put(kind='quest', text='ingest acheson 2026 corpus end-to-end')
 # → created quest 'ingest-acheson-2026-corpus-end-to-end' (status: open)
 ```
 
-The slug is auto-derived (lowercased, hyphenated, ≤60 chars). On
-collision the handler appends `-2`, `-3`, … until unique.
+Slug is auto-derived from the text (lowercased, hyphenated, ≤60 chars).
+Collisions append `-2`, `-3`. `put` is create-only — passing `id=` is
+rejected. To change the framing, soft-delete and re-open.
 
-`put` is **create-only** for quest. To mutate an existing quest use
-the dedicated verbs: `tag`, `link`, `delete`. Re-issuing
-`put(text='same')` does not edit the existing quest — it raises
-`BadInput`.
-
-## Browse
+## See what I'm working on
+## List my open quests
+## What am I working toward this quarter?
 
 ```python
-get(kind='quest')                    # /recent (default)
-get(kind='quest', id='/recent')      # 100 newest, any status
-get(kind='quest', id='/open')        # STATUS:open
-get(kind='quest', id='/doing')       # STATUS:doing
-get(kind='quest', id='/blocked')     # STATUS:blocked
-get(kind='quest', id='/done')        # STATUS:done
-get(kind='quest', id='<slug>')       # one quest
+get(kind='quest')                # /recent (default)
+get(kind='quest', id='/open')    # STATUS:open + doing + blocked
+get(kind='quest', id='/doing')   # in progress only
+get(kind='quest', id='/blocked') # waiting on something
+get(kind='quest', id='/done')    # completed
+get(kind='quest', id='<slug>')   # one quest with its tags
 ```
 
-## Status transitions
+## Mark a quest done
+## Move a quest through statuses
+## How do I close out a quest?
 
 ```python
-tag(kind='quest', id='ingest-acheson-2026', add=['STATUS:doing'])
-tag(kind='quest', id='ingest-acheson-2026', add=['STATUS:blocked'])
-tag(kind='quest', id='ingest-acheson-2026', add=['STATUS:done'])
+tag(kind='quest', id='<slug>', add=['STATUS:doing'])
+tag(kind='quest', id='<slug>', add=['STATUS:blocked'])
+tag(kind='quest', id='<slug>', add=['STATUS:done'])
+tag(kind='quest', id='<slug>', add=['STATUS:won\'t-do'])
 ```
 
-`STATUS:` is closed-prefix and replaces atomically — adding a new
-status removes the previous one in the same call.
+`STATUS:` is closed-prefix — setting one replaces the previous value
+atomically. Same applies to `PRIO:` (`low`, `normal`, `high`, `urgent`).
 
-## Search
-
-```python
-search(kind='quest', q='ingest', tags=['STATUS:open'])
-search(kind='quest', q='photocatalysis')
-```
-
-`tags=` filters compose with AND. Cross-kind search (`kind='*'` or
-`kind='quest,todo,memory'`) includes quests in the merge.
-
-## Link to evidence and follow-ups
-
-Quests are the connective tissue between long-running goals and
-the smaller refs that progress them:
+## Link a todo to a quest
+## Attach evidence or follow-ups to a quest
+## How do I connect a task to a goal?
 
 ```python
-# A todo that's part of a quest
-put(kind='todo', text='extract chapter 3 figures',
-    tags=['PRIO:normal'])
-# → todo id=204
+# A todo that progresses this quest
+put(kind='todo', text='extract chapter 3 figures')   # → id=204
 link(kind='todo', id=204,
-     target='quest:ingest-acheson-2026-corpus-end-to-end',
-     rel='derived-from')
+     target='quest:<slug>', rel='derived-from')
 
-# A memory that captured the goal's framing
-link(kind='quest', id='ingest-acheson-2026-corpus-end-to-end',
-     target='memory:88', rel='supports')
-
-# A patent watch that the quest spawned
-link(kind='quest', id='ingest-acheson-2026-corpus-end-to-end',
+# A paper the quest is about
+link(kind='quest', id='<slug>',
      target='paper:acheson2026automated', rel='cites')
+
+# A memory that captured the framing
+link(kind='quest', id='<slug>',
+     target='memory:88', rel='supports')
 ```
 
-`view='links'` is not yet wired on slug kinds — to enumerate a
-quest's links today, look at the linked numeric-ref refs (memory,
-todo) via their own `view='links'`.
+Targets carry an explicit kind prefix. See `precis-relations` for the
+vocabulary.
 
-## Delete
+## Search quests by content
 
 ```python
-delete(kind='quest', id='ingest-acheson-2026-corpus-end-to-end')
-# Soft-delete: row retained for audit, vanishes from list views.
+search(kind='quest', q='ingest')
+search(kind='quest', q='ingest', tags=['STATUS:open'])
 ```
 
-No MCP undo — reverse via SQL by setting `deleted_at = NULL`.
+`tags=` filters compose with AND. Cross-kind search
+(`kind='quest,todo'`) merges quests with other queues.
 
-## Vocabulary
+## Delete a quest
 
-- `STATUS:` values: `open` (default on create), `doing`, `blocked`,
-  `done`, `won't-do`. Unknown values rejected at write time.
-- `PRIO:` values: `low`, `normal`, `high`, `urgent`. Optional.
+```python
+delete(kind='quest', id='<slug>')
+```
+
+Soft-delete — row retained, vanishes from list views.
 
 ## When to use quest vs todo vs memory
 
-| Want to capture... | Use |
+| Capture | Use |
 |---|---|
 | Discrete next-action | `todo` |
-| Multi-step goal with status flow | `quest` |
-| Decision / observation / lesson | `memory` |
-| Friction with no articulation yet | `gripe` (write-only) |
+| Multi-session goal with status flow | `quest` |
+| Decision, observation, lesson | `memory` |
 
-The same `STATUS:` lifecycle applies to todo and quest, but a todo
-disappears off the queue when done; a quest stays as the durable
-slug for retrospective queries (`search(kind='quest', q='ingest',
-tags=['STATUS:done'])`).
-
-## Failure modes
-
-- **`put(id='...')`** — rejected. To mutate, use `tag` / `link` /
-  `delete`. Quest text is the framing on creation, not editable
-  thereafter; if the framing needs to change, soft-delete and
-  re-open.
-- **Slug collision** — handled silently with `-2`, `-3`, … suffix.
-  If you wanted to overwrite, soft-delete the existing slug first.
-- **`STATUS:invented`** — closed-prefix axes reject unknown values
-  with the canonical list in the error.
+A done todo disappears off the queue; a done quest stays as the durable
+slug for retrospective queries.
 
 ## See also
 
-- `precis-todo-help` — discrete actions; same `STATUS:` axis
-- `precis-relations` — `derived-from` / `supports` / `cites`
-- `precis-tags` — `STATUS:` / `PRIO:` vocabulary
+```python
+get(kind='skill', id='precis-todo-help')      # day-to-day tasks; same STATUS axis
+get(kind='skill', id='precis-relations')      # derived-from / supports / cites
+get(kind='skill', id='precis-tags')           # STATUS: / PRIO: vocabulary
+get(kind='skill', id='precis-memory-help')    # capturing decisions and framings
+```
