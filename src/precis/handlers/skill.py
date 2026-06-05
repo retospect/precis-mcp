@@ -1276,6 +1276,7 @@ _STARTED_AT: datetime = datetime.now(UTC)
 #: Unset vars fall through to the literal string ``"unknown"`` — the
 #: status response surfaces the gap honestly rather than pretending.
 _BUILD_ENV_KEYS: tuple[tuple[str, str], ...] = (
+    ("PRECIS_GIT_LAST_TAG", "git_last_tag"),
     ("PRECIS_GIT_SHA", "git_sha"),
     ("PRECIS_GIT_SHA_SHORT", "git_sha_short"),
     ("PRECIS_GIT_DIRTY", "git_dirty"),

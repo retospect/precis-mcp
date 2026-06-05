@@ -328,3 +328,95 @@ def test_precis_status_marks_missing_optional_dep(monkeypatch) -> None:
     assert "fake-probe" in body
     assert "pip install nothing" in body
     assert "Overall: DEGRADED" in body
+
+
+def test_precis_status_build_section_reads_env(monkeypatch) -> None:
+    """The Build section surfaces the ``PRECIS_*`` env vars baked in
+    at ``docker build`` time. When unset, fields read ``unknown`` so
+    a bare ``docker build .`` (or a pip install with no metadata
+    plumbing) still produces a well-formed response.
+    """
+    monkeypatch.setenv("PRECIS_GIT_LAST_TAG", "v8.4.4")
+    monkeypatch.setenv("PRECIS_GIT_SHA", "abcdef0123456789")
+    monkeypatch.setenv("PRECIS_GIT_DIRTY", "1")
+    monkeypatch.setenv("PRECIS_GIT_BRANCH", "main")
+    monkeypatch.setenv("PRECIS_BUILD_TIME", "2026-06-05T12:00:00Z")
+    # Leave PRECIS_BUILD_HOST / PRECIS_BUILD_USER / etc. untouched —
+    # they must render as ``unknown`` without crashing.
+    monkeypatch.delenv("PRECIS_BUILD_HOST", raising=False)
+    monkeypatch.delenv("PRECIS_GIT_DESCRIBE", raising=False)
+
+    handler = SkillHandler(hub=Hub())
+    body = handler._render_status()
+
+    assert "**Build**" in body
+    assert "v8.4.4" in body
+    assert "abcdef0123456789" in body
+    assert "2026-06-05T12:00:00Z" in body
+    # `version` always populated from precis.__version__ regardless
+    # of env state — it's the one Build field a pip install can rely
+    # on without a wheel-build hook.
+    from precis import __version__
+
+    assert __version__ in body
+    # Unset env vars surface honestly as ``unknown`` rather than
+    # silently disappearing or crashing the response.
+    assert "unknown" in body
+
+
+def test_precis_status_runtime_section_present() -> None:
+    """The Runtime section reports live process facts (hostname,
+    pid, uptime). Asserts presence + structural fields; values are
+    machine-dependent so we don't pin them.
+    """
+    handler = SkillHandler(hub=Hub())
+    body = handler._render_status()
+
+    assert "**Runtime**" in body
+    assert "hostname" in body
+    assert "platform" in body
+    assert "python" in body
+    assert "pid" in body
+    assert "uptime_seconds" in body
+
+
+def test_precis_status_database_unreachable_renders_inline() -> None:
+    """When the DB roundtrip raises, the Database section reports
+    ``unreachable: <type>: <msg>`` inline rather than crashing the
+    whole status response. The status surface is the first thing
+    called when something is wrong — it must keep working when the
+    DB is the thing wrong.
+    """
+
+    class _ExplodingPool:
+        def connection(self) -> None:
+            raise RuntimeError("pretend the DB is down")
+
+    class _BrokenStore:
+        dsn = "postgresql://precis:secret@db.example.invalid:5432/precis"
+        pool = _ExplodingPool()
+
+    hub = Hub(store=_BrokenStore())  # type: ignore[arg-type]
+    handler = SkillHandler(hub=hub)
+    handler._register_with(hub)
+
+    body = handler._render_status()
+    assert "**Database**" in body
+    assert "unreachable" in body
+    assert "RuntimeError" in body
+    # The DSN's password component must never leak into the rendered
+    # response — only host / port / name / user are echoed back.
+    assert "secret" not in body
+    # The rest of the response still renders end-to-end.
+    assert "**Overall:" in body
+
+
+def test_precis_status_database_stateless_when_no_store() -> None:
+    """A hub with no store wired renders the Database section as a
+    one-line ``stateless build`` note rather than erroring or omitting
+    the heading.
+    """
+    handler = SkillHandler(hub=Hub())
+    body = handler._render_status()
+    assert "**Database**" in body
+    assert "stateless build" in body

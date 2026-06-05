@@ -10,6 +10,28 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **`precis-status` reports build / runtime / DB facts.** The
+  synthesised `precis-status` skill (previously only an optional-
+  dependency probe) now prepends three sections:
+  **Build** (`precis.__version__` + 9 env-sourced fields:
+  `PRECIS_GIT_LAST_TAG`, `PRECIS_GIT_SHA`, `…_SHORT`, `…_DIRTY`,
+  `…_DESCRIBE`, `…_BRANCH`, `PRECIS_BUILD_TIME`, `…_HOST`,
+  `…_USER`); **Runtime** (container hostname, OS platform, python
+  version, pid, started-at, uptime); **Database** (parsed
+  `dsn_host`/`port` + a single round-trip pulling
+  `current_database()`, `current_user`, `version()`, and the last
+  applied row from `public._migrations`). DB failures render
+  `unreachable: <type>: <msg>` inline so the surface stays usable
+  when the DB itself is the thing wrong. Env fields default to
+  `"unknown"` when no build-args were passed — see
+  `scripts/build-image` for the host-side capture.
+- **`scripts/build-image`.** Host-side wrapper that collects git
+  facts (`git rev-parse`, `git describe --tags --abbrev=0`, dirty
+  flag) plus `date`/`hostname`/`$USER` and runs
+  `docker compose -f $PRECIS_COMPOSE build` with the right
+  `--build-arg` flags. The matching `ARG`/`ENV` block sits late in
+  the `runtime` and `dev` stages of `docker/Dockerfile` so changed
+  values only invalidate a single cheap layer.
 - **`gripe` promoted to first-class bug tracker.** The write-only
   capture box was useful but ended at filing; gripe is now the
   project's discoverable bug tracker. `get(kind='gripe', id=N)`

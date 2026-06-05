@@ -37,12 +37,16 @@ else
     GIT_DIRTY=1
 fi
 GIT_DESCRIBE="$(git describe --tags --always --dirty --long 2>/dev/null || echo unknown)"
+# Latest annotated/lightweight tag reachable from HEAD — what an
+# operator means by "what release is this?" (e.g. v8.4.4).
+GIT_LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo unknown)"
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_HOST="$(hostname -f 2>/dev/null || hostname)"
 BUILD_USER="${USER:-unknown}"
 
 exec docker compose -f "${INFRA_COMPOSE}" build \
+    --build-arg "PRECIS_GIT_LAST_TAG=${GIT_LAST_TAG}" \
     --build-arg "PRECIS_GIT_SHA=${GIT_SHA}" \
     --build-arg "PRECIS_GIT_SHA_SHORT=${GIT_SHA_SHORT}" \
     --build-arg "PRECIS_GIT_DIRTY=${GIT_DIRTY}" \

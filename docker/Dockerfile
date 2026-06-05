@@ -230,6 +230,7 @@ WORKDIR /data
 # Defaults to `unknown` so a bare `docker build .` (no --build-arg flags)
 # still produces a well-formed status response. Kept here near the end of
 # the stage so changed values only invalidate this single ENV layer.
+ARG PRECIS_GIT_LAST_TAG=unknown
 ARG PRECIS_GIT_SHA=unknown
 ARG PRECIS_GIT_SHA_SHORT=unknown
 ARG PRECIS_GIT_DIRTY=unknown
@@ -238,7 +239,8 @@ ARG PRECIS_GIT_BRANCH=unknown
 ARG PRECIS_BUILD_TIME=unknown
 ARG PRECIS_BUILD_HOST=unknown
 ARG PRECIS_BUILD_USER=unknown
-ENV PRECIS_GIT_SHA=$PRECIS_GIT_SHA \
+ENV PRECIS_GIT_LAST_TAG=$PRECIS_GIT_LAST_TAG \
+    PRECIS_GIT_SHA=$PRECIS_GIT_SHA \
     PRECIS_GIT_SHA_SHORT=$PRECIS_GIT_SHA_SHORT \
     PRECIS_GIT_DIRTY=$PRECIS_GIT_DIRTY \
     PRECIS_GIT_DESCRIBE=$PRECIS_GIT_DESCRIBE \
@@ -347,6 +349,7 @@ RUN chown -R precis:precis /opt/venv
 # Build metadata. See the matching block in the `runtime` stage for
 # the rationale. Mirrored here so dev shells (scripts/dev) surface the
 # same precis-status response as production containers.
+ARG PRECIS_GIT_LAST_TAG=unknown
 ARG PRECIS_GIT_SHA=unknown
 ARG PRECIS_GIT_SHA_SHORT=unknown
 ARG PRECIS_GIT_DIRTY=unknown
@@ -355,7 +358,8 @@ ARG PRECIS_GIT_BRANCH=unknown
 ARG PRECIS_BUILD_TIME=unknown
 ARG PRECIS_BUILD_HOST=unknown
 ARG PRECIS_BUILD_USER=unknown
-ENV PRECIS_GIT_SHA=$PRECIS_GIT_SHA \
+ENV PRECIS_GIT_LAST_TAG=$PRECIS_GIT_LAST_TAG \
+    PRECIS_GIT_SHA=$PRECIS_GIT_SHA \
     PRECIS_GIT_SHA_SHORT=$PRECIS_GIT_SHA_SHORT \
     PRECIS_GIT_DIRTY=$PRECIS_GIT_DIRTY \
     PRECIS_GIT_DESCRIBE=$PRECIS_GIT_DESCRIBE \
