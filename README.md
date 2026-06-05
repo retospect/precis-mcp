@@ -89,9 +89,7 @@ off the tool surface with a WARNING, the server stays up.
 
 `precis-mcp` requires PostgreSQL with the `pgvector` extension. The
 CLI `precis migrate` applies the forward-only numbered SQL migrations
-in `src/precis/migrations/`. See
-[`docs/store_sketch.py`](docs/store_sketch.py) for the Python store
-interface and `0001_initial.sql` for the schema.
+in `src/precis/migrations/`. See `0001_initial.sql` for the schema.
 
 ```bash
 createdb precis

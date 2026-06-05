@@ -291,8 +291,7 @@ tests/test_worker_cli.py
 
 ## Test plan
 
-Per `docs/conventions/testing.md`, tests go first for new pure-
-library code.
+Tests go first for new pure-library code.
 
 **Unit (no DB)**
 
