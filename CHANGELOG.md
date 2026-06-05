@@ -8,6 +8,8 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+## v8.4.1 — pick_candidate + retraction cascade + CI hygiene (2026-06-05)
+
 ### Added
 
 - **`edit(kind='finding', id=N, pick_candidate='<cite_key|ref_id>')`** —
@@ -37,6 +39,40 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   bulk backfills. 6 scenarios under
   `tests/test_finding.py::TestRetractionPropagation`. Closes
   design-doc open question #3.
+
+### Fixed
+
+- **Mypy stub for `add_tag` on `RefsMixin`.** The retraction
+  cascade above calls `TagsMixin.add_tag` across the mixin
+  boundary; mypy 2.1 couldn't see through it and raised
+  `"RefsMixin" has no attribute "add_tag"`. Followed the existing
+  `_validate_slug_for_kind` pattern documented in the module
+  docstring: declare a `NotImplementedError`-bodied stub of
+  `add_tag` on `RefsMixin` so mypy sees the signature in
+  isolation while MRO resolves to `TagsMixin.add_tag` at runtime.
+- **`docker/bake-models.py` retries the bge-m3 fetch on HF 429 /
+  `LocalEntryNotFoundError`.** The v8.3.1 `publish-image` job
+  failed at the bge-m3 stage when the `premodels` build-context
+  cache wasn't populated and the cold fetch hit HF's rate limit.
+  Wrapped `snapshot_download` in an exponential-backoff loop
+  (5s / 15s / 45s / 120s / 300s, ~8 min total) so a transient
+  429 window doesn't fail the release. Non-transient 4xx still
+  fails fast.
+- **`docker/bake-models.py::_patch_surya_config` works on surya
+  0.17.x.** The hard import of `SuryaOCRConfig` from
+  `surya.recognition.model.config` worked on surya 0.13 but the
+  class was removed in 0.17 (broad upgrade in v8.3.0). Rewrote
+  the patch as a best-effort sweep over both module layouts so
+  the bake survives further surya renames.
+- **`.pre-commit-config.yaml` pins ruff to v0.15.16** to match
+  `uv.lock`. The hook was at v0.11.6 while CI's `uv run ruff
+  format --check` was at 0.15.16, so the 0.15+ formatter rules
+  silently passed pre-commit and failed CI. Header comment
+  documents the `grep -A1 '^name = "ruff"' uv.lock` recipe for
+  future bumps.
+- **Windows `test_ingest_failure_str_format`** no longer fails on
+  the POSIX-vs-`\\tmp\\x.md` separator mismatch — the assertion
+  now compares against `str(path)`.
 
 ## v8.3.1 — migration runner: pg_dump compatibility (2026-06-05)
 

@@ -28,7 +28,9 @@ from precis.handlers.skill import _load_skill  # noqa: E402  (path setup above)
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--persona", required=True, help="Persona slug (filename stem)")
-    ap.add_argument("--handle", required=True, help="Paper handle to substitute for <handle>")
+    ap.add_argument(
+        "--handle", required=True, help="Paper handle to substitute for <handle>"
+    )
     args = ap.parse_args()
 
     body = _load_skill(args.persona)
