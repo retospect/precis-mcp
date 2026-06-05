@@ -45,7 +45,7 @@ from psycopg_pool import ConnectionPool
 from precis.errors import NotFound
 from precis.store._mappers import _REFS_COLS, _REFS_COLS_ALIASED, _row_to_ref
 from precis.store._tag_filter import build_tag_filter
-from precis.store.types import Ref
+from precis.store.types import ActorSlug, Ref, Tag
 
 
 class RefsMixin:
@@ -62,6 +62,22 @@ class RefsMixin:
         kind: str,
         slug: str | None,
         *,
+        conn: Connection | None = None,
+    ) -> None:
+        raise NotImplementedError  # pragma: no cover — overridden by Store
+
+    # Provided by ``TagsMixin`` on the concrete Store; declared here so
+    # the retraction-cascade path in ``regrade_finding_for_retraction``
+    # type-checks against the cross-mixin call. MRO resolves to the
+    # real impl at runtime.
+    def add_tag(
+        self,
+        ref_id: int,
+        tag: Tag,
+        *,
+        pos: int | None = None,
+        set_by: ActorSlug = "agent",
+        replace_prefix: bool = False,
         conn: Connection | None = None,
     ) -> None:
         raise NotImplementedError  # pragma: no cover — overridden by Store
@@ -435,8 +451,6 @@ class RefsMixin:
         ).fetchall()
         if not rows:
             return 0
-
-        from precis.store.types import Tag
 
         retracted_slug_row = conn.execute(
             "SELECT id_value FROM ref_identifiers "
