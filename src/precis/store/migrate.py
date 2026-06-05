@@ -49,10 +49,15 @@ def _load_migrations(migrations_dir: Path) -> list[MigrationFile]:
 
 def _applied_versions(conn: psycopg.Connection) -> dict[str, str]:
     """Return {version: checksum} from `_migrations`. Empty dict if the
-    table doesn't exist yet (fresh database)."""
+    table doesn't exist yet (fresh database).
+
+    Uses the schema-qualified ``public._migrations`` — a pg_dump
+    migration body can set ``search_path = ''`` mid-apply, which
+    leaves later bare references unresolved.
+    """
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT version, checksum FROM _migrations")
+            cur.execute("SELECT version, checksum FROM public._migrations")
             rows = cur.fetchall()
     except UndefinedTable:
         conn.rollback()
@@ -119,11 +124,20 @@ class Migrator:
                 log.info("applying migration %s", f.version)
                 with conn.transaction():
                     with conn.cursor() as cur:
-                        cur.execute(f.sql)
+                        _execute_dump_sql(cur, f.sql)
                         # _migrations may not exist yet on first migration;
                         # the migration creates it as part of its body.
+                        # Fully qualified: pg_dump-style migrations
+                        # set ``search_path = ''`` at the top of the
+                        # body for DDL-safety (line ~45 of a 0001_initial
+                        # dump). After the migration runs, the same
+                        # search_path is still in effect on this
+                        # connection, so a bare ``_migrations`` reference
+                        # fails to resolve. Use the schema-qualified
+                        # name so the ledger row lands regardless of
+                        # what the migration file did to search_path.
                         cur.execute(
-                            "INSERT INTO _migrations (version, checksum) "
+                            "INSERT INTO public._migrations (version, checksum) "
                             "VALUES (%s, %s)",
                             (f.version, f.checksum),
                         )
@@ -131,3 +145,78 @@ class Migrator:
                 log.info("  applied %s ok", f.version)
 
         return newly_applied
+
+
+# ---------------------------------------------------------------------------
+# pg_dump-compatible SQL execution
+# ---------------------------------------------------------------------------
+
+
+def _execute_dump_sql(cur: psycopg.Cursor, sql: str) -> None:
+    """Run a migration SQL body, handling pg_dump psql artefacts.
+
+    A pg_dump-format file mixes real SQL with psql metacommands and
+    ``COPY ... FROM stdin;`` data blocks. psycopg's simple-query
+    ``execute()`` can't run either shape: ``\\restrict`` is a
+    parser error, and a ``FROM stdin;`` COPY needs the explicit
+    ``copy()`` API rather than an embedded ``\\.``-terminated block.
+
+    This driver walks the SQL line-by-line:
+
+    * ``\\restrict X`` / ``\\unrestrict X`` — silently skipped
+      (these are PG 18+ dump markers that gate protocol features
+      we don't use during a single-connection apply).
+    * ``COPY table (cols) FROM stdin;`` — collect rows up to the
+      ``\\.`` terminator and stream them through ``cur.copy()``
+      with the same tab-separated payload the dump emitted.
+    * Everything else — buffered and flushed to a single
+      ``cur.execute()`` call between blocks so ordinary
+      multi-statement SQL still runs in one parse.
+
+    The intent is "pg_dump output Just Works"; clean hand-written
+    migrations (the previous shape) pass through unchanged because
+    they contain no ``\\``-prefixed lines.
+    """
+    buffer: list[str] = []
+
+    def _flush() -> None:
+        if not buffer:
+            return
+        chunk = "".join(buffer)
+        buffer.clear()
+        if chunk.strip():
+            cur.execute(chunk)
+
+    lines = sql.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+        if stripped.startswith("\\restrict ") or stripped.startswith("\\unrestrict "):
+            # Drop the dump marker; it isn't SQL.
+            i += 1
+            continue
+        # COPY ... FROM stdin; — the next lines are tab-separated
+        # row data terminated by a lone ``\.`` line.
+        s_lower = stripped.lower()
+        if s_lower.startswith("copy ") and "from stdin" in s_lower:
+            _flush()
+            copy_sql = line.rstrip()
+            j = i + 1
+            data: list[str] = []
+            while j < len(lines):
+                row = lines[j]
+                if row.rstrip("\r\n") == "\\.":
+                    j += 1
+                    break
+                data.append(row)
+                j += 1
+            payload = "".join(data).encode("utf-8")
+            with cur.copy(copy_sql) as copy:
+                copy.write(payload)
+            i = j
+            continue
+        buffer.append(line)
+        i += 1
+
+    _flush()
