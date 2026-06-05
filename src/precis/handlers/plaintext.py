@@ -40,6 +40,7 @@ from precis.handlers._link_tag_ops import (
     apply_tag_ops,
     format_link_tag_ack,
 )
+from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
@@ -453,12 +454,14 @@ class PlaintextHandler(Handler):
         *,
         q: str,
         top_k: int = 10,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         if not (q and q.strip()):
             return []
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
+        # query_vec= may be pre-supplied by the runtime cross-kind
+        # dispatcher (computed once for all kinds).
+        if query_vec is None and self.embedder is not None:
             query_vec = self.embedder.embed_one(q)
         triples = self.store.search_blocks_fused(
             q=q,
@@ -1064,14 +1067,14 @@ class PlaintextHandler(Handler):
     def _resolve_pt_ref(self, id: str | int) -> tuple[str, int]:
         """Coerce an id to (slug, ref_id), ingesting the file if needed."""
         slug, sel, path_view = _parse_file_id(str(id), extensions=self._EXTENSIONS)
-        if sel is not None or path_view is not None:
-            raise BadInput(
-                (
-                    f"{self._KIND} tag/link ops operate at file level - drop the "
-                    "block selector / path view from id="
-                ),
-                next=f"tag(kind='{self._KIND}', id={slug!r}, add=[...])",
-            )
+        reject_chunk_or_path_view(
+            kind=self._KIND,
+            slug=slug,
+            sel=sel,
+            path_view=path_view,
+            selector_noun="block selector",
+            level_noun="file",
+        )
         ref = self._require_existing_file(slug)
         return slug, ref.id
 

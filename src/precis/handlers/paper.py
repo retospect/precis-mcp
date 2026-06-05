@@ -32,7 +32,10 @@ from precis.handlers._link_tag_ops import (
     apply_tag_ops,
     format_link_tag_ack,
 )
-from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.handlers._slug_ref_shared import (
+    reject_chunk_or_path_view,
+    resolve_live_slug_ref,
+)
 from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -50,8 +53,15 @@ from precis.utils.toc_db import render_from_store
 # ---------------------------------------------------------------------------
 
 _SUPPORTED_VIEWS = (
-    "bibtex", "ris", "endnote", "abstract", "toc", "health", "bibliography",
-    "log", "abbrevs",
+    "bibtex",
+    "ris",
+    "endnote",
+    "abstract",
+    "toc",
+    "health",
+    "bibliography",
+    "log",
+    "abbrevs",
 )
 
 
@@ -565,27 +575,16 @@ class PaperHandler(Handler):
             else:
                 top_slug = (hits[0][1].slug or "???") if hits else None
 
-                # Exclude-continuation: pre-fill the slugs of refs we
-                # just returned (UNION'd with the caller's prior
-                # exclude list) so the agent can paste the call
-                # straight back to get the next page. Pushed down to
-                # SQL so ``LIMIT`` operates post-exclusion — the next
-                # call really does return the next ``top_k`` hits,
-                # not ``top_k - len(exclude)``. Order: this hint
-                # comes first because it's the most actionable.
-                seen_slugs: set[str] = set(excluded_slugs_in)
-                continuation: list[str] = list(excluded_slugs_in)
-                for _b, ref, _s in hits:
-                    s = ref.slug
-                    if s and s not in seen_slugs:
-                        seen_slugs.add(s)
-                        continuation.append(s)
-                if continuation:
+                # Pagination continuation: bump page=N. page= is the
+                # canonical pagination knob; exclude= is a hand-skip
+                # filter for known-irrelevant refs (kept available via
+                # the arg but no longer the recommended next-step
+                # because it bloats the call with a slug list).
+                if total > top_k * page:
                     nav.append(
                         (
-                            f"search(kind='paper', q={q!r}, exclude={continuation!r})",
-                            f"see the next {top_k} hits "
-                            f"(skipping {len(continuation)} already shown)",
+                            f"search(kind='paper', q={q!r}, page={page + 1})",
+                            f"see the next {top_k} of {total} hits",
                         )
                     )
 
@@ -621,6 +620,7 @@ class PaperHandler(Handler):
         tags: list[str] | None = None,
         top_k: int = 10,
         exclude: list[str] | None = None,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search returned as ``SearchHit``s.
@@ -649,8 +649,10 @@ class PaperHandler(Handler):
                 exclude_ref_ids = self.store.fetch_ref_ids_by_slugs(
                     normalised, kind="paper"
                 )
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
+        # query_vec= may be pre-supplied by the runtime cross-kind
+        # dispatcher (computed once for all kinds), avoiding an
+        # extra embed_one(q) per fanned-out kind.
+        if query_vec is None and self.embedder is not None:
             query_vec = self.embedder.embed_one(q)
         triples = self.store.search_blocks_fused(
             q=q,
@@ -675,12 +677,12 @@ class PaperHandler(Handler):
         """
         raw_id = _maybe_resolve_doi(self.store, str(id))
         slug, chunk_spec, path_view = _parse_paper_id(raw_id)
-        if chunk_spec is not None or path_view is not None:
-            raise BadInput(
-                "paper ops operate at ref level - drop the chunk "
-                "selector / path view from id=",
-                next=f"tag(kind='paper', id={slug!r}, ...) or link(kind='paper', id={slug!r}, ...)",
-            )
+        reject_chunk_or_path_view(
+            kind="paper",
+            slug=slug,
+            sel=chunk_spec,
+            path_view=path_view,
+        )
         ref = resolve_live_slug_ref(
             self.store,
             kind="paper",
@@ -974,9 +976,7 @@ class PaperHandler(Handler):
         Returns a "no citations on file" placeholder with recovery
         hints when no citations exist for this paper.
         """
-        cite_links = self.store.links_for(
-            ref.id, direction="in", relation="cites"
-        )
+        cite_links = self.store.links_for(ref.id, direction="in", relation="cites")
         slug = ref.slug or "???"
 
         if not cite_links:
@@ -1019,8 +1019,12 @@ class PaperHandler(Handler):
             )
 
         head = f"# {slug} bibliography — {len(rows)} citation{'s' if len(rows) != 1 else ''}"
-        body = head + "\n\n" + render_agent_table(
-            rows, schema=["id", "claim", "source", "conf", "quote"]
+        body = (
+            head
+            + "\n\n"
+            + render_agent_table(
+                rows, schema=["id", "claim", "source", "conf", "quote"]
+            )
         )
         body += render_next_section(
             [
@@ -1065,10 +1069,7 @@ class PaperHandler(Handler):
                 flat[short] = val
             elif isinstance(val, dict) and "long" in val:
                 flat[short] = str(val["long"])
-        rows = [
-            {"short": short, "long": flat[short]}
-            for short in sorted(flat)
-        ]
+        rows = [{"short": short, "long": flat[short]} for short in sorted(flat)]
         head = f"# {slug} — {len(rows)} abbreviation(s)"
         table = render_agent_table(rows, schema=["short", "long"])
         return Response(body=f"{head}\n\n{table}")

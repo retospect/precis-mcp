@@ -2232,7 +2232,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pydantic", marker = "extra == 'plot'", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
-    { name = "pymupdf", marker = "extra == 'paper'", specifier = ">=1.24" },
+    { name = "pymupdf", marker = "extra == 'paper'", specifier = ">=1.24.10" },
     { name = "pysbd", marker = "extra == 'paper'", specifier = ">=0.3.4" },
     { name = "python-docx", marker = "extra == 'docx'", specifier = ">=1.1" },
     { name = "python-epo-ops-client", marker = "extra == 'patent'", specifier = ">=4.0" },

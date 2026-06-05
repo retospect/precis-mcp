@@ -1,187 +1,114 @@
 ---
 id: precis-search-help
-title: precis — the search verb (mechanics + cross-kind fan-out)
-status: active
-tier: 1
-floor: any
+title: precis — the search verb (mechanics, pagination, filters)
 applies-to: search (every kind that supports it)
-last-updated: 2026-05-24
+status: active
 ---
 
 # precis-search-help — search across kinds
 
-`search` is the discovery verb. Two streams under the hood — lexical
-(tsvector / substring) and semantic (bge-m3 cosine) — RRF-fused into
-one ranked list. The same shape works for one kind, several kinds,
-or the cross-kind fan-out.
+Hybrid lexical + semantic search. Returns ranked handles (`slug~N`)
+you paste into `get` to drill in. Order is the relevance signal —
+there is no honest numeric score.
+
+## What knobs does search have?
+## Quick reference for search arguments
+## How do I call search?
 
 ```python
-search(q='your query')                          # cross-kind fan-out
-search(kind='paper', q='photocatalysis')        # one kind
-search(kind='paper,patent', q='NOxRR')          # comma-list
-search(kind='*', q='topic-x')                   # explicit '*' (also: 'all', 'any')
+search(q='photocatalysis')                          # fan out across all kinds
+search(kind='paper', q='photocatalysis')            # one kind
+search(kind='paper,patent', q='photocatalysis')     # several kinds
+search(kind='paper', q='X', page=2, top_k=20)       # paginate
+search(kind='paper', q='X', tags=['topic:noxrr'])   # tag-filter
+search(kind='paper', q='X', scope='wang2020state')  # search inside one ref
+search(kind='paper', q='X', exclude=['wang2020state', 'kim2024electro'])
+search(kind='patent', q='X', source='remote')       # patent-only knob
 ```
 
-## Arguments
+| Arg | Type | Meaning |
+|---|---|---|
+| `q` | str | Free-text query. |
+| `kind` | str | One kind, comma-list, or `'*'` / `'all'` / `'any'` / `''` for fan-out. |
+| `page` | int | Page number (default 1). |
+| `top_k` | int | **Page size** (default 10, max 100). Not a match-quality cutoff despite the name. |
+| `tags` | list[str] | Per-kind tag filters; AND semantics. |
+| `scope` | str | Restrict to one ref's blocks. |
+| `exclude` | list[str] | Skip-list (specific slugs to drop). `page=` is the normal pagination. |
+| `source` | str | Patent only: `'both'` (default) / `'local'` / `'remote'`. |
 
-| Arg | Type | Default | Meaning |
-|---|---|---|---|
-| `q` | str | required | Free-text query. Lexical + semantic, hybrid-fused. |
-| `kind` | str | None → `*` | One kind, comma-list, or `*` / `all` / `any` / `''` for fan-out. |
-| `scope` | str | None | Restrict to one ref's blocks (slug or numeric id). |
-| `top_k` | int | 10 | Max results. **Must be a positive int ≤ 100** — wire-level cap. |
-| `tags` | list[str] | None | Per-kind tag filters. Closed-vocab axes (`cpc:B01J27/24`) and open tags (`topic-x`) both flow. |
-| `source` | str | None | **Patent only**: `'both'` / `'local'` / `'remote'`. Ignored elsewhere. See `precis-patent-search-help`. |
-| `exclude` | list[str] | None | Ref slugs to omit. Use to paginate. |
-
-## `top_k` is capped at 100
-
-Larger values are rejected to bound response size and protect smaller
-models' context windows. To see more, paginate via `exclude=`.
-
-## Result shape — TOON
-
-Search responses render hits as a **TOON table** so the agent parses
-one shape across every kind. For papers, each hit row is paired
-with an **indented excerpt sub-line** drawn from the persistent
-discovery layer (`ref_segment_sentences`):
-
-```
-{handle	chunk_keywords}
-cai23~91	secondary electron image outlines, ToF-SIMS characterization, …
-  - excerpt @ ~91: "ToF-SIMS depth profiling confirms a uniform F-rich layer at 30 nm."
-cai23~45	cross-sectional SEM images, PEO membrane doped, …
-  - excerpt @ ~45: "PEO membranes doped with LiBF4 show ionic conductivity above 10⁻⁴ S cm⁻¹."
-```
-
-* `handle` is a copy-pasteable `id=` for `get` — drilling into any
-  hit is a one-call follow-up (`get(kind='paper', id='cai23~91')`).
-* `chunk_keywords` is RAKE-extracted from the matched block (with
-  per-paper abbreviation substitution — `FTIR` not "Fourier
-  Transform Infrared Spectroscopy").
-* `- excerpt @ ~N: "..."` is the **query-aligned central sentence**
-  from the segment that contains the hit chunk. The sentence is
-  reranked against your query embedding via pgvector cosine, so the
-  sub-line shows the segment's most-on-topic sentence — not just
-  the most central one. The `~N` annotation tells you which chunk
-  the excerpt came from (often the same as the hit chunk, sometimes
-  a nearby one in the same segment).
-
-**Excerpts are triage, not citations.** They help you decide whether
-to drill in — *not* whether to cite. Always fetch the verbatim
-chunk and run the verifier before persisting a citation. See
-`precis-citation-help` for the write-side workflow.
-
-**Skill search** uses `{slug, section, keywords}` instead — slug
-prefixed with `[unwired]` when the skill documents a kind that isn't
-loaded in this build.
-
-## Cluster context in the trailer
-
-For paper search, the `Next:` block includes a **cluster hint** for
-the top hit — pointing at the segment of the paper that contains
-the matched chunk:
-
-```
-Next:
-  get(kind='paper', id='cai23~91')                    - read the full text of any hit
-  get(kind='paper', id='cai23~41..93', view='toc')    - sub-TOC of the segment containing the top hit
-  search(kind='paper', q='tof', exclude=[…])          - next page
-  search(kind='paper', q='tof', scope='cai23')        - narrow to this paper
-```
-
-The cluster handle comes from the same embedding-cluster TOC the
-paper handler emits for `view='toc'`. So `~41..93` says "the top
-hit lives in a 53-chunk segment about XPS / surface chemistry — drill
-into that range for context."
-
-## Cross-kind fan-out
-
-When `kind` is omitted, `'*'`, `'all'`, `'any'`, `''`, or a comma-list,
-search fans out across every kind whose handler declares
-`supports_search_hits=True`. Each hit is tagged with its source kind in
-the response. RRF-merged, so per-kind relevance signals combine.
+## Search the whole corpus
+## Find something but I don't know which kind
+## Cross-kind search — let the runtime pick
 
 ```python
 search(q='Z-scheme photocatalysis')             # all kinds
-search(kind='paper,patent', q='Z-scheme')       # subset
+search(kind='*', q='topic-x')                   # explicit wildcard
+search(kind='paper,patent', q='Z-scheme')       # subset via comma-list
 ```
 
-Comma-lists narrow the fan-out without forcing a single-kind shape.
+When `kind=` is omitted (or `'*'` / `'all'` / `'any'` / `''`), search
+fans out across every kind whose handler supports it. Each hit is
+tagged with its source kind. Streams merge by rank, so a strong hit
+in `memory` can out-rank a weaker hit in `paper`.
 
-## Pagination via `exclude=`
-
-`exclude=` drops ref slugs from the result. Use to paginate:
+## See more results
+## Page through search hits beyond the first page
+## What if there are more hits than I see?
 
 ```python
-# Page 1.
-search(kind='paper', q='photocatalysis', top_k=5)
-# → 5 of 47 ...
-#   ## 1. wang2020state~12 ...
-#   ## 2. kim2024electro~7 ...
-#   ...
-
-# Page 2 — pass back the slugs from page 1.
-search(kind='paper', q='photocatalysis', top_k=5,
-       exclude=['wang2020state', 'kim2024electro', 'liu2022zscheme',
-                'park2023nitrate', 'choi2021hybrid'])
-# → 5 of 42 ...
+search(kind='paper', q='photocatalysis', page=2)
+search(kind='paper', q='photocatalysis', page=3, top_k=20)
 ```
 
-Notes:
+`page=1` is the default. Bump `page=` to walk results. `top_k=` sets
+the page size (default 10, max 100) — *not* a quality cutoff despite
+the name.
 
-- **Coarse / ref-level.** `exclude=['wang2020state']` drops every
-  block of that paper. Selectors and view paths are stripped — a
-  hit handle (`'wang2020~12'`) and a DOI (`'10.1111/x'`) both
-  resolve to the bare slug.
-- **`LIMIT` applies after exclusion.** `top_k=5` with five excluded
-  refs really does return five new hits, not zero. The `N of K`
-  header reports the remaining universe.
-- **Stale slugs are silent no-ops.** Unknown / soft-deleted slugs
-  don't fail the call.
-- **Continuation pre-filled.** When `total > len(hits)`, the
-  response trailer is a copy-pasteable
-  `search(... exclude=[...])` that already merges prior exclude
-  with this page's slugs.
-- Currently honoured by `kind='paper'`; other block-level kinds
-  ignore it.
-
-## Tag filtering
-
-`tags=` accepts a list of tag strings. Two flavours:
-
-- **Closed-vocab axes** like `cpc:B01J27/24`, `topic-noxrr`,
-  `STATUS:done`. Validated per-kind via the axis matrix. See
-  `precis-tags` and `precis-paper-tag-axes`.
-- **Open tags** like `pinned`, `2026-q2`, `fbproj`. Free-form;
-  no validation beyond charset.
+## Filter search results by tag
+## Find refs tagged with topic:X
+## Combine search with a tag axis
 
 ```python
-search(kind='paper', q='photocatalysis', tags=['topic-noxrr'])
-
+search(kind='paper', q='photocatalysis', tags=['topic:noxrr'])
 search(kind='patent', tags=['cpc:B01J27/24', 'country:ep'])
-
-search(kind='memory', tags=['topic-noxrr', 'pinned'])
-
 search(kind='todo', tags=['STATUS:open', 'PRIO:hi'])
+search(kind='memory', q='', tags=['pinned'])
 ```
 
-## Scope to one ref
+AND semantics — `tags=['A', 'B']` matches refs carrying *both* tags.
+Closed-vocab axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are kind-gated;
+open tags (`topic:`, `project:`, `pinned`, ...) are universal. See
+`precis-tags` for the axis matrix.
 
-`scope=<slug-or-id>` restricts search to the blocks of one ref:
+## Search inside a specific paper or ref
+## Where does this paper mention X?
+## Scope a search to one ref's contents
 
 ```python
 search(kind='paper', q='Z-scheme', scope='wang2020state')
 search(kind='patent', q='heterojunction', scope='ep4123456a1')
 ```
 
-Useful for "where in this paper does X come up?".
+`scope=` restricts to one ref's blocks. Useful for "where in this
+paper does X come up?"
 
-## Skill discovery (the meta-use)
+## Drop specific refs from results
+## Hand-skip known-irrelevant papers
+## Search but ignore these slugs
 
-`kind='skill'` is the discovery surface. The skill index is
-embedding-backed (bge-m3 cosine over H2-chunked help docs) so
-natural-language queries land:
+```python
+search(kind='paper', q='photocatalysis',
+       exclude=['wang2020state', 'kim2024electro'])
+```
+
+Paper-level — chunk selectors and DOIs both resolve to the bare slug;
+unknown slugs are silently ignored. `exclude=` is the skip-list for
+known-irrelevant refs, not a paging mechanism — use `page=` for that.
+
+## Find the right skill for a task
+## Which skill explains how to do X?
+## Discover a skill by topic
 
 ```python
 search(kind='skill', q='how do I edit a markdown file')
@@ -189,28 +116,31 @@ search(kind='skill', q='paginate paper search')
 search(kind='skill', q='patent prior art')
 ```
 
-This is the standard first action on any non-trivial task — the
-ranked list of skills is faster than reading the full TOC.
+Natural-language queries work — phrase your query the way you'd ask
+it. Skill hits whose subject kind isn't loaded in the current build
+are prefixed `[unwired]` so you don't follow them to no-op verbs.
+This is the standard first move on any non-trivial task.
 
-## Per-kind notes
+## Find patents not yet in the local store
+## Search EPO directly via OPS
+## How do I find a patent that isn't ingested yet?
 
-- **paper** — block-level hybrid; `exclude=` pagination supported;
-  `tags=` includes the topic axis. See `precis-paper-help`.
-- **patent** — extra `source=` knob; OPS integration; prior-art
-  sweep mode. Full matrix in `precis-patent-search-help`.
-- **memory / gripe / conv / fc / quest / todo** — block-level
-  hybrid over the ref's text + summary.
-- **markdown / plaintext / tex** — block-level hybrid; respects
-  the `workspace` tag for sandbox refs.
-- **python** — symbol-level lexical + semantic; uses the in-memory
-  AST index.
-- **calc / math / web / wolfram / youtube** — read the appropriate
-  per-kind skill via `search(kind='skill', q='<kind>')`.
+```python
+search(kind='patent', q='photocatalysis', source='remote')
+search(kind='patent', tags=['cpc:B01J27/24'], source='remote')
+```
+
+`source=` is patent-only. `'both'` (default) merges local + remote;
+`'local'` skips OPS; `'remote'` returns only patents *not* already
+in the local store. CQL details in `precis-patent-search-help`.
 
 ## See also
 
-- `precis-overview` — kind topology and addressing conventions
-- `precis-patent-search-help` — the `source=` matrix in detail
-- `precis-paper-tag-axes` — paper tag vocabulary
-- `precis-tags` — cross-kind tag conventions
-- `precis-toc-help` — cluster context (the trailer's "sub-TOC of the segment containing the top hit" hint)
+```python
+get(kind='skill', id='precis-overview')             # verbs and kinds
+get(kind='skill', id='precis-paper-help')           # paper-specific search shape
+get(kind='skill', id='precis-patent-search-help')   # CQL + source= matrix
+get(kind='skill', id='precis-tags')                 # axis vocabulary
+get(kind='skill', id='precis-relations')            # link vocabulary
+get(kind='skill', id='precis-toc-help')             # drilling into hits via /toc
+```

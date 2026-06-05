@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from precis.format import render_agent_table
@@ -45,7 +45,7 @@ from precis.utils.keybert import (
     mean_embedding,
     privileged_candidates,
 )
-from precis.utils.rake import extract_keywords, keyword_summary
+from precis.utils.rake import extract_keywords
 from precis.utils.segmentation import (
     K_MAX,
     K_MIN,
@@ -53,7 +53,6 @@ from precis.utils.segmentation import (
     segment_dp,
     segment_embeddings,
 )
-
 
 # ── tunables (operator-only, no env vars per maintainer 2026-05-31) ──
 
@@ -177,7 +176,7 @@ class ChunksForToc:
 
 
 _CACHE_CAPACITY = 256
-_cache: "OrderedDict[tuple[Any, ...], str]" = OrderedDict()
+_cache: OrderedDict[tuple[Any, ...], str] = OrderedDict()
 
 
 def cache_clear() -> None:

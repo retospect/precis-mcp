@@ -1,101 +1,79 @@
 ---
 id: precis-link-help
 title: precis — the link verb (typed edges between refs)
-status: active
-tier: 1
-floor: any
 applies-to: link (every kind that supports it)
-last-updated: 2026-05-24
+status: active
 ---
 
 # precis-link-help — typed edges between refs
 
-`link` creates and removes typed edges between two refs. Edges are
-directional and carry a relation slug (`cites`, `blocks`,
-`contradicts`, `derived-from`, `supports`, …). For the full
-relation vocabulary, see `precis-relations`.
+`link` creates or removes a directional, typed edge from one ref to
+another. The relation vocabulary (`cites`, `blocks`, `contradicts`,
+…) lives in `precis-relations`; this skill documents the verb.
+
+## Connect one ref to another
+## Add a typed edge between two refs
+## How do I record that ref A cites ref B?
 
 ```python
-# Add: this memory cites that paper.
 link(kind='memory', id=42,
      target='paper:wang2020state', rel='cites')
+```
 
-# Remove: drop that specific (target, relation) pair.
+Source is `(kind, id)`. Target is a canonical address. `rel=`
+defaults to `related-to` — name a specific relation when one fits.
+Re-adding the same `(source, target, rel)` is a no-op.
+
+## Address the other end of the edge
+## What does target= take?
+## How do I point at a block of a paper, not the whole paper?
+
+Targets use one shape: `kind:identifier[~selector]`.
+
+```text
+paper:wang2020state                # ref-level
+paper:wang2020state~38             # block 38 of that paper
+patent:ep4123456a1
+todo:158                           # numeric-id ref
+markdown:notes/foo.md
+markdown:notes/foo.md~intro        # block in a file
+```
+
+The `kind:` prefix is required — slug shapes overlap across kinds
+and the parser won't guess.
+
+## Remove an edge I added earlier
+## Drop a link between two refs
+## Undo a link
+
+```python
 link(kind='memory', id=42,
      target='paper:wang2020state', rel='cites',
-     mode='remove')
+     mode='remove')                                  # one specific (target, rel)
 
-# Remove every link from this memory to that paper, regardless of relation.
 link(kind='memory', id=42,
      target='paper:wang2020state',
-     mode='remove')
+     mode='remove')                                  # every edge to this target
 ```
+
+With `rel=` set, `mode='remove'` deletes that exact pair. Omit
+`rel=` to drop every link from source to target regardless of
+relation.
 
 ## Arguments
 
 | Arg | Type | Default | Meaning |
 |---|---|---|---|
-| `kind` | str | required | Kind owning the *source* ref. |
+| `kind` | str | required | Kind of the source ref. |
 | `id` | str / int | required | Source ref id. |
-| `target` | str | required | Canonical link target — `kind:identifier[~selector]`. |
-| `mode` | str | `add` | `add` creates the edge. `remove` deletes it. |
-| `rel` | str | None | Relation slug. Defaults to `related-to` on add. |
+| `target` | str | required | `kind:identifier[~selector]`. |
+| `rel` | str | `related-to` | Relation slug (see `precis-relations`). |
+| `mode` | str | `add` | `add` or `remove`. |
 
-## Canonical target form
+## Link at creation time instead
 
-Every link target uses the same shape:
-
-```
-kind:identifier[~selector]
-```
-
-Examples:
-
-```
-paper:wang2020state                # ref-level link
-paper:wang2020state~38             # block-level link (block 38)
-patent:ep4123456a1                 # patent ref
-todo:158                           # numeric-id ref
-markdown:notes/foo.md              # file ref
-markdown:notes/foo.md~intro        # block in a file
-```
-
-The `kind:` prefix is **required** — the parser doesn't infer kind
-from id shape because slug shapes overlap (e.g. `wang2020state`
-could be a memory id elsewhere).
-
-## Relations
-
-Common relation slugs:
-
-- `cites` — citation (paper, patent, memory)
-- `blocks` — workflow blocker (todo, quest, gripe)
-- `contradicts` — refutes / opposes
-- `derived-from` — content provenance
-- `supports` — corroborates
-- `annotates` — note about a ref
-- `references` — generic mention
-- `related-to` — fallback default; use a specific relation when one
-  fits
-
-See `precis-relations` for the full vocabulary and per-kind
-constraints.
-
-## Mode semantics
-
-- **`mode='add'`** (default): create the edge. Idempotent —
-  re-adding the same (source, target, rel) is a no-op.
-- **`mode='remove'`**:
-  - With `rel=` set: removes the specific (target, relation) pair.
-  - Without `rel=`: removes **every** link from source to target,
-    regardless of relation.
-
-## Where else can I link?
-
-`link` is the dedicated verb for retroactive edge management.
-Outbound links can also be attached **at creation time** via
-`put(... link=..., rel=...)` when a fresh ref ships with an
-outbound edge:
+When a fresh ref ships with one outbound edge, attach it on the
+`put` call rather than a follow-up `link`:
 
 ```python
 put(kind='memory',
@@ -103,45 +81,28 @@ put(kind='memory',
     link='paper:wang2020state', rel='contradicts')
 ```
 
-For link removal — or for adding to an existing ref — use this
-verb directly.
+Use `link` directly for removal, for second edges, or when adding
+to a ref that already exists.
 
-## Worked examples
-
-### Citation graph
-
-```python
-link(kind='memory', id=42,
-     target='paper:wang2020state', rel='cites')
-link(kind='memory', id=42,
-     target='paper:kim2024electro', rel='cites')
-```
-
-### Block-level link to a paper paragraph
+## Block-level link to a paper paragraph
 
 ```python
 link(kind='memory', id=42,
      target='paper:wang2020state~38', rel='annotates')
 ```
 
-### Workflow blocker
+## Workflow blocker between tasks
 
 ```python
 link(kind='todo', id=158,
      target='gripe:7', rel='blocks')
 ```
 
-### Bulk-remove every link to a target
-
-```python
-link(kind='memory', id=42,
-     target='paper:wang2020state',
-     mode='remove')
-```
-
 ## See also
 
-- `precis-relations` — full relation vocabulary
-- `precis-put-help` — link-during-create flow
-- `precis-tag-help` — tags (cross-cutting metadata, distinct from
-  links)
+```python
+get(kind='skill', id='precis-relations')     # relation vocabulary, per-kind constraints
+get(kind='skill', id='precis-put-help')      # link= on creation
+get(kind='skill', id='precis-tags')          # tags vs links — when to reach for which
+get(kind='skill', id='precis-overview')      # verbs and address grammar
+```

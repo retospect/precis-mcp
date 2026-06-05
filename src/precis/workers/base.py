@@ -143,6 +143,29 @@ class WorkerHandler(ABC):
         :meth:`write_failed` (exception) after this returns.
         """
 
+    def process_batch(self, rows: list[ChunkRow]) -> list[object]:
+        """Compute artifacts for a whole claimed batch.
+
+        Returns a list parallel to ``rows`` where each element is
+        either the payload (success) or the exception object
+        (failure). The default implementation calls :meth:`process`
+        per row so a poison-pill chunk does not break the batch;
+        subclasses that benefit from bulk compute (e.g. a transformer
+        forward pass with batch_size > 1) override this.
+
+        Type-wise the result list is ``list[object | BaseException]``
+        but is declared ``list[object]`` to keep the abstract surface
+        consistent with :meth:`process`; the runner pattern-matches
+        on ``isinstance(payload, BaseException)`` to route.
+        """
+        out: list[object] = []
+        for row in rows:
+            try:
+                out.append(self.process(row))
+            except Exception as exc:
+                out.append(exc)
+        return out
+
     @abstractmethod
     def write_ok(self, conn: Connection, chunk_id: int, payload: object) -> None:
         """Persist a successful result.

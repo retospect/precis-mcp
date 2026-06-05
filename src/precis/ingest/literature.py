@@ -1,4 +1,4 @@
-"""Shared literature helpers: author parsing, slug generation, embedders.
+"""Shared literature helpers: author parsing + the SKIP_EMBED_TYPES set.
 
 Canonical home for primitives used by ``acatome-extract``, ``acatome-store``,
 and ``precis-mcp`` — eliminates duplication across packages.
@@ -7,20 +7,21 @@ Public API:
   * :data:`SKIP_EMBED_TYPES` — block types that should not be embedded.
   * :func:`first_author_key` — raw citation-key chunk for slug fingerprinting.
   * :func:`first_author_surname` — display-friendly surname.
-  * :func:`build_embedder` — embedding-function factory for chroma and
-    sentence-transformers; raises :class:`ImportError` with install hints when
-    the selected backend is unavailable.
 
 The legacy ``make_slug`` helper that lived here was removed during B3a
 of the v2 storage rewrite (per ADR 0008). For human-readable citation
 handles, call :func:`precis.identity.make_cite_key` instead.
+
+A ``build_embedder`` factory used to live here too — chroma + sentence-
+transformers wrappers — but it was only ever called by its own tests.
+Production code uses :class:`precis.embedder.BgeM3Embedder` directly.
+Removed 2026-06-05.
 """
 
 from __future__ import annotations
 
 import json
 import unicodedata
-from collections.abc import Callable
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -180,100 +181,8 @@ def _ascii_fold(text: str) -> str:
 # ``miller2023dopamine``. Call sites have switched accordingly.
 
 
-# ---------------------------------------------------------------------------
-# Embedder factory
-# ---------------------------------------------------------------------------
-
-
-class EmbedderUnavailableError(ImportError):
-    """Raised when the requested embedding backend cannot be loaded.
-
-    Inherits from :class:`ImportError` so existing ``except ImportError``
-    handlers in batch callers continue to work. The message includes the
-    recommended ``pip install`` incantation so LLM-facing tool errors can
-    bubble up with a user-actionable hint.
-    """
-
-
-def build_embedder(
-    provider: str,
-    model: str = "",
-    dim: int | None = None,
-    index_dim: int | None = None,
-) -> Callable[[list[str]], list[list[float]]]:
-    """Build an embedding function for the given provider.
-
-    Parameters:
-        provider: ``"chroma"`` (default MiniLM via chromadb) or
-            ``"sentence-transformers"`` (any HuggingFace model).
-        model: Model identifier (only used for ``sentence-transformers``).
-        dim: Native embedding dimension of the model.
-        index_dim: Optional truncation dimension; embeddings are clipped to
-            this length before being returned. Useful when downstream indexes
-            are sized smaller than the model's native output.
-
-    Returns:
-        A callable ``(texts: list[str]) -> list[list[float]]``.
-
-    Raises:
-        EmbedderUnavailableError: If the backend library is not installed.
-        ValueError: If ``provider`` is not recognised.
-    """
-    if provider == "chroma":
-        try:
-            from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
-        except ImportError as exc:
-            raise EmbedderUnavailableError(
-                "chromadb is not installed. "
-                "Install with: pip install 'acatome-store[chroma]' "
-                "or: pip install chromadb"
-            ) from exc
-
-        ef = DefaultEmbeddingFunction()
-
-        def _chroma_embed(texts: list[str]) -> list[list[float]]:
-            results = ef(texts)
-            return [e.tolist() if hasattr(e, "tolist") else list(e) for e in results]
-
-        return _chroma_embed
-
-    if provider == "sentence-transformers":
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:
-            raise EmbedderUnavailableError(
-                "sentence-transformers is not installed. "
-                "Install with: pip install 'acatome-store[embeddings]' "
-                "or: pip install sentence-transformers"
-            ) from exc
-
-        if not model:
-            raise ValueError(
-                "'sentence-transformers' provider requires a model name "
-                "(e.g. 'BAAI/bge-m3' or 'all-MiniLM-L6-v2')"
-            )
-
-        st_model = SentenceTransformer(model)
-        clip = index_dim or dim
-
-        def _st_embed(texts: list[str]) -> list[list[float]]:
-            embs = st_model.encode(texts, normalize_embeddings=True)
-            if clip is not None:
-                return [e[:clip].tolist() for e in embs]
-            return [e.tolist() for e in embs]
-
-        return _st_embed
-
-    raise ValueError(
-        f"Unknown embedding provider: {provider!r}. "
-        "Expected 'chroma' or 'sentence-transformers'."
-    )
-
-
 __all__ = [
     "SKIP_EMBED_TYPES",
-    "EmbedderUnavailableError",
-    "build_embedder",
     "first_author_key",
     "first_author_surname",
     "surname_from_name",

@@ -55,7 +55,7 @@ from precis.handlers._patent_ingest import (
 from precis.handlers._patent_ops import OpsClientProto, OpsError, OpsNotFound
 from precis.handlers._patent_slug import parse_docdb_id
 from precis.handlers._patent_xml import parse_patent
-from precis.ingest.blocks import ParsedBlock, classify_density, fill_embeddings
+from precis.ingest.blocks import ParsedBlock, classify_density
 from precis.jobs.patent_watch import (
     DEFAULT_FAIR_USE_LIMIT_GB,
     _gb_to_bytes,
@@ -336,8 +336,10 @@ def _retry_one_ref(
         seeds.append(
             ParsedBlock(text=txt, embedding=None, density=classify_density(txt))
         )
-    if embedder is not None and seeds:
-        seeds = fill_embeddings(seeds, embedder=embedder)
+    # Embeddings are populated lazily by the embed:bge-m3 worker
+    # (ADR 0007 / AGENTS.md ingest-guarantees). The previous
+    # synchronous fill_embeddings call blocked the sweep on a model
+    # forward pass and diverged from paper-ingest's deferred path.
 
     # Block positions follow the existing block count so a partial
     # earlier ingest (unlikely, but defensive) doesn't collide.

@@ -328,6 +328,136 @@ class FindingHandler(NumericRefHandler):
         )
 
     # ──────────────────────────────────────────────────────────────────
+    # search — status-filtered TOON table
+    # ──────────────────────────────────────────────────────────────────
+
+    def search(  # type: ignore[override]
+        self,
+        *,
+        q: str | None = None,
+        status: str | None = None,
+        tags: list[str] | None = None,
+        top_k: int = 10,
+        **_kw: Any,
+    ) -> Response:
+        """Lexical search across findings with a status-axis default.
+
+        ``status=`` is a finding-specific shorthand for filtering by
+        the ``STATUS:`` closed-vocab tag. The default
+        (``status='established'``) is the natural "what evidence do
+        we have for X?" shape — the agent rarely wants in-flight
+        rows mixed in. Pass ``status='tracing'`` /
+        ``'multi_candidate'`` / ``'dead_chain'`` to inspect each
+        cohort, or ``status='*'`` to see all findings regardless.
+
+        The shorthand desugars to ``tags=['STATUS:<value>']`` and
+        unions with any explicit ``tags=`` the caller passed, so
+        ``search(status='tracing', tags=['topic-co2'])`` works as
+        expected.
+
+        Renders results as a TOON table (``id | title | setup |
+        primary``) so the agent gets a scannable list — the begat
+        chain detail lives behind ``get(kind='finding', id=N)``.
+        """
+        # Translate status= shorthand to a closed-vocab tag filter,
+        # unless the caller asked for "any status" via '*'.
+        effective_tags: list[str] = list(tags) if tags else []
+        resolved_status = (status if status is not None else "established").strip()
+        if resolved_status and resolved_status != "*":
+            tag_str = f"STATUS:{resolved_status}"
+            if tag_str not in effective_tags:
+                effective_tags.append(tag_str)
+
+        # Validate / normalise via the same path as put(tags=...)
+        # so a bogus status value surfaces a sharp BadInput at the
+        # boundary rather than a silent empty result.
+        normalized = Tag.normalize_filter(effective_tags or None, kind=self.kind)
+
+        # No q= → fall back to a recency list filtered by the tag
+        # set (mirrors the base NumericRefHandler.search ergonomics).
+        if q is None or not q.strip():
+            if normalized:
+                refs = self.store.list_refs(
+                    kind=self.kind, tags=normalized, limit=top_k
+                )
+                return self._render_finding_table(refs, query=None)
+            raise BadInput(
+                "search(kind='finding') requires q= or status=/tags=",
+                next=(
+                    "search(kind='finding', q='2.4 kV gate dielectric') or "
+                    "search(kind='finding', status='tracing')"
+                ),
+            )
+
+        hits = self.store.search_refs_lexical(
+            q=q, kind=self.kind, tags=normalized, limit=top_k
+        )
+        if not hits:
+            tag_suffix = (
+                f" with status={resolved_status!r}"
+                if resolved_status != "*"
+                else ""
+            )
+            body = f"no finding matches {q!r}{tag_suffix}"
+            from precis.utils.next_block import render_next_section
+
+            nav: list[tuple[str, str]] = [
+                (
+                    f"search(kind='finding', q={q!r}, status='*')",
+                    "drop the status filter",
+                ),
+                (
+                    f"search(kind='finding', q='broader term', status={resolved_status!r})",
+                    "loosen the query",
+                ),
+            ]
+            body += render_next_section(nav)
+            return Response(body=body)
+
+        refs = [r for r, _rank in hits]
+        return self._render_finding_table(refs, query=q)
+
+    def _render_finding_table(
+        self, refs: list[Ref], *, query: str | None
+    ) -> Response:
+        """Render the finding-search TOON table.
+
+        Shape: ``id | title | setup | primary``. ``setup`` is
+        ``meta.scope`` flattened to ``key=value`` pairs; ``primary``
+        is ``meta.primary_cite_key`` when the chase has terminated
+        (empty for in-flight rows).
+        """
+        from precis.format import render_agent_table
+
+        if not refs:
+            return Response(body="no finding entries match")
+
+        rows: list[dict[str, str]] = []
+        for r in refs:
+            meta = r.meta or {}
+            scope = meta.get("scope") or {}
+            setup_str = ", ".join(
+                f"{k}={v}" for k, v in sorted(scope.items()) if v
+            )
+            primary = meta.get("primary_cite_key") or ""
+            rows.append(
+                {
+                    "id": str(r.id),
+                    "title": r.title,
+                    "setup": setup_str,
+                    "primary": primary,
+                }
+            )
+
+        schema = ["id", "title", "setup", "primary"]
+        if query is not None:
+            header = f"# {len(refs)} finding match(es) for {query!r}"
+        else:
+            header = f"# {len(refs)} finding(s)"
+        body = f"{header}\n\n" + render_agent_table(rows, schema=schema)
+        return Response(body=body)
+
+    # ──────────────────────────────────────────────────────────────────
     # view='log' — filter to chase events
     # ──────────────────────────────────────────────────────────────────
 
@@ -430,6 +560,25 @@ class FindingHandler(NumericRefHandler):
                     f"  ref_id={hop.get('ref_id')} "
                     f"ord={hop.get('ord')}"
                 )
+
+        # User-curated misattribution links (seeded by migration
+        # 0004 as the ``misattributes`` relation). These are
+        # outbound edges on the finding pointing at refs whose
+        # citation chain the user has flagged as wrong. Surfaced
+        # alongside the begat chain so a reader sees both "what we
+        # traced to" and "what we explicitly disowned."
+        misattrib = self.store.links_for(
+            ref.id, direction="out", relation="misattributes"
+        )
+        if misattrib:
+            lines.append("")
+            lines.append("misattributed via:")
+            for link in misattrib:
+                target = self._fetch_ref_any_kind(link.dst_ref_id)
+                handle = target.slug or f"ref:{link.dst_ref_id}"
+                pos = link.dst_pos
+                suffix = f"~{pos}" if pos is not None else ""
+                lines.append(f"  {handle}{suffix}")
 
         status = _extract_status_tag(tags)
         lines.append("")

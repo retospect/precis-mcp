@@ -48,6 +48,8 @@ import sys
 import time
 from typing import TYPE_CHECKING, Any
 
+from psycopg import sql
+
 from precis.cli._common import resolve_dsn
 
 if TYPE_CHECKING:
@@ -466,7 +468,11 @@ def _vacuum_analyze(*, store: Store, dry_run: bool) -> None:
         try:
             for table in _VACUUM_TABLES:
                 log.info("maintenance: VACUUM ANALYZE %s", table)
-                conn.execute(f"VACUUM ANALYZE {table}")
+                # sql.Identifier quotes/escapes the table name even
+                # though _VACUUM_TABLES is a hard-coded tuple today
+                # — defense-in-depth for the day someone wires a
+                # CLI flag here.
+                conn.execute(sql.SQL("VACUUM ANALYZE {}").format(sql.Identifier(table)))
         finally:
             conn.autocommit = False
 

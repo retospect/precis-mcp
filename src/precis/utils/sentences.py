@@ -30,7 +30,6 @@ from dataclasses import dataclass
 
 import pysbd
 
-
 # Bump this whenever a pysbd upgrade (or splitter swap) materially
 # changes the offsets we emit. Read-time consumers compare this against
 # the row's stored ``sentence_splitter_version`` and recompute on
@@ -85,4 +84,4 @@ def split_sentences(text: str) -> list[Sentence]:
     return out
 
 
-__all__ = ["Sentence", "SENTENCE_SPLITTER_VERSION", "split_sentences"]
+__all__ = ["SENTENCE_SPLITTER_VERSION", "Sentence", "split_sentences"]

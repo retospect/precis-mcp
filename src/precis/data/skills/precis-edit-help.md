@@ -1,238 +1,214 @@
 ---
 id: precis-edit-help
-title: precis — the edit verb (anchored region edits)
+title: precis — anchored region edits across file kinds
+applies-to: edit (kind='markdown'|'plaintext'|'tex'|'python')
 status: active
-tier: 2
-floor: any
-applies-to: edit (mode='find-replace'|'append'|'insert'|'replace') on R/W file kinds (kind='markdown', kind='plaintext', kind='tex', kind='python')
-last-updated: 2026-05-24
 ---
 
-> **Status:** v1 ships for `markdown`, `plaintext`, `tex`, and
-> `python`. The first three share `PRECIS_ROOT` (single root for all
-> prose-file kinds); `python` has its own multi-repo `PRECIS_PYTHON_ROOTS`.
-> Use `get(kind='skill', id='toc')` to confirm which are live
-> in the server you're talking to.
+# precis-edit-help — anchored region edits across file kinds
 
-# precis-edit-help — anchored region edits across every file kind
+`edit` rewrites a region of an existing file. The grammar is identical
+across `markdown`, `plaintext`, `tex`, and `python`; only the
+post-edit validation differs.
 
-For anything smaller than creating a fresh file, use `edit`. The
-grammar is **identical across every file kind**; only the
-validation gates differ. Per-kind quirks (cross-region rules, AST
-gates, paragraph integrity) live in each kind's skill — this one
-covers what's universal.
-
-## Distinct from `put`
-
-- `put` creates new refs. On file kinds it's **creation-only**
-  (`mode='create'`); no other put mode is accepted there.
-- `edit` rewrites an existing ref. Region or whole-file, your
-  choice: `mode='replace'` with `id='slug'` (no selector) rewrites
-  the whole file; with `id='slug~selector'` it rewrites one block.
-- Each `edit` mode has a **fixed** required-argument set — the
-  JSON Schema encodes the coupling so a call with the wrong shape
-  is rejected before dispatch.
-
-## When to reach for it
-
-| You want to | Use |
-|---|---|
-| Rewrite a whole block / function / paragraph | `mode='replace'` |
-| Change one token, one cite, one literal | `mode='find-replace'` |
-| **Delete a matched span (one line, one cite, one token)** | `mode='find-replace'` with `text=''` |
-| Add text adjacent to an existing anchor | `mode='insert'` |
-| Bulk rename one identifier | `mode='find-replace'` with `match='all'` |
-
-The rule of thumb: **content selects, range bounds.** The `id=`
-selector narrows where to look; the literal `find=` decides what
-to change. This survives drift after prior edits.
-
-**Every mode requires `text=`.** Span-deletes pass `text=''`;
-the `delete` verb is for whole files and whole blocks, not for
-lines or tokens.
-
-## Schema
+## Change one token, cite, or literal in a file
+## Replace a string somewhere I know exists
+## Swap a word inside a paragraph
 
 ```python
-edit(kind='<kind>', id='<path>[~<selector>]',
-    mode='find-replace',           # or 'insert' | 'append' | 'replace'
-    find='<exact text>',   # literal — required for find-replace and insert
-    before='<anchor>',     # optional: text immediately preceding find
-    after='<anchor>',      # optional: text immediately following find
-    text='<new text>',     # required (use '' on find-replace to delete the match)
-    where='before|after',  # required for mode='insert' only
-    match='unique',        # unique (default) | first | all | nth
-    nth=2,                 # 1-indexed when match='nth'
-    dry_run=False)         # True | 'diff' | 'full' — preview without writing
-```
-
-### Mode → required arguments
-
-- **`find-replace`** (default): anchor-based string replace.
-  Requires `find=` AND `text=`. Optional `before=` / `after=` /
-  `match=` / `nth=` disambiguate.
-- **`insert`**: insert `text=` adjacent to a `find=` anchor.
-  Requires `find=`, `text=`, `where='before'|'after'`.
-- **`append`** / **`replace`**: whole-region region edits.
-  Requires `text=`. `replace` with `id='slug~selector'` rewrites
-  one block; `append` adds to the end of the file.
-- **`reorder`**: structured-file rearrangement (deferred — not yet
-  wired). See migration doc D5.
-
-### `dry_run` — preview without writing
-
-Pass `dry_run=True` (or `dry_run='diff'`) to run the same resolver
-and validation gates without touching disk. The response carries:
-
-- a structured header (region, edited spans, match policy, per-
-  gate pass/fail), and
-- a body that's a unified diff (`'diff'`, default) or the post-
-  edit lines with `> ` markers (`'full'`).
-
-Gate failures still raise during dry-run, so you learn whether
-the edit would validate without any disk mutation. Use it before
-any large or risky edit.
-
-```python
-# Diff preview (default).
-edit(kind='python', id='r/src/precis/cli.py',
-    mode='find-replace',
-    find='deprecated_call(', text='new_call(', match='all',
-    dry_run=True)
-
-# Post-edit region preview.
-edit(kind='markdown', id='notes--foo',
-    mode='find-replace',
-    find='draft', text='final',
-    dry_run='full')
-```
-
-## Worked examples
-
-The motivating case from the spec:
-
-```python
-# 'the fox jumps over the fence.' → 'the fox jumps over a fence.'
 edit(kind='markdown', id='notes--foo~intro',
-    mode='find-replace',
-    find='the', before='over ', after=' fence',
-    text='a')
+     mode='find-replace',
+     find='the', before='over ', after=' fence',
+     text='a')
 ```
 
-The span-delete case — `text=''` removes the match without
-touching the surrounding block:
+`find=` is literal text. `before=` / `after=` are optional anchors —
+strict whitespace — that pin the match when `find=` alone is
+ambiguous. `mode='find-replace'` is the default.
+
+## Delete a matched span without touching the surrounding block
+## Remove a line, cite, or token from a file
+## Drop one field from a structured entry
 
 ```python
-# Drop one 'doi' line from a bibtex entry, leave the entry's
-# surrounding fields intact. Anchors pin the match to the right
-# @article{…} block even when the same doi appears elsewhere.
 edit(kind='plaintext', id='refs.bib',
-    mode='find-replace',
-    find='doi     = {10.1111/ejn.12125}',
-    before='@article{tritsch2012dopaminergic,',
-    after='volume  = {35},',
-    text='')
+     mode='find-replace',
+     find='doi     = {10.1111/ejn.12125}',
+     before='@article{tritsch2012dopaminergic,',
+     after='volume  = {35},',
+     text='')
 ```
 
-## Resolution algorithm
+Pass `text=''` to delete the match. The `delete` verb is for whole
+files and whole blocks — not lines or tokens.
 
-Identical for every kind:
+## Rewrite a whole block, function, or paragraph
+## Replace an entire region by its handle
+## Overwrite one section of a file
 
-1. **Resolve the region** from `id` (whole file, block, qualname,
-   or line range — the standard precis address grammar).
-2. **Find candidate matches** of `find` inside the region.
-3. **Anchor filter** — drop candidates whose surrounding bytes
-   don't equal `before=` / `after=`. Whitespace is **strict**.
-4. **Apply `match` policy**:
-   - `unique` (default) — exactly 1 match required.
-   - `first` — earliest match wins.
-   - `all` — every match.
-   - `nth` — the Nth match (1-indexed).
-5. **Splice → kind-specific validate → format → atomic write → re-ingest.**
+```python
+edit(kind='markdown', id='<slug>~intro',
+     mode='replace',
+     text='<new region body>')
 
-If any step fails, disk is untouched.
-
-## Errors — every one is actionable
-
-### `find` not found
-
-The error includes up to 3 fuzzy nearest lines so the agent has
-something concrete to fix:
-
-```
-find='dpoamine' not found in notes--neuroscience~abstract
-Nearest matches in the region:
-  L42  dopamine is a neurotransmitter   (88% similar)
+edit(kind='python', id='precis::precis.cli.main',
+     mode='replace',
+     text='def main():\n    ...\n')
 ```
 
-Next: widen the `id=` to a larger region, or copy the exact text
-from `get(... view='raw')`.
+`mode='replace'` with `id='<slug>~<selector>'` rewrites one block.
+With a bare `id='<slug>'` (no selector), it rewrites the whole file.
 
-### Ambiguous (`match='unique'` had ≥2 hits)
+## Add text next to an existing anchor
+## Insert before or after a known string
 
-Every candidate is listed with its line number:
-
+```python
+edit(kind='markdown', id='notes--foo~intro',
+     mode='insert',
+     find='## Background',
+     where='before',
+     text='## Motivation\n\nWhy this matters.\n\n')
 ```
+
+`mode='insert'` requires `find=`, `text=`, and `where='before'|'after'`.
+
+## Append to the end of a file
+
+```python
+edit(kind='markdown', id='notes--log',
+     mode='append',
+     text='\n## 2026-06-05\n\nAnother entry.\n')
+```
+
+## Rename an identifier across a file
+## Bulk-change every occurrence
+
+```python
+edit(kind='python', id='r/src/precis/cli.py',
+     mode='find-replace',
+     find='deprecated_call(', text='new_call(',
+     match='all')
+```
+
+`match='unique'` (default) requires exactly one hit. `match='first'`
+takes the earliest. `match='all'` rewrites every hit. `match='nth'`
+with `nth=N` picks the Nth (1-indexed).
+
+## Edit one specific line or line range
+## Target a region by line number
+
+```python
+edit(kind='plaintext', id='<slug>~L42',
+     mode='replace', text='replacement line\n')
+
+edit(kind='markdown', id='<slug>~L42-58',
+     mode='replace', text='<new region body>')
+```
+
+`~L<n>` selects one line; `~L<n>-<m>` selects an inclusive line range.
+Available on every file kind.
+
+## Edit a python function or class by qualname
+## Rewrite one symbol without touching neighbours
+
+```python
+edit(kind='python', id='precis::precis.cli.main',
+     mode='replace',
+     text='def main():\n    ...\n')
+
+edit(kind='python', id='precis::precis.cli.MyClass.method',
+     mode='find-replace',
+     find='return x', text='return x + 1')
+```
+
+Python edits run `ast.parse` on the post-edit buffer. A `def`/`class`
+rename is rejected unless you pass `allow_rename=True`. `ruff
+check --fix` + `ruff format` run on the result.
+
+## Preview an edit without writing to disk
+## Dry-run before committing a risky change
+
+```python
+edit(kind='python', id='r/src/precis/cli.py',
+     mode='find-replace',
+     find='deprecated_call(', text='new_call(', match='all',
+     dry_run=True)
+
+edit(kind='markdown', id='notes--foo',
+     mode='find-replace',
+     find='draft', text='final',
+     dry_run='full')
+```
+
+`dry_run=True` (or `'diff'`) returns a unified diff. `dry_run='full'`
+returns the post-edit region with `> ` markers. Validation gates run
+during dry-run, so you see whether the edit *would* validate.
+
+## When find= matches more than once
+## Disambiguate an ambiguous match
+
+The error lists every candidate with line numbers:
+
+```text
 find='the' has 3 matches in notes--foo~intro (match='unique' requires exactly 1):
   L42  The fox jumps over the fence.
   L43  The morning was clear.
 ```
 
-Next: narrow with `before='...'` / `after='...'`, or pick a policy
-(`match='all'` / `match='nth'` with `nth=N`).
+Next: add `before=` / `after=` anchors, or pick a policy
+(`match='first'`, `match='all'`, or `match='nth'` with `nth=N`).
 
-### Post-edit validation
+## When find= isn't found
+## The literal text I gave doesn't match
 
-Kind-specific gates run on the spliced buffer before any disk
-write. Failure rolls back; disk stays unchanged.
+The error includes up to three fuzzy nearest lines:
 
+```text
+find='dpoamine' not found in notes--neuroscience~abstract
+Nearest matches in the region:
+  L42  dopamine is a neurotransmitter   (88% similar)
 ```
+
+Next: copy the exact text from `get(kind='<kind>', id='<slug>~<sel>')`,
+or widen `id=` to a larger region.
+
+## When the post-edit buffer fails validation
+
+Kind-specific gates run on the spliced buffer before any disk write.
+Failure rolls back; disk is untouched.
+
+```text
 ast.parse failed on the post-edit buffer: SyntaxError: ... (line 142)
 Next: check the indentation / syntax of the replacement text
 ```
 
-For python this fires for `ast.parse` failures and for the
-qualname-drop check (an edit that renames a `def` is rejected
-unless you pass `allow_rename=True`).
+Per-kind gates:
 
-## Why anchors instead of regex
-
-Literal `find` + two anchors covers most regex cases without the
-escape hazards (models don't reliably escape `.`/`*`/`(`/`\`).
-See `docs/edit-protocol-spec.md § Considered and rejected` for the
-full rationale.
-
-## Per-kind quirks
-
-The schema is universal; the validation differs:
-
-| Kind | Validation gate | Format step |
+| Kind | Gate | Format |
 |---|---|---|
-| `markdown` | re-parse blocks on re-ingest | none |
-| `plaintext` | UTF-8 encode check | none |
+| `markdown` | re-parse blocks on re-ingest | — |
+| `plaintext` | UTF-8 encode check | — |
+| `tex` | re-parse sections on re-ingest | — |
 | `python` | `ast.parse` + qualname-stable | `ruff check --fix` + `ruff format` |
 
-For kind-specific examples and recipes, see the kind's own skill
-(`precis-markdown-help § Surgical edits`, `precis-python-help §
-Anchored edits`).
+## edit vs put vs delete
 
-v1 does **not** include the explicit cross-region rejection
-(matches that span markdown blocks or python top-level statements
-are allowed; the kind's own validation gate catches the breakage
-that would result). A future version may add an opt-out
-`allow_cross_region=False` knob if data shows it's needed.
+| You want to | Verb |
+|---|---|
+| Create a new file | `put(kind='<kind>', id='<slug>', text='...')` |
+| Rewrite a region of an existing file | `edit` |
+| Remove a whole file or block | `delete` |
+| Remove one line or token | `edit` with `text=''` |
 
-## What this verb does NOT do
-
-- No regex (literal `find=` only — `rg` first, then feed text back).
-- No multi-edit batches (sequence calls; pair with `dry_run`).
-- No cross-file edits (one `id=` per call).
-- No fuzzy `find=` matching (fuzzy hints appear only on errors).
-- No cursor / position state across calls (stateless).
+`put` on a file kind is creation-only; use `edit` to modify.
 
 ## See also
 
-- `precis-files-help` — universal address grammar that `id=` uses
-- `precis-markdown-help § Surgical edits` — markdown recipes
-- `precis-python-help § Anchored edits` — python recipes (AST + ruff gates apply)
-- `docs/edit-protocol-spec.md` — full design rationale and v2 roadmap
+```python
+get(kind='skill', id='precis-files-help')       # shared address grammar (~L, ~N, qualnames)
+get(kind='skill', id='precis-markdown-help')    # markdown recipes
+get(kind='skill', id='precis-python-help')      # python AST gates + ruff
+get(kind='skill', id='precis-plaintext-help')   # plaintext quirks
+get(kind='skill', id='precis-put-help')         # creating new files
+get(kind='skill', id='precis-delete-help')      # whole-file and whole-block removal
+```

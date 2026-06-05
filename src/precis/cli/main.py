@@ -35,6 +35,7 @@ from precis.cli import (
     provenance,
     repl,
     resolve,
+    stats,
     stubs,
     tools,
     watch,
@@ -98,6 +99,10 @@ def main() -> None:
         stubs.run(args)
         return
 
+    if args.cmd == "stats":
+        stats.run(args)
+        return
+
     if args.cmd == "resolve":
         resolve.run(args)
         return
@@ -145,6 +150,7 @@ def _build_parser() -> argparse.ArgumentParser:
     watch.add_batch_parser(sub)
     worker.add_parser(sub)
     stubs.add_parser(sub)
+    stats.add_parser(sub)
     resolve.add_parser(sub)
     tools.add_parser(sub)
     repl.add_parser(sub)

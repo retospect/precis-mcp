@@ -249,7 +249,45 @@ def resolve_live_slug_ref(
     return ref
 
 
+def reject_chunk_or_path_view(
+    *,
+    kind: str,
+    slug: str,
+    sel: object | None,
+    path_view: object | None,
+    selector_noun: str = "chunk selector",
+    level_noun: str = "ref",
+) -> None:
+    """Reject ``id=`` carrying a chunk-selector or path-view fragment.
+
+    Every slug-addressed handler's ``_resolve_*_slug`` repeats this
+    guard before calling :func:`resolve_live_slug_ref`: tag / link /
+    delete entry points operate at the ref level, so an id of
+    ``slug~3`` or ``slug/abstract`` is a user error rather than a
+    silent drop. Centralised here so the wording stays uniform and a
+    future shape change (e.g. ``id='slug?abstract'``) lands once.
+
+    ``selector_noun`` lets each kind say what its selector is in
+    natural language — chunks for paper, turns for conv, blocks for
+    plaintext — without forking the helper. ``level_noun`` is the
+    granularity name in the error (``"ref"`` / ``"file"`` / …).
+    """
+    if sel is None and path_view is None:
+        return
+    raise BadInput(
+        (
+            f"{kind} ops operate at {level_noun} level - drop the "
+            f"{selector_noun} / path view from id="
+        ),
+        next=(
+            f"tag(kind={kind!r}, id={slug!r}, ...) or "
+            f"link(kind={kind!r}, id={slug!r}, ...)"
+        ),
+    )
+
+
 __all__ = [
+    "reject_chunk_or_path_view",
     "render_slug_ref_list",
     "resolve_live_slug_ref",
     "search_hits_slug_refs",

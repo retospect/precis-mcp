@@ -1,79 +1,34 @@
 ---
 id: precis-tag-help
 title: precis — the tag verb (add and remove tags)
-status: active
-tier: 1
-floor: any
 applies-to: tag (every kind that supports it)
-last-updated: 2026-05-24
+status: active
 ---
 
-# precis-tag-help — manage tags on a ref
+# precis-tag-help — add and remove tags on a ref
 
-`tag` adds and / or removes tags on an existing ref. Both `add`
-and `remove` are accepted in the same call so a transactional
-STATUS bump is atomic:
+`tag` mutates a ref's tag set. `add=` and `remove=` are both
+accepted in one call so a state transition lands atomically. For
+the axis vocabulary (which prefixes mean what, which kinds accept
+which axis), see `precis-tags`. This file is the verb mechanics.
+
+## Change a tag on something I already have
+## Add or remove tags after the ref exists
+## I need to update tags on a ref
 
 ```python
-tag(kind='todo', id=158,
-    add=['STATUS:done'],
-    remove=['STATUS:open'])
+tag(kind='todo', id=158, add=['STATUS:done'], remove=['STATUS:open'])
+tag(kind='paper', id='wang2020state', add=['topic-noxrr'])
+tag(kind='memory', id=42, remove=['pinned'])
 ```
 
-For tag vocabulary that spans every kind, see `precis-tags`. This
-skill covers the `tag` verb's mechanics and the per-kind axis
-gating that determines which closed prefixes are accepted on which
-kind.
+`add=` and `remove=` are both lists. Either can be omitted; both
+in one call is a single atomic update. `remove=` of a tag the ref
+doesn't have is a no-op.
 
-## Arguments
-
-| Arg | Type | Default | Meaning |
-|---|---|---|---|
-| `kind` | str | required | Kind owning the ref. |
-| `id` | str / int | required | Ref id (slug for slug kinds, int for numeric kinds). |
-| `add` | list[str] | None | Tags to add. |
-| `remove` | list[str] | None | Tags to remove. |
-
-Tags can also be applied **at creation time** via `put(... tags=...)`
-when a fresh ref ships with metadata. The dedicated `tag` verb is
-for retroactive changes — use `tag(remove=...)` to drop a tag.
-
-## Tag vocabulary
-
-Three flavours flow through the same surface:
-
-- **Closed UPPERCASE prefixes** (`STATUS:`, `PRIO:`, `SRC:`,
-  `CACHE:`) — replace within the prefix on add. Adding
-  `STATUS:done` implicitly removes any existing `STATUS:*`. Each
-  closed prefix is **gated per-kind** (matrix below).
-- **Flag tags** (bare lowercase: `pinned`, `draft`,
-  `awaiting-fulltext`) — toggle on / off. No prefix.
-- **Open tags** (`topic-noxrr`, `cpc:B01J27/24`,
-  `applicant:siemens-ag`, `2026-q2`, `fbproj`) — add and remove
-  freely on any kind that supports tagging.
-
-## Per-kind closed-prefix gating
-
-| Kind family | Allowed closed prefixes |
-|---|---|
-| `todo` / `gripe` / `quest` | `STATUS`, `PRIO` (workflow kinds) |
-| `memory` / `fc` / `conv` | none (use open tags like `confidence-strong`) |
-| `paper` / `patent` | `SRC`, `CACHE` (provenance + cache freshness) |
-| `web` / `research` / `think` / `websearch` / `youtube` | `CACHE` only |
-| `oracle` / `skill` | none (read-only references) |
-| `python` / `calc` / `math` | tag verb unsupported (read-only / stateless) |
-| `markdown` / `plaintext` / `tex` | none on the closed-prefix axis (open tags only; the `workspace` flag is auto-applied at create) |
-
-A closed prefix rejected on a kind raises
-`[error:BadInput] axis not allowed on kind 'K'` — that's the
-expected response for cross-axis attempts, not a bug.
-
-For the authoritative per-axis matrix (which prefixes accept
-multiple values, which are single-valued, etc.) see `precis-tags`.
-
-## Worked examples
-
-### Workflow STATUS bump (transactional)
+## Bump a workflow STATUS atomically
+## Move a todo from open to done in one call
+## How do I transition state without a stale tag lingering?
 
 ```python
 tag(kind='quest', id=42,
@@ -81,41 +36,71 @@ tag(kind='quest', id=42,
     remove=['STATUS:open', 'PRIO:hi'])
 ```
 
-### Topic tagging
+Pair `add=` + `remove=` in one call to flip state cleanly. With
+closed UPPERCASE prefixes the explicit `remove=` is belt-and-braces
+— see the next section.
+
+## UPPERCASE prefixes replace within their axis
+
+```python
+tag(kind='todo', id=158, add=['STATUS:done'])
+# implicitly removes any prior STATUS:* on this todo
+```
+
+Closed UPPERCASE prefixes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`)
+are single-valued per ref. Adding `STATUS:done` drops any existing
+`STATUS:*` automatically. You can still pass `remove=` for clarity;
+it won't double-remove.
+
+## Lowercase tags accumulate
+## Add a topic without disturbing others
 
 ```python
 tag(kind='paper', id='wang2020state',
-    add=['topic-noxrr', 'topic-photocatalysis'])
+    add=['topic-noxrr', 'topic-photocatalysis', 'project-foo'])
 ```
 
-### Pin / unpin
+Lowercase / open tags (`topic-x`, `cpc:B01J27/24`,
+`applicant:siemens-ag`, `2026-q2`) accumulate freely. Adding one
+does not displace another. Drop individually with `remove=`.
+
+## Toggle a bare flag tag
+## Pin or unpin
 
 ```python
 tag(kind='memory', id=42, add=['pinned'])
 tag(kind='memory', id=42, remove=['pinned'])
 ```
 
-### Cache freshness
+Bare lowercase flags (`pinned`, `draft`, `awaiting-fulltext`) are
+on/off. Add to set, remove to clear.
+
+## Tag a ref at creation time
 
 ```python
-# Force a refetch on the next get(...) call (CACHE-supporting kind).
-tag(kind='web', id='example-org-blog',
-    add=['CACHE:stale'])
+put(kind='todo', text='Review section 3 of abazari2024design.',
+    tags=['PRIO:hi', 'topic-photocatalysis'])
 ```
 
-## Default tags via `PRECIS_DEFAULT_TAGS`
+`put(..., tags=[...])` applies tags as part of the create. Use the
+`tag` verb for any later change.
 
-When the `PRECIS_DEFAULT_TAGS` env var is set, the active list
-is surfaced as a hint on `tag` calls for note-like kinds —
-reminding the operator about ambient project context without
-auto-applying it (`tag` is explicit user intent; defaults never
-override). See `precis-session-context-help` for details.
+## What if an axis isn't allowed on this kind?
+
+```text
+[error:BadInput] axis 'STATUS' not allowed on kind 'paper'
+```
+
+Closed prefixes are gated per kind (e.g. `STATUS:` on workflow
+kinds, `SRC:`/`CACHE:` on provenance kinds). The matrix lives in
+`precis-tags`; the error names the offending axis.
 
 ## See also
 
-- `precis-tags` — cross-kind tag conventions and the full axis
-  matrix
-- `precis-paper-tag-axes` — paper-specific axes (topic, src, …)
-- `precis-put-help` — applying tags during ref creation
-- `precis-relations` — typed links (the *link* verb's vocabulary;
-  distinct from tags)
+```python
+get(kind='skill', id='precis-tags')              # axis vocabulary + per-kind matrix
+get(kind='skill', id='precis-paper-tag-axes')    # paper-specific axes
+get(kind='skill', id='precis-put-help')          # tags= at creation
+get(kind='skill', id='precis-relations')         # link verb (typed cross-refs, distinct from tags)
+get(kind='skill', id='precis-session-context-help')  # PRECIS_DEFAULT_TAGS hint surface
+```

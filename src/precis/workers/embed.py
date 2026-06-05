@@ -68,6 +68,30 @@ class EmbedHandler(WorkerHandler):
         """
         return self._embedder.embed_one(row.text)
 
+    def process_batch(self, rows: list[ChunkRow]) -> list[object]:
+        """Embed the whole claimed batch in one forward pass.
+
+        ``Embedder.embed`` accepts ``list[str]`` and returns
+        ``list[list[float]]`` with the same length, so we can feed
+        the entire batch to BGE-M3 once instead of paying the
+        per-call overhead 32 times per pass. Empty input list short-
+        circuits to ``[]``.
+
+        Whole-batch failure (OOM, model dim mismatch) falls back to
+        per-row processing so a single poison-pill chunk gets a
+        failure marker rather than poisoning the rest of the batch.
+        """
+        if not rows:
+            return []
+        try:
+            vectors = self._embedder.embed([row.text for row in rows])
+        except Exception:
+            # Don't lose the whole batch on a single bad row. Per-row
+            # path runs each chunk through embed_one and routes each
+            # failure to write_failed via the runner.
+            return super().process_batch(rows)
+        return list(vectors)
+
     # ------------------------------------------------------------------
     # write_ok — INSERT into chunk_embeddings
     # ------------------------------------------------------------------

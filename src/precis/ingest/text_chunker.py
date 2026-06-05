@@ -23,7 +23,6 @@ import re
 
 from precis.utils.sentences import SENTENCE_SPLITTER_VERSION, split_sentences
 
-
 # Chunker version — bump on any change that materially shifts the
 # (ord, text) shape of chunks produced from a given input. Downstream
 # tables (chunks via ``chunks.meta['chunker_version']``, the future

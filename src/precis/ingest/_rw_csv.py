@@ -29,7 +29,6 @@ import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any
 
 log = logging.getLogger(__name__)
 

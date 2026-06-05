@@ -1,76 +1,81 @@
 ---
 id: precis-delete-help
-title: precis — the delete verb (soft-delete or selector-delete)
-status: active
-tier: 1
-floor: any
+title: precis — soft-delete a ref or remove a region of a file
 applies-to: delete (every kind that supports it)
-last-updated: 2026-05-24
+status: active
 ---
 
 # precis-delete-help — remove a ref or a selector region
 
-`delete` removes refs (soft) and addressed regions (hard).
-Behaviour is kind-specific and explicit by design — the verb does
-not infer intent from id shape.
+`delete` removes content two ways. Numeric-ref kinds soft-delete:
+the row hides from list/search but is recoverable. File kinds
+require a selector and rewrite the file without the addressed
+region.
 
-```python
-delete(kind='memory', id=42)                   # soft-delete a numeric ref
-delete(kind='markdown', id='notes/foo.md~intro')  # delete a block
-```
-
-## Arguments
-
-| Arg | Type | Default | Meaning |
-|---|---|---|---|
-| `kind` | str | required | Which kind to delete from. |
-| `id` | str / int | required | Ref id, or `slug~SELECTOR` for region deletes on file kinds. |
-
-## Behaviour by kind family
-
-### Numeric-ref kinds — soft-delete
-
-`memory`, `todo`, `gripe`, `fc`, `quest`, `oracle`, `conv`:
-
-- Soft-deletes the ref. The row is **retained** for audit /
-  undelete; it just stops appearing in list views and search.
-- Recoverable at the SQL layer.
+## Soft-delete a memory, todo, or other numeric ref
+## Remove a note I no longer want
+## How do I drop a todo from the list?
 
 ```python
 delete(kind='memory', id=42)
+delete(kind='todo', id=122)
+delete(kind='gripe', id=9)
+delete(kind='fc', id=204)
+delete(kind='citation', id=18)
+delete(kind='quest', id='ship-v2')
 ```
 
-### File kinds with a selector — region-delete
+Soft-delete only. The ref disappears from list views and search;
+the row is retained for audit. Links pointing at the soft-deleted
+ref persist — resolve via the link table if you need them.
 
-`markdown`, `plaintext`, `tex`, `python`:
-
-- With a selector in `id=`: deletes the addressed block / symbol /
-  line range. The file is rewritten without the deleted region.
-- Without a selector → `BadInput`. The verb refuses to wipe a
-  whole file by accident.
+## Delete a block or section from a markdown / tex file
+## Remove one part of a file without rewriting the whole thing
+## How do I drop section X from this file?
 
 ```python
-# Delete one block of a markdown file.
-delete(kind='markdown', id='notes/foo.md~intro')
+delete(kind='markdown', id='notes/foo.md~intro')        # named block
+delete(kind='markdown', id='notes/foo.md~3..5')         # block range
+delete(kind='tex', id='chapters/intro.tex~background')  # tex section
+```
 
-# Delete one symbol from a python module.
-delete(kind='python', id='r::pkg.module.deprecated_func')
+The file is rewritten without the addressed region. The selector
+grammar is the same one `get` uses — see `precis-files-help`.
 
-# Delete a line range.
+## Delete a line range from a plaintext or log file
+## Cut lines 40–60 of this file
+
+```python
 delete(kind='plaintext', id='captures/log~L40-L60')
+delete(kind='plaintext', id='captures/log~L12')
 ```
 
-### Whole-file delete: use `edit`
+`~L<n>` is a single line; `~L<n>-<m>` is an inclusive range.
 
-To clear an entire file, use `edit(mode='replace', text='')`:
+## Delete a Python symbol
+## Remove a function or class from a module
 
 ```python
-edit(kind='markdown', id='notes/foo.md',
-     mode='replace', text='')
+delete(kind='python', id='r::pkg.module.deprecated_func')
+delete(kind='python', id='r::pkg.module.OldClass')
 ```
 
-To delete a matched span (one cite, one line), use
-`edit(mode='find-replace', text='')`:
+The symbol's source span is removed; the rest of the module stays.
+`r::` is the repo prefix — see `precis-python-help`.
+
+## Clear an entire file
+## I want to empty this file, not delete a region
+
+```python
+edit(kind='markdown', id='notes/foo.md', mode='replace', text='')
+```
+
+`delete` without a selector on a file kind raises `BadInput` — the
+verb refuses to wipe a whole file by accident. Use `edit` with
+`mode='replace'` and an empty body.
+
+## Delete a single matched span (one citation, one line)
+## Cut one occurrence of a string from a file
 
 ```python
 edit(kind='plaintext', id='refs.bib',
@@ -81,36 +86,36 @@ edit(kind='plaintext', id='refs.bib',
      text='')
 ```
 
-The `delete` verb is for **whole files and whole blocks**, not for
-lines or tokens. `edit(mode='find-replace', text='')` is the
-canonical span-delete idiom — see `precis-edit-help`.
+`delete` operates on whole blocks / line ranges / symbols.
+For arbitrary spans inside a block, use `edit(mode='find-replace',
+text='')`. See `precis-edit-help`.
 
-### Cache-backed and read-only kinds — `Unsupported`
+## Why can't I delete a paper or a cached tool answer?
 
-`calc`, `math`, `web`, `youtube`, `research`, `think`, `websearch`,
-`paper`: `delete` raises `Unsupported`.
+```python
+delete(kind='paper', id='<slug>')   # raises Unsupported
+delete(kind='web', id='<url>')      # raises Unsupported
+```
 
-For papers and patents — content you didn't author — the safe
-operation is to soft-delete via the SQL layer or to re-fetch by
-id (which overwrites the local copy). Cache-backed kinds expire
-on TTL or via `tag(... add=['CACHE:stale'])`.
+Papers, patents, and cache-backed kinds (`calc`, `math`, `web`,
+`youtube`, `websearch`, `think`, `research`) reject `delete`. Cache
+entries expire on TTL or via `tag(... add=['CACHE:stale'])`. To
+remove an ingested paper, work at the SQL layer or re-fetch by id
+to overwrite the local copy.
 
-## What this verb does NOT do
+## Undo a delete
+## I deleted the wrong thing — can I get it back?
 
-- **Hard-delete numeric refs.** Soft-delete only. Hard-delete
-  lives in DB-admin scripts, not the agent surface.
-- **Cascade.** Deleting a memory does not delete linked refs.
-  Links are stored separately and persist (pointing at the
-  soft-deleted row); resolve via the link table.
-- **Undo.** Soft-deletes are recoverable at the SQL layer; selector
-  deletes write the file out without the deleted region (recover
-  via VCS).
-- **Span-delete.** Use `edit(mode='find-replace', text='')`.
-- **Whole-file clear.** Use `edit(mode='replace', text='')`.
+Soft-deletes (numeric refs) are recoverable at the SQL layer — the
+row is still there. Selector deletes on file kinds rewrite the
+file; recover from VCS or your editor's undo.
 
 ## See also
 
-- `precis-edit-help` — span-delete via `edit(... text='')`,
-  whole-file clear via `edit(mode='replace', text='')`
-- `precis-files-help` — selector grammar for file kinds
-- `precis-overview` — verbs and kinds
+```python
+get(kind='skill', id='precis-edit-help')      # span-delete, find-replace, whole-file clear
+get(kind='skill', id='precis-files-help')     # selector grammar for file kinds
+get(kind='skill', id='precis-overview')       # verbs and kinds
+get(kind='skill', id='precis-memory-help')    # what a soft-deleted memory looks like
+get(kind='skill', id='precis-todo-help')      # closing vs deleting a todo
+```

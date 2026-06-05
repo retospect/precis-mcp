@@ -13,7 +13,6 @@ import pytest
 
 from precis.handlers.paper import _is_journal_template_heading
 
-
 # ── exact-match templates ───────────────────────────────────────────
 
 

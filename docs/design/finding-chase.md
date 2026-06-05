@@ -1268,37 +1268,88 @@ Each step ships its own commit with tests. C1 ran
 
 ## Definition of done
 
+(Audited 2026-06-05 against `v8.1.0 — finding-chase` CHANGELOG entry;
+gaps closed same day in a follow-up commit.)
+
 - [x] `0004_finding_and_queue_family.sql` applied to live DB
       (`9d7e85f170f7` checksum). Vocabulary present and dormant
       where Path B doesn't consume it (`chunk_kinds.finding_context`,
       two `artifact_kinds` seed rows, `relations.misattributes` pair).
 - [x] `make_finding_paper_id` shipped with 12 tests (C2).
-- [ ] `put(kind='finding', ...)` creates ref + one `finding_body`
+- [x] `put(kind='finding', ...)` creates ref + one `finding_body`
       chunk (claim + setup as prose) + initial `derived-from`
-      link in one transaction.
-- [ ] `precis worker --only chase` advances findings by one hop
+      link in one transaction. (`handlers/finding.py` lines
+      244–303 — single `with store.tx() as conn:` wraps every
+      write; `UniqueViolation` on `pub_id` rolls back cleanly.)
+- [x] `precis worker --only chase` advances findings by one hop
       per pass; `--once` mode is deterministic for the test suite.
-- [ ] Stubs are identified by `pdf_sha256 IS NULL` (no tag).
+      (`cli/worker.py` registers the `--only chase` choice;
+      `workers/chase.py:run_finding_chase_pass` is the entry.)
+- [x] Stubs are identified by `pdf_sha256 IS NULL` (no tag).
       `precis_add` on a matching PDF merges into the same
       `ref_id`, UPDATEs `refs.pdf_sha256` when it was NULL, and
       ADDs `(pdf_sha256, content_hash)` rows to `ref_identifiers`
-      either way (multi-hash alias support).
-- [ ] `search(kind='finding', q=...)` returns hits filtered to
-      `:established` by default, TOON shape `id | title | setup
-      | primary_cite`.
-- [ ] `get(kind='finding', id=...)` renders the begat chain plus
+      either way (multi-hash alias support). (`ingest/add.py:230`
+      stub upgrade comment + `ingest/db_writer.py:476–516` alias path.)
+- [x] `search(kind='finding', q=...)` returns hits filtered to
+      `:established` by default, TOON shape
+      `id | title | setup | primary_cite`. (`FindingHandler.search`
+      override added 2026-06-05; `status=` shorthand desugars to
+      a STATUS-tag filter unioned with the caller's `tags=`;
+      empty-q path falls back to a recency-ordered list; rendering
+      uses `render_agent_table` for the TOON shape. Closed-vocab
+      `_CLOSED_VOCAB['STATUS']` extended to include the
+      chase-workflow values so filter-time validation accepts
+      them.)
+- [x] `get(kind='finding', id=...)` renders the begat chain plus
       any user-curated misattribution links on the chain.
-- [ ] `cite(kind='finding', ...)` raises "kind does not support
-      cite".
-- [ ] `precis resolve` substitutes established findings;
+      (`handlers/finding.py:_render_one` surfaces outbound
+      `misattributes` edges under a `misattributed via:` block
+      alongside the begat chain. Added 2026-06-05; test
+      `tests/test_finding.py::TestRoundTrip::test_get_renders_misattribution_links`.)
+- [x] `cite(kind='finding', ...)` raises "kind does not support
+      cite". (`handlers/finding.py:349–370` — `raise Unsupported`
+      with the `precis resolve` next-hint.)
+- [x] `precis resolve` substitutes established findings;
       `--strict` exits non-zero on in-flight; LaTeX output uses
-      UTF-8 by default with ASCII fallback.
-- [ ] `precis stats --findings` summarises counts per `STATUS:`
+      UTF-8 by default with ASCII fallback. (`cli/resolve.py:97`
+      `--strict`, line 110 `--ascii`, line 188 `sys.exit(3)`.)
+- [x] `precis stats --findings` summarises counts per `STATUS:`
       value; `precis stats --stubs` summarises stub backlog.
-- [ ] `finding-help` skill installed under
-      `src/precis/data/skills/`.
-- [ ] Tests cover: terminal, stub-waiting (does-nothing pass),
+      (`cli/stats.py` added 2026-06-05. Default prints both
+      sections; each flag isolates one. `precis stubs` remains
+      the row-level lister; `precis stats --stubs` is the
+      aggregate count for "how big is the backlog?" without
+      dumping it. JSON / TOON / table output via the shared
+      ``add_format_argument`` plumbing.)
+- [x] `finding-help` skill installed under
+      `src/precis/data/skills/precis-finding-help.md` (236
+      lines, last-updated 2026-06-01).
+- [x] Tests cover: terminal, stub-waiting (does-nothing pass),
       hop, cycle (revisit), dead-chain (no inline cite / no
       external id / target deleted), multi-candidate, card re-emit
       at chain termination.
-- [ ] CHANGELOG entry + minor version bump.
+      (`tests/workers/test_chase.py` added 2026-06-05 — 9 scenario
+      tests against `run_finding_chase_pass` with
+      `_load_s2_references` mocked. Plus a `test_finding.py`
+      `TestSearch` class covering the new search override:
+      default-established filter, status overrides, `status='*'`,
+      TOON shape, recency fallback, BadInput on empty input.)
+- [x] CHANGELOG entry + minor version bump
+      (`v8.1.0 — finding-chase + OA fetcher cascade + event
+      log (2026-06-01)`).
+
+### Audit close-out (2026-06-05)
+
+All gaps from the 2026-06-05 audit landed the same day:
+
+* `FindingHandler.search` override + `_CLOSED_VOCAB['STATUS']`
+  expansion to cover the chase-workflow values.
+* `_render_one` surfaces `misattributes` outbound edges.
+* `precis stats` subcommand with `--findings` / `--stubs` flags.
+* `tests/workers/test_chase.py` — 9 scenario tests.
+
+The genuinely open items now live under §"Open questions" (lenient
+vs. strict verification gate, multi-candidate disambiguation UI,
+re-running a chase after upstream retraction). Those are design
+discussions, not DoD gaps.

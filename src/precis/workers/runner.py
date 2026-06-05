@@ -72,20 +72,23 @@ def run_handler_once(
             conn.commit()
             return BatchResult(handler=handler.name, claimed=0, ok=0, failed=0)
 
-        for row in rows:
-            try:
-                payload = handler.process(row)
-            except Exception as exc:
-                # Pure-compute error: poison-pill chunk, oversize,
-                # OOM under bge-m3, etc. Record the failure marker
-                # so the loop doesn't re-claim the chunk forever.
+        # ``process_batch`` returns a list parallel to ``rows`` where
+        # each element is either the payload or an Exception. The
+        # default implementation calls ``process`` per row; handlers
+        # that benefit from bulk compute (EmbedHandler runs one
+        # batched transformer forward pass per call) override it.
+        # Per-row failures still route to write_failed below so the
+        # poison-pill chunk gets a failure marker.
+        results = handler.process_batch(rows)
+        for row, payload in zip(rows, results, strict=True):
+            if isinstance(payload, Exception):
                 log.warning(
                     "worker: %s process failed for chunk %d: %s",
                     handler.name,
                     row.chunk_id,
-                    exc,
+                    payload,
                 )
-                handler.write_failed(conn, row.chunk_id, repr(exc))
+                handler.write_failed(conn, row.chunk_id, repr(payload))
                 n_failed += 1
             else:
                 handler.write_ok(conn, row.chunk_id, payload)
@@ -139,9 +142,7 @@ def run_loop(
       within one batch.
     """
     if not handlers and not ref_passes:
-        log.warning(
-            "worker: no handlers and no ref_passes registered; nothing to do"
-        )
+        log.warning("worker: no handlers and no ref_passes registered; nothing to do")
         return
 
     while True:

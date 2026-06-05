@@ -33,7 +33,7 @@ from typing import Any
 # without libreadline-dev it may be missing, in which case input()
 # silently falls back to the no-edit behaviour.
 try:
-    import readline  # noqa: F401
+    import readline
 except ImportError:
     readline = None  # type: ignore[assignment]
 

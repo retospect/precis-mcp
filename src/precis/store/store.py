@@ -102,11 +102,25 @@ class Store(
         cls,
         dsn: str,
         *,
-        min_size: int = 1,
-        max_size: int = 8,
+        min_size: int | None = None,
+        max_size: int | None = None,
     ) -> Self:
-        """Create a Store from a DSN, using the shared pool factory."""
-        pool = create_pool(dsn, min_size=min_size, max_size=max_size)
+        """Create a Store from a DSN, using the shared pool factory.
+
+        Defaults fall through to :mod:`precis.store.pool` so
+        ``Store.connect`` and direct ``create_pool`` calls agree on
+        one source of truth (previously they diverged at 8 vs 10).
+        """
+        from precis.store.pool import (
+            DEFAULT_POOL_MAX_SIZE,
+            DEFAULT_POOL_MIN_SIZE,
+        )
+
+        pool = create_pool(
+            dsn,
+            min_size=min_size if min_size is not None else DEFAULT_POOL_MIN_SIZE,
+            max_size=max_size if max_size is not None else DEFAULT_POOL_MAX_SIZE,
+        )
         return cls(pool, dsn=dsn)
 
     def close(self) -> None:

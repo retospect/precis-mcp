@@ -84,11 +84,11 @@ def _stream_lines(url: str) -> Iterator[str]:
     entirely in memory. ``urllib.request`` is stdlib — no extra dep
     just for this monthly job.
     """
-    req = urllib.request.Request(  # noqa: S310 — URL is in our control
+    req = urllib.request.Request(
         url,
         headers={"User-Agent": "precis-mcp/provenance-rw-sync"},
     )
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as resp:
         # Force UTF-8; RW publishes UTF-8 per their docs.
         for raw_line in resp:
             yield raw_line.decode("utf-8", errors="replace")
@@ -203,7 +203,7 @@ def _try_source(
             error=err,
         )
         return SyncResult(source_url, 0, 0, "failed", err)
-    except Exception as exc:  # noqa: BLE001 — defensive; want the ledger updated
+    except Exception as exc:
         err = f"unexpected error: {exc}"
         log.exception("RW sync: %s", err)
         _record_sync(

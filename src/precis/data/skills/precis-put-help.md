@@ -1,122 +1,108 @@
 ---
 id: precis-put-help
-title: precis — the put verb (write or annotate)
-status: active
-tier: 1
-floor: any
+title: precis — the put verb (create, annotate, import)
 applies-to: put (every kind that supports it)
-last-updated: 2026-05-24
+status: active
 ---
 
-# precis-put-help — write or annotate
+# precis-put-help — create a new ref
 
-`put` creates new refs and applies metadata to refs (tags, links).
-For sub-region rewrites of an existing ref, reach for `edit`
-instead.
+`put` is the create verb. It mints new refs and attaches tags or
+links on the same call. Rewriting an existing ref's body lives on
+`edit`; flipping tags or links on an existing ref lives on `tag`
+and `link`.
 
-```python
-put(kind='memory', text='...')                  # create a numeric-ref
-put(kind='markdown', mode='create',
-    id='notes/foo.md', text='...')              # create a file
-put(kind='memory', id=42, tags=['pinned'])      # annotate (tags only)
-```
-
-## Arguments
-
-| Arg | Type | Default | Meaning |
-|---|---|---|---|
-| `kind` | str | required | Which kind to write to. |
-| `mode` | str | None | Operation hint. Kind-specific (see below). |
-| `id` | str / int | None | Target ref. Omit on numeric-ref kinds to create new. Required on file kinds with `mode='create'`. |
-| `text` | str | None | Content for create or text update. |
-| `tags` | list[str] | None | Tags to **add** to the ref on creation. For tag removal use the `tag` verb. |
-| `link` | str | None | Add a link `kind:identifier[~selector]` to a new ref. For link removal use the `link` verb. |
-| `rel` | str | None | Relation slug for `link=`. Defaults to `related-to`. |
-
-## `mode=` matrix
-
-Each kind family has its own `mode=` discipline:
-
-- **File kinds** (`markdown`, `plaintext`, `tex`, `python`):
-  `put` is **creation-only** since the seven-verb cutover.
-  `mode='create'` is required and the only accepted value.
-  Region edits (`append` / `insert` / `replace` / `find-replace`)
-  live on `edit`; whole-file deletes live on `delete`.
-- **Numeric-ref kinds** (`memory`, `todo`, `gripe`, `conv`, `fc`,
-  `quest`, `citation`): omit `mode=` to create a new ref;
-  `mode='delete'` soft-deletes (or use the `delete` verb directly).
-  `citation` takes additional named kwargs — see
-  `precis-citation-help`.
-- **`perplexity`**: `mode='import'` ingests a pre-generated report
-  as a $0 cache entry.
-
-Unknown modes are rejected with a clear error.
-
-## Tags via put
-
-`tags=` applies tags **at creation time** — the convenient one-call
-shape when a new ref ships with metadata:
+## Jot a thought into memory
+## Capture a quick note I want to keep
+## How do I record something for later?
 
 ```python
+put(kind='memory', text='Wang20 cites our 2024 result indirectly.')
 put(kind='memory',
     text='Schedule the next sortie review for 2026-Q3.',
     tags=['topic-sortie', 'pinned'])
-```
-
-For retroactive tag changes (adding / removing on an existing ref)
-use the `tag` verb:
-
-```python
-tag(kind='todo', id=158,
-    add=['STATUS:done'],
-    remove=['STATUS:open'])
-```
-
-Tag vocabulary follows the cross-kind convention — see
-`precis-tag-help` for the full matrix (closed prefixes, flag tags,
-open tags, per-kind axis gating).
-
-## Links via put
-
-`link=` attaches a link **at creation time** — the convenient
-one-call shape when a new ref ships with an outbound edge:
-
-```python
-# Create a memory that already cites a paper.
 put(kind='memory',
-    text='Wang20 cites our 2024 result indirectly.',
+    text='Heterojunction comparison aligns with our hypothesis.',
     link='paper:wang2020state', rel='cites')
 ```
 
-For retroactive link changes (adding / removing on an existing
-ref) use the `link` verb:
+Omit `id=` to mint a fresh numeric ref. The response returns the
+new id; paste it into `get(kind='memory', id=<N>)` to read back.
+
+## File a todo
+## Add a task to my list
+## I need to remember to do X
 
 ```python
-link(kind='memory', id=42,
-     target='paper:wang2020state', rel='cites')          # add
-
-link(kind='memory', id=42,
-     target='paper:wang2020state', rel='cites',
-     mode='remove')                                       # remove one (target, rel)
-
-link(kind='memory', id=42,
-     target='paper:wang2020state', mode='remove')         # remove every link to target
+put(kind='todo', text='Review section 3 of abazari2024design.')
+put(kind='todo',
+    text='Sweep open patents for cpc B01J27.',
+    tags=['PRIO:high', 'project:noxrr'])
 ```
 
-`rel=` defaults to `related-to`. See `precis-link-help` for the
-full relation vocabulary.
+`STATUS:open` is the implicit default; flip with
+`tag(kind='todo', id=<N>, add=['STATUS:done'])` once the task lands.
 
-## Worked examples
-
-### Memory, fresh
+## Log a gripe
+## Capture an annoyance to fix later
+## How do I record a niggle?
 
 ```python
-put(kind='memory',
-    text='Schedule the next sortie review for 2026-Q3.',
-    tags=['topic-sortie', 'pinned'])
+put(kind='gripe', text='Search misses on exact CPC codes — needs a lexical floor.')
+put(kind='gripe',
+    text='TOC excerpts feel too short on very long segments.',
+    tags=['area:search'])
 ```
 
-### Markdown file, create
+Gripes feed the retrieval-misses channel; one sentence per gripe.
+
+## Stash a flashcard
+## Create a spaced-repetition card
+## How do I queue something to review?
+
+```python
+put(kind='fc',
+    text='Q: What does the bare-DOI form of get(kind=paper) do?\nA: Resolves via metadata, fetches the paper.')
+put(kind='fc',
+    text='Q: ...\nA: ...',
+    tags=['topic:precis'])
+```
+
+Card scheduling follows the SM-2 cadence — see `precis-fc-help`.
+
+## Open a long-running quest
+## Start a multi-step goal I'll come back to
+## How do I track a project across sessions?
+
+```python
+put(kind='quest', text='Ship the v2 search reranker.')
+put(kind='quest',
+    text='Ingest the 2024 NOxRR corpus end-to-end.',
+    tags=['project:noxrr'])
+```
+
+Link memories and todos into the quest with
+`link(kind='memory', id=<N>, target='quest:<slug>', rel='part-of')`.
+
+## Record a verified citation
+## Stamp a claim with a source quote
+## How do I write the verifier output back?
+
+```python
+put(kind='citation',
+    text='Z-scheme NOxRR achieves 78% selectivity at 1.2 V.',
+    source_handle='wang2020state~38..42',
+    source_quote='...selectivity reached 78% at 1.2 V vs RHE...',
+    verifier_confidence=0.92,
+    link='paper:wang2020state', rel='cites')
+```
+
+Citation is the verifier's output kind. See `precis-citation-help`
+for the verifier loop and the named-kwarg shape.
+
+## Create a markdown file under PRECIS_ROOT
+## Drop a new note file on disk
+## How do I make a new .md file?
 
 ```python
 put(kind='markdown', mode='create',
@@ -124,10 +110,79 @@ put(kind='markdown', mode='create',
     text='# fbproj — project notes\n\n## Goals\n- ...\n')
 ```
 
-### Patent: not supported
+`mode='create'` is required for file kinds and is the only accepted
+mode on `put`. `id=` is the path under `PRECIS_ROOT`. Append, insert,
+replace, and find-replace live on `edit`.
 
-`put` doesn't apply to `patent` (read-only via OPS). To annotate a
-patent, link a `memory` to it:
+## Create a plaintext, tex, or python file
+## Drop a new .txt, .tex, or source file
+## Same shape, different kind
+
+```python
+put(kind='plaintext', mode='create',
+    id='logs/2026-06-05.txt', text='...')
+put(kind='tex', mode='create',
+    id='chapters/intro.tex', text='\\section{Intro}\n...')
+put(kind='python', mode='create',
+    id='precis::precis.utils.demo', text='def demo():\n    ...')
+```
+
+Same `mode='create'` discipline as `markdown`. The `id=` form for
+`python` is `<repo>::<dotted.path>`; see `precis-python-help`.
+
+## Import a Perplexity report I already paid for
+## Stash a web-UI Sonar answer at $0
+## How do I avoid double-paying for a Perplexity query I already ran?
+
+```python
+put(kind='websearch', mode='import',
+    q='latest perovskite tandem efficiencies',
+    text='<paste the answer body>')
+put(kind='think', mode='import',
+    q='compare DAC and BECCS', text='...')
+put(kind='research', mode='import',
+    q='mechanism of NOxRR', text='...')
+```
+
+`mode='import'` lands the report in the cache keyed on `q=`; the
+next `get(kind='websearch', q='...')` hits cache at $0. See
+`precis-perplexity-help`.
+
+## Tag a ref while creating it
+## Attach metadata on the same call
+## How do I avoid a second tag() call?
+
+```python
+put(kind='memory', text='...', tags=['pinned', 'topic-sortie'])
+put(kind='todo', text='...', tags=['PRIO:high'])
+```
+
+`tags=` runs only at creation. For retroactive tag changes use
+`tag(kind='...', id=<N>, add=[...], untags=[...])`. Closed-prefix
+axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are kind-gated; open
+tags are universal. See `precis-tag-help`.
+
+## Link a ref while creating it
+## Attach an outbound edge on the same call
+## How do I cite a paper from a new memory?
+
+```python
+put(kind='memory', text='Anchors our claim.',
+    link='paper:wang2020state', rel='cites')
+put(kind='memory', text='Touches the same idea.',
+    link='paper:wang2020state~38..42', rel='discusses')
+```
+
+`link=` takes a single target `kind:identifier[~selector]` and `rel=`
+defaults to `related-to`. For retroactive link changes use the `link`
+verb. See `precis-link-help` for the relation vocabulary.
+
+## Annotate a patent I can't put-create
+## Attach a note to a read-only ref
+## How do I add commentary to a patent?
+
+Patents are read-only via OPS — `put(kind='patent', ...)` is
+rejected. Hang a memory off the patent instead:
 
 ```python
 put(kind='memory',
@@ -135,10 +190,17 @@ put(kind='memory',
     link='patent:ep4123456a1', rel='annotates')
 ```
 
+Same trick works for any read-only kind.
+
 ## See also
 
-- `precis-edit-help` — sub-region rewrites of existing refs
-- `precis-delete-help` — soft-delete and selector-delete
-- `precis-tag-help` — tag vocabulary and per-kind axis gating
-- `precis-link-help` — link grammar and relation vocabulary
-- `precis-files-help` — file-kind addressing (slug discipline)
+```python
+get(kind='skill', id='precis-overview')         # seven verbs, address grammar
+get(kind='skill', id='precis-edit-help')        # sub-region rewrites of existing refs
+get(kind='skill', id='precis-delete-help')      # soft-delete numeric refs, region delete on files
+get(kind='skill', id='precis-tag-help')         # tag vocabulary and axis gating
+get(kind='skill', id='precis-link-help')        # relation vocabulary
+get(kind='skill', id='precis-citation-help')    # verifier-workflow citation shape
+get(kind='skill', id='precis-perplexity-help')  # mode='import' for paid kinds
+get(kind='skill', id='precis-files-help')       # file-kind addressing
+```

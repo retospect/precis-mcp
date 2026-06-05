@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from psycopg import Connection
+from psycopg.types.json import Jsonb
 
 from precis.ingest.citations import citations as fetch_s2_citations
 from precis.utils.claude_p import ClaudePError, call_claude_p
@@ -247,9 +248,7 @@ def advance_finding(
             }
 
     is_terminal = (
-        not inline_cites
-        if verification is None
-        else bool(verification.get("terminal"))
+        not inline_cites if verification is None else bool(verification.get("terminal"))
     )
 
     if is_terminal:
@@ -333,13 +332,9 @@ def run_finding_chase_pass(
         t0 = time.perf_counter()
         try:
             with store.pool.connection() as conn:
-                outcome, ev = advance_finding(
-                    conn, store, finding, with_llm=with_llm
-                )
+                outcome, ev = advance_finding(conn, store, finding, with_llm=with_llm)
                 duration_ms = int((time.perf_counter() - t0) * 1000)
-                _flush_event(
-                    store, conn, finding.ref_id, outcome, ev, duration_ms
-                )
+                _flush_event(store, conn, finding.ref_id, outcome, ev, duration_ms)
                 conn.commit()
             field = _OUTCOME_FIELD[outcome]
             setattr(result, field, getattr(result, field) + 1)
@@ -677,8 +672,7 @@ def _resolve_or_create_stub(
 
     for id_kind, id_value in probes:
         row = conn.execute(
-            "SELECT ref_id FROM ref_identifiers "
-            "WHERE id_kind = %s AND id_value = %s",
+            "SELECT ref_id FROM ref_identifiers WHERE id_kind = %s AND id_value = %s",
             (id_kind, id_value),
         ).fetchone()
         if row is not None:
@@ -873,9 +867,8 @@ def _set_status(
     )
     if reason:
         conn.execute(
-            "UPDATE refs SET meta = meta || %s::jsonb, updated_at = now() "
-            "WHERE ref_id = %s",
-            (json.dumps({"dead_reason": reason}), finding_ref_id),
+            "UPDATE refs SET meta = meta || %s, updated_at = now() WHERE ref_id = %s",
+            (Jsonb({"dead_reason": reason}), finding_ref_id),
         )
     # Tag is imported above for type-checker visibility; the SQL
     # path above doesn't use it directly but keeps the symbol
@@ -1030,9 +1023,7 @@ def _locate_chunk_in_target(
 ) -> tuple[int, int, str] | None:
     """Confirm or correct the proposed chunk pick. Returns the chosen tuple."""
     alt_table = (
-        "\n".join(
-            f"  [ord {alt[1]}]: {alt[2][:200]}" for alt in alternates
-        )
+        "\n".join(f"  [ord {alt[1]}]: {alt[2][:200]}" for alt in alternates)
         or "  (none)"
     )
     prompt = _PROMPT_LOCATE.format(

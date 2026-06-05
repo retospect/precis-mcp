@@ -341,16 +341,19 @@ class PatentHandler(Handler):
         scope_ref_id: int | None,
         tags: list[str] | None,
         top_k: int,
+        query_vec: list[float] | None = None,
     ) -> list[tuple[Any, Ref, float]]:
         """Run the hybrid lex+semantic search over patent blocks.
 
         Returns an empty list when q= is empty AND no scope/tags are
         set — there's nothing to rank against.
+
+        ``query_vec=`` may be pre-supplied by the runtime cross-kind
+        dispatcher to avoid an embed_one(q) per kind in the fan-out.
         """
         if not (q and q.strip()):
             return []
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
+        if query_vec is None and self.embedder is not None:
             query_vec = self.embedder.embed_one(q)
         return self.store.search_blocks_fused(
             q=q,
@@ -590,6 +593,7 @@ class PatentHandler(Handler):
         q: str,
         tags: list[str] | None = None,
         top_k: int = 10,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Local-only block-level search returned as ``SearchHit``s.
@@ -598,6 +602,9 @@ class PatentHandler(Handler):
         upstream calls cost money and shouldn't fire on every
         cross-kind search. Operators who want OPS hits run the
         single-kind ``search(kind='patent', q=...)`` directly.
+
+        ``query_vec=`` may be pre-supplied by the runtime cross-kind
+        dispatcher (computed once for all kinds).
         """
         if not (q and q.strip()):
             return []
@@ -607,6 +614,7 @@ class PatentHandler(Handler):
             scope_ref_id=None,
             tags=normalized_tags,
             top_k=top_k,
+            query_vec=query_vec,
         )
         return block_hits_to_search_hits(triples, kind="patent")
 

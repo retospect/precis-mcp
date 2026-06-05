@@ -58,7 +58,7 @@ def render_event_log(
         pgcode = getattr(e, "sqlstate", None) or getattr(
             getattr(e, "diag", None), "sqlstate", None
         )
-        if pgcode == "42P01" or "ref_events" in msg and "does not exist" in msg:
+        if pgcode == "42P01" or ("ref_events" in msg and "does not exist" in msg):
             raise Unsupported(
                 "view='log' requires the ref_events table (migration 0009)",
                 next="run `precis migrate` to apply pending migrations",
@@ -117,7 +117,9 @@ def _summarise(
 def _summarise_chase(event: str, payload: dict[str, Any]) -> str:
     front = payload.get("frontier") or {}
     nxt = payload.get("next") or {}
-    front_str = f"ref={front.get('ref_id')}~{front.get('resolved_ord', front.get('ord'))}"
+    front_str = (
+        f"ref={front.get('ref_id')}~{front.get('resolved_ord', front.get('ord'))}"
+    )
     if event == "advanced":
         return f"{front_str} → ref={nxt.get('ref_id')}"
     if event == "terminated":

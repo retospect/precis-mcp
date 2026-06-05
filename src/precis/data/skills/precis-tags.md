@@ -1,16 +1,13 @@
 ---
 id: precis-tags
 title: precis — set and filter by tags
-status: phase-7
-tier: 1
-floor: any
 applies-to: tag (add=, remove=), search (tags=), put (tags= on create)
-last-updated: 2026-04-28
+status: active
 ---
 
 # precis-tags — set and filter by tags
 
-Three tag shapes by case.  Pick by what you're doing:
+Three tag shapes by case. Pick by what you're doing:
 
 | Want to... | Use | Example |
 |---|---|---|
@@ -18,7 +15,11 @@ Three tag shapes by case.  Pick by what you're doing:
 | Categorise by an open axis | `lowercase:value` | `topic:co2-capture`, `project:precis-v2` |
 | Mark a boolean flag | bare | `star`, `wip`, `pinned` |
 
-## Set tags
+UPPERCASE replaces within its prefix. Lowercase and bare accumulate.
+
+## How do I set a tag?
+## Add a tag to an existing ref
+## How do I mark a todo as high priority?
 
 ```python
 tag(kind='todo', id=48, add=[
@@ -28,14 +29,13 @@ tag(kind='todo', id=48, add=[
 ])
 ```
 
-UPPERCASE replaces within its prefix.  Lowercase and bare add.
+Closed prefixes are **kind-gated** — `PRIO:` and `STATUS:` only apply
+to workflow kinds (`todo`, `gripe`, `quest`); `memory` and other
+free-form kinds reject them. See the per-kind axis matrix below.
 
-**Closed prefixes are kind-gated** — ``PRIO:`` and ``STATUS:`` only
-apply to workflow kinds (``todo``, ``gripe``, ``quest``); ``memory``
-and other free-form kinds reject them. See the per-kind axis matrix
-below.
-
-## Remove tags
+## How do I remove a tag?
+## Drop a tag from a ref
+## How do I clear STATUS:done on a todo?
 
 ```python
 tag(kind='todo', id=48, remove=[
@@ -45,46 +45,36 @@ tag(kind='todo', id=48, remove=[
 ])
 ```
 
-`tag(remove=...)` is **value-matched** for closed prefixes:
-`remove=['STATUS:open']` against a `STATUS:done` ref is a silent
-no-op (no error, no row touched). To switch axes, prefer the
-overwrite form via `tag(add=['STATUS:open'])` — it's atomic.
+`remove=` is value-matched for closed prefixes — `remove=['STATUS:open']`
+against a `STATUS:done` ref is a silent no-op. To switch axes, prefer
+the overwrite form `tag(add=['STATUS:open'])` — atomic, no separate
+remove needed. `remove=` runs the same canonical-form validation as
+`add=` (so `remove=['urgent']` raises the bare-flag-collision error).
 
-`tag()` is rejected on a non-existent ref, and `remove=` goes
-through the same canonical-form validation as `add=` —
-`remove=['urgent']` raises the bare-flag-collision error.
-
-## Filter by tags
+## How do I filter search results by tag?
+## Restrict search to refs that carry tag X
+## Combine search with a tag filter
 
 `search(tags=...)` narrows results to refs that carry **all** the
 listed tags (AND semantics). Combine with `q=` for ranked search
-inside the filtered set.
+inside the filtered set:
 
 ```python
 search(kind='paper', q='photocatalysis', tags=['topic:co2-capture'])
-# only blocks belonging to papers tagged with that topic
-
 search(kind='todo', q='write', tags=['STATUS:open', 'PRIO:high'])
-# only refs that carry BOTH tags
-
-search(kind='memory', q='', tags=['star'])     # not currently legal
-# search requires q=; use a list view instead:
-get(kind='memory', id='/recent')                # then post-filter, OR
-list_refs(kind='memory', tags=['star'])         # store-level (when
-                                                # exposed by a handler)
+search(kind='memory', q='kwargs vs modes', tags=['confidence-strong'])
 ```
 
-The filter is applied at the SQL layer via the unified `ref_tags`
-view, so it cuts the rows the lexical/semantic ranker has to score —
-two orders of magnitude fewer rows for the typical "STATUS:open todo"
-pattern. Same canonical-form validation as `tag(add=...)`: an
+`tags=` runs the same canonical-form validation as `tag(add=)` — an
 `urgent` filter raises the bare-flag-collision error.
 
-## The closed UPPERCASE vocabularies
+## What are the closed UPPERCASE axes?
+## Which UPPERCASE prefixes does the runtime know?
+## Where do STATUS, PRIO, SRC, CACHE come from?
 
-The runtime **rejects** unknown values inside a registered closed
-prefix and **rejects** bare flags that collide with a closed value.
-Pick from the canonical list:
+The runtime rejects unknown values inside a registered closed prefix
+and rejects bare flags that collide with a closed value. Pick from
+the canonical list:
 
 | Prefix | Values | Writer |
 |---|---|---|
@@ -93,91 +83,81 @@ Pick from the canonical list:
 | `SRC:` | `primary` / `secondary` | agent |
 | `CACHE:` | `fresh` / `stale` / `pinned` | system |
 
-Any UPPERCASE prefix outside that table is rejected at the write
-boundary — coin concepts as lowercase tags (`density:dense`,
-`confidence:strong`) instead, which the runtime accepts freely.
+Any UPPERCASE prefix outside that table is rejected — coin concepts
+as lowercase tags (`density:dense`, `confidence:strong`) instead.
 
+## Which closed axes apply to which kind?
 ## Per-kind axis matrix
+## I tried PRIO:high on a memory and it was rejected — why?
 
-Each kind opts in to a subset of the closed prefixes above. A tag
-outside the kind's allowed set raises `BadInput` at the write
-boundary, with the kind's allowed axes named in the recovery hint.
-Write the equivalent semantic as a lowercase open tag instead.
+Each kind opts in to a subset of the closed prefixes. A tag outside
+the kind's allowed set raises `BadInput`; the error names the allowed
+axes and suggests the lowercase rewrite.
 
-| Kind                              | Allowed closed axes |
-|-----------------------------------|---------------------|
-| `todo`, `gripe`, `quest`          | `STATUS`, `PRIO`    |
-| `paper`, `patent`                 | `SRC`, `CACHE`      |
+| Kind | Allowed closed axes |
+|---|---|
+| `todo`, `gripe`, `quest` | `STATUS`, `PRIO` |
+| `paper`, `patent` | `SRC`, `CACHE` |
 | `research`, `think`, `websearch`, `web`, `youtube` | `CACHE` |
 | `memory`, `fc`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |
 
-For a `memory` you'd write priority as a lowercase open tag:
+Free-form kinds (`memory` etc.) express the same semantics with open
+tags:
 
 ```python
-tag(kind='memory', id=48, add=['prio:high'])      # OK
+tag(kind='memory', id=48, add=['prio:high'])      # OK (lowercase)
 tag(kind='memory', id=48, add=['PRIO:high'])      # rejected
 ```
 
-The error names the kind's allowed axes and suggests the lowercase
-rewrite, so a 7B caller that hits it converges in one round-trip.
+## What do validation errors look like?
+## I got a BadInput on tag — what's the recovery?
 
-## Validation errors
-
-```python
+```text
 put(kind='todo', text='...', tags=['urgent'])
-# [error:BadInput] bare flag 'urgent' collides with closed value 'PRIO:urgent'
-#   next: use tags=['PRIO:urgent'] instead of tags=['urgent']
+[error:BadInput] bare flag 'urgent' collides with closed value 'PRIO:urgent'
+  next: use tags=['PRIO:urgent'] instead of tags=['urgent']
 
 tag(kind='todo', id=40, add=['STATUS:bogus'])
-# [error:BadInput] invalid STATUS value: 'bogus'
-#   options: ['blocked', 'doing', 'done', 'open', "won't-do"]
+[error:BadInput] invalid STATUS value: 'bogus'
+  options: ['blocked', 'doing', 'done', 'open', "won't-do"]
 ```
 
-## Create-with-tags shortcut
+## Tag a ref at creation time
+## Add tags in the same put call (no second round-trip)
 
-`put` accepts `tags=[...]` on creation as a shortcut so you don't
-need two calls for a fresh ref:
+`put` accepts `tags=[...]` on creation:
 
 ```python
-put(kind='memory', text='...', tags=['kind:decision', 'topic-co2'])
+put(kind='memory', text='...', tags=['topic:co2-capture', 'confidence-strong'])
+put(kind='todo', text='...', tags=['PRIO:high', 'project:precis-v2'])
 ```
 
 After creation, use `tag(...)` to mutate.
 
-## Common lowercase prefixes
+## Common lowercase prefixes and bare flags
+
+Lowercase prefixes (coin new ones freely):
 
 - `topic:` — subject matter (`topic:co2-capture`, `topic:noxrr`)
-- `project:` — what initiative (`project:giri`, `project:precis-v2`)
-- `kind:` — sub-kind on memories (`kind:decision`, `kind:idea`)
+- `project:` — which initiative (`project:giri`, `project:precis-v2`)
+- `confidence-` — bare-style confidence levels (`confidence-tentative`,
+  `confidence-moderate`, `confidence-strong`, `confidence-certain`)
 
-Coin new prefixes freely. Lowercase prefixes are open-ended; the
-runtime never rejects them.
+Bare flags (coin freely as long as they don't collide with a closed
+value on the same kind): `wip`, `star`, `draft`, `private`, `pinned`.
 
-## Common bare flags
-
-`wip`, `star`, `draft`, `private`, `pinned`. Coin new ones freely as
-long as they don't collide with the closed-vocab values above —
-*except* that the collision check is kind-scoped: a bare flag whose
-spelling matches a closed value (`pinned` → `CACHE:pinned`,
-`fresh` → `CACHE:fresh`) is accepted on kinds that don't allow the
-colliding axis. Concretely: `tag(kind='memory', add=['pinned'])`
-works (memory has no `CACHE:` axis); `tag(kind='paper',
-add=['pinned'])` is rejected with the canonical-form hint (paper
-allows `CACHE:` and the bare flag would shadow the closed form).
-
-## Not yet implemented
-
-- `tags=` filter on `get(kind=K)` list views — surfaced at the
-  store level (`Store.list_refs(tags=...)`) but not piped through
-  the agent-facing list-view path. Use `search(...)` with `q=`
-  for now.
-- Block-level (positional) tag filtering — the schema supports
-  `pos=N` tags on a specific block, but no handler currently
-  writes them and the search filter only matches ref-level tags.
+The collision check is kind-scoped: `tag(kind='memory', add=['pinned'])`
+works (memory has no `CACHE:` axis), but `tag(kind='paper', add=['pinned'])`
+is rejected (paper allows `CACHE:` and the bare flag would shadow the
+closed form).
 
 ## See also
 
-- `precis-overview` — verbs and kinds
-- `precis-cache` — `CACHE:*` and the `pinned` flag
-- `precis-todo-help` — `STATUS:` lifecycle
-- `precis-memory-help` — `kind:` discriminator
+```python
+get(kind='skill', id='precis-overview')        # verbs and kinds
+get(kind='skill', id='precis-tag-help')        # the tag verb mechanics
+get(kind='skill', id='precis-search-help')     # tags= filter inside search
+get(kind='skill', id='precis-cache')           # CACHE:* and the pinned flag
+get(kind='skill', id='precis-todo-help')       # STATUS:/PRIO: lifecycle
+get(kind='skill', id='precis-memory-help')     # open-tag categorisation
+```

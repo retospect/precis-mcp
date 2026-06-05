@@ -131,6 +131,44 @@ def _check_reserved_args(
 # Hard cap on top_k for search tool
 _SEARCH_TOP_K_MAX: int = 100
 
+# Hard cap on ``text=`` payloads to put / edit. The embedder
+# (BGE-M3 / 1024-d) tokenises and forwards the payload in worker
+# passes; an uncapped multi-MB write OOMs the model. 2 MiB is well
+# above any sane note/markdown/abstract while still bounding a
+# malicious or accidental write. Boundary check lives at the tool
+# surface so the runtime + handlers see only validated input.
+_TEXT_PAYLOAD_MAX_BYTES: int = 2 * 1024 * 1024
+
+
+def _check_text_payload_size(verb: str, text: str | None) -> str | None:
+    """Reject oversize ``text=`` at the verb boundary.
+
+    Returns an MCP-shaped validation-error envelope when ``text``
+    exceeds :data:`_TEXT_PAYLOAD_MAX_BYTES`; otherwise ``None``.
+    """
+    if text is None:
+        return None
+    size = len(text.encode("utf-8", errors="ignore"))
+    if size <= _TEXT_PAYLOAD_MAX_BYTES:
+        return None
+    from precis.errors import BadInput
+
+    runtime = _get_runtime()
+    cap_mib = _TEXT_PAYLOAD_MAX_BYTES // (1024 * 1024)
+    return _validation_error(
+        runtime.render_error(
+            BadInput(
+                f"{verb}: text payload is {size} bytes, exceeds the "
+                f"{_TEXT_PAYLOAD_MAX_BYTES}-byte ({cap_mib} MiB) cap",
+                next=(
+                    "split the write into smaller blocks or compress the "
+                    "input; the cap protects the embedder from OOM on the "
+                    "downstream worker pass"
+                ),
+            )
+        )
+    )
+
 
 def get(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
@@ -276,6 +314,9 @@ def put(
     Full reference: get(kind='skill', id='precis-put-help'), or
     search(kind='skill', q='saving a note') for a topical lookup.
     """
+    err = _check_text_payload_size("put", text)
+    if err is not None:
+        return err
     return _dispatch(
         "put",
         {
@@ -327,6 +368,9 @@ def edit(
     search(kind='skill', q='changing existing content') for a topical
     lookup.
     """
+    err = _check_text_payload_size("edit", text)
+    if err is not None:
+        return err
     payload: dict[str, Any] = {
         "kind": kind,
         "id": id,
@@ -450,11 +494,11 @@ _SEARCH_HELP: dict[str, str] = {
     "scope": "Restrict to one ref's blocks (slug or numeric id).",
     "top_k": "Max results per page. Positive int ≤ 100.",
     "page": "Page number (default 1). Pass page=2 to see results "
-            "top_k..2*top_k-1, etc.",
+    "top_k..2*top_k-1, etc.",
     "tags": "Per-kind tag filters (closed-vocab axes + open tags).",
     "source": "Patent only: 'both' (default) | 'local' | 'remote'.",
     "exclude": "Ref slugs to drop from results (hand-skip; page= is "
-               "usually preferable).",
+    "usually preferable).",
 }
 
 _PUT_HELP: dict[str, str] = {

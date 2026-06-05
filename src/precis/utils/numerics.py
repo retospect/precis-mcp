@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import re
 
-
 # Units we recognize as a closed set, ordered longest-first so the
 # regex consumes the longest match (avoids partial matches like
 # ``"keV"`` matching as ``"k"`` + value).

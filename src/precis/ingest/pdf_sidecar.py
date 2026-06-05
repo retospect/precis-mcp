@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import fitz
+
+log = logging.getLogger(__name__)
 
 DOI_REGEX = re.compile(r"10\.\d{4,}/[^\s<\"}\)]+")
 
@@ -57,7 +60,12 @@ def extract_pdf_meta(path: str | Path) -> dict[str, Any]:
 
     try:
         xmp_raw = doc.get_xml_metadata() or ""
-    except Exception:
+    except Exception as exc:
+        # Corrupt XMP packet — fall back to other DOI sources
+        # (first-page text, info dict, filename) below. Logged so a
+        # systemic XMP corruption pattern can be diagnosed without
+        # the exception silently swallowing every signal.
+        log.debug("pdf_sidecar: XMP read failed for %s: %s", path, exc)
         xmp_raw = ""
 
     # Content hash
@@ -71,8 +79,15 @@ def extract_pdf_meta(path: str | Path) -> dict[str, Any]:
     for i in range(min(5, doc.page_count)):
         try:
             first_pages_text += doc[i].get_text() + "\n"
-        except Exception:
-            pass
+        except Exception as exc:
+            # Per-page extraction can fail on corrupt page trees;
+            # we still want the surviving pages for DOI extraction.
+            log.debug(
+                "pdf_sidecar: page %d text extraction failed for %s: %s",
+                i,
+                path,
+                exc,
+            )
 
     # DOI extraction cascade: XMP → first-page text → info dict → filename
     doi = _extract_doi(xmp_raw, first_pages_text, info)

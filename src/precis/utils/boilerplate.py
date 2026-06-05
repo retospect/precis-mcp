@@ -26,10 +26,10 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class ChunkClass(str, Enum):
+class ChunkClass(StrEnum):
     """What kind of chunk this is."""
 
     HEAD = "head"  # title + abstract + authors at the top
@@ -200,9 +200,7 @@ def _is_references_chunk(text: str) -> bool:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return False
-    matches = sum(
-        1 for ln in lines if any(p.search(ln) for p in _CITATION_PATTERNS)
-    )
+    matches = sum(1 for ln in lines if any(p.search(ln) for p in _CITATION_PATTERNS))
     if matches >= 3 and matches / len(lines) >= 0.3:
         return True
     # DOI-heavy chunks deep in the paper are references.

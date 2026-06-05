@@ -122,16 +122,31 @@ class WebHandler(CacheBackedHandler):
 
         import os
 
+        from precis.utils.safe_fetch import SsrfBlocked, safe_get
+
         ua = os.environ.get("WEB_USER_AGENT", _DEFAULT_UA)
         headers = {"User-Agent": ua, "Accept": "text/html,*/*;q=0.8"}
 
         try:
+            # follow_redirects=False — safe_get walks the redirect
+            # chain itself, revalidating each Location against the
+            # SSRF blocklist. Original code set this True with no
+            # host check, letting an agent-supplied URL chain into
+            # 169.254.169.254 / 127.0.0.1 / RFC1918.
             with httpx.Client(
                 timeout=30.0,
-                follow_redirects=True,
+                follow_redirects=False,
                 headers=headers,
             ) as client:
-                resp = client.get(key)
+                resp = safe_get(client, key)
+        except SsrfBlocked as exc:
+            raise Upstream(
+                f"fetch refused for {key}: {exc}",
+                next=(
+                    "the URL (or a redirect target) resolves to a "
+                    "non-public address; use a public-internet URL"
+                ),
+            ) from exc
         except httpx.HTTPError as exc:
             raise Upstream(
                 f"fetch failed for {key}: {exc}",

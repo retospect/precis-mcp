@@ -19,7 +19,6 @@ from precis.utils.keybert import (
     privileged_candidates,
 )
 
-
 # ── deterministic mock embedder ─────────────────────────────────────
 
 

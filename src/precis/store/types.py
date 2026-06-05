@@ -406,7 +406,31 @@ class Tag:
 # in the codebase + skill docs.
 
 _CLOSED_VOCAB: dict[str, frozenset[str]] = {
-    "STATUS": frozenset({"open", "doing", "blocked", "done", "won't-do"}),
+    # STATUS hosts two distinct workflows on the same axis:
+    #
+    # * todo / gripe / quest — original lifecycle:
+    #     open → doing → done (or blocked / won't-do)
+    # * finding — the citation-chase lifecycle (migration 0004):
+    #     tracing → established (or multi_candidate / dead_chain)
+    #
+    # Both are unioned here so filter-time validation
+    # (``Tag.normalize_filter`` → ``parse_strict``) accepts either.
+    # Kind-axis enforcement (``_KIND_ALLOWED_AXES``) decides which
+    # kinds may carry STATUS at all; the value-subset that's
+    # meaningful per kind is documented in each handler's skill.
+    "STATUS": frozenset(
+        {
+            "open",
+            "doing",
+            "blocked",
+            "done",
+            "won't-do",
+            "tracing",
+            "established",
+            "multi_candidate",
+            "dead_chain",
+        }
+    ),
     "PRIO": frozenset({"low", "normal", "high", "urgent"}),
     "SRC": frozenset({"primary", "secondary"}),
     "CACHE": frozenset({"fresh", "stale", "pinned"}),

@@ -37,7 +37,6 @@ from __future__ import annotations
 import re
 import unicodedata
 
-
 # English stopwords dropped from both title comparison and (less
 # usefully) surname comparison. Kept small and conservative —
 # anything that meaningfully contributes to a title shouldn't be

@@ -97,7 +97,7 @@ class TestPutHappy:
         assert "Faradaic efficiency" in meta["source_quote"]
         assert meta["char_offset"] == 142
         assert meta["verifier_confidence"] == 0.95
-        assert "verified_at" in meta and meta["verified_at"]
+        assert meta.get("verified_at")
 
     def test_create_ack_carries_summary(self, store) -> None:
         h = _make_handler(store)

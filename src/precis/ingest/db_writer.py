@@ -416,19 +416,15 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
     import hashlib
 
     seen_text_hashes: set[str] = set()
-    chunks_written = 0
     chunks_skipped_dup = 0
+    chunk_rows: list[tuple[Any, ...]] = []
     for chunk in paper.chunks:
         text_hash = hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
         if text_hash in seen_text_hashes:
             chunks_skipped_dup += 1
             continue
         seen_text_hashes.add(text_hash)
-        conn.execute(
-            "INSERT INTO chunks "
-            "(ref_id, set_by, ord, chunk_kind, text, section_path, "
-            " page_first, page_last, token_count, meta, numerics) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        chunk_rows.append(
             (
                 ref_id,
                 paper.set_by,
@@ -441,9 +437,21 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
                 chunk.token_count,
                 Jsonb(chunk.meta or {}),
                 chunk.numerics or [],
-            ),
+            )
         )
-        chunks_written += 1
+    # One round-trip for the whole chunk batch instead of
+    # len(paper.chunks) per-row INSERTs — a 200-chunk paper used to
+    # pay 200x the connection RTT cost on the watcher path.
+    if chunk_rows:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO chunks "
+                "(ref_id, set_by, ord, chunk_kind, text, section_path, "
+                " page_first, page_last, token_count, meta, numerics) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                chunk_rows,
+            )
+    chunks_written = len(chunk_rows)
 
     return WriteResult(
         ref_id=ref_id,
@@ -554,29 +562,35 @@ def register_aliases_and_maybe_upgrade(
         "WHERE ref_id = %s AND deleted_at IS NULL",
         (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
     )
-    chunks_written = 0
-    for chunk in paper.chunks:
-        conn.execute(
-            "INSERT INTO chunks "
-            "(ref_id, set_by, ord, chunk_kind, text, section_path, "
-            " page_first, page_last, token_count, meta, numerics) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                existing_ref_id,
-                paper.set_by,
-                chunk.ord,
-                chunk.chunk_kind,
-                chunk.text,
-                chunk.section_path,
-                chunk.page_first,
-                chunk.page_last,
-                chunk.token_count,
-                Jsonb(chunk.meta or {}),
-                chunk.numerics or [],
-            ),
+    chunk_rows: list[tuple[Any, ...]] = [
+        (
+            existing_ref_id,
+            paper.set_by,
+            chunk.ord,
+            chunk.chunk_kind,
+            chunk.text,
+            chunk.section_path,
+            chunk.page_first,
+            chunk.page_last,
+            chunk.token_count,
+            Jsonb(chunk.meta or {}),
+            chunk.numerics or [],
         )
-        chunks_written += 1
-    return chunks_written
+        for chunk in paper.chunks
+    ]
+    # One round-trip for the whole chunk batch — see write_paper for
+    # the same pattern. Stub-upgrade ingests typically hand in
+    # 50-300 chunks and used to pay the RTT cost per row.
+    if chunk_rows:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO chunks "
+                "(ref_id, set_by, ord, chunk_kind, text, section_path, "
+                " page_first, page_last, token_count, meta, numerics) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                chunk_rows,
+            )
+    return len(chunk_rows)
 
 
 __all__ = [

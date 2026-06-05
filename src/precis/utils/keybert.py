@@ -28,16 +28,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
-from typing import Any, Protocol
+from typing import Protocol
 
-from precis.utils.rake import _candidate_phrases, _STOPWORDS
-
+from precis.utils.rake import _STOPWORDS, _candidate_phrases
 
 # 2-8 char UPPER-CASE blocks, optionally with a digit / hyphen /
 # slash inside. Catches FTIR, MOFs, UiO-66, XPS, ToF-SIMS, NMR.
-_ACRONYM_RE = re.compile(
-    r"\b[A-Z][A-Z0-9]{1,7}(?:[-/][A-Z0-9]{1,8})?\b"
-)
+_ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,7}(?:[-/][A-Z0-9]{1,8})?\b")
 
 # Title-case 2-4 word phrases. Matches "Metal Organic Framework",
 # "Z-scheme Photocatalysis", "Density Functional Theory". Excludes
@@ -54,8 +51,7 @@ class _EmbedderProto(Protocol):
     Matches both ``precis.embedder.BgeM3Embedder`` and ``MockEmbedder``.
     """
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        ...
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
 # ── public API ──────────────────────────────────────────────────────
@@ -127,10 +123,15 @@ def extract_keywords_semantic(
 
     exclude_lc = {e.lower() for e in exclude}
 
+    # ``seen_lc`` is declared once and reused across both branches
+    # below — RAKE-fallback and caller-supplied — so mypy doesn't see
+    # a redefinition. Same intent, smaller diff than threading two
+    # separately-named locals.
+    seen_lc: set[str] = set()
+
     # Build the candidate set. Either use the caller-supplied list
     # (performance fast-path) or extract via RAKE's tokeniser.
     if candidates is not None:
-        seen_lc: set[str] = set()
         candidates_lc: list[str] = []
         for c in candidates:
             c_lc = c.strip().lower()
@@ -152,7 +153,6 @@ def extract_keywords_semantic(
         if not phrase_tokens:
             return []
 
-        seen_lc: set[str] = set()
         cand_list: list[str] = []
         for tokens in phrase_tokens:
             joined_lc = " ".join(tokens)

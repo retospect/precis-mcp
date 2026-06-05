@@ -39,7 +39,6 @@ from psycopg import Connection
 from precis.utils.rake import _STOPWORDS, extract_keywords
 from precis.workers.base import ChunkRow, WorkerHandler
 
-
 # ---------------------------------------------------------------------------
 # Handler — wraps extract_keywords for the worker runner
 # ---------------------------------------------------------------------------
@@ -121,4 +120,4 @@ class RakeLemmaHandler(WorkerHandler):
         )
 
 
-__all__ = ["RakeLemmaHandler", "_STOPWORDS", "extract_keywords"]
+__all__ = ["_STOPWORDS", "RakeLemmaHandler", "extract_keywords"]

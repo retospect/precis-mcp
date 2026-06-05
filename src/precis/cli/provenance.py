@@ -216,7 +216,7 @@ def run(args: argparse.Namespace) -> None:
 
         try:
             dsn = resolve_dsn(args.database_url)
-        except Exception as exc:  # noqa: BLE001 — surface DSN issues cleanly
+        except Exception as exc:
             print(f"check-provenance: cannot resolve DSN: {exc}", file=sys.stderr)
             sys.exit(2)
         store = Store.connect(dsn)
@@ -245,7 +245,7 @@ def run_sync(args: argparse.Namespace) -> None:
 
     try:
         dsn = resolve_dsn(args.database_url)
-    except Exception as exc:  # noqa: BLE001 — surface DSN issues cleanly
+    except Exception as exc:
         print(f"sync-retraction-watch: cannot resolve DSN: {exc}", file=sys.stderr)
         sys.exit(2)
 

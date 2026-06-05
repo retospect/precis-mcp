@@ -308,3 +308,188 @@ class TestRoundTrip:
         assert "miller23a" in body
         assert "fischer13  (primary)" in body
         assert "STATUS:established" in body
+
+    def test_get_renders_misattribution_links(self, store) -> None:
+        """When a user has flagged a chain hop as a misattribution
+        (``link(kind='finding', id=N, link='paper:badcite~7',
+        rel='misattributes')``), the begat-chain render surfaces it
+        under a dedicated ``misattributed via:`` block so the reader
+        sees both what the chase traced to and what the user
+        explicitly disowned."""
+        _seed_paper(store, cite_key="miller23a")
+        bad_id = _seed_paper(store, cite_key="badcite99")
+        h = _make_handler(store)
+        resp = h.put(
+            title="t",
+            body="claim body",
+            scope={},
+            cited_in="miller23a",
+        )
+        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+
+        # Attach a misattribution link directly via the store —
+        # mirrors what `link(kind='finding', ..., rel='misattributes')`
+        # would write at the agent surface.
+        store.add_link(
+            src_ref_id=ref_id,
+            dst_ref_id=bad_id,
+            dst_pos=0,
+            relation="misattributes",
+        )
+
+        out = h.get(id=ref_id)
+        body = out.body
+        assert "misattributed via:" in body
+        assert "badcite99~0" in body
+
+
+# ── search override ─────────────────────────────────────────────────
+
+
+class TestSearch:
+    """The search() override on FindingHandler: status-axis default,
+    TOON table shape ``id | title | setup | primary``, and the
+    'requires q= or status=/tags=' error path."""
+
+    def _seed_finding(
+        self,
+        store,
+        *,
+        cite_key: str,
+        title: str,
+        body: str,
+        scope: dict | None = None,
+        status: str = "tracing",
+        primary: str | None = None,
+    ) -> int:
+        from precis.store.types import Tag
+
+        _seed_paper(store, cite_key=cite_key)
+        h = _make_handler(store)
+        resp = h.put(title=title, body=body, scope=scope or {}, cited_in=cite_key)
+        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        if status != "tracing":
+            store.add_tag(
+                ref_id,
+                Tag.closed("STATUS", status),
+                set_by="chase",
+                replace_prefix=True,
+            )
+        if primary is not None:
+            store.update_ref(ref_id, meta_patch={"primary_cite_key": primary})
+        return ref_id
+
+    def test_default_filters_to_established(self, store) -> None:
+        """``search(q='...')`` with no ``status=`` returns only
+        established findings; the tracing row is filtered out."""
+        established = self._seed_finding(
+            store,
+            cite_key="paper-est",
+            title="established claim about photocatalysis",
+            body="photocatalysis claim body",
+            status="established",
+            primary="primary-src",
+        )
+        self._seed_finding(
+            store,
+            cite_key="paper-trc",
+            title="in-flight claim about photocatalysis",
+            body="photocatalysis claim body 2",
+            status="tracing",
+        )
+        h = _make_handler(store)
+        out = h.search(q="photocatalysis")
+        assert "id\ttitle\tsetup\tprimary" in out.body or "id" in out.body
+        assert str(established) in out.body
+        # The tracing row must not surface under the default filter.
+        assert "in-flight claim" not in out.body
+
+    def test_status_override_returns_tracing_only(self, store) -> None:
+        """``status='tracing'`` filters to in-flight findings."""
+        self._seed_finding(
+            store,
+            cite_key="paper-est2",
+            title="established cathode claim",
+            body="cathode claim body",
+            status="established",
+            primary="primary-src",
+        )
+        tracing_id = self._seed_finding(
+            store,
+            cite_key="paper-trc2",
+            title="in-flight cathode claim",
+            body="cathode claim body 2",
+            status="tracing",
+        )
+        h = _make_handler(store)
+        out = h.search(q="cathode", status="tracing")
+        assert str(tracing_id) in out.body
+        assert "established cathode claim" not in out.body
+
+    def test_status_star_returns_all(self, store) -> None:
+        """``status='*'`` skips the STATUS filter entirely."""
+        a = self._seed_finding(
+            store,
+            cite_key="paper-est3",
+            title="kV claim A",
+            body="kV body A",
+            status="established",
+            primary="primary-src",
+        )
+        b = self._seed_finding(
+            store,
+            cite_key="paper-trc3",
+            title="kV claim B",
+            body="kV body B",
+            status="tracing",
+        )
+        h = _make_handler(store)
+        out = h.search(q="kV", status="*")
+        assert str(a) in out.body
+        assert str(b) in out.body
+
+    def test_toon_shape_id_title_setup_primary(self, store) -> None:
+        """Result body carries a tab-separated header
+        ``id\\ttitle\\tsetup\\tprimary`` plus one row per hit."""
+        self._seed_finding(
+            store,
+            cite_key="paper-shape",
+            title="MOSCAP gate-bias 2.4 kV",
+            body="device prep at 2.4 kV body text",
+            scope={"electrode": "Cu", "ambient": "N2"},
+            status="established",
+            primary="fischer13",
+        )
+        h = _make_handler(store)
+        out = h.search(q="MOSCAP")
+        lines = out.body.splitlines()
+        # TOON header row (D2 agent-table): one column-name per
+        # tab-delimited cell.
+        header_lines = [ln for ln in lines if "title" in ln and "setup" in ln]
+        assert header_lines, f"expected TOON header line, got:\n{out.body}"
+        body_row = [ln for ln in lines if "Cu" in ln]
+        assert body_row, f"expected scope cell with Cu, got:\n{out.body}"
+        # primary cite_key in the same row.
+        assert "fischer13" in body_row[0]
+
+    def test_q_required_when_no_status_or_tags(self, store) -> None:
+        """No q= and no status= raises BadInput at the boundary."""
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="requires q="):
+            h.search(status="*")
+
+    def test_recency_list_when_only_status_supplied(self, store) -> None:
+        """``search(status='tracing')`` with no q= returns a recency
+        list of tracing findings (mirrors the base handler's
+        empty-q fallback shape)."""
+        rid = self._seed_finding(
+            store,
+            cite_key="paper-rec",
+            title="recency claim",
+            body="recency body",
+            status="tracing",
+        )
+        h = _make_handler(store)
+        out = h.search(status="tracing")
+        assert str(rid) in out.body
+        assert "recency claim" in out.body

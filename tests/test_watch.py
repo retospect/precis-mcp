@@ -235,7 +235,12 @@ class TestBackfillSubprocess:
         assert "_watch_batch_ingest" in cmd
         assert "--corpus-dir" in cmd
         assert "--user" in cmd and "reto" in cmd
-        assert "--database-url" in cmd and "postgresql://x/y" in cmd
+        # The DSN no longer rides in argv — exposing credentials via
+        # /proc/<pid>/cmdline was an SSRF / leak risk. It now flows
+        # through the subprocess environment instead.
+        assert "--database-url" not in cmd
+        env = captured["kwargs"].get("env") or {}
+        assert env.get("PRECIS_DATABASE_URL") == "postgresql://x/y"
         # PDFs trail the flags.
         assert cmd[-2:] == [str(tmp_path / "a.pdf"), str(tmp_path / "b.pdf")]
 

@@ -18,6 +18,7 @@ from precis.response import Response
 if TYPE_CHECKING:
     from precis.dispatch import Hub
     from precis.utils.search_merge import SearchHit
+    from precis.utils.toc import ChunksForToc
 
 Verb = Literal["get", "search", "put", "edit", "delete", "tag", "link"]
 
@@ -176,7 +177,7 @@ class Handler:
         """
         return []
 
-    def chunks_for_toc(self, ref: Any) -> "ChunksForToc | None":  # noqa: F821
+    def chunks_for_toc(self, ref: Any) -> ChunksForToc | None:
         """Return ``(chunks, embeddings, h2_boundaries)`` for ``ref``.
 
         Opt-in contract for the generic TOC renderer

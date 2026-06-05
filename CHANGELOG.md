@@ -8,6 +8,44 @@ context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
 
 ## Unreleased
 
+### Added
+
+- **`precis stats` CLI subcommand** — quick observability for the
+  finding-chase pipeline. Default prints two sections: STATUS-count
+  for `kind='finding'` ("how many findings are tracing /
+  established / multi_candidate / dead_chain?") and a stub backlog
+  count partitioned by `awaiting` vs `retry`. Flags `--findings` /
+  `--stubs` isolate one section; `--format json` produces a single
+  keyed object suitable for piping through `jq`. Complements the
+  existing row-level `precis stubs` (which lists the backlog) by
+  answering "how big is it?" without dumping every row.
+- **`FindingHandler.search` override** — status-axis filter on
+  finding searches. Default behaviour returns only
+  `STATUS:established` rows so the common "what evidence do we
+  have for X?" call doesn't surface in-flight noise. `status=` is
+  a shorthand that desugars to a tag filter (e.g.
+  `status='tracing'` ≡ `tags=['STATUS:tracing']`); `status='*'`
+  bypasses the filter to inspect every cohort. Results render as
+  a TOON table `id | title | setup | primary` matching the
+  finding-chase design's "scannable list" shape; the begat-chain
+  detail still lives behind `get(kind='finding', id=N)`. Closed-
+  vocab `_CLOSED_VOCAB['STATUS']` extended to union the original
+  todo-workflow values (`open`/`doing`/...) with the finding-chase
+  values (`tracing`/`established`/...) so filter-time validation
+  accepts both without per-kind hooks.
+- **Misattribution-link rendering on `get(kind='finding')`.** When
+  a finding carries outbound `misattributes` edges (e.g. a user
+  flagged a chain hop as wrong via `link(... rel='misattributes')`),
+  the begat detail surfaces them under a `misattributed via:`
+  block alongside the begat chain. Closes the corresponding DoD
+  bullet in `docs/design/finding-chase.md`.
+- **Chase-worker scenario tests** (`tests/workers/test_chase.py`).
+  Nine scenarios exercising `run_finding_chase_pass` against a
+  real Postgres store with `_load_s2_references` mocked: terminal,
+  stub-waiting, hop, cycle protection, three dead-chain modes
+  (no resolvable cite / target deleted / empty chain),
+  multi-candidate, and card-combined re-emit at chain termination.
+
 ### Fixed
 
 - **Migration runner no longer masks SQL errors as

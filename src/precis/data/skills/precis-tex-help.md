@@ -1,160 +1,82 @@
 ---
 id: precis-tex-help
 title: precis — read and edit LaTeX files
-status: active
-tier: 1
-floor: any
 applies-to: get/search/put/edit/delete (kind='tex')
-last-updated: 2026-05-02
+status: active
 ---
 
-# precis-tex-help — `.tex` files
+# precis-tex-help — `.tex` files, section-aware
 
-For shared concepts (address grammar, two-track addressing, root
-config, write modes, reverse lookups) read `precis-files-help`
-first. The `tex` kind is a section-aware sibling of `plaintext` —
-same edit / put / delete / tag / link surface, plus a sectioning-
-aware block grammar and a recursive `/toc` view.
+For shared address grammar, write modes, and root config, read
+`precis-files-help` first. This skill covers what's tex-specific:
+section-aware blocks, the recursive `/toc`, and literal-source edits
+against LaTeX syntax.
 
-> **Status:** shipped, gated on `PRECIS_ROOT` (shared with `markdown`
-> and `plaintext`). Section-aware block grammar: `\section`,
-> `\subsection`, `\subsubsection`, `\paragraph`, `\chapter`, `\part`
-> drive block boundaries. The `/toc` view recursively expands
-> `\input{}` and `\include{}` so a TOC of `main.tex` shows sections
-> from every included file inline at the inclusion point. Source
-> text is preserved verbatim — no macro expansion, no environment
-> grouping. Anchored edits work against the literal characters.
+## What does a tex id look like?
+## How do I address a .tex file or one of its parts?
+## Path form vs slug — what's the difference?
 
-## When to use this kind
+```python
+get(kind='tex', id='chapters/intro.tex')        # path form
+get(kind='tex', id='chapters--intro')           # slug form (path / → --)
+get(kind='tex', id='chapters/intro.tex~3')      # block by pos
+get(kind='tex', id='chapters/intro.tex~kinetics')   # block by name
+get(kind='tex', id='chapters/intro.tex~L42-58') # block by line range
+get(kind='tex', id='chapters/intro.tex/toc')    # TOC view
+get(kind='tex', id='chapters/intro.tex/raw')    # full source
+get(kind='tex')                                 # index of all .tex files
+```
 
-- You're editing a paper / chapter / lab notebook in LaTeX.
-- You want `find-replace` against literal LaTeX source (e.g. fix a
-  typo inside `\citep{Smith2020}`).
-- You want `search(kind='tex', q='...')` over your project's `.tex`
-  files alongside your `.md` notes.
+Path form and slug form are interchangeable. Block selectors come in
+two tracks: durable names (`~kinetics`) survive edits above; line
+coordinates (`~L42-58`) follow IDE/grep output.
 
-If you want **bibliography / citation-graph navigation**, that's the
-`paper` kind — it knows about DOI / authors / abstracts. The `tex`
-kind treats `\cite{}` as opaque source text.
+## What counts as a block?
 
-## Block grammar
+A block boundary is created by either:
 
-A block boundary is created by **either**:
+1. A blank line (paragraph break).
+2. A sectioning command: `\part`, `\chapter`, `\section`,
+   `\subsection`, `\subsubsection`, `\paragraph`, `\subparagraph`.
 
-1. A blank line (paragraph break, like `plaintext`).
-2. A sectioning command (`\part`, `\chapter`, `\section`,
-   `\subsection`, `\subsubsection`, `\paragraph`, `\subparagraph`).
-
-The sectioning command line is always its **own** one-line block —
-so you can edit a heading without touching the body that follows.
-Within a section, paragraphs are still split on blank lines, so
-editing granularity stays paragraph-sized.
+The sectioning command is its own one-line block, so a heading can be
+edited without touching the body. Each block records its section
+ancestry — search results render "hit in Methods > Kinetics".
 
 ```latex
-\section{Methods}                ← block 0 (heading, one line)
+\section{Methods}                ← block 0 (heading)
 
 We measured \(k_{\text{cat}}\) using the protocol of \citep{Smith2020}.
-The activation energy was $E_a = 42 \pm 3$ kJ/mol.
-                                  ← block 1 (paragraph in Methods)
+                                  ← block 1 (paragraph)
 
 \subsection{Kinetics}            ← block 2 (heading)
 
-Fitting Michaelis–Menten gave \(K_M = 1.2 \pm 0.3\) mM.
-                                  ← block 3 (paragraph in Methods/Kinetics)
+Fitting Michaelis–Menten gave \(K_M = 1.2\) mM.
+                                  ← block 3 (paragraph, ancestry: Methods > Kinetics)
 ```
 
-Block slugs are content-derived (first ~5 words + 6-hex hash), so
-edits to one block leave other slugs stable. Each block also
-records its **section ancestry** in `meta.section_path` (a list of
-`[level, title]` pairs from outer to inner), and any
-`\input{...}` / `\include{...}` arguments it contains in
-`meta.inputs`. Search-result rendering can show "hit in Methods >
-Kinetics" without re-parsing.
+Source is preserved verbatim — no macro expansion, no environment
+grouping. `\begin{equation}...\end{equation}` stays in one block only
+if it has no internal blank lines. `\cite{...}` keys are opaque text;
+for citation-graph navigation use `kind='paper'`.
 
-## Address shapes
+## Inspect a project's structure
+## See the section hierarchy across included files
+## What sections does main.tex contain?
 
 ```python
-get(kind='tex', id='chapters--intro')                # overview
-get(kind='tex', id='chapters--intro~0')              # one block by pos
-get(kind='tex', id='chapters--intro~SLUG')           # one block by slug
-get(kind='tex', id='chapters--intro/raw')            # full source
-get(kind='tex', id='chapters--intro/toc')            # table of contents
-get(kind='tex', id='chapters--intro', view='toc')    # equivalent
-get(kind='tex')                                      # index of all .tex files
+get(kind='tex', id='main.tex', view='toc')
+get(kind='tex', id='main.tex', view='outline')   # headings only, no excerpts
+get(kind='tex', id='main.tex/toc')               # path form
 ```
 
-Path segments are encoded as `--` (so `chapters/intro.tex` becomes
-`chapters--intro`), matching the rest of the prose-file kinds.
+The TOC walks sections in source order. When it hits `\input{path}`
+or `\include{path}`, it resolves the target relative to the parent's
+directory, ingests it lazily, and inlines its sections at the right
+indent. Cycles terminate with a `⇺` marker. Targets outside
+`PRECIS_ROOT` show as `not found`. `\subfile{...}` is not followed.
 
-## Recipes
-
-### Drop a chapter into the corpus
-
-```python
-put(kind='tex', id='chapters/discussion',
-    text=r'''\section{Discussion}
-
-Our results corroborate \citet{Smith2020}, but extend the operating
-window from 5 to 25 bar.''',
-    mode='create')
-```
-
-### Surgical edit against literal LaTeX
-
-Same protocol as `plaintext` — see `precis-edit-help`. The `find=`
-anchor is a literal substring match, so `\citep{...}` works.
-
-```python
-edit(kind='tex', id='chapters/intro',
-     mode='find-replace',
-     find=r'\citep{Smith2020}',
-     text=r'\citep{Smith2020,Jones2021}')
-```
-
-### Delete a matched span in place
-
-`text=''` is the canonical span-delete idiom. Use it to strip one
-cite, one footnote, or one `\todo{...}` without rewriting the
-surrounding paragraph.
-
-```python
-edit(kind='tex', id='chapters/intro',
-     mode='find-replace',
-     find=r'\todo{check this}',
-     text='')   # empty text = delete
-```
-
-### Search across the project
-
-```python
-search(kind='tex', q='activation energy')
-search(kind='tex', q='kcat', scope='chapters--intro')   # one file
-```
-
-Cross-kind search picks `tex` up automatically:
-
-```python
-search(q='activation energy')   # markdown + tex + paper + ...
-```
-
-### Inspect the project structure with `/toc`
-
-```python
-get(kind='tex', id='main/toc')
-```
-
-The TOC walks `main.tex`'s sections in source order and, whenever
-it hits a `\input{path}` / `\include{path}`, fetches the target
-`.tex` file (resolved relative to the parent's directory, gated by
-`PRECIS_ROOT`), ingests it lazily, and inlines its sections at the
-correct indent. Cycles (e.g. `a → b → a`) terminate with a `⇺`
-marker rather than recursing forever; targets that resolve outside
-`PRECIS_ROOT` are reported as `not found` so secret files can't
-leak into the TOC.
-
-Example output:
-
-```
+```text
 # TOC: main
 
 - \section{Introduction}  (`main~introduction-...`)
@@ -166,27 +88,72 @@ Example output:
 - \section{Conclusion}  (`main~conclusion-...`)
 ```
 
-Each handle in backticks is a real address — paste it back to
-`get(kind='tex', id='...')` to read that block.
+Each backticked handle is a real address. Paste it as `id=` to read
+that block.
 
-## Limits
+Views: `toc` (sections + excerpts, recursive across `\input`),
+`outline` (headings only), `raw` (full source).
 
-- **No macro expansion.** `\newcommand` definitions are opaque
-  source. The agent reads the literal characters, which is what
-  you want for surgical edits.
-- **No environment grouping.** `\begin{equation}…\end{equation}`
-  is split on blank lines and sectioning, not on environment
-  boundaries. Most environments stay in one block by accident
-  (no internal blank lines), but it isn't guaranteed.
-- **No bibliography integration.** `\cite{}` keys are opaque text;
-  for citation-graph queries use `kind='paper'`.
-- **No `\subfile{...}` package** — only `\input{}` and `\include{}`
-  are followed by `/toc`.
+## Drill into part of a file with a sub-TOC
+
+```python
+get(kind='tex', id='<slug>~Methods', view='toc')   # TOC of one section
+get(kind='tex', id='<slug>~L100-300', view='toc')  # TOC of a line range
+```
+
+Same shape as the file-level TOC, scoped to one section or range.
+
+## Search across the project
+
+```python
+search(kind='tex', q='activation energy')
+search(kind='tex', q='kcat', scope='chapters--intro')   # one file
+search(q='activation energy')                           # cross-kind
+```
+
+Hybrid lexical + semantic. Results are `<slug>~<block>` handles;
+order is the relevance signal.
+
+## Edit literal LaTeX source
+
+`find=` is a literal substring match, so LaTeX control sequences
+work directly.
+
+```python
+edit(kind='tex', id='chapters/intro.tex',
+     mode='find-replace',
+     find=r'\citep{Smith2020}',
+     text=r'\citep{Smith2020,Jones2021}')
+```
+
+## Strip a single command without rewriting the paragraph
+
+`text=''` is the canonical span-delete.
+
+```python
+edit(kind='tex', id='chapters/intro.tex',
+     mode='find-replace',
+     find=r'\todo{check this}',
+     text='')
+```
+
+## Create a new .tex file
+
+```python
+put(kind='tex', id='chapters/discussion.tex',
+    text=r'''\section{Discussion}
+
+Our results corroborate \citet{Smith2020}, but extend the operating
+window from 5 to 25 bar.''',
+    mode='create')
+```
 
 ## See also
 
-- `precis-files-help` — shared addressing model for all file kinds
-- `precis-plaintext-help` — block grammar superset (tex extends it)
-- `precis-edit-help` — universal anchored-edit grammar
-- `precis-paper-help` — citation-graph navigation for cited papers
-- `precis-markdown-help` — markdown block grammar for prose notes
+```python
+get(kind='skill', id='precis-files-help')       # shared address grammar, write modes
+get(kind='skill', id='precis-edit-help')        # find-replace + insert grammar
+get(kind='skill', id='precis-plaintext-help')   # block grammar tex extends
+get(kind='skill', id='precis-paper-help')       # citation-graph navigation
+get(kind='skill', id='precis-markdown-help')    # .md block grammar for prose notes
+```

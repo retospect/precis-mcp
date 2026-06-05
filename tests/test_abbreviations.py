@@ -12,7 +12,6 @@ import pytest
 
 from precis.utils.abbreviations import find, substitute
 
-
 # ── find: positive cases ────────────────────────────────────────────
 
 

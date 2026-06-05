@@ -168,7 +168,7 @@ def _seed_paper(
         year=year,
         meta={
             "authors": author_dicts,  # legacy duplicate; some readers still consult meta
-            "year": year,              # legacy duplicate
+            "year": year,  # legacy duplicate
             "journal": journal,
             "doi": doi,
             "abstract": abstract,
@@ -263,7 +263,7 @@ class TestViews:
             "run_paper_segments_pass in the seed or rewriting the "
             "assertions against the placeholder text."
         ),
-        strict=False,
+        strict=True,
     )
     def test_toc(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, blocks=["Block A", "Block B", "Block C"])
@@ -281,7 +281,7 @@ class TestViews:
 
     @pytest.mark.xfail(
         reason="ADR 0018 — view='toc' needs ref_segments populated; see test_toc.",
-        strict=False,
+        strict=True,
     )
     def test_toc_with_headings_is_hierarchical(
         self, store: Store, handler: PaperHandler
@@ -322,7 +322,7 @@ class TestViews:
 
     @pytest.mark.xfail(
         reason="ADR 0018 — view='toc' needs ref_segments populated; see test_toc.",
-        strict=False,
+        strict=True,
     )
     def test_toc_drilldown_via_id(self, store: Store, handler: PaperHandler) -> None:
         """`get(id='slug~A..B/toc')` returns a TOC scoped to the range."""
@@ -553,7 +553,7 @@ class TestSearch:
             "Either re-add the hint to the new renderer or update "
             "the assertion to the current trailer vocabulary."
         ),
-        strict=False,
+        strict=True,
     )
     def test_singleton_hit_no_redundant_trailer(
         self, store: Store, handler: PaperHandler
@@ -828,7 +828,7 @@ class TestSearch:
             "Same renderer change as test_singleton_hit_no_redundant_trailer "
             "— search trailer vocabulary moved off ``top_k=10`` widen hint."
         ),
-        strict=False,
+        strict=True,
     )
     def test_search_exclude_trailer_singleton_keeps_widen(
         self, store: Store, handler: PaperHandler

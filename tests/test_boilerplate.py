@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from precis.utils.boilerplate import ChunkClass, classify_chunks
 
-
 # ── trivial / boundary cases ────────────────────────────────────────
 
 

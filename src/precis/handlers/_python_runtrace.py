@@ -287,8 +287,15 @@ def build_tree(events: tuple[TraceEvent, ...]) -> TraceNode | None:
             # match the top of stack — possible with C builtins that
             # don't emit c_return on exception).
             if top_node.qualname != ev.qn:
-                # Best-effort — still record elapsed.
-                pass
+                # Unbalanced return: e.g. a C builtin that didn't
+                # emit a matching c_return on exception. Surface
+                # for diagnosis without breaking the trace — the
+                # elapsed time still lands on the popped node.
+                log.debug(
+                    "runtrace: unbalanced return: stack-top=%s event=%s",
+                    top_node.qualname,
+                    ev.qn,
+                )
             top_node.total_ns += (ev.t - call_t) * 1e9
 
     return root

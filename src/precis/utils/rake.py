@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from collections.abc import Iterable
 
 # ---------------------------------------------------------------------------
 # Stoplist — SMART-subset focused on academic prose.

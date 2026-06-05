@@ -1,141 +1,63 @@
 ---
 id: precis-files-help
-title: precis — read and edit files (markdown, plaintext, code, …)
-status: active
-tier: 1
-floor: any
+title: precis — read and edit files (markdown, plaintext, tex, python)
 applies-to: cross-cutting (file-rooted kinds)
-last-updated: 2026-05-01
+status: active
 ---
-
-> **Status:** `markdown`, `plaintext`, `tex`, and `python` ship today
-> (read + write, including the `mode='edit'` / `mode='insert'`
-> surface). The first three share **one** env var — `PRECIS_ROOT`
-> — a single directory under which all `.md`, `.txt`, `.log`, and
-> `.tex` files live. `python` has its own multi-repo `PRECIS_PYTHON_ROOTS`
-> (alias-prefixed paths). A build that doesn't set the relevant var
-> won't register the corresponding kind(s). Use
-> `get(kind='skill', id='precis-help')` to see which kinds are live
-> in the server you're talking to.
 
 # precis-files-help — file-rooted kinds, shared concepts
 
-This skill covers what's the **same** across every file-rooted kind:
+This skill covers what's the same across every file-rooted kind.
+Per-kind specifics live in `precis-<kind>-help`.
 
 | Kind | Files | Env var |
 |---|---|---|
-| `markdown` | `.md` | `PRECIS_ROOT` (shared) |
-| `plaintext` | `.txt`, `.log` | `PRECIS_ROOT` (shared) |
-| `tex` | `.tex` | `PRECIS_ROOT` (shared) |
-| `python` | `.py` (Python codebases) | `PRECIS_PYTHON_ROOTS` |
+| `markdown` | `.md` | `PRECIS_ROOT` |
+| `plaintext` | `.txt`, `.log` | `PRECIS_ROOT` |
+| `tex` | `.tex` | `PRECIS_ROOT` |
+| `python` | `.py` | `PRECIS_PYTHON_ROOTS` |
 
-`PRECIS_ROOT` is the **single writable boundary** for the prose-file
-trio. Every read and write goes through `Path.resolve()` followed by
-`Path.relative_to(PRECIS_ROOT)` — a check that rejects `../` traversal
-**and** symlink escapes (since `resolve()` follows symlinks). Files
-from outside this directory are unreachable; writes outside it are
-rejected with `BadInput: path traversal not allowed`.
+`PRECIS_ROOT` is the writable boundary for the prose-file trio.
+Paths outside it are rejected (`BadInput: path traversal not allowed`).
+The LLM sees the root as `./` — never the absolute filesystem path.
 
-The LLM sees `PRECIS_ROOT` as `./` — it doesn't know (and isn't told)
-the absolute filesystem path of the root. Every error message and
-index listing names the symbolic `PRECIS_ROOT`, never the absolute
-path.
+## How do I scope searches to my working directory?
+## Filter results to files in PRECIS_ROOT only
+## How do I exclude papers / web caches from my search?
 
-For kind-specific rules (block grammar, views, edits) see:
-
-- `precis-markdown-help` — `.md` files
-- `precis-plaintext-help` — `.txt` / `.log` files
-- `precis-tex-help` — `.tex` files (section-aware blocks + recursive `/toc`)
-- `precis-python-help` — Python codebases
-
-## The `workspace` flag (auto-applied)
-
-Every ref ingested via the prose-file handlers (`markdown`,
-`plaintext`, `tex`) is stamped with the **`workspace` flag tag** on
-ingest. The LLM uses it to scope searches to its working directory:
+Every file ingested via `markdown` / `plaintext` / `tex` carries a
+system-applied `workspace` tag. Use it to scope:
 
 ```python
-# Everything in my working directory, no external refs.
-search(q='kinetics',       tags=['workspace'])
-
-# Restricted to a single file-kind.
+search(q='kinetics', tags=['workspace'])                # working dir only
 search(kind='markdown', q='meeting', tags=['workspace'])
 ```
 
-The tag is applied with `set_by='system'` (not `agent`) so audit
-queries can distinguish the machine-applied scope tag from tags the
-LLM or the user added themselves. It's idempotent — re-ingesting
-the same file doesn't duplicate the tag.
+The tag is system-applied (`set_by='system'`), idempotent on
+re-ingest, and absent on out-of-root refs (papers, web, patents,
+memories, todos).
 
-Refs **outside** `PRECIS_ROOT` (papers, web caches, patents,
-memories, todos, etc.) are not stamped, so `tags=['workspace']` is
-an effective filter for "stuff in my working directory right now."
+## How do I pre-warm the file store?
+## Ingest every file before I start searching
+## How do I avoid the lazy-on-first-touch delay?
 
-## Pre-warming the store (`precis jobs ingest`)
-
-By default, handlers ingest files **lazily** — a `.md` / `.txt` /
-`.tex` file doesn't enter the DB until the LLM opens it via
-`get()` or touches it via `search(scope=...)`. That means on a
-freshly-mounted `PRECIS_ROOT`, `search(kind='tex', q='…')` returns
-nothing until each file has been individually read.
-
-To pre-warm the store, run the CLI before starting the MCP server:
+Handlers ingest lazily — a `.md` / `.txt` / `.tex` file enters the
+DB only when the LLM opens it. On a fresh `PRECIS_ROOT`, search
+returns nothing until each file is touched. Pre-warm with:
 
 ```bash
-precis jobs ingest                           # all three prose kinds under $PRECIS_ROOT
+precis jobs ingest                           # all prose kinds under $PRECIS_ROOT
 precis jobs ingest /path/to/root             # override root
 precis jobs ingest --kinds tex,plaintext     # scope to some kinds
 precis jobs ingest --force                   # re-embed even unchanged files
-
 precis jobs ingest && precis serve           # launcher-script prefix
 ```
 
-The walker is **mtime-gated** — unchanged files are skipped (cheap
-stat call). Run it as often as you like.
+The walker is mtime-gated — unchanged files are skipped.
 
-Output:
-
-```
-  ok    [md       ] notes--meeting  (8 blocks)
-  ok    [tex      ] chapters--intro  (12 blocks)
-  ok    [plaintext] logs--run-2026-05  (47 blocks)
-ingest: total ingested=3  skipped=0  failed=0
-  per-kind: md=1/1, plaintext=1/1, tex=1/1
-```
-
-## Two tracks of addressing
-
-Every file-rooted kind exposes the same dual-track addressing model.
-Pick whichever track is cheaper for the input you have:
-
-| Track | Form | When to use it |
-|---|---|---|
-| **A — coordinates** | `~L<start>-<end>` | external pointer (test failure, grep, IDE) |
-| **B — headers** | `~<name>` | durable storage; cross-session references |
-
-```python
-# Track A: I have a line number from a stack trace.
-get(kind='python',   id='precis/src/precis/cli.py~L142')
-get(kind='markdown', id='notes/meeting.md~L42-58')
-
-# Track B: I have a stable name from a previous response or a search hit.
-get(kind='python',   id='precis/src/precis/cli.py~_cmd_serve')
-get(kind='markdown', id='notes/meeting.md~conclusion')
-```
-
-**The handler always returns both forms in the response header**, so
-your next call can use whichever is more durable. Track A shifts
-under edits above; Track B does not.
-
-```
-# notes/meeting.md~conclusion  (block 5, lines 42-58)
-…
-```
-
-Every selector-bearing response carries `~name`, `block N`, and
-`lines A-B` together. No round-trip needed.
-
-## Address grammar (one shape, all kinds)
+## How do I address a file or one of its parts?
+## What's the address grammar for files?
+## How do I point at a specific block, line range, or view?
 
 ```
 [<root-alias>/]<relative-path>[~<selector>][/<view>]
@@ -148,239 +70,156 @@ Every selector-bearing response carries `~name`, `block N`, and
 | `<selector>` | `conclusion`, `Registry.get`, `L42-58`, `3` |
 | `<view>` | `toc`, `outline`, `raw`, `source`, `callgraph` |
 
-Examples worked end to end:
-
 ```python
 get(kind='markdown', id='notes/meeting.md')             # overview
-get(kind='markdown', id='notes/meeting.md~conclusion')  # one block
-get(kind='markdown', id='notes/meeting.md~L42-58')      # by lines
+get(kind='markdown', id='notes/meeting.md~conclusion')  # one block by name
+get(kind='markdown', id='notes/meeting.md~L42-58')      # by line range
+get(kind='markdown', id='notes/meeting.md~3')           # by block pos
 get(kind='markdown', id='notes/meeting.md/toc')         # full TOC
 get(kind='markdown', id='notes/meeting.md/raw')         # source
+get(kind='markdown', id='/Users/bots/notes/meeting.md') # absolute path also works
+```
+
+## Coordinate-form vs name-form addressing
+## When should I use ~L<n>-<m> vs ~<name>?
+## Two tracks: line-numbers vs durable slugs
+
+| Track | Form | Use when |
+|---|---|---|
+| Coordinates | `~L<start>-<end>` | external pointer (stack trace, grep, IDE) |
+| Names | `~<slug>` | durable reference; survives edits above |
+
+Every selector-bearing response carries both forms together (block N,
+lines A-B, slug). No round-trip needed:
+
+```text
+# notes/meeting.md~conclusion  (block 5, lines 42-58)
+…
+```
+
+Track A (line numbers) shifts under edits above; track B (names)
+does not.
+
+## How do I read a file?
+## Open a file and see its contents
+
+```python
 get(kind='markdown')                                    # index of all files
-```
-
-### Absolute paths work too
-
-If you have an absolute path (from `find`, an IDE, a stack trace),
-pass it straight in. The handler matches it against configured roots
-and normalizes:
-
-```python
-get(kind='markdown', id='/Users/bots/notes/meeting.md')
-# → resolved to notes/meeting.md
-```
-
-## Root configuration
-
-The prose-file trio (`markdown`, `plaintext`, `tex`) shares a single
-root:
-
-```
-PRECIS_ROOT=/Users/bots/notes
-```
-
-All three kinds walk the same tree and filter by extension. A file
-laid out as `chapters/intro.tex` becomes `tex:chapters--intro`;
-`meeting.md` becomes `markdown:meeting`; `log/2026-05.txt` becomes
-`plaintext:log--2026-05`. The directory layout is yours to choose —
-the handlers don't care whether you organise by kind, by topic, or
-flat.
-
-The Python kind is different: code lives in real repos with their
-own roots, so `PRECIS_PYTHON_ROOTS` is alias-prefixed and supports
-multiple entries:
-
-```
-PRECIS_PYTHON_ROOTS=precis:/path/to/precis,cluster:/path/to/cluster
-```
-
-The alias becomes the prefix in addresses (`precis::pkg.mod:func`).
-
-## Read
-
-```python
-# Index — every file under every configured root for this kind.
-get(kind='markdown')
-
-# File overview — header + heading TOC preview + Next: trailer.
-get(kind='markdown', id='notes/meeting.md')
-
-# One block by name, lines, or pos.
-get(kind='markdown', id='notes/meeting.md~conclusion')
-get(kind='markdown', id='notes/meeting.md~L42-58')
-get(kind='markdown', id='notes/meeting.md~3')
-
-# Search — block-level lexical + semantic, fused.
-search(kind='markdown', q='deadline')
+get(kind='markdown', id='notes/meeting.md')             # overview + TOC preview
+get(kind='markdown', id='notes/meeting.md~conclusion')  # one block
+get(kind='markdown', id='notes/meeting.md~L42-58')      # by lines
+search(kind='markdown', q='deadline')                   # all files
 search(kind='markdown', q='deadline', scope='notes/meeting.md')
 ```
 
-## Write
+## How do I create or rewrite a file?
+## Write to a file (create / append / replace / delete)
+## What modes does write support?
 
-Four modes. Available on R/W kinds (`markdown`, `plaintext`, `python`).
-
-`python` adds two extras on top of the shared modes: writes go
-through `ast.parse` (mandatory) and `ruff check --fix` + `ruff
-format` (mandatory) before the atomic write. If ruff modifies the
-buffer the response says what it changed. See `precis-python-help`
-for the validation table and recipes for replace-by-qualname /
-replace-by-line / append / create / delete on Python files.
-
-`plaintext` has no validation gate — writes go to disk verbatim
-after a UTF-8 encode check. Block grammar is "one paragraph per
-blank-line-separated run".
+Available on R/W kinds (`markdown`, `plaintext`, `python`).
+`python` validates writes via `ast.parse` + `ruff check --fix` +
+`ruff format` before the atomic write (see `precis-python-help`).
+`plaintext` writes verbatim after UTF-8 encode check.
 
 ```python
 # Create a new file.
 put(kind='markdown', id='notes/new-file.md',
     text='# Title\n\nFirst paragraph.', mode='create')
 
-# Append paragraph(s) to an existing file.
+# Append to the end.
 edit(kind='markdown', id='notes/meeting.md',
     text='Final thought.', mode='append')
 
-# Replace one region — by slug, lines, or pos. Same op, three forms.
+# Replace one region — by slug, lines, or pos.
 edit(kind='markdown', id='notes/meeting.md~note-on-reagents',
-    text='Rewritten paragraph content.', mode='replace')
+    text='Rewritten paragraph.', mode='replace')
 edit(kind='markdown', id='notes/meeting.md~L42-58',
-    text='Rewritten paragraph content.', mode='replace')
+    text='Rewritten paragraph.', mode='replace')
 
-# Delete one region — same selector forms.
+# Delete a region.
 delete(kind='markdown', id='notes/meeting.md~note-on-reagents')
-```
 
-> **Block = one paragraph, one heading, one fenced code, one table,
-> one list — whichever unit the parser found.** `~<heading-slug>`
-> names the *heading paragraph*, not the section that follows it.
-> `mode='replace'` on a heading slug rewrites the heading line only
-> and leaves the section body in place. To replace a whole section,
-> delete every block in the range and append new content, or use
-> `mode='find-replace'` against a literal anchor. The response
-> line always names the exact block you wrote (verb, block N,
-> line range, file slug) so you can verify the scope.
-
-All writes are **atomic** (tmpfile + rename). After every write the
-file is re-ingested so the next `get` sees the new state. Every
-write verb (`append`, `replace`, `find-replace`, `insert`, `delete`)
-returns the same unified shape — slug, block pos, block slug,
-line range — so chained edits don't need a follow-up `/toc`
-round-trip:
-
-```
-appended block 7 'final-thought-90d11a' (L82-85) in 'notes--meeting'
-replaced block 5 'conclusion'             (L42-62) in 'notes--meeting'
-edited    block 3 'first-body-7ec401'     (L17)    in 'notes--meeting'  [2 spans]
-deleted   block 5 'conclusion'            (L42-48) in 'notes--meeting'
-```
-
-If you addressed by line range, the response gives you the slug.
-If you addressed by slug, the response gives you the line range.
-Round-trip is free.
-
-Whole-file delete is gated behind an explicit confirm string so
-it can't fire on a typo (`confirm=True` never deletes — the
-string must name the exact slug):
-
-```python
+# Whole-file delete — gated behind exact-slug confirm string.
 delete(kind='markdown', id='notes--meeting',
-    confirm='delete-file-notes--meeting')
+       confirm='delete-file-notes--meeting')
 ```
 
-## Anchored edits
+A block is one paragraph, one heading, one fenced code, one table, or
+one list — whichever unit the parser found. `~<heading-slug>` names
+the heading paragraph, not the section below it. To replace a whole
+section, delete every block in the range and append new content, or
+use `mode='find-replace'`.
 
-The four-mode surface (`create` / `append` / `replace` / `delete`)
-is joined by two sub-region modes for surgical changes:
+Every write response names slug, block pos, block slug, and line
+range together — chained edits don't need a `/toc` round-trip.
 
-| Mode | Region | Behavior |
-|---|---|---|
-| `edit` | optional (defaults to whole file) | find literal text and replace it — anchored, validated |
-| `insert` | optional | insert text immediately before/after a found anchor |
+## How do I make a surgical edit?
+## Find-replace within a block or file
+## Anchor an insert before/after a specific line
 
-The grammar is **identical across every R/W file kind**; per-kind
-quirks (validation gates, format steps) live in each kind's
-skill. The full universal grammar lives in `precis-edit-help`.
+Two sub-region modes for surgical changes:
 
-Ships today for `markdown`, `plaintext`, and `python`.
+| Mode | Behavior |
+|---|---|
+| `find-replace` | find literal text and replace it — anchored, validated |
+| `insert` | insert text immediately before/after a found anchor |
 
 ```python
-# Surgical replacement: change one token, leave everything else alone.
-# Content selects ('the'); anchors disambiguate; the selector bounds the search.
+# Surgical replacement: content selects, anchors disambiguate.
 edit(kind='markdown', id='notes--foo~intro',
-    mode='find-replace',
-    find='the', before='over ', after=' fence',
-    text='a',
-    match='unique')
+     mode='find-replace',
+     find='the', before='over ', after=' fence',
+     text='a', match='unique')
 
-# Insert a paragraph adjacent to an anchor, no rewriting.
+# Insert adjacent to an anchor.
 edit(kind='markdown', id='notes--foo',
-    mode='insert',
-    find='## Conclusion', where='before',
-    text='\n## TL;DR\n\nQuick summary.\n\n')
+     mode='insert',
+     find='## Conclusion', where='before',
+     text='\n## TL;DR\n\nQuick summary.\n\n')
 
-# Bulk rename across one file. Python's AST + ruff gates apply.
+# Bulk rename across one file (Python's AST + ruff gates apply).
 edit(kind='python', id='r/src/precis/cli.py',
-    mode='find-replace',
-    find='X.legacy_method(',
-    text='X.method(',
-    match='all')
+     mode='find-replace',
+     find='X.legacy_method(', text='X.method(',
+     match='all')
 
-# Delete a matched span without rewriting the surrounding block.
-# text='' is the canonical span-delete idiom — use it to drop one
-# line, one cite, or one decorator; use `delete` only for whole
-# files and whole blocks.
+# Delete a matched span without rewriting the block.
 edit(kind='markdown', id='notes--foo~intro',
-    mode='find-replace',
-    find='(draft) ',
-    text='')
+     mode='find-replace',
+     find='(draft) ', text='')
 ```
 
-The rule of thumb: **content selects, range bounds.** Use the `id`
-selector to narrow where the search runs (one block, one function,
-one line range); use literal `find=` plus optional `before=` /
-`after=` to choose which match to edit. `match='unique'` (the
-default) means "must be exactly one match — else error with every
-candidate listed."
+**Content selects, range bounds.** `id`-selector narrows where the
+search runs (one block, one function, one line range); `find=` +
+optional `before=` / `after=` chooses which match. `match='unique'`
+(default) errors with every candidate listed when multiple match;
+`match='all'` rewrites all; `match='first'` takes the first.
 
-## Reverse lookups
+Full grammar in `precis-edit-help`.
 
-The handler maintains the bijection between Track A and Track B.
-Every response includes both forms. You never need to compute a
-mapping by hand.
+## What if my slug went stale after an edit?
+## A block's name changed — how do I reach it?
+
+The handler maintains the bijection between line-form and name-form;
+every response includes both. When a slug no longer exists (file
+edited externally), `NotFound` carries `options=` listing the five
+nearest matches.
 
 | You have | You can call |
 |---|---|
-| line number | `~L<n>` (resolves to enclosing block + name) |
-| absolute path | full path (resolves to canonical) |
-| stale slug after replace | `~<old-slug>` (handler recovers via rename map) |
-| search hit | the hit's `id` field (already canonical) |
-
-When a slug no longer exists (file edited externally, content
-changed), you get `NotFound` with `options=` listing the five
-nearest matches.
-
-## Lazy re-ingest
-
-Every `get` checks the file's mtime. If unchanged, cached blocks
-are served. If changed, the handler re-hashes + re-parses before
-responding. Stable names survive re-ingest.
-
-You do not have to ingest manually. The first `get` or `search`
-that touches a file pulls it through the parser; subsequent calls
-hit the cached blocks.
-
-## Limits + safety
-
-- Slugs are validated against the configured root(s); `..` and
-  out-of-root paths are rejected with `BadInput`.
-- `mode='create'` refuses to overwrite an existing file.
-- Track-changes / multi-author concurrent editing is **out of scope**.
-- Binary files are not read; only text formats per the per-kind
-  parser.
+| line number | `~L<n>` resolves to the enclosing block + its name |
+| absolute path | resolves to canonical |
+| stale slug | recovered via rename map; or use `options=` from the NotFound |
+| search hit | the hit's `id` field is already canonical |
 
 ## See also
 
-- `precis-overview` — verbs and kinds
-- `precis-edit-help` — universal anchored-edit grammar (`op='edit'` / `op='insert'`)
-- `precis-markdown-help` — `.md` block grammar and recipes
-- `precis-python-help` — Python codebase navigation
-- `precis-relations` — typed links between refs (file ↔ paper ↔ memory)
+```python
+get(kind='skill', id='precis-overview')          # verbs and kinds
+get(kind='skill', id='precis-edit-help')         # universal find-replace + insert grammar
+get(kind='skill', id='precis-markdown-help')     # .md block grammar and recipes
+get(kind='skill', id='precis-plaintext-help')    # .txt / .log specifics
+get(kind='skill', id='precis-tex-help')          # .tex section-aware blocks
+get(kind='skill', id='precis-python-help')       # Python navigation + AST-gated edits
+get(kind='skill', id='precis-relations')         # typed links (file ↔ paper ↔ memory)
+```

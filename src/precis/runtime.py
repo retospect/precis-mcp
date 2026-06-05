@@ -309,8 +309,8 @@ class PrecisRuntime:
                     f"kind {kind!r} is registered but disabled in this build "
                     f"({reason})",
                     next=(
-                        f"see get(kind='skill', id='precis-kinds-disabled-help') "
-                        f"and precis-overview Needs column"
+                        "see get(kind='skill', id='precis-kinds-disabled-help') "
+                        "and precis-overview Needs column"
                     ),
                 )
             # Broad usability pass 2026-05-30 (#10): the previous
@@ -418,9 +418,7 @@ class PrecisRuntime:
             else:
                 unknown = self._unknown_extras(method, extras)
                 if unknown:
-                    accepted_kwargs = sorted(
-                        k for k in accepted if k not in ("args",)
-                    )
+                    accepted_kwargs = sorted(k for k in accepted if k not in ("args",))
                     raise BadInput(
                         f"args= keys {unknown!r} not accepted by {kind}.{verb}",
                         options=accepted_kwargs,
@@ -856,7 +854,26 @@ class PrecisRuntime:
         # slug in the list silently no-ops on memory etc.). Kinds
         # that don't accept the kwarg fall through to the
         # ``TypeError`` retry below.
+        #
+        # ``query_vec=`` is computed once here and threaded into every
+        # block-level handler that opts in. Without this the cross-
+        # kind fan-out paid one embed_one(q) per kind — for kind='*'
+        # over seven block-level handlers that's seven identical
+        # transformer forward passes on the same query string. Kinds
+        # whose ``search_hits`` signature doesn't accept ``query_vec=``
+        # fall through the same TypeError-degradation chain as
+        # ``exclude=`` / ``tags=``.
         base_kwargs: dict[str, Any] = {"q": q, "top_k": top_k}
+        embedder = getattr(self.hub, "embedder", None)
+        if embedder is not None:
+            try:
+                base_kwargs["query_vec"] = embedder.embed_one(q)
+            except Exception:
+                # An embed failure here shouldn't kill the whole
+                # cross-kind search — fall back to per-kind embed
+                # (or lex-only when the kind's embedder is also
+                # unavailable).
+                log.exception("cross-kind: query embed failed; falling back per-kind")
         if tags:
             base_kwargs["tags"] = tags
         if exclude:

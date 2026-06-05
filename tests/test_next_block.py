@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from precis.utils.next_block import format_next_block, render_next_section
 
-
 _HEADER = "{if you want to\texecute this call}"
 
 

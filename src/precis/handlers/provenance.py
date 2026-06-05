@@ -36,9 +36,8 @@ kind ``'provenance'`` exist; the handler enriches existing
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
-
 import json
+from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
@@ -56,7 +55,6 @@ from precis.ingest.provenance import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-
 
 _SUPPORTED_VIEWS: tuple[str, ...] = (
     "default",

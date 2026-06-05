@@ -33,14 +33,14 @@ URL and ``doi:`` prefixes stripped.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 from precis.ingest._text_norm import best_jaccard, surname_matches
 from precis.store import Store, Tag
-
 
 # ---------------------------------------------------------------------------
 # DOI format validation
@@ -424,7 +424,7 @@ def _check_cited_doi(
 
     try:
         msg = _fetch_crossref_message(cited_doi, mailto)
-    except Exception:  # noqa: BLE001 — propagation here would kill the parent
+    except Exception:
         cache[cited_doi] = _CITE_CLEAN
         return None
 
@@ -526,7 +526,7 @@ def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
     try:
         with store.pool.connection() as conn:
             rows = conn.execute(sql, (paper_doi,)).fetchall()
-    except Exception:  # noqa: BLE001 — missing table / read error
+    except Exception:
         return []
     out: list[_RWCacheRow] = []
     for r in rows:
@@ -853,12 +853,12 @@ def _fetch_crossref_message(doi: str, mailto: str | None) -> dict[str, Any] | No
     transport error (429, 5xx, network failure) propagates and surfaces
     as ``check_failed`` with the error string preserved.
     """
-    from habanero import Crossref  # noqa: PLC0415 — lazy optional dep
+    from habanero import Crossref
 
     cr = Crossref(mailto=mailto) if mailto else Crossref()
     try:
         result = cr.works(ids=doi)
-    except Exception as exc:  # noqa: BLE001 — duck-typed 404 detection
+    except Exception as exc:
         response = getattr(exc, "response", None)
         status_code = getattr(response, "status_code", None) if response is not None else None
         if status_code == 404:
@@ -890,7 +890,7 @@ def _search_crossref_works(
     """
     if not title and not author:
         return []
-    from habanero import Crossref  # noqa: PLC0415 — lazy optional dep
+    from habanero import Crossref
 
     cr = Crossref(mailto=mailto) if mailto else Crossref()
     kwargs: dict[str, Any] = {"limit": rows}
@@ -900,7 +900,7 @@ def _search_crossref_works(
         kwargs["query_author"] = author
     try:
         result = cr.works(**kwargs)
-    except Exception:  # noqa: BLE001 — never propagate; hints are advisory
+    except Exception:
         return []
     if not result or "message" not in result:
         return []
@@ -1378,7 +1378,7 @@ def check_doi(
     crossref_error: str | None = None
     try:
         msg = _fetch_crossref_message(canonical, mailto)
-    except Exception as exc:  # noqa: BLE001 — degrade gracefully, fall through
+    except Exception as exc:
         crossref_error = str(exc)
 
     # Always consult the local RW cache, regardless of Crossref outcome.
@@ -1663,7 +1663,7 @@ def check_dois(
                 # not thread-pool completion order — that's the whole
                 # point of Phase 3.5.
                 results[i] = replace(fut.result(), input_index=i + 1)
-            except Exception as exc:  # noqa: BLE001 — preserve batch isolation
+            except Exception as exc:
                 # ``check_doi`` already catches transport errors internally,
                 # so reaching this branch implies a bug. Surface as
                 # ``check_failed`` so the batch still completes.

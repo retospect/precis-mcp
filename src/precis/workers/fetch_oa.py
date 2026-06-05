@@ -105,7 +105,9 @@ _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
 # arXiv id shape. Accepts both new-style (``2401.12345`` /
 # ``2401.12345v2``) and old-style (``hep-th/9901001``). The
 # bare-id regex below is permissive — arXiv normalises its URL.
-_ARXIV_ID_RE = re.compile(r"^([a-z\-]+/)?\d{4}\.?\d{4,5}(v\d+)?$|^[a-z\-]+/\d{7}(v\d+)?$")
+_ARXIV_ID_RE = re.compile(
+    r"^([a-z\-]+/)?\d{4}\.?\d{4,5}(v\d+)?$|^[a-z\-]+/\d{7}(v\d+)?$"
+)
 
 
 # ── Result type ────────────────────────────────────────────────────
@@ -240,7 +242,10 @@ def _try_unpaywall(
         if exc.response.status_code == 429:
             return FetchOutcome(
                 event="rate_limited",
-                payload={"doi": stub.doi, "retry_after": exc.response.headers.get("retry-after")},
+                payload={
+                    "doi": stub.doi,
+                    "retry_after": exc.response.headers.get("retry-after"),
+                },
                 duration_ms=_ms(t0),
             )
         return FetchOutcome(
@@ -402,7 +407,11 @@ def _try_s2(
     except Exception as exc:
         return FetchOutcome(
             event="fetch_failed",
-            payload={"paper_id": paper_id_for_s2, "url": oa_url, "error": str(exc)[:200]},
+            payload={
+                "paper_id": paper_id_for_s2,
+                "url": oa_url,
+                "error": str(exc)[:200],
+            },
             duration_ms=_ms(t0),
         )
     return FetchOutcome(
@@ -453,9 +462,8 @@ def run_oa_fetch_pass(
     """
     email = email or os.environ.get("PRECIS_UNPAYWALL_EMAIL", "").strip()
     if inbox_dir is None:
-        inbox_dir = (
-            os.environ.get("PRECIS_WATCH_INBOX")
-            or str(Path.home() / "work" / "new_papers" / "_oa_fetched")
+        inbox_dir = os.environ.get("PRECIS_WATCH_INBOX") or str(
+            Path.home() / "work" / "new_papers" / "_oa_fetched"
         )
     inbox_path = Path(inbox_dir)
 
@@ -474,15 +482,15 @@ def run_oa_fetch_pass(
         except Exception as exc:  # pragma: no cover — defensive
             log.warning(
                 "fetch_oa: ref_id=%s unhandled error: %s",
-                stub.ref_id, exc, exc_info=True,
+                stub.ref_id,
+                exc,
+                exc_info=True,
             )
             failed += 1
     return {"claimed": len(stubs), "ok": ok, "failed": failed}
 
 
-def _run_cascade(
-    store: Any, stub: StubRef, inbox_dir: Path, email: str
-) -> None:
+def _run_cascade(store: Any, stub: StubRef, inbox_dir: Path, email: str) -> None:
     """Walk providers in order; stop at first fetch_ok.
 
     Records every attempted provider's outcome via append_event.
@@ -492,9 +500,12 @@ def _run_cascade(
     """
     providers: list[tuple[str, Any]] = []
     if email:
-        providers.append((_SOURCE_UNPAYWALL, lambda: _try_unpaywall(
-            stub, inbox_dir=inbox_dir, email=email
-        )))
+        providers.append(
+            (
+                _SOURCE_UNPAYWALL,
+                lambda: _try_unpaywall(stub, inbox_dir=inbox_dir, email=email),
+            )
+        )
     providers.append((_SOURCE_ARXIV, lambda: _try_arxiv(stub, inbox_dir=inbox_dir)))
     providers.append((_SOURCE_S2, lambda: _try_s2(stub, inbox_dir=inbox_dir)))
 
@@ -561,15 +572,23 @@ def _download_pdf(url: str, target: Path) -> int:
     file — some publishers return HTML interstitial pages with 200
     OK; saving those would poison the watcher (Marker would barf).
     """
+    from precis.utils.safe_fetch import safe_stream
+
     tmp = target.with_suffix(target.suffix + ".part")
     size = 0
     head = b""
+    # follow_redirects=False — safe_stream walks the chain itself,
+    # revalidating each Location. Original code set this True with
+    # only is_http_url() shape validation on ``url``, so a publisher
+    # redirect to 169.254.169.254 / 127.0.0.1 would be followed and
+    # the magic-byte check at the end could be defeated by a server
+    # that echoes %PDF- bytes.
     with httpx.Client(
         timeout=_DOWNLOAD_TIMEOUT_S,
-        follow_redirects=True,
+        follow_redirects=False,
         headers=_DOWNLOAD_HEADERS,
     ) as client:
-        with client.stream("GET", url) as resp:
+        with safe_stream(client, "GET", url) as resp:
             resp.raise_for_status()
             with tmp.open("wb") as fh:
                 for chunk in resp.iter_bytes(chunk_size=64 * 1024):
@@ -579,9 +598,7 @@ def _download_pdf(url: str, target: Path) -> int:
                     size += len(chunk)
     if not head.startswith(b"%PDF-"):
         tmp.unlink(missing_ok=True)
-        raise ValueError(
-            f"response is not a PDF (got {size} bytes, head={head!r})"
-        )
+        raise ValueError(f"response is not a PDF (got {size} bytes, head={head!r})")
     tmp.rename(target)
     return size
 
@@ -590,8 +607,7 @@ def _download_pdf(url: str, target: Path) -> int:
 # httpx UA. Identify ourselves and include the contact env when
 # present so an annoyed sysadmin can ping us rather than blocking.
 _USER_AGENT = (
-    "precis-mcp/8.0 (+https://github.com/retostamm/precis-mcp;"
-    " mailto:{email})"
+    "precis-mcp/8.0 (+https://github.com/retostamm/precis-mcp; mailto:{email})"
 )
 
 

@@ -24,7 +24,6 @@ from typing import Any, Literal
 
 from precis.ingest.provenance import (
     CandidateMatch,
-    MetadataVerification,
     Notice,
     ProvenanceResult,
     Severity,

@@ -132,5 +132,9 @@ class TestVersion:
 class TestSentenceDataclass:
     def test_immutable(self) -> None:
         s = Sentence(text="hello.", char_offset=0)
-        with pytest.raises(Exception):
+        # frozen=True + slots=True → AttributeError when assigning
+        # to any field; the original blanket pytest.raises(Exception)
+        # would also swallow a regression that turned the dataclass
+        # mutable accidentally.
+        with pytest.raises(AttributeError):
             s.text = "x"  # type: ignore[misc]

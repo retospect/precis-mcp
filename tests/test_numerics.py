@@ -6,7 +6,6 @@ import pytest
 
 from precis.utils.numerics import extract_numerics
 
-
 # ── trivial ─────────────────────────────────────────────────────────
 
 

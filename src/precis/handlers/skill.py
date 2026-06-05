@@ -39,10 +39,10 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
+from precis.format import render_agent_table
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
 from precis.skill_index import FileCorpusIndex, SearchHit
-from precis.format import render_agent_table
 from precis.utils.next_block import render_next_section
 from precis.utils.rake import keyword_summary
 from precis.utils.search_header import format_search_headline
@@ -94,9 +94,7 @@ def _parse_skill_id(
         if hi_i < lo_i:
             raise BadInput(
                 f"inverted skill chunk range: ~{lo_i}..{hi_i}",
-                next=(
-                    f"use the smaller bound first: ~{hi_i}..{lo_i}"
-                ),
+                next=(f"use the smaller bound first: ~{hi_i}..{lo_i}"),
             )
         chunk_spec = (lo_i, hi_i)
     path_view = m.group("view")
@@ -384,6 +382,18 @@ class SkillHandler(Handler):
         # stays cheap. Falls back to substring search when no
         # embedder is wired (see :meth:`_get_index`).
         self._index: FileCorpusIndex | None = None
+
+        # Memoised view='toc' render per (slug, scope). Skill files
+        # are static disk content for the life of the process, so
+        # one DP+KeyBERT pass per (slug, scope) is enough — the
+        # per-request renderer in ``utils/toc.py`` is expensive
+        # (~hundreds of ms on a dozen-chunk skill) and was being
+        # re-run on every ``get(kind='skill', id='X/toc')``. The
+        # paper handler already cut over to the db-backed renderer
+        # (ADR 0018-superseding F20) but the skill handler still
+        # uses the on-demand path; caching avoids the worst-case
+        # cost without a schema change for skills.
+        self._toc_cache: dict[tuple[str, tuple[int, int] | None], str] = {}
 
     # ── get ────────────────────────────────────────────────────────
 
@@ -699,6 +709,11 @@ class SkillHandler(Handler):
         self, slug: str, *, scope: tuple[int, int] | None
     ) -> Response:
         """Render the smart-TOC for a skill, optionally scoped."""
+        cache_key = (slug, scope)
+        cached = self._toc_cache.get(cache_key)
+        if cached is not None:
+            return Response(body=cached)
+
         from precis.utils.toc import render_for_ref
 
         adapter = self.chunks_for_toc(slug)
@@ -721,11 +736,13 @@ class SkillHandler(Handler):
                 ),
             ]
         )
+        # Memoise the fully-rendered body. Skill files are static
+        # for the life of the process; subsequent calls return the
+        # cached body without re-running DP+KeyBERT.
+        self._toc_cache[cache_key] = body
         return Response(body=body)
 
-    def _render_skill_chunks(
-        self, slug: str, chunk_spec: tuple[int, int]
-    ) -> Response:
+    def _render_skill_chunks(self, slug: str, chunk_spec: tuple[int, int]) -> Response:
         """Render one or more H2 chunks of a skill (selector ``~N`` /
         ``~A..B``). Single-chunk requests show the H2 heading + the
         chunk body verbatim; range requests concatenate the body of
@@ -744,9 +761,7 @@ class SkillHandler(Handler):
             raise BadInput(
                 f"skill {slug!r} has {len(chunks)} chunks; "
                 f"range ~{lo}..{hi} is out of bounds",
-                next=(
-                    f"get(kind='skill', id='{slug}/toc') for valid handles"
-                ),
+                next=(f"get(kind='skill', id='{slug}/toc') for valid handles"),
             )
 
         # Single chunk: heading + body. Range: concatenate.
@@ -817,9 +832,7 @@ class SkillHandler(Handler):
                 index._build()
                 entry = index._entries.get(slug) if index._entries else None
                 if entry is not None and len(entry.chunks) == len(chunks):
-                    embeddings = tuple(
-                        tuple(c.embedding) for c in entry.chunks
-                    )
+                    embeddings = tuple(tuple(c.embedding) for c in entry.chunks)
                     embedder_name = entry.embedder_model
             except Exception:  # pragma: no cover — defensive
                 embeddings = None
@@ -909,7 +922,9 @@ class SkillHandler(Handler):
         lines.append("")
         lines.append("## Suggested starting commands")
         lines.append("")
-        lines.append("These are example invocations — paste verbatim to land somewhere useful.")
+        lines.append(
+            "These are example invocations — paste verbatim to land somewhere useful."
+        )
         lines.append("")
         lines.append(
             render_agent_table(
@@ -1031,7 +1046,9 @@ class SkillHandler(Handler):
         # blurred the line between commands and skills.
         lines.append("## Suggested starting commands")
         lines.append("")
-        lines.append("These are example invocations — paste verbatim to land somewhere useful.")
+        lines.append(
+            "These are example invocations — paste verbatim to land somewhere useful."
+        )
         lines.append("")
         lines.append(
             render_agent_table(

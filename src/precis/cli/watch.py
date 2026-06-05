@@ -637,12 +637,18 @@ def _spawn_batch_subprocess(
     ]
     if user:
         cmd += ["--user", user]
-    if database_url:
-        cmd += ["--database-url", database_url]
     cmd += [str(p) for p in pdfs]
 
+    # Pass the DSN through the environment instead of argv so it
+    # doesn't surface in /proc/<pid>/cmdline for the lifetime of the
+    # subprocess. The child resolves it via ``resolve_dsn(None)`` →
+    # ``cfg.database_url`` → ``PRECIS_DATABASE_URL``.
+    env = os.environ.copy()
+    if database_url:
+        env["PRECIS_DATABASE_URL"] = database_url
+
     log.info("precis watch: spawning batch subprocess for %d PDF(s)", len(pdfs))
-    result = subprocess.run(cmd, env=os.environ.copy(), check=False)
+    result = subprocess.run(cmd, env=env, check=False)
     if result.returncode != 0:
         log.warning(
             "precis watch: batch subprocess exited with code %d "

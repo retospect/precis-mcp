@@ -198,13 +198,24 @@ def run(args: argparse.Namespace) -> None:
         # runs the chunk-level handlers + this pass each cycle; the
         # ``--only chunk_keywords`` choice drops chunk-level work and
         # drains this queue alone.
-        ref_passes = []
+        from precis.workers.runner import RefPass
+
+        ref_passes: list[RefPass] = []
         if args.only in (None, "chunk_keywords"):
             from precis.workers.chunk_keywords import run_chunk_keywords_pass
+
+            # Narrow to EmbedHandler so mypy sees the .embedder
+            # attribute; the abstract WorkerHandler doesn't carry it.
+            from precis.workers.embed import EmbedHandler
             from precis.workers.runner import BatchResult
 
             embed_handler = next(
-                (h for h in handlers if h.name.startswith("embed:")), None
+                (
+                    h
+                    for h in handlers
+                    if isinstance(h, EmbedHandler) and h.name.startswith("embed:")
+                ),
+                None,
             )
             kw_embedder = (
                 embed_handler.embedder
@@ -213,9 +224,7 @@ def run(args: argparse.Namespace) -> None:
             )
 
             def _chunk_keywords_pass(batch_size: int) -> BatchResult:
-                r = run_chunk_keywords_pass(
-                    store, kw_embedder, batch_size=batch_size
-                )
+                r = run_chunk_keywords_pass(store, kw_embedder, batch_size=batch_size)
                 return BatchResult(
                     handler="chunk_keywords",
                     claimed=r["claimed"],

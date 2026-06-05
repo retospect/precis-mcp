@@ -15,11 +15,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from precis.ingest._rw_csv import RWRow, parse_rw_rows
+from precis.ingest._rw_csv import parse_rw_rows
 from precis.ingest.provenance import (
     Notice,
-    _RWCacheRow,
     _enrich_notices_with_rw,
+    _RWCacheRow,
 )
 
 

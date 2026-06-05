@@ -288,7 +288,7 @@ def write_chunk_keywords(
     envelope including version + embedder for the lazy-update path).
     """
     canonical = [
-        ((k.get("short") or k.get("long") or "")).lower().strip()
+        (k.get("short") or k.get("long") or "").lower().strip()
         for k in keywords
     ]
     canonical = [c for c in canonical if c]

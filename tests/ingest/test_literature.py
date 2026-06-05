@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from precis.ingest.literature import (
     SKIP_EMBED_TYPES,
-    EmbedderUnavailableError,
-    build_embedder,
     first_author_key,
     first_author_surname,
 )
@@ -83,17 +79,8 @@ class TestFirstAuthorSurname:
 # per ADR 0006).
 
 
-class TestBuildEmbedder:
-    def test_unknown_provider_raises(self):
-        with pytest.raises(ValueError, match="Unknown embedding provider"):
-            build_embedder("huggingface-hub")
-
-    def test_sentence_transformers_requires_model(self):
-        # Skip if the backend is unavailable — the ImportError path is tested separately.
-        pytest.importorskip("sentence_transformers")
-        with pytest.raises(ValueError, match="requires a model name"):
-            build_embedder("sentence-transformers", model="")
-
-    def test_error_is_import_error_subclass(self):
-        # EmbedderUnavailableError should be catchable as ImportError.
-        assert issubclass(EmbedderUnavailableError, ImportError)
+# Tests for ``build_embedder`` / ``EmbedderUnavailableError`` were
+# removed alongside the helper itself in 2026-06-05: the factory had
+# no production callers (BgeM3Embedder is constructed directly) and
+# the chroma path was dormant. ``test_identity.py`` covers the slug
+# / cite-key helpers that replaced ``make_slug`` per ADR 0008.

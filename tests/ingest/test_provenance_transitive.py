@@ -14,7 +14,6 @@ from unittest.mock import patch
 
 from precis.handlers._provenance_report import render_batch
 from precis.ingest.provenance import (
-    Notice,
     ProvenanceResult,
     TransitiveCiteFinding,
     _check_cited_doi,
@@ -22,7 +21,6 @@ from precis.ingest.provenance import (
     check_doi,
     check_dois,
 )
-
 
 # ---------------------------------------------------------------------------
 # Reference extraction
