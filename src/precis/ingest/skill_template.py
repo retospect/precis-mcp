@@ -11,12 +11,11 @@ at ingest time, before chunking. Two sources defined in v1 (see
   introspects the verb's signature + docstring in ``tools/core.py``
   (or kindspec) and emits a markdown table.
 
-Each substitution is wrapped in HTML-comment markers so the rendered
-output remains traceable to the directive that produced it:
-
-    <!-- inlined-from: doc:precis-common#address-grammar -->
-    <resolved content>
-    <!-- /inlined-from doc:precis-common#address-grammar -->
+Each substitution is the resolved body verbatim — no surrounding
+markers or comment fences. Agents reading the expanded skill see
+the resolved content as if it had been authored in-place, which is
+the right shape for LLM consumption (every extra byte is
+context-window pressure).
 
 The preprocessor itself is source-agnostic: it parses the directive,
 looks up a resolver registered under the source name, and substitutes.
@@ -115,11 +114,7 @@ class Includer:
             except Exception as exc:
                 raise IncludeError(f"resolver for {d.label()} failed: {exc}") from exc
 
-            replacement = (
-                f"<!-- inlined-from: {d.label()} -->\n"
-                f"{body.rstrip()}\n"
-                f"<!-- /inlined-from {d.label()} -->"
-            )
+            replacement = body.rstrip()
             start, end = d.span
             out = out[:start] + replacement + out[end:]
         return out

@@ -1307,33 +1307,107 @@ def _norm_for_substr(s: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _list_skills() -> list[str]:
-    """Return all available skill slugs (without the ``.md`` suffix)."""
+#: Process-wide cache of ``{slug → raw markdown body}``. First call
+#: to :func:`_load_skills_map` populates it; subsequent calls reuse
+#: it. Tests that mutate the on-disk skill corpus must call
+#: :func:`_load_skills_map_cache_clear` to force a re-scan.
+_SKILLS_MAP_CACHE: dict[str, str] | None = None
+
+
+def _load_skills_map_cache_clear() -> None:
+    """Drop the cached ``{slug → raw}`` map. Use in tests after edits."""
+    global _SKILLS_MAP_CACHE
+    _SKILLS_MAP_CACHE = None
+
+
+def _load_skills_map() -> dict[str, str]:
+    """Return ``{slug → raw markdown body}`` for every shipped skill.
+
+    Walks ``src/precis/data/skills/`` recursively so subdirectory
+    organisation (``personas/``, ``refs/``, …) is invisible to callers
+    — every ``*.md`` whose stem matches :data:`_SLUG_RE` is reachable
+    via :func:`_load_skill` regardless of its directory.
+
+    Cached on first call. Process-wide; restart the server to pick
+    up new files on disk in production. Tests that mutate the corpus
+    call :func:`_load_skills_map_cache_clear`.
+    """
+    global _SKILLS_MAP_CACHE
+    if _SKILLS_MAP_CACHE is not None:
+        return _SKILLS_MAP_CACHE
+
+    out: dict[str, str] = {}
     try:
-        files = resources.files("precis.data.skills")
+        root = resources.files("precis.data.skills")
     except (ModuleNotFoundError, FileNotFoundError):
         log.warning("precis.data.skills package missing")
-        return []
-    out: list[str] = []
-    for entry in files.iterdir():  # type: ignore[union-attr]
-        name = entry.name
-        if name.endswith(".md"):
+        _SKILLS_MAP_CACHE = out
+        return out
+
+    def walk(node: Any) -> None:
+        for entry in node.iterdir():  # type: ignore[union-attr]
+            name = entry.name
+            if name.startswith("__"):
+                continue  # skip __pycache__, __init__.py, etc.
+            if entry.is_dir():
+                walk(entry)
+                continue
+            if not name.endswith(".md"):
+                continue
             stem = name[:-3]
-            if _SLUG_RE.match(stem):
-                out.append(stem)
+            if not _SLUG_RE.match(stem):
+                continue
+            try:
+                out[stem] = entry.read_text(encoding="utf-8")
+            except (OSError, FileNotFoundError) as exc:
+                log.warning("could not read skill %s: %s", stem, exc)
+
+    walk(root)
+    _SKILLS_MAP_CACHE = out
     return out
 
 
+def _list_skills() -> list[str]:
+    """Return all available skill slugs (without the ``.md`` suffix).
+
+    Includes slugs from any subdirectory under
+    ``src/precis/data/skills/`` (personas/, refs/, etc.).
+    """
+    return list(_load_skills_map().keys())
+
+
 def _load_skill(slug: str) -> str | None:
-    """Return the raw markdown for a skill, or None if missing."""
-    try:
-        files = resources.files("precis.data.skills")
-        path = files / f"{slug}.md"
-        if not path.is_file():  # type: ignore[union-attr]
-            return None
-        return path.read_text(encoding="utf-8")  # type: ignore[union-attr]
-    except (ModuleNotFoundError, FileNotFoundError):
+    """Return the skill body with ``{{include doc:…}}`` directives resolved.
+
+    Returns ``None`` if the slug is unknown. Frontmatter is preserved
+    through expansion (includes only live in body content), so
+    callers that parse frontmatter on the result continue to work.
+
+    Includes that fail to resolve are **logged and the raw content
+    is returned** so the skill stays viewable rather than disappearing
+    on a directive typo. The strict "fail ingest on broken include"
+    gate (per docs-and-skills-redesign.md decision 10) lives in the
+    boot-time scanner (``precis.ingest.skill_ingest``); SkillHandler
+    is the lenient runtime path.
+    """
+    skills = _load_skills_map()
+    text = skills.get(slug)
+    if text is None:
         return None
+    # Fast path — most skills don't carry include directives.
+    if "{{include" not in text:
+        return text
+    # Lazy import to avoid pulling the ingest module on every
+    # ``import skill`` (and to keep the import graph acyclic if the
+    # ingest layer ever wants to import from handlers).
+    from precis.ingest.skill_template import DocResolver, IncludeError, Includer
+
+    includer = Includer(resolvers={"doc": DocResolver(docs=skills)})
+    try:
+        return includer.expand(text)
+    except IncludeError as exc:
+        log.warning("skill %r: include expansion failed: %s; serving raw", slug, exc)
+        return text
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:

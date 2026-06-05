@@ -88,13 +88,15 @@ def _stub(label_to_body: dict[str, str]):
     return resolve
 
 
-def test_expand_substitutes_with_markers() -> None:
+def test_expand_substitutes_inline() -> None:
     text = "before {{include doc:precis-common#x}} after"
     includer = Includer(resolvers={"doc": _stub({"precis-common#x": "RESOLVED BODY"})})
     out = includer.expand(text)
     assert "RESOLVED BODY" in out
-    assert "<!-- inlined-from: doc:precis-common#x -->" in out
-    assert "<!-- /inlined-from doc:precis-common#x -->" in out
+    assert "{{include" not in out
+    # Substitution is verbatim — no HTML-comment markers (keeps
+    # MCP-served bodies free of low-signal tokens).
+    assert "<!-- inlined-from" not in out
     assert "before " in out and " after" in out
 
 
@@ -110,9 +112,11 @@ def test_expand_multiple_directives() -> None:
     out = includer.expand(text)
     assert "AAA" in out
     assert "BBB" in out
-    # First-directive substitution must not corrupt the second-directive
-    # span — both markers present.
-    assert out.count("<!-- inlined-from:") == 2
+    # Both directives substituted — no raw directive tokens remain.
+    assert "{{include" not in out
+    # Order preserved: AAA's substitution appears before BBB's,
+    # matching the source span order.
+    assert out.index("AAA") < out.index("BBB")
 
 
 def test_expand_no_resolver_raises() -> None:
@@ -232,7 +236,7 @@ def test_includer_with_docresolver_e2e() -> None:
     out = includer.expand(skill)
     assert "Use `slug~N`" in out
     assert "UPPERCASE replaces" not in out
-    assert "<!-- inlined-from: doc:precis-common#address-grammar -->" in out
+    assert "{{include" not in out
 
 
 def test_directive_span_round_trip() -> None:

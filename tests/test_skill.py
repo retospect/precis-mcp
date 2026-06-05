@@ -148,6 +148,114 @@ def test_skill_count_reasonable(skill: SkillHandler) -> None:
     assert 5 <= len(skills) <= 100
 
 
+# ── subdirectory discovery + include expansion ───────────────────────
+
+
+def test_personas_subdir_is_discoverable() -> None:
+    """Persona files under ``data/skills/personas/`` are findable.
+
+    The recursive walk in ``_load_skills_map`` means subdirectory
+    organisation (personas/, refs/, runbooks/, …) is transparent to
+    callers; every ``*.md`` whose stem matches the slug regex is
+    reachable via ``_load_skill`` regardless of its directory.
+    """
+    from precis.handlers.skill import _list_skills
+
+    slugs = _list_skills()
+    assert "precis-adversarial-reviewer" in slugs
+    assert "precis-citation-reviewer" in slugs
+
+
+def test_load_skill_expands_includes(skill: SkillHandler) -> None:
+    """``_load_skill`` resolves ``{{include doc:…}}`` directives.
+
+    The adversarial-reviewer persona pulls 6 sections from
+    ``precis-common-reviewer.md`` via include directives. The body
+    returned by ``_load_skill`` must have those expanded inline —
+    no HTML-comment markers, no raw directive tokens.
+    """
+    from precis.handlers.skill import _load_skill
+
+    body = _load_skill("precis-adversarial-reviewer")
+    assert body is not None
+    # No raw {{include directives left in the expanded text.
+    assert "{{include" not in body
+    # Substitution is verbatim — no HTML-comment markers so MCP-
+    # served bodies don't carry low-signal tokens.
+    assert "<!-- inlined-from" not in body
+    # Content from the included section actually appears, inline.
+    assert "Picky reviewer stance" in body
+    assert "Quote verbatim" in body
+
+
+def test_get_skill_returns_expanded_body(skill: SkillHandler) -> None:
+    """`get(kind='skill', id='precis-adversarial-reviewer')` returns
+    expanded content — agents fetching via MCP see resolved includes,
+    not raw directive tokens."""
+    out = skill.get(id="precis-adversarial-reviewer")
+    assert "{{include" not in out.body
+    assert "Picky reviewer stance" in out.body
+
+
+def test_personas_are_searchable_by_unique_term(skill: SkillHandler) -> None:
+    """End-to-end: personas under ``data/skills/personas/`` show up
+    in ``search(kind='skill', q=…)`` when the query matches text
+    unique to that persona.
+
+    Without an embedder wired (the fixture builds SkillHandler with a
+    bare Hub), search falls through to the substring/lexical path of
+    FileCorpusIndex. The persona's body must therefore be in the
+    files dict — proving that the recursive walk picked it up AND
+    that include expansion produced content (the included sections
+    are part of what makes these queries hit).
+    """
+    out = skill.search(q="adversarial")
+    assert "precis-adversarial-reviewer" in out.body, (
+        "adversarial-reviewer persona under personas/ should be "
+        "searchable; query 'adversarial' did not find it"
+    )
+
+    out = skill.search(q="citation discipline")
+    assert "precis-citation-reviewer" in out.body, (
+        "citation-reviewer persona under personas/ should be "
+        "searchable; query 'citation discipline' did not find it"
+    )
+
+
+def test_personas_search_finds_included_content(skill: SkillHandler) -> None:
+    """A query matching text from ``precis-common-reviewer``'s shared
+    blocks (which personas pull in via ``{{include}}``) must hit the
+    personas — proves include expansion ran *before* the search index
+    sampled their content, not just at body-render time."""
+    # 'no benefit of the doubt' lives only in
+    # precis-common-reviewer#picky-reviewer-stance, and personas pull
+    # it in. If expansion ran, the personas should also match.
+    out = skill.search(q="no benefit of the doubt")
+    body = out.body
+    # Either the common-reviewer file itself surfaces (also valid),
+    # or one of the personas does. With include expansion working,
+    # personas carrying the same text should appear.
+    assert (
+        "precis-adversarial-reviewer" in body or "precis-citation-reviewer" in body
+    ), (
+        "query matching included shared text should hit at least "
+        "one persona — include expansion may not have run during "
+        "index build"
+    )
+
+
+def test_skill_without_includes_is_unchanged(skill: SkillHandler) -> None:
+    """Skills with no ``{{include}}`` directives skip the expander
+    entirely and return identical bytes — fast path for the 90 % of
+    skills that don't yet use the include mechanism."""
+    from precis.handlers.skill import _load_skill, _load_skills_map
+
+    raw = _load_skills_map().get("precis-overview")
+    expanded = _load_skill("precis-overview")
+    if raw is not None and "{{include" not in raw:
+        assert expanded == raw
+
+
 # ── synthesized precis-help skill ────────────────────────────────────
 
 
