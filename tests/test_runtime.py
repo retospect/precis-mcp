@@ -150,7 +150,7 @@ def _migrations_dir():
 # handlers take ``**_kw`` and silently drop unknown kwargs. That
 # means ``tags=['workspace']`` in a cross-kind search was effectively
 # a no-op for ``markdown`` / ``tex`` / ``plaintext`` / ``oracle`` /
-# ``quest`` / ``think`` / ``websearch`` / ``web`` — every stream
+# ``think`` / ``websearch`` / ``web`` — every stream
 # returned unfiltered hits, the merger RRF'd them together, and the
 # agent got the scope-to-workspace promise broken.
 #

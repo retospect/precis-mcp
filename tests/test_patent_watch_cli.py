@@ -69,7 +69,6 @@ class TestWatchPatentsParse:
         assert args.cql == "cpc=B01J27/24"
         assert args.name == "my-watch"
         assert args.every == "7d"
-        assert args.auto_get is False
         assert args.max_per_pass is None
         assert args.delete is False
 
@@ -84,14 +83,12 @@ class TestWatchPatentsParse:
                 "auto",
                 "--every",
                 "1d",
-                "--auto-get",
                 "--max-per-pass",
                 "5",
                 "--database-url",
                 "postgresql://h/db",
             ]
         )
-        assert args.auto_get is True
         assert args.max_per_pass == 5
         assert args.database_url == "postgresql://h/db"
 

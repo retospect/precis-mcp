@@ -192,7 +192,6 @@ def test_note_like_kinds_are_flipped() -> None:
     from precis.handlers.markdown import MarkdownHandler
     from precis.handlers.memory import MemoryHandler
     from precis.handlers.plaintext import PlaintextHandler
-    from precis.handlers.quest import QuestHandler
     from precis.handlers.tex import TexHandler
     from precis.handlers.todo import TodoHandler
 
@@ -201,7 +200,6 @@ def test_note_like_kinds_are_flipped() -> None:
         TodoHandler,
         GripeHandler,
         FlashcardHandler,
-        QuestHandler,
         ConversationHandler,
         MarkdownHandler,
         PlaintextHandler,

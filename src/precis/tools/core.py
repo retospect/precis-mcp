@@ -307,7 +307,7 @@ def put(
     File kinds (`markdown`, `plaintext`, `tex`, `python`) require
     `mode='create'` (only accepted value; region edits live on `edit`,
     whole-file deletes on `delete`). Numeric-ref kinds (`memory`,
-    `todo`, `gripe`, `conv`, `fc`, `quest`) omit `mode=` to create.
+    `todo`, `gripe`, `conv`, `fc`) omit `mode=` to create.
     `tags=` adds, `untags=` removes. `link=`/`unlink=` use canonical
     `kind:identifier[~selector]` form; `rel=` defaults to `related-to`.
 
@@ -396,7 +396,7 @@ def delete(
 ) -> str:
     """Delete a ref or addressed region.
 
-    Numeric-ref kinds (memory, todo, gripe, fc, quest, conv):
+    Numeric-ref kinds (memory, todo, gripe, fc, conv):
     soft-delete the ref (recoverable at SQL layer).
 
     File kinds with selector in `id=` (markdown, plaintext, tex,
@@ -429,7 +429,7 @@ def tag(
     `[error:BadInput] axis not allowed on kind 'K'`.
 
     Per-kind closed-prefix gating (summary):
-    todo/gripe/quest: STATUS+PRIO. memory/fc/conv: none.
+    todo/gripe: STATUS+PRIO. memory/fc/conv: none.
     paper/patent: SRC+CACHE. web/research/think/websearch/youtube:
     CACHE only. oracle/skill: none. python/calc/math: tag unsupported.
 

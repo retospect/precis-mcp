@@ -30,7 +30,7 @@ tag(kind='todo', id=48, add=[
 ```
 
 Closed prefixes are **kind-gated** — `PRIO:` and `STATUS:` only apply
-to workflow kinds (`todo`, `gripe`, `quest`); `memory` and other
+to workflow kinds (`todo`, `gripe`); `memory` and other
 free-form kinds reject them. See the per-kind axis matrix below.
 
 ## How do I remove a tag?
@@ -150,7 +150,7 @@ axes and suggests the lowercase rewrite.
 
 | Kind | Allowed closed axes |
 |---|---|
-| `todo`, `gripe`, `quest` | `STATUS`, `PRIO` |
+| `todo`, `gripe` | `STATUS`, `PRIO` |
 | `paper`, `patent` | `SRC`, `CACHE` |
 | `research`, `think`, `websearch`, `web`, `youtube` | `CACHE` |
 | `memory`, `fc`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |

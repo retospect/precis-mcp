@@ -70,20 +70,6 @@ put(kind='fc',
 
 Card scheduling follows the SM-2 cadence — see `precis-fc-help`.
 
-## Open a long-running quest
-## Start a multi-step goal I'll come back to
-## How do I track a project across sessions?
-
-```python
-put(kind='quest', text='Ship the v2 search reranker.')
-put(kind='quest',
-    text='Ingest the 2024 NOxRR corpus end-to-end.',
-    tags=['project:noxrr'])
-```
-
-Link memories and todos into the quest with
-`link(kind='memory', id=<N>, target='quest:<slug>', rel='part-of')`.
-
 ## Record a verified citation
 ## Stamp a claim with a source quote
 ## How do I write the verifier output back?

@@ -22,7 +22,6 @@ delete(kind='todo', id=122)
 delete(kind='gripe', id=9)
 delete(kind='fc', id=204)
 delete(kind='citation', id=18)
-delete(kind='quest', id='ship-v2')
 ```
 
 Soft-delete only. The ref disappears from list views and search;

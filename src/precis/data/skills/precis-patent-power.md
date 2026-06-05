@@ -107,27 +107,23 @@ jurisdiction); use `q=` for the variable part.
 ```sh
 precis jobs watch-patents 'cpc=B01J27/24 and pa="university of limerick"' --name limerick-cat
 precis jobs watch-patents 'ti=nanobud or ab=nanobud' --name nanobud --every 1d
-precis jobs watch-patents 'pa=basf and cpc=B01J' --name basf-b01j --auto-get
+precis jobs watch-patents 'pa=basf and cpc=B01J' --name basf-b01j
 precis jobs watch-patents 'cpc=Y02E60/13' --name h2 --max-per-pass 5
 ```
 
 Watches require strict CQL — bare keywords are rejected at create
 time. `--every` accepts hours (`1h`), days (`7d`, default), or
-weeks (`2w`). `--max-per-pass` caps ingest or surfacing per pass.
+weeks (`2w`). `--max-per-pass` caps ingest per pass.
 
-Modes:
-
-- **default** — opens a quest summarising new hits. Triage by
-  `get(kind='patent', id='<docdb>')` on the interesting ones, then
-  `tag(kind='quest', id='<slug>', add=['STATUS:done'])`.
-- **`--auto-get`** — ingests new hits directly. Overflow past
-  `--max-per-pass` is dropped and resurfaces next pass
-  (oldest-publication-date first). Use only for CQLs you trust.
+New hits are ingested directly into the patent kind. Overflow past
+`--max-per-pass` is dropped and resurfaces next pass
+(oldest-publication-date first). Triage afterwards with
+`search(kind='patent', q='…')` against the freshly ingested rows.
 
 Manage:
 
 ```sh
-precis jobs list-patent-watches              # NAME · EVERY · MODE · LAST RUN · SEEN
+precis jobs list-patent-watches              # NAME · EVERY · LAST RUN · SEEN
 precis jobs list-patent-watches --show-cql
 precis jobs run-patent-watches               # one-shot pass over due watches
 precis jobs run-patent-watches --name limerick-cat --dry-run

@@ -967,7 +967,7 @@ class PrecisRuntime:
         else:
             without_exclude = base_kwargs
 
-        # Drop ``tags=`` too (oracle / quest don't filter by tag).
+        # Drop ``tags=`` too (oracle doesn't filter by tag).
         if "tags" in without_exclude:
             minimal = {k: v for k, v in without_exclude.items() if k != "tags"}
             try:

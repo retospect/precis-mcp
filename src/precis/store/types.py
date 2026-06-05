@@ -408,7 +408,7 @@ class Tag:
 _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # STATUS hosts two distinct workflows on the same axis:
     #
-    # * todo / gripe / quest — original lifecycle:
+    # * todo / gripe — original lifecycle:
     #     open → doing → done (or blocked / won't-do)
     # * finding — the citation-chase lifecycle (chase worker):
     #     tracing → established (or multi_candidate / dead_chain)
@@ -469,7 +469,6 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # Workflow kinds — STATUS + priority.
     "todo": frozenset({"STATUS", "PRIO"}),
     "gripe": frozenset({"STATUS", "PRIO"}),
-    "quest": frozenset({"STATUS", "PRIO"}),
     # Free-form notes: no closed axes. Confidence, topic, project,
     # etc. are open tags (``confidence-strong``, ``topic-noxrr``).
     "memory": frozenset(),
@@ -478,7 +477,7 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     "fc": frozenset(),
     # Conversation refs don't carry closed axes — conversations
     # aren't workflow objects. Any status belongs on the associated
-    # todo/quest.
+    # todo.
     "conv": frozenset(),
     # Paper refs use SRC (primary vs secondary lit) and CACHE (pinned
     # vs re-ingested). STATUS doesn't apply — papers don't have a
@@ -505,8 +504,7 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # Patent refs use SRC (e.g. SRC:primary for the patent we ingested
     # direct, SRC:secondary for refs found via family-walk) and CACHE
     # (cluster-wide cache discipline). STATUS doesn't apply — patents
-    # don't have a workflow lifecycle; ingestion-pending bookkeeping
-    # would live on an associated `quest` row.
+    # don't have a workflow lifecycle.
     "patent": frozenset({"SRC", "CACHE"}),
 }
 

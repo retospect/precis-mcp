@@ -7,6 +7,14 @@
 > — same gating pattern as `markdown`/`voice`. When the keys are
 > missing both the kind and the `precis-patent-help` /
 > `precis-patent-power` skills are hidden from the agent index.
+>
+> **Updated 2026-06-05:** the `quest` ref kind was retired
+> alongside this spec's quest-summary mode. Watches now ingest
+> directly; the sections below that describe quest queues,
+> `_patent_quest.py`, or `quest:patents-pending-review` are
+> historical and no longer reflect the live runner. The CQL
+> validation, OPS endpoint discipline, fair-use accounting, and
+> cache shape are all still current.
 
 This spec matches the agent-facing surface in
 `src/precis/data/skills/precis-patent-help.md` (entry-level) and

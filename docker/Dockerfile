@@ -1,27 +1,58 @@
 # syntax=docker/dockerfile:1.7
-# precis-mcp — multi-stage Dockerfile (deps / models / builder / runtime / dev)
+# precis-mcp — multi-stage Dockerfile
 #
-# Layering goal: source edits → ~5-second rebuild (only Stage 3 reruns).
-# Only `pyproject.toml` / `uv.lock` / marker / bge-m3 version changes
-# trigger the 1.5 GB model re-download. See the rationale below.
+# Stage layout (top → bottom):
 #
-# Targets:
-#   deps     — venv populated from lockfile, no source (intermediate)
-#   models   — pre-populates marker + bge-m3 weights (intermediate)
-#   builder  — installs precis-mcp itself on top of models (intermediate)
-#   runtime  — production image; ENTRYPOINT precis (serve|watch|worker|...)
-#   dev      — adds pytest, ruff, mypy, plantuml, psql on top of runtime
+#   premodels    — placeholder for the model-cache seed image. Defaults
+#                  to an empty scratch FS; override at build time with
+#                  `--build-context premodels=docker-image://precis-mcp:premodels`
+#                  to seed Stage `models` from a prior image.
 #
-# Build context is the precis-mcp repo root. Build the prod image:
+#   deps         — /opt/venv populated from pyproject.toml + uv.lock.
+#                  Inputs: lockfile only. Source edits don't touch this.
+#
+#   models       — Marker (surya) + bge-m3 weights baked under
+#                  /opt/precis/models/. With a premodels seed, the bake
+#                  no-ops. Inputs: deps + bake-models.py + the seed.
+#
+#   builder      — precis-mcp itself installed into deps' venv (snapshot
+#                  install for runtime). Inputs: models + full repo.
+#
+#   system-base  — minimal runtime apt stack + precis user + entrypoint
+#                  script. Shared base for the runtime and dev images.
+#                  Source-independent — cached unless the runtime apt
+#                  list or UID/GID changes.
+#
+#   runtime      — production image. system-base + COPY venv from
+#                  builder + COPY models from models. ENTRYPOINT
+#                  `precis serve`.
+#
+#   dev-system   — dev apt stack (psql, graphviz, plantuml, jre) + node
+#                  + claude-code + uv. Source-independent — cached
+#                  unless the dev apt list / node / claude pin changes.
+#
+#   dev-venv     — runtime venv + dev Python tools (pytest, ruff, mypy,
+#                  …). Source-independent — cached unless pyproject /
+#                  uv.lock / the dev pip list changes.
+#
+#   dev          — final dev image. dev-system + COPY dev-venv +
+#                  COPY models + COPY source + editable install of
+#                  precis-mcp. The source COPY and editable install
+#                  are the only steps that invalidate on every source
+#                  edit; everything upstream stays cached.
+#
+# Build the prod image:
 #   docker build --target runtime -t precis-mcp:latest -f docker/Dockerfile .
 #
 # Build the dev image:
 #   docker build --target dev -t precis-mcp:dev -f docker/Dockerfile .
 #
-# Architecture note: builds native to the host (ARM64 on Apple Silicon,
-# AMD64 on intel hosts). Multi-arch via `docker buildx --platform` for
-# release builds. See docs/decisions/0004-multi-stage-dockerfile.md and
-# docs/decisions/0009-dockerfile-relocation-container-first.md.
+# Build context is the precis-mcp repo root. Builds native to the host
+# (ARM64 on Apple Silicon, AMD64 on intel hosts); multi-arch via
+# `docker buildx --platform` for release builds. See
+# docs/decisions/0004-multi-stage-dockerfile.md,
+# docs/decisions/0009-dockerfile-relocation-container-first.md, and
+# docs/design/bake-models-into-image.md (premodels seed mechanism).
 
 ARG PYTHON_DIGEST=sha256:d193c6f51a7dbd10395d6328de3a7edb0516fb0608ca138036576f574c3e07d2
 ARG UV_VERSION=0.11.14
@@ -29,14 +60,14 @@ ARG UV_VERSION=0.11.14
 # Default empty stage for `premodels`. Override at build time with
 # --build-context premodels=docker-image://precis-mcp:premodels
 # (or similar) to seed the model cache from a prior image and skip
-# the multi-GB HF / datalab download. See Stage 2 (models) below.
+# the multi-GB HF / datalab download. See Stage `models` below.
 FROM scratch AS premodels
 
 # =============================================================================
-# Stage 1 (deps): install dependencies from the lockfile into /opt/venv.
-# This stage's inputs are ONLY pyproject.toml + uv.lock — touching any
-# `.py` under `src/precis/**` does NOT invalidate this layer, so the
-# ~1.5 GB model bake in Stage 2 also stays cached across source edits.
+# Stage: deps — install dependencies from the lockfile into /opt/venv.
+# Inputs are ONLY pyproject.toml + uv.lock — touching any `.py` under
+# `src/precis/**` does NOT invalidate this layer, so the ~1.5 GB model
+# bake in Stage `models` also stays cached across source edits.
 # =============================================================================
 FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS deps
 
@@ -60,7 +91,7 @@ WORKDIR /build/precis-mcp
 COPY pyproject.toml uv.lock /build/precis-mcp/
 
 # Install every locked dep into /opt/venv, but NOT precis-mcp itself
-# (--no-install-project). Stage 4 (builder) does that on top.
+# (--no-install-project). Stage `builder` does that on top.
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv venv /opt/venv && \
     uv sync --frozen --no-install-project --all-extras
@@ -73,7 +104,7 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 RUN /opt/venv/bin/python -c "from marker.util import download_font; download_font()"
 
 # =============================================================================
-# Stage 2 (models): pre-populate the HuggingFace cache with the model
+# Stage: models — pre-populate the HuggingFace cache with the model
 # weights precis loads at runtime (Marker surya stack + BAAI/bge-m3).
 #
 # Inputs: the `deps` venv only. Source edits under src/precis/** do NOT
@@ -93,12 +124,6 @@ FROM deps AS models
 ENV HF_HOME=/opt/precis/models/hf \
     MODEL_CACHE_DIR=/opt/precis/models/datalab/models
 
-# Bake via a shim script that monkeypatches surya.SuryaOCRConfig to
-# tolerate the no-arg ctor that transformers.to_diff_dict makes when
-# formatting `logger.info(f"Model config {config}")`. The f-string is
-# eager so TRANSFORMERS_VERBOSITY=error does not dodge the format call —
-# we need to make the no-arg init itself succeed. See docker/bake-models.py.
-#
 # Seed marker + HF caches from a prior image via the `premodels` build
 # context BEFORE running bake-models.py. snapshot_download / create_model_dict
 # are both idempotent — they no-op when the cache is already populated.
@@ -118,10 +143,13 @@ RUN /opt/venv/bin/python /tmp/bake-models.py && \
     rm /tmp/bake-models.py
 
 # =============================================================================
-# Stage 3 (builder): install precis-mcp itself on top of cached deps + models.
+# Stage: builder — install precis-mcp itself on top of cached deps + models.
 # This stage's inputs are the full repo, so it reruns on every source edit
 # — but the install is cheap (`--no-deps` because all deps already in the
-# venv) and the heavy marker/bge-m3 download from Stage 2 is preserved.
+# venv) and the heavy marker/bge-m3 download from Stage `models` is preserved.
+# Output is consumed by the `runtime` stage (snapshot install). The `dev`
+# stage uses `dev-venv` + an editable install instead, so it doesn't depend
+# on builder.
 # =============================================================================
 FROM models AS builder
 
@@ -130,9 +158,12 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv pip install --python /opt/venv --no-deps "/build/precis-mcp[all]"
 
 # =============================================================================
-# Stage 2 (runtime): production image, lean
+# Stage: system-base — shared minimal apt stack + precis user.
+# Source-independent: cached unless the runtime apt list or UID/GID changes.
+# Consumed by both `runtime` and `dev-system` so the apt layer is computed
+# once for both image variants.
 # =============================================================================
-FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS runtime
+FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS system-base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -157,9 +188,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         procps \
         libimage-exiftool-perl
 
-COPY --from=builder /opt/venv /opt/venv
-
-# Non-root user + pre-created cache dirs (so volume mounts inherit perms).
+# Non-root user.
 #
 # UID/GID are build args so the in-container ``precis`` user can match
 # the host user that owns bind-mounted directories (~/work, ~/.secrets,
@@ -175,16 +204,23 @@ RUN groupadd -g "${GID}" -o precis && \
     mkdir -p /data /inbox /home/precis/.cache && \
     chown -R precis:precis /data /inbox /home/precis/.cache
 
-# Baked-in HuggingFace cache (marker surya + bge-m3). ~3.8 GB on disk;
-# mmap'd lazily on first embed / first PDF, so RAM behaviour is unchanged
-# from the previous lazy-download model. Must come after `useradd precis`
-# so the --chown can resolve the user. See
-# docs/design/bake-models-into-image.md.
-COPY --from=models --chown=precis:precis /opt/precis/models /opt/precis/models
-
-# Secrets reader (lives next to this Dockerfile)
+# Secrets reader (lives next to this Dockerfile).
 COPY docker/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# =============================================================================
+# Stage: runtime — production image. system-base + venv (from builder)
+# + models (from models). Lean, no dev tooling.
+# =============================================================================
+FROM system-base AS runtime
+
+COPY --from=builder /opt/venv /opt/venv
+
+# Baked-in HuggingFace cache (marker surya + bge-m3). ~3.8 GB on disk;
+# mmap'd lazily on first embed / first PDF, so RAM behaviour is unchanged
+# from the previous lazy-download model. See
+# docs/design/bake-models-into-image.md.
+COPY --from=models --chown=precis:precis /opt/precis/models /opt/precis/models
 
 USER precis
 WORKDIR /data
@@ -193,17 +229,16 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["precis", "serve"]
 
 # =============================================================================
-# Stage 3 (dev): runtime + developer tooling + editable source
+# Stage: dev-system — system-base + dev apt + node + claude-code + uv.
+# Source-independent: cached unless the dev apt list, NODE_MAJOR, or
+# CLAUDE_CODE_VERSION changes. Sibling of `runtime`, not a child of it,
+# so source edits don't invalidate this layer through builder's venv.
 # =============================================================================
-FROM runtime AS dev
+FROM system-base AS dev-system
 
-USER root
-
-# Tell uv to reuse /opt/venv as the project env (instead of creating
-# /app/.venv, which would pollute the bind-mounted host repo).
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 
-# Dev system tools
+# Dev system tools.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -228,10 +263,22 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get install -y --no-install-recommends nodejs && \
     npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
-# Install dev Python deps into the same venv
+# uv — used by `dev` to install dev Python tools into /opt/venv and to
+# do the editable precis-mcp install at the tail.
 ARG UV_VERSION
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
-    pip install --no-cache-dir "uv==${UV_VERSION}" && \
+    pip install --no-cache-dir "uv==${UV_VERSION}"
+
+# =============================================================================
+# Stage: dev-venv — deps' runtime venv with dev Python tools added on top.
+# Source-independent: cached unless pyproject.toml / uv.lock or the dev pip
+# list changes. Output (/opt/venv) is COPYed into `dev`. Kept off the
+# `models` chain because dev's editable install of precis-mcp replaces the
+# snapshot install — no need to drag the snapshot through.
+# =============================================================================
+FROM deps AS dev-venv
+
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv pip install --python /opt/venv \
         pytest \
         pytest-cov \
@@ -246,16 +293,28 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
         ipdb \
         rich
 
+# =============================================================================
+# Stage: dev — final developer image. dev-system + venv (from dev-venv)
+# + models (from models) + editable source install. Only the source
+# COPY and editable install invalidate per source edit; everything
+# upstream stays cached.
+# =============================================================================
+FROM dev-system AS dev
+
+# Bring in the runtime venv (deps + dev pip tools) and the baked model
+# cache. Both COPYs are cached unless their source stages changed.
+COPY --from=dev-venv /opt/venv /opt/venv
+COPY --from=models --chown=precis:precis /opt/precis/models /opt/precis/models
+
 # Bring the source tree in for live editing convenience; bind-mounts in
 # compose will override this so it's just a sane fallback.
 COPY --chown=precis:precis . /app
 WORKDIR /app
 
-# Editable install of precis-mcp itself. Replaces the snapshot from the
-# builder stage. The resulting .pth file in /opt/venv references
-# /app/src/precis — at runtime the bind mount makes /app live, so
-# `import precis` resolves to the host source. Edit and re-run; no
-# container rebuild.
+# Editable install of precis-mcp itself. The resulting .pth file in
+# /opt/venv references /app/src/precis — at runtime the bind mount
+# makes /app live, so `import precis` resolves to the host source.
+# Edit and re-run; no container rebuild.
 RUN uv pip install --python /opt/venv --no-deps -e /app
 
 # Hand /opt/venv to the precis user. uv run's sync pass needs write

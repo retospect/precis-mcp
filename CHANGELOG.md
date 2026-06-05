@@ -8,6 +8,77 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added
+
+- **`gripe` promoted to first-class bug tracker.** The write-only
+  capture box was useful but ended at filing; gripe is now the
+  project's discoverable bug tracker. `get(kind='gripe', id=N)`
+  reads the body + comment timeline, `search(kind='gripe', q=...)`
+  finds matches across body and comments, `tag` / `link` / `delete`
+  work normally. Body and comments are stored as chunks
+  (`chunk_kind='gripe_body'` and new `gripe_comment`) so they pick
+  up embeddings and keyword extraction from the standard workers
+  automatically. Default lifecycle tag is `STATUS:open`; the
+  documented progression is `open → triaged → ready_for_fix →
+  in_review` plus `wontfix` as a final kept state, with `delete`
+  as the absolute terminator. Comments are append-only: a second
+  `put(kind='gripe', id=N, text='...')` adds a `gripe_comment`
+  chunk rather than mutating.
+- **`job` kind: substrate for offline LLM-driven work.** New
+  numeric ref kind for "things that run offline and report back".
+  Each job carries `meta.job_type` (the dispatcher key) and
+  `meta.executor` (the runner-class key); status is a `STATUS:`
+  tag (`queued → running → succeeded|failed|cancelled`); the
+  comment timeline is `chunk_kind='job_event'` (forensics, hidden
+  from default search) plus a final `chunk_kind='job_summary'`
+  (human-readable, searchable). v1 ships one job_type
+  (`fix_gripe`) and one executor (`claude_inproc`). Future
+  consumers (notably `kind='sortie'` for "next step to execute")
+  reuse the same substrate.
+- **`fix_gripe` job type.** Submit
+  `put(kind='job', job_type='fix_gripe', link='gripe:42',
+  rel='fixes')` and an in-container worker clones the repo to
+  `$PRECIS_FIX_WORK_DIR/clones/gripe_42`, runs `claude -p
+  --dangerously-skip-permissions` on a `gripe_42` branch with
+  the gripe body + comment timeline as the prompt, and pushes
+  the branch to `origin` (the source repo) for human review.
+  Submit auto-tags the gripe `STATUS:ready_for_fix`; success
+  posts a `gripe_comment` with the SHA and fetch instructions
+  and tags the gripe `STATUS:in_review`; failure rolls the gripe
+  back to `STATUS:open` and retains the clone dir for forensics.
+  Pre-push hook in every clone rejects pushes to anything not
+  matching `gripe_*` so the agent can't touch `main`. New env
+  vars: `PRECIS_FIX_REPO_DIR`, `PRECIS_FIX_WORK_DIR`,
+  `PRECIS_FIX_CLAUDE_BIN`, `PRECIS_FIX_CLAUDE_MODEL`,
+  `PRECIS_FIX_TIMEOUT_SECONDS`, `PRECIS_FIX_CLONE_TTL_DAYS`.
+  Compose-side: the precis container needs `~/.claude`,
+  `$PRECIS_FIX_REPO_DIR`, and `$PRECIS_FIX_WORK_DIR`
+  bind-mounted; the image must include the `claude` binary.
+
+### Deprecated
+
+- **`precis gripes` CLI.** Prints a deprecation notice on
+  invocation pointing at the MCP `get` / `search` surface; will
+  be removed in a follow-up release.
+
+### Removed
+
+- **`quest` ref kind retired.** Quest was envisioned as an
+  inter-agent task queue, but the consumer side never landed —
+  nothing claimed or processed quest rows. The "papers needing a
+  PDF" workflow it was originally pitched for is covered by the
+  stubs pipeline (`chase` worker → `fetch_oa` → `precis stubs`).
+  The `patent_watch` runner's quest-summary mode is gone too:
+  every watch now ingests directly (the former `--auto-get`),
+  with overflow past `--max-per-pass` dropped and resurfaced on
+  the next pass. Forward migration `0004_drop_quest_kind.sql`
+  deletes any existing quest refs (cascading through chunks /
+  events / tags / links), drops the `quest` row from `kinds`,
+  drops the `quest_body` chunk-kind registry row, and removes
+  `patent_watches.auto_get`. The `--auto-get` CLI flag and the
+  `precis-quest-help` skill are deleted; `kind='quest'` calls
+  now return an unknown-kind dispatch error.
+
 ### Changed
 
 - **`view='toc'` (papers): uniform `(handle, keywords)` schema, plus
@@ -46,6 +117,38 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   `docs/design/bake-models-into-image.md` and used by
   `infrastructure/compose.yaml`; just plumbed through the
   standalone wrapper.
+
+- **Dockerfile restructure: dev tooling no longer reruns on source
+  edits.** Previously `dev` extended `runtime`, which
+  `COPY --from=builder /opt/venv` — and builder's venv changes on
+  every source edit because the snapshot install of precis-mcp
+  pins to the new tree. Net effect: a one-character change under
+  `src/precis/**` invalidated the runtime layer, which invalidated
+  every `dev` step, which re-ran ~170 s of `apt install`
+  (postgresql-client, graphviz, plantuml, jre), `nodejs` setup +
+  `npm install @anthropic-ai/claude-code`, and `uv pip install`
+  for pytest / ruff / mypy / ipython — even though the RUN
+  commands were byte-identical to the prior build. Three new
+  intermediate stages give `dev` a parallel ancestry that bypasses
+  the source-dependent venv:
+
+  - `system-base` — shared minimal apt stack (libpq5, tini,
+    procps, exiftool) + precis user + entrypoint script. Sibling
+    parent for `runtime` and `dev-system` so the apt layer is
+    computed once.
+  - `dev-system` — `system-base` + dev apt list + node +
+    claude-code + uv. Source-independent; cached unless the dev
+    apt list / `NODE_MAJOR` / `CLAUDE_CODE_VERSION` change.
+  - `dev-venv` — `deps`' runtime venv with dev Python tools
+    (pytest, ruff, mypy, …) layered on top. Cached unless
+    pyproject.toml / uv.lock / the dev pip list change.
+
+  `dev` now `FROM dev-system`, then `COPY --from=dev-venv
+  /opt/venv` + `COPY --from=models /opt/precis/models` + source
+  COPY + editable install. Source-only rebuilds skip apt / node /
+  dev-pip entirely; only the source COPY, `uv pip install -e
+  /app`, and `chown -R /opt/venv` rerun. `runtime` is unchanged
+  in observable behavior — just reparented onto `system-base`.
 
 ## v8.4.1 — pick_candidate + retraction cascade + CI hygiene (2026-06-05)
 

@@ -1,6 +1,6 @@
 """Shared render + search helpers for slug-addressed ref kinds.
 
-Slug-addressed kinds (``oracle``, ``conv``, ``quest``, plus slices of
+Slug-addressed kinds (``oracle``, ``conv``, plus slices of
 ``paper`` / ``patent``) repeatedly hand-roll the same four pieces:
 
 1. A ref-level lexical search that calls ``search_refs_lexical`` +
@@ -54,7 +54,7 @@ def search_slug_refs(
     ``q`` must be non-empty; empty queries raise :class:`BadInput`
     with a hint tailored to ``kind`` so the agent sees a concrete
     recovery call. ``noun`` is the singular form used in the
-    headline (``"oracle match"``, ``"quest match"``); it's
+    headline (``"oracle match"``, ``"conv match"``); it's
     pluralised by :func:`format_search_headline`.
 
     ``empty_next`` is an optional list of ``(call, description)``
@@ -136,7 +136,7 @@ def render_slug_ref_list(
             count-correct form here — ``# 1 oracle`` /
             ``# 9 oracles`` rather than the ungrammatical
             ``# 9 oracle(s)`` the MCP critic flagged 2026-05-02.
-            Already-resolved labels (``"quest"``,
+            Already-resolved labels (``"oracle"``,
             ``"conversations"``) pass through verbatim.
         limit: Row cap on ``store.list_refs``. Defaults to 50,
             which matches the existing oracle/conv values.
@@ -202,7 +202,7 @@ def resolve_live_slug_ref(
     """Coerce a ``(kind, slug)`` pair to a live :class:`Ref` or raise.
 
     Canonicalises the pattern that every slug-addressed handler
-    (quest, oracle, paper, patent, conv, markdown, plaintext)
+    (oracle, paper, patent, conv, markdown, plaintext)
     repeats in its ``get`` / ``tag`` / ``link`` / ``delete`` entry
     points::
 

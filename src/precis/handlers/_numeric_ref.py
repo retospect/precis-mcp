@@ -1,7 +1,7 @@
 """Shared base class for numeric-id ref kinds.
 
-Memory was the first instance; phase 5 brings five more (todo, gripe,
-fc, conv, quest) plus a couple of slug variants. The CRUD shape is
+Memory was the first instance; phase 5 brings four more (todo, gripe,
+fc, conv) plus a couple of slug variants. The CRUD shape is
 nearly identical for all of them — only the kind name, default tags,
 landing/list views, and a small render hook differ.
 
@@ -23,8 +23,7 @@ Subclass contract:
 
 The base provides ``get`` / ``search`` / ``put`` exactly as v1's
 MemoryHandler did. Subclasses that need fancier behaviour (e.g. `fc`'s
-spaced-repetition scheduling, `quest`'s status transitions) override
-the relevant hook.
+spaced-repetition scheduling) override the relevant hook.
 """
 
 from __future__ import annotations

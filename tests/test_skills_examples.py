@@ -302,7 +302,7 @@ def test_specific_critic_findings_are_fixed(skill_name: str) -> None:
     if skill_name == "precis-tags":
         # The original "Set tags" example must use a workflow kind.
         # We can't easily check the *exact* line, but assert the
-        # canonical-form example carries 'todo' (or 'gripe' / 'quest')
+        # canonical-form example carries 'todo' (or 'gripe')
         # rather than 'memory' near the first PRIO:high reference.
         assert "tag(kind='memory', id=48, add=[\n    'PRIO:high'" not in text, (
             "precis-tags 'Set tags' example still uses kind='memory' with PRIO:"

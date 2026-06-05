@@ -14,9 +14,9 @@ The runner:
    the next hourly tick re-tries naturally.
 3. Issues one ``ops.search(cql, range_end=watch.max_per_pass or 50)``
    call per watch and parses out the publication numbers.
-4. Diffs against ``last_seen_pn``. New ids → either ``auto_get``
-   (call ``ingest_patent`` for each, dropping any past
-   ``max_per_pass``) or open one quest summarising the lot.
+4. Diffs against ``last_seen_pn``. New ids are ingested directly
+   via ``ingest_patent`` (oldest publication-date first), dropping
+   any past ``max_per_pass``.
 5. Calls ``record_pass`` to bump ``last_run_at`` and union the
    *seen* ids — overflow ids that were dropped do NOT enter
    ``last_seen_pn``, so they resurface naturally on the next
@@ -38,7 +38,6 @@ from precis.handlers import _patent_watch_db as watch_db
 from precis.handlers._patent_ingest import ingest_patent
 from precis.handlers._patent_ops import OpsClientProto, OpsError
 from precis.handlers._patent_xml import OpsHit, parse_search_response
-from precis.jobs._patent_quest import QuestCreated, open_quest_for_hits
 
 if TYPE_CHECKING:
     from precis.embedder import Embedder
@@ -69,7 +68,6 @@ class WatchPassResult:
     new_pn: list[str] = field(default_factory=list)
     overflow_pn: list[str] = field(default_factory=list)
     ingested_pn: list[str] = field(default_factory=list)
-    quest_slug: str | None = None
     bytes_fetched: int = 0
     error: str | None = None
     skipped_fair_use: bool = False
@@ -149,7 +147,7 @@ def run_one_pass(
             ``run-patent-watches --name <slug>``.
         dry_run: print what would happen, mutate nothing. Useful for
             inspecting which patents a watch would surface before
-            committing to ``--auto-get``.
+            committing to ingest.
         fair_use_limit_gb: rolling 7-day cap. Defaults to 3 GiB
             (spec § Configuration).
 
@@ -235,10 +233,9 @@ def _run_one_watch(
     if dry_run:
         result.skipped_dry_run = True
         log.info(
-            "patent_watch[%s]: dry-run - %d new (auto_get=%s)",
+            "patent_watch[%s]: dry-run - %d new",
             watch.name,
             len(new_pn),
-            watch.auto_get,
         )
         return result
 
@@ -248,57 +245,36 @@ def _run_one_watch(
         log.info("patent_watch[%s]: no new hits", watch.name)
         return result
 
-    # 2. Auto-get vs quest split. ``auto_get`` ingests directly;
-    # otherwise we open a single quest.
-    if watch.auto_get:
-        ingested, overflow = _auto_get_with_overflow(
-            store=store,
-            ops=ops,
-            embedder=embedder,
-            raw_root=raw_root,
-            new_hits=new_hits,
-            max_per_pass=watch.max_per_pass,
-            watch_name=watch.name,
-            fair_use_limit_bytes=fair_use_limit_bytes,
-            current_bytes_fetched=result.bytes_fetched,
-        )
-        result.ingested_pn = ingested
-        result.overflow_pn = overflow
-        # Only the *ingested* ids enter last_seen_pn — overflow
-        # resurfaces next pass. (drop-and-resurface policy.)
-        watch_db.record_pass(
-            store,
-            watch_id=watch.id,
-            new_pn=ingested,
-        )
-    else:
-        try:
-            created = _open_quest_safely(
-                store=store,
-                watch_name=watch.name,
-                cql=watch.cql,
-                hits=new_hits,
-            )
-            result.quest_slug = created.quest_slug
-        except Exception as e:
-            result.error = f"quest creation failed: {e}"
-            log.warning("patent_watch[%s]: %s", watch.name, result.error)
-            return result
-        # Quest mode: every new id enters last_seen_pn so we don't
-        # re-surface them next pass.
-        watch_db.record_pass(
-            store,
-            watch_id=watch.id,
-            new_pn=new_pn,
-        )
+    # 2. Ingest new hits directly. Oldest publication-date first;
+    # overflow past ``max_per_pass`` is dropped and resurfaces next
+    # pass.
+    ingested, overflow = _auto_get_with_overflow(
+        store=store,
+        ops=ops,
+        embedder=embedder,
+        raw_root=raw_root,
+        new_hits=new_hits,
+        max_per_pass=watch.max_per_pass,
+        watch_name=watch.name,
+        fair_use_limit_bytes=fair_use_limit_bytes,
+        current_bytes_fetched=result.bytes_fetched,
+    )
+    result.ingested_pn = ingested
+    result.overflow_pn = overflow
+    # Only the *ingested* ids enter last_seen_pn — overflow
+    # resurfaces next pass. (drop-and-resurface policy.)
+    watch_db.record_pass(
+        store,
+        watch_id=watch.id,
+        new_pn=ingested,
+    )
 
     log.info(
-        "patent_watch[%s]: new=%d ingested=%d overflow=%d quest=%s bytes=%d",
+        "patent_watch[%s]: new=%d ingested=%d overflow=%d bytes=%d",
         watch.name,
         len(new_pn),
         len(result.ingested_pn),
         len(result.overflow_pn),
-        result.quest_slug or "-",
         result.bytes_fetched,
     )
     return result
@@ -381,20 +357,6 @@ def _auto_get_with_overflow(
 
     overflow_pn = [h.docdb_id for h in overflow_hits]
     return ingested, overflow_pn
-
-
-def _open_quest_safely(
-    *,
-    store: Store,
-    watch_name: str,
-    cql: str,
-    hits: list[OpsHit],
-) -> QuestCreated:
-    """Wrap ``open_quest_for_hits`` so the call site can ``try/except``
-    on ``Exception`` without leaking the underlying type. The runner
-    treats quest-creation as best-effort — a failure here shouldn't
-    crash the pass."""
-    return open_quest_for_hits(store, watch_name=watch_name, cql=cql, hits=hits)
 
 
 __all__ = [

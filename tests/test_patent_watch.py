@@ -4,8 +4,7 @@ Uses ``FakeOpsClient`` and the ``store`` fixture (ephemeral postgres
 with all migrations applied). Verifies:
 
 * diff logic against ``last_seen_pn``;
-* quest mode opens one quest with the canonical body shape;
-* ``auto_get`` ingests in oldest-publication-date-first order;
+* watches ingest in oldest-publication-date-first order;
 * ``max_per_pass`` cap drops overflow and DOES NOT advance
   ``last_seen_pn`` for those ids (resurfacing on the next pass);
 * fair-use pre-check pauses without mutating any watch row;
@@ -79,7 +78,7 @@ def fake_ops_for_runner(
     """OPS fake pre-loaded with one search response + a single
     ingestable patent (ep1234567b1). Other ids in the search hit
     list will raise OpsNotFound on ingest, simulating a typical
-    auto_get run where some ids have full data and others don't."""
+    run where some ids have full data and others don't."""
     return FakeOpsClient(
         searches={"cpc=B01J27/24": search_three_hits_xml},
         biblio={"ep1234567b1": biblio_xml},
@@ -125,9 +124,13 @@ class TestDiffLogic:
             "wo2023123456a1",
             "us20240012345a1",
         }
-        # Default mode is quest, not auto_get.
-        assert result.quest_slug is not None
-        assert result.ingested_pn == []
+        # Only ep1234567b1 has full biblio in the fake; the others
+        # land in overflow when ingest fails.
+        assert result.ingested_pn == ["ep1234567b1"]
+        assert set(result.overflow_pn) == {
+            "wo2023123456a1",
+            "us20240012345a1",
+        }
 
     def test_subsequent_pass_picks_only_delta(
         self,
@@ -153,9 +156,8 @@ class TestDiffLogic:
         )
         result = summary.results[0]
         assert result.new_pn == ["us20240012345a1"]
-        assert result.quest_slug is not None
 
-    def test_no_new_hits_no_quest(
+    def test_no_new_hits_records_pass(
         self,
         store: Store,
         fake_ops_for_runner: FakeOpsClient,
@@ -181,7 +183,6 @@ class TestDiffLogic:
         )
         result = summary.results[0]
         assert result.new_pn == []
-        assert result.quest_slug is None
         # last_run_at still bumped — re-listing finds it not due.
         again = watch_db.get_by_name(store, "catalysts")
         assert again is not None
@@ -189,107 +190,21 @@ class TestDiffLogic:
 
 
 # ---------------------------------------------------------------------------
-# Quest-mode body shape
+# Ingest + overflow drop-and-resurface
 # ---------------------------------------------------------------------------
 
 
-class TestQuestMode:
-    def test_quest_body_lists_all_new_hits(
+class TestIngest:
+    def test_ingests_only_known_id(
         self,
         store: Store,
         fake_ops_for_runner: FakeOpsClient,
         embedder: MockEmbedder,
         raw_root: Path,
     ) -> None:
-        watch_db.create(store, name="catalysts", cql="cpc=B01J27/24")
-        summary = run_one_pass(
-            store=store,
-            ops=fake_ops_for_runner,
-            embedder=embedder,
-            raw_root=raw_root,
-        )
-        slug = summary.results[0].quest_slug
-        assert slug is not None
-        quest = store.get_ref(kind="quest", id=slug)
-        assert quest is not None
-        body = (quest.meta or {}).get("body", "")
-        # Headline mentions watch name + count.
-        assert "catalysts" in body.lower()
-        assert "3 new patents" in body
-        # Every DOCDB id appears uppercase + with espacenet link.
-        assert "EP1234567B1" in body
-        assert "WO2023123456A1" in body
-        assert "US20240012345A1" in body
-        assert "espacenet" in body.lower()
-        # CQL echoed verbatim for re-running.
-        assert "cpc=B01J27/24" in body
-
-    def test_quest_tagged_with_watch_topic(
-        self,
-        store: Store,
-        fake_ops_for_runner: FakeOpsClient,
-        embedder: MockEmbedder,
-        raw_root: Path,
-    ) -> None:
-        watch_db.create(store, name="catalysts", cql="cpc=B01J27/24")
-        summary = run_one_pass(
-            store=store,
-            ops=fake_ops_for_runner,
-            embedder=embedder,
-            raw_root=raw_root,
-        )
-        ref_id = summary.results[0].quest_slug
-        assert ref_id is not None
-        quest = store.get_ref(kind="quest", id=ref_id)
-        assert quest is not None
-        # v2 unifies the legacy ref_open_tags / ref_closed_tags into
-        # ref_tags JOIN tags discriminated by namespace ('OPEN' for
-        # open-prefix tags, anything else for closed-prefix).
-        with store.pool.connection() as conn:
-            tags = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT t.value FROM ref_tags rt "
-                    "JOIN tags t USING (tag_id) "
-                    "WHERE rt.ref_id = %s AND t.namespace = 'OPEN'",
-                    (quest.id,),
-                ).fetchall()
-            }
-            closed = {
-                (row[0], row[1])
-                for row in conn.execute(
-                    "SELECT t.namespace, t.value FROM ref_tags rt "
-                    "JOIN tags t USING (tag_id) "
-                    "WHERE rt.ref_id = %s AND t.namespace <> 'OPEN'",
-                    (quest.id,),
-                ).fetchall()
-            }
-        assert "topic:patent-watch-catalysts" in tags
-        assert ("STATUS", "open") in closed
-
-
-# ---------------------------------------------------------------------------
-# auto_get + overflow drop-and-resurface
-# ---------------------------------------------------------------------------
-
-
-class TestAutoGet:
-    def test_auto_get_ingests_only_known_id(
-        self,
-        store: Store,
-        fake_ops_for_runner: FakeOpsClient,
-        embedder: MockEmbedder,
-        raw_root: Path,
-    ) -> None:
-        # Watch with auto_get=True. The fake only knows biblio for
-        # ep1234567b1; the other two ids will raise OpsNotFound
-        # during ingest and end up in overflow.
-        watch_db.create(
-            store,
-            name="auto",
-            cql="cpc=B01J27/24",
-            auto_get=True,
-        )
+        # The fake only knows biblio for ep1234567b1; the other two
+        # ids raise OpsNotFound during ingest and end up in overflow.
+        watch_db.create(store, name="auto", cql="cpc=B01J27/24")
         summary = run_one_pass(
             store=store,
             ops=fake_ops_for_runner,
@@ -303,12 +218,10 @@ class TestAutoGet:
             "wo2023123456a1",
             "us20240012345a1",
         }
-        # No quest in auto_get mode.
-        assert result.quest_slug is None
         # The patent ref now exists.
         assert store.get_ref(kind="patent", id="ep1234567b1") is not None
 
-    def test_auto_get_max_per_pass_clipped(
+    def test_max_per_pass_clipped(
         self,
         store: Store,
         fake_ops_for_runner: FakeOpsClient,
@@ -320,7 +233,6 @@ class TestAutoGet:
             store,
             name="auto",
             cql="cpc=B01J27/24",
-            auto_get=True,
             max_per_pass=1,
         )
         summary = run_one_pass(
@@ -350,7 +262,6 @@ class TestAutoGet:
             store,
             name="auto",
             cql="cpc=B01J27/24",
-            auto_get=True,
             max_per_pass=1,
         )
         run_one_pass(
@@ -492,8 +403,7 @@ class TestDryRun:
         )
         result = summary.results[0]
         assert result.skipped_dry_run is True
-        # No quest, no last_run_at update, no patent refs.
-        assert result.quest_slug is None
+        # No last_run_at update, no patent refs.
         again = watch_db.get_by_name(store, "catalysts")
         assert again is not None
         assert again.last_run_at is None

@@ -191,7 +191,6 @@ _SKILL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "precis-memory-help",
             "precis-todo-help",
             "precis-fc-help",
-            "precis-quest-help",
             "precis-cache",
             "precis-random-help",
             "precis-gripe-help",
@@ -1218,7 +1217,7 @@ _OPTIONAL_DEP_PROBES: tuple[tuple[str, str, str, str], ...] = (
     (
         "sentence_transformers",
         "sentence-transformers",
-        "paper / markdown / patent / quest semantic search",
+        "paper / markdown / patent semantic search",
         "pip install 'precis-mcp[paper]'",
     ),
     (

@@ -601,7 +601,6 @@ def boot(
         from precis.handlers.memory import MemoryHandler
         from precis.handlers.oracle import OracleHandler
         from precis.handlers.paper import PaperHandler
-        from precis.handlers.quest import QuestHandler
         from precis.handlers.random import RandomHandler
         from precis.handlers.skill import SkillHandler
         from precis.handlers.tag import TagHandler
@@ -616,7 +615,6 @@ def boot(
         _gated(FlashcardHandler)
         _gated(CitationHandler)
         _gated(FindingHandler)
-        _gated(QuestHandler)
         _gated(ConversationHandler)
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the

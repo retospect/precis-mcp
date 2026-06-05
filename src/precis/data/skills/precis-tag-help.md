@@ -31,7 +31,7 @@ doesn't have is a no-op.
 ## How do I transition state without a stale tag lingering?
 
 ```python
-tag(kind='quest', id=42,
+tag(kind='todo', id=42,
     add=['STATUS:done', 'PRIO:lo'],
     remove=['STATUS:open', 'PRIO:hi'])
 ```

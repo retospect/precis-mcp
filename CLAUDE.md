@@ -7,6 +7,39 @@
 > discovery / search / chase paths. Update it the same commit you
 > change the things it describes.
 
+## What just landed (2026-06-05, follow-up)
+
+**Gripe → first-class bug tracker + `job` substrate for offline
+LLM work.** The minimal write-only gripe box is gone; gripe is
+now a normal MCP kind with `get` / `search` / `tag` / `link` /
+`delete`. The body and the append-only comment timeline live as
+chunks (`gripe_body`, new `gripe_comment`) so they're searchable
+through the standard chunk surface — embed + chunk_keywords
+workers pick them up automatically.
+
+New `kind='job'` is the substrate for offline runs: each job
+carries `meta.job_type` and `meta.executor`, status lives as a
+`STATUS:` tag, and forensics / final summary live as
+`chunk_kind='job_event'` (hidden from default search) and
+`chunk_kind='job_summary'` (searchable). v1 ships one job_type
+(`fix_gripe`) and one executor (`claude_inproc`).
+
+`fix_gripe` is the first job_type and the proof of the substrate:
+`put(kind='job', job_type='fix_gripe', link='gripe:42',
+rel='fixes')` clones the repo, runs `claude -p
+--dangerously-skip-permissions` inside the precis container, and
+pushes a `gripe_42` branch to origin for review. Deployment-side
+this adds three bind-mounts to the precis service (`~/.claude`,
+`$PRECIS_FIX_REPO_DIR`, `$PRECIS_FIX_WORK_DIR`) and bakes the
+`claude` binary into the precis image.
+
+Skills: `precis-gripe-help` (rewritten — the project's bug
+tracker), `precis-job-help` (new — the substrate), and
+`precis-fix-gripe-help` (new — the end-to-end recipe). The old
+`precis gripes` CLI is deprecated.
+
+Forward migration: `0005_gripe_first_class_and_jobs.sql`.
+
 ## What just landed (2026-06-05)
 
 **F20: per-chunk KeyBERT supersedes the persistent discovery layer.**

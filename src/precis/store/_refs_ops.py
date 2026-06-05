@@ -1,7 +1,7 @@
 """Ref-level CRUD + lexical search. Mixin on :class:`precis.store.Store`.
 
 Ref is the hub row in the v2 schema: one row per paper / memory / todo /
-conversation / oracle / quest / .... All domain mixins ultimately touch
+conversation / oracle / .... All domain mixins ultimately touch
 a ref_id; this module owns the ref rows themselves plus the title-level
 lexical search that powers ``search(kind=..., q=...)`` for slug-addressed
 kinds.
@@ -96,7 +96,7 @@ class RefsMixin:
     ) -> Ref:
         """Insert a ref. Slug rules:
 
-        - Slug kinds (paper/book/oracle/conv/skill/quest): slug required.
+        - Slug kinds (paper/book/oracle/conv/skill): slug required.
         - Numeric kinds (todo/memory/gripe/fc): slug must be None.
 
         Enforced at app layer (the DB ``CHECK`` can't subquery the

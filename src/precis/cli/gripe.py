@@ -1,16 +1,16 @@
-"""``precis gripes`` — dump every filed gripe for human triage.
+"""``precis gripes`` — DEPRECATED dump of filed gripes.
 
-The ``gripe`` kind is deliberately write-only from the agent surface
-(see :mod:`precis.handlers.gripe`): the LLM can file a complaint via
-``put(kind='gripe', text=...)`` but cannot read, search, or list what
-was filed. Triage is a human operation, and this CLI is that human's
-entry point.
+Was the v0 human-triage path when ``gripe`` was a write-only kind
+on the MCP surface. As of migration 0005 gripe is a full
+first-class kind — ``get(kind='gripe', id=N)`` reads the body +
+comment timeline, ``search(kind='gripe', q=...)`` finds matches
+by text or tag, ``tag``/``link``/``delete`` work normally. This
+CLI duplicates that surface from the terminal and will be
+removed in a follow-up release.
 
-The default output is a human-readable dump of every live gripe in
-reverse-chronological order. ``--include-deleted`` surfaces soft-
-deleted rows (retained for audit), ``--format json`` emits one JSON
-object per line for pipeline consumption, and ``--oldest-first``
-flips the sort to walk the backlog in filed order.
+The implementation is preserved verbatim so existing shell
+scripts keep working; only the entry point prints a one-line
+deprecation notice to stderr.
 """
 
 from __future__ import annotations
@@ -72,6 +72,13 @@ def run(args: argparse.Namespace) -> None:
     """Implements ``precis gripes``."""
     from precis.config import load_config
     from precis.store import Store
+
+    print(
+        "precis gripes: DEPRECATED — gripe is now a full MCP kind. "
+        "Use get(kind='gripe', id=N) / search(kind='gripe', q=...). "
+        "This CLI will be removed in a follow-up release.",
+        file=sys.stderr,
+    )
 
     cfg = load_config()
     dsn = resolve_dsn(args.database_url, cfg=cfg)

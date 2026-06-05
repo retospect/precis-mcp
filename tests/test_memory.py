@@ -108,7 +108,7 @@ def test_update_open_tags_accumulate(handler: MemoryHandler) -> None:
 
 
 def test_status_axis_rejected_on_memory(handler: MemoryHandler) -> None:
-    """Per-kind axis enforcement: STATUS: belongs on todo/gripe/quest,
+    """Per-kind axis enforcement: STATUS: belongs on todo/gripe,
     not on memory. The MCP critic flagged ``STATUS:open`` on a memory
     as a smell — the tag is decorative because no STATUS-filtered
     query against ``kind='memory'`` can find it. Reject at the write

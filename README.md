@@ -26,7 +26,7 @@ One tool surface — **seven verbs** discriminated by a single `kind=`
 argument — over three categories of content:
 
 - **Ref kinds** (content addressed by slug or integer id): `paper`,
-  `skill`, `oracle`, `quest`, `conv`, `markdown`, `plaintext`,
+  `skill`, `oracle`, `conv`, `markdown`, `plaintext`,
   `python`, `todo`, `memory`, `gripe`, `fc` (flashcard),
   `citation` (verified claim → source quote).
 - **Tool kinds** (stateless or cache-backed; pass `q=` or `id=`, get
@@ -80,7 +80,7 @@ Extras (each enables its kinds; omit any you don't want):
 | `all`       | All of the above.                                 | yes |
 
 A bare `pip install precis-mcp` gives you the state kinds (`todo`,
-`memory`, `gripe`, `fc`, `quest`, `conv`, `oracle`, `skill`,
+`memory`, `gripe`, `fc`, `conv`, `oracle`, `skill`,
 `random`) and the `markdown` / `plaintext` / `python` file kinds.
 Optional deps surface as `InitError` at boot: the kind silently drops
 off the tool surface with a WARNING, the server stays up.

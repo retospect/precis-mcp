@@ -28,7 +28,6 @@ class TestCreate:
         assert w.interval_s == 604_800
         assert w.last_run_at is None
         assert w.last_seen_pn == []
-        assert w.auto_get is False
         assert w.max_per_pass is None
 
         again = db.get_by_name(store, "my-watch")
@@ -47,12 +46,10 @@ class TestCreate:
             name="auto",
             cql="cpc=B01J27/24",
             interval_s=86_400,
-            auto_get=True,
             max_per_pass=5,
             created_by="system",
         )
         assert w.interval_s == 86_400
-        assert w.auto_get is True
         assert w.max_per_pass == 5
         assert w.created_by == "system"
 

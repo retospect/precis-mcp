@@ -2,7 +2,7 @@
 
 Numeric-id ref kind. Refactored in phase 5 to subclass
 :class:`NumericRefHandler` — the shared CRUD shape now lives in one
-place across memory / todo / gripe / fc / conv / quest.
+place across memory / todo / gripe / fc / conv.
 
 Semantics from the `precis-memory-help` skill:
     - put(text=...)                — create new memory, return its id

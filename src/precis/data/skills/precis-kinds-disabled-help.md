@@ -42,7 +42,7 @@ the missing var(s) to the operator.
 | `markdown`, `plaintext`, `tex` | `PRECIS_ROOT` |
 | `python` | `PRECIS_PYTHON_ROOTS` |
 
-Store-backed kinds (`paper`, `oracle`, `quest`, `conv`, `todo`,
+Store-backed kinds (`paper`, `oracle`, `conv`, `todo`,
 `memory`, `gripe`, `fc`, `citation`) need a configured store; if
 absent they report `store required` in the boot banner.
 

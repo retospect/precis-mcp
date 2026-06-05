@@ -1,4 +1,4 @@
-"""Tests for the slimmer phase-5 state kinds (gripe, fc, oracle, conv, quest).
+"""Tests for the slimmer phase-5 state kinds (gripe, fc, oracle, conv).
 
 Heavy lifting (CRUD shape) lives in `_NumericRefHandler`, exercised
 already via `test_memory.py` and `test_todo.py`. These tests verify
@@ -13,63 +13,93 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound
+from precis.errors import NotFound
 from precis.handlers.conversation import ConversationHandler
 from precis.handlers.flashcard import FlashcardHandler
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.oracle import OracleHandler
-from precis.handlers.quest import QuestHandler
 from precis.store import Store
 from precis.store.types import BlockInsert
 
-# ── GripeHandler — write-only complaint box ──────────────────────────
+# ── GripeHandler — first-class bug tracker ──────────────────────────
 
 
 class TestGripe:
-    """Gripe is intentionally write-only from the agent surface.
+    """Gripe is the project's bug tracker (since migration 0005).
 
-    The agent files complaints via ``put``; reading happens
-    out-of-band (human triage via SQL / CLI). Anything else
-    raises ``Unsupported`` at the dispatch boundary because the
-    KindSpec flags are False.
+    The body and the append-only comment timeline live as chunks
+    (`gripe_body` for the body, `gripe_comment` for each comment).
+    Standard CRUD shape via NumericRefHandler; the gripe-specific
+    behaviour we verify here is the chunk-based timeline and the
+    `put(id=N, text=...)` comment-append idiom.
     """
 
     @pytest.fixture
     def gripe(self, hub: Hub) -> GripeHandler:
         return GripeHandler(hub=hub)
 
-    def test_put_creates_a_gripe(self, gripe: GripeHandler) -> None:
+    def test_put_creates_a_gripe_with_body_chunk(
+        self, gripe: GripeHandler
+    ) -> None:
         r = gripe.put(text="VS Code keeps reloading the workspace")
-        # Body advertises the new ref id even though the agent can't
-        # read it back via the MCP surface — humans triaging via SQL
-        # need the row id.
         assert "id=" in r.body
-        # Persisted in the store regardless of the read-side gating.
         refs = gripe.store.list_refs(kind="gripe", limit=10)
-        assert any("VS Code" in r.title for r in refs)
+        ref = next(r for r in refs if "VS Code" in r.title)
+        # Body materialises as a chunk so the embed + chunk_keywords
+        # workers can index it for search.
+        blocks = gripe.store.list_blocks_for_ref(ref.id)
+        assert len(blocks) == 1
+        assert blocks[0].chunk_kind == "gripe_body"
+        assert "VS Code" in blocks[0].text
 
-    def test_no_default_tags(self, gripe: GripeHandler) -> None:
-        """Unlike todos, gripes don't auto-stamp STATUS:open."""
+    def test_default_status_open_tag(self, gripe: GripeHandler) -> None:
+        """New gripes start at STATUS:open, like todos."""
         gripe.put(text="anything")
         refs = gripe.store.list_refs(kind="gripe", limit=10)
         tags = gripe.store.tags_for(refs[0].id)
-        assert not any("STATUS:" in str(t) for t in tags)
+        assert any("STATUS:open" in str(t) for t in tags)
 
-    def test_kindspec_is_write_only(self) -> None:
-        """The KindSpec flags are the contract that makes gripe
-        write-only at the dispatch layer. ``Handler._register_with``
-        only registers verbs whose ``supports_<verb>`` flag is True,
-        so verifying the spec directly is the cleanest regression
-        guard."""
+    def test_put_with_id_appends_comment_chunk(
+        self, gripe: GripeHandler
+    ) -> None:
+        gripe.put(text="paper slug NotFound has no near-match suggestions")
+        refs = gripe.store.list_refs(kind="gripe", limit=10)
+        gripe_id = refs[0].id
+        gripe.put(id=gripe_id, text="only triggers when the slug has a hyphen")
+        blocks = gripe.store.list_blocks_for_ref(gripe_id)
+        assert len(blocks) == 2
+        assert blocks[0].chunk_kind == "gripe_body"
+        assert blocks[1].chunk_kind == "gripe_comment"
+        assert "hyphen" in blocks[1].text
+
+    def test_get_renders_body_plus_comment_timeline(
+        self, gripe: GripeHandler
+    ) -> None:
+        gripe.put(text="search drops duplicate hits")
+        refs = gripe.store.list_refs(kind="gripe", limit=10)
+        gripe_id = refs[0].id
+        gripe.put(id=gripe_id, text="reproduces on HNSW ties")
+        gripe.put(id=gripe_id, text="ranking comparator needs a tiebreaker")
+        body = gripe.get(id=gripe_id).body
+        assert "search drops duplicate hits" in body
+        assert "## comment 1" in body
+        assert "reproduces on HNSW ties" in body
+        assert "## comment 2" in body
+        assert "tiebreaker" in body
+
+    def test_kindspec_is_first_class(self) -> None:
+        """Regression guard: the v0 write-only KindSpec was inverted
+        in migration 0005 / handler rewrite. If any of these flags
+        drift back to False the dispatch boundary silently drops
+        the verb."""
         spec = GripeHandler.spec
         assert spec.supports_put is True
-        # Reading verbs are deliberately disabled.
-        assert spec.supports_get is False
-        assert spec.supports_search is False
-        assert spec.supports_search_hits is False
-        assert spec.supports_delete is False
-        assert spec.supports_tag is False
-        assert spec.supports_link is False
+        assert spec.supports_get is True
+        assert spec.supports_search is True
+        assert spec.supports_search_hits is True
+        assert spec.supports_delete is True
+        assert spec.supports_tag is True
+        assert spec.supports_link is True
 
 
 # ── FlashcardHandler ────────────────────────────────────────────────
@@ -424,55 +454,3 @@ class TestConversation:
         # Headline pluralisation auto-resolves to ``2 conversations``
         # (MCP critic MINOR-C 2026-05-02).
         assert "2 conversations" in out.body
-
-
-# ── QuestHandler — slug-addressed with auto-mint ─────────────────────
-
-
-class TestQuest:
-    @pytest.fixture
-    def quest(self, hub: Hub) -> QuestHandler:
-        return QuestHandler(hub=hub)
-
-    def test_create_mints_slug_from_text(self, quest: QuestHandler) -> None:
-        r = quest.put(text="Ingest paper acheson 2026")
-        assert "ingest-paper-acheson-2026" in r.body
-        assert "status: open" in r.body
-
-    def test_create_then_read(self, quest: QuestHandler) -> None:
-        quest.put(text="Re-deploy hermes profile")
-        out = quest.get(id="re-deploy-hermes-profile")
-        assert "Re-deploy hermes profile" in out.body
-        assert "STATUS:open" in out.body
-
-    def test_collision_appends_suffix(self, quest: QuestHandler) -> None:
-        quest.put(text="duplicate")
-        r = quest.put(text="duplicate")
-        # Second create gets "-2" suffix.
-        assert "duplicate-2" in r.body
-
-    def test_list_open(self, quest: QuestHandler) -> None:
-        quest.put(text="open one")
-        r2 = quest.put(text="closed one")
-        slug = r2.body.split("'")[1]  # extract 'closed-one' from message
-        quest.tag(id=slug, add=["STATUS:done"])
-        out = quest.get(id="/open")
-        assert "open-one" in out.body
-        assert "closed-one" not in out.body
-
-    def test_status_transition(self, quest: QuestHandler) -> None:
-        quest.put(text="task")
-        quest.tag(id="task", add=["STATUS:doing"])
-        out = quest.get(id="task")
-        assert "STATUS:doing" in out.body
-        assert "STATUS:open" not in out.body
-
-    def test_create_requires_text(self, quest: QuestHandler) -> None:
-        with pytest.raises(BadInput, match="creating a quest"):
-            quest.put()
-
-    def test_delete(self, quest: QuestHandler) -> None:
-        quest.put(text="ephemeral")
-        quest.delete(id="ephemeral")
-        with pytest.raises(NotFound):
-            quest.get(id="ephemeral")

@@ -37,7 +37,6 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `patent` | `ep1234567b1` | EPO OPS patent record | store |
 | `skill` | `precis-overview` | Agent how-to (you're reading one) | — |
 | `oracle` | `stoic` | Curated wisdom-tradition entry | store |
-| `quest` | `ship-v2` | A long-running goal | store |
 | `conv` | `2026-04-26-spec` | Past conversation | store |
 | `markdown` | `notes--meeting` | A `.md` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `plaintext` | `notes--log` | A `.txt` / `.log` file under `PRECIS_ROOT` | `PRECIS_ROOT` |

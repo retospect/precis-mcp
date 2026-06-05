@@ -1,6 +1,6 @@
 """DAO for the ``patent_watches`` table.
 
-Pure SQL; no OPS calls, no quest creation. The runner
+Pure SQL; no OPS calls, no ingest. The runner
 (``precis.jobs.patent_watch``) and the CLI both go through this
 module to read and update saved-watch rows.
 
@@ -47,7 +47,6 @@ class PatentWatch:
     interval_s: int
     last_run_at: datetime | None
     last_seen_pn: list[str]
-    auto_get: bool
     max_per_pass: int | None
     created_at: datetime
     created_by: str | None
@@ -95,7 +94,6 @@ def create(
     name: str,
     cql: str,
     interval_s: int = 604_800,
-    auto_get: bool = False,
     max_per_pass: int | None = None,
     created_by: str | None = "agent",
 ) -> PatentWatch:
@@ -127,10 +125,10 @@ def create(
 
     sql = """
         INSERT INTO patent_watches
-            (name, cql, interval_s, auto_get, max_per_pass, created_by)
-        VALUES (%s, %s, %s, %s, %s, %s)
+            (name, cql, interval_s, max_per_pass, created_by)
+        VALUES (%s, %s, %s, %s, %s)
         RETURNING id, name, cql, interval_s, last_run_at, last_seen_pn,
-                  auto_get, max_per_pass, created_at, created_by
+                  max_per_pass, created_at, created_by
     """
     with store.pool.connection() as conn:
         try:
@@ -140,7 +138,6 @@ def create(
                     norm_name,
                     norm_cql,
                     interval_s,
-                    auto_get,
                     max_per_pass,
                     created_by,
                 ),
@@ -169,7 +166,7 @@ def get_by_name(store: Store, name: str) -> PatentWatch | None:
         row = conn.execute(
             """
             SELECT id, name, cql, interval_s, last_run_at, last_seen_pn,
-                   auto_get, max_per_pass, created_at, created_by
+                   max_per_pass, created_at, created_by
             FROM patent_watches WHERE name = %s
             """,
             (norm,),
@@ -183,7 +180,7 @@ def list_all(store: Store) -> list[PatentWatch]:
         rows = conn.execute(
             """
             SELECT id, name, cql, interval_s, last_run_at, last_seen_pn,
-                   auto_get, max_per_pass, created_at, created_by
+                   max_per_pass, created_at, created_by
             FROM patent_watches ORDER BY name ASC
             """
         ).fetchall()
@@ -204,7 +201,7 @@ def list_due(store: Store) -> list[PatentWatch]:
         rows = conn.execute(
             """
             SELECT id, name, cql, interval_s, last_run_at, last_seen_pn,
-                   auto_get, max_per_pass, created_at, created_by
+                   max_per_pass, created_at, created_by
             FROM patent_watches
             WHERE last_run_at IS NULL
                OR last_run_at + (interval_s * INTERVAL '1 second') <= now()
@@ -286,10 +283,9 @@ def _row_to_watch(row: tuple) -> PatentWatch:
         interval_s=int(row[3]),
         last_run_at=row[4],
         last_seen_pn=list(row[5] or []),
-        auto_get=bool(row[6]),
-        max_per_pass=int(row[7]) if row[7] is not None else None,
-        created_at=row[8],
-        created_by=str(row[9]) if row[9] is not None else None,
+        max_per_pass=int(row[6]) if row[6] is not None else None,
+        created_at=row[7],
+        created_by=str(row[8]) if row[8] is not None else None,
     )
 
 

@@ -91,14 +91,6 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         ),
     )
     wp.add_argument(
-        "--auto-get",
-        action="store_true",
-        help=(
-            "Ingest hits directly into the patent kind. "
-            "Default is to open a quest summarising new hits."
-        ),
-    )
-    wp.add_argument(
         "--max-per-pass",
         type=int,
         default=None,
@@ -141,7 +133,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     rp.add_argument(
         "--dry-run",
         action="store_true",
-        help="Report what would happen; don't write quests, ingest, or update last_run_at.",
+        help="Report what would happen; don't ingest or update last_run_at.",
     )
     rp.add_argument(
         "--fair-use-limit-gb",
@@ -234,7 +226,6 @@ def run_watch(args: argparse.Namespace) -> None:
                 name=args.name,
                 cql=args.cql,
                 interval_s=interval_s,
-                auto_get=args.auto_get,
                 max_per_pass=args.max_per_pass,
                 created_by="cli",
             )
@@ -243,14 +234,13 @@ def run_watch(args: argparse.Namespace) -> None:
             if e.next:
                 print(f"  next: {e.next}", file=sys.stderr)
             sys.exit(1)
-        mode = "auto-get" if watch.auto_get else "quest-on-new-hits"
         days = watch.interval_s / 86_400
         cap = (
             f"{watch.max_per_pass}/pass" if watch.max_per_pass is not None else "no cap"
         )
         print(
             f"watch-patents: created {watch.name!r} "
-            f"[{mode}, every {days:g}d, {cap}]\n"
+            f"[every {days:g}d, {cap}]\n"
             f"  cql: {watch.cql}"
         )
     finally:
@@ -276,11 +266,10 @@ def run_list(args: argparse.Namespace) -> None:
         if not watches:
             print("list-patent-watches: no saved watches")
             return
-        cols = f"{'NAME':<24}  {'EVERY':>6}  {'MODE':<8}  {'LAST RUN':<19}  {'SEEN':>5}"
+        cols = f"{'NAME':<24}  {'EVERY':>6}  {'LAST RUN':<19}  {'SEEN':>5}"
         print(cols)
         print("-" * len(cols))
         for w in watches:
-            mode = "auto" if w.auto_get else "quest"
             days = w.interval_s / 86_400
             every_str = f"{days:g}d" if days >= 1 else f"{w.interval_s // 3600}h"
             last = (
@@ -289,7 +278,7 @@ def run_list(args: argparse.Namespace) -> None:
                 else "(never)"
             )
             print(
-                f"{w.name:<24}  {every_str:>6}  {mode:<8}  "
+                f"{w.name:<24}  {every_str:>6}  "
                 f"{last:<19}  {len(w.last_seen_pn):>5}"
             )
             if args.show_cql:
@@ -377,12 +366,10 @@ def run_runner(args: argparse.Namespace) -> None:
                     f"({len(r.new_pn)} new patent{'s' if len(r.new_pn) != 1 else ''})"
                 )
                 continue
-            quest_part = f"quest={r.quest_slug}" if r.quest_slug is not None else ""
             ingest_part = f"ingested={len(r.ingested_pn)}" if r.ingested_pn else ""
             overflow_part = f"overflow={len(r.overflow_pn)}" if r.overflow_pn else ""
             details = (
-                " ".join(p for p in (quest_part, ingest_part, overflow_part) if p)
-                or "no new hits"
+                " ".join(p for p in (ingest_part, overflow_part) if p) or "no new hits"
             )
             print(f"  ok    {r.watch_name}  new={len(r.new_pn)}  {details}")
     finally:

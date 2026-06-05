@@ -1443,7 +1443,7 @@ def test_calc_recovery_hint_uses_q_kwarg() -> None:
 
 
 def test_empty_numeric_ref_search_has_next_trailer(store: Store) -> None:
-    """Empty searches on memory/todo/gripe/fc/quest must surface a
+    """Empty searches on memory/todo/gripe/fc must surface a
     Next: block — same shape as the very-good empty-list responses
     on get(kind='conv') / get(kind='gripe').  Without this, a small-
     model caller retries the same query, gives up, or guesses at

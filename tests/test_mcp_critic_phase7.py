@@ -15,7 +15,7 @@ against the live ``precis2`` MCP build:
   MAJOR  #12  cross-kind error options filtered to verb-supporting kinds
   MAJOR  #13  ``mode='note'`` removed from advertised list
   MINOR  m1   strip drops ``<jats:title>Abstract</jats:title>`` outright
-  MINOR  m2   empty-list responses on oracle/conv/quest carry Next: trailers
+  MINOR  m2   empty-list responses on oracle/conv carry Next: trailers
   MINOR  m3   underscore-in-paper-slug names the offending char
   MINOR  m4   calc rejects expressions that simplify to themselves
   MINOR  m6   single-block trailers render ``~N`` not ``~N..N``
@@ -396,15 +396,6 @@ class TestEmptyListTrailers:
         out = h.get()
         assert "no conversations" in out.body
         assert "Next:" in out.body
-
-    def test_quest_empty_list_has_trailer(self, store: Store) -> None:
-        from precis.handlers.quest import QuestHandler
-
-        h = QuestHandler(hub=Hub(store=store))
-        out = h.get(id="/recent")
-        assert "no quests" in out.body
-        assert "Next:" in out.body
-
 
 # ── MINOR m6: degenerate ranges render as ~N not ~N..N ─────────
 

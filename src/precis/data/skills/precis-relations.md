@@ -75,7 +75,7 @@ link(kind='memory', id=12,
      target='paper:wang2020state', rel='derived-from')
 
 link(kind='research', id=88,
-     target='quest:14', rel='derived-from')
+     target='todo:14', rel='derived-from')
 ```
 
 `derived-from` records that A's content was produced from B —
@@ -109,8 +109,7 @@ link(kind='todo', id=158,
 ```
 
 `blocks` / `blocked-by` is the workflow-filter pair. Targets are
-usually `todo`, `gripe`, or `quest`. The `todo` list view filters
-on these.
+usually `todo` or `gripe`. The `todo` list view filters on these.
 
 ## Mark a retraction, correction, or concern
 ## A retracts / corrects / raises concern about B
