@@ -8,7 +8,28 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+## v8.3.0 — second greenfield + deps catch-up (2026-06-05)
+
 ### Changed
+
+- **Dependency catch-up via `uv lock --upgrade`.** Bumps `marker-pdf`
+  1.6.1 → 1.10.2 (transitively closes the markdownify retention DoS
+  alert by lifting `markdownify` 0.13.1 → 1.2.2, well above the
+  0.14.1 fix); pulls `einops` + `openai` as new required deps
+  (marker-pdf 1.10.x added LLM-assisted post-processing); and
+  forces `opencv-python-headless` 4.13.0.92 → 4.11.0.86 via
+  `surya-ocr` 0.17.1's hard pin (upstream constraint, not ours).
+  Also: `cryptography` 47 → 48, `mypy` 1.20.2 → 2.1.0, `typer`
+  0.23.1 → 0.26.7, `ruff` 0.15.12 → 0.15.16, `torch` 2.11 → 2.12,
+  `pydantic` 2.12.5 → 2.13.4, `rpds-py` 0.30.0 → 2026.5.1 (upstream
+  CalVer cutover), and ~50 other patch/minor bumps within existing
+  constraints. The 6 remaining open `pillow` + `transformers` alerts
+  stay open until marker-pdf lifts its `Pillow<11.0.0` and
+  `transformers<5.0.0` upstream caps; the pyproject transitive-dep
+  security-floor note remains accurate.
+- **Repo-wide ruff format apply** (53 files reformatted). Ruff
+  0.15.16's formatter joins short multi-line string literals onto
+  one line; the diff is pure whitespace.
 
 - **Second greenfield: migrations re-baselined** (ADR 0019). The
   sealed `0001_initial.sql` is now a fresh `pg_dump` of the cluster
@@ -69,6 +90,22 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Fixed
 
+- **Mypy 2.1 strictness catch-up.** Tightens nine pre-existing type
+  bugs in tests that mypy 1.20 was lenient about: `_make_notice`
+  in `test_provenance_rw.py` now uses the `RetractionStatus` and
+  `Severity` Literal aliases so `Notice`'s Literal-typed fields
+  type-check; the local `_StubHub` class in
+  `test_finding`/`test_citation`/`test_verify`/`test_stats`/
+  `workers/test_chase.py` is replaced with a real
+  `Hub(store=store)` constructed from dataclass defaults; and
+  `_seed_paper` in `test_paper.py` types its `authors` param as
+  `list[dict[str, Any]] | None` to match `insert_ref`'s signature.
+- **Windows CI no longer fails on
+  `test_ingest_failure_str_format`.** The assertion now compares
+  against `str(path)` rather than a hardcoded POSIX literal so
+  `pathlib.Path("/tmp/x.md")` renders with the platform-native
+  separator (`\tmp\x.md` on Windows) without failing the contains
+  check.
 - **Migration runner no longer masks SQL errors as
   `InvalidSavepointSpecification`.** `Migrator.apply_all` previously
   opened its connection with `autocommit=False`. The first `SELECT`
