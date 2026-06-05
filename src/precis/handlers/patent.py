@@ -371,17 +371,20 @@ class PatentHandler(Handler):
         return Response(body=body)
 
     def _list_by_publication_date(self, *, limit: int) -> list[Ref]:
-        """List patents sorted by ``meta->>'publication_date' DESC, slug ASC``.
+        """List patents sorted by ``meta->>'publication_date' DESC, cite_key ASC``.
 
-        Stable secondary sort on slug — matches the spec's confirmed
-        tie-break rule.
+        Stable secondary sort on cite_key — matches the spec's
+        confirmed tie-break rule. v2 has no ``refs.slug`` column; the
+        cite_key handle comes from ``ref_identifiers`` (ADR 0008), so
+        the ORDER BY plumbs through that lookup.
         """
         sql = f"""
             SELECT {_REFS_COLS_ALIASED}
             FROM   refs r
             WHERE  r.kind = 'patent' AND r.deleted_at IS NULL
             ORDER BY (r.meta->>'publication_date') DESC NULLS LAST,
-                     r.slug ASC
+                     (SELECT id_value FROM ref_identifiers
+                       WHERE ref_id = r.ref_id AND id_kind = 'cite_key') ASC
             LIMIT  %s
         """
         with self.store.pool.connection() as conn:

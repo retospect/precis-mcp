@@ -38,25 +38,28 @@ from __future__ import annotations
 from typing import Any
 
 
-def _parse_tag_string(s: str) -> tuple[str, str]:
-    """Parse an agent-facing canonical tag string into ``(namespace, value)``.
+def _parse_tag_string(s: str) -> list[tuple[str, str]]:
+    """Parse an agent-facing canonical tag string into one or more
+    ``(namespace, value)`` rows.
 
     Mirrors :mod:`precis.store._tags_ops`'s canonical mapping:
 
-    - ``"PREFIX:value"`` with uppercase prefix → (``"PREFIX"``, ``"value"``)
-    - otherwise → (``"OPEN"``, raw string)
+    - ``"PREFIX:value"`` with uppercase prefix → single ``(prefix, value)``
+    - bare string ``"workspace"``            → both ``(OPEN, "workspace")``
+                                               and ``(FLAG, "workspace")``
 
-    Flag-shaped bare strings (``"pinned"``) end up under the ``OPEN``
-    namespace by default. Callers that need to filter on a flag
-    specifically should pass the canonical ``"FLAG:pinned"`` form
-    (the upstream tag normalisation rewrites bare flags to that
-    shape when known_flags is provided).
+    The bare-string expansion makes cross-kind tag filtering namespace-
+    agnostic: a caller writing ``tags=['workspace']`` doesn't have to
+    know whether the ref carries the tag in the ``OPEN`` or the
+    ``FLAG`` namespace. The SQL planner emits one combined IN-tuple
+    and counts *distinct values* (not tag_ids), so the bare tag
+    still counts once whether it matched the open or flag row.
     """
     if ":" in s:
         prefix, _, value = s.partition(":")
         if prefix and prefix.isupper():
-            return (prefix, value)
-    return ("OPEN", s)
+            return [(prefix, value)]
+    return [("OPEN", s), ("FLAG", s)]
 
 
 def build_tag_filter(
@@ -98,9 +101,18 @@ def build_tag_filter(
     if not tags:
         return "", []
 
-    parsed = [_parse_tag_string(s) for s in tags]
-    # IN((%s, %s), (%s, %s), ...)
-    tuple_placeholders = ", ".join(["(%s, %s)"] * len(parsed))
+    # Each input tag expands to one or more (namespace, value) rows.
+    # Bare tags expand into both OPEN and FLAG; closed-prefix tags
+    # stay single. We collect all rows for the IN-tuple, then count
+    # *distinct values* in the HAVING so a bare tag still counts once
+    # whether it landed in the open or the flag namespace.
+    flat: list[tuple[str, str]] = []
+    distinct_count = 0
+    for s in tags:
+        rows = _parse_tag_string(s)
+        flat.extend(rows)
+        distinct_count += 1
+    tuple_placeholders = ", ".join(["(%s, %s)"] * len(flat))
 
     if block_level:
         # Chunk-level: filter refs whose chunks collectively carry
@@ -114,7 +126,7 @@ def build_tag_filter(
             f"  JOIN tags t ON t.tag_id = ct.tag_id "
             f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
             f"  GROUP BY c.ref_id "
-            f"  HAVING COUNT(DISTINCT t.tag_id) = %s"
+            f"  HAVING COUNT(DISTINCT t.value) = %s"
             f")"
         )
     else:
@@ -125,15 +137,15 @@ def build_tag_filter(
             f"  JOIN tags t ON t.tag_id = rt.tag_id "
             f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
             f"  GROUP BY rt.ref_id "
-            f"  HAVING COUNT(DISTINCT t.tag_id) = %s"
+            f"  HAVING COUNT(DISTINCT t.value) = %s"
             f")"
         )
 
     params: list[Any] = []
-    for ns, val in parsed:
+    for ns, val in flat:
         params.append(ns)
         params.append(val)
-    params.append(len(parsed))
+    params.append(distinct_count)
     return fragment, params
 
 

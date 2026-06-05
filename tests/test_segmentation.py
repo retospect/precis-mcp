@@ -151,7 +151,7 @@ def test_version_string_is_pinned() -> None:
     """Tests + cache callers rely on the version string being a
     stable identifier. Bumping it is intentional; silent drift
     isn't. Pin the current value here."""
-    assert SEGMENTATION_VERSION == "1.0"
+    assert SEGMENTATION_VERSION == "1.1"
 
 
 # ── K bounds parameterised ───────────────────────────────────────────

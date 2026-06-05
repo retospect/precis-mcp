@@ -157,6 +157,11 @@ class Block:
     meta: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+    # F19a + F20: extras appended at the end so existing tuple-indexed
+    # callsites stay unaffected. Optional with sensible defaults so test
+    # fixtures that construct Blocks by hand don't all need updates.
+    chunk_kind: str = "paragraph"
+    keywords: list[str] | None = None  # NULL until the chunk_keywords worker runs
 
 
 @dataclass(frozen=True, slots=True)

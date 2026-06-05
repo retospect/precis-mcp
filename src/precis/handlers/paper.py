@@ -51,7 +51,7 @@ from precis.utils.toc_db import render_from_store
 
 _SUPPORTED_VIEWS = (
     "bibtex", "ris", "endnote", "abstract", "toc", "health", "bibliography",
-    "log",
+    "log", "abbrevs",
 )
 
 
@@ -233,8 +233,28 @@ class PaperHandler(Handler):
         if effective_view is not None:
             accepted = self.accepted_views(id=ref)
             if effective_view not in accepted:
-                raise BadInput(
-                    f"unknown paper view {effective_view!r}",
+                # Reserved views: ``fig/<N>`` is advertised in
+                # ``precis-paper-help`` as a future-reserved
+                # affordance. Surface a dedicated "reserved" error so
+                # a caller who has read the help skill knows the
+                # shape is right but the build is early — distinct
+                # from a typo against the canonical enum.
+                if effective_view.startswith("fig/"):
+                    from precis.errors import Unsupported
+
+                    raise Unsupported(
+                        f"paper view {effective_view!r} is a reserved "
+                        f"affordance — the help advertises fig/<N> but "
+                        f"the build does not yet implement it",
+                        next=(
+                            "get(kind='skill', id='precis-paper-help') for "
+                            "the current view enum"
+                        ),
+                    )
+                from precis.errors import Unsupported
+
+                raise Unsupported(
+                    f"unknown view {effective_view!r} for kind='paper'",
                     options=accepted,
                     next=(
                         f"view= for kind='paper' accepts: {accepted}; "
@@ -467,39 +487,34 @@ class PaperHandler(Handler):
             noun="block hit",
             query=q,
         )
-        # For each hit we render a TOON row + optional indented
-        # excerpt sub-line drawn from the persistent discovery layer
-        # (``ref_segment_sentences``). The sub-line is query-aligned
-        # — sentences are reranked against ``query_vec`` via pgvector
-        # cosine — so the agent sees the segment's most-on-topic
-        # sentence inline with the hit. Falls back silently to a
-        # plain row when the worker hasn't populated segments for
-        # the ref yet (workflow design discussion 2026-05-31).
+        # F20: each hit renders as a TOON row with its own per-chunk
+        # KeyBERT keywords (from ``chunks.keywords``). The old
+        # segment-level excerpt sub-line was removed when the static
+        # discovery layer (ref_segments + ref_segment_sentences) was
+        # retired — per-chunk keywords carry the "what's in this
+        # specific chunk" signal more directly.
+        del query_vec  # no longer used for per-hit excerpt reranking
         table_rows: list[dict[str, str]] = []
-        excerpt_lines: list[str | None] = []
         for block, ref, _score in hits:
             slug = ref.slug or "???"
             handle = f"{slug}~{block.pos}"
-            chunk_text = _scrub_block_text(block.text)
+            kw_list = block.keywords or []
+            if kw_list:
+                kw_display = ", ".join(kw_list[:5])
+            else:
+                chunk_text = _scrub_block_text(block.text)
+                kw_display = _chunk_keywords_or_caption(chunk_text)
             table_rows.append(
                 {
                     "handle": handle,
-                    "chunk_keywords": _chunk_keywords_or_caption(chunk_text),
+                    "chunk_keywords": kw_display,
                 }
-            )
-            excerpt_lines.append(
-                _query_aligned_excerpt(
-                    store=self.store,
-                    ref_id=ref.id,
-                    chunk_pos=block.pos,
-                    query_vec=query_vec,
-                )
             )
         rendered_table = render_agent_table(
             table_rows,
             schema=["handle", "chunk_keywords"],
         )
-        body = head + "\n\n" + _splice_excerpt_sub_lines(rendered_table, excerpt_lines)
+        body = head + "\n\n" + rendered_table
 
         # Pagination affordance — when the lexical total exceeds what
         # we returned, surface the narrow-with-scope path explicitly.
@@ -527,30 +542,11 @@ class PaperHandler(Handler):
                     "read the full text of any hit (paste any handle above)",
                 )
             )
-            # Cluster-context hint: identify the segment containing
-            # the top hit and point at its sub-TOC. Reads from the
-            # persistent ref_segments table populated by the
-            # segment-toc worker. Skipped silently when the worker
-            # hasn't run yet for this ref so a missing discovery
-            # layer never blocks a hit list from rendering.
-            top_block, top_ref, _ = hits[0]
-            try:
-                seg = self.store.segment_containing_chunk(
-                    top_ref.id, top_block.pos
-                )
-                if seg is not None and seg.pos_hi > seg.pos_lo:
-                    cluster_handle = (
-                        f"{top_ref.slug or '???'}~{seg.pos_lo}..{seg.pos_hi}"
-                    )
-                    nav.append(
-                        (
-                            f"get(kind='paper', id='{cluster_handle}', "
-                            f"view='toc')",
-                            "sub-TOC of the segment containing the top hit",
-                        )
-                    )
-            except Exception:  # pragma: no cover — defensive
-                pass
+            # F20: cluster-context navigation hint now uses the
+            # dynamic TOC. Pointing at view='toc' on the paper gives
+            # the agent the freshly-clustered structure for the
+            # current corpus state — no segment-containing-chunk
+            # lookup needed because clusters are computed on demand.
 
         # Singleton-hit special case (MCP critic MINOR-$): when
         # ``len(hits) == 1`` the original nav was 46 % of the response
@@ -895,10 +891,26 @@ class PaperHandler(Handler):
             return self._render_toc(ref, scope=None)
 
         if view in ("bibtex", "ris", "endnote"):
-            return Response(body=_format_citation(ref, style=view))
+            # F15: pre-fetch the DOI from ref_identifiers. The v2
+            # schema moved DOI off ref.meta into its own table, but
+            # _format_citation was still reading meta.get('doi') and
+            # always finding None — so every bibtex looked like a
+            # stub even when the data was fully populated.
+            doi: str | None = None
+            try:
+                for scheme, value, _src in self.store.list_ref_identifiers(ref.id):
+                    if scheme == "doi" and value:
+                        doi = value
+                        break
+            except Exception:
+                doi = None
+            return Response(body=_format_citation(ref, style=view, doi=doi))
 
         if view == "health":
             return self._render_health(ref)
+
+        if view == "abbrevs":
+            return self._render_abbrevs(ref)
 
         if view == "bibliography":
             return self._render_bibliography(ref)
@@ -1023,6 +1035,43 @@ class PaperHandler(Handler):
             ]
         )
         return Response(body=body)
+
+    def _render_abbrevs(self, ref: Ref) -> Response:
+        """F20: render the per-paper abbreviation legend.
+
+        Reads ``ref.meta['abbrevs']`` (populated lazily by the
+        chunk_keywords worker via Schwartz-Hearst over the body text).
+        Renders alphabetical TOON ``{short	long}``. Empty-paper case
+        gets a placeholder + a pointer at the worker.
+        """
+        slug = ref.slug or "???"
+        meta = ref.meta or {}
+        abbrevs = meta.get("abbrevs") or {}
+        if not abbrevs:
+            body = (
+                f"# {slug} — no abbreviations detected yet\n\n"
+                "Detection runs on the first chunk_keywords worker pass "
+                "over this paper. Either the worker hasn't run yet, or "
+                "the body text contains no ``long form (SHORT)`` "
+                "patterns that Schwartz-Hearst recognises."
+            )
+            return Response(body=body)
+        # Normalise: legacy entries are plain strings, newer ones
+        # may be ``{long, first_at}`` envelopes. Render to plain dict
+        # for sorting + table rendering.
+        flat: dict[str, str] = {}
+        for short, val in abbrevs.items():
+            if isinstance(val, str):
+                flat[short] = val
+            elif isinstance(val, dict) and "long" in val:
+                flat[short] = str(val["long"])
+        rows = [
+            {"short": short, "long": flat[short]}
+            for short in sorted(flat)
+        ]
+        head = f"# {slug} — {len(rows)} abbreviation(s)"
+        table = render_agent_table(rows, schema=["short", "long"])
+        return Response(body=f"{head}\n\n{table}")
 
     def _render_health(self, ref: Ref) -> Response:
         """Phase 5 shim: ``view='health'`` on a paper ref.
@@ -1403,74 +1452,6 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
 
 #: Case-insensitive exact-match strings that are journal-template
 #: chrome, not real section headings. Extend as new patterns appear.
-def _query_aligned_excerpt(
-    *,
-    store: Any,
-    ref_id: int,
-    chunk_pos: int,
-    query_vec: list[float] | None,
-) -> str | None:
-    """Markdown sub-line excerpt for one search hit.
-
-    Looks up the segment that contains ``chunk_pos``, then asks
-    :meth:`Store.top_sentences_for_segment` for the single best
-    sentence — query-aligned via pgvector cosine when
-    ``query_vec`` is available, segment-prototypical otherwise.
-    Returns ``None`` silently when no segment is stored yet
-    (worker hasn't run) so a missing discovery layer never
-    breaks search rendering.
-    """
-    try:
-        seg = store.segment_containing_chunk(ref_id, chunk_pos)
-    except Exception:  # pragma: no cover — defensive
-        return None
-    if seg is None:
-        return None
-    try:
-        sents = store.top_sentences_for_segment(
-            seg.segment_id, limit=1, query_embedding=query_vec
-        )
-    except Exception:  # pragma: no cover — defensive
-        return None
-    if not sents:
-        return None
-    sent = sents[0]
-    flat = " ".join(sent.text.split())
-    return f'  - excerpt @ ~{sent.chunk_pos}: "{flat}"'
-
-
-def _splice_excerpt_sub_lines(
-    table_body: str,
-    excerpts: list[str | None],
-) -> str:
-    """Inject an indented sub-line after each non-header table row.
-
-    ``table_body`` is the output of :func:`render_agent_table` —
-    one TOON header line followed by N data rows. Walks the lines,
-    emits each as-is, and appends ``excerpts[i]`` (when non-None)
-    after data row ``i``. ``None`` entries — ref hasn't been
-    segmented yet, or no sentence cleared the threshold — emit no
-    sub-line so the row stays silent.
-    """
-    lines = table_body.splitlines()
-    out: list[str] = []
-    data_idx = 0
-    for line in lines:
-        out.append(line)
-        # TOON header rows look like ``{handle\theading\t…}`` —
-        # skip the appendix logic for them.
-        if line.startswith("{") and line.endswith("}"):
-            continue
-        if not line.strip():
-            continue
-        if data_idx < len(excerpts):
-            sub = excerpts[data_idx]
-            if sub:
-                out.append(sub)
-            data_idx += 1
-    return "\n".join(out)
-
-
 _JOURNAL_TEMPLATE_HEADINGS: frozenset[str] = frozenset(
     {
         # Article-type labels
@@ -1798,7 +1779,7 @@ def _author_names(raw: Any) -> list[str]:
     return []
 
 
-def _format_citation(ref: Ref, *, style: str) -> str:
+def _format_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
     """Render a citation in BibTeX / RIS / EndNote.
 
     All scalar metadata fields are run through :func:`_clean_inline_text`
@@ -1806,15 +1787,21 @@ def _format_citation(ref: Ref, *, style: str) -> str:
     ``&``); BibTeX additionally LaTeX-escapes ``& % _ #`` so the output
     compiles cleanly. (MCP critic MINOR — BibTeX leaks ``&amp;`` and
     paper list leaks ``<sub>``.)
+
+    F15: ``authors`` and ``year`` now read from the top-level
+    ``Ref.authors`` / ``Ref.year`` columns (v2 schema location).
+    ``doi`` is fetched from ``ref_identifiers`` by the caller and
+    passed in. ``journal`` is still in ``meta`` because it's the
+    only one of the four that v2 chose to keep there.
     """
     meta = ref.meta or {}
     slug = ref.slug or "???"
     title = _clean_inline_text(ref.title)
-    authors = [_clean_inline_text(a) for a in _author_names(meta.get("authors"))]
+    authors = [_clean_inline_text(a) for a in _author_names(ref.authors)]
     authors = [a for a in authors if a]
     journal = _clean_inline_text(str(meta.get("journal") or ""))
-    year = meta.get("year")
-    doi = _clean_inline_text(str(meta.get("doi") or ""))
+    year = ref.year
+    doi_clean = _clean_inline_text(doi or "")
 
     if style == "bibtex":
         # LaTeX-escape every scalar field that might carry a special
@@ -1824,7 +1811,7 @@ def _format_citation(ref: Ref, *, style: str) -> str:
         bx_title = _latex_escape(title)
         bx_authors = " and ".join(_latex_escape(a) for a in authors)
         bx_journal = _latex_escape(journal)
-        bx_doi = _latex_escape(doi)
+        bx_doi = _latex_escape(doi_clean)
         lines = [f"@article{{{slug},"]
         if bx_title:
             lines.append(f"  title = {{{bx_title}}},")
@@ -1849,8 +1836,8 @@ def _format_citation(ref: Ref, *, style: str) -> str:
             out.append(f"PY  - {year}")
         if journal:
             out.append(f"JO  - {journal}")
-        if doi:
-            out.append(f"DO  - {doi}")
+        if doi_clean:
+            out.append(f"DO  - {doi_clean}")
         out.append("ER  - ")
         return "\n".join(out)
 
@@ -1864,8 +1851,8 @@ def _format_citation(ref: Ref, *, style: str) -> str:
         out.append(f"%D {year}")
     if journal:
         out.append(f"%J {journal}")
-    if doi:
-        out.append(f"%R {doi}")
+    if doi_clean:
+        out.append(f"%R {doi_clean}")
     return "\n".join(out)
 
 

@@ -208,7 +208,7 @@ class BlocksMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [
-            (_row_to_block(r[:11]), _row_to_ref(r[11:34]), float(r[34])) for r in rows
+            (_row_to_block(r[:14]), _row_to_ref(r[14:37]), float(r[37])) for r in rows
         ]
 
     def search_blocks_semantic(
@@ -285,7 +285,7 @@ class BlocksMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [
-            (_row_to_block(r[:11]), _row_to_ref(r[11:34]), float(r[34])) for r in rows
+            (_row_to_block(r[:14]), _row_to_ref(r[14:37]), float(r[37])) for r in rows
         ]
 
     def search_blocks_fused(
@@ -436,7 +436,7 @@ class BlocksMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, full_params).fetchall()
         return [
-            (_row_to_block(r[:11]), _row_to_ref(r[11:34]), float(r[34])) for r in rows
+            (_row_to_block(r[:14]), _row_to_ref(r[14:37]), float(r[37])) for r in rows
         ]
 
     # -- CRUD (Phase 2 — v2 chunks table) ----------------------------------
@@ -625,6 +625,7 @@ class BlocksMixin:
                 "       (c.meta->>'slug') AS slug, c.text, c.token_count, "
                 "       NULL::vector AS embedding, NULL::text AS density, "
                 "       c.meta, c.created_at, c.created_at AS updated_at, "
+                "       c.section_path, c.chunk_kind, c.keywords, "
                 f"       {_REFS_COLS_ALIASED} "
                 "FROM chunks c "
                 "JOIN refs r ON r.ref_id = c.ref_id "
@@ -637,7 +638,7 @@ class BlocksMixin:
             row = conn.execute(sql, (embedder,)).fetchone()
         if row is None:
             return None
-        return _row_to_block(row[:11]), _row_to_ref(row[11:])
+        return _row_to_block(row[:14]), _row_to_ref(row[14:])
 
     def update_block_density(self, block_id: int, density: Density) -> None:
         """Set the density bucket (sparse/medium/dense) on a chunk.
@@ -764,7 +765,8 @@ _CHUNK_PROJ = (
     "   JOIN tags t ON t.tag_id = ct.tag_id "
     "   WHERE ct.chunk_id = c.chunk_id AND t.namespace = 'DENSITY' "
     "   LIMIT 1) AS density, "
-    "c.meta, c.created_at, c.created_at AS updated_at"
+    "c.meta, c.created_at, c.created_at AS updated_at, "
+    "c.section_path, c.chunk_kind, c.keywords"
 )
 
 
@@ -847,7 +849,8 @@ def _refetch_block(conn: Connection, chunk_id: int) -> Block:
         "          JOIN tags t ON t.tag_id = ct.tag_id "
         "          WHERE ct.chunk_id = c.chunk_id "
         "          AND t.namespace = 'DENSITY' LIMIT 1) AS density, "
-        "       c.meta, c.created_at, c.created_at AS updated_at "
+        "       c.meta, c.created_at, c.created_at AS updated_at, "
+        "       c.section_path "
         "FROM chunks c "
         "LEFT JOIN chunk_embeddings ce "
         "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "

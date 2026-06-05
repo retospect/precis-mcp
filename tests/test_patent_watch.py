@@ -242,18 +242,25 @@ class TestQuestMode:
         assert ref_id is not None
         quest = store.get_ref(kind="quest", id=ref_id)
         assert quest is not None
+        # v2 unifies the legacy ref_open_tags / ref_closed_tags into
+        # ref_tags JOIN tags discriminated by namespace ('OPEN' for
+        # open-prefix tags, anything else for closed-prefix).
         with store.pool.connection() as conn:
             tags = {
                 row[0]
                 for row in conn.execute(
-                    "SELECT value FROM ref_open_tags WHERE ref_id = %s",
+                    "SELECT t.value FROM ref_tags rt "
+                    "JOIN tags t USING (tag_id) "
+                    "WHERE rt.ref_id = %s AND t.namespace = 'OPEN'",
                     (quest.id,),
                 ).fetchall()
             }
             closed = {
                 (row[0], row[1])
                 for row in conn.execute(
-                    "SELECT prefix, value FROM ref_closed_tags WHERE ref_id = %s",
+                    "SELECT t.namespace, t.value FROM ref_tags rt "
+                    "JOIN tags t USING (tag_id) "
+                    "WHERE rt.ref_id = %s AND t.namespace <> 'OPEN'",
                     (quest.id,),
                 ).fetchall()
             }

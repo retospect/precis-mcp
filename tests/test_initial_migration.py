@@ -90,8 +90,24 @@ EXPECTED_SEED_COUNTS = {
 
 
 def _apply_migration(dsn: str) -> list[str]:
-    """Apply the migration via Migrator (the real production path)."""
-    return Migrator(dsn, MIGRATIONS_DIR).apply_all()
+    """Apply ONLY ``0001_initial.sql`` (not the full bundle).
+
+    These tests assert structural invariants of the *initial* migration —
+    e.g. seed counts after only 0001 has run. Later migrations
+    (0002+) extend the seed sets, so running the whole bundle
+    breaks every count-asserting test in this file. To preserve the
+    narrow contract, we point Migrator at a temp dir containing
+    only ``0001_initial.sql``.
+    """
+    import shutil
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="precis_test_init_")
+    try:
+        shutil.copy(MIGRATION_FILE, Path(tmp) / MIGRATION_FILE.name)
+        return Migrator(dsn, Path(tmp)).apply_all()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _query_one(dsn: str, sql: str, params: tuple = ()) -> tuple:

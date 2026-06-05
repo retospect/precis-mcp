@@ -55,8 +55,12 @@ class TestBuildTagFilter:
         # holds (namespace, value).
         assert "ref_tags" in frag
         assert "tags t" in frag
-        # AND semantics: HAVING COUNT(DISTINCT t.tag_id) = N where N=1.
-        assert "HAVING COUNT(DISTINCT t.tag_id) = %s" in frag
+        # AND semantics: HAVING COUNT(DISTINCT t.value) = N where N=1.
+        # Counts on ``t.value`` rather than ``t.tag_id`` so a bare
+        # tag expanded into OPEN+FLAG namespaces still counts once
+        # (namespace-agnostic match for cross-kind workspace
+        # filtering — see ``_parse_tag_string`` for the rationale).
+        assert "HAVING COUNT(DISTINCT t.value) = %s" in frag
         # Two params per tag (namespace, value) + the count.
         assert params == ["STATUS", "open", 1]
 
@@ -239,14 +243,22 @@ class TestPaperHandlerSearchTags:
 
     def test_invalid_tag_rejected_at_handler(self, store: Store) -> None:
         h = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
-        # ``urgent`` collides with ``PRIO:urgent`` — same rejection
-        # shape as put(tags=['urgent']).
-        with pytest.raises(BadInput, match="bare flag 'urgent'"):
-            h.search(q="x", tags=["urgent"])
+        # Use an unknown closed prefix to exercise the handler-
+        # boundary rejection. ``paper`` doesn't allow ``PRIO:`` (per
+        # ``_KIND_ALLOWED_AXES``), so ``urgent`` no longer collides
+        # with ``PRIO:urgent`` on this kind — it just becomes an
+        # open tag. The contract being pinned is "tags=[bad] never
+        # silently passes the handler boundary."
+        with pytest.raises(BadInput):
+            h.search(q="x", tags=["NOSUCHAXIS:value"])
 
     def test_invalid_status_value_rejected(self, store: Store) -> None:
         h = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
-        with pytest.raises(BadInput, match="invalid STATUS value"):
+        # See above — paper doesn't allow STATUS, so the rejection is
+        # axis-not-allowed rather than invalid-value. The contract
+        # being tested is handler-boundary rejection, not the exact
+        # error text.
+        with pytest.raises(BadInput):
             h.search(q="x", tags=["STATUS:bogus"])
 
 

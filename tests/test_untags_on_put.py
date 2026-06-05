@@ -124,16 +124,32 @@ def test_untag_with_tags_combined(memory: MemoryHandler, store: Store) -> None:
 # ── validation: same shape as tags= ────────────────────────────────
 
 
-def test_untag_rejects_bare_collision(memory: MemoryHandler) -> None:
-    rid = _create_with_tags(memory, "topic-x")
+def test_untag_rejects_bare_collision(store: Store) -> None:
+    """Bare flag rejection is kind-scoped (per :data:`_KIND_ALLOWED_AXES`):
+    a bare flag only shadows the closed form on kinds that allow the
+    colliding axis. ``urgent`` collides with ``PRIO:urgent``, which is
+    accepted by ``todo`` but not by ``memory``. So the rejection only
+    fires on workflow kinds — exercise on ``todo``."""
+    from precis.handlers.todo import TodoHandler
+
+    todo = TodoHandler(hub=Hub(store=store))
+    out = todo.put(text="task", tags=["topic-x"])
+    rid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
     with pytest.raises(BadInput, match="bare flag 'urgent'"):
-        memory.tag(id=rid, remove=["urgent"])
+        todo.tag(id=rid, remove=["urgent"])
 
 
-def test_untag_rejects_unknown_status(memory: MemoryHandler) -> None:
-    rid = _create_with_tags(memory)
+def test_untag_rejects_unknown_status(store: Store) -> None:
+    """STATUS axis enforcement now happens before value validation.
+    Exercised on ``todo`` (which allows STATUS) so we reach the
+    invalid-value branch — the rejection text is what we pin."""
+    from precis.handlers.todo import TodoHandler
+
+    todo = TodoHandler(hub=Hub(store=store))
+    out = todo.put(text="task")
+    rid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
     with pytest.raises(BadInput, match="invalid STATUS value"):
-        memory.tag(id=rid, remove=["STATUS:bogus"])
+        todo.tag(id=rid, remove=["STATUS:bogus"])
 
 
 def test_untag_rejects_empty_value_form(memory: MemoryHandler) -> None:

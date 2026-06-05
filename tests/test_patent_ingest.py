@@ -147,12 +147,15 @@ class TestIngestFirstCall:
             embedder=embedder,
             raw_root=raw_root,
         )
-        # Verify tags via direct SQL — open tags live in ref_open_tags.
+        # Verify tags via direct SQL — v2 unifies the legacy
+        # ref_open_tags into ref_tags JOIN tags with namespace='OPEN'.
         with store.pool.connection() as conn:
             tags = {
                 row[0]
                 for row in conn.execute(
-                    "SELECT value FROM ref_open_tags WHERE ref_id = %s",
+                    "SELECT t.value FROM ref_tags rt "
+                    "JOIN tags t USING (tag_id) "
+                    "WHERE rt.ref_id = %s AND t.namespace = 'OPEN'",
                     (result.ref_id,),
                 ).fetchall()
             }

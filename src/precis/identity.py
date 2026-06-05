@@ -186,6 +186,18 @@ _ARXIV_PREFIXES = (
     "arxiv:",
 )
 _ARXIV_VERSION_RE = re.compile(r"v\d+$")
+# New-style arxiv IDs are ``NNNN.NNNNN`` (YYMM.number, 4 or 5
+# digit number). Old-style: ``<archive>(.<subclass>)?/<7-digit>``
+# (e.g. ``cs.LG/0501001``, ``math-ph/0001001``). The validator
+# accepts either shape and rejects anything else so callers like
+# ``fetch_paper_by_arxiv`` don't hit Semantic Scholar with junk.
+_ARXIV_ID_RE = re.compile(
+    r"^("
+    r"\d{4}\.\d{4,5}"  # new-style
+    r"|"
+    r"[a-z\-]+(?:\.[A-Z]{2})?/\d{7}"  # old-style
+    r")$"
+)
 
 
 def normalize_arxiv(s: str | None) -> str | None:
@@ -218,7 +230,14 @@ def normalize_arxiv(s: str | None) -> str | None:
     if raw.lower().endswith(".pdf"):
         raw = raw[:-4]
     raw = _ARXIV_VERSION_RE.sub("", raw)
-    return raw or None
+    if not raw:
+        return None
+    # Format gate: anything that doesn't look like a valid arxiv id
+    # gets rejected here so downstream lookups (Semantic Scholar,
+    # OAI-PMH, …) don't waste a network round-trip on a typo.
+    if not _ARXIV_ID_RE.match(raw):
+        return None
+    return raw
 
 
 # ---------------------------------------------------------------------------

@@ -587,18 +587,23 @@ def test_workspace_flag_idempotent_on_re_ingest(
     handler: PlaintextHandler, pt_root: Path
 ) -> None:
     """Re-ingest must not duplicate the flag (``add_tag`` is an
-    ``ON CONFLICT DO NOTHING`` insert). Exactly one row per (ref, flag)."""
+    ``ON CONFLICT DO NOTHING`` insert). Exactly one row per (ref, flag).
+
+    Phase 3 unification: ``ref_flags`` was folded into the canonical
+    ``tags`` table as the ``FLAG`` namespace; the ``ref_tags`` join
+    is what we count now.
+    """
     _write(pt_root, "note.txt", "body.\n")
     handler.get(id="note")
     handler.get(id="note")  # mtime-match fast path
     handler.get(id="note")
     ref = handler.store.get_ref(kind="plaintext", id="note")
     assert ref is not None
-    # Confirm exactly one row in ref_flags for this name.
     with handler.store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) FROM ref_flags WHERE ref_id = %s AND name = %s",
-            (ref.id, "workspace"),
+            "SELECT COUNT(*) FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = %s AND t.value = %s",
+            (ref.id, "FLAG", "workspace"),
         ).fetchone()
     assert row is not None and row[0] == 1
 
@@ -648,7 +653,8 @@ def test_workspace_flag_set_by_system(handler: PlaintextHandler, pt_root: Path) 
     assert ref is not None
     with handler.store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT set_by FROM ref_flags WHERE ref_id = %s AND name = 'workspace'",
+            "SELECT rt.set_by FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = 'FLAG' AND t.value = 'workspace'",
             (ref.id,),
         ).fetchone()
     assert row is not None and row[0] == "system"

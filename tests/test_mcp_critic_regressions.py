@@ -675,13 +675,19 @@ class TestTransactionalPut:
     """
 
     def test_create_with_invalid_tag_writes_nothing(self, store: Store) -> None:
-        from precis.handlers.memory import MemoryHandler
+        """Per-kind axis enforcement: ``memory`` doesn't allow the
+        PRIO axis, so a bare ``urgent`` flag is accepted as an open
+        tag there. To exercise the transactional-rollback contract
+        we use ``todo``, which *does* allow ``PRIO:`` and therefore
+        rejects the bare-flag collision.
+        """
+        from precis.handlers.todo import TodoHandler
 
-        h = MemoryHandler(hub=Hub(store=store))
-        before = len(store.list_refs(kind="memory", limit=200))
+        h = TodoHandler(hub=Hub(store=store))
+        before = len(store.list_refs(kind="todo", limit=200))
         with pytest.raises(BadInput):
             h.put(text="probe", tags=["urgent"])  # collides with PRIO:urgent
-        after = len(store.list_refs(kind="memory", limit=200))
+        after = len(store.list_refs(kind="todo", limit=200))
         assert after == before, "rejected create still wrote a ref row"
 
     def test_create_with_unknown_axis_writes_nothing(self, store: Store) -> None:
@@ -1301,10 +1307,12 @@ def test_search_error_path_survives_fastmcp_convert_result(
             f"success path should return ContentBlock list, got {type(out_ok)}"
         )
         body_ok = "".join(b.text for b in out_ok if getattr(b, "type", None) == "text")
-        # Either we got hits ("# N matches for") or the empty-result
-        # template ("no paper blocks match"); either is fine — the
-        # important thing is no exception leaked through convert_result.
-        assert "match" in body_ok.lower(), f"unexpected success body: {body_ok!r}"
+        # Either we got hits ("# N block hits for" / "# N matches for")
+        # or the empty-result template ("no paper blocks match"); any
+        # of these is fine — the important thing is no exception
+        # leaked through convert_result.
+        ok = any(s in body_ok.lower() for s in ("match", "hit"))
+        assert ok, f"unexpected success body: {body_ok!r}"
 
         # 2) error path — unknown kind in cross-kind list.  Must come
         #    back without raising and must carry ``[error:BadInput]``.

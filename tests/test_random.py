@@ -327,7 +327,7 @@ def test_slug_view_default_4_chars_crockford(handler: RandomHandler) -> None:
     from precis.handlers.random import _CROCKFORD_ALPHABET
 
     r = handler.get(view="slug")
-    slug = r.body
+    slug = r.body.splitlines()[0]
     assert len(slug) == 4
     assert all(c in _CROCKFORD_ALPHABET for c in slug), (
         f"slug {slug!r} contains chars outside Crockford alphabet"
@@ -339,13 +339,13 @@ def test_slug_view_no_corpus_dependency(handler: RandomHandler) -> None:
     (the default block-pick path raises NotFound on empty corpus)."""
     # No fixtures seeded; corpus is empty.
     r = handler.get(view="slug")
-    assert len(r.body) == 4  # still works
+    assert len(r.body.splitlines()[0]) == 4  # still works
 
 
 def test_slug_view_freshly_random(handler: RandomHandler) -> None:
     """Successive calls return different slugs (with overwhelming
     probability — 4 chars in a 32-char alphabet = 1 in ~1M collision)."""
-    slugs = {handler.get(view="slug").body for _ in range(20)}
+    slugs = {handler.get(view="slug").body.splitlines()[0] for _ in range(20)}
     # 20 draws from 1M space — collision probability vanishingly small.
     assert len(slugs) == 20
 
@@ -353,13 +353,13 @@ def test_slug_view_freshly_random(handler: RandomHandler) -> None:
 def test_slug_view_custom_length(handler: RandomHandler) -> None:
     """``args={'len': N}`` sets the slug length."""
     r = handler.get(view="slug", args={"len": 8})
-    assert len(r.body) == 8
+    assert len(r.body.splitlines()[0]) == 8
 
     r = handler.get(view="slug", args={"len": 1})
-    assert len(r.body) == 1
+    assert len(r.body.splitlines()[0]) == 1
 
     r = handler.get(view="slug", args={"len": 64})
-    assert len(r.body) == 64
+    assert len(r.body.splitlines()[0]) == 64
 
 
 def test_slug_view_length_out_of_range(handler: RandomHandler) -> None:
@@ -386,16 +386,19 @@ def test_slug_view_named_alphabets(handler: RandomHandler) -> None:
     """``alphabet='lower' / 'alnum' / 'crockford'`` select the named
     alphabets."""
     r = handler.get(view="slug", args={"len": 20, "alphabet": "lower"})
-    assert all(c in "abcdefghijklmnopqrstuvwxyz" for c in r.body)
+    slug = r.body.splitlines()[0]
+    assert all(c in "abcdefghijklmnopqrstuvwxyz" for c in slug)
 
     r = handler.get(view="slug", args={"len": 20, "alphabet": "alnum"})
-    assert all((c.isalnum() and c.islower()) or c.isdigit() for c in r.body)
+    slug = r.body.splitlines()[0]
+    assert all((c.isalnum() and c.islower()) or c.isdigit() for c in slug)
 
 
 def test_slug_view_custom_alphabet_literal(handler: RandomHandler) -> None:
     """A literal alphabet string is accepted as-is."""
     r = handler.get(view="slug", args={"len": 32, "alphabet": "ab"})
-    assert set(r.body) <= {"a", "b"}
+    slug = r.body.splitlines()[0]
+    assert set(slug) <= {"a", "b"}
 
 
 def test_slug_view_alphabet_too_short(handler: RandomHandler) -> None:

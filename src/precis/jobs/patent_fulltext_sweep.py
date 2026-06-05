@@ -110,21 +110,28 @@ class FulltextSweepSummary:
 
 
 def _list_due(store: Store, *, now: datetime, limit: int) -> list[tuple[int, str]]:
-    """Return ``(ref_id, slug)`` for every awaiting-fulltext ref whose
+    """Return ``(ref_id, cite_key)`` for every awaiting-fulltext ref whose
     retry timestamp is past.
 
-    The query joins ``refs`` against ``ref_open_tags`` and compares
+    The query joins ``refs`` against the v2 unified tags tables
+    (``ref_tags`` + ``tags`` with ``namespace='OPEN'``) and compares
     the ISO timestamp in ``meta->>'fulltext_retry_at'`` against
     ``now`` at the SQL boundary so we don't materialise every awaiting
     ref client-side. Ordering by ``retry_at`` ensures the oldest
-    backlog clears first.
+    backlog clears first. ``cite_key`` comes from the
+    ``ref_identifiers`` lookup the v2 schema uses for all slug-form
+    handles (legacy ``refs.slug`` column is gone — see ADR 0008).
     """
     sql = """
-        SELECT r.id, r.slug
+        SELECT r.ref_id,
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key
         FROM   refs r
-        JOIN   ref_open_tags t ON t.ref_id = r.id
+        JOIN   ref_tags rt ON rt.ref_id = r.ref_id
+        JOIN   tags t       ON t.tag_id  = rt.tag_id
         WHERE  r.kind = 'patent'
           AND  r.deleted_at IS NULL
+          AND  t.namespace = 'OPEN'
           AND  t.value = %s
           AND  (r.meta->>'fulltext_retry_at') IS NOT NULL
           AND  (r.meta->>'fulltext_retry_at')::timestamptz <= %s
@@ -133,7 +140,7 @@ def _list_due(store: Store, *, now: datetime, limit: int) -> list[tuple[int, str
     """
     with store.pool.connection() as conn:
         rows = conn.execute(sql, (AWAITING_FULLTEXT_TAG, now, limit)).fetchall()
-    return [(int(r[0]), str(r[1])) for r in rows]
+    return [(int(r[0]), str(r[1] or "")) for r in rows]
 
 
 # ---------------------------------------------------------------------------

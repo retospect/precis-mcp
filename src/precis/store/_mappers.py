@@ -139,6 +139,27 @@ def _row_to_block(row: tuple) -> Block:
         # pgvector returns numpy.ndarray when registered; coerce for stable
         # cross-version output.
         embedding = list(map(float, embedding))
+    # ``section_path`` lives in its own TEXT[] column on ``chunks``
+    # (v2; ADR 0018). For compatibility with code that still reads
+    # ``block.meta['section_path']`` (oracle entry-title resolver,
+    # paper TOC fallback, …), surface the array back into the meta
+    # dict so consumers don't have to learn the column split.
+    meta = dict(row[8] or {})
+    # ``section_path`` is appended to the projection by every Block-
+    # producing SELECT in this module. Defensively check the type:
+    # a caller that hand-rolls a projection without the column will
+    # pass row[:11] (no 12th elem) and the .get-style branch falls
+    # through cleanly.
+    section_path = row[11] if len(row) > 11 else None
+    if isinstance(section_path, (list, tuple)) and section_path:
+        meta.setdefault("section_path", list(section_path))
+    # F19a / F20: chunk_kind + keywords appended at the end of the
+    # projection. Optional positions (len(row) > 12 / > 13) keep
+    # legacy callers that hand-roll 11-element tuples working.
+    chunk_kind = row[12] if len(row) > 12 and row[12] else "paragraph"
+    keywords = row[13] if len(row) > 13 else None
+    if keywords is not None and not isinstance(keywords, list):
+        keywords = list(keywords)
     return Block(
         id=row[0],
         ref_id=row[1],
@@ -148,9 +169,11 @@ def _row_to_block(row: tuple) -> Block:
         token_count=row[5],
         embedding=embedding,
         density=row[7],
-        meta=row[8] or {},
+        meta=meta,
         created_at=row[9],
         updated_at=row[10],
+        chunk_kind=str(chunk_kind),
+        keywords=keywords,
     )
 
 
@@ -175,7 +198,8 @@ _CHUNKS_COLS = (
     "   JOIN tags t ON t.tag_id = ct.tag_id "
     "   WHERE ct.chunk_id = chunks.chunk_id AND t.namespace = 'DENSITY' "
     "   LIMIT 1) AS density, "
-    "chunks.meta, chunks.created_at, chunks.created_at AS updated_at"
+    "chunks.meta, chunks.created_at, chunks.created_at AS updated_at, "
+    "chunks.section_path, chunks.chunk_kind, chunks.keywords"
 )
 _CHUNKS_COLS_ALIASED = (
     "c.chunk_id AS id, c.ref_id, c.ord AS pos, "
@@ -185,8 +209,14 @@ _CHUNKS_COLS_ALIASED = (
     "   JOIN tags t ON t.tag_id = ct.tag_id "
     "   WHERE ct.chunk_id = c.chunk_id AND t.namespace = 'DENSITY' "
     "   LIMIT 1) AS density, "
-    "c.meta, c.created_at, c.created_at AS updated_at"
+    "c.meta, c.created_at, c.created_at AS updated_at, "
+    "c.section_path, c.chunk_kind, c.keywords"
 )
+#: Column count produced by the above projections. Slicing callers
+#: (search / random / list-blocks combined with refs) reference this
+#: constant rather than a hard-coded ``12`` so adding columns is a
+#: one-line change at the projection site.
+_CHUNKS_COLS_LEN = 14
 
 
 # ---------------------------------------------------------------------------

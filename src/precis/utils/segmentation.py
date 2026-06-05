@@ -36,10 +36,16 @@ from typing import Final
 #: Bump this whenever the algorithm changes shape. Caches and any
 #: persisted segmentation rows include the version in their key so
 #: an algorithm tweak doesn't silently return stale boundaries.
-SEGMENTATION_VERSION: Final[str] = "1.0"
+#:
+#: 1.1 (2026-06-04, F18) — raised K_MAX from 9 to 18, dropped
+#: target chunks-per-segment from 20 to 12, added singleton merge
+#: post-DP. Existing ref_segments rows with version "1.0" are
+#: outdated; clear them to trigger re-segmentation, or run a
+#: targeted refresh on big papers (>120 body chunks).
+SEGMENTATION_VERSION: Final[str] = "1.1"
 
 K_MIN: Final[int] = 3
-K_MAX: Final[int] = 9
+K_MAX: Final[int] = 18
 DEPTH_THRESHOLD_MULTIPLIER: Final[float] = 0.5
 SMOOTHING_WINDOW: Final[int] = 3  # 3-wide centred moving average
 

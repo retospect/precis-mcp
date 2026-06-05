@@ -254,9 +254,15 @@ class TestPrecisAddIdempotent:
 
 
 class TestPrecisAddErrors:
-    def test_missing_pdf_raises(self, store, tmp_path: Path):
-        with pytest.raises(FileNotFoundError):
-            precis_add(PdfInput(pdf_path=tmp_path / "missing.pdf"), store=store)
+    def test_missing_pdf_is_silent_noop(self, store, tmp_path: Path):
+        """A missing PDF returns ``None`` rather than raising — the
+        watcher path enqueues files and the file may disappear before
+        the worker picks them up; treating it as a no-op avoids
+        loud failures in that race. CLI / API callers that want a
+        loud miss should ``Path.exists()``-gate before calling.
+        """
+        result = precis_add(PdfInput(pdf_path=tmp_path / "missing.pdf"), store=store)
+        assert result is None
 
     def test_doi_lookup_miss_raises(self, store):
         with patch(

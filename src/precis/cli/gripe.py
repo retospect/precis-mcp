@@ -87,8 +87,8 @@ def run(args: argparse.Namespace) -> None:
 
     order = "ASC" if args.oldest_first else "DESC"
     sql = (
-        "SELECT id, title, created_at, updated_at, deleted_at "
-        "FROM refs WHERE " + " AND ".join(clauses) + f" ORDER BY id {order}"
+        "SELECT ref_id, title, created_at, updated_at, deleted_at "
+        "FROM refs WHERE " + " AND ".join(clauses) + f" ORDER BY ref_id {order}"
     )
     if args.limit is not None:
         if args.limit < 0:

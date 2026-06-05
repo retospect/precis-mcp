@@ -253,14 +253,15 @@ def test_try_swallows_import_error(caplog: pytest.LogCaptureFixture) -> None:
 
 
 def test_boot_stateless_registers_calc_only() -> None:
-    """Stateless path (no store) registers only the calc kind.
+    """Stateless path (no store) registers stateless handlers.
 
-    This is the phase-1 "no DB" deployment mode, preserved from the
-    v1 ``registry.builtins(store=None)`` shape.
+    Originally just ``calc``; ``provenance`` was added (also store-
+    optional, gated on habanero). Both must show up on the
+    no-store boot path.
     """
     r = boot(store=None)
     assert isinstance(r, Hub)
-    assert r.kinds == {"calc"}
+    assert {"calc", "provenance"}.issubset(r.kinds)
     # calc exposes only ``get``.
     assert r.verbs_for("calc") == {"get"}
     # Overview blurb was registered.
@@ -548,4 +549,4 @@ def test_plugin_empty_entry_points_is_noop(
     _patch_entry_points(monkeypatch, [])
 
     hub = boot(store=None)
-    assert hub.kinds == {"calc"}
+    assert {"calc", "provenance"}.issubset(hub.kinds)

@@ -47,7 +47,7 @@ _STATUS_SCHEMA: list[str] = ["handler", "total", "ok", "failed", "pending"]
 log = logging.getLogger(__name__)
 
 
-HandlerKey = Literal["embed", "summarize", "segments", "chase", "fetch"]
+HandlerKey = Literal["embed", "summarize", "chunk_keywords", "chase", "fetch"]
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--only",
-        choices=("embed", "summarize", "segments", "chase", "fetch"),
+        choices=("embed", "summarize", "chunk_keywords", "chase", "fetch"),
         default=None,
         help="Restrict to one handler kind. Default: all of them — "
         "embed + summarize (chunk-level), segments (ref-level "
@@ -192,44 +192,38 @@ def run(args: argparse.Namespace) -> None:
             _print_status(handlers, store, format=resolve_format(args))
             return
 
-        # Ref-level passes (segment_toc) plug into ``run_loop`` via
-        # the ``ref_passes`` parameter. The default (no ``--only``)
-        # runs every chunk-level handler AND the segments pass each
-        # cycle, so new papers landing via precis-watch get their
-        # discovery layer populated without a separate worker
-        # service. ``--only segments`` drops the chunk handlers and
-        # runs the segments pass alone; ``--only embed`` /
-        # ``--only summarize`` skip segments entirely.
+        # Chunk-keybert pass (F20). Replaces the v1 segment_toc worker.
+        # Runs after embeddings exist (the claim query requires
+        # ``chunk_embeddings.status='ok'``). Default (no ``--only``)
+        # runs the chunk-level handlers + this pass each cycle; the
+        # ``--only chunk_keywords`` choice drops chunk-level work and
+        # drains this queue alone.
         ref_passes = []
-        if args.only in (None, "segments"):
+        if args.only in (None, "chunk_keywords"):
+            from precis.workers.chunk_keywords import run_chunk_keywords_pass
             from precis.workers.runner import BatchResult
-            from precis.workers.segment_toc import run_paper_segments_pass
 
-            # The embedder for segment_toc is the same model registered
-            # for ``embed`` — reuse the EmbedHandler's instance when
-            # the chunk handler is also active, otherwise instantiate
-            # one. Either way bge-m3 only loads once per process.
             embed_handler = next(
                 (h for h in handlers if h.name.startswith("embed:")), None
             )
-            seg_embedder = (
+            kw_embedder = (
                 embed_handler.embedder
                 if embed_handler is not None
                 else make_embedder(args.embedder)
             )
 
-            def _segments_pass(batch_size: int) -> BatchResult:
-                r = run_paper_segments_pass(
-                    store, seg_embedder, limit=batch_size
+            def _chunk_keywords_pass(batch_size: int) -> BatchResult:
+                r = run_chunk_keywords_pass(
+                    store, kw_embedder, batch_size=batch_size
                 )
                 return BatchResult(
-                    handler="segment_toc",
+                    handler="chunk_keywords",
                     claimed=r["claimed"],
                     ok=r["ok"],
                     failed=r["failed"],
                 )
 
-            ref_passes.append(_segments_pass)
+            ref_passes.append(_chunk_keywords_pass)
 
         # Finding-chase pass — same sibling-worker pattern, but for
         # STATUS:tracing findings. Default-off LLM hooks via

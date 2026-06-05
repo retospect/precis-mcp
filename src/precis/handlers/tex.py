@@ -94,8 +94,13 @@ class TexHandler(PlaintextHandler):
             meta["section_level"] = block.section_level
             meta["section_title"] = block.section_title
         if block.section_path:
-            # JSON-friendly: list of [level, title] pairs.
-            meta["section_path"] = [list(p) for p in block.section_path]
+            # ``section_path`` is the column-bound key — store
+            # flat title strings so ``chunks.section_path`` (TEXT[])
+            # accepts them. The level information is preserved
+            # alongside under ``section_path_pairs`` for any future
+            # consumer that needs the nesting (rendered TOC, etc.).
+            meta["section_path"] = [t for _, t in block.section_path]
+            meta["section_path_pairs"] = [list(p) for p in block.section_path]
         if block.inputs:
             meta["inputs"] = list(block.inputs)
         return meta

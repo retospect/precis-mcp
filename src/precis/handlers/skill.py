@@ -892,21 +892,14 @@ class SkillHandler(Handler):
                 )
             )
 
-        if hidden_slugs:
-            lines.append("")
-            lines.append(
-                f"## Hidden ({len(hidden_slugs)} — kind not wired or "
-                "status: planned)"
-            )
-            lines.append(
-                render_agent_table(
-                    [
-                        {"slug": slug, "title": _skill_title(slug) or ""}
-                        for slug in hidden_slugs
-                    ],
-                    schema=["slug", "title"],
-                )
-            )
+        # F17: the "Hidden" section (skills whose subject kind isn't
+        # wired in this build) was useful as a developer / operator
+        # audit but pure noise for the agent — those skills are
+        # unreachable until configuration changes, which is not the
+        # agent's concern. Dropped here; ``hidden_slugs`` stays
+        # computed in case a future operator view wants to expose
+        # it under a separate path.
+        del hidden_slugs
 
         # Suggested starting commands — explicitly labelled as
         # examples rather than reusing the generic "Next:" trailer.
@@ -1028,18 +1021,10 @@ class SkillHandler(Handler):
             )
             lines.append("")
 
-        if hidden:
-            lines.append(
-                f"## Hidden ({len(hidden)} — kind not wired or status: planned)"
-            )
-            lines.append("")
-            lines.append(
-                render_agent_table(
-                    [{"slug": slug, "title": title} for slug, title in hidden],
-                    schema=["slug", "title"],
-                )
-            )
-            lines.append("")
+        # F17: hidden skills (subject kind not wired in this build)
+        # dropped from the agent-facing list — unreachable from the
+        # current configuration, so showing them just adds noise.
+        del hidden
 
         # Same explicit "these are examples" framing as the index —
         # avoids the picky reviewer's complaint that the Next: trailer

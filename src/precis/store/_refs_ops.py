@@ -74,6 +74,8 @@ class RefsMixin:
         title: str,
         provider: str | None = None,
         meta: dict[str, Any] | None = None,
+        authors: list[dict[str, Any]] | None = None,
+        year: int | None = None,
         conn: Connection | None = None,
     ) -> Ref:
         """Insert a ref. Slug rules:
@@ -84,6 +86,13 @@ class RefsMixin:
         Enforced at app layer (the DB ``CHECK`` can't subquery the
         ``kinds`` reference table).
 
+        ``authors`` / ``year`` are first-class ``refs`` columns in
+        the v2 schema; pass them here so renderers that read
+        ``Ref.authors`` / ``Ref.year`` (bibtex, RIS, EndNote) see
+        them. Stashing them in ``meta`` instead leaves the columns
+        NULL and the renderer with nothing to show — which was the
+        pre-fix shape and the cause of ~30 test_paper failures.
+
         v2 inserts in two steps inside the same connection: first the
         ``refs`` row, then (when ``slug is not None``) a row in
         ``ref_identifiers`` with ``id_kind='cite_key'``. Both rows
@@ -93,13 +102,15 @@ class RefsMixin:
         self._validate_slug_for_kind(kind, slug, conn=conn)
 
         insert_sql = (
-            "INSERT INTO refs (kind, title, provider, meta) "
-            "VALUES (%s, %s, %s, %s) "
+            "INSERT INTO refs (kind, title, authors, year, provider, meta) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
             "RETURNING ref_id"
         )
         insert_params: tuple[Any, ...] = (
             kind,
             title,
+            Jsonb(authors) if authors is not None else None,
+            year,
             provider,
             Jsonb(meta or {}),
         )
