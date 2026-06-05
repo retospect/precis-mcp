@@ -82,6 +82,7 @@ class FindingHandler(NumericRefHandler):
         supports_get=True,
         supports_search=True,
         supports_search_hits=False,
+        supports_edit=True,
         supports_delete=True,
         supports_tag=True,
         supports_link=True,
@@ -468,6 +469,204 @@ class FindingHandler(NumericRefHandler):
         attached to the row.
         """
         return "chase"
+
+    # ──────────────────────────────────────────────────────────────────
+    # edit — pick_candidate (multi-candidate disambiguation)
+    # ──────────────────────────────────────────────────────────────────
+
+    def edit(  # type: ignore[override]
+        self,
+        *,
+        id: int | str | None = None,
+        pick_candidate: str | int | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Resolve a ``STATUS:multi_candidate`` finding by picking one cite.
+
+        When the chase reaches a chunk citing multiple references
+        (e.g. ``[12,13]``) and can't disambiguate automatically, it
+        tags the finding ``STATUS:multi_candidate`` and writes one
+        ``derived-from`` link per candidate with
+        ``meta.candidate=true``. The user reads the candidates via
+        ``get(kind='finding', id=N)``, then promotes one with:
+
+            edit(kind='finding', id=N, pick_candidate='miller23a')
+            edit(kind='finding', id=N, pick_candidate=42)   # by ref_id
+
+        Effect:
+        * The chosen candidate link loses its ``meta.candidate``
+          marker (becomes a regular ``derived-from`` edge).
+        * The other candidate links are deleted.
+        * The finding's status flips back to ``STATUS:tracing`` so
+          the chase advances on the next pass.
+        * ``meta.chain``'s frontier entry is replaced with the
+          picked target so the next chase pass walks the right path.
+
+        Idempotent — picking the same candidate twice is fine
+        (re-flips to tracing, no-op on links).
+        """
+        if id is None:
+            raise BadInput(
+                "edit(kind='finding') requires id=<finding ref_id or pub_id>",
+                next=("edit(kind='finding', id=<N>, pick_candidate='<cite_key>')"),
+            )
+        if pick_candidate is None or (
+            isinstance(pick_candidate, str) and not pick_candidate.strip()
+        ):
+            raise BadInput(
+                "edit(kind='finding') requires pick_candidate=<cite_key or ref_id>",
+                next=(
+                    "pick_candidate='miller23a' (or the candidate's ref_id) — "
+                    "see get(kind='finding', id=N) for the candidate list"
+                ),
+            )
+
+        finding_ref_id = self._resolve_finding_ref_id(id)
+
+        # Pull all candidate links (outbound derived-from with
+        # meta.candidate=true). The chase worker writes these as a
+        # batch when it hits a multi-cite chunk.
+        candidates = [
+            link
+            for link in self.store.links_for(
+                finding_ref_id, direction="out", relation="derived-from"
+            )
+            if (link.meta or {}).get("candidate") is True
+        ]
+        if not candidates:
+            raise BadInput(
+                f"finding id={finding_ref_id} has no candidate links — nothing to pick",
+                next=(
+                    "get(kind='finding', id=<N>) — the chain may already "
+                    "be resolved (STATUS:established) or this finding is "
+                    "in a different state"
+                ),
+            )
+
+        picked_link, other_links = self._match_candidate(
+            candidates, pick_candidate=pick_candidate
+        )
+
+        with self.store.tx() as conn:
+            # Promote the picked link: clear the candidate flag.
+            # No store-level helper for "patch one link's meta", so
+            # update by primary key directly — the candidate marker
+            # was the only meaningful key on these links.
+            conn.execute(
+                "UPDATE links SET meta = meta - 'candidate' WHERE link_id = %s",
+                (picked_link.id,),
+            )
+            # Drop the losing candidates by primary key (the
+            # store-level ``remove_link`` matches endpoint pairs;
+            # we have the exact link rows already so this is
+            # tighter and skips the chunk_id resolution dance).
+            if other_links:
+                conn.execute(
+                    "DELETE FROM links WHERE link_id = ANY(%s)",
+                    ([link.id for link in other_links],),
+                )
+
+            # Replace the chain's frontier entry with the picked
+            # target so the next chase pass walks from there.
+            ref = self.store.get_ref(kind=self.kind, id=finding_ref_id)
+            assert ref is not None
+            meta = dict(ref.meta or {})
+            chain = list(meta.get("chain") or [])
+            if chain:
+                # The frontier (last hop) is the multi-cite source —
+                # swap it for the picked next-hop so the chain reads
+                # as "this is what the chase advanced to."
+                chain[-1] = {
+                    "ref_id": picked_link.dst_ref_id,
+                    "chunk_id": None,
+                    "ord": picked_link.dst_pos,
+                }
+                self.store.update_ref(
+                    finding_ref_id, meta_patch={"chain": chain}, conn=conn
+                )
+
+            # Flip status back to tracing so the chase worker
+            # re-claims this row on the next pass.
+            self.store.add_tag(
+                finding_ref_id,
+                Tag.closed(_STATUS_NAMESPACE, _STATUS_TRACING),
+                set_by="user",
+                replace_prefix=True,
+                conn=conn,
+            )
+
+        # Resolve a human-friendly handle for the response body.
+        picked_ref = self._fetch_ref_any_kind(picked_link.dst_ref_id)
+        picked_handle = picked_ref.slug or f"ref:{picked_link.dst_ref_id}"
+        return Response(
+            body=(
+                f"picked candidate {picked_handle} on finding id={finding_ref_id}\n"
+                f"dropped {len(other_links)} other candidate(s); "
+                f"status flipped to STATUS:{_STATUS_TRACING}\n"
+                f"next: precis worker --only chase --once  "
+                f"(or wait for the next pass)"
+            )
+        )
+
+    def _resolve_finding_ref_id(self, raw_id: int | str) -> int:
+        """Resolve ``id=`` to a finding ref_id.
+
+        Accepts a numeric ref_id, a numeric-string ref_id, or a
+        ``pub_id`` (the agent-facing placeholder shape).
+        """
+        if isinstance(raw_id, int):
+            ref = self.store.get_ref(kind=self.kind, id=raw_id)
+            if ref is None:
+                raise BadInput(f"no finding with ref_id={raw_id}")
+            return raw_id
+        s = str(raw_id).strip()
+        if s.isdigit():
+            return self._resolve_finding_ref_id(int(s))
+        # Treat as pub_id.
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT r.ref_id FROM ref_identifiers ri "
+                "JOIN refs r ON r.ref_id = ri.ref_id "
+                "WHERE ri.id_kind = 'pub_id' AND ri.id_value = %s "
+                "  AND r.kind = 'finding' AND r.deleted_at IS NULL",
+                (s,),
+            ).fetchone()
+        if row is None:
+            raise BadInput(f"no finding with pub_id={s!r}")
+        return int(row[0])
+
+    def _match_candidate(
+        self, candidates: list, *, pick_candidate: str | int
+    ) -> tuple[Any, list]:
+        """Pick the link matching ``pick_candidate``; return
+        ``(picked, others)``. Accepts a cite_key (slug) or ref_id."""
+        if isinstance(pick_candidate, int) or (
+            isinstance(pick_candidate, str) and pick_candidate.strip().isdigit()
+        ):
+            target_ref_id = int(pick_candidate)
+            picked = [c for c in candidates if c.dst_ref_id == target_ref_id]
+            if not picked:
+                raise BadInput(
+                    f"ref_id={target_ref_id} is not in the candidate list",
+                    options=sorted(str(c.dst_ref_id) for c in candidates),
+                )
+            return picked[0], [c for c in candidates if c.id != picked[0].id]
+
+        # Match by cite_key (slug). Resolve each candidate ref's
+        # cite_key once and look the input up against that map.
+        target_slug = str(pick_candidate).strip()
+        for c in candidates:
+            ref = self._fetch_ref_any_kind(c.dst_ref_id)
+            if (ref.slug or "") == target_slug:
+                return c, [other for other in candidates if other.id != c.id]
+        candidate_slugs = sorted(
+            (self._fetch_ref_any_kind(c.dst_ref_id).slug or f"ref:{c.dst_ref_id}")
+            for c in candidates
+        )
+        raise BadInput(
+            f"no candidate matches pick_candidate={target_slug!r}",
+            options=candidate_slugs,
+        )
 
     # ──────────────────────────────────────────────────────────────────
     # cite — explicitly not supported

@@ -484,3 +484,327 @@ class TestSearch:
         out = h.search(status="tracing")
         assert str(rid) in out.body
         assert "recency claim" in out.body
+
+
+# ── edit(pick_candidate=...) — multi-candidate disambiguation ───────
+
+
+class TestPickCandidate:
+    """The ``edit(kind='finding', id=N, pick_candidate=...)`` verb.
+
+    When the chase reaches a chunk citing multiple references it
+    tags the finding ``STATUS:multi_candidate`` and writes one
+    ``derived-from`` link per candidate with ``meta.candidate=true``.
+    This verb promotes one, drops the others, replaces the chain's
+    frontier with the picked target, and flips status back to
+    ``tracing`` so the chase advances on the next pass.
+    """
+
+    def _seed_multi_candidate(
+        self, store, *, candidate_keys: tuple[str, ...]
+    ) -> tuple[int, list[int]]:
+        """Seed a finding in the ``STATUS:multi_candidate`` shape.
+
+        Returns ``(finding_ref_id, [candidate_ref_id, ...])``.
+        """
+        from precis.store.types import Tag
+
+        # Source paper (the cite frontier) — the chase started here.
+        _seed_paper(store, cite_key="source")
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", scope={}, cited_in="source")
+        finding_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+
+        # Plant candidate papers + their candidate links.
+        candidate_ids: list[int] = []
+        for ck in candidate_keys:
+            cid = _seed_paper(store, cite_key=ck)
+            candidate_ids.append(cid)
+            store.add_link(
+                src_ref_id=finding_id,
+                dst_ref_id=cid,
+                dst_pos=None,
+                relation="derived-from",
+                meta={"candidate": True},
+            )
+
+        # Flip status to multi_candidate (chase worker does this).
+        store.add_tag(
+            finding_id,
+            Tag.closed("STATUS", "multi_candidate"),
+            set_by="chase",
+            replace_prefix=True,
+        )
+        return finding_id, candidate_ids
+
+    def _status_value(self, store, ref_id: int) -> str | None:
+        for t in store.tags_for(ref_id):
+            if getattr(t, "namespace", None) == "closed" and t.prefix == "STATUS":
+                return t.value
+        return None
+
+    def _outbound_derived_from(self, store, ref_id: int) -> list:
+        return [
+            link
+            for link in store.links_for(
+                ref_id, direction="out", relation="derived-from"
+            )
+        ]
+
+    def test_pick_by_cite_key_promotes_and_drops_others(self, store) -> None:
+        finding_id, cand_ids = self._seed_multi_candidate(
+            store, candidate_keys=("miller23a", "fischer13", "wang2020state")
+        )
+        h = _make_handler(store)
+        out = h.edit(id=finding_id, pick_candidate="fischer13")
+        assert "picked candidate fischer13" in out.body
+
+        # One outbound derived-from link remains (the original to
+        # 'source' is gone — chain frontier was replaced — and the
+        # picked candidate became the new frontier link).
+        remaining = self._outbound_derived_from(store, finding_id)
+        # We expect exactly the picked candidate + the original
+        # source-paper link.
+        dst_ids = sorted(link.dst_ref_id for link in remaining)
+        # 'fischer13' candidate id is index 1.
+        fischer_id = cand_ids[1]
+        # The non-picked candidates are gone.
+        assert cand_ids[0] not in dst_ids
+        assert cand_ids[2] not in dst_ids
+        # The picked one is present and no longer marked candidate.
+        picked = [link for link in remaining if link.dst_ref_id == fischer_id]
+        assert picked
+        assert (picked[0].meta or {}).get("candidate") is None
+
+        # Status flipped back to tracing.
+        assert self._status_value(store, finding_id) == "tracing"
+
+    def test_pick_by_ref_id(self, store) -> None:
+        finding_id, cand_ids = self._seed_multi_candidate(
+            store, candidate_keys=("a23", "b24")
+        )
+        h = _make_handler(store)
+        out = h.edit(id=finding_id, pick_candidate=cand_ids[0])
+        assert "picked candidate" in out.body
+        # cand_ids[1] dropped; cand_ids[0] survived.
+        dst_ids = {l.dst_ref_id for l in self._outbound_derived_from(store, finding_id)}
+        assert cand_ids[0] in dst_ids
+        assert cand_ids[1] not in dst_ids
+
+    def test_unknown_candidate_rejected_with_options(self, store) -> None:
+        finding_id, _ = self._seed_multi_candidate(
+            store, candidate_keys=("known-a", "known-b")
+        )
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as exc:
+            h.edit(id=finding_id, pick_candidate="nosuchcite")
+        # Error names the available candidates so the agent can retry.
+        opts = getattr(exc.value, "options", None) or []
+        assert "known-a" in opts and "known-b" in opts
+
+    def test_unknown_ref_id_rejected(self, store) -> None:
+        finding_id, cand_ids = self._seed_multi_candidate(
+            store, candidate_keys=("a23",)
+        )
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="not in the candidate list"):
+            h.edit(id=finding_id, pick_candidate=99999)
+
+    def test_finding_without_candidates_rejected(self, store) -> None:
+        """A finding not in ``STATUS:multi_candidate`` has no candidate
+        links — picking is a category error, not a no-op."""
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", scope={}, cited_in="miller23a")
+        rid = int(re.search(r"id=(\d+)", resp.body).group(1))
+        with pytest.raises(BadInput, match="no candidate links"):
+            h.edit(id=rid, pick_candidate="anything")
+
+    def test_chain_frontier_replaced_with_picked_target(self, store) -> None:
+        finding_id, cand_ids = self._seed_multi_candidate(
+            store, candidate_keys=("a", "b")
+        )
+        h = _make_handler(store)
+        h.edit(id=finding_id, pick_candidate="a")
+        ref = store.get_ref(kind="finding", id=finding_id)
+        chain = (ref.meta or {}).get("chain") or []
+        # The frontier (last hop) now points at the picked target.
+        assert chain[-1]["ref_id"] == cand_ids[0]
+
+    def test_pick_candidate_required(self, store) -> None:
+        finding_id, _ = self._seed_multi_candidate(store, candidate_keys=("a", "b"))
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="requires pick_candidate"):
+            h.edit(id=finding_id)
+
+    def test_id_required(self, store) -> None:
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="requires id"):
+            h.edit(pick_candidate="x")
+
+    def test_pick_by_pub_id(self, store) -> None:
+        """``id=`` accepts the agent-facing pub_id as well as a ref_id."""
+        finding_id, cand_ids = self._seed_multi_candidate(
+            store, candidate_keys=("a", "b")
+        )
+        ref = store.get_ref(kind="finding", id=finding_id)
+        pub_id = (ref.meta or {})["pub_id"]
+        h = _make_handler(store)
+        out = h.edit(id=pub_id, pick_candidate="a")
+        assert "picked candidate a" in out.body
+
+
+# ── retraction propagation into findings ────────────────────────────
+
+
+class TestRetractionPropagation:
+    """When a paper on a finding's chain is retracted, the finding
+    re-grades: STATUS:tracing, meta.retraction_caveats appended,
+    human_verified_at cleared, and a ref_events row recorded so
+    ``view='log'`` shows why."""
+
+    def _seed_established_finding_with_chain(
+        self, store, *, primary_cite: str = "fischer13"
+    ) -> tuple[int, int]:
+        """Seed a paper, then a finding whose chain landed at it.
+
+        Returns ``(finding_ref_id, primary_paper_ref_id)``.
+        """
+        from precis.store.types import Tag
+
+        primary_id = _seed_paper(store, cite_key=primary_cite)
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", scope={}, cited_in=primary_cite)
+        finding_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+
+        # Simulate post-chase state: meta carries primary_cite_key
+        # + chain points at the primary; STATUS flipped to
+        # established; human_verified_at stamped.
+        store.update_ref(
+            finding_id,
+            meta_patch={
+                "primary_cite_key": primary_cite,
+                "via_cite_keys": [],
+                "chain": [{"ref_id": primary_id, "chunk_id": None, "ord": 0}],
+            },
+        )
+        store.add_tag(
+            finding_id,
+            Tag.closed("STATUS", "established"),
+            set_by="chase",
+            replace_prefix=True,
+        )
+        store.set_human_verified(finding_id, by="reto", note="reviewed")
+        return finding_id, primary_id
+
+    def _status_value(self, store, ref_id: int) -> str | None:
+        for t in store.tags_for(ref_id):
+            if getattr(t, "namespace", None) == "closed" and t.prefix == "STATUS":
+                return t.value
+        return None
+
+    def test_retraction_regrades_established_finding(self, store) -> None:
+        """Retracting the primary paper flips the finding back to
+        tracing, appends a caveat record, and clears the human
+        verification stamp."""
+        finding_id, primary_id = self._seed_established_finding_with_chain(store)
+        # Sanity: starting state is established + verified.
+        assert self._status_value(store, finding_id) == "established"
+
+        n = store.set_retraction_status(
+            primary_id,
+            status="retracted",
+            reason="data fabrication",
+            url="https://retractionwatch.com/abc",
+        )
+        assert n == 1
+
+        # Status flipped back.
+        assert self._status_value(store, finding_id) == "tracing"
+        # Caveat record appended to meta.
+        ref = store.get_ref(kind="finding", id=finding_id)
+        assert ref is not None
+        caveats = (ref.meta or {}).get("retraction_caveats") or []
+        assert len(caveats) == 1
+        c = caveats[0]
+        assert c["ref_id"] == primary_id
+        assert c["handle"] == "fischer13"
+        assert c["reason"] == "data fabrication"
+        # Human verification cleared.
+        assert ref.human_verified_at is None
+        assert ref.human_verified_by is None
+        assert ref.human_verified_note is None
+
+    def test_retraction_emits_ref_events_audit_row(self, store) -> None:
+        finding_id, primary_id = self._seed_established_finding_with_chain(store)
+        store.set_retraction_status(primary_id, status="retracted", reason="x")
+
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT source, event, payload FROM ref_events "
+                "WHERE ref_id = %s ORDER BY event_id DESC LIMIT 1",
+                (finding_id,),
+            ).fetchone()
+        assert row is not None
+        source, event, payload = row
+        assert source == "retraction_propagation"
+        assert event == "regraded_to_tracing"
+        assert payload["ref_id"] == primary_id
+
+    def test_unaffected_finding_is_untouched(self, store) -> None:
+        """A finding whose chain doesn't include the retracted ref
+        stays put — no spurious caveats, no status changes."""
+        # Finding A cites fischer13.
+        finding_a, _primary_a = self._seed_established_finding_with_chain(
+            store, primary_cite="fischer13"
+        )
+        # Finding B cites a different paper.
+        _seed_paper(store, cite_key="otherprimary")
+        h = _make_handler(store)
+        resp = h.put(title="other", body="b2", scope={}, cited_in="otherprimary")
+        finding_b = int(re.search(r"id=(\d+)", resp.body).group(1))
+
+        # Retract finding A's primary. B must stay tracing-default
+        # but with no caveats.
+        primary_a_id = store.get_ref(kind="paper", id="fischer13").id
+        n = store.set_retraction_status(primary_a_id, status="retracted", reason="r")
+        assert n == 1  # only A regrades
+
+        ref_b = store.get_ref(kind="finding", id=finding_b)
+        assert (ref_b.meta or {}).get("retraction_caveats") is None
+        # A re-graded; B's initial status is just whatever put left.
+        assert self._status_value(store, finding_a) == "tracing"
+
+    def test_propagation_is_idempotent(self, store) -> None:
+        """Re-affirming the same retraction doesn't double-stamp
+        the caveats list."""
+        finding_id, primary_id = self._seed_established_finding_with_chain(store)
+        n1 = store.set_retraction_status(primary_id, status="retracted", reason="r1")
+        n2 = store.set_retraction_status(primary_id, status="retracted", reason="r2")
+        # Second call sees the existing caveat and skips.
+        assert n1 == 1
+        assert n2 == 0
+        ref = store.get_ref(kind="finding", id=finding_id)
+        caveats = (ref.meta or {}).get("retraction_caveats") or []
+        assert len(caveats) == 1
+
+    def test_clean_status_no_propagation(self, store) -> None:
+        """``status=None`` (a clean re-check) only touches
+        ``retraction_checked_at`` — no finding regrades."""
+        finding_id, primary_id = self._seed_established_finding_with_chain(store)
+        n = store.set_retraction_status(primary_id, status=None)
+        assert n == 0
+        assert self._status_value(store, finding_id) == "established"
+
+    def test_opt_out_via_propagate_false(self, store) -> None:
+        """Bulk backfills can disable cascade with
+        ``propagate_to_findings=False``."""
+        finding_id, primary_id = self._seed_established_finding_with_chain(store)
+        n = store.set_retraction_status(
+            primary_id,
+            status="retracted",
+            reason="r",
+            propagate_to_findings=False,
+        )
+        assert n == 0
+        assert self._status_value(store, finding_id) == "established"

@@ -1027,24 +1027,41 @@ Genuinely open:
    `STATUS:verified` tag, set by `precis verify <finding>`, can
    layer on top.
 
-2. **Multi-candidate disambiguation UI.** When the chase pauses
-   at a chunk citing multiple references, the candidates are all
-   linked with `meta={"candidate":true}` and the finding tags
-   `STATUS:multi_candidate`. How does the user pick? Two options:
+2. **Multi-candidate disambiguation UI.** ✅ Shipped 2026-06-05 as
+   `edit(kind='finding', id=N, pick_candidate=...)` —
+   `pick_candidate` accepts a cite_key (slug) or a numeric ref_id;
+   the verb promotes the picked link (drops the
+   `meta.candidate=true` marker), deletes the losing candidates,
+   replaces the chain's frontier entry with the picked target,
+   and flips `STATUS:multi_candidate` back to
+   `STATUS:tracing` so the chase advances on the next pass. See
+   `src/precis/handlers/finding.py::FindingHandler.edit` and
+   `tests/test_finding.py::TestPickCandidate` (9 scenarios). A
+   `precis disambiguate` interactive command was deferred — the
+   `edit(..., pick_candidate=...)` shape is sharp enough for
+   normal authoring; promote to interactive only if a real
+   workflow surfaces.
 
-   - `edit(kind='finding', id=..., pick_candidate='miller23a')` —
-     promotes one link to non-candidate, deletes the others.
-   - A future `precis disambiguate` interactive command.
-
-   Recommendation: ship `edit(..., pick_candidate=...)` first; add
-   the interactive command if a real workflow surfaces.
-
-3. **Re-running a chase after upstream changes.** A retracted
-   target ref should ideally re-grade the finding's `:established`
-   status. Today: manual re-trigger only (`precis chase --refresh
-   <pub_id>`). Retraction propagation is queued for "after links
-   are populated" (`storage-v2.md:614-617`); chase chains become an
-   input to that work.
+3. **Re-running a chase after upstream changes.** ✅ Shipped
+   2026-06-05 as automatic propagation in
+   `Store.set_retraction_status`. When the provenance worker
+   (or any caller) marks a paper as `retracted` / `corrected` /
+   `expression_of_concern`, every finding whose `meta.chain`
+   includes that ref is re-graded in the same transaction:
+   `STATUS` flips to `tracing`, the offending ref is appended to
+   `meta.retraction_caveats` (ref_id + cite_key + reason),
+   `human_verified_at` is cleared (a prior review can't cover a
+   chain that's since shifted), and a `ref_events` row
+   (`source='retraction_propagation'`) lands so the
+   `view='log'` surface tells the operator why a previously-
+   established finding is back in flight. Idempotent on repeat
+   confirmations; opt-out via `propagate_to_findings=False` for
+   bulk backfills. `precis chase --refresh <pub_id>` remains
+   available as a manual escape hatch. (The broader "papers I
+   cite that have been retracted" query against the generic
+   `links` graph, sketched in `storage-v2.md` §Retractions, is
+   still future work — narrower than the finding-chain
+   propagation but useful for memo/quest kinds.)
 
 ## LLM hooks (`claude -p`, default-off)
 

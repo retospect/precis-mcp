@@ -346,7 +346,8 @@ class RefsMixin:
         reason: str | None = None,
         url: str | None = None,
         conn: Connection | None = None,
-    ) -> None:
+        propagate_to_findings: bool = True,
+    ) -> int:
         """Set the retraction columns on a ref + touch retraction_checked_at.
 
         ``status`` is one of ``'retracted'``, ``'corrected'``,
@@ -355,6 +356,16 @@ class RefsMixin:
         in which case we still touch ``retraction_checked_at`` so the
         TTL gate works. See ``ingest/provenance.py`` for the caller
         and ``docs/design/provenance-kind-plan.md`` for the schema rationale.
+
+        Returns the number of findings whose chain was re-graded
+        as a side effect (0 when ``status`` is None or no finding
+        cites this ref).
+
+        ``propagate_to_findings`` (default True) triggers the
+        chase re-grading sweep — see
+        :meth:`_propagate_retraction_to_findings`. Set False on
+        bulk retraction backfills that have their own propagation
+        path; the default keeps findings honest by default.
         """
         sql = (
             "UPDATE refs SET "
@@ -367,11 +378,132 @@ class RefsMixin:
             "WHERE ref_id = %s AND deleted_at IS NULL"
         )
         params = (status, retracted_at, reason, url, ref_id)
+
+        def _do(c: Connection) -> int:
+            c.execute(sql, params)
+            # Propagate only when the retraction is real (not just
+            # touching ``retraction_checked_at``). The caller can
+            # opt out for bulk backfills.
+            if not (propagate_to_findings and status):
+                return 0
+            return self._propagate_retraction_to_findings(ref_id, reason=reason, conn=c)
+
         if conn is not None:
-            conn.execute(sql, params)
-        else:
-            with self.pool.connection() as c:
-                c.execute(sql, params)
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def _propagate_retraction_to_findings(
+        self,
+        retracted_ref_id: int,
+        *,
+        reason: str | None,
+        conn: Connection,
+    ) -> int:
+        """Re-grade every finding whose chain cites the retracted ref.
+
+        When a paper goes retracted, any finding that walked through
+        it has a tainted citation chain — the previously-resolved
+        primary_cite_key was reached via a now-untrustworthy hop.
+        We restore those findings to ``STATUS:tracing`` so the chase
+        worker re-walks the chain on the next pass, clear the
+        ``human_verified_at`` stamp (a prior human review can't
+        cover a chain that's since shifted), and append a
+        ``retraction_caveat`` entry to ``meta`` so the next reader
+        sees what changed.
+
+        Findings are matched by membership in ``meta.chain`` —
+        every hop the chase added carries the visited ``ref_id``.
+        Soft-deleted findings are skipped.
+
+        Returns the number of findings re-graded. An emitted
+        ``ref_events`` row (``source='retraction_propagation'``)
+        per affected finding makes the trail auditable from
+        ``view='log'``.
+        """
+        # ``meta @> '{"chain": [{"ref_id": N}]}'::jsonb`` would be
+        # ideal but pg's JSON containment doesn't match nested
+        # array elements that way. Fall back to a JSONB-path
+        # existence check — fast enough at the volumes we care
+        # about (findings table is small).
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs "
+            "WHERE kind = 'finding' AND deleted_at IS NULL "
+            "  AND meta @? "
+            "      ('$.chain[*] ? (@.ref_id == ' || %s || ')')::jsonpath",
+            (retracted_ref_id,),
+        ).fetchall()
+        if not rows:
+            return 0
+
+        from precis.store.types import Tag
+
+        retracted_slug_row = conn.execute(
+            "SELECT id_value FROM ref_identifiers "
+            "WHERE id_kind = 'cite_key' AND ref_id = %s LIMIT 1",
+            (retracted_ref_id,),
+        ).fetchone()
+        retracted_handle = (
+            str(retracted_slug_row[0])
+            if retracted_slug_row is not None
+            else f"ref:{retracted_ref_id}"
+        )
+
+        caveat_record = {
+            "ref_id": retracted_ref_id,
+            "handle": retracted_handle,
+            "reason": reason or "(no reason given)",
+        }
+
+        n = 0
+        for row in rows:
+            finding_ref_id = int(row[0])
+            meta = dict(row[1] or {})
+            existing_caveats = list(meta.get("retraction_caveats") or [])
+            # Skip re-propagation of the same retraction (idempotent
+            # on repeat calls; matters when the provenance worker
+            # re-confirms a known retraction).
+            if any(c.get("ref_id") == retracted_ref_id for c in existing_caveats):
+                continue
+            existing_caveats.append(caveat_record)
+            conn.execute(
+                "UPDATE refs SET "
+                "  meta = meta || jsonb_build_object("
+                "    'retraction_caveats', %s::jsonb"
+                "  ), "
+                "  human_verified_at   = NULL, "
+                "  human_verified_by   = NULL, "
+                "  human_verified_note = NULL, "
+                "  updated_at = now() "
+                "WHERE ref_id = %s",
+                (Jsonb(existing_caveats), finding_ref_id),
+            )
+            # Flip STATUS back to tracing so the chase re-walks
+            # this row on the next worker pass.
+            self.add_tag(
+                finding_ref_id,
+                Tag.closed("STATUS", "tracing"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            # Auditable trail: every retraction re-grade lands a
+            # ref_events row so the per-finding ``view='log'``
+            # surface tells the operator why a previously
+            # established finding is back in flight.
+            conn.execute(
+                "INSERT INTO ref_events "
+                "(ref_id, source, event, payload) "
+                "VALUES (%s, %s, %s, %s::jsonb)",
+                (
+                    finding_ref_id,
+                    "retraction_propagation",
+                    "regraded_to_tracing",
+                    Jsonb(caveat_record),
+                ),
+            )
+            n += 1
+        return n
 
     def set_human_verified(
         self,

@@ -8,6 +8,36 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added
+
+- **`edit(kind='finding', id=N, pick_candidate='<cite_key|ref_id>')`** —
+  manual disambiguation for the `STATUS:multi_candidate` chase
+  outcome. When the chase reaches a chunk citing multiple
+  references (``[12,13]``) and can't pick automatically, it writes
+  one `derived-from` link per candidate with `meta.candidate=true`
+  and tags the finding `multi_candidate`. The new verb promotes
+  one of those candidates (clears the `candidate` marker), drops
+  the losing siblings, replaces the chain's frontier entry with
+  the picked target, and flips `STATUS` back to `tracing` so the
+  chase advances on the next pass. Accepts cite_key (slug) or
+  numeric ref_id for `pick_candidate`; `id=` accepts ref_id or
+  pub_id. 9 scenarios under
+  `tests/test_finding.py::TestPickCandidate`. Closes design-doc
+  open question #2 in `docs/design/finding-chase.md`.
+
+- **Retraction → finding propagation.** `Store.set_retraction_status`
+  now cascades into findings whose `meta.chain` cites the
+  retracted ref: `STATUS` re-grades to `tracing`,
+  `meta.retraction_caveats` appends a record with the offending
+  ref_id + cite_key + reason, `human_verified_at` is cleared (a
+  prior review can't cover a chain that's since shifted), and a
+  `ref_events` row (`source='retraction_propagation'`) lands so
+  `view='log'` shows the regrade. Idempotent on repeat
+  confirmations; opt-out via `propagate_to_findings=False` for
+  bulk backfills. 6 scenarios under
+  `tests/test_finding.py::TestRetractionPropagation`. Closes
+  design-doc open question #3.
+
 ## v8.3.1 — migration runner: pg_dump compatibility (2026-06-05)
 
 ### Fixed
