@@ -1,34 +1,22 @@
 ---
 id: precis-memory-help
 title: precis — capture notes, decisions, ideas, questions
-status: shipped
-tier: 1
-floor: any
 applies-to: get/search (kind='memory'), put (kind='memory')
-last-updated: 2026-05-02
+status: active
 ---
 
 # precis-memory-help — capture notes, decisions, ideas, questions
 
-Sub-kind via `kind:` tag.  Pick by what you're capturing:
-
-| Sub-kind | For |
-|---|---|
-| `kind:note` | General observation (default) |
-| `kind:decision` | A choice you made, with reasoning |
-| `kind:idea` | Speculative thought worth revisiting |
-| `kind:question` | Open question to answer later |
-| `kind:lessons-learned` | Retrospective insight |
-| `kind:summary` | Distilled summary |
-
-Coin new sub-kinds freely.
+Memory is a numeric-ref scratchpad for thoughts that stand alone.
+Categorise with open tags (`topic:`, `project:`, `confidence-*`) and
+bare flags (`pinned`, `wip`); there is no enforced sub-kind axis.
 
 ## Capture a note
 
 ```python
 put(kind='memory',
     text='Wang2020 chunk 38 has the cleanest Z-scheme diagram.',
-    tags=['kind:note', 'topic:noxrr'],
+    tags=['topic:noxrr'],
     link='paper:wang2020state~38')
 ```
 
@@ -36,8 +24,8 @@ put(kind='memory',
 
 ```python
 put(kind='memory',
-    text='Decided to drop mode-driven tag/link in favour of typed kwargs.',
-    tags=['kind:decision', 'confidence-strong', 'project:precis-v2'])
+    text='Dropped mode-driven tag/link in favour of typed kwargs.',
+    tags=['confidence-strong', 'project:precis-v2', 'topic:api-design'])
 # → returns integer id (e.g. 73)
 ```
 
@@ -45,13 +33,13 @@ put(kind='memory',
 
 ```python
 put(kind='memory', text='Does CACHE: pinning play well with re-ingest?',
-    tags=['kind:question', 'confidence-tentative'])
+    tags=['confidence-tentative', 'topic:caching'])
 ```
 
 ## Browse memories
 
 ```python
-search(kind='memory', q='kwargs vs modes', tags=['kind:decision'])
+search(kind='memory', q='kwargs vs modes', tags=['topic:api-design'])
 ```
 
 ## Promote a research cache to durable
@@ -60,16 +48,16 @@ search(kind='memory', q='kwargs vs modes', tags=['kind:decision'])
 get(kind='research', q='mechanism of NOxRR')    # generates cache
 put(kind='memory',
     text='Distilled mechanism: three-electron pathway, see §2 of cache.',
-    tags=['kind:summary', 'topic:noxrr', 'confidence-moderate'],
+    tags=['topic:noxrr', 'confidence-moderate'],
     link='research:mechanism-of-noxrr')
 ```
 
 ## Bump confidence later
 
-Confidence is an open-tag axis today (lowercase, hyphenated):
-``confidence-tentative``, ``confidence-moderate``, ``confidence-strong``,
-``confidence-certain``. Open tags don't replace each other — to
-bump from ``moderate`` to ``certain``, untag the old value:
+Confidence is an open-tag axis (lowercase, hyphenated):
+`confidence-tentative`, `confidence-moderate`, `confidence-strong`,
+`confidence-certain`. Open tags don't replace each other — bump by
+untagging the old value:
 
 ```python
 tag(kind='memory', id=73,
@@ -77,22 +65,20 @@ tag(kind='memory', id=73,
     remove=['confidence-moderate'])
 ```
 
-If ``confidence`` graduates to a registered closed prefix in a
-later phase, the same call shape will swap to
-``add=['CONFIDENCE:certain']`` and the replacement becomes atomic
-(no separate ``remove=`` needed).
-
 ## Notes
 
-- Server assigns an integer id on create; reference it thereafter.
+- Server assigns an integer id on create. Both `id=42` and
+  `id='memory:42'` are accepted (the link-target form).
 - Use a memory for thoughts that stand alone; for commentary on an
-  existing ref, create the memory and `link=` it back to the ref
-  (with `rel='related-to'` or a more specific relation — see
+  existing ref, create the memory and `link=` it back (with
+  `rel='related-to'` or a more specific relation — see
   `precis-relations`).
 
 ## See also
 
-- `precis-overview` — verbs and kinds
-- `precis-tags` — `kind:`, `topic:`, the registered closed axes
-- `precis-relations` — `related-to`, `contradicts`
-- `precis-cache` — when to promote a `research` / `think` cache to a memory
+```python
+get(kind='skill', id='precis-overview')       # verbs and kinds
+get(kind='skill', id='precis-tags')           # topic:, axes, conventions
+get(kind='skill', id='precis-relations')      # related-to, contradicts
+get(kind='skill', id='precis-cache')          # promoting a research cache
+```

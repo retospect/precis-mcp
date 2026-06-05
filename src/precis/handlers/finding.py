@@ -499,7 +499,11 @@ class FindingHandler(NumericRefHandler):
         if row is None:
             raise BadInput(
                 f"cited_in target ref_id={ref_id} not found",
-                next="confirm the target ref exists and is not soft-deleted",
+                next=(
+                    "the target was deleted or never existed — find a live one "
+                    "with search(kind='paper', q='<topic>') or look up by DOI "
+                    "with get(kind='paper', id='<doi>')"
+                ),
             )
         return _row_to_ref(row)
 

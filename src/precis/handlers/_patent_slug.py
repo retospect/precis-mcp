@@ -39,6 +39,20 @@ from precis.errors import BadInput
 # T, T1, U, U1, P, P1, S, S1, …). Country code is always two letters.
 _DOCDB_RE = re.compile(r"^([a-z]{2})(\d+)([a-z])(\d?)$")
 
+
+def looks_like_docdb(s: str) -> bool:
+    """True when ``s`` matches DOCDB shape after lowercasing + dot/space strip.
+
+    Cheap shape check — does NOT validate the country code against
+    the authority list. Callers route DOCDB-shaped misses to the
+    OPS-fetch + finding pipeline rather than re-querying with keyword
+    variants; the authority check happens later, on the fetch path.
+    """
+    if not s:
+        return False
+    stripped = re.sub(r"[\s.]", "", s.lower())
+    return _DOCDB_RE.match(stripped) is not None
+
 # Closed list of country / authority codes that EPO OPS recognises.
 # Source: WIPO ST.3 / EPO DOCDB. Kept here because OPS will reject
 # anything else with a 400, and we'd rather catch typos at the agent

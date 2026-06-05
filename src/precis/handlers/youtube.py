@@ -199,7 +199,10 @@ class YouTubeHandler(CacheBackedHandler):
                 next=f"get(kind='youtube', id='{video_id}', view='languages')",
             ) from exc
         except VideoUnavailable as exc:
-            raise NotFound(f"video {video_id} is unavailable") from exc
+            raise NotFound(
+                f"video {video_id} is unavailable",
+                next="verify the URL; the video may be private, deleted, or region-blocked",
+            ) from exc
         except Exception as exc:
             raise Upstream(f"YouTube API error: {exc}") from exc
 

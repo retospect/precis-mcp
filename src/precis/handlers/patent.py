@@ -35,7 +35,7 @@ from precis.handlers._patent_ops import (
     OpsClientProto,
     OpsError,
 )
-from precis.handlers._patent_slug import parse_docdb_id
+from precis.handlers._patent_slug import looks_like_docdb, parse_docdb_id
 from precis.handlers._patent_xml import OpsHit, parse_search_response
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
@@ -261,12 +261,12 @@ class PatentHandler(Handler):
             if cql is not None:
                 cql_used = cql
                 try:
-                    response = self.ops.search(
+                    ops_response = self.ops.search(
                         cql,
                         range_start=1,
                         range_end=max(top_k, _DEFAULT_REMOTE_PAGE),
                     )
-                    remote_hits, _total = parse_search_response(response.xml)
+                    remote_hits, _total = parse_search_response(ops_response.xml)
                 except OpsError:
                     # Best-effort remote leg. If OPS is down or
                     # quota-limited we still serve the local hits.
@@ -282,13 +282,43 @@ class PatentHandler(Handler):
                 if self.store.get_ref(kind="patent", id=h.docdb_id) is None
             ]
 
-        return self._render_search_response(
+        response = self._render_search_response(
             q=q,
             cql=cql_used,
             local_hits=local_hits,
             remote_hits=remote_hits,
             top_k=top_k,
         )
+
+        # DOCDB-shaped query that found nothing → mirror paper's
+        # DOI-shape branch (paper.py:397-426): the caller is hunting
+        # for a specific publication, not running a topic search.
+        # Route them at the finding-chase + OPS fetch pipeline so the
+        # next step is a single action, not 3-5 keyword retries.
+        if not local_hits and not remote_hits and q is not None and looks_like_docdb(q):
+            from precis.utils.next_block import render_next_section
+
+            docdb = re.sub(r"[\s.]", "", q.lower())
+            trailer = render_next_section(
+                [
+                    (
+                        f"get(kind='patent', id={docdb!r})",
+                        "fetch this patent from OPS directly",
+                    ),
+                    (
+                        "put(kind='finding', title='<short claim>', "
+                        f"body='<claim + setup>', cited_in='patent:{docdb}', "
+                        "scope={'...': '...'})",
+                        "register as a chase target if OPS doesn't have it",
+                    ),
+                ]
+            )
+            response = Response(
+                body=response.body + "\n\n" + trailer,
+                cost=response.cost,
+            )
+
+        return response
 
     def put(  # type: ignore[override]
         self, **_kw: Any

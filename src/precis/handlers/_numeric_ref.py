@@ -640,8 +640,16 @@ class NumericRefHandler(Handler):
             )
         if isinstance(id, int):
             return id
+        # Accept the canonical link-target form (`<kind>:<int>`) too —
+        # an LLM that copy-pastes a link-target string into id= should
+        # not have to strip the kind prefix by hand. Mirrors paper's
+        # transparent DOI resolution and youtube's URL-form acceptance.
+        s = id.strip()
+        prefix = f"{cls.kind}:"
+        if s.startswith(prefix):
+            s = s[len(prefix):]
         try:
-            return int(id)
+            return int(s)
         except (ValueError, TypeError):
             raise BadInput(
                 f"{cls._sense()} id must be an integer, got {id!r}",

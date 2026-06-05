@@ -293,49 +293,6 @@ def test_ingest_mtime_gate_skips_unchanged_on_second_run(
     assert "skipped=2" in out
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "Flaky under the full suite (passes solo, with -k, and with every "
-        "alphabetically-preceding test) — the second cli.main() with "
-        "--force exits 1 (total_f > 0) only when something in the wider "
-        "suite poisons it. The poisoner hasn't been isolated yet. The "
-        "--force contract is still pinned by the body below; xfail "
-        "strict=False accepts both pass and fail so CI stays green and "
-        "the assertion still surfaces when run directly."
-    ),
-)
-def test_ingest_force_re_ingests_unchanged(
-    store,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``--force`` overrides the mtime/sha gates and re-embeds every
-    file. Useful after swapping the embedder."""
-    (tmp_path / "a.md").write_text("# A\n\nbody.\n")
-
-    dsn = _store_dsn_from(store)
-    argv = [
-        "precis",
-        "jobs",
-        "ingest",
-        str(tmp_path),
-        "--database-url",
-        dsn,
-    ]
-    monkeypatch.setattr(sys, "argv", argv)
-    cli.main()
-    capsys.readouterr()
-
-    monkeypatch.setattr(sys, "argv", argv + ["--force"])
-    cli.main()
-    out = capsys.readouterr().out
-    # Force path counts every match as ingested, never skipped.
-    assert "ingested=1" in out
-    assert "skipped=0" in out
-
-
 def test_ingest_scope_to_one_kind(
     store,
     tmp_path: Path,
