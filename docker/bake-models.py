@@ -145,17 +145,48 @@ def _bake_bge_m3() -> None:
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "0")
 
-    from huggingface_hub import snapshot_download
+    import time
 
-    snapshot_download(
-        repo_id="BAAI/bge-m3",
-        repo_type="model",
-        # Skip onnx artefacts we don't need for the sentence-transformers
-        # path. Saves ~500 MB.
-        ignore_patterns=["onnx/*", "*.onnx", "*.onnx_data"],
-        max_workers=4,
-        etag_timeout=30,
-    )
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError
+
+    # HF's edge rate-limits the per-build cold fetch with 429s when CI
+    # runs are bunched up. Retry with exponential backoff so a transient
+    # rate-limit window doesn't fail the publish.
+    delays = [5, 15, 45, 120, 300]
+    last_err: Exception | None = None
+    for attempt, delay in enumerate([0, *delays], start=1):
+        if delay:
+            print(f"[bake] retry {attempt - 1} after {delay}s …")
+            time.sleep(delay)
+        try:
+            snapshot_download(
+                repo_id="BAAI/bge-m3",
+                repo_type="model",
+                # Skip onnx artefacts we don't need for the sentence-
+                # transformers path. Saves ~500 MB.
+                ignore_patterns=["onnx/*", "*.onnx", "*.onnx_data"],
+                max_workers=4,
+                etag_timeout=30,
+            )
+            return
+        except (HfHubHTTPError, LocalEntryNotFoundError) as e:
+            # 429 surfaces as HfHubHTTPError directly; the API-then-fetch
+            # path in snapshot_download wraps a 429 in LocalEntryNotFoundError
+            # after a single failed repo_info call. Both are retryable.
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if (
+                isinstance(e, HfHubHTTPError)
+                and status is not None
+                and status < 500
+                and status != 429
+            ):
+                # Non-transient client error — fail fast.
+                raise
+            last_err = e
+            print(f"[bake] HF fetch attempt {attempt} failed: {type(e).__name__}: {e}")
+    assert last_err is not None
+    raise last_err
 
 
 def main() -> None:
