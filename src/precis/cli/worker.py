@@ -48,7 +48,13 @@ log = logging.getLogger(__name__)
 
 
 HandlerKey = Literal[
-    "embed", "summarize", "chunk_keywords", "chase", "fetch", "tag_embeddings"
+    "embed",
+    "summarize",
+    "chunk_keywords",
+    "chase",
+    "fetch",
+    "tag_embeddings",
+    "job_claude_inproc",
 ]
 
 
@@ -104,15 +110,17 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "chase",
             "fetch",
             "tag_embeddings",
+            "job_claude_inproc",
         ),
         default=None,
         help="Restrict to one handler kind. Default: all of them — "
         "embed + summarize (chunk-level), chunk_keywords (per-chunk "
         "KeyBERT), chase (ref-level finding-chase), fetch (ref-level "
-        "Unpaywall OA fetch for stub papers), and tag_embeddings "
-        "(corpus-wide tag vocabulary for kind='tag' discovery). "
-        "Each --only value drains its queue alone; useful for "
-        "ad-hoc backfills.",
+        "Unpaywall OA fetch for stub papers), tag_embeddings "
+        "(corpus-wide tag vocabulary for kind='tag' discovery), and "
+        "job_claude_inproc (drives `kind='job'` rows whose "
+        "meta.executor=='claude_inproc'). Each --only value drains "
+        "its queue alone; useful for ad-hoc backfills.",
     )
     p.add_argument(
         "--with-llm",
@@ -302,6 +310,29 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_tag_embeddings_pass)
+
+        # job_claude_inproc — drains the `kind='job'` queue for jobs
+        # whose meta.executor=='claude_inproc'. v1 only job_type is
+        # fix_gripe; see precis-fix-gripe-help for the recipe.
+        if args.only in (None, "job_claude_inproc"):
+            from precis.workers.executors.claude_inproc import (
+                run_claude_inproc_pass,
+            )
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _job_claude_inproc_pass(batch_size: int) -> _BatchResult:
+                # Smaller cap than the default chunk batch — each job
+                # runs a multi-minute LLM subprocess and we want the
+                # outer loop to yield between attempts.
+                r = run_claude_inproc_pass(store, limit=min(batch_size, 4))
+                return _BatchResult(
+                    handler="job_claude_inproc",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_job_claude_inproc_pass)
 
         # Unpaywall OA fetcher — turns stub paper refs (DOI known,
         # pdf_sha256 IS NULL) into landed PDFs by checking Unpaywall

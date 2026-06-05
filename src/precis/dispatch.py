@@ -598,6 +598,7 @@ def boot(
         from precis.handlers.finding import FindingHandler
         from precis.handlers.flashcard import FlashcardHandler
         from precis.handlers.gripe import GripeHandler
+        from precis.handlers.job import JobHandler
         from precis.handlers.memory import MemoryHandler
         from precis.handlers.oracle import OracleHandler
         from precis.handlers.paper import PaperHandler
@@ -612,6 +613,7 @@ def boot(
         _gated(MemoryHandler)
         _gated(TodoHandler)
         _gated(GripeHandler)
+        _gated(JobHandler)
         _gated(FlashcardHandler)
         _gated(CitationHandler)
         _gated(FindingHandler)

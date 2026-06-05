@@ -13,10 +13,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.handlers.conversation import ConversationHandler
 from precis.handlers.flashcard import FlashcardHandler
 from precis.handlers.gripe import GripeHandler
+from precis.handlers.job import JobHandler
 from precis.handlers.oracle import OracleHandler
 from precis.store import Store
 from precis.store.types import BlockInsert
@@ -100,6 +101,69 @@ class TestGripe:
         assert spec.supports_delete is True
         assert spec.supports_tag is True
         assert spec.supports_link is True
+
+
+# ── JobHandler — offline-work substrate ─────────────────────────────
+
+
+class TestJob:
+    """JobHandler validates put at submit time.
+
+    The validation paths don't need a real store — they reject
+    before any DB write — so the rejection tests run without the
+    `hub` fixture. The happy-path / DB-backed tests use the fixture
+    and skip when no database is available.
+    """
+
+    @pytest.fixture
+    def job(self, hub: Hub) -> JobHandler:
+        return JobHandler(hub=hub)
+
+    def test_kindspec_is_first_class(self) -> None:
+        spec = JobHandler.spec
+        assert spec.supports_put is True
+        assert spec.supports_get is True
+        assert spec.supports_search is True
+        assert spec.supports_tag is True
+        assert spec.supports_link is True
+        assert spec.supports_delete is True
+
+    def test_put_requires_job_type(self) -> None:
+        # Validation runs before any store access, so we don't need
+        # the hub fixture for this rejection path.
+        handler = JobHandler.__new__(JobHandler)
+        # Store-less handler: the validation we want to verify
+        # runs before store access.
+        with pytest.raises(BadInput, match="requires job_type"):
+            handler.put()
+
+    def test_put_rejects_unknown_job_type(self) -> None:
+        handler = JobHandler.__new__(JobHandler)
+        with pytest.raises(BadInput, match="unknown job_type"):
+            handler.put(job_type="simulate_warp_drive", link="gripe:1", rel="fixes")
+
+    def test_put_rejects_incompatible_executor(self) -> None:
+        handler = JobHandler.__new__(JobHandler)
+        with pytest.raises(
+            BadInput,
+            match=r"does not support executor 'slurm'|unknown executor 'slurm'",
+        ):
+            handler.put(
+                job_type="fix_gripe",
+                executor="slurm",
+                link="gripe:1",
+                rel="fixes",
+            )
+
+    def test_put_rejects_id_present(self) -> None:
+        handler = JobHandler.__new__(JobHandler)
+        with pytest.raises(BadInput, match="put on existing job"):
+            handler.put(id=42)
+
+    def test_put_rejects_fix_gripe_without_link(self) -> None:
+        handler = JobHandler.__new__(JobHandler)
+        with pytest.raises(BadInput, match="fix_gripe requires link"):
+            handler.put(job_type="fix_gripe")
 
 
 # ── FlashcardHandler ────────────────────────────────────────────────

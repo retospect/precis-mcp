@@ -33,9 +33,15 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
+import platform
 import re
+import socket
+import sys
+from datetime import UTC, datetime
 from importlib import resources
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
@@ -347,7 +353,7 @@ class SkillHandler(Handler):
     #: enumeration) discover the slug through this dict.
     _SYNTHESIZED_SKILLS: ClassVar[dict[str, str]] = {
         "precis-help": ("active kinds + verbs (auto-generated from this server)"),
-        "precis-status": ("optional dependencies + runtime health probe"),
+        "precis-status": ("build + runtime + DB + optional-dependency probe"),
         "precis-toc": ("table of contents - every skill with a one-line summary"),
         "toc": ("alias for precis-toc"),
     }
@@ -1128,27 +1134,78 @@ class SkillHandler(Handler):
     def _render_status(self) -> str:
         """Render the synthesised ``precis-status`` skill.
 
-        Probes optional Python dependencies and reports installed /
-        missing per backing module.  The MCP critic's April 2026
-        re-probe noted that the previous CRITICAL (sentence-
-        transformers missing from `[paper]`) would have been caught
-        by a health tool surfacing optional-deps state — this skill
-        is that tool.
+        Four sections:
 
-        Pure introspection, no DB or network.  Each probe is a
-        ``(label, module, kind it backs, install-hint)`` row; the
-        method imports each module lazily and tags the line OK /
-        MISSING / ERROR.  Adding a new probe is one row in
-        ``_OPTIONAL_DEP_PROBES``.
+        1. **Build** — version + git/build metadata baked into the
+           image at ``docker build`` time via env vars from
+           ``scripts/build-image``. Surfaces ``"unknown"`` when the
+           image was built without the build-args (so the response
+           still answers "what is this build" honestly).
+        2. **Runtime** — live process facts: container hostname, OS
+           platform, python version, pid, uptime.
+        3. **Database** — connected DB host/port/name/user, server
+           version, and the highest applied migration. Renders an
+           ``unreachable`` line instead of crashing when the DB is
+           down — this is the surface you hit *because* something is
+           wrong.
+        4. **Optional dependencies** — original import probe table.
+
+        Pure introspection. The DB read is a single round-trip;
+        everything else is in-process.
         """
         lines = [
             "# precis-status",
             "",
-            "Optional-dependency health probe.  Each row tags the",
-            "Python module that backs a precis kind or affordance,",
-            "and reports whether it imports cleanly in this venv.",
+            "Build + runtime + DB + optional-dependency health probe.",
+            "",
+            "**Build**",
+            "",
+            render_agent_table(
+                [
+                    {"field": field, "value": value}
+                    for field, value in _collect_build_info()
+                ],
+                schema=["field", "value"],
+            ),
+            "",
+            "**Runtime**",
+            "",
+            render_agent_table(
+                [
+                    {"field": field, "value": value}
+                    for field, value in _collect_runtime_info()
+                ],
+                schema=["field", "value"],
+            ),
+            "",
+            "**Database**",
             "",
         ]
+        store = getattr(self.hub, "store", None) if self.hub is not None else None
+        db_info = _collect_database_info(store)
+        if isinstance(db_info, str):
+            lines.append(f"_{db_info}_")
+        else:
+            lines.append(
+                render_agent_table(
+                    [
+                        {"field": field, "value": value}
+                        for field, value in db_info
+                    ],
+                    schema=["field", "value"],
+                )
+            )
+        lines.extend(
+            [
+                "",
+                "**Optional dependencies**",
+                "",
+                "Each row tags the Python module that backs a precis "
+                "kind or affordance, and reports whether it imports "
+                "cleanly in this venv.",
+                "",
+            ]
+        )
 
         rows: list[tuple[str, str, str, str]] = []  # (label, status, kind, hint)
         worst = "OK"
@@ -1202,6 +1259,126 @@ class SkillHandler(Handler):
                     f"**Registered kinds ({len(kinds)}):** " + ", ".join(kinds)
                 )
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Build / runtime / DB collectors — used by ``precis-status``
+# ---------------------------------------------------------------------------
+
+
+#: Process start time. Captured at module import so ``uptime_seconds``
+#: in ``precis-status`` reflects how long the server has been live.
+_STARTED_AT: datetime = datetime.now(UTC)
+
+
+#: Build-metadata env vars baked into the image by ``scripts/build-image``.
+#: Each entry is ``(env name, display label)``. Order is the render order.
+#: Unset vars fall through to the literal string ``"unknown"`` — the
+#: status response surfaces the gap honestly rather than pretending.
+_BUILD_ENV_KEYS: tuple[tuple[str, str], ...] = (
+    ("PRECIS_GIT_SHA", "git_sha"),
+    ("PRECIS_GIT_SHA_SHORT", "git_sha_short"),
+    ("PRECIS_GIT_DIRTY", "git_dirty"),
+    ("PRECIS_GIT_DESCRIBE", "git_describe"),
+    ("PRECIS_GIT_BRANCH", "git_branch"),
+    ("PRECIS_BUILD_TIME", "build_time"),
+    ("PRECIS_BUILD_HOST", "build_host"),
+    ("PRECIS_BUILD_USER", "build_user"),
+)
+
+
+def _collect_build_info() -> list[tuple[str, str]]:
+    """Return ``(field, value)`` rows for the **Build** section.
+
+    Sources: ``precis.__version__`` plus every entry in
+    :data:`_BUILD_ENV_KEYS`. Missing env vars render as ``"unknown"``
+    so a bare ``docker build .`` (no build-args) produces a well-formed
+    response rather than crashing.
+    """
+    from precis import __version__
+
+    rows: list[tuple[str, str]] = [("version", __version__)]
+    for env_name, label in _BUILD_ENV_KEYS:
+        rows.append((label, os.environ.get(env_name, "unknown")))
+    return rows
+
+
+def _collect_runtime_info() -> list[tuple[str, str]]:
+    """Return ``(field, value)`` rows for the **Runtime** section.
+
+    Pure introspection of the live process — hostname, platform,
+    python version, pid, and uptime since :data:`_STARTED_AT`.
+    """
+    uptime = int((datetime.now(UTC) - _STARTED_AT).total_seconds())
+    return [
+        ("hostname", socket.gethostname()),
+        ("platform", platform.platform()),
+        ("python", sys.version.split()[0]),
+        ("pid", str(os.getpid())),
+        ("started_at", _STARTED_AT.isoformat(timespec="seconds")),
+        ("uptime_seconds", str(uptime)),
+    ]
+
+
+def _collect_database_info(store: Any) -> list[tuple[str, str]] | str:
+    """Return DB facts as rows, or a one-line error string.
+
+    On stateless builds (``store is None``) returns a sentinel string.
+    On reachable DBs returns rows: ``dsn_host`` / ``dsn_port`` (parsed
+    from ``store.dsn`` — password component is never read), then
+    ``current_database()``, ``current_user``, ``version()``, and the
+    last applied migration version + count from ``public._migrations``.
+
+    Wraps the DB roundtrip in a broad ``except`` — this is the *first*
+    surface called when something is wrong, so it must not die when the
+    DB is the thing wrong. Returns ``"unreachable: <type>: <msg>"`` so
+    the operator sees the failure mode without a traceback.
+    """
+    if store is None:
+        return "stateless build — no DB configured"
+
+    rows: list[tuple[str, str]] = []
+    if getattr(store, "dsn", None):
+        try:
+            parsed = urlparse(store.dsn)
+            if parsed.hostname:
+                rows.append(("dsn_host", parsed.hostname))
+            if parsed.port:
+                rows.append(("dsn_port", str(parsed.port)))
+        except ValueError:
+            # Malformed DSN — skip the parsed fields; the live SQL
+            # round-trip below still works because psycopg parses
+            # independently.
+            pass
+
+    try:
+        with store.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT current_database(), current_user, version(),"
+                " (SELECT max(version) FROM public._migrations),"
+                " (SELECT count(*) FROM public._migrations)"
+            )
+            row = cur.fetchone()
+    except Exception as exc:
+        # Broad except is intentional: this is the *first* surface
+        # called when something is wrong. A traceback here masks the
+        # real signal; render the failure mode in-band instead.
+        return f"unreachable: {type(exc).__name__}: {exc}"
+
+    if row is None:
+        return "DB returned no rows"
+    db_name, db_user, server_version, migration, mig_count = row
+    rows.append(("name", str(db_name)))
+    rows.append(("user", str(db_user)))
+    # ``SELECT version()`` returns a multi-comma string ("PostgreSQL
+    # 16.4 on x86_64-pc-linux-gnu, compiled by gcc …"); keep the
+    # leading clause for readability.
+    rows.append(("server_version", str(server_version).split(",", 1)[0]))
+    rows.append(
+        ("migration", str(migration) if migration is not None else "(none)")
+    )
+    rows.append(("migration_count", str(mig_count)))
+    return rows
 
 
 # ---------------------------------------------------------------------------

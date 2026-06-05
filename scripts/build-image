@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# scripts/build-image — build a precis docker image with baked-in
+# git + build metadata.
+#
+# The metadata (git sha, dirty flag, describe, branch, build time, host,
+# user) lands on the image as env vars and is surfaced at runtime by
+# `get(kind='skill', id='precis-status')` so an agent can answer "what
+# version am I, what DB am I connected to" without grovelling through
+# compose files.
+#
+# Usage:
+#   scripts/build-image                # builds the `precis` service
+#   scripts/build-image precis-dev     # builds the dev image
+#
+# The compose file lives outside this repo at
+# ~/work/infrastructure/compose.yaml (override with $PRECIS_COMPOSE).
+# This wrapper collects the values on the host and threads them in via
+# --build-arg so you don't have to edit the compose file by hand.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+if [[ ! -f "${INFRA_COMPOSE}" ]]; then
+    echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
+    echo "     set PRECIS_COMPOSE=/path/to/compose.yaml to override" >&2
+    exit 1
+fi
+
+SERVICE="${1:-precis}"
+
+GIT_SHA="$(git rev-parse HEAD)"
+GIT_SHA_SHORT="$(git rev-parse --short=12 HEAD)"
+if [[ -z "$(git status --porcelain)" ]]; then
+    GIT_DIRTY=0
+else
+    GIT_DIRTY=1
+fi
+GIT_DESCRIBE="$(git describe --tags --always --dirty --long 2>/dev/null || echo unknown)"
+GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+BUILD_HOST="$(hostname -f 2>/dev/null || hostname)"
+BUILD_USER="${USER:-unknown}"
+
+exec docker compose -f "${INFRA_COMPOSE}" build \
+    --build-arg "PRECIS_GIT_SHA=${GIT_SHA}" \
+    --build-arg "PRECIS_GIT_SHA_SHORT=${GIT_SHA_SHORT}" \
+    --build-arg "PRECIS_GIT_DIRTY=${GIT_DIRTY}" \
+    --build-arg "PRECIS_GIT_DESCRIBE=${GIT_DESCRIBE}" \
+    --build-arg "PRECIS_GIT_BRANCH=${GIT_BRANCH}" \
+    --build-arg "PRECIS_BUILD_TIME=${BUILD_TIME}" \
+    --build-arg "PRECIS_BUILD_HOST=${BUILD_HOST}" \
+    --build-arg "PRECIS_BUILD_USER=${BUILD_USER}" \
+    "${SERVICE}"

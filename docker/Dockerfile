@@ -225,6 +225,28 @@ COPY --from=models --chown=precis:precis /opt/precis/models /opt/precis/models
 USER precis
 WORKDIR /data
 
+# Build metadata. Surfaced by `get(kind='skill', id='precis-status')`.
+# `scripts/build-image` fills these from `git rev-parse` / `hostname` etc.
+# Defaults to `unknown` so a bare `docker build .` (no --build-arg flags)
+# still produces a well-formed status response. Kept here near the end of
+# the stage so changed values only invalidate this single ENV layer.
+ARG PRECIS_GIT_SHA=unknown
+ARG PRECIS_GIT_SHA_SHORT=unknown
+ARG PRECIS_GIT_DIRTY=unknown
+ARG PRECIS_GIT_DESCRIBE=unknown
+ARG PRECIS_GIT_BRANCH=unknown
+ARG PRECIS_BUILD_TIME=unknown
+ARG PRECIS_BUILD_HOST=unknown
+ARG PRECIS_BUILD_USER=unknown
+ENV PRECIS_GIT_SHA=$PRECIS_GIT_SHA \
+    PRECIS_GIT_SHA_SHORT=$PRECIS_GIT_SHA_SHORT \
+    PRECIS_GIT_DIRTY=$PRECIS_GIT_DIRTY \
+    PRECIS_GIT_DESCRIBE=$PRECIS_GIT_DESCRIBE \
+    PRECIS_GIT_BRANCH=$PRECIS_GIT_BRANCH \
+    PRECIS_BUILD_TIME=$PRECIS_BUILD_TIME \
+    PRECIS_BUILD_HOST=$PRECIS_BUILD_HOST \
+    PRECIS_BUILD_USER=$PRECIS_BUILD_USER
+
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["precis", "serve"]
 
@@ -321,6 +343,26 @@ RUN uv pip install --python /opt/venv --no-deps -e /app
 # access at runtime to refresh metadata; in the runtime stage the venv
 # stays root-owned for safety.
 RUN chown -R precis:precis /opt/venv
+
+# Build metadata. See the matching block in the `runtime` stage for
+# the rationale. Mirrored here so dev shells (scripts/dev) surface the
+# same precis-status response as production containers.
+ARG PRECIS_GIT_SHA=unknown
+ARG PRECIS_GIT_SHA_SHORT=unknown
+ARG PRECIS_GIT_DIRTY=unknown
+ARG PRECIS_GIT_DESCRIBE=unknown
+ARG PRECIS_GIT_BRANCH=unknown
+ARG PRECIS_BUILD_TIME=unknown
+ARG PRECIS_BUILD_HOST=unknown
+ARG PRECIS_BUILD_USER=unknown
+ENV PRECIS_GIT_SHA=$PRECIS_GIT_SHA \
+    PRECIS_GIT_SHA_SHORT=$PRECIS_GIT_SHA_SHORT \
+    PRECIS_GIT_DIRTY=$PRECIS_GIT_DIRTY \
+    PRECIS_GIT_DESCRIBE=$PRECIS_GIT_DESCRIBE \
+    PRECIS_GIT_BRANCH=$PRECIS_GIT_BRANCH \
+    PRECIS_BUILD_TIME=$PRECIS_BUILD_TIME \
+    PRECIS_BUILD_HOST=$PRECIS_BUILD_HOST \
+    PRECIS_BUILD_USER=$PRECIS_BUILD_USER
 
 USER precis
 
