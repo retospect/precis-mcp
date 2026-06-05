@@ -1,93 +1,131 @@
 ---
 id: precis-todo-help
 title: precis — create, prioritise, complete todos
-status: phase-7
-tier: 1
-floor: any
 applies-to: get/search/put/delete/tag/link (kind='todo')
-last-updated: 2026-05-02
+status: active
 ---
 
 # precis-todo-help — create, prioritise, complete todos
 
-## Create
+Todos are work items in the store. Address by numeric id — both
+`id=122` and `id='todo:122'` are accepted.
+
+## Create a todo
+## Add a new task to my queue
+## How do I file something I need to do?
 
 ```python
-put(kind='todo', text='Review section 3 of abazari2024design.',
-    tags=['PRIO:high'])
-# server assigns integer id (e.g. 122); STATUS:open default
+put(kind='todo', text='Review section 3 of abazari2024design.')
+put(kind='todo', text='Draft the abstract.', tags=['PRIO:high'])
+put(kind='todo', text='Wait on reviewer feedback.',
+    tags=['PRIO:normal', 'project:precis-v2'])
 ```
 
-## See what's on
+Server assigns the integer id and defaults to `STATUS:open`. Pass
+`tags=` on `put` to set priority or project in one round-trip.
+
+## See what's on my plate
+## List my todos
+## Show me the queue
 
 ```python
-get(kind='todo')                      # alias for /recent
-get(kind='todo', id='/recent')        # most recent 20 (any status)
-get(kind='todo', id='/open')          # open + doing + blocked (the queue)
-get(kind='todo', id='/doing')         # in-progress only
-get(kind='todo', id='/blocked')       # waiting on something
-get(kind='todo', id='/done')          # completed
+get(kind='todo')                  # alias for /recent
+get(kind='todo', id='/recent')    # most recent 20, any status
+get(kind='todo', id='/open')      # open + doing + blocked (the queue)
+get(kind='todo', id='/queue')     # alias for /open
+get(kind='todo', id='/doing')     # in-progress only
+get(kind='todo', id='/blocked')   # waiting on something
+get(kind='todo', id='/done')      # completed
 ```
 
-`id='/queue'` is an alias for `/open`. **Date-driven views (`/today`,
-`/overdue`, `/due`, `/unscheduled`) are not implemented** — todos
-have no built-in due-date field today; track scheduling client-side
-or via lowercase tags (`due:2026-05-01`).
+## Start work on a todo
+## Mark a todo as in-progress
+## How do I move a todo to doing?
 
-## Mark done / move through statuses
+```python
+tag(kind='todo', id=122, add=['STATUS:doing'])
+```
+
+`STATUS:` is closed-prefix and replaces atomically — setting a new
+value removes the previous one. No separate remove needed.
+
+## Mark a todo done
+## Complete a todo
+## How do I close out a finished task?
 
 ```python
 tag(kind='todo', id=122, add=['STATUS:done'])
-tag(kind='todo', id=122, add=['STATUS:doing'])
-tag(kind='todo', id=122, add=['STATUS:blocked'])
+tag(kind='todo', id=122, add=["STATUS:won't-do"])   # decided not to do it
 ```
 
-`STATUS:` is closed-prefix and replaces atomically — setting one
-removes the previous value.
-
-## Block on another todo
-
-```python
-link(kind='todo', id=141, target='todo:158', rel='blocked-by')
-# id=141 declares it's blocked-by id=158
-```
-
-The link target always carries an explicit kind prefix
-(`todo:158`, `paper:wang2020state`, `markdown:notes/x.md`); the
-relation goes in a separate `rel=` kwarg. See `precis-relations`
-for the full vocabulary and inverse map.
-
-## Re-prioritise
+## Change priority
+## Re-prioritise a todo
+## Bump a todo to urgent
 
 ```python
 tag(kind='todo', id=141, add=['PRIO:urgent'])
-# replaces any other PRIO:* on this ref atomically
+tag(kind='todo', id=141, add=['PRIO:low'])
 ```
 
-For closed-prefix axes, just set the new value — overwrite is
-atomic. For open or flag tags, use `tag(remove=['topic-x'])` (see
-`precis-tags` for the full removal semantics).
+Values: `low` / `normal` / `high` / `urgent`. Overwrite is atomic
+within the `PRIO:` prefix.
 
-## Search by content
+## Block a todo on another ref
+## Mark a todo as waiting on something else
+## How do I say this is blocked by another todo?
 
 ```python
-search(kind='todo', q='precis-v2 review', tags=['STATUS:open'])
-# narrow to open todos only
+tag(kind='todo', id=141, add=['STATUS:blocked'])
+link(kind='todo', id=141, target='todo:158', rel='blocked-by')
+link(kind='todo', id=141, target='paper:wang2020state', rel='blocked-by')
 ```
 
-`tags=` accepts the same canonical forms as `put`. Multiple tags
-combine with AND (`tags=['STATUS:open', 'PRIO:high']` returns
-only refs that carry both).
+`STATUS:blocked` marks the state; `link(... rel='blocked-by')`
+records what it's waiting on. Targets carry an explicit kind prefix
+(`todo:158`, `paper:<slug>`, `markdown:notes/x.md`).
 
-## Vocabulary
+## Schedule a todo for a date
+## Add a due date to a todo
+## How do I track when something is due?
 
-- `STATUS:` values: `open` (default on create), `doing`, `blocked`,
-  `done`, `won't-do`. Unknown values are rejected with the valid
-  list at write time.
-- `PRIO:` values: `low`, `normal`, `high`, `urgent`.
+There is no built-in due-date field. Use a lowercase tag:
+
+```python
+tag(kind='todo', id=122, add=['due:2026-06-15'])
+search(kind='todo', tags=['due:2026-06-15', 'STATUS:open'])
+```
+
+Date-driven views (`/today`, `/overdue`, `/due`) are not exposed —
+filter via `search(tags=['due:<date>'])`.
+
+## Search todos by content
+## Find a todo by keyword
+## Look up todos matching a phrase
+
+```python
+search(kind='todo', q='abstract draft')
+search(kind='todo', q='precis-v2 review', tags=['STATUS:open'])
+search(kind='todo', q='reviewer', tags=['STATUS:open', 'PRIO:high'])
+```
+
+`tags=` filters with AND semantics. Combine with `q=` to rank
+inside the filtered set.
+
+## Delete a todo
+## Remove a todo I no longer want
+
+```python
+delete(kind='todo', id=122)
+```
+
+Prefer `STATUS:won't-do` over delete when the decision itself is
+worth keeping a record of.
 
 ## See also
 
-- `precis-overview` — verbs and kinds
-- `precis-tags` — `STATUS:`, `PRIO:`, validation rules
-- `precis-relations` — `blocks` / `blocked-by`
+```python
+get(kind='skill', id='precis-overview')      # verbs and kinds
+get(kind='skill', id='precis-tags')          # STATUS:/PRIO: vocabulary, validation
+get(kind='skill', id='precis-relations')     # blocked-by / blocks and other rels
+get(kind='skill', id='precis-search-help')   # tags= filter, q= ranking
+```

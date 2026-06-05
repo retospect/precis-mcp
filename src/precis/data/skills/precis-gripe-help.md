@@ -1,72 +1,70 @@
 ---
 id: precis-gripe-help
 title: precis — file friction, never look back
-status: shipped
-tier: 1
-floor: any
 applies-to: put (kind='gripe')
-last-updated: 2026-05-02
+status: active
 ---
 
-# precis-gripe-help — file and forget
+# precis-gripe-help — file friction in one line, triage later
 
-Capture friction without breaking flow. A gripe is a half-sentence
-observation that something is worse than it should be. Write it
-down and move on.
+A gripe is a half-sentence note that something is worse than it
+should be. Drop it and keep working; articulation can wait.
 
-`gripe` is **write-only from the agent surface**. There is no
-`get`, no `search`, no `tag`, no `link`. You cannot list, browse,
-or read what's in the box. That's the point — it's a zero-friction
-complaint slot, not a workflow queue. Triage happens out-of-band
-(human review of the database; CLI tools); the agent's job is to
-notice friction and drop the note.
-
-## File one
+## File a gripe about something annoying
+## Log friction I noticed in passing
+## How do I record a niggle without breaking flow?
 
 ```python
 put(kind='gripe', text='paper slug NotFound does not surface near-match options')
-# → created gripe id=42
+# → created gripe id=42 (write-only — gripes cannot be read, edited,
+#   or deleted via the MCP surface; triage happens out-of-band)
 ```
 
-That's the entire surface. No `tags=`, no `link`, no triage. 5
-seconds of typing.
+`put(text=...)` is the entire surface. No `tags=`, no `link=`, no
+follow-up read.
 
-## What this is for
+## Promote a gripe to a todo when I know the fix
 
-- **Notice in passing.** A skill said one thing, the runtime did
-  another. File and keep working.
-- **Surface tooling friction.** Error messages that don't help,
-  examples that don't run, slugs that aren't accepted. File.
-- **Unstructured complaints.** Don't know yet what's wrong, just
-  that something feels off. File. The articulation can come later.
+Gripes can't be edited into todos in place. Create a new todo that
+links back to the gripe via the numeric-ref form `gripe:<N>`:
 
-## When to use gripe vs other kinds
+```python
+put(kind='todo',
+    text='Add near-match suggestions to paper slug NotFound errors.',
+    tags=['PRIO:normal'],
+    link='gripe:42', rel='resolves')
+```
 
-| Want to capture... | Use |
-|---|---|
-| "This annoyed me, don't know why yet" | `gripe` |
-| "I will do this" | `todo` |
-| "I noticed this structural thing" | `memory` with `kind:note` |
-| "Here is what I decided" | `memory` with `kind:decision` |
+The gripe stays on file for triage; the todo carries the action.
 
-The distinction: **gripe is pre-articulation**. If you already
-know what to do, skip it and write a todo. If you understand why
-it matters, skip it and write a memory.
+## Choose gripe vs todo vs memory
 
-## Failure modes
+| Capture                                 | Use      |
+|-----------------------------------------|----------|
+| "This annoyed me, don't know why yet"   | `gripe`  |
+| "I will do this"                        | `todo`   |
+| "Here's a thought I want to keep"       | `memory` |
 
-- **Trying to read your own gripes.** `get(kind='gripe', ...)`,
-  `search(kind='gripe', ...)`, and friends raise
-  `[error:Unsupported]` by design. The capture is one-way.
-- **Over-tagging at write time.** `put(text='...')` only — `tags=`
-  isn't accepted. Don't waste the capture budget on classification.
-- **Gripes that are actually todos.** If you know the fix, write a
-  todo, not a gripe.
-- **Gripes as passive-aggressive communication.** Document on the
-  thing you're criticising; don't file-and-forget something you
-  wanted someone else to see.
+Gripe is pre-articulation. If you already know the fix, skip
+straight to `todo`. If you understand why something matters and
+want it findable, use `memory`.
+
+## What not to expect from gripe
+
+- `get(kind='gripe', ...)`, `search(kind='gripe', ...)`,
+  `tag(kind='gripe', ...)`, `link(kind='gripe', ...)`, and
+  `delete(kind='gripe', ...)` all return `[error:Unsupported]`.
+  The capture is one-way from the agent surface.
+- `put` rejects `tags=` and `link=` on gripe — keep the call to
+  `text=` only.
+- Don't file passive-aggressive notes meant for someone else to
+  read; gripes are not a messaging channel.
 
 ## See also
 
-- `precis-todo-help` — actionable items go here, not in gripe
-- `precis-memory-help` — articulated insights go here, not in gripe
+```python
+get(kind='skill', id='precis-todo-help')      # promote a gripe to an actionable todo
+get(kind='skill', id='precis-memory-help')    # articulated thoughts go here, not in gripe
+get(kind='skill', id='precis-put-help')       # the put verb across every kind
+get(kind='skill', id='precis-link-help')      # rel= vocabulary for the promote flow
+```

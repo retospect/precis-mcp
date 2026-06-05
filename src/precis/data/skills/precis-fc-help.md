@@ -1,119 +1,103 @@
 ---
 id: precis-fc-help
 title: precis — spaced-repetition flashcards
-status: phase-5 (partial)
-tier: 1
-floor: any
-applies-to: get / search / put / delete / tag / link (kind='fc')
-last-updated: 2026-05-02
+applies-to: get/search/put/delete/tag/link (kind='fc')
+status: active
 ---
 
 # precis-fc-help — spaced-repetition knowledge cards
 
-`fc` is **SM-2** spaced-repetition in an agent-native shape. One
-card = one knowledge statement. Review schedule lives in
-`ref.meta`.
+Flashcards are numeric-ref knowledge statements scheduled for review.
+One card = one atomic fact you want to remember.
 
-> **Status:** phase-5 ships the thin surface — create, read, search,
-> list-due. The **full SM-2 grader** (grade → next interval →
-> update `next_review`) is queued for a follow-up. Tagging a card
-> with `REVIEW:*` today records the tag but does **not** yet
-> advance the schedule. Cards still surface as due based on
-> `ref.meta.next_review`; until the grader lands, untouched cards
-> simply stay due.
-
-## Write a card
+## Create a card from something I just read
+## Make a flashcard for a fact worth memorising
+## Capture a knowledge statement as a card
 
 ```python
-put(kind='fc', text='SM-2 schedules reviews at intervals of 1, 6, and then interval * easiness days.')
-# → created fc id=204
-```
+put(kind='fc', text='PIPS needs only 36 molecular configurations to generalise.')
+# → returns integer id (e.g. 204)
 
-The card body is the **knowledge statement** you want to remember —
-not a question. The agent asking you later reframes it into a Q&A
-dynamically, using the body as the answer-key. One atomic fact per
-card gives the best recall signal.
-
-Cards accept optional tags and links at creation time:
-
-```python
-put(kind='fc',
-    text='RRF combines rankings by sum of 1/(k + rank_i) where k is typically 60.',
-    tags=['topic-search', 'topic-rrf'],
-    link='paper:acheson2026automated~8')
-```
-
-## What's due today
-
-```python
-get(kind='fc', id='/due')       # cards whose next_review <= now
-```
-
-Response shows due cards plus anything due within the next 3 days,
-with ref ids and short titles. Empty? `no flashcards due` with a
-hint to browse `/recent` or create a new card.
-
-Meta state (`easiness`, `interval`, `reps`, `next_review`,
-`last_reviewed`, `review_log`) lives on each ref and is visible
-when you `get(kind='fc', id=N)`. Untouched cards (no `next_review`
-set) count as due — they surface immediately on the first `/due`
-call after creation.
-
-## Browse
-
-```python
-get(kind='fc')                  # /recent (default)
-get(kind='fc', id='/recent')    # 20 newest, any due state
-get(kind='fc', id=204)          # one card
-```
-
-## Review a card (today — manual)
-
-Until the SM-2 grader ships, reviewing is informal: `get` the card,
-quiz yourself, and move on. The full grader (`grade=0..5` →
-recomputed `next_review`) is queued for a follow-up — when it
-lands, a dedicated verb will advance the SM-2 state atomically.
-The agent surface for logging a grade is deliberately absent until
-then; the `/due` listing stays useful in the meantime.
-
-## Search
-
-```python
-search(kind='fc', q='RRF')
-search(kind='fc', q='rank fusion', tags=['topic-search'])
-```
-
-Cross-kind search also includes cards — useful when you're writing
-a note and want to check whether you already made a card about the
-same idea.
-
-## Typical flow — capture from learning
-
-```python
-# Just read a paper block.
-get(kind='paper', id='acheson2026automated~8')
-
-# Found a fact worth remembering. Make a card, link it back.
 put(kind='fc',
     text='PIPS needs only 36 molecular configurations to generalise.',
-    tags=['topic-pips', 'source-acheson2026automated'],
+    tags=['topic:pips'],
     link='paper:acheson2026automated~8', rel='derived-from')
 ```
 
-## Failure modes
+The `text=` is the **answer** — the statement you want to recall.
+The reviewing agent reframes it into a question at quiz time. One
+atomic fact per card gives the cleanest recall signal; long bodies
+hurt both recall and the rating signal.
 
-- **Card body is a question, not the answer.** SM-2 expects the
-  statement you want to memorise. Put the answer in `text=`; the
-  agent generates the prompt shape.
-- **Over-carding.** One card per atomic fact. Long bodies reduce
-  recall probability and the reliability of the (eventual) grade
-  signal.
-- **Expecting the schedule to advance today.** Reviewing doesn't
-  (yet) reset `next_review`; cards stay on `/due` indefinitely
-  until the grader ships.
+## What's due today
+## Show the review queue
+## List cards I need to review now
+
+```python
+get(kind='fc', id='/due')
+```
+
+```text
+# 3 flashcard(s) due
+   204  PIPS needs only 36 molecular configurations to generalise.
+   187  Z-scheme photocatalysts pair two semiconductors with offset bands.
+   142  Hybrid search rank-fuses lexical and semantic results.
+
+  2 due within 3 days
+   199  (2026-06-07)  Cu-doped TiO2 shifts absorption into the visible.
+   201  (2026-06-08)  NOxRR three-electron pathway peaks near pH 6.
+```
+
+Untouched cards (never reviewed) count as due and surface
+immediately. Empty queue returns `no flashcards due` with hints to
+`/recent` or create.
+
+## Browse existing cards
+## List recent flashcards
+## See what cards I already have
+
+```python
+get(kind='fc')                  # /recent (default)
+get(kind='fc', id='/recent')    # 20 newest
+get(kind='fc', id=204)          # one card — body + schedule meta
+```
+
+Both `id=204` and `id='fc:204'` are accepted.
+
+## Review a card
+## Quiz myself on a due card
+## Rate how well I recalled a card
+
+Read the card, recall the answer, check the body. The rating verb
+(`grade=0..5` → next-interval update) is not yet wired; reviewed
+cards stay on `/due` until it ships. The schedule meta
+(`easiness`, `interval`, `reps`, `next_review`, `last_reviewed`)
+is visible on `get(kind='fc', id=N)`.
+
+## Search across cards
+## Find a card by topic
+## Check whether I already made a card about X
+
+```python
+search(kind='fc', q='rank fusion')
+search(kind='fc', q='photocatalysis', tags=['topic:noxrr'])
+```
+
+Cards also surface in cross-kind search — useful when writing a
+note to check for an existing card on the same idea.
+
+## Tag or link a card
+
+```python
+tag(kind='fc', id=204, add=['topic:pips'])
+link(kind='fc', id=204, target='paper:acheson2026automated~8', rel='derived-from')
+```
 
 ## See also
 
-- `precis-memory-help` — for context/prose that isn't a recall target
-- `precis-overview` — verbs and kinds
-- Background: Piotr Woźniak, SuperMemo SM-2 algorithm (1987).
+```python
+get(kind='skill', id='precis-overview')       # verbs and kinds
+get(kind='skill', id='precis-memory-help')    # prose notes that aren't recall targets
+get(kind='skill', id='precis-tags')           # tag axis conventions
+get(kind='skill', id='precis-relations')      # link relations (derived-from, ...)
+```
