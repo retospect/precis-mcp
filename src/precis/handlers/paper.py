@@ -20,7 +20,6 @@ v2:
 from __future__ import annotations
 
 import difflib
-import html
 import re
 from typing import Any, ClassVar
 
@@ -32,6 +31,19 @@ from precis.handlers._link_tag_ops import (
     apply_tag_ops,
     format_link_tag_ack,
 )
+from precis.handlers._paper_format import (
+    _clean_inline_text,
+    _format_authors,
+    _format_citation,
+    _strip_jats,
+)
+from precis.handlers._paper_text import (
+    _chunk_keywords_or_caption,
+    _is_image_only_block,
+    _looks_like_caption,
+    _render_block_body,
+    _scrub_block_text,
+)
 from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
     resolve_live_slug_ref,
@@ -41,7 +53,6 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils.next_block import render_next_section
-from precis.utils.rake import keyword_summary
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
@@ -1743,174 +1754,12 @@ def _parse_paper_id(
     )
 
 
-# ---------------------------------------------------------------------------
-# Author + citation rendering
-# ---------------------------------------------------------------------------
-
-
-def _format_authors(raw: Any) -> str:
-    names = [_clean_inline_text(n) for n in _author_names(raw)]
-    names = [n for n in names if n]
-    if not names:
-        return ""
-    if len(names) <= 3:
-        return "; ".join(names)
-    return f"{names[0]} et al."
-
-
-def _author_names(raw: Any) -> list[str]:
-    """Normalise ``authors`` into a flat list of name strings.
-
-    Accepts list-of-dicts (``[{"name": "Smith, J."}, ...]``),
-    list-of-strings, semicolon-packed string, or None/garbage.
-    Pure — never raises.
-    """
-    if isinstance(raw, list):
-        out: list[str] = []
-        for item in raw:
-            if isinstance(item, dict):
-                name = str(item.get("name") or "").strip()
-            else:
-                name = str(item).strip()
-            if name:
-                out.append(name)
-        return out
-    if isinstance(raw, str) and raw.strip():
-        return [a.strip() for a in raw.split(";") if a.strip()]
-    return []
-
-
-def _format_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
-    """Render a citation in BibTeX / RIS / EndNote.
-
-    All scalar metadata fields are run through :func:`_clean_inline_text`
-    to strip JATS / HTML markup and unescape entities (``&amp;`` →
-    ``&``); BibTeX additionally LaTeX-escapes ``& % _ #`` so the output
-    compiles cleanly. (MCP critic MINOR — BibTeX leaks ``&amp;`` and
-    paper list leaks ``<sub>``.)
-
-    F15: ``authors`` and ``year`` now read from the top-level
-    ``Ref.authors`` / ``Ref.year`` columns (v2 schema location).
-    ``doi`` is fetched from ``ref_identifiers`` by the caller and
-    passed in. ``journal`` is still in ``meta`` because it's the
-    only one of the four that v2 chose to keep there.
-    """
-    meta = ref.meta or {}
-    slug = ref.slug or "???"
-    title = _clean_inline_text(ref.title)
-    authors = [_clean_inline_text(a) for a in _author_names(ref.authors)]
-    authors = [a for a in authors if a]
-    journal = _clean_inline_text(str(meta.get("journal") or ""))
-    year = ref.year
-    doi_clean = _clean_inline_text(doi or "")
-
-    if style == "bibtex":
-        # LaTeX-escape every scalar field that might carry a special
-        # char. ``and``/``year``/``doi`` rarely do but we run them
-        # through anyway for symmetry; a stray ``&`` in the title was
-        # the actual MCP-critic finding.
-        bx_title = _latex_escape(title)
-        bx_authors = " and ".join(_latex_escape(a) for a in authors)
-        bx_journal = _latex_escape(journal)
-        bx_doi = _latex_escape(doi_clean)
-        lines = [f"@article{{{slug},"]
-        if bx_title:
-            lines.append(f"  title = {{{bx_title}}},")
-        if bx_authors:
-            lines.append(f"  author = {{{bx_authors}}},")
-        if year:
-            lines.append(f"  year = {{{year}}},")
-        if bx_journal:
-            lines.append(f"  journal = {{{bx_journal}}},")
-        if bx_doi:
-            lines.append(f"  doi = {{{bx_doi}}},")
-        lines.append("}")
-        return "\n".join(lines) + "\n"
-
-    if style == "ris":
-        out = ["TY  - JOUR"]
-        if title:
-            out.append(f"TI  - {title}")
-        for a in authors:
-            out.append(f"AU  - {a}")
-        if year:
-            out.append(f"PY  - {year}")
-        if journal:
-            out.append(f"JO  - {journal}")
-        if doi_clean:
-            out.append(f"DO  - {doi_clean}")
-        out.append("ER  - ")
-        return "\n".join(out)
-
-    # endnote (subset)
-    out = ["%0 Journal Article"]
-    if title:
-        out.append(f"%T {title}")
-    for a in authors:
-        out.append(f"%A {a}")
-    if year:
-        out.append(f"%D {year}")
-    if journal:
-        out.append(f"%J {journal}")
-    if doi_clean:
-        out.append(f"%R {doi_clean}")
-    return "\n".join(out)
-
-
-# ---------------------------------------------------------------------------
-# Inline-markup + LaTeX-escape helpers
-# ---------------------------------------------------------------------------
-
-# Strip a small whitelist of inline HTML / JATS tags that publishers
-# leak into title/journal metadata: ``<sub>``, ``<sup>``, ``<i>``,
-# ``<b>``, ``<em>``, ``<strong>`` plus any ``<jats:*>`` namespace tag.
-# The tag *contents* are kept; only the markers go.
-_INLINE_TAG_RE = re.compile(
-    r"</?(?:sub|sup|i|b|em|strong|jats:[a-zA-Z0-9_-]+)\b[^>]*>",
-    re.IGNORECASE,
-)
-
-# Characters that need backslash-escaping for LaTeX. The list is the
-# minimum set that breaks BibTeX / biber compilation when present in
-# field values; ``$``, ``{``, ``}``, ``\`` are not common in
-# bibliographic metadata and would need a richer escape.
-_LATEX_ESCAPES: dict[str, str] = {
-    "&": r"\&",
-    "%": r"\%",
-    "_": r"\_",
-    "#": r"\#",
-}
-
-
-def _clean_inline_text(text: str) -> str:
-    """Run the metadata-cleanup pipeline used by every renderer.
-
-    Steps (idempotent):
-
-    1. ``html.unescape`` to flip ``&amp;`` → ``&``, ``&lt;`` → ``<``,
-       and any double-encoded ``&amp;lt;`` shapes back to literal text.
-       Run twice so the double-encoded shape lands as ``<``.
-    2. Strip a small whitelist of inline HTML/JATS tags.
-    3. Collapse whitespace runs.
-
-    Pure — never raises.
-    """
-    if not text:
-        return ""
-    cleaned = html.unescape(html.unescape(text))
-    cleaned = _INLINE_TAG_RE.sub("", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
-
-
-def _latex_escape(text: str) -> str:
-    """Backslash-escape the LaTeX special chars BibTeX trips on."""
-    if not text:
-        return ""
-    out = text
-    for ch, esc in _LATEX_ESCAPES.items():
-        out = out.replace(ch, esc)
-    return out
+# Author + citation + inline-markup helpers moved to
+# ``precis.handlers._paper_format`` (2026-06-05). The symbols
+# ``_author_names``, ``_format_authors``, ``_format_citation``,
+# ``_clean_inline_text``, ``_latex_escape`` are imported at the top of
+# this file; tests previously reaching them via
+# ``precis.handlers.paper`` should import from ``_paper_format`` now.
 
 
 # ---------------------------------------------------------------------------
@@ -1962,184 +1811,13 @@ def _normalise_view(view: str | None) -> str | None:
     return _VIEW_KWARG_ALIASES.get(view, view)
 
 
-# JATS-XML namespace tags leak through some publishers' abstract metadata.
-# We strip the simple ``<jats:tag>...</jats:tag>`` form rather than running
-# a full parser — abstracts are short and the tag set is constrained.
-#
-# `<jats:title>Abstract</jats:title>` immediately followed by body text
-# was rendering as ``AbstractMetal–organic frameworks…`` (heading word
-# glued to the next sentence) — the MCP critic's MINOR m1. Drop the
-# ``<jats:title>Abstract</jats:title>`` block specifically because the
-# view name itself ('abstract') already names the section, and the
-# label is never anything else worth keeping.
-_JATS_ABSTRACT_TITLE_RE = re.compile(
-    r"<jats:title>\s*Abstract\s*</jats:title>", re.IGNORECASE
-)
-
-
-def _strip_jats(text: str) -> str:
-    """Strip ``<jats:*>`` and ``</jats:*>`` namespace tags from text.
-
-    Leaves tag *contents* intact, so ``<jats:p>Hi.</jats:p>`` becomes
-    ``Hi.``. Idempotent. Whitespace around stripped tags is collapsed
-    only where two newlines emerge — we keep paragraph structure.
-
-    Block-level closing tags (``</jats:p>``, ``</jats:title>``) are
-    replaced with a single space rather than nothing, so adjacent
-    paragraphs/headings don't end up word-glued. The opening tags
-    are still empty-substituted because the preceding character is
-    typically already whitespace.
-    """
-    # Drop the redundant `<jats:title>Abstract</jats:title>` outright —
-    # see comment on _JATS_ABSTRACT_TITLE_RE.
-    cleaned = _JATS_ABSTRACT_TITLE_RE.sub("", text)
-    # Closing tags get a space so we don't fuse "Hi.</jats:p><jats:p>Bye"
-    # into "Hi.Bye". Opening tags get nothing.
-    cleaned = re.sub(r"</jats:[a-zA-Z0-9_-]+\s*[^>]*>", " ", cleaned)
-    cleaned = re.sub(r"<jats:[a-zA-Z0-9_-]+\s*[^>]*>", "", cleaned)
-    # Collapse the spaces and newlines the strip can leave behind.
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
-
-
-# ---------------------------------------------------------------------------
-# Figure-and-caption coalescing
-# ---------------------------------------------------------------------------
-
-# Markdown image markers like ``![](path/to.jpeg)``. The path component
-# is captured so the placeholder can name the original asset (purely
-# informational — the image isn't served).
-_IMAGE_MARKER_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
-
-# Page-anchor span that acatome-extract emits before image blocks
-# (``<span id="page-19-0"></span>``). Stripped along with the image so
-# the placeholder body is just a one-line marker.
-_PAGE_ANCHOR_RE = re.compile(r"<span\s+id=\"page-\d+-\d+\"\s*></span>")
-
-# Caption blocks start with ``**Fig``, ``**Figure``, ``**Scheme``, or
-# ``**Table`` — the bold-prefixed legend pattern emitted by Marker /
-# acatome-extract. The check is applied to the *first non-empty line*
-# of the candidate block.
-_CAPTION_LEAD_RE = re.compile(
-    r"^\*\*\s*(Fig(?:ure)?|Scheme|Table)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_image_only_block(text: str) -> bool:
-    """True when the block consists solely of image markers + page anchors.
-
-    A block that's just ``<span id="page-N-M"></span>![](_page_N_*.jpeg)``
-    has no readable content for the agent — the relative path resolves
-    to nothing the MCP serves, and there's no caption text to quote.
-    """
-    stripped = _PAGE_ANCHOR_RE.sub("", text)
-    stripped = _IMAGE_MARKER_RE.sub("", stripped)
-    return stripped.strip() == ""
-
-
-def _looks_like_caption(text: str) -> bool:
-    """True when the block opens with a Fig/Scheme/Table legend lead."""
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        return bool(_CAPTION_LEAD_RE.match(line))
-    return False
-
-
-def _render_block_body(slug: str, pos: int, text: str) -> str:
-    """Replace bare image markers with a structured placeholder.
-
-    The relative URL ``![](_page_19_Figure_1.jpeg)`` resolves to
-    nothing — quoting it back is a footgun for any LLM citing the
-    figure. Replace each marker with a short ``[figure: slug~N —
-    image not served; caption on adjacent block]`` placeholder, and
-    strip the page-anchor spans around it.
-
-    The asset path is **not** preserved.  An earlier cut kept it
-    "for diagnostics" but a 7B caller reading ``asset: _page_3_
-    Figure_3.jpeg`` still treats the string as a real file —
-    that's the same footgun the substitution exists to close.
-    The MCP critic's April 2026 re-probe pinned this regression.
-    """
-    if not _IMAGE_MARKER_RE.search(text):
-        return text
-    cleaned = _PAGE_ANCHOR_RE.sub("", text)
-
-    def _replace(_m: re.Match[str]) -> str:
-        return (
-            f"[figure: {slug}~{pos} - image not served; "
-            f"caption on adjacent block (~{pos + 1})]"
-        )
-
-    cleaned = _IMAGE_MARKER_RE.sub(_replace, cleaned)
-    # Collapse whitespace-only artefacts left behind by the strip.
-    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-
-
-def _chunk_keywords_or_caption(text: str) -> str:
-    """Render the ``chunk_keywords`` cell for one search hit.
-
-    Most chunks are prose — RAKE produces useful summary keywords.
-    Tables (Marker emits them as markdown grids starting with ``|``)
-    poison RAKE because empty cells render as ``"na"`` and the rake
-    output collapses to ``"na na na na; na na na; ..."``. For those
-    we skip RAKE and surface a one-line caption from the table's
-    column header row instead, so the search hit still tells the
-    agent *what kind of thing* this is without the noise.
-
-    Heuristic: starts with ``|`` after lstrip, pipe density >5 %.
-    Same heuristic as migration 0009's paragraph→table backfill,
-    so this also handles legacy chunks that pre-date the
-    chunk_kind=table classification.
-    """
-    stripped = text.lstrip()
-    is_table = (
-        stripped.startswith("|")
-        and len(text) > 0
-        and (text.count("|") / len(text)) > 0.05
-    )
-    if is_table:
-        first_line = stripped.split("\n", 1)[0].strip()
-        # Drop empty cells / trim long rows so the caption fits the
-        # one-line cell budget. ``A, (A) | B, (B) | C, (C) | …`` is
-        # plenty for an agent to recognise a data table.
-        cells = [c.strip() for c in first_line.strip("|").split("|") if c.strip()]
-        if cells:
-            caption = " | ".join(cells[:6])
-            if len(cells) > 6:
-                caption += " | …"
-            return f"[table] {caption}"
-        return "[table]"
-    return keyword_summary(text, top_k=5)
-
-
-def _scrub_block_text(text: str) -> str:
-    """Strip image markers + page anchors from arbitrary block text.
-
-    Companion to :func:`_render_block_body` for code paths that
-    don't have a slug/pos in scope (search previews, future digest
-    views).  The output never carries a markdown image marker or
-    a page-anchor span — anything that would lure an LLM into
-    quoting a non-served asset is dropped, replaced by a brief
-    ``[figure]`` sentinel.
-
-    Idempotent: running twice yields the same result, because the
-    regexes don't match their own replacements.
-
-    The MCP critic's April 2026 re-probe flagged the search
-    preview path leaking raw ``![](_page_3_Figure_3.jpeg)``
-    markers because :func:`_render_block_body` was only wired
-    into ``_render_chunks``.  Centralising the substitution in
-    one helper keeps every excerpt path on the same contract.
-    """
-    if not text:
-        return text
-    cleaned = _PAGE_ANCHOR_RE.sub("", text)
-    cleaned = _IMAGE_MARKER_RE.sub("[figure]", cleaned)
-    return cleaned
+# JATS-stripping (``_strip_jats``) and figure-and-caption coalescing
+# (``_is_image_only_block`` / ``_looks_like_caption`` /
+# ``_render_block_body`` / ``_chunk_keywords_or_caption`` /
+# ``_scrub_block_text``) moved to ``precis.handlers._paper_text``
+# (2026-06-05). Imported at the top of this file; tests previously
+# reaching them via ``precis.handlers.paper`` should import from
+# ``_paper_text`` now.
 
 
 __all__ = ["PaperHandler"]

@@ -1,122 +1,109 @@
 ---
 id: precis-toon
-title: precis — TOON tabular output
+title: precis — TOON tabular output format
+applies-to: tabular responses from search, get(view='toc'), and list views
 status: active
-tier: 2
-floor: any
-applies-to: precis CLI piped output, MCP tabular responses
-last-updated: 2026-05-22
 ---
 
 # precis-toon — Token-Oriented Object Notation
 
-`precis` emits tabular results in **TOON** (Token-Oriented Object
-Notation) when stdout is piped or when the caller asks for
-`--format toon` explicitly. TOON is roughly 40 % cheaper than
-indented JSON for homogeneous lists because the column keys
-appear once in the header instead of once per row.
+Tabular `precis` responses (search hits, TOCs, list views) come back
+as TOON: a header line wrapped in `{…}` followed by tab-separated
+data rows. Column keys appear once, in the header.
 
-## Shape
+## Read the shape of a TOON table
+## What does TOON output look like?
+## How is a tabular precis response structured?
 
+```text
+{handle	chunk_keywords}
+wang2020state~14	z-scheme, heterojunction, photocatalysis
+wang2020state~38	cocatalyst, oxygen evolution, water splitting
+kim2024electrocatalytic~7	noxrr, copper, faradaic efficiency
 ```
-{col1<TAB>col2<TAB>col3}
-val1<TAB>val2<TAB>val3
-val1<TAB>val2<TAB>val3
+
+- First non-blank line is the header: column names wrapped in literal
+  `{` and `}`, tab-separated. The braces are markers so the table is
+  locatable inside a larger response (preamble + table + `Next:`
+  trailer). They are not part of the column names.
+- Each later line is a row: tab-separated cells in header order.
+- No trailing newline; tolerate one anyway.
+
+## Search hit shape
+
+```text
+{handle	chunk_keywords}
+abazari2024design~22	mof, linker design, photocatalytic
+wang2020state~14	z-scheme, heterojunction, photocatalysis
 ```
 
-- The first non-blank line is the **header**, wrapped in literal
-  `{` … `}` braces. The braces are **markers**, not delimiters —
-  the column names inside are still tab-separated. `toon.load`
-  strips them on read.
-- Every subsequent line is a **row** — tab-separated cell values
-  in the same order as the header.
-- The document does not end with a trailing newline; agents
-  should tolerate one anyway (pipes and `print` add one).
+One row per hit. `handle` is `slug~N` — paste it as
+`get(kind='paper', id='<handle>')` to drill in. Order is the
+relevance signal.
 
-Why the brace markers: a TOON document inside a larger response
-(MCP body with prose preamble + table + footer) needs to be
-unambiguously findable. The braces let an agent (or `grep`) locate
-the header row without context, and signal where the table starts
-when the surrounding markdown has its own headings, blockquotes,
-or `Next:` trailers.
+## TOC shape
 
-The delimiter is `\t` — paper titles routinely contain commas,
-which would otherwise force quoting on every row. Other tools
-in the precis ecosystem keep the same convention.
+```text
+# wang2020state TOC — 187 chunks, 9 clusters
 
-## Escape rules — minimal by design
+{handle	keywords}
+wang2020state~0..14	introduction, photocatalysis, motivation
+wang2020state~15..38	z-scheme, heterojunction, band alignment
+wang2020state~39..62	cocatalyst, oxygen evolution
+…
+```
 
-The audience for `precis` TOON output is an LLM, not a parser.
-The wrapping rules are tuned for token frugality:
+One row per cluster. `handle` is a range (`slug~A..B`) you can pass
+to `get` to read or to `get(..., view='toc')` to drill further.
 
-- A cell is wrapped in `"…"` **only** when it contains the
-  delimiter, a newline, or a carriage return — characters that
-  would otherwise confuse the column / row structure.
-- Bare double quotes inside cells pass through verbatim. You'll
-  see `He said "hi"` as a single cell with literal quotes; the
-  column boundary is the tab, not the quote.
-- When a cell *does* need wrapping (because of an embedded tab
-  or newline), inner `"` characters inside the wrapper are
-  doubled (`""`) per RFC 4180 so the closing-wrapper boundary
-  stays unambiguous.
-- An empty cell renders as the empty string.
+## Cell-escape rules — when quoting kicks in
 
-A consequence of the minimalism: a cell whose value *starts*
-with a literal `"` is ambiguous to a strict parser (the leading
-quote looks like a wrapper open). LLMs read it correctly from
-context, and `precis` does not parse its own output in
-production, so this is by design rather than an oversight.
+A cell is wrapped in `"…"` only when it contains a tab, a newline,
+or a carriage return. Bare `"` characters pass through verbatim — a
+cell like `He said "hi"` is a single unquoted cell. When a cell does
+get wrapped, inner `"` is doubled (`""`).
 
-## Parse it in Python
+Empty cells render as the empty string. `None` → empty;
+`True`/`False` → `true`/`false`.
 
-The standard library handles TOON as-is via `csv.DictReader`:
+## Parse a TOON response in Python
+## Decode a TOON table programmatically
+
+Stdlib only:
 
 ```python
 import csv, io
-text = open("/path/to/output.toon").read()
 rows = list(csv.DictReader(io.StringIO(text), delimiter="\t"))
+# Header still carries the {…} markers — strip if needed:
+if rows:
+    first_key = next(iter(rows[0]))
+    rows[0] = {first_key.lstrip("{"): v for k, v in rows[0].items()}
 ```
 
-Or use the precis helper:
+Or the precis helper, which strips the brace markers for you:
 
 ```python
 from precis.format import toon
 rows = toon.load(text)   # list[dict[str, str]]
 ```
 
-`toon.load` returns dicts of strings — type recovery (e.g.
-`int(row["pending"])`) is the caller's job; TOON is a transport,
-not a schema language.
+Cells always come back as `str`. Type recovery is the caller's job.
 
-## Choose the format
-
-- **Default on a TTY**: `table` — ASCII box-drawing for
-  readability. Not meant to be parsed.
-- **Default when piped**: `toon` — tab-separated, minimal token
-  overhead.
-- **Explicit override**: `--format {toon,json,table}`. Use
-  `json` for nested or single-record output.
+## Pick a format on the CLI
 
 ```sh
-precis worker --status              # TTY → ASCII table
-precis worker --status | cat        # pipe → TOON
-precis worker --status --format json
+precis worker --status                  # TTY → ASCII table
+precis worker --status | cat            # pipe → TOON
+precis worker --status --format json    # nested/single-record output
 ```
 
-## Why not JSON everywhere?
-
-JSON wastes tokens on repeated keys in homogeneous lists. A
-50-hit search response in indented JSON repeats every column
-name 50 times; the same response in TOON has one header and 50
-slim rows. The agent-facing token cost goes from ~3 K to ~1.8 K
-on a typical search payload.
-
-Single-record responses (e.g. `precis show <handle>`) still emit
-JSON — they have no repeated structure to compress, and JSON
-parsers are universal.
+`--format {toon,json,table}`. JSON is the right pick for single
+records or nested structures; TOON is for homogeneous row lists.
 
 ## See also
 
-- `precis-overview` — verbs and kinds
-- ADR 0002 (`docs/decisions/0002-pub-id-and-toon.md`) — why TOON
-- `precis worker --help` — the canonical CLI surface using TOON
+```python
+get(kind='skill', id='precis-overview')        # verbs and kinds
+get(kind='skill', id='precis-search-help')     # search response shape
+get(kind='skill', id='precis-toc-help')        # TOC machinery + drill-in
+```

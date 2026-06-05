@@ -14,7 +14,8 @@ import pytest
 
 from precis.dispatch import Hub, boot
 from precis.errors import BadInput, Gone, NotFound
-from precis.handlers.paper import _normalise_view, _strip_jats
+from precis.handlers._paper_format import _strip_jats
+from precis.handlers.paper import _normalise_view
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
 from precis.utils.slug import _first_author, mint_slug
@@ -1168,7 +1169,7 @@ def test_bibtex_unescapes_html_entities() -> None:
     not the verbatim HTML entity. (MCP critic MINOR.)"""
     from datetime import datetime
 
-    from precis.handlers.paper import _format_citation
+    from precis.handlers._paper_format import _format_citation
     from precis.store.types import Ref
 
     _now = datetime(2026, 1, 1, tzinfo=UTC)
@@ -1198,7 +1199,7 @@ def test_bibtex_unescapes_html_entities() -> None:
 def test_paper_list_view_strips_jats_markup() -> None:
     """List view titles must not leak ``Cu/ZnO<sub>x</sub>``; the
     cleanup helper strips inline JATS / HTML tags. (MCP critic MINOR.)"""
-    from precis.handlers.paper import _clean_inline_text
+    from precis.handlers._paper_format import _clean_inline_text
 
     assert _clean_inline_text("Cu/ZnO<sub>x</sub> Nanoparticles") == (
         "Cu/ZnOx Nanoparticles"
@@ -1217,7 +1218,7 @@ def test_figure_block_pairs_with_caption(store: Store) -> None:
     auto-pulls the adjacent caption block so the agent sees both in one
     response. (MCP critic MAJOR — figure block returns image marker
     with no caption.)"""
-    from precis.handlers.paper import (
+    from precis.handlers._paper_text import (
         _is_image_only_block,
         _looks_like_caption,
     )
@@ -1243,7 +1244,7 @@ def test_figure_block_renders_structured_placeholder() -> None:
     .jpeg`` treated the string as a real file, defeating the
     point of the substitution.
     """
-    from precis.handlers.paper import _render_block_body
+    from precis.handlers._paper_text import _render_block_body
 
     image_block = '<span id="page-19-0"></span>![](_page_19_Figure_1.jpeg)'
     rendered = _render_block_body("ahmed2025revolutionary", 210, image_block)
@@ -1499,7 +1500,8 @@ def test_paper_search_preview_strips_image_markers(store: Store) -> None:
     ``_scrub_block_text`` and applying it at both call sites keeps
     every excerpt path on the same contract.
     """
-    from precis.handlers.paper import PaperHandler, _scrub_block_text
+    from precis.handlers._paper_text import _scrub_block_text
+    from precis.handlers.paper import PaperHandler
 
     # Pure-helper sanity: image marker + page anchor both go.
     raw = '<span id="page-3-0"></span>![](_page_3_Figure_3.jpeg)'

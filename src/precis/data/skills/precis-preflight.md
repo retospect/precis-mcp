@@ -1,102 +1,68 @@
 ---
 id: precis-preflight
-title: precis — manuscript preflight (retraction + citation check)
-status: shipped
-tier: 1
-floor: any
-applies-to: jobs check-provenance, get (kind='provenance')
-last-updated: 2026-05-30
+title: precis — manuscript preflight (retraction + citation audit)
+applies-to: get (kind='provenance'), jobs check-provenance
+status: active
 ---
 
-# precis-preflight — manuscript citation audit before release
+# precis-preflight — audit a manuscript's citations before release
 
-You have a manuscript citing N papers and a week before release. This
-skill walks through finding any citation that's been retracted, is
-under expression of concern, has a correction, or — worst case — is
-the wrong paper entirely (the DOI is real but points elsewhere).
+Run before submission to find citations that are retracted, under
+Expression of Concern, have a correction, or point at the wrong paper.
 
-## The 30-second version
+## Audit a manuscript's bibliography
+## Check my references for retractions before submitting
+## Pre-flight my bib file
 
 ```bash
-# 1. Pull every cited DOI from your bibtex
+# 1. Extract every cited DOI from the bib
 grep -oE '10\.[0-9]{4,9}/[^"} ,]+' references.bib | sort -u > preflight.txt
 
-# 2. (optional) Keep RW reasons fresh
-precis jobs sync-retraction-watch --mailto you@example.org
-
-# 3. Run the audit
+# 2. Run the audit
 precis jobs check-provenance --refs preflight.txt \
     --view default --out preflight.md
 ```
 
-Open `preflight.md`. Anything 🔴 has to be addressed before submission;
-🟠 needs human judgement; 🟡 is usually housekeeping; 🟢 is fine.
+Open `preflight.md`. 🔴 must be fixed; 🟠 needs human judgement;
+🟡 is usually housekeeping; 🟢 / 🟢 is fine; ⚪ is an unresolvable DOI.
 
-## What the report tells you
+## Read the report
+## What the severity emojis mean
+## How do I interpret preflight output?
 
-```
-# Provenance check — 250 DOIs · 2026-05-30
+```text
+Provenance check — 250 DOIs · 2026-05-30
 
 3/250 resolved · 🔴 1 · 🟠 3 · 🟡 12 · ⚪ unknown: 2
 
-## 🔴 Blocker (1)
+-- 🔴 Blocker (1) --
 
-### #47 · `10.1234/foo` — Smith 2019
-_The retracted paper title_
-- 🔴 retraction · 2022-08-14 · notice DOI: `10.1234/foo-r1`
-  - Reasons: +Falsification/Fabrication of Data; +Misconduct
+#47 · `10.1234/foo` — Smith 2019
+  _The retracted paper title_
+  - 🔴 retraction · 2022-08-14 · notice DOI: `10.1234/foo-r1`
+    - Reasons: +Falsification/Fabrication of Data; +Misconduct
 
-## 🟠 Review (3)
+-- 🟠 Review (3) --
 
-### #82 · `10.5678/bar` — Doe 2023
-_Paper under EoC_
-- 🟠 expression_of_concern · 2024-03-10
-  - Reasons: +Concerns/Issues With Data
-
-### #119 · `10.9999/baz` — Lee 2022
-_A clean-itself paper that cites retracted work_
-- 🔴 cites retracted `10.x/contested-source` — _The cited paper_
-
-## ⚪ Unknown DOI (Crossref 404) (2)
-
-- #163 · `10.1234/typo` — Crossref returned 404
+#119 · `10.9999/baz` — Lee 2022
+  - 🔴 cites retracted `10.x/contested-source`
 ```
 
-The `#N` is the 1-based position in your input — `#47` here is the
-47th line of `preflight.txt`. Stable across all views and JSON output,
-so you can grep your bib for line 47 and find what to fix.
+- 🔴 **Blocker** — retracted. Drop the citation or replace the argument.
+- 🟠 **Review** — Expression of Concern, cites retracted work, or
+  metadata mismatch. Human judgement.
+- 🟡 **Correction** — corrigendum / erratum. Skim; mostly housekeeping.
+- 🟢 **Info** — clean.
+- ⚪ **Unknown DOI** — Crossref 404. Likely typo or hallucinated DOI.
+- ⚪ **Malformed DOI** — doesn't match `10.<digits>/<suffix>`.
 
-## Severity buckets
+`#N` is the 1-based line in `preflight.txt` — grep your bib for the
+matching DOI to locate the citation.
 
-- 🔴 **Blocker** — paper retracted. Drop the citation or replace the
-  supporting argument.
-- 🟠 **Review** — Expression of Concern, OR the paper cites a
-  retracted source, OR metadata mismatch detected. Human judgement
-  required.
-- 🟡 **Correction** — corrigendum / erratum. Skim each; most are
-  housekeeping (affiliation, typo), occasionally substantive.
-- 🟢 **Info** — clean, no action.
-- ⚪ **Unknown DOI** — Crossref returned 404. Likely typo or
-  hallucinated DOI. Verify the source.
-- ⚪ **Malformed DOI** — doesn't match `10.<digits>/<suffix>`. Verify.
+## Catch the "right DOI, wrong paper" case
+## Verify that each DOI's metadata matches what I cite
+## How do I confirm the DOIs resolve to the papers I think they do?
 
-## Deeper checks (opt-in)
-
-**Transitive cite-walk.** Do my citations themselves cite retracted
-work? Adds depth-1 cite checking; clean-itself papers that cite
-retracted sources get promoted into the 🟠 Review bucket.
-
-```bash
-precis jobs check-provenance --refs preflight.txt --transitive depth=1
-```
-
-Or via the kind API:
-
-```python
-get(kind='provenance', q='10.x/a, 10.x/b, ...', transitive=True)
-```
-
-**Metadata verification.** Catches the "right DOI, wrong paper" case.
 Requires structured input (DOI + title + authors + year):
 
 ```python
@@ -107,14 +73,25 @@ get(kind='provenance', view='verify', q='''
 ''')
 ```
 
-Token-set Jaccard comparison with NFKD diacritic stripping + German-
-phonetic alts (`Müller` ↔ `Mueller`) + reverse-phonetic fold for the
-ASCII↔ASCII case. Flags any DOI whose Crossref title doesn't match
-your supplied title, or whose first author doesn't match.
+Flags any DOI whose Crossref title or first author doesn't match
+your supplied bibliographic data. Handles diacritics and German
+phonetic alternates (`Müller` ↔ `Mueller`).
 
-**Candidate hints for unknown DOIs.** When a DOI 404s *and* you've
-supplied bibliographic metadata, opt-in to advisory candidate
-suggestions:
+## Check whether my citations themselves cite retracted work
+## Run a transitive cite-walk one level deep
+## Audit depth-1 — do my sources cite bad papers?
+
+```bash
+precis jobs check-provenance --refs preflight.txt --transitive depth=1
+```
+
+```python
+get(kind='provenance', q='10.x/a, 10.x/b, ...', transitive=True)
+```
+
+Clean-itself papers that cite retracted sources get promoted to 🟠.
+
+## Get candidate suggestions for unknown DOIs
 
 ```python
 get(kind='provenance',
@@ -123,69 +100,42 @@ get(kind='provenance',
     suggest_candidates=True)
 ```
 
-The supplied DOI's status stays `unknown` — we never auto-substitute.
-The report just lists possible matches from Crossref. You verify
-and replace by hand.
+The 404'd DOI stays `unknown` — no auto-substitution. The report lists
+possible Crossref matches; verify and replace by hand.
 
-## Pre-release runbook
+## Keep retraction reasons fresh
 
-Recommended sequence one week before release:
+```bash
+precis jobs sync-retraction-watch --mailto you@example.org
+```
 
-1. **Sync the RW dataset** — once, monthly. Surfaces *why* a paper was
-   retracted, not just *that* it was.
-   ```bash
-   precis jobs sync-retraction-watch --mailto you@example.org
-   ```
+Run once monthly. Surfaces *why* a paper was retracted, not just *that*
+it was.
 
-2. **Extract DOIs** from your bib.
-   ```bash
-   grep -oE '10\.[0-9]{4,9}/[^"} ,]+' references.bib | sort -u > preflight.txt
-   ```
+## Decide whether "cites retracted work" matters
 
-3. **Run the audit** with full checks.
-   ```bash
-   precis jobs check-provenance --refs preflight.txt \
-       --transitive depth=1 \
-       --view default --out preflight.md
-   ```
+The citing paper might cite the retracted source for unrelated
+background, alongside alternatives, or while explicitly noting the
+retraction — none load-bearing. Or the retracted claim might be
+foundational. Read the citing paper's use of the source (usually one
+paragraph) and decide.
 
-4. **Fix 🔴 entries first.** These are non-negotiable. Drop the citation
-   or replace the argument.
+## Pre-release sequence
 
-5. **Read 🟠 entries.** Decide whether your argument depends on the
-   contested claim. For "cites retracted work" findings: check whether
-   the retracted citation is load-bearing in your argument or
-   peripheral.
-
-6. **Skim 🟡 entries.** Most are housekeeping; a few may have
-   substantive corrections you should know about.
-
-7. **Resolve ⚪ entries** (unknown DOIs). Manual verification — these
-   are typos or hallucinated DOIs that need fixing or removal.
-
-8. **Re-run** after fixes to confirm the report is clean.
-
-## How to interpret "cites retracted work"
-
-A clean-itself paper that cites a retracted source isn't automatically
-a problem. The citing paper might:
-
-- Only cite the retracted work for unrelated background context
-- Cite multiple alternative sources making the same point
-- Explicitly note the retraction in their text
-
-OR it might be load-bearing:
-
-- The cited claim is foundational to their argument
-- No alternative source backs the assertion
-- The retraction was for fabricated data the citing paper builds on
-
-The tool can't tell the difference. Read the citing paper's use of
-the contested source — typically a single paragraph — and decide.
+1. `sync-retraction-watch` (monthly).
+2. Extract DOIs from the bib.
+3. Run `check-provenance` with `--transitive depth=1`.
+4. Fix 🔴 first — non-negotiable.
+5. Read 🟠; decide per-citation.
+6. Skim 🟡 for substantive corrections.
+7. Resolve ⚪ — typos or hallucinated DOIs.
+8. Re-run until clean.
 
 ## See also
 
-- `precis-provenance-help` — full kind documentation
-- `precis-paper-help` — paper ingest (so notice DOIs become refs in
-  your local store)
-- `precis-doi-resolution` — DOI canonicalisation rules
+```python
+get(kind='skill', id='precis-provenance-help')   # full provenance kind docs
+get(kind='skill', id='precis-paper-help')        # ingest notice DOIs as papers
+get(kind='skill', id='precis-doi-resolution')    # DOI canonicalisation rules
+get(kind='skill', id='precis-citation-help')     # verifier workflow for writing
+```

@@ -1,143 +1,96 @@
 ---
-title: Startup-skill pinning via PRECIS_STARTUP_SKILLS
-tier: 2
-applies-to: skill
+id: precis-startup-skills-help
+title: precis — pin skills into the cold-start banner
+applies-to: PRECIS_STARTUP_SKILLS env var
+status: active
 ---
 
-# Startup-skill pinning (`PRECIS_STARTUP_SKILLS`)
+# precis-startup-skills-help — pin skills into the cold-start banner
 
-The MCP server ships with a deliberately spare cold-start banner.
-The default action it teaches is **discovery**:
+The cold-start banner is spare by default: it teaches discovery via
+`search(kind='skill', q=...)`. Operators can pin skill ids so they
+surface to every connecting agent on the first message — useful when
+small models would otherwise miss them.
 
-```python
-search(kind='skill', q='<your goal in plain language>')
-```
+## Pin skills for every connecting agent
+## Configure PRECIS_STARTUP_SKILLS
+## Tell the server which skills to advertise at boot
 
-If a particular deployment knows in advance which skills its agents
-will need (e.g. a research workspace centred on the `paper` and
-`patent` kinds), the operator can **pin** specific skill ids so they
-surface in the cold-start banner without an explicit search.
-
-## Configuration
-
-Set the env var to a comma-separated list of skill slugs:
-
-```
+```bash
 PRECIS_STARTUP_SKILLS=precis-search-help,precis-paper-help,precis-patent-search-help
 ```
 
-The default is empty — cold-start stays lean unless an operator
-opts in.
+Comma-separated skill slugs. Whitespace tolerated. Duplicates dropped
+(first occurrence wins). Empty by default — banner stays lean.
 
-Whitespace around commas is tolerated. Duplicates are dropped
-silently in the operator-stated order (first occurrence wins).
+## What pinning surfaces to the agent
+## How an agent sees pinned skills
+## What lands in the cold-start banner
 
-## What pinning does
+The banner gains one line listing the pinned ids:
 
-For each surviving slug:
+```text
+Pinned skills (load via prompts/get): precis-search-help,
+  precis-paper-help, precis-patent-search-help.
+```
 
-1. The banner in `serverInfo.instructions` carries a one-line notice
-   listing the pinned ids:
+The agent decides whether to pre-fetch the bodies via
+`get(kind='skill', id='<slug>')` or `prompts/get`. The corresponding
+MCP prompts carry a `pinned` tag for clients that prioritise tagged
+prompts in their picker.
 
-   ```
-   Pinned skills (load via prompts/get): precis-search-help,
-     precis-paper-help, precis-patent-search-help.
-   ```
+Bodies are not inlined — the banner stays small, bodies stream on
+demand.
 
-   An agent sees this on the very first message and can decide
-   whether to pre-fetch the bodies via `get(kind='skill', id='<slug>')`
-   or `prompts/get`.
+## Cap pinned-body size
+## Limit how much context pinning can consume
+## PRECIS_STARTUP_SKILLS_CAP_KB
 
-2. The corresponding MCP **prompt** carries a `pinned` tag (alongside
-   the existing `precis`, `skill`, `tier-<N>`, `kind:<X>` tags). Modern
-   clients can use the tag to prioritise the operator's recommended
-   set in their prompt picker.
+Default cap: **50 KB** of cumulative resolved-body size across all
+pinned slugs.
 
-What pinning does **not** do:
+```bash
+PRECIS_STARTUP_SKILLS_CAP_KB=50    # default; 0 disables (not recommended)
+```
 
-- It does not inline skill bodies into the banner. The banner stays
-  small; bodies stream on demand.
-- It does not change the seven-verb wire surface. Pinned skills
-  remain reachable via the same `get(kind='skill', ...)` and
-  `search(kind='skill', ...)` calls every other skill uses.
-- It does not pre-emit `notifications/prompts/list_changed`. The
-  prompts are registered at boot like every other skill; the
-  `pinned` tag is the only extra signal.
+Drop-tail when exceeded: slugs resolve in env-var order; the first
+slug that would push the total over the cap — and every slug after
+it — is omitted. A warning appends to the banner:
 
-## Cap and truncation
+```text
+PRECIS_STARTUP_SKILLS truncated to cap (50 KB): omitted
+  precis-python-help, precis-files-help.
+```
 
-To prevent operator misconfiguration from inflating context for
-every connecting agent, the resolver enforces a cap on total
-resolved-body bytes.
-
-- Default cap: **50 KB** of cumulative skill-body size.
-- Configurable via `PRECIS_STARTUP_SKILLS_CAP_KB` (integer; set to
-  `0` to disable, not recommended).
-
-Behaviour when the cap is exceeded is **drop-tail** to preserve the
-operator-stated priority order:
-
-1. Resolve slugs in the order they appear in the env var.
-2. Sum body bytes as we go.
-3. The first slug that would push the total over the cap, and
-   every slug after it, lands in the `truncated` set.
-4. A warning notice is appended to the banner:
-
-   ```
-   ⚠ PRECIS_STARTUP_SKILLS truncated to cap (50 KB): omitted
-     precis-python-help, precis-files-help.
-   ```
-
-Reorder the env-var entries (or raise the cap) to change which
-skills survive.
+Reorder entries (highest-priority first) or raise the cap to change
+which skills survive.
 
 ## Unknown slug handling
 
-A slug that doesn't resolve to a shipped skill (typo, removed
-skill, third-party skill from a sibling deployment) is dropped
-with a one-line warning:
+Unresolvable slugs (typo, removed skill, third-party id) drop with a
+one-line warning:
 
+```text
+PRECIS_STARTUP_SKILLS skipped unknown skill ids: foo, bar.
 ```
-⚠ PRECIS_STARTUP_SKILLS skipped unknown skill ids: foo, bar.
-```
 
-This is **suppressed entirely** when the config is valid: zero
-banner bytes are paid by an operator who set the env var
-correctly.
+Zero banner bytes are paid when the config is valid.
 
-## Discovery
-
-To list every available slug:
+## Pick the right slugs to pin
 
 ```python
-get(kind='skill', id='toc')
+get(kind='skill', id='toc')                     # browse every skill, one-line synopsis
+search(kind='skill', q='patent search prior art')   # fuzzy lookup for a workflow
 ```
 
-To find the right slugs for your workflow:
+Pin the skills agents in this deployment will hit first and most
+often — typically `precis-search-help` plus the one or two `kind`
+helpers central to the workspace.
+
+## See also
 
 ```python
-search(kind='skill', q='patent search prior art')
+get(kind='skill', id='precis-overview')         # verbs and kinds
+get(kind='skill', id='precis-search-help')      # default cold-start action
+get(kind='skill', id='precis-kinds-disabled-help')   # PRECIS_KINDS_DISABLED sibling env var
 ```
-
-## Operator workflow
-
-1. `get(kind='skill', id='toc')` and `search(kind='skill', q=...)`
-   to identify the skill ids your agents will need most often.
-2. Set `PRECIS_STARTUP_SKILLS=<slug1>,<slug2>,...`.
-3. (Optional) Adjust `PRECIS_STARTUP_SKILLS_CAP_KB` if the default
-   50 KB is too tight or too loose for your context budget.
-4. Restart the server.
-5. Verify the banner: a connecting agent should see the
-   `Pinned skills (load via prompts/get): ...` line on the first
-   message.
-
-## Related
-
-- `precis-overview` — the seven-verb agent tool surface and the
-  full kind topology.
-- `precis-search-help` — the canonical first-action skill that the
-  cold-start banner advertises by default.
-- `PRECIS_KINDS_DISABLED` — sibling env var that turns whole kinds
-  off; pinning a skill whose subject kind is disabled surfaces a
-  notice on the banner (see `precis-kinds-disabled-help` once that
-  ships).

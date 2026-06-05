@@ -66,7 +66,7 @@ for citation-graph navigation use `kind='paper'`.
 
 ```python
 get(kind='tex', id='main.tex', view='toc')
-get(kind='tex', id='main.tex', view='outline')   # headings only, no excerpts
+get(kind='tex', id='main.tex', view='outline')   # headings only
 get(kind='tex', id='main.tex/toc')               # path form
 ```
 
@@ -91,7 +91,7 @@ indent. Cycles terminate with a `⇺` marker. Targets outside
 Each backticked handle is a real address. Paste it as `id=` to read
 that block.
 
-Views: `toc` (sections + excerpts, recursive across `\input`),
+Views: `toc` (sections + keywords, recursive across `\input`),
 `outline` (headings only), `raw` (full source).
 
 ## Drill into part of a file with a sub-TOC

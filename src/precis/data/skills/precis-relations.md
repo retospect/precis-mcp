@@ -1,156 +1,165 @@
 ---
 id: precis-relations
-title: precis — link two refs
-status: phase-7
-tier: 1
-floor: any
-applies-to: link (target=, mode=, rel=), get (view='links') on numeric-ref kinds (memory/todo/gripe/fc/quest/conv), put (link=, rel= on create)
-last-updated: 2026-05-02
+title: precis — relation vocabulary for link(rel=)
+applies-to: link (rel=), put (rel= on create)
+status: active
 ---
 
-# precis-relations — link two refs
+# precis-relations — relation vocabulary for `link(rel=)`
 
-Links connect any two refs (or specific blocks within them) across
-kinds. The link table is **kind-agnostic** — paper → todo,
-memory → markdown-block, todo → todo are all legal.
+Closed list of relation slugs `link(...)` accepts as `rel=`. Default
+is `related-to`. Unknown relations raise `BadInput` with the full
+options list. Link verb mechanics and target grammar live in
+`precis-link-help`.
 
-## Canonical syntax
+## Which relation should I use?
+## Pick the right rel= for what I want to record
+## I want to link A to B — which relation fits?
 
-The link target always carries an explicit kind prefix:
-
-```
-kind:identifier[~selector]
-```
-
-- `kind:` — registered kind (`paper`, `memory`, `todo`, `markdown`, …).
-- `identifier` — slug for slug kinds, integer id for numeric kinds.
-- `~selector` — *optional* block selector: numeric pos (`~38`) or
-  block slug (`~agenda`).
-
-The relation goes in a separate `rel=` kwarg (default `related-to`).
-There is **no** colon-suffix shortcut — earlier docs that showed
-`link='158:blocked-by'` were inconsistent and have been retired.
-
-## Relations vocabulary
-
-| `rel=` | Inverse | Use when |
+| `rel=` | Inverse | Use for |
 |---|---|---|
-| `related-to` (default) | self | Symmetric "see also" |
-| `blocks` / `blocked-by` | each other | Workflow dependency |
-| `cites` / `cited-by` | each other | Citation graph |
-| `derived-from` / `derived-into` | each other | Provenance |
-| `supports` / `supported-by` | each other | Evidential support |
-| `contradicts` / `contradicted-by` | each other | Disagreement |
-| `generalises` / `specialises` | each other | Abstraction level |
-| `see-also` | (none) | Asymmetric pointer for context |
+| `related-to` (default) | self | Symmetric "see also"; no stronger claim fits. |
+| `cites` | `cited-by` | A references B (paper → paper, memory → paper, etc.). |
+| `supports` | `supported-by` | B is evidence for A. |
+| `contradicts` | `contradicted-by` | A disagrees with B. |
+| `derived-from` | `derived-into` | A was produced from B (summary, distillation, chase result). |
+| `generalises` | `specialises` | A is the broader abstraction of B. |
+| `blocks` | `blocked-by` | A workflow item must finish before B can. |
+| `see-also` | (none) | One-way "for context" pointer with no reverse semantic. |
+| `retracts` | `retracted-by` | A retracts B (notice → paper). |
+| `corrects` | `corrected-by` | A corrects B (corrigendum → paper). |
+| `raises-concern-about` | `concern-raised-by` | A raises an expression of concern about B. |
 
-## Link a memory to a paper
+All relations except `related-to` and `see-also` auto-mirror: writing
+`cites` from A→B makes A→B queryable as `cited-by` from B's side
+without a second `link()`.
+
+## Cite a paper from a memory or another paper
+## Record that A cites B
+## How do I capture a citation edge?
 
 ```python
-link(kind='memory', id=47, target='paper:wang2020state')
-# default rel='related-to', mode='add'
+link(kind='memory', id=42,
+     target='paper:wang2020state', rel='cites')
+
+link(kind='memory', id=42,
+     target='paper:wang2020state~38', rel='cites')   # cite a specific block
 ```
 
-## Cite a specific block
+Use `cites` for any reference edge — bibliographic citation, in-body
+mention, or quoted passage. Block-level targets pin the citation to
+one paragraph.
+
+## Record evidential support or disagreement
+## A backs / counters B — which rel?
+## I have a memory that agrees (or argues against) a paper
 
 ```python
 link(kind='memory', id=89,
-     target='paper:wang2020state~38',
-     rel='cites')
+     target='paper:wang2020state', rel='supports')
+
+link(kind='memory', id=89,
+     target='paper:chen2021critique', rel='contradicts')
 ```
 
-Block selector `~38` pins the link to paper block 38 rather than
-the paper as a whole.
+`supports` / `contradicts` carry an evidential claim — stronger than
+`cites`. Use when the source ref takes a position on the target's
+findings. Both work between any two ref kinds.
+
+## Record provenance (A came from B)
+## How do I link a summary to its source?
+## Mark one ref as derived from another
+
+```python
+link(kind='memory', id=12,
+     target='paper:wang2020state', rel='derived-from')
+
+link(kind='research', id=88,
+     target='quest:14', rel='derived-from')
+```
+
+`derived-from` records that A's content was produced from B —
+summaries, distillations, chase-pipeline outputs, manual notes
+extracted from a passage.
+
+## Express abstraction level
+## A is broader / narrower than B
+
+```python
+link(kind='memory', id=51,
+     target='memory:23', rel='generalises')          # 51 is the broader claim
+
+link(kind='memory', id=23,
+     target='memory:51', rel='specialises')          # equivalent edge from the other side
+```
+
+Use between concept-bearing refs (memory, fc, paper). The auto-mirror
+means writing one direction makes the other queryable.
 
 ## Block one todo on another
+## Record a workflow dependency
+## A can't start until B is done
 
 ```python
 link(kind='todo', id=141,
-     target='todo:158',
-     rel='blocked-by')
+     target='todo:158', rel='blocked-by')
+
+link(kind='todo', id=158,
+     target='gripe:7', rel='blocks')
 ```
 
-## Record a contradiction across kinds
+`blocks` / `blocked-by` is the workflow-filter pair. Targets are
+usually `todo`, `gripe`, or `quest`. The `todo` list view filters
+on these.
+
+## Mark a retraction, correction, or concern
+## A retracts / corrects / raises concern about B
 
 ```python
-link(kind='memory', id=89,
-     target='paper:chen2021critique',
-     rel='contradicts')
+link(kind='memory', id=7,
+     target='paper:badpaper2020', rel='retracts')
+
+link(kind='paper', id='corrigendum-slug',
+     target='paper:original-slug', rel='corrects')
+
+link(kind='memory', id=8,
+     target='paper:disputed2021', rel='raises-concern-about')
 ```
 
-## See what's linked
+These attach a provenance notice to the affected ref. The renderer
+surfaces the inverse (`retracted-by`, `corrected-by`,
+`concern-raised-by`) when displaying the target.
+
+## One-way "for context" pointer
+## I want to nudge a reader toward B without claiming a stronger edge
 
 ```python
-get(kind='todo', id=141, view='links')
-#  outbound
-# → todo:158  (blocked-by)
-#  inbound
-# (none)
+link(kind='memory', id=42,
+     target='paper:wang2020state', rel='see-also')
 ```
 
-The renderer prints both directions: `→` for outbound, `←` for
-inbound.
+`see-also` is the only asymmetric relation with **no** inverse. Use
+for "while reading A, you might want B" hints that don't fit
+`related-to`, `cites`, or any evidential edge.
 
-`view='links'` is currently wired only on the **numeric-ref kinds**
-(`memory`, `todo`, `fc`, `quest`, `conv` — `gripe` is write-only).
-Slug kinds (`paper`, `patent`, `oracle`, `web`, `research`, …)
-raise `[error:Unsupported]`; query the link graph for those via
-the store-level helpers or by traversing from the linked
-numeric-ref ref.
-
-## Remove a link
+## Default — symmetric "see also"
+## I just want a generic link, no specific claim
 
 ```python
-# Remove a specific (target, relation) pair
-link(kind='todo', id=141, target='todo:158', mode='remove', rel='blocked-by')
-
-# Remove ALL links to a target (any relation)
-link(kind='todo', id=141, target='todo:158', mode='remove')
+link(kind='memory', id=47,
+     target='paper:wang2020state')                  # rel='related-to' by default
 ```
 
-`mode='add'` and `mode='remove'` are mutually exclusive — issue
-two `link()` calls if you want to swap a relation atomically:
-remove the old (target, rel) pair, then add the new one.
-
-## Validation errors
-
-```python
-link(kind='memory', id=47, target='wang2020state')
-# [error:BadInput] link target 'wang2020state' missing required 'kind:' prefix
-#   next: use canonical 'kind:identifier' form
-#         (e.g. 'paper:wang2020state' or 'todo:158')
-
-link(kind='memory', id=47, target='paper:nope')
-# [error:NotFound] link target 'paper:nope' resolves to no live paper ref
-#   next: check it exists: get(kind='paper', id='nope')
-
-link(kind='memory', id=47, target='paper:wang2020state', rel='references')
-# [error:BadInput] unknown relation: 'references'
-#   options: ['blocked-by', 'blocks', 'cited-by', 'cites', ...]
-#   next: pick from the registered relations or omit rel=
-#         for the default 'related-to'
-```
-
-## Notes
-
-- **Kind-agnostic:** any ref can link to any ref (live or
-  soft-deleted; deleted targets render with a `(deleted)` marker).
-- **Position-aware:** block-level links work on either end, e.g.
-  `link='paper:slug~5'` or sourcing from a memory block via
-  future Phase 7.5 work.
-- **Idempotent:** re-issuing the same `(src, src_pos, dst, dst_pos,
-  relation)` insert is a no-op (UNIQUE constraint).
-- **Self-loops blocked:** linking a ref to itself at the same
-  position raises `BadInput`. Same-ref different-pos links are
-  allowed (e.g. `memory:42~3 → memory:42~7` for "see block 7").
-- **Inverse_slug is documentation, not auto-mirroring** — adding
-  a `cites` link does *not* create a `cited-by` row. The renderer
-  shows the inverse direction by querying both sides.
-- **Bare slug, mode-suffix syntax (older docs):** retired. The
-  runtime now requires `kind:identifier` and a separate `rel=`.
+`related-to` is symmetric — querying from either side surfaces the
+edge without a separate inverse row. Omit `rel=` to get it.
 
 ## See also
 
-- `precis-overview` — verbs and kinds
-- `precis-tags` — for axes the relations vocabulary can't express
-- `precis-todo-help` — `blocks`/`blocked-by` workflow filter
+```python
+get(kind='skill', id='precis-link-help')        # link verb mechanics, target=, mode=
+get(kind='skill', id='precis-tags')             # tag vocabulary (axes vs relations)
+get(kind='skill', id='precis-overview')         # verbs and kinds
+get(kind='skill', id='precis-todo-help')        # blocks/blocked-by workflow filter
+get(kind='skill', id='precis-citation-help')    # verifier workflow for cites
+get(kind='skill', id='precis-provenance-help')  # retraction/correction notices
+```

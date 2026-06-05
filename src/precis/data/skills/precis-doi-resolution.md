@@ -1,124 +1,108 @@
 ---
 id: precis-doi-resolution
-title: precis — collapse raw DOIs in text to paper slugs
+title: precis — resolve a DOI to a paper at the agent boundary
+applies-to: get(kind='paper', id='<DOI>')
 status: active
-tier: 2
-floor: any
-applies-to: cross-cutting (markdown / plaintext / tex; out-of-root dirs too)
-last-updated: 2026-05-10
 ---
 
-# precis-doi-resolution — collapse raw DOIs in text to paper slugs
+# precis-doi-resolution — resolve a DOI to a paper at the agent boundary
 
-When you ingest external prose (Perplexity reports, research dumps,
-LLM chat exports, manuscript drafts, bibliography rough-cuts, …)
-it usually contains DOIs in their raw form — `10.1093/sleep/zsag065`
-or `https://doi.org/10.1038/s41531-025-01018-8`. Every DOI that
-precis already knows can be replaced *in place* with its paper slug
-in square brackets — `[lee2026could]`, `[nepozitek2025glymphatic]` —
-giving you a citation-friendly, search-friendly, bib-generation-friendly
-form. Unknown DOIs are left untouched (best-effort).
+A bare DOI works anywhere a paper slug works. `get` and `search`
+collapse `10.1038/nature10352` to the underlying paper transparently;
+you do not need a separate resolve step.
 
-This is a destructive rewrite of the text on disk. It's idempotent
-(re-running is a no-op since the DOIs are gone), but the original
-DOI strings are not preserved unless you keep a backup outside the
-target directory.
-
-## When to run it
-
-Run it **once per directory** of freshly-ingested prose, before any
-downstream tool (LaTeX bib generation, agent prompts, search) touches
-the files. Typical triggers:
-
-- A new sub-directory under `content/.../...` got populated with
-  Perplexity / Sonar-deep-research reports.
-- You just landed a docx / markdown manuscript that cites by DOI.
-- An agent wrote a research summary to `$PAPERS_REPORTS` and you
-  want the slug form for the next pipeline stage.
-
-## Workflow surface
-
-### Today: workspace-side script
-
-The current implementation lives in the workspace, *not* in the MCP
-verb surface. From `pips/packages/precis-mcp/`:
-
-```sh
-# default: cwd, recurse, rewrite *.md and *.txt in place
-./scripts/doilist convert-doi-to-slugs
-
-# explicit dir + dry-run (counts only, no writes)
-./scripts/doilist convert-doi-to-slugs --dry-run path/to/dir
-
-# also rewrite .tex sources
-./scripts/doilist convert-doi-to-slugs --ext md --ext txt --ext tex .
-```
-
-Output reports `replaced/seen` per file plus a final tally. Best to
-run `--dry-run` first on unfamiliar directories — the bulk SQL-backed
-slug map runs in well under a second, so iterating is cheap.
-
-The script lives at
-`pips/packages/precis-mcp/scripts/_doilist.py`; documented in
-`pips/packages/precis-mcp/scripts/README.md` under
-`### doilist → #### doilist convert-doi-to-slugs`.
-
-### Tomorrow: precis edit mode (planned)
-
-The intended long-term home is an `edit` mode on the file kinds:
+## Open a paper when all I have is a DOI
+## Fetch a paper by DOI instead of slug
+## I have a DOI — how do I read the paper?
 
 ```python
-edit(kind='markdown',  id='content/foo/bar.md', mode='resolve-dois')
-edit(kind='plaintext', id='notes/dump.txt',     mode='resolve-dois')
-edit(kind='tex',       id='paper.tex',          mode='resolve-dois')
+get(kind='paper', id='10.1038/nature10352')                     # full overview
+get(kind='paper', id='10.1038/nature10352', view='abstract')    # DOI + view = kwarg only
+get(kind='paper', id='10.1038/nature10352', view='toc')
+get(kind='paper', id='10.1038/nature10352', view='bibtex')
 ```
 
-Once shipped, that's the agent-native call. **Until then**, prefer
-the workspace script — it works on directories outside `PRECIS_ROOT`
-(e.g. `content/techreport/...`) which the file kinds can't reach.
+The DOI resolves to the same paper a slug would. After the first
+call, take the slug from the response header and use it for any
+chunk-level work (`<slug>~38..42`).
 
-## What gets matched and replaced
+## Pass a view with a DOI without breaking on the slash
+## Why does view= have to be a kwarg for DOIs?
+## DOI plus view — the kwarg-only quirk
 
-- **Bare DOI** `10.x/y` → `[slug]`
-- **URL-form DOI** `https://doi.org/10.x/y` (or `dx.doi.org`,
-  `http://`) → `[slug]` (the URL prefix is consumed too — no broken
-  links left behind).
-- **arXiv DOI form** `10.48550/arXiv.<id>` → same slug as the bare
-  arXiv id (resolved via the `ref_identifiers` cross-scheme alias
-  index).
+DOI suffixes contain `/`, so the `slug/view` path form (which works
+for slugs: `id='abazari2024design/toc'`) is ambiguous for DOIs. Use
+the `view=` kwarg:
 
-Trailing markdown formatting and a single sentence-punctuation char
-are preserved on output:
+```python
+get(kind='paper', id='10.1038/nature10352', view='toc')         # works
+get(kind='paper', id='10.1038/nature10352/toc')                 # ambiguous — don't
+```
 
-| Input                             | Output                |
-|-----------------------------------|-----------------------|
-| `**DOI: 10.x/y**`                 | `**DOI: [slug]**`     |
-| `See 10.x/y.`                     | `See [slug].`         |
-| `Footnote 10.x/y[^9].`            | `Footnote [slug][^9].`|
-| `In a list (10.x/y).`             | `In a list ([slug]).` |
-| `` `10.x/y` ``                    | `` `[slug]` ``        |
+Same rule for chunk selectors: `id='<DOI>~38..42'` is fine because
+`~` doesn't collide with DOI grammar, but `id='<DOI>/cite/bib'`
+collides — use `view='bibtex'`.
 
-URL-suffix junk is dropped (`.full`, `?utm=…`, `…`, `..`).
+## Fetch a paper from a URL-form DOI
+## Resolve doi.org links
+## I copy-pasted a doi.org URL — does that work?
 
-Unknown DOIs (not yet ingested in precis) are left **exactly** as-is.
+Strip the URL prefix and pass the bare DOI:
 
-## What it does *not* do
+```python
+get(kind='paper', id='10.1038/s41531-025-01018-8')   # from https://doi.org/10.1038/s41531-025-01018-8
+```
 
-- It does **not** auto-ingest unknown DOIs. Pair with `doilist scan`
-  (which writes a `dois_to_get.md` queue and optionally fetches OA
-  PDFs via Unpaywall) when you want missing DOIs added to the
-  corpus.
-- It does **not** create `cites` links between the rewritten document
-  and the cited papers. That's a separate workflow (see option D in
-  `docs/future-integrations.md` if it lands).
-- It does **not** rewrite bibtex (`.bib`) or LaTeX-style `\cite{...}`
-  references — only DOI strings in prose.
+`https://doi.org/`, `http://doi.org/`, `dx.doi.org/` prefixes all
+need stripping. arXiv-flavoured DOIs (`10.48550/arXiv.<id>`) resolve
+to the same paper as the bare arXiv id.
 
-## Related
+## Cite a paper when I only have its DOI
+## Get BibTeX from a DOI
+## DOI → BibTeX in one call
 
-- `precis-paper-help` — paper slugs are the canonical paper ID;
-  every `get(kind='paper', id='10.x/y')` already does the same DOI →
-  slug resolution at lookup time, so once a document carries `[slug]`
-  forms the agent never needs to round-trip through a DOI again.
-- `precis-files-help` — file-kind addressing and the `PRECIS_ROOT`
-  boundary.
+```python
+get(kind='paper', id='10.1038/nature10352', view='bibtex')
+get(kind='paper', id='10.1038/nature10352', view='ris')
+get(kind='paper', id='10.1038/nature10352', view='endnote')
+```
+
+## Handle a DOI that isn't in the corpus
+## Recover when a DOI lookup misses
+## What if get(kind='paper', id='<DOI>') raises NotFound?
+
+The DOI isn't ingested. Register a finding so the worker chases it:
+
+```python
+put(kind='finding',
+    title='<one-line claim from the citing context>',
+    body='<the surrounding sentence(s)>',
+    cited_in='doi:10.1038/nature10352')
+# → created finding id=N
+```
+
+The chase fetches via Unpaywall / arXiv / S2 and walks back toward
+the primary source. Drop `[N]` in your draft; `precis resolve`
+substitutes the established `cite_key` at finalisation. Full chase
+mechanics in `precis-finding-help`.
+
+## Find which ingested papers cite a given DOI
+## Search the corpus for body-text mentions of a DOI
+## Who cites 10.x/y?
+
+```python
+search(kind='paper', q='10.1038/nature10352')
+```
+
+Searching a DOI string finds papers that *mention* it in body text
+(typically citing it). To fetch the paper itself, use
+`get(kind='paper', id='<DOI>')`.
+
+## See also
+
+```python
+get(kind='skill', id='precis-paper-help')       # slug grammar, views, chunk selectors
+get(kind='skill', id='precis-finding-help')     # chase pipeline for un-ingested DOIs
+get(kind='skill', id='precis-search-help')      # query mechanics
+get(kind='skill', id='precis-citation-help')    # verifier workflow for writing
+```

@@ -97,10 +97,9 @@ get(kind='paper', id='<slug>')                       # full overview
 get(kind='paper', id='<slug>/toc')                   # path form = view='toc'
 ```
 
-TOC rows are drillable: paste a handle (`slug~A..B`) as `id=`. When
-the paper has H2 headings, the table includes a `heading` column;
-otherwise segments are clustered by content. Excerpts align to your
-query when there is one.
+TOC rows are drillable: paste a handle (`slug~A..B`) as `id=`. Each
+row shows the segment's most-distinctive keywords. Segments are
+clustered dynamically by content at request time.
 
 Views: `abstract`, `toc`, `bibtex` (`cite/bib`), `ris` (`cite/ris`),
 `endnote` (`cite/endnote`). The `view=` kwarg and `slug/<view>` path

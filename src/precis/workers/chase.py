@@ -34,7 +34,6 @@ default costs zero.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -46,7 +45,11 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.ingest.citations import citations as fetch_s2_citations
-from precis.utils.claude_p import ClaudePError, call_claude_p
+from precis.workers._chase_llm import (
+    _disambiguate_candidates,
+    _locate_chunk_in_target,
+    _verify_support_with_caveats,
+)
 
 log = logging.getLogger(__name__)
 
@@ -876,174 +879,13 @@ def _set_status(
     _ = Tag
 
 
-# ── LLM hooks (default-off; activated by with_llm=True) ────────────
-
-
-_PROMPT_VERIFY = """\
-You are verifying whether a source paper chunk supports a specific
-empirical claim made under a specific experimental setup. Be
-CONSERVATIVE: hedged or conditionally-supportive language → record
-a caveat, do not claim full support.
-
-CLAIM:
-{claim}
-
-SETUP (structured):
-{scope_json}
-
-SOURCE: paper {target_cite_key}, chunk ord {target_chunk_ord}
-
-CHUNK TEXT:
-{target_chunk_text}
-
-Definitions:
-  supports = "yes"      : chunk states the claim under the setup
-                          (verbatim or close paraphrase)
-  supports = "partial"  : chunk supports the claim with conditions
-                          listed in caveats
-  supports = "no"       : chunk does not support the claim
-  caveats               : conditions, regimes, applicability limits
-                          that qualify the support
-  cited_others          : inline citation tokens that the chase
-                          should follow (e.g. "[12]", "(Lin 1998)").
-                          Empty if the chunk is the original source.
-  terminal              : true iff the chunk DESCRIBES the
-                          measurement itself; false if it merely
-                          restates a value from elsewhere.
-
-Respond with EXACTLY ONE JSON object, nothing else:
-{{
-  "supports": "yes" | "partial" | "no",
-  "support_reason": "<one sentence>",
-  "caveats": ["<caveat 1>", ...],
-  "cited_others": ["<token 1>", ...],
-  "terminal": true | false
-}}
-"""
-
-
-def _verify_support_with_caveats(
-    *,
-    claim: str,
-    scope: dict[str, Any],
-    target_cite_key: str,
-    target_chunk_ord: int,
-    target_chunk_text: str,
-) -> dict[str, Any] | None:
-    """Run the verifier LLM hook. Returns the parsed JSON dict or None."""
-    prompt = _PROMPT_VERIFY.format(
-        claim=claim,
-        scope_json=json.dumps(scope, sort_keys=True),
-        target_cite_key=target_cite_key,
-        target_chunk_ord=target_chunk_ord,
-        target_chunk_text=target_chunk_text[:4000],  # cap context cost
-    )
-    try:
-        result = call_claude_p(prompt)
-    except ClaudePError as exc:
-        log.warning("chase: verify hook failed: %s", exc)
-        return None
-    return result.data
-
-
-_PROMPT_DISAMBIGUATE = """\
-A chunk in a paper cites multiple references inline. Pick which
-single reference most plausibly grounds a specific claim.
-
-CHUNK TEXT:
-{chunk_text}
-
-CANDIDATE REFERENCES (0-indexed):
-{candidates_table}
-
-Respond with EXACTLY ONE JSON object, nothing else:
-{{
-  "pick_index": <int> | null,
-  "reason": "<one sentence>"
-}}
-
-Use null only when NO candidate plausibly grounds the claim.
-"""
-
-
-def _disambiguate_candidates(
-    chunk_text: str, candidates: list[_NextHopTarget]
-) -> int | None:
-    """Pick the most plausible candidate via LLM. Returns index or None."""
-    table = "\n".join(
-        f"  [{i}] {c.title or '(no title)'} ({c.year or '?'}) "
-        f"doi={c.doi or '-'} s2={c.s2_id or '-'}"
-        for i, c in enumerate(candidates)
-    )
-    prompt = _PROMPT_DISAMBIGUATE.format(
-        chunk_text=chunk_text[:3000],
-        candidates_table=table,
-    )
-    try:
-        result = call_claude_p(prompt)
-    except ClaudePError as exc:
-        log.warning("chase: disambiguate hook failed: %s", exc)
-        return None
-    pick = result.data.get("pick_index")
-    return int(pick) if isinstance(pick, int) else None
-
-
-_PROMPT_LOCATE = """\
-You are confirming whether a proposed chunk in a paper is the right
-place to find evidence for a specific claim. A lexical-overlap
-ranker proposed the "main" chunk; three alternates from the same
-paper are listed.
-
-CLAIM: {claim}
-
-MAIN proposal (ord {main_ord}):
-{main_text}
-
-ALTERNATES:
-{alternates_table}
-
-Respond with EXACTLY ONE JSON object, nothing else:
-{{
-  "ok": true | false,
-  "alternative_ord": <int> | null,
-  "reason": "<one sentence>"
-}}
-
-ok=true: the proposal is the right chunk.
-ok=false: pick alternative_ord, OR set null if NONE of the
-shown chunks supports the claim (chase will tag dead_chain).
-"""
-
-
-def _locate_chunk_in_target(
-    *,
-    claim: str,
-    proposed: tuple[int, int, str],
-    alternates: list[tuple[int, int, str]],
-) -> tuple[int, int, str] | None:
-    """Confirm or correct the proposed chunk pick. Returns the chosen tuple."""
-    alt_table = (
-        "\n".join(f"  [ord {alt[1]}]: {alt[2][:200]}" for alt in alternates)
-        or "  (none)"
-    )
-    prompt = _PROMPT_LOCATE.format(
-        claim=claim,
-        main_ord=proposed[1],
-        main_text=proposed[2][:1500],
-        alternates_table=alt_table,
-    )
-    try:
-        result = call_claude_p(prompt)
-    except ClaudePError as exc:
-        log.warning("chase: locate hook failed: %s", exc)
-        return proposed  # fall back to lexical pick
-    if result.data.get("ok") is True:
-        return proposed
-    alt_ord = result.data.get("alternative_ord")
-    if alt_ord is None:
-        return None  # caller tags dead_chain
-    match = next((a for a in alternates if a[1] == int(alt_ord)), None)
-    return match or proposed
+# LLM hooks (``_verify_support_with_caveats``,
+# ``_disambiguate_candidates``, ``_locate_chunk_in_target``) and their
+# prompts moved to ``precis.workers._chase_llm`` 2026-06-05. They are
+# imported at the top of this file so the call-site in
+# ``advance_finding`` is unchanged. The default-off contract is
+# preserved: the hooks only execute when ``with_llm=True`` (or
+# ``PRECIS_CHASE_LLM=1``) reaches the call site.
 
 
 __all__ = [

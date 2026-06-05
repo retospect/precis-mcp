@@ -1,112 +1,92 @@
 ---
-title: Prohibiting kinds via PRECIS_KINDS_DISABLED
-tier: 2
-applies-to: skill
+id: precis-kinds-disabled-help
+title: precis — recognize and enable disabled kinds
+applies-to: all kinds (boot-time enablement)
+status: active
 ---
 
-# Prohibiting kinds (`PRECIS_KINDS_DISABLED`)
+# precis-kinds-disabled-help — recognize and enable disabled kinds
 
-A deployment may want to **prohibit** a kind even when the
-resources to run it are available — for example, an air-gapped
-research workspace might disable the `web` kind to keep the
-agent from issuing outbound HTTP requests even though
-`PERPLEXITY_API_KEY` is set, or a security review might want
-the `patent` kind off until the EPO Terms-of-Use audit lands.
+A kind is *disabled* when its env vars are missing or when the
+operator listed it in `PRECIS_KINDS_DISABLED`. Calls against a
+disabled kind raise `Unsupported`; the error names the reason.
 
-## Configuration
+## I got "kind is registered but disabled" — what now?
+## A verb failed with Unsupported on a kind I expected to work
+## What does "disabled in this build" mean?
 
-Set the env var to a comma-separated list of kind names:
+The runtime raises this when the kind exists in the registry but
+was gated out at boot:
 
-```
-PRECIS_KINDS_DISABLED=patent,web,youtube
-```
-
-The default is empty — every kind whose resources are available
-loads, matching today's behaviour.
-
-Whitespace around commas is tolerated. Unknown kind names (typo,
-removed kind) are accepted silently as a no-op against the live
-registry; treating typos as a hard error would create a footgun
-every time a kind is renamed.
-
-## What prohibition does
-
-The kind-enablement predicate is:
-
-```
-loaded(kind) = NOT prohibited(kind) AND resources_present(kind)
+```text
+Unsupported: kind 'patent' is registered but disabled in this build
+(missing EPO_OPS_CLIENT_KEY, EPO_OPS_CLIENT_SECRET, PRECIS_PATENT_RAW_ROOT)
+Next: see get(kind='skill', id='precis-kinds-disabled-help')
+      and precis-overview Needs column
 ```
 
-Where `resources_present(kind)` is the existing machinery —
-env vars on `KindSpec.requires_env`, store / embedder / file root
-checks inside the handler's `__init__`.
+The parenthetical names the reason: either `prohibited` (operator
+listed it in `PRECIS_KINDS_DISABLED`) or `missing <ENV1>, <ENV2>`
+(required env vars not set). The agent cannot fix this — relay
+the missing var(s) to the operator.
 
-A prohibited kind:
+## Which env vars does each kind need?
+## What credentials enable a kind?
+## How do I tell the operator what to set?
 
-- Is **not constructed** at boot. The handler module is not
-  imported; no sockets open, no env vars are read.
-- Is **not registered** in the dispatch table. Any
-  `get(kind='patent', ...)` etc. raises `NotFound` with the
-  standard "kind not registered" recovery message.
-- **Surfaces on the cold-start banner**:
+| Kind | Required env |
+|---|---|
+| `patent` | `EPO_OPS_CLIENT_KEY`, `EPO_OPS_CLIENT_SECRET`, `PRECIS_PATENT_RAW_ROOT` |
+| `math` | `WOLFRAM_APP_ID` |
+| `websearch`, `think`, `research` | `PERPLEXITY_API_KEY` |
+| `markdown`, `plaintext`, `tex` | `PRECIS_ROOT` |
+| `python` | `PRECIS_PYTHON_ROOTS` |
 
-  ```
-  Kinds unavailable: patent (prohibited), web (prohibited).
-  ```
+Store-backed kinds (`paper`, `oracle`, `quest`, `conv`, `todo`,
+`memory`, `gripe`, `fc`, `citation`) need a configured store; if
+absent they report `store required` in the boot banner.
 
-  Connected agents see this on the first message and can advise
-  the operator if the prohibition was unintentional.
+## Check what's actually live in this build
+## See which kinds loaded vs which got gated out
+## What's wired right now?
 
-## Resource vs prohibition
+```python
+get(kind='skill', id='precis-help')        # live kinds + verbs in this build
+get(kind='skill', id='precis-overview')    # full kind topology + Needs column
+```
 
-The two axes are independent:
+The cold-start banner already names every absent kind:
 
-| Resources present? | Prohibited? | Outcome             | Banner reason         |
-|--------------------|-------------|---------------------|-----------------------|
-| Yes                | No          | Loaded              | (none — kind appears in `Kinds loaded:`) |
-| No                 | No          | Skipped             | `missing <ENV>` / `store required` / …    |
-| Yes                | Yes         | Skipped             | `prohibited`          |
-| No                 | Yes         | Skipped             | `prohibited` (prohibition wins)           |
+```text
+Kinds unavailable: math (missing WOLFRAM_APP_ID), patent (prohibited).
+```
 
-When both axes skip the kind, the **prohibition reason wins** so
-the operator sees the intent they expressed, not the incidental
-resource state.
+## Operator prohibited a kind on purpose
+## A kind shows reason='prohibited' on the banner
+## What is PRECIS_KINDS_DISABLED?
 
-## Operator workflow
+`PRECIS_KINDS_DISABLED` is a comma-separated list of kind names
+the operator has turned off even when resources are present (air-
+gapped deployment disabling `web`; security review keeping
+`patent` off until audit lands). Prohibition wins over resource
+state: a prohibited kind that *could* load still reports
+`prohibited` on the banner.
 
-1. `get(kind='skill', id='precis-overview')` for the catalogue of
-   live kinds.
-2. Decide which kinds to keep off (review the security posture or
-   the deployment shape).
-3. Set `PRECIS_KINDS_DISABLED=<kind1>,<kind2>,...`.
-4. Restart the server.
-5. Verify the banner: a connecting agent should see the
-   `Kinds unavailable: <kind> (prohibited)` entries on the first
-   message; `Kinds loaded:` should no longer mention the
-   prohibited kinds.
+To re-enable: operator removes the kind from
+`PRECIS_KINDS_DISABLED` and restarts the server.
 
-## Interaction with `PRECIS_STARTUP_SKILLS`
+## A pinned skill targets a disabled kind
+## Startup-skills mention a kind I can't call
 
-When a pinned skill targets a kind that's been prohibited, the
-skill body still loads (it's a markdown file in the package
-data — no I/O on the kind itself). The startup-skills banner
-notice is unchanged. The pinned skill teaches the agent how to
-use a kind that won't actually answer; future iteration may
-emit a stronger warning.
+The skill body still loads — it's package data, no I/O on the
+kind. The skill teaches you how to call a verb that will then
+raise `Unsupported`. If you hit this, tell the operator to either
+enable the kind or remove the skill from `PRECIS_STARTUP_SKILLS`.
 
-For now, the simplest discipline is: remove the skill from
-`PRECIS_STARTUP_SKILLS` when the matching kind is in
-`PRECIS_KINDS_DISABLED`.
+## See also
 
-## Related
-
-- `precis-overview` — the seven-verb agent tool surface and the
-  full kind topology.
-- `precis-startup-skills-help` — sibling env var that pre-surfaces
-  specific skill ids.
-- `precis-status` — runtime health probe; lists every live kind
-  and the env vars each consumes.
-- `docs/conventions/kind-enablement.md` — handler-author
-  contract: declare resource requirements via
-  `KindSpec.requires_env` rather than via inline checks at the
-  boot site.
+```python
+get(kind='skill', id='precis-overview')              # Needs column maps kinds to env vars
+get(kind='skill', id='precis-startup-skills-help')   # sibling env var for pinned skills
+get(kind='skill', id='precis-preflight')             # health probe before calling unfamiliar kinds
+```
