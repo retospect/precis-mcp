@@ -1,6 +1,10 @@
 repos:
+  # Keep `rev` in sync with the ruff version pinned in `uv.lock`
+  # (run `grep -A1 '^name = "ruff"' uv.lock`) so pre-commit and CI's
+  # `uv run ruff` agree on which formatter rules to apply. A mismatch
+  # silently passes locally and fails in CI's `ruff format --check`.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.6
+    rev: v0.15.16
     hooks:
       - id: ruff
         args: [--fix]
