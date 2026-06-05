@@ -373,6 +373,74 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, params)
 
+    def set_human_verified(
+        self,
+        ref_id: int,
+        *,
+        by: str,
+        note: str | None = None,
+        conn: Connection | None = None,
+    ) -> None:
+        """Stamp ``human_verified_at`` / ``_by`` / ``_note`` on a ref.
+
+        Sets ``human_verified_at = now()`` and records the verifier
+        identity + optional note. Idempotent on re-stamp (refreshes
+        the timestamp and overwrites note).
+
+        Used by ``precis verify <pub_id>`` to mark a finding's chain
+        as human-checked; ``precis resolve --strict-verified`` gates
+        substitution on this column being non-NULL.
+
+        The schema reserves these columns on every ref (not just
+        findings) — papers, memories, etc. can carry verification
+        too — but the only writer today is the finding-verify path.
+        """
+        sql = (
+            "UPDATE refs SET "
+            "  human_verified_at   = now(), "
+            "  human_verified_by   = %s, "
+            "  human_verified_note = %s, "
+            "  updated_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL"
+        )
+        params = (by, note, ref_id)
+        if conn is not None:
+            cur = conn.execute(sql, params)
+        else:
+            with self.pool.connection() as c:
+                cur = c.execute(sql, params)
+        if cur.rowcount == 0:
+            raise NotFound(
+                f"ref id={ref_id} not found (or already deleted)",
+                next=f"get(kind='finding', id={ref_id}) to confirm",
+            )
+
+    def clear_human_verified(
+        self,
+        ref_id: int,
+        *,
+        conn: Connection | None = None,
+    ) -> None:
+        """Clear ``human_verified_at`` / ``_by`` / ``_note`` on a ref.
+
+        Inverse of :meth:`set_human_verified` — used when the chain
+        has been re-graded (e.g. an upstream ref was retracted) and
+        the prior verification is no longer trustworthy.
+        """
+        sql = (
+            "UPDATE refs SET "
+            "  human_verified_at   = NULL, "
+            "  human_verified_by   = NULL, "
+            "  human_verified_note = NULL, "
+            "  updated_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL"
+        )
+        if conn is not None:
+            conn.execute(sql, (ref_id,))
+        else:
+            with self.pool.connection() as c:
+                c.execute(sql, (ref_id,))
+
     def soft_delete_ref(self, ref_id: int) -> None:
         """Soft-delete a ref by setting ``deleted_at = now()``."""
         with self.pool.connection() as conn:

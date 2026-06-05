@@ -23,7 +23,8 @@ This handler owns the **write door** for findings:
 
 Storage details:
 
-* ``kind='finding'`` is seeded in migration ``0004_finding_and_queue_family.sql``.
+* ``kind='finding'`` is seeded in ``0001_initial.sql`` (originally
+  added in the archived ``0004_finding_and_queue_family.sql``).
 * The finding's deterministic ``paper_id`` comes from
   :func:`precis.identity.make_finding_paper_id` over
   ``(body, scope, initial_cite_handle)``; the ``pub_id`` is

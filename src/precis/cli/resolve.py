@@ -100,6 +100,14 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "Use as a CI gate on manuscripts.",
     )
     p.add_argument(
+        "--strict-verified",
+        action="store_true",
+        help="In addition to --strict, also treat *unverified* "
+        "established findings as in-flight. Implies --strict. "
+        "Use when a manuscript requires every cite chain to have "
+        "been human-reviewed via ``precis verify``.",
+    )
+    p.add_argument(
         "--keep-id",
         action="store_true",
         help="When a placeholder resolves but the finding is dead "
@@ -145,6 +153,7 @@ def run(args: argparse.Namespace) -> None:
             format=args.format,
             ascii_mode=args.ascii,
             keep_id=args.keep_id,
+            require_verified=args.strict_verified,
         )
     finally:
         store.close()
@@ -179,9 +188,10 @@ def run(args: argparse.Namespace) -> None:
         if not resolved.endswith("\n"):
             sys.stdout.write("\n")
 
-    if args.strict and summary.inflight_pub_ids:
+    if (args.strict or args.strict_verified) and summary.inflight_pub_ids:
+        flag = "--strict-verified" if args.strict_verified else "--strict"
         print(
-            f"resolve: --strict: {len(summary.inflight_pub_ids)} "
+            f"resolve: {flag}: {len(summary.inflight_pub_ids)} "
             "placeholder(s) still in flight; exiting 3",
             file=sys.stderr,
         )
@@ -245,8 +255,14 @@ def _resolve_text(
     format: str,
     ascii_mode: bool,
     keep_id: bool,
+    require_verified: bool = False,
 ) -> tuple[str, _Summary]:
-    """Walk placeholders left → right, substituting where possible."""
+    """Walk placeholders left → right, substituting where possible.
+
+    When ``require_verified`` is True, an established finding whose
+    ``human_verified_at`` is still NULL is rendered as in-flight
+    (not substituted) so the strict-verified gate refuses to ship.
+    """
     summary = _Summary()
     lookups: dict[str, dict[str, Any] | None] = {}
 
@@ -274,6 +290,21 @@ def _resolve_text(
                     (pub_id, "established", "no primary_cite_key on meta")
                 )
                 summary.inflight_pub_ids.append(pub_id)
+                return _render_inflight(pub_id, format, ascii_mode)
+            if require_verified and not finding.get("human_verified"):
+                # --strict-verified: established but no human review
+                # → treat as in-flight so the gate refuses to ship.
+                # The substitution doesn't happen and the placeholder
+                # carries the in-flight marker.
+                summary.inflight_pub_ids.append(pub_id)
+                summary.warnings.append(
+                    (
+                        pub_id,
+                        "unverified",
+                        "established but not human-verified; "
+                        f"run `precis verify {pub_id}` to clear",
+                    )
+                )
                 return _render_inflight(pub_id, format, ascii_mode)
             summary.resolved_count += 1
             return _render_established(primary, format)
@@ -305,7 +336,9 @@ def _lookup_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
     """Resolve a pub_id to its finding ref, or None when there's no
     matching finding (different kind, no such row, soft-deleted).
 
-    Returns ``{ref_id, status, primary_cite_key, dead_reason}``.
+    Returns ``{ref_id, status, primary_cite_key, dead_reason,
+    human_verified}``. ``human_verified`` is a bool —
+    ``--strict-verified`` reads it to decide whether to substitute.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -314,7 +347,8 @@ def _lookup_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
                    (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
                      WHERE rt.ref_id = r.ref_id
                        AND t.namespace = 'STATUS'
-                     LIMIT 1) AS status
+                     LIMIT 1) AS status,
+                   r.human_verified_at
               FROM ref_identifiers ri
               JOIN refs r ON r.ref_id = ri.ref_id
              WHERE ri.id_kind = 'pub_id' AND ri.id_value = %s
@@ -323,7 +357,7 @@ def _lookup_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
         ).fetchone()
     if row is None:
         return None
-    ref_id, kind, deleted_at, meta, status = row
+    ref_id, kind, deleted_at, meta, status, human_verified_at = row
     if kind != "finding":
         return None
     if deleted_at is not None:
@@ -334,6 +368,7 @@ def _lookup_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
         "status": status,
         "primary_cite_key": meta.get("primary_cite_key"),
         "dead_reason": meta.get("dead_reason"),
+        "human_verified": human_verified_at is not None,
     }
 
 

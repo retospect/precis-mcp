@@ -68,8 +68,8 @@ def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
     DOI; un-matched rows are surfaced via the merge path so RW
     reasons aren't lost when Crossref's view of the paper is thin.
 
-    Returns ``[]`` when the cache table doesn't exist yet (e.g. on
-    a deployment that hasn't run migration 0003) — the caller
+    Returns ``[]`` when the cache table doesn't exist yet (e.g. on a
+    deployment that hasn't applied ``0001_initial.sql``) — the caller
     treats the absence as "no reasons available", same as an empty
     cache. This keeps the kind usable in degraded environments.
 

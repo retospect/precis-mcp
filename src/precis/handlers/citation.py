@@ -29,7 +29,8 @@ its rendered output.
 
 Storage details:
 
-* ``kind='citation'`` is seeded in migration ``0007_citation_kind.sql``.
+* ``kind='citation'`` is seeded in ``0001_initial.sql`` (originally
+  added in the archived ``0007_citation_kind.sql``).
 * The claim summary (``text=`` on put) lives in ``refs.title`` for
   list-view scannability.
 * The full record sits in ``refs.meta`` as a JSON object.

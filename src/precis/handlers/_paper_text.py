@@ -106,9 +106,9 @@ def _chunk_keywords_or_caption(text: str) -> str:
     agent *what kind of thing* this is without the noise.
 
     Heuristic: starts with ``|`` after lstrip, pipe density >5 %.
-    Same heuristic as migration 0009's paragraph→table backfill,
-    so this also handles legacy chunks that pre-date the
-    chunk_kind=table classification.
+    Same heuristic the pre-greenfield paragraph→table backfill used,
+    so legacy chunks that landed before the ``chunk_kind='table'``
+    classifier still surface readable cells here.
     """
     stripped = text.lstrip()
     is_table = (

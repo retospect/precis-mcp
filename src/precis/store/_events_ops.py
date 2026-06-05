@@ -1,8 +1,9 @@
 """Event-log CRUD against the v2 ``ref_events`` table. Mixin on
 :class:`precis.store.Store`.
 
-Backs the cross-subsystem per-ref audit trail introduced by migration
-``0009_ref_events.sql``. Every long-lived worker / API consumer
+Backs the cross-subsystem per-ref audit trail defined in
+``0001_initial.sql`` (originally introduced in the archived
+``0009_ref_events.sql``). Every long-lived worker / API consumer
 writes events here; consumers read either chronologically per ref
 (``view='log'`` on a handler) or cross-ref by ``(source, event)``
 for incident timelines.

@@ -12,7 +12,8 @@ from precis.store import Store, Tag
 # ---------------------------------------------------------------------------
 #
 # v2 dropped the v1 ``system`` table and replaced it with ``app_state``
-# (migration 0003_app_state). ``get_setting``/``set_setting`` are now
+# (now part of the sealed ``0001_initial.sql`` per ADR 0019).
+# ``get_setting``/``set_setting`` are now
 # backed by a real SELECT and an ``ON CONFLICT … DO UPDATE`` upsert.
 # The tests below exercise the round-trip against an ephemeral migrated
 # DB — the ``store`` fixture in conftest applies all migrations before

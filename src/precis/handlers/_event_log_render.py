@@ -60,7 +60,7 @@ def render_event_log(
         )
         if pgcode == "42P01" or ("ref_events" in msg and "does not exist" in msg):
             raise Unsupported(
-                "view='log' requires the ref_events table (migration 0009)",
+                "view='log' requires the ref_events table (0001_initial.sql)",
                 next="run `precis migrate` to apply pending migrations",
             ) from e
         raise

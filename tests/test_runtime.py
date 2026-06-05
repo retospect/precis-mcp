@@ -249,7 +249,7 @@ def test_cross_kind_tag_filter_matches_flag_namespace(
     """The filter comparison is on the tag's canonical string form
     (``__str__``). A bare ``'workspace'`` in the filter matches
     the flag-namespace entry on the ref (the ``workspace`` flag
-    added in migration 0008) regardless of whether the caller
+    seeded in ``0001_initial.sql``) regardless of whether the caller
     thought of it as a flag or an open tag. Pins the namespace-
     agnostic comparison in ``_filter_hits_by_tags``.
     """

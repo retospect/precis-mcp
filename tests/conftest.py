@@ -284,7 +284,7 @@ _DATA_TABLES: tuple[str, ...] = (
     # Provenance — only the data tables (relation rows are vocab).
     "provenance_rw_cache",
     "provenance_rw_sync",
-    # Patent watch DAO state (NOT in refs — own table per migration 0014).
+    # Patent watch DAO state (NOT in refs — own ``patent_watches`` table).
     "patent_watches",
     # App-state KV.
     "app_state",

@@ -60,7 +60,7 @@ class _CountingEmbedHandler(EmbedHandler):
         for row in rows:
             try:
                 out.append(self.process(row))
-            except Exception as exc:  # noqa: BLE001 — mirrors base fallback
+            except Exception as exc:
                 out.append(exc)
         return out
 

@@ -11,8 +11,8 @@
 
 **F20: per-chunk KeyBERT supersedes the persistent discovery layer.**
 The `ref_segments` / `ref_segment_sentences` tables described in ADR
-`0018-persistent-discovery-layer.md` were dropped in migration
-`0011_chunk_keywords.sql`. The discovery surface is now:
+`0018-persistent-discovery-layer.md` were dropped. The discovery
+surface is now:
 
 - `chunks.keywords TEXT[]` (canonical lower-case forms, GIN-indexed)
   + `chunks.keywords_meta JSONB` (versioned envelope with short/long
@@ -41,14 +41,14 @@ The `ref_segments` / `ref_segment_sentences` tables described in ADR
   `precis-citation-help`.
 - `chunks.numerics TEXT[]` GIN-indexed lexical filter —
   `WHERE numerics @> ARRAY['1.523 eV']` for exact quantitative
-  lookups (migration `0006_chunk_numerics.sql`). Currently
-  unwired into the search verbs; available via direct SQL only.
+  lookups. Currently unwired into the search verbs; available via
+  direct SQL only.
 - pysbd-backed sentence splitter in the chunker fallback chain
   (`et al.`, `Fig.`, `i.e.`, `e.g.`, `vs.`-aware).
 - Dehyphenation in `marker._clean_text` (joins `-\n` when both
   sides are lowercase ASCII).
-- HNSW index on `chunk_embeddings.vector` (migration `0016`)
-  — semantic search no longer seq-scans.
+- HNSW index on `chunk_embeddings.vector` — semantic search no
+  longer seq-scans.
 - SSRF guard on outbound HTTP (`src/precis/utils/safe_fetch.py`)
   used by `handlers/web.py` and `workers/fetch_oa.py`. DNS-resolves
   the host before fetch and revalidates every redirect against the
@@ -63,19 +63,18 @@ The `ref_segments` / `ref_segment_sentences` tables described in ADR
 | Full schema (visual)             | `docs/design/schema-v2.svg` (PUML in same dir) |
 | Worker queue pattern             | `docs/decisions/0007-derived-queue-no-block-jobs.md`, `0017` |
 | F20 (per-chunk keybert)          | `src/precis/workers/chunk_keywords.py` header + `src/precis/utils/toc_db.py` header |
-| ADR 0018                         | Superseded by F20. Tables dropped in `0011_chunk_keywords.sql`. Keep for history, do not implement against. |
+| ADR 0018                         | Superseded by F20. Keep for history, do not implement against. |
 | Agent-runtime surface (skills)   | `src/precis/data/skills/precis-*.md` |
-| Migrations                       | `0001_initial.sql` is sealed; head is `0016_chunk_embeddings_hnsw.sql`. ADR 0005 governs forward-only discipline. |
 | Ingest pipeline                  | `src/precis/ingest/{marker,pipeline,text_chunker,db_writer}.py` |
 | Worker code                      | `src/precis/workers/{embed,summarize,chunk_keywords,chase,fetch_oa,runner}.py` |
 | SSRF guard                       | `src/precis/utils/safe_fetch.py` |
 
 ## Conventions that bite
 
-- **Forward-only migrations.** Never edit a sealed `*.sql` file.
-  See `docs/decisions/0005-greenfield-migrations.md`. If you find a
-  bug in a sealed file, ship a new forward migration that corrects
-  it; do not rewrite history.
+- **Forward-only migrations.** Never edit a sealed `*.sql` file
+  under `src/precis/migrations/`. If you find a bug in a sealed
+  file, ship a new forward migration that corrects it. Rationale
+  lives in `docs/decisions/0005-greenfield-migrations.md`.
 - **`uv` for everything.** Bare `pip` / `pytest` / `mypy` are
   not reproducible. Use `scripts/dev pytest …` inside the
   container, or `uv run …` on the host.

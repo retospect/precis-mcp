@@ -145,8 +145,8 @@ class Store(
     # Small key/value surface for cross-boot bookkeeping rows that don't
     # belong on a ref. Today's only caller is :mod:`precis.jobs.oracle_sync`
     # caching the bundled oracle YAML version so we don't re-embed the
-    # whole oracle corpus on every boot. See migration 0003_app_state.sql
-    # for the table definition and scoping rationale.
+    # whole oracle corpus on every boot. See ``app_state`` in
+    # ``0001_initial.sql`` for the table definition and scoping rationale.
 
     def get_setting(self, key: str) -> str | None:
         """Return the value for ``key`` from ``app_state``, or ``None``.

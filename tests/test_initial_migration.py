@@ -40,26 +40,38 @@ MIGRATION_FILE = MIGRATIONS_DIR / "0001_initial.sql"
 # them only when changing the locked schema (which means a new
 # migration, not an edit to 0001).
 
+# Tables created by the new sealed 0001 (second-greenfield, 2026-06-05
+# per ADR 0019). Cumulative snapshot of the schema after the original
+# 0001-0017 had applied to the cluster master; future tables ship as
+# new forward migrations and extend this set.
 EXPECTED_TABLES = {
     "_migrations",
     "actors",
-    "kinds",
-    "relations",
-    "providers",
-    "chunk_kinds",
-    "embedders",
-    "summarizers",
-    "pdfs",
-    "refs",
-    "ref_identifiers",
-    "chunks",
-    "chunk_embeddings",
-    "chunk_summaries",
-    "links",
-    "tags",
-    "ref_tags",
-    "chunk_tags",
+    "app_state",
+    "artifact_kinds",
     "cache_state",
+    "chunk_embeddings",
+    "chunk_kinds",
+    "chunk_summaries",
+    "chunk_tags",
+    "chunks",
+    "embedders",
+    "kinds",
+    "links",
+    "patent_watches",
+    "pdfs",
+    "provenance_rw_cache",
+    "provenance_rw_sync",
+    "providers",
+    "ref_artifacts",
+    "ref_events",
+    "ref_identifiers",
+    "ref_tags",
+    "refs",
+    "relations",
+    "summarizers",
+    "tag_embeddings",
+    "tags",
 }
 
 EXPECTED_VIEWS = {
@@ -68,18 +80,17 @@ EXPECTED_VIEWS = {
     "v_chunk_tags_all",
 }
 
-# Seed counts. These match the INSERT blocks in 0001_initial.sql.
+# Seed counts. These match the COPY blocks the greenfield pulled from
+# the cluster master (per ADR 0019). Update only when intentionally
+# extending the closed vocabulary in a new forward migration.
 EXPECTED_SEED_COUNTS = {
-    "actors": 3,
-    "kinds": 24,
-    # 9 v1 relations + 7 Phase-7 vocabulary additions (derived-from /
-    # derived-into / supports / supported-by / generalises / specialises /
-    # see-also). See migration header for the rationale.
-    "relations": 16,
-    # 11 v1 providers + 'web' (added for the WebHandler cache provider).
-    "providers": 12,
-    "chunk_kinds": 57,
+    "actors": 4,
+    "artifact_kinds": 6,
+    "chunk_kinds": 60,
     "embedders": 1,
+    "kinds": 32,
+    "providers": 14,
+    "relations": 24,
     "summarizers": 1,
 }
 
@@ -90,14 +101,14 @@ EXPECTED_SEED_COUNTS = {
 
 
 def _apply_migration(dsn: str) -> list[str]:
-    """Apply ONLY ``0001_initial.sql`` (not the full bundle).
+    """Apply ONLY ``0001_initial.sql`` (not subsequent migrations).
 
-    These tests assert structural invariants of the *initial* migration —
-    e.g. seed counts after only 0001 has run. Later migrations
-    (0002+) extend the seed sets, so running the whole bundle
-    breaks every count-asserting test in this file. To preserve the
-    narrow contract, we point Migrator at a temp dir containing
-    only ``0001_initial.sql``.
+    These tests assert structural invariants of the canonical sealed
+    schema — tables, views, seed counts, CHECK constraints. After the
+    second greenfield (ADR 0019) ``0001_initial.sql`` IS the schema;
+    subsequent forward migrations extend it but the canonical
+    invariants live here. To keep the contract narrow, we point
+    Migrator at a temp dir containing only ``0001_initial.sql``.
     """
     import shutil
     import tempfile

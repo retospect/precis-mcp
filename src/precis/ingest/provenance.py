@@ -127,7 +127,8 @@ def classify_update_type(
     type isn't in our vocabulary (e.g. ``new_version``). ``status`` is
     one of the three values accepted by the ``refs.retraction_status``
     CHECK constraint; ``link_relation`` is one of the three notice
-    relations defined in migration ``0002_provenance.sql``.
+    relations seeded in ``0001_initial.sql`` (originally added in the
+    archived ``0002_provenance.sql``).
     """
     key = update_type.strip().lower().replace("-", "_").replace(" ", "_")
     return _UPDATE_TYPE_MAP.get(key)

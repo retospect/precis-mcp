@@ -38,6 +38,7 @@ from precis.cli import (
     stats,
     stubs,
     tools,
+    verify,
     watch,
     worker,
 )
@@ -107,6 +108,10 @@ def main() -> None:
         resolve.run(args)
         return
 
+    if args.cmd == "verify":
+        verify.run(args)
+        return
+
     if args.cmd == "jobs":
         _dispatch_job(args)
         return
@@ -152,6 +157,7 @@ def _build_parser() -> argparse.ArgumentParser:
     stubs.add_parser(sub)
     stats.add_parser(sub)
     resolve.add_parser(sub)
+    verify.add_parser(sub)
     tools.add_parser(sub)
     repl.add_parser(sub)
 

@@ -28,9 +28,9 @@ Relation = Literal[
     "blocked-by",
     "contradicts",
     "contradicted-by",
-    # Phase 7 link CRUD migration (0005). Keep this list in sync
-    # with `migrations/0005_link_relations.sql` so type-checkers
-    # catch typos in `rel=` kwargs ahead of the FK violation.
+    # Phase 7 link CRUD vocabulary. Keep this list in sync with the
+    # ``relations`` seed block in ``0001_initial.sql`` so type-checkers
+    # catch typos in ``rel=`` kwargs ahead of the FK violation.
     "cites",
     "cited-by",
     "derived-from",
@@ -53,7 +53,7 @@ ActorSlug = Literal["agent", "user", "system"]
 
 
 # Inverse relations for auto-mirroring at link write time. Mirrored
-# from ``migrations/0001_initial.sql`` and ``0005_link_relations.sql``
+# from the ``relations`` seed block in ``migrations/0001_initial.sql``
 # (the ``relations.inverse_slug`` column). Symmetric relations
 # (``related-to``) are NOT in this map — the bidirectional query in
 # :meth:`Store.links_for` (direction='both') already surfaces them
@@ -410,7 +410,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     #
     # * todo / gripe / quest — original lifecycle:
     #     open → doing → done (or blocked / won't-do)
-    # * finding — the citation-chase lifecycle (migration 0004):
+    # * finding — the citation-chase lifecycle (chase worker):
     #     tracing → established (or multi_candidate / dead_chain)
     #
     # Both are unioned here so filter-time validation

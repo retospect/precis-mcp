@@ -8,6 +8,27 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed
+
+- **Second greenfield: migrations re-baselined** (ADR 0019). The
+  sealed `0001_initial.sql` is now a fresh `pg_dump` of the cluster
+  master after migrations 0001–0017 had landed (PG 17.10 schema
+  snapshot + seed-vocabulary dump for actors / kinds / relations /
+  providers / chunk_kinds / embedders / summarizers /
+  artifact_kinds). The original 0001–0017 files are preserved under
+  `src/precis/migrations/archive/` for history; the runner's
+  `glob("*.sql")` is non-recursive so they're invisible to
+  `precis migrate`. Motivation: four sealed files (`0001`,
+  `0002`, `0009`, `0010`) had drifted post-seal during the bug-fix
+  run, and the runner's checksum gate blocked applying the new
+  `0016` (HNSW) and `0017` (tag_embeddings). The cluster master's
+  `_migrations` ledger was rewritten in a single transaction to
+  record only the new sealed `0001_initial`. Pre-flight backup at
+  `~/work/backups/precis-cluster-20260605-143621.dump` (151 MB,
+  restore-tested). Source comments and `tests/test_initial_migration.py`
+  were updated to reference the cumulative seed state instead of
+  the archived per-migration files.
+
 ### Added
 
 - **`precis stats` CLI subcommand** — quick observability for the
