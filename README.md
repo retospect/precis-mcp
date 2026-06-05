@@ -143,12 +143,12 @@ config:
 - **Seven verbs, one `kind=`**. The whole surface is
   `get`/`search`/`put`/`edit`/`delete`/`tag`/`link`. No per-kind
   bespoke tools. See
-  [`docs/seven-verb-surface-migration.md`](docs/seven-verb-surface-migration.md).
+  [`docs/user-facing/seven-verb-surface-migration.md`](docs/user-facing/seven-verb-surface-migration.md).
 - **Content-anchored edits.** `edit(find=..., before=..., after=...)`
   resolves by literal content match; unique/first/all/nth policy;
   fuzzy nearest-line hint on not-found. Pure resolver in
   `precis.utils.edit_resolve`; ships for `markdown`, `plaintext`, and
-  `python`. See [`docs/edit-protocol-spec.md`](docs/edit-protocol-spec.md).
+  `python`. See [`docs/user-facing/edit-protocol-spec.md`](docs/user-facing/edit-protocol-spec.md).
 - **Hybrid search.** Lexical `tsvector` + semantic `pgvector` (bge-m3)
   with Reciprocal Rank Fusion. Block-level; paper chunks, markdown
   paragraphs, Perplexity answers, web pages all searchable.
@@ -187,12 +187,12 @@ config:
   hand-ordered in `precis.dispatch.boot()`. Third-party kinds can
   register themselves via the `precis.handlers` entry-point group
   without forking — see
-  [`docs/plugin-authoring.md`](docs/plugin-authoring.md).
+  [`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md).
 
 ## Extending
 
 Write a plugin handler in 3 steps — see the one-pager at
-[`docs/plugin-authoring.md`](docs/plugin-authoring.md) and the
+[`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md) and the
 canonical tiny example in
 [`src/precis/handlers/calc.py`](src/precis/handlers/calc.py).
 
@@ -247,18 +247,18 @@ high-traffic ones:
 
 - `docx`, `tex`, `book`, `rmk` file handlers (Phase 6b/c).
 - `web` bookmark mode + Wayback enrichment (gripe:3681 phase 2 + 4 — see [`OPEN-ITEMS.md`](OPEN-ITEMS.md)).
-- `voice` kind — STT/TTS bound to transcript refs (see [`docs/voice-kind-spec.md`](docs/voice-kind-spec.md)).
+- `voice` kind — STT/TTS bound to transcript refs (see [`docs/user-facing/voice-kind-spec.md`](docs/user-facing/voice-kind-spec.md)).
 - SDK extraction (`precis-core`) once the plugin API has settled.
 
 ## Documentation
 
-- [`docs/plugin-authoring.md`](docs/plugin-authoring.md) — write a third-party handler.
-- [`docs/seven-verb-surface-migration.md`](docs/seven-verb-surface-migration.md) — verb surface design rationale.
-- [`docs/edit-protocol-spec.md`](docs/edit-protocol-spec.md) — anchored edits across file kinds.
-- [`docs/file-kinds-unified-addressing.md`](docs/file-kinds-unified-addressing.md) — the `slug~SELECTOR` address grammar.
-- [`docs/python-kind-spec.md`](docs/python-kind-spec.md) — python navigator design.
-- [`docs/patent-kind-spec.md`](docs/patent-kind-spec.md) — EPO OPS integration.
-- [`docs/paper_ingest.md`](docs/paper_ingest.md) — `.acatome` bundle ingest path.
+- [`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md) — write a third-party handler.
+- [`docs/user-facing/seven-verb-surface-migration.md`](docs/user-facing/seven-verb-surface-migration.md) — verb surface design rationale.
+- [`docs/user-facing/edit-protocol-spec.md`](docs/user-facing/edit-protocol-spec.md) — anchored edits across file kinds.
+- [`docs/user-facing/file-kinds-unified-addressing.md`](docs/user-facing/file-kinds-unified-addressing.md) — the `slug~SELECTOR` address grammar.
+- [`docs/user-facing/python-kind-spec.md`](docs/user-facing/python-kind-spec.md) — python navigator design.
+- [`docs/user-facing/patent-kind-spec.md`](docs/user-facing/patent-kind-spec.md) — EPO OPS integration.
+- [`docs/user-facing/paper_ingest.md`](docs/user-facing/paper_ingest.md) — `.acatome` bundle ingest path.
 - [`docs/design/storage-v2.md`](docs/design/storage-v2.md) — full schema + discovery-layer design.
 - [`src/precis/data/skills/precis-citation-help.md`](src/precis/data/skills/precis-citation-help.md) — `citation` kind + verifier-workflow agent surface.
 - [`src/precis/data/skills/precis-toc-help.md`](src/precis/data/skills/precis-toc-help.md) — TOC machinery (segments, sentences, matryoshka keywords).

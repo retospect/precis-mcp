@@ -90,7 +90,7 @@ def _validation_error(body: str) -> _ToolReturn:
     The MCP protocol distinguishes successful tool results from errors
     via the ``isError`` flag on ``CallToolResult``. Pre-dispatch
     validation paths (e.g. ``_check_reserved_args``, the ``search``
-    ``top_k`` cap) build the rendered text via
+    ``page_size`` cap) build the rendered text via
     ``runtime.render_error`` but must surface it through the same
     error-flag-bearing envelope the runtime uses for handler-side
     failures — otherwise MCP wrappers see a successful response with
@@ -128,8 +128,8 @@ def _check_reserved_args(
     return _validation_error(body)
 
 
-# Hard cap on top_k for search tool
-_SEARCH_TOP_K_MAX: int = 100
+# Hard cap on page_size for search tool
+_SEARCH_PAGE_SIZE_MAX: int = 100
 
 # Hard cap on ``text=`` payloads to put / edit. The embedder
 # (BGE-M3 / 1024-d) tokenises and forwards the payload in worker
@@ -216,7 +216,7 @@ def search(
     q: str | None = None,
     kind: str | None = None,
     scope: str | None = None,
-    top_k: int = 10,
+    page_size: int = 10,
     page: int = 1,
     tags: list[str] | None = None,
     source: str | None = None,
@@ -224,11 +224,11 @@ def search(
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
-    `top_k` must be a positive int ≤ 100. Omit `kind` (or pass `'*'`)
-    for cross-kind fan-out. `page=N` (default 1) returns the Nth page
-    of `top_k` results — server-side OFFSET, no need to thread
-    `exclude=` lists manually. `exclude=` is still useful for hand-
-    skipping specific slugs. `source=` is patent-only
+    `page_size` must be a positive int ≤ 100. Omit `kind` (or pass
+    `'*'`) for cross-kind fan-out. `page=N` (default 1) returns the
+    Nth page of `page_size` results — server-side OFFSET, no need to
+    thread `exclude=` lists manually. `exclude=` is still useful for
+    hand-skipping specific slugs. `source=` is patent-only
     (`'both'`/`'local'`/`'remote'`); ignored elsewhere.
 
     Full reference: get(kind='skill', id='precis-search-help'), or
@@ -236,29 +236,29 @@ def search(
     lookup. For per-kind nuances (e.g. patent's prior-art sweep)
     search the skill index with a natural-language goal.
     """
-    # Validate top_k at the boundary. Errors round-trip via
+    # Validate page_size at the boundary. Errors round-trip via
     # ``_validation_error`` so the MCP ``isError`` flag survives.
     from precis.errors import BadInput
 
-    if not isinstance(top_k, int) or top_k <= 0:
+    if not isinstance(page_size, int) or page_size <= 0:
         runtime = _get_runtime()
         return _validation_error(
             runtime.render_error(
                 BadInput(
-                    f"top_k must be a positive integer, got {top_k!r}",
-                    next="search(kind='paper', q='...', top_k=10)",
+                    f"page_size must be a positive integer, got {page_size!r}",
+                    next="search(kind='paper', q='...', page_size=10)",
                 )
             )
         )
-    if top_k > _SEARCH_TOP_K_MAX:
+    if page_size > _SEARCH_PAGE_SIZE_MAX:
         runtime = _get_runtime()
         return _validation_error(
             runtime.render_error(
                 BadInput(
-                    f"top_k={top_k} exceeds maximum {_SEARCH_TOP_K_MAX}",
+                    f"page_size={page_size} exceeds maximum {_SEARCH_PAGE_SIZE_MAX}",
                     next=(
                         f"narrow with scope= or paginate; "
-                        f"max top_k is {_SEARCH_TOP_K_MAX}"
+                        f"max page_size is {_SEARCH_PAGE_SIZE_MAX}"
                     ),
                 )
             )
@@ -274,7 +274,7 @@ def search(
         "kind": kind,
         "q": q,
         "scope": scope,
-        "top_k": top_k,
+        "page_size": page_size,
         "page": page,
     }
 
@@ -492,9 +492,9 @@ _SEARCH_HELP: dict[str, str] = {
     "q": "Free-text query (lexical + semantic, hybrid-fused).",
     "kind": "Restrict to a kind (or comma-list, '*', omit for fan-out).",
     "scope": "Restrict to one ref's blocks (slug or numeric id).",
-    "top_k": "Max results per page. Positive int ≤ 100.",
+    "page_size": "Max results per page. Positive int ≤ 100 (default 10).",
     "page": "Page number (default 1). Pass page=2 to see results "
-    "top_k..2*top_k-1, etc.",
+    "page_size..2*page_size-1, etc.",
     "tags": "Per-kind tag filters (closed-vocab axes + open tags).",
     "source": "Patent only: 'both' (default) | 'local' | 'remote'.",
     "exclude": "Ref slugs to drop from results (hand-skip; page= is "

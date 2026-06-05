@@ -763,7 +763,7 @@ Phased rollout. Each phase is independently shippable.
   `len(json.dumps(tools_list)) < 8192` initially; tighten to
   `baseline + 20%` once Phase 1 lands and a real measurement
   exists. ✅
-- **OQ-10** — Write `docs/decisions/0013-mcp-cold-start-budget.md`
+- **OQ-10** — Write `docs/decisions/0013-mcp-session-context-env-vars.md`
   capturing the project-wide stance: reference material lives
   in skills, retrieved on demand; tool descriptions carry only
   signature + wire-level constraints + discovery pointer. ✅

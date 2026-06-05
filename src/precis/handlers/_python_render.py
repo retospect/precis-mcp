@@ -5,7 +5,7 @@ RepoIndex) and returns a `str` body. No I/O, no DB. Keeping the
 renderers separate from the handler means tests can exercise rendering
 shapes without standing up a handler+cache combo.
 
-The rendered shapes follow `docs/python-kind-spec.md § Views`. Headings
+The rendered shapes follow `docs/user-facing/python-kind-spec.md § Views`. Headings
 are `#`-delimited markdown so the runtime's footer machinery (cost
 line, hint bus output) appends cleanly.
 """

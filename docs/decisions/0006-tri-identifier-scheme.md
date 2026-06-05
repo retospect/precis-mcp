@@ -1,10 +1,18 @@
 # ADR 0006 — Tri-identifier scheme: `pub_id` / `cite_key` / `slug`
 
-- **Status**: accepted (2026-05-21)
+- **Status**: accepted (2026-05-21) — *slug section superseded*; `pub_id`
+  + `cite_key` portions remain in force.
+  - **Slug section**: superseded by
+    [ADR 0008 — Drop slug identifier normalisation](./0008-drop-slug-identifier-normalisation.md).
+    Slugs were dropped as a normalised identifier; `cite_key` is the
+    canonical human-readable form.
+  - **`pub_id` + `cite_key` sections**: in force. See
+    `src/precis/identity.py` and the `ref_identifiers` table.
 - **Deciders**: Reto + agent
 - **Supersedes**: ADR 0002 §"Identifier scheme" (the rest of ADR
   0002 — TOON output format, pub_id derivation reference — remains
   in force)
+- **Superseded by**: 0008 (slug section only).
 
 ## Context
 

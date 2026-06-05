@@ -1,6 +1,12 @@
 # ADR 0018 — Persistent discovery layer (`ref_segments` + `ref_segment_sentences`)
 
-- **Status**: accepted (2026-05-31)
+- **Status**: **superseded by F20 (2026-06-05)** — `ref_segments` and
+  `ref_segment_sentences` were dropped in migration `0011_chunk_keywords.sql`.
+  Discovery now reads `chunks.keywords TEXT[]` (per-chunk KeyBERT) at request
+  time. See `CLAUDE.md § "What just landed (2026-06-05)"` and
+  `src/precis/workers/chunk_keywords.py`. Kept here for history; do not
+  implement against this design.
+- **Status (historical)**: accepted (2026-05-31)
 - **Deciders**: Reto + agent
 - **Extends**: [ADR 0007 — Derived queue](./0007-derived-queue-no-block-jobs.md)
   and [ADR 0017 — Derived-queue family](./0017-derived-queue-family.md).

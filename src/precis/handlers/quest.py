@@ -89,14 +89,14 @@ class QuestHandler(Handler):
         self,
         *,
         q: str | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> Response:
         return search_slug_refs(
             self.store,
             kind="quest",
             q=q,
-            top_k=top_k,
+            page_size=page_size,
             noun="quest match",
             empty_next=[
                 (
@@ -116,11 +116,11 @@ class QuestHandler(Handler):
         self,
         *,
         q: str,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Ref-level lexical search returned as ``SearchHit``s."""
-        return search_hits_slug_refs(self.store, kind="quest", q=q, top_k=top_k)
+        return search_hits_slug_refs(self.store, kind="quest", q=q, page_size=page_size)
 
     # ── put: create-only ───────────────────────────────────────────
 

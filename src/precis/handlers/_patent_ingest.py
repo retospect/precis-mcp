@@ -348,7 +348,7 @@ def _build_meta(
 ) -> dict:
     """Compose the ``refs.meta`` payload.
 
-    Layout matches the spec at ``docs/patent-kind-spec.md``. We keep
+    Layout matches the spec at ``docs/user-facing/patent-kind-spec.md``. We keep
     this in one place so the handler renderers can rely on stable
     keys.
 

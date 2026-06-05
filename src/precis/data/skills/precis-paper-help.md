@@ -49,7 +49,7 @@ get(kind='paper', id='<DOI>')                      # DOI → fetches the paper
 
 ```python
 search(kind='paper', q='photocatalytic NOx reduction')
-search(kind='paper', q='photocatalytic NOx reduction', top_k=20)   # top_k = page size (default 10)
+search(kind='paper', q='photocatalytic NOx reduction', page_size=20)   # default 10, max 100
 ```
 
 Hybrid lexical + semantic. Results are `slug~chunk` handles; order is
@@ -74,10 +74,10 @@ papers; use `get(kind='paper', id='<DOI>')` to fetch the paper itself.
 
 ```python
 search(kind='paper', q='photocatalytic NOx reduction', page=2)
-search(kind='paper', q='photocatalytic NOx reduction', page=3, top_k=20)
+search(kind='paper', q='photocatalytic NOx reduction', page=3, page_size=20)
 ```
 
-`page=1` is the default. Bump `page=` to walk results; `top_k=` sets
+`page=1` is the default. Bump `page=` to walk results; `page_size=` sets
 the page size (default 10, max 100).
 
 ## Read a paper or one of its sections

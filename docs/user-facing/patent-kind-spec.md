@@ -17,7 +17,7 @@ implementation behind them.
 Deferred filter affordances (date ranges as kwargs, extra search
 state markers, family deduplication, cited / cited-by graph,
 cross-kind search) are tracked in
-`docs/search-future-filters.md`.
+`docs/user-facing/search-future-filters.md`.
 
 ## Why
 
@@ -868,7 +868,7 @@ into a uniform surface. The current design is:
 
 Date-range filtering as a first-class kwarg becomes a cross-kind
 protocol question (papers, patents, web, perplexity all have
-dates in meta). Tracked in `docs/search-future-filters.md`.
+dates in meta). Tracked in `docs/user-facing/search-future-filters.md`.
 
 ### `put(kind='patent', mode='ingest')` from the MCP
 
@@ -911,8 +911,8 @@ ten" semantics become useful from agent code.
 - `src/precis/data/skills/precis-patent-help.md` — entry-level skill
 - `src/precis/data/skills/precis-patent-power.md` — raw CQL power-user skill
 - `src/precis/data/skills/precis-tags.md` — tag conventions used by tag-to-CQL lift
-- `docs/search-future-filters.md` — deferred filter affordances (date ranges, state markers, family dedup, citation graph, cross-kind search)
-- `docs/paper_ingest.md` — paper ingest pipeline (parallels Tier 2)
-- `docs/voice-kind-spec.md` — pattern for optional-deps + env-gated kinds
+- `docs/user-facing/search-future-filters.md` — deferred filter affordances (date ranges, state markers, family dedup, citation graph, cross-kind search)
+- `docs/user-facing/paper_ingest.md` — paper ingest pipeline (parallels Tier 2)
+- `docs/user-facing/voice-kind-spec.md` — pattern for optional-deps + env-gated kinds
 - `pips/packages/acatome-quest-mcp/` — quest queue used by the
   watch runner when `auto_get=FALSE`

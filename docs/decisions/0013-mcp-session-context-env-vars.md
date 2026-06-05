@@ -136,7 +136,7 @@ intent is already explicit.
 - `kind_gate.py`, `startup_skills.py`, and `default_tags.py`
   share parse semantics. Cross-cutting parser test pins the
   triple in `tests/test_token_budget.py`.
-- `KindSpec.note_like` (`docs/seven-verb-surface-migration.md` D7
+- `KindSpec.note_like` (`docs/user-facing/seven-verb-surface-migration.md` D7
   contract additive) carries the policy-relevance flag. Handlers
   flipped: memory, todo, gripe, flashcard, quest, conversation,
   markdown, plaintext, tex (nine of seventeen handlers in the

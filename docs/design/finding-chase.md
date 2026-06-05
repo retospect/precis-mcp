@@ -294,7 +294,7 @@ The substrate remains valuable for *other* ref-level work
 This design just doesn't consume it.
 
 **Retraction-checking is NOT in this design.** The
-[provenance kind](../provenance-kind-plan.md) — **shipped Phases
+[provenance kind](provenance-kind-plan.md) — **shipped Phases
 1–6**, see `src/precis/handlers/provenance.py` and
 `src/precis/ingest/provenance.py` — handles retraction / EoC /
 correction state synchronously via `get(kind='provenance', ...)`,

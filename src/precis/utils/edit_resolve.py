@@ -2,7 +2,7 @@
 
 Implements the ``mode='edit'`` / ``mode='insert'`` primitives shared
 across every R/W file kind. The resolution algorithm is the core of
-``docs/edit-protocol-spec.md``: content selects, anchors disambiguate,
+``docs/user-facing/edit-protocol-spec.md``: content selects, anchors disambiguate,
 ``match`` policy validates uniqueness.
 
 Three responsibilities:

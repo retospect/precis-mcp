@@ -337,7 +337,7 @@ class FindingHandler(NumericRefHandler):
         q: str | None = None,
         status: str | None = None,
         tags: list[str] | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> Response:
         """Lexical search across findings with a status-axis default.
@@ -378,7 +378,7 @@ class FindingHandler(NumericRefHandler):
         if q is None or not q.strip():
             if normalized:
                 refs = self.store.list_refs(
-                    kind=self.kind, tags=normalized, limit=top_k
+                    kind=self.kind, tags=normalized, limit=page_size
                 )
                 return self._render_finding_table(refs, query=None)
             raise BadInput(
@@ -390,7 +390,7 @@ class FindingHandler(NumericRefHandler):
             )
 
         hits = self.store.search_refs_lexical(
-            q=q, kind=self.kind, tags=normalized, limit=top_k
+            q=q, kind=self.kind, tags=normalized, limit=page_size
         )
         if not hits:
             tag_suffix = (

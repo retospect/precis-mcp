@@ -2,7 +2,7 @@
 
 Every search handler emits a first line like ``# 10 paper match(es)
 for 'photocatalysis'``. The MCP critic asked for a "you're seeing
-N of K" pagination cue so an agent that asks for ``top_k=10`` and
+N of K" pagination cue so an agent that asks for ``page_size=10`` and
 gets exactly 10 hits knows whether there are more.
 
 This helper centralises the format so the wording is consistent
@@ -46,7 +46,7 @@ def format_search_headline(
     * ``total == n_returned`` — caller saw everything. Render the
       same shorter form so we don't say "10 of 10" when the agent
       already knows they got all of it.
-    * ``total > n_returned`` — capped by ``top_k``. Render
+    * ``total > n_returned`` — capped by ``page_size``. Render
       ``# N of K {noun}(s) for 'q'`` so the agent knows pagination
       is in play.
 

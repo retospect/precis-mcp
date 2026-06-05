@@ -1,6 +1,6 @@
 """Retraction Watch dataset sync — fetches CSV, upserts into the cache.
 
-See ``docs/provenance-kind-plan.md`` § "Phase 3" for the design.
+See ``docs/design/provenance-kind-plan.md`` § "Phase 3" for the design.
 
 Source order:
 

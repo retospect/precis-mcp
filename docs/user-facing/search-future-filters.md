@@ -193,4 +193,4 @@ kind also needs it.
 - `src/precis/data/skills/precis-patent-help.md` — agent skill
 - `src/precis/data/skills/precis-patent-power.md` — power-user CQL surface
 - `src/precis/data/skills/precis-tags.md` — tag conventions
-- `docs/patent-kind-spec.md` — patent implementation spec
+- `docs/user-facing/patent-kind-spec.md` — patent implementation spec

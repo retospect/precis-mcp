@@ -9,7 +9,7 @@ Two subcommands sharing the provenance module:
   (Crossref-distributed, CC-BY) into ``provenance_rw_cache`` so the
   check pulls reason codes alongside notice DOIs.
 
-The preflight use case from ``docs/provenance-kind-plan.md``: an
+The preflight use case from ``docs/design/provenance-kind-plan.md``: an
 operator has 250 papers cited in a manuscript and wants to know
 before release which ones are retracted, under expression of concern,
 or corrected. Run:

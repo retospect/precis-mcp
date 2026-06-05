@@ -296,6 +296,290 @@ class TagsMixin:
             ).fetchone()
         return row is not None
 
+    # ── discovery surface (kind='tag') ──────────────────────────────
+    #
+    # These methods back the tag-discovery handler and the
+    # tag_embeddings worker. Read-only against the live tag corpus —
+    # never mutate tags here; tag writes still flow through
+    # :meth:`add_tag` / :meth:`remove_tag` above.
+
+    def list_all_tags(
+        self,
+        *,
+        kind: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> list[tuple[str, str, int]]:
+        """Return tags ordered by usage count desc for the discovery view.
+
+        Yields ``(namespace, value, usage_count)`` rows. When ``kind``
+        is set, only counts tags attached to refs of that kind (joins
+        through ``ref_tags`` and ``refs``). Otherwise counts every
+        attachment across the whole corpus (ref + chunk attachments
+        unioned, deduped per (tag, ref/chunk)).
+
+        Pagination via ``page`` / ``page_size`` — the canonical
+        verb-surface shape; ``page=1`` is the first page.
+        """
+        if page < 1:
+            page = 1
+        offset = (page - 1) * page_size
+        with self.pool.connection() as conn:
+            if kind is None:
+                # Sum ref-level and chunk-level attachments — every tag
+                # row that has at least one join from either table.
+                rows = conn.execute(
+                    "SELECT t.namespace, t.value, "
+                    "       COALESCE(rc.n, 0) + COALESCE(cc.n, 0) AS usage_count "
+                    "FROM tags t "
+                    "LEFT JOIN (SELECT tag_id, COUNT(*) AS n FROM ref_tags "
+                    "           GROUP BY tag_id) rc ON rc.tag_id = t.tag_id "
+                    "LEFT JOIN (SELECT tag_id, COUNT(*) AS n FROM chunk_tags "
+                    "           GROUP BY tag_id) cc ON cc.tag_id = t.tag_id "
+                    "WHERE COALESCE(rc.n, 0) + COALESCE(cc.n, 0) > 0 "
+                    "ORDER BY usage_count DESC, t.namespace ASC, t.value ASC "
+                    "LIMIT %s OFFSET %s",
+                    (page_size, offset),
+                ).fetchall()
+            else:
+                # Scope to refs of the given kind. Chunk-level
+                # attachments inherit the parent ref's kind.
+                rows = conn.execute(
+                    "SELECT t.namespace, t.value, COUNT(*) AS usage_count "
+                    "FROM tags t "
+                    "JOIN ref_tags rt ON rt.tag_id = t.tag_id "
+                    "JOIN refs r ON r.ref_id = rt.ref_id "
+                    "WHERE r.kind = %s AND r.deleted_at IS NULL "
+                    "GROUP BY t.namespace, t.value "
+                    "ORDER BY usage_count DESC, t.namespace ASC, t.value ASC "
+                    "LIMIT %s OFFSET %s",
+                    (kind, page_size, offset),
+                ).fetchall()
+        return [(str(r[0]), str(r[1]), int(r[2])) for r in rows]
+
+    def tag_metadata(
+        self,
+        *,
+        namespace: str,
+        value: str,
+    ) -> dict[str, Any] | None:
+        """Return metadata for the ``(namespace, value)`` tag.
+
+        Output shape::
+
+            {"count": int,
+             "first_seen": datetime,
+             "last_seen": datetime,
+             "sample_refs": [(kind, slug, ref_id), ...]}
+
+        ``sample_refs`` is up to five most-recently-attached live
+        refs. Returns ``None`` when the tag has no row in ``tags``
+        (never used). When the row exists but has no attachments
+        (orphan row left after every ref untagged), returns count 0
+        with the tag-row created_at timestamp for first/last and an
+        empty sample list.
+        """
+        with self.pool.connection() as conn:
+            tag_row = conn.execute(
+                "SELECT tag_id, created_at FROM tags "
+                "WHERE namespace = %s AND value = %s",
+                (namespace, value),
+            ).fetchone()
+            if tag_row is None:
+                return None
+            tag_id = int(tag_row[0])
+            tag_created_at = tag_row[1]
+
+            # Aggregate ref-level + chunk-level attachments. We need
+            # the total count (for the headline number) and the
+            # min/max created_at (for first/last seen). UNION ALL
+            # keeps duplicates out of the per-target groups but
+            # double-counts a (ref, tag) pair that's also attached to
+            # one of the ref's chunks — acceptable for a usage_count
+            # hint.
+            agg = conn.execute(
+                "WITH all_attachments AS ( "
+                "  SELECT created_at FROM ref_tags WHERE tag_id = %s "
+                "  UNION ALL "
+                "  SELECT created_at FROM chunk_tags WHERE tag_id = %s "
+                ") "
+                "SELECT COUNT(*), MIN(created_at), MAX(created_at) "
+                "FROM all_attachments",
+                (tag_id, tag_id),
+            ).fetchone()
+            assert agg is not None
+            count = int(agg[0])
+            first_seen = agg[1] or tag_created_at
+            last_seen = agg[2] or tag_created_at
+
+            # Up to five live refs carrying this tag, most recent
+            # attachment first. Joins via ref_tags (chunk-only
+            # attachments don't surface as sample refs — chunk
+            # selectors are noise here).
+            sample_rows = conn.execute(
+                "SELECT r.kind, "
+                "       (SELECT value FROM ref_identifiers "
+                "          WHERE ref_id = r.ref_id "
+                "            AND id_kind = 'cite_key' LIMIT 1) AS slug, "
+                "       r.ref_id "
+                "FROM ref_tags rt "
+                "JOIN refs r ON r.ref_id = rt.ref_id "
+                "WHERE rt.tag_id = %s AND r.deleted_at IS NULL "
+                "ORDER BY rt.created_at DESC, r.ref_id DESC "
+                "LIMIT 5",
+                (tag_id,),
+            ).fetchall()
+        sample_refs: list[tuple[str, str | None, int]] = [
+            (str(r[0]), (None if r[1] is None else str(r[1])), int(r[2]))
+            for r in sample_rows
+        ]
+        return {
+            "count": count,
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "sample_refs": sample_refs,
+        }
+
+    def unembedded_tags(
+        self,
+        *,
+        limit: int,
+        version: int = 1,
+    ) -> list[tuple[str, str]]:
+        """Claim query for the ``tag_embeddings`` worker.
+
+        Returns up to ``limit`` ``(namespace, value)`` pairs that
+        lack a fresh embedding — either no ``tag_embeddings`` row
+        at all, or a row whose ``version`` is below the worker's
+        current version constant. Locks the ``tags`` rows
+        ``FOR UPDATE SKIP LOCKED`` so concurrent workers don't
+        double-process the same tag.
+
+        Caller is responsible for either calling
+        :meth:`write_tag_embedding` (which clears the claim by
+        upserting at ``version``) inside the same transaction, or
+        committing the lock release explicitly. The worker pass
+        wraps the loop in one connection and commits per-batch, so
+        the lock lifetime tracks the batch.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT t.namespace, t.value "
+                "FROM tags t "
+                "LEFT JOIN tag_embeddings te "
+                "  ON te.namespace = t.namespace "
+                " AND te.value = t.value "
+                "WHERE te.namespace IS NULL "
+                "   OR te.version < %s "
+                "ORDER BY t.tag_id "
+                "LIMIT %s "
+                "FOR UPDATE OF t SKIP LOCKED",
+                (version, limit),
+            ).fetchall()
+        return [(str(r[0]), str(r[1])) for r in rows]
+
+    def write_tag_embedding(
+        self,
+        *,
+        namespace: str,
+        value: str,
+        vector: list[float],
+        embedder: str,
+        version: int,
+    ) -> None:
+        """Upsert one row into ``tag_embeddings``.
+
+        Bumps ``embedded_at`` on every write so operators can see
+        when a tag was last (re)embedded. Idempotent on the
+        ``(namespace, value)`` primary key — re-running the worker
+        against the same tags is a no-op modulo the timestamp.
+        """
+        with self.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO tag_embeddings "
+                "  (namespace, value, vector, version, embedder, embedded_at) "
+                "VALUES (%s, %s, %s, %s, %s, NOW()) "
+                "ON CONFLICT (namespace, value) DO UPDATE SET "
+                "  vector = EXCLUDED.vector, "
+                "  version = EXCLUDED.version, "
+                "  embedder = EXCLUDED.embedder, "
+                "  embedded_at = NOW()",
+                (namespace, value, vector, version, embedder),
+            )
+
+    def search_tags_semantic(
+        self,
+        *,
+        query_vector: list[float],
+        page: int = 1,
+        page_size: int = 20,
+    ) -> list[tuple[str, str, float]]:
+        """Cosine-distance nearest neighbours over ``tag_embeddings``.
+
+        Returns ``[(namespace, value, distance), ...]`` smallest
+        distance first. Tags without a vector (worker hasn't run)
+        are excluded; the caller should fall back to lexical search
+        when this returns empty unexpectedly.
+        """
+        if page < 1:
+            page = 1
+        offset = (page - 1) * page_size
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT namespace, value, "
+                "       (vector <=> %s::vector) AS dist "
+                "FROM tag_embeddings "
+                "WHERE vector IS NOT NULL "
+                "ORDER BY vector <=> %s::vector ASC "
+                "LIMIT %s OFFSET %s",
+                (query_vector, query_vector, page_size, offset),
+            ).fetchall()
+        return [(str(r[0]), str(r[1]), float(r[2])) for r in rows]
+
+    def search_tags_lexical(
+        self,
+        *,
+        q: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> list[tuple[str, str, int]]:
+        """Substring match over tag (namespace, value) pairs.
+
+        Returns ``[(namespace, value, usage_count), ...]`` ordered
+        by usage_count desc — so common matches surface above
+        long-tail ones. Substring (ILIKE) match against
+        ``namespace || ':' || value`` so a caller can hit either
+        side with one query (``q='topic'`` matches every
+        ``topic:*`` open tag; ``q='cap'`` matches ``co2-capture``).
+        Empty / whitespace-only ``q`` returns an empty list.
+        """
+        if not q or not q.strip():
+            return []
+        if page < 1:
+            page = 1
+        offset = (page - 1) * page_size
+        # ``%`` is the wildcard; escape any literal % / _ in q so a
+        # user-supplied string doesn't behave like a pattern.
+        needle = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT t.namespace, t.value, "
+                "       COALESCE(rc.n, 0) + COALESCE(cc.n, 0) AS usage_count "
+                "FROM tags t "
+                "LEFT JOIN (SELECT tag_id, COUNT(*) AS n FROM ref_tags "
+                "           GROUP BY tag_id) rc ON rc.tag_id = t.tag_id "
+                "LEFT JOIN (SELECT tag_id, COUNT(*) AS n FROM chunk_tags "
+                "           GROUP BY tag_id) cc ON cc.tag_id = t.tag_id "
+                "WHERE (t.namespace || ':' || t.value) ILIKE %s "
+                "   OR t.value ILIKE %s "
+                "ORDER BY usage_count DESC, t.namespace ASC, t.value ASC "
+                "LIMIT %s OFFSET %s",
+                (f"%{needle}%", f"%{needle}%", page_size, offset),
+            ).fetchall()
+        return [(str(r[0]), str(r[1]), int(r[2])) for r in rows]
+
     def find_first_meta_for_open_tag(
         self,
         *,

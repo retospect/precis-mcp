@@ -1,6 +1,6 @@
 """``ProvenanceHandler`` — retraction / amendment checks against Crossref.
 
-Phase 1 + 2 surface (``docs/provenance-kind-plan.md``):
+Phase 1 + 2 surface (``docs/design/provenance-kind-plan.md``):
 
 - ``get(id='<doi>')`` — single-DOI provenance check returning a
   markdown report. Accepts the DOI in any common form: bare

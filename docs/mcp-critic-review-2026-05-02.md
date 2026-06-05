@@ -292,7 +292,7 @@ Feature-gap (from `gripe:3681`, still open):
 
 - **`gripe:3681`** — registry-driven four-fold proposal (web search, cross-kind fan-out, one-call bookmark, refresh mode). Phases 1 + 3 confirmed shipped at static-review time; phases 2 + 4 remain.
 - **`tests/test_mcp_modalities.py`** — 10 tests pinning the prompts/resources modality wiring. Hardcodes one test-env assumption (see MINOR-C #10 in patch plan).
-- **`docs/paper_ingest.md`** — design doc covering the out-of-band paper ingestion flow (`.acatome` bundles; paper kind is read-only from MCP surface).
+- **`docs/user-facing/paper_ingest.md`** — design doc covering the out-of-band paper ingestion flow (`.acatome` bundles; paper kind is read-only from MCP surface).
 
 ---
 

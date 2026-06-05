@@ -108,7 +108,7 @@ class FileCorpusIndex:
 
     # ── search ─────────────────────────────────────────────────────
 
-    def search(self, q: str, top_k: int = 10) -> list[SearchHit]:
+    def search(self, q: str, page_size: int = 10) -> list[SearchHit]:
         """Cosine search the corpus for ``q``.
 
         Returns ``[]`` when the index isn't available (see
@@ -148,7 +148,7 @@ class FileCorpusIndex:
                 )
 
         hits.sort(key=lambda h: h.score, reverse=True)
-        return hits[:top_k]
+        return hits[:page_size]
 
     # ── build / cache ──────────────────────────────────────────────
 

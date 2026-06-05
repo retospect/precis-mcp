@@ -382,13 +382,13 @@ class PythonHandler(Handler):
         *,
         q: str | None = None,
         scope: str | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> Response:
         """Lexical search across symbols.
 
         Scores each symbol by where the query matched:
-        qualname > signature > docstring. Returns up to `top_k` hits,
+        qualname > signature > docstring. Returns up to `page_size` hits,
         deduped by qualname.
 
         `scope=` may be:
@@ -484,7 +484,7 @@ class PythonHandler(Handler):
 
         hits.sort(key=lambda h: -h[0])
         total = len(hits)
-        hits = hits[:top_k]
+        hits = hits[:page_size]
 
         lines = [
             format_search_headline(

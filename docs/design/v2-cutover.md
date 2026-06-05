@@ -151,5 +151,5 @@ during the transition period; nothing v1 reads is touched.
 
 ## Re-embed when changing models
 
-Out of scope for cutover; documented in `docs/paper_ingest.md` under
+Out of scope for cutover; documented in `docs/user-facing/paper_ingest.md` under
 "Re-embed flow".

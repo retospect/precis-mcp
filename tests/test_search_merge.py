@@ -87,7 +87,7 @@ def test_priority_preserves_stream_order_and_drops_cross_stream_dups() -> None:
         _hit(slug="a", pos=99, dedupe_key="paper:a"),  # collides with s1
         _hit(slug="b", pos=1, dedupe_key="paper:b"),
     ]
-    out = merge_and_render([s1, s2], top_k=10, mode="priority")
+    out = merge_and_render([s1, s2], page_size=10, mode="priority")
     body = out.body
     # Both s1 hits keep (intra-stream collisions allowed).
     assert "a~1" in body
@@ -101,7 +101,7 @@ def test_priority_preserves_stream_order_and_drops_cross_stream_dups() -> None:
 def test_priority_no_dedupe_key_means_no_collapse() -> None:
     s1 = [_hit(slug="a", pos=1, dedupe_key=None)]
     s2 = [_hit(slug="a", pos=1, dedupe_key=None)]
-    out = merge_and_render([s1, s2], top_k=10, mode="priority")
+    out = merge_and_render([s1, s2], page_size=10, mode="priority")
     # Both hits render — without a dedupe_key, no merge happens.
     assert out.body.count("a~1") == 2
 
@@ -124,7 +124,7 @@ def test_rrf_fuses_streams_by_rank() -> None:
         _hit(slug="z", dedupe_key="paper:z", score=0.4),
     ]
     s3 = [_hit(slug="y", dedupe_key="paper:y", score=0.6)]
-    out = merge_and_render([s1, s2, s3], top_k=10, mode="rrf")
+    out = merge_and_render([s1, s2, s3], page_size=10, mode="rrf")
     body = out.body
     # x must outrank y (two stream contributions vs one).
     x_idx = body.find("paper:x")  # via dedupe_key only used internally;
@@ -135,7 +135,7 @@ def test_rrf_fuses_streams_by_rank() -> None:
 def test_rrf_no_dedupe_key_keeps_all_singletons() -> None:
     s1 = [_hit(slug="a", pos=1)]
     s2 = [_hit(slug="a", pos=1)]
-    out = merge_and_render([s1, s2], top_k=10, mode="rrf")
+    out = merge_and_render([s1, s2], page_size=10, mode="rrf")
     # Without dedupe_key, every hit is its own document.
     assert out.body.count("## ") == 2
 
@@ -146,14 +146,14 @@ def test_rrf_no_dedupe_key_keeps_all_singletons() -> None:
 
 
 def test_empty_streams_default_message() -> None:
-    out = merge_and_render([], top_k=10, mode="priority", header_noun="patent hit")
+    out = merge_and_render([], page_size=10, mode="priority", header_noun="patent hit")
     assert "no patent hit matches" in out.body
 
 
 def test_empty_streams_custom_message() -> None:
     out = merge_and_render(
         [],
-        top_k=10,
+        page_size=10,
         mode="priority",
         empty_body="no patents match 'foo'",
     )
@@ -161,7 +161,7 @@ def test_empty_streams_custom_message() -> None:
 
 
 def test_empty_streams_with_query_mentions_query() -> None:
-    out = merge_and_render([], top_k=10, query="foo", header_noun="match")
+    out = merge_and_render([], page_size=10, query="foo", header_noun="match")
     assert "foo" in out.body
 
 
@@ -172,7 +172,7 @@ def test_empty_streams_with_query_mentions_query() -> None:
 
 def test_renders_handle_title_and_preview() -> None:
     s1 = [_hit(slug="a", pos=3, title="A title", preview="A preview")]
-    out = merge_and_render([s1], top_k=10, mode="priority")
+    out = merge_and_render([s1], page_size=10, mode="priority")
     assert "## 1. a~3" in out.body
     assert "_A title_" in out.body
     assert "A preview" in out.body
@@ -180,26 +180,26 @@ def test_renders_handle_title_and_preview() -> None:
 
 def test_show_label_false_drops_bracket() -> None:
     s1 = [_hit(slug="a", pos=3, source="local")]
-    out = merge_and_render([s1], top_k=10, mode="priority", show_label=False)
+    out = merge_and_render([s1], page_size=10, mode="priority", show_label=False)
     assert "[local]" not in out.body
 
 
 def test_show_label_uses_kind_when_no_source() -> None:
     s1 = [_hit(slug="a", pos=3, kind="paper")]
-    out = merge_and_render([s1], top_k=10, mode="priority")
+    out = merge_and_render([s1], page_size=10, mode="priority")
     assert "[paper]" in out.body
 
 
 def test_show_label_prefers_source_over_kind() -> None:
     s1 = [_hit(slug="a", pos=3, kind="paper", source="local")]
-    out = merge_and_render([s1], top_k=10, mode="priority")
+    out = merge_and_render([s1], page_size=10, mode="priority")
     assert "[local]" in out.body
     assert "[paper]" not in out.body
 
 
-def test_top_k_caps_rendered_hits() -> None:
+def test_page_size_caps_rendered_hits() -> None:
     s1 = [_hit(slug=f"x{i}", pos=0, dedupe_key=f"paper:x{i}") for i in range(5)]
-    out = merge_and_render([s1], top_k=2, mode="priority")
+    out = merge_and_render([s1], page_size=2, mode="priority")
     assert "## 1. x0" in out.body
     assert "## 2. x1" in out.body
     assert "## 3. x2" not in out.body

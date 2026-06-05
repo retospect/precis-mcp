@@ -244,7 +244,7 @@ class TestGetBadInput:
 
 class TestSearch:
     def test_search_no_local_only_remote(self, handler: PatentHandler) -> None:
-        r = handler.search(q="photocatalysis", top_k=10)
+        r = handler.search(q="photocatalysis", page_size=10)
         # Remote leg picked up two hits from the search fixture.
         assert "ep1234567b1" in r.body
         assert "wo2023123456a1" in r.body
@@ -261,7 +261,7 @@ class TestSearch:
         # test) stems to a different English-snowball lexeme and
         # would not hit the local lex CTE. Either query reaches the
         # remote leg via the equivalent fake_ops mapping.
-        r = handler.search(q="photocatalytic", top_k=10)
+        r = handler.search(q="photocatalytic", page_size=10)
         # Local hits are block-level, so ep1234567b1 appears in many
         # ## headers — but every one is marked [local].
         assert "[local]" in r.body
@@ -276,7 +276,7 @@ class TestSearch:
 
     def test_search_via_tag_no_q(self, handler: PatentHandler) -> None:
         # cpc tag lifts to CQL even without q=.
-        r = handler.search(tags=["cpc:b01j27/24"], top_k=10)
+        r = handler.search(tags=["cpc:b01j27/24"], page_size=10)
         assert "ep1234567b1" in r.body or "wo2023123456a1" in r.body
 
     def test_search_no_hits(
@@ -285,7 +285,7 @@ class TestSearch:
         # An unknown CQL → fake raises OpsNotFound → handler treats
         # remote as empty. With no local hits either, the response
         # carries the no-match message.
-        r = handler.search(q="completely-novel-topic-xyz", top_k=10)
+        r = handler.search(q="completely-novel-topic-xyz", page_size=10)
         assert "no patents match" in r.body.lower()
 
     def test_search_axis_enforcement(self, handler: PatentHandler) -> None:
@@ -307,7 +307,7 @@ class TestSearchSourceKwarg:
     """``source=`` picks which leg(s) run.  ``'remote'`` also dedupes
     OPS hits against the local store so the agent sees only patents
     it hasn't fetched yet — the natural prior-art sweep mode.
-    See ``docs/search-future-filters.md`` §7.
+    See ``docs/user-facing/search-future-filters.md`` §7.
     """
 
     def test_source_invalid_raises(self, handler: PatentHandler) -> None:
@@ -343,8 +343,8 @@ class TestSearchSourceKwarg:
     def test_source_both_is_default(self, handler: PatentHandler) -> None:
         # source defaults to 'both' — local AND remote hits render.
         handler.get(id="EP1234567B1")
-        default = handler.search(q="photocatalytic", top_k=10)
-        explicit = handler.search(q="photocatalytic", top_k=10, source="both")
+        default = handler.search(q="photocatalytic", page_size=10)
+        explicit = handler.search(q="photocatalytic", page_size=10, source="both")
         assert default.body == explicit.body
 
 

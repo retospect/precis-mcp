@@ -1,8 +1,15 @@
 # ADR 0002 — `pub_id` as primary LLM handle, TOON for tabular output
 
-- **Status**: accepted (2026-05-21)
+- **Status**: accepted (2026-05-21) — *partially superseded* (see below).
+  - **TOON portion**: in force. Tabular output uses TOON; see ADR 0003
+    and `src/precis/format/toon.py`.
+  - **Identifier portion (`pub_id` as primary handle)**: superseded by
+    [ADR 0006 — Tri-identifier scheme](./0006-tri-identifier-scheme.md)
+    (which added `cite_key`), and the `slug` aspect was further
+    superseded by [ADR 0008 — Drop slug normalisation](./0008-drop-slug-identifier-normalisation.md).
 - **Deciders**: Reto + agent
 - **Supersedes**: nothing
+- **Superseded by**: 0006 (identifier section), then 0008 (slug section).
 
 ## Context
 

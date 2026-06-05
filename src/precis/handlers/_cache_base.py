@@ -646,7 +646,7 @@ class CacheBackedHandler(Handler):
         self,
         *,
         q: str | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> Response:
         """Block-level fused search across cached entries of this kind.
@@ -671,7 +671,7 @@ class CacheBackedHandler(Handler):
             q=q,
             query_vec=query_vec,
             kind=self.spec.kind,
-            limit=top_k,
+            limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         if not hits:
@@ -688,7 +688,7 @@ class CacheBackedHandler(Handler):
                         "populate the cache first",
                     ),
                     (
-                        f"search(kind={self.spec.kind!r}, q={q!r}, top_k=50)",
+                        f"search(kind={self.spec.kind!r}, q={q!r}, page_size=50)",
                         "widen the lexical net",
                     ),
                 ]
@@ -717,7 +717,7 @@ class CacheBackedHandler(Handler):
         self,
         *,
         q: str,
-        top_k: int = 10,
+        page_size: int = 10,
         query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
@@ -739,7 +739,7 @@ class CacheBackedHandler(Handler):
             q=q,
             query_vec=query_vec,
             kind=self.spec.kind,
-            limit=top_k,
+            limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         return block_hits_to_search_hits(triples, kind=self.spec.kind)

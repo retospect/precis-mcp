@@ -61,7 +61,7 @@ retry, so trust it and re-issue.
 
 ```python
 search(kind='patent', q='photocatalytic NOx reduction')
-search(kind='patent', q='Z-scheme photocatalysis', top_k=20)
+search(kind='patent', q='Z-scheme photocatalysis', page_size=20)
 search(kind='patent', q='amine carbon capture', source='remote')
 ```
 
@@ -80,10 +80,10 @@ points at `get(kind='patent', id=...)` to fetch it, or
 
 ```python
 search(kind='patent', q='photocatalysis', page=2)
-search(kind='patent', q='photocatalysis', page=3, top_k=20)
+search(kind='patent', q='photocatalysis', page=3, page_size=20)
 ```
 
-`page=1` is the default. `top_k=` sets page size (default 10,
+`page=1` is the default. `page_size=` sets page size (default 10,
 max 100).
 
 ## Find a passage in a patent I have

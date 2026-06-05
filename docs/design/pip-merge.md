@@ -1,8 +1,13 @@
 # pip-merge — fold acatome-extract + acatome-meta into precis-mcp
 
-- **Status**: in-progress (2026-05-21)
+- **Status**: shipped — B0–B5 landed across 2026-05-21 → 2026-05-24
+  (commits f02dad6 → 02c878c → ab5ab20). `acatome-extract` /
+  `acatome-meta` have been vendored into `src/precis/ingest/`; see
+  `pyproject.toml` `# (vendored from acatome-extract in B3/B4)`.
+  Later steps (B7 removal of `Store.ingest_bundle()`, B10 TOON output)
+  shipped subsequently; tracked in their own design docs.
 - **Parent plan**: [`storage-v2.md`](./storage-v2.md) §step B
-- **Branch**: `feat/storage-v2-step-b`
+- **Branch**: merged from `feat/storage-v2-step-b` into `main`.
 
 This is the file-by-file mapping and execution order for ADR 0001.
 

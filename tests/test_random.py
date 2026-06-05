@@ -313,7 +313,7 @@ def test_ignores_unknown_kwargs(store: Store, hub: Hub, handler: RandomHandler) 
     _seed_oracle_with_embeddings(store, hub, "kw", ["only block"])
     # Pass every conventional kwarg; none of them mean anything
     # to random, but none should raise either.
-    r = handler.get(id=None, q=None, view=None, top_k=None)
+    r = handler.get(id=None, q=None, view=None, page_size=None)
     assert "`oracle:kw~0`" in r.body
 
 

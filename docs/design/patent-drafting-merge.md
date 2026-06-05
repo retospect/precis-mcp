@@ -41,7 +41,7 @@ ergonomics. One MCP server, one config entry, one repo to maintain.
   is documented but **deferred to phase 4**. Phase 1-3 land without it.
 - New verb introduction. The seven verbs stay.
 - Replacing the existing read-only `kind='patent'` (EPO OPS lookup)
-  in `docs/patent-kind-spec.md`. The new modes (`init`,
+  in `docs/user-facing/patent-kind-spec.md`. The new modes (`init`,
   `set-root`, `export-*`) **extend** that kind; the search/get
   surface for foreign patents is untouched.
 
@@ -122,7 +122,7 @@ This proposal is the **first multi-word kind family** in precis
 > (`patent-`, future `legal-`, `clinical-`) followed by an entity
 > name. Single-word kinds remain bare.
 
-Add this rule to `docs/file-kinds-unified-addressing.md`.
+Add this rule to `docs/user-facing/file-kinds-unified-addressing.md`.
 
 ### 2.2 Why `patent-ids-submission` is its own kind
 
@@ -266,7 +266,7 @@ edit(kind='patent-numeral', id='*', mode='renumber')
 
 ### 5.2 Specification
 
-Add to `docs/edit-protocol-spec.md`:
+Add to `docs/user-facing/edit-protocol-spec.md`:
 
 > When `id='*'` is supplied to `edit` or `delete`, the call is a
 > **bulk operation** over every ref of the kind that matches the
@@ -335,7 +335,7 @@ project-owning kinds**. The convention:
 - Returns a manifest in the response body listing what was
   written.
 
-Document this in `docs/edit-protocol-spec.md` so the next
+Document this in `docs/user-facing/edit-protocol-spec.md` so the next
 project-owning kind (lab-mcp's `experiment`?) can reuse it.
 
 ---
@@ -521,7 +521,7 @@ Each phase commits independently and leaves `pytest` green.
   - `__main__.py` prints "patentorney-mcp has been merged into
     precis-mcp; install `precis-mcp` and configure
     `${PRECIS_ROOT}/.patent.yaml`. See
-    https://github.com/.../precis-mcp/blob/main/docs/patent-drafting-merge.md"
+    https://github.com/.../precis-mcp/blob/main/docs/design/patent-drafting-merge.md"
     then exits 0
   - `README.md` mirrors the same notice with the migration
     cookbook (mapping from old MCP tool calls to new precis verb
@@ -549,7 +549,7 @@ Each phase commits independently and leaves `pytest` green.
     > `patent-*` family. Existing `patent.yaml` files are
     > read; rename to `.patent.yaml` to use the new
     > engagement trigger. See
-    > docs/patent-drafting-merge.md.
+    > docs/design/patent-drafting-merge.md.
 
 **Definition of done**
 

@@ -4,7 +4,7 @@ The v6.0 line is the ground-up redesign that started as the `v2`
 branch and merged into `main` 2026-04-30. The last v1 release on
 PyPI is `5.2.6`; everything below `## v6.0.0` represents the
 post-merge state. Phases pre-merge are kept here as historical
-context — see also `docs/phase*-plan.md` and `docs/v2-cutover.md`.
+context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
@@ -357,7 +357,7 @@ to a fresh DB and to a live v8.0.0 DB.
       the Unknown DOI section. **Never substitutes** — the
       supplied DOI's status stays `unknown`. Fuzzy
       auto-resolution was explicitly rejected; see
-      `docs/provenance-kind-plan.md` § "Rejected: fuzzy DOI
+      `docs/design/provenance-kind-plan.md` § "Rejected: fuzzy DOI
       auto-resolution" for the rationale.
   - Source layout: `ingest/provenance.py`, `ingest/_text_norm.py`
     (Phase 2.5 helpers), `ingest/_rw_csv.py` (Phase 3 parser),
@@ -367,7 +367,7 @@ to a fresh DB and to a live v8.0.0 DB.
     `data/skills/precis-preflight.md`. Migrations `0002` and
     `0003` in `src/precis/migrations/`. Tests at
     `tests/ingest/test_provenance{,_verify,_rw,_transitive,_phase5}.py`.
-  - Design doc: `docs/provenance-kind-plan.md`.
+  - Design doc: `docs/design/provenance-kind-plan.md`.
 
 - **Phase 6.1 — RW cache as Crossref fallback.** `check_doi` now
   always consults the local Retraction Watch cache regardless of
@@ -795,7 +795,7 @@ works without hacks.
   singleton-hit branch keeps the existing `top_k=10` widen hint.
 - **Docs** — new "Skip what you've seen" section in
   `precis-paper-help.md`, one-line example in `precis-overview.md`,
-  shipped entry in `docs/search-future-filters.md`.
+  shipped entry in `docs/user-facing/search-future-filters.md`.
 - **Tests** — 4 store-level (`test_block_search.py`: drops listed
   refs, `LIMIT` post-exclude, lex-only fallback path, count-lex
   honours exclude) and 8 handler-level (`test_paper.py`: drops
@@ -1019,7 +1019,7 @@ the live registry dump, plus a `precis-<kind>-help` per kind).
 Highlights since `5.2.6`:
 
 - **Seven-verb tool surface** — see
-  [`docs/seven-verb-surface-migration.md`](docs/seven-verb-surface-migration.md)
+  [`docs/user-facing/seven-verb-surface-migration.md`](docs/user-facing/seven-verb-surface-migration.md)
   for the design rationale.
 - **New kinds**: `python` (AST navigator), `patent` (EPO OPS),
   `random` (discovery), `fc` (flashcards / spaced repetition),
@@ -1144,7 +1144,7 @@ Pinned by `tests/test_python_indexer.py` (25 cases),
 `test_python_callgraph.py` (17), `test_python_entries.py` (18),
 `test_python_runtrace.py` (39, with real-subprocess end-to-end),
 `test_python_config_wire.py` (18), and `test_mcp_args_kwarg.py`
-(13). Full design rationale in `docs/python-kind-spec.md`.
+(13). Full design rationale in `docs/user-facing/python-kind-spec.md`.
 
 ## Anchored edit protocol — v1 (April 2026)
 
@@ -1235,7 +1235,7 @@ Pinned by `tests/test_edit_resolve.py` (59 unit tests covering
 7 dry_run cases), `tests/test_python_handler_writes.py` (20 anchored
 edit tests including 8 dry_run cases that verify gates run + disk
 untouched + diff/full formats). Full design rationale in
-`docs/edit-protocol-spec.md`.
+`docs/user-facing/edit-protocol-spec.md`.
 
 ## bge-m3 char-truncation guard (April 2026)
 
@@ -1394,10 +1394,10 @@ required now that the install path actually works. Queued.
 ## Planned — Phase 9: `patent` kind (EPO OPS)
 
 Read-only third durable knowledge corpus alongside `paper` and
-`markdown`. Spec at `docs/patent-kind-spec.md`; agent skills at
+`markdown`. Spec at `docs/user-facing/patent-kind-spec.md`; agent skills at
 `src/precis/data/skills/precis-patent-help.md` (entry-level) and
 `precis-patent-power.md` (raw CQL); deferred filter affordances at
-`docs/search-future-filters.md`.
+`docs/user-facing/search-future-filters.md`.
 
 Phase-1 surface:
 - `search(kind='patent', q=, tags=, scope=, top_k=)` — merged
@@ -1427,7 +1427,7 @@ Decisions captured this round:
   kwargs (`ti=`/`ab=`/`pd=`/etc.). Power users put raw CQL in
   `q=`; the simple-vs-power-user split is two skill files.
 - Date-range / state-marker / `source=local|remote|both` knobs
-  captured in `docs/search-future-filters.md` for cross-kind
+  captured in `docs/user-facing/search-future-filters.md` for cross-kind
   consistency rather than implemented patent-only.
 - Slug normalisation strips whitespace only (no dots) so DOIs /
   arXiv ids in other kinds aren't undermined by precedent.
@@ -2760,7 +2760,7 @@ search, citation views, CLI cutover commands. 216 tests green.
 - CLI: `precis migrate [--dry-run] [--database-url …]`,
   `precis jobs ingest-bundle <file>`,
   `precis jobs ingest-bundles <dir> [--dry-run] [--limit N]`
-- `docs/v2-cutover.md`: ops runbook for the v1 → v2 switch
+- `docs/design/v2-cutover.md`: ops runbook for the v1 → v2 switch
 
 ## Phase 2 — DB backbone (sync, psycopg 3) + memory handler
 
@@ -2796,5 +2796,5 @@ with v1.
 
 - Schema: `src/precis/migrations/0001_initial.sql`
 - Python store interface sketch: `docs/store_sketch.py`
-- Paper-ingest spec: `docs/paper_ingest.md`
-- Phase-3 plan: `docs/phase3-plan.md`
+- Paper-ingest spec: `docs/user-facing/paper_ingest.md`
+- Phase-3 plan: `docs/design/phase3-plan.md`

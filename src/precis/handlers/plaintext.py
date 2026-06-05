@@ -371,7 +371,7 @@ class PlaintextHandler(Handler):
         *,
         q: str | None = None,
         scope: str | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> Response:
         if q is None or not q.strip():
@@ -399,7 +399,7 @@ class PlaintextHandler(Handler):
             query_vec=query_vec,
             kind=self._KIND,
             scope_ref_id=scope_ref_id,
-            limit=top_k,
+            limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         if not hits:
@@ -408,7 +408,7 @@ class PlaintextHandler(Handler):
             body += render_next_section(
                 [
                     (
-                        f"search(kind='{self._KIND}', q={q!r}, top_k=50)",
+                        f"search(kind='{self._KIND}', q={q!r}, page_size=50)",
                         "widen the lexical net",
                     ),
                     (
@@ -453,7 +453,7 @@ class PlaintextHandler(Handler):
         self,
         *,
         q: str,
-        top_k: int = 10,
+        page_size: int = 10,
         query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
@@ -467,7 +467,7 @@ class PlaintextHandler(Handler):
             q=q,
             query_vec=query_vec,
             kind=self._KIND,
-            limit=top_k,
+            limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         return block_hits_to_search_hits(triples, kind=self._KIND)

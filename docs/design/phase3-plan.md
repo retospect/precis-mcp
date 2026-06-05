@@ -26,7 +26,7 @@ git log --oneline -5
 | File | Why |
 |---|---|
 | `README.md` | Phase plan + conventions |
-| `docs/paper_ingest.md` | Bundle-ingest architecture sketch |
+| `docs/user-facing/paper_ingest.md` | Bundle-ingest architecture sketch |
 | `src/precis/data/skills/precis-paper-help.md` | Target agent-facing API |
 | `src/precis/data/skills/precis-overview.md` | Kind topology recap |
 | `src/precis/migrations/0001_initial.sql` | Schema (paper kind already seeded) |
@@ -207,7 +207,7 @@ update minor discrepancies as you find them.
 
 ### 9. Cutover note
 
-Drop `docs/v2-cutover.md` covering:
+Drop `docs/design/v2-cutover.md` covering:
 - New postgres DB name (`precis`, separate from `cluster`)
 - Required extensions (`vector`, `pg_trgm`)
 - Migration command sequence
@@ -228,7 +228,7 @@ This is for ops, not the agent. ~30–40 lines is fine.
 7. `Store.ingest_bundle()` + tests using a fixture bundle.
 8. CLI `jobs ingest-bundles`.
 9. Real `BgeM3Embedder` (optional dep).
-10. `docs/v2-cutover.md`.
+10. `docs/design/v2-cutover.md`.
 11. Skill draft polish.
 
 Each step gets its own commit. Don't pile a 1500-line PR.
@@ -281,7 +281,7 @@ Phase 3 is "done" when:
   and get a sensible overview
 - `precis serve` running, agent can `search(q='nitrate', kind='paper')`
   and get block-level hits
-- `docs/v2-cutover.md` written
+- `docs/design/v2-cutover.md` written
 - `git log --oneline -10` shows phase-3 commits, each focused on one
   step from the order above
 

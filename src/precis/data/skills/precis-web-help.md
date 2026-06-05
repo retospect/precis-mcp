@@ -73,7 +73,7 @@ with and without `?utm_source=x` is always the same cache entry.
 
 ```python
 search(kind='web', q='retrieval-augmented generation')
-search(kind='web', q='dopamine D1 D2', top_k=20)
+search(kind='web', q='dopamine D1 D2', page_size=20)
 search(kind='web', q='RAG', page=2)
 ```
 

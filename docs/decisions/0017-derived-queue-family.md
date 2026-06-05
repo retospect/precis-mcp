@@ -23,7 +23,7 @@
   the citation-chase work needs a per-ref output relation for
   `chase_citation` / `resolve_citation:s2` artifacts and surfaced
   that the pattern was implicit, not documented. (The
-  [provenance kind](../provenance-kind-plan.md) — shipped
+  [provenance kind](../design/provenance-kind-plan.md) — shipped
   Phases 1–6 ahead of this ADR — owns retraction state through
   a synchronous tool, not a queue artifact; see
   §"Consequences > Positive" for the cross-reference.)
@@ -287,7 +287,7 @@ five handlers today, room to grow.
   artifact needs them. Greenfield principle preserved.
 - **Future-proof for periodic-backfill artifacts.** The substrate
   accommodates artifacts the
-  [provenance kind](../provenance-kind-plan.md) explicitly punts
+  [provenance kind](../design/provenance-kind-plan.md) explicitly punts
   on — bulk corpus sweeps for retraction state, link-level
   severity scoring, per-PDF OCR retries. None ship with this ADR;
   they have a home for when demand surfaces.

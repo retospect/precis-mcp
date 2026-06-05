@@ -272,7 +272,7 @@ def test_index_returns_hits_with_mock_embedder(
         cache_namespace="test",
     )
     assert idx.is_available()
-    hits = idx.search("First content about apples and oranges.", top_k=10)
+    hits = idx.search("First content about apples and oranges.", page_size=10)
     assert hits, "expected at least one hit"
     # MockEmbedder is hash-based, not semantic — ranks aren't tied
     # to content overlap with the query. What we can assert is that

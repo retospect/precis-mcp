@@ -416,8 +416,8 @@ def test_search_scope_unknown_alias_raises(handler: PythonHandler) -> None:
         handler.search(q="x", scope="missing-alias")
 
 
-def test_search_top_k_limits_results(repo: Path) -> None:
-    """top_k caps the result count even when many symbols match."""
+def test_search_page_size_limits_results(repo: Path) -> None:
+    """page_size caps the result count even when many symbols match."""
     # Add a noisy file so we have plenty of matches for 'def'.
     _write(
         repo,
@@ -425,7 +425,7 @@ def test_search_top_k_limits_results(repo: Path) -> None:
         "def a(): pass\ndef b(): pass\ndef c(): pass\ndef d(): pass\n",
     )
     handler = PythonHandler(hub=Hub(), roots={"r": repo})
-    out = handler.search(q="pkg", top_k=2)
+    out = handler.search(q="pkg", page_size=2)
     # Header reports the actual hit count (≤ 2).
     header = out.body.splitlines()[0]
     assert header.startswith("# ")

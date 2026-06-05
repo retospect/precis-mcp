@@ -55,15 +55,21 @@ def _seed_paper_stub(
     arxiv: str | None = None,
     s2_id: str | None = None,
 ) -> int:
-    """Seed a ``kind='paper'`` ref with no PDF and the given identifiers."""
+    """Seed a ``kind='paper'`` ref with no PDF and the given identifiers.
+
+    v2: ``refs`` no longer carries a ``slug`` column — the cite_key
+    lives under ``ref_identifiers (id_kind='cite_key')``. We use
+    the store API which knows the layout instead of hand-rolling
+    the INSERT.
+    """
+    ref = store.insert_ref(
+        kind="paper",
+        slug=cite_key,
+        title=title,
+        meta={},
+    )
+    ref_id = ref.id
     with store.pool.connection() as conn:
-        row = conn.execute(
-            "INSERT INTO refs (kind, slug, set_by, title) "
-            "VALUES ('paper', %s, 'system', %s) RETURNING ref_id",
-            (cite_key, title),
-        ).fetchone()
-        assert row is not None
-        ref_id = int(row[0])
         if doi is not None:
             conn.execute(
                 "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
@@ -82,11 +88,6 @@ def _seed_paper_stub(
                 "VALUES (%s, 's2', %s, 'manual')",
                 (ref_id, s2_id),
             )
-        conn.execute(
-            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
-            "VALUES (%s, 'cite_key', %s, 'manual')",
-            (ref_id, cite_key),
-        )
         conn.commit()
     return ref_id
 

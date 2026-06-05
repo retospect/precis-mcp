@@ -907,7 +907,7 @@ class PrecisRuntime:
 
         response = merge_and_render(
             streams,
-            top_k=top_k,
+            page_size=top_k,
             query=q,
             header_noun="match",
             mode="rrf",
@@ -1198,7 +1198,7 @@ def build_runtime(
     optional deps), and populates the flat dispatch table. The
     returned :class:`Hub` carries the store / embedder / hints; the
     runtime is a thin wrapper around it. See
-    ``docs/seven-verb-surface-migration.md`` D7/D8.
+    ``docs/user-facing/seven-verb-surface-migration.md`` D7/D8.
     """
     from precis.config import load_config
     from precis.dispatch import boot

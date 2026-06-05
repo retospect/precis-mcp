@@ -354,7 +354,7 @@ class RefsMixin:
         ``0001_initial.sql``) or ``None`` when the paper is clean —
         in which case we still touch ``retraction_checked_at`` so the
         TTL gate works. See ``ingest/provenance.py`` for the caller
-        and ``docs/provenance-kind-plan.md`` for the schema rationale.
+        and ``docs/design/provenance-kind-plan.md`` for the schema rationale.
         """
         sql = (
             "UPDATE refs SET "

@@ -19,7 +19,7 @@ there is no honest numeric score.
 search(q='photocatalysis')                          # fan out across all kinds
 search(kind='paper', q='photocatalysis')            # one kind
 search(kind='paper,patent', q='photocatalysis')     # several kinds
-search(kind='paper', q='X', page=2, top_k=20)       # paginate
+search(kind='paper', q='X', page=2, page_size=20)       # paginate
 search(kind='paper', q='X', tags=['topic:noxrr'])   # tag-filter
 search(kind='paper', q='X', scope='wang2020state')  # search inside one ref
 search(kind='paper', q='X', exclude=['wang2020state', 'kim2024electro'])
@@ -31,7 +31,7 @@ search(kind='patent', q='X', source='remote')       # patent-only knob
 | `q` | str | Free-text query. |
 | `kind` | str | One kind, comma-list, or `'*'` / `'all'` / `'any'` / `''` for fan-out. |
 | `page` | int | Page number (default 1). |
-| `top_k` | int | **Page size** (default 10, max 100). Not a match-quality cutoff despite the name. |
+| `page_size` | int | **Page size** (default 10, max 100). Not a match-quality cutoff despite the name. |
 | `tags` | list[str] | Per-kind tag filters; AND semantics. |
 | `scope` | str | Restrict to one ref's blocks. |
 | `exclude` | list[str] | Skip-list (specific slugs to drop). `page=` is the normal pagination. |
@@ -58,10 +58,10 @@ in `memory` can out-rank a weaker hit in `paper`.
 
 ```python
 search(kind='paper', q='photocatalysis', page=2)
-search(kind='paper', q='photocatalysis', page=3, top_k=20)
+search(kind='paper', q='photocatalysis', page=3, page_size=20)
 ```
 
-`page=1` is the default. Bump `page=` to walk results. `top_k=` sets
+`page=1` is the default. Bump `page=` to walk results. `page_size=` sets
 the page size (default 10, max 100) — *not* a quality cutoff despite
 the name.
 
@@ -71,8 +71,11 @@ the name.
 
 ```python
 search(kind='paper', q='photocatalysis', tags=['topic:noxrr'])
+
 search(kind='patent', tags=['cpc:B01J27/24', 'country:ep'])
-search(kind='todo', tags=['STATUS:open', 'PRIO:hi'])
+
+search(kind='todo', tags=['STATUS:open', 'PRIO:high'])
+
 search(kind='memory', q='', tags=['pinned'])
 ```
 

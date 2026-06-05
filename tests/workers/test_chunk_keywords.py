@@ -261,9 +261,11 @@ class TestEnsurePaperAbbrevs:
         assert "MOFs" in detected or "MOF" in detected
 
         with store.pool.connection() as conn:
-            (meta,) = conn.execute(
+            row = conn.execute(
                 "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
             ).fetchone()
+        assert row is not None
+        meta = row[0]
         assert isinstance(meta, dict)
         assert "abbrevs" in meta
 

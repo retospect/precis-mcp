@@ -47,7 +47,9 @@ _STATUS_SCHEMA: list[str] = ["handler", "total", "ok", "failed", "pending"]
 log = logging.getLogger(__name__)
 
 
-HandlerKey = Literal["embed", "summarize", "chunk_keywords", "chase", "fetch"]
+HandlerKey = Literal[
+    "embed", "summarize", "chunk_keywords", "chase", "fetch", "tag_embeddings"
+]
 
 
 # ---------------------------------------------------------------------------
@@ -95,14 +97,22 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--only",
-        choices=("embed", "summarize", "chunk_keywords", "chase", "fetch"),
+        choices=(
+            "embed",
+            "summarize",
+            "chunk_keywords",
+            "chase",
+            "fetch",
+            "tag_embeddings",
+        ),
         default=None,
         help="Restrict to one handler kind. Default: all of them — "
-        "embed + summarize (chunk-level), segments (ref-level "
-        "segment_toc), chase (ref-level finding-chase), and fetch "
-        "(ref-level Unpaywall OA fetch for stub papers). Each "
-        "--only value drains its queue alone; useful for ad-hoc "
-        "backfills.",
+        "embed + summarize (chunk-level), chunk_keywords (per-chunk "
+        "KeyBERT), chase (ref-level finding-chase), fetch (ref-level "
+        "Unpaywall OA fetch for stub papers), and tag_embeddings "
+        "(corpus-wide tag vocabulary for kind='tag' discovery). "
+        "Each --only value drains its queue alone; useful for "
+        "ad-hoc backfills.",
     )
     p.add_argument(
         "--with-llm",
@@ -254,6 +264,44 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_chase_pass)
+
+        # Tag-embeddings pass — populates ``tag_embeddings`` so the
+        # kind='tag' handler can serve semantic discovery
+        # ("find tags related to carbon capture"). Idle most of the
+        # time; one batched embed call per pass keeps cost flat.
+        if args.only in (None, "tag_embeddings"):
+            # Reuse the embed handler's embedder when available so we
+            # don't double-load weights.
+            from precis.workers.embed import EmbedHandler as _EmbedHandler
+            from precis.workers.runner import BatchResult as _BatchResult
+            from precis.workers.tag_embeddings import (
+                run_tag_embeddings_pass,
+            )
+
+            embed_handler_te = next(
+                (
+                    h
+                    for h in handlers
+                    if isinstance(h, _EmbedHandler) and h.name.startswith("embed:")
+                ),
+                None,
+            )
+            te_embedder = (
+                embed_handler_te.embedder
+                if embed_handler_te is not None
+                else make_embedder(args.embedder)
+            )
+
+            def _tag_embeddings_pass(batch_size: int) -> _BatchResult:
+                r = run_tag_embeddings_pass(store, te_embedder, batch_size=batch_size)
+                return _BatchResult(
+                    handler="tag_embeddings",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_tag_embeddings_pass)
 
         # Unpaywall OA fetcher — turns stub paper refs (DOI known,
         # pdf_sha256 IS NULL) into landed PDFs by checking Unpaywall

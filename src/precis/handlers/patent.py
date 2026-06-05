@@ -1,8 +1,8 @@
 """``PatentHandler`` — read-only patent kind backed by EPO OPS.
 
-Phase 1 surface (deferred items in ``docs/patent-kind-spec.md``):
+Phase 1 surface (deferred items in ``docs/user-facing/patent-kind-spec.md``):
 
-- ``search(q=..., tags=..., scope=..., top_k=...)`` — merged local +
+- ``search(q=..., tags=..., scope=..., page_size=...)`` — merged local +
   remote OPS hits with ``[local]`` markers.
 - ``get(id=...)`` — fetch-as-ingest. First call hits OPS, parses,
   stores; subsequent calls render from the local store.
@@ -204,7 +204,7 @@ class PatentHandler(Handler):
         q: str | None = None,
         tags: list[str] | None = None,
         scope: str | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         source: str = "both",
         **_kw: Any,
     ) -> Response:
@@ -216,7 +216,7 @@ class PatentHandler(Handler):
         # filters out hits whose DOCDB id is already in the local
         # store, so the agent sees only patents it hasn't fetched yet
         # — the natural "prior-art sweep" mode. See
-        # ``docs/search-future-filters.md`` §7.
+        # ``docs/user-facing/search-future-filters.md`` §7.
         if source not in ("both", "local", "remote"):
             raise BadInput(
                 f"invalid source={source!r} - expected 'both', 'local', or 'remote'",
@@ -243,7 +243,7 @@ class PatentHandler(Handler):
                 q=q,
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
-                top_k=top_k,
+                page_size=page_size,
             )
 
         # Remote leg: only when q= or a CQL-liftable tag is present
@@ -264,7 +264,7 @@ class PatentHandler(Handler):
                     ops_response = self.ops.search(
                         cql,
                         range_start=1,
-                        range_end=max(top_k, _DEFAULT_REMOTE_PAGE),
+                        range_end=max(page_size, _DEFAULT_REMOTE_PAGE),
                     )
                     remote_hits, _total = parse_search_response(ops_response.xml)
                 except OpsError:
@@ -287,7 +287,7 @@ class PatentHandler(Handler):
             cql=cql_used,
             local_hits=local_hits,
             remote_hits=remote_hits,
-            top_k=top_k,
+            page_size=page_size,
         )
 
         # DOCDB-shaped query that found nothing → mirror paper's
@@ -340,7 +340,7 @@ class PatentHandler(Handler):
         q: str | None,
         scope_ref_id: int | None,
         tags: list[str] | None,
-        top_k: int,
+        page_size: int,
         query_vec: list[float] | None = None,
     ) -> list[tuple[Any, Ref, float]]:
         """Run the hybrid lex+semantic search over patent blocks.
@@ -361,7 +361,7 @@ class PatentHandler(Handler):
             kind="patent",
             scope_ref_id=scope_ref_id,
             tags=tags,
-            limit=top_k,
+            limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
 
@@ -539,7 +539,7 @@ class PatentHandler(Handler):
         cql: str | None,
         local_hits: list[tuple[Any, Ref, float]],
         remote_hits: list[OpsHit],
-        top_k: int,
+        page_size: int,
     ) -> Response:
         """Merge local + remote hits into one rendered response.
 
@@ -569,7 +569,7 @@ class PatentHandler(Handler):
 
         response = merge_and_render(
             [local_stream, remote_stream],
-            top_k=top_k,
+            page_size=page_size,
             query=q or cql,
             header_noun="patent hit",
             mode="priority",
@@ -592,7 +592,7 @@ class PatentHandler(Handler):
         *,
         q: str,
         tags: list[str] | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
@@ -613,7 +613,7 @@ class PatentHandler(Handler):
             q=q,
             scope_ref_id=None,
             tags=normalized_tags,
-            top_k=top_k,
+            page_size=page_size,
             query_vec=query_vec,
         )
         return block_hits_to_search_hits(triples, kind="patent")

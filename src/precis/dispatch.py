@@ -411,7 +411,7 @@ def _load_plugins(hub: Hub) -> None:
     :class:`~precis.protocol.KindSpec` ClassVar, accept
     ``*, hub: Hub`` in ``__init__``, and raise
     :class:`InitError` from ``__init__`` when it can't usefully run.
-    See ``docs/plugin-authoring.md`` for the full write-up; the
+    See ``docs/user-facing/plugin-authoring.md`` for the full write-up; the
     canonical minimal example is
     :class:`precis.handlers.calc.CalcHandler`.
 
@@ -524,7 +524,7 @@ def boot(
     ``self.hub.embed_one(...)`` etc. without each one needing its
     own copy of the dependency wiring.
 
-    See ``docs/seven-verb-surface-migration.md`` D7/D8 for the design
+    See ``docs/user-facing/seven-verb-surface-migration.md`` D7/D8 for the design
     rationale and rejected alternatives.
     """
     # If a store is wired but no embedder was provided, fall back to
@@ -604,6 +604,7 @@ def boot(
         from precis.handlers.quest import QuestHandler
         from precis.handlers.random import RandomHandler
         from precis.handlers.skill import SkillHandler
+        from precis.handlers.tag import TagHandler
         from precis.handlers.todo import TodoHandler
 
         # Numeric- and slug-addressed refs. Cheap; always available
@@ -655,6 +656,11 @@ def boot(
                 ).start()
         _gated(SkillHandler)
         _gated(PaperHandler)
+
+        # Tag — corpus-wide discovery surface over the tags table.
+        # Always-on (store-only dep); the embedder is optional and
+        # the handler falls back to lexical search without it.
+        _gated(TagHandler)
 
         # Corpus-wide random-pick. Store-backed because it reads
         # ``blocks`` directly; no embedder needed (it uses the
@@ -732,7 +738,7 @@ def boot(
 
         _gated(PatentHandler)
 
-    # Third-party plugins load last. See ``docs/plugin-authoring.md``
+    # Third-party plugins load last. See ``docs/user-facing/plugin-authoring.md``
     # and :func:`_load_plugins` for the contract and failure modes.
     # Built-ins win on kind-name collisions because they register
     # first; a plugin attempting to claim an already-registered kind

@@ -28,7 +28,7 @@ A plugin handler must:
 
 The canonical minimal example is `precis.handlers.calc.CalcHandler`
 — ~40 lines of handler proper, stateless, no DB. Read it end-to-end:
-[`../src/precis/handlers/calc.py`](../src/precis/handlers/calc.py).
+[`../../src/precis/handlers/calc.py`](../../src/precis/handlers/calc.py).
 
 ## Entry-point declaration
 
@@ -169,7 +169,7 @@ def test_wikipedia_summary():
 
 For handlers that need a store or embedder, pass stubs into the
 `Hub(...)` constructor; see
-[`tests/conftest.py`](../tests/conftest.py) in the precis repo for
+[`tests/conftest.py`](../../tests/conftest.py) in the precis repo for
 the `fresh_db` / `store` fixtures the built-in handlers use.
 
 To test the entry-point plumbing itself, mock
@@ -199,7 +199,7 @@ def test_plugin_registers(monkeypatch):
 ```
 
 See
-[`tests/test_dispatch.py`](../tests/test_dispatch.py) in the precis
+[`tests/test_dispatch.py`](../../tests/test_dispatch.py) in the precis
 repo for the full pattern — the `_FakeEP` helper and
 `_patch_entry_points` wiring are both reusable.
 
@@ -217,11 +217,11 @@ Breaking changes to the handler contract will be called out in
 
 ## See also
 
-- [`../src/precis/handlers/calc.py`](../src/precis/handlers/calc.py)
+- [`../../src/precis/handlers/calc.py`](../../src/precis/handlers/calc.py)
   — canonical minimal handler.
-- [`../src/precis/dispatch.py`](../src/precis/dispatch.py) — the Hub,
+- [`../../src/precis/dispatch.py`](../../src/precis/dispatch.py) — the Hub,
   the boot loop, and `_load_plugins` itself.
-- [`../src/precis/protocol.py`](../src/precis/protocol.py) —
+- [`../../src/precis/protocol.py`](../../src/precis/protocol.py) —
   `Handler` base class and `KindSpec` dataclass.
 - [`seven-verb-surface-migration.md`](seven-verb-surface-migration.md)
   — design rationale for the verb surface and the D7 contract for

@@ -1,8 +1,8 @@
 # Plan: `precis.identity` (B2)
 
-- **Status**: in-progress (2026-05-21)
+- **Status**: shipped 2026-05-21 (commit e1fb2ec; module lives at `src/precis/identity.py`, has continued to evolve through 2026-06-05).
 - **Parent plan**: [`storage-v2.md`](./storage-v2.md) §step B
-- **Branch**: `feat/storage-v2-step-b`
+- **Branch**: merged from `feat/storage-v2-step-b` into `main`.
 - **Touchpoints**: ADR 0002 (pub_id), ADR 0006 (cite_key), ADR 0008
   (slug dropped, identifiers normalized into `ref_identifiers`)
 

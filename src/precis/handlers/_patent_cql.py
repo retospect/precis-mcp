@@ -1,7 +1,7 @@
 """CQL assembly for the ``patent`` kind.
 
 EPO OPS uses CQL (Common Query Language, OPS dialect). The handler
-exposes the cross-kind ``search(q=, tags=, scope=, top_k=)`` surface
+exposes the cross-kind ``search(q=, tags=, scope=, page_size=)`` surface
 and translates it into CQL on the remote leg.
 
 Two inputs feed the lift:
@@ -121,7 +121,7 @@ def _promote_or_passthrough(q: str) -> str:
     field=value) or any boolean operator (case-insensitive), treat
     it as raw CQL. Otherwise wrap it as a phrase match against the
     title and abstract fields. This is the same heuristic the spec
-    references in ``docs/patent-kind-spec.md``.
+    references in ``docs/user-facing/patent-kind-spec.md``.
     """
     lower = q.lower()
     is_cql = _CQL_FIELD_MARK in q or any(op in f" {lower} " for op in _CQL_OPERATORS)

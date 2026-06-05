@@ -1,6 +1,6 @@
 # B4 — `precis_add()` entry point + `precis add` CLI
 
-- **Status**: in progress (2026-05-22)
+- **Status**: shipped 2026-05-22 (commits 4d6629b → 0003358; `precis_add()` lives in `src/precis/ingest/add.py`, CLI in `src/precis/cli/`).
 - **Authors**: Reto + agent
 - **Parent plan**: [`pip-merge.md`](./pip-merge.md) §B4
 - **Related ADRs**: 0006 (tri-identifier), 0007 (derived queue), 0008 (drop slug)

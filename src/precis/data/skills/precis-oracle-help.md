@@ -16,11 +16,10 @@ numbered entries you can pull individually or at random.
 ## What wisdom traditions are loaded?
 
 ```python
-get(kind='oracle')                              # list all traditions
+get(kind='oracle')                              # list all traditions live in this build
 ```
 
-Shipped today: `stoic`, `zen`, `talmudic`, `iching`, `engineering`,
-`chengyu`, `buddhist`, `proverbs-irish`, `proverbs-euro`.
+The list is build-specific — call it to see what's available.
 
 ## Consult an oracle for a random principle
 ## Pull one entry from a tradition

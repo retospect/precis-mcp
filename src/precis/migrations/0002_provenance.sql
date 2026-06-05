@@ -1,7 +1,7 @@
 -- ===========================================================================
 -- 0002_provenance.sql — retraction / amendment monitoring infrastructure.
 --
--- Phase 1 of docs/provenance-kind-plan.md. The refs.retraction_* columns
+-- Phase 1 of docs/design/provenance-kind-plan.md. The refs.retraction_* columns
 -- were provisioned in 0001_initial.sql; this migration adds the link
 -- vocabulary for notice references and the Retraction Watch provider.
 -- The RW dataset cache tables land in a later migration (Phase 3).

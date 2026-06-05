@@ -527,7 +527,7 @@ class SkillHandler(Handler):
         self,
         *,
         q: str | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> Response:
         # ``q=`` is optional — round-2 picky N4/F-6, 2026-05-30. The
@@ -545,7 +545,7 @@ class SkillHandler(Handler):
         # contributes hits; per-slug we keep the better-scoring one
         # so ranking stays sharp. The index is silently unavailable
         # on builds without an embedder — substring carries on alone.
-        semantic_hits = self._semantic_hits(q, top_k=top_k * 2)
+        semantic_hits = self._semantic_hits(q, page_size=page_size * 2)
         lexical_hits = self._lexical_hits(q)
 
         merged: dict[str, _SkillSearchRow] = {}
@@ -581,7 +581,7 @@ class SkillHandler(Handler):
 
         rows = sorted(merged.values(), key=lambda r: r.score, reverse=True)
         total = len(rows)
-        rows = rows[:top_k]
+        rows = rows[:page_size]
 
         # Round-2 picky 2026-05-31: dropped low-signal columns
         # (status/source/score) that the maintainer flagged as
@@ -625,7 +625,7 @@ class SkillHandler(Handler):
                     "read the full skill (paste any slug from the table)",
                 ),
                 (
-                    f"search(kind='skill', q={q!r}, top_k=25)",
+                    f"search(kind='skill', q={q!r}, page_size=25)",
                     "widen to more hits",
                 ),
             ]
@@ -634,12 +634,12 @@ class SkillHandler(Handler):
 
     # ── search helpers ─────────────────────────────────────────────
 
-    def _semantic_hits(self, q: str, *, top_k: int) -> list[SearchHit]:
+    def _semantic_hits(self, q: str, *, page_size: int) -> list[SearchHit]:
         """Return cosine-ranked chunk hits, or ``[]`` when no embedder."""
         index = self._get_index()
         if index is None:
             return []
-        return index.search(q, top_k=top_k)
+        return index.search(q, page_size=page_size)
 
     def _lexical_hits(self, q: str) -> list[tuple[str, int, str]]:
         """Substring-match every skill body against ``q``.

@@ -205,9 +205,13 @@ def test_5xx_status_raises_upstream(handler: WebHandler) -> None:
 def test_network_error_raises_upstream(handler: WebHandler) -> None:
     import httpx
 
+    # ``example.com`` resolves to a public IP, so the SSRF pre-flight
+    # in ``safe_fetch.assert_public_http_url`` passes; the
+    # ``_StubClient.raise_on_get`` then short-circuits the actual GET
+    # with the ConnectError we want to drive into the handler.
     _StubClient.raise_on_get = httpx.ConnectError("DNS fail")
     with pytest.raises(Upstream, match="fetch failed"):
-        handler.get(id="https://nonexistent.example/")
+        handler.get(id="https://example.com/network-error-probe")
 
 
 # ── extraction edge cases ────────────────────────────────────────────
@@ -218,7 +222,9 @@ def test_low_text_page_falls_back_to_stub(handler: WebHandler) -> None:
     _StubClient.response = _StubResp(
         text="<html><body><div id='app'></div></body></html>"
     )
-    resp = handler.get(id="https://js-shell.example/")
+    # ``example.com`` so the SSRF pre-flight resolves; the stub
+    # client returns the empty-shell HTML below regardless of host.
+    resp = handler.get(id="https://example.com/js-shell-probe")
     assert "no readable content extracted" in resp.body
 
 

@@ -1,6 +1,6 @@
 # B10 — TOON output module
 
-- **Status**: in progress
+- **Status**: shipped 2026-05-24 (first landed in commit ab5ab20; module lives at `src/precis/format/toon.py` with tests under `tests/format/`).
 - **ADR**: [`0002-pub-id-and-toon.md`](../decisions/0002-pub-id-and-toon.md) — TOON portion in force.
 - **Parent plan**: [`pip-merge.md`](pip-merge.md) §B10.
 - **Touches**: `src/precis/format/`, `src/precis/cli/_common.py`,

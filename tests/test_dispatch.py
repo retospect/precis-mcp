@@ -2,7 +2,7 @@
 
 These tests exercise only the registration machinery and the boot
 loop's failure semantics; they do not depend on any real handler
-being ported yet. See ``docs/seven-verb-surface-migration.md`` D7
+being ported yet. See ``docs/user-facing/seven-verb-surface-migration.md`` D7
 for the contract under test.
 """
 

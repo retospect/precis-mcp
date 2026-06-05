@@ -9,7 +9,7 @@ status: active
 
 Patent search merges local hits with EPO OPS. The patent-specific
 knob is `source=`; everything else follows the cross-kind search
-shape (`page=`, `top_k=`, `tags=`, `scope=`, `exclude=`).
+shape (`page=`, `page_size=`, `tags=`, `scope=`, `exclude=`).
 
 ## Search patents
 ## Find a patent by topic
@@ -17,7 +17,7 @@ shape (`page=`, `top_k=`, `tags=`, `scope=`, `exclude=`).
 
 ```python
 search(kind='patent', q='photocatalytic NOx reduction')
-search(kind='patent', q='Z-scheme photocatalysis', top_k=20)
+search(kind='patent', q='Z-scheme photocatalysis', page_size=20)
 search(kind='patent', q='amine carbon capture', page=2)
 ```
 

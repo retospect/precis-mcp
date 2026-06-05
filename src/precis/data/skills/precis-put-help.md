@@ -154,11 +154,12 @@ next `get(kind='websearch', q='...')` hits cache at $0. See
 
 ```python
 put(kind='memory', text='...', tags=['pinned', 'topic-sortie'])
+
 put(kind='todo', text='...', tags=['PRIO:high'])
 ```
 
 `tags=` runs only at creation. For retroactive tag changes use
-`tag(kind='...', id=<N>, add=[...], untags=[...])`. Closed-prefix
+`tag(kind='...', id=<N>, add=[...], remove=[...])`. Closed-prefix
 axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are kind-gated; open
 tags are universal. See `precis-tag-help`.
 

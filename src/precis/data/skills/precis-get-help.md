@@ -70,11 +70,11 @@ not "all of them" — use `search` for content-driven discovery.
 
 ```python
 get(kind='paper', page=2)
-get(kind='paper', page=3, top_k=20)   # top_k = page size (default 10, max 100)
+get(kind='paper', page=3, page_size=20)   # default 10, max 100
 ```
 
-`page=1` is the default. `top_k=` is the page size, not a quality
-cutoff. `exclude=[…]` is for hand-skipping known slugs, not paging.
+`page=1` is the default. `exclude=[…]` is for hand-skipping known
+slugs, not paging.
 
 ## Address a chunk or sub-range inside a ref
 ## Read just block 38, or blocks 38..42

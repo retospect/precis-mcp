@@ -96,7 +96,7 @@ class Handler:
     Construction: :func:`precis.dispatch._try` builds the instance,
     then calls :meth:`_register_with` to publish it to the
     :class:`~precis.dispatch.Hub`. See
-    ``docs/seven-verb-surface-migration.md`` D7 for the contract.
+    ``docs/user-facing/seven-verb-surface-migration.md`` D7 for the contract.
     """
 
     spec: ClassVar[KindSpec]

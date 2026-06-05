@@ -1,11 +1,11 @@
 ---
 id: precis-tags
-title: precis — set and filter by tags
-applies-to: tag (add=, remove=), search (tags=), put (tags= on create)
+title: precis — set, filter by, and discover tags
+applies-to: tag (add=, remove=), search (tags=), put (tags= on create), get/search (kind='tag')
 status: active
 ---
 
-# precis-tags — set and filter by tags
+# precis-tags — set, filter by, and discover tags
 
 Three tag shapes by case. Pick by what you're doing:
 
@@ -61,12 +61,66 @@ inside the filtered set:
 
 ```python
 search(kind='paper', q='photocatalysis', tags=['topic:co2-capture'])
+```
+
+```python
 search(kind='todo', q='write', tags=['STATUS:open', 'PRIO:high'])
+```
+
+```python
 search(kind='memory', q='kwargs vs modes', tags=['confidence-strong'])
 ```
 
 `tags=` runs the same canonical-form validation as `tag(add=)` — an
 `urgent` filter raises the bare-flag-collision error.
+
+## List every tag in use
+## Browse the tag vocabulary
+## What tags exist across the corpus?
+
+```python
+get(kind='tag')                            # most-used first, paginated
+get(kind='tag', page=2)                    # next page (default 50 per page)
+get(kind='tag', page_size=20)              # smaller page
+get(kind='tag', scope='paper')             # tags used on papers only
+```
+
+Output is a TOON table with `tag / count / axis`. Each row is
+addressable — paste the `tag` slug back as `id=` to drill in.
+
+## Search tags semantically
+## Find tags related to a topic
+## Is there already a tag for "sustainability"?
+
+```python
+search(kind='tag', q='carbon capture')     # hybrid lexical + semantic
+search(kind='tag', q='sustainability')
+search(kind='tag', q='photocatalysis', page=2)
+```
+
+**Before coining a new tag, search for an existing one.** Fragmentation
+(`topic:co2-capture` alongside `topic:carbon-capture` alongside
+`topic:CO2`) is the chief failure mode of an open-axis tag system; the
+discovery surface exists to prevent it.
+
+Lexical substring matches come first; semantically-similar tags
+follow in a "related" section. Pick the closest existing tag rather
+than inventing a new neighbour.
+
+## See what's tagged with X
+## Get metadata for a tag
+## Who uses topic:co2-capture?
+
+```python
+get(kind='tag', id='topic:co2-capture')    # count, first/last seen, sample refs
+get(kind='tag', id='STATUS:done')          # closed axis — also shows sibling values
+get(kind='tag', id='pinned')               # bare flag (probes FLAG and OPEN)
+```
+
+Shows usage count, when the tag was first/last attached, up to 5
+sample refs carrying it, and (for closed axes) the sibling values
+in the same prefix. To enumerate **every** ref carrying a tag, use
+`search(q='', tags=['<tag>'])` with the appropriate `kind=`.
 
 ## What are the closed UPPERCASE axes?
 ## Which UPPERCASE prefixes does the runtime know?
@@ -105,9 +159,11 @@ Free-form kinds (`memory` etc.) express the same semantics with open
 tags:
 
 ```python
-tag(kind='memory', id=48, add=['prio:high'])      # OK (lowercase)
-tag(kind='memory', id=48, add=['PRIO:high'])      # rejected
+tag(kind='memory', id=48, add=['prio:high'])      # lowercase = OK
 ```
+
+(`PRIO:high` on memory would be rejected — the runtime error names the
+allowed axes and suggests the lowercase form.)
 
 ## What do validation errors look like?
 ## I got a BadInput on tag — what's the recovery?
@@ -129,6 +185,9 @@ tag(kind='todo', id=40, add=['STATUS:bogus'])
 
 ```python
 put(kind='memory', text='...', tags=['topic:co2-capture', 'confidence-strong'])
+```
+
+```python
 put(kind='todo', text='...', tags=['PRIO:high', 'project:precis-v2'])
 ```
 

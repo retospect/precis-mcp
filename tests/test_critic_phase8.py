@@ -12,7 +12,7 @@ Covers the deferred items from phase 7 that landed this session:
     ``relation='cites'`` rows where B is dst. One-row-per-edge,
     no drift, but the "who cites me?" filter just works.
   * ``total_hits`` header in search responses. Each handler emits
-    ``# N of K …`` so an agent that asks for ``top_k=10`` and gets
+    ``# N of K …`` so an agent that asks for ``page_size=10`` and gets
     exactly 10 hits knows whether there are more.
 """
 
@@ -263,7 +263,7 @@ class TestTotalHitsHeader:
 
     def test_search_response_renders_total_when_capped(self, store: Store) -> None:
         """End-to-end: handler.search renders the header with 'of K'
-        when top_k truncates the result set."""
+        when page_size truncates the result set."""
         for i in range(5):
             store.insert_ref(
                 kind="memory",
@@ -271,7 +271,7 @@ class TestTotalHitsHeader:
                 title=f"precis fact {i}",
             )
         h = MemoryHandler(hub=Hub(store=store))
-        out = h.search(q="precis", top_k=2)
+        out = h.search(q="precis", page_size=2)
         # 2 hits returned, 5 total. Header should reflect both.
         assert "2 of 5" in out.body
 
@@ -284,7 +284,7 @@ class TestTotalHitsHeader:
                 title=f"precis fact {i}",
             )
         h = MemoryHandler(hub=Hub(store=store))
-        out = h.search(q="precis", top_k=10)
+        out = h.search(q="precis", page_size=10)
         # All 2 returned. No "of N" trailer.
         assert "of 2" not in out.body
         assert "2 memory match" in out.body

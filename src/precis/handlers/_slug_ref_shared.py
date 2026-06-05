@@ -45,7 +45,7 @@ def search_slug_refs(
     *,
     kind: str,
     q: str | None,
-    top_k: int,
+    page_size: int,
     noun: str,
     empty_next: list[tuple[str, str]] | None = None,
 ) -> Response:
@@ -68,7 +68,7 @@ def search_slug_refs(
             next=f"search(kind={kind!r}, q='your query')",
         )
 
-    hits = store.search_refs_lexical(q=q, kind=kind, limit=top_k)
+    hits = store.search_refs_lexical(q=q, kind=kind, limit=page_size)
     if not hits:
         body = f"no {kind} entries match {q!r}"
         if empty_next:
@@ -95,7 +95,7 @@ def search_hits_slug_refs(
     *,
     kind: str,
     q: str | None,
-    top_k: int,
+    page_size: int,
 ) -> list[SearchHit]:
     """Ref-level lexical search returned as :class:`SearchHit`\\ s.
 
@@ -107,7 +107,7 @@ def search_hits_slug_refs(
     """
     if not (q and q.strip()):
         return []
-    pairs = store.search_refs_lexical(q=q, kind=kind, limit=top_k)
+    pairs = store.search_refs_lexical(q=q, kind=kind, limit=page_size)
     return ref_hits_to_search_hits(pairs, kind=kind)
 
 

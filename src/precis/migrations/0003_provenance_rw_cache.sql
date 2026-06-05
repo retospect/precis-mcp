@@ -1,7 +1,7 @@
 -- ===========================================================================
 -- 0003_provenance_rw_cache.sql — Retraction Watch dataset cache.
 --
--- Phase 3 of docs/provenance-kind-plan.md. Backs the monthly sync job
+-- Phase 3 of docs/design/provenance-kind-plan.md. Backs the monthly sync job
 -- (jobs/provenance_rw_sync.py) and the join into the provenance report.
 -- Crossref's `update-to` field carries notice DOIs + types but no
 -- human-readable reasons; the Retraction Watch dataset (distributed

@@ -199,7 +199,7 @@ class NumericRefHandler(Handler):
         *,
         q: str | None = None,
         tags: list[str] | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> Response:
         # Validate at the agent boundary — symmetric with put(tags=...).
@@ -216,7 +216,7 @@ class NumericRefHandler(Handler):
         # wanted in the first place.
         if q is None or not q.strip():
             if normalized_tags:
-                return self._list_by_tags(normalized_tags, top_k=top_k)
+                return self._list_by_tags(normalized_tags, page_size=page_size)
             raise BadInput(
                 "search requires q= or tags=",
                 next=(
@@ -226,7 +226,7 @@ class NumericRefHandler(Handler):
             )
 
         hits = self.store.search_refs_lexical(
-            q=q, kind=self.kind, tags=normalized_tags, limit=top_k
+            q=q, kind=self.kind, tags=normalized_tags, limit=page_size
         )
         if not hits:
             tag_suffix = f" tagged {normalized_tags}" if normalized_tags else ""
@@ -262,7 +262,7 @@ class NumericRefHandler(Handler):
 
         # Total-hits header: a second COUNT(*) with the same WHERE
         # clause so the agent sees "10 of 1234 hits" when results are
-        # capped by top_k. The MCP critic flagged the missing "of K"
+        # capped by page_size. The MCP critic flagged the missing "of K"
         # readout as a pagination footgun (the agent couldn't tell
         # whether it had everything or just the first page).
         total = self.store.count_refs_lexical(q=q, kind=self.kind, tags=normalized_tags)
@@ -279,7 +279,7 @@ class NumericRefHandler(Handler):
         return Response(body="\n".join(lines))
 
     def _list_by_tags(
-        self, tags: list[str], *, top_k: int
+        self, tags: list[str], *, page_size: int
     ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
@@ -289,7 +289,7 @@ class NumericRefHandler(Handler):
         path for callers who realize they wanted ranking.
         """
         refs = self.store.list_refs(
-            kind=self.kind, tags=tags, limit=top_k
+            kind=self.kind, tags=tags, limit=page_size
         )
         if not refs:
             body = f"no {self._sense()} entries tagged {tags}"
@@ -324,7 +324,7 @@ class NumericRefHandler(Handler):
         *,
         q: str,
         tags: list[str] | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Ref-level lexical search returned as ``SearchHit``s.
@@ -338,7 +338,7 @@ class NumericRefHandler(Handler):
             return []
         normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
         pairs = self.store.search_refs_lexical(
-            q=q, kind=self.kind, tags=normalized_tags, limit=top_k
+            q=q, kind=self.kind, tags=normalized_tags, limit=page_size
         )
         return ref_hits_to_search_hits(pairs, kind=self.kind)
 
@@ -789,7 +789,7 @@ class NumericRefHandler(Handler):
 
         Teaser column = first ~60 chars of the target's title. The
         F8 design called for "keywords" but the project doesn't yet
-        expose a ``Store.top_keywords_for_ref`` helper; title is the
+        expose a ``Store.page_sizeeywords_for_ref`` helper; title is the
         portable fallback. Upgrade path: swap the call here when a
         keyword API lands.
         """

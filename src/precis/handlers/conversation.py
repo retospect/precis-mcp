@@ -94,7 +94,7 @@ class ConversationHandler(Handler):
         *,
         q: str | None = None,
         scope: str | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> Response:
         if q is None or not q.strip():
@@ -116,7 +116,7 @@ class ConversationHandler(Handler):
             query_vec=None,  # phase 5 — lexical only for state kinds
             kind="conv",
             scope_ref_id=scope_ref_id,
-            limit=top_k,
+            limit=page_size,
         )
         if not hits:
             return Response(body=f"no conv turns match {q!r}")
@@ -145,7 +145,7 @@ class ConversationHandler(Handler):
         self,
         *,
         q: str,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level lexical search returned as ``SearchHit``s.
@@ -160,7 +160,7 @@ class ConversationHandler(Handler):
             q=q,
             query_vec=None,
             kind="conv",
-            limit=top_k,
+            limit=page_size,
         )
         return block_hits_to_search_hits(triples, kind="conv", excerpt=160)
 

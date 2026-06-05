@@ -1,8 +1,8 @@
 ---
-status: plan — hard-cutover, no deprecation window; critic prereqs fixed on main
+status: shipped 2026-05-02 (hard-cutover; surface live in `server.py` + every handler + every skill)
 applies-to: MCP tool surface (server.py) + every handler + every skill
-supersedes: nothing; replaces the four-verb surface from precis-overview
-last-updated: 2026-05-01
+supersedes: nothing; replaced the four-verb surface from precis-overview
+last-updated: 2026-06-05 (status flipped from "plan" to "shipped"; document retained for design rationale per AGENTS.md "obsolete plans stay for context")
 ---
 
 # Seven-verb surface migration plan

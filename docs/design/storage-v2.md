@@ -1,6 +1,13 @@
 # storage-v2 — design plan
 
-- **Status**: locked (2026-05-21)
+- **Status**: locked (2026-05-21).
+  **2026-06-05 amendment (F20):** the `ref_segments` /
+  `ref_segment_sentences` discovery layer described in §"Discovery layer"
+  below was superseded by per-chunk KeyBERT — tables dropped in
+  migration `0011_chunk_keywords.sql`. Discovery now reads
+  `chunks.keywords TEXT[]` at request time
+  (`src/precis/utils/toc_db.py`). See ADR 0018 status note and
+  `CLAUDE.md`. The rest of this document remains current.
 - **Authors**: Reto + agent
 - **Canonical schema visual**: [`schema-v2.puml`](./schema-v2.puml) /
   [`schema-v2.svg`](./schema-v2.svg) — rendered via
@@ -633,6 +640,15 @@ Added 2026-05-31. Migrations `0005_segments_and_sentences.sql`,
 `0006_chunk_numerics.sql`, `0007_citation_kind.sql`. See the
 design discussion threaded through this conversation for the
 full reasoning.
+
+> **Superseded by F20 (2026-06-05).** `ref_segments` and
+> `ref_segment_sentences` were dropped in migration
+> `0011_chunk_keywords.sql`. The `chunks.numerics` and `citation`
+> kind portions of this section remain in force. The segment
+> tables described below no longer exist; the design is preserved
+> for history. Live discovery code:
+> `src/precis/workers/chunk_keywords.py`,
+> `src/precis/utils/toc_db.py`.
 
 ### `ref_segments` table
 

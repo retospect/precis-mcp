@@ -538,7 +538,7 @@ def test_skills_use_seven_verb_surface() -> None:
        ``mode='create'`` and ``mode='import'`` are accepted on
        ``put`` (D3) and aren't in the legacy list.
 
-    See ``docs/seven-verb-surface-migration.md`` Phase 2.
+    See ``docs/user-facing/seven-verb-surface-migration.md`` Phase 2.
     """
     import re
     from importlib.resources import files

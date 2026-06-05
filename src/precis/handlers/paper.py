@@ -315,7 +315,7 @@ class PaperHandler(Handler):
         q: str | None = None,
         scope: str | None = None,
         tags: list[str] | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         page: int = 1,
         exclude: list[str] | None = None,
         **_kw: Any,
@@ -386,9 +386,9 @@ class PaperHandler(Handler):
         # The lexical leg already has a natural zero (the tsquery
         # either matches or it doesn't); the floor is sem-only.
         # (Critic MAJOR #3.)
-        # page=N → offset = (page-1) * top_k. Clamped to >= 0 so a 7B
+        # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a 7B
         # caller passing ``page=0`` doesn't blow the query up.
-        search_offset = max(0, (int(page) - 1) * int(top_k))
+        search_offset = max(0, (int(page) - 1) * int(page_size))
 
         hits = self.store.search_blocks_fused(
             q=q,
@@ -396,7 +396,7 @@ class PaperHandler(Handler):
             kind="paper",
             scope_ref_id=scope_ref_id,
             tags=normalized_tags,
-            limit=top_k,
+            limit=page_size,
             offset=search_offset,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids or None,
@@ -449,7 +449,7 @@ class PaperHandler(Handler):
                 body += render_next_section(
                     [
                         (
-                            f"search(kind='paper', q={q!r}, top_k=50)",
+                            f"search(kind='paper', q={q!r}, page_size=50)",
                             "widen the lexical net",
                         ),
                         (
@@ -574,12 +574,12 @@ class PaperHandler(Handler):
         # and 100 % redundant — the scope suggestion narrowed to the
         # only hit's own paper (a no-op), and the salient-term
         # suggestion is moot when the caller already has a tight
-        # match. Just bump ``top_k`` in that branch.
+        # match. Just bump ``page_size`` in that branch.
         if total > len(hits):
             if len(hits) == 1:
                 nav.append(
                     (
-                        f"search(kind='paper', q={q!r}, top_k=10)",
+                        f"search(kind='paper', q={q!r}, page_size=10)",
                         f"see more of the {total} matches",
                     )
                 )
@@ -591,11 +591,11 @@ class PaperHandler(Handler):
                 # filter for known-irrelevant refs (kept available via
                 # the arg but no longer the recommended next-step
                 # because it bloats the call with a slug list).
-                if total > top_k * page:
+                if total > page_size * page:
                     nav.append(
                         (
                             f"search(kind='paper', q={q!r}, page={page + 1})",
-                            f"see the next {top_k} of {total} hits",
+                            f"see the next {page_size} of {total} hits",
                         )
                     )
 
@@ -629,7 +629,7 @@ class PaperHandler(Handler):
         *,
         q: str,
         tags: list[str] | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         exclude: list[str] | None = None,
         query_vec: list[float] | None = None,
         **_kw: Any,
@@ -670,7 +670,7 @@ class PaperHandler(Handler):
             query_vec=query_vec,
             kind="paper",
             tags=normalized_tags,
-            limit=top_k,
+            limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids or None,
         )

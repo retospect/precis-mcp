@@ -606,7 +606,7 @@ audit. No data migration required.
 - The actual TOC tree-rendering code. That's per-kind, lives in each
   handler.
 - The python indexer (AST passes, call resolution). See
-  `docs/python-kind-spec.md`.
+  `docs/user-facing/python-kind-spec.md`.
 - The git integration (blame, log, churn). See `python-kind-spec.md`
   §"Git integration".
 - The `book` kind's multi-file glue. Its `id` shape will follow this

@@ -268,6 +268,7 @@ _DATA_TABLES: tuple[str, ...] = (
     "ref_segments",
     "ref_artifacts",
     "ref_events",
+    "tag_embeddings",
     # Tags + links + identifiers — secondary to refs/chunks.
     "chunk_tags",
     "ref_tags",

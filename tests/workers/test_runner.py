@@ -29,7 +29,15 @@ from tests.workers._helpers import make_mock_bge_m3, seed_chunks
 
 
 class _CountingEmbedHandler(EmbedHandler):
-    """EmbedHandler with hooks: count calls, optionally fail Nth chunk."""
+    """EmbedHandler with hooks: count calls, optionally fail Nth chunk.
+
+    EmbedHandler's default ``process_batch`` runs one batched
+    transformer pass that bypasses ``process()``. To exercise the
+    per-row success/failure routing in the runner we override
+    ``process_batch`` here to dispatch per-row through ``process``
+    instead — the same fallback shape the base handler uses when
+    the bulk path raises.
+    """
 
     def __init__(self, *, fail_on: set[int] | None = None) -> None:
         super().__init__(make_mock_bge_m3())
@@ -43,6 +51,18 @@ class _CountingEmbedHandler(EmbedHandler):
             self.failures.append(row.chunk_id)
             raise RuntimeError(f"forced failure on chunk {row.chunk_id}")
         return super().process(row)
+
+    def process_batch(self, rows: list[ChunkRow]) -> list[object]:
+        # Per-row dispatch so the test handler's `process` override
+        # observes every claimed chunk (the bulk embed path would
+        # never call it).
+        out: list[object] = []
+        for row in rows:
+            try:
+                out.append(self.process(row))
+            except Exception as exc:  # noqa: BLE001 — mirrors base fallback
+                out.append(exc)
+        return out
 
 
 # ---------------------------------------------------------------------------

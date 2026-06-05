@@ -496,18 +496,20 @@ def test_tag_strict_accepts_lowercase_and_open_tags() -> None:
 
 
 def test_status_vocabulary_matches_todo_handler() -> None:
-    """The STATUS values listed in the closed vocabulary are the same
-    set the TodoHandler defaults and renders. If you add a new status,
-    update both ``_CLOSED_VOCAB['STATUS']`` and the docstring + skill."""
+    """The STATUS values used by TodoHandler are all present in the
+    closed vocabulary. The vocab is a *superset* — it also hosts the
+    finding-chase workflow values (``tracing``, ``established``, …)
+    on the same axis. If you add a new todo status, update both
+    ``_CLOSED_VOCAB['STATUS']`` and the docstring + skill."""
     from precis.handlers.todo import TodoHandler
     from precis.store.types import _CLOSED_VOCAB
 
-    expected = {"open", "doing", "blocked", "done", "won't-do"}
-    assert _CLOSED_VOCAB["STATUS"] == expected
+    todo_values = {"open", "doing", "blocked", "done", "won't-do"}
+    assert todo_values.issubset(_CLOSED_VOCAB["STATUS"])
     # Default-on-create value lives in the closed vocabulary.
     for default in TodoHandler.default_tags_on_create:
         if default.startswith("STATUS:"):
-            assert default[len("STATUS:") :] in expected
+            assert default[len("STATUS:") :] in _CLOSED_VOCAB["STATUS"]
 
 
 # ── MINOR: precis-overview no longer cites dead kinds ───────────────
@@ -1301,7 +1303,7 @@ def test_search_error_path_survives_fastmcp_convert_result(
         out_ok = asyncio.run(
             server.mcp.call_tool(
                 "search",
-                {"q": "anything", "kind": "paper", "top_k": 3},
+                {"q": "anything", "kind": "paper", "page_size": 3},
             )
         )
         assert isinstance(out_ok, list), (
@@ -1323,7 +1325,7 @@ def test_search_error_path_survives_fastmcp_convert_result(
             out_err = asyncio.run(
                 server.mcp.call_tool(
                     "search",
-                    {"q": "anything", "kind": "paper,nosuchkind", "top_k": 3},
+                    {"q": "anything", "kind": "paper,nosuchkind", "page_size": 3},
                 )
             )
         except ToolError as e:  # pragma: no cover — fail loudly if it raises

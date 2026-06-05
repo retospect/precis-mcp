@@ -133,7 +133,7 @@ class SearchHit:
 def merge_and_render(
     streams: list[list[SearchHit]],
     *,
-    top_k: int,
+    page_size: int,
     query: str | None = None,
     header_noun: str = "match",
     mode: _MergeMode = "priority",
@@ -146,7 +146,7 @@ def merge_and_render(
         streams: One list of hits per producer.  Each inner list is
             assumed already sorted best-first.  Empty streams are
             allowed and skipped.
-        top_k: Cap on rendered hits.  Applied after merge + dedup.
+        page_size: Cap on rendered hits.  Applied after merge + dedup.
         query: Optional query string echoed in the header
             (``# N matches for 'foo'``).
         header_noun: Singular form of what's being counted.
@@ -189,7 +189,7 @@ def merge_and_render(
         body = empty_body or _empty_body(header_noun, query)
         return Response(body=body)
 
-    rendered = merged[:top_k]
+    rendered = merged[:page_size]
     total_pre_cap = len(merged)
 
     # ``format_search_headline`` requires a concrete query string.

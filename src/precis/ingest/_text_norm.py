@@ -1,6 +1,6 @@
 """Text normalisation for citation metadata verification (Phase 2.5).
 
-See ``docs/provenance-kind-plan.md`` § "Phase 2.5: citation metadata
+See ``docs/design/provenance-kind-plan.md`` § "Phase 2.5: citation metadata
 verification" for the design rationale. Two normalised forms are
 produced for each string; comparison succeeds if either form matches.
 

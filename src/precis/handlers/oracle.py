@@ -148,14 +148,14 @@ class OracleHandler(Handler):
         self,
         *,
         q: str | None = None,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> Response:
         return search_slug_refs(
             self.store,
             kind="oracle",
             q=q,
-            top_k=top_k,
+            page_size=page_size,
             noun="oracle match",
         )
 
@@ -165,7 +165,7 @@ class OracleHandler(Handler):
         self,
         *,
         q: str,
-        top_k: int = 10,
+        page_size: int = 10,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Title-level lexical search returned as ``SearchHit``s.
@@ -175,7 +175,7 @@ class OracleHandler(Handler):
         therefore stays consistent with single-kind ``search()``.
         Block-level search is a follow-up.
         """
-        return search_hits_slug_refs(self.store, kind="oracle", q=q, top_k=top_k)
+        return search_hits_slug_refs(self.store, kind="oracle", q=q, page_size=page_size)
 
     # ── seven-verb surface ─────────────────────────────────────────
 

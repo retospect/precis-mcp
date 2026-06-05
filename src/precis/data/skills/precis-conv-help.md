@@ -42,7 +42,7 @@ get(kind='conv', id='/recent')    # explicit
 ```python
 search(kind='conv', q='why we dropped mode=')
 search(kind='conv', q='tag axis', scope='2026-04-28-tag-axes')   # scope to one conv
-search(kind='conv', q='register endpoint', top_k=20)
+search(kind='conv', q='register endpoint', page_size=20)
 ```
 
 Lexical search over turn text. Results are `slug~pos` handles; paste

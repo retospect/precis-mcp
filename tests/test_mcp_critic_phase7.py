@@ -10,7 +10,7 @@ against the live ``precis2`` MCP build:
   MAJOR  #7   ``precis-navigation`` filtered (status: aspirational)
   MAJOR  #8   unregistered ``UPPERCASE:`` tag prefixes are rejected
   MAJOR  #9   paper default overview strips ``<jats:*>`` like view='abstract'
-  MAJOR  #10  ``top_k`` capped at 100, larger values rejected
+  MAJOR  #10  ``page_size`` capped at 100, larger values rejected
   MAJOR  #11  search skips blocks shorter than 4 chars
   MAJOR  #12  cross-kind error options filtered to verb-supporting kinds
   MAJOR  #13  ``mode='note'`` removed from advertised list
@@ -362,19 +362,19 @@ class TestCalcRejectsGibberish:
         assert "cos(x)" in out.body
 
 
-# ── MAJOR #10: top_k cap (validated at MCP boundary) ─────────────
+# ── MAJOR #10: page_size cap (validated at MCP boundary) ─────────────
 
 
 class TestTopKCap:
-    def test_top_k_max_constant(self) -> None:
+    def test_page_size_max_constant(self) -> None:
         """The cap lives next to the ``search`` tool implementation
         as a module constant — pin the value so changes are
         deliberate. Moved out of ``precis.server`` and into
         ``precis.tools.core`` when the seven verbs migrated to the
         shared tool registry."""
-        from precis.tools.core import _SEARCH_TOP_K_MAX
+        from precis.tools.core import _SEARCH_PAGE_SIZE_MAX
 
-        assert _SEARCH_TOP_K_MAX == 100
+        assert _SEARCH_PAGE_SIZE_MAX == 100
 
 
 # ── MINOR m2: empty-list responses carry Next: trailers ─────────

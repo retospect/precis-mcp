@@ -1,11 +1,22 @@
 # ADR 0007 — Derived queue (no `block_jobs` table)
 
-- **Status**: accepted (2026-05-21)
+- **Status**: accepted (2026-05-21) — *in force, extended*.
+  - **Chunk-level derived queue** (this ADR): in force.
+    `chunk_embeddings`, `chunk_summaries` populated lazily by
+    `precis worker` keyed on `chunk_id`. See
+    `src/precis/workers/runner.py`.
+  - **Extended by** [ADR 0017 — Derived-queue family](./0017-derived-queue-family.md):
+    formalises the pattern as a registry (`artifact_kinds`) and
+    generalises to additional derived artifacts.
+  - **Sibling ref-level pattern** introduced by
+    [ADR 0018 — Persistent discovery layer](./0018-persistent-discovery-layer.md)
+    (now superseded by F20; see ADR 0018 status note).
 - **Deciders**: Reto + agent
 - **Supersedes**: nothing — this updates `docs/design/storage-v2.md`
   (a plan, not an ADR), which originally proposed a `block_jobs`
   table. The plan is revised in the same commit that introduces
   this ADR.
+- **Extended by**: 0017.
 
 ## Context
 

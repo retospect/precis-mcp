@@ -500,7 +500,7 @@ class TestSearch:
             title="B",
             blocks=["unrelated text"],
         )
-        resp = handler.search(q="nitrate reduction", top_k=5)
+        resp = handler.search(q="nitrate reduction", page_size=5)
         assert "paper-a" in resp.body
         assert "block hit" in resp.body
 
@@ -548,7 +548,7 @@ class TestSearch:
 
     @pytest.mark.xfail(
         reason=(
-            "Search response renderer dropped the ``top_k=10`` widen "
+            "Search response renderer dropped the ``page_size=10`` widen "
             "hint when porting to the TOON-table response shape. "
             "Either re-add the hint to the new renderer or update "
             "the assertion to the current trailer vocabulary."
@@ -558,19 +558,19 @@ class TestSearch:
     def test_singleton_hit_no_redundant_trailer(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """MCP critic MINOR-$: ``top_k=1`` against a corpus with many
+        """MCP critic MINOR-$: ``page_size=1`` against a corpus with many
         matches used to render a two-line nav (``scope=<that slug>``
         + ``+ <salient term>``) that was 46 % of the response and
         100 % redundant — scoping to the only hit's own paper is a
         no-op, and the salient-term hint is moot when the caller
         already has a tight match.
 
-        New shape: a single ``top_k=10`` widen hint replaces both
+        New shape: a single ``page_size=10`` widen hint replaces both
         lines. ``scope=`` with the hit's own slug must NOT appear,
         and the long-form salient-term suggestion must be gone too.
         """
         # Seed multiple papers all matching the same word so a
-        # ``top_k=1`` query has many more matches than it returned.
+        # ``page_size=1`` query has many more matches than it returned.
         for slug in ("paper-a", "paper-b", "paper-c", "paper-d"):
             _seed_paper(
                 store,
@@ -578,12 +578,12 @@ class TestSearch:
                 title=f"Paper {slug}",
                 blocks=[f"photocatalytic nitrogen reduction in {slug}"],
             )
-        resp = handler.search(q="photocatalytic", top_k=1)
+        resp = handler.search(q="photocatalytic", page_size=1)
         # Header still announces "1 of N" so the caller knows there
         # are more matches.
         assert " of " in resp.body
-        # New: a top_k=10 widen hint is present.
-        assert "top_k=10" in resp.body
+        # New: a page_size=10 widen hint is present.
+        assert "page_size=10" in resp.body
         assert "see more of the" in resp.body
         # Old: scope=<self> is no longer suggested.
         # ``scope='paper-a'`` would only appear in the legacy two-
@@ -605,7 +605,7 @@ class TestSearch:
                 title=f"Paper {slug}",
                 blocks=[f"photocatalytic reduction in {slug}"],
             )
-        resp = handler.search(q="photocatalytic", top_k=2)
+        resp = handler.search(q="photocatalytic", page_size=2)
         # Two-line nav must still be present.
         assert "narrow to blocks inside" in resp.body
         assert "tighten the query with a hit-specific token" in resp.body
@@ -627,12 +627,12 @@ class TestSearch:
                 doi=f"10.1/{slug}",
             )
         # Without exclude: all three papers.
-        full = handler.search(q="photocatalytic", top_k=10)
+        full = handler.search(q="photocatalytic", page_size=10)
         assert "paper-a" in full.body
         assert "paper-b" in full.body
         assert "paper-c" in full.body
         # With exclude: paper-a drops out.
-        excluded = handler.search(q="photocatalytic", top_k=10, exclude=["paper-a"])
+        excluded = handler.search(q="photocatalytic", page_size=10, exclude=["paper-a"])
         assert "paper-a~" not in excluded.body
         assert "paper-b" in excluded.body
         assert "paper-c" in excluded.body
@@ -659,7 +659,7 @@ class TestSearch:
         )
         resp = handler.search(
             q="photocatalytic",
-            top_k=10,
+            page_size=10,
             exclude=["paper-a~0"],  # copy-pasted handle
         )
         assert "paper-a~" not in resp.body
@@ -687,7 +687,7 @@ class TestSearch:
         )
         resp = handler.search(
             q="alpha",
-            top_k=10,
+            page_size=10,
             exclude=["10.1111/jnc.13915"],
         )
         assert "paper-a~" not in resp.body
@@ -720,7 +720,7 @@ class TestSearch:
         )
         resp = handler.search(
             q="alpha",
-            top_k=10,
+            page_size=10,
             exclude=["does-not-exist", "paper-a"],
         )
         # Valid slug still drops; stale slug is no-op (no error).
@@ -736,7 +736,7 @@ class TestSearch:
         more page worth; ``# 2 of 4`` would over-count and bait the
         agent into a paginate that can't move forward.
 
-        Seeds 4 matching papers so ``top_k=2`` triggers the ``N of K``
+        Seeds 4 matching papers so ``page_size=2`` triggers the ``N of K``
         form in both branches (the format collapses to ``# N`` when
         ``total == n_returned``).
         """
@@ -749,24 +749,24 @@ class TestSearch:
                 doi=f"10.1/{slug}",
             )
         # Without exclude: 2 of 4.
-        full = handler.search(q="alpha", top_k=2)
+        full = handler.search(q="alpha", page_size=2)
         assert " of 4" in full.body
         # With one excluded: 2 of 3 — header subtracts the dropped ref.
-        excluded = handler.search(q="alpha", top_k=2, exclude=["paper-a"])
+        excluded = handler.search(q="alpha", page_size=2, exclude=["paper-a"])
         assert " of 3" in excluded.body
         # And specifically NOT "of 4" — would lie about how much
         # is still paginate-able.
         assert " of 4" not in excluded.body
 
-    def test_search_next_trailer_prefills_exclude_continuation(
+    def test_search_next_trailer_offers_page_continuation(
         self, store: Store, handler: PaperHandler
     ) -> None:
         """When ``total > len(hits)``, the multi-hit Next: block
-        renders an ``exclude=[...]`` continuation pre-filled with
-        the slugs of refs returned in this response. Agent reads
-        the trailer, copy-pastes, and gets hits 6..N without
-        having to track state itself."""
-        # Seed 5 papers all matching, ask for top_k=2 so 3 are paginated.
+        offers a ``page=2`` continuation so the agent can paginate
+        without managing exclude lists by hand. (Pagination was
+        moved off ``exclude=[...]`` onto the canonical ``page=`` knob
+        — see the inline comment in
+        :meth:`PaperHandler.search`.)"""
         for slug in ("paper-a", "paper-b", "paper-c", "paper-d", "paper-e"):
             _seed_paper(
                 store,
@@ -775,27 +775,20 @@ class TestSearch:
                 blocks=[f"photocatalytic reduction in {slug}"],
                 doi=f"10.1/{slug}",
             )
-        resp = handler.search(q="photocatalytic", top_k=2)
+        resp = handler.search(q="photocatalytic", page_size=2)
         body = resp.body
-        # Trailer carries an exclude= continuation.
-        assert "exclude=[" in body
-        # The slugs of the returned hits appear in the exclude list.
-        # We don't pin exact ranking (RRF) — just that both top-2
-        # slugs end up in the trailer's exclude list.
-        # Find the exclude=[...] segment and check it includes 2 slugs.
-        idx = body.index("exclude=[")
-        end = body.index("]", idx)
-        exclude_segment = body[idx : end + 1]
-        slug_count = sum(exclude_segment.count(f"'paper-{ch}'") for ch in "abcde")
-        assert slug_count == 2
+        # Trailer offers a page= continuation.
+        assert "page=2" in body
+        # And surfaces the total so the agent sees how many remain.
+        assert "5 hits" in body or "of 5" in body
 
-    def test_search_next_trailer_unions_prior_exclude(
+    def test_search_with_prior_exclude_keeps_filter(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """The Next: continuation list = prior exclude UNION new
-        slugs. An agent paginating through 5 papers in pages of 2
-        sees the exclude list grow from [a,b] → [a,b,c,d] → [a,b,c,d,e]
-        without ever doing the bookkeeping itself."""
+        """``exclude=`` still works as a hand-skip filter — it's no
+        longer the recommended pagination knob, but a caller passing
+        ``exclude=['paper-a']`` still gets a result set without
+        paper-a in it."""
         for slug in ("paper-a", "paper-b", "paper-c", "paper-d"):
             _seed_paper(
                 store,
@@ -804,29 +797,22 @@ class TestSearch:
                 blocks=[f"photocatalytic reduction in {slug}"],
                 doi=f"10.1/{slug}",
             )
-        # Continuation: caller already excluded paper-a; hit page
-        # returns paper-b and one more — trailer should suggest
-        # excluding [paper-a, paper-b, <other>].
         resp = handler.search(
             q="photocatalytic",
-            top_k=2,
+            page_size=2,
             exclude=["paper-a"],
         )
         body = resp.body
-        assert "exclude=[" in body
-        idx = body.index("exclude=[")
-        end = body.index("]", idx)
-        seg = body[idx : end + 1]
-        # Prior exclude survives.
-        assert "'paper-a'" in seg
-        # And one of the new returned slugs is also in there.
-        new_count = sum(seg.count(f"'paper-{ch}'") for ch in "bcd")
-        assert new_count >= 1
+        # paper-a was the requested exclude; it must not show up
+        # in the result handles.
+        assert "paper-a~" not in body
+        # And at least one of the non-excluded slugs is present.
+        assert any(f"paper-{ch}~" in body for ch in "bcd")
 
     @pytest.mark.xfail(
         reason=(
             "Same renderer change as test_singleton_hit_no_redundant_trailer "
-            "— search trailer vocabulary moved off ``top_k=10`` widen hint."
+            "— search trailer vocabulary moved off ``page_size=10`` widen hint."
         ),
         strict=True,
     )
@@ -834,7 +820,7 @@ class TestSearch:
         self, store: Store, handler: PaperHandler
     ) -> None:
         """Singleton-hit branch (``len(hits) == 1``) keeps the
-        existing ``top_k=10`` widen hint and does NOT render an
+        existing ``page_size=10`` widen hint and does NOT render an
         exclude-continuation — widening is the right next step
         when only one match was returned."""
         for slug in ("paper-a", "paper-b", "paper-c"):
@@ -845,9 +831,9 @@ class TestSearch:
                 blocks=[f"alpha topic in {slug}"],
                 doi=f"10.1/{slug}",
             )
-        resp = handler.search(q="alpha", top_k=1)
+        resp = handler.search(q="alpha", page_size=1)
         body = resp.body
-        assert "top_k=10" in body
+        assert "page_size=10" in body
         # Singleton branch must not render an exclude continuation.
         assert "exclude=[" not in body
 
