@@ -77,6 +77,7 @@ def _patch_surya_config() -> None:
     a full dump, which is fine — this only affects the once-per-load
     info message during the bake step.
     """
+
     def _empty_diff(self):  # type: ignore[no-untyped-def]
         return {}
 
