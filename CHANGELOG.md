@@ -38,6 +38,18 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   `ref_identifiers.value`, a v1 column name that v2 renamed to
   `id_value`. Surfaced once migrations could actually re-apply
   cleanly; broke the four `precis-tag` get-metadata paths.
+- **Docker `publish-image` bake step no longer fails on surya
+  0.17.x.** `_patch_surya_config` in `docker/bake-models.py`
+  hard-imported `surya.recognition.model.config.SuryaOCRConfig`,
+  which existed in surya 0.13 but was removed in 0.17. v8.2.0
+  and v8.3.0 publishes both failed at the `models 4/4` stage with
+  `ModuleNotFoundError: No module named 'surya.recognition.model'`.
+  Rewrote the patch as a best-effort sweep over both module
+  layouts (0.13's `surya.{recognition,foundation,layout,
+  table_rec}` paths plus 0.17's `surya.common.surya.config` +
+  renamed `SuryaTableRec{,Decoder}Config`). Missing classes are
+  silently skipped, so a follow-on surya rename can't re-break
+  the bake.
 
 ## v8.3.0 — second greenfield + deps catch-up (2026-06-05)
 

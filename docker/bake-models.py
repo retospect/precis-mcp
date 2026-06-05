@@ -21,6 +21,8 @@ during the Docker bake step.
 
 from __future__ import annotations
 
+import importlib
+
 
 def _patch_get_text_config() -> None:
     """Make transformers' ``get_text_config()`` deterministic for surya.
@@ -75,36 +77,37 @@ def _patch_surya_config() -> None:
     a full dump, which is fine — this only affects the once-per-load
     info message during the bake step.
     """
-    from surya.recognition.model.config import SuryaOCRConfig
-
     def _empty_diff(self):  # type: ignore[no-untyped-def]
         return {}
 
-    SuryaOCRConfig.to_diff_dict = _empty_diff  # type: ignore[method-assign]
-
-    # Other surya configs use the same machinery; patch the ones we know
-    # come up. Adding too few here just produces a follow-on KeyError on
-    # the next config class; adding too many is harmless.
-    try:
-        from surya.foundation.config import SuryaModelConfig
-
-        SuryaModelConfig.to_diff_dict = _empty_diff  # type: ignore[method-assign]
-    except ImportError:
-        pass
-
-    try:
-        from surya.layout.model.config import SuryaLayoutConfig
-
-        SuryaLayoutConfig.to_diff_dict = _empty_diff  # type: ignore[method-assign]
-    except ImportError:
-        pass
-
-    try:
-        from surya.table_rec.model.config import TableRecConfig
-
-        TableRecConfig.to_diff_dict = _empty_diff  # type: ignore[method-assign]
-    except ImportError:
-        pass
+    # Surya's internal module layout shifted between 0.13 and 0.17:
+    # SuryaOCRConfig was removed; SuryaModelConfig moved from
+    # surya.foundation.config to surya.common.surya.config; and
+    # SuryaLayoutConfig / TableRecConfig were renamed or relocated.
+    # Patch every known location best-effort — a missing class on
+    # either side of the rename is silently skipped, and adding too
+    # many here is harmless.
+    _candidates = [
+        # surya 0.13.x layout (pre-rename)
+        ("surya.recognition.model.config", "SuryaOCRConfig"),
+        ("surya.foundation.config", "SuryaModelConfig"),
+        ("surya.layout.model.config", "SuryaLayoutConfig"),
+        ("surya.table_rec.model.config", "TableRecConfig"),
+        # surya 0.17.x layout
+        ("surya.common.surya.config", "SuryaModelConfig"),
+        ("surya.common.surya.config", "SuryaDecoderConfig"),
+        ("surya.common.surya.config", "SuryaEncoderConfig"),
+        ("surya.table_rec.model.config", "SuryaTableRecConfig"),
+        ("surya.table_rec.model.config", "SuryaTableRecDecoderConfig"),
+    ]
+    for module_name, class_name in _candidates:
+        try:
+            mod = importlib.import_module(module_name)
+            cls = getattr(mod, class_name, None)
+            if cls is not None:
+                cls.to_diff_dict = _empty_diff  # type: ignore[method-assign]
+        except ImportError:
+            continue
 
 
 def _bake_bge_m3() -> None:
