@@ -2,10 +2,9 @@
 
 Wraps `pysbd <https://github.com/nipunsadvilkar/pySBD>`_ in a tiny
 adapter that returns sentences with their character offsets in the
-source text. The offsets are load-bearing for the persistent
-discovery layer — :class:`ref_segment_sentences` stores
-``char_offset`` per sentence so the verifier sub-call can grep the
-verbatim chunk text for the exact span.
+source text. Used by the verifier sub-call to grep verbatim chunk
+text for an exact span, and by the chunker fallback chain when an
+H2-only segmentation needs sentence-level granularity.
 
 Why pysbd over alternatives:
 

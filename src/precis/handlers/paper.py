@@ -508,12 +508,11 @@ class PaperHandler(Handler):
             noun="block hit",
             query=q,
         )
-        # F20: each hit renders as a TOON row with its own per-chunk
-        # KeyBERT keywords (from ``chunks.keywords``). The old
-        # segment-level excerpt sub-line was removed when the static
-        # discovery layer (ref_segments + ref_segment_sentences) was
-        # retired — per-chunk keywords carry the "what's in this
-        # specific chunk" signal more directly.
+        # Each hit renders as a TOON row with its own per-chunk KeyBERT
+        # keywords (from ``chunks.keywords``). Per-chunk keywords carry
+        # the "what's in this specific chunk" signal directly — the
+        # earlier segment-level excerpt sub-line had to go via a
+        # central-sentence picker that produced too much noise.
         del query_vec  # no longer used for per-hit excerpt reranking
         table_rows: list[dict[str, str]] = []
         for block, ref, _score in hits:
@@ -1352,11 +1351,9 @@ class PaperHandler(Handler):
         / ``render_toc`` path is retained for callers that need
         explicit H1-hierarchy rendering — see git log.
         """
-        # Read the pre-computed discovery layer (segments + sentences)
-        # from ref_segments / ref_segment_sentences. The worker
-        # (:mod:`precis.workers.segment_toc`) populates these at ingest;
-        # this path no longer recomputes on request — see the cutover
-        # discussion in the 2026-05-31 storage-v2 design pass.
+        # Dynamic clustering at request time over per-chunk keywords
+        # (``chunks.keywords``, populated by the chunk_keywords worker).
+        # See :mod:`precis.utils.toc_db` for the algorithm.
         body = render_from_store(
             store=self.store,
             ref_id=ref.id,

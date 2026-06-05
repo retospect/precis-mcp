@@ -33,15 +33,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
-#: Bump this whenever the algorithm changes shape. Caches and any
-#: persisted segmentation rows include the version in their key so
-#: an algorithm tweak doesn't silently return stale boundaries.
+#: Bump when the algorithm changes shape. Used today as a cache key
+#: for the in-process skill-TOC clustering in :mod:`precis.utils.toc`;
+#: F20 retired the persistent ``ref_segments`` rows that used to
+#: include this version, but the in-memory cache still keys on it so
+#: an algorithm tweak invalidates the cache on process restart.
 #:
-#: 1.1 (2026-06-04, F18) — raised K_MAX from 9 to 18, dropped
-#: target chunks-per-segment from 20 to 12, added singleton merge
-#: post-DP. Existing ref_segments rows with version "1.0" are
-#: outdated; clear them to trigger re-segmentation, or run a
-#: targeted refresh on big papers (>120 body chunks).
+#: 1.1 (2026-06-04, F18) — raised K_MAX from 9 to 18, dropped target
+#: chunks-per-segment from 20 to 12, added singleton merge post-DP.
 SEGMENTATION_VERSION: Final[str] = "1.1"
 
 K_MIN: Final[int] = 3

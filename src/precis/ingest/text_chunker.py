@@ -25,11 +25,11 @@ from precis.utils.sentences import SENTENCE_SPLITTER_VERSION, split_sentences
 
 # Chunker version — bump on any change that materially shifts the
 # (ord, text) shape of chunks produced from a given input. Downstream
-# tables (chunks via ``chunks.meta['chunker_version']``, the future
-# ``ref_segments`` worker, anything cached per-paper) compare stored
-# values against this constant and treat mismatch as a cache-miss
-# (the lazy-invalidation discipline). Format:
-# ``<chunker-major>.<sentence-splitter-version>``.
+# tables (chunks via ``chunks.meta['chunker_version']``, the
+# chunk_keywords worker via ``chunks.keywords_meta``, anything cached
+# per-paper) compare stored values against this constant and treat
+# mismatch as a cache-miss (the lazy-invalidation discipline).
+# Format: ``<chunker-major>.<sentence-splitter-version>``.
 CHUNKER_VERSION = f"2.0+{SENTENCE_SPLITTER_VERSION}"
 
 
