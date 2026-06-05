@@ -72,6 +72,12 @@ dependencies = [
     # direct dep in B8 now that the watch loop lives in this package
     # (`precis/cli/watch.py`).
     "watchdog>=4.0",
+    # Line editor backing ``precis repl``. Pure-Python; gives arrow-key
+    # movement, persistent history, and tab completion of verb / param
+    # names without depending on system libreadline (the slim runtime
+    # image doesn't ship it, so the prior readline-based REPL silently
+    # fell back to no-editing input()).
+    "prompt-toolkit>=3.0",
     # Transitive-dep security floor — DO NOT add Pillow>=12.2.0 or
     # markdownify>=1.2 here without first bumping marker-pdf upstream.
     # As of 2026-05, marker-pdf 1.10.2 hard-caps Pillow<11.0.0 and

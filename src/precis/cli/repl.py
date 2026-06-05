@@ -12,6 +12,14 @@ Grammar (shlex-split, so quote values containing spaces):
     precis> get kind=skill id=precis-search-help
     precis> put kind=todo text="buy milk" tags=home,urgent
 
+Line editing comes from ``prompt_toolkit`` — arrow keys, Ctrl-R
+reverse search, persistent history across sessions, and Tab
+completion over verb names and the current verb's ``key=``
+parameters. We use prompt_toolkit instead of ``readline`` because
+the slim runtime image (python:3.12-slim-bookworm) doesn't ship
+libreadline, so the prior readline-based REPL silently degraded to
+no-editing ``input()``.
+
 Meta-commands:
 
     help                  list verbs
@@ -27,15 +35,9 @@ import shlex
 import sys
 from typing import Any
 
-# Importing ``readline`` has the side-effect of binding it to
-# ``input()`` — arrow-up / ctrl-r / line editing all start working
-# automatically. The module is best-effort: on minimal Linux images
-# without libreadline-dev it may be missing, in which case input()
-# silently falls back to the no-edit behaviour.
-try:
-    import readline
-except ImportError:
-    readline = None  # type: ignore[assignment]
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.history import FileHistory
 
 from precis.tools import TOOL_REGISTRY, get_tool_info, get_tool_names
 from precis.tools.cli_adapter import _convert_value, _is_call_tool_result
@@ -52,12 +54,54 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
+class _VerbCompleter(Completer):
+    """Tab-complete verb names at position 0, then the verb's ``key=`` params.
+
+    Position 0 → completes against ``get_tool_names()``.
+    Position ≥1 → looks up the verb at position 0 in ``TOOL_REGISTRY``
+    and offers its parameter names with a trailing ``=``. Already-used
+    keys are filtered so completion narrows as the line fills out.
+    """
+
+    def get_completions(self, document, complete_event):  # type: ignore[no-untyped-def]
+        text = document.text_before_cursor
+        try:
+            tokens = shlex.split(text, posix=True)
+        except ValueError:
+            return  # unbalanced quote — give up rather than complete garbage
+        trailing_space = text.endswith((" ", "\t"))
+        word = "" if trailing_space else (tokens[-1] if tokens else "")
+        position = len(tokens) - (0 if trailing_space else 1)
+        if position < 0:
+            position = 0
+
+        if position == 0:
+            for name in get_tool_names():
+                if name.startswith(word):
+                    yield Completion(name, start_position=-len(word))
+            return
+
+        verb = tokens[0]
+        if verb not in TOOL_REGISTRY:
+            return
+        params = TOOL_REGISTRY[verb]["parameters"]
+        used = {t.split("=", 1)[0] for t in tokens[1:] if "=" in t}
+        if "=" in word:
+            return  # mid-value; don't complete
+
+        for pname in params:
+            if pname in used:
+                continue
+            if pname.startswith(word):
+                yield Completion(pname + "=", start_position=-len(word))
+
+
 def run(args: argparse.Namespace) -> None:
     """Build runtime once, warm the embedder, then loop on stdin."""
     del args  # no flags yet
 
     _silence_tqdm()
-    _enable_history()
+    session = _build_session()
 
     # Force runtime construction (and bge-m3 weight load) up front so
     # the first verb call doesn't eat the 30–50 s lazy-load. The
@@ -109,7 +153,7 @@ def run(args: argparse.Namespace) -> None:
 
     while True:
         try:
-            line = input("precis> ")
+            line = session.prompt("precis> ")
         except EOFError:
             print(file=sys.stderr)
             return
@@ -162,38 +206,29 @@ def run(args: argparse.Namespace) -> None:
             print(result)
 
 
-def _enable_history() -> None:
-    """Load + persist input history under ``~/.cache/precis/repl_history``.
+def _build_session() -> PromptSession:
+    """Construct the prompt_toolkit session with history + completion.
 
-    Intra-session arrow-up works automatically once ``readline`` is
-    imported. Cross-session persistence needs an explicit load/save.
-    The cache directory is mounted as a docker volume in
-    ``scripts/precis-shell`` so history survives container restarts;
-    elsewhere it lands in the host ``~/.cache`` and is best-effort
-    (silently skipped if HOME isn't writable).
+    History lives at ``~/.cache/precis/repl_history`` (the same path
+    the prior readline-based REPL used). The cache directory is
+    mounted as a docker volume by ``scripts/precis-shell`` so it
+    survives container restarts; on hosts where HOME isn't writable
+    we fall back to an in-memory session.
     """
-    if readline is None:
-        return
     histdir = os.path.expanduser("~/.cache/precis")
     histfile = os.path.join(histdir, "repl_history")
+    history = None
     try:
         os.makedirs(histdir, exist_ok=True)
+        history = FileHistory(histfile)
     except OSError:
-        return
-    try:
-        readline.read_history_file(histfile)
-    except (FileNotFoundError, OSError):
-        pass
-    readline.set_history_length(1000)
-    import atexit
+        pass  # read-only HOME — session keeps history in memory only
 
-    def _save() -> None:
-        try:
-            readline.write_history_file(histfile)
-        except OSError:
-            pass
-
-    atexit.register(_save)
+    return PromptSession(
+        history=history,
+        completer=_VerbCompleter(),
+        complete_while_typing=False,
+    )
 
 
 def _silence_tqdm() -> None:

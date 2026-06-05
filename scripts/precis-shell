@@ -9,31 +9,90 @@
 # Usage:
 #   scripts/precis-shell                       # interactive bash at /app
 #   scripts/precis-shell pytest tests/         # one-off command
-#   scripts/precis-shell --rebuild             # force image rebuild, then shell
+#   scripts/precis-shell --rebuild             # rebuild dev image, then shell
 #   scripts/precis-shell --rebuild pytest -x   # rebuild, then run command
+#   scripts/precis-shell --rebuild-base        # also rebuild the base
+#                                              # (slow; only when marker /
+#                                              # bge-m3 pin changes)
 #
-# The image is built on first use and reused thereafter. Pass --rebuild
-# (or delete with `docker image rm precis-mcp:dev`) to refresh after
-# Dockerfile or dependency changes.
+# Two-image layering:
+#   precis-mcp:premodels  base image — deps venv + baked Marker/bge-m3
+#                         weights. Slow to build (≥ tens of minutes on
+#                         a cold HF cache). Rebuild ONLY with
+#                         --rebuild-base.
+#   precis-mcp:dev        derived image — adds dev tooling + source.
+#                         Cheap to rebuild because Stage 2 (`models`)
+#                         seeds /opt/precis/models from the base image
+#                         via `--build-context premodels=...`, so
+#                         bake-models.py runs as a no-op.
+#
+# Pass --rebuild whenever pyproject.toml / source changes. The model
+# layer stays cached as long as :premodels is around — even when
+# pyproject changes force the deps stage to rebuild.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 IMAGE="precis-mcp:dev"
+BASE_IMAGE="precis-mcp:premodels"
 
 rebuild=0
-if [[ "${1:-}" == "--rebuild" || "${1:-}" == "--build" ]]; then
-    rebuild=1
-    shift
+rebuild_base=0
+while [[ "${1:-}" == --* ]]; do
+    case "$1" in
+        --rebuild|--build)
+            rebuild=1; shift ;;
+        --rebuild-base|--build-base)
+            rebuild_base=1; rebuild=1; shift ;;
+        --)
+            shift; break ;;
+        *)
+            echo "[precis-shell] unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+
+have_image() { docker image inspect "$1" >/dev/null 2>&1; }
+
+# Bootstrap the seed: if no :premodels tag yet, retag whatever model-
+# bearing image is already around. The Dockerfile's models-stage
+# COPY only looks at /opt/precis/models on the seed, which exists in
+# every image built from the runtime/dev stages.
+if ! have_image "${BASE_IMAGE}" && [[ "${rebuild_base}" == 0 ]]; then
+    for seed in precis-mcp:latest precis-mcp:dev; do
+        if have_image "${seed}"; then
+            echo "[precis-shell] tagging ${seed} as ${BASE_IMAGE} (seed bootstrap)" >&2
+            docker tag "${seed}" "${BASE_IMAGE}"
+            break
+        fi
+    done
 fi
 
-if [[ "${rebuild}" == 1 ]] || ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
-    echo "[precis-shell] building ${IMAGE} (target=dev, UID=$(id -u) GID=$(id -g))" >&2
+if [[ "${rebuild_base}" == 1 ]] || ! have_image "${BASE_IMAGE}"; then
+    echo "[precis-shell] building ${BASE_IMAGE} (target=models — slow, models stage)" >&2
+    base_args=()
+    # Self-seed: a stale :premodels still avoids the bge-m3 cold-fetch
+    # deadlock documented in docs/design/bake-models-into-image.md.
+    if have_image "${BASE_IMAGE}"; then
+        base_args+=(--build-context "premodels=docker-image://${BASE_IMAGE}")
+    fi
+    docker build \
+        --target models \
+        --build-arg "UID=$(id -u)" \
+        --build-arg "GID=$(id -g)" \
+        "${base_args[@]}" \
+        -t "${BASE_IMAGE}" \
+        -f docker/Dockerfile \
+        "${REPO_ROOT}"
+fi
+
+if [[ "${rebuild}" == 1 ]] || ! have_image "${IMAGE}"; then
+    echo "[precis-shell] building ${IMAGE} (target=dev, UID=$(id -u) GID=$(id -g), seed=${BASE_IMAGE})" >&2
     docker build \
         --target dev \
         --build-arg "UID=$(id -u)" \
         --build-arg "GID=$(id -g)" \
+        --build-context "premodels=docker-image://${BASE_IMAGE}" \
         -t "${IMAGE}" \
         -f docker/Dockerfile \
         "${REPO_ROOT}"

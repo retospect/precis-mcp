@@ -12,17 +12,33 @@ renderer entirely. The new model:
   resulting cluster from the union of its constituent chunks'
   keywords.
 
-Output shape — TOON table::
+Output shape — TOON table, always ``(handle, keywords)``::
 
     # slug TOC — N chunks, K clusters
+
+    Topics: shared keywords across ≥75% of clusters    (optional)
 
     {handle	keywords}
     slug~0..14	keyword phrases for cluster 0
     slug~15..29	keyword phrases for cluster 1
     …
 
-When the requested range is small enough to read directly,
-clustering is skipped and the chunks render as a per-chunk preview.
+    Next: drill into fat clusters                       (optional)
+      get(kind='paper', id='slug~15..29', view='toc')  # 30 chunks
+
+The ``Topics:`` line is a lossless summary — it lists keywords that
+appear in ≥75% of clusters; the per-row labels still include them,
+so the line is a redundant overview, never a transformation.
+
+The ``Next:`` block fires for any cluster large enough to re-bucket
+on its own (≥ ``_BUCKETING_THRESHOLD`` chunks). It hints the agent
+that a recursive ``view='toc'`` on that handle yields more structure.
+
+When the requested range is small enough to read directly
+(< ``_BUCKETING_THRESHOLD`` chunks), the renderer skips clustering
+and emits one row per chunk — same schema, per-chunk KeyBERT
+keywords as the label. For the actual chunk text, call
+``get(...)`` without ``view='toc'``.
 """
 
 from __future__ import annotations
@@ -35,8 +51,9 @@ from typing import Any
 from precis.format import render_agent_table
 from precis.utils.segmentation import Segment, segment_dp
 
-#: Below this chunk count, render per-chunk preview rather than
-#: clustering. Below ~30 chunks the agent can scan them directly.
+#: Below this chunk count, render per-chunk keywords directly
+#: instead of clustering — small ranges are scannable as-is and
+#: there is nothing to drill into.
 _BUCKETING_THRESHOLD = 30
 
 #: Hard cap on the cluster count. Keeps the rendered table skimmable
@@ -50,16 +67,26 @@ _BUCKET_MIN_COUNT = 3
 #: RAKE-style top-K keywords per cluster label.
 _LABEL_TOP_K = 5
 
-#: First-N chars of chunk text shown in the per-chunk preview
-#: fallback for short ranges.
-_FALLBACK_PREVIEW_CHARS = 60
-
-#: Row cap for the per-chunk preview fallback.
-_FALLBACK_ROW_CAP = 30
-
 #: Minimum cluster size in the DP output. Smaller clusters get
 #: absorbed into a neighbour by :func:`_collapse_singletons`.
-_MIN_CLUSTER_SIZE = 3
+#: 2 (was 3 pre-2026-06-05) — only true singletons collapse, so the
+#: requested bucket count from :func:`_bucket_count` is preserved
+#: more faithfully and the user gets the granularity they asked for.
+_MIN_CLUSTER_SIZE = 2
+
+#: Multiplier in the log-scaled bucket-count formula. 7 (was 5
+#: pre-2026-06-05) — produces ~15 buckets at N≈150 instead of ~11,
+#: matching the K_MAX ceiling at the sizes papers actually hit.
+_BUCKET_MULTIPLIER = 7
+
+#: Fraction of clusters a keyword must span to be promoted to the
+#: "Topics:" header. ≥75% means it is pervasive enough to be the
+#: paper-wide theme. Lower thresholds (≥50%) would hide *which*
+#: half the keyword belongs to — see discussion in toc_db review.
+_TOPICS_RATIO = 0.75
+
+#: Cap on Topics-line keywords; same shape as per-row labels.
+_TOPICS_TOP_K = 5
 
 
 def render_from_store(
@@ -76,7 +103,8 @@ def render_from_store(
     position range. Without it, the full body is clustered.
 
     Returns Markdown. First line is the kind-aware headline; the rest
-    is the TOON table.
+    is the TOON table, optionally preceded by a ``Topics:`` line and
+    followed by a ``Next:`` drill-in block.
     """
     pos_range = scope
     blocks = store.list_blocks_for_ref(ref_id, pos_range=pos_range)
@@ -85,17 +113,19 @@ def render_from_store(
 
     n = len(blocks)
     if n < _BUCKETING_THRESHOLD:
-        return _render_chunk_preview(slug=slug, blocks=blocks, scope=scope)
+        return _render_per_chunk(slug=slug, blocks=blocks, scope=scope)
 
     target_k = _bucket_count(n)
     distances = _adjacent_jaccard_distances(blocks)
     if not distances:
-        return _render_chunk_preview(slug=slug, blocks=blocks, scope=scope)
+        return _render_per_chunk(slug=slug, blocks=blocks, scope=scope)
 
     raw_segments = segment_dp(distances, k=target_k)
     segments = _collapse_singletons(raw_segments, min_size=_MIN_CLUSTER_SIZE)
 
     rows: list[dict[str, str]] = []
+    row_keyword_sets: list[list[str]] = []
+    fat_clusters: list[tuple[str, int]] = []
     for seg in segments:
         bucket = blocks[seg.start : seg.end + 1]
         if not bucket:
@@ -105,25 +135,41 @@ def render_from_store(
         handle = (
             f"{slug}~{lo_pos}" if lo_pos == hi_pos else f"{slug}~{lo_pos}..{hi_pos}"
         )
-        rows.append({"handle": handle, "keywords": _label_cluster(bucket)})
+        label_kws = _top_keywords(bucket, top_k=_LABEL_TOP_K)
+        rows.append({"handle": handle, "keywords": ", ".join(label_kws)})
+        row_keyword_sets.append(label_kws)
+        if len(bucket) >= _BUCKETING_THRESHOLD and lo_pos != hi_pos:
+            fat_clusters.append((handle, len(bucket)))
 
     headline = _headline(slug=slug, n_chunks=n, n_clusters=len(rows), scope=scope)
     table = render_agent_table(rows, schema=["handle", "keywords"])
-    return f"{headline}\n\n{table}"
+
+    parts: list[str] = [headline, ""]
+    topics = _topics_line(row_keyword_sets)
+    if topics:
+        parts.extend([f"Topics: {topics}", ""])
+    parts.append(table)
+    if fat_clusters:
+        parts.extend(["", "Next: drill into fat clusters"])
+        for handle, size in fat_clusters:
+            parts.append(
+                f"  get(kind='paper', id='{handle}', view='toc')  # {size} chunks"
+            )
+    return "\n".join(parts)
 
 
 # ── helpers: cluster shape ───────────────────────────────────────────
 
 
 def _bucket_count(n_chunks: int) -> int:
-    """Log-scaled cluster count: ~10 at N=170, capped at 15 around N=1000+.
+    """Log-scaled cluster count: ~15 by N≈150, capped at 15.
 
-    Matches the F16 v2 formula. Floor at 3 keeps small-but-bucketable
-    ranges interesting; ceiling at 15 keeps tables skimmable.
+    Floor at 3 keeps small-but-bucketable ranges interesting;
+    ceiling at 15 keeps tables skimmable.
     """
     if n_chunks <= 1:
         return 1
-    target = math.ceil(5 * math.log10(max(2, n_chunks)))
+    target = math.ceil(_BUCKET_MULTIPLIER * math.log10(max(2, n_chunks)))
     return max(_BUCKET_MIN_COUNT, min(_BUCKET_MAX_COUNT, target))
 
 
@@ -178,12 +224,12 @@ def _collapse_singletons(segments: list[Segment], *, min_size: int) -> list[Segm
     return out
 
 
-def _label_cluster(bucket: Sequence[Any]) -> str:
-    """Top-K most-frequent keywords across the cluster's chunks.
+def _top_keywords(bucket: Sequence[Any], *, top_k: int) -> list[str]:
+    """Top-K most-frequent keywords across the bucket's chunks.
 
     Frequency-ranked union. Ties broken by first-occurrence order.
-    Empty-keyword chunks contribute nothing — the cluster's label
-    comes from whichever members have keywords.
+    Empty-keyword chunks contribute nothing — the label comes from
+    whichever members have keywords.
     """
     counter: Counter[str] = Counter()
     first_seen: dict[str, int] = {}
@@ -192,13 +238,39 @@ def _label_cluster(bucket: Sequence[Any]) -> str:
             counter[kw] += 1
             first_seen.setdefault(kw, idx)
     if not counter:
-        return ""
-    # Sort by (-count, first_seen) for stable, frequency-first order.
+        return []
     ordered = sorted(
         counter.items(),
         key=lambda kv: (-kv[1], first_seen[kv[0]]),
     )
-    return ", ".join(kw for kw, _ in ordered[:_LABEL_TOP_K])
+    return [kw for kw, _ in ordered[:top_k]]
+
+
+def _topics_line(row_keyword_sets: Sequence[Sequence[str]]) -> str:
+    """Keywords present in ≥``_TOPICS_RATIO`` of clusters' row labels.
+
+    Operates on the truncated per-cluster labels (what the user
+    actually sees), so promotion mirrors the visible content. A
+    keyword is counted at most once per cluster.
+
+    Empty when no keyword crosses the threshold (e.g. an incoherent
+    range across unrelated subjects).
+    """
+    k = len(row_keyword_sets)
+    if k < 2:
+        return ""
+    threshold = math.ceil(k * _TOPICS_RATIO)
+    counter: Counter[str] = Counter()
+    first_seen: dict[str, int] = {}
+    for idx, kws in enumerate(row_keyword_sets):
+        for kw in set(kws):
+            counter[kw] += 1
+            first_seen.setdefault(kw, idx)
+    shared = [(kw, c) for kw, c in counter.items() if c >= threshold]
+    if not shared:
+        return ""
+    shared.sort(key=lambda kv: (-kv[1], first_seen[kv[0]]))
+    return ", ".join(kw for kw, _ in shared[:_TOPICS_TOP_K])
 
 
 # ── helpers: rendering ──────────────────────────────────────────────
@@ -219,45 +291,33 @@ def _headline(
     return f"# {slug} TOC — {n_chunks} chunks, {n_clusters} clusters"
 
 
-def _render_chunk_preview(
+def _render_per_chunk(
     *,
     slug: str,
     blocks: Sequence[Any],
     scope: tuple[int, int] | None,
 ) -> str:
-    """Short-range fallback: one row per chunk with text preview."""
-    n_total = len(blocks)
-    truncated = blocks[:_FALLBACK_ROW_CAP]
+    """Short-range path: one row per chunk, per-chunk keywords as label.
+
+    Same ``(handle, keywords)`` schema as the bucketed path — agents
+    get a uniform contract regardless of range size. For the actual
+    chunk text, use ``get(...)`` without ``view='toc'``.
+    """
     rows: list[dict[str, str]] = []
-    for block in truncated:
-        text = (block.text or "").strip().replace("\n", " ")
-        if len(text) > _FALLBACK_PREVIEW_CHARS:
-            preview = text[:_FALLBACK_PREVIEW_CHARS].rstrip() + "…"
-        else:
-            preview = text
+    for block in blocks:
         rows.append(
             {
                 "handle": f"{slug}~{block.pos}",
-                "preview": preview,
+                "keywords": ", ".join(_top_keywords([block], top_k=_LABEL_TOP_K)),
             }
         )
+    n_total = len(blocks)
     if scope is not None:
-        head = (
-            f"# {slug} sub-TOC ~{scope[0]}..{scope[1]} — "
-            f"{n_total} chunks (per-chunk preview)"
-        )
+        head = f"# {slug} sub-TOC ~{scope[0]}..{scope[1]} — {n_total} chunks"
     else:
-        head = f"# {slug} TOC — {n_total} chunks (per-chunk preview)"
-    table = render_agent_table(rows, schema=["handle", "preview"])
-    body = f"{head}\n\n{table}"
-    if n_total > _FALLBACK_ROW_CAP:
-        lo = blocks[_FALLBACK_ROW_CAP].pos
-        hi = blocks[-1].pos
-        body += (
-            f"\n\n…{n_total - _FALLBACK_ROW_CAP} more chunks. "
-            f"Continue: get(kind='paper', id='{slug}~{lo}..{hi}')"
-        )
-    return body
+        head = f"# {slug} TOC — {n_total} chunks"
+    table = render_agent_table(rows, schema=["handle", "keywords"])
+    return f"{head}\n\n{table}"
 
 
 def _empty_body(*, slug: str, kind: str, scope: tuple[int, int] | None) -> str:

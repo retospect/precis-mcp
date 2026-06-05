@@ -8,6 +8,45 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed
+
+- **`view='toc'` (papers): uniform `(handle, keywords)` schema, plus
+  Topics / Next hints.** The short-range fallback that emitted a
+  per-chunk text "preview" column was dropped — the renderer now
+  always emits the same two-column schema regardless of range size,
+  so the agent contract no longer shifts under it. For ≥75% pervasive
+  keywords the renderer prepends a lossless `Topics:` line (keywords
+  *also* stay on each row, so promotion never hides which cluster a
+  keyword came from). Any cluster large enough to re-bucket on its
+  own (≥ `_BUCKETING_THRESHOLD = 30` chunks) gets a `Next:`
+  drill-in hint that names the recursive `view='toc'` call. The
+  bucket-count formula was bumped (`5·log10(N) → 7·log10(N)`) and
+  `_MIN_CLUSTER_SIZE` lowered from 3 → 2 so requested clusters
+  survive collapse — bose16 (N=148) now renders ~15 clusters instead
+  of the 4 that survived after aggressive singleton collapse.
+  `src/precis/utils/toc_db.py`, tests in `tests/test_toc_db.py`.
+
+### Fixed
+
+- **`scripts/precis-shell --rebuild` now reuses the baked model
+  cache.** Previously the wrapper called `docker build` without the
+  `--build-context premodels=docker-image://precis-mcp:premodels`
+  arg that the Dockerfile's Stage 2 (`models`) is designed around.
+  With the seed absent, the `FROM scratch AS premodels` fallback
+  kicked in and `bake-models.py` ran against an empty
+  `/opt/precis/models`, re-downloading the Marker datalab models
+  (~1.5 GB) and bge-m3 (~2.3 GB) on every rebuild whose
+  `pyproject.toml` change invalidated the deps layer. Now the
+  script always passes `--build-context premodels=...` (using
+  `precis-mcp:premodels`, falling back to retagging
+  `precis-mcp:latest` / `:dev` if no seed exists yet) and exposes
+  a `--rebuild-base` flag for the rare case where the model layer
+  itself needs refresh (e.g. a marker-pdf or bge-m3 pin bump). Same
+  premodels mechanism documented in
+  `docs/design/bake-models-into-image.md` and used by
+  `infrastructure/compose.yaml`; just plumbed through the
+  standalone wrapper.
+
 ## v8.4.1 — pick_candidate + retraction cascade + CI hygiene (2026-06-05)
 
 ### Added
