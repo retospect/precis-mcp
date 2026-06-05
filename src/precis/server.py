@@ -449,9 +449,7 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
     # is the safety net when they ignore both.
     properties = params.get("properties") or {}
 
-    _MODE_COUPLING = (
-        " REQUIRED WHEN: mode='find-replace' (default) or mode='insert'."
-    )
+    _MODE_COUPLING = " REQUIRED WHEN: mode='find-replace' (default) or mode='insert'."
     _WHERE_COUPLING = " REQUIRED WHEN: mode='insert'. Value: 'before' or 'after'."
     _MODE_NOTE = (
         " Per-mode required args: 'find-replace' (default) → find=, text=;"
@@ -516,9 +514,7 @@ def _warm_embedder_background(runtime: PrecisRuntime) -> None:
 
     import threading
 
-    thread = threading.Thread(
-        target=_warm, name="precis-embedder-warmup", daemon=True
-    )
+    thread = threading.Thread(target=_warm, name="precis-embedder-warmup", daemon=True)
     thread.start()
 
 

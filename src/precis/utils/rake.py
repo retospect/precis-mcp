@@ -260,9 +260,9 @@ _WORD_RE = re.compile(r"[\w'\-]*[^\W_][\w'\-]*", re.UNICODE)
 _SENT_BREAK_RE = re.compile(
     r"[.!?;,\n\r()\[\]{}/"
     r"。，；！？"  # CJK . , ; ! ?
-    r"・"                          # CJK middle dot
-    r"「」『』"        # 「」『』
-    r"（）"                    # （）
+    r"・"  # CJK middle dot
+    r"「」『』"  # 「」『』
+    r"（）"  # （）
     r"]+"
     r"|[-_=]{2,}"  # horizontal-rule-style separators
 )

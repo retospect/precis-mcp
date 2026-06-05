@@ -271,8 +271,7 @@ def run_sync(args: argparse.Namespace) -> None:
     )
     if result.status != "ok":
         print(
-            f"sync-retraction-watch: {result.status} — "
-            f"{result.error or 'see logs'}",
+            f"sync-retraction-watch: {result.status} — {result.error or 'see logs'}",
             file=sys.stderr,
         )
         sys.exit(1 if result.status == "failed" else 0)

@@ -305,8 +305,16 @@ class TestCheckDoisWithBibEntries:
     def test_positional_pairing(self, mock_fetch) -> None:
         # Different Crossref response per DOI
         responses = {
-            "10.1234/a": {"title": ["Title A"], "author": [{"family": "Smith"}], "DOI": "10.1234/a"},
-            "10.5678/b": {"title": ["Title B"], "author": [{"family": "Jones"}], "DOI": "10.5678/b"},
+            "10.1234/a": {
+                "title": ["Title A"],
+                "author": [{"family": "Smith"}],
+                "DOI": "10.1234/a",
+            },
+            "10.5678/b": {
+                "title": ["Title B"],
+                "author": [{"family": "Jones"}],
+                "DOI": "10.5678/b",
+            },
         }
         mock_fetch.side_effect = lambda doi, mailto: responses[doi]
         entries = [

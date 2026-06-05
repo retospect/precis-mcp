@@ -123,7 +123,7 @@ class TestInvariants:
         assert segs[-1].end == len(e) - 1
         for i in range(len(segs) - 1):
             assert segs[i].end + 1 == segs[i + 1].start, (
-                f"segments {i} and {i+1} not adjacent: {segs[i]!r} {segs[i+1]!r}"
+                f"segments {i} and {i + 1} not adjacent: {segs[i]!r} {segs[i + 1]!r}"
             )
 
     def test_segment_count_within_k_bounds(self) -> None:

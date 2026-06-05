@@ -170,8 +170,12 @@ def call_claude_p(
     except subprocess.TimeoutExpired as exc:
         raise ClaudePError(
             f"claude -p timed out after {timeout_s}s",
-            stdout=exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
-            stderr=exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or ""),
+            stdout=exc.stdout.decode()
+            if isinstance(exc.stdout, bytes)
+            else (exc.stdout or ""),
+            stderr=exc.stderr.decode()
+            if isinstance(exc.stderr, bytes)
+            else (exc.stderr or ""),
         ) from exc
     except FileNotFoundError as exc:
         raise ClaudePError(

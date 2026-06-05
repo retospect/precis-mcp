@@ -18,6 +18,8 @@ from datetime import date, datetime
 from precis.ingest._rw_csv import parse_rw_rows
 from precis.ingest.provenance import (
     Notice,
+    RetractionStatus,
+    Severity,
     _enrich_notices_with_rw,
     _RWCacheRow,
 )
@@ -69,14 +71,16 @@ def _csv(rows: list[str]) -> list[str]:
 
 class TestParseRwRows:
     def test_basic_row(self) -> None:
-        lines = _csv([
-            "42,Some Title,Biology,MIT,Nature,Springer,USA,"
-            'Smith J;Jones K,http://example.org,"Research Article",'
-            "08/14/2022,10.1038/foo-r1,12345,01/15/2019,"
-            "10.1038/foo,99999,Retraction,"
-            "+Falsification/Fabrication of Data;+Investigation by Journal/Publisher,"
-            "No,Notes here"
-        ])
+        lines = _csv(
+            [
+                "42,Some Title,Biology,MIT,Nature,Springer,USA,"
+                'Smith J;Jones K,http://example.org,"Research Article",'
+                "08/14/2022,10.1038/foo-r1,12345,01/15/2019,"
+                "10.1038/foo,99999,Retraction,"
+                "+Falsification/Fabrication of Data;+Investigation by Journal/Publisher,"
+                "No,Notes here"
+            ]
+        )
         rows = list(parse_rw_rows(lines))
         assert len(rows) == 1
         r = rows[0]
@@ -93,32 +97,38 @@ class TestParseRwRows:
         assert r.journal == "Nature"
 
     def test_doi_canonicalisation(self) -> None:
-        lines = _csv([
-            "1,T,,,,,,,,,,DOI:10.X/Notice,,,https://doi.org/10.X/Paper,,Retraction,,,"
-        ])
+        lines = _csv(
+            ["1,T,,,,,,,,,,DOI:10.X/Notice,,,https://doi.org/10.X/Paper,,Retraction,,,"]
+        )
         r = list(parse_rw_rows(lines))[0]
         # Both DOIs lowercased and prefix-stripped
         assert r.paper_doi == "10.x/paper"
         assert r.notice_doi == "10.x/notice"
 
     def test_skip_missing_paper_doi(self) -> None:
-        lines = _csv([
-            "1,T,,,,,,,,,,10.x/notice,,,,,Retraction,,,",  # no original DOI
-        ])
+        lines = _csv(
+            [
+                "1,T,,,,,,,,,,10.x/notice,,,,,Retraction,,,",  # no original DOI
+            ]
+        )
         rows = list(parse_rw_rows(lines))
         assert rows == []
 
     def test_skip_missing_record_id(self) -> None:
-        lines = _csv([
-            ",T,,,,,,,,,,10.x/notice,,,10.x/paper,,Retraction,,,",  # blank record id
-        ])
+        lines = _csv(
+            [
+                ",T,,,,,,,,,,10.x/notice,,,10.x/paper,,Retraction,,,",  # blank record id
+            ]
+        )
         rows = list(parse_rw_rows(lines))
         assert rows == []
 
     def test_skip_malformed_record_id(self) -> None:
-        lines = _csv([
-            "not-a-number,T,,,,,,,,,,10.x/n,,,10.x/p,,Retraction,,,",
-        ])
+        lines = _csv(
+            [
+                "not-a-number,T,,,,,,,,,,10.x/n,,,10.x/p,,Retraction,,,",
+            ]
+        )
         rows = list(parse_rw_rows(lines))
         assert rows == []
 
@@ -128,9 +138,11 @@ class TestParseRwRows:
         # (PubMedID, OriginalPaperDate), 10.x/p (OriginalPaperDOI),
         # 1 empty (OriginalPaperPubMedID), Retraction (Nature),
         # 3 empties (Reason, Paywalled, Notes).
-        lines = _csv([
-            "1,T,,,,,,,,,bogus-date,10.x/n,,,10.x/p,,Retraction,,,",
-        ])
+        lines = _csv(
+            [
+                "1,T,,,,,,,,,bogus-date,10.x/n,,,10.x/p,,Retraction,,,",
+            ]
+        )
         rows = list(parse_rw_rows(lines))
         assert rows[0].retraction_date is None
 
@@ -142,19 +154,25 @@ class TestParseRwRows:
             "retraction_pubmed_id,Original Paper Date,original_paper_DOI,"
             "OriginalPaperPubMedID,Retraction Nature,Reason,Paywalled,Notes"
         )
-        rows = list(parse_rw_rows([
-            weird_header,
-            "1,T,,,,,,,,,,10.x/n,,,10.x/p,,Retraction,,,",
-        ]))
+        rows = list(
+            parse_rw_rows(
+                [
+                    weird_header,
+                    "1,T,,,,,,,,,,10.x/n,,,10.x/p,,Retraction,,,",
+                ]
+            )
+        )
         assert len(rows) == 1
         assert rows[0].record_id == 1
         assert rows[0].paper_doi == "10.x/p"
 
     def test_multivalue_reasons(self) -> None:
-        lines = _csv([
-            '1,T,,,,,,,,,,10.x/n,,,10.x/p,,Retraction,'
-            '"+Reason A;+Reason B;+Reason C",,'
-        ])
+        lines = _csv(
+            [
+                "1,T,,,,,,,,,,10.x/n,,,10.x/p,,Retraction,"
+                '"+Reason A;+Reason B;+Reason C",,'
+            ]
+        )
         rows = list(parse_rw_rows(lines))
         assert rows[0].reasons == ["+Reason A", "+Reason B", "+Reason C"]
 
@@ -174,9 +192,9 @@ class TestParseRwRows:
 
 def _make_notice(
     notice_doi: str = "10.x/foo-r1",
-    status: str | None = "retracted",
+    status: RetractionStatus | None = "retracted",
 ) -> Notice:
-    severity = "blocker" if status == "retracted" else "review"
+    severity: Severity = "blocker" if status == "retracted" else "review"
     return Notice(
         update_type="retraction",
         severity=severity,
@@ -254,7 +272,9 @@ class TestEnrichNoticesWithRw:
         )
         cache = [
             _rw_row(notice_doi="10.x/r1", reasons=["R-reason"]),
-            _rw_row(notice_doi="10.x/c1", notice_nature="Correction", reasons=["C-reason"]),
+            _rw_row(
+                notice_doi="10.x/c1", notice_nature="Correction", reasons=["C-reason"]
+            ),
         ]
         out = _enrich_notices_with_rw([retraction_notice, correction_notice], cache)
         assert out[0].rw_reasons == ["R-reason"]

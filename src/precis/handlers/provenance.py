@@ -87,7 +87,7 @@ def _parse_structured_input(raw: str) -> list[BibEntry] | None:
             f"provenance: input looks like JSON but won't parse: {e}",
             next=(
                 "get(kind='provenance', "
-                "q='[{\"doi\":\"10.x/foo\",\"title\":\"...\"}]', "
+                'q=\'[{"doi":"10.x/foo","title":"..."}]\', '
                 "view='verify')"
             ),
         ) from e
@@ -262,7 +262,7 @@ class ProvenanceHandler(Handler):
                 "input has nothing to verify against.",
                 next=(
                     "get(kind='provenance', "
-                    "q='[{\"doi\":\"10.x/foo\",\"title\":\"…\",\"year\":2020}]', "
+                    'q=\'[{"doi":"10.x/foo","title":"…","year":2020}]\', '
                     "view='verify')"
                 ),
             )

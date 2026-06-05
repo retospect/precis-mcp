@@ -127,17 +127,19 @@ def _upsert_rows(store: Store, rows: Iterator[RWRow]) -> int:
         with conn.transaction():
             cur = conn.cursor()
             for row in rows:
-                batch.append((
-                    row.record_id,
-                    row.paper_doi,
-                    row.notice_doi or None,
-                    row.notice_nature,
-                    row.reasons,
-                    row.retraction_date,
-                    row.paper_title,
-                    row.journal,
-                    Jsonb(row.raw),
-                ))
+                batch.append(
+                    (
+                        row.record_id,
+                        row.paper_doi,
+                        row.notice_doi or None,
+                        row.notice_nature,
+                        row.reasons,
+                        row.retraction_date,
+                        row.paper_title,
+                        row.journal,
+                        Jsonb(row.raw),
+                    )
+                )
                 if len(batch) >= chunk_size:
                     cur.executemany(sql, batch)
                     n += len(batch)

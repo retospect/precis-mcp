@@ -103,9 +103,7 @@ def render_from_store(
         lo_pos = bucket[0].pos
         hi_pos = bucket[-1].pos
         handle = (
-            f"{slug}~{lo_pos}"
-            if lo_pos == hi_pos
-            else f"{slug}~{lo_pos}..{hi_pos}"
+            f"{slug}~{lo_pos}" if lo_pos == hi_pos else f"{slug}~{lo_pos}..{hi_pos}"
         )
         rows.append({"handle": handle, "keywords": _label_cluster(bucket)})
 
@@ -155,9 +153,7 @@ def _adjacent_jaccard_distances(blocks: Sequence[Any]) -> list[float]:
     return out
 
 
-def _collapse_singletons(
-    segments: list[Segment], *, min_size: int
-) -> list[Segment]:
+def _collapse_singletons(segments: list[Segment], *, min_size: int) -> list[Segment]:
     """Merge segments with fewer than ``min_size`` chunks into a neighbour.
 
     Greedy forward merge: a too-small segment is absorbed by the

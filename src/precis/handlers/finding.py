@@ -196,9 +196,11 @@ class FindingHandler(NumericRefHandler):
         # to ref_id) as the deterministic input to make_finding_paper_id.
         # Two agents citing the same source chunk under the same setup
         # collide on the resulting pub_id — that's the design intent.
-        target_ref = self.store.get_ref_by_id(target.ref_id) if hasattr(
-            self.store, "get_ref_by_id"
-        ) else None
+        target_ref = (
+            self.store.get_ref_by_id(target.ref_id)
+            if hasattr(self.store, "get_ref_by_id")
+            else None
+        )
         # Fall back to a direct query when the helper isn't available.
         if target_ref is None:
             target_ref = self._fetch_ref_any_kind(target.ref_id)
@@ -395,9 +397,7 @@ class FindingHandler(NumericRefHandler):
         )
         if not hits:
             tag_suffix = (
-                f" with status={resolved_status!r}"
-                if resolved_status != "*"
-                else ""
+                f" with status={resolved_status!r}" if resolved_status != "*" else ""
             )
             body = f"no finding matches {q!r}{tag_suffix}"
             from precis.utils.next_block import render_next_section
@@ -418,9 +418,7 @@ class FindingHandler(NumericRefHandler):
         refs = [r for r, _rank in hits]
         return self._render_finding_table(refs, query=q)
 
-    def _render_finding_table(
-        self, refs: list[Ref], *, query: str | None
-    ) -> Response:
+    def _render_finding_table(self, refs: list[Ref], *, query: str | None) -> Response:
         """Render the finding-search TOON table.
 
         Shape: ``id | title | setup | primary``. ``setup`` is
@@ -437,9 +435,7 @@ class FindingHandler(NumericRefHandler):
         for r in refs:
             meta = r.meta or {}
             scope = meta.get("scope") or {}
-            setup_str = ", ".join(
-                f"{k}={v}" for k, v in sorted(scope.items()) if v
-            )
+            setup_str = ", ".join(f"{k}={v}" for k, v in sorted(scope.items()) if v)
             primary = meta.get("primary_cite_key") or ""
             rows.append(
                 {
@@ -557,10 +553,7 @@ class FindingHandler(NumericRefHandler):
             lines.append("")
             lines.append(f"chain (in flight, {len(chain)} hop(s)):")
             for hop in chain:
-                lines.append(
-                    f"  ref_id={hop.get('ref_id')} "
-                    f"ord={hop.get('ord')}"
-                )
+                lines.append(f"  ref_id={hop.get('ref_id')} ord={hop.get('ord')}")
 
         # User-curated misattribution links (seeded by migration
         # 0004 as the ``misattributes`` relation). These are
@@ -586,7 +579,8 @@ class FindingHandler(NumericRefHandler):
         lines.append(f"status: STATUS:{status or _STATUS_TRACING}")
 
         non_status_tags = [
-            t for t in (tags or [])
+            t
+            for t in (tags or [])
             if getattr(t, "namespace", None) != "closed"
             or not str(t).startswith("STATUS:")
         ]

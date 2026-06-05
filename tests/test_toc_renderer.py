@@ -134,8 +134,7 @@ class TestPaperWideRow:
         assert "foo~0..5" in out
         # And it appears before the first per-segment row.
         first_handle_lines = [
-            i for i, ln in enumerate(out.splitlines())
-            if ln.startswith("foo~")
+            i for i, ln in enumerate(out.splitlines()) if ln.startswith("foo~")
         ]
         assert first_handle_lines, "expected at least one foo~ row"
         # The full-range handle should be the first one rendered.
@@ -232,8 +231,7 @@ class TestColumnShape:
         # Long chunks to avoid the boilerplate classifier reclassifying
         # chunk 0 as front-matter (position-0 + len<1500 rule).
         chunks = [
-            ("substantive paragraph " * 200) + f" chunk {i} marker."
-            for i in range(9)
+            ("substantive paragraph " * 200) + f" chunk {i} marker." for i in range(9)
         ]
         h2 = [
             (0, 2, "Real Section Name"),

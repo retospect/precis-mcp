@@ -144,7 +144,9 @@ _HEADER_CLOSE = "}"
 
 
 def _braced_header(columns: list[str], sep: str) -> str:
-    return _HEADER_OPEN + sep.join(_encode_cell(c, sep) for c in columns) + _HEADER_CLOSE
+    return (
+        _HEADER_OPEN + sep.join(_encode_cell(c, sep) for c in columns) + _HEADER_CLOSE
+    )
 
 
 def load(text: str, *, sep: str = "\t") -> list[dict[str, str]]:

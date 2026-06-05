@@ -250,14 +250,16 @@ class TestDominantStatus:
         assert dominant_status(["corrected"]) == "corrected"
 
     def test_retraction_dominates(self) -> None:
-        assert dominant_status(
-            ["corrected", "retracted", "expression_of_concern"]
-        ) == "retracted"
+        assert (
+            dominant_status(["corrected", "retracted", "expression_of_concern"])
+            == "retracted"
+        )
 
     def test_eoc_dominates_correction(self) -> None:
-        assert dominant_status(
-            ["corrected", "expression_of_concern"]
-        ) == "expression_of_concern"
+        assert (
+            dominant_status(["corrected", "expression_of_concern"])
+            == "expression_of_concern"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +355,9 @@ class TestCheckDoiNoStore:
         assert result.overall_severity == "blocker"
 
     @patch("precis.ingest.provenance._fetch_crossref_message")
-    def test_canonicalises_doi_in_result(self, mock_fetch, crossref_clean: dict) -> None:
+    def test_canonicalises_doi_in_result(
+        self, mock_fetch, crossref_clean: dict
+    ) -> None:
         """Input ``https://doi.org/10.X/Foo`` is canonicalised in the result."""
         mock_fetch.return_value = crossref_clean
         result = check_doi("https://doi.org/10.1234/Foo")
@@ -491,9 +495,9 @@ class TestCheckDois:
         # call args.
         def fake(doi: str, mailto) -> dict:
             return {
-                "10.1234/clean":      crossref_clean,
+                "10.1234/clean": crossref_clean,
                 "10.1038/nature05095": crossref_retracted,
-                "10.5678/contested":   crossref_eoc,
+                "10.5678/contested": crossref_eoc,
             }[doi]
 
         mock_fetch.side_effect = fake
@@ -581,11 +585,13 @@ class TestRenderBatch:
 
     def test_empty(self) -> None:
         from precis.handlers._provenance_report import render_batch
+
         out = render_batch([])
         assert "No DOIs to check" in out
 
     def test_default_view_groups_by_severity(self) -> None:
         from precis.handlers._provenance_report import render_batch
+
         results = [
             self._make_clean("10.x/clean1"),
             self._make_retracted("10.x/bad1"),
@@ -602,6 +608,7 @@ class TestRenderBatch:
 
     def test_blockers_view_hides_low_severity(self) -> None:
         from precis.handlers._provenance_report import render_batch
+
         results = [
             self._make_clean("10.x/clean1"),
             self._make_retracted("10.x/bad1"),
@@ -619,6 +626,7 @@ class TestRenderBatch:
         import json as _json
 
         from precis.handlers._provenance_report import render_batch
+
         results = [self._make_retracted("10.x/bad1"), self._make_clean("10.x/clean1")]
         out = render_batch(results, view="json")
         payload = _json.loads(out)
@@ -632,6 +640,7 @@ class TestRenderBatch:
 
     def test_default_view_surfaces_malformed(self) -> None:
         from precis.handlers._provenance_report import render_batch
+
         results = [
             ProvenanceResult(doi="not-a-doi", status="malformed"),
             self._make_clean(),
@@ -642,6 +651,7 @@ class TestRenderBatch:
 
     def test_default_view_surfaces_check_failed(self) -> None:
         from precis.handlers._provenance_report import render_batch
+
         results = [
             ProvenanceResult(
                 doi="10.x/down",

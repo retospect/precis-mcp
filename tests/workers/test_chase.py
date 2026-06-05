@@ -35,8 +35,8 @@ import re
 from typing import Any
 from unittest.mock import patch
 
+from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
-from precis.hints import HintBus
 from precis.store.types import BlockInsert
 from precis.workers.chase import run_finding_chase_pass
 
@@ -44,13 +44,7 @@ from precis.workers.chase import run_finding_chase_pass
 
 
 def _make_handler(store):
-    class _StubHub:
-        def __init__(self) -> None:
-            self.store = store
-            self.embedder = None
-            self.hints = HintBus()
-
-    return FindingHandler(hub=_StubHub())
+    return FindingHandler(hub=Hub(store=store))
 
 
 def _seed_paper(
@@ -335,9 +329,7 @@ def test_multi_candidate_tags_status_and_records_candidates(store) -> None:
 
     # Both candidates linked with the candidate=true marker.
     links = store.links_for(fid, direction="out", relation="derived-from")
-    candidate_links = [
-        l for l in links if (l.meta or {}).get("candidate") is True
-    ]
+    candidate_links = [l for l in links if (l.meta or {}).get("candidate") is True]
     assert len(candidate_links) == 2
 
 

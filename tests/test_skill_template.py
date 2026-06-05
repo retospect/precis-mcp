@@ -78,19 +78,19 @@ def test_parse_tolerates_whitespace_in_directive() -> None:
 
 def _stub(label_to_body: dict[str, str]):
     """Return a resolver that maps ``slug[#section]`` → body."""
+
     def resolve(slug: str, section: str | None) -> str:
         key = f"{slug}#{section}" if section else slug
         if key not in label_to_body:
             raise IncludeError(f"stub: {key!r} not found")
         return label_to_body[key]
+
     return resolve
 
 
 def test_expand_substitutes_with_markers() -> None:
     text = "before {{include doc:precis-common#x}} after"
-    includer = Includer(
-        resolvers={"doc": _stub({"precis-common#x": "RESOLVED BODY"})}
-    )
+    includer = Includer(resolvers={"doc": _stub({"precis-common#x": "RESOLVED BODY"})})
     out = includer.expand(text)
     assert "RESOLVED BODY" in out
     assert "<!-- inlined-from: doc:precis-common#x -->" in out
@@ -105,12 +105,8 @@ def test_expand_no_directives_is_identity() -> None:
 
 
 def test_expand_multiple_directives() -> None:
-    text = (
-        "intro {{include doc:a#one}} middle {{include doc:b}}\n"
-    )
-    includer = Includer(
-        resolvers={"doc": _stub({"a#one": "AAA", "b": "BBB"})}
-    )
+    text = "intro {{include doc:a#one}} middle {{include doc:b}}\n"
+    includer = Includer(resolvers={"doc": _stub({"a#one": "AAA", "b": "BBB"})})
     out = includer.expand(text)
     assert "AAA" in out
     assert "BBB" in out
@@ -122,7 +118,9 @@ def test_expand_multiple_directives() -> None:
 def test_expand_no_resolver_raises() -> None:
     text = "{{include schema:put#arguments}}"
     includer = Includer(resolvers={"doc": lambda s, sec: ""})
-    with pytest.raises(IncludeError, match="no resolver registered for source 'schema'"):
+    with pytest.raises(
+        IncludeError, match="no resolver registered for source 'schema'"
+    ):
         includer.expand(text)
 
 
@@ -136,13 +134,16 @@ def test_expand_resolver_failure_raises() -> None:
 # ── slugify ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("text,expected", [
-    ("Address grammar", "address-grammar"),
-    ("Find a paper by topic", "find-a-paper-by-topic"),
-    ("Arguments to the `put` verb", "arguments-to-the-put-verb"),
-    ("  Whitespace at ends   ", "whitespace-at-ends"),
-    ("Mixed CASE and DASH-words", "mixed-case-and-dash-words"),
-])
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Address grammar", "address-grammar"),
+        ("Find a paper by topic", "find-a-paper-by-topic"),
+        ("Arguments to the `put` verb", "arguments-to-the-put-verb"),
+        ("  Whitespace at ends   ", "whitespace-at-ends"),
+        ("Mixed CASE and DASH-words", "mixed-case-and-dash-words"),
+    ],
+)
 def test_slugify_heading(text: str, expected: str) -> None:
     assert slugify_heading(text) == expected
 
@@ -192,13 +193,7 @@ def test_docresolver_section_not_found_raises() -> None:
 
 
 def test_docresolver_section_terminates_at_next_h2() -> None:
-    body = (
-        "## First\n"
-        "first body\n"
-        "more first body\n"
-        "## Second\n"
-        "second body\n"
-    )
+    body = "## First\nfirst body\nmore first body\n## Second\nsecond body\n"
     r = DocResolver(docs={"d": body})
     out = r("d", "first")
     assert "first body" in out
@@ -207,12 +202,7 @@ def test_docresolver_section_terminates_at_next_h2() -> None:
 
 
 def test_docresolver_section_terminates_at_next_h1() -> None:
-    body = (
-        "## First\n"
-        "first body\n"
-        "# Big break\n"
-        "after\n"
-    )
+    body = "## First\nfirst body\n# Big break\nafter\n"
     r = DocResolver(docs={"d": body})
     out = r("d", "first")
     assert "first body" in out
@@ -236,7 +226,9 @@ def test_includer_with_docresolver_e2e() -> None:
         "{{include doc:precis-common#address-grammar}}\n\n"
         "More skill text.\n"
     )
-    includer = Includer(resolvers={"doc": DocResolver(docs={"precis-common": precis_common})})
+    includer = Includer(
+        resolvers={"doc": DocResolver(docs={"precis-common": precis_common})}
+    )
     out = includer.expand(skill)
     assert "Use `slug~N`" in out
     assert "UPPERCASE replaces" not in out
@@ -247,5 +239,5 @@ def test_directive_span_round_trip() -> None:
     # Sanity check that the span captures the directive precisely.
     text = "X {{include doc:a#b}} Y"
     [d] = parse_directives(text)
-    assert text[d.span[0]:d.span[1]] == "{{include doc:a#b}}"
+    assert text[d.span[0] : d.span[1]] == "{{include doc:a#b}}"
     assert isinstance(d, IncludeDirective)

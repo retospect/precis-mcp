@@ -107,11 +107,7 @@ def segment_embeddings(
     # into a single shoulder). Threshold of 8 gaps = 9 chunks chosen
     # so any paper short enough to have densely-packed topics gets
     # raw peak detection.
-    smoothed = (
-        _smooth(gaps, window=SMOOTHING_WINDOW)
-        if len(gaps) > 8
-        else list(gaps)
-    )
+    smoothed = _smooth(gaps, window=SMOOTHING_WINDOW) if len(gaps) > 8 else list(gaps)
 
     # Step 3: depth scores at every candidate boundary.
     depths = _depth_scores(smoothed)
@@ -198,15 +194,11 @@ def _depth_scores(gaps: list[float]) -> list[float]:
         elif right_min is None:
             depths[i] = 2.0 * max(0.0, gaps[i] - left_min)
         else:
-            depths[i] = max(0.0, gaps[i] - left_min) + max(
-                0.0, gaps[i] - right_min
-            )
+            depths[i] = max(0.0, gaps[i] - left_min) + max(0.0, gaps[i] - right_min)
     return depths
 
 
-def _choose_k_minus_1(
-    depths: list[float], *, k_min: int, k_max: int
-) -> int:
+def _choose_k_minus_1(depths: list[float], *, k_min: int, k_max: int) -> int:
     """Pick the number of boundaries given the depth profile.
 
     Strategy:

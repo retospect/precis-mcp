@@ -41,22 +41,24 @@ import unicodedata
 # usefully) surname comparison. Kept small and conservative —
 # anything that meaningfully contributes to a title shouldn't be
 # in here.
-_STOPWORDS: frozenset[str] = frozenset({
-    "the",
-    "a",
-    "an",
-    "of",
-    "in",
-    "on",
-    "for",
-    "and",
-    "to",
-    "with",
-    "from",
-    "by",
-    "at",
-    "as",
-})
+_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "of",
+        "in",
+        "on",
+        "for",
+        "and",
+        "to",
+        "with",
+        "from",
+        "by",
+        "at",
+        "as",
+    }
+)
 
 
 # German-phonetic transliteration table. Applied as an *alternative*
@@ -64,9 +66,12 @@ _STOPWORDS: frozenset[str] = frozenset({
 # runs so ``Müller`` reduces to ``muller`` there. Both forms are
 # matched against the comparison target.
 _GERMAN_PHONETIC: dict[str, str] = {
-    "ä": "ae", "Ä": "Ae",
-    "ö": "oe", "Ö": "Oe",
-    "ü": "ue", "Ü": "Ue",
+    "ä": "ae",
+    "Ä": "Ae",
+    "ö": "oe",
+    "Ö": "Oe",
+    "ü": "ue",
+    "Ü": "Ue",
     "ß": "ss",
 }
 

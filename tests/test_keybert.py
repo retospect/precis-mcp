@@ -53,24 +53,31 @@ def embedder() -> _MockEmbedder:
 class TestTrivial:
     def test_empty_text(self, embedder: _MockEmbedder) -> None:
         target = embedder.embed(["foo"])[0]
-        assert extract_keywords_semantic(
-            "", target_embedding=target, embedder=embedder
-        ) == []
+        assert (
+            extract_keywords_semantic("", target_embedding=target, embedder=embedder)
+            == []
+        )
 
     def test_whitespace_text(self, embedder: _MockEmbedder) -> None:
         target = embedder.embed(["foo"])[0]
-        assert extract_keywords_semantic(
-            "   \n  ", target_embedding=target, embedder=embedder
-        ) == []
+        assert (
+            extract_keywords_semantic(
+                "   \n  ", target_embedding=target, embedder=embedder
+            )
+            == []
+        )
 
     def test_top_k_zero(self, embedder: _MockEmbedder) -> None:
         target = embedder.embed(["foo"])[0]
-        assert extract_keywords_semantic(
-            "lithium nitrogen reduction",
-            target_embedding=target,
-            embedder=embedder,
-            top_k=0,
-        ) == []
+        assert (
+            extract_keywords_semantic(
+                "lithium nitrogen reduction",
+                target_embedding=target,
+                embedder=embedder,
+                top_k=0,
+            )
+            == []
+        )
 
 
 # ── core behaviour ──────────────────────────────────────────────────
@@ -101,12 +108,12 @@ class TestCore:
             top_k=5,
             exclude={"lithium battery anode"},
         )
-        assert any(
-            "lithium battery anode" in k.lower() for k in out_with
-        ), f"baseline call should surface the phrase; got {out_with}"
-        assert not any(
-            "lithium battery anode" in k.lower() for k in out_without
-        ), f"exclude should drop the phrase; got {out_without}"
+        assert any("lithium battery anode" in k.lower() for k in out_with), (
+            f"baseline call should surface the phrase; got {out_with}"
+        )
+        assert not any("lithium battery anode" in k.lower() for k in out_without), (
+            f"exclude should drop the phrase; got {out_without}"
+        )
 
     def test_exclude_is_case_insensitive(self, embedder: _MockEmbedder) -> None:
         text = "Metal Organic Framework synthesis. Lithium deposition."
@@ -118,9 +125,9 @@ class TestCore:
             top_k=5,
             exclude={"METAL ORGANIC FRAMEWORK SYNTHESIS"},
         )
-        assert not any(
-            "metal organic framework synthesis" in k.lower() for k in out
-        ), f"case-insensitive exclude failed; got {out}"
+        assert not any("metal organic framework synthesis" in k.lower() for k in out), (
+            f"case-insensitive exclude failed; got {out}"
+        )
 
 
 # ── case recovery ───────────────────────────────────────────────────
@@ -146,9 +153,9 @@ class TestCaseRecovery:
             text, target_embedding=target, embedder=embedder, top_k=5
         )
         # At least one returned phrase preserves the original Title Case.
-        assert any(
-            "Membrane Electrode Assembly" in k for k in out
-        ), f"expected title-case preserved; got {out}"
+        assert any("Membrane Electrode Assembly" in k for k in out), (
+            f"expected title-case preserved; got {out}"
+        )
 
 
 # ── MMR diversity ───────────────────────────────────────────────────
@@ -159,15 +166,16 @@ class TestMMR:
         text = "alpha beta gamma. delta epsilon zeta. eta theta iota."
         target = embedder.embed(["alpha"])[0]
         out_plain = extract_keywords_semantic(
-            text, target_embedding=target, embedder=embedder, top_k=3,
+            text,
+            target_embedding=target,
+            embedder=embedder,
+            top_k=3,
             diversity_lambda=0.0,
         )
         # With λ=0, should pick top-3 by raw score, no diversity penalty.
         assert len(out_plain) <= 3
 
-    def test_lambda_positive_changes_selection(
-        self, embedder: _MockEmbedder
-    ) -> None:
+    def test_lambda_positive_changes_selection(self, embedder: _MockEmbedder) -> None:
         # 4 candidates where two are near-duplicates. MMR with high
         # λ should pick non-duplicates; λ=0 might pick both
         # duplicates. We just verify the output differs when
@@ -175,11 +183,17 @@ class TestMMR:
         text = "alpha beta. alpha beta gamma. delta epsilon. zeta eta theta."
         target = embedder.embed(["alpha"])[0]
         plain = extract_keywords_semantic(
-            text, target_embedding=target, embedder=embedder, top_k=3,
+            text,
+            target_embedding=target,
+            embedder=embedder,
+            top_k=3,
             diversity_lambda=0.0,
         )
         diverse = extract_keywords_semantic(
-            text, target_embedding=target, embedder=embedder, top_k=3,
+            text,
+            target_embedding=target,
+            embedder=embedder,
+            top_k=3,
             diversity_lambda=0.7,
         )
         # Both produce some output; the diverse selection may reorder

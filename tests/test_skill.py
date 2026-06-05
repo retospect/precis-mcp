@@ -332,8 +332,7 @@ def test_search_uses_semantic_index_when_embedder_wired(tmp_path) -> None:
         # At least one TOON row begins with a slug + tab — the data
         # rows of the search-hit table.
         assert any(
-            ln.startswith("precis-") and "\t" in ln
-            for ln in out.body.splitlines()
+            ln.startswith("precis-") and "\t" in ln for ln in out.body.splitlines()
         ), f"expected at least one precis-* TOON row; got body:\n{out.body}"
     finally:
         del os.environ["PRECIS_CACHE_DIR"]
@@ -417,11 +416,7 @@ def test_search_marks_unwired_skills(skill: SkillHandler) -> None:
     # TOON row shape (post-2026-05-31 trim): ``slug\tsection\tkeywords``.
     # Locate the precis-tags row by its slug column; confirm no
     # ``[unwired]`` prefix prepended.
-    rows = [
-        ln
-        for ln in tags_out.body.splitlines()
-        if ln.startswith("precis-tags\t")
-    ]
+    rows = [ln for ln in tags_out.body.splitlines() if ln.startswith("precis-tags\t")]
     if rows:
         assert "[unwired]" not in rows[0], (
             f"cross-cutting skill should not be marked unwired: {rows[0]!r}"

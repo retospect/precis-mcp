@@ -74,9 +74,7 @@ def _row_to_event(row: tuple[Any, ...]) -> RefEvent:
     )
 
 
-_EVENT_COLS = (
-    "event_id, ref_id, ts, source, event, payload, duration_ms, cost_usd"
-)
+_EVENT_COLS = "event_id, ref_id, ts, source, event, payload, duration_ms, cost_usd"
 
 
 class EventsMixin:

@@ -175,7 +175,9 @@ class OracleHandler(Handler):
         therefore stays consistent with single-kind ``search()``.
         Block-level search is a follow-up.
         """
-        return search_hits_slug_refs(self.store, kind="oracle", q=q, page_size=page_size)
+        return search_hits_slug_refs(
+            self.store, kind="oracle", q=q, page_size=page_size
+        )
 
     # ── seven-verb surface ─────────────────────────────────────────
 

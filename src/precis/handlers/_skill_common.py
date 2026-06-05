@@ -104,9 +104,16 @@ _KEY_ALIASES: Final[dict[str, str]] = {
 # into known fields vs the ``extra`` bucket.
 _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
     {
-        "id", "title", "status", "tier", "floor",
-        "applies_to", "last_updated", "flavor",
-        "invokes_personas", "available_when",
+        "id",
+        "title",
+        "status",
+        "tier",
+        "floor",
+        "applies_to",
+        "last_updated",
+        "flavor",
+        "invokes_personas",
+        "available_when",
     }
 )
 
@@ -214,9 +221,7 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
     # Validate flavor early — hard-fail per decision 7.
     flavor_val = fields_in.get("flavor")
     if flavor_val is not None and flavor_val not in VALID_FLAVORS:
-        raise FrontmatterError(
-            f"flavor={flavor_val!r} is not one of {VALID_FLAVORS}"
-        )
+        raise FrontmatterError(f"flavor={flavor_val!r} is not one of {VALID_FLAVORS}")
 
     # invokes_personas: always tuple[str, ...] regardless of input shape.
     ip = fields_in.get("invokes_personas")

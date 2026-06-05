@@ -22,22 +22,16 @@ import pytest
 
 from precis.cli.resolve import _lookup_finding, _resolve_text
 from precis.cli.verify import _resolve_finding_ref_id
+from precis.dispatch import Hub
 from precis.errors import NotFound
 from precis.handlers.finding import FindingHandler
-from precis.hints import HintBus
 from precis.store.types import BlockInsert, Tag
 
 # ── plumbing ────────────────────────────────────────────────────────
 
 
 def _make_handler(store):
-    class _StubHub:
-        def __init__(self) -> None:
-            self.store = store
-            self.embedder = None
-            self.hints = HintBus()
-
-    return FindingHandler(hub=_StubHub())
+    return FindingHandler(hub=Hub(store=store))
 
 
 def _seed_paper(store, *, cite_key: str = "miller23a") -> int:

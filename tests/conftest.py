@@ -305,10 +305,7 @@ def _truncate_data_tables(dsn: str) -> None:
             return
         # Single TRUNCATE so CASCADE is one round-trip; RESTART IDENTITY
         # so per-test ref_ids start from 1 (predictable across runs).
-        conn.execute(
-            f"TRUNCATE TABLE {', '.join(targets)} "
-            "RESTART IDENTITY CASCADE"
-        )
+        conn.execute(f"TRUNCATE TABLE {', '.join(targets)} RESTART IDENTITY CASCADE")
 
 
 def _drop_all_public_objects(dsn: str) -> None:
@@ -322,8 +319,8 @@ def _drop_all_public_objects(dsn: str) -> None:
         # Drop views first (they may depend on tables we're about
         # to drop); then tables CASCADE; then orphan sequences.
         for kind, drop_kw in (
-            ("VIEW",     "CASCADE"),
-            ("TABLE",    "CASCADE"),
+            ("VIEW", "CASCADE"),
+            ("TABLE", "CASCADE"),
             ("SEQUENCE", "CASCADE"),
         ):
             rows = conn.execute(
@@ -331,9 +328,7 @@ def _drop_all_public_objects(dsn: str) -> None:
                 "JOIN pg_namespace n ON n.oid = c.relnamespace "
                 "WHERE n.nspname = 'public' "
                 "  AND c.relkind = %s",
-                (
-                    {"VIEW": "v", "TABLE": "r", "SEQUENCE": "S"}[kind],
-                ),
+                ({"VIEW": "v", "TABLE": "r", "SEQUENCE": "S"}[kind],),
             ).fetchall()
             for (name,) in rows:
                 conn.execute(f'DROP {kind} IF EXISTS "{name}" {drop_kw}')

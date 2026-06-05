@@ -118,9 +118,7 @@ def scan_skill_dir(
         try:
             plan = _plan_one(path, slug, includer, chunk_budget_chars)
         except _PlanError as exc:
-            failures.append(
-                IngestFailure(slug=slug, file_path=path, reason=str(exc))
-            )
+            failures.append(IngestFailure(slug=slug, file_path=path, reason=str(exc)))
             continue
         plans.append(plan)
 
@@ -224,14 +222,14 @@ def _validate_cross_references(
             if missing:
                 parts.append(f"missing persona slugs: {missing}")
             if wrong_flavor:
-                parts.append(
-                    f"slugs are not FLAVOR:persona: {wrong_flavor}"
+                parts.append(f"slugs are not FLAVOR:persona: {wrong_flavor}")
+            failures.append(
+                IngestFailure(
+                    slug=plan.slug,
+                    file_path=plan.file_path,
+                    reason="invokes_personas validation failed — " + "; ".join(parts),
                 )
-            failures.append(IngestFailure(
-                slug=plan.slug,
-                file_path=plan.file_path,
-                reason="invokes_personas validation failed — " + "; ".join(parts),
-            ))
+            )
         else:
             good.append(plan)
     return good, failures

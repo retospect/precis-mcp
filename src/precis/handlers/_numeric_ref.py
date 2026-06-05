@@ -278,9 +278,7 @@ class NumericRefHandler(Handler):
             lines.append(self._render_search_hit(ref, rank))
         return Response(body="\n".join(lines))
 
-    def _list_by_tags(
-        self, tags: list[str], *, page_size: int
-    ) -> Response:
+    def _list_by_tags(self, tags: list[str], *, page_size: int) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
         Reached when ``search(kind=K, tags=[...])`` is called without
@@ -288,9 +286,7 @@ class NumericRefHandler(Handler):
         Always emits a ``Next:`` trailer pointing at the ranked search
         path for callers who realize they wanted ranking.
         """
-        refs = self.store.list_refs(
-            kind=self.kind, tags=tags, limit=page_size
-        )
+        refs = self.store.list_refs(kind=self.kind, tags=tags, limit=page_size)
         if not refs:
             body = f"no {self._sense()} entries tagged {tags}"
             body += render_next_section(
@@ -647,7 +643,7 @@ class NumericRefHandler(Handler):
         s = id.strip()
         prefix = f"{cls.kind}:"
         if s.startswith(prefix):
-            s = s[len(prefix):]
+            s = s[len(prefix) :]
         try:
             return int(s)
         except (ValueError, TypeError):
@@ -963,9 +959,7 @@ class NumericRefHandler(Handler):
                 preview = (r.title[:80] + "…") if len(r.title) > 80 else r.title
                 row: dict[str, str] = {"id": str(r.id), "preview": preview}
                 if any_tagged:
-                    row["tags"] = " ".join(
-                        str(t) for t in tags_per_ref[r.id]
-                    )
+                    row["tags"] = " ".join(str(t) for t in tags_per_ref[r.id])
                 rows.append(row)
             from precis.format import render_agent_table
 

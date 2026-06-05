@@ -121,9 +121,7 @@ class TestClaimQuery:
     def test_excludes_short_chunks(self, store: Store) -> None:
         ref_id = seed_ref(store)
         # Below the 150-char floor — KeyBERT has nothing to score on.
-        short_id = _seed_long_chunk(
-            store, ref_id=ref_id, ord=0, text="too short"
-        )
+        short_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text="too short")
 
         with store.pool.connection() as conn:
             rows = claim_chunks_without_keywords(conn, limit=10)
@@ -132,9 +130,7 @@ class TestClaimQuery:
 
     def test_excludes_skip_kinds(self, store: Store) -> None:
         ref_id = seed_ref(store)
-        body_id = _seed_long_chunk(
-            store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1
-        )
+        body_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
         # Same body length but a skip-kind — must not be claimed even
         # though its embedding exists.
         refs_id = _seed_long_chunk(
@@ -189,9 +185,7 @@ class TestClaimQuery:
 
     def test_reclaim_on_version_mismatch(self, store: Store) -> None:
         ref_id = seed_ref(store)
-        chunk_id = _seed_long_chunk(
-            store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1
-        )
+        chunk_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
         # Pre-populate keywords + a stale version stamp.
         stale_meta = {
             "version": "0.0-stale",
@@ -213,9 +207,7 @@ class TestClaimQuery:
 
     def test_no_reclaim_on_current_version(self, store: Store) -> None:
         ref_id = seed_ref(store)
-        chunk_id = _seed_long_chunk(
-            store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1
-        )
+        chunk_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
         fresh_meta = {
             "version": KEYWORDS_VERSION,
             "embedder": "bge-m3",
@@ -250,9 +242,7 @@ class TestEnsurePaperAbbrevs:
             "linker is central to the topology of the MOF."
         )
         ref_id = seed_ref(store)
-        seed_chunk(
-            store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text=body
-        )
+        seed_chunk(store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text=body)
 
         with store.pool.connection() as conn:
             detected = ensure_paper_abbrevs(conn, ref_id)
@@ -292,12 +282,17 @@ class TestEnsurePaperAbbrevs:
             conn.execute(
                 "UPDATE refs SET meta = %s WHERE ref_id = %s",
                 (
-                    Jsonb({
-                        "abbrevs": {
-                            "MOF": {"long": "metal-organic framework", "first_at": 12},
-                            "ETC": "etcetera",
+                    Jsonb(
+                        {
+                            "abbrevs": {
+                                "MOF": {
+                                    "long": "metal-organic framework",
+                                    "first_at": 12,
+                                },
+                                "ETC": "etcetera",
+                            }
                         }
-                    }),
+                    ),
                     ref_id,
                 ),
             )
@@ -375,9 +370,7 @@ class TestExtractChunkKeywords:
 class TestWriteChunkKeywords:
     def test_populates_both_columns(self, store: Store) -> None:
         ref_id = seed_ref(store)
-        chunk_id = _seed_long_chunk(
-            store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1
-        )
+        chunk_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
         keywords: list[dict[str, Any]] = [
             {"short": "MOF", "long": "metal-organic framework", "score": 0.82},
             {"short": None, "long": "porous crystalline materials", "score": 0.71},
@@ -389,8 +382,7 @@ class TestWriteChunkKeywords:
             conn.commit()
 
             row = conn.execute(
-                "SELECT keywords, keywords_meta FROM chunks "
-                "WHERE chunk_id = %s",
+                "SELECT keywords, keywords_meta FROM chunks WHERE chunk_id = %s",
                 (chunk_id,),
             ).fetchone()
         assert row is not None
@@ -404,13 +396,9 @@ class TestWriteChunkKeywords:
 
     def test_empty_keywords_writes_empty_array(self, store: Store) -> None:
         ref_id = seed_ref(store)
-        chunk_id = _seed_long_chunk(
-            store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1
-        )
+        chunk_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
         with store.pool.connection() as conn:
-            write_chunk_keywords(
-                conn, chunk_id, keywords=[], embedder_name="bge-m3"
-            )
+            write_chunk_keywords(conn, chunk_id, keywords=[], embedder_name="bge-m3")
             conn.commit()
             row = conn.execute(
                 "SELECT keywords FROM chunks WHERE chunk_id = %s",
@@ -427,16 +415,12 @@ class TestWriteChunkKeywords:
 
 
 class TestRunChunkKeywordsPass:
-    def test_ok_path_writes_keywords_and_returns_counts(
-        self, store: Store
-    ) -> None:
+    def test_ok_path_writes_keywords_and_returns_counts(self, store: Store) -> None:
         ref_id = seed_ref(store)
         cid1 = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
         cid2 = _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
 
-        result = run_chunk_keywords_pass(
-            store, make_mock_bge_m3(), batch_size=10
-        )
+        result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
         assert result == {"claimed": 2, "ok": 2, "failed": 0}
 
         with store.pool.connection() as conn:
@@ -461,7 +445,5 @@ class TestRunChunkKeywordsPass:
 
     def test_empty_queue_returns_zero_counts(self, store: Store) -> None:
         # No chunks seeded at all.
-        result = run_chunk_keywords_pass(
-            store, make_mock_bge_m3(), batch_size=10
-        )
+        result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
         assert result == {"claimed": 0, "ok": 0, "failed": 0}

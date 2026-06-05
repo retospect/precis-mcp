@@ -224,7 +224,6 @@ class TestRetagReferences:
             "references",
         ]
 
-
     def test_no_body_chunks_unchanged(self):
         # Edge case: a ref with only a references-section block
         # (e.g. metadata-only ingest that later got bibliography

@@ -75,9 +75,7 @@ def test_edit_schema_find_description_advertises_mode_coupling() -> None:
     allOf-based enforcement gone, this is the principal in-schema
     signal small models will see for the coupling."""
     schema = _edit_schema()
-    desc = (schema.get("properties", {}).get("find", {}) or {}).get(
-        "description", ""
-    )
+    desc = (schema.get("properties", {}).get("find", {}) or {}).get("description", "")
     assert "find-replace" in desc and "insert" in desc, (
         f"`find` description must name modes that require it; got {desc!r}"
     )
@@ -86,9 +84,7 @@ def test_edit_schema_find_description_advertises_mode_coupling() -> None:
 def test_edit_schema_where_description_advertises_mode_coupling() -> None:
     """``where`` is required when ``mode='insert'``."""
     schema = _edit_schema()
-    desc = (schema.get("properties", {}).get("where", {}) or {}).get(
-        "description", ""
-    )
+    desc = (schema.get("properties", {}).get("where", {}) or {}).get("description", "")
     assert "insert" in desc, (
         f"`where` description must name mode='insert' as the trigger; got {desc!r}"
     )
@@ -101,9 +97,7 @@ def test_edit_schema_mode_description_enumerates_per_mode_required_args() -> Non
     models reading the mode field surface should see this without
     having to fetch the help skill."""
     schema = _edit_schema()
-    desc = (schema.get("properties", {}).get("mode", {}) or {}).get(
-        "description", ""
-    )
+    desc = (schema.get("properties", {}).get("mode", {}) or {}).get("description", "")
     for token in ("find-replace", "insert", "append", "replace"):
         assert token in desc, (
             f"mode description must enumerate mode {token!r}; got {desc!r}"
@@ -134,9 +128,7 @@ def test_idempotent_schema_install_does_not_duplicate_clauses() -> None:
     # Property descriptions should be stable across re-runs.
     for name, before_schema in before_props.items():
         after_schema = schema_after.get("properties", {}).get(name, {})
-        assert after_schema.get("description") == before_schema.get(
-            "description"
-        ), (
+        assert after_schema.get("description") == before_schema.get("description"), (
             f"installer re-appended description suffix on {name!r}: "
             f"before={before_schema.get('description')!r} "
             f"after={after_schema.get('description')!r}"

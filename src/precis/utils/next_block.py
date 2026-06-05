@@ -53,9 +53,7 @@ def format_next_block(
     rows: list[dict[str, str]] = []
     for call, desc in calls:
         rows.append({"if you want to": desc, "execute this call": call})
-    table = render_agent_table(
-        rows, schema=["if you want to", "execute this call"]
-    )
+    table = render_agent_table(rows, schema=["if you want to", "execute this call"])
     return table.splitlines()
 
 

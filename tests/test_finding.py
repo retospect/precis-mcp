@@ -11,22 +11,15 @@ import re
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers.finding import FindingHandler
-from precis.hints import HintBus
 from precis.identity import make_finding_paper_id, make_pub_id
 
 
 def _make_handler(store):
     """Build a FindingHandler bound to a fresh store."""
-
-    class _StubHub:
-        def __init__(self) -> None:
-            self.store = store
-            self.embedder = None
-            self.hints = HintBus()
-
-    return FindingHandler(hub=_StubHub())
+    return FindingHandler(hub=Hub(store=store))
 
 
 def _seed_paper(store, *, cite_key: str = "miller23a") -> int:
@@ -149,8 +142,7 @@ class TestPutHappy:
         # finding_body chunk at ord=0.
         with store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT text, chunk_kind FROM chunks "
-                "WHERE ref_id = %s ORDER BY ord",
+                "SELECT text, chunk_kind FROM chunks WHERE ref_id = %s ORDER BY ord",
                 (ref_id,),
             ).fetchone()
         assert row is not None
@@ -160,8 +152,7 @@ class TestPutHappy:
         # derived-from link to the paper chunk.
         with store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT dst_ref_id, relation FROM links "
-                "WHERE src_ref_id = %s",
+                "SELECT dst_ref_id, relation FROM links WHERE src_ref_id = %s",
                 (ref_id,),
             ).fetchone()
         assert row is not None

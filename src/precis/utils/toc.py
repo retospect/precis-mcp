@@ -315,8 +315,7 @@ def render(
         # boundaries are positions into body_indices; remap to
         # absolute chunk indices.
         body_segments = [
-            (body_indices[s.start], body_indices[s.end], "")
-            for s in boundaries
+            (body_indices[s.start], body_indices[s.end], "") for s in boundaries
         ]
     elif body_n > 0:
         # No embeddings — flat list of body chunks.
@@ -326,13 +325,9 @@ def render(
 
     # Step 3: KeyBERT or RAKE per segment. The paper-wide row goes
     # first; per-segment rows exclude paper-wide phrases.
-    use_keybert = (
-        embedder is not None and embeddings is not None and body_n > 0
-    )
+    use_keybert = embedder is not None and embeddings is not None and body_n > 0
     keywords_per_segment = (
-        _KEYWORDS_PER_SKILL_SECTION
-        if kind == "skill"
-        else _KEYWORDS_PER_PAPER_SEGMENT
+        _KEYWORDS_PER_SKILL_SECTION if kind == "skill" else _KEYWORDS_PER_PAPER_SEGMENT
     )
     paper_keywords: list[str] = []
     per_segment_keywords: list[list[str]] = []
@@ -342,9 +337,7 @@ def render(
         # and front-matter shouldn't dilute the topical signal.
         import os
 
-        cap = int(
-            os.environ.get("PRECIS_TOC_CANDIDATE_CAP", _DEFAULT_CANDIDATE_CAP)
-        )
+        cap = int(os.environ.get("PRECIS_TOC_CANDIDATE_CAP", _DEFAULT_CANDIDATE_CAP))
         body_text = "\n".join(chunks_text[i] for i in body_indices)
         body_text_subst = (
             substitute_abbreviations(body_text, abbrevs) if abbrevs else body_text
@@ -374,13 +367,9 @@ def render(
             seg_indices = list(range(start, end + 1))
             seg_text = "\n".join(chunks_text[i] for i in seg_indices)
             seg_text_subst = (
-                substitute_abbreviations(seg_text, abbrevs)
-                if abbrevs
-                else seg_text
+                substitute_abbreviations(seg_text, abbrevs) if abbrevs else seg_text
             )
-            seg_centroid = mean_embedding(
-                [embeddings[i] for i in seg_indices]
-            )
+            seg_centroid = mean_embedding([embeddings[i] for i in seg_indices])
             seg_candidates = _pre_filtered_candidates(
                 seg_text_subst,
                 cap=cap,
@@ -412,9 +401,7 @@ def render(
             seg_text = "\n".join(chunks_text[i] for i in range(start, end + 1))
             if abbrevs:
                 seg_text = substitute_abbreviations(seg_text, abbrevs)
-            raw = extract_keywords(
-                seg_text, max_keywords=keywords_per_segment * 3
-            )
+            raw = extract_keywords(seg_text, max_keywords=keywords_per_segment * 3)
             filtered = [k for k in raw if k.lower() not in paper_exclude_lc]
             per_segment_keywords.append(filtered[:keywords_per_segment])
 
@@ -438,14 +425,10 @@ def render(
     # is the parent's segment row already).
     if scope is None and paper_keywords and body_segments:
         first_pos = (
-            positions[body_indices[0]]
-            if positions is not None
-            else body_indices[0]
+            positions[body_indices[0]] if positions is not None else body_indices[0]
         )
         last_pos = (
-            positions[body_indices[-1]]
-            if positions is not None
-            else body_indices[-1]
+            positions[body_indices[-1]] if positions is not None else body_indices[-1]
         )
         paper_row: dict[str, str] = {
             "handle": _handle_for(slug, first_pos, last_pos),
@@ -469,10 +452,14 @@ def render(
             f"({n} chunks, {seg_count} segments)"
         )
     else:
-        mode = "H2 sections" if use_h2 else (
-            "segments via embedding clustering"
-            if embeddings is not None
-            else "flat listing"
+        mode = (
+            "H2 sections"
+            if use_h2
+            else (
+                "segments via embedding clustering"
+                if embeddings is not None
+                else "flat listing"
+            )
         )
         head = f"# {slug} — TOC ({n} chunks, {seg_count} {mode})"
 
@@ -559,9 +546,7 @@ def _h2_segments_within_body(
     return out
 
 
-def _h2_coverage_body(
-    segments: list[tuple[int, int, str]], body_n: int
-) -> float:
+def _h2_coverage_body(segments: list[tuple[int, int, str]], body_n: int) -> float:
     if body_n == 0:
         return 0.0
     covered = sum(e - s + 1 for s, e, h in segments if h)
@@ -620,9 +605,7 @@ def _pre_filtered_candidates(
     matter — KeyBERT scores all of them and picks top-K.
     """
     rake_top = extract_keywords(text, max_keywords=cap)
-    abbrev_keys: Iterable[str] = (
-        abbreviations.keys() if abbreviations else ()
-    )
+    abbrev_keys: Iterable[str] = abbreviations.keys() if abbreviations else ()
     privileged = privileged_candidates(text, abbreviations=abbrev_keys)
     seen: set[str] = set()
     out: list[str] = []
@@ -680,9 +663,7 @@ def _build_rows(
         else:
             # Embedding mode: no heading column; boilerplate label
             # prepended to keywords so it's visible inline.
-            display = (
-                f"{label} {kw_str}".strip() if label else kw_str
-            )
+            display = f"{label} {kw_str}".strip() if label else kw_str
             row = {"handle": handle, "keywords": display}
         rows.append(row)
     return rows
@@ -706,7 +687,9 @@ def _token_is_numericky(token: str) -> bool:
     """True for tokens like ``4.2``, ``2``, ``a)``, ``i.`` — anything
     a section numbering scheme would produce."""
     stripped = token.strip("().[]")
-    return all(c.isdigit() or c == "." for c in stripped) and any(c.isdigit() for c in stripped)
+    return all(c.isdigit() or c == "." for c in stripped) and any(
+        c.isdigit() for c in stripped
+    )
 
 
 def _heading_for_row(h2: str, fallback_keywords: list[str]) -> str:
@@ -811,9 +794,7 @@ def segments_for_ref(
         canonical = []
         for s in boundaries:
             if adapter.positions is not None:
-                canonical.append(
-                    (adapter.positions[s.start], adapter.positions[s.end])
-                )
+                canonical.append((adapter.positions[s.start], adapter.positions[s.end]))
             else:
                 canonical.append((s.start, s.end))
     _cache_put(key, _encode_segment_list(canonical))

@@ -132,7 +132,9 @@ def _bake_bge_m3() -> None:
     have_cache = snapshots.is_dir() and any(snapshots.iterdir())
 
     if have_cache:
-        print(f"[bake] bge-m3 cache already populated under {snapshots} — skipping download")
+        print(
+            f"[bake] bge-m3 cache already populated under {snapshots} — skipping download"
+        )
         return
 
     print("[bake] bge-m3 cache empty — fetching from HF")

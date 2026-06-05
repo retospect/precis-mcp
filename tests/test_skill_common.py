@@ -70,12 +70,7 @@ def test_kebab_keys_map_to_snake_fields() -> None:
 
 
 def test_quotes_are_stripped() -> None:
-    text = (
-        '---\n'
-        'title: "precis — seven verbs"\n'
-        "status: 'active'\n"
-        "---\n"
-    )
+    text = "---\ntitle: \"precis — seven verbs\"\nstatus: 'active'\n---\n"
     fm = parse_frontmatter(text)
     assert fm.title == "precis — seven verbs"
     assert fm.status == "active"

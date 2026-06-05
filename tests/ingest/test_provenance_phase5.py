@@ -95,9 +95,7 @@ class TestCandidateSearch:
 class TestCheckDoiCandidates:
     @patch("precis.ingest.provenance._search_crossref_works")
     @patch("precis.ingest.provenance._fetch_crossref_message")
-    def test_404_with_hints_emits_candidates(
-        self, mock_fetch, mock_search
-    ) -> None:
+    def test_404_with_hints_emits_candidates(self, mock_fetch, mock_search) -> None:
         mock_fetch.return_value = None  # DOI 404s
         mock_search.return_value = [
             {
@@ -126,9 +124,7 @@ class TestCheckDoiCandidates:
 
     @patch("precis.ingest.provenance._search_crossref_works")
     @patch("precis.ingest.provenance._fetch_crossref_message")
-    def test_404_no_hints_no_candidates(
-        self, mock_fetch, mock_search
-    ) -> None:
+    def test_404_no_hints_no_candidates(self, mock_fetch, mock_search) -> None:
         """No BibEntry → no candidate search even with flag set."""
         mock_fetch.return_value = None
         r = check_doi(
@@ -141,9 +137,7 @@ class TestCheckDoiCandidates:
 
     @patch("precis.ingest.provenance._search_crossref_works")
     @patch("precis.ingest.provenance._fetch_crossref_message")
-    def test_404_flag_off_no_candidates(
-        self, mock_fetch, mock_search
-    ) -> None:
+    def test_404_flag_off_no_candidates(self, mock_fetch, mock_search) -> None:
         """Default behaviour: no candidate search."""
         mock_fetch.return_value = None
         bib = BibEntry(doi="10.1234/typo", title="anything")
@@ -152,9 +146,7 @@ class TestCheckDoiCandidates:
         mock_search.assert_not_called()
 
     @patch("precis.ingest.provenance._fetch_crossref_message")
-    def test_resolved_doi_no_candidates_even_with_flag(
-        self, mock_fetch
-    ) -> None:
+    def test_resolved_doi_no_candidates_even_with_flag(self, mock_fetch) -> None:
         """If the DOI resolves, candidate search never runs."""
         mock_fetch.return_value = {
             "title": ["Found it"],

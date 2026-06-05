@@ -13,19 +13,13 @@ import re
 import pytest
 
 from precis.cli.stats import _query_findings, _query_stubs
+from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
-from precis.hints import HintBus
 from precis.store.types import BlockInsert, Tag
 
 
 def _make_handler(store):
-    class _StubHub:
-        def __init__(self) -> None:
-            self.store = store
-            self.embedder = None
-            self.hints = HintBus()
-
-    return FindingHandler(hub=_StubHub())
+    return FindingHandler(hub=Hub(store=store))
 
 
 def _seed_paper(store, *, cite_key: str, pdf_sha256: str | None = None) -> int:
@@ -187,9 +181,7 @@ class TestCli:
         _seed_paper(store, cite_key="stub", pdf_sha256=None)
 
         dsn = store.pool.conninfo
-        monkeypatch.setattr(
-            sys, "argv", ["precis", "stats", "--database-url", dsn]
-        )
+        monkeypatch.setattr(sys, "argv", ["precis", "stats", "--database-url", dsn])
         cli_main()
         out = capsys.readouterr().out
         assert "# findings" in out

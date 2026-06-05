@@ -36,16 +36,16 @@ _VALID_VIEWS: tuple[View, ...] = ("default", "blockers", "json", "verify", "exis
 
 _SEVERITY_GLYPH: dict[Severity, str] = {
     "blocker": "🔴",
-    "review":  "🟠",
-    "note":    "🟡",
-    "info":    "🟢",
+    "review": "🟠",
+    "note": "🟡",
+    "info": "🟢",
 }
 
 _SEVERITY_LABEL: dict[Severity, str] = {
     "blocker": "Blocker",
-    "review":  "Review",
-    "note":    "Correction",
-    "info":    "Info",
+    "review": "Review",
+    "note": "Correction",
+    "info": "Info",
 }
 
 
@@ -104,7 +104,11 @@ def _format_notice_line(notice: Notice) -> str:
         # to keep the report scannable; the JSON view always carries
         # the full list.
         shown = notice.rw_reasons[:5]
-        extra = "" if len(notice.rw_reasons) <= 5 else f" (+{len(notice.rw_reasons) - 5} more)"
+        extra = (
+            ""
+            if len(notice.rw_reasons) <= 5
+            else f" (+{len(notice.rw_reasons) - 5} more)"
+        )
         reasons_line = "  - **Reasons:** " + "; ".join(shown) + extra
         return main + "\n" + reasons_line
     return main
@@ -184,8 +188,10 @@ def render_single(result: ProvenanceResult) -> str:
     glyph = _SEVERITY_GLYPH[overall]
     label = _SEVERITY_LABEL[overall]
     if not result.notices:
-        lines.append("🟢 **Clean** — Crossref reports no retraction, expression of "
-                     "concern, or correction notices on this DOI.")
+        lines.append(
+            "🟢 **Clean** — Crossref reports no retraction, expression of "
+            "concern, or correction notices on this DOI."
+        )
         lines.append("")
         if result.paper_in_store:
             lines.append(
@@ -205,9 +211,9 @@ def render_single(result: ProvenanceResult) -> str:
     # Group notices by severity, render in dominance order.
     by_sev: dict[Severity, list[Notice]] = {
         "blocker": [],
-        "review":  [],
-        "note":    [],
-        "info":    [],
+        "review": [],
+        "note": [],
+        "info": [],
     }
     for n in result.notices:
         by_sev[n.severity].append(n)
@@ -405,13 +411,13 @@ _BucketKey = Literal[
 
 
 _BUCKET_GLYPH_LABEL: dict[str, tuple[str, str]] = {
-    "blocker":      ("🔴", "Blocker"),
-    "review":       ("🟠", "Review"),
-    "note":         ("🟡", "Correction"),
-    "info_notice":  ("🟢", "Informational notice"),
-    "info_clean":   ("🟢", "Clean"),
-    "unknown":      ("⚪", "Unknown DOI (Crossref 404)"),
-    "malformed":    ("⚪", "Malformed DOI"),
+    "blocker": ("🔴", "Blocker"),
+    "review": ("🟠", "Review"),
+    "note": ("🟡", "Correction"),
+    "info_notice": ("🟢", "Informational notice"),
+    "info_clean": ("🟢", "Clean"),
+    "unknown": ("⚪", "Unknown DOI (Crossref 404)"),
+    "malformed": ("⚪", "Malformed DOI"),
     "check_failed": ("⚠️", "Check failed (transport error)"),
 }
 
@@ -457,14 +463,10 @@ def _format_summary(results: list[ProvenanceResult]) -> str:
     }
     blockers = sum(1 for r in results if r.overall_severity == "blocker")
     review = sum(
-        1
-        for r in results
-        if r.status == "ok" and r.overall_severity == "review"
+        1 for r in results if r.status == "ok" and r.overall_severity == "review"
     )
     corrections = sum(
-        1
-        for r in results
-        if r.status == "ok" and r.overall_severity == "note"
+        1 for r in results if r.status == "ok" and r.overall_severity == "note"
     )
     parts = [
         f"**{counts['ok']}/{len(results)}** resolved",
@@ -524,9 +526,7 @@ def _render_verification_block(r: ProvenanceResult) -> list[str]:
             f"`{v.first_author_crossref}`"
         )
     elif v.first_author_match is True:
-        lines.append(
-            f"- **First author**: match (`{v.first_author_supplied}`)"
-        )
+        lines.append(f"- **First author**: match (`{v.first_author_supplied}`)")
     # Year diff
     if v.year_match == "mismatch":
         lines.append(
@@ -596,9 +596,7 @@ def _render_cited_findings_section(
     """
     lines: list[str] = []
     n = len(findings)
-    lines.append(
-        f"### 🟠 Cites retracted / concerning work ({n})"
-    )
+    lines.append(f"### 🟠 Cites retracted / concerning work ({n})")
     lines.append(
         "_The paper itself is clean, but it cites at least one "
         "work with a retraction or expression of concern. Read each "
@@ -609,26 +607,20 @@ def _render_cited_findings_section(
         glyph = _SEVERITY_GLYPH[f.severity]
         year_str = f" {f.cited_year}" if f.cited_year else ""
         title_str = f.cited_title or "(no title)"
-        lines.append(
-            f"- {glyph} `{f.cited_doi}` — _{title_str}_{year_str}"
-        )
+        lines.append(f"- {glyph} `{f.cited_doi}` — _{title_str}_{year_str}")
         if f.notice_doi:
             lines.append(f"  - notice DOI: `{f.notice_doi}`")
         if f.rw_reasons:
             shown = f.rw_reasons[:5]
             extra = (
-                ""
-                if len(f.rw_reasons) <= 5
-                else f" (+{len(f.rw_reasons) - 5} more)"
+                "" if len(f.rw_reasons) <= 5 else f" (+{len(f.rw_reasons) - 5} more)"
             )
             lines.append("  - **Reasons:** " + "; ".join(shown) + extra)
     lines.append("")
     return lines
 
 
-def _render_per_doi_block(
-    r: ProvenanceResult, bucket_key: str
-) -> list[str]:
+def _render_per_doi_block(r: ProvenanceResult, bucket_key: str) -> list[str]:
     """Render one result inside a batch section (concise — not the full
     single-DOI template, which would explode the report at 250 DOIs)."""
     lines: list[str] = []
@@ -638,13 +630,18 @@ def _render_per_doi_block(
     lines.append(f"### {_index_prefix(r)}`{r.doi}` — {authors_str}{year_str}")
     lines.append(f"_{title}_")
     if r.applied_status is not None:
-        lines.append(f"- **Applied status**: `{r.applied_status}` (local ref id={r.paper_ref_id})")
+        lines.append(
+            f"- **Applied status**: `{r.applied_status}` (local ref id={r.paper_ref_id})"
+        )
     for n in r.notices:
         # In blockers view, hide 🟡/🟢 sub-notices — but in default
         # view we want to show every notice attached to a parent
         # paper, even if the *overall* severity put it in a lower
         # bucket.
-        if bucket_key in ("blocker", "review") and n.severity not in ("blocker", "review"):
+        if bucket_key in ("blocker", "review") and n.severity not in (
+            "blocker",
+            "review",
+        ):
             continue
         lines.append(_format_notice_line(n))
     # Phase 4 cited findings — compact form, one bullet per cited
@@ -660,9 +657,7 @@ def _render_per_doi_block(
         if f.rw_reasons:
             shown = f.rw_reasons[:3]
             extra = (
-                ""
-                if len(f.rw_reasons) <= 3
-                else f" (+{len(f.rw_reasons) - 3} more)"
+                "" if len(f.rw_reasons) <= 3 else f" (+{len(f.rw_reasons) - 3} more)"
             )
             lines.append("  - " + "; ".join(shown) + extra)
     lines.append("")

@@ -182,7 +182,9 @@ class TestMergeCrossrefAndRwNotices:
         crossref = [_crossref_notice(notice_doi="10.x/foo-r1")]
         rw = [
             _rw_row(notice_doi="10.x/foo-r1"),  # matches Crossref → enrich
-            _rw_row(notice_doi="10.x/foo-e1", nature="Expression of Concern"),  # synthesise
+            _rw_row(
+                notice_doi="10.x/foo-e1", nature="Expression of Concern"
+            ),  # synthesise
         ]
         merged, consumed = _merge_crossref_and_rw_notices(crossref, rw)
         assert len(merged) == 2
@@ -226,9 +228,7 @@ class TestCheckDoiRwFallback:
 
     @patch("precis.ingest.provenance._lookup_rw_cache")
     @patch("precis.ingest.provenance._fetch_crossref_message")
-    def test_crossref_clean_rw_has_retraction(
-        self, mock_fetch, mock_lookup
-    ) -> None:
+    def test_crossref_clean_rw_has_retraction(self, mock_fetch, mock_lookup) -> None:
         """The Hwang case — Crossref doesn't know but RW does."""
         mock_fetch.return_value = {
             "title": ["Patient-Specific Embryonic Stem Cells"],
@@ -251,9 +251,7 @@ class TestCheckDoiRwFallback:
 
     @patch("precis.ingest.provenance._lookup_rw_cache")
     @patch("precis.ingest.provenance._fetch_crossref_message")
-    def test_crossref_404_rw_has_retraction(
-        self, mock_fetch, mock_lookup
-    ) -> None:
+    def test_crossref_404_rw_has_retraction(self, mock_fetch, mock_lookup) -> None:
         """Crossref didn't index the paper but RW has the retraction."""
         mock_fetch.return_value = None  # 404
         mock_lookup.return_value = [_rw_row(notice_doi="10.x/bad-r1")]
@@ -268,9 +266,7 @@ class TestCheckDoiRwFallback:
 
     @patch("precis.ingest.provenance._lookup_rw_cache")
     @patch("precis.ingest.provenance._fetch_crossref_message")
-    def test_crossref_fails_rw_has_retraction(
-        self, mock_fetch, mock_lookup
-    ) -> None:
+    def test_crossref_fails_rw_has_retraction(self, mock_fetch, mock_lookup) -> None:
         """Crossref transport error but RW cache has data — degrade gracefully."""
         mock_fetch.side_effect = RuntimeError("handshake timed out")
         mock_lookup.return_value = [_rw_row()]
@@ -283,9 +279,7 @@ class TestCheckDoiRwFallback:
 
     @patch("precis.ingest.provenance._lookup_rw_cache")
     @patch("precis.ingest.provenance._fetch_crossref_message")
-    def test_crossref_404_rw_empty_still_unknown(
-        self, mock_fetch, mock_lookup
-    ) -> None:
+    def test_crossref_404_rw_empty_still_unknown(self, mock_fetch, mock_lookup) -> None:
         """Genuinely unknown DOI — neither source has it."""
         mock_fetch.return_value = None
         mock_lookup.return_value = []

@@ -71,10 +71,17 @@ _MIN_CHUNK_CHARS = 150
 #: equations (LaTeX), figures (terse captions), references (citation
 #: lists). The set is small and stable; promote to ``chunk_kinds``
 #: metadata if it ever grows.
-_SKIP_KINDS: frozenset[str] = frozenset({
-    "card_authors", "card_combined", "card_title",
-    "table", "equation", "figure", "references",
-})
+_SKIP_KINDS: frozenset[str] = frozenset(
+    {
+        "card_authors",
+        "card_combined",
+        "card_title",
+        "table",
+        "equation",
+        "figure",
+        "references",
+    }
+)
 
 #: Top-K KeyBERT keywords kept per chunk.
 _TOP_K = 8
@@ -141,9 +148,7 @@ def ensure_paper_abbrevs(conn: Connection, ref_id: int) -> dict[str, str]:
 
     Empty dict when the ref has no detectable abbreviations.
     """
-    row = conn.execute(
-        "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
-    ).fetchone()
+    row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)).fetchone()
     if row is None:
         return {}
     meta = row[0] or {}
@@ -288,8 +293,7 @@ def write_chunk_keywords(
     envelope including version + embedder for the lazy-update path).
     """
     canonical = [
-        (k.get("short") or k.get("long") or "").lower().strip()
-        for k in keywords
+        (k.get("short") or k.get("long") or "").lower().strip() for k in keywords
     ]
     canonical = [c for c in canonical if c]
     meta = {
@@ -342,7 +346,8 @@ def run_chunk_keywords_pass(
                     embedder=embedder,
                 )
                 write_chunk_keywords(
-                    conn, chunk_id,
+                    conn,
+                    chunk_id,
                     keywords=keywords,
                     embedder_name=embedder.model,
                 )

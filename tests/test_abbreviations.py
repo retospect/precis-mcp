@@ -154,7 +154,9 @@ def test_find_then_substitute_full_round_trip() -> None:
     assert "(DFT)" not in out
 
 
-def test_short_form_propagates_to_keyword_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_short_form_propagates_to_keyword_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Round-trip with the actual keyword_summary wrapper: after
     abbreviation substitution, RAKE returns the short form."""
     from precis.utils.rake import keyword_summary

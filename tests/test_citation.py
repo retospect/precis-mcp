@@ -6,21 +6,14 @@ import re
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.citation import CitationHandler
-from precis.hints import HintBus
 
 
 def _make_handler(store):
     """Build a CitationHandler bound to a real fresh store."""
-    # Minimal Hub stand-in — we only need .store + .embedder=None.
-    class _StubHub:
-        def __init__(self) -> None:
-            self.store = store
-            self.embedder = None
-            self.hints = HintBus()
-
-    return CitationHandler(hub=_StubHub())
+    return CitationHandler(hub=Hub(store=store))
 
 
 # ── put validation ──────────────────────────────────────────────────
@@ -55,13 +48,17 @@ class TestPutValidation:
         h = _make_handler(store)
         with pytest.raises(BadInput) as excinfo:
             h.put(
-                text="claim", source_handle="x~1", source_quote="q",
+                text="claim",
+                source_handle="x~1",
+                source_quote="q",
                 verifier_confidence=1.5,
             )
         assert "between 0.0 and 1.0" in str(excinfo.value)
         with pytest.raises(BadInput):
             h.put(
-                text="claim", source_handle="x~1", source_quote="q",
+                text="claim",
+                source_handle="x~1",
+                source_quote="q",
                 verifier_confidence=-0.1,
             )
 
@@ -76,8 +73,7 @@ class TestPutHappy:
             text="MOF X achieves 12% FE for CO2 reduction",
             source_handle="collins06~7",
             source_quote=(
-                "we observed 12% Faradaic efficiency for CO2 "
-                "reduction at -0.3 V"
+                "we observed 12% Faradaic efficiency for CO2 reduction at -0.3 V"
             ),
             char_offset=142,
             verifier_confidence=0.95,

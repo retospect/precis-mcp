@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -146,7 +148,7 @@ def _seed_paper(
     *,
     slug: str = "wang2020state",
     title: str = "State of the art in nitrate reduction",
-    authors: list[str] | None = None,
+    authors: list[dict[str, Any]] | None = None,
     year: int = 2020,
     journal: str = "Nature",
     doi: str = "10.1/x",

@@ -43,15 +43,19 @@ def _write(p: Path, name: str, text: str) -> Path:
 
 
 def test_scan_single_valid_skill(tmp_path: Path) -> None:
-    _write(tmp_path, "precis-search-help.md", (
-        "---\n"
-        "id: precis-search-help\n"
-        "flavor: reference\n"
-        "---\n"
-        "# precis-search-help\n\n"
-        "## Find a paper by topic when you don't know the title\n\n"
-        "Use `search(kind='paper', q='...')`.\n"
-    ))
+    _write(
+        tmp_path,
+        "precis-search-help.md",
+        (
+            "---\n"
+            "id: precis-search-help\n"
+            "flavor: reference\n"
+            "---\n"
+            "# precis-search-help\n\n"
+            "## Find a paper by topic when you don't know the title\n\n"
+            "Use `search(kind='paper', q='...')`.\n"
+        ),
+    )
     r = scan_skill_dir(tmp_path)
     assert r.failures == ()
     assert len(r.plans) == 1
@@ -66,7 +70,11 @@ def test_scan_single_valid_skill(tmp_path: Path) -> None:
 
 def test_scan_recurses_into_subdirs(tmp_path: Path) -> None:
     _write(tmp_path, "precis-a.md", "---\nflavor: concept\n---\n# A\nbody\n")
-    _write(tmp_path, "personas/precis-b.md", "---\nflavor: persona\n---\n# B\n## Adopt this persona\nbe B\n")
+    _write(
+        tmp_path,
+        "personas/precis-b.md",
+        "---\nflavor: persona\n---\n# B\n## Adopt this persona\nbe B\n",
+    )
     r = scan_skill_dir(tmp_path)
     assert r.failures == ()
     slugs = {p.slug for p in r.plans}
@@ -74,12 +82,16 @@ def test_scan_recurses_into_subdirs(tmp_path: Path) -> None:
 
 
 def test_scan_emits_requires_tag(tmp_path: Path) -> None:
-    _write(tmp_path, "p.md", (
-        "---\n"
-        "flavor: reference\n"
-        "available-when: PRECIS_EPO_KEY\n"
-        "---\n# title\n## op\nbody\n"
-    ))
+    _write(
+        tmp_path,
+        "p.md",
+        (
+            "---\n"
+            "flavor: reference\n"
+            "available-when: PRECIS_EPO_KEY\n"
+            "---\n# title\n## op\nbody\n"
+        ),
+    )
     r = scan_skill_dir(tmp_path)
     [p] = r.plans
     assert "FLAVOR:reference" in p.tags
@@ -125,11 +137,15 @@ def test_scan_empty_file_becomes_failure(tmp_path: Path) -> None:
 
 
 def test_scan_unresolved_include_becomes_failure(tmp_path: Path) -> None:
-    _write(tmp_path, "uses-include.md", (
-        "---\nflavor: reference\n---\n"
-        "# title\n## op\n"
-        "{{include doc:does-not-exist#section}}\n"
-    ))
+    _write(
+        tmp_path,
+        "uses-include.md",
+        (
+            "---\nflavor: reference\n---\n"
+            "# title\n## op\n"
+            "{{include doc:does-not-exist#section}}\n"
+        ),
+    )
     includer = Includer(resolvers={"doc": DocResolver(docs={})})
     r = scan_skill_dir(tmp_path, includer=includer)
     assert r.plans == ()
@@ -153,12 +169,8 @@ def test_scan_expands_includes_and_hash_reflects_resolved_text(
     )
     _write(tmp_path, "skill.md", skill_md)
 
-    common_v1 = (
-        "## Address grammar\nUse `slug~N`.\n"
-    )
-    common_v2 = (
-        "## Address grammar\nUse `slug~N` or `slug#anchor`.\n"
-    )
+    common_v1 = "## Address grammar\nUse `slug~N`.\n"
+    common_v2 = "## Address grammar\nUse `slug~N` or `slug#anchor`.\n"
 
     inc1 = Includer(resolvers={"doc": DocResolver(docs={"precis-common": common_v1})})
     inc2 = Includer(resolvers={"doc": DocResolver(docs={"precis-common": common_v2})})
@@ -176,39 +188,53 @@ def test_scan_expands_includes_and_hash_reflects_resolved_text(
 
 
 def test_scan_runbook_with_resolved_personas_passes(tmp_path: Path) -> None:
-    _write(tmp_path, "personas/precis-reviewer-a.md", (
-        "---\nflavor: persona\n---\n# A\n## Adopt this persona\nbe A\n"
-    ))
-    _write(tmp_path, "personas/precis-reviewer-b.md", (
-        "---\nflavor: persona\n---\n# B\n## Adopt this persona\nbe B\n"
-    ))
-    _write(tmp_path, "precis-polish.md", (
-        "---\n"
-        "flavor: runbook\n"
-        "invokes-personas:\n"
-        "  - precis-reviewer-a\n"
-        "  - precis-reviewer-b\n"
-        "---\n"
-        "# polish\n## Run a polish pass\nbody\n"
-    ))
+    _write(
+        tmp_path,
+        "personas/precis-reviewer-a.md",
+        ("---\nflavor: persona\n---\n# A\n## Adopt this persona\nbe A\n"),
+    )
+    _write(
+        tmp_path,
+        "personas/precis-reviewer-b.md",
+        ("---\nflavor: persona\n---\n# B\n## Adopt this persona\nbe B\n"),
+    )
+    _write(
+        tmp_path,
+        "precis-polish.md",
+        (
+            "---\n"
+            "flavor: runbook\n"
+            "invokes-personas:\n"
+            "  - precis-reviewer-a\n"
+            "  - precis-reviewer-b\n"
+            "---\n"
+            "# polish\n## Run a polish pass\nbody\n"
+        ),
+    )
     r = scan_skill_dir(tmp_path)
     assert r.failures == ()
     assert len(r.plans) == 3
 
 
 def test_scan_runbook_with_missing_persona_becomes_failure(tmp_path: Path) -> None:
-    _write(tmp_path, "personas/precis-reviewer-a.md", (
-        "---\nflavor: persona\n---\n# A\n## Adopt this persona\nbe A\n"
-    ))
-    _write(tmp_path, "precis-polish.md", (
-        "---\n"
-        "flavor: runbook\n"
-        "invokes-personas:\n"
-        "  - precis-reviewer-a\n"
-        "  - precis-reviewer-ghost\n"
-        "---\n"
-        "# polish\n## op\nbody\n"
-    ))
+    _write(
+        tmp_path,
+        "personas/precis-reviewer-a.md",
+        ("---\nflavor: persona\n---\n# A\n## Adopt this persona\nbe A\n"),
+    )
+    _write(
+        tmp_path,
+        "precis-polish.md",
+        (
+            "---\n"
+            "flavor: runbook\n"
+            "invokes-personas:\n"
+            "  - precis-reviewer-a\n"
+            "  - precis-reviewer-ghost\n"
+            "---\n"
+            "# polish\n## op\nbody\n"
+        ),
+    )
     r = scan_skill_dir(tmp_path)
     # Persona alone passes; runbook fails cross-validation.
     assert {p.slug for p in r.plans} == {"precis-reviewer-a"}
@@ -220,17 +246,23 @@ def test_scan_runbook_with_missing_persona_becomes_failure(tmp_path: Path) -> No
 def test_scan_runbook_pointing_at_non_persona_becomes_failure(
     tmp_path: Path,
 ) -> None:
-    _write(tmp_path, "precis-not-a-persona.md", (
-        "---\nflavor: reference\n---\n# r\n## op\nbody\n"
-    ))
-    _write(tmp_path, "precis-polish.md", (
-        "---\n"
-        "flavor: runbook\n"
-        "invokes-personas:\n"
-        "  - precis-not-a-persona\n"
-        "---\n"
-        "# polish\n## op\nbody\n"
-    ))
+    _write(
+        tmp_path,
+        "precis-not-a-persona.md",
+        ("---\nflavor: reference\n---\n# r\n## op\nbody\n"),
+    )
+    _write(
+        tmp_path,
+        "precis-polish.md",
+        (
+            "---\n"
+            "flavor: runbook\n"
+            "invokes-personas:\n"
+            "  - precis-not-a-persona\n"
+            "---\n"
+            "# polish\n## op\nbody\n"
+        ),
+    )
     r = scan_skill_dir(tmp_path)
     assert {p.slug for p in r.plans} == {"precis-not-a-persona"}
     [f] = r.failures
@@ -239,9 +271,7 @@ def test_scan_runbook_pointing_at_non_persona_becomes_failure(
 
 def test_scan_runbook_without_invokes_personas_passes(tmp_path: Path) -> None:
     # Runbooks without persona orchestration are still legal.
-    _write(tmp_path, "p.md", (
-        "---\nflavor: runbook\n---\n# title\n## op\nbody\n"
-    ))
+    _write(tmp_path, "p.md", ("---\nflavor: runbook\n---\n# title\n## op\nbody\n"))
     r = scan_skill_dir(tmp_path)
     assert r.failures == ()
     [p] = r.plans
@@ -257,7 +287,9 @@ def test_ingest_plan_is_immutable_dataclass() -> None:
         slug="x",
         file_path=Path("/tmp/x.md"),
         file_sha256="abc",
-        frontmatter=__import__("precis.handlers._skill_common", fromlist=["SkillFrontmatter"]).SkillFrontmatter(),
+        frontmatter=__import__(
+            "precis.handlers._skill_common", fromlist=["SkillFrontmatter"]
+        ).SkillFrontmatter(),
         chunks=(),
         tags=(),
         expanded_text="",
@@ -268,8 +300,9 @@ def test_ingest_plan_is_immutable_dataclass() -> None:
 
 
 def test_ingest_failure_str_format() -> None:
-    f = IngestFailure(slug="x", file_path=Path("/tmp/x.md"), reason="oops")
+    path = Path("/tmp/x.md")
+    f = IngestFailure(slug="x", file_path=path, reason="oops")
     s = str(f)
     assert "[x]" in s
     assert "oops" in s
-    assert "/tmp/x.md" in s
+    assert str(path) in s

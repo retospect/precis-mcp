@@ -118,9 +118,7 @@ def _stub(
     s2_id: str | None = None,
     cite_key: str | None = "smith2024example",
 ) -> StubRef:
-    return StubRef(
-        ref_id=ref_id, doi=doi, arxiv=arxiv, s2_id=s2_id, cite_key=cite_key
-    )
+    return StubRef(ref_id=ref_id, doi=doi, arxiv=arxiv, s2_id=s2_id, cite_key=cite_key)
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +138,7 @@ class TestClaimStubs:
 
     def test_excludes_ref_without_identifier(self, store: Store) -> None:
         # paper with NO doi/arxiv/s2 — claim's EXISTS clause drops it.
-        _seed_paper_stub(
-            store, cite_key="naked2024", doi=None, arxiv=None, s2_id=None
-        )
+        _seed_paper_stub(store, cite_key="naked2024", doi=None, arxiv=None, s2_id=None)
         with store.pool.connection() as conn:
             stubs = claim_stubs_to_fetch(conn, limit=10)
             conn.commit()
@@ -202,15 +198,11 @@ class TestClaimStubs:
 
 class TestTryUnpaywall:
     def test_returns_none_when_no_doi(self, tmp_path: Path) -> None:
-        out = _try_unpaywall(
-            _stub(doi=None), inbox_dir=tmp_path, email="a@b"
-        )
+        out = _try_unpaywall(_stub(doi=None), inbox_dir=tmp_path, email="a@b")
         assert out is None
 
     def test_invalid_doi_shape(self, tmp_path: Path) -> None:
-        out = _try_unpaywall(
-            _stub(doi="not-a-doi"), inbox_dir=tmp_path, email="a@b"
-        )
+        out = _try_unpaywall(_stub(doi="not-a-doi"), inbox_dir=tmp_path, email="a@b")
         assert out is not None
         assert out.event == "invalid_identifier"
         assert out.payload["doi"] == "not-a-doi"
@@ -228,9 +220,7 @@ class TestTryUnpaywall:
                 "best_oa_location": None,
             },
         )
-        out = _try_unpaywall(
-            _stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b"
-        )
+        out = _try_unpaywall(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
         assert out is not None
         assert out.event == "no_oa_version"
         assert out.payload["oa_status"] == "closed"
@@ -249,9 +239,7 @@ class TestTryUnpaywall:
             )
 
         monkeypatch.setattr(fetch_oa, "_query_unpaywall", _raise_429)
-        out = _try_unpaywall(
-            _stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b"
-        )
+        out = _try_unpaywall(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
         assert out is not None
         assert out.event == "rate_limited"
         assert out.payload["retry_after"] == "60"
@@ -263,9 +251,7 @@ class TestTryUnpaywall:
             raise RuntimeError("connection reset")
 
         monkeypatch.setattr(fetch_oa, "_query_unpaywall", _boom)
-        out = _try_unpaywall(
-            _stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b"
-        )
+        out = _try_unpaywall(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
         assert out is not None
         assert out.event == "api_error"
         assert "connection reset" in out.payload["error"]
@@ -293,9 +279,7 @@ class TestTryUnpaywall:
             "_download_pdf",
             lambda url, target: _write_synthetic_pdf(target, size=2048),
         )
-        out = _try_unpaywall(
-            _stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b"
-        )
+        out = _try_unpaywall(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
         assert out is not None
         assert out.event == "fetch_ok"
         assert out.payload["license"] == "cc-by"
@@ -324,9 +308,7 @@ class TestTryUnpaywall:
             raise SsrfBlocked(f"refusing host: {url}")
 
         monkeypatch.setattr(fetch_oa, "_download_pdf", _refuse)
-        out = _try_unpaywall(
-            _stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b"
-        )
+        out = _try_unpaywall(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
         assert out is not None
         assert out.event == "fetch_failed"
         assert "refusing host" in out.payload["error"]
@@ -375,9 +357,7 @@ class TestTryS2:
             return None  # no_oa_version
 
         monkeypatch.setattr(fetch_oa, "_query_s2_openaccess", _stub_query)
-        out = _try_s2(
-            _stub(doi="10.1234/x", arxiv="2401.12345"), inbox_dir=tmp_path
-        )
+        out = _try_s2(_stub(doi="10.1234/x", arxiv="2401.12345"), inbox_dir=tmp_path)
         assert out is not None
         assert out.event == "no_oa_version"
         # DOI wins the priority race.
@@ -392,9 +372,7 @@ class TestTryS2:
             is None
         )
 
-    def test_fetch_ok(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_fetch_ok(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             fetch_oa,
             "_query_s2_openaccess",
@@ -443,9 +421,7 @@ class TestRunCascade:
             lambda paper_id: pytest.fail("S2 should not be called after fetch_ok"),
         )
 
-        result = run_oa_fetch_pass(
-            store, limit=10, inbox_dir=tmp_path, email="a@b"
-        )
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 1, "ok": 1, "failed": 0}
 
     def test_falls_through_to_arxiv(
@@ -454,9 +430,7 @@ class TestRunCascade:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _seed_paper_stub(
-            store, doi="10.1234/e", arxiv="2401.99999"
-        )
+        _seed_paper_stub(store, doi="10.1234/e", arxiv="2401.99999")
         # Unpaywall says no_oa_version → cascade tries arXiv.
         monkeypatch.setattr(
             fetch_oa,
@@ -472,9 +446,7 @@ class TestRunCascade:
 
         monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
 
-        result = run_oa_fetch_pass(
-            store, limit=10, inbox_dir=tmp_path, email="a@b"
-        )
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 1, "ok": 1, "failed": 0}
         # arXiv URL was downloaded (not the Unpaywall one).
         assert seen_urls == ["https://arxiv.org/pdf/2401.99999.pdf"]
@@ -485,9 +457,7 @@ class TestRunCascade:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        ref_id = _seed_paper_stub(
-            store, doi="10.1234/f", arxiv="2401.88888"
-        )
+        ref_id = _seed_paper_stub(store, doi="10.1234/f", arxiv="2401.88888")
         # Unpaywall: no_oa_version. arXiv: fetch_ok.
         monkeypatch.setattr(
             fetch_oa,
@@ -504,8 +474,7 @@ class TestRunCascade:
 
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT source, event FROM ref_events "
-                "WHERE ref_id = %s ORDER BY ts",
+                "SELECT source, event FROM ref_events WHERE ref_id = %s ORDER BY ts",
                 (ref_id,),
             ).fetchall()
         # Both attempts recorded; no S2 entry because cascade stopped
@@ -515,12 +484,8 @@ class TestRunCascade:
             ("fetcher:arxiv", "fetch_ok"),
         ]
 
-    def test_empty_queue_zero_counts(
-        self, store: Store, tmp_path: Path
-    ) -> None:
-        result = run_oa_fetch_pass(
-            store, limit=10, inbox_dir=tmp_path, email="a@b"
-        )
+    def test_empty_queue_zero_counts(self, store: Store, tmp_path: Path) -> None:
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 0, "ok": 0, "failed": 0}
 
     def test_unhandled_provider_exception_counts_as_ok_stub(
@@ -545,7 +510,5 @@ class TestRunCascade:
             "_download_pdf",
             lambda url, target: _write_synthetic_pdf(target, size=128),
         )
-        result = run_oa_fetch_pass(
-            store, limit=10, inbox_dir=tmp_path, email="a@b"
-        )
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 1, "ok": 1, "failed": 0}

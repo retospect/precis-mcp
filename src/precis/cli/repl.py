@@ -92,8 +92,7 @@ def run(args: argparse.Namespace) -> None:
                 ensure()
             except Exception as e:
                 print(
-                    f"\nprecis repl: embedder warmup failed ({e!r}); "
-                    "continuing lazily",
+                    f"\nprecis repl: embedder warmup failed ({e!r}); continuing lazily",
                     file=sys.stderr,
                 )
     finally:
@@ -250,8 +249,7 @@ def _print_help(tokens: list[str]) -> None:
     if not tokens:
         print("verbs:", ", ".join(get_tool_names()), file=sys.stderr)
         print(
-            "usage: <verb> key=value [key=value …]   "
-            "(quote values with spaces)",
+            "usage: <verb> key=value [key=value …]   (quote values with spaces)",
             file=sys.stderr,
         )
         return

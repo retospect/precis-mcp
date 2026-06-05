@@ -113,9 +113,7 @@ class Includer:
             except IncludeError:
                 raise
             except Exception as exc:
-                raise IncludeError(
-                    f"resolver for {d.label()} failed: {exc}"
-                ) from exc
+                raise IncludeError(f"resolver for {d.label()} failed: {exc}") from exc
 
             replacement = (
                 f"<!-- inlined-from: {d.label()} -->\n"
@@ -204,7 +202,7 @@ def _strip_frontmatter(text: str) -> str:
     if end == -1:
         return text
     # Skip past the closing ``---`` line.
-    after = text[end + 4:]
+    after = text[end + 4 :]
     return after.lstrip("\n")
 
 
@@ -230,9 +228,7 @@ def _find_section(body: str, section_slug: str) -> str | None:
         # H2 we're inside.
         heading_end = body.find("\n", start)
         if 0 <= heading_end < end:
-            h1_match = re.search(
-                r"^#\s+", body[heading_end + 1:end], re.MULTILINE
-            )
+            h1_match = re.search(r"^#\s+", body[heading_end + 1 : end], re.MULTILINE)
             if h1_match:
                 end = heading_end + 1 + h1_match.start()
         return body[start:end].rstrip()

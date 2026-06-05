@@ -418,7 +418,7 @@ class TagsMixin:
             # selectors are noise here).
             sample_rows = conn.execute(
                 "SELECT r.kind, "
-                "       (SELECT value FROM ref_identifiers "
+                "       (SELECT id_value FROM ref_identifiers "
                 "          WHERE ref_id = r.ref_id "
                 "            AND id_kind = 'cite_key' LIMIT 1) AS slug, "
                 "       r.ref_id "

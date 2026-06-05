@@ -104,9 +104,7 @@ def run(args: argparse.Namespace) -> None:
     print(serialize(rows, format=resolve_format(args), schema=_SCHEMA))
 
 
-def _query_stubs(
-    store: Store, *, limit: int, awaiting: bool
-) -> list[dict[str, Any]]:
+def _query_stubs(store: Store, *, limit: int, awaiting: bool) -> list[dict[str, Any]]:
     """Return one dict per stub paper ref, newest-stub-first.
 
     Joins ``refs`` (stub predicate) with the latest ``ref_events``
@@ -167,15 +165,17 @@ def _query_stubs(
     with store.pool.connection() as conn:
         rows = conn.execute(sql, (awaiting, limit)).fetchall()
     for row in rows:
-        out.append({
-            "ref_id": int(row[0]),
-            "cite_key": row[1] or "",
-            "identifier": row[2] or "",
-            "last_attempt": row[3].isoformat() if row[3] is not None else "",
-            "last_source": row[4] or "",
-            "last_event": row[5] or "",
-            "state": _state_summary(row[5], row[3]),
-        })
+        out.append(
+            {
+                "ref_id": int(row[0]),
+                "cite_key": row[1] or "",
+                "identifier": row[2] or "",
+                "last_attempt": row[3].isoformat() if row[3] is not None else "",
+                "last_source": row[4] or "",
+                "last_event": row[5] or "",
+                "state": _state_summary(row[5], row[3]),
+            }
+        )
     return out
 
 

@@ -53,6 +53,7 @@ def looks_like_docdb(s: str) -> bool:
     stripped = re.sub(r"[\s.]", "", s.lower())
     return _DOCDB_RE.match(stripped) is not None
 
+
 # Closed list of country / authority codes that EPO OPS recognises.
 # Source: WIPO ST.3 / EPO DOCDB. Kept here because OPS will reject
 # anything else with a 400, and we'd rather catch typos at the agent

@@ -169,9 +169,7 @@ class CitationHandler(NumericRefHandler):
             "source_quote": str(source_quote).strip(),
             "char_offset": int(char_offset) if char_offset is not None else None,
             "verifier_confidence": (
-                float(verifier_confidence)
-                if verifier_confidence is not None
-                else None
+                float(verifier_confidence) if verifier_confidence is not None else None
             ),
             "verifier_caveats": verifier_caveats,
             "verified_at": verified_iso,

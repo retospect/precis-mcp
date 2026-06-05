@@ -26,9 +26,7 @@ class TestFormatNextBlock:
         assert out[1] == "do x\tget(x)"
 
     def test_multi_row(self) -> None:
-        out = format_next_block(
-            [("short", "first"), ("a longer call here", "second")]
-        )
+        out = format_next_block([("short", "first"), ("a longer call here", "second")])
         assert out == [_HEADER, "first\tshort", "second\ta longer call here"]
 
     def test_empty_input(self) -> None:

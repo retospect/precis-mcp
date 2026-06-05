@@ -109,7 +109,7 @@ def chunk_by_h2(text: str) -> list[Chunk]:
         # with no non-whitespace content between.
         while i + 1 < n:
             cur_end = _line_end(body, matches[i].end())
-            between = body[cur_end:matches[i + 1].start()]
+            between = body[cur_end : matches[i + 1].start()]
             if between.strip():
                 break
             i += 1

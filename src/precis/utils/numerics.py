@@ -35,31 +35,83 @@ import re
 # matching arbitrary trailing words as units.
 _UNITS: tuple[str, ...] = (
     # vibrational / spectroscopy
-    "cm-1", "cm−1",
+    "cm-1",
+    "cm−1",
     # energy
-    "keV", "meV", "eV", "kJ", "J",
+    "keV",
+    "meV",
+    "eV",
+    "kJ",
+    "J",
     # voltage
-    "kV", "mV", "V",
+    "kV",
+    "mV",
+    "V",
     # current
-    "mA", "µA", "uA", "nA", "A",
+    "mA",
+    "µA",
+    "uA",
+    "nA",
+    "A",
     # frequency
-    "GHz", "MHz", "kHz", "Hz",
+    "GHz",
+    "MHz",
+    "kHz",
+    "Hz",
     # percent
     "%",
     # temperature
-    "°C", "°F", "K",
+    "°C",
+    "°F",
+    "K",
     # pressure
-    "GPa", "MPa", "kPa", "mbar", "atm", "bar", "Pa", "torr",
+    "GPa",
+    "MPa",
+    "kPa",
+    "mbar",
+    "atm",
+    "bar",
+    "Pa",
+    "torr",
     # concentration
-    "mM", "µM", "uM", "nM", "ppm", "ppb", "M",
+    "mM",
+    "µM",
+    "uM",
+    "nM",
+    "ppm",
+    "ppb",
+    "M",
     # length
-    "nm", "µm", "um", "mm", "cm", "Å", "Angstrom",
+    "nm",
+    "µm",
+    "um",
+    "mm",
+    "cm",
+    "Å",
+    "Angstrom",
     # mass
-    "kg", "mg", "µg", "ug", "ng",
+    "kg",
+    "mg",
+    "µg",
+    "ug",
+    "ng",
     # time / count
-    "ms", "µs", "us", "ns", "ps", "min", "hr", "h", "days", "cycles", "s",
+    "ms",
+    "µs",
+    "us",
+    "ns",
+    "ps",
+    "min",
+    "hr",
+    "h",
+    "days",
+    "cycles",
+    "s",
     # current-density-ish
-    "mAh/g", "Ah/g", "mAh", "Ah",
+    "mAh/g",
+    "Ah/g",
+    "mAh",
+    "Ah",
 )
 
 
