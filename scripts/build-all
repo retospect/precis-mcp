@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# scripts/build-all — build every precis docker image (ADR 0020/0021
+# split: serve / worker / ingest / embedder) with baked-in git + build
+# metadata.
+#
+# Unlike scripts/build-image (which drives the external infra compose
+# file), this builds the role-scoped targets directly from
+# docker/Dockerfile via `docker build --target`, so it works without a
+# compose service entry for each new image.
+#
+# Usage:
+#   scripts/build-all                      # serve worker ingest embedder
+#   scripts/build-all serve worker         # only the listed targets
+#   scripts/build-all runtime dev          # the legacy fat images too
+#
+# Environment knobs:
+#   PRECIS_IMAGE_PREFIX   image name prefix       (default: precis)
+#   PRECIS_TAG            tag for every image      (default: git describe)
+#   PRECIS_PREMODELS      image ref to seed the model cache from, e.g.
+#                         precis-embedder:latest — passed as the
+#                         `premodels` build context so a rebuild skips
+#                         the multi-GB HF / datalab download.
+#   PRECIS_PLATFORM       --platform value (e.g. linux/amd64) if cross-building
+#
+# macOS note: the embedder image is CPU-torch and exists for Linux/Spark.
+# On a Mac you run the embedder NATIVELY (launchd + MPS), not via this
+# image — see ADR 0020.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+PREFIX="${PRECIS_IMAGE_PREFIX:-precis}"
+DOCKERFILE="docker/Dockerfile"
+
+# Targets: explicit args win; otherwise the four split images.
+if [[ "$#" -gt 0 ]]; then
+    TARGETS=("$@")
+else
+    TARGETS=(serve worker ingest embedder)
+fi
+
+# --- git / build metadata (mirrors scripts/build-image) ----------------------
+GIT_SHA="$(git rev-parse HEAD)"
+GIT_SHA_SHORT="$(git rev-parse --short=12 HEAD)"
+if [[ -z "$(git status --porcelain)" ]]; then GIT_DIRTY=0; else GIT_DIRTY=1; fi
+GIT_DESCRIBE="$(git describe --tags --always --dirty --long 2>/dev/null || echo unknown)"
+GIT_LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo unknown)"
+GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+BUILD_HOST="$(hostname -f 2>/dev/null || hostname)"
+BUILD_USER="${USER:-unknown}"
+
+TAG="${PRECIS_TAG:-${GIT_DESCRIBE}}"
+
+META_ARGS=(
+    --build-arg "PRECIS_GIT_LAST_TAG=${GIT_LAST_TAG}"
+    --build-arg "PRECIS_GIT_SHA=${GIT_SHA}"
+    --build-arg "PRECIS_GIT_SHA_SHORT=${GIT_SHA_SHORT}"
+    --build-arg "PRECIS_GIT_DIRTY=${GIT_DIRTY}"
+    --build-arg "PRECIS_GIT_DESCRIBE=${GIT_DESCRIBE}"
+    --build-arg "PRECIS_GIT_BRANCH=${GIT_BRANCH}"
+    --build-arg "PRECIS_BUILD_TIME=${BUILD_TIME}"
+    --build-arg "PRECIS_BUILD_HOST=${BUILD_HOST}"
+    --build-arg "PRECIS_BUILD_USER=${BUILD_USER}"
+)
+
+EXTRA_ARGS=()
+if [[ -n "${PRECIS_PREMODELS:-}" ]]; then
+    EXTRA_ARGS+=(--build-context "premodels=docker-image://${PRECIS_PREMODELS}")
+fi
+if [[ -n "${PRECIS_PLATFORM:-}" ]]; then
+    EXTRA_ARGS+=(--platform "${PRECIS_PLATFORM}")
+fi
+
+echo "==> building ${#TARGETS[@]} image(s) [tag=${TAG}, prefix=${PREFIX}]"
+[[ -n "${PRECIS_PREMODELS:-}" ]] && echo "    premodels seed: ${PRECIS_PREMODELS}"
+
+for target in "${TARGETS[@]}"; do
+    image="${PREFIX}-${target}:${TAG}"
+    echo
+    echo "==> [${target}] -> ${image}"
+    docker build \
+        --target "${target}" \
+        -t "${image}" \
+        -f "${DOCKERFILE}" \
+        "${META_ARGS[@]}" \
+        "${EXTRA_ARGS[@]}" \
+        .
+done
+
+echo
+echo "==> done. built:"
+for target in "${TARGETS[@]}"; do
+    echo "    ${PREFIX}-${target}:${TAG}"
+done

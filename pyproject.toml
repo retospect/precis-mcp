@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "8.4.4"
+version = "8.5.0"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -93,17 +93,22 @@ Homepage = "https://github.com/retospect/precis-mcp"
 Repository = "https://github.com/retospect/precis-mcp"
 
 [project.optional-dependencies]
-# Paper ingest — PDF → layout (marker-pdf) → chunks + metadata
-# lookup (CrossRef / Semantic Scholar) → embeddings (bge-m3). The
-# full pipeline lives in :mod:`precis.ingest` as of the v7 rewrite
-# (was previously farmed out to ``acatome-extract``).
+# The embedder backend — ``sentence-transformers`` (and, transitively,
+# ``torch``). Split out of ``paper`` (ADR 0020/0021) so the torch-free
+# serve / worker images can omit it and reach the model over HTTP via
+# ``RemoteEmbedder`` instead. The embedder *service* image installs this
+# extra; single-process PyPI installs that want an in-process model get
+# it via ``[all]`` or an explicit ``[embed]``.
 #
-# Without ``sentence-transformers`` the ``search()`` verb on every
-# embedder-backed kind crashes with -32603 even though tools/list
-# advertises it as supported (MCP critic CRITICAL — search(kind=
-# 'paper', …) is broken in this deployment). The hint surfaced by
-# ``BgeM3Embedder._ensure_loaded`` says ``pip install
-# 'precis-mcp[paper]'``, so this extra has to actually carry it.
+# Without an embedder (no ``[embed]`` and no remote URL) the ``search()``
+# verb on every embedder-backed kind crashes with -32603 even though
+# tools/list advertises it (MCP critic CRITICAL). ``[all]`` includes
+# ``embed`` so the single-process install keeps working.
+embed = ["sentence-transformers>=3.0"]
+# Paper ingest — PDF → layout (marker-pdf) → chunks + metadata
+# lookup (CrossRef / Semantic Scholar). The full pipeline lives in
+# :mod:`precis.ingest` as of the v7 rewrite (was previously farmed out
+# to ``acatome-extract``).
 #
 # ``marker-pdf`` is gated on ``sys_platform != 'win32'`` because
 # Marker's surya / torch stack doesn't support Windows; on Windows
@@ -121,11 +126,14 @@ paper = [
     "habanero>=2.0",        # CrossRef REST client
     "semanticscholar>=0.8", # Semantic Scholar REST client
     "tenacity>=8.0",        # retry decorator on the S2 + CrossRef paths
-    "sentence-transformers>=3.0",
     "pysbd>=0.3.4",         # abbreviation-aware sentence splitter for
                             # scientific prose; underpins central-sentence
                             # extraction + replaces the naive ". "
                             # fallback in text_chunker.
+    # NOTE: ``sentence-transformers`` is NOT here — it moved to the
+    # ``embed`` extra (ADR 0021). Marker still pulls ``torch`` for surya,
+    # so the ingest image is heavy regardless; serve / worker, which omit
+    # both ``paper`` and ``embed``, are the ones that go torch-free.
 ]
 # DOCX file handler.
 docx = ["python-docx>=1.1", "lxml>=5.0"]
@@ -147,7 +155,7 @@ patent = [
     "python-epo-ops-client>=4.0",
     "lxml>=5.0",
 ]
-all = ["precis-mcp[paper,docx,tex,calc,plot,external,patent]"]
+all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent]"]
 
 [project.scripts]
 precis = "precis.cli:main"

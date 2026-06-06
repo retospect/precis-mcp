@@ -192,28 +192,39 @@ def _bake_bge_m3() -> None:
 def main() -> None:
     import os
 
-    _patch_get_text_config()
-    _patch_surya_config()
+    # Which caches to bake. The split images (ADR 0021) bake only what
+    # they run: the `ingest` image needs marker/surya, the `embedder`
+    # image needs bge-m3. The full runtime/dev images bake both.
+    #   PRECIS_BAKE_ONLY = all (default) | marker | embed
+    only = os.environ.get("PRECIS_BAKE_ONLY", "all").strip().lower()
+    do_marker = only in ("all", "marker")
+    do_embed = only in ("all", "embed")
+    print(f"[bake] PRECIS_BAKE_ONLY={only!r} → marker={do_marker} embed={do_embed}")
 
-    # Marker layout / OCR / detection / table-recognition models.
-    from marker.models import create_model_dict
+    if do_marker:
+        _patch_get_text_config()
+        _patch_surya_config()
 
-    create_model_dict()
+        # Marker layout / OCR / detection / table-recognition models.
+        from marker.models import create_model_dict
 
-    # BAAI/bge-m3 for chunk embeddings — pre-fetch (or no-op if cache
-    # is already seeded from the `premodels` build context).
-    _bake_bge_m3()
+        create_model_dict()
 
-    # Verify the cache resolves through sentence-transformers. Force
-    # OFFLINE mode for the verification: even when the cache is fully
-    # populated, the SentenceTransformer constructor otherwise hits
-    # HF to check for a newer revision — that's the xet-bridge path
-    # that was hanging in futex_wait for hours.
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    from sentence_transformers import SentenceTransformer
+    if do_embed:
+        # BAAI/bge-m3 for chunk embeddings — pre-fetch (or no-op if cache
+        # is already seeded from the `premodels` build context).
+        _bake_bge_m3()
 
-    SentenceTransformer("BAAI/bge-m3")
+        # Verify the cache resolves through sentence-transformers. Force
+        # OFFLINE mode for the verification: even when the cache is fully
+        # populated, the SentenceTransformer constructor otherwise hits
+        # HF to check for a newer revision — that's the xet-bridge path
+        # that was hanging in futex_wait for hours.
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        from sentence_transformers import SentenceTransformer
+
+        SentenceTransformer("BAAI/bge-m3")
 
 
 if __name__ == "__main__":

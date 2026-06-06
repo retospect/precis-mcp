@@ -27,6 +27,49 @@ in a production runtime image, add claude to the runtime stage
 (mirror the dev-system block: nodejs + `npm install -g
 @anthropic-ai/claude-code@<pin>`).
 
+## Authentication: ANTHROPIC_API_KEY is required
+
+`fix_gripe` invokes `claude -p --bare --dangerously-skip-
+permissions`. **`--bare` mode forces strict `ANTHROPIC_API_KEY`
+auth** — OAuth and the macOS Keychain are unreachable from
+inside the container (the Keychain is host-only and doesn't
+bind-mount), so this is the only auth path that works for a
+non-interactive worker.
+
+Submit-time validation rejects the `put(kind='job', job_type=
+'fix_gripe', ...)` call with a clear error if the API key isn't
+set; no zombie queued jobs.
+
+Setup:
+
+1. Provision an API key at
+   <https://console.anthropic.com/settings/keys>.
+2. Add it to the precis-dev service in
+   `~/work/infrastructure/compose.yaml`:
+
+   ```yaml
+   services:
+     precis-dev:
+       environment:
+         ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}   # from host env
+   ```
+
+3. Export the key in your host shell or `~/.zprofile`:
+
+   ```bash
+   export ANTHROPIC_API_KEY="sk-ant-..."
+   ```
+
+The `_restricted_env` builder in `fix_gripe.py` whitelists
+`ANTHROPIC_*` vars so the key flows from the precis worker
+process into the per-job `claude -p` subprocess.
+
+`--bare` mode also strips Claude Code's auto-discovery (CLAUDE.md
+auto-loading, plugin sync, hooks, attribution, LSP, etc.) which
+is exactly what we want for a deterministic worker. The agent
+still has full tool access (Bash/Read/Write/Edit) and skill
+resolution via `/skill-name`.
+
 ## Required env vars on the precis container
 
 | Var                          | Required        | Default                | Notes                                                  |

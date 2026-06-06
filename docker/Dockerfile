@@ -373,3 +373,184 @@ USER precis
 # Drop into a shell by default. Override with `--command pytest` etc.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash"]
+
+# =============================================================================
+# IMAGE SPLIT (ADR 0021) — lean, role-scoped images on top of the shared
+# stages above. The embedder moved to its own service (ADR 0020), so
+# `serve` and `worker` no longer need `torch`/`sentence-transformers` or
+# the baked models at all; they reach the model over HTTP via
+# `PRECIS_EMBEDDER=remote` + `PRECIS_EMBEDDER_URL`.
+#
+#   serve     — MCP server.   torch-free, no models.   `precis serve`
+#   worker    — queue driver.  torch-free, no models.   `precis worker`
+#   ingest    — PDF watcher.   marker/torch + models.   `precis watch`
+#   embedder  — model service. sentence-transformers + bge-m3 cache.
+#               `precis serve-embeddings`
+#
+# Build e.g.:
+#   docker build --target serve    -t precis-serve:latest    -f docker/Dockerfile .
+#   docker build --target worker   -t precis-worker:latest   -f docker/Dockerfile .
+#   docker build --target ingest   -t precis-ingest:latest   -f docker/Dockerfile .
+#   docker build --target embedder -t precis-embedder:latest -f docker/Dockerfile .
+# (scripts/build-all wraps all four with git/build metadata + the
+#  premodels model-cache seed.)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage: deps-lite — torch-free venv for serve + worker. Installs the base
+# package plus only the lightweight kind extras (docx/tex/calc/plot/
+# external/patent). Crucially OMITS `paper` (marker→torch) and `embed`
+# (sentence-transformers→torch), so this venv carries no torch at all.
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS deps-lite
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_COLOR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+ARG UV_VERSION
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+        git \
+    && pip install --no-cache-dir "uv==${UV_VERSION}"
+
+WORKDIR /build/precis-mcp
+COPY pyproject.toml uv.lock /build/precis-mcp/
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    uv venv /opt/venv && \
+    uv sync --frozen --no-install-project \
+        --extra docx --extra tex --extra calc \
+        --extra plot --extra external --extra patent
+
+# -----------------------------------------------------------------------------
+# Stage: builder-lite — install precis-mcp (base only, --no-deps) into the
+# torch-free venv. Source edits invalidate from here; deps stay cached.
+# -----------------------------------------------------------------------------
+FROM deps-lite AS builder-lite
+
+COPY . /build/precis-mcp/
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    uv pip install --python /opt/venv --no-deps "/build/precis-mcp"
+
+# -----------------------------------------------------------------------------
+# Stage: serve — MCP server. system-base + torch-free venv, no models.
+# Set PRECIS_EMBEDDER=remote + PRECIS_EMBEDDER_URL at run time to reach the
+# embedder service; the default ("mock") keeps a bare `docker run` working.
+# -----------------------------------------------------------------------------
+FROM system-base AS serve
+
+COPY --from=builder-lite /opt/venv /opt/venv
+USER precis
+WORKDIR /data
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+CMD ["precis", "serve"]
+
+# -----------------------------------------------------------------------------
+# Stage: worker — derived-queue driver. system-base + torch-free venv, no
+# models. Embeds via the remote service like `serve`.
+# -----------------------------------------------------------------------------
+FROM system-base AS worker
+
+COPY --from=builder-lite /opt/venv /opt/venv
+USER precis
+WORKDIR /data
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+CMD ["precis", "worker"]
+
+# -----------------------------------------------------------------------------
+# Stage: ingest — PDF watcher. Needs marker/surya (→torch) and the marker
+# model cache, so it reuses the full `builder` venv. Embeddings are NOT
+# computed here (the embed worker does that lazily), so it carries marker
+# weights but reaches bge-m3 — when needed — via the remote embedder.
+# -----------------------------------------------------------------------------
+FROM system-base AS ingest
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=models --chown=precis:precis /opt/precis/models /opt/precis/models
+USER precis
+WORKDIR /inbox
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+CMD ["precis", "watch"]
+
+# -----------------------------------------------------------------------------
+# Stage: deps-embed — venv for the embedder service: base + `embed`
+# (sentence-transformers → torch). No marker.
+#
+# NOTE (CUDA): this builds CPU torch on the slim base — functional
+# everywhere, GPU-accelerated nowhere. The Linux/Spark deployment (ADR
+# 0020) overrides the base image with an nvidia/cuda runtime and installs
+# CUDA torch wheels; that needs a lockfile/extra-index pass and is tracked
+# as a follow-up. macOS runs the embedder NATIVELY (launchd + MPS), not in
+# this container, because a Mac container cannot reach Metal.
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS deps-embed
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_COLOR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+ARG UV_VERSION
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+        git \
+    && pip install --no-cache-dir "uv==${UV_VERSION}"
+
+WORKDIR /build/precis-mcp
+COPY pyproject.toml uv.lock /build/precis-mcp/
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    uv venv /opt/venv && \
+    uv sync --frozen --no-install-project --extra embed
+
+# -----------------------------------------------------------------------------
+# Stage: models-embed — bake ONLY the bge-m3 cache (PRECIS_BAKE_ONLY=embed).
+# Seeded from the `premodels` build context like the full `models` stage.
+# -----------------------------------------------------------------------------
+FROM deps-embed AS models-embed
+
+ENV HF_HOME=/opt/precis/models/hf \
+    PRECIS_BAKE_ONLY=embed
+
+COPY --from=premodels / /tmp/premodels-root/
+RUN mkdir -p "${HF_HOME}" && \
+    if [ -d /tmp/premodels-root/opt/precis/models ]; then \
+        cp -r /tmp/premodels-root/opt/precis/models/. /opt/precis/models/; \
+    fi && \
+    rm -rf /tmp/premodels-root
+COPY docker/bake-models.py /tmp/bake-models.py
+RUN /opt/venv/bin/python /tmp/bake-models.py && rm /tmp/bake-models.py
+
+# -----------------------------------------------------------------------------
+# Stage: builder-embed — install precis-mcp (base only) into the embed venv.
+# -----------------------------------------------------------------------------
+FROM models-embed AS builder-embed
+
+COPY . /build/precis-mcp/
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    uv pip install --python /opt/venv --no-deps "/build/precis-mcp"
+
+# -----------------------------------------------------------------------------
+# Stage: embedder — the HTTP embedding service. system-base + embed venv +
+# bge-m3 cache. Binds 8181 (PRECIS_EMBEDDER_PORT). `precis serve-embeddings`.
+# -----------------------------------------------------------------------------
+FROM system-base AS embedder
+
+COPY --from=builder-embed /opt/venv /opt/venv
+COPY --from=models-embed --chown=precis:precis /opt/precis/models /opt/precis/models
+USER precis
+WORKDIR /data
+EXPOSE 8181
+# Bind all interfaces inside the container so the port can be published;
+# in the all-local topology operators publish it on loopback only.
+ENV PRECIS_EMBEDDER_HOST=0.0.0.0
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+CMD ["precis", "serve-embeddings"]

@@ -127,7 +127,8 @@ config:
 | Var                           | Purpose                                          |
 |-------------------------------|--------------------------------------------------|
 | `PRECIS_DATABASE_URL`         | Postgres DSN (required for all ref kinds).       |
-| `PRECIS_EMBEDDER`             | `"mock"` (dev/tests) or `"bge-m3"` (prod).       |
+| `PRECIS_EMBEDDER`             | `"mock"` (dev/tests), `"bge-m3"` (in-process), or `"remote"` (HTTP client to `precis serve-embeddings`). |
+| `PRECIS_EMBEDDER_URL`         | Required for `remote`: ordered, comma-separated base URL(s), e.g. `http://127.0.0.1:8181`. First healthy endpoint wins; rest are fallback. |
 | `PRECIS_ROOT`                 | Single root dir for `markdown` / `plaintext` / `tex` kinds. The trio is hidden when unset; every read/write is normalised against this path (`Path.resolve()` + `relative_to`). |
 | `PRECIS_PYTHON_ROOTS`         | `alias:/path,alias2:/path2` — exposed Python repos. |
 | `PRECIS_PYTHON_ALLOW_EXEC=1`  | Gate for `python` runtrace (spawns subprocess).  |
@@ -210,6 +211,10 @@ the server.
 
 ```text
 precis serve                       # Start the MCP stdio server.
+precis serve-embeddings            # Run the HTTP embedding service (the
+                                   #   server side of PRECIS_EMBEDDER=remote;
+                                   #   /healthz /readyz /model /embed /metrics).
+precis worker                      # Drive the derived-artifact queue.
 precis migrate                     # Run pending SQL migrations.
 precis jobs ingest [root]          # Pre-warm .md / .txt / .tex under PRECIS_ROOT
                                    #   (mtime-gated; compose into launchers:

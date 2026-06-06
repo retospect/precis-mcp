@@ -1,7 +1,10 @@
 # ADR 0021 — Split the runtime image into `serve` / `worker` / `ingest`
 
-- **Status**: **proposed** (2026-06-06) — plan-first stub; no code
-  landed yet. Tracks `docs/design/embedder-service-and-image-split.md`.
+- **Status**: **accepted** (2026-06-06) — `serve` / `worker` / `ingest`
+  / `embedder` targets landed in `docker/Dockerfile`; `sentence-
+  transformers` split into the `embed` extra so serve/worker are
+  torch-free; `scripts/build-all` builds all four. Tracks
+  `docs/design/embedder-service-and-image-split.md`.
 - **Deciders**: Reto + agent
 - **Extends**: [ADR 0004 — multi-stage Dockerfile](./0004-multi-stage-dockerfile.md),
   [ADR 0009 — Dockerfile relocation](./0009-dockerfile-relocation-container-first.md),

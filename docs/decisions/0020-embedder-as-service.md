@@ -1,7 +1,10 @@
 # ADR 0020 — Embedder as a network service (behind the `Embedder` Protocol)
 
-- **Status**: **proposed** (2026-06-06) — plan-first stub; no code
-  landed yet. Tracks `docs/design/embedder-service-and-image-split.md`.
+- **Status**: **accepted** (2026-06-06) — client + service + CLI landed
+  (`precis.embedder.RemoteEmbedder`, `precis.embedder_service`,
+  `precis serve-embeddings`, `precis.embedder_wire`). Remaining: CUDA
+  embedder image (CPU torch only for now) + native macOS launchd
+  packaging. Tracks `docs/design/embedder-service-and-image-split.md`.
 - **Deciders**: Reto + agent
 - **Extends**: [ADR 0012 — Bake models into runtime image](./0012-bake-models-into-runtime-image.md)
   and [ADR 0019 — premodels build context](./0019-premodels-build-context.md).

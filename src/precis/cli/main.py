@@ -35,6 +35,7 @@ from precis.cli import (
     provenance,
     repl,
     resolve,
+    serve_embeddings,
     stats,
     stubs,
     tools,
@@ -66,6 +67,10 @@ def main() -> None:
         from precis.server import main as serve
 
         serve()
+        return
+
+    if args.cmd == "serve-embeddings":
+        serve_embeddings.run(args)
         return
 
     if args.cmd == "migrate":
@@ -146,6 +151,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve", help="Run the MCP server (stdio).")
+    serve_embeddings.add_parser(sub)
 
     migrate.add_parser(sub)
     maintenance.add_parser(sub)

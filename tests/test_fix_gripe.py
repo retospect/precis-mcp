@@ -286,6 +286,71 @@ class TestResolveRepoForGripe:
             resolve_repo_for_gripe(store, 42, cfg)
 
 
+# ── validate_submit: pre-submit rejection paths ───────────────────
+
+
+class TestValidateSubmit:
+    """``validate_submit`` is the JobHandler-side hook that turns
+    deployment misconfiguration into a clear ``BadInput`` at
+    ``put(kind='job', ...)`` time. Verifies the three rejection
+    paths we documented."""
+
+    @staticmethod
+    def _store(tag_values: list[str] | None = None) -> object:
+        class _Store:
+            def tags_for(self, _ref_id: int) -> list[str]:
+                return list(tag_values or [])
+
+        return _Store()
+
+    def test_rejects_when_env_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.workers.job_types.fix_gripe import validate_submit
+
+        monkeypatch.delenv("PRECIS_FIX_REPO_DIR", raising=False)
+        monkeypatch.delenv("PRECIS_FIX_REPOS", raising=False)
+        monkeypatch.delenv("PRECIS_FIX_WORK_DIR", raising=False)
+        err = validate_submit(self._store(), gripe_id=42, params={})
+        assert err is not None and "PRECIS_FIX_WORK_DIR" in err
+
+    def test_rejects_unknown_repo_tag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.workers.job_types.fix_gripe import validate_submit
+
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_REPOS", '{"precis-mcp": "/tmp/precis-mcp"}')
+        monkeypatch.delenv("PRECIS_FIX_REPO_DIR", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        err = validate_submit(
+            self._store(["repo:nope"]), gripe_id=42, params={}
+        )
+        assert err is not None and "not in PRECIS_FIX_REPOS" in err
+
+    def test_rejects_when_api_key_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.workers.job_types.fix_gripe import validate_submit
+
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/precis-mcp")
+        monkeypatch.delenv("PRECIS_FIX_REPOS", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        err = validate_submit(self._store(), gripe_id=42, params={})
+        assert err is not None and "ANTHROPIC_API_KEY" in err
+
+    def test_accepts_valid_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from precis.workers.job_types.fix_gripe import validate_submit
+
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/precis-mcp")
+        monkeypatch.delenv("PRECIS_FIX_REPOS", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        err = validate_submit(self._store(), gripe_id=42, params={})
+        assert err is None
+
+
 # ── job_types registry: lookup paths ───────────────────────────────
 
 

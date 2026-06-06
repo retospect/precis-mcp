@@ -158,20 +158,33 @@ def validate_submit(
     immediate, actionable rejection rather than a queued job that
     silently fails at claim time.
 
-    Today we only validate repo resolution; future params would
-    plug into the same hook.
+    We check three things:
+
+    1. The fix_gripe env is wired (``PRECIS_FIX_WORK_DIR``,
+       repo resolution available).
+    2. The linked gripe's ``repo:`` tag resolves to an allowed
+       repo (or there's a fallback for un-tagged gripes).
+    3. ``ANTHROPIC_API_KEY`` is set — the in-container
+       ``claude -p --bare`` invocation can't see the host's
+       OAuth / Keychain state, so an API key is the only
+       workable auth path.
     """
     try:
         cfg = load_config_from_env()
     except RuntimeError as exc:
-        # Deployment doesn't have fix_gripe env wired at all — be
-        # explicit. The runner won't start either way; surfacing
-        # this at submit time is a kindness to the operator.
         return str(exc)
     try:
         resolve_repo_for_gripe(store, gripe_id, cfg)
     except ValueError as exc:
         return str(exc)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return (
+            "fix_gripe: ANTHROPIC_API_KEY is not set in the precis "
+            "container env. The in-container `claude -p --bare` "
+            "invocation can't reach the host's OAuth / Keychain "
+            "state, so an API key is required. Add it to the "
+            "precis-dev service in your compose file."
+        )
     return None
 
 
@@ -390,12 +403,35 @@ def _compose_prompt(*, ref_title: str, blocks: list[Any]) -> str:
 def _spawn_claude(
     cfg: FixGripeConfig, cwd: Path, prompt: str
 ) -> subprocess.CompletedProcess[str]:
-    """Spawn ``claude -p`` with a stripped env."""
+    """Spawn ``claude -p`` with a stripped env.
+
+    Uses ``--bare`` so auth is strictly ``ANTHROPIC_API_KEY`` (no
+    OAuth, no keychain reads, no plugin sync, no CLAUDE.md
+    auto-discovery). The claude_inproc executor runs inside the
+    precis container where Claude Code's OAuth state from the host
+    is unreachable (Keychain doesn't bind-mount), so an API key is
+    the only workable auth path. ``--bare`` makes the failure mode
+    obvious — without a key claude exits immediately with a clear
+    error rather than silently reading a stale OAuth state.
+
+    The agent inside ``--bare`` still has full tool access
+    (Bash/Read/Write/Edit) and skill resolution via ``/skill-name``;
+    only auto-discovery is stripped, which is exactly what we want
+    for a deterministic worker.
+    """
     env = _restricted_env(cwd)
+    if "ANTHROPIC_API_KEY" not in env:
+        raise RuntimeError(
+            "fix_gripe: ANTHROPIC_API_KEY is required to run claude -p "
+            "in the precis container (OAuth / keychain auth aren't "
+            "reachable from inside the container). Set it in the "
+            "precis-dev compose service."
+        )
     return subprocess.run(
         [
             cfg.claude_bin,
             "-p",
+            "--bare",
             "--dangerously-skip-permissions",
             "--model",
             cfg.claude_model,

@@ -10,6 +10,27 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **Embedder-as-a-service + image split (ADR 0020 / 0021).** The
+  embedder can now run as a standalone HTTP service so torch-free
+  `serve` / `worker` processes embed remotely instead of each loading
+  bge-m3 in-process:
+  - `precis serve-embeddings` — stdlib HTTP service wrapping
+    `BgeM3Embedder` (`/healthz`, `/readyz`, `/model`, `/embed`,
+    `/metrics`; bounded-semaphore backpressure → `429` + `Retry-After`).
+  - `RemoteEmbedder` — an `Embedder` HTTP client with ordered
+    endpoint fallback, exponential-backoff retries, and a `/model`
+    boundary check that refuses a dim/version mismatch loudly.
+    Selected via `PRECIS_EMBEDDER=remote` + `PRECIS_EMBEDDER_URL`
+    (`PRECIS_EMBEDDER_TIMEOUT`, `PRECIS_EMBEDDER_MAX_RETRIES`).
+  - `precis.embedder_wire` — the request/response schema shared by
+    client and service so they cannot drift.
+  - **Dockerfile split** into role-scoped targets: `serve` / `worker`
+    (torch-free, no models), `ingest` (marker + models), and
+    `embedder` (sentence-transformers + bge-m3 cache). `bake-models.py`
+    gained `PRECIS_BAKE_ONLY=all|marker|embed`.
+  - **`scripts/build-all`** — builds all four images via
+    `docker build --target`, threading git/build metadata and the
+    `premodels` model-cache seed.
 - **`precis-status` reports build / runtime / DB facts.** The
   synthesised `precis-status` skill (previously only an optional-
   dependency probe) now prepends three sections:
