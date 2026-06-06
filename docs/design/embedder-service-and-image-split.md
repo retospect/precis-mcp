@@ -61,6 +61,12 @@ its ADR.
 - **Placement is a URL, not a hard-coded topology.** `PRECIS_EMBEDDER_URL`
   selects the endpoint(s). All-local (laptop) and server-hosted are the
   same code.
+- **Fleet = every node runs its own local embedder (settled).** Each Mac
+  (laptop + any metal boxes) runs a native launchd embedder; the Spark
+  (Linux/CUDA) runs the container form. Every `serve`/`worker` on a node
+  talks to **its own `127.0.0.1` embedder** — so it's all-local, no
+  tunnel on the hot path. A cross-node forwarded endpoint is an optional
+  *fallback* only (token + tunnel), not the normal path.
 - **macOS embedder = native launchd service** (MPS). Linux GPU embedder
   = CUDA container. Single-platform per target; the earlier
   "multiplatform container" framing is dropped for the embedder.
@@ -108,6 +114,12 @@ its ADR.
 - Workers that need an embedder: `embed`, `chunk_keywords`,
   `tag_embeddings`. Workers that **don't**: `chase`, `job_claude_inproc`,
   `fetch_oa`. (`cli/worker.py` wires them as ref-passes.)
+- **"KeyBERT" is not the `keybert` library** — `src/precis/utils/keybert.py`
+  + the `chunk_keywords` pass are RAKE/regex/abbrev candidate generation
+  (pure stdlib) scored by cosine via the **same `Embedder`**. No model
+  of its own; it is just another `embedder.embed()` consumer, served by
+  the remote embedder automatically. Also called by `utils/toc.py` (the
+  discovery-layer precompute, not a live `serve` path).
 - Marker/surya is imported **only** in `src/precis/ingest/marker.py`,
   lazily inside functions; `serve` never loads it. Ingest does *not*
   embed inline — embeddings are populated lazily by the embed worker
@@ -273,6 +285,82 @@ worker) gets its own isolation boundary — tracked in its own ADR.
   `pytest`); version bump + `CHANGELOG` entry; README + `--help` for
   the new subcommand.
 
+## Deploy & fleet management (Ansible)
+
+The fleet is heterogeneous: several **Macs** (native launchd embedders)
+plus the **Spark** (Linux/CUDA container embedder). One Ansible role,
+`embedder`, with OS branches; nodes carry inventory vars for which
+precis roles they host (`serve`, `worker`, `ingest`, `embedder`).
+
+### One role, two platform branches
+
+- `when: ansible_os_family == "Darwin"` → native path (uv venv +
+  LaunchAgent).
+- `when: ansible_os_family != "Darwin"` (Spark) → container path
+  (compose/systemd + nvidia runtime).
+
+Shared, platform-agnostic vars pin the **model contract** so every node
+agrees: `precis_embedder_model: bge-m3`, `precis_embedder_dim: 1024`,
+`precis_embedder_revision: <hf-sha>`, `precis_embedder_port: 8181`,
+`precis_version: <git tag / wheel>`. The client's boundary check
+(`/model`) turns any drift into a loud failure rather than silent
+corruption — Ansible pins it, the runtime verifies it.
+
+### macOS specifics (the fiddly bits)
+
+- **uv venv, pinned.** Role installs `uv`, creates the venv at a fixed
+  path, `uv sync --frozen` against the pinned `precis_version`. Idempotent.
+- **LaunchAgent, not LaunchDaemon.** Template
+  `~/Library/LaunchAgents/com.precis.embedder.plist`
+  (`RunAtLoad=true`, `KeepAlive=true`, `EnvironmentVariables`,
+  `StandardOut/ErrorPath`, `SoftResourceLimits`). Load with
+  `launchctl bootstrap gui/$UID …` / reload on plist change
+  (`bootout` then `bootstrap`).
+- **Auto-login is required and is the sensitive step.** Metal/MPS needs
+  an Aqua session, so the headless Macs must auto-login the embedder
+  user at boot. This is a security tradeoff (FileVault interaction,
+  `kcpassword`): call it out, gate it behind an explicit
+  `precis_enable_autologin: true`, and document the manual
+  alternative. **Do not silently enable it.**
+- **Model cache pre-seed.** Pre-stage the pinned HF revision to
+  `HF_HOME` (rsync from a known-good node or an internal mirror) so the
+  first boot doesn't trigger a multi-GB download — mirrors the
+  Dockerfile `premodels` seed mechanism. Verify the revision hash
+  post-copy.
+- **Remote management caveat:** Ansible over SSH to a Mac runs outside
+  the GUI session; `launchctl` ops on a GUI-domain agent need
+  `bootstrap gui/$(id -u <user>)` (the target user's uid), not the SSH
+  session's. Pin the uid in inventory.
+
+### Spark (Linux/CUDA) specifics
+
+- Pull/build the `embedder` image (CUDA target); run via compose or a
+  systemd unit with `--gpus all` (nvidia-container-runtime). Same
+  `/healthz` `/readyz` `/model` `/metrics` contract.
+- Secrets via the existing `_FILE` convention in
+  `docker/docker-entrypoint.sh` (the embedder itself needs no DB/API
+  secrets, but `serve`/`worker`/`ingest` on the box do).
+
+### Cross-cutting
+
+- **Secrets:** `ansible-vault`; never in the repo. Embedder binds
+  `127.0.0.1`, so no embedder secret is needed in the all-local
+  topology; a forwarded endpoint adds `PRECIS_EMBEDDER_TOKEN`.
+- **Health-gated rollout:** after (re)starting the embedder, the play
+  polls `/readyz` and runs a one-shot smoke `embed` before marking the
+  node done; only then (re)starts dependent `serve`/`worker`.
+- **Rolling fleet upgrade:** bumping `precis_embedder_revision` is a
+  corpus-wide contract change (re-embed implication — see
+  `thresholds.md`). Roll one node at a time; the `/model` boundary
+  check is the guardrail. **Stop-and-ask** before changing the
+  revision/dim across the fleet.
+- **Idempotency / convergence:** re-running the playbook converges
+  venv → pinned version, plist → template, service → running the right
+  revision. No drift.
+- **Observability:** scrape each node's `/metrics`; alert on sustained
+  queue depth / p99 (per §service). A node with a wedged embedder
+  fails its dependents' readiness, not silently.
+
 ## Suggested sequencing
 
 1. `embedder_wire` + `RemoteEmbedder` + `make_embedder("remote")` +
@@ -287,14 +375,30 @@ worker) gets its own isolation boundary — tracked in its own ADR.
 6. Image split: tiny serve, worker without torch, ingest with marker.
 7. Independent queues as deployment units; `job_claude_inproc`
    isolation (own ADR).
+8. Ansible `embedder` role (Mac launchd + Spark CUDA branches),
+   model-contract vars, health-gated rollout, model-cache pre-seed.
 
 ## Open questions for the reviewer
 
 1. Wire format: stay JSON, or msgpack the float payload from day one?
-2. Does the laptop run its *own* local embedder (prefer-local, fall
-   back to metal) — 2× weights in RAM — or always forward to the metal
-   box?
 3. Auth on forwarded endpoints: bearer token now, or rely on the tunnel
-   (tailscale/cloudflared) for identity?
-4. Keep `ingest` as its own image, or fold it into a "fat backend" that
-   also runs the worker queues?
+   (tailscale/cloudflared) for identity? (Moot in the all-local
+   topology; only matters if a node ever borrows another's embedder.)
+
+_Resolved:_
+- **Every node runs its own local embedder** (laptop included);
+  `serve`/`worker` talk to `127.0.0.1`. Cross-node forwarding is a
+  fallback only. (No 2×-RAM concern — each node has one embedder.)
+- **`ingest` stays its own image** (Marker is the biggest dep; only
+  `precis watch` needs it).
+- **Run the embedder on Mac natively** (launchd, MPS) on every Mac;
+  the Spark runs the Linux/CUDA container form.
+- **Enclosed via a locked `uv` venv**; **monorepo** wire schema;
+  **`torch` removed** from serve/worker images; **exponential backoff**
+  in the client.
+
+_Performance follow-up (not v1-blocking):_ the `chunk_keywords` pass
+embeds ~40 candidate phrases per chunk — a heavier embedder consumer
+than the embed pass. Cross-chunk batch coalescing + a phrase→vector
+cache (phrases repeat across chunks/papers) would cut remote
+round-trips; revisit once the service is live.

@@ -259,7 +259,8 @@ capped (~6), distance floor (`PRECIS_DREAM_MAX_DIST`). No cluster →
 mark dreamed, no-op.
 
 **LLM supervision (default-off, opus-class).** Show cluster (id + text +
-tags + links summary); strict JSON:
+tags + links summary); strict JSON (full prompt template + parse/repair
+policy in §Prompts & output contracts):
 
 ```json
 {
@@ -491,6 +492,200 @@ are the default and the prompt nudges toward them, with `research`
 reserved for when it's clearly worth it. A new top-level capability —
 warrants its own ADR.
 
+## Prompts & output contracts
+
+All dream LLM calls go through the same `call_claude_p(prompt,
+model=..., max_usd=...)` path the chase worker uses
+(`utils/claude_p.py`), with `model` set to the opus-class
+`PRECIS_DREAM_MODEL`. The shared mechanics, grounded in the existing
+chase hooks (`workers/_chase_llm.py`):
+
+- **Single-prompt, JSON-tail.** There is no separate system field —
+  the persona + rules are the prompt preamble, and every prompt ends
+  with *"Respond with EXACTLY ONE JSON object, nothing else:"* + the
+  schema. `_parse_last_json_block` takes the rightmost balanced `{…}`,
+  so a stray sentence of preamble is tolerated.
+- **Stateless calls.** `--no-session-persistence` means no
+  conversation memory between calls. The search loop is therefore
+  **worker-driven**: each round the worker re-calls `call_claude_p`
+  with a fresh prompt that *appends* prior search results (a
+  `PRIOR SEARCH RESULTS` block); the model is not "continuing" a chat.
+- **Context caps.** Chunk/excerpt text is truncated before
+  interpolation (chase uses `[:4000]` / `[:1500]` / `[:200]`). Dream
+  prompts never dump a full cluster — see input rendering below.
+
+### Parse / validate / repair policy
+
+Mirrors chase's `None`-tolerance, made explicit:
+
+1. **Transport / parse failure** — `ClaudePError` (non-zero exit,
+   timeout, *no parseable JSON block*) → **no-op**: stamp
+   `meta.dreamed_at`, log a `dream_log` row with `outcome='error'`,
+   move on. Never partially applies.
+2. **Parsed but schema-invalid** — required key missing, wrong type,
+   or a semantic guard fails (e.g. Mode 1 `merge_ids` not a length-≥2
+   subset of the shown ids; Mode 4 `confidence` out of `[0,1]`) →
+   treat as **no-op** too (`outcome='rejected'`, reason
+   `'schema_invalid'`). Conservative by default.
+3. **No automatic repair re-prompt** in v1 (matches chase, which does
+   not retry). A single repair round is a future option behind a flag,
+   not baseline — it costs a second opus call for a rare event.
+
+So *"unparsable"* (the Mode 1 term) = case 1 or 2: the worker could not
+recover a valid, schema-conforming object, so it does nothing and lets
+the memory cool down.
+
+### Input rendering & token budget
+
+A Mode 2 frontier is thousands of chunks; it is never serialized whole.
+The worker renders a **bounded, representative view**:
+
+- Cluster members → a table of `(id, kind, tags, excerpt[:500])`,
+  capped at the **N most central** rows (nearest centroid) plus a few
+  peripheral ones; remaining count summarized as `"+M more"`.
+- Mode 1 shows the focal memory + its neighbours in full (memories are
+  short).
+- The shown `id`s are the *only* handles the model may cite back in
+  `source_ids` / `merge_ids` / `stimulus_id`; the worker maps them to
+  real ref/chunk ids and rejects any id it didn't show.
+
+### Shared SEARCH PROTOCOL block (Modes 2 & 4)
+
+Interpolated into Mode 2/4 prompts (not Mode 1):
+
+```text
+SEARCH PROTOCOL (optional):
+You may gather external knowledge before deciding. Providers:
+  s2        - Semantic Scholar (free): papers, abstracts, OA PDFs
+  websearch - quick web answer (~$0.001)   [prefer this]
+  think     - deeper analytical answer (~$0.005)
+  research  - multi-step deep research (costs a little more; reserve
+              it for when it's clearly worth it)
+Search freely when it would change your decision - you can take your
+time; prefer the cheap tiers. To search, return "searches" non-empty
+and "decision": null. The worker runs them and re-prompts you with the
+results. When you are done, return "searches": [] and a full
+"decision".
+```
+
+The envelope for searchable modes is uniform:
+
+```json
+{
+  "searches": [{"provider": "...", "query": "...", "reason": "..."}],
+  "decision": { /* mode-specific, see below */ } | null
+}
+```
+
+Worker loop: `searches` non-empty → execute via the §External-search
+entry-points, append a `PRIOR SEARCH RESULTS` block, re-prompt
+(unbounded rounds). `searches` empty + `decision` non-null → apply.
+
+### Mode 1 — consolidate (no search)
+
+```text
+You are consolidating a personal knowledge base's MEMORY notes. You
+are shown a focal memory and its nearest semantic neighbours. Decide
+whether a SUBSET of them say the same thing or refine one another and
+should be MERGED into one better memory.
+
+Be CONSERVATIVE: default merge=false unless you are confident the
+subset is redundant or one clearly refines another. Never merge notes
+that carry distinct, independently useful facts.
+
+MEMORIES (id, tags, text):
+{cluster_table}
+
+Respond with EXACTLY ONE JSON object, nothing else:
+{{
+  "merge": true | false,
+  "merge_ids": [<int>, ...],   // subset of shown ids, length >= 2
+  "new_text": "<consolidated memory; \"\" when merge=false>",
+  "new_tags": ["..."],          // default: union of merged tags
+  "reason": "<one sentence>"
+}}
+```
+
+### Modes 2 & 3 — synthesize + TOC (one call)
+
+The synthesis pass emits the Mode-2 summary and the Mode-3 TOC together
+(Mode 3 is a renderer, not a separate call):
+
+```text
+You are writing a higher-level SYNTHESIS over a cluster of items
+(papers, findings, notes) from a knowledge base. Produce (1) a concise
+"dream" memory capturing what this region is about and why it mattered
+lately, and (2) a table of contents breaking the region into
+sub-themes.
+
+Cite sources only by their shown id. Invent nothing unsupported by the
+shown items; if the cluster is incoherent, say so in "summary" and
+return few or no toc entries.
+
+{SEARCH_PROTOCOL}
+
+ITEMS (id, kind, tags, excerpt):
+{cluster_table}
+
+{prior_search_results}
+
+Respond with EXACTLY ONE JSON object, nothing else:
+{{
+  "searches": [ ... ],
+  "decision": {{
+    "summary": "<the dream memory text>",
+    "tags": ["..."],
+    "source_ids": [<int>, ...],
+    "toc": [
+      {{"label": "<sub-theme>",
+        "gloss": "<one or two sentences>",
+        "source_ids": [<int>, ...]}}
+    ]
+  }} | null
+}}
+```
+
+### Mode 4 — inspire (search + judgment)
+
+```text
+You are looking for non-obvious but REALISTIC cross-applications. You
+are shown a CURRENT ISSUE (an active cluster the user is working on)
+and one or more unrelated STIMULUS items from elsewhere in the
+knowledge base. For each stimulus, decide whether there is a
+realistic, concrete way to apply it to the issue.
+
+Be skeptical: say no by default. A forced or generic analogy is a no.
+Return apply=true only when you can name a specific, plausible use.
+
+{SEARCH_PROTOCOL}
+
+CURRENT ISSUE:
+{issue_summary}
+
+STIMULI (id, kind, excerpt):
+{stimulus_table}
+
+{prior_search_results}
+
+Respond with EXACTLY ONE JSON object, nothing else:
+{{
+  "searches": [ ... ],
+  "decision": {{
+    "ideas": [
+      {{"stimulus_id": <int>,
+        "apply": true | false,
+        "idea": "<concrete application; \"\" when apply=false>",
+        "confidence": 0.0,
+        "reason": "<one sentence>"}}
+    ]
+  }} | null
+}}
+```
+
+Each `idea` with `apply=true` becomes one fenced `inspiration` memory;
+`apply=false` ideas are logged to `dream_log` (`outcome='rejected'`)
+and never written as memories.
+
 ## Dream log (telemetry & feedback loop)
 
 `ref_events` is keyed to a ref, so it cannot record **discarded**
@@ -581,6 +776,12 @@ staleness thresholds.
 - **Dream log:** row written on all outcomes incl. discards;
   discard rows carry stimulus/target ids and no `result_ref_id`;
   acceptance-rate aggregation query.
+- **Prompts / parsing:** `ClaudePError` → `outcome='error'` no-op;
+  schema-invalid (missing key, bad type, `merge_ids` not a ≥2 subset
+  of shown ids, out-of-range `confidence`) → `outcome='rejected'`
+  no-op; id-handle rejection (model cites an id it wasn't shown);
+  search-loop terminates when `searches=[]` + `decision` non-null;
+  worker appends `PRIOR SEARCH RESULTS` across stateless rounds.
 
 ## Definition of done (per AGENTS.md)
 
