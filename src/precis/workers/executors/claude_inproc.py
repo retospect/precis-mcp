@@ -196,11 +196,12 @@ def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
         if not rows:
             conn.commit()
             return {"claimed": 0, "ok": 0, "failed": 0}
-        lease_horizon = "now() + interval '30 minutes'"
         for ref_id, _title, _meta in rows:
             conn.execute(
                 "UPDATE refs SET meta = meta || "
-                f"jsonb_build_object('lease_until', {lease_horizon}::text) "
+                "jsonb_build_object("
+                "  'lease_until', (now() + interval '30 minutes')::text"
+                ") "
                 "WHERE ref_id = %s",
                 (ref_id,),
             )

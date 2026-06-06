@@ -48,6 +48,10 @@ Relation = Literal[
     "corrects",
     "concern-raised-by",
     "raises-concern-about",
+    # fix_gripe job_type — migration 0006. A `kind='job'` with
+    # `job_type='fix_gripe'` carries `link='gripe:N' rel='fixes'`.
+    "fixes",
+    "fixed-by",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -429,6 +433,24 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "established",
             "multi_candidate",
             "dead_chain",
+            # gripe lifecycle (migration 0005 / handler rewrite).
+            # ``open`` is shared with todo above; the rest are
+            # gripe-only.
+            "triaged",
+            "ready_for_fix",
+            "in_review",
+            "wontfix",
+            # job lifecycle (migration 0005 / fix_gripe substrate).
+            # ``submitted`` is reserved for future cluster
+            # executors (slurm); ``claude_inproc`` jobs go
+            # queued → running → succeeded|failed|cancelled.
+            "queued",
+            "submitted",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "cancel_requested",
         }
     ),
     "PRIO": frozenset({"low", "normal", "high", "urgent"}),
@@ -469,6 +491,9 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # Workflow kinds — STATUS + priority.
     "todo": frozenset({"STATUS", "PRIO"}),
     "gripe": frozenset({"STATUS", "PRIO"}),
+    # Job state machine — STATUS only. PRIO not used (jobs run on
+    # demand; if you want one prioritised, just submit it later).
+    "job": frozenset({"STATUS"}),
     # Free-form notes: no closed axes. Confidence, topic, project,
     # etc. are open tags (``confidence-strong``, ``topic-noxrr``).
     "memory": frozenset(),

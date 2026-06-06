@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -68,19 +68,25 @@ class RefsMixin:
 
     # Provided by ``TagsMixin`` on the concrete Store; declared here so
     # the retraction-cascade path in ``regrade_finding_for_retraction``
-    # type-checks against the cross-mixin call. MRO resolves to the
-    # real impl at runtime.
-    def add_tag(
-        self,
-        ref_id: int,
-        tag: Tag,
-        *,
-        pos: int | None = None,
-        set_by: ActorSlug = "agent",
-        replace_prefix: bool = False,
-        conn: Connection | None = None,
-    ) -> None:
-        raise NotImplementedError  # pragma: no cover — overridden by Store
+    # type-checks against the cross-mixin call. **Must be TYPE_CHECKING
+    # only** — Store's MRO is (Store, RefsMixin, BlocksMixin, TagsMixin,
+    # ...), so a runtime ``def add_tag`` here wins over TagsMixin's real
+    # implementation and every numeric-ref put dies with
+    # NotImplementedError. Filed gripe: see CHANGELOG entry for
+    # migration 0005 / handler rewrite for the prior incident that
+    # surfaced this.
+    if TYPE_CHECKING:
+
+        def add_tag(
+            self,
+            ref_id: int,
+            tag: Tag,
+            *,
+            pos: int | None = None,
+            set_by: ActorSlug = "agent",
+            replace_prefix: bool = False,
+            conn: Connection | None = None,
+        ) -> None: ...
 
     def insert_ref(
         self,
