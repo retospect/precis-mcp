@@ -485,6 +485,25 @@ limit.)
   recorded in the dream's `dream_log.verdict` and `ref_events`, and the
   fetched refs link back to the resulting dream for provenance.
 
+**How a search actually runs (in-process, not over MCP).** The LLM's
+`searches[]` is *data, not an executed call*. The model proposes; the
+worker validates and executes. Execution reuses the **same in-process
+entry the MCP server uses** — `runtime.dispatch('get', {'kind':
+'websearch', 'q': ...})`, equivalently `hub.handler_for(kind).get(...)`
+(for `s2`, the `lookup_s2` / `get_paper_by_id` → `precis add`
+functions). MCP is only a transport shell over `runtime.dispatch`
+(`mcp_modalities._read_resource` just calls it), and the worker is
+already in the process — so it bypasses the transport: no self-MCP
+round-trip, and **not** `call_claude_p`'s own tool/web access (rejected
+for cache/audit/cost control). Each call returns a `Response` (rendered
+body + `cost`) **and** persists a cached ref (refs + chunks +
+cache_state) as a side effect, so the fetched knowledge is immediately
+searchable and linkable. The worker folds a trimmed body into the next
+round's `PRIOR SEARCH RESULTS` block, records `Response.cost` + the
+created ref id in `dream_log`, and links the ref to the dream. This is
+the same **propose / dispose** split that keeps the `decision` (merges,
+inspirations) out of the model's hands — the model never writes.
+
 **Cost & safety.** Default-off behind the same `PRECIS_DREAM_LLM` gate
 plus a separate `PRECIS_DREAM_SEARCH` toggle. No hard budget ceiling
 (unbounded by choice); the cheap tiers (free S2, ~$0.001 `websearch`)

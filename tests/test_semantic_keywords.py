@@ -1,4 +1,4 @@
-"""KeyBERT semantic keyword extractor contract tests.
+"""Semantic keyword extractor (KeyBERT-style) contract tests.
 
 Uses a deterministic mock embedder (hash-based) so the test
 doesn't depend on a real model. The mock isn't semantically
@@ -13,7 +13,7 @@ import hashlib
 
 import pytest
 
-from precis.utils.keybert import (
+from precis.utils.semantic_keywords import (
     extract_keywords_semantic,
     mean_embedding,
     privileged_candidates,

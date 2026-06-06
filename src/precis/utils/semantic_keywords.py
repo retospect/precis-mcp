@@ -1,4 +1,10 @@
-"""KeyBERT-style semantic keyword extraction using the live embedder.
+"""Semantic keyword extraction using the live embedder.
+
+KeyBERT-style (Grootendorst) — this is a homegrown reimplementation of
+the *technique* (embed candidate phrases, rank by cosine to a target
+embedding, diversify with MMR), **not** the ``keybert`` PyPI package,
+which is not a dependency. Named ``semantic_keywords`` to avoid
+impersonating that package.
 
 Extracts candidate noun phrases the same way RAKE does (stopword-split
 within sentences, 1-4 word phrases), then scores each candidate by

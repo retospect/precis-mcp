@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARN", "WARNING", "ERROR"]
-EmbedderName = Literal["mock", "bge-m3"]
+EmbedderName = Literal["mock", "bge-m3", "remote"]
 
 
 class PrecisConfig(BaseSettings):
@@ -34,7 +34,38 @@ class PrecisConfig(BaseSettings):
     - ``"mock"`` (default): deterministic, no model load. Use for tests
       and local smoke runs.
     - ``"bge-m3"``: load `BAAI/bge-m3` via `sentence-transformers`
-      (heavy; requires the optional `paper` extra). Use for production.
+      (heavy; requires the optional `paper` extra). In-process.
+    - ``"remote"``: an HTTP client (`RemoteEmbedder`) to a
+      ``precis serve-embeddings`` service — no local model load, no
+      `torch`. Requires ``PRECIS_EMBEDDER_URL`` (ADR 0020).
+    """
+
+    embedder_url: str | None = None
+    """Endpoint(s) for ``embedder="remote"``.
+
+    Ordered, comma-separated base URLs, e.g.
+    ``http://127.0.0.1:8181`` or
+    ``http://127.0.0.1:8181,http://pg-host.local:8181``. The client
+    prefers the first healthy endpoint and falls back to the next. In
+    the all-local fleet topology each node points at its own loopback
+    embedder; a forwarded endpoint is an optional fallback.
+
+    Set via ``PRECIS_EMBEDDER_URL`` in the env. Ignored unless
+    ``embedder="remote"``.
+    """
+
+    embedder_timeout: float = 30.0
+    """Per-call HTTP deadline (seconds) for ``embedder="remote"``.
+
+    Set via ``PRECIS_EMBEDDER_TIMEOUT`` in the env.
+    """
+
+    embedder_max_retries: int = 3
+    """Max retries per endpoint for ``embedder="remote"`` before falling
+    back to the next endpoint. Retries use exponential backoff with
+    jitter; ``429`` / ``5xx`` / connection failures are retryable.
+
+    Set via ``PRECIS_EMBEDDER_MAX_RETRIES`` in the env.
     """
 
     root: str | None = None

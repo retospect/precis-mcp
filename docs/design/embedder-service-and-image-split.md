@@ -114,8 +114,8 @@ its ADR.
 - Workers that need an embedder: `embed`, `chunk_keywords`,
   `tag_embeddings`. Workers that **don't**: `chase`, `job_claude_inproc`,
   `fetch_oa`. (`cli/worker.py` wires them as ref-passes.)
-- **"KeyBERT" is not the `keybert` library** — `src/precis/utils/keybert.py`
-  + the `chunk_keywords` pass are RAKE/regex/abbrev candidate generation
+- **"KeyBERT" is not the `keybert` library** — `src/precis/utils/semantic_keywords.py`
+  (renamed from `keybert.py`) + the `chunk_keywords` pass are RAKE/regex/abbrev candidate generation
   (pure stdlib) scored by cosine via the **same `Embedder`**. No model
   of its own; it is just another `embedder.embed()` consumer, served by
   the remote embedder automatically. Also called by `utils/toc.py` (the

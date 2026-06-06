@@ -40,12 +40,12 @@ from precis.format import render_agent_table
 from precis.utils.abbreviations import find as find_abbreviations
 from precis.utils.abbreviations import substitute as substitute_abbreviations
 from precis.utils.boilerplate import ChunkClass, classify_chunks
-from precis.utils.keybert import (
+from precis.utils.rake import extract_keywords
+from precis.utils.semantic_keywords import (
     extract_keywords_semantic,
     mean_embedding,
     privileged_candidates,
 )
-from precis.utils.rake import extract_keywords
 from precis.utils.segmentation import (
     K_MAX,
     K_MIN,
@@ -599,7 +599,7 @@ def _pre_filtered_candidates(
     The privileged-pattern union catches the rare-but-central
     phrases RAKE's frequency-only score might drop (a paper's
     central concept mentioned only twice). See
-    :func:`precis.utils.keybert.privileged_candidates`.
+    :func:`precis.utils.semantic_keywords.privileged_candidates`.
 
     Returns a deduplicated list (case-insensitive). Order doesn't
     matter — KeyBERT scores all of them and picks top-K.

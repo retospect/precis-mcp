@@ -25,6 +25,9 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Marker memory leak | [0015](./0015-marker-leak-mitigation.md) | |
 | Work-claim locking | [0016](./0016-advisory-lock-claims.md) | postgres advisory locks; replaces file-based |
 | Discovery layer | **superseded** — see [F20 note in CLAUDE.md](../../CLAUDE.md) | [0018](./0018-persistent-discovery-layer.md) kept for history; per-chunk KeyBERT now lives in `src/precis/workers/chunk_keywords.py` |
+| Embedder as a service | [0020](./0020-embedder-as-service.md) | **proposed**; extends 0012/0019 (weights move into one warm service) |
+| Image split (serve/worker/ingest) | [0021](./0021-image-split-serve-worker-ingest.md) | **proposed**; extends 0004/0009/0012, depends on 0020 |
+| Independent worker queues | [0022](./0022-independent-worker-queues.md) | **proposed**; extends 0016/0017 |
 
 ## Supersession graph
 

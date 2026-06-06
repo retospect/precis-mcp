@@ -1212,7 +1212,13 @@ def build_runtime(
     embedder: Embedder | None = None
     if config.database_url:
         store = Store.connect(config.database_url)
-        embedder = make_embedder(config.embedder, dim=store.embedding_dim())
+        embedder = make_embedder(
+            config.embedder,
+            dim=store.embedding_dim(),
+            url=config.embedder_url,
+            timeout=config.embedder_timeout,
+            max_retries=config.embedder_max_retries,
+        )
 
     from precis import default_tags as _dt
     from precis.kind_gate import parse_disabled
