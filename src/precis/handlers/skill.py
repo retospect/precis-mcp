@@ -143,6 +143,7 @@ _SKILL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "precis-toc",
             "precis-toc-help",
             "precis-status",
+            "precis-status-help",
             "precis-startup-skills-help",
             "precis-session-context-help",
             "precis-kinds-disabled-help",

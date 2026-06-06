@@ -25,6 +25,16 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   when the DB itself is the thing wrong. Env fields default to
   `"unknown"` when no build-args were passed — see
   `scripts/build-image` for the host-side capture.
+- **`precis-status-help` skill.** Companion file-backed skill that
+  makes the synthesised `precis-status` discoverable through
+  `search(kind='skill', q=…)`. The synth's body is rendered live
+  (uptime, pid, …) and never indexed; the help file is an alias-
+  group ramp — every section bundles 6–8 natural-language H2
+  phrasings of the same intent ("what version am I", "what release",
+  "git sha", "what database", "migration version", …) sharing one
+  body, so each phrasing gets its own embedding chunk and matches
+  the obvious query. Listed in the `Orientation` category of the
+  skill index alongside `precis-status` itself.
 - **`scripts/build-image`.** Host-side wrapper that collects git
   facts (`git rev-parse`, `git describe --tags --abbrev=0`, dirty
   flag) plus `date`/`hostname`/`$USER` and runs
