@@ -173,6 +173,20 @@ class JobHandler(NumericRefHandler):
 
         resolved_idem = idem_key or (link if link is not None else None)
 
+        # Per-type submit-time validation. For fix_gripe this is
+        # where the repo-resolution check lives (the gripe's
+        # ``repo:<name>`` tag must match an entry in
+        # ``PRECIS_FIX_REPOS``, or the deployment must carry a
+        # ``PRECIS_FIX_REPO_DIR`` fallback). Surfacing the
+        # rejection at put time avoids a zombie queued job that
+        # would only fail when the runner picked it up.
+        if spec.validate_submit is not None and target is not None:
+            err = spec.validate_submit(
+                self.store, gripe_id=target.ref_id, params=params
+            )
+            if err is not None:
+                raise BadInput(err)
+
         if resolved_idem is not None:
             existing = self._lookup_idem(resolved_idem)
             if existing is not None:

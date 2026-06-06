@@ -38,6 +38,7 @@ import platform
 import re
 import socket
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from importlib import resources
 from typing import Any, ClassVar
@@ -551,8 +552,21 @@ class SkillHandler(Handler):
         # contributes hits; per-slug we keep the better-scoring one
         # so ranking stays sharp. The index is silently unavailable
         # on builds without an embedder — substring carries on alone.
-        semantic_hits = self._semantic_hits(q, page_size=page_size * 2)
+        #
+        # 2026-06-06: over-fetch 5× page_size so that (a) after
+        # dropping unwired skills there are still page_size wired
+        # survivors to show, and (b) the per-slug semantic-hit count
+        # used for the ``more`` column is a closer approximation of
+        # "how many H2 sections of this skill matched."
+        over_fetch = page_size * 5
+        semantic_hits = self._semantic_hits(q, page_size=over_fetch)
         lexical_hits = self._lexical_hits(q)
+
+        # Count semantic chunk hits per slug BEFORE dedup so the
+        # ``more`` column can reflect "this skill has N additional
+        # matching sections" — same signal as the paper-mode
+        # ``more`` design in backlog-search-unique-per-paper.md.
+        sem_hits_per_slug: Counter[str] = Counter(h.slug for h in semantic_hits)
 
         merged: dict[str, _SkillSearchRow] = {}
         for hit in semantic_hits:
@@ -585,45 +599,79 @@ class SkillHandler(Handler):
                 )
             )
 
-        rows = sorted(merged.values(), key=lambda r: r.score, reverse=True)
-        total = len(rows)
-        rows = rows[:page_size]
+        all_rows = sorted(merged.values(), key=lambda r: r.score, reverse=True)
+
+        # 2026-06-06: partition by availability. Unwired skills are
+        # filtered from the result rows (recipes won't all run on
+        # this build, and an LLM with no cross-session memory gains
+        # nothing from reading them) and surfaced instead as a
+        # single escalation line below the table so the agent can
+        # still suggest "spin up a build with kind X wired."
+        wired_rows: list[_SkillSearchRow] = []
+        unwired_rows: list[_SkillSearchRow] = []
+        for row in all_rows:
+            if _availability_gap(row.slug, hub=self.hub) is not None:
+                unwired_rows.append(row)
+            else:
+                wired_rows.append(row)
+
+        total_wired = len(wired_rows)
+        visible = wired_rows[:page_size]
 
         # Round-2 picky 2026-05-31: dropped low-signal columns
         # (status/source/score) that the maintainer flagged as
         # uninformative for a top-K skill search. Replaced the raw
         # snippet with RAKE-extracted key phrases — agents scanning
         # results want the *topic* of the matched section, not its
-        # first 140 characters of prose. Unwired skills get an
-        # ``[unwired]`` prefix on the slug instead of a dedicated
-        # column (rare enough that an inline marker beats a column
-        # that's empty 90 % of the time).
+        # first 140 characters of prose.
+        #
+        # 2026-06-06: added a ``more`` column counting additional
+        # semantic H2 hits in the same skill (``+3`` / ``.``) —
+        # mirrors the paper-mode ``more`` design. Informational
+        # only: ``get(kind='skill', id=…)`` returns the whole file,
+        # so unlike papers there's no per-section drill verb to
+        # spend the signal on, but it still distinguishes "broadly
+        # relevant skill" from "one paragraph happens to match."
         table_rows: list[dict[str, str]] = []
-        for row in rows:
-            gap = _availability_gap(row.slug, hub=self.hub)
-            slug_display = f"[unwired] {row.slug}" if gap is not None else row.slug
+        for row in visible:
+            extra = max(0, sem_hits_per_slug.get(row.slug, 0) - 1)
+            more = f"+{extra}" if extra > 0 else "."
             table_rows.append(
                 {
-                    "slug": slug_display,
+                    "slug": row.slug,
                     "section": row.section,
+                    "more": more,
                     "keywords": keyword_summary(row.snippet, top_k=5),
                 }
             )
 
-        head = format_search_headline(
-            n_returned=len(rows),
-            total=total,
-            noun="skill match",
-            query=q,
-        )
-        body = (
-            head
-            + "\n\n"
-            + render_agent_table(
-                table_rows,
-                schema=["slug", "section", "keywords"],
+        if visible:
+            head = format_search_headline(
+                n_returned=len(visible),
+                total=total_wired,
+                noun="skill match",
+                query=q,
             )
-        )
+            body = head + "\n\n" + render_agent_table(
+                table_rows,
+                schema=["slug", "section", "more", "keywords"],
+            )
+        else:
+            body = f"# no actionable skill matches for {q!r}"
+
+        if unwired_rows:
+            _ESC_CAP = 5
+            shown = [r.slug for r in unwired_rows[:_ESC_CAP]]
+            overflow = len(unwired_rows) - len(shown)
+            tail = f" (+{overflow} more)" if overflow > 0 else ""
+            body += (
+                "\n\n"
+                f"Also matched in unwired skills: {', '.join(shown)}{tail}. "
+                "These need a build with their kind enabled to run; "
+                "use `get(kind='skill', id='<slug>')` only to read for "
+                "context, not to invoke recipes."
+            )
+
         body += render_next_section(
             [
                 (

@@ -36,6 +36,15 @@ class JobTypeSpec:
     requires: frozenset[str]
     description: str
     run: Callable[..., Any]
+    #: Optional submit-time check. Signature ``(store, *,
+    #: gripe_id, params) -> str | None``: return an error message
+    #: when the submit can't actually be carried out, ``None``
+    #: when OK. The MCP-side ``JobHandler.put`` surfaces non-None
+    #: as ``BadInput`` so the LLM gets an immediate rejection
+    #: rather than a queued zombie job. ``None`` here means "no
+    #: extra validation beyond the static schema / executor /
+    #: REQUIRES checks".
+    validate_submit: Callable[..., str | None] | None = None
 
 
 def _load_fix_gripe() -> JobTypeSpec:
@@ -50,6 +59,7 @@ def _load_fix_gripe() -> JobTypeSpec:
         requires=fix_gripe.REQUIRES,
         description=fix_gripe.DESCRIPTION,
         run=fix_gripe.run,
+        validate_submit=fix_gripe.validate_submit,
     )
 
 

@@ -27,6 +27,25 @@ One call. The worker clones the repo, runs `claude -p` on a
 repo), and posts a comment on the gripe when it's ready for
 review.
 
+## Which repo does the agent operate on?
+
+The worker picks the repo from the gripe's `repo:<name>` tag.
+The set of allowed names is configured on the deployment side
+(`PRECIS_FIX_REPOS` JSON map). If the gripe carries no `repo:`
+tag, the worker falls back to the single-repo default
+(`PRECIS_FIX_REPO_DIR`).
+
+If the linked gripe carries a `repo:` tag that isn't in the
+allowlist, the `put(kind='job', ...)` call is rejected at submit
+time with a clear message — no zombie queued jobs.
+
+Tag the gripe before submitting if you need a non-default repo:
+
+```python
+tag(kind='gripe', id=42, add=['repo:my-other-project'])
+put(kind='job', job_type='fix_gripe', link='gripe:42', rel='fixes')
+```
+
 ## What the fix worker actually does
 
 1. Reads the gripe body + current `gripe_comment` thread.

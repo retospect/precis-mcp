@@ -18,15 +18,24 @@ matching ``gripe_*``. See the safety section in
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# Tag namespace gripes carry to declare which repo they're about.
+# Open tag (not closed-prefix) so a gripe could in theory list
+# multiple repos for a cross-cutting bug — the runner picks the
+# first one and clones it. Keep it lower-case to follow the
+# existing precedent for free-form axes like ``due:`` and
+# ``project:`` used on todos.
+_REPO_TAG_NAMESPACE = "repo"
 
 
 # ── Declared metadata (read by the dispatcher and the runner) ──────
@@ -55,27 +64,46 @@ DESCRIPTION: str = (
 
 @dataclass(frozen=True)
 class FixGripeConfig:
-    repo_dir: Path
+    #: Fallback repo when a gripe carries no ``repo:`` tag. Preserves
+    #: the v0 single-repo workflow ("everything is about precis-mcp").
+    #: Can be None on a deployment that requires every gripe to be
+    #: explicitly tagged.
+    default_repo_dir: Path | None
     work_dir: Path
     claude_bin: str
     claude_model: str
     timeout_seconds: int
+    #: Allowlist of ``repo:<name>`` tag values → host paths. Read
+    #: from ``PRECIS_FIX_REPOS`` JSON; gripes carrying a ``repo:``
+    #: tag must match a key here or the job is rejected.
+    repos: dict[str, Path] = field(default_factory=dict)
 
 
 def load_config_from_env() -> FixGripeConfig:
-    """Read the fix_gripe env vars. Raises if a required one is unset."""
-    repo_dir_raw = os.environ.get("PRECIS_FIX_REPO_DIR")
+    """Read the fix_gripe env vars.
+
+    Required: ``PRECIS_FIX_WORK_DIR`` (scratch root for clones).
+    Optional: ``PRECIS_FIX_REPO_DIR`` (single-repo fallback) AND/OR
+    ``PRECIS_FIX_REPOS`` (multi-repo allowlist as JSON map). At
+    least one of the two must be set or the runner has no repo
+    to clone from.
+    """
     work_dir_raw = os.environ.get("PRECIS_FIX_WORK_DIR")
-    if not repo_dir_raw:
-        raise RuntimeError(
-            "fix_gripe: PRECIS_FIX_REPO_DIR is not set (source repo path)"
-        )
     if not work_dir_raw:
         raise RuntimeError(
             "fix_gripe: PRECIS_FIX_WORK_DIR is not set (clone scratch root)"
         )
+    repo_dir_raw = os.environ.get("PRECIS_FIX_REPO_DIR")
+    default_repo = Path(repo_dir_raw).resolve() if repo_dir_raw else None
+    repos = _parse_repos_env(os.environ.get("PRECIS_FIX_REPOS"))
+    if default_repo is None and not repos:
+        raise RuntimeError(
+            "fix_gripe: neither PRECIS_FIX_REPO_DIR (single-repo "
+            "fallback) nor PRECIS_FIX_REPOS (multi-repo JSON map) "
+            "is set — the runner has no repo to clone"
+        )
     return FixGripeConfig(
-        repo_dir=Path(repo_dir_raw).resolve(),
+        default_repo_dir=default_repo,
         work_dir=Path(work_dir_raw).resolve(),
         claude_bin=os.environ.get("PRECIS_FIX_CLAUDE_BIN", "claude"),
         claude_model=os.environ.get(
@@ -84,6 +112,105 @@ def load_config_from_env() -> FixGripeConfig:
         timeout_seconds=int(
             os.environ.get("PRECIS_FIX_TIMEOUT_SECONDS", "1800")
         ),
+        repos=repos,
+    )
+
+
+def _parse_repos_env(raw: str | None) -> dict[str, Path]:
+    """Parse ``PRECIS_FIX_REPOS`` JSON into ``{name: Path}``.
+
+    Empty / missing → empty dict. Anything else must parse as a
+    JSON object of string → string; a malformed value raises so the
+    operator notices.
+    """
+    if not raw or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"fix_gripe: PRECIS_FIX_REPOS is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            "fix_gripe: PRECIS_FIX_REPOS must be a JSON object "
+            "(name → host path)"
+        )
+    out: dict[str, Path] = {}
+    for name, path in parsed.items():
+        if not isinstance(name, str) or not isinstance(path, str):
+            raise RuntimeError(
+                "fix_gripe: PRECIS_FIX_REPOS entries must be "
+                "string → string (name → host path)"
+            )
+        out[name] = Path(path).resolve()
+    return out
+
+
+def validate_submit(
+    store: Any, *, gripe_id: int, params: dict[str, Any]
+) -> str | None:
+    """Pre-submit check: can we actually run this fix on this gripe?
+
+    Returns an error message string if not, ``None`` if OK. The
+    JobHandler surfaces non-None as a ``BadInput`` at the
+    ``put(kind='job', ...)`` boundary so the caller gets an
+    immediate, actionable rejection rather than a queued job that
+    silently fails at claim time.
+
+    Today we only validate repo resolution; future params would
+    plug into the same hook.
+    """
+    try:
+        cfg = load_config_from_env()
+    except RuntimeError as exc:
+        # Deployment doesn't have fix_gripe env wired at all — be
+        # explicit. The runner won't start either way; surfacing
+        # this at submit time is a kindness to the operator.
+        return str(exc)
+    try:
+        resolve_repo_for_gripe(store, gripe_id, cfg)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def resolve_repo_for_gripe(
+    store: Any, gripe_id: int, cfg: FixGripeConfig
+) -> Path:
+    """Look up the repo path for a gripe at submit / claim time.
+
+    Reads the gripe's tags; if a ``repo:<name>`` tag is present, the
+    name must be in ``cfg.repos`` and the resolved path is returned.
+    If no ``repo:`` tag, falls back to ``cfg.default_repo_dir`` (the
+    single-repo deployment path).
+
+    Raises ``ValueError`` with a message naming the missing piece —
+    the dispatcher surfaces this as a ``BadInput`` at submit time so
+    the LLM gets a clear recovery hint rather than queueing an
+    unrunnable job.
+    """
+    tags = store.tags_for(gripe_id)
+    repo_tags = [
+        str(t).split(":", 1)[1]
+        for t in tags
+        if str(t).startswith(f"{_REPO_TAG_NAMESPACE}:")
+    ]
+    if repo_tags:
+        name = repo_tags[0]
+        path = cfg.repos.get(name)
+        if path is None:
+            known = sorted(cfg.repos.keys()) or "<none>"
+            raise ValueError(
+                f"gripe:{gripe_id} is tagged repo:{name!r} but that "
+                f"repo is not in PRECIS_FIX_REPOS (known: {known})"
+            )
+        return path
+    if cfg.default_repo_dir is not None:
+        return cfg.default_repo_dir
+    raise ValueError(
+        f"gripe:{gripe_id} has no repo: tag and no "
+        "PRECIS_FIX_REPO_DIR fallback is configured"
     )
 
 
@@ -129,6 +256,10 @@ def run(
     if ref is None:
         raise RuntimeError(f"fix_gripe: gripe id={gripe_id} not found")
 
+    # Pick the repo per the gripe's ``repo:<name>`` tag (multi-repo
+    # deployments) or the single-repo fallback.
+    repo_dir = resolve_repo_for_gripe(store, gripe_id, cfg)
+
     blocks = store.list_blocks_for_ref(gripe_id)
     if not blocks:
         raise RuntimeError(
@@ -142,7 +273,7 @@ def run(
         shutil.rmtree(clone_dir)
     clone_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    _git_clone_and_branch(cfg.repo_dir, clone_dir, branch)
+    _git_clone_and_branch(repo_dir, clone_dir, branch)
     _install_prepush_hook(clone_dir)
 
     base_sha = _git_rev_parse(clone_dir, "origin/main")
@@ -398,5 +529,7 @@ __all__ = [
     "FixGripeConfig",
     "RunOutcome",
     "load_config_from_env",
+    "resolve_repo_for_gripe",
     "run",
+    "validate_submit",
 ]

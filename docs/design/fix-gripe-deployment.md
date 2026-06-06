@@ -29,14 +29,52 @@ in a production runtime image, add claude to the runtime stage
 
 ## Required env vars on the precis container
 
-| Var                          | Required | Default                | Notes                                                  |
-|------------------------------|----------|------------------------|--------------------------------------------------------|
-| `PRECIS_FIX_REPO_DIR`        | yes      | —                      | Path to the precis-mcp source repo                     |
-| `PRECIS_FIX_WORK_DIR`        | yes      | —                      | Root for `clones/gripe_<id>/`; growth bounded by GC    |
-| `PRECIS_FIX_CLAUDE_BIN`      | no       | `claude`               | Resolved from container `$PATH`                        |
-| `PRECIS_FIX_CLAUDE_MODEL`    | no       | `claude-opus-4-7`      | Passed to `claude -p --model`                          |
-| `PRECIS_FIX_TIMEOUT_SECONDS` | no       | `1800`                 | Wall-clock cap; SIGTERM then SIGKILL                   |
-| `PRECIS_FIX_CLONE_TTL_DAYS`  | no       | `14`                   | Clone-dir age-out (not yet wired; see TODO below)      |
+| Var                          | Required        | Default                | Notes                                                  |
+|------------------------------|-----------------|------------------------|--------------------------------------------------------|
+| `PRECIS_FIX_WORK_DIR`        | yes             | —                      | Root for `clones/gripe_<id>/`; growth bounded by GC    |
+| `PRECIS_FIX_REPO_DIR`        | one-of †        | —                      | Single-repo fallback when a gripe carries no `repo:` tag |
+| `PRECIS_FIX_REPOS`           | one-of †        | —                      | JSON map `{"name": "host_path"}` — multi-repo allowlist |
+| `PRECIS_FIX_CLAUDE_BIN`      | no              | `claude`               | Resolved from container `$PATH`                        |
+| `PRECIS_FIX_CLAUDE_MODEL`    | no              | `claude-opus-4-7`      | Passed to `claude -p --model`                          |
+| `PRECIS_FIX_TIMEOUT_SECONDS` | no              | `1800`                 | Wall-clock cap; SIGTERM then SIGKILL                   |
+| `PRECIS_FIX_CLONE_TTL_DAYS`  | no              | `14`                   | Clone-dir age-out (not yet wired; see follow-ups)      |
+
+† At least one of `PRECIS_FIX_REPO_DIR` (default fallback) and
+`PRECIS_FIX_REPOS` (allowlist for tagged gripes) must be set.
+Setting both is fine and common: tagged gripes resolve through the
+allowlist, untagged ones use the default.
+
+## Multi-repo
+
+A gripe declares its project with a `repo:<name>` tag, e.g.
+`repo:precis-mcp`. The runner reads the linked gripe's tags at
+submit and at claim time and resolves the name through
+`PRECIS_FIX_REPOS` (host path lookup).
+
+Example for a host running two precis-managed projects:
+
+```yaml
+environment:
+  PRECIS_FIX_REPO_DIR: /home/precis/work/projects/code/precis-mcp
+  PRECIS_FIX_WORK_DIR: /home/precis/precis-fix-work
+  PRECIS_FIX_REPOS: |
+    {
+      "precis-mcp":   "/home/precis/work/projects/code/precis-mcp",
+      "acatome":      "/home/precis/work/projects/code/acatome"
+    }
+```
+
+Validation at `put(kind='job', job_type='fix_gripe', ...)` time:
+
+- If the linked gripe is tagged `repo:<name>` and `<name>` ∉
+  `PRECIS_FIX_REPOS`, the put is rejected with a clear "not in
+  the allowlist" error and the job row is never created.
+- If the linked gripe has no `repo:` tag, the runner uses
+  `PRECIS_FIX_REPO_DIR`. If that's also unset, the put is
+  rejected.
+
+Bind-mount every repo path you list in the allowlist into the
+precis container at the same path the env var declares.
 
 ## Required bind-mounts
 
@@ -89,6 +127,6 @@ the future `claude_docker` executor under
   pressure is observed.
 - **Runtime image**: production deployments need claude in the
   `runtime` target (currently dev-only).
-- **Multi-repo**: v1 is hard-coded to the precis-mcp repo via
-  `PRECIS_FIX_REPO_DIR`. Multi-repo support is a `params.repo`
-  field + allowlist away.
+- **Multi-repo**: wired. Tag a gripe `repo:<name>` and add the
+  matching entry to `PRECIS_FIX_REPOS`. Bind-mount each allowed
+  repo into the precis container at the same path.

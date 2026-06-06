@@ -200,6 +200,32 @@ link(kind='gripe', id=42, target='paper:abazari2024design', rel='related-to')
 link(kind='gripe', id=42, target='gripe:38', rel='supersedes')
 ```
 
+## Tag the repo a gripe is about
+## Which project is this bug in?
+
+If you've got more than one project under the same precis
+instance, tag the gripe with the repo name so `fix_gripe` knows
+which tree to clone:
+
+```python
+put(kind='gripe', text='auth handler chokes on empty cookies',
+    tags=['repo:my-other-project'])
+# or after the fact:
+tag(kind='gripe', id=42, add=['repo:my-other-project'])
+```
+
+Filter by repo when triaging:
+
+```python
+search(kind='gripe', tags=['repo:my-other-project', 'STATUS:open'])
+```
+
+Gripes with no `repo:` tag fall back to the deployment's
+`PRECIS_FIX_REPO_DIR` (the single-repo workflow). The set of
+allowed repo names is deployment-side
+(`PRECIS_FIX_REPOS` JSON map); submitting a fix_gripe job for an
+unknown repo is rejected at the `put` call.
+
 ## Gripe vs todo vs memory
 
 | Capture                                  | Use      |

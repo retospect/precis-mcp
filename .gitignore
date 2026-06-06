@@ -25,6 +25,10 @@ scripts/exercise-mcp/out/
 # command and not useful in version control.
 .test-results.xml
 
+# devin/windsurf
+**/.devin
+**/.windsurf
+
 # Personal ops notes — anything matching *.local.md / *.local/.
 # Convention for ops crib sheets, scratch SQL, host-specific quirks.
 *.local.md

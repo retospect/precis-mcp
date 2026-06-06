@@ -79,13 +79,20 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   and tags the gripe `STATUS:in_review`; failure rolls the gripe
   back to `STATUS:open` and retains the clone dir for forensics.
   Pre-push hook in every clone rejects pushes to anything not
-  matching `gripe_*` so the agent can't touch `main`. New env
-  vars: `PRECIS_FIX_REPO_DIR`, `PRECIS_FIX_WORK_DIR`,
-  `PRECIS_FIX_CLAUDE_BIN`, `PRECIS_FIX_CLAUDE_MODEL`,
-  `PRECIS_FIX_TIMEOUT_SECONDS`, `PRECIS_FIX_CLONE_TTL_DAYS`.
-  Compose-side: the precis container needs `~/.claude`,
-  `$PRECIS_FIX_REPO_DIR`, and `$PRECIS_FIX_WORK_DIR`
-  bind-mounted; the image must include the `claude` binary.
+  matching `gripe_*` so the agent can't touch `main`.
+  Multi-repo is wired via a `repo:<name>` tag on the gripe + a
+  `PRECIS_FIX_REPOS` JSON allowlist; un-tagged gripes use the
+  `PRECIS_FIX_REPO_DIR` single-repo fallback; an unknown
+  `repo:` tag is rejected at the put call rather than queueing a
+  zombie job. New env vars: `PRECIS_FIX_REPO_DIR` (single-repo
+  fallback), `PRECIS_FIX_REPOS` (multi-repo allowlist),
+  `PRECIS_FIX_WORK_DIR`, `PRECIS_FIX_CLAUDE_BIN`,
+  `PRECIS_FIX_CLAUDE_MODEL`, `PRECIS_FIX_TIMEOUT_SECONDS`,
+  `PRECIS_FIX_CLONE_TTL_DAYS`. Compose-side: the precis container
+  needs `~/.claude`, every host path in the allowlist (or the
+  fallback), and `$PRECIS_FIX_WORK_DIR` bind-mounted; the image
+  must include the `claude` binary. See
+  `docs/design/fix-gripe-deployment.md`.
 
 ### Deprecated
 
@@ -112,6 +119,21 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   now return an unknown-kind dispatch error.
 
 ### Changed
+
+- **`search(kind='skill')`: hide unwired skills, add `more` column,
+  surface an escalation line.** Unwired skills (those whose subject
+  kind isn't loaded in this build, or whose frontmatter says
+  `status: planned`/`aspirational`) no longer appear as result rows —
+  an LLM with no cross-session memory gains nothing from reading
+  recipes it can't invoke. They're surfaced instead in a single
+  "Also matched in unwired skills: …" footer line so the agent
+  retains the redirect signal ("spin up a build with kind X
+  wired"). Over-fetches 5×`page_size` semantic hits so dropping
+  unwired skills still leaves a full table of actionable matches.
+  New `more` column (`+N` / `.`) counts additional matching H2
+  sections per skill — same triage signal as the paper-mode `more`
+  design in `backlog-search-unique-per-paper.md`.
+  `src/precis/handlers/skill.py`, tests in `tests/test_skill.py`.
 
 - **`view='toc'` (papers): uniform `(handle, keywords)` schema, plus
   Topics / Next hints.** The short-range fallback that emitted a

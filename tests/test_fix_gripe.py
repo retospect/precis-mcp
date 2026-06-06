@@ -139,21 +139,27 @@ class _FakeBlock:
 
 
 class TestLoadConfig:
-    def test_missing_repo_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("PRECIS_FIX_REPO_DIR", raising=False)
-        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
-        with pytest.raises(RuntimeError, match="PRECIS_FIX_REPO_DIR"):
-            load_config_from_env()
-
     def test_missing_work_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
         monkeypatch.delenv("PRECIS_FIX_WORK_DIR", raising=False)
         with pytest.raises(RuntimeError, match="PRECIS_FIX_WORK_DIR"):
             load_config_from_env()
 
+    def test_missing_both_repo_settings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """At least one of PRECIS_FIX_REPO_DIR / PRECIS_FIX_REPOS
+        must be set, or the runner has no repo to clone."""
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.delenv("PRECIS_FIX_REPO_DIR", raising=False)
+        monkeypatch.delenv("PRECIS_FIX_REPOS", raising=False)
+        with pytest.raises(RuntimeError, match="neither PRECIS_FIX_REPO_DIR"):
+            load_config_from_env()
+
     def test_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
         monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.delenv("PRECIS_FIX_REPOS", raising=False)
         for var in (
             "PRECIS_FIX_CLAUDE_BIN",
             "PRECIS_FIX_CLAUDE_MODEL",
@@ -164,6 +170,120 @@ class TestLoadConfig:
         assert isinstance(cfg, FixGripeConfig)
         assert cfg.claude_bin == "claude"
         assert cfg.timeout_seconds == 1800
+        assert cfg.default_repo_dir == Path("/tmp/repo")
+        assert cfg.repos == {}
+
+    def test_repos_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv(
+            "PRECIS_FIX_REPOS",
+            '{"precis-mcp": "/tmp/precis-mcp", "other": "/tmp/other"}',
+        )
+        monkeypatch.delenv("PRECIS_FIX_REPO_DIR", raising=False)
+        cfg = load_config_from_env()
+        assert cfg.default_repo_dir is None
+        assert cfg.repos == {
+            "precis-mcp": Path("/tmp/precis-mcp"),
+            "other": Path("/tmp/other"),
+        }
+
+    def test_repos_json_malformed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/fallback")
+        monkeypatch.setenv("PRECIS_FIX_REPOS", "not-json")
+        with pytest.raises(RuntimeError, match="not valid JSON"):
+            load_config_from_env()
+
+
+# ── resolve_repo_for_gripe: tag-driven multi-repo ─────────────────
+
+
+class TestResolveRepoForGripe:
+    """``repo:<name>`` on the gripe selects the host path through
+    ``PRECIS_FIX_REPOS``; un-tagged gripes fall back to
+    ``PRECIS_FIX_REPO_DIR``."""
+
+    @staticmethod
+    def _store_with_tags(tag_values: list[str]) -> object:
+        class _Store:
+            def tags_for(self, _ref_id: int) -> list[str]:
+                return list(tag_values)
+
+        return _Store()
+
+    def test_tag_lookup(self) -> None:
+        from precis.workers.job_types.fix_gripe import (
+            FixGripeConfig,
+            resolve_repo_for_gripe,
+        )
+
+        cfg = FixGripeConfig(
+            default_repo_dir=None,
+            work_dir=Path("/tmp/work"),
+            claude_bin="claude",
+            claude_model="claude-opus-4-7",
+            timeout_seconds=1800,
+            repos={"my-other-project": Path("/tmp/other")},
+        )
+        store = self._store_with_tags(["STATUS:open", "repo:my-other-project"])
+        path = resolve_repo_for_gripe(store, 42, cfg)
+        assert path == Path("/tmp/other")
+
+    def test_fallback_when_no_tag(self) -> None:
+        from precis.workers.job_types.fix_gripe import (
+            FixGripeConfig,
+            resolve_repo_for_gripe,
+        )
+
+        cfg = FixGripeConfig(
+            default_repo_dir=Path("/tmp/precis-mcp"),
+            work_dir=Path("/tmp/work"),
+            claude_bin="claude",
+            claude_model="claude-opus-4-7",
+            timeout_seconds=1800,
+            repos={},
+        )
+        store = self._store_with_tags(["STATUS:open"])
+        path = resolve_repo_for_gripe(store, 42, cfg)
+        assert path == Path("/tmp/precis-mcp")
+
+    def test_unknown_repo_tag_raises(self) -> None:
+        from precis.workers.job_types.fix_gripe import (
+            FixGripeConfig,
+            resolve_repo_for_gripe,
+        )
+
+        cfg = FixGripeConfig(
+            default_repo_dir=Path("/tmp/precis-mcp"),
+            work_dir=Path("/tmp/work"),
+            claude_bin="claude",
+            claude_model="claude-opus-4-7",
+            timeout_seconds=1800,
+            repos={"precis-mcp": Path("/tmp/precis-mcp")},
+        )
+        store = self._store_with_tags(["repo:does-not-exist"])
+        with pytest.raises(ValueError, match="not in PRECIS_FIX_REPOS"):
+            resolve_repo_for_gripe(store, 42, cfg)
+
+    def test_no_tag_no_fallback_raises(self) -> None:
+        from precis.workers.job_types.fix_gripe import (
+            FixGripeConfig,
+            resolve_repo_for_gripe,
+        )
+
+        cfg = FixGripeConfig(
+            default_repo_dir=None,
+            work_dir=Path("/tmp/work"),
+            claude_bin="claude",
+            claude_model="claude-opus-4-7",
+            timeout_seconds=1800,
+            repos={"precis-mcp": Path("/tmp/precis-mcp")},
+        )
+        store = self._store_with_tags(["STATUS:open"])
+        with pytest.raises(ValueError, match="no repo: tag"):
+            resolve_repo_for_gripe(store, 42, cfg)
 
 
 # ── job_types registry: lookup paths ───────────────────────────────

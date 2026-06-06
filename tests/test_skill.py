@@ -462,73 +462,122 @@ def test_search_falls_back_to_substring_when_no_embedder(skill: SkillHandler) ->
     assert "no skills mention" in out.body or "skill match" in out.body
 
 
-# ── search marks unwired skills ──────────────────────────────────────
+# ── search hides unwired skills + surfaces escalation hint ───────────
 
 
-def test_search_marks_unwired_skills(skill: SkillHandler) -> None:
-    """``search(kind='skill', q=...)`` must annotate skills whose
-    subject kind is *known* to the registry but not currently loaded
-    with ``[unwired]`` — 7B callers quote the title and invoke
-    ``[error:NotFound]`` otherwise. Mirror of the index's
-    hidden-skills behaviour.
+class _Loadability:
+    def __init__(self, loaded: bool) -> None:
+        self.loaded = loaded
 
-    The "known" check (round-2 picky R2-3, 2026-05-30) uses
-    ``hub.loadabilities`` so umbrella skill slugs like
-    ``precis-files-help`` (whose stem ``'files'`` is *not* a real
-    kind) don't get falsely marked. Production registers every
-    deferred kind in ``loadabilities`` with ``loaded=False`` — the
-    fake hub below mirrors that.
+
+class _NoFileKindsHub:
+    """Duck-typed hub that deliberately omits the file kinds
+    (markdown / plaintext / python / tex) so their help skills are
+    treated as unwired. The file kinds appear in ``loadabilities``
+    (registered, but loaded=False) so the availability gate
+    recognises them as known-but-disabled."""
+
+    @property
+    def kinds(self) -> list[str]:
+        return ["calc", "paper", "memory"]
+
+    loadabilities: dict[str, _Loadability] = {
+        "calc": _Loadability(True),
+        "paper": _Loadability(True),
+        "memory": _Loadability(True),
+        "markdown": _Loadability(False),
+        "plaintext": _Loadability(False),
+        "tex": _Loadability(False),
+        "python": _Loadability(False),
+    }
+
+
+def test_search_hides_unwired_skills_from_rows(skill: SkillHandler) -> None:
+    """``search(kind='skill', q=...)`` filters unwired skills out of
+    the result rows entirely — an LLM with no cross-session memory
+    gains nothing from reading recipes it can't invoke (2026-06-06).
+    The legacy ``[unwired]`` slug prefix must no longer appear in
+    the body, and no row may start with an unwired skill slug.
     """
-
-    class _Loadability:
-        def __init__(self, loaded: bool) -> None:
-            self.loaded = loaded
-
-    class _NoFileKindsHub:
-        """Duck-typed hub that deliberately omits the file kinds
-        (markdown / plaintext / python) so their help skills surface
-        with the ``[unwired]`` marker. The file kinds appear in
-        ``loadabilities`` (registered, but loaded=False) so the
-        availability gate recognises them as known-but-disabled."""
-
-        @property
-        def kinds(self) -> list[str]:
-            return ["calc", "paper", "memory"]
-
-        loadabilities: dict[str, _Loadability] = {
-            "calc": _Loadability(True),
-            "paper": _Loadability(True),
-            "memory": _Loadability(True),
-            "markdown": _Loadability(False),
-            "plaintext": _Loadability(False),
-            "tex": _Loadability(False),
-            "python": _Loadability(False),
-        }
-
     skill.hub = _NoFileKindsHub()
-    # 'edit' appears in several file-kind skills; the search hit
-    # list should include at least one markdown/plaintext/tex/python
-    # help skill with the inline ``[unwired]`` prefix on its slug.
-    # (Round-2 picky 2026-05-31: dropped the dedicated ``status``
-    # column; the marker is now a slug prefix to save a column for
-    # the rare case it fires.)
     out = skill.search(q="edit")
-    assert "[unwired]" in out.body, (
-        "at least one unwired file-kind skill must surface with the "
-        f"[unwired] slug prefix; got body:\n{out.body}"
+    body = out.body
+    assert "[unwired]" not in body, (
+        "unwired rows must be filtered, not prefix-marked; got body:\n" + body
     )
-    # Skills the hub DOES support must NOT carry the marker.
-    # precis-tags is a cross-cutting skill that references no specific
-    # kind — its slug row must NOT have the [unwired] prefix.
-    tags_out = skill.search(q="tags")
-    # TOON row shape (post-2026-05-31 trim): ``slug\tsection\tkeywords``.
-    # Locate the precis-tags row by its slug column; confirm no
-    # ``[unwired]`` prefix prepended.
-    rows = [ln for ln in tags_out.body.splitlines() if ln.startswith("precis-tags\t")]
-    if rows:
-        assert "[unwired]" not in rows[0], (
-            f"cross-cutting skill should not be marked unwired: {rows[0]!r}"
+    # No table row may BEGIN with an unwired slug.
+    unwired_slugs = (
+        "precis-markdown-help",
+        "precis-plaintext-help",
+        "precis-tex-help",
+        "precis-python-help",
+    )
+    rows = [ln for ln in body.splitlines() if ln.startswith("precis-")]
+    for ln in rows:
+        slug = ln.split("\t", 1)[0]
+        assert slug not in unwired_slugs, (
+            f"unwired skill leaked into result rows: {ln!r}"
         )
+
+
+def test_search_surfaces_escalation_line_for_unwired_matches(
+    skill: SkillHandler,
+) -> None:
+    """When the query matches unwired skills, the response carries a
+    single escalation line naming them and explaining they need a
+    build with the kind enabled — preserves the redirect signal
+    without burning context on inactionable recipes (2026-06-06).
+    """
+    skill.hub = _NoFileKindsHub()
+    out = skill.search(q="edit")
+    body = out.body
+    assert "Also matched in unwired skills:" in body, (
+        "expected escalation line for unwired matches; got body:\n" + body
+    )
+    # The escalation line should reference at least one of the
+    # disabled file-kind skills by slug.
+    esc_line = next(
+        ln for ln in body.splitlines() if "Also matched in unwired skills:" in ln
+    )
+    assert any(
+        s in esc_line
+        for s in (
+            "precis-markdown-help",
+            "precis-plaintext-help",
+            "precis-tex-help",
+            "precis-python-help",
+        )
+    ), f"escalation line missing an unwired skill slug: {esc_line!r}"
+
+
+def test_search_omits_escalation_line_when_all_matches_wired(
+    skill: SkillHandler,
+) -> None:
+    """A query that matches only wired skills must not emit the
+    escalation line (no signal to convey)."""
+    # Default hub from the fixture has no loadabilities, so
+    # availability is determined by `kinds`. Hub() registers no
+    # kinds, but verb-help slugs are exempt — pick a query that's
+    # owned by a verb-help skill (precis-search-help) and confirm
+    # the escalation footer is absent.
+    out = skill.search(q="search")
+    assert "Also matched in unwired skills:" not in out.body
+
+
+def test_search_emits_more_column(skill: SkillHandler) -> None:
+    """The result table carries a ``more`` column counting additional
+    semantic H2 hits per slug (``+N`` / ``.``) — mirrors the
+    paper-mode `more` design from
+    backlog-search-unique-per-paper.md (2026-06-06)."""
+    out = skill.search(q="kind")
+    body = out.body
+    # Either the column header includes 'more' (TOON-rendered table)
+    # or — when the embedder is unwired in this test build and only
+    # lexical hits surface — at least the empty-marker '.' appears.
+    # We assert the header form since it's the new contract.
+    assert "more" in body, (
+        "expected `more` column in result table; got body:\n" + body
+    )
 
 
 # ── precis-overview kinds table stays honest ──────────────────────────
