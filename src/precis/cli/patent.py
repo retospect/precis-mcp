@@ -277,10 +277,7 @@ def run_list(args: argparse.Namespace) -> None:
                 if w.last_run_at is not None
                 else "(never)"
             )
-            print(
-                f"{w.name:<24}  {every_str:>6}  "
-                f"{last:<19}  {len(w.last_seen_pn):>5}"
-            )
+            print(f"{w.name:<24}  {every_str:>6}  {last:<19}  {len(w.last_seen_pn):>5}")
             if args.show_cql:
                 print(f"    cql: {w.cql}")
         print(f"-- total: {len(watches)}")

@@ -39,7 +39,6 @@ from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit
 
-
 # Chunk-kind slugs we own. Match the seed in 0005.
 _BODY_KIND = "gripe_body"
 _COMMENT_KIND = "gripe_comment"
@@ -93,12 +92,8 @@ class GripeHandler(NumericRefHandler):
         if id is not None:
             if text is None or not text.strip():
                 raise BadInput(
-                    f"appending a comment to {self._sense()} id={id!r} "
-                    "requires text=",
-                    next=(
-                        f"put(kind={self.kind!r}, id={id}, "
-                        "text='your comment')"
-                    ),
+                    f"appending a comment to {self._sense()} id={id!r} requires text=",
+                    next=(f"put(kind={self.kind!r}, id={id}, text='your comment')"),
                 )
             # Tags / links / mode are not accepted on the append
             # path — they belong on tag() / link() against the
@@ -108,8 +103,7 @@ class GripeHandler(NumericRefHandler):
                     "tags=/untags= are not accepted when appending a "
                     f"{self._sense()} comment",
                     next=(
-                        f"use tag(kind={self.kind!r}, id={id}, "
-                        "add=[...]/remove=[...])"
+                        f"use tag(kind={self.kind!r}, id={id}, add=[...]/remove=[...])"
                     ),
                 )
             if link is not None or unlink is not None or rel is not None:
@@ -161,9 +155,7 @@ class GripeHandler(NumericRefHandler):
                 f"creating a {self._sense()} requires text=",
                 next=f"put(kind={self.kind!r}, text='your content')",
             )
-        target = (
-            parse_link_target(link, store=self.store) if link is not None else None
-        )
+        target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
 
         all_tag_strs: list[str] = list(self.default_tags_on_create)

@@ -58,7 +58,9 @@ _GRIPE_COMMENT_KIND = "gripe_comment"
 # ── Claim ─────────────────────────────────────────────────────────
 
 
-def _claim_jobs(conn: Connection, *, limit: int) -> list[tuple[int, str, dict[str, Any]]]:
+def _claim_jobs(
+    conn: Connection, *, limit: int
+) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable claude_inproc jobs.
 
     Claimable = ``kind='job'``, executor matches, ``STATUS:queued``,
@@ -103,10 +105,7 @@ def _claim_jobs(conn: Connection, *, limit: int) -> list[tuple[int, str, dict[st
             limit,
         ),
     ).fetchall()
-    return [
-        (int(r[0]), str(r[1]), dict(r[2] or {}))
-        for r in rows
-    ]
+    return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
 
 
 def _linked_gripe_id(store: Any, job_ref_id: int) -> int | None:
@@ -157,7 +156,12 @@ def _is_cancel_requested(conn: Connection, ref_id: int) -> bool:
 
 
 def _append_chunk(
-    store: Any, ref_id: int, chunk_kind: str, text: str, *, conn: Connection | None = None
+    store: Any,
+    ref_id: int,
+    chunk_kind: str,
+    text: str,
+    *,
+    conn: Connection | None = None,
 ) -> None:
     """Append a chunk at the next ``ord`` for the ref."""
     blocks = store.list_blocks_for_ref(ref_id)
@@ -216,9 +220,7 @@ def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1
-            log.warning(
-                "claude_inproc: job %d raised: %s", ref_id, exc, exc_info=True
-            )
+            log.warning("claude_inproc: job %d raised: %s", ref_id, exc, exc_info=True)
             try:
                 with store.pool.connection() as conn:
                     _append_chunk(
@@ -243,7 +245,9 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
     job_type_name = meta.get("job_type")
     if not job_type_name:
         _record_failure(
-            store, ref_id, "missing meta.job_type",
+            store,
+            ref_id,
+            "missing meta.job_type",
             gripe_rollback=None,
         )
         return
@@ -252,8 +256,7 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
         _record_failure(
             store,
             ref_id,
-            f"unknown job_type {job_type_name!r}; "
-            f"known: {known_job_types()}",
+            f"unknown job_type {job_type_name!r}; known: {known_job_types()}",
             gripe_rollback=None,
         )
         return
@@ -276,7 +279,9 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
         _run_fix_gripe(store, ref_id, spec)
     else:  # pragma: no cover — registry only knows fix_gripe in v1
         _record_failure(
-            store, ref_id, f"no dispatcher for job_type {spec.name!r}",
+            store,
+            ref_id,
+            f"no dispatcher for job_type {spec.name!r}",
             gripe_rollback=None,
         )
 
@@ -357,4 +362,4 @@ def _record_failure(
         conn.commit()
 
 
-__all__ = ["run_claude_inproc_pass", "EXECUTOR_PROVIDES"]
+__all__ = ["EXECUTOR_PROVIDES", "run_claude_inproc_pass"]

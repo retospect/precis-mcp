@@ -41,17 +41,17 @@ from precis.utils.abbreviations import find as find_abbreviations
 from precis.utils.abbreviations import substitute as substitute_abbreviations
 from precis.utils.boilerplate import ChunkClass, classify_chunks
 from precis.utils.rake import extract_keywords
-from precis.utils.semantic_keywords import (
-    extract_keywords_semantic,
-    mean_embedding,
-    privileged_candidates,
-)
 from precis.utils.segmentation import (
     K_MAX,
     K_MIN,
     SEGMENTATION_VERSION,
     segment_dp,
     segment_embeddings,
+)
+from precis.utils.semantic_keywords import (
+    extract_keywords_semantic,
+    mean_embedding,
+    privileged_candidates,
 )
 
 # ── tunables (operator-only, no env vars per maintainer 2026-05-31) ──

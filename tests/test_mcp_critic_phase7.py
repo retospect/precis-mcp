@@ -397,6 +397,7 @@ class TestEmptyListTrailers:
         assert "no conversations" in out.body
         assert "Next:" in out.body
 
+
 # ── MINOR m6: degenerate ranges render as ~N not ~N..N ─────────
 
 

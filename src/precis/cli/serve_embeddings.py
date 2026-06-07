@@ -66,8 +66,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "--max-inflight",
         type=int,
         default=int(os.environ.get("PRECIS_EMBEDDER_MAX_INFLIGHT", "4")),
-        help="Concurrent embed requests admitted before returning 429 "
-        "(default: 4).",
+        help="Concurrent embed requests admitted before returning 429 (default: 4).",
     )
     p.add_argument(
         "--no-warm",

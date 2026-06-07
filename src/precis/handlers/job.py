@@ -14,11 +14,9 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from psycopg.types.json import Jsonb
-
-from precis.errors import BadInput, NotFound
-from precis.handlers._link_target import parse_link_target
+from precis.errors import BadInput
 from precis.handlers._link_tag_ops import validate_relation
+from precis.handlers._link_target import parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -30,7 +28,6 @@ from precis.workers.executors import (
     is_known_executor,
 )
 from precis.workers.job_types import get_job_type, known_job_types
-
 
 _TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
 _JOB_SUMMARY_KIND = "job_summary"
@@ -100,15 +97,13 @@ class JobHandler(NumericRefHandler):
             raise BadInput(
                 "put(kind='job') requires job_type=",
                 next=(
-                    "put(kind='job', job_type='fix_gripe', "
-                    "link='gripe:N', rel='fixes')"
+                    "put(kind='job', job_type='fix_gripe', link='gripe:N', rel='fixes')"
                 ),
             )
         spec = get_job_type(str(job_type))
         if spec is None:
             raise BadInput(
-                f"unknown job_type {job_type!r}; "
-                f"known: {known_job_types()}",
+                f"unknown job_type {job_type!r}; known: {known_job_types()}",
                 options=known_job_types(),
             )
 
@@ -125,10 +120,7 @@ class JobHandler(NumericRefHandler):
             raise BadInput(
                 f"job_type {spec.name!r} does not support executor "
                 f"{resolved_executor!r}",
-                next=(
-                    f"compatible executors: "
-                    f"{sorted(spec.compatible_executors)}"
-                ),
+                next=(f"compatible executors: {sorted(spec.compatible_executors)}"),
             )
         missing = spec.requires - EXECUTOR_PROVIDES[resolved_executor]
         if missing:

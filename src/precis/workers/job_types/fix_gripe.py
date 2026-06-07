@@ -106,12 +106,8 @@ def load_config_from_env() -> FixGripeConfig:
         default_repo_dir=default_repo,
         work_dir=Path(work_dir_raw).resolve(),
         claude_bin=os.environ.get("PRECIS_FIX_CLAUDE_BIN", "claude"),
-        claude_model=os.environ.get(
-            "PRECIS_FIX_CLAUDE_MODEL", "claude-opus-4-7"
-        ),
-        timeout_seconds=int(
-            os.environ.get("PRECIS_FIX_TIMEOUT_SECONDS", "1800")
-        ),
+        claude_model=os.environ.get("PRECIS_FIX_CLAUDE_MODEL", "claude-opus-4-7"),
+        timeout_seconds=int(os.environ.get("PRECIS_FIX_TIMEOUT_SECONDS", "1800")),
         repos=repos,
     )
 
@@ -133,8 +129,7 @@ def _parse_repos_env(raw: str | None) -> dict[str, Path]:
         ) from exc
     if not isinstance(parsed, dict):
         raise RuntimeError(
-            "fix_gripe: PRECIS_FIX_REPOS must be a JSON object "
-            "(name → host path)"
+            "fix_gripe: PRECIS_FIX_REPOS must be a JSON object (name → host path)"
         )
     out: dict[str, Path] = {}
     for name, path in parsed.items():
@@ -147,9 +142,7 @@ def _parse_repos_env(raw: str | None) -> dict[str, Path]:
     return out
 
 
-def validate_submit(
-    store: Any, *, gripe_id: int, params: dict[str, Any]
-) -> str | None:
+def validate_submit(store: Any, *, gripe_id: int, params: dict[str, Any]) -> str | None:
     """Pre-submit check: can we actually run this fix on this gripe?
 
     Returns an error message string if not, ``None`` if OK. The
@@ -188,9 +181,7 @@ def validate_submit(
     return None
 
 
-def resolve_repo_for_gripe(
-    store: Any, gripe_id: int, cfg: FixGripeConfig
-) -> Path:
+def resolve_repo_for_gripe(store: Any, gripe_id: int, cfg: FixGripeConfig) -> Path:
     """Look up the repo path for a gripe at submit / claim time.
 
     Reads the gripe's tags; if a ``repo:<name>`` tag is present, the
@@ -275,9 +266,7 @@ def run(
 
     blocks = store.list_blocks_for_ref(gripe_id)
     if not blocks:
-        raise RuntimeError(
-            f"fix_gripe: gripe id={gripe_id} has no body chunk"
-        )
+        raise RuntimeError(f"fix_gripe: gripe id={gripe_id} has no body chunk")
     prompt = _compose_prompt(ref_title=ref.title, blocks=blocks)
 
     clone_dir = cfg.work_dir / "clones" / f"gripe_{gripe_id}"
@@ -389,11 +378,13 @@ def _compose_prompt(*, ref_title: str, blocks: list[Any]) -> str:
     lines.append("- You are on a fresh branch named gripe_<id>.")
     lines.append("- Make the smallest commits that fix the reported bug.")
     lines.append("- Run any relevant tests before committing.")
-    lines.append("- When you are done, push your branch to origin "
-                 "(`git push origin HEAD`).")
+    lines.append(
+        "- When you are done, push your branch to origin (`git push origin HEAD`)."
+    )
     lines.append("- Do NOT touch main. Do NOT switch branches.")
-    lines.append("- The pre-push hook will reject pushes to anything not "
-                 "matching gripe_*.")
+    lines.append(
+        "- The pre-push hook will reject pushes to anything not matching gripe_*."
+    )
     return "\n".join(lines)
 
 
@@ -558,10 +549,10 @@ def _git_diff_stat(clone_dir: Path, base: str | None, head: str) -> str:
 
 
 __all__ = [
-    "PARAMS_SCHEMA",
     "COMPATIBLE_EXECUTORS",
-    "REQUIRES",
     "DESCRIPTION",
+    "PARAMS_SCHEMA",
+    "REQUIRES",
     "FixGripeConfig",
     "RunOutcome",
     "load_config_from_env",

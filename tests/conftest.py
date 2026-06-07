@@ -269,6 +269,10 @@ _DATA_TABLES: tuple[str, ...] = (
     "ref_artifacts",
     "ref_events",
     "tag_embeddings",
+    # Dream telemetry (migration 0007). Transcript FK → log, so child
+    # first; both are analysis-only and carry no FK into refs/chunks.
+    "dream_transcripts",
+    "dream_log",
     # Tags + links + identifiers — secondary to refs/chunks.
     "chunk_tags",
     "ref_tags",

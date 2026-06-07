@@ -575,9 +575,7 @@ def test_search_emits_more_column(skill: SkillHandler) -> None:
     # or — when the embedder is unwired in this test build and only
     # lexical hits surface — at least the empty-marker '.' appears.
     # We assert the header form since it's the new contract.
-    assert "more" in body, (
-        "expected `more` column in result table; got body:\n" + body
-    )
+    assert "more" in body, "expected `more` column in result table; got body:\n" + body
 
 
 # ── precis-overview kinds table stays honest ──────────────────────────

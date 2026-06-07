@@ -299,6 +299,21 @@ def _excerpt(text: str | None, limit: int = 240) -> str:
     return t if len(t) <= limit else t[: limit - 1] + "…"
 
 
+#: Per-item cap for the verbatim FOCUS body. Generous enough that real
+#: memories / chunks land whole, but bounds the prompt when a focus item
+#: is pathologically long (region_n items shown in full). `get(...)`
+#: pulls the untruncated text if the agent needs it.
+_FOCUS_BODY_CAP = 2000
+
+
+def _cap_verbatim(text: str | None, cap: int) -> str:
+    """Truncate ``text`` to ``cap`` chars, preserving newlines (verbatim)."""
+    t = text or ""
+    if len(t) <= cap:
+        return t
+    return t[: cap - 1].rstrip() + "…"
+
+
 def _indent(text: str | None, prefix: str = "    ") -> str:
     """Indent each line of ``text`` by ``prefix`` (verbatim, newlines kept)."""
     return "\n".join(prefix + line for line in (text or "").splitlines())
@@ -307,10 +322,11 @@ def _indent(text: str | None, prefix: str = "    ") -> str:
 def _format_hits(hits: list[tuple[Any, Any, float]], *, full: bool = False) -> str:
     """Render search hits for the prompt.
 
-    ``full=True`` shows the body **verbatim and untruncated** (the FOCUS
-    region — the agent should sit with it in detail); ``full=False`` shows
-    a single-line excerpt (the SPARKS — just enough to spot a connection,
-    `get(...)` pulls the rest).
+    ``full=True`` shows the body **verbatim** (the FOCUS region — the
+    agent should sit with it in detail), capped at :data:`_FOCUS_BODY_CAP`
+    chars so a pathological item can't blow the prompt. ``full=False``
+    shows a single-line excerpt (the SPARKS — just enough to spot a
+    connection, `get(...)` pulls the rest).
     """
     if not hits:
         return "(none)"
@@ -318,7 +334,10 @@ def _format_hits(hits: list[tuple[Any, Any, float]], *, full: bool = False) -> s
     for block, ref, score in hits:
         title = ref.title or ref.slug or f"#{ref.id}"
         header = f"- [{ref.kind}] id={ref.id} (cos={score:.2f}) {_excerpt(title, 80)}"
-        body = _indent(block.text) if full else f"    {_excerpt(block.text)}"
+        if full:
+            body = _indent(_cap_verbatim(block.text, _FOCUS_BODY_CAP))
+        else:
+            body = f"    {_excerpt(block.text)}"
         lines.append(f"{header}\n{body}")
     return "\n".join(lines)
 

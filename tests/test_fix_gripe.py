@@ -24,7 +24,6 @@ from precis.workers.job_types.fix_gripe import (
     load_config_from_env,
 )
 
-
 # ── _restricted_env: claude must not see the DB ────────────────────
 
 
@@ -44,18 +43,14 @@ class TestRestrictedEnv:
         assert "PGPASSWORD" not in env
         assert "PGHOST" not in env
 
-    def test_strips_precis_database_url(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_strips_precis_database_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(
             "PRECIS_DATABASE_URL", "postgresql://precis:s3cret@db/precis"
         )
         env = _restricted_env(cwd_for_test())
         assert "PRECIS_DATABASE_URL" not in env
 
-    def test_strips_other_precis_vars(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_strips_other_precis_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Belt and braces: any PRECIS_* var goes — claude doesn't
         need to know about precis internals, and a future
         PRECIS_FOO_DATABASE_URL leaking through the PG-prefix
@@ -64,18 +59,14 @@ class TestRestrictedEnv:
         env = _restricted_env(cwd_for_test())
         assert "PRECIS_WATCH_INBOX" not in env
 
-    def test_keeps_path_and_home(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_keeps_path_and_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
         monkeypatch.setenv("HOME", "/home/precis")
         env = _restricted_env(cwd_for_test())
         assert env["PATH"] == "/usr/bin:/bin"
         assert env["HOME"] == "/home/precis"
 
-    def test_keeps_anthropic_vars(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_keeps_anthropic_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """ANTHROPIC_API_KEY is the alternate auth path; if the
         operator sets it on the precis container it must flow into
         the subprocess."""
@@ -121,9 +112,7 @@ class TestComposePrompt:
         assert "COMMENT 2: more detail 2" in prompt
 
     def test_constraints_present(self) -> None:
-        prompt = _compose_prompt(
-            ref_title="bug", blocks=[_FakeBlock("any body")]
-        )
+        prompt = _compose_prompt(ref_title="bug", blocks=[_FakeBlock("any body")])
         assert "CONSTRAINTS" in prompt
         assert "gripe_*" in prompt
         assert "Do NOT touch main" in prompt
@@ -145,9 +134,7 @@ class TestLoadConfig:
         with pytest.raises(RuntimeError, match="PRECIS_FIX_WORK_DIR"):
             load_config_from_env()
 
-    def test_missing_both_repo_settings(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_missing_both_repo_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """At least one of PRECIS_FIX_REPO_DIR / PRECIS_FIX_REPOS
         must be set, or the runner has no repo to clone."""
         monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
@@ -187,9 +174,7 @@ class TestLoadConfig:
             "other": Path("/tmp/other"),
         }
 
-    def test_repos_json_malformed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_repos_json_malformed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
         monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/fallback")
         monkeypatch.setenv("PRECIS_FIX_REPOS", "not-json")
@@ -303,9 +288,7 @@ class TestValidateSubmit:
 
         return _Store()
 
-    def test_rejects_when_env_missing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_rejects_when_env_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from precis.workers.job_types.fix_gripe import validate_submit
 
         monkeypatch.delenv("PRECIS_FIX_REPO_DIR", raising=False)
@@ -314,18 +297,14 @@ class TestValidateSubmit:
         err = validate_submit(self._store(), gripe_id=42, params={})
         assert err is not None and "PRECIS_FIX_WORK_DIR" in err
 
-    def test_rejects_unknown_repo_tag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_rejects_unknown_repo_tag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from precis.workers.job_types.fix_gripe import validate_submit
 
         monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
         monkeypatch.setenv("PRECIS_FIX_REPOS", '{"precis-mcp": "/tmp/precis-mcp"}')
         monkeypatch.delenv("PRECIS_FIX_REPO_DIR", raising=False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-        err = validate_submit(
-            self._store(["repo:nope"]), gripe_id=42, params={}
-        )
+        err = validate_submit(self._store(["repo:nope"]), gripe_id=42, params={})
         assert err is not None and "not in PRECIS_FIX_REPOS" in err
 
     def test_rejects_when_api_key_missing(

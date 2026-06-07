@@ -100,8 +100,7 @@ class TestBucketedPath:
         half = n // 2
         a = [_Stub(pos=i, keywords=["alpha", "beta", "shared"]) for i in range(half)]
         b = [
-            _Stub(pos=i, keywords=["gamma", "delta", "shared"])
-            for i in range(half, n)
+            _Stub(pos=i, keywords=["gamma", "delta", "shared"]) for i in range(half, n)
         ]
         return a + b
 

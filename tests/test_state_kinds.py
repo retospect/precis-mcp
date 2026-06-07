@@ -39,9 +39,7 @@ class TestGripe:
     def gripe(self, hub: Hub) -> GripeHandler:
         return GripeHandler(hub=hub)
 
-    def test_put_creates_a_gripe_with_body_chunk(
-        self, gripe: GripeHandler
-    ) -> None:
+    def test_put_creates_a_gripe_with_body_chunk(self, gripe: GripeHandler) -> None:
         r = gripe.put(text="VS Code keeps reloading the workspace")
         assert "id=" in r.body
         refs = gripe.store.list_refs(kind="gripe", limit=10)
@@ -60,9 +58,7 @@ class TestGripe:
         tags = gripe.store.tags_for(refs[0].id)
         assert any("STATUS:open" in str(t) for t in tags)
 
-    def test_put_with_id_appends_comment_chunk(
-        self, gripe: GripeHandler
-    ) -> None:
+    def test_put_with_id_appends_comment_chunk(self, gripe: GripeHandler) -> None:
         gripe.put(text="paper slug NotFound has no near-match suggestions")
         refs = gripe.store.list_refs(kind="gripe", limit=10)
         gripe_id = refs[0].id
@@ -73,9 +69,7 @@ class TestGripe:
         assert blocks[1].chunk_kind == "gripe_comment"
         assert "hyphen" in blocks[1].text
 
-    def test_get_renders_body_plus_comment_timeline(
-        self, gripe: GripeHandler
-    ) -> None:
+    def test_get_renders_body_plus_comment_timeline(self, gripe: GripeHandler) -> None:
         gripe.put(text="search drops duplicate hits")
         refs = gripe.store.list_refs(kind="gripe", limit=10)
         gripe_id = refs[0].id

@@ -18,7 +18,6 @@ new runner classes land.
 
 from __future__ import annotations
 
-
 #: Capability set each executor provides. The dispatcher checks
 #: a job_type's REQUIRES against the chosen executor's PROVIDES;
 #: any missing capability is reason to reject the submit.
@@ -40,4 +39,4 @@ def is_known_executor(name: str) -> bool:
     return name in EXECUTOR_PROVIDES
 
 
-__all__ = ["EXECUTOR_PROVIDES", "DEFAULT_EXECUTOR", "is_known_executor"]
+__all__ = ["DEFAULT_EXECUTOR", "EXECUTOR_PROVIDES", "is_known_executor"]

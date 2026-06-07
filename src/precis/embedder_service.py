@@ -100,7 +100,9 @@ class EmbedderService:
         self._ready = threading.Event()
         self.metrics = _Metrics()
         if warm:
-            threading.Thread(target=self._warm, name="embedder-warm", daemon=True).start()
+            threading.Thread(
+                target=self._warm, name="embedder-warm", daemon=True
+            ).start()
         else:
             self._ready.set()
 
@@ -119,7 +121,11 @@ class EmbedderService:
         try:
             self._embedder.embed(["warmup"])
             self._ready.set()
-            log.info("embedder warm: model=%s dim=%d", self._embedder.model, self._embedder.dim)
+            log.info(
+                "embedder warm: model=%s dim=%d",
+                self._embedder.model,
+                self._embedder.dim,
+            )
         except Exception:  # pragma: no cover - depends on real model
             log.exception("embedder warmup failed; /readyz stays 503")
 
@@ -155,7 +161,9 @@ def _make_handler(service: EmbedderService) -> type[BaseHTTPRequestHandler]:
         def log_message(self, *args: object) -> None:
             return
 
-        def _send_json(self, status: int, obj: dict, extra_headers: dict | None = None) -> None:
+        def _send_json(
+            self, status: int, obj: dict, extra_headers: dict | None = None
+        ) -> None:
             body = json.dumps(obj).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")

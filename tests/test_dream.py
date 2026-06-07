@@ -13,8 +13,6 @@ import json
 import re
 import types
 
-import pytest
-
 from precis.embedder import MockEmbedder
 from precis.runtime import PrecisRuntime
 from precis.store import Store
@@ -26,14 +24,6 @@ from precis.workers.dream import (
 )
 
 _EMB = MockEmbedder(dim=1024)
-
-
-@pytest.fixture(autouse=True)
-def _clean_dream_tables(store: Store) -> None:
-    """The shared-DB cleanup doesn't cover the dreaming telemetry tables;
-    truncate them per-test so row counts/ordering are deterministic."""
-    with store.pool.connection() as conn:
-        conn.execute("TRUNCATE dream_transcripts, dream_log RESTART IDENTITY")
 
 
 # ── scripted transport ──────────────────────────────────────────────
@@ -146,6 +136,15 @@ def test_focus_verbatim_preserves_newlines() -> None:
     body = "line one\nline two\nline three"
     out = _format_hits([_hit(body, "multi")], full=True)
     assert "    line one\n    line two\n    line three" in out
+
+
+def test_focus_body_capped_at_2k() -> None:
+    body = "z" * 5000
+    out = _format_hits([_hit(body, "huge")], full=True)
+    assert "…" in out  # capped
+    # the verbatim body never exceeds the 2k cap (+ the indent prefix)
+    rendered_body = out.split("\n", 1)[1]
+    assert len(rendered_body.strip()) <= 2000
 
 
 # ── gate ────────────────────────────────────────────────────────────

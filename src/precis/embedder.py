@@ -336,8 +336,7 @@ class RemoteEmbedder:
         resp = EmbedResponse.from_dict(body)
         if len(resp.vectors) != len(texts):
             raise RuntimeError(
-                f"embedder returned {len(resp.vectors)} vectors "
-                f"for {len(texts)} texts"
+                f"embedder returned {len(resp.vectors)} vectors for {len(texts)} texts"
             )
         return resp.vectors
 

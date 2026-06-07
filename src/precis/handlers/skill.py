@@ -652,9 +652,13 @@ class SkillHandler(Handler):
                 noun="skill match",
                 query=q,
             )
-            body = head + "\n\n" + render_agent_table(
-                table_rows,
-                schema=["slug", "section", "more", "keywords"],
+            body = (
+                head
+                + "\n\n"
+                + render_agent_table(
+                    table_rows,
+                    schema=["slug", "section", "more", "keywords"],
+                )
             )
         else:
             body = f"# no actionable skill matches for {q!r}"
@@ -1237,10 +1241,7 @@ class SkillHandler(Handler):
         else:
             lines.append(
                 render_agent_table(
-                    [
-                        {"field": field, "value": value}
-                        for field, value in db_info
-                    ],
+                    [{"field": field, "value": value} for field, value in db_info],
                     schema=["field", "value"],
                 )
             )
@@ -1424,9 +1425,7 @@ def _collect_database_info(store: Any) -> list[tuple[str, str]] | str:
     # 16.4 on x86_64-pc-linux-gnu, compiled by gcc …"); keep the
     # leading clause for readability.
     rows.append(("server_version", str(server_version).split(",", 1)[0]))
-    rows.append(
-        ("migration", str(migration) if migration is not None else "(none)")
-    )
+    rows.append(("migration", str(migration) if migration is not None else "(none)"))
     rows.append(("migration_count", str(mig_count)))
     return rows
 

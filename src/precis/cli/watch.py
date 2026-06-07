@@ -554,8 +554,7 @@ def process_pdf(
         # present here would be a genuine bug — surface it normally.)
         if not pdf.exists():
             log.info(
-                "precis watch: %s vanished mid-ingest — another host "
-                "owns it, skipping",
+                "precis watch: %s vanished mid-ingest — another host owns it, skipping",
                 pdf.name,
             )
             return None
@@ -569,8 +568,7 @@ def process_pdf(
         # manual recovery for what is almost always a self-healing
         # condition.
         log.warning(
-            "precis watch: transient DB error for %s (%s); "
-            "leaving in inbox for retry",
+            "precis watch: transient DB error for %s (%s); leaving in inbox for retry",
             pdf.name,
             exc,
         )
