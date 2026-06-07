@@ -22,7 +22,7 @@ from precis.ingest.pipeline import (
     _REPLACEMENT_CHAR,
     _blocks_to_chunks,
     _build_cards,
-    _repair_or_fail_mojibake,
+    _repair_mojibake,
     _resolve_identity,
     _retag_references,
     extract_paper,
@@ -557,14 +557,14 @@ class TestPaperToWriteContract:
 # ---------------------------------------------------------------------------
 
 
-class TestRepairOrFailMojibake:
-    """Pins the U+FFFD repair / fail-fast pass.
+class TestRepairMojibake:
+    """Pins the U+FFFD em-dash repair pass.
 
-    OPEN-ITEMS.md `acatome \\ufffd mojibake` regression test. Mirrors
-    the upstream test in ``acatome-extract/tests/test_pipeline.py``;
-    repeated here because precis-mcp replaced the upstream's bundle-
-    writing path with direct DB inserts, so the cleanup lives at this
-    layer too.
+    The high-precision ``LETTER ␣ FFFD ␣ LETTER`` pattern is rewritten
+    to ``LETTER ␣ — ␣ LETTER``. Anything else is left as U+FFFD —
+    that character is itself the canonical Unicode "byte sequence I
+    could not decode" sentinel and is the most honest representation
+    when the ToUnicode map gap can't be guessed safely.
     """
 
     @staticmethod
@@ -573,9 +573,7 @@ class TestRepairOrFailMojibake:
 
     def test_repairs_em_dash_between_words(self) -> None:
         blocks = [self._block(f"compound {_REPLACEMENT_CHAR} silver")]
-        result = _repair_or_fail_mojibake(
-            blocks, paper_id="p1", pdf_path=Path("p1.pdf")
-        )
+        result = _repair_mojibake(blocks)
         assert result[0]["text"] == "compound — silver"
 
     def test_passes_through_text_without_fffd(self) -> None:
@@ -583,47 +581,40 @@ class TestRepairOrFailMojibake:
             self._block("normal prose"),
             self._block("already has — em-dash"),
         ]
-        result = _repair_or_fail_mojibake(
-            blocks, paper_id="p1", pdf_path=Path("p1.pdf")
-        )
+        result = _repair_mojibake(blocks)
         assert result[0]["text"] == "normal prose"
         assert result[1]["text"] == "already has — em-dash"
 
-    def test_fails_on_unrepairable_fffd(self) -> None:
-        """FFFD inside numbers / next to punctuation / without flanking
-        spaces all fail — we don't know what was lost."""
-        for bad in (
+    def test_unrepairable_fffd_stays_in_text(self) -> None:
+        """FFFD inside numbers / next to punctuation / mid-word is
+        left in place — we don't guess what was lost, and FFFD is
+        the standard Unicode sentinel for exactly this situation.
+        """
+        cases = [
             f"value{_REPLACEMENT_CHAR}, then more",
             f"page 1{_REPLACEMENT_CHAR}2 of report",
             f"compound{_REPLACEMENT_CHAR}silver",
-        ):
-            with pytest.raises(ValueError, match="unrepairable U\\+FFFD"):
-                _repair_or_fail_mojibake(
-                    [self._block(bad)],
-                    paper_id="p1",
-                    pdf_path=Path("p1.pdf"),
-                )
-
-    def test_error_message_includes_paper_page_and_pdf(self) -> None:
-        blocks = [
-            self._block("ok"),
-            self._block(f"bad{_REPLACEMENT_CHAR}context", page=7),
         ]
-        with pytest.raises(ValueError) as excinfo:
-            _repair_or_fail_mojibake(
-                blocks,
-                paper_id="acheson2026automated",
-                pdf_path=Path("acheson2026.pdf"),
-            )
-        msg = str(excinfo.value)
-        assert "acheson2026automated" in msg
-        assert "7" in msg
-        assert "acheson2026.pdf" in msg
+        for bad in cases:
+            blocks = [self._block(bad, page=3)]
+            result = _repair_mojibake(blocks)
+            assert result[0]["text"] == bad  # untouched
+
+    def test_em_dash_repair_runs_per_block(self) -> None:
+        # Repair walks every block; non-FFFD blocks are skipped fast.
+        blocks = [
+            self._block("clean prose"),
+            self._block(f"x {_REPLACEMENT_CHAR} y", page=4),
+            self._block(f"still {_REPLACEMENT_CHAR}gap unrepairable"),
+        ]
+        result = _repair_mojibake(blocks)
+        assert result[0]["text"] == "clean prose"
+        assert result[1]["text"] == "x — y"
+        # Mid-block FFFD without flanking spaces stays as-is.
+        assert _REPLACEMENT_CHAR in result[2]["text"]
 
     def test_empty_input_returns_empty(self) -> None:
-        assert (
-            _repair_or_fail_mojibake([], paper_id="p1", pdf_path=Path("p1.pdf")) == []
-        )
+        assert _repair_mojibake([]) == []
 
     def test_regex_does_not_match_digit_or_punctuation(self) -> None:
         # Direct regex assertions — useful for diagnosing future failures.

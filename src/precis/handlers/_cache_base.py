@@ -695,6 +695,9 @@ class CacheBackedHandler(Handler):
             )
             return Response(body=body)
 
+        # Salience: heat the chunks this page surfaced; no-op for dreamer.
+        self.store.bump_salience([block.id for block, _ref, _score in hits])
+
         total = self.store.count_blocks_lexical(q=q, kind=self.spec.kind)
         lines = [
             format_search_headline(
@@ -742,6 +745,8 @@ class CacheBackedHandler(Handler):
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
+        # Salience bump (block-level); no-op for dream-actor reads.
+        self.store.bump_salience([block.id for block, _ref, _score in triples])
         return block_hits_to_search_hits(triples, kind=self.spec.kind)
 
     # ── block ingestion helper ────────────────────────────────────

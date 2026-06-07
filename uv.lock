@@ -2223,7 +2223,7 @@ wheels = [
 
 [[package]]
 name = "precis-mcp"
-version = "8.4.4"
+version = "8.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "ftfy" },
@@ -2265,6 +2265,9 @@ docx = [
     { name = "lxml" },
     { name = "python-docx" },
 ]
+embed = [
+    { name = "sentence-transformers" },
+]
 external = [
     { name = "httpx" },
     { name = "trafilatura" },
@@ -2278,7 +2281,6 @@ paper = [
     { name = "pysbd" },
     { name = "rapidfuzz" },
     { name = "semanticscholar" },
-    { name = "sentence-transformers" },
     { name = "tenacity" },
 ]
 patent = [
@@ -2314,7 +2316,7 @@ requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.0" },
     { name = "pgvector", specifier = ">=0.3.0" },
     { name = "platformdirs", specifier = ">=4.0" },
-    { name = "precis-mcp", extras = ["paper", "docx", "tex", "calc", "plot", "external", "patent"], marker = "extra == 'all'" },
+    { name = "precis-mcp", extras = ["embed", "paper", "docx", "tex", "calc", "plot", "external", "patent"], marker = "extra == 'all'" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pydantic", marker = "extra == 'plot'", specifier = ">=2.0" },
@@ -2326,7 +2328,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rapidfuzz", marker = "extra == 'paper'", specifier = ">=3.0" },
     { name = "semanticscholar", marker = "extra == 'paper'", specifier = ">=0.8" },
-    { name = "sentence-transformers", marker = "extra == 'paper'", specifier = ">=3.0" },
+    { name = "sentence-transformers", marker = "extra == 'embed'", specifier = ">=3.0" },
     { name = "sympy", marker = "extra == 'calc'", specifier = ">=1.12" },
     { name = "tenacity", marker = "extra == 'paper'", specifier = ">=8.0" },
     { name = "trafilatura", marker = "extra == 'external'", specifier = ">=1.6" },
@@ -2334,7 +2336,7 @@ requires-dist = [
     { name = "wolframalpha", marker = "extra == 'external'", specifier = ">=5.0" },
     { name = "youtube-transcript-api", marker = "extra == 'external'", specifier = ">=1.0" },
 ]
-provides-extras = ["paper", "docx", "tex", "calc", "plot", "external", "patent", "all"]
+provides-extras = ["embed", "paper", "docx", "tex", "calc", "plot", "external", "patent", "all"]
 
 [package.metadata.requires-dev]
 dev = [

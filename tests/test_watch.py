@@ -552,6 +552,95 @@ class TestProcessPdf:
         assert dest is None
         m.assert_not_called()  # never reached precis_add
 
+    def test_filenotfound_race_does_not_write_error(self, tmp_path: Path):
+        """Source PDF removed mid-ingest (multi-host inbox race) is
+        not a failure — no error file, no move to errors/."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "raced.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+
+        def vanish_then_raise(*a: Any, **kw: Any) -> Any:
+            pdf.unlink()
+            raise FileNotFoundError(f"PDF not found: {pdf}")
+
+        with patch("precis.cli.watch.precis_add", side_effect=vanish_then_raise):
+            dest = process_pdf(
+                pdf,
+                store=object(),  # type: ignore[arg-type]
+                corpus_dir=corpus_dir,
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="",
+            )
+
+        assert dest is None
+        # No bucket created under errors/, no .error.txt written.
+        ts_buckets = [
+            p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
+        ]
+        assert ts_buckets == []
+
+    def test_filenotfound_with_file_present_still_errors(self, tmp_path: Path):
+        """FileNotFoundError where the source PDF *is* still on disk
+        is a genuine bug, not a race — must surface normally."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "weird.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+
+        with patch(
+            "precis.cli.watch.precis_add",
+            side_effect=FileNotFoundError("internal: helper.txt missing"),
+        ):
+            dest = process_pdf(
+                pdf,
+                store=object(),  # type: ignore[arg-type]
+                corpus_dir=corpus_dir,
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="",
+            )
+
+        assert dest is None
+        assert not pdf.exists()  # moved to errors/
+        ts_buckets = [
+            p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
+        ]
+        assert len(ts_buckets) == 1
+        err_files = list(ts_buckets[0].glob("*.error.txt"))
+        assert len(err_files) == 1
+
+    def test_db_outage_leaves_file_in_inbox(self, tmp_path: Path):
+        """Transient psycopg.OperationalError → leave PDF in place
+        for retry on the next backfill pass; never write an error."""
+        from psycopg import OperationalError
+
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "db_blip.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+
+        with patch(
+            "precis.cli.watch.precis_add",
+            side_effect=OperationalError("server closed the connection unexpectedly"),
+        ):
+            dest = process_pdf(
+                pdf,
+                store=object(),  # type: ignore[arg-type]
+                corpus_dir=corpus_dir,
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="",
+            )
+
+        assert dest is None
+        assert pdf.exists()  # NOT moved — next pass will retry
+        ts_buckets = [
+            p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
+        ]
+        assert ts_buckets == []
+
 
 # ---------------------------------------------------------------------------
 # CLI parser smoke test

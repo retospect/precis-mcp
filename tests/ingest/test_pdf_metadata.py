@@ -29,10 +29,12 @@ from pathlib import Path
 from precis.ingest.pdf_metadata import (
     DoiCandidate,
     DoiProvenance,
+    PdfMetadata,
     _compute_file_hash,
     _is_valid_doi_format,
     _normalize_doi,
     _read_sidecar_meta,
+    _strip_nul_bytes,
 )
 
 
@@ -125,3 +127,43 @@ class TestComputeFileHash:
         assert len(h) == 64
         # Determinism — same bytes, same hash.
         assert _compute_file_hash(pdf) == h
+
+
+class TestStripNulBytes:
+    """Pin the cleanup that prevents psycopg.DataError on INSERT.
+
+    Postgres TEXT rejects NUL; the metadata cascade has been seen to
+    pull NULs out of corrupt embedded info / XMP streams in the wild.
+    """
+
+    def test_strips_nul_from_all_text_fields(self, tmp_path: Path) -> None:
+        meta = PdfMetadata(
+            pdf_path=tmp_path / "x.pdf",
+            title="A\x00 paper",
+            authors=["Smith\x00, J.", "clean"],
+            doi="10.1000/\x00abc",
+            journal="Journal\x00",
+            publisher="\x00Pub",
+            abstract="abs\x00tract",
+            keywords=["k\x001", "k2"],
+        )
+        _strip_nul_bytes(meta)
+        assert meta.title == "A paper"
+        assert meta.authors == ["Smith, J.", "clean"]
+        assert meta.doi == "10.1000/abc"
+        assert meta.journal == "Journal"
+        assert meta.publisher == "Pub"
+        assert meta.abstract == "abstract"
+        assert meta.keywords == ["k1", "k2"]
+
+    def test_is_idempotent_when_no_nul_present(self, tmp_path: Path) -> None:
+        meta = PdfMetadata(
+            pdf_path=tmp_path / "x.pdf",
+            title="A paper",
+            authors=["Smith, J."],
+            doi="10.1000/abc",
+        )
+        _strip_nul_bytes(meta)
+        assert meta.title == "A paper"
+        assert meta.authors == ["Smith, J."]
+        assert meta.doi == "10.1000/abc"

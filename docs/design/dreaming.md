@@ -1,4 +1,4 @@
-# Dreaming — agentic memory consolidation + synthesis
+# Dreaming -- agentic memory consolidation + synthesis
 
 Status: **proposed** (plan-first artifact; no code landed yet)
 Author: (fill in)
@@ -6,13 +6,11 @@ Date: 2026-06-05 (agentic re-architecture 2026-06-06)
 
 > **Architecture note (2026-06-06).** Dreaming is now a **full-agentic**
 > loop: a thin worker hands an opus-class model a turn/cost budget and a
-> connection to precis's own MCP tools, and lets it roam. The four
-> "modes" below are no longer separate workers — they are *behaviors*
+> connection to precis's own MCP tools, and lets it roam. The behaviors
+> below are no longer separate workers -- they are *behaviors*
 > the one agent may choose. The intelligence lives in the **navigation
 > tools** (§Dream navigation tools) and the agent loop (§The dreaming
-> agent), not in worker control flow. The earlier per-mode JSON prompt
-> contracts are retained at the end as an **optional deterministic
-> fallback**, not the primary path.
+> agent), not in worker control flow.
 
 ## Problem
 
@@ -27,15 +25,15 @@ today:
 2. **No synthesis layer.** The corpus (papers, findings, gripes,
    memories) is a flat sea of chunks. There is no higher-altitude,
    "pre-chewed" layer that captures *"the interesting clusters we've
-   been worried about lately"* — and no signal for what *recently
+   been worried about lately"* -- and no signal for what *recently
    mattered* to focus such synthesis on.
 
 **Dreaming** is a single **agent**, not four workers. A thin worker
 launches an opus-class model connected to precis's MCP surface, gives
 it a turn/cost budget, and one instruction: *roam the knowledge base
-and improve it, or do nothing.* The taxonomy below is principled — it
+and improve it, leaving at least one small change.* The taxonomy below is principled -- it
 mirrors the leading hypothesis for what sleep does: *consolidation* and
-creative *recombination* — but each is now a **behavior the agent may
+creative *recombination* -- but each is now a **behavior the agent may
 choose**, reached by the same navigation tools, not a separate code
 path:
 
@@ -54,19 +52,22 @@ path:
 - **Acquire** (outward, gated): notice a paper the corpus keeps bumping
   into but doesn't hold; mint a stub so the **existing** fetch pipeline
   auto-grabs it if open-access, else parks it on the required-papers
-  backlog. The dream only mints the stub — it never ingests inline.
+  backlog. The dream only mints the stub -- it never ingests inline.
 
 **Guiding philosophy (decided).** Memories are *low-value and
-reversible*, and the model is clever — so **trust it, and treat NO
-ACTION as a first-class, encouraged outcome.** A run that reads around
-and concludes nothing is worth changing is a success, not a waste. "If
-in doubt, do nothing" is the default.
+reversible*, and the model is clever -- so **trust it, but make it
+leave a mark.** In this evaluation phase every run must commit **at
+least one small change** -- a new note, a link, or a conservative
+merge -- so we can inspect the output and judge quality directly.
+Everything is `DREAM:`-tagged and reversible, so a weak dream is cheap
+to ignore or undo. Bias toward *small*, not toward *nothing*; once
+quality is calibrated we may re-allow silent no-op runs.
 
 Shared infrastructure under the agent: a **salience signal** on chunks
 (what mattered lately) powering the cluster-navigation tools; a
 **`dream_log`** recording every run + a saved transcript for the
-feedback loop; **additive-only writes** through the normal MCP verbs so
-a bad dream is inert clutter, never corruption.
+feedback loop; **additive or guarded-merge writes** through the normal
+MCP verbs so a bad dream is inert clutter, never corruption.
 
 ## Decisions (settled in discussion)
 
@@ -76,69 +77,68 @@ a bad dream is inert clutter, never corruption.
 - **Link model unchanged; memory = ref + 1 card chunk.** A memory is a
   `ref` with a single `card_combined` chunk (`ord=-1`) for its body.
   Links stay **ref-anchored** (ref→ref, with `chunk_id` an optional
-  *body* locus only — never a card, since cards are re-emitted via
+  *body* locus only -- never a card, since cards are re-emitted via
   DELETE+INSERT). So a memory's links are keyed on its stable `ref_id`
   and always surface, regardless of card churn. No chunk→chunk rewrite,
-  no migration. (Soft-delete is ref-only — `chunks` has no `deleted_at`.)
+  no migration. (Soft-delete is ref-only -- `chunks` has no `deleted_at`.)
 - **Memory-only consolidation; papers are never merged or deleted.**
   Synthesis *reads* papers as cluster inputs but only ever *writes* new
   memories.
 - **Full-agentic, turn/cost-bounded.** No worker-coded mode dispatch and
   no per-call JSON contract on the hot path: a thin worker launches an
   opus-class model connected to the precis MCP server, capped by
-  `--max-turns` (large-ish is fine — dreaming isn't latency-sensitive)
+  `--max-turns` (large-ish is fine -- dreaming isn't latency-sensitive)
   and `--max-budget-usd`, gated default-off behind `PRECIS_DREAM_LLM`.
   The agent reads, decides, and writes through ordinary MCP verbs.
 - **The navigation tools are the product, not the prompt.** The cleverness
-  lives in a few MCP tools (active/unvisited clusters; near / far /
-  opposite retrieval via a similarity knob) — see §Dream navigation
-  tools. The prompt is deliberately minimal: *pick something, do the
-  magic, or do nothing.*
-- **Additive-only writes; no-op is success.** The agent may `put` new
-  memories and `link` / `tag` existing ones; destructive consolidation
-  (delete + link-migration) is the one behavior that still routes
-  through a guarded `supersedes` path, not a raw `delete`. Soft-delete +
-  the `supersedes` chain keep every merge reversible at SQL. Doing
-  nothing is a valid, encouraged outcome.
-- **Every run leaves a transcript.** The full agent tool-call transcript
-  is written to a file outside the tree; `dream_log` keeps a pointer +
-  summary. That is the audit trail (alongside `ref_events` for the
-  writes themselves).
-- **Salience = two quantities, not one.** *Access salience* `A` (lazy
-  exponential decay of recency×frequency) is **stored** as two `NOT NULL`
-  columns on `chunks` (`access_score`, `last_seen`), updated in place;
-  ingest seeds it (cold-start for free), dream-actor reads don't.
-  *Target-worthiness* `worth = Â·prior·(1−β·C)` is **derived** per region
-  at cluster time — the coverage gate `C` doubles as the cooldown. See
-  §Salience for the formulae and starting values.
-- **Cluster tool = retrieve-then-cluster.** ANN-retrieve a salient
-  frontier (HNSW), then run real clustering (HDBSCAN/GMM) on that
-  bounded subset. Never global GMM over the whole corpus (it's
-  >500k chunks and growing). Clustering deps land behind an ADR when
-  the cluster tool is built.
-- **Retrieval: dreams blend into fused search with a boost** (not a
-  hard memory-first gate), where the boost is **dream-recency relative
-  to cluster activity** (see §Salience). Survives cold start; never a
-  dead end (drill to sources via `derived-from` links).
+  lives in two `search` modes -- `view='dreamable'` (the focus region) and
+  the `angle`/`n` spray (distinct sparks) -- see §Dream navigation
+  tools. The prompt is deliberately minimal: *pick something and make
+  one small improvement.*
+- **Writes are additive or a guarded merge; each run leaves >=1 small
+  change.** The agent may `put` new memories and `link` / `tag`
+  existing ones; destructive consolidation (delete + link-migration)
+  routes through a guarded `supersedes` path, never a raw `delete`.
+  Soft-delete + the `supersedes` chain keep every merge reversible at
+  SQL. In the eval phase a no-op is *not* the goal -- commit at least
+  one small change so we can inspect quality.
+- **Every run leaves a transcript, in the DB.** The full agent tool-call
+  transcript lands in a `dream_transcripts` row (1:1 with `dream_log` via
+  `attempt_id`); `dream_log` itself stays lean for analytics. One store,
+  transactional, no orphaned files. That is the audit trail (alongside
+  `ref_events` for the writes themselves).
+- **Target selection = date-only, knob-free.** The dream seed is
+  `argmax(last_seen - last_dreamt)` over `paper`+`memory` chunks -- two
+  `NOT NULL` timestamps, no decay, no coefficients, no sampling.
+  Surfacing resets `last_dreamt`, so the corpus rotates on its own and a
+  dreamt region drops out deterministically (no `worth`/`β`/softmax, no
+  separate cooldown). `accesses` is kept for heatmaps only. See
+  §Target selection.
+- **Focus region = retrieve-then-cluster.** `search(view='dreamable')`
+  ANN-retrieves a salient frontier (HNSW), then runs real clustering
+  (HDBSCAN/GMM) on that bounded subset -- never global GMM over the
+  whole corpus (>500k chunks and growing). Clustering deps land behind
+  an ADR when it's built; there is no `cluster` kind.
 - **`new_tags` default = union of survivors' tags** (minus control
   tags); the LLM may prune.
 - **Dream log keeps everything forever.** One row per run, retained
-  including `noop` runs — no pruning, no retention window. Nothing in it
+  including `noop` runs -- no pruning, no retention window. Nothing in it
   surfaces in search or any normal view; it's analysis-only. The
   retained log + transcripts are the dataset for "optimize the
   dreaming": fruitfulness rate, behavior mix, which regions fertilize.
 - **Search spans all kinds by default.** `search` already supports
   cross-kind fan-out (`kind='*'` / `'all'` / `'paper,memory'`,
-  RRF-fused) — the agent uses it directly. `get` stays single-kind
-  (it's id-addressed); the new `cluster` kind is reached the same way.
-- **One similarity knob: near / ring / opposite.** `search` grows
-  `target` (cosine, default ~1) + `tol` and a `like=<id>` seed, so the
-  agent can ask for *adjacent* (target~1), a *ring* of moderately-
-  related ideas (target~0.5), or the *opposite pole* (target=-1). See
+  RRF-fused) -- the agent uses it directly. `get` stays single-kind
+  (it's id-addressed).
+- **One similarity knob: `angle` + `n`.** `search` grows `angle`
+  (target cosine, default 1), `n` (how many distinct items), and a
+  `like=<id>` seed, so the agent can ask for *adjacent* (`angle=1`), a
+  *cone* of moderately-related ideas (`angle=0.5`), or the *opposite
+  pole* (`angle=-1`). See
   §Dream navigation tools for the (feasible) mechanics.
 - **Dreams may reach outward.** Semantic Scholar and Perplexity are
   already MCP kinds (`websearch` / `think` / `research`, cached), so an
-  agentic dream simply calls them like any other tool — no special
+  agentic dream simply calls them like any other tool -- no special
   worker plumbing. Cost is a prompt *hint* (prefer free S2 + cheap
   `websearch`; reserve deep `research`), bounded by the run's overall
   `--max-budget-usd`. Gated behind `PRECIS_DREAM_SEARCH`.
@@ -162,10 +162,10 @@ a bad dream is inert clutter, never corruption.
   max_distance=...)` (cosine via `chunk_embeddings`, excludes `ord<0`).
   Fused lexical+semantic via `search_blocks_fused` (RRF, k=60).
 - HNSW ANN index already exists (`migrations/.../chunk_embeddings_hnsw`)
-  — candidate retrieval scales to millions.
+  -- candidate retrieval scales to millions.
 - `chunks` already has a `meta JSONB` column; chunk text is
   append-only with an embedding/summary cascade. **Non-text columns do
-  NOT trigger that cascade** — so a salience column is safe to UPDATE
+  NOT trigger that cascade** -- so a salience column is safe to UPDATE
   in place (the "don't mutate chunks" rule is specifically about
   `chunks.text`).
 - Links: `links (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id,
@@ -177,12 +177,20 @@ a bad dream is inert clutter, never corruption.
   "(deleted)" marker (provenance stays visible).
 - `Relation` enum (`store/types.py`) + `relations` seed in
   `migrations/0001_initial.sql` are the source of truth.
-  **`supersedes` does not yet exist.**
+  **`supersedes` / `superseded-by` now exist** (migration 0007 +
+  `Relation` Literal); the guarded `supersede` tool is implemented on
+  `MemoryHandler` (`Store.migrate_links` + `soft_delete_ref(conn=)` +
+  `stamp_ref_meta`).
 - Tags: `tags(namespace, value)` is generic data (no migration for new
-  values), but `_KIND_ALLOWED_AXES["memory"] = frozenset()` rejects
-  *closed* axes on memory. So a closed `DREAM:` axis would need code
-  edits to `_CLOSED_VOCAB` + `_KIND_ALLOWED_AXES` (not SQL); an open
-  tag or `meta.*` needs nothing.
+  values). **Decided + implemented:** `DREAM:` is a *closed* axis
+  (`_CLOSED_VOCAB["DREAM"] = {consolidated, speculative}`, added to
+  `_KIND_ALLOWED_AXES["memory"]`). An open tag was considered but the
+  tag parser routes every `UPPERCASE:` prefix to the closed namespace,
+  so an agent writing `DREAM:speculative` through the validated
+  `tag`/`put` verb needs the axis registered to pass `parse_strict` —
+  and the closed vocab gives typo protection for free. Two app-side
+  lines, no SQL. (`DREAM:acquire` for the gated stub tag is deferred to
+  the acquire tool; it also needs `DREAM` on `paper`'s allowed axes.)
 - LLM via `call_claude_p(prompt, model=...)` (`utils/claude_p.py`);
   per-call model override + `--max-budget-usd` cap. Chase defaults to
   Haiku; dreaming passes an opus-class model. For the **agentic** path
@@ -194,13 +202,13 @@ a bad dream is inert clutter, never corruption.
   `supports_search_hits` kind and RRF-fuse the streams; `kind='*'`,
   `'all'`, and comma-lists (`'paper,memory'`) are already accepted
   (`runtime.py`). So "search all kinds that support it" needs no new
-  surface \u2014 the agent uses it as-is.
+  surface -- the agent uses it as-is.
 - **MCP is a thin shell over `runtime.dispatch`.** Every MCP verb (and
   every resource read) routes through `runtime.dispatch(verb, args)`
   (`mcp_modalities._read_resource`), which hits the same handlers a
   worker can call in-process. New navigation tools therefore land as
   ordinary handler verbs/views and are reachable both over MCP (for the
-  agent) and in-process (for tests / deterministic fallback).
+  agent) and in-process (for tests).
 - **External providers already exist as callable, cached paths:**
   - Semantic Scholar: `ingest/semantic_scholar.py::lookup_s2(title)`
     (search → metadata + abstract), `get_paper_by_id(doi/arxiv/s2)`;
@@ -211,7 +219,7 @@ a bad dream is inert clutter, never corruption.
     `CacheBackedHandler` (parsed, embedded, stored as refs +
     `cache_state`). Needs `PERPLEXITY_API_KEY`. The `~$0.50` figure for
     `research` is the repo's own declared estimate
-    (`cost_per_call_usd` in `perplexity.py`), not a measured price —
+    (`cost_per_call_usd` in `perplexity.py`), not a measured price --
     verify against current Perplexity pricing if it matters; the cheap
     tiers are the default anyway.
   - Cache discipline: `cache_state` (provider, request_hash, TTL,
@@ -220,7 +228,7 @@ a bad dream is inert clutter, never corruption.
 - **Acquire pipeline already exists end-to-end.** The chase worker
   mints **stub paper refs** when a citation resolves to a paper we don't
   hold (`chase._resolve_or_create_stub`: probe `ref_identifiers`, else
-  `insert_ref(kind='paper', meta={set_by})` + register every id —
+  `insert_ref(kind='paper', meta={set_by})` + register every id --
   idempotent via identifier-collapse). A stub is a `paper` ref with
   `pdf_sha256 IS NULL`. The **`fetch_oa` worker**
   (`claim_stubs_to_fetch`) then auto-claims *any* such stub carrying a
@@ -228,238 +236,189 @@ a bad dream is inert clutter, never corruption.
   PDF lands in the watch inbox → `precis add` promotes the stub to a
   full paper. No OA copy → `no_oa_version`, the stub stays in the
   backlog that `precis stubs` renders. So "auto-fetch if possible, else
-  a required-papers list" already exists — a dream just has to mint the
+  a required-papers list" already exists -- a dream just has to mint the
   stub.
-- Worker scaffold: `run_finding_chase_pass` — claim
+- Worker scaffold: `run_finding_chase_pass` -- claim
   `FOR UPDATE ... SKIP LOCKED`, one ref per tx, default-off LLM, write
   `ref_events`, mutate `meta`, re-emit `card_combined` via
   DELETE+INSERT, flip a tag. CLI registers ref-passes in
   `cli/worker.py` (see `fetch_oa` for a default-off pass).
 
-## Salience signal (shared by all behaviors)
+## Target selection (date-only, knob-free)
 
-"Salience" is really **two** quantities, and conflating them is the bug
-in the original one-liner:
+The seed for a dream is chosen by **one ranking key over chunks** -- no
+decay, no coefficients, no sampling. Two timestamps and a subtraction.
 
-- **Access salience `A`** — a per-chunk recency×frequency score, *stored*
-  on `chunks`. "What got attention lately."
-- **Target-worthiness `worth`** — a per-*region* score, *derived* at
-  cluster time, that decides where to dream: high `A`, but discounted
-  where we *already* dreamed recently.
+### Storage -- two timestamps (+ a counter) on `chunks` (migration)
 
-They pull opposite ways on dream-recency, so they must stay separate:
-
-- **Seed-selection** wants high `A`, **low** recent-dream coverage — go
-  where attention is, that we *haven't* just synthesized.
-- **Search ranking** wants the opposite: a **recent** dream is a fresh
-  summary, so it should float **up**. Same "dream age", opposite sign
-  (search boost is specified in §Retrieval, not here).
-
-### Storage — two columns on `chunks` (migration, backfilled)
+These are **metadata-only** columns: no content, no embedding/summary
+cascade -- so mutating them does **not** breach the "chunks body is
+append-only" invariant (which guards `chunks.text`). Paper/memory
+*content* stays sacrosanct; only these salience fields move.
 
 ```sql
 ALTER TABLE chunks
-  ADD COLUMN access_score DOUBLE PRECISION NOT NULL DEFAULT 0,
-  ADD COLUMN last_seen    TIMESTAMPTZ      NOT NULL DEFAULT now();
+  ADD COLUMN last_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),  -- last EXTERNAL access
+  ADD COLUMN last_dreamt TIMESTAMPTZ NOT NULL DEFAULT now(),  -- last surfaced by a dream
+  ADD COLUMN accesses    INTEGER     NOT NULL DEFAULT 0;       -- analytics only (heatmaps)
 
--- backfill: treat ingest as the first access, at the chunk's birth
-UPDATE chunks
-   SET last_seen    = created_at,
-       access_score = :w_ingest;   -- raw seed; read-time decay does the rest
+-- everything starts at its birth: neither hot nor suppressed
+UPDATE chunks SET last_seen = created_at, last_dreamt = created_at;
+
+-- one set-based, in-DB bump: a single round-trip for a whole result page
+CREATE FUNCTION bump_salience(ids bigint[]) RETURNS void
+LANGUAGE sql AS $$
+  UPDATE chunks SET last_seen = now(), accesses = accesses + 1
+  WHERE chunk_id = ANY(ids);
+$$;
 ```
 
-Both columns are **`NOT NULL`** and the existing corpus is backfilled,
-so no row ever lacks a value — **no NULL guard, no `CASE`** in the read
-path. Updated **in place** on touch; no side table, no per-access append
-log (unbounded at 500k+ read volume — rejected).
+All `NOT NULL`, init = `created_at` → **no NULL guard**. `accesses` is
+kept for heatmaps / observability **only** -- it does *not* enter the
+ranking (the dates suffice).
 
-### Access salience `A` — lazy exponential decay (no batch sweep)
-
-```
-λ_access = ln(2) / HALF_LIFE_ACCESS_DAYS
-A = access_score * exp(-λ_access * Δt_days)   # Δt = now - last_seen
-
-# on external touch:  access_score = A + weight(access_type) ; last_seen = now()
-# on read:            compute A only (no write)
-```
-
-No daily decay job — decay folds in on touch and is computed at read.
-Untouched chunks floor toward 0 (= forgotten). Proven lineage:
-time-decayed counters / forward decay (Cormode 2009), HN/Reddit
-"hotness", LFUDA caches.
-
-### Ingest is the first access (cold-start for free)
-
-Acquiring a paper is a deliberate act of interest, so **ingest seeds
-`A`** rather than being a separate freshness term — cold-start falls out
-of the one decay mechanism, no extra coefficient. The seed is
-**source-weighted** (`w_ingest`): a human `precis add` ≫ a dream
-`acquire` ≫ a bulk/stub backfill. Storing the raw seed with
-`last_seen = created_at` is identical to "ingest was a touch at birth",
-so a fresh paper starts warm and cools if nobody engages — i.e.
-**dreaming naturally drifts toward new material**, bounded by sampling
-and the coverage gate below.
-
-### Dream reads do NOT count as access (feedback-loop guard)
-
-`A` must mean **external** attention. If the dreamer's own traversal
-bumped `A`, regions it wandered into would heat up and attract more
-dreaming — an echo chamber. So the access-accrual path **excludes the
-dream actor's reads** (`weight = 0`, filtered on `set_by`). Two
-carve-outs: a dream's **writes** are new content and get the ingest seed
-(at a *low* `w_ingest`, so dreams don't make their own output hot); and
-**later human access** to a dream-written memory *does* count — that is
-the fruitfulness signal.
-
-### Write path — keep it cheap (off the response path)
-
-Salience writes are **lossy-tolerant**: a dropped bump barely moves a
-fuzzy, decaying score. So the only real constraint is `thresholds.md`'s
-"no new synchronous writes on `precis serve`'s search path" — satisfied
-by a plain **fire-and-forget** in-place UPDATE after the response is
-sent (best-effort; drop on contention or failure). No buffer, no
-flush-worker, no coalescing — that's a later optimization *if* write
-volume ever warrants it, not v1.
-
-### Importance prior (structural, kept OUT of the counter)
-
-Static/structural importance is a **separate multiplicative factor**
-applied at seed-selection, never mixed into the decaying scalar:
+### The score (one line, no knobs)
 
 ```
-prior = f(link_degree, kind_weight, PRIO, human_verified, citation_count)
+score(chunk) = last_seen - last_dreamt        -- a duration; argmax wins
 ```
 
-### Ref-level rollup
+Pick `argmax`. That is the whole model.
 
-`A` lives on chunks, but dreaming targets *regions* and ranking
-sometimes wants a *document* number. Roll up:
+- **It always picks something -- we're never bored.** No candidate
+  filter, no no-op-on-empty. Even when *everything* has been dreamt, the
+  top item is the one **least-recently-dreamt relative to its last
+  access** -- a sensible "most due" pick, not random. (This corrects the
+  earlier "empty set → do nothing".)
+- **Dreaming resets the score → no softmax needed.** Surfacing sets
+  `last_dreamt = now` on every returned chunk, which deterministically
+  drops the winner to the bottom; next run a *different* region tops, so
+  the corpus **rotates on its own**. The act of looking *is* the
+  anti-repeat mechanism (no stochastic spreading, no `dreamt` counter).
+- **New / edited material.** Ingest/edit init `last_seen = last_dreamt =
+  created_at` → score 0: neither hot nor suppressed. It enters the
+  rotation during lulls and jumps up the moment something accesses it.
+  (We accept that brand-new material may be dreamt during a quiet period
+  even before access -- consistent with "never bored".)
 
-```
-A(ref) = mean over its chunks of A  +  small_mass_bonus(n_chunks)
-```
+### Access accounting (the only write)
 
-Mean (size-neutral) plus a mild `ln(1+n)` mass bonus so a substantive
-paper outweighs a one-line note without letting the biggest blob always
-win. For a 1-chunk memory this is just its chunk's `A` (identity).
+On each **external** access: `last_seen = now()`, `accesses += 1`.
 
-### Target-worthiness — `worth = A · prior · (1 − β·C)`
+- **Dream-actor reads excluded** (filtered on `set_by`) -- otherwise the
+  dreamer heats its own wandering into an echo chamber. (Later human
+  access to a dream-written memory *does* count -- the fruitfulness
+  signal.)
+- **One in-DB call on the search path.** The bump is a single
+  `bump_salience(ids)` for the whole result page -- set-based, one
+  round-trip, cheap. `thresholds.md` is **relaxed to allow
+  metadata-only writes here**: its rule exists to protect *content*
+  (paper/chunk text is immutable), which this never touches. Still
+  lossy-tolerant, so it may be fired async under contention -- a missed
+  bump barely moves a date.
 
-Multiplicative, so coverage `C` acts as a **bounded novelty gate**
-rather than a unit-mismatched subtraction:
+### Selection algorithm (the worker)
 
-```
-worth(R) = Â(R) · prior(R) · (1 − β · C(R))
-```
+1. `argmax(last_seen - last_dreamt)` over **target-kind** chunks (§Scope)
+   → the **seed chunk**.
+2. ANN around the seed → the **focus region** (this *is*
+   `search(view='dreamable')`, §Dream navigation tools).
+3. **Inject always**: the focus region **+ a few inspiration sparks**
+   (the `angle` spray) into the prompt.
+4. Let the LLM work.
+5. At run end, set `last_dreamt = now()` on **every chunk the run
+   touched** -- focus region, sparks, and anything the agent pulled via
+   `search`/`get`, server-side from the session's tool-call log. If the
+   dream looked at it, it has been dreamt; a later external access
+   revives its score.
 
-- **`Â(R)`** — region access salience (rollup above), **normalized
-  across the candidate set** (divide-by-max) so the sampling temperature
-  is stable run-to-run.
-- **`(1 − β·C)`** — novelty gate in `[1−β, 1]`. `β=1` ⇒ a fully-covered,
-  unchanged region drops to 0 (hard cooldown); `β<1` leaves a floor so a
-  red-hot region can still win.
+### Scope -- which kinds are targets vs sparks
 
-### Coverage `C` — the cooldown, unified (two tiers, change-gated)
+Not every kind should be dreamt *on*, but more kinds can *fertilize*:
 
-The "don't dream the same region back-to-back" cooldown **is** `C` — no
-separate mechanism. For a candidate centroid `c`:
-
-```
-C(R) = clip01( max over prior dream-activity d near c of
-               w_tier(d) · cos(c, emb_or_centroid(d)) · exp(-λ_dream · age_days(d))
-               · change_gate(R, d) )
-```
-
-- **Two tiers (`w_tier`).** A region we *synthesized* (a dream memory
-  exists near `c`) gets a **strong, long** cooldown; a region we merely
-  *examined and no-op'd* (from `dream_log.seed_clusters`, even with no
-  write) gets a cooldown that **escalates with consecutive no-ops**.
-  - **Why escalate.** Without it, a *persistently salient but barren*
-    region — the agent keeps looking, keeps declining — stays top-`worth`
-    (no synthesis ever marks it covered), floats back up, and burns
-    budget on the same dead end. Sampling only lowers the frequency; it
-    doesn't stop the waste.
-  - **Backoff.** Count consecutive no-op visits to the region (already in
-    `dream_log`): 1st no-op → brief skip; repeated no-ops → geometric
-    growth so `C → 1`, which under `β=1` drives `worth → 0` and exiles a
-    truly dead region. The `change_gate` (below) resets the count — new
-    material is a fresh reason to look, so an exiled region reopens the
-    moment it changes.
-- **Distance × recency.** Close + recent ⇒ high `C`; the `exp(-λ_dream)`
-  term auto-expires the cooldown as the dream ages.
-- **`change_gate`.** If `R` gained members *after* dream `d`, shrink
-  `d`'s contribution (∝ fraction unchanged) — new material reopens a
-  region even if recently dreamed. This is `view='unvisited'` made
-  smooth.
-
-### Seed selection — sample, don't argmax
-
-Pick the region by **softmax sampling over `worth`** (temperature `τ`),
-not strict max, so dreaming *explores* instead of hammering the single
-top region every run.
-
-### Definitions & starting values (the knobs)
-
-| symbol | meaning | start | env / note |
-|---|---|---|---|
-| `λ_access` | access decay rate | half-life **14 d** | `PRECIS_DREAM_HALFLIFE_ACCESS_DAYS` (7–30) |
-| `λ_dream` | coverage decay rate | half-life **30 d** | `PRECIS_DREAM_HALFLIFE_DREAM_DAYS`; longer than access |
-| `β` | coverage suppression | **1.0** (hard gate) | drop to ~0.85 to soften; *intent, don't sweep* |
-| `τ` | softmax temperature | tune so top region ≈ **2–3×** median pick-prob | |
-| `w_ingest` | ingest seed, by source | human **1.0** / dream-acquire **0.5** / bulk **0.2** | dream *write* seed **0.2** |
-| access weights | per touch type | cite **1.0** / full-read **0.5** / impression **0.1** | dream-actor read **0.0** |
-| `w_tier` | cooldown strength | synthesized **1.0** / examined-noop **0.3 × backoff** | escalates with consecutive no-ops |
-| mass bonus | rollup size term | `0.1 · ln(1 + n_chunks)` | mild |
-
-All starting values; the genuine tunables are the **two half-lives** and
-`τ`. `β` and the weights are set by *intent*, not parameter sweep.
+- **Dream targets (the `argmax` pool):** **`paper` + `memory`** only.
+  These are durable, agent-writable knowledge where synthesis / link /
+  supersede have something to do. (Dream-authored memories are
+  themselves `memory`, so they re-enter the pool; runaway volume is
+  bounded by pruning low-value dreams (see Recursion).)
+- **Inspiration sparks (the `angle` spray):** **`paper` + `memory` +
+  `oracle`**. `oracle` is read-only curated wisdom (Stoic principles,
+  engineering rules of thumb) -- useless as a *target* (no `put`, not
+  ours to consolidate) but **excellent fertilizer** at an angle from a
+  research cluster. Precondition: the kind must be in the embedding/ANN
+  index (oracle entries are already `search_hits`-able).
+- **Excluded entirely:** **`skill`** (tooling how-to docs -- dreaming on
+  "how to use precis" is noise), and transient/cache kinds
+  (`websearch` / `think` / `research`, file kinds, `todo`/`gripe`).
+  Widen later behind an ADR if a kind earns its place.
 
 ## The dreaming agent (loop, prompt, budget)
 
+> **Implemented — in-process litellm loop, NOT the `claude` binary
+> (ADR 0024).** Step 2 below is superseded: the loop runs in-process
+> inside `precis worker` (`src/precis/workers/dream.py`), speaking the
+> OpenAI `/v1/chat/completions` wire (`tools=`) to the local litellm
+> proxy (`qwen-heavy` alias) and dispatching each tool-call back through
+> the in-process `PrecisRuntime` / handlers — no subprocess, no MCP
+> socket. Gated off by default (`PRECIS_DREAM_LLM`); runs only via
+> `precis worker --only dream`. Local inference has no USD cost, so the
+> `--max-budget-usd` cap is replaced by `PRECIS_DREAM_MAX_TURNS`. The
+> stdlib `urllib` transport seam (mirroring `RemoteEmbedder`) keeps the
+> loop dependency-free and offline-testable. See
+> `docs/design/dream-agent-loop.md` and `tests/test_dream.py`.
+
 The worker is **thin**. Per scheduled run it:
 
-1. Checks the gate (`PRECIS_DREAM_LLM`). No separate cooldown — "don't
-   dream the same region back-to-back" is the coverage gate `(1−β·C)`
-   baked into seed-`worth` (see §Salience).
+1. Checks the gate (`PRECIS_DREAM_LLM`). No separate cooldown -- surfacing
+   a region resets its chunks' `last_dreamt`, so its score drops and a
+   different region tops next run (see §Target selection).
 2. Launches the `claude` binary connected to the precis MCP server,
    with `model=$PRECIS_DREAM_MODEL` (opus-class), `--max-turns`
-   (large-ish; \u00a7below) and `--max-budget-usd`.
+   (large-ish; see below) and `--max-budget-usd`.
 3. Feeds the **minimal prompt** below and lets the agent drive: it calls
    precis tools to explore and, if warranted, to write.
-4. On exit (agent stops, or turns/budget exhausted) captures the
-   tool-call transcript to a file and writes one `dream_log` row
-   (outcome, cost, turns, transcript path, any `result_ref_id`s).
+4. On exit (agent stops, or turns/budget exhausted) writes one
+   `dream_log` row (outcome, cost, turns, any `result_ref_id`s) and the
+   full tool-call transcript into `dream_transcripts` (same `attempt_id`).
 
-The agent's whole job is to *optionally* leave the corpus a little
-better. It is not orchestrated through modes; the behaviors
-(consolidate / synthesize / TOC / inspire) emerge from which tools it
-chooses.
+The agent's whole job is to leave the corpus a little better -- at
+least one small change per run. It is not orchestrated through modes;
+the behaviors
+(consolidate / synthesize / TOC / inspire / acquire) emerge from which
+tools it chooses.
 
 ### The prompt (deliberately minimal)
 
 ```text
-You are dreaming over a personal knowledge base. Your job is to improve
-it a little — or to do nothing. Doing nothing is a perfectly good
-outcome; bias strongly toward LESS.
+You are dreaming over a personal knowledge base. Improve it a little.
+Before you stop, leave at least ONE small change -- a note, a link, or a
+conservative merge. Prefer small over sweeping.
 
-EXPLORE (read freely, no cost worry):
-  - get(kind='cluster', view='active')      regions that mattered lately
-  - get(kind='cluster', view='unvisited')   dense regions never dreamt
-  - get(kind='cluster', id=N)               a region's members
-  - search(kind='*', q=... | like=<id>, target=, tol=)
-        target~1  adjacent ideas      target~0.5  a "ring" of related-
-        but-different ideas           target=-1   the opposite pole
-  - external: websearch / think / research  (only if it clearly helps;
-        prefer the cheap tiers)
+You've been handed a FOCUS region (what's most due for a look) and a few
+SPARKS (distinct, far-flung items), below -- no need to go find them.
+Sit with the focus; glance at the sparks for an unexpected connection.
 
-ACT only if it clearly helps (else just stop):
+MAKE at least one change (small is good):
   - put(kind='memory', text=...)   a synthesis or inspiration note
-  - link(...)                      connect related items
-  - tag(...)                       label something (e.g. DREAM:speculative)
-  - supersede(...)                 merge near-duplicate memories
+  - link(...) / tag(...)           connect or label (e.g. DREAM:speculative)
+  - supersede(merge_ids=[...])     merge near-dups (only compress, never invent)
   - acquire(identifier|title, ...) queue a missing paper to fetch
 
-If in doubt, do nothing and stop. A quiet dream is a good dream.
+WANT MORE TO CHEW ON? (optional -- you already have enough to decide)
+  - search(kind='*', like=<id>, angle=A, n=K)   K distinct items at
+        cosine A from <id>:  A=1 same · A=0 unrelated · A=-1 opposite ·
+        0<|A|<1 a random rotation that far out (nondeterministic)
+  - search(kind='*', view='dreamable')          re-pull the focus region
+  - search(kind='*', q=...)                     ordinary search
+  - external: websearch / think / research      (only if it clearly helps)
+
+When in doubt, make the smallest useful change -- then stop.
+
+--- FOCUS REGION ---
+{focus_region}
+
+--- SPARKS ---
+{sparks}
 ```
 
 No strict output JSON, no per-turn contract: writes happen as the agent
@@ -467,7 +426,7 @@ calls the write verbs; the run ends when it stops or hits a limit.
 
 ### Turn & cost limits
 
-Turns can be **large-ish** \u2014 dreaming is a background job and we *want*
+Turns can be **large-ish** -- dreaming is a background job and we *want*
 it to wander (read clusters, pull a ring, check an opposite, maybe one
 external lookup). The real backstop is `--max-budget-usd` per run; turns
 are a coarse safety net against pathological loops, not a tight leash.
@@ -477,21 +436,23 @@ Both default-off (whole feature gated by `PRECIS_DREAM_LLM`); knobs
 ### Transcript capture
 
 The full tool-call transcript (every search/get/put with args +
-results) is written to a file **outside the repo tree**
-(`PRECIS_DREAM_TRANSCRIPT_DIR`, default `~/.precis/dream-transcripts/`),
-named by `attempt_id`. `dream_log.transcript_path` points at it. This
-replaces the old per-call `verdict` JSON as the audit record: the
-transcript *is* the reasoning trace, and `ref_events` still records the
-concrete writes.
+results) is written to a **`dream_transcripts` table** keyed by
+`attempt_id` (1:1 with `dream_log`; see §Dream log). Kept in the DB
+rather than a file: one transactional store, no orphaned files, no
+extra path env var -- and at dreaming's low run volume the size is
+negligible. The separate table keeps `dream_log` lean for analytics
+scans; you `JOIN` only when you want the trace. This replaces the old
+per-call `verdict` JSON: the transcript *is* the reasoning trace, and
+`ref_events` still records the concrete writes.
 
 ### Write surface & safety
 
-- **Additive verbs** (`put`, `link`, `tag`) are unrestricted \u2014 a stray
+- **Additive verbs** (`put`, `link`, `tag`) are unrestricted -- a stray
   dream memory is inert clutter, trivially pruned by its `DREAM:` tag.
 - **Consolidation is the one destructive behavior** and does *not* go
   through a raw `delete`. It routes through a dedicated **`supersede`**
   operation (delete + link-migration + `supersedes` edge + soft-delete,
-  one tx \u2014 see \u00a7Consolidate behavior) so it stays atomic and
+  one tx -- see §Consolidate behavior) so it stays atomic and
   reversible. The agent cannot hard-delete anything.
 - Dreams write with a `DREAM:` tag (and `DREAM:speculative` for
   inspirations) so every agent-authored row is identifiable and
@@ -500,74 +461,93 @@ concrete writes.
 ## Dream navigation tools (MCP surface)
 
 The cleverness lives here, in a handful of read tools. **No new verbs**
-\u2014 these are parameters on `search` and a new read-only `cluster` kind,
+-- these are parameters on `search` (no new `cluster` kind),
 both reachable over MCP and in-process.
 
-### Similarity knob on `search` (near / ring / opposite)
+### The `angle` spray on `search` (a diverse cone sample)
+
+> **Implemented.** Pure anchor math in `precis/utils/angle.py`
+> (`angle_anchors`, seedable RNG); the ANN-snap engine
+> (`Store.angle_neighbours` / `_nearest_chunk`, card-inclusive) +
+> seed resolution (`get_chunk_vector`, `seed_chunk_for_ref`) in
+> `store/_blocks_ops.py`; dispatch interception
+> (`PrecisRuntime._dispatch_angle`) routes `search` with `angle=`/`like=`
+> away from the lexical+RRF path; the MCP `search` tool exposes
+> `angle` / `n` / `like`. Tests: `test_angle.py`,
+> `test_angle_search.py`, `test_angle_dispatch.py`.
 
 `search` grows three optional params, on top of the existing cross-kind
 fan-out (`kind='*'`):
 
-- `target` \u2014 desired cosine similarity to the seed (default `1.0` =
-  today's nearest-first behavior).
-- `tol` \u2014 half-width of the accepted band around `target`.
-- `like=<ref|chunk id>` \u2014 seed by an existing item's stored vector
-  instead of embedding a `q=` string (so a dream can pivot off a node).
+- `angle` -- target cosine to the seed in `[-1, 1]`: `1` = same direction
+  (the seed itself), `0` = orthogonal / unrelated, `-1` = opposite pole.
+  Default `1` (today's nearest-first).
+- `n` -- how many mutually-distinct items to return at that cosine.
+- `like=<ref|chunk id>` -- seed by an existing item's stored vector
+  instead of a `q=` string, so a dream pivots off a node.
 
-Three regimes, with genuinely different mechanics:
+The result is **not a cluster** -- it's `n` points at cosine `angle`
+from the seed in *different directions*, each snapped to the nearest
+real item. **One formula covers every angle:** for a unit seed `v` and
+a random unit vector `u` drawn orthogonal to `v`,
 
-- **`target \u2248 1` (adjacent).** The existing HNSW nearest-neighbor query.
-- **`target = -1` (opposite pole).** The most anti-correlated item to
-  `v` is the nearest neighbor of `-v`. Just negate the seed and run the
-  ordinary ANN query (`ORDER BY embedding <=> (-v)`). One cheap query.
-- **`target \u2248 0.5` / `-0.5` (a "ring").** Hard, because the set of points
-  at a fixed intermediate cosine to `v` is not a point but a **cone** \u2014
-  a whole `(d-2)`-sphere of directions ("many ways to get there"). Two
-  affordable strategies, since dreaming is not latency-sensitive:
-  1. **Cone sampling (preferred).** Pick a few random unit vectors
-     `u_i \u22a5 v`; build anchors `w_i = cos\u03b8\u00b7v + sin\u03b8\u00b7u_i` (\u03b8 = acos(target));
-     ANN near each `w_i`; keep hits whose *actual* cosine to `v` is in
-     `[target\u2212tol, target+tol]`. K cheap ANN queries that naturally
-     sample different slices of the ring \u2014 exactly the diversity we want.
-  2. **Exact band scan (fallback).**
-     `WHERE (1 - (emb <=> v)) BETWEEN lo AND hi ORDER BY random() LIMIT k`
-     \u2014 O(N) but correct and simple; fine for a background job, and the
-     reference implementation for testing the sampler.
+```
+w = angle*v + sqrt(1 - angle^2)*u      # cosine(w, v) == angle, exactly
+```
+
+Draw `n` random `u`s, build the `n` anchors `w_i`, ANN each, keep the
+nearest real item, dedup. `angle=1` gives `w=v` (the plain
+nearest-neighbour query); `angle=-1` gives `w=-v`. That is the whole
+sampler -- a few lines of tensor ops plus the existing ANN call. High
+dimensions make the random `u_i` near-orthogonal, so the items spread
+on their own (no `diversify` flag).
 
 > **Caveat (anisotropy).** Sentence-embedding spaces (BGE-M3 included)
-> occupy a cone, not the full sphere \u2014 vectors are mostly positively
-> correlated. True cosine \u2248 \u22121 essentially never exists; the "opposite
-> pole" in practice is whatever is *least* similar (often cos \u2248 \u22120.1).
-> A `target \u2248 0.5` ring is well-populated; negative targets return the
-> sparse contrarian fringe. State this so nobody reads it as a bug.
->
-> **Why not just page down?** Walking the nearest-first ranking until the
-> band appears works for *high* targets (the band is near the top) but
-> degrades badly for mid/low targets \u2014 in an anisotropic space cos\u22480.5
-> can sit near the *median*, so you'd page through a huge fraction of the
-> corpus, and HNSW quality falls off with deep pagination. Hence
-> cone-sampling / band-scan for the interesting bands.
+> occupy a cone, not the full sphere -- vectors are mostly positively
+> correlated, so a snapped item lands at the *realised* nearest cosine,
+> not exactly `angle`. True cosine near -1 essentially never exists; the
+> "opposite pole" is whatever is *least* similar (often cos ~ -0.1). An
+> `angle` near 0.5 is well-populated; negative angles return the sparse
+> contrarian fringe. Not a bug.
 
-`view='ring'` and `view='opposite'` are convenience presets that set
-`target`/`tol` defaults; raw floats remain available for precision.
+Angle presets (`view='unrelated'`, `view='opposite'`) are optional
+sugar; raw floats remain available.
 
-### Cluster navigation: a read-only `cluster` kind
+### `view='dreamable'`: the focus region (no `cluster` kind)
 
-A new kind exposed through the existing verbs (no new verb):
+> **Implemented (no clustering dependency — sub-theming cut per scope
+> decision 2026-06).** `Store.dreamable_region` picks the salience seed
+> (`select_dream_seed`, `argmax(last_seen - last_dreamt)`) and returns
+> its `n` nearest embedded chunks (card-inclusive, target kinds, live
+> refs) — a single cosine ring, **not** an HDBSCAN/GMM carve-up. The
+> runtime intercepts `search(view='dreamable')` in `_dispatch_dreamable`,
+> stamps `last_dreamt` on every surfaced chunk (the rotation), and
+> renders the region. Exposed on the MCP `search` tool via the new
+> `view=` param. Salience is **not** bumped here (looking at a region
+> counts as *dreaming* it). Tests: `test_dreamable.py`. The
+> HDBSCAN/GMM retrieve-then-cluster path below remains deferred and is
+> only needed if a single frontier must be split into labelled
+> sub-themes in one call.
 
-- `get(kind='cluster')` \u2014 list the current salient clusters (numeric/
-  file kinds already "list on no id"; `cluster` follows that contract).
-- `get(kind='cluster', view='active')` \u2014 salience-ranked regions ("what
-  mattered lately"), driven by the decayed `access_score` signal.
-- `get(kind='cluster', view='unvisited')` \u2014 dense regions with **no**
-  covering dream nearby (structure-driven; also the cold-start answer).
-- `get(kind='cluster', id=N)` \u2014 one cluster's members + centroid +
-  existing dream links, so the agent can drill in.
+The focus region is just a `search` ranking mode (no new kind):
+
+- `search(kind='*', view='dreamable')` -- return the region most
+  **due** for a dream: pick the seed by `argmax(last_seen -
+  last_dreamt)` over target kinds, ANN its neighbourhood, return that
+  set (+ centroid for the worker's spray).
+- Surfacing -- stamps `last_dreamt = now()` on the returned chunks
+  (the rotation), so the region drops out and a different one tops next
+  run.
+- Drill in -- `search(like=<member id>, angle=1)` returns a member's
+  neighbourhood; `get(id=...)` reads one item.
+- Anything the run touches (focus, sparks, drilled items) is stamped
+  `last_dreamt = now()` server-side at run end -- looking at it counts
+  as dreaming it.
 
 Clusters are computed by the **retrieve-then-cluster** machinery
-(\u00a7Synthesize behavior): ANN-retrieve a salient frontier, cluster that
-bounded subset. **Cluster ids are ephemeral by default** \u2014 computed per
-call, not persisted \u2014 because the durable artifact is the dream + its
+(§Synthesize behavior): ANN-retrieve a salient frontier, cluster that
+bounded subset. **Cluster ids are ephemeral by default** -- computed per
+call, not persisted -- because the durable artifact is the dream + its
 links, not a cluster table. (Open question: persist a refreshed
 `clusters` table if stable ids across a run prove necessary for the
 agent to reference a cluster it saw a few turns earlier; a cheap
@@ -576,16 +556,16 @@ member id via `like=`.)
 
 ### Where this sits in the seven-verb surface
 
-No verbs added. `search` gains `target`/`tol`/`like`; `cluster` is a new
-`supports_search` + list-on-`get` kind; `supersede` is a guarded
-operation on the `memory` handler (not a new top-level verb \u2014 it is the
-delete+migrate path of \u00a7Consolidate, exposed as a single tool so the
+No verbs added, **no new kind**. `search` gains `view='dreamable'` plus
+`angle` / `n` / `like`; `supersede` is a guarded
+operation on the `memory` handler (not a new top-level verb -- it is the
+delete+migrate path of §Consolidate, exposed as a single tool so the
 agent can't assemble it from raw `delete`). External providers are
 already kinds. This keeps the surface migration intact.
 
 ## Consolidate behavior (memory-only)
 
-### Schema migration `0003_dreaming.sql`
+### Schema migration `0007_dreaming.sql`
 
 Additive only:
 
@@ -596,7 +576,7 @@ Additive only:
 
 `supersedes` is deliberately distinct from `retracts` (retraction =
 "this was wrong"; supersession = "absorbed into a better phrasing").
-The original is **soft-deleted, not hard-deleted** — the `supersedes`
+The original is **soft-deleted, not hard-deleted** -- the `supersedes`
 edge and `ref_events` audit point *at* the old row, so a hard delete
 would orphan provenance and break reversibility.
 
@@ -618,11 +598,11 @@ finds neighbours.
 
 The agent discovers near-duplicate memories with the navigation tools
 (`search(kind='memory', like=<id>)` for adjacency), then calls **one
-guarded operation** — it never assembles a merge from raw `delete`:
+guarded operation** -- it never assembles a merge from raw `delete`:
 
 ```
 supersede(merge_ids=[...],   # >= 2 live memory ids
-          new_text="...",    # the consolidated memory
+          new_text="...",    # consolidated; <= inputs, no new claims
           new_tags=[...])    # default: union of survivors' tags
 ```
 
@@ -641,25 +621,22 @@ embedding cascade re-runs cleanly):
    view shows them as "(deleted)".
 
 **Guards (enforced by the tool, not the prompt):** all `merge_ids` must
-be live `memory` refs (no papers — papers are never merged or deleted),
+be live `memory` refs (no papers -- papers are never merged or deleted),
 length ≥ 2, and the caller cannot target non-memory kinds. A bad call
 fails with a typed error the agent can read and retry; it can never
 corrupt or hard-delete.
 
+**Conservative by construction (forget, don't invent).** A merge may
+only **compress**: `new_text` must be no longer than the combined
+survivors (the tool rejects a longer one) and may not introduce a claim
+absent from them. The accepted failure is *losing a nuance*
+(recoverable via soft-delete), never *manufacturing a false memory*.
+When unsure, the agent drops detail rather than synthesising new
+assertions.
+
 **Audit.** Each `supersede` writes a `ref_events` row (source `'dream'`):
-merged ids, link-migration counts, merged-into id — plus the run's
+merged ids, link-migration counts, merged-into id -- plus the run's
 `dream_log` row + transcript capture the surrounding reasoning.
-
-### Memories embeddable + supersede make this safe
-
-- Memories gain `card_combined` chunks (above) so the agent's
-  `search(like=...)` finds true semantic neighbours, not just title
-  matches.
-- Reversible at SQL (`deleted_at=NULL` + the `supersedes` edges).
-- Because consolidation is *opt-in by the agent* and memories are
-  low-value, the conservative bias is cultural (the prompt) plus the
-  tool guards — not a rigid worker heuristic. If the agent is unsure, it
-  simply doesn't call `supersede`.
 
 ### Soft-delete ↔ link semantics (checked against the code)
 
@@ -671,19 +648,19 @@ that does to the graph (`store/_links_ops.py`, `store/_refs_ops.py`,
   the ref; it never touches the `links` table. Link rows survive intact.
 - **Links to a tombstone still resolve.** `links_for` joins
   `links → chunks` (for pos) but **never joins `refs`**, so it does not
-  filter on the endpoint's `deleted_at` — a link whose other end is
+  filter on the endpoint's `deleted_at` -- a link whose other end is
   soft-deleted is still returned.
 - **Today: rendered with a marker.** The links view currently fetches
   endpoints via `fetch_refs_by_ids(include_deleted=True)` and
   `_format_link_line` appends `" (deleted)"` when `ref.deleted_at` is
-  set — so a link to a tombstone shows as `memory:<old> (deleted)`.
+  set -- so a link to a tombstone shows as `memory:<old> (deleted)`.
 - **Fully reversible.** Because links are untouched, `deleted_at=NULL`
-  on the old ref restores the original graph verbatim — this is what
+  on the old ref restores the original graph verbatim -- this is what
   makes "reversible at SQL" actually true.
 
 **Decision (general, not dreaming-specific): hide links to deleted
 endpoints by default, on both sides; reveal only on explicit opt-in.**
-A reference to a deleted thing is clutter — it shouldn't appear in the
+A reference to a deleted thing is clutter -- it shouldn't appear in the
 normal links view in either direction (outbound *or* inbound). The
 change is one predicate in the single read path, `Store.links_for`:
 
@@ -691,16 +668,16 @@ change is one predicate in the single read path, `Store.links_for`:
   both endpoints and add
   `AND (include_deleted_endpoints OR (rs.deleted_at IS NULL AND rd.deleted_at IS NULL))`.
   Since the focal ref is alive, requiring both endpoints non-deleted
-  reduces to "hide if the *other* end is deleted" — covering out, in,
+  reduces to "hide if the *other* end is deleted" -- covering out, in,
   and the inverse-relation rewrite uniformly.
 - Internal callers that must see every edge (the future `migrate_links`)
   pass `include_deleted_endpoints=True`.
-- User-facing reveal: an explicit flag on the links view (surface TBD —
+- User-facing reveal: an explicit flag on the links view (surface TBD --
   e.g. `view='links'` + `show_deleted=true`, or a `view='history'`).
 
 Consequence for `supersede`: after `migrate_links` *hard-DELETEs* the
 old ref's edges (re-pointed to the survivor), the only remaining pointer
-to the dead ref is the `new → supersedes → old` provenance edge — and
+to the dead ref is the `new → supersedes → old` provenance edge -- and
 under the new default that edge is **hidden** unless the agent/human
 explicitly asks for deleted endpoints. Provenance is preserved at SQL,
 just not shown by default. No live ref dangles at a tombstone.
@@ -717,32 +694,30 @@ just not shown by default. No live ref dangles at a tombstone.
 
 Generative RAPTOR-like layer. The agent reads any kind and writes only
 `kind:dream`-tagged memories; never deletes. The **retrieve-then-cluster**
-machinery below is what backs `get(kind='cluster', ...)`; the agent
+machinery below is what backs `search(view='dreamable')`; the agent
 triggers synthesis simply by reading a salient cluster and, if it's
 worth a summary, calling `put(kind='memory', ...)` + `link(...)`.
 
-### Retrieve-then-cluster (scales past 500k, powers the cluster tool)
+### Retrieve-then-cluster (scales past 500k, powers `view='dreamable'`)
 
-Per cluster-tool call:
-1. **Seed selection.** Pick salient seeds.
-   - *Warm:* high-churn regions (top chunks by decayed `access_score`).
-   - *Idle:* dense, **undreamt** clusters (structure-driven) — regions
-     with many chunks and no `derived-from`-linked dream within ε of the
-     centroid. This is also the **cold-start** answer: dreaming
-     bootstraps from usage; when quiet, it pre-chews dense uncovered
-     regions.
+Per `view='dreamable'` call:
+1. **Seed selection.** The seed chunk is `argmax(last_seen - last_dreamt)`
+   over target kinds (the date score, see Target selection) - no
+   warm/idle split, no decayed `access_score`.
+   - **Cold start:** with nothing accessed yet the date score ties at 0
+     everywhere, so the earliest-`created_at` chunks seed first; the
+     rotation spreads naturally as items get accessed.
 2. **Frontier retrieval (HNSW, scales).** For each seed, ANN top-k →
    union into a working set of a few thousand chunks. Never loads the
    full matrix.
 3. **Cluster the working set (cheap).** HDBSCAN/GMM (soft assignment)
-   over the few-thousand-vector subset — genuine structure, sub-second,
+   over the few-thousand-vector subset -- genuine structure, sub-second,
    memory-bounded regardless of corpus size. *(Adds `scikit-learn` /
-   `umap` — ADR-gated cross-package threshold, taken when the cluster
-   tool is built.)*
+   `umap` -- ADR-gated cross-package threshold, taken when clustering lands.)*
 4. **Surprise is now a tool, not an env knob.** The old worker
-   `PRECIS_DREAM_WILDCARDS` is gone — in the agentic model the agent
-   pulls a far-away or *opposite* member itself via the similarity knob
-   (`search(like=<centroid member>, target=-1 | view='ring')`) when it
+   `PRECIS_DREAM_WILDCARDS` is gone -- in the agentic model the agent
+   pulls a far-away or *opposite* member itself via the `angle` knob
+   (`search(like=<centroid member>, angle=-1 | angle=0.5)`) when it
    wants grounded surprise (this is the Inspire behavior).
 5. **Synthesis is the agent's write.** When a cluster is worth a
    summary, the agent writes a dream-origin memory with
@@ -751,7 +726,7 @@ Per cluster-tool call:
 
 > **Relation decision (settled):** reuse the existing
 > `derived-from` / `derived-into` pair for dream→source provenance. We
-> do **not** add a `summarises` relation — the distinction hasn't earned
+> do **not** add a `summarises` relation -- the distinction hasn't earned
 > its keep, and reusing an existing relation avoids a migration. All
 > references below use `derived-from`.
 
@@ -766,38 +741,48 @@ included) → collapsed-tree retrieval for free, scales with HNSW.
 
 Dream memories are themselves embeddable memories, so a later pass
 clusters *them* too. Level 0 (500k+) → frontier-only; level 1 (dream
-memories, hundreds–thousands) → can cluster more globally; level 2+
-→ tiny, fully global. Track height with `meta.dream_level`; children
-via `derived-from`. Cap depth + cooldown to avoid runaway.
+memories, hundreds-thousands) → can cluster more globally; level 2+
+→ tiny, fully global. Track height with `meta.dream_level`; children via `derived-from`.
+This runs **automatically** in the normal rotation -- dream memories
+are seeds like any other, no opt-in gate. Runaway isn't the worry:
+dream memories are **low-value and droppable**, so stale,
+never-revisited `DREAM:` memories can be pruned (aged out) without harm
+and an unfruitful dream-on-dream simply ages out -- the bound is
+acceptable loss, not a structural cap.
 
-### Cooldown & search boost — recency RELATIVE to cluster activity
+**Prune pass (the actual bound).** A periodic sweep soft-deletes
+`DREAM:`-tagged memories whose `last_seen` never advanced past
+`created_at` after a grace window and that nothing links to as a
+promoted source. Reversible like any soft-delete (`deleted_at=NULL`),
+audited in `ref_events` -- this is what keeps automatic recursion from
+accumulating.
 
-A dream's freshness is judged against its cluster's own latest churn,
-not wall-clock:
+### Dreams in search (fenced, never boosted)
 
-```
-cluster_activity = max(last_seen) over cluster members   # decayed-weighted ok
-dream_is_current = dream.created_at >= cluster_activity
-staleness        = access accumulated in the region SINCE dream.created_at
-```
+> **Implemented (the `DREAM:speculative` fence).** All three block-search
+> paths (`search_blocks_lexical` / `_semantic` / `_fused` in
+> `store/_blocks_ops.py`) exclude refs tagged `DREAM:speculative` by
+> default via a parameterless `NOT EXISTS` clause
+> (`speculative_fence` in `store/_tag_filter.py` — param-free so it
+> survives the fused CTE's double-splice of the shared WHERE). The
+> fence lifts when the caller forces `include_speculative=True` or
+> lists `DREAM:speculative` in `tags=` (listing the control tag *is*
+> the opt-in). Consolidated dream memories carry no speculative tag,
+> so they stay visible and unboosted. No-op for kinds that never carry
+> the tag. Tests: `test_speculative_fence.py`.
 
-- **(Re)dream scheduling:** trigger when `staleness` crosses a
-  threshold — i.e. the region churned since the last covering dream.
-  Not on a timer. (5-month-old cluster + 4-month-old dream = fresh,
-  skip; 1-day-old churning cluster + 2-day-old dream = stale,
-  re-dream.)
-- **Search boost (option A):** dreams ride in `search_blocks_fused`
-  with a recency×importance bump; the bump is high when
-  `dream_is_current` and decays as the cluster churns past it, so stale
-  dreams sink rather than mislead. Always expose `derived-from` links so
-  the agent can drill to primary sources (no dead ends; survives cold
-  start). **Inspirations are exempt from this boost** — see Inspire.
+Dream-origin memories are ordinary `memory` rows in fused search -- no
+special ranking bump. They are `DREAM:`-tagged so they can be fenced
+from authoritative results, and always carry `derived-from` links so a
+reader can drill to primary sources (no dead ends; survives cold
+start). Re-dreaming needs no scheduler: the `last_seen - last_dreamt`
+rotation re-surfaces a churned region on its own.
 
 ## Navigate / TOC behavior (a shape of synthesize)
 
 Not a separate behavior so much as a *shape* of the synthesis write:
 instead of a prose summary, the agent emits a **navigable outline**
-memory over a region — reusing precis's existing TOC vocabulary
+memory over a region -- reusing precis's existing TOC vocabulary
 (`segment_toc` worker, `ref_segments`, `views=("toc", …)` on handlers),
 but at cross-ref / region scope instead of per-ref.
 
@@ -807,38 +792,39 @@ but at cross-ref / region scope instead of per-ref.
   of prose).
 - **Guards:** cap entry count; only expound subclusters above a
   size/salience floor so a TOC doesn't balloon.
-- **Shares everything else** with synthesis: the cluster tool, the
-  recursion (`meta.dream_level`), relative-recency cooldown, search
-  boost. The agent just chooses an outline-shaped `put` when a region is
-  better navigated than summarized.
+- **Shares everything else** with synthesis: `view='dreamable'` and the
+  recursion (`meta.dream_level`). The agent just chooses an
+  outline-shaped `put` when a region is better navigated than
+  summarized.
 
 ## Inspire behavior (speculative, fenced)
 
-The creative-recombination behavior — and the reason the similarity knob
+The creative-recombination behavior -- and the reason the `angle` knob
 exists. The agent:
 
-- Picks an **active cluster** (`get(kind='cluster', view='active')` =
+- Picks the **focus region** (`search(view='dreamable')` =
   "what we're worried about now").
 - Pulls **remote/opposite stimuli** with the knob itself:
-  `search(like=<cluster member>, view='ring')` for moderately-distant
-  ideas or `target=-1` for the opposite pole — cross-kind
+  `search(like=<cluster member>, angle=0.5)` for moderately-distant
+  ideas or `angle=-1` for the opposite pole -- cross-kind
   (`kind='*'`) so any kind can fertilize.
 - Judges, in its own head, whether there's a *realistic* way to apply a
-  stimulus to the issue. Bias: say no. Most reads → nothing, and that's
-  fine.
+  stimulus to the issue. Bias: say no *per stimulus*. Most reads → nothing, and that's fine; the run still leaves its one small
+  change elsewhere (synthesis, link, or merge) rather than forcing a
+  weak inspiration.
 - **On a real hit:** `put(kind='memory', ...)` a low-confidence note
   tagged `kind:inspiration` + `DREAM:speculative`, then `link` it to
-  *both* parents (issue cluster + stimulus) so the provenance — "this
-  idea came from applying X to Y" — is traceable.
+  *both* parents (issue cluster + stimulus) so the provenance -- "this
+  idea came from applying X to Y" -- is traceable.
 
 **Fencing (decided):** inspirations are NOT boosted in default search
 and do not pollute authoritative results. They surface on explicit ask
 or a dedicated view, and the `DREAM:speculative` tag makes pruning
-trivial. Later Mode-1 consolidation or a human can promote the good
+trivial. Later consolidation or a human can promote the good
 ones.
 
 **Autonomy:** autonomous-write is acceptable *because* it's fenced and
-non-destructive — a bad inspiration is inert clutter, never a
+non-destructive -- a bad inspiration is inert clutter, never a
 corruption. Cost is the main risk: tightest per-call budget, lowest
 frequency, default-off.
 
@@ -846,10 +832,23 @@ frequency, default-off.
 
 A dream is well-placed to notice the corpus is *missing* a paper it
 keeps bumping into. The decisive fact: **the fetch pipeline already
-exists end-to-end** (see §grounding) — so the agent only mints a stub,
+exists end-to-end** (see §grounding) -- so the agent only mints a stub,
 and everything downstream is automatic.
 
 ### The `acquire` tool (guarded, like `supersede`)
+
+> **Implemented (handler method; MCP/agent wiring deferred to #8, like
+> `supersede`).** `PaperHandler.acquire(identifier=, title=, reason=,
+> context_ref_id=)` in `handlers/paper.py`: parses `doi:`/`arxiv:`/`s2:`
+> (or a bare DOI / arXiv id), best-effort S2 enrichment via the
+> patch-out-able `_lookup_acquire_metadata` (never raises — the stub
+> mints offline too), then idempotently upserts a stub through the new
+> `Store.upsert_stub_paper` (identifier-collapse; mirrors the chase
+> stub path), tags a *fresh* stub `DREAM:acquire` with
+> `meta.set_by='dream'`, and links it from `context_ref_id`. Already-held
+> papers short-circuit to a no-op and are never re-tagged. The
+> `DREAM:acquire` closed value + `DREAM` on the `paper` axis are
+> registered in `store/types.py`. Tests: `test_acquire.py`.
 
 ```
 acquire(identifier=<doi|arxiv|s2> | title=...,   # what to get
@@ -859,15 +858,15 @@ acquire(identifier=<doi|arxiv|s2> | title=...,   # what to get
 
 It does the minimum, then gets out of the way:
 
-1. Resolves metadata via S2 (`get_paper_by_id` / `lookup_s2`) — enough
+1. Resolves metadata via S2 (`get_paper_by_id` / `lookup_s2`) -- enough
    to mint a meaningful stub (title, year, ids).
 2. Upserts a **stub paper ref** *idempotently* (identifier-collapse via
    `ref_identifiers`: a hit on an already-held or already-wanted paper
    short-circuits to a no-op), with `meta.set_by='dream'` and a
-   `DREAM:acquire` tag — reusing the exact path `chase` already uses
+   `DREAM:acquire` tag -- reusing the exact path `chase` already uses
    (`_resolve_or_create_stub`).
 3. Links the stub to `context_ref_id` (provenance) and to the dream.
-4. Returns immediately. **It never ingests inline** — no Marker, no
+4. Returns immediately. **It never ingests inline** -- no Marker, no
    download, in the dream turn.
 
 ### Auto-fetch vs the required-papers list (the user's rule, for free)
@@ -881,7 +880,7 @@ machinery applies with zero new wiring:
   The agent did nothing special.
 - **Not auto-acquirable (paywalled / no OA):** `fetch_oa` logs
   `no_oa_version` and the stub **stays in the backlog** that
-  `precis stubs` renders — *the required-papers list*. New wants append
+  `precis stubs` renders -- *the required-papers list*. New wants append
   in stub-creation order; a human (or the `doilist` operator flow)
   drains it, and if an OA copy later appears `fetch_oa` grabs it
   automatically.
@@ -891,7 +890,7 @@ machinery applies with zero new wiring:
 Behind its own `PRECIS_DREAM_ACQUIRE` gate. Minting a stub is additive
 and reversible (soft-delete), and because heavy ingest runs in the
 normal worker rotation, a runaway dream can at worst enqueue paper
-stubs — it can never blow the run budget on downloads or ingest. The
+stubs -- it can never blow the run budget on downloads or ingest. The
 `acquire` tool, like `supersede`, is the *only* way the agent touches
 the paper-acquisition path; it cannot drive `fetch_oa` or `precis add`
 directly.
@@ -899,238 +898,36 @@ directly.
 ## External search (dreams reaching outward)
 
 Dreaming need not be closed-corpus. A dream can pull in *new* external
-knowledge — to ground a speculative inspiration (has someone already
+knowledge -- to ground a speculative inspiration (has someone already
 done this? what's the prior art?) or to fetch a reference a cluster
 keeps citing but we don't hold.
 
-**No special plumbing — they're already MCP kinds.** Semantic Scholar
+**No special plumbing -- they're already MCP kinds.** Semantic Scholar
 and Perplexity are existing precis kinds (`websearch` / `think` /
 `research`, plus the S2 ingest path), each cache-backed: a call parses,
 embeds, and persists a ref + `cache_state` row, so results are
 **immediately searchable and linkable** and re-asking is free. In the
-agentic model the dream just *calls them like any other tool* —
-`get(kind='websearch', q=...)` — and the caching, dedup, and cost
+agentic model the dream just *calls them like any other tool* --
+`get(kind='websearch', q=...)` -- and the caching, dedup, and cost
 tracking come for free from the handler. (This is why agentic-over-MCP
 doesn't sacrifice cache discipline: the cache lives in the handler,
 hit via `runtime.dispatch` regardless of caller.)
 
 **Cost is a hint, bounded by the run.** The prompt nudges toward the
-cheap tiers — free Semantic Scholar and ~$0.001 `websearch` first,
-`think` when it helps, deep `research` only when clearly worth it — but
+cheap tiers -- free Semantic Scholar and ~$0.001 `websearch` first,
+`think` when it helps, deep `research` only when clearly worth it -- but
 there's no per-search ceiling; the only hard cap is the run's overall
 `--max-budget-usd`. Gated behind `PRECIS_DREAM_SEARCH` (separate from
 the `PRECIS_DREAM_LLM` master gate) so external reach can be disabled
 without disabling dreaming. Warrants its own ADR.
 
-## Deterministic fallback — prompts & output contracts (OPTIONAL)
-
-> **Not the primary path.** The sections above (agent loop + navigation
-> tools) are the design. This section is retained as an **optional
-> deterministic fallback**: a worker-mediated, single-shot-per-call
-> implementation of each behavior with strict JSON contracts, for use
-> if the agentic loop proves too costly/flaky or for cheap regression
-> testing of the underlying writes. It does *not* use MCP tool-calling —
-> it's the old `call_claude_p` propose/dispose model. Skip it on a first
-> read.
-
-All fallback LLM calls go through the same `call_claude_p(prompt,
-model=..., max_usd=...)` path the chase worker uses
-(`utils/claude_p.py`), with `model` set to the opus-class
-`PRECIS_DREAM_MODEL`. The shared mechanics, grounded in the existing
-chase hooks (`workers/_chase_llm.py`):
-
-- **Single-prompt, JSON-tail.** There is no separate system field —
-  the persona + rules are the prompt preamble, and every prompt ends
-  with *"Respond with EXACTLY ONE JSON object, nothing else:"* + the
-  schema. `_parse_last_json_block` takes the rightmost balanced `{…}`,
-  so a stray sentence of preamble is tolerated.
-- **Stateless calls.** `--no-session-persistence` means no
-  conversation memory between calls. The search loop is therefore
-  **worker-driven**: each round the worker re-calls `call_claude_p`
-  with a fresh prompt that *appends* prior search results (a
-  `PRIOR SEARCH RESULTS` block); the model is not "continuing" a chat.
-- **Context caps.** Chunk/excerpt text is truncated before
-  interpolation (chase uses `[:4000]` / `[:1500]` / `[:200]`). Dream
-  prompts never dump a full cluster — see input rendering below.
-
-### Parse / validate / repair policy
-
-Mirrors chase's `None`-tolerance, made explicit:
-
-1. **Transport / parse failure** — `ClaudePError` (non-zero exit,
-   timeout, *no parseable JSON block*) → **no-op**: stamp
-   `meta.dreamed_at`, log a `dream_log` row with `outcome='error'`,
-   move on. Never partially applies.
-2. **Parsed but schema-invalid** — required key missing, wrong type,
-   or a semantic guard fails (e.g. Mode 1 `merge_ids` not a length-≥2
-   subset of the shown ids; Mode 4 `confidence` out of `[0,1]`) →
-   treat as **no-op** too (`outcome='rejected'`, reason
-   `'schema_invalid'`). Conservative by default.
-3. **No automatic repair re-prompt** in v1 (matches chase, which does
-   not retry). A single repair round is a future option behind a flag,
-   not baseline — it costs a second opus call for a rare event.
-
-So *"unparsable"* (the Mode 1 term) = case 1 or 2: the worker could not
-recover a valid, schema-conforming object, so it does nothing and lets
-the memory cool down.
-
-### Input rendering & token budget
-
-A Mode 2 frontier is thousands of chunks; it is never serialized whole.
-The worker renders a **bounded, representative view**:
-
-- Cluster members → a table of `(id, kind, tags, excerpt[:500])`,
-  capped at the **N most central** rows (nearest centroid) plus a few
-  peripheral ones; remaining count summarized as `"+M more"`.
-- Mode 1 shows the focal memory + its neighbours in full (memories are
-  short).
-- The shown `id`s are the *only* handles the model may cite back in
-  `source_ids` / `merge_ids` / `stimulus_id`; the worker maps them to
-  real ref/chunk ids and rejects any id it didn't show.
-
-### Shared SEARCH PROTOCOL block (Modes 2 & 4)
-
-Interpolated into Mode 2/4 prompts (not Mode 1):
-
-```text
-SEARCH PROTOCOL (optional):
-You may gather external knowledge before deciding. Providers:
-  s2        - Semantic Scholar (free): papers, abstracts, OA PDFs
-  websearch - quick web answer (~$0.001)   [prefer this]
-  think     - deeper analytical answer (~$0.005)
-  research  - multi-step deep research (costs a little more; reserve
-              it for when it's clearly worth it)
-Search freely when it would change your decision - you can take your
-time; prefer the cheap tiers. To search, return "searches" non-empty
-and "decision": null. The worker runs them and re-prompts you with the
-results. When you are done, return "searches": [] and a full
-"decision".
-```
-
-The envelope for searchable modes is uniform:
-
-```json
-{
-  "searches": [{"provider": "...", "query": "...", "reason": "..."}],
-  "decision": { /* mode-specific, see below */ } | null
-}
-```
-
-Worker loop: `searches` non-empty → execute via the §External-search
-entry-points, append a `PRIOR SEARCH RESULTS` block, re-prompt
-(unbounded rounds). `searches` empty + `decision` non-null → apply.
-
-### Mode 1 — consolidate (no search)
-
-```text
-You are consolidating a personal knowledge base's MEMORY notes. You
-are shown a focal memory and its nearest semantic neighbours. Decide
-whether a SUBSET of them say the same thing or refine one another and
-should be MERGED into one better memory.
-
-Be CONSERVATIVE: default merge=false unless you are confident the
-subset is redundant or one clearly refines another. Never merge notes
-that carry distinct, independently useful facts.
-
-MEMORIES (id, tags, text):
-{cluster_table}
-
-Respond with EXACTLY ONE JSON object, nothing else:
-{{
-  "merge": true | false,
-  "merge_ids": [<int>, ...],   // subset of shown ids, length >= 2
-  "new_text": "<consolidated memory; \"\" when merge=false>",
-  "new_tags": ["..."],          // default: union of merged tags
-  "reason": "<one sentence>"
-}}
-```
-
-### Modes 2 & 3 — synthesize + TOC (one call)
-
-The synthesis pass emits the Mode-2 summary and the Mode-3 TOC together
-(Mode 3 is a renderer, not a separate call):
-
-```text
-You are writing a higher-level SYNTHESIS over a cluster of items
-(papers, findings, notes) from a knowledge base. Produce (1) a concise
-"dream" memory capturing what this region is about and why it mattered
-lately, and (2) a table of contents breaking the region into
-sub-themes.
-
-Cite sources only by their shown id. Invent nothing unsupported by the
-shown items; if the cluster is incoherent, say so in "summary" and
-return few or no toc entries.
-
-{SEARCH_PROTOCOL}
-
-ITEMS (id, kind, tags, excerpt):
-{cluster_table}
-
-{prior_search_results}
-
-Respond with EXACTLY ONE JSON object, nothing else:
-{{
-  "searches": [ ... ],
-  "decision": {{
-    "summary": "<the dream memory text>",
-    "tags": ["..."],
-    "source_ids": [<int>, ...],
-    "toc": [
-      {{"label": "<sub-theme>",
-        "gloss": "<one or two sentences>",
-        "source_ids": [<int>, ...]}}
-    ]
-  }} | null
-}}
-```
-
-### Mode 4 — inspire (search + judgment)
-
-```text
-You are looking for non-obvious but REALISTIC cross-applications. You
-are shown a CURRENT ISSUE (an active cluster the user is working on)
-and one or more unrelated STIMULUS items from elsewhere in the
-knowledge base. For each stimulus, decide whether there is a
-realistic, concrete way to apply it to the issue.
-
-Be skeptical: say no by default. A forced or generic analogy is a no.
-Return apply=true only when you can name a specific, plausible use.
-
-{SEARCH_PROTOCOL}
-
-CURRENT ISSUE:
-{issue_summary}
-
-STIMULI (id, kind, excerpt):
-{stimulus_table}
-
-{prior_search_results}
-
-Respond with EXACTLY ONE JSON object, nothing else:
-{{
-  "searches": [ ... ],
-  "decision": {{
-    "ideas": [
-      {{"stimulus_id": <int>,
-        "apply": true | false,
-        "idea": "<concrete application; \"\" when apply=false>",
-        "confidence": 0.0,
-        "reason": "<one sentence>"}}
-    ]
-  }} | null
-}}
-```
-
-Each `idea` with `apply=true` becomes one fenced `inspiration` memory;
-`apply=false` ideas are logged to `dream_log` (`outcome='rejected'`)
-and never written as memories.
-
 ## Dream log (telemetry & feedback loop)
 
-One row per **agentic run** (not per micro-decision — the agent's
+One row per **agentic run** (not per micro-decision -- the agent's
 internal exploration lives in the transcript). It records what a run
-did, what it cost, and where the full trace is. Together with the saved
-transcript it's the substrate for "optimize the dreaming".
+did and what it cost; the full trace lives in a sibling
+`dream_transcripts` row. Together they're the substrate for "optimize
+the dreaming".
 
 ```sql
 CREATE TABLE dream_log (
@@ -1144,17 +941,23 @@ CREATE TABLE dream_log (
   tool_calls       INTEGER,              -- total MCP calls
   model            TEXT,
   cost_usd         DOUBLE PRECISION,
-  transcript_path  TEXT,                 -- file holding the full tool-call trace
   summary          JSONB                 -- agent's closing note + counts
+);
+
+-- 1:1 sibling, kept separate so dream_log stays lean for analytics scans
+CREATE TABLE dream_transcripts (
+  attempt_id       BIGINT PRIMARY KEY REFERENCES dream_log(attempt_id),
+  transcript       JSONB NOT NULL        -- full tool-call trace (args + results)
 );
 ```
 
-- **Keep everything forever.** No pruning, no retention window. `noop`
-  runs are kept too — "the agent looked at region X and left it alone"
-  is exactly the signal we want for tuning. Nothing here surfaces in
-  normal search; it's analysis-only.
-- **The transcript is the rich record.** Fine-grained provenance —
-  *which* remote/opposite stimulus led to an inspiration — comes from
+- **Keep everything forever.** No pruning, no retention window. In the
+  eval phase a `noop` outcome should be rare (a run cut off by
+  turns/budget before committing its one change); it is still logged --
+  the looked-but-didn't-write trace is a tuning signal. Nothing here
+  surfaces in normal search; it's analysis-only.
+- **The transcript is the rich record.** Fine-grained provenance --
+  *which* remote/opposite stimulus led to an inspiration -- comes from
   (a) the `derived-from` links on the created inspiration (both parents
   linked) and (b) the saved transcript, not from a structured
   `stimulus_dist` array. This is the cost of going agentic: telemetry
@@ -1163,26 +966,25 @@ CREATE TABLE dream_log (
   (`wrote / total`), behavior mix (`behaviors`), cost/turns per run.
   Deeper "what fertilizes what" analysis parses transcripts offline.
 - **Volume is fine:** dreaming is gated, default-off, low-frequency, so
-  one row + one transcript file per run is negligible.
+  one `dream_log` row + one `dream_transcripts` row per run is negligible.
 - Indexes: `(outcome, created_at)`; optional GIN on `behaviors`.
 
 ## CLI wiring
 
 A single `--only dream` pass in `cli/worker.py`, default-off in the
 normal rotation (like `fetch_oa`). There is **no `--dream-mode` switch**
-any more — one agent chooses its own behavior. The pass launches the
+any more -- one agent chooses its own behavior. The pass launches the
 `claude` binary with the precis MCP config, `--max-turns`, and
 `--max-budget-usd`, then records the run. Env knobs:
 `PRECIS_DREAM_LLM` (master gate), `PRECIS_DREAM_MODEL` (opus-class),
 `PRECIS_DREAM_MAX_TURNS`, `PRECIS_DREAM_MAX_USD`,
 `PRECIS_DREAM_SEARCH` (external-reach gate),
 `PRECIS_DREAM_ACQUIRE` (paper-stub-minting gate),
-`PRECIS_DREAM_TRANSCRIPT_DIR`, the two salience half-lives
-(`PRECIS_DREAM_HALFLIFE_ACCESS_DAYS`, `PRECIS_DREAM_HALFLIFE_DREAM_DAYS`
-— see §Salience for `β`/`τ`/weights), plus cluster-size + staleness
-thresholds. (`PRECIS_DREAM_WILDCARDS` /
-`STIMULUS_MODE` / `MAX_DIST` are retired — surprise is now the
-similarity knob, neighbour distance a `tol` arg.)
+plus the clustering-frontier size. (Transcripts go to the
+`dream_transcripts` table, not a file -- no path env var. Target
+selection itself is **knob-free** -- `argmax(last_seen - last_dreamt)`,
+see §Target selection.) (`PRECIS_DREAM_WILDCARDS` /
+`STIMULUS_MODE` / `MAX_DIST` are retired -- surprise is now an `angle` spray, neighbour distance the `angle` arg.)
 
 ## Test plan
 
@@ -1190,33 +992,25 @@ Most behavior is now the agent's, so tests target the **tools** (which
 are deterministic and in-process testable) and the **run harness**, not
 LLM judgment.
 
-- **Salience:** lazy-decay math (`λ_access` half-life, floor-to-zero),
-  in-place update, fire-and-forget best-effort write (read-side no-write,
-  off the response path);
-  migration backfills `last_seen=created_at` + seeded `access_score`
-  (both `NOT NULL`, so the read path has no NULL branch); ingest seeds
-  `A` source-weighted; **dream-actor reads accrue weight 0** (feedback
-  guard); ref-level rollup = mean + mass bonus (identity for a 1-chunk
-  memory).
-- **Target-worthiness / cooldown:** `worth = Â·prior·(1−β·C)`; `β=1`
-  fully suppresses a covered+unchanged region while `change_gate`
-  reopens it once new members land after the dream; two-tier `C`
-  (synthesized vs examined-noop from `dream_log.seed_clusters`) with
-  `λ_dream` expiry; **repeated no-ops on a region escalate its cooldown
-  (backoff) so a persistently-barren-but-salient region is exiled, and
-  a change resets the count**; seed selection samples (softmax `τ`), not
-  argmax.
-- **Similarity knob:** `target=-1` returns the nearest neighbour of
-  `-v` (exact, vs brute-force); cone-sampling returns members whose
-  *actual* cosine to `v` lands in `[target±tol]` (vs the exact
-  band-scan reference); `like=<id>` seeds from the stored vector;
-  `target~1` is byte-identical to today's nearest search;
-  `view='ring'`/`'opposite'` presets resolve to the right `target/tol`.
-- **Cluster kind:** `get(kind='cluster')` lists; `view='active'`
-  ranks by decayed `access_score`; `view='unvisited'` excludes regions
-  with a `derived-from` dream near the centroid; `get(...,id=N)`
-  returns members + centroid + dream links; cross-kind fan-out
-  (`kind='*'`) merges via RRF (existing behavior, regression-guarded).
+- **Target selection:** `score = last_seen - last_dreamt`; assert
+  `argmax` picks the most-due chunk, surfacing a region sets its chunks'
+  `last_dreamt=now` so it drops out and a *different* region tops next
+  run (rotation, never an empty set), a freshly-accessed chunk jumps the
+  queue, and **dream-actor reads do not advance `last_seen`** (feedback
+  guard). Migration backfills both timestamps to `created_at` (both
+  `NOT NULL`, no NULL branch); `accesses` increments for heatmaps only
+  and never enters the ranking. Scope: targets are `paper`+`memory`
+  only; `oracle` appears as a spark, never a target; `skill` excluded.
+- **Angle spray:** `angle=1` is today's nearest search (byte-identical);
+  `angle=-1` returns the nearest neighbour of `-v`; for `0<|angle|<1`
+  each anchor `w = angle*v + sqrt(1-angle^2)*u` has cosine `angle` to `v`
+  by construction, and the `n` snapped items come back in distinct
+  directions (dedup) at their realised nearest cosine; `like=<id>` seeds
+  from the stored vector.
+- **`view='dreamable'`:** ranks by `argmax(last_seen - last_dreamt)` and
+  returns the seed's region; surfacing stamps `last_dreamt`; there is no
+  `cluster` kind; cross-kind fan-out (`kind='*'`) merges via RRF
+  (existing behavior, regression-guarded).
 - **`supersede` tool:** `Store.migrate_links` (re-point,
   dedup-on-collision, self-loop drop, in+out, chunk-pos); card-chunk
   emission + re-embed; survivor surfaces / originals soft-deleted with
@@ -1230,25 +1024,22 @@ LLM judgment.
   default links view shows **no** dead endpoint (the `supersedes` edge
   is hidden until asked for); a superseded memory is **absent** from
   `search(kind='memory')` and cluster member lists (deleted-ref
-  exclusion — catches a missing `deleted_at IS NULL` predicate);
+  exclusion -- catches a missing `deleted_at IS NULL` predicate);
   `deleted_at=NULL` restores the original (visible) link graph verbatim.
 - **Agent harness:** mocked `claude` (`PRECIS_CLAUDE_BIN` stub) that
   emits a scripted tool-call sequence → assert writes happened; a
-  **no-op run** (agent reads then stops) writes a `dream_log` row with
-  `outcome='noop'`, empty `result_ref_ids`, and a transcript file;
-  `--max-turns` / `--max-budget-usd` truncation recorded; transcript
-  written under `PRECIS_DREAM_TRANSCRIPT_DIR`.
-- **Search boost / fencing:** dream-origin memories ride fused search
-  with the relative-recency bump; `DREAM:speculative` inspirations are
-  absent from the default boost; `derived-from` drill-down works.
+  **budget-exhausted run** (agent reads but is cut off before writing)
+  writes a `dream_log` row with `outcome='noop'`, empty
+  `result_ref_ids`, and a `dream_transcripts` row; `--max-turns` /
+  `--max-budget-usd` truncation recorded.
+- **Fencing:** dream-origin memories are plain `memory` rows in fused
+  search (no special boost); `DREAM:speculative` inspirations are
+  excluded from default results; `derived-from` drill-down works.
 - **`acquire` tool:** mints a `pdf_sha256 IS NULL` stub tagged
   `DREAM:acquire` with `meta.set_by='dream'`; idempotent on a known
   identifier (re-acquire = no-op); links to context; the stub is
   claimable by `claim_stubs_to_fetch` (regression: a dream stub and a
   chase stub are indistinguishable to `fetch_oa`); never ingests inline.
-- **Deterministic fallback (optional path):** the legacy JSON contracts
-  — `ClaudePError` → `noop`; schema-invalid → `noop`; id-handle
-  rejection — only if the fallback is built.
 
 ## Definition of done (per AGENTS.md)
 
@@ -1256,23 +1047,24 @@ LLM judgment.
 - ADRs in `docs/decisions/`: (a) `supersedes` relation + the guarded
   `supersede` tool (additive-only agent writes, no raw delete);
   (b) salience model + columns on `chunks` + the `dream_log` table;
-  (c) similarity knob on `search` (`target`/`tol`/`like`, cone-sampling)
-  + the read-only `cluster` kind, incl. the clustering dependency
-  (`scikit-learn`/`umap`) — taken when the cluster tool is built;
+  (c) the `angle`/`n`/`like` knob on `search` (cone-sampling) and
+  `view='dreamable'`, incl. the clustering dependency
+  (`scikit-learn`/`umap`) -- taken when clustering lands;
   (d) the **agentic dream loop** (claude-over-MCP, turn/cost-bounded,
-  transcript capture, default-off) — the headline capability ADR;
+  transcript capture, default-off) -- the headline capability ADR;
   (e) external-reach gate (`PRECIS_DREAM_SEARCH`); (f) acquire behavior
-  — the guarded `acquire` stub-minting tool + `PRECIS_DREAM_ACQUIRE`,
+  -- the guarded `acquire` stub-minting tool + `PRECIS_DREAM_ACQUIRE`,
   reusing the chase-stub / `fetch_oa` loop.
-- `0003_dreaming.sql` applies cleanly to a fresh DB (salience columns,
-  `supersedes` relation, `dream_log` table); only the new file pending
-  under `precis migrate --dry-run`.
-- Navigation tools shipped + tested in-process (similarity knob,
-  `cluster` kind, `supersede`); `--only dream` has `--help`, an
+- `0007_dreaming.sql` applies cleanly to a fresh DB (salience columns,
+  `bump_salience()`, `supersedes` relation, `dream_log` +
+  `dream_transcripts` tables); only the new file pending under
+  `precis migrate --dry-run`.
+- Navigation tools shipped + tested in-process (`angle`/`n` spray,
+  `view='dreamable'`, `supersede`); `--only dream` has `--help`, an
   integration test (mocked `claude`), and a README line.
 - The agent loop runs end-to-end against the MCP server with a real
-  (gated) model at least once; a no-op run and a writing run both
-  produce correct `dream_log` rows + transcripts.
+  (gated) model at least once; a budget-exhausted run and a writing run
+  both produce correct `dream_log` rows + transcripts.
 - Full check green (`ruff check`, `ruff format --check`, `mypy`,
   `pytest`); version bump + `CHANGELOG` entry.
 
@@ -1281,16 +1073,16 @@ LLM judgment.
 Tools first (deterministic, independently useful), then the agent on
 top.
 
-1. Salience columns + lazy decay + batched flush (useful on its own for
-   search ranking).
+1. Salience columns + the `bump_salience()` function (useful on its own
+   for search ranking).
 2. Memory `card_combined` chunks + backfill + `supersedes` migration +
    `dream_log` table.
-3. Similarity knob on `search` (`target`/`tol`/`like`: `-v` opposite +
-   cone-sampling, band-scan reference). Useful to any caller, not just
-   dreams.
-4. `cluster` kind (retrieve-then-cluster behind `get` views) + the
+3. The `angle`/`n`/`like` knob on `search` (one rotation formula:
+   `w = angle*v + sqrt(1-angle^2)*u`; `-v` for the opposite pole).
+   Useful to any caller, not just dreams.
+4. `view='dreamable'` (retrieve-then-cluster behind `search`) + the
    `supersede` tool. Behind the clustering-deps ADR.
-5. Search boost + fencing for the dream/memory layer.
+5. Fencing (`DREAM:` tag) for the dream/memory layer.
 6. **The agent loop** (claude-over-MCP, `--max-turns`/budget, transcript
    capture, `dream_log`) behind `PRECIS_DREAM_LLM`. This is where the
    behaviors come alive.
@@ -1299,42 +1091,41 @@ top.
 8. Acquire: the `acquire` stub-minting tool + `PRECIS_DREAM_ACQUIRE`
    (the `fetch_oa` / `precis stubs` machinery already exists, so this is
    just the guarded tool + a gate).
-9. *(Optional)* deterministic fallback worker, if the agent loop proves
-   too costly/flaky.
 
 ## Open questions for the reviewer
 
-1. Access-event weights (cite / read / search-impression) — starting
+1. Access-event weights (cite / read / search-impression) -- starting
    values?
 2. `cluster` ids: ephemeral (computed per call) vs a persisted,
-   refreshed `clusters` table — needed only if the agent must reference
+   refreshed `clusters` table -- needed only if the agent must reference
    a cluster it saw several turns earlier (the `like=<member>` pin is a
    cheaper alternative). Start ephemeral?
 3. `--max-turns` default (large-ish) and per-run `--max-budget-usd`
-   default — pick starting values; budget is the real backstop.
+   default -- pick starting values; budget is the real backstop.
 4. Transcript format + retention: full session JSON vs a trimmed
    tool-call log; keep forever or age out old transcripts?
-5. Half-life, cluster-size, staleness, ring `tol` defaults — pick
+5. Cluster-frontier size and `angle`/`n`/cone defaults -- pick
    conservative values and tune from `dream_log` telemetry.
 
 _Resolved:_
 - **Full-agentic** loop (claude-over-MCP, turn/cost-bounded) is the
-  design; per-mode workers are an optional deterministic fallback.
+  design; there is no separate per-mode worker path.
 - **No action is a first-class outcome**; memories are low-value and
   reversible, so trust the model and bias toward doing nothing.
 - **Writes are additive** (`put`/`link`/`tag`); destructive merges go
   only through the guarded `supersede` tool (no raw delete).
-- **Similarity knob** (near/ring/opposite) is feasible: `-v` for the
-  pole, cone-sampling for the ring; anisotropy means true `-1` is rare.
+- **Angle knob** (`angle`/`n`) is feasible: `-v` for the pole,
+  cone-sampling for the mid-cone; anisotropy means true `-1` is rare.
 - **Search spans all kinds** via the existing `kind='*'` fan-out.
 - **Provenance relation** = reuse `derived-from` (no new `summarises`).
-- **Transcript to file**; `dream_log` is one row per run + a pointer.
+- **Transcript to a DB table** (`dream_transcripts`); `dream_log` is
+  one row per run + a pointer.
 - External reach: providers are already kinds; cost is a prompt hint
   bounded by the run budget; gated by `PRECIS_DREAM_SEARCH`. (Patents
-  deferred — kind exists but currently unavailable.)
+  deferred -- kind exists but currently unavailable.)
 - **Acquire = auto-fetch, gated.** The dream mints a paper stub; if an
   OA copy exists the existing `fetch_oa` worker auto-ingests it, else it
   appends to the `precis stubs` required-papers backlog. No inline
   ingest; gated by `PRECIS_DREAM_ACQUIRE`.
-- `dream_log` retention — keep everything forever (incl. no-ops),
+- `dream_log` retention -- keep everything forever (incl. no-ops),
   analysis-only.

@@ -10,8 +10,11 @@ from __future__ import annotations
 import argparse
 import json
 
+import pytest
+
 from precis.cli.main import _build_parser
-from precis.cli.worker import _build_handlers, _print_status
+from precis.cli.worker import _build_handlers, _print_status, _resolve_embedder
+from precis.embedder import MockEmbedder, RemoteEmbedder
 from precis.format import toon
 
 # ---------------------------------------------------------------------------
@@ -20,7 +23,10 @@ from precis.format import toon
 
 
 class TestParser:
-    def test_worker_subcommand_registered(self):
+    def test_worker_subcommand_registered(self, monkeypatch):
+        # --embedder now defaults to PRECIS_EMBEDDER; clear it so the
+        # documented fallback ('bge-m3') is what the test pins.
+        monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
         parser = _build_parser()
         args = parser.parse_args(["worker"])
         assert args.cmd == "worker"
@@ -32,6 +38,12 @@ class TestParser:
         assert args.only is None
         assert args.embedder == "bge-m3"
         assert args.summarizer_model == "rake-lemma"
+
+    def test_worker_embedder_reads_env(self, monkeypatch):
+        monkeypatch.setenv("PRECIS_EMBEDDER", "remote")
+        parser = _build_parser()
+        args = parser.parse_args(["worker"])
+        assert args.embedder == "remote"
 
     def test_worker_status_flag(self):
         parser = _build_parser()
@@ -50,6 +62,40 @@ class TestParser:
         args = parser.parse_args(["worker", "--embedder", "mock"])
         assert args.embedder == "mock"
 
+    def test_worker_remote_embedder_flags(self, monkeypatch):
+        # Env should not leak into the parser defaults under test.
+        monkeypatch.delenv("PRECIS_EMBEDDER_URL", raising=False)
+        monkeypatch.delenv("PRECIS_EMBEDDER_TIMEOUT", raising=False)
+        monkeypatch.delenv("PRECIS_EMBEDDER_MAX_RETRIES", raising=False)
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "worker",
+                "--embedder",
+                "remote",
+                "--embedder-url",
+                "http://127.0.0.1:8181",
+                "--embedder-timeout",
+                "5",
+                "--embedder-max-retries",
+                "1",
+            ]
+        )
+        assert args.embedder == "remote"
+        assert args.embedder_url == "http://127.0.0.1:8181"
+        assert args.embedder_timeout == 5.0
+        assert args.embedder_max_retries == 1
+
+    def test_worker_remote_embedder_defaults(self, monkeypatch):
+        monkeypatch.delenv("PRECIS_EMBEDDER_URL", raising=False)
+        monkeypatch.delenv("PRECIS_EMBEDDER_TIMEOUT", raising=False)
+        monkeypatch.delenv("PRECIS_EMBEDDER_MAX_RETRIES", raising=False)
+        parser = _build_parser()
+        args = parser.parse_args(["worker"])
+        assert args.embedder_url is None
+        assert args.embedder_timeout == 30.0
+        assert args.embedder_max_retries == 3
+
     def test_worker_format_flag_defaults_to_none(self):
         parser = _build_parser()
         args = parser.parse_args(["worker"])
@@ -62,6 +108,38 @@ class TestParser:
         for fmt in ("toon", "json", "table"):
             args = parser.parse_args(["worker", "--format", fmt])
             assert args.format == fmt
+
+
+# ---------------------------------------------------------------------------
+# _resolve_embedder — remote URL threading (regression for ADR 0020 deploy)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveEmbedder:
+    def _ns(self, **overrides) -> argparse.Namespace:
+        defaults = dict(
+            embedder="mock",
+            embedder_url=None,
+            embedder_timeout=30.0,
+            embedder_max_retries=3,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def test_mock(self):
+        assert isinstance(_resolve_embedder(self._ns(embedder="mock")), MockEmbedder)
+
+    def test_remote_threads_url(self):
+        emb = _resolve_embedder(
+            self._ns(embedder="remote", embedder_url="http://127.0.0.1:8181")
+        )
+        assert isinstance(emb, RemoteEmbedder)
+
+    def test_remote_without_url_raises(self):
+        # The deploy regression: `precis worker --embedder remote` with no
+        # URL must fail loudly, not silently build a broken embedder.
+        with pytest.raises(ValueError, match="PRECIS_EMBEDDER_URL"):
+            _resolve_embedder(self._ns(embedder="remote", embedder_url=None))
 
 
 # ---------------------------------------------------------------------------

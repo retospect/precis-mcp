@@ -44,6 +44,7 @@ from pathlib import Path
 from threading import Event, Lock
 from typing import Any
 
+from psycopg import OperationalError
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
@@ -545,6 +546,35 @@ def process_pdf(
 
     try:
         result = precis_add(PdfInput(pdf_path=pdf), store=store)
+    except FileNotFoundError as exc:
+        # Race on a shared inbox: another host ingested this PDF and
+        # moved it between our ``_wait_stable`` success and the read
+        # inside ``precis_add``. The other host is handling it; don't
+        # synthesize an error file for a non-event. (Source-PDF still
+        # present here would be a genuine bug — surface it normally.)
+        if not pdf.exists():
+            log.info(
+                "precis watch: %s vanished mid-ingest — another host "
+                "owns it, skipping",
+                pdf.name,
+            )
+            return None
+        log.exception("precis watch: ingest failed for %s", pdf.name)
+        _handle_failure(pdf, exc, errors_dir=errors_dir)
+        return None
+    except OperationalError as exc:
+        # Transient DB outage (server restart, network blip,
+        # connection reaper). Leave the PDF in place so the next
+        # backfill pass retries — moving to errors/ would require
+        # manual recovery for what is almost always a self-healing
+        # condition.
+        log.warning(
+            "precis watch: transient DB error for %s (%s); "
+            "leaving in inbox for retry",
+            pdf.name,
+            exc,
+        )
+        return None
     except Exception as exc:
         log.exception("precis watch: ingest failed for %s", pdf.name)
         _handle_failure(pdf, exc, errors_dir=errors_dir)

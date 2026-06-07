@@ -37,6 +37,7 @@ Mixin assumes the concrete Store provides ``self.pool``.
 
 from __future__ import annotations
 
+import random
 from typing import Any
 
 from psycopg import Connection
@@ -51,8 +52,14 @@ from precis.store._mappers import (
     _row_to_block,
     _row_to_ref,
 )
-from precis.store._tag_filter import build_tag_filter
+from precis.store._salience import dream_actor_active
+from precis.store._tag_filter import (
+    build_tag_filter,
+    is_speculative_tag,
+    speculative_fence,
+)
 from precis.store.types import Block, BlockInsert, Density, Ref
+from precis.utils.angle import angle_anchors
 
 # Default chunk_kind for inserts via this mixin. Phase 2 keeps the
 # block surface kind-agnostic; ingesters that want richer typing
@@ -150,6 +157,22 @@ class BlocksMixin:
         assert row is not None
         return int(row[0])
 
+    @staticmethod
+    def _fence_speculative(tags: list[str] | None, include_speculative: bool) -> bool:
+        """Whether to apply the ``DREAM:speculative`` fence to a search.
+
+        Fence by default. Lift it when the caller forces inclusion
+        (``include_speculative=True``) or explicitly lists the
+        ``DREAM:speculative`` tag in ``tags=`` — listing the control
+        tag *is* the opt-in (docs/design/dreaming.md §Inspire: "surface
+        on explicit ask").
+        """
+        if include_speculative:
+            return False
+        if tags and any(is_speculative_tag(t) for t in tags):
+            return False
+        return True
+
     def search_blocks_lexical(
         self,
         *,
@@ -160,6 +183,7 @@ class BlocksMixin:
         limit: int = 20,
         offset: int = 0,
         exclude_ref_ids: list[int] | None = None,
+        include_speculative: bool = False,
     ) -> list[tuple[Block, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
 
@@ -189,6 +213,8 @@ class BlocksMixin:
         if tag_frag:
             clauses.append(tag_frag.removeprefix(" AND "))
             params.extend(tag_params)
+        if self._fence_speculative(tags, include_speculative):
+            clauses.append(speculative_fence("r"))
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -220,6 +246,7 @@ class BlocksMixin:
         tags: list[str] | None = None,
         limit: int = 20,
         max_distance: float | None = None,
+        include_speculative: bool = False,
     ) -> list[tuple[Block, Ref, float]]:
         """Cosine-distance semantic search via ``chunk_embeddings``.
 
@@ -255,6 +282,8 @@ class BlocksMixin:
         if tag_frag:
             clauses.append(tag_frag.removeprefix(" AND "))
             where_params.extend(tag_params)
+        if self._fence_speculative(tags, include_speculative):
+            clauses.append(speculative_fence("r"))
 
         distance_clause = ""
         distance_params: list[Any] = []
@@ -301,6 +330,7 @@ class BlocksMixin:
         k: int = 60,
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
+        include_speculative: bool = False,
     ) -> list[tuple[Block, Ref, float]]:
         """Hybrid search via reciprocal rank fusion over lex + sem.
 
@@ -323,6 +353,7 @@ class BlocksMixin:
                 limit=limit,
                 offset=offset,
                 exclude_ref_ids=exclude_ref_ids,
+                include_speculative=include_speculative,
             )
 
         with self.pool.connection() as conn:
@@ -344,6 +375,10 @@ class BlocksMixin:
         if tag_frag:
             clauses.append(tag_frag.removeprefix(" AND "))
             params.extend(tag_params)
+        if self._fence_speculative(tags, include_speculative):
+            # Parameterless clause — safe under the double-splice of
+            # ``where_extra`` into both the lex and sem CTEs below.
+            clauses.append(speculative_fence("r"))
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -552,6 +587,335 @@ class BlocksMixin:
             return _do(conn)
         with self.pool.connection() as c:
             return _do(c)
+
+    def upsert_card_combined(
+        self,
+        ref_id: int,
+        text: str,
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """(Re-)emit a ref's ``card_combined`` chunk (``ord = -1``).
+
+        DELETE+INSERT — never in-place UPDATE — so the embedding /
+        summary cascade re-runs cleanly: deleting the old ``ord=-1``
+        row cascades away its ``chunk_embeddings`` / ``chunk_summaries``
+        rows, and the fresh INSERT re-enters the embed worker's queue.
+        Idempotent: safe on create (no existing card) and on edit
+        (replaces it).
+
+        This makes note-like kinds embeddable (today: ``memory``) so
+        ``search_blocks_semantic`` finds true cosine neighbours rather
+        than only lexical ``refs.title`` matches. Returns the new
+        ``chunk_id``.
+        """
+
+        def _do(c: Connection) -> int:
+            c.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND ord = -1",
+                (ref_id,),
+            )
+            row = c.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                "VALUES (%s, -1, 'card_combined', %s, '{}'::jsonb) "
+                "RETURNING chunk_id",
+                (ref_id, text),
+            ).fetchone()
+            assert row is not None
+            return int(row[0])
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    # ── salience (dreaming target selection) ───────────────────────
+
+    def bump_salience(self, chunk_ids: list[int]) -> int:
+        """Record an external access for a result page (set-based).
+
+        One in-DB ``bump_salience(ids)`` call advances ``last_seen=now()``
+        and ``accesses += 1`` for the whole page in a single round-trip
+        (docs/design/dreaming.md, §Access accounting). Metadata-only —
+        never touches ``chunks.text`` — so it's the one write permitted
+        on the search path (thresholds.md relaxed for metadata bumps).
+
+        No-op when:
+
+        - ``chunk_ids`` is empty (nothing matched), or
+        - the call is inside :func:`as_dream_actor` — the dreamer's own
+          reads must not heat the region it is wandering into an echo
+          chamber.
+
+        Returns the number of chunk ids bumped (0 when suppressed).
+        """
+        if not chunk_ids or dream_actor_active():
+            return 0
+        with self.pool.connection() as conn:
+            conn.execute("SELECT bump_salience(%s)", (list(chunk_ids),))
+        return len(chunk_ids)
+
+    def touch_last_dreamt(
+        self,
+        chunk_ids: list[int],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Stamp ``last_dreamt = now()`` on chunks a dream run touched.
+
+        Run-end rotation step: everything the dreamer surfaced (focus
+        region, sparks, drilled items) is stamped so its
+        ``last_seen - last_dreamt`` score drops and a *different* region
+        tops the next run (docs/design/dreaming.md, §Selection). The
+        act of looking *is* the anti-repeat mechanism. Metadata-only,
+        same as :meth:`bump_salience`. Returns the count stamped.
+        """
+        if not chunk_ids:
+            return 0
+        sql = "UPDATE chunks SET last_dreamt = now() WHERE chunk_id = ANY(%s)"
+        ids = list(chunk_ids)
+        if conn is not None:
+            conn.execute(sql, (ids,))
+        else:
+            with self.pool.connection() as c:
+                c.execute(sql, (ids,))
+        return len(ids)
+
+    def card_chunk_ids(self, ref_ids: list[int]) -> list[int]:
+        """Resolve the ``card_combined`` (``ord=-1``) chunk id per ref.
+
+        Ref-level search (memory) returns refs, not chunks, but salience
+        lives on chunks — a memory's only salience-bearing chunk is its
+        card. This maps a page of hit ref ids to the chunk ids
+        :meth:`bump_salience` should heat. Refs without a card (kinds
+        that don't emit one) simply contribute nothing, so calling this
+        for a mixed/numeric-kind page is safe.
+        """
+        if not ref_ids:
+            return []
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ord = -1 AND ref_id = ANY(%s)",
+                (list(ref_ids),),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def select_dream_seed(
+        self,
+        *,
+        kinds: tuple[str, ...] = ("paper", "memory"),
+    ) -> int | None:
+        """Pick the most-due chunk: ``argmax(last_seen - last_dreamt)``.
+
+        The seed of a dream (docs/design/dreaming.md, §Target
+        selection) — knob-free, no decay, no sampling. Restricted to
+        live refs of the target ``kinds`` (``paper`` + ``memory``;
+        ``oracle``/``skill`` never seed). Ties break on ``chunk_id`` so
+        selection is deterministic and in-process testable. Returns the
+        seed ``chunk_id``, or ``None`` when the corpus has no target
+        chunks.
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT c.chunk_id
+                FROM chunks c
+                JOIN refs r ON r.ref_id = c.ref_id
+                WHERE r.deleted_at IS NULL
+                  AND r.kind = ANY(%s)
+                ORDER BY (c.last_seen - c.last_dreamt) DESC, c.chunk_id
+                LIMIT 1
+                """,
+                (list(kinds),),
+            ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    def dreamable_region(
+        self,
+        *,
+        kinds: tuple[str, ...] = ("paper", "memory"),
+        n: int = 12,
+    ) -> tuple[int | None, list[tuple[Block, Ref, float]]]:
+        """The focus region: the salience seed + its ANN neighbourhood.
+
+        Backs ``search(view='dreamable')`` (docs/design/dreaming.md,
+        §view='dreamable'). Picks the most-due seed via
+        :meth:`select_dream_seed`, then returns the ``n`` nearest
+        embedded chunks to it (the seed included) over the target
+        ``kinds`` — a single cosine neighbourhood, **not** a
+        sub-clustered carve-up. Per the scoped cut there is no
+        HDBSCAN/GMM here; the plain ring *is* the region. Card chunks
+        (``ord=-1``) are included so a memory's only embedded chunk is
+        reachable.
+
+        Returns ``(seed_chunk_id, [(block, ref, cosine)])`` ordered
+        nearest-first; ``(None, [])`` when no target chunk exists and
+        ``(seed_id, [])`` when the seed itself has no embedding yet.
+
+        Pure retrieval — stamping ``last_dreamt`` on the surfaced
+        chunks (the rotation) is the caller's job (the dream dispatch
+        path), so a plain store-level read stays side-effect-free and
+        testable.
+        """
+        seed_id = self.select_dream_seed(kinds=kinds)
+        if seed_id is None:
+            return None, []
+        seed_vec = self.get_chunk_vector(seed_id)
+        if seed_vec is None:
+            return seed_id, []
+        proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        sql = (
+            f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
+            "       (ce.vector <=> %s::vector) AS dist "
+            "FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id "
+            "JOIN chunk_embeddings ce "
+            "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+            "WHERE r.deleted_at IS NULL "
+            "  AND ce.vector IS NOT NULL AND ce.status = 'ok' "
+            "  AND r.kind = ANY(%s) "
+            "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s"
+        )
+        with self.pool.connection() as conn:
+            embedder = self._default_embedder_name(conn)
+            rows = conn.execute(
+                sql, (seed_vec, embedder, list(kinds), seed_vec, n)
+            ).fetchall()
+        region = [
+            (_row_to_block(r[:14]), _row_to_ref(r[14:37]), 1.0 - float(r[37]))
+            for r in rows
+        ]
+        return seed_id, region
+
+    # ── angle spray (diverse-cone semantic neighbours) ─────────────
+
+    def get_chunk_vector(self, chunk_id: int) -> list[float] | None:
+        """Read a chunk's stored embedding under the default embedder.
+
+        Returns ``None`` when the chunk has no ``ok`` embedding row yet
+        (worker hasn't run). Used to seed an :meth:`angle_neighbours`
+        spray from an existing item (``like=<chunk id>``).
+        """
+        with self.pool.connection() as conn:
+            embedder = self._default_embedder_name(conn)
+            row = conn.execute(
+                "SELECT vector FROM chunk_embeddings "
+                "WHERE chunk_id = %s AND embedder = %s AND status = 'ok'",
+                (chunk_id, embedder),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return [float(x) for x in row[0]]
+
+    def seed_chunk_for_ref(self, ref_id: int) -> int | None:
+        """Pick a ref's representative chunk id for ``like=<ref id>``.
+
+        Prefers the ``card_combined`` chunk (``ord=-1``) — the whole-ref
+        summary that note-like kinds (memory) embed — and otherwise
+        falls back to the lowest-``ord`` embedded body chunk so papers
+        seed from their head. Returns the ``chunk_id`` (pair it with
+        :meth:`get_chunk_vector` for the seed vector and exclude it from
+        the spray), or ``None`` when nothing under this ref is embedded
+        yet.
+        """
+        with self.pool.connection() as conn:
+            embedder = self._default_embedder_name(conn)
+            row = conn.execute(
+                "SELECT c.chunk_id "
+                "FROM chunks c "
+                "JOIN chunk_embeddings ce "
+                "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+                "WHERE c.ref_id = %s AND ce.vector IS NOT NULL "
+                "  AND ce.status = 'ok' "
+                "ORDER BY (c.ord = -1) DESC, c.ord ASC "
+                "LIMIT 1",
+                (embedder, ref_id),
+            ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    def angle_neighbours(
+        self,
+        seed_vec: list[float],
+        *,
+        angle: float = 1.0,
+        n: int = 8,
+        kinds: tuple[str, ...] = ("paper", "memory"),
+        exclude_chunk_ids: list[int] | None = None,
+        rng: random.Random | None = None,
+    ) -> list[tuple[Block, Ref, float]]:
+        """``n`` diverse items at cosine ``angle`` from ``seed_vec``.
+
+        Draws ``n`` anchors at the requested cosine (see
+        :func:`precis.utils.angle.angle_anchors`), ANN-snaps each to its
+        nearest not-yet-seen real chunk over the target ``kinds``, and
+        dedups. The result is **not a cluster** — it's ``n`` points
+        spread around the seed's cone, each snapped to a real item
+        (docs/design/dreaming.md, §The ``angle`` spray).
+
+        Card chunks (``ord=-1``) are **included** as snap targets so a
+        memory's only embedded chunk is reachable — unlike the body-only
+        :meth:`search_blocks_semantic`. Returns ``(block, ref, cosine)``
+        where ``cosine = 1 - cosine_distance`` is the *realised*
+        similarity (anisotropy means it rarely equals ``angle`` exactly;
+        that's expected, not a bug). Empty when the seed is empty/zero.
+        """
+        if not seed_vec:
+            return []
+        anchors = angle_anchors(seed_vec, angle, n, rng=rng)
+        seen: set[int] = {int(x) for x in (exclude_chunk_ids or [])}
+        out: list[tuple[Block, Ref, float]] = []
+        with self.pool.connection() as conn:
+            embedder = self._default_embedder_name(conn)
+            for w in anchors:
+                res = self._nearest_chunk(conn, w, embedder, list(kinds), seen)
+                if res is None:
+                    continue
+                block, ref, dist = res
+                seen.add(block.id)
+                out.append((block, ref, 1.0 - dist))
+        return out
+
+    def _nearest_chunk(
+        self,
+        conn: Connection,
+        vec: list[float],
+        embedder: str,
+        kinds: list[str],
+        exclude: set[int],
+    ) -> tuple[Block, Ref, float] | None:
+        """Single nearest embedded chunk to ``vec`` over ``kinds``.
+
+        Card-inclusive (no ``ord >= 0`` filter) so memory cards snap.
+        Skips ``exclude`` so an :meth:`angle_neighbours` spray returns
+        distinct items across its anchors. Returns ``(block, ref,
+        cosine_distance)`` or ``None`` when nothing matches.
+        """
+        proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        clauses = [
+            "r.deleted_at IS NULL",
+            "ce.vector IS NOT NULL",
+            "ce.status = 'ok'",
+            "r.kind = ANY(%s)",
+        ]
+        params: list[Any] = [vec, embedder, kinds]
+        if exclude:
+            clauses.append("c.chunk_id <> ALL(%s)")
+            params.append(list(exclude))
+        params.append(vec)
+        sql = (
+            f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
+            "       (ce.vector <=> %s::vector) AS dist "
+            "FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id "
+            "JOIN chunk_embeddings ce "
+            "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY ce.vector <=> %s::vector ASC LIMIT 1"
+        )
+        row = conn.execute(sql, params).fetchone()
+        if row is None:
+            return None
+        return _row_to_block(row[:14]), _row_to_ref(row[14:37]), float(row[37])
 
     def get_block(
         self,

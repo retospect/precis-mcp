@@ -167,6 +167,85 @@ class RefsMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def upsert_stub_paper(
+        self,
+        *,
+        identifiers: list[tuple[str, str]],
+        title: str | None = None,
+        year: int | None = None,
+        set_by: str = "dream",
+        conn: Connection | None = None,
+    ) -> tuple[int, bool]:
+        """Idempotently find-or-mint a stub paper ref by identifier-collapse.
+
+        A *stub* is a ``paper`` ref with no body and ``pdf_sha256 IS
+        NULL``, so the ``fetch_oa`` worker auto-claims it on a later
+        pass when it carries a DOI/arXiv/S2 id. Returns ``(ref_id,
+        created)``.
+
+        ``identifiers`` is a list of ``(id_kind, id_value)`` pairs
+        (e.g. ``[("doi", "10.1/x"), ("arxiv", "2401.00001")]``). The
+        method probes ``ref_identifiers`` for any of them first — a hit
+        short-circuits to the existing ref (``created=False``), so
+        re-acquiring an already-held or already-wanted paper is a no-op.
+        On a miss (or when no identifiers are supplied), it mints a
+        ``paper`` ref with a freshly-minted ``cite_key`` slug and
+        ``meta.set_by=<set_by>``, registers every identifier, and
+        returns ``created=True``.
+
+        Mirrors the chase worker's stub path
+        (``workers/chase._resolve_or_create_stub``) but takes explicit
+        identifier pairs so the gated dream ``acquire`` tool can reuse
+        it (docs/design/dreaming.md, §Acquire).
+        """
+        from precis.identity import make_cite_key
+
+        norm = [(k, v.strip()) for k, v in identifiers if v and v.strip()]
+
+        def _do(c: Connection) -> tuple[int, bool]:
+            for id_kind, id_value in norm:
+                row = c.execute(
+                    "SELECT ref_id FROM ref_identifiers "
+                    "WHERE id_kind = %s AND id_value = %s",
+                    (id_kind, id_value),
+                ).fetchone()
+                if row is not None:
+                    return int(row[0]), False
+
+            # No collapse hit — mint a stub. Derive a non-colliding
+            # cite_key from the title's first word + year.
+            first_word = (title or "").split()
+            authors = [{"family": first_word[0] if first_word else "anon"}]
+            base = make_cite_key(authors, year)
+            taken_rows = c.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE id_kind = 'cite_key' AND id_value LIKE %s",
+                (base + "%",),
+            ).fetchall()
+            taken = {str(r[0]) for r in taken_rows}
+            cite_key = make_cite_key(authors, year, taken=taken)
+
+            new_ref = self.insert_ref(
+                kind="paper",
+                slug=cite_key,
+                title=title or "(no title)",
+                year=year,
+                meta={"set_by": set_by},
+                conn=c,
+            )
+            for id_kind, id_value in norm:
+                c.execute(
+                    "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                    (id_kind, id_value, new_ref.id, set_by),
+                )
+            return int(new_ref.id), True
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def get_ref(
         self,
         *,
@@ -593,17 +672,50 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (ref_id,))
 
-    def soft_delete_ref(self, ref_id: int) -> None:
-        """Soft-delete a ref by setting ``deleted_at = now()``."""
-        with self.pool.connection() as conn:
-            cur = conn.execute(
-                "UPDATE refs SET deleted_at = now() "
-                "WHERE ref_id = %s AND deleted_at IS NULL",
-                (ref_id,),
-            )
-            rowcount = cur.rowcount
+    def soft_delete_ref(
+        self,
+        ref_id: int,
+        *,
+        conn: Connection | None = None,
+    ) -> None:
+        """Soft-delete a ref by setting ``deleted_at = now()``.
+
+        ``conn`` lets the delete join an outer transaction (e.g. the
+        memory ``supersede`` merge, where retiring the originals must
+        be atomic with minting the survivor + migrating links).
+        """
+        sql = (
+            "UPDATE refs SET deleted_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL"
+        )
+        if conn is not None:
+            rowcount = conn.execute(sql, (ref_id,)).rowcount
+        else:
+            with self.pool.connection() as c:
+                rowcount = c.execute(sql, (ref_id,)).rowcount
         if rowcount == 0:
             raise NotFound(f"ref id={ref_id} not found (or already deleted)")
+
+    def stamp_ref_meta(
+        self,
+        ref_id: int,
+        updates: dict[str, Any],
+        *,
+        conn: Connection | None = None,
+    ) -> None:
+        """Shallow-merge ``updates`` into a ref's ``meta`` JSONB.
+
+        Used by ``supersede`` to record ``meta.superseded_by = <new_id>``
+        on each retired original so provenance is queryable after the
+        soft-delete. ``meta || %s`` is a top-level merge: existing keys
+        are overwritten, others preserved. No-op-safe on a missing key.
+        """
+        sql = "UPDATE refs SET meta = meta || %s, updated_at = now() WHERE ref_id = %s"
+        if conn is not None:
+            conn.execute(sql, (Jsonb(updates), ref_id))
+        else:
+            with self.pool.connection() as c:
+                c.execute(sql, (Jsonb(updates), ref_id))
 
     def most_recent_kind(self, *, kinds: list[str] | None = None) -> str | None:
         """Return the kind of the most recently updated live ref.

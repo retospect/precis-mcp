@@ -141,6 +141,16 @@ class Migrator:
                             "VALUES (%s, %s)",
                             (f.version, f.checksum),
                         )
+                # A pg_dump-style migration body (0001) runs
+                # ``set_config('search_path', '', false)`` which persists
+                # on this shared connection for the SESSION, not just the
+                # transaction. Subsequent hand-written migrations use bare
+                # table names (``chunks``, ``relations``, …) and would
+                # fail to resolve them ("relation chunks does not exist")
+                # on a fresh full apply. RESET restores the connection's
+                # startup default (``"$user", public``) between migrations
+                # so each forward migration starts from a sane search_path.
+                conn.execute("RESET search_path")
                 newly_applied.append(f.version)
                 log.info("  applied %s ok", f.version)
 

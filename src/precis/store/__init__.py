@@ -12,6 +12,7 @@ The schema is defined in `src/precis/migrations/0001_initial.sql`.
 
 from __future__ import annotations
 
+from precis.store._salience import as_dream_actor, dream_actor_active
 from precis.store.migrate import Migrator
 from precis.store.store import SEMANTIC_DISTANCE_FLOOR, Store
 from precis.store.types import (
@@ -43,4 +44,6 @@ __all__ = [
     "Relation",
     "Store",
     "Tag",
+    "as_dream_actor",
+    "dream_actor_active",
 ]

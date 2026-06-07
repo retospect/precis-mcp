@@ -300,5 +300,71 @@ class LinksMixin:
             out.append(_row_to_link(r))
         return out
 
+    def migrate_links(
+        self,
+        old_ref_id: int,
+        new_ref_id: int,
+        *,
+        conn: Connection,
+    ) -> int:
+        """Re-point every link touching ``old_ref_id`` onto ``new_ref_id``.
+
+        The link-migration step of a memory ``supersede`` merge: when
+        an old memory is absorbed into a freshly-minted consolidated
+        one, its graph position must follow so the survivor inherits
+        every edge (and inbound provenance from papers etc. is
+        preserved rather than orphaned by the soft-delete).
+
+        Requires a caller-supplied ``conn`` because it is only ever run
+        inside the ``supersede`` transaction (insert survivor →
+        migrate links → add ``supersedes`` edge → soft-delete old), so
+        the whole merge is atomic.
+
+        Mechanics (mirrors the design doc, §Consolidate behavior):
+
+        1. INSERT a substituted copy of every link where ``old_ref_id``
+           is on either endpoint, swapping that endpoint to
+           ``new_ref_id`` and keeping ``src_chunk_id`` / ``dst_chunk_id``
+           (memory links are ref-level so those are NULL; a paper→memory
+           link keeps the paper's chunk endpoint, which stays valid).
+           ``ON CONFLICT DO NOTHING`` dedups against the
+           ``NULLS NOT DISTINCT`` unique index; the ``NOT (...)`` guard
+           drops rows that would become self-loops after substitution
+           (the schema CHECK would otherwise raise, not conflict).
+        2. DELETE the original rows touching ``old_ref_id``.
+
+        Returns the number of old rows deleted (the migrated count;
+        deduped duplicates collapse into existing survivor edges).
+        """
+        conn.execute(
+            """
+            INSERT INTO links
+              (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id,
+               relation, set_by, meta)
+            SELECT
+              CASE WHEN src_ref_id = %(old)s THEN %(new)s ELSE src_ref_id END,
+              src_chunk_id,
+              CASE WHEN dst_ref_id = %(old)s THEN %(new)s ELSE dst_ref_id END,
+              dst_chunk_id,
+              relation, set_by, meta
+            FROM links
+            WHERE (src_ref_id = %(old)s OR dst_ref_id = %(old)s)
+              AND NOT (
+                (CASE WHEN src_ref_id = %(old)s THEN %(new)s ELSE src_ref_id END)
+                = (CASE WHEN dst_ref_id = %(old)s THEN %(new)s ELSE dst_ref_id END)
+                AND src_chunk_id IS NOT DISTINCT FROM dst_chunk_id
+              )
+            ON CONFLICT
+              (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, relation)
+              DO NOTHING
+            """,
+            {"old": old_ref_id, "new": new_ref_id},
+        )
+        cur = conn.execute(
+            "DELETE FROM links WHERE src_ref_id = %(old)s OR dst_ref_id = %(old)s",
+            {"old": old_ref_id},
+        )
+        return cur.rowcount or 0
+
 
 __all__ = ["LinksMixin"]

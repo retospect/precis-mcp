@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 from typing import Literal
@@ -111,6 +112,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "fetch",
             "tag_embeddings",
             "job_claude_inproc",
+            "dream",
         ),
         default=None,
         help="Restrict to one handler kind. Default: all of them — "
@@ -149,9 +151,33 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--embedder",
-        default="bge-m3",
-        help="Embedder name (default 'bge-m3'). Use 'mock' for tests / "
-        "CI to skip the model download.",
+        default=os.environ.get("PRECIS_EMBEDDER", "bge-m3"),
+        help="Embedder name (default: PRECIS_EMBEDDER env, else "
+        "'bge-m3'). Use 'mock' for tests / CI to skip the model "
+        "download, or 'remote' to embed via a `precis serve-embeddings` "
+        "service (set --embedder-url / PRECIS_EMBEDDER_URL).",
+    )
+    p.add_argument(
+        "--embedder-url",
+        default=os.environ.get("PRECIS_EMBEDDER_URL"),
+        help="Endpoint(s) for --embedder remote (default: "
+        "PRECIS_EMBEDDER_URL env). Ordered, comma-separated base URLs, "
+        "e.g. http://127.0.0.1:8181. Ignored unless --embedder remote.",
+    )
+    p.add_argument(
+        "--embedder-timeout",
+        type=float,
+        default=float(os.environ.get("PRECIS_EMBEDDER_TIMEOUT", "30.0")),
+        help="Per-call HTTP deadline in seconds for --embedder remote "
+        "(default: PRECIS_EMBEDDER_TIMEOUT env, else 30.0).",
+    )
+    p.add_argument(
+        "--embedder-max-retries",
+        type=int,
+        default=int(os.environ.get("PRECIS_EMBEDDER_MAX_RETRIES", "3")),
+        help="Max retries per endpoint for --embedder remote before "
+        "falling back to the next (default: PRECIS_EMBEDDER_MAX_RETRIES "
+        "env, else 3).",
     )
     p.add_argument(
         "--summarizer-model",
@@ -205,7 +231,7 @@ def run(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url)
     store = Store.connect(dsn)
     try:
-        handlers = _build_handlers(args)
+        handlers = _build_handlers(args, store)
         if args.status:
             _print_status(handlers, store, format=resolve_format(args))
             return
@@ -238,7 +264,7 @@ def run(args: argparse.Namespace) -> None:
             kw_embedder = (
                 embed_handler.embedder
                 if embed_handler is not None
-                else make_embedder(args.embedder)
+                else _resolve_embedder(args, store)
             )
 
             def _chunk_keywords_pass(batch_size: int) -> BatchResult:
@@ -297,7 +323,7 @@ def run(args: argparse.Namespace) -> None:
             te_embedder = (
                 embed_handler_te.embedder
                 if embed_handler_te is not None
-                else make_embedder(args.embedder)
+                else _resolve_embedder(args, store)
             )
 
             def _tag_embeddings_pass(batch_size: int) -> _BatchResult:
@@ -362,6 +388,27 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_fetch_pass)
 
+        # Dreaming pass — the in-process agentic janitor (ADR 0024).
+        # Explicit-only: never in the default cycle (expensive, scheduled
+        # via `precis worker --only dream --once`). Gated off unless
+        # PRECIS_DREAM_LLM is set, so even an accidental run is a no-op.
+        if args.only == "dream":
+            from precis.workers.dream import run_dream_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            dream_embedder = _resolve_embedder(args, store)
+
+            def _dream_pass(batch_size: int) -> _BatchResult:
+                r = run_dream_pass(store, embedder=dream_embedder)
+                return _BatchResult(
+                    handler="dream",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_dream_pass)
+
         stop_flag = _install_signal_handlers()
         run_loop(
             handlers,
@@ -381,14 +428,40 @@ def run(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_handlers(args: argparse.Namespace) -> list[WorkerHandler]:
+def _resolve_embedder(
+    args: argparse.Namespace, store: Store | None = None
+):  # -> Embedder
+    """Build the embedder named by ``--embedder``, threading remote knobs.
+
+    Routes ``--embedder-url`` / ``--embedder-timeout`` /
+    ``--embedder-max-retries`` (env-defaulted in ``add_parser``) into
+    :func:`precis.embedder.make_embedder` so ``--embedder remote`` reaches
+    a ``precis serve-embeddings`` service. ``getattr`` defaults keep older
+    call sites (and test Namespaces that omit the remote flags) working.
+
+    When a ``store`` is supplied the corpus embedding dimension is passed
+    as ``expected_dim`` so a wrong/upgraded remote model fails loudly at
+    the boundary instead of writing incompatible vectors (ADR 0020).
+    """
+    return make_embedder(
+        args.embedder,
+        dim=store.embedding_dim() if store is not None else 1024,
+        url=getattr(args, "embedder_url", None),
+        timeout=getattr(args, "embedder_timeout", 30.0),
+        max_retries=getattr(args, "embedder_max_retries", 3),
+    )
+
+
+def _build_handlers(
+    args: argparse.Namespace, store: Store | None = None
+) -> list[WorkerHandler]:
     """Materialise the handler list per ``--only`` / model flags."""
     handlers: list[WorkerHandler] = []
     if args.only in (None, "embed"):
         # MockEmbedder.dim defaults to 1024 to match the seeded
         # bge-m3 embedder column dim, so swapping it in for tests
         # does not require schema changes.
-        embedder = make_embedder(args.embedder)
+        embedder = _resolve_embedder(args, store)
         handlers.append(EmbedHandler(embedder))
     if args.only in (None, "summarize"):
         handlers.append(

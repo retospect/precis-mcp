@@ -167,6 +167,63 @@ def _suggest_paper_slugs(slug: str, *, store: Any) -> list[str]:
     )
 
 
+# Identifier prefixes the gated ``acquire`` tool accepts in its
+# ``identifier=`` slot. Bare DOIs (``10....``) and arXiv ids
+# (``NNNN.NNNNN``) are inferred without a prefix.
+_ACQUIRE_ID_PREFIXES = ("doi", "arxiv", "s2", "pubmed")
+_ARXIV_BARE_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
+
+
+def _parse_acquire_identifier(raw: str) -> tuple[str, str] | None:
+    """Parse an ``acquire`` identifier into an ``(id_kind, id_value)`` pair.
+
+    Accepts prefixed forms (``doi:10.1/x``, ``arxiv:2401.00001``,
+    ``s2:<id>``, ``pubmed:<id>``) and infers bare DOIs (``10.``-prefixed)
+    and bare arXiv ids. Returns ``None`` when nothing recognisable is
+    found — the caller turns that into a ``BadInput`` with a usage hint.
+    DOIs are lower-cased to match the chase worker's normalisation so
+    identifier-collapse stays case-insensitive.
+    """
+    s = raw.strip()
+    if not s:
+        return None
+    low = s.lower()
+    for pfx in _ACQUIRE_ID_PREFIXES:
+        if low.startswith(pfx + ":"):
+            val = s[len(pfx) + 1 :].strip()
+            if not val:
+                return None
+            return (pfx, val.lower() if pfx == "doi" else val)
+    if low.startswith("10."):
+        return ("doi", low)
+    if _ARXIV_BARE_RE.match(s):
+        return ("arxiv", s)
+    return None
+
+
+def _lookup_acquire_metadata(id_kind: str, id_value: str) -> dict[str, Any] | None:
+    """Best-effort Semantic Scholar enrichment for a fresh stub.
+
+    Returns the normalised S2 metadata dict (``title`` / ``year`` /
+    ``doi`` / ``arxiv_id`` / ``s2_id`` / ...) or ``None`` on any failure
+    (offline, rate-limited, not found, unsupported id kind). **Never
+    raises** — enrichment is a nicety; the stub mints with or without
+    it. Patched out in tests to keep them offline.
+    """
+    try:
+        from precis.ingest.semantic_scholar import get_paper_by_id
+
+        if id_kind == "doi":
+            return get_paper_by_id(f"doi:{id_value}")
+        if id_kind == "arxiv":
+            return get_paper_by_id(f"arxiv:{id_value}")
+        if id_kind == "s2":
+            return get_paper_by_id(id_value)
+    except Exception:
+        return None
+    return None
+
+
 class PaperHandler(Handler):
     """Slug-addressed, read-only paper handler.
 
@@ -207,6 +264,141 @@ class PaperHandler(Handler):
             raise InitError("paper: store required")
         self.store = hub.store
         self.embedder = hub.embedder
+
+    # -- acquire: the gated dream stub-mint tool -----------------------------
+
+    def acquire(
+        self,
+        *,
+        identifier: str | None = None,
+        title: str | None = None,
+        reason: str | None = None,
+        context_ref_id: int | str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Queue a missing paper for fetch — the gated dream ``acquire`` tool.
+
+        A dream notices the corpus keeps citing a paper it doesn't hold
+        and mints a **stub** so the existing fetch pipeline takes over
+        (docs/design/dreaming.md, §Acquire). It does the minimum and
+        gets out of the way: it **never ingests inline** — no download,
+        no Marker, in the dream turn.
+
+        1. Resolve the ``identifier`` (``doi:`` / ``arxiv:`` / ``s2:`` or
+           a bare DOI / arXiv id) and best-effort enrich via S2.
+        2. Idempotently upsert a stub ``paper`` ref (identifier-collapse:
+           a hit on an already-held or already-wanted paper short-circuits
+           to a no-op), tagged ``DREAM:acquire`` with ``meta.set_by='dream'``.
+        3. Link it from ``context_ref_id`` (provenance) when supplied.
+
+        Downstream is automatic and needs no wiring here: the
+        ``fetch_oa`` worker auto-claims the stub on a later pass and
+        grabs an OA PDF if one exists; otherwise the stub waits on the
+        ``precis stubs`` required-papers backlog. Minting is additive and
+        reversible (soft-delete), so a runaway dream can at worst enqueue
+        stubs — never blow a budget on downloads.
+
+        Gated behind ``PRECIS_DREAM_ACQUIRE`` at the agent-tool surface
+        (not enforced here, mirroring ``supersede``).
+        """
+        has_identifier = bool(identifier and identifier.strip())
+        has_title = bool(title and title.strip())
+        if not has_identifier and not has_title:
+            raise BadInput(
+                "acquire requires identifier= (doi/arxiv/s2) or title=",
+                next="acquire(identifier='doi:10.1/x', reason='cited 5x in cluster')",
+            )
+
+        id_pair: tuple[str, str] | None = None
+        if has_identifier:
+            assert identifier is not None
+            id_pair = _parse_acquire_identifier(identifier)
+            if id_pair is None:
+                raise BadInput(
+                    f"acquire: unrecognised identifier {identifier!r}",
+                    next=(
+                        "use 'doi:10...', 'arxiv:2401.00001', or 's2:<id>' "
+                        "(or pass title= for a backlog-only stub)"
+                    ),
+                )
+
+        # Validate the provenance ref up-front so a bad id fails before
+        # any write (kind-agnostic — context may be a paper or a memory).
+        ctx_id: int | None = None
+        if context_ref_id is not None:
+            try:
+                ctx_id = int(context_ref_id)
+            except (TypeError, ValueError) as exc:
+                raise BadInput(
+                    f"acquire: context_ref_id must be an int, got {context_ref_id!r}",
+                    next="pass the numeric ref id where the paper came up",
+                ) from exc
+            if ctx_id not in self.store.fetch_refs_by_ids(
+                [ctx_id], include_deleted=False
+            ):
+                raise BadInput(
+                    f"acquire: context_ref_id={ctx_id} is not a live ref",
+                    next="omit context_ref_id or pass a live ref id",
+                )
+
+        # Best-effort S2 enrichment → a meaningful stub. Failure is fine.
+        stub_title = title.strip() if has_title else None
+        year: int | None = None
+        identifiers: list[tuple[str, str]] = [id_pair] if id_pair else []
+        if id_pair is not None:
+            meta = _lookup_acquire_metadata(*id_pair)
+            if meta:
+                stub_title = stub_title or (meta.get("title") or None)
+                raw_year = meta.get("year")
+                year = int(raw_year) if isinstance(raw_year, int) else None
+                for kind_key, meta_key in (
+                    ("doi", "doi"),
+                    ("arxiv", "arxiv_id"),
+                    ("s2", "s2_id"),
+                ):
+                    val = meta.get(meta_key)
+                    if val:
+                        pair = (
+                            kind_key,
+                            str(val).lower() if kind_key == "doi" else str(val),
+                        )
+                        if pair not in identifiers:
+                            identifiers.append(pair)
+
+        with self.store.tx() as conn:
+            ref_id, created = self.store.upsert_stub_paper(
+                identifiers=identifiers,
+                title=stub_title,
+                year=year,
+                set_by="dream",
+                conn=conn,
+            )
+            # Tag the provenance only on a fresh stub — never slap
+            # DREAM:acquire onto a paper the corpus already holds in full.
+            if created:
+                self.store.add_tag(
+                    ref_id,
+                    Tag.closed("DREAM", "acquire"),
+                    set_by="agent",
+                    conn=conn,
+                )
+            if ctx_id is not None:
+                self.store.add_link(
+                    src_ref_id=ctx_id,
+                    dst_ref_id=ref_id,
+                    relation="related-to",
+                    set_by="agent",
+                    meta={"acquire_reason": reason} if reason else None,
+                    conn=conn,
+                )
+
+        state = "minted stub" if created else "already tracked"
+        parts = [f"acquire: {state} paper id={ref_id}"]
+        if identifiers:
+            parts.append("(" + ", ".join(f"{k}:{v}" for k, v in identifiers) + ")")
+        if ctx_id is not None:
+            parts.append(f"← linked from ref {ctx_id}")
+        return Response(body=" ".join(parts))
 
     # -- get -----------------------------------------------------------------
 
@@ -460,6 +652,10 @@ class PaperHandler(Handler):
                 )
             return Response(body=body)
 
+        # Salience: heat the chunks this page surfaced (block-level).
+        # One set-based bump; no-op for dream-actor reads.
+        self.store.bump_salience([block.id for block, _ref, _score in hits])
+
         # Total-hits header: count blocks the lexical filter would
         # match without the LIMIT, so the agent sees "10 of K" when
         # paginated. RRF only re-ranks lexically-matching rows, so
@@ -673,6 +869,8 @@ class PaperHandler(Handler):
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids or None,
         )
+        # Salience bump (block-level); no-op for dream-actor reads.
+        self.store.bump_salience([block.id for block, _ref, _score in triples])
         return block_hits_to_search_hits(triples, kind="paper")
 
     # -- seven-verb surface --------------------------------------------------

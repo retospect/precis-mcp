@@ -20,6 +20,7 @@ stage. The branch is dead-code-simple anyway.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -265,3 +266,81 @@ class TestSignedPdfSkip:
         outcome = patch_pdf_metadata(pdf, PatchInfo(title="Patched OK"))
         assert outcome.skipped_reason is None
         assert outcome.post_hash is not None
+
+
+class TestCorruptDocSurvivesPatchAttempt:
+    """A PDF that opens but raises during any metadata read/write
+    must not propagate — patch is best-effort and a failure here
+    would otherwise abort the whole ingest of a recoverable body.
+
+    Observed in production: ``ValueError("is no PDF")`` from
+    ``set_metadata``; ``FzErrorFormat: code=7: object is not a
+    stream`` from ``get_xml_metadata``.
+    """
+
+    @staticmethod
+    def _patch_with_broken_method(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        method: str,
+        exc: Exception,
+    ) -> None:
+        pdf = tmp_path / "weird.pdf"
+        _make_pdf(pdf)
+
+        real_open = fitz.open
+
+        class _BadDoc:
+            def __init__(self, inner: Any) -> None:
+                self._inner = inner
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._inner, name)
+
+            def _raise(self, *_a: Any, **_kw: Any) -> Any:
+                raise exc
+
+        # Bind the broken method on the proxy class so attribute
+        # lookup finds it before __getattr__ falls back to the real
+        # doc — mirrors what a real corrupt fitz.Document would do.
+        setattr(_BadDoc, method, _BadDoc._raise)
+
+        def fake_open(path: str) -> Any:
+            return _BadDoc(real_open(path))
+
+        monkeypatch.setattr("fitz.open", fake_open)
+
+        outcome = patch_pdf_metadata(pdf, PatchInfo(title="Anything"))
+
+        assert outcome.skipped_reason == "error"
+        assert outcome.post_hash is None
+        # Source file is untouched (incremental save never ran).
+        assert pdf.exists()
+
+    def test_set_metadata_failure_returns_error_outcome(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._patch_with_broken_method(
+            tmp_path,
+            monkeypatch,
+            method="set_metadata",
+            exc=ValueError("is no PDF"),
+        )
+
+    def test_get_xml_metadata_failure_returns_error_outcome(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Mirrors pymupdf's FzErrorFormat from a malformed XMP packet.
+        # Using a plain RuntimeError because FzErrorFormat is a C-ext
+        # class we don't want to import at test time.
+        self._patch_with_broken_method(
+            tmp_path,
+            monkeypatch,
+            method="get_xml_metadata",
+            exc=RuntimeError("code=7: object is not a stream"),
+        )

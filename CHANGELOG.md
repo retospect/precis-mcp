@@ -10,6 +10,53 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **Dreaming capability — foundation (in progress; agent loop deferred).**
+  A background "dreaming" pass that consolidates memories and surfaces
+  missing papers, built on additive/guarded writes through the normal
+  verbs (see `docs/design/dreaming.md`):
+  - **Migration `0007_dreaming.sql`** — salience columns on `chunks`
+    (`last_seen`, `last_dreamt`, `accesses`; metadata-only), the
+    `bump_salience(ids)` set-based function, supersede relations, and
+    the `dream_log` / transcript tables.
+  - **Deterministic salience** — `score = last_seen - last_dreamt`
+    (no decay, no sampling). Search hits bump salience across paper /
+    memory / cache handlers; a `as_dream_actor` contextvar suppresses
+    the bump on the dreamer's own reads.
+  - **`supersede`** (guarded memory-merge tool) — hard-capped
+    2..10 live memories, compress-only survivor text, soft-delete +
+    link migration, survivor tagged on the closed `DREAM` axis.
+  - **`acquire`** (gated dream tool) — idempotently mints a stub
+    `paper` ref by identifier-collapse (`doi:`/`arxiv:`/`s2:` or bare
+    DOI/arXiv), best-effort S2 enrichment, `DREAM:acquire` tag, and a
+    provenance link; the existing `fetch_oa` pipeline takes over.
+  - **`search` angle spray** — `angle=` (cosine in `[-1,1]`) +/-
+    `like='kind:id'` returns `n` diverse, mutually-distinct items at
+    that cosine from a seed (a cone sample, card-inclusive).
+  - **`search(view='dreamable')`** — the focus region: the most-due
+    salience seed + its nearest cosine neighbourhood; surfacing stamps
+    `last_dreamt` so the region rotates out. No clustering dependency
+    (plain ANN ring; sub-theming intentionally cut).
+  - **`DREAM:speculative` fence** — speculative dream outputs are
+    hidden from default search across all block-search paths; opt-in
+    via the tag or an explicit flag.
+  - **Dream agent loop (`precis worker --only dream`, ADR 0024)** — the
+    in-process agentic janitor. Drives a local model (default the
+    `qwen-heavy` litellm alias) over the OpenAI `/v1/chat/completions`
+    wire with `tools=`, dispatching each tool-call back through the
+    in-process runtime/handlers (no subprocess, no MCP socket). Builds
+    the focus region + sparks, runs the turn loop under `as_dream_actor`
+    suppression, stamps `last_dreamt` (the rotation), and records one
+    `dream_log` row + `dream_transcripts` trace. Tool surface:
+    `search`/`get`/`put`/`link`/`tag` (via dispatch) plus the gated
+    handler tools `supersede` and `acquire` (the dream loop is their
+    surface; not global MCP verbs). Gated off by default
+    (`PRECIS_DREAM_LLM`; `PRECIS_DREAM_ACQUIRE` for `acquire`); never in
+    the default worker pass set. Stdlib `urllib` transport seam
+    (mirroring `RemoteEmbedder`) — no new dependency, fully
+    offline-testable (`tests/test_dream.py`). Knobs:
+    `PRECIS_DREAM_LLM_URL` (default `http://127.0.0.1:4000/v1`),
+    `PRECIS_DREAM_MODEL`, `PRECIS_DREAM_MAX_TURNS`, `PRECIS_DREAM_TIMEOUT`,
+    `PRECIS_DREAM_REGION_N`, `PRECIS_DREAM_SPARKS_N`.
 - **Embedder-as-a-service + image split (ADR 0020 / 0021).** The
   embedder can now run as a standalone HTTP service so torch-free
   `serve` / `worker` processes embed remotely instead of each loading
@@ -24,6 +71,16 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
     (`PRECIS_EMBEDDER_TIMEOUT`, `PRECIS_EMBEDDER_MAX_RETRIES`).
   - `precis.embedder_wire` — the request/response schema shared by
     client and service so they cannot drift.
+  - **`precis worker` now threads the remote embedder.** Added
+    `--embedder-url` / `--embedder-timeout` / `--embedder-max-retries`
+    (env-defaulted to `PRECIS_EMBEDDER_URL` / `…_TIMEOUT` /
+    `…_MAX_RETRIES`) and routed every embedder construction through one
+    `_resolve_embedder` helper, so `precis worker --embedder remote`
+    actually reaches a `serve-embeddings` service instead of raising
+    "remote requires a URL". The helper passes the corpus embedding
+    dimension as the boundary `expected_dim`. Required for the
+    all-local fleet topology where each node's worker embeds via its
+    loopback embedder.
   - **Dockerfile split** into role-scoped targets: `serve` / `worker`
     (torch-free, no models), `ingest` (marker + models), and
     `embedder` (sentence-transformers + bge-m3 cache). `bake-models.py`
@@ -173,6 +230,62 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   `src/precis/utils/toc_db.py`, tests in `tests/test_toc_db.py`.
 
 ### Fixed
+
+- **Watcher: drop spurious error reports for transient / race
+  conditions.** A backfill audit of `tmp_errors/` (~560 .error.txt
+  files across 560 timestamped buckets) showed that the watcher was
+  treating every exception out of `precis_add` as a real failure,
+  including conditions the next pass would self-heal:
+  - **Multi-host inbox race** — another host moved the PDF between
+    our `_wait_stable` success and the read inside `precis_add`
+    (336 cases, surfacing as `FileNotFoundError: PDF not found:
+    /…/inbox/<name>.pdf`). `process_pdf` now distinguishes "source
+    PDF vanished" from a genuine missing-file bug and skips the
+    error-bucket move; only a `FileNotFoundError` with the source
+    PDF still on disk goes through the normal failure path.
+  - **Transient DB outages** — `psycopg.OperationalError` from a
+    server restart / network blip dropped 14 PDFs into
+    `errors/<ts>/` requiring manual recovery. Now caught and left
+    in the inbox for the next backfill pass to retry.
+
+  `src/precis/cli/watch.py`, new tests in `tests/test_watch.py`.
+
+- **Ingest: U+FFFD survival is no longer fatal.** `_repair_mojibake`
+  (formerly `_repair_or_fail_mojibake`) keeps its em-dash repair pass
+  (`LETTER ␣ FFFD ␣ LETTER → LETTER ␣ — ␣ LETTER`) but no longer
+  raises on the remaining cases. U+FFFD is itself the canonical
+  Unicode "byte sequence I could not decode" sentinel; leaving it in
+  the chunk text is more honest than guessing a replacement, and the
+  fail-fast policy was costing ~210 real papers per backfill to
+  publisher PDFs with bad ToUnicode maps that the operator could do
+  nothing about. Search (BGE-M3, PG-FTS) handles FFFD cleanly; in
+  rendered output the diamond-`?` glyph is an unmistakable "this is
+  not original content" tripwire. `src/precis/ingest/pipeline.py`,
+  tests in `tests/ingest/test_pipeline.py`.
+
+- **PDF metadata patch is now genuinely best-effort.** Two corrupt-
+  PDF cases were aborting the entire ingest at the metadata-write
+  step: `ValueError("is no PDF")` from `doc.set_metadata` (strict
+  trailer validation fails after `fitz.open` succeeded) and
+  `FzErrorFormat: code=7: object is not a stream` from
+  `doc.get_xml_metadata` (malformed XMP packet). Widened the try
+  block around all metadata read/write/save calls in
+  `patch_pdf_metadata` so any pymupdf failure returns
+  `PatchOutcome(skipped_reason="error")` and ingest of the extracted
+  body continues. `src/precis/ingest/pdf_writer.py`, tests in
+  `tests/ingest/test_pdf_writer.py`.
+
+- **Strip NUL bytes from bibliographic metadata before DB insert.**
+  Postgres TEXT rejects `\x00` with `psycopg.DataError`; one paper's
+  ingest aborted at `INSERT INTO refs` because the embedded info /
+  XMP cascade pulled a NUL byte into `title`. `_clean_text` already
+  strips control chars from the *body* path, but the metadata
+  cascade has its own extraction surface; added `_strip_nul_bytes`
+  at the tail of `extract_metadata_from_sources` to scrub every
+  text field (title, authors, doi, journal, publisher, abstract,
+  keywords). NUL never carries meaning in a citation.
+  `src/precis/ingest/pdf_metadata.py`, tests in
+  `tests/ingest/test_pdf_metadata.py`.
 
 - **`scripts/precis-shell --rebuild` now reuses the baked model
   cache.** Previously the wrapper called `docker build` without the

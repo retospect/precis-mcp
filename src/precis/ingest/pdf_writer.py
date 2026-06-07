@@ -135,41 +135,56 @@ def patch_pdf_metadata(
             # ADR 0014.
             return PatchOutcome(pre_hash, None, None, "signed")
 
-        current = doc.metadata or {}
-        current_xmp = doc.get_xml_metadata() or ""
-        target_xmp = _build_xmp_packet(info)
-
-        needs_info = not _already_matches(current, target)
-        needs_xmp = target_xmp is not None and not _xmp_already_carries(
-            current_xmp, info
-        )
-
-        if not needs_info and not needs_xmp:
-            return PatchOutcome(pre_hash, None, None, "noop")
-
-        if needs_info:
-            # Merge: keep existing fields we don't intend to set
-            # (Producer, Creator, CreationDate, etc.), overlay the
-            # fields from ``target``.
-            merged = dict(current)
-            merged.update(target)
-            doc.set_metadata(merged)
-
-        if needs_xmp and target_xmp:
-            # XMP is the publisher-canonical home for dc:identifier
-            # (DOI). Writing here means an exiftool-driven re-ingest
-            # finds the DOI via -Identifier even if the Keywords
-            # field is stripped downstream.
-            doc.set_xml_metadata(target_xmp)
-
         try:
+            # All metadata access here can raise on malformed PDFs.
+            # Examples seen in production: ``FzErrorFormat: code=7:
+            # object is not a stream`` from ``get_xml_metadata`` when
+            # the XMP packet is not a proper stream object;
+            # ``ValueError("is no PDF")`` from ``set_metadata`` when
+            # the trailer fails strict validation. All best-effort —
+            # a metadata-patch failure must not block ingest of the
+            # extracted body.
+            current = doc.metadata or {}
+            current_xmp = doc.get_xml_metadata() or ""
+            target_xmp = _build_xmp_packet(info)
+
+            needs_info = not _already_matches(current, target)
+            needs_xmp = target_xmp is not None and not _xmp_already_carries(
+                current_xmp, info
+            )
+
+            if not needs_info and not needs_xmp:
+                return PatchOutcome(pre_hash, None, None, "noop")
+
+            if needs_info:
+                # Merge: keep existing fields we don't intend to set
+                # (Producer, Creator, CreationDate, etc.), overlay the
+                # fields from ``target``.
+                merged = dict(current)
+                merged.update(target)
+                doc.set_metadata(merged)
+
+            if needs_xmp and target_xmp:
+                # XMP is the publisher-canonical home for dc:identifier
+                # (DOI). Writing here means an exiftool-driven re-ingest
+                # finds the DOI via -Identifier even if the Keywords
+                # field is stripped downstream.
+                doc.set_xml_metadata(target_xmp)
+
             # Incremental save: appends an update section instead of
             # rewriting the entire file. The original content stream
             # stays byte-identical, which is the lowest-risk write
             # mode for academic PDFs of unknown provenance.
             doc.save(str(path), incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
         except Exception as exc:
-            log.warning("pdf_writer: save failed for %s: %s", path, exc)
+            # Best-effort: any failure during metadata read/write/save
+            # is logged and skipped. Observed failures in production:
+            # ``FzErrorFormat: code=7: object is not a stream`` from
+            # ``get_xml_metadata`` on malformed XMP; ``ValueError("is
+            # no PDF")`` from ``set_metadata`` on corrupt trailers;
+            # generic save() failures on read-only mounts. A patch
+            # failure must never block ingest of the extracted body.
+            log.warning("pdf_writer: patch failed for %s: %s", path, exc)
             return PatchOutcome(pre_hash, None, None, "error")
     finally:
         doc.close()

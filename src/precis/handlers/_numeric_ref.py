@@ -63,6 +63,13 @@ class NumericRefHandler(Handler):
     #: "todo id=…", …). Defaults to the kind name.
     sense: ClassVar[str] = ""
 
+    #: When True, put-create emits a synthetic ``card_combined`` chunk
+    #: (``ord=-1``) holding the ref's text so the embed worker
+    #: vectorizes it and semantic search finds neighbours. Scoped to
+    #: ``memory`` for the dreaming capability (see
+    #: docs/design/dreaming.md); widen to other note-like kinds later.
+    emits_card: ClassVar[bool] = False
+
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError(f"{self.kind}: store required")
@@ -259,6 +266,11 @@ class NumericRefHandler(Handler):
             body += render_next_section(nav)
             return Response(body=body)
 
+        # Salience: heat the entries this page surfaced. Ref-level kinds
+        # carry their salience on the card_combined chunk (ord=-1); kinds
+        # without a card contribute nothing. No-op for dream-actor reads.
+        self.store.bump_salience(self.store.card_chunk_ids([r.id for r, _ in hits]))
+
         # Total-hits header: a second COUNT(*) with the same WHERE
         # clause so the agent sees "10 of 1234 hits" when results are
         # capped by page_size. The MCP critic flagged the missing "of K"
@@ -335,6 +347,8 @@ class NumericRefHandler(Handler):
         pairs = self.store.search_refs_lexical(
             q=q, kind=self.kind, tags=normalized_tags, limit=page_size
         )
+        # Salience bump (card chunks); no-op for cardless kinds / dreamer.
+        self.store.bump_salience(self.store.card_chunk_ids([r.id for r, _ in pairs]))
         return ref_hits_to_search_hits(pairs, kind=self.kind)
 
     # ── put: create-only on numeric-ref kinds ──────────────────────
@@ -612,6 +626,10 @@ class NumericRefHandler(Handler):
                     relation=relation,
                     conn=conn,
                 )
+            if self.emits_card:
+                # Emit the embeddable card in the same tx as the ref
+                # insert so the embed worker can vectorize it lazily.
+                self.store.upsert_card_combined(ref.id, text, conn=conn)
         return self._render_create_ack(ref.id)
 
     def _delete(self, id: str | int | None) -> Response:

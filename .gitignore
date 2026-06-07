@@ -33,3 +33,4 @@ scripts/exercise-mcp/out/
 # Convention for ops crib sheets, scratch SQL, host-specific quirks.
 *.local.md
 *.local/
+tmp_errors

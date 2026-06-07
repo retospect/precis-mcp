@@ -52,6 +52,11 @@ Relation = Literal[
     # `job_type='fix_gripe'` carries `link='gripe:N' rel='fixes'`.
     "fixes",
     "fixed-by",
+    # Dreaming consolidation — migration 0007. A `supersede` merge adds
+    # `new --supersedes--> old` (auto-mirrored to `superseded-by`) and
+    # soft-deletes the originals. Distinct from `retracts`.
+    "supersedes",
+    "superseded-by",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -93,6 +98,8 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "corrects": "corrected-by",
     "concern-raised-by": "raises-concern-about",
     "raises-concern-about": "concern-raised-by",
+    "supersedes": "superseded-by",
+    "superseded-by": "supersedes",
 }
 
 
@@ -463,6 +470,23 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # a typo (``WATCH:dialy``) fails loud at write time instead of
     # silently dropping the row from the sweep. (gripe:3681 phase 4.)
     "WATCH": frozenset({"hourly", "daily", "weekly", "monthly"}),
+    # Dreaming provenance (docs/design/dreaming.md). Agent-authored
+    # rows carry a DREAM: axis so they're identifiable and fenceable:
+    #   * ``DREAM:consolidated`` — a survivor minted by a ``supersede``
+    #     merge (stays visible in default search).
+    #   * ``DREAM:speculative`` — a low-confidence inspiration note
+    #     (hidden from default search; opt back in with an explicit
+    #     ``tags=['DREAM:speculative']`` filter).
+    #   * ``DREAM:acquire`` — a paper stub minted by the gated ``acquire``
+    #     tool (a region kept citing a paper the corpus doesn't hold);
+    #     the ``fetch_oa`` worker auto-claims it, else it waits on the
+    #     ``precis stubs`` backlog. Lives on the ``paper`` axis.
+    # Registered as a closed axis (not a free open tag) because the
+    # tag parser routes every ``UPPERCASE:`` prefix to the closed
+    # namespace, so an agent writing ``DREAM:speculative`` through the
+    # validated tag/put verb needs the axis registered to pass
+    # ``parse_strict``. Closed vocab also gives typo protection.
+    "DREAM": frozenset({"consolidated", "speculative", "acquire"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as
@@ -494,9 +518,11 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # Job state machine — STATUS only. PRIO not used (jobs run on
     # demand; if you want one prioritised, just submit it later).
     "job": frozenset({"STATUS"}),
-    # Free-form notes: no closed axes. Confidence, topic, project,
-    # etc. are open tags (``confidence-strong``, ``topic-noxrr``).
-    "memory": frozenset(),
+    # Free-form notes: confidence, topic, project, etc. are open tags
+    # (``confidence-strong``, ``topic-noxrr``). The only closed axis is
+    # DREAM: — provenance for agent-authored (dreamed) memories
+    # (consolidated survivors + speculative inspirations).
+    "memory": frozenset({"DREAM"}),
     # Flashcard doesn't use STATUS (review state lives elsewhere —
     # EASE/DUE on blocks in a future phase), nor PRIO.
     "fc": frozenset(),
@@ -506,8 +532,9 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     "conv": frozenset(),
     # Paper refs use SRC (primary vs secondary lit) and CACHE (pinned
     # vs re-ingested). STATUS doesn't apply — papers don't have a
-    # workflow state.
-    "paper": frozenset({"SRC", "CACHE"}),
+    # workflow state. DREAM carries the ``acquire`` provenance tag the
+    # gated dream ``acquire`` tool stamps on a freshly-minted stub.
+    "paper": frozenset({"SRC", "CACHE", "DREAM"}),
     # Cache-backed kinds use CACHE (freshness state) and WATCH
     # (refresh interval for the nightly maintenance driver). The
     # MCP critic gripe:3681 phase 4 motivated WATCH — a closed-vocab

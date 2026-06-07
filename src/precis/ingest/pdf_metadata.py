@@ -486,4 +486,25 @@ def extract_metadata_from_sources(
             else:
                 metadata.authors = [author_str.strip()]
 
+    _strip_nul_bytes(metadata)
     return metadata
+
+
+def _strip_nul_bytes(metadata: PdfMetadata) -> None:
+    """Strip ``\\x00`` from every text field on ``metadata`` in place.
+
+    Postgres TEXT columns reject NUL (``psycopg.DataError: PostgreSQL
+    text fields cannot contain NUL (0x00) bytes``); the body-text
+    ``_clean_text`` pass in ``marker.py`` already strips them, but the
+    bibliographic cascade pulls strings straight from pymupdf's
+    info dict / XMP packet, which can leak NULs from corrupt streams.
+    NUL never carries semantic meaning in a citation, so a surgical
+    strip at the extraction boundary is safer than dropping the paper.
+    """
+    metadata.title = metadata.title.replace("\x00", "")
+    metadata.authors = [a.replace("\x00", "") for a in metadata.authors]
+    metadata.doi = metadata.doi.replace("\x00", "")
+    metadata.journal = metadata.journal.replace("\x00", "")
+    metadata.publisher = metadata.publisher.replace("\x00", "")
+    metadata.abstract = metadata.abstract.replace("\x00", "")
+    metadata.keywords = [k.replace("\x00", "") for k in metadata.keywords]

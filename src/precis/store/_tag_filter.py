@@ -149,4 +149,52 @@ def build_tag_filter(
     return fragment, params
 
 
-__all__ = ["build_tag_filter"]
+#: Canonical control tag for fenced, speculative dream output
+#: (docs/design/dreaming.md, §Inspire behavior). The ``DREAM`` axis is
+#: a closed vocabulary; ``speculative`` is its low-confidence value.
+SPECULATIVE_TAG = "DREAM:speculative"
+_SPECULATIVE_NS = "DREAM"
+_SPECULATIVE_VALUE = "speculative"
+
+
+def is_speculative_tag(tag: str) -> bool:
+    """True iff ``tag`` is the ``DREAM:speculative`` control tag.
+
+    Used to detect an *explicit* opt-in: a caller that lists this tag in
+    ``tags=`` is asking to see fenced inspirations, so the fence lifts
+    for that query (docs/design/dreaming.md §Inspire — "surface on
+    explicit ask").
+    """
+    return tag.strip() == SPECULATIVE_TAG
+
+
+def speculative_fence(ref_alias: str = "r") -> str:
+    """SQL clause excluding refs tagged ``DREAM:speculative``.
+
+    Returns a bare ``NOT EXISTS (...)`` predicate (no leading ``AND``,
+    no bind params — the namespace/value are fixed constants, not user
+    input). Parameterless on purpose: the fused-search CTE splices its
+    shared WHERE fragment twice, and a param-free clause stays correct
+    under that duplication. Splice into a ``clauses`` list that gets
+    ``AND``-joined.
+
+    Default search fences speculative dream output so inspirations never
+    pollute authoritative results; the fence is a no-op for every kind
+    that never carries the tag (paper/todo/...).
+    """
+    return (
+        "NOT EXISTS ("
+        "SELECT 1 FROM ref_tags rt "
+        "JOIN tags t ON t.tag_id = rt.tag_id "
+        f"WHERE rt.ref_id = {ref_alias}.ref_id "
+        f"AND t.namespace = '{_SPECULATIVE_NS}' "
+        f"AND t.value = '{_SPECULATIVE_VALUE}')"
+    )
+
+
+__all__ = [
+    "SPECULATIVE_TAG",
+    "build_tag_filter",
+    "is_speculative_tag",
+    "speculative_fence",
+]

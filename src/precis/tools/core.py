@@ -221,6 +221,10 @@ def search(
     tags: list[str] | None = None,
     source: str | None = None,
     exclude: list[str] | None = None,
+    angle: float | None = None,
+    n: int | None = None,
+    like: str | None = None,
+    view: str | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -230,6 +234,11 @@ def search(
     thread `exclude=` lists manually. `exclude=` is still useful for
     hand-skipping specific slugs. `source=` is patent-only
     (`'both'`/`'local'`/`'remote'`); ignored elsewhere.
+
+    **Angle spray**: `angle=` (cosine in `[-1,1]`) +/- `like='kind:id'`
+    returns `n` diverse items at that cosine from the seed (a cone
+    sample, not a ranked list). **`view='dreamable'`**: the most-due
+    salient seed + its neighbourhood. See the skill help for both.
 
     Full reference: get(kind='skill', id='precis-search-help'), or
     search(kind='skill', q='finding things by topic') for a topical
@@ -285,6 +294,18 @@ def search(
         payload["source"] = source
     if exclude is not None:
         payload["exclude"] = exclude
+    # Angle-spray knobs — forwarded only when set so a plain search
+    # never trips the angle interception path in the runtime.
+    if angle is not None:
+        payload["angle"] = angle
+    if n is not None:
+        payload["n"] = n
+    if like is not None:
+        payload["like"] = like
+    # ``view='dreamable'`` routes to the salience focus-region search
+    # (seed + ANN ring); other views pass through to the handler.
+    if view is not None:
+        payload["view"] = view
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)
