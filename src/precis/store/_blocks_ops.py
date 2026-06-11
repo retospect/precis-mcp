@@ -1075,6 +1075,11 @@ class BlocksMixin:
         params.append(limit)
         with self.pool.connection() as conn:
             embedder = self._default_embedder_name(conn)
+            # Conv blocks jump the queue. Chat history is "hot" — Asa
+            # reads recent turns every preamble build, so the digest
+            # tier needs keywords + the search surface needs embeddings
+            # ASAP after each turn lands. The CASE expression sorts
+            # conv first, everything else FIFO behind.
             sql = (
                 "SELECT c.chunk_id AS id, c.ref_id, c.ord AS pos, "
                 "       (c.meta->>'slug') AS slug, c.text, c.token_count, "
@@ -1085,7 +1090,9 @@ class BlocksMixin:
                 "LEFT JOIN chunk_embeddings ce "
                 "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
                 f"WHERE {' AND '.join(clauses)} "
-                "ORDER BY c.chunk_id ASC LIMIT %s"
+                "ORDER BY (CASE WHEN r.kind = 'conv' THEN 0 ELSE 1 END), "
+                "         c.chunk_id ASC "
+                "LIMIT %s"
             )
             rows = conn.execute(sql, [embedder, *params]).fetchall()
         return [_row_to_block(r) for r in rows]

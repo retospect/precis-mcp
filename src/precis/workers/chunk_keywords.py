@@ -111,9 +111,15 @@ def claim_chunks_without_keywords(
     if limit <= 0:
         raise ValueError("limit must be positive")
     skip_list = list(_SKIP_KINDS)
+    # Conv blocks jump the queue. asa_bot's mid-range digest tier
+    # renders ``chunks.keywords`` for each turn; without priority the
+    # boundary turn (just-out-of-recent) waits behind paper backlog
+    # and renders the text fallback for hours. JOIN-ing refs adds one
+    # planner hop but the ref_id index makes it nearly free.
     sql = """
         SELECT c.chunk_id, c.ref_id, c.text, ce.vector::text
           FROM chunks c
+          JOIN refs r ON r.ref_id = c.ref_id
           LEFT JOIN chunk_embeddings ce
             ON ce.chunk_id = c.chunk_id
            AND ce.embedder = %s
@@ -125,7 +131,8 @@ def claim_chunks_without_keywords(
              OR (c.keywords_meta->>'version') IS DISTINCT FROM %s
            )
            AND ce.vector IS NOT NULL
-         ORDER BY c.chunk_id
+         ORDER BY (CASE WHEN r.kind = 'conv' THEN 0 ELSE 1 END),
+                  c.chunk_id
          LIMIT %s
            FOR UPDATE OF c SKIP LOCKED
     """
