@@ -1,7 +1,7 @@
 ---
 id: precis-conv-help
 title: precis — find, read, tag past conversations
-applies-to: get/search/tag/link (kind='conv')
+applies-to: get/search/put/tag/link (kind='conv')
 status: active
 ---
 
@@ -83,9 +83,31 @@ the conversation level; turn selectors are rejected.
 
 ## Capture a new conversation
 
-Transcripts arrive via the chat-bridge; `put(kind='conv')` is not
-exposed. To annotate a conversation in flight, create a `memory`
-and `link=` it to the turn.
+Transcripts arrive via the chat-bridge. The Hermes Discord adapter
+calls `put(kind='conv', ...)` once per inbound user message and
+once per outbound assistant reply:
+
+```python
+put(kind='conv',
+    id='discord/<guild>/<channel>/<thread>',     # slug — stable per thread
+    text='hi, what do we know about X?',         # message body
+    author='alice#1234',                         # who said it
+    msg_id='1185923456789012345',                # platform id — idempotency key
+    title='X discussion',                        # optional, set on first call only
+    ref_meta={'platform': 'discord',
+              'guild_id': '...', 'channel_id': '...',
+              'thread_id': '...'},               # set on first call only
+    meta={'ts': '2026-06-11T10:00:00Z'})         # per-turn extras
+```
+
+The first call mints the conv ref; later calls append a turn
+(block) and skip silently if `msg_id` is already captured. So a
+bridge replay after a disconnect is safe — no duplicates.
+
+To annotate a conversation in flight from an agent, create a
+`memory` and `link=` it to the turn; do not call
+`put(kind='conv')` from agent code (the bridge will already be
+capturing the same turn).
 
 ## See also
 

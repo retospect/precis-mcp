@@ -53,7 +53,7 @@ Watch a directory for new top-level `*.pdf` files. For each one:
    `<stem>.error.log` traceback.
 
 ```sh
-# default watch dir = /Users/bots/Documents/openclaw-cluster/paper-ingest
+# default watch dir = /Users/bots/Documents/cluster/paper-ingest
 ./scripts/paper-monitor-ingest-dir
 ./scripts/paper-monitor-ingest-dir --once          # one sweep, no loop
 ./scripts/paper-monitor-ingest-dir --interval 30   # poll every 30 s

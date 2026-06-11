@@ -38,6 +38,7 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `skill` | `precis-overview` | Agent how-to (you're reading one) | — |
 | `oracle` | `stoic` | Curated wisdom-tradition entry | store |
 | `conv` | `2026-04-26-spec` | Past conversation | store |
+| `pres` | `2026-06-talk-foo` | Slide deck or unpublished writeup | store |
 | `markdown` | `notes--meeting` | A `.md` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `plaintext` | `notes--log` | A `.txt` / `.log` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |

@@ -10,6 +10,34 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **`pres` kind — slide decks + unpublished writeups (migration
+  0008).** New slug-addressed kind for internal artefacts kept
+  separate from the academic paper library. One ref per deck or
+  writeup; one block per slide (default `chunk_kind='pres_slide'`)
+  or per paragraph (override `chunk_kind='paragraph'`) for prose.
+  Surface: `get` (overview / `~N` / `/full`), `search` (lexical +
+  cross-kind via `search_hits`), `put` (per-block append with
+  `pos=` override + same-pos overwrite), `tag`, `link`. Subtype
+  carried as a `subtype:slides|writeup|notes` open tag stamped on
+  creation. Skill `precis-pres-help` ships the ingest recipes.
+  PDF→slide-per-block auto-ingest is a follow-up (will reuse the
+  existing marker pipeline + a new_pres drop folder watcher).
+
+- **`conv` capture-on-write (`put`).** ConversationHandler now
+  exposes a `put` verb so the chat-bridge can append turns:
+  `put(kind='conv', id='<slug>', text=..., author=..., msg_id=...)`.
+  First call mints the conv ref (using `title` and `ref_meta` as
+  ref-level metadata); subsequent calls append one block per turn
+  with the message body. Idempotency on `msg_id` — a Discord
+  reconnect-replay does not duplicate turns. Block-level metadata
+  carries `author` + `msg_id` + per-turn extras; chunk_kind is set
+  to the existing seeded `conv_message` slug so the embed +
+  chunk_keywords workers index chat history through the same
+  cross-kind search surface as papers/memory. Skill
+  (`precis-conv-help`) updated with the put-call shape. See
+  `cluster/roles/hermes/README.md` for the bridge contract on the
+  hermes side.
+
 - **Dreaming capability — foundation (in progress; agent loop deferred).**
   A background "dreaming" pass that consolidates memories and surfaces
   missing papers, built on additive/guarded writes through the normal

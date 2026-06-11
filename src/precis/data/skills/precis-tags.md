@@ -132,13 +132,32 @@ the canonical list:
 
 | Prefix | Values | Writer |
 |---|---|---|
-| `STATUS:` | `open` / `doing` / `blocked` / `done` / `won't-do` | agent |
+| `STATUS:` | see table below — value subset depends on kind | agent |
 | `PRIO:` | `low` / `normal` / `high` / `urgent` | agent |
 | `SRC:` | `primary` / `secondary` | agent |
 | `CACHE:` | `fresh` / `stale` / `pinned` | system |
+| `WATCH:` | `hourly` / `daily` / `weekly` / `monthly` | agent (cache-backed refs) |
+| `DREAM:` | `consolidated` / `speculative` / `acquire` | dreaming worker |
 
 Any UPPERCASE prefix outside that table is rejected — coin concepts
 as lowercase tags (`density:dense`, `confidence:strong`) instead.
+
+### `STATUS:` value subsets per lifecycle
+
+`STATUS:` is the one axis that hosts multiple lifecycles on the same
+prefix. The runtime accepts the union (20 values); each handler enforces
+a sane subset for its kind. Pick the row that matches the ref you're
+tagging:
+
+| Lifecycle | Kinds | Values |
+|---|---|---|
+| Workflow (original) | `todo`, `gripe` | `open`, `doing`, `blocked`, `done`, `won't-do` |
+| Gripe-specific | `gripe` | also: `triaged`, `ready_for_fix`, `in_review`, `wontfix` |
+| Citation chase | `finding` | `tracing`, `established`, `multi_candidate`, `dead_chain` |
+| Job queue | `job` | `queued`, `submitted`, `running`, `succeeded`, `failed`, `cancelled`, `cancel_requested` |
+
+The runtime rejects unknown values at write time with the full options
+list. To see the live set, `get(kind='skill', id='precis-status-help')`.
 
 ## Which closed axes apply to which kind?
 ## Per-kind axis matrix
@@ -151,9 +170,11 @@ axes and suggests the lowercase rewrite.
 | Kind | Allowed closed axes |
 |---|---|
 | `todo`, `gripe` | `STATUS`, `PRIO` |
+| `finding`, `job` | `STATUS` (lifecycle subsets — see table above) |
 | `paper`, `patent` | `SRC`, `CACHE` |
-| `research`, `think`, `websearch`, `web`, `youtube` | `CACHE` |
-| `memory`, `fc`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |
+| `research`, `think`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |
+| `memory` | `DREAM` (dreaming-worker provenance) |
+| `fc`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |
 
 Free-form kinds (`memory` etc.) express the same semantics with open
 tags:
@@ -175,7 +196,11 @@ put(kind='todo', text='...', tags=['urgent'])
 
 tag(kind='todo', id=40, add=['STATUS:bogus'])
 [error:BadInput] invalid STATUS value: 'bogus'
-  options: ['blocked', 'doing', 'done', 'open', "won't-do"]
+  options: ['blocked', 'cancel_requested', 'cancelled', 'dead_chain',
+            'doing', 'done', 'established', 'failed', 'in_review',
+            'multi_candidate', 'open', 'queued', 'ready_for_fix',
+            'running', 'submitted', 'succeeded', 'tracing', 'triaged',
+            'won't-do', 'wontfix']
 ```
 
 ## Tag a ref at creation time

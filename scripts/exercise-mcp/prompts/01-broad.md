@@ -18,7 +18,7 @@ first tool call must be `WaitForMcpServers`** — block on it returning
 - **Do not modify any pre-existing user data.** Treat refs you find as read-only
   unless you created them yourself in this session.
 - When you need to create state to exercise `put`/`edit`/`delete`/`tag`/`link`,
-  tag every created ref with `STATUS:exercise-mcp-throwaway` so it can be found and
+  tag every created ref with `topic:exercise-mcp-throwaway` so it can be found and
   reaped. Delete what you create before you finish.
 - Prefer breadth over depth. Touch every category at least once: ref kinds, tool
   kinds, discovery, the seven verbs.
@@ -89,8 +89,9 @@ reachable from the native surface alone?** Note any gap as a finding in the
 
 ## What to exercise
 
-Walk a representative slice of the **verb × kind** matrix. You don't have to hit
-every cell — aim for ~25 calls total, biased toward:
+Walk a representative slice of the **verb × kind** matrix. **Aim for ~75 tool
+calls** — this is a thorough pass, not a quick smoke test. Don't hit every
+cell, but bias toward:
 
 - **Every verb at least twice**, across different kinds.
 - **Every category** (ref / tool / discovery) at least once.
@@ -183,6 +184,6 @@ knows what's untested>
 
 ## Cleanup
 
-Before exiting, search for everything you tagged `STATUS:exercise-mcp-throwaway`
+Before exiting, search for everything you tagged `topic:exercise-mcp-throwaway`
 and delete it. Confirm the search returns zero results. Note in the report if
 cleanup hit any snags.

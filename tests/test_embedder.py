@@ -208,4 +208,7 @@ class TestProtocol:
             def embed_one(self, text: str) -> list[float]:
                 return [0.0] * 4
 
+            def is_ready(self) -> bool:
+                return True
+
         assert isinstance(Minimal(), Embedder)

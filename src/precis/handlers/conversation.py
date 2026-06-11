@@ -5,11 +5,13 @@ turns live as ``blocks`` (one block per message in chronological
 order). The ref title is a short summary; metadata holds participants
 and any thread-level context.
 
-Phase 5 ships a read-only handler — get an overview, get a specific
-turn (`~N`), get the whole transcript (`/transcript`), search across
-turns. Capture-on-write (a `put` interface that appends messages) is
-deferred until the chat-bridge work that produces these threads is
-final.
+Read surface: get an overview, get a specific turn (`~N`), get the
+whole transcript (`/transcript`), search across turns.
+
+Capture-on-write (``put``) is intended for the chat-bridge — Hermes'
+Discord adapter calls it once per inbound user message and once per
+outbound assistant reply. ``msg_id`` makes the append idempotent so
+a bridge replay (or a retry storm) does not duplicate turns.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.store.types import BlockInsert
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -41,16 +44,15 @@ class ConversationHandler(Handler):
         title="Conversation",
         description=(
             "Durable conversation transcript - slug-addressed, one "
-            "block per message turn. Body is capture-on-write; use "
-            "tag / link to cross-link to papers, memory, todos."
+            "block per message turn. Body is capture-on-write via "
+            "put(id=<slug>, text=..., author=..., msg_id=...) from "
+            "the chat-bridge; use tag / link to cross-link to papers, "
+            "memory, todos."
         ),
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
-        # Phase-9 / seven-verb cutover: conv transcripts are
-        # capture-on-write (arrive via the chat-bridge, never written
-        # by agents). Cross-linking and tagging ride on the dedicated
-        # tag/link verbs; ``put`` is therefore not exposed.
+        supports_put=True,
         supports_tag=True,
         supports_link=True,
         is_numeric=False,
@@ -187,6 +189,121 @@ class ConversationHandler(Handler):
             next_hint="search(kind='conv', q='...') to find existing slugs",
         )
         return slug, ref.id
+
+    # ── put: capture-on-write turn append ──────────────────────────
+
+    def put(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        text: str | None = None,
+        author: str | None = None,
+        msg_id: str | None = None,
+        title: str | None = None,
+        meta: dict[str, Any] | None = None,
+        ref_meta: dict[str, Any] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Append a turn to a conv ref (chat-bridge entry point).
+
+        First call with a given ``id`` slug mints the ref using
+        ``title`` (or a slug-derived fallback) and ``ref_meta`` as
+        the ref-level metadata (platform / guild / channel /
+        thread). Subsequent calls just append a block.
+
+        Idempotency: if ``msg_id`` is set and any existing block on
+        the ref already carries ``meta.msg_id == msg_id``, the call
+        is a no-op. This is what makes a Discord-adapter replay safe
+        — the bridge can re-emit the same message and we won't
+        duplicate the turn. Discord msg ids are 64-bit snowflakes;
+        we store as a string to also fit Slack ``ts`` values
+        verbatim if/when that bridge is added.
+
+        Block-level ``meta`` carries per-turn provenance the
+        renderer surfaces: ``author``, ``msg_id``, ``ts``,
+        ``edited_at``. The block ``text`` is the raw message body.
+        Embeddings are populated asynchronously by the existing
+        ``embed:bge-m3`` worker; keyword extraction by the
+        ``chunk_keywords`` worker.
+        """
+        if id is None or not str(id).strip():
+            raise BadInput(
+                "put(kind='conv') requires id= (the conv slug)",
+                next=(
+                    "put(kind='conv', id='discord/<guild>/<channel>/"
+                    "<thread>', text='...', author='<user>', "
+                    "msg_id='<platform-id>')"
+                ),
+            )
+        if text is None or not str(text).strip():
+            raise BadInput(
+                "put(kind='conv') requires text= (the message body)",
+                next=(
+                    "put(kind='conv', id='<slug>', text='hello', "
+                    "author='alice', msg_id='1234')"
+                ),
+            )
+        slug = str(id).strip()
+        body = str(text)
+        author_s = (author or "unknown").strip() or "unknown"
+        msg_id_s = str(msg_id).strip() if msg_id is not None else None
+
+        ref = self.store.get_ref(kind="conv", id=slug)
+        created = False
+        if ref is None:
+            ref_title = (title or f"conversation {slug}").strip() or slug
+            ref_meta_payload = dict(ref_meta or {})
+            if msg_id_s is not None and "first_msg_id" not in ref_meta_payload:
+                ref_meta_payload["first_msg_id"] = msg_id_s
+            ref = self.store.insert_ref(
+                kind="conv",
+                slug=slug,
+                title=ref_title,
+                meta=ref_meta_payload,
+            )
+            created = True
+
+        # Idempotency: a Discord bridge may replay the same message id
+        # after a reconnect. Cheap per-ref scan — turns counts cap in
+        # the low thousands per conv even for long threads.
+        if msg_id_s is not None:
+            existing = self.store.list_blocks_for_ref(ref.id)
+            for b in existing:
+                if (b.meta or {}).get("msg_id") == msg_id_s:
+                    return Response(
+                        body=(
+                            f"{slug}~{b.pos}: already captured "
+                            f"(msg_id={msg_id_s!r}); no-op"
+                        )
+                    )
+            next_pos = (existing[-1].pos + 1) if existing else 0
+        else:
+            next_pos = self.store.count_blocks(ref.id)
+
+        block_meta: dict[str, Any] = dict(meta or {})
+        block_meta["author"] = author_s
+        if msg_id_s is not None:
+            block_meta["msg_id"] = msg_id_s
+        # chunk_kind tags the block as a chat turn so cross-kind
+        # search renderers can distinguish it from paper paragraphs
+        # at hit time. ``conv_message`` is the seeded vocabulary slug
+        # (0001_initial.sql line 1578).
+        block_meta.setdefault("chunk_kind", "conv_message")
+
+        inserted = self.store.insert_blocks(
+            ref.id,
+            [BlockInsert(pos=next_pos, text=body, meta=block_meta)],
+        )
+        assert inserted, "insert_blocks returned no rows"
+        verb = "created + appended" if created else "appended"
+        return Response(
+            body=(
+                f"{verb} {slug}~{inserted[0].pos} "
+                f"(author={author_s!r}"
+                + (f", msg_id={msg_id_s!r}" if msg_id_s else "")
+                + ")"
+            )
+        )
 
     def tag(  # type: ignore[override]
         self,

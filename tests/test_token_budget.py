@@ -71,22 +71,28 @@ def _tools_list_wire_shape() -> list[dict[str, object]]:
 
 
 def test_tools_list_under_byte_budget() -> None:
-    """``tools/list`` JSON serialisation stays under 12 KB.
+    """``tools/list`` JSON serialisation stays under 14 KB.
 
     The seven-verb surface (get, search, put, edit, delete, tag,
     link) plus FastMCP's input-schema overhead is the cost centre
     here. The schema bytes are largely unavoidable (mode-specific
     constraints on ``edit``, type/required information on every
-    verb), so the regression-guard target is the verb description
-    text. If this trips, the most likely culprit is a verb
-    docstring that grew back beyond its post-Phase-1 trim — fix
-    the docstring (push detail into a skill file) rather than
-    bumping the cap.
+    verb, plus the kind-specific kwargs on ``put`` that strict-schema
+    clients need to accept findings/citations/jobs/etc.). The
+    regression-guard target is therefore the verb *description*
+    text — if this trips, the most likely culprit is a docstring
+    that grew back beyond its post-Phase-1 trim; fix the docstring
+    (push detail into a skill file) rather than bumping the cap.
+
+    2026-06-11: cap raised from 12 KB → 14 KB to absorb the
+    kind-specific kwargs added to ``put`` / ``edit`` (broad-pass
+    usability findings #1 / #2). Schema-side growth is on-purpose;
+    verb descriptions stayed tight.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 12 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 12 KB). "
+    assert size < 14 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 14 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

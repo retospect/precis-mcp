@@ -19,6 +19,7 @@ from precis.handlers.flashcard import FlashcardHandler
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.job import JobHandler
 from precis.handlers.oracle import OracleHandler
+from precis.handlers.presentation import PresentationHandler
 from precis.store import Store
 from precis.store.types import BlockInsert
 
@@ -512,3 +513,209 @@ class TestConversation:
         # Headline pluralisation auto-resolves to ``2 conversations``
         # (MCP critic MINOR-C 2026-05-02).
         assert "2 conversations" in out.body
+
+    # ── put (chat-bridge capture-on-write) ──────────────────────────
+
+    def test_put_creates_ref_and_first_turn(
+        self, conv: ConversationHandler
+    ) -> None:
+        out = conv.put(
+            id="discord/g/c/t",
+            text="hi there",
+            author="alice",
+            msg_id="m1",
+            title="kickoff",
+            ref_meta={"platform": "discord", "channel_id": "c"},
+        )
+        assert "created + appended" in out.body
+        assert "discord/g/c/t~0" in out.body
+        ref = conv.store.get_ref(kind="conv", id="discord/g/c/t")
+        assert ref is not None
+        assert ref.title == "kickoff"
+        assert ref.meta.get("platform") == "discord"
+        blocks = conv.store.list_blocks_for_ref(ref.id)
+        assert len(blocks) == 1
+        assert blocks[0].text == "hi there"
+        assert blocks[0].meta.get("author") == "alice"
+        assert blocks[0].meta.get("msg_id") == "m1"
+
+    def test_put_appends_subsequent_turns(
+        self, conv: ConversationHandler
+    ) -> None:
+        conv.put(id="t1", text="one", author="alice", msg_id="m1")
+        conv.put(id="t1", text="two", author="bob", msg_id="m2")
+        conv.put(id="t1", text="three", author="alice", msg_id="m3")
+        ref = conv.store.get_ref(kind="conv", id="t1")
+        assert ref is not None
+        blocks = conv.store.list_blocks_for_ref(ref.id)
+        assert [b.text for b in blocks] == ["one", "two", "three"]
+        assert [b.pos for b in blocks] == [0, 1, 2]
+
+    def test_put_is_idempotent_on_msg_id(
+        self, conv: ConversationHandler
+    ) -> None:
+        conv.put(id="t1", text="one", author="alice", msg_id="m1")
+        out = conv.put(id="t1", text="one (replay)", author="alice", msg_id="m1")
+        assert "already captured" in out.body
+        ref = conv.store.get_ref(kind="conv", id="t1")
+        assert ref is not None
+        blocks = conv.store.list_blocks_for_ref(ref.id)
+        # No duplicate. Replay text is ignored.
+        assert len(blocks) == 1
+        assert blocks[0].text == "one"
+
+    def test_put_without_msg_id_just_appends(
+        self, conv: ConversationHandler
+    ) -> None:
+        conv.put(id="t1", text="one", author="alice")
+        conv.put(id="t1", text="two", author="bob")
+        ref = conv.store.get_ref(kind="conv", id="t1")
+        assert ref is not None
+        blocks = conv.store.list_blocks_for_ref(ref.id)
+        assert len(blocks) == 2
+        # No msg_id idempotency key on either block.
+        assert "msg_id" not in (blocks[0].meta or {})
+
+    def test_put_rejects_missing_id_or_text(
+        self, conv: ConversationHandler
+    ) -> None:
+        with pytest.raises(BadInput, match="requires id"):
+            conv.put(text="hi")
+        with pytest.raises(BadInput, match="requires text"):
+            conv.put(id="t1")
+        with pytest.raises(BadInput, match="requires text"):
+            conv.put(id="t1", text="   ")  # whitespace-only rejected
+
+
+# ── PresentationHandler ────────────────────────────────────────────
+
+
+class TestPresentation:
+    """`pres` is for slide decks + unpublished writeups (migration
+    0008). Slug-addressed, one block per slide (or paragraph for
+    writeups). Block ``chunk_kind`` defaults to ``pres_slide``."""
+
+    @pytest.fixture
+    def pres(self, hub: Hub) -> PresentationHandler:
+        return PresentationHandler(hub=hub)
+
+    def test_put_creates_deck_and_first_slide(
+        self, pres: PresentationHandler
+    ) -> None:
+        out = pres.put(
+            id="2026-06-talk-foo",
+            text="Title slide",
+            pos=0,
+            title="Talk Foo",
+            subtype="slides",
+            ref_meta={"venue": "demo day", "date": "2026-06-04"},
+        )
+        assert "created + appended" in out.body
+        assert "2026-06-talk-foo~0" in out.body
+        assert "subtype='slides'" in out.body
+        ref = pres.store.get_ref(kind="pres", id="2026-06-talk-foo")
+        assert ref is not None
+        assert ref.title == "Talk Foo"
+        assert ref.meta.get("venue") == "demo day"
+        blocks = pres.store.list_blocks_for_ref(ref.id)
+        assert len(blocks) == 1
+        assert blocks[0].text == "Title slide"
+        assert blocks[0].chunk_kind == "pres_slide"
+
+    def test_put_appends_in_order_without_pos(
+        self, pres: PresentationHandler
+    ) -> None:
+        pres.put(id="d", text="slide 0")
+        pres.put(id="d", text="slide 1")
+        pres.put(id="d", text="slide 2")
+        ref = pres.store.get_ref(kind="pres", id="d")
+        assert ref is not None
+        blocks = pres.store.list_blocks_for_ref(ref.id)
+        assert [b.text for b in blocks] == ["slide 0", "slide 1", "slide 2"]
+        assert [b.pos for b in blocks] == [0, 1, 2]
+
+    def test_put_overwrites_at_explicit_pos(
+        self, pres: PresentationHandler
+    ) -> None:
+        pres.put(id="d", text="original slide 0", pos=0)
+        pres.put(id="d", text="original slide 1", pos=1)
+        out = pres.put(id="d", text="fixed slide 0", pos=0)
+        assert "overwrote" in out.body
+        ref = pres.store.get_ref(kind="pres", id="d")
+        assert ref is not None
+        blocks = pres.store.list_blocks_for_ref(ref.id)
+        assert [b.pos for b in blocks] == [0, 1]
+        # Block 0 holds the new text; block 1 untouched.
+        by_pos = {b.pos: b.text for b in blocks}
+        assert by_pos[0] == "fixed slide 0"
+        assert by_pos[1] == "original slide 1"
+
+    def test_put_writeup_uses_paragraph_chunk_kind(
+        self, pres: PresentationHandler
+    ) -> None:
+        pres.put(
+            id="postmortem",
+            text="The cluster went down at 03:14.",
+            chunk_kind="paragraph",
+            subtype="writeup",
+            title="Cluster postmortem",
+        )
+        ref = pres.store.get_ref(kind="pres", id="postmortem")
+        assert ref is not None
+        blocks = pres.store.list_blocks_for_ref(ref.id)
+        assert blocks[0].chunk_kind == "paragraph"
+
+    def test_get_overview_lists_block_count(
+        self, pres: PresentationHandler
+    ) -> None:
+        pres.put(
+            id="d",
+            text="s0",
+            title="Deck",
+            ref_meta={"venue": "demo day", "date": "2026-06-04"},
+        )
+        pres.put(id="d", text="s1")
+        out = pres.get(id="d")
+        assert "d" in out.body
+        assert "Deck" in out.body
+        assert "2 blocks" in out.body
+        assert "venue" in out.body
+
+    def test_get_full_renders_all_blocks_labelled(
+        self, pres: PresentationHandler
+    ) -> None:
+        pres.put(id="d", text="alpha", title="x")
+        pres.put(id="d", text="beta")
+        out = pres.get(id="d/full")
+        assert "## slide ~0" in out.body
+        assert "## slide ~1" in out.body
+        assert "alpha" in out.body
+        assert "beta" in out.body
+
+    def test_get_single_block(self, pres: PresentationHandler) -> None:
+        pres.put(id="d", text="alpha", title="x")
+        pres.put(id="d", text="beta")
+        pres.put(id="d", text="gamma")
+        out = pres.get(id="d~1")
+        assert "d~1 (slide)" in out.body
+        assert "beta" in out.body
+        assert "alpha" not in out.body
+
+    def test_missing_block_404s(self, pres: PresentationHandler) -> None:
+        pres.put(id="d", text="one", title="x")
+        with pytest.raises(NotFound, match="no block at"):
+            pres.get(id="d~99")
+
+    def test_put_rejects_missing_id_or_text(
+        self, pres: PresentationHandler
+    ) -> None:
+        with pytest.raises(BadInput, match="requires id"):
+            pres.put(text="hi")
+        with pytest.raises(BadInput, match="requires text"):
+            pres.put(id="d")
+
+    def test_list_view(self, pres: PresentationHandler) -> None:
+        pres.put(id="a", text="hi", title="deck A")
+        pres.put(id="b", text="hi", title="deck B")
+        out = pres.get()
+        assert "2 presentations" in out.body

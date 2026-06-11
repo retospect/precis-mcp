@@ -57,6 +57,14 @@ class Embedder(Protocol):
 
     def embed_one(self, text: str) -> list[float]: ...
 
+    # ``is_ready`` lets the dispatcher fast-fail with a retryable
+    # "warming" notice when an in-process backend (BgeM3Embedder) is
+    # still loading weights, instead of blocking the MCP transport for
+    # 30-120 s on a foreground first call. Backends with no warmup
+    # phase (Mock, Remote) return True. Default added 2026-06-11 per
+    # broad-pass usability finding #7.
+    def is_ready(self) -> bool: ...
+
 
 # ---------------------------------------------------------------------------
 # Mock — deterministic, no external deps. Used in all unit tests.
@@ -90,6 +98,10 @@ class MockEmbedder:
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [self.embed_one(t) for t in texts]
+
+    def is_ready(self) -> bool:
+        # MockEmbedder has no warmup phase — deterministic hashing.
+        return True
 
     def embed_one(self, text: str) -> list[float]:
         # Fill `dim` floats by hashing the text repeatedly with a
@@ -213,9 +225,46 @@ class BgeM3Embedder:
             self._st = SentenceTransformer(_BGE_M3_HF_ID)
         return self._st
 
+    def is_ready(self) -> bool:
+        """True once the bge-m3 weights are loaded.
+
+        Used by the dispatch path to fast-fail foreground search calls
+        with a retryable "warming" notice while the background warmup
+        thread (server._warm_embedder_background) is still loading the
+        model on a cold container — instead of blocking the MCP
+        transport for the 30-120 s the load can take and tripping the
+        per-call timeout. (Broad-pass usability finding #7.)
+        """
+        return self._st is not None
+
+    def _raise_if_warming(self) -> None:
+        """Fast-fail when the model isn't loaded yet.
+
+        The background warmup thread races every first foreground
+        call. Without this guard, an MCP search arriving before the
+        thread finishes blocks the transport for the entire model
+        load; the wall-clock time is dominated by ``SentenceTransformer``
+        construction and the first forward pass to JIT-compile MPS
+        kernels, neither of which we can preempt. ``Upstream`` is the
+        closest error class — bge-m3 is in-process but warmup is the
+        kind of transient-unavailability the agent should retry rather
+        than treat as a fatal misconfiguration.
+        """
+        if self._st is not None:
+            return
+        from precis.errors import Upstream
+
+        raise Upstream(
+            "embedder warming — bge-m3 weights are still loading; "
+            "retry in ~30 seconds. "
+            "(Lexical-only searches via tags= work now without waiting.)",
+            next="retry the same call in ~30s, or scope by tags=[...] for lex-only",
+        )
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        self._raise_if_warming()
         st = self._ensure_loaded()
         # Per-text char truncation — see class docstring + _BGE_M3_MAX_CHARS.
         # Cheap O(n) check; only allocates a new string when over budget.
@@ -322,6 +371,14 @@ class RemoteEmbedder:
     @property
     def model(self) -> str:
         return self._model_info().model
+
+    def is_ready(self) -> bool:
+        # Remote backend has no local warmup phase. The first call
+        # pays a small ``/model`` round-trip; subsequent calls don't.
+        # Returning True here keeps the dispatch fast-path uncluttered;
+        # genuine transport failures still surface via ``embed()``'s
+        # existing retry / RuntimeError path.
+        return True
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:

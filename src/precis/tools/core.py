@@ -322,13 +322,49 @@ def put(
     link: str | None = None,
     unlink: str | None = None,
     rel: str | None = None,
+    # Kind-specific kwargs. Declared here (rather than tunnelled through
+    # ``args=``) so the JSON Schema advertised over MCP matches what the
+    # help skills document — strict-schema clients (Claude Desktop, etc.)
+    # otherwise reject these calls before the server-side per-kind error
+    # paths can teach the agent what's missing.
+    # finding (see precis-finding-help):
+    title: str | None = None,
+    body: str | None = None,
+    scope: dict[str, Any] | None = None,
+    cited_in: str | None = None,
+    # citation (see precis-citation-help):
+    source_handle: str | None = None,
+    source_quote: str | None = None,
+    char_offset: int | None = None,
+    verifier_confidence: float | None = None,
+    verifier_caveats: str | None = None,
+    verified_at: str | None = None,
+    # job (see precis-job-help):
+    job_type: str | None = None,
+    executor: str | None = None,
+    params: dict[str, Any] | None = None,
+    idem_key: str | None = None,
+    # presentation (see precis-pres-help):
+    pos: int | None = None,
+    meta: dict[str, Any] | None = None,
+    ref_meta: dict[str, Any] | None = None,
+    subtype: str | None = None,
+    chunk_kind: str | None = None,
+    # conversation (see precis-conv-help):
+    author: str | None = None,
+    msg_id: str | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    File kinds (`markdown`, `plaintext`, `tex`, `python`) require
-    `mode='create'` (only accepted value; region edits live on `edit`,
-    whole-file deletes on `delete`). Numeric-ref kinds (`memory`,
-    `todo`, `gripe`, `conv`, `fc`) omit `mode=` to create.
+    `mode=` matrix:
+      - File kinds (`markdown`, `plaintext`, `tex`, `python`):
+        `mode='create'` (region edits live on `edit`,
+        whole-file deletes on `delete`).
+      - Paid-import kinds (`websearch`, `think`, `research`):
+        `mode='import'` to ingest an existing payload (e.g. a
+        Perplexity report) without re-running the upstream call.
+      - Numeric-ref kinds (`memory`, `todo`, `gripe`, `conv`, `fc`):
+        omit `mode=` to create.
     `tags=` adds, `untags=` removes. `link=`/`unlink=` use canonical
     `kind:identifier[~selector]` form; `rel=` defaults to `related-to`.
 
@@ -350,6 +386,31 @@ def put(
             "link": link,
             "unlink": unlink,
             "rel": rel,
+            # Kind-specific kwargs — the dispatcher strips None values
+            # before calling the handler, and handlers carry **_kw
+            # catch-alls so unrecognised keys are no-ops for kinds that
+            # don't use them.
+            "title": title,
+            "body": body,
+            "scope": scope,
+            "cited_in": cited_in,
+            "source_handle": source_handle,
+            "source_quote": source_quote,
+            "char_offset": char_offset,
+            "verifier_confidence": verifier_confidence,
+            "verifier_caveats": verifier_caveats,
+            "verified_at": verified_at,
+            "job_type": job_type,
+            "executor": executor,
+            "params": params,
+            "idem_key": idem_key,
+            "pos": pos,
+            "meta": meta,
+            "ref_meta": ref_meta,
+            "subtype": subtype,
+            "chunk_kind": chunk_kind,
+            "author": author,
+            "msg_id": msg_id,
         },
     )
 
@@ -369,6 +430,10 @@ def edit(
     nth: int | None = None,
     allow_rename: bool | None = None,
     dry_run: bool | None = None,
+    # finding-specific: pick the cite_key / ref_id that resolves an
+    # established / multi_candidate finding. Declared at the verb level
+    # so strict-schema MCP clients don't strip it (see precis-finding-help).
+    pick_candidate: str | int | None = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -405,6 +470,7 @@ def edit(
         "nth": nth,
         "allow_rename": allow_rename,
         "dry_run": dry_run,
+        "pick_candidate": pick_candidate,
     }
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)

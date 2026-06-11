@@ -31,7 +31,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, Gone, NotFound, Unsupported
+from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._link_tag_ops import validate_relation
 from precis.handlers._link_target import parse_link_target
 from precis.protocol import Handler, KindSpec
@@ -540,8 +540,45 @@ class NumericRefHandler(Handler):
             )
         ref_id = self._coerce_id(id)
         existing = self._resolve_live_ref(ref_id)
-        link_target = parse_link_target(target, store=self.store)
-        relation = validate_relation(rel)
+        # Collect both target-resolution and rel-vocabulary errors so a
+        # caller with both wrong gets one round trip's worth of feedback,
+        # not two. (MCP broad-pass usability finding #10.)
+        target_err: PrecisError | None = None
+        rel_err: BadInput | None = None
+        link_target = None
+        relation = None
+        try:
+            link_target = parse_link_target(target, store=self.store)
+        except (NotFound, BadInput) as exc:
+            target_err = exc
+        try:
+            relation = validate_relation(rel)
+        except BadInput as exc:
+            rel_err = exc
+        if target_err is not None and rel_err is not None:
+            raise BadInput(
+                "link validation failed: "
+                f"(target) {target_err.cause}; "
+                f"(rel) {rel_err.cause}",
+                options=rel_err.options,
+                next=[
+                    n
+                    for n in (
+                        target_err.next
+                        if isinstance(target_err.next, str)
+                        else None,
+                        rel_err.next if isinstance(rel_err.next, str) else None,
+                    )
+                    if n
+                ]
+                or None,
+            )
+        if target_err is not None:
+            raise target_err
+        if rel_err is not None:
+            raise rel_err
+        # mypy: link_target and relation are guaranteed non-None below.
+        assert link_target is not None and relation is not None
         if mode == "add":
             self.store.add_link(
                 src_ref_id=ref_id,
