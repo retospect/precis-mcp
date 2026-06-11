@@ -69,7 +69,7 @@ Use a turn handle (`slug~pos`) as the link target to point at a
 specific message; use the bare slug to point at the conversation.
 
 ## Tag a conversation
-## Mark a conversation as pivotal or topic-X
+## Mark a conversation as pivotal or topic:X
 ## Categorise a transcript
 
 ```python

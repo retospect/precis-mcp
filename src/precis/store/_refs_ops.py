@@ -85,6 +85,7 @@ class RefsMixin:
             pos: int | None = None,
             set_by: ActorSlug = "agent",
             replace_prefix: bool = False,
+            expires_at: datetime | None = None,
             conn: Connection | None = None,
         ) -> None: ...
 

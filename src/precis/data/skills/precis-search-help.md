@@ -36,6 +36,10 @@ search(kind='patent', q='X', source='remote')       # patent-only knob
 | `scope` | str | Restrict to one ref's blocks. |
 | `exclude` | list[str] | Skip-list (specific slugs to drop). `page=` is the normal pagination. |
 | `source` | str | Patent only: `'both'` (default) / `'local'` / `'remote'`. |
+| `view` | str | Alternate result shape. `view='dreamable'` returns a salience-focus-region pick from the most-due seed (cross-kind only; `q=` not required for this view). |
+| `angle` | float | Salience-rotation search; pairs with `like=` (or `q=` for a seed). See `precis-dreaming-help`. |
+| `like` | str | Seed ref handle for `angle=` search; e.g. `like='paper:wang2020state~5'`. |
+| `status` | str | Finding-only shorthand for `tags=['STATUS:<value>']`. Default is `'established'` (the "what evidence do we have?" cohort); pass `'tracing'`/`'multi_candidate'`/`'dead_chain'` for a specific cohort, or `'*'` for all findings regardless. Ignored on every other kind. |
 
 ## Search the whole corpus
 ## Find something but I don't know which kind
@@ -43,7 +47,7 @@ search(kind='patent', q='X', source='remote')       # patent-only knob
 
 ```python
 search(q='Z-scheme photocatalysis')             # all kinds
-search(kind='*', q='topic-x')                   # explicit wildcard
+search(kind='*', q='topic:x')                   # explicit wildcard
 search(kind='paper,patent', q='Z-scheme')       # subset via comma-list
 ```
 

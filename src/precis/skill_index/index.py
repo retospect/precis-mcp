@@ -155,11 +155,29 @@ class FileCorpusIndex:
     def _build(self) -> None:
         """Populate the in-memory entry table, embedding as needed.
 
-        Idempotent — once ``self._entries`` is set we never rebuild
-        within the lifetime of this object. The caller drops the
-        index when it wants a fresh build (e.g. file reloaded).
+        Idempotent **once a successful build lands**. Until then, every
+        ``search`` call retries the build — so a cold-embedder first
+        call doesn't poison the index with an empty entry table for
+        the lifetime of the process. Broad-pass usability finding
+        R2#1: my earlier ``is_ready()`` short-circuit on
+        ``BgeM3Embedder.embed*`` interacted with the previous
+        unconditional ``_entries = out`` assignment by killing
+        natural-language skill search forever once the first cold
+        search ran during warmup.
+
+        Strategy now: if the embedder advertises an ``is_ready()``
+        method (Mock / Remote / BgeM3 — see ``precis.embedder``) and
+        reports False, skip the build and leave ``_entries`` unset.
+        The next call retries — by then the background warmup
+        thread (``server._warm_embedder_background``) has typically
+        finished. Backends with no ``is_ready()`` (third-party
+        custom embedders, older test fakes) keep the historical
+        unconditional behaviour.
         """
         if self._entries is not None:
+            return
+        is_ready = getattr(self._embedder, "is_ready", None)
+        if callable(is_ready) and not is_ready():
             return
         if self._cache is None:
             model = getattr(self._embedder, "model", "unknown")

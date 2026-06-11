@@ -93,14 +93,14 @@ search(kind='paper,web', q='retrieval augmentation')
 Each hit is tagged with its source kind.
 
 ## Bookmark a page with tags
-## Mark a cached page as topic-X
+## Mark a cached page as topic:X
 ## Annotate a fetched URL
 
 ```python
 get(kind='web', id='https://example.com/article')      # fetch to populate cache
 
 tag(kind='web', id='https://example.com/article',
-    add=['bookmark', 'topic-rag', 'read-later'])
+    add=['bookmark', 'topic:rag', 'read-later'])
 
 tag(kind='web', id='https://example.com/article',
     add=['CACHE:pinned'])                              # never expire
@@ -110,7 +110,7 @@ tag(kind='web', id='https://example.com/article',
 ```
 
 Closed-prefix axes for web: `CACHE:` only. Open tags
-(`bookmark`, `topic-x`, ...) always allowed.
+(`bookmark`, `topic:x`, ...) always allowed.
 
 ## Cross-link a page to a memory, paper, or todo
 ## Tie a bookmarked URL to something else in the corpus

@@ -18,7 +18,7 @@ which axis), see `precis-tags`. This file is the verb mechanics.
 
 ```python
 tag(kind='todo', id=158, add=['STATUS:done'], remove=['STATUS:open'])
-tag(kind='paper', id='wang2020state', add=['topic-noxrr'])
+tag(kind='paper', id='wang2020state', add=['topic:noxrr'])
 tag(kind='memory', id=42, remove=['pinned'])
 ```
 
@@ -32,8 +32,8 @@ doesn't have is a no-op.
 
 ```python
 tag(kind='todo', id=42,
-    add=['STATUS:done', 'PRIO:lo'],
-    remove=['STATUS:open', 'PRIO:hi'])
+    add=['STATUS:done', 'PRIO:low'],
+    remove=['STATUS:open', 'PRIO:high'])
 ```
 
 Pair `add=` + `remove=` in one call to flip state cleanly. With
@@ -57,12 +57,14 @@ it won't double-remove.
 
 ```python
 tag(kind='paper', id='wang2020state',
-    add=['topic-noxrr', 'topic-photocatalysis', 'project-foo'])
+    add=['topic:noxrr', 'topic:photocatalysis', 'project:foo'])
 ```
 
-Lowercase / open tags (`topic-x`, `cpc:B01J27/24`,
+Lowercase / open tags (`topic:x`, `cpc:B01J27/24`,
 `applicant:siemens-ag`, `2026-q2`) accumulate freely. Adding one
-does not displace another. Drop individually with `remove=`.
+does not displace another. Drop individually with `remove=`. The
+canonical separator for open prefixes is `:` (not `-`) — see
+`precis-tags` for the rationale.
 
 ## Toggle a bare flag tag
 ## Pin or unpin
@@ -79,7 +81,7 @@ on/off. Add to set, remove to clear.
 
 ```python
 put(kind='todo', text='Review section 3 of abazari2024design.',
-    tags=['PRIO:hi', 'topic-photocatalysis'])
+    tags=['PRIO:high', 'topic:photocatalysis'])
 ```
 
 `put(..., tags=[...])` applies tags as part of the create. Use the

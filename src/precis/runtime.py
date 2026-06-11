@@ -28,6 +28,7 @@ from precis.errors import (
     NotFound,
     PrecisError,
     Unsupported,
+    Upstream,
 )
 from precis.protocol import _ALL_VERBS, Handler, Verb
 from precis.response import Response
@@ -883,10 +884,19 @@ class PrecisRuntime:
             )
             for block, ref, cosine in region
         ]
+        # ``query=`` populates the rendered header (``... for 'X'``);
+        # passing the literal view name read as if the agent had typed
+        # ``q='dreamable'`` (broad-pass usability finding R2#3). Use a
+        # label that names what the view actually picked.
+        seed_label = (
+            f"most-due seed ref_id={seed_id}"
+            if seed_id is not None
+            else "most-due seed"
+        )
         return merge_and_render(
             [stream],
             page_size=n,
-            query="dreamable",
+            query=seed_label,
             header_noun="region member",
             mode="priority",
             show_label=True,
@@ -1087,6 +1097,34 @@ class PrecisRuntime:
         if embedder is not None:
             try:
                 base_kwargs["query_vec"] = embedder.embed_one(q)
+            except Upstream as exc:
+                # Embedder is warming (or upstream is unavailable).
+                # Falling back to lexical-only is the right runtime
+                # move, but we must SURFACE the degraded state so the
+                # agent doesn't read "no matches" as a definitive
+                # answer. Round-2 picky finding R2#2: silent fallback
+                # made `search(q='photocatalysis')` return zero hits
+                # while `search(kind='paper', q='...')` raised
+                # Upstream — same underlying state, two different
+                # signals.
+                from precis.hints import Hint
+
+                self.hub.emit_hint(
+                    Hint(
+                        text=(
+                            f"cross-kind semantic search degraded to "
+                            f"lexical-only: {exc.cause}. Some matches "
+                            "may be missing; retry shortly for the "
+                            "full semantic fan-out."
+                        ),
+                        topic="search.embedder_warming",
+                        cooldown=3,
+                    )
+                )
+                log.info(
+                    "cross-kind: embedder unavailable; "
+                    "falling back to lexical (%s)", exc.cause
+                )
             except Exception:
                 # An embed failure here shouldn't kill the whole
                 # cross-kind search — fall back to per-kind embed

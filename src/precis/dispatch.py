@@ -595,6 +595,7 @@ def boot(
     if store is not None:
         from precis.handlers.citation import CitationHandler
         from precis.handlers.conversation import ConversationHandler
+        from precis.handlers.cron import CronHandler
         from precis.handlers.finding import FindingHandler
         from precis.handlers.flashcard import FlashcardHandler
         from precis.handlers.gripe import GripeHandler
@@ -619,6 +620,7 @@ def boot(
         _gated(CitationHandler)
         _gated(FindingHandler)
         _gated(ConversationHandler)
+        _gated(CronHandler)
         _gated(PresentationHandler)
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the

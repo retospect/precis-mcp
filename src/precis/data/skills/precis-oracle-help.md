@@ -92,12 +92,12 @@ back in the response header.
 ## Mark this passage as the one that decided X
 
 ```python
-tag(kind='oracle', id='stoic~9', add=['topic-decision-aid'])
+tag(kind='oracle', id='stoic~9', add=['topic:decision-aid'])
 link(kind='oracle', id='stoic~9',
      target='memory:88', rel='supports')
 ```
 
-Open tags (`topic-*`, `project-*`) work freely. Tradition bodies are
+Open tags (`topic:*`, `project:*`) work freely. Tradition bodies are
 curated; `put(kind='oracle', …)` is not exposed.
 
 ## When to reach for an oracle

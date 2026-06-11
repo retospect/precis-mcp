@@ -23,6 +23,7 @@ these helpers.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import cast, get_args
 
 from precis.errors import BadInput
@@ -120,6 +121,8 @@ def apply_tag_ops(
     *,
     tags: list[str] | None,
     untags: list[str] | None,
+    ttl_days: int | None = None,
+    expires_at: datetime | None = None,
 ) -> tuple[int, int]:
     """Apply ``tags=`` / ``untags=`` against ``ref_id``.
 
@@ -142,7 +145,31 @@ def apply_tag_ops(
     write happens; the writes themselves run inside a single
     transaction so a downstream constraint violation rolls back
     every part of the call. (Critic MAJOR #1, read-only-kinds side.)
+
+    ``ttl_days`` / ``expires_at`` (migration 0009) stamps an
+    expiry on the *added* tag rows. Passing ``ttl_days=30`` means
+    ``expires_at = now() + 30 days`` resolved at call time. The two
+    are mutually exclusive; pass at most one. Re-tagging the same
+    tag with a fresh ``ttl_days`` refreshes the expiry (the
+    underlying ``add_tag`` does ``ON CONFLICT DO UPDATE``). Pass
+    neither to keep the prior semantics (no expiry).
     """
+    if ttl_days is not None and expires_at is not None:
+        raise BadInput(
+            "ttl_days= and expires_at= are mutually exclusive",
+            next="pass at most one of ttl_days=N or expires_at=<iso8601>",
+        )
+    resolved_expires: datetime | None = None
+    if ttl_days is not None:
+        if not isinstance(ttl_days, int) or ttl_days <= 0:
+            raise BadInput(
+                f"ttl_days must be a positive integer, got {ttl_days!r}",
+                next="ttl_days=30",
+            )
+        resolved_expires = datetime.now(tz=UTC) + timedelta(days=ttl_days)
+    elif expires_at is not None:
+        resolved_expires = expires_at
+
     parsed_add: list[Tag] = (
         [Tag.parse_strict(s, kind=kind) for s in tags] if tags else []
     )
@@ -159,6 +186,7 @@ def apply_tag_ops(
                 tag,
                 set_by="agent",
                 replace_prefix=(tag.namespace == "closed"),
+                expires_at=resolved_expires,
                 conn=conn,
             )
             n_added += 1

@@ -147,7 +147,7 @@ don't invent URLs.
 
 ## Tag a paper or cross-link it
 ## Annotate a paper with topic tags or relationships
-## How do I mark this paper as topic-X?
+## How do I mark this paper as topic:X?
 
 ```python
 tag(kind='paper', id='<slug>', add=['topic:photocatalysis'])
@@ -159,7 +159,7 @@ link(kind='paper', id='<slug>',
 ```
 
 Closed-prefix axes for paper: `SRC:`, `CACHE:`. Open tags
-(`topic-x`, ...) always allowed. Other axes (`STATUS:`, `PRIO:`, ...)
+(`topic:x`, ...) always allowed. Other axes (`STATUS:`, `PRIO:`, ...)
 are rejected. Tag and link operate at the paper level — chunk
 selectors and view paths are rejected.
 

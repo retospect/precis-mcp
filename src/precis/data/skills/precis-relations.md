@@ -29,6 +29,8 @@ options list. Link verb mechanics and target grammar live in
 | `retracts` | `retracted-by` | A retracts B (notice → paper). |
 | `corrects` | `corrected-by` | A corrects B (corrigendum → paper). |
 | `raises-concern-about` | `concern-raised-by` | A raises an expression of concern about B. |
+| `fixes` | `fixed-by` | A workflow job resolves a gripe / todo (job → gripe is the canonical pair; pairs with `job_type='fix_gripe'`). |
+| `supersedes` | `superseded-by` | A subsumes B; B is soft-deleted but graph-reachable via the inverse. Used by `memory.supersede` consolidation (survivor → originals). |
 
 All relations except `related-to` and `see-also` auto-mirror: writing
 `cites` from A→B makes A→B queryable as `cited-by` from B's side

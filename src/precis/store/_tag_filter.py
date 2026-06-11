@@ -118,6 +118,8 @@ def build_tag_filter(
         # Chunk-level: filter refs whose chunks collectively carry
         # all N tags. AND semantics across distinct tags, but the
         # tags don't have to be on the same chunk.
+        # Chunk-level tags don't carry expires_at in v1 (migration 0009
+        # added the column only on ref_tags) — no expiry filter needed.
         fragment = (
             f" AND {ref_alias}.ref_id IN ("
             f"  SELECT c.ref_id "
@@ -130,12 +132,19 @@ def build_tag_filter(
             f")"
         )
     else:
+        # Ref-level tags can carry TTL via ref_tags.expires_at (migration
+        # 0009). Exclude expired tags from the filter — agents that pin a
+        # memory with ttl_days=30 expect the memory to drop out of
+        # ``tags=['sticky:thread']`` filters once the TTL passes. Expired
+        # rows stay in the table for audit; the runtime just doesn't see
+        # them through this verb.
         fragment = (
             f" AND {ref_alias}.ref_id IN ("
             f"  SELECT rt.ref_id "
             f"  FROM ref_tags rt "
             f"  JOIN tags t ON t.tag_id = rt.tag_id "
             f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
+            f"    AND (rt.expires_at IS NULL OR rt.expires_at > now()) "
             f"  GROUP BY rt.ref_id "
             f"  HAVING COUNT(DISTINCT t.value) = %s"
             f")"

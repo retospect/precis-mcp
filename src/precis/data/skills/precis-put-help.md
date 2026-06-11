@@ -20,7 +20,7 @@ and `link`.
 put(kind='memory', text='Wang20 cites our 2024 result indirectly.')
 put(kind='memory',
     text='Schedule the next sortie review for 2026-Q3.',
-    tags=['topic-sortie', 'pinned'])
+    tags=['topic:sortie', 'pinned'])
 put(kind='memory',
     text='Heterojunction comparison aligns with our hypothesis.',
     link='paper:wang2020state', rel='cites')
@@ -139,7 +139,7 @@ next `get(kind='websearch', q='...')` hits cache at $0. See
 ## How do I avoid a second tag() call?
 
 ```python
-put(kind='memory', text='...', tags=['pinned', 'topic-sortie'])
+put(kind='memory', text='...', tags=['pinned', 'topic:sortie'])
 
 put(kind='todo', text='...', tags=['PRIO:high'])
 ```

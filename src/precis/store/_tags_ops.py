@@ -43,6 +43,7 @@ Mixin assumes the concrete Store provides ``self.pool``.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from psycopg import Connection
@@ -140,6 +141,7 @@ class TagsMixin:
         pos: int | None = None,
         set_by: ActorSlug = "agent",
         replace_prefix: bool = False,
+        expires_at: datetime | None = None,
         conn: Connection | None = None,
     ) -> None:
         """Add a tag to a ref (``pos=None``) or to a chunk (``pos=ord``).
@@ -150,8 +152,20 @@ class TagsMixin:
         v1 invariant that a closed prefix has at most one value per
         target (e.g. exactly one ``STATUS:...`` on a memory).
 
-        Idempotent under ``ON CONFLICT DO NOTHING`` on the join table:
-        adding the same tag twice is a no-op.
+        ``expires_at`` (ref-level only — migration 0009) sets an optional
+        TTL on the tag row. ``None`` means no expiry (the prior default).
+        Query-time filter (``WHERE expires_at IS NULL OR expires_at >
+        now()``) excludes expired tags from search; the row stays for
+        audit + revival. **Re-tagging refreshes the expiry** by
+        ``ON CONFLICT DO UPDATE`` — so an agent calling ``tag(...,
+        ttl_days=30)`` on a memory that already has the tag bumps the
+        TTL back to 30 days from now. (Without UPDATE the existing row
+        would lock the original expiry in place.) Setting
+        ``expires_at=None`` on an existing row clears any prior TTL.
+
+        Chunk-level expiry is not supported in v1; pass ``pos=None`` for
+        any TTL'd tag. The schema column lives only on ``ref_tags`` for
+        now; promote when a chunk-level use case appears.
         """
         namespace, value = _tag_to_namespace_value(tag)
 
@@ -169,14 +183,20 @@ class TagsMixin:
                     )
                 tag_id = _upsert_tag(c, namespace, value)
                 c.execute(
-                    "INSERT INTO ref_tags (ref_id, tag_id, set_by) "
-                    "VALUES (%s, %s, %s) "
-                    "ON CONFLICT (ref_id, tag_id) DO NOTHING",
-                    (ref_id, tag_id, set_by),
+                    "INSERT INTO ref_tags (ref_id, tag_id, set_by, expires_at) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (ref_id, tag_id) DO UPDATE "
+                    "SET set_by = EXCLUDED.set_by, "
+                    "    expires_at = EXCLUDED.expires_at",
+                    (ref_id, tag_id, set_by, expires_at),
                 )
                 return
 
             # Chunk-level tag.
+            if expires_at is not None:
+                raise ValueError(
+                    "expires_at is supported only on ref-level tags (pos=None)"
+                )
             chunk_id = _resolve_chunk_id(c, ref_id, pos)
             if replace_prefix and namespace not in ("FLAG", "OPEN"):
                 c.execute(
@@ -283,6 +303,11 @@ class TagsMixin:
         ``'FLAG'`` sentinel namespace explicitly. Closed-prefix
         probes pass their prefix directly (e.g. ``has_tag(ref_id,
         'STATUS', 'done')``); open tag probes use ``'OPEN'``.
+
+        Expired tags (``expires_at <= now()`` per migration 0009) do
+        not count as present. The row stays in the table for audit;
+        ``has_tag`` is the runtime probe that mirrors what the agent
+        actually "sees."
         """
         with self.pool.connection() as conn:
             row = conn.execute(
@@ -291,10 +316,41 @@ class TagsMixin:
                 "WHERE rt.ref_id = %s "
                 "  AND t.namespace = %s "
                 "  AND t.value = %s "
+                "  AND (rt.expires_at IS NULL OR rt.expires_at > now()) "
                 "LIMIT 1",
                 (ref_id, namespace, value),
             ).fetchone()
         return row is not None
+
+    def tags_for_with_expiry(
+        self,
+        ref_id: int,
+    ) -> list[tuple[Tag, datetime | None]]:
+        """Return every ref-level tag paired with its ``expires_at``.
+
+        Includes expired tags (so callers can render "this tag
+        expired 3d ago"). For the runtime "what tags does this ref
+        carry right now" use :meth:`has_tag` or
+        :meth:`tags_for`. For the preamble builder's sticky-memory
+        rendering with "expires in Nd" / "⚠️ Nd left" markers, use
+        this. asa_bot reads it via the precis MCP and renders the
+        countdown.
+
+        Ordered by insertion (``created_at ASC``).
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT t.namespace, t.value, rt.expires_at "
+                "FROM ref_tags rt "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = %s "
+                "ORDER BY rt.created_at ASC, t.tag_id ASC",
+                (ref_id,),
+            ).fetchall()
+        return [
+            (_row_to_tag(str(r[0]), str(r[1])), r[2])
+            for r in rows
+        ]
 
     # ── discovery surface (kind='tag') ──────────────────────────────
     #

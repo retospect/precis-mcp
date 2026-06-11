@@ -225,6 +225,12 @@ def search(
     n: int | None = None,
     like: str | None = None,
     view: str | None = None,
+    # finding-specific filter: short-circuits a STATUS:<value> tag
+    # filter. Defaults to 'established' on the finding handler; pass
+    # 'tracing' / 'multi_candidate' / 'dead_chain' to inspect a
+    # specific lifecycle cohort, or '*' to see all. Declared at the
+    # verb level so the schema advertises it to strict-schema clients.
+    status: str | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -306,6 +312,8 @@ def search(
     # (seed + ANN ring); other views pass through to the handler.
     if view is not None:
         payload["view"] = view
+    if status is not None:
+        payload["status"] = status
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)
