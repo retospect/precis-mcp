@@ -146,7 +146,7 @@ def apply_tag_ops(
     transaction so a downstream constraint violation rolls back
     every part of the call. (Critic MAJOR #1, read-only-kinds side.)
 
-    ``ttl_days`` / ``expires_at`` (migration 0009) stamps an
+    ``ttl_days`` / ``expires_at`` (migration 0010) stamps an
     expiry on the *added* tag rows. Passing ``ttl_days=30`` means
     ``expires_at = now() + 30 days`` resolved at call time. The two
     are mutually exclusive; pass at most one. Re-tagging the same

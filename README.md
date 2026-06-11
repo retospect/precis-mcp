@@ -11,14 +11,16 @@ and searching across papers, documents, personal state, code, and
 cached tool calls. Small-model-friendly (7B-class agents are the design
 target); stores content in PostgreSQL with `pgvector`.
 
-> **Status.** v8.0.0 — ground-up redesign of v1. Twenty-two kinds
-> shipping across ref / tool / discovery categories, seven verbs,
-> plugin surface stable. The discovery layer (persistent
-> per-segment keywords + per-sentence embeddings) and the
-> verifier-workflow `citation` kind landed 2026-05-31; see
-> [`docs/design/storage-v2.md § Discovery layer`](docs/design/storage-v2.md).
-> v5.2.6 on PyPI is the last v1-line release;
-> see [`CHANGELOG.md`](CHANGELOG.md) for the migration path.
+> **Status.** v8.6.0 — see [`CHANGELOG.md`](CHANGELOG.md) for the
+> live story. v5.2.6 on PyPI is the last v1-line release.
+>
+> **README is stale beyond this banner.** The kinds list below
+> covers ~half of what's now shipped; the v8.5+v8.6 additions
+> (`pres` / `cron` / `message`, `ref_tags.expires_at` TTL, conv
+> preamble views, `pg_notify` event bus, embedding-priority for
+> conv) live only in `CHANGELOG.md` + the per-kind skill docs for
+> now. Treat the architecture section + verb table as still
+> correct; treat the ref-kinds list as a non-exhaustive sample.
 
 ## What it does
 

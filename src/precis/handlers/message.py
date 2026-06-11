@@ -1,6 +1,6 @@
 """MessageHandler — proactive outbound messages.
 
-Numeric-id ref kind (migration 0009). Each message ref is one
+Numeric-id ref kind (migration 0010). Each message ref is one
 outbound proactive send. asa_bot calls
 ``put(kind='message', target='discord/G/C/T', text='...')`` to ping
 the user unprompted; the handler stores the ref AND fires

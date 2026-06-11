@@ -8,6 +8,63 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+## v8.6.0
+
+### Added
+
+- **`kind='cron'` — scheduled wakeups** (migration 0010).
+  Numeric-id refs. `put(text='...', target='conv:discord/<g>/<c>/<t>',
+  in_='10 minutes' | when='<iso>' | recurring='daily@09:00')`
+  schedules a payload; the cron-tick CLI scans every 60s on
+  melchior, fires `pg_notify('precis.cron', ...)` for due entries,
+  and advances `next_fire_at` per recurrence + catch_up policy.
+  asa_bot LISTENs and wakes Asa with the payload as a synthetic
+  prompt. `compute_next` caps catch-up at one fire after long
+  downtime. Skill: `precis-cron-help`.
+
+- **`kind='message'` — proactive outbound** (migration 0010).
+  Numeric-id refs. `put(text='...', target='discord/<g>/<c>/<t>',
+  reason='cron:42 fired')` stores the ref AND fires
+  `pg_notify('precis.messages', ...)` in the same transaction.
+  asa_bot LISTENs and delivers. Every send is searchable history.
+  Attachments via `attachments=[{filename, content_type,
+  archive_path}]`. Skill: `precis-message-help`.
+
+- **`ref_tags.expires_at` + tag TTL** (migration 0010). Every
+  `tag(...)` call accepts `ttl_days=N` or
+  `expires_at='<iso>'`. Re-tagging refreshes the TTL via
+  `ON CONFLICT DO UPDATE`. Query-time filter excludes expired
+  rows from search results and `has_tag` probes; expired rows
+  stay in the table for audit. Unlocks the sticky-memory pattern
+  used by asa_bot's preamble builder. See updated
+  `precis-memory-help`.
+
+- **Conv preamble views.** `get(kind='conv', id='<slug>',
+  recent=N)` renders the last N turns verbatim;
+  `digest=N + skip_recent=K` renders a keyword-only digest of
+  mid-range turns (uses `chunks.keywords`; falls back to a text
+  preview when keywords haven't been populated yet).
+  `view='last-meta'` returns the most recent block's meta as a
+  JSON blob. Designed for asa_bot's 4-tier per-turn prompt
+  builder.
+
+- **`precis cron tick` CLI subcommand.** Atomic claim of due
+  cron entries with `FOR UPDATE SKIP LOCKED`, NOTIFYs each, and
+  advances schedules per policy. Deployed via the
+  `precis_cron_tick` ansible role (launchd timer
+  `StartInterval=60`).
+
+### Changed
+
+- **Worker priority for `kind='conv'`.** Both the embed and
+  chunk_keywords workers' claim queries now sort conv blocks
+  ahead of papers. Chat history is hot — asa_bot reads recent
+  turns every preamble build, so the digest tier needs keywords
+  + the search surface needs embeddings ASAP after each turn
+  lands.
+
+## v8.5.0
+
 ### Added
 
 - **`pres` kind — slide decks + unpublished writeups (migration

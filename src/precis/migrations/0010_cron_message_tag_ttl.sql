@@ -1,4 +1,4 @@
--- 0009_cron_message_tag_ttl.sql
+-- 0010_cron_message_tag_ttl.sql
 --
 -- Three additions bundled because they ship as one feature: Asa-on-Claude
 -- as a hosted Discord agent that uses precis for all state.
@@ -95,4 +95,4 @@ CREATE INDEX IF NOT EXISTS ref_tags_expires_at_idx
 
 COMMIT;
 
--- End of 0009_cron_message_tag_ttl.sql
+-- End of 0010_cron_message_tag_ttl.sql

@@ -152,7 +152,7 @@ class TagsMixin:
         v1 invariant that a closed prefix has at most one value per
         target (e.g. exactly one ``STATUS:...`` on a memory).
 
-        ``expires_at`` (ref-level only — migration 0009) sets an optional
+        ``expires_at`` (ref-level only — migration 0010) sets an optional
         TTL on the tag row. ``None`` means no expiry (the prior default).
         Query-time filter (``WHERE expires_at IS NULL OR expires_at >
         now()``) excludes expired tags from search; the row stays for
@@ -304,7 +304,7 @@ class TagsMixin:
         probes pass their prefix directly (e.g. ``has_tag(ref_id,
         'STATUS', 'done')``); open tag probes use ``'OPEN'``.
 
-        Expired tags (``expires_at <= now()`` per migration 0009) do
+        Expired tags (``expires_at <= now()`` per migration 0010) do
         not count as present. The row stays in the table for audit;
         ``has_tag`` is the runtime probe that mirrors what the agent
         actually "sees."

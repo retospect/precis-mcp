@@ -1,6 +1,6 @@
 """CronHandler — scheduled wakeups.
 
-Numeric-id ref kind (migration 0009). Each cron ref is a scheduled
+Numeric-id ref kind (migration 0010). Each cron ref is a scheduled
 prompt: when its ``next_fire_at`` arrives, the cron-tick CLI fires a
 ``pg_notify('precis.cron', ...)`` event that asa_bot (or whichever
 delivery layer is wired) picks up and translates into a synthetic

@@ -118,7 +118,7 @@ def build_tag_filter(
         # Chunk-level: filter refs whose chunks collectively carry
         # all N tags. AND semantics across distinct tags, but the
         # tags don't have to be on the same chunk.
-        # Chunk-level tags don't carry expires_at in v1 (migration 0009
+        # Chunk-level tags don't carry expires_at in v1 (migration 0010
         # added the column only on ref_tags) — no expiry filter needed.
         fragment = (
             f" AND {ref_alias}.ref_id IN ("

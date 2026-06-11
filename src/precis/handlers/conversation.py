@@ -82,7 +82,7 @@ class ConversationHandler(Handler):
           - ``id='<slug>/transcript'`` → full chronological body
           - ``id='<slug>~N'`` → single turn at position N
 
-        asa_bot preamble-builder kwargs (migration 0009-era):
+        asa_bot preamble-builder kwargs (migration 0010-era):
           - ``recent=N`` → render last N turns verbatim with their
             block metadata. Used to inline hot recent context into
             Asa's per-turn prompt.
