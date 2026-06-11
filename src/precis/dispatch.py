@@ -601,6 +601,7 @@ def boot(
         from precis.handlers.gripe import GripeHandler
         from precis.handlers.job import JobHandler
         from precis.handlers.memory import MemoryHandler
+        from precis.handlers.message import MessageHandler
         from precis.handlers.oracle import OracleHandler
         from precis.handlers.paper import PaperHandler
         from precis.handlers.presentation import PresentationHandler
@@ -621,6 +622,7 @@ def boot(
         _gated(FindingHandler)
         _gated(ConversationHandler)
         _gated(CronHandler)
+        _gated(MessageHandler)
         _gated(PresentationHandler)
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the

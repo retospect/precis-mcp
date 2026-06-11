@@ -70,8 +70,33 @@ class ConversationHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        recent: int | None = None,
+        digest: int | None = None,
+        skip_recent: int | None = None,
         **_kw: Any,
     ) -> Response:
+        """Read a conv ref.
+
+        Standard views:
+          - bare ``get(kind='conv', id='<slug>')`` → overview
+          - ``id='<slug>/transcript'`` → full chronological body
+          - ``id='<slug>~N'`` → single turn at position N
+
+        asa_bot preamble-builder kwargs (migration 0009-era):
+          - ``recent=N`` → render last N turns verbatim with their
+            block metadata. Used to inline hot recent context into
+            Asa's per-turn prompt.
+          - ``digest=N`` + optional ``skip_recent=K`` → render a
+            keyword-only digest of turns ``[len-N-K, len-K)`` so
+            asa_bot can show mid-range context cheaply. Falls back
+            to a text-preview when ``chunks.keywords`` isn't yet
+            populated (the chunk_keywords worker lags behind the
+            ingest for ~seconds).
+          - ``view='last-meta'`` → return JSON-ish render of the
+            most recent assistant block's meta. Used to surface
+            the previous turn's stop_reason / token counts /
+            anomalies.
+        """
         if id is None or (isinstance(id, str) and id.startswith("/")):
             return self._render_list()
 
@@ -79,6 +104,18 @@ class ConversationHandler(Handler):
         ref = resolve_live_slug_ref(self.store, kind="conv", id=slug)
 
         effective_view = path_view or view
+
+        # asa_bot preamble views are dispatched by kwarg, not by
+        # path_view, so they cooperate with bare slug ids.
+        if recent is not None:
+            return self._render_recent(slug, ref, n=int(recent))
+        if digest is not None:
+            return self._render_digest(
+                slug, ref, n=int(digest), skip_recent=int(skip_recent or 0)
+            )
+        if effective_view == "last-meta":
+            return self._render_last_meta(slug, ref)
+
         if chunk is not None:
             return self._render_turn(slug, ref.id, chunk)
         if effective_view == "transcript":
@@ -86,7 +123,10 @@ class ConversationHandler(Handler):
         if effective_view is not None:
             raise Unsupported(
                 f"unknown conv view {effective_view!r}",
-                next="see precis-conv-help - try '/transcript' or '~N'",
+                next=[
+                    "try '/transcript', '~N', or view='last-meta'",
+                    "get(kind='skill', id='precis-conv-help') for the full surface",
+                ],
             )
         # Default: overview.
         return self._render_overview(slug, ref)
@@ -438,6 +478,131 @@ class ConversationHandler(Handler):
             )
         b = blocks[0]
         return Response(body=f"# {slug}~{pos}\n{b.text}")
+
+    # ── asa_bot preamble views ──────────────────────────────────────
+
+    def _render_recent(self, slug: str, ref: Any, *, n: int) -> Response:
+        """Render the last ``n`` turns verbatim with author + msg_id.
+
+        asa_bot's hot-tier renderer. Each block is rendered as:
+
+            ## ~K [author]
+            <body>
+
+        followed by a one-line metadata trailer (msg_id, ts) if present.
+        """
+        if n <= 0:
+            return Response(body=f"{slug}: no turns inlined (recent=0)")
+        all_blocks = self.store.list_blocks_for_ref(ref.id)
+        if not all_blocks:
+            return Response(body=f"{slug}: no turns")
+        tail = all_blocks[-n:]
+        lines = [f"# {slug} - recent {len(tail)} turn(s)", f"_{ref.title}_", ""]
+        for b in tail:
+            meta = b.meta or {}
+            author = meta.get("author") or "?"
+            lines.append(f"## ~{b.pos} [{author}]")
+            lines.append(b.text)
+            trailer_bits = []
+            msg_id = meta.get("msg_id")
+            if msg_id:
+                trailer_bits.append(f"msg_id={msg_id}")
+            ts = meta.get("ts")
+            if ts:
+                trailer_bits.append(f"ts={ts}")
+            if trailer_bits:
+                lines.append(f"_({'; '.join(trailer_bits)})_")
+            lines.append("")
+        return Response(body="\n".join(lines).rstrip())
+
+    def _render_digest(
+        self,
+        slug: str,
+        ref: Any,
+        *,
+        n: int,
+        skip_recent: int = 0,
+    ) -> Response:
+        """Render a keyword digest of ``n`` mid-range turns.
+
+        ``skip_recent=K`` excludes the last K turns (so the digest
+        complements ``recent=K`` without overlap).
+
+        Each turn renders as:
+
+            ~K [author]: "<comma-separated keywords>"
+
+        Falls back to a short text preview when ``chunks.keywords``
+        is null — the chunk_keywords worker has a brief lag behind
+        ingest, so the boundary turn may not yet have keywords.
+        Eventually consistent; no rows missing.
+        """
+        if n <= 0:
+            return Response(body=f"{slug}: digest empty (digest=0)")
+        all_blocks = self.store.list_blocks_for_ref(ref.id)
+        if not all_blocks:
+            return Response(body=f"{slug}: no turns")
+        # Window: drop the trailing skip_recent, then take the last n
+        # of what remains. Yields [len-n-skip, len-skip).
+        upper = len(all_blocks) - skip_recent
+        if upper <= 0:
+            return Response(body=f"{slug}: digest empty (all turns are recent)")
+        lower = max(0, upper - n)
+        window = all_blocks[lower:upper]
+        if not window:
+            return Response(body=f"{slug}: digest empty")
+        lines = [
+            f"# {slug} - digest of turns ~{window[0].pos}..~{window[-1].pos}",
+            f"_{ref.title}_",
+            "",
+        ]
+        for b in window:
+            meta = b.meta or {}
+            author = meta.get("author") or "?"
+            kws = b.keywords or []
+            if kws:
+                kw_str = ", ".join(kws[:8])
+                lines.append(f"~{b.pos} [{author}]: \"{kw_str}\"")
+            else:
+                # Worker hasn't populated keywords yet — show a short
+                # text preview so the renderer doesn't silently elide
+                # the turn.
+                preview = b.text[:80].replace("\n", " ")
+                if len(b.text) > 80:
+                    preview += "…"
+                lines.append(f"~{b.pos} [{author}]: \"{preview}\"  (keywords pending)")
+        return Response(body="\n".join(lines))
+
+    def _render_last_meta(self, slug: str, ref: Any) -> Response:
+        """Render the most-recent block's meta JSON.
+
+        asa_bot calls this to get the last assistant turn's
+        ``stop_reason`` / token counts / anomaly flags, which it
+        renders as the conditional "Last turn" preamble line.
+
+        Returns a small JSON blob in the body (the runtime renderer
+        just emits it as code-block markdown so asa_bot can parse
+        without ambiguity).
+        """
+        all_blocks = self.store.list_blocks_for_ref(ref.id)
+        if not all_blocks:
+            return Response(body=f"{slug}: no turns yet")
+        last = all_blocks[-1]
+        meta = last.meta or {}
+        import json
+        payload = {
+            "pos": last.pos,
+            "author": meta.get("author"),
+            "msg_id": meta.get("msg_id"),
+            "stop_reason": meta.get("stop_reason"),
+            "input_tokens": meta.get("input_tokens"),
+            "output_tokens": meta.get("output_tokens"),
+            "cache_read_tokens": meta.get("cache_read_tokens"),
+            "cache_creation_tokens": meta.get("cache_creation_tokens"),
+            "duration_ms": meta.get("duration_ms"),
+            "ts": meta.get("ts"),
+        }
+        return Response(body="```json\n" + json.dumps(payload, indent=2) + "\n```")
 
 
 def _parse_conv_id(raw: str) -> tuple[str, int | None, str | None]:

@@ -48,6 +48,8 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `gripe` | `9` (int) | Annoyance / niggle | store |
 | `fc` | `204` (int) | Flashcard (SM-2 spaced rep) | store |
 | `citation` | `18` (int) | Verified claim → source quote | store |
+| `cron` | `42` (int) | Scheduled wakeup / reminder | store |
+| `message` | `11` (int) | Proactive outbound (Discord post) | store |
 
 Rows with an env var in *Needs* are only active when that var is set.
 For the live list use `get(kind='skill', id='precis-help')`.

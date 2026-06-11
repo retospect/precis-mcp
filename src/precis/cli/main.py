@@ -25,6 +25,7 @@ import sys
 
 from precis.cli import (
     add,
+    cron,
     dedupe,
     gripe,
     ingest,
@@ -129,6 +130,10 @@ def main() -> None:
         repl.run(args)
         return
 
+    if args.cmd == "cron":
+        cron.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -166,6 +171,7 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_parser(sub)
     tools.add_parser(sub)
     repl.add_parser(sub)
+    cron.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)

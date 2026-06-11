@@ -1043,12 +1043,21 @@ class PrecisRuntime:
         fusion via ``merge_and_render(mode='rrf')``.
         """
         q = args.get("q")
+        tags_in = args.get("tags")
+        # Tags-only cross-kind path (R2#9 — finding "every throwaway
+        # across kinds" used to force 4 single-kind calls). The lexical
+        # leg doesn't need an embedder, so we can answer this in one
+        # store query — list_refs accepts a kind=None tag filter and
+        # returns a kind-mixed result set the renderer trivially flattens.
         if q is None or not (isinstance(q, str) and q.strip()):
+            if tags_in:
+                return self._dispatch_cross_kind_tags_only(kind, args)
             raise BadInput(
-                "cross-kind search requires q=",
+                "cross-kind search requires q= or tags=",
                 next=(
                     f"search(kind={kind!r}, q='your query') - cross-kind merge "
-                    "fans out via search_hits, which needs a non-empty query"
+                    "fans out via search_hits, which needs a non-empty query; "
+                    f"or search(kind={kind!r}, tags=['<tag>']) for a tags-only sweep"
                 ),
             )
         top_k = int(args.get("top_k") or 10)
@@ -1185,6 +1194,57 @@ class PrecisRuntime:
                 response = Response(body="\n".join(lines), cost=response.cost)
 
         return response
+
+    def _dispatch_cross_kind_tags_only(
+        self, kind: Any, args: dict[str, Any]
+    ) -> Response:
+        """Tags-only fan-out — one store query, no embedder needed.
+
+        Use case: "find every ref tagged ``topic:exercise-mcp-throwaway``
+        across all the kinds I created throwaways on" — previously
+        forced four single-kind calls. Now a single
+        ``search(tags=['<tag>'])`` (kind omitted) returns the kind-mixed
+        set in one call. Restricted to live numeric-ref kinds (memory,
+        todo, gripe, fc, conv, finding, job, pres) — the slug-ref and
+        cache-backed kinds don't share the same tag-indexing path.
+        """
+        store = self.hub.store
+        if store is None:
+            raise Unsupported(
+                "tags-only cross-kind search needs a store-backed deployment"
+            )
+        tags = args.get("tags") or []
+        # ``Tag.normalize_filter(kind=None)`` validates each tag against
+        # the registered vocabulary (typo-rejection on closed axes) and
+        # returns canonical string form so the store filter matches by
+        # string equality. Mirrors the validation in the q= path above.
+        normalized = Tag.normalize_filter(tags, kind=None)
+        page_size = max(1, int(args.get("page_size") or 10))
+
+        allowed_kinds = set(self._resolve_cross_kind_request(kind))
+        # Pull enough to cover the requested page after the kind filter.
+        # 5x oversample is generous — the store's tag filter is fast and
+        # the typical "find my throwaways" call returns < 20 rows.
+        raw = store.list_refs(
+            kind=None,
+            tags=normalized,
+            limit=page_size * 5,
+        )
+        refs = [r for r in raw if r.kind in allowed_kinds][:page_size]
+
+        if not refs:
+            body = f"no refs match tags={normalized!r} across {sorted(allowed_kinds)}"
+        else:
+            head = (
+                f"# {len(refs)} ref{'s' if len(refs) != 1 else ''} "
+                f"tagged {normalized!r} (kind-mixed, by recency)"
+            )
+            lines = [head]
+            for r in refs:
+                title = r.title or r.slug or f"#{r.id}"
+                lines.append(f"{r.kind}:{r.id}  {title}")
+            body = "\n".join(lines)
+        return Response(body=body)
 
     def _cross_kind_invoke_search_hits(
         self,

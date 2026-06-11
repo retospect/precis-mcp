@@ -140,6 +140,39 @@ tag(kind='memory', id=73,
 Levels: `confidence-tentative` → `confidence-moderate` →
 `confidence-strong` → `confidence-certain`.
 
+## Sticky memories — show up every turn until they decay
+
+Some memories matter so much you want them in front of you on every
+turn until they don't. Tag them sticky:
+
+```python
+# Pin to this thread for 30 days (the default TTL)
+tag(kind='memory', id=42, add=['sticky:thread'])
+
+# Pin globally — visible in every conv — for 90 days (default)
+tag(kind='memory', id=42, add=['sticky:global'])
+
+# Pin for a specific TTL — re-tag bumps it back to that window
+tag(kind='memory', id=42, add=['sticky:thread'], ttl_days=7)
+tag(kind='memory', id=42, add=['sticky:global'], ttl_days=180)
+
+# Refresh — re-tagging resets the expiry to a fresh window
+tag(kind='memory', id=42, add=['sticky:thread'])    # TTL → 30d again
+
+# Actively unpin (before expiry)
+tag(kind='memory', id=42, remove=['sticky:thread'])
+```
+
+**Memory survives forever.** The sticky tag is a view-state — when
+it expires (or you remove it), the memory itself stays in the
+corpus and remains searchable; only the per-turn preamble injection
+stops. asa_bot's preamble shows a `[expires in Nd]` warning when a
+sticky tag is within 3 days of decay, so you can decide whether to
+refresh or let it go.
+
+Use sparingly — every sticky memory eats prompt budget every turn.
+~5 thread-scoped + ~5 global is the soft cap.
+
 ## Tag axes available on memory
 
 Closed UPPERCASE axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are
