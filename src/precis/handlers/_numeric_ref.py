@@ -364,6 +364,7 @@ class NumericRefHandler(Handler):
         link: str | None = None,
         unlink: str | None = None,
         rel: str | None = None,
+        auto_refresh_days: int | None = None,
         **_kw: Any,
     ) -> Response:
         """Create a new numeric ref.
@@ -448,7 +449,13 @@ class NumericRefHandler(Handler):
                     f"get(kind='skill', id='precis-{self.kind}-help')"
                 ),
             )
-        return self._create(text=text, tags=tags, link=link, rel=rel)
+        return self._create(
+            text=text,
+            tags=tags,
+            link=link,
+            rel=rel,
+            auto_refresh_days=auto_refresh_days,
+        )
 
     # ── seven-verb surface (delegates to the same private helpers) ─
 
@@ -610,6 +617,7 @@ class NumericRefHandler(Handler):
         tags: list[str] | None,
         link: str | None,
         rel: str | None = None,
+        auto_refresh_days: int | None = None,
     ) -> Response:
         if text is None or not text.strip():
             raise BadInput(
@@ -645,6 +653,7 @@ class NumericRefHandler(Handler):
                 slug=None,
                 title=text,
                 meta={},
+                auto_refresh_days=auto_refresh_days,
                 conn=conn,
             )
             for tag in parsed_tags:

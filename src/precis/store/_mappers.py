@@ -256,7 +256,8 @@ _REFS_COLS = (
     "human_verified_at, human_verified_by, human_verified_note, "
     "retraction_status, retracted_at, retraction_reason, "
     "retraction_url, retraction_checked_at, "
-    "pdf_sha256, pdf_pages::text AS pdf_pages, pdf_role"
+    "pdf_sha256, pdf_pages::text AS pdf_pages, pdf_role, "
+    "auto_refresh_days, refreshed_at"
 )
 _REFS_COLS_ALIASED = (
     "r.ref_id AS id, "
@@ -268,7 +269,8 @@ _REFS_COLS_ALIASED = (
     "r.human_verified_at, r.human_verified_by, r.human_verified_note, "
     "r.retraction_status, r.retracted_at, r.retraction_reason, "
     "r.retraction_url, r.retraction_checked_at, "
-    "r.pdf_sha256, r.pdf_pages::text AS pdf_pages, r.pdf_role"
+    "r.pdf_sha256, r.pdf_pages::text AS pdf_pages, r.pdf_role, "
+    "r.auto_refresh_days, r.refreshed_at"
 )
 
 
@@ -328,6 +330,8 @@ def _row_to_ref(row: tuple) -> Ref:
         pdf_sha256=row[20],
         pdf_pages=row[21],
         pdf_role=row[22],
+        auto_refresh_days=row[23],
+        refreshed_at=row[24],
     )
 
 

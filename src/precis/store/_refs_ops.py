@@ -99,6 +99,7 @@ class RefsMixin:
         meta: dict[str, Any] | None = None,
         authors: list[dict[str, Any]] | None = None,
         year: int | None = None,
+        auto_refresh_days: int | None = None,
         conn: Connection | None = None,
     ) -> Ref:
         """Insert a ref. Slug rules:
@@ -124,19 +125,42 @@ class RefsMixin:
         """
         self._validate_slug_for_kind(kind, slug, conn=conn)
 
-        insert_sql = (
-            "INSERT INTO refs (kind, title, authors, year, provider, meta) "
-            "VALUES (%s, %s, %s, %s, %s, %s) "
-            "RETURNING ref_id"
-        )
-        insert_params: tuple[Any, ...] = (
-            kind,
-            title,
-            Jsonb(authors) if authors is not None else None,
-            year,
-            provider,
-            Jsonb(meta or {}),
-        )
+        # ``auto_refresh_days`` (migration 0011) opts the ref into
+        # Model A relevance decay: weight slides from 1.0 → 0 over
+        # the next N days unless refreshed via ``touch``. NULL =
+        # permanent (default). Initial ``refreshed_at = now()`` so
+        # the decay clock starts immediately.
+        if auto_refresh_days is not None:
+            insert_sql = (
+                "INSERT INTO refs "
+                "(kind, title, authors, year, provider, meta, "
+                " auto_refresh_days, refreshed_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, now()) "
+                "RETURNING ref_id"
+            )
+            insert_params: tuple[Any, ...] = (
+                kind,
+                title,
+                Jsonb(authors) if authors is not None else None,
+                year,
+                provider,
+                Jsonb(meta or {}),
+                auto_refresh_days,
+            )
+        else:
+            insert_sql = (
+                "INSERT INTO refs (kind, title, authors, year, provider, meta) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "RETURNING ref_id"
+            )
+            insert_params = (
+                kind,
+                title,
+                Jsonb(authors) if authors is not None else None,
+                year,
+                provider,
+                Jsonb(meta or {}),
+            )
 
         def _do(c: Connection) -> Ref:
             row = c.execute(insert_sql, insert_params).fetchone()
@@ -694,6 +718,48 @@ class RefsMixin:
         else:
             with self.pool.connection() as c:
                 rowcount = c.execute(sql, (ref_id,)).rowcount
+        if rowcount == 0:
+            raise NotFound(f"ref id={ref_id} not found (or already deleted)")
+
+    def touch_ref(
+        self,
+        ref_id: int,
+        *,
+        auto_refresh_days: int | None = None,
+        conn: Connection | None = None,
+    ) -> None:
+        """Mark a ref as freshly relevant (migration 0011 / Model A).
+
+        Bumps ``refreshed_at = now()`` so the decay weight returns to
+        1.0 for the configured ``auto_refresh_days`` window. When
+        ``auto_refresh_days`` is also passed, the ref's window is
+        updated alongside — so ``touch(ref, auto_refresh_days=90)``
+        both refreshes and extends.
+
+        Raises :class:`NotFound` if the ref is missing or soft-deleted.
+        Calling ``touch`` on a ref that has ``auto_refresh_days IS NULL``
+        and you don't pass the kwarg leaves the ref durable and just
+        bumps ``refreshed_at`` (harmless; effectively a no-op for
+        ranking since durable refs ignore the timestamp).
+        """
+        if auto_refresh_days is not None:
+            sql = (
+                "UPDATE refs SET refreshed_at = now(), "
+                "auto_refresh_days = %s, updated_at = now() "
+                "WHERE ref_id = %s AND deleted_at IS NULL"
+            )
+            params: tuple[Any, ...] = (auto_refresh_days, ref_id)
+        else:
+            sql = (
+                "UPDATE refs SET refreshed_at = now(), updated_at = now() "
+                "WHERE ref_id = %s AND deleted_at IS NULL"
+            )
+            params = (ref_id,)
+        if conn is not None:
+            rowcount = conn.execute(sql, params).rowcount
+        else:
+            with self.pool.connection() as c:
+                rowcount = c.execute(sql, params).rowcount
         if rowcount == 0:
             raise NotFound(f"ref id={ref_id} not found (or already deleted)")
 

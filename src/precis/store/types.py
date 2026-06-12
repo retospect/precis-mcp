@@ -146,6 +146,12 @@ class Ref:
     pdf_sha256: str | None = None
     pdf_pages: str | None = None  # PG int4range as text
     pdf_role: str | None = None
+    # Migration 0011 / Model A relevance decay. NULL on auto_refresh_days
+    # means the ref is permanent (default). When set, the ref's weight
+    # piecewise-decays over an N-day window from refreshed_at; touchable
+    # via store.touch_ref().
+    auto_refresh_days: int | None = None
+    refreshed_at: datetime | None = None
 
     @property
     def public_id(self) -> str:
