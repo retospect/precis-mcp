@@ -1446,7 +1446,17 @@ class PrecisRuntime:
 
         live_kinds = set(self.hub.kinds) if self.hub is not None else set()
         if isinstance(kind, str) and kind in live_kinds:
-            hint = f"get(kind='skill', id='precis-{kind}-help')"
+            # ``kind='skill'`` has no ``precis-skill-help`` — skills ARE
+            # the help system, so the auto-generated breadcrumb points at
+            # an id the caller just failed to fetch (broad-pass R3#3:
+            # the NotFound for a bad skill slug ended with a self-
+            # referential ``next: get(kind='skill', id='precis-skill-help')``).
+            # Route to the live catalogue instead so the recovery hint
+            # is always runnable.
+            if kind == "skill":
+                hint = "get(kind='skill', id='toc')"
+            else:
+                hint = f"get(kind='skill', id='precis-{kind}-help')"
         elif verb in {"get", "search", "put", "edit", "delete", "tag", "link"}:
             hint = f"get(kind='skill', id='precis-{verb}-help')"
         else:

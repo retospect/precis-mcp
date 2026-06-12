@@ -139,9 +139,9 @@ edit(kind='markdown', id='notes/meeting.md~L42-58',
 # Delete a region.
 delete(kind='markdown', id='notes/meeting.md~note-on-reagents')
 
-# Whole-file delete — gated behind exact-slug confirm string.
-delete(kind='markdown', id='notes--meeting',
-       confirm='delete-file-notes--meeting')
+# Whole-file delete via edit (the delete verb only handles regions
+# with a selector in id=). Clear the file in one call:
+edit(kind='markdown', id='notes/meeting.md', mode='replace', text='')
 ```
 
 A block is one paragraph, one heading, one fenced code, one table, or

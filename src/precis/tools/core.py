@@ -524,9 +524,10 @@ def tag(
     `[error:BadInput] axis not allowed on kind 'K'`.
 
     Per-kind closed-prefix gating (summary):
-    todo/gripe: STATUS+PRIO. memory/fc/conv: none.
+    todo/gripe: STATUS+PRIO. finding/job: STATUS (lifecycle subsets).
+    memory: DREAM (dreaming-worker provenance). fc/conv: none.
     paper/patent: SRC+CACHE. web/research/think/websearch/youtube:
-    CACHE only. oracle/skill: none. python/calc/math: tag unsupported.
+    CACHE+WATCH. oracle/skill: none. python/calc/math: tag unsupported.
 
     Full reference: get(kind='skill', id='precis-tag-help'), or
     search(kind='skill', q='classifying refs') for a topical lookup.

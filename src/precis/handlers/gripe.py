@@ -141,6 +141,14 @@ class GripeHandler(NumericRefHandler):
         tags: list[str] | None,
         link: str | None,
         rel: str | None = None,
+        # ``auto_refresh_days`` is propagated by NumericRefHandler.put
+        # for cache-backed kinds (Model A relevance decay, migration
+        # 0011). Gripe has no refresh policy, but accepting the kwarg
+        # here keeps the override in lock-step with the base class so
+        # any ``put(kind='gripe', ...)`` call doesn't raise TypeError.
+        # (Broad-pass R3#14.)
+        auto_refresh_days: int | None = None,
+        **_kw: Any,
     ) -> Response:
         # Mirror NumericRefHandler._create but add the body-chunk
         # write in the same transaction so the gripe + its body

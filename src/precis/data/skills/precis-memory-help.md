@@ -175,8 +175,11 @@ Use sparingly — every sticky memory eats prompt budget every turn.
 
 ## Tag axes available on memory
 
-Closed UPPERCASE axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are
-**rejected** on memory. Express the same intent with open tags:
+The only closed UPPERCASE axis accepted on memory is `DREAM:`
+(`consolidated` / `speculative` / `acquire`) — written by the
+dreaming worker, not by agent code. Every other closed axis
+(`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`, `WATCH:`) is rejected.
+Express the same intent with open tags:
 
 | Want | Use |
 |---|---|
@@ -187,7 +190,7 @@ Closed UPPERCASE axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are
 | Project | `project:<slug>` |
 | Boolean | `pinned`, `star`, `private`, `draft` |
 
-See `precis-tags` for the full axis vocabulary.
+See `precis-tags` for the full axis vocabulary and per-kind matrix.
 
 ## See also
 
