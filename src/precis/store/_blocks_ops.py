@@ -47,7 +47,9 @@ from psycopg_pool import ConnectionPool
 from precis.errors import BadInput
 from precis.store._mappers import (
     _CHUNKS_COLS,
+    _CHUNKS_COLS_LEN,
     _REFS_COLS_ALIASED,
+    _REFS_COLS_LEN,
     _block_noise_clauses,
     _row_to_block,
     _row_to_ref,
@@ -66,6 +68,31 @@ from precis.utils.angle import angle_anchors
 # (cards at ord<0, figures, equations) bypass insert_blocks and use
 # precis.ingest.db_writer directly.
 _DEFAULT_CHUNK_KIND = "paragraph"
+
+
+# Named slice positions for the ``SELECT chunk_cols, ref_cols, score``
+# projection used by every search method below. Derived from the
+# canonical column-count constants in ``_mappers`` so adding a
+# column to either projection list updates every search method
+# automatically — no more "I bumped REFS_COLS and forgot to rejig
+# the slices" foot-guns (one such bug shipped in 8.7.0).
+_BLOCK_END = _CHUNKS_COLS_LEN
+_REF_END = _BLOCK_END + _REFS_COLS_LEN
+_SCORE_IDX = _REF_END
+
+
+def _unpack_search_row(row: tuple) -> tuple[Block, Ref, float]:
+    """Decompose a ``(chunk_cols, ref_cols, score)`` row into typed parts.
+
+    Companion to the search projections above. Variants that need
+    to transform the score (e.g. distance→similarity) should index
+    by the named constants directly rather than copy this body.
+    """
+    return (
+        _row_to_block(row[:_BLOCK_END]),
+        _row_to_ref(row[_BLOCK_END:_REF_END]),
+        float(row[_SCORE_IDX]),
+    )
 
 
 class BlocksMixin:
@@ -97,14 +124,24 @@ class BlocksMixin:
     # -- search (Phase 3 — v2 chunks/chunk_embeddings) ---------------------
     #
     # SELECT projection across all four search methods is:
-    #   row[0:11]  — chunk columns (matches _row_to_block; embedding
-    #                column projected as NULL::vector, density via
-    #                correlated subquery on chunk_tags)
-    #   row[11:34] — ref columns from _REFS_COLS_ALIASED (23 cols incl.
-    #                ref_id-aliased-to-id, slug-via-ref_identifiers,
-    #                and the v2-new authors/year/retraction_*/pdf_*)
-    #   row[34]    — score (ts_rank for lexical, cosine distance for
-    #                semantic, RRF sum for fused)
+    #
+    #   row[:_BLOCK_END]          — chunk columns (matches _row_to_block;
+    #                               embedding column projected as
+    #                               NULL::vector or ce.vector, density
+    #                               via correlated subquery on chunk_tags)
+    #   row[_BLOCK_END:_REF_END]  — ref columns from _REFS_COLS_ALIASED
+    #                               (ref_id-aliased-to-id, slug via
+    #                               ref_identifiers, plus the v2-new
+    #                               authors/year/retraction_*/pdf_* and
+    #                               the Model A decay window)
+    #   row[_SCORE_IDX]           — score (ts_rank for lexical, cosine
+    #                               distance for semantic, RRF sum for
+    #                               fused)
+    #
+    # Use :func:`_unpack_search_row` for the common shape; for variants
+    # (e.g. distance→similarity inversion) index by the named constants
+    # directly. Never hard-code the integers — adding a column to
+    # ``_REFS_COLS_ALIASED`` should be a one-line change in _mappers.
     #
     # ord >= 0 excludes synthetic card chunks (cards are ref-level
     # introducers; agents searching for content don't want them in
@@ -234,7 +271,7 @@ class BlocksMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [
-            (_row_to_block(r[:14]), _row_to_ref(r[14:37]), float(r[37])) for r in rows
+            _unpack_search_row(r) for r in rows
         ]
 
     def search_blocks_semantic(
@@ -314,7 +351,7 @@ class BlocksMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [
-            (_row_to_block(r[:14]), _row_to_ref(r[14:37]), float(r[37])) for r in rows
+            _unpack_search_row(r) for r in rows
         ]
 
     def search_blocks_fused(
@@ -471,7 +508,7 @@ class BlocksMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, full_params).fetchall()
         return [
-            (_row_to_block(r[:14]), _row_to_ref(r[14:37]), float(r[37])) for r in rows
+            _unpack_search_row(r) for r in rows
         ]
 
     # -- CRUD (Phase 2 — v2 chunks table) ----------------------------------
@@ -782,7 +819,11 @@ class BlocksMixin:
                 sql, (seed_vec, embedder, list(kinds), seed_vec, n)
             ).fetchall()
         region = [
-            (_row_to_block(r[:14]), _row_to_ref(r[14:37]), 1.0 - float(r[37]))
+            (
+                _row_to_block(r[:_BLOCK_END]),
+                _row_to_ref(r[_BLOCK_END:_REF_END]),
+                1.0 - float(r[_SCORE_IDX]),
+            )
             for r in rows
         ]
         return seed_id, region
@@ -915,7 +956,7 @@ class BlocksMixin:
         row = conn.execute(sql, params).fetchone()
         if row is None:
             return None
-        return _row_to_block(row[:14]), _row_to_ref(row[14:37]), float(row[37])
+        return _unpack_search_row(row)
 
     def get_block(
         self,
@@ -1002,7 +1043,7 @@ class BlocksMixin:
             row = conn.execute(sql, (embedder,)).fetchone()
         if row is None:
             return None
-        return _row_to_block(row[:14]), _row_to_ref(row[14:])
+        return _row_to_block(row[:_BLOCK_END]), _row_to_ref(row[_BLOCK_END:])
 
     def update_block_density(self, block_id: int, density: Density) -> None:
         """Set the density bucket (sparse/medium/dense) on a chunk.

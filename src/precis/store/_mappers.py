@@ -272,6 +272,11 @@ _REFS_COLS_ALIASED = (
     "r.pdf_sha256, r.pdf_pages::text AS pdf_pages, r.pdf_role, "
     "r.auto_refresh_days, r.refreshed_at"
 )
+#: Column count produced by ``_REFS_COLS`` / ``_REFS_COLS_ALIASED``.
+#: Joined-projection slicers (chunks ⋈ refs in ``_blocks_ops``)
+#: reference this so adding a column to the projection list above
+#: doesn't silently drift the downstream row layout.
+_REFS_COLS_LEN = 25
 
 
 def _row_to_ref(row: tuple) -> Ref:

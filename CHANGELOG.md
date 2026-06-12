@@ -8,6 +8,31 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+## v8.7.1
+
+### Fixed
+
+- **Chunk-based search silently returned empty after the v8.7.0
+  Model A migration.** Five row-slice positions in
+  `src/precis/store/_blocks_ops.py` (lexical, semantic, fused,
+  semantic-region, single-row fetch) were hardcoded as `r[14:37]`
+  / `r[37]`. Migration 0011 added two columns
+  (`auto_refresh_days`, `refreshed_at`) to `_REFS_COLS_ALIASED`,
+  shifting the score from index 37 to 39, but the slicers weren't
+  updated. `_row_to_ref` then IndexError'd on every row, the
+  search handler swallowed it, and `precis search(kind='paper',
+  q='…')` came back empty across the entire library. Memory
+  tag-search was unaffected (refs-only path, never touches
+  `_blocks_ops`). Symptom in the wild: asa's librarian reported
+  "zero indexed coverage on MOFs/DFT/CO₂ capture" — a
+  ~2500-paper library claiming nothing on a topic with hundreds
+  of hits.
+- Slice positions are now derived from named constants
+  (`_BLOCK_END`, `_REF_END`, `_SCORE_IDX`) wired to
+  `_CHUNKS_COLS_LEN` and the new `_REFS_COLS_LEN` in
+  `_mappers.py`. Adding a column to either projection list now
+  updates every search method automatically.
+
 ## v8.6.2
 
 ### Changed
