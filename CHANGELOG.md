@@ -38,6 +38,22 @@ No migration needed: `refs.pdf_sha256` is kind-agnostic, the
 `0008_pres_kind.sql`, and `probe_existing` queries
 `ref_identifiers` without filtering on kind.
 
+## v8.7.4
+
+### Added
+
+- **`precis-inner-life-help` skill.** Documents the tag protocol on
+  `kind='memory'` that the asa-bot preamble uses to render its
+  `## Inner life` section: `internal-state` (rolling self-doc),
+  `internal-thought` (decaying fragments), `DREAM:speculative`
+  (dream worker output), `user:asa` (identity anchor),
+  `interest:<topic>` and `changed-mind:<topic>`. Covers capture,
+  in-place edit vs. fresh write, retrieval beyond preamble caps,
+  reinforcement via re-tag, dream promotion, and bulk decay
+  introspection — the mechanics the renderer hints at but doesn't
+  spell out. Surfaced via `PRECIS_STARTUP_SKILLS` on melchior so
+  asa sees the path on every cold-start.
+
 ## v8.7.3
 
 ### Fixed
