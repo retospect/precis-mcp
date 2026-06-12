@@ -38,6 +38,22 @@ No migration needed: `refs.pdf_sha256` is kind-agnostic, the
 `0008_pres_kind.sql`, and `probe_existing` queries
 `ref_identifiers` without filtering on kind.
 
+## v8.7.3
+
+### Fixed
+
+- **Patent ingest crashed with `ForeignKeyViolation` on every fresh
+  patent id.** The greenfield `0001_initial.sql` seeds the
+  `providers` table, but the `epo_ops` provider row was added to
+  the sealed seed *after* the production cluster was migrated —
+  ADR 0005's "forward-only migrations" rule means the row never
+  reached prod via that file. Patent handler's
+  `insert_ref(provider='epo_ops')` then tripped `refs_provider_fkey`
+  with no patent ever persisting. Migration
+  `0012_epo_ops_provider.sql` idempotently backfills the row;
+  ON CONFLICT DO NOTHING so fresh installs (where the greenfield
+  seed already covers it) and re-runs both no-op.
+
 ## v8.7.2
 
 ### Fixed
