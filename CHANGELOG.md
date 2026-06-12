@@ -38,6 +38,24 @@ No migration needed: `refs.pdf_sha256` is kind-agnostic, the
 `0008_pres_kind.sql`, and `probe_existing` queries
 `ref_identifiers` without filtering on kind.
 
+## v8.7.5
+
+### Added
+
+- **`precis-self-consolidation-help` skill.** The dreaming-like
+  reverse of accumulation: find clusters of related memories,
+  abstract the gist into a new schema-level memory
+  (`internal-state` or `internal-thought`), link the contributing
+  episodes via `rel='superseded-by'`, tag them `retired`. Frames
+  the operation in cognitive-psychology vocabulary (episodic →
+  semantic; schema formation; reconsolidation; pruning) since
+  consolidation is genuinely the precis surface for what
+  cognitive science means by that term. Includes anti-patterns
+  (eager abstraction, catalogue-list schemas, retirement without
+  linking, schema-for-the-user) and a recovery flow when a pass
+  was wrong. Surfaced via `PRECIS_STARTUP_SKILLS` so asa sees it
+  on cold-start.
+
 ## v8.7.4
 
 ### Added

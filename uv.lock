@@ -2223,7 +2223,7 @@ wheels = [
 
 [[package]]
 name = "precis-mcp"
-version = "8.7.4"
+version = "8.7.5"
 source = { editable = "." }
 dependencies = [
     { name = "ftfy" },
