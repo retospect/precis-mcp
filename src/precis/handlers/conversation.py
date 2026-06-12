@@ -497,21 +497,20 @@ class ConversationHandler(Handler):
         if not all_blocks:
             return Response(body=f"{slug}: no turns")
         tail = all_blocks[-n:]
-        lines = [f"# {slug} - recent {len(tail)} turn(s)", f"_{ref.title}_", ""]
+        # Compact rendering: drop the conv-overview headers (the
+        # caller already knows which conv this is — slug is in the
+        # preamble's "This turn" block), shrink msg_id to a 6-char
+        # tail, drop microseconds + timezone from timestamps. Saves
+        # ~50 tokens per turn rendered, ×5 turns ≈ 250 tokens / turn.
+        lines: list[str] = []
         for b in tail:
             meta = b.meta or {}
             author = meta.get("author") or "?"
-            lines.append(f"## ~{b.pos} [{author}]")
+            lines.append(f"~{b.pos} [{author}]")
             lines.append(b.text)
-            trailer_bits = []
-            msg_id = meta.get("msg_id")
-            if msg_id:
-                trailer_bits.append(f"msg_id={msg_id}")
-            ts = meta.get("ts")
-            if ts:
-                trailer_bits.append(f"ts={ts}")
-            if trailer_bits:
-                lines.append(f"_({'; '.join(trailer_bits)})_")
+            trailer = _compact_trailer(meta)
+            if trailer:
+                lines.append(f"_({trailer})_")
             lines.append("")
         return Response(body="\n".join(lines).rstrip())
 
@@ -603,6 +602,31 @@ class ConversationHandler(Handler):
             "ts": meta.get("ts"),
         }
         return Response(body="```json\n" + json.dumps(payload, indent=2) + "\n```")
+
+
+def _compact_trailer(meta: dict[str, Any]) -> str:
+    """Render the (msg_id, ts) trailer in compact form.
+
+    msg_id is shrunk to the last 6 chars (Discord snowflake last
+    digits are still unique within a conv); timestamps lose
+    microseconds + timezone (always UTC anyway). Saves ~40 chars
+    per turn vs verbose form.
+    """
+    bits: list[str] = []
+    msg_id = meta.get("msg_id")
+    if msg_id:
+        bits.append(f"id={str(msg_id)[-6:]}")
+    ts = meta.get("ts")
+    if ts:
+        bits.append(f"ts={_compact_ts(str(ts))}")
+    return "; ".join(bits)
+
+
+def _compact_ts(raw: str) -> str:
+    """Strip microseconds + tz from an ISO timestamp."""
+    s = raw.split(".", 1)[0]  # drop microseconds
+    s = s.split("+", 1)[0].split("Z", 1)[0]  # drop tz
+    return s
 
 
 #: Trailing path-views the conv get verb knows about. Any other suffix

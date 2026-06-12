@@ -8,6 +8,19 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+## v8.6.2
+
+### Changed
+
+- **Compact conv recent-turn rendering.** `_render_recent` no
+  longer emits the full slug header or the conv title; preamble
+  callers already know which conv they're in. msg_id renders as
+  the last 6 chars (Discord snowflake tail uniquely identifies
+  within a conv). Timestamps drop microseconds + timezone. Saves
+  ~50 tokens per turn × 5 turns ≈ 250 tokens/turn of preamble
+  bloat. Old verbose form still available via
+  `get(kind='conv', id='<slug>/transcript')` for human reading.
+
 ## v8.6.1
 
 ### Fixed
