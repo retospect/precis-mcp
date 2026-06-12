@@ -8,6 +8,55 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added
+
+- **`precis watch` routes by inbox subtree, ingests slide decks as
+  `kind='pres'`.** `inbox/papers/` → paper (current behaviour),
+  `inbox/books/` → paper with auto `subtype:book` + `topic:book`,
+  `inbox/presentations/` → new pres pipeline: one chunk per slide
+  (`chunk_kind='pres_slide'`), `subtype:slides` on creation, slide
+  titles derived from per-page first headings. Slide-deck PDFs
+  land in `corpus_pres/<letter>/<slug>.pdf` (new sibling of
+  `corpus_dir`). New CLI flag: `--corpus-pres-dir` (defaults to
+  `<corpus-dir>.parent / corpus_pres`).
+- **Path-derived tags via `tagging/` sentinel.** Any path component
+  after a `tagging/` segment in the inbox tree becomes a
+  `topic:<kebab-slug>` open tag, applied additively on both the
+  fresh-ingest and `pdf_sha256`-hit branches so re-dropping a
+  known PDF under a new tagging dir merges tags instead of
+  silently no-op'ing. `PdfInput` and `PresInput` both grow an
+  `extra_tags: tuple[str, ...]` field carrying the same payload.
+- **Pres slug-collision policy.** `pdf_sha256` hit is idempotent
+  (merge tags only). Slug taken with different bytes suffixes
+  `-2`, `-3`, … with a warning log. Diverges from
+  `make_cite_key`'s `a/b/c` style on purpose — pres slugs are
+  user-typed in directory paths and `lecture-3-2` reads more
+  naturally than `lecture-3a`.
+
+No migration needed: `refs.pdf_sha256` is kind-agnostic, the
+`pres` kind and `pres_slide` chunk_kind were already seeded in
+`0008_pres_kind.sql`, and `probe_existing` queries
+`ref_identifiers` without filtering on kind.
+
+## v8.7.2
+
+### Fixed
+
+- **Patent kind reported available even when `python-epo-ops-client`
+  was not installed.** The cold-start kind gate only enforced the
+  EPO_OPS_CLIENT_KEY / EPO_OPS_CLIENT_SECRET / PRECIS_PATENT_RAW_ROOT
+  env trio — the optional `[patent]` extra's Python lib was checked
+  lazily on first call, so operators who set the env vars but
+  hadn't installed the extras saw a misleading "patent: available"
+  banner and only learned the truth when the first
+  `precis(kind='patent', ...)` request raised
+  `OpsError: python-epo-ops-client is not installed`. Now
+  `dispatch.py` does an `importlib.util.find_spec('epo_ops')` probe
+  alongside the env gate; missing package surfaces as a proper
+  `Loadability(loaded=False, reason="missing python-epo-ops-client;
+  install with pip install precis-mcp[patent]")` so the banner
+  names the gap honestly and agents can route around it.
+
 ## v8.7.1
 
 ### Fixed

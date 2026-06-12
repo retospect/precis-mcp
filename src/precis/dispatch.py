@@ -740,9 +740,32 @@ def boot(
         # ``epo_ops`` import is deferred inside the handler's
         # ``__init__`` so a missing optional dep doesn't take down
         # other handlers' boot path.
-        from precis.handlers.patent import PatentHandler
+        #
+        # Banner honesty (#40): the env-var gate alone wasn't enough —
+        # if the operator set the EPO env trio but never installed
+        # the ``[patent]`` extra, the cold-start banner said
+        # "available" and the first call crashed with the lazy
+        # ``import epo_ops`` failure. Probe for the package here so
+        # the kind appears as deferred with an actionable reason
+        # instead of pretending to work. We don't import — just
+        # check for spec presence — to keep boot fast.
+        import importlib.util
 
-        _gated(PatentHandler)
+        if importlib.util.find_spec("epo_ops") is None:
+            from precis.kind_gate import Loadability
+
+            hub.loadabilities["patent"] = Loadability(
+                kind="patent",
+                loaded=False,
+                reason=(
+                    "missing python-epo-ops-client; "
+                    "install with `pip install precis-mcp[patent]`"
+                ),
+            )
+        else:
+            from precis.handlers.patent import PatentHandler
+
+            _gated(PatentHandler)
 
     # Third-party plugins load last. See ``docs/user-facing/plugin-authoring.md``
     # and :func:`_load_plugins` for the contract and failure modes.
