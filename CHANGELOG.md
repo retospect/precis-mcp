@@ -8,6 +8,21 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+## v8.6.1
+
+### Fixed
+
+- **Conv handler parser corrupted chat-bridge slugs.** `_parse_conv_id`
+  partitioned on the FIRST `/`, so
+  `get(kind='conv', id='discord/<g>/<c>/<t>', recent=5)` got read as
+  `slug='discord', view='<g>/<c>/<t>'` and NotFound'd. Now only the
+  trailing path segment is treated as a view, and only when it
+  matches a known view (`transcript`, `full`, `last-meta`). Discord
+  / Slack / future-bridge slugs flow through unchanged. asa_bot's
+  recent + digest preamble fetches were silently broken until this
+  fix — visible in a turn-prompt dump as
+  `[error:NotFound] conv slug 'discord' not found`.
+
 ## v8.6.0
 
 ### Added

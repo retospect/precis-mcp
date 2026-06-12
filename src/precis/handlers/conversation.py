@@ -605,8 +605,24 @@ class ConversationHandler(Handler):
         return Response(body="```json\n" + json.dumps(payload, indent=2) + "\n```")
 
 
+#: Trailing path-views the conv get verb knows about. Any other suffix
+#: after a ``/`` belongs to the slug itself — conv slugs in the wild
+#: contain ``/`` (e.g. ``discord/<guild>/<channel>/<thread>``), so the
+#: partition-on-first-slash heuristic the v1 parser used corrupted
+#: every Discord-bridge slug into ``slug='discord', view='<guid>/<c>/<t>'``
+#: which then NotFound'd on resolve. Splitting only the trailing
+#: known-view keeps both shapes addressable.
+_KNOWN_CONV_PATH_VIEWS: frozenset[str] = frozenset({"transcript", "full", "last-meta"})
+
+
 def _parse_conv_id(raw: str) -> tuple[str, int | None, str | None]:
-    """Parse conv ids: ``slug``, ``slug~N``, ``slug/transcript``."""
+    """Parse conv ids: ``slug``, ``slug~N``, ``slug/transcript``.
+
+    ``slug`` may itself contain slashes (chat-bridge slugs like
+    ``discord/<guild>/<channel>/<thread>``). Only the trailing path
+    segment is treated as a view, and only when it matches a known
+    view name; otherwise the whole input is the slug.
+    """
     if "~" in raw:
         slug, _, sel = raw.partition("~")
         try:
@@ -618,6 +634,9 @@ def _parse_conv_id(raw: str) -> tuple[str, int | None, str | None]:
             ) from exc
         return slug, pos, None
     if "/" in raw:
-        slug, _, view = raw.partition("/")
-        return slug, None, view
+        slug, _, last = raw.rpartition("/")
+        if last in _KNOWN_CONV_PATH_VIEWS:
+            return slug, None, last
+        # Whole input is the slug (chat-bridge style with slashes).
+        return raw, None, None
     return raw, None, None
