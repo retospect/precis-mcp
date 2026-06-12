@@ -38,6 +38,26 @@ No migration needed: `refs.pdf_sha256` is kind-agnostic, the
 `0008_pres_kind.sql`, and `probe_existing` queries
 `ref_identifiers` without filtering on kind.
 
+## v8.7.6
+
+### Changed
+
+- **Cold-start banner tersified for LLM consumption.** The
+  `serverInfo.instructions` text every MCP client sees on connect
+  shrank from ~450 chars over 9 lines to ~250 chars over 3-4 lines,
+  same information, no prose padding. `_INSTRUCTIONS` collapsed
+  from a multi-line "First action on any non-trivial request:..."
+  paragraph to a single-line `precis: verbs ...; kind= discriminator.
+  Discover: search(kind='skill', q='<goal>') | get(kind='skill',
+  id='toc').`. Sandbox preamble collapsed similarly (e.g. `Sandbox
+  PRECIS_ROOT (3 markdown): get(kind='markdown'|'plaintext'|'tex').
+  tags=['workspace'] scopes.`). `Kinds loaded:` → `Kinds:`.
+  Startup-skills warnings dropped their `PRECIS_STARTUP_SKILLS`
+  prefix (the source is obvious from the warning glyph). Token
+  budget anchor changed from `First action` to `Discover:`; both
+  static-banner anchor tests + sandbox preamble tests updated to
+  match.
+
 ## v8.7.5
 
 ### Added

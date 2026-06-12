@@ -51,13 +51,8 @@ _ToolReturn = Any  # documents runtime: str on success, CallToolResult on error
 _TOOL_KW: dict[str, Any] = {"structured_output": False}
 
 _INSTRUCTIONS = (
-    "precis-mcp v2 - seven-verb agent tool surface.\n\n"
-    "First action on any non-trivial request:\n"
-    "  search(kind='skill', q='<your goal in plain language>')\n"
-    "This returns ranked help skills (verb mechanics, kind specifics,\n"
-    "tag axes, edit protocol, ...). For the full index:\n"
-    "  get(kind='skill', id='toc').\n\n"
-    "Verbs: get, search, put, edit, delete, tag, link.  Discriminator: kind=."
+    "precis: verbs get/search/put/edit/delete/tag/link; kind= discriminator. "
+    "Discover: search(kind='skill', q='<goal>') | get(kind='skill', id='toc')."
 )
 
 # Sanity check the instructions actually advertise every verb. The MCP
@@ -147,8 +142,8 @@ def _kinds_loaded_line(runtime: PrecisRuntime) -> str:
     """
     kinds = sorted(getattr(runtime.hub, "kinds", ()) or ())
     if not kinds:
-        return "Kinds loaded: (none)"
-    return "Kinds loaded: " + ", ".join(kinds) + "."
+        return "Kinds: (none)"
+    return "Kinds: " + ", ".join(kinds) + "."
 
 
 def _kinds_unavailable_line(runtime: PrecisRuntime) -> str:
@@ -227,20 +222,16 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     total = sum(counts.values())
     if total == 0:
         preamble = (
-            "Editable sandbox under PRECIS_ROOT is empty. Create a file with\n"
-            "  put(kind='markdown'|'plaintext'|'tex', id='<slug>',\n"
-            "      text='...', mode='create')\n"
-            "Everything here carries the `workspace` tag - scope search with:\n"
-            "  search(q='<keyword>', tags=['workspace'])\n\n"
+            "Sandbox PRECIS_ROOT empty: "
+            "put(kind='markdown'|'plaintext'|'tex', id, text, mode='create'). "
+            "tags=['workspace'] scopes.\n"
         )
     else:
         summary = ", ".join(f"{counts[k]} {k}" for k in file_kinds if counts[k])
-        by_kind = "\n".join(f"  get(kind='{k}')" for k in file_kinds)
+        kinds_str = "|".join(f"'{k}'" for k in file_kinds)
         preamble = (
-            f"Editable sandbox under PRECIS_ROOT ({summary}). List with:\n"
-            f"{by_kind}\n"
-            "Everything here carries the `workspace` tag - scope search with:\n"
-            "  search(q='<keyword>', tags=['workspace'])\n\n"
+            f"Sandbox PRECIS_ROOT ({summary}): get(kind={kinds_str}). "
+            "tags=['workspace'] scopes.\n"
         )
     return preamble + core + tail
 

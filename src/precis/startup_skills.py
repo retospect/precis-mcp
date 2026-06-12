@@ -182,23 +182,18 @@ def format_banner(result: Resolution) -> str:
     """
     lines: list[str] = []
     if result.pinned:
-        lines.append(
-            "Pinned skills (load via prompts/get): " + ", ".join(result.pinned) + "."
-        )
+        lines.append("Pinned skills: " + ", ".join(result.pinned) + ".")
     if result.unknown:
-        lines.append(
-            "\u26a0 PRECIS_STARTUP_SKILLS skipped unknown skill ids: "
-            + ", ".join(result.unknown)
-            + "."
-        )
+        lines.append("\u26a0 unknown skill ids: " + ", ".join(result.unknown) + ".")
     if result.truncated:
         lines.append(
-            f"\u26a0 PRECIS_STARTUP_SKILLS truncated to cap "
-            f"({result.cap_kb} KB): omitted " + ", ".join(result.truncated) + "."
+            f"\u26a0 truncated ({result.cap_kb} KB cap): "
+            + ", ".join(result.truncated)
+            + "."
         )
     if result.kind_unavailable:
         lines.append(
-            "\u26a0 PRECIS_STARTUP_SKILLS targets unavailable kinds: "
+            "\u26a0 skills for unavailable kinds: "
             + ", ".join(result.kind_unavailable)
             + "."
         )

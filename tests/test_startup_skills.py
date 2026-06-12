@@ -164,7 +164,7 @@ def test_format_banner_pinned_only() -> None:
         Resolution(pinned=("precis-search-help", "precis-paper-help"))
     )
     assert (
-        out == "Pinned skills (load via prompts/get): precis-search-help, "
+        out == "Pinned skills: precis-search-help, "
         "precis-paper-help."
     )
 
@@ -172,7 +172,7 @@ def test_format_banner_pinned_only() -> None:
 def test_format_banner_surfaces_unknown_slugs() -> None:
     """Operator typo → warning notice, even with no successful pins."""
     out = startup_skills.format_banner(Resolution(unknown=("foo", "bar")))
-    assert "skipped unknown skill ids: foo, bar." in out
+    assert "unknown skill ids: foo, bar." in out
 
 
 def test_format_banner_surfaces_truncation_with_cap() -> None:
@@ -180,7 +180,7 @@ def test_format_banner_surfaces_truncation_with_cap() -> None:
     out = startup_skills.format_banner(
         Resolution(truncated=("precis-tex-help",), cap_kb=50)
     )
-    assert "truncated to cap (50 KB)" in out
+    assert "truncated (50 KB cap)" in out
     assert "precis-tex-help" in out
 
 
@@ -252,7 +252,7 @@ def test_build_instructions_includes_pinned_skills_when_configured() -> None:
     )
     out = server._build_instructions(runtime)
     assert (
-        "Pinned skills (load via prompts/get): "
+        "Pinned skills: "
         "precis-search-help, precis-overview." in out
     )
 
@@ -267,9 +267,9 @@ def test_build_instructions_surfaces_unknown_slugs_in_banner() -> None:
         startup_skills_value="precis-search-help,does-not-exist"
     )
     out = server._build_instructions(runtime)
-    assert "skipped unknown skill ids: does-not-exist" in out
+    assert "unknown skill ids: does-not-exist" in out
     # The valid one still pins.
-    assert "Pinned skills (load via prompts/get): precis-search-help." in out
+    assert "Pinned skills: precis-search-help." in out
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +349,7 @@ def test_format_banner_surfaces_kind_unavailable() -> None:
     out = startup_skills.format_banner(
         Resolution(kind_unavailable=("precis-patent-help",))
     )
-    assert "targets unavailable kinds: precis-patent-help" in out
+    assert "skills for unavailable kinds: precis-patent-help" in out
 
 
 def test_build_instructions_surfaces_pinned_skill_kind_unavailable() -> None:
@@ -375,7 +375,7 @@ def test_build_instructions_surfaces_pinned_skill_kind_unavailable() -> None:
     rt = PrecisRuntime(config=config, hub=_FakeHub())  # type: ignore[arg-type]
     out = server._build_instructions(rt)
     assert "Kinds unavailable: patent (prohibited)." in out
-    assert "targets unavailable kinds: precis-patent-help" in out
+    assert "skills for unavailable kinds: precis-patent-help" in out
 
 
 @pytest.mark.parametrize(

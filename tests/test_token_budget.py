@@ -171,7 +171,7 @@ def test_instructions_under_byte_budget_clean() -> None:
     """Stateless cold-start banner stays under 2 KB.
 
     The static core (skill-search CTA, seven-verb cheat sheet,
-    per-verb hints) plus the trailing ``Kinds loaded:`` line
+    per-verb hints) plus the trailing ``Kinds:`` line
     are the only mandatory components on a clean boot. If this
     trips, ``server._INSTRUCTIONS`` grew unexpectedly — push
     detail into ``precis-overview`` rather than bumping the cap.
@@ -191,7 +191,7 @@ def test_instructions_under_relaxed_budget_with_features() -> None:
 
     Worst-case unconditional banner shape:
       - sandbox preamble (PRECIS_ROOT with files)
-      - Kinds loaded: <several>
+      - Kinds: <several>
       - Kinds unavailable: <prohibited>
       - PRECIS_STARTUP_SKILLS pinned + kind_unavailable cross-check
 
@@ -230,18 +230,18 @@ def test_instructions_under_relaxed_budget_with_features() -> None:
 @pytest.mark.parametrize(
     "anchor",
     [
-        "First action",
+        "Discover:",
         "search(kind='skill', q=",
-        "Kinds loaded:",
+        "Kinds:",
     ],
 )
 def test_instructions_carries_anchor(anchor: str) -> None:
     """Every cold-start banner carries these structural anchors:
 
-    - ``First action`` and the skill-search CTA pin the Phase-2
+    - ``Discover:`` and the skill-search CTA pin the Phase-2
       framing — the first thing an agent should do on a non-trivial
-      request is a skill search.
-    - ``Kinds loaded:`` pins the Phase-2 trailer — every banner
+      request is a skill search. (Tersified from "First action" in v8.7.6.)
+    - ``Kinds:`` pins the Phase-2 trailer — every banner
       reports the live registry, even on a stateless build.
 
     Without these anchors, the banner would lose its discovery
