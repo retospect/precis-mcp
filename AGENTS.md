@@ -145,6 +145,29 @@ Re-running `build_segments` on an existing ref does
 `DELETE FROM ref_segments WHERE ref_id=N` then re-INSERTs — sentences
 cascade via FK, so the operation is atomic and idempotent.
 
+### Watcher routing (papers / books / presentations)
+
+`precis watch` routes by the first path component under `inbox/`:
+
+- `inbox/papers/...` → paper pipeline (current behaviour).
+- `inbox/books/...` → paper pipeline, plus `subtype:book` and
+  `topic:book` open tags. (A real `book` kind may follow once
+  page/chapter ToC and ISBN cascade are needed; books-as-paper
+  stays the supported route until then.)
+- `inbox/presentations/...` → `PresInput` → `kind='pres'` via
+  `src/precis/ingest/pres.py`: one chunk per slide
+  (`chunk_kind='pres_slide'`), `subtype:slides` on creation. Slide
+  decks land in a separate `corpus_pres/` root so an `ls
+  corpus_pres/<letter>/` listing stays useful as the paper corpus
+  grows.
+- Components under any `tagging/` segment become `topic:<kebab-slug>`
+  open tags applied additively on both fresh-ingest and `pdf_sha256`-
+  hit branches; re-dropping the same PDF under a new tagging dir
+  merges tags rather than silently no-op'ing.
+
+Flat-inbox files (no kind dir) still ingest as paper, preserving
+back-compat with any files staged before the routing landed.
+
 ## On-demand pointers
 
 - **Conventions**: `docs/conventions/`

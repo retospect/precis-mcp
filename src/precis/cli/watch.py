@@ -39,6 +39,7 @@ import subprocess
 import sys
 import time
 import traceback
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event, Lock
@@ -50,7 +51,8 @@ from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
 from precis.cli._common import resolve_dsn
-from precis.ingest.add import IngestResult, PdfInput, precis_add
+from precis.ingest.add import IngestResult, PdfInput, PresInput, precis_add
+from precis.ingest.pres import kebab_slug
 from precis.store import Store
 
 log = logging.getLogger(__name__)
@@ -76,6 +78,19 @@ DEFAULT_POLL_INTERVAL = 15.0
 # itself; events on these never trigger ingest. Explicit list so
 # operators can drop cooperative dirs without breaking anything.
 _MANAGED_DIRS: frozenset[str] = frozenset({"errors", "completed"})
+
+# Inbox sub-trees that select the ingest kind. Files outside any of
+# these go through the paper pipeline (back-compat with the flat
+# layout the watcher saw before this routing landed).
+_KIND_DIRS: frozenset[str] = frozenset({"papers", "books", "presentations"})
+
+# Sentinel segment inside any kind subtree: components *after* this
+# segment become ``topic:<kebab-slug>`` open tags on the ingested
+# ref. So ``inbox/papers/tagging/matthias-quantum/foo.pdf`` adds
+# ``topic:matthias-quantum``; nested ``inbox/papers/tagging/
+# matthias-quantum/lecture-3/foo.pdf`` adds both ``topic:matthias-
+# quantum`` and ``topic:lecture-3``.
+_TAGGING_SENTINEL: str = "tagging"
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +119,18 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         type=Path,
         default=None,
         help=(
-            "Where to move PDFs after successful ingest. Defaults to ~/work/corpus/."
+            "Where to move paper PDFs after successful ingest. "
+            "Defaults to ~/work/corpus/."
+        ),
+    )
+    p.add_argument(
+        "--corpus-pres-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Where to move slide-deck PDFs ingested from "
+            "inbox/presentations/ after successful ingest. Defaults "
+            "to <corpus-dir>.parent / corpus_pres."
         ),
     )
     p.add_argument(
@@ -185,7 +211,9 @@ def add_batch_parser(sub: argparse._SubParsersAction) -> None:
         ),
     )
     p.add_argument("pdfs", nargs="+", type=Path)
+    p.add_argument("--watch-dir", type=Path, required=True)
     p.add_argument("--corpus-dir", type=Path, required=True)
+    p.add_argument("--corpus-pres-dir", type=Path, required=True)
     p.add_argument("--errors-dir", type=Path, required=True)
     p.add_argument("--duplicates-dir", type=Path, required=True)
     p.add_argument("--debounce", type=float, default=DEFAULT_DEBOUNCE)
@@ -207,7 +235,9 @@ def run_batch(args: argparse.Namespace) -> None:
                 process_pdf(
                     pdf,
                     store=store,
+                    watch_dir=args.watch_dir,
                     corpus_dir=args.corpus_dir,
+                    corpus_pres_dir=args.corpus_pres_dir,
                     errors_dir=args.errors_dir,
                     duplicates_dir=args.duplicates_dir,
                     debounce=args.debounce,
@@ -223,6 +253,7 @@ def run(args: argparse.Namespace) -> None:
     """Top-level handler for ``precis watch``."""
     dsn = resolve_dsn(args.database_url)
     corpus_dir = args.corpus_dir or (Path.home() / "work" / "corpus")
+    corpus_pres_dir = args.corpus_pres_dir
     user = args.user or getpass.getuser()
 
     store = Store.connect(dsn)
@@ -230,6 +261,7 @@ def run(args: argparse.Namespace) -> None:
         watch(
             watch_dir=args.watch_dir,
             corpus_dir=corpus_dir,
+            corpus_pres_dir=corpus_pres_dir,
             store=store,
             backfill=not args.no_backfill,
             recursive=not args.no_recursive,
@@ -254,6 +286,7 @@ def watch(
     *,
     corpus_dir: Path,
     store: Store,
+    corpus_pres_dir: Path | None = None,
     backfill: bool = True,
     recursive: bool = True,
     use_polling: bool = False,
@@ -276,9 +309,18 @@ def watch(
     batch. ``database_url`` is plumbed into the subprocess as
     ``--database-url`` so the child opens a fresh Store without
     depending on env-var inheritance.
+
+    ``corpus_pres_dir`` is where ingested slide decks land. Default:
+    sibling of ``corpus_dir`` named ``corpus_pres``. The two roots
+    stay separate so an operator's ``ls corpus_pres/`` listing
+    stays useful even when the paper corpus grows into the
+    thousands.
     """
     watch_dir = Path(watch_dir).resolve()
     corpus_dir = Path(corpus_dir).resolve()
+    if corpus_pres_dir is None:
+        corpus_pres_dir = corpus_dir.parent / "corpus_pres"
+    corpus_pres_dir = Path(corpus_pres_dir).resolve()
     if not watch_dir.is_dir():
         raise FileNotFoundError(f"Watch directory not found: {watch_dir}")
 
@@ -287,19 +329,22 @@ def watch(
     errors_dir.mkdir(exist_ok=True)
     duplicates_dir.mkdir(exist_ok=True)
     corpus_dir.mkdir(parents=True, exist_ok=True)
+    corpus_pres_dir.mkdir(parents=True, exist_ok=True)
 
     user = user or getpass.getuser()
 
     log.info(
-        "precis watch starting: watch=%s corpus=%s recursive=%s",
+        "precis watch starting: watch=%s corpus=%s corpus_pres=%s recursive=%s",
         watch_dir,
         corpus_dir,
+        corpus_pres_dir,
         recursive,
     )
 
     handler = _PdfHandler(
         watch_dir=watch_dir,
         corpus_dir=corpus_dir,
+        corpus_pres_dir=corpus_pres_dir,
         errors_dir=errors_dir,
         duplicates_dir=duplicates_dir,
         store=store,
@@ -349,6 +394,7 @@ class _PdfHandler(FileSystemEventHandler):
         *,
         watch_dir: Path,
         corpus_dir: Path,
+        corpus_pres_dir: Path,
         errors_dir: Path,
         duplicates_dir: Path,
         store: Store,
@@ -361,6 +407,7 @@ class _PdfHandler(FileSystemEventHandler):
         super().__init__()
         self.watch_dir = watch_dir
         self.corpus_dir = corpus_dir
+        self.corpus_pres_dir = corpus_pres_dir
         self.errors_dir = errors_dir
         self.duplicates_dir = duplicates_dir
         self.store = store
@@ -474,7 +521,9 @@ class _PdfHandler(FileSystemEventHandler):
                 batch = shard[start : start + self.subprocess_batch_size]
                 _spawn_batch_subprocess(
                     batch,
+                    watch_dir=self.watch_dir,
                     corpus_dir=self.corpus_dir,
+                    corpus_pres_dir=self.corpus_pres_dir,
                     errors_dir=self.errors_dir,
                     duplicates_dir=self.duplicates_dir,
                     debounce=self.debounce,
@@ -499,7 +548,9 @@ class _PdfHandler(FileSystemEventHandler):
             process_pdf(
                 path,
                 store=self.store,
+                watch_dir=self.watch_dir,
                 corpus_dir=self.corpus_dir,
+                corpus_pres_dir=self.corpus_pres_dir,
                 errors_dir=self.errors_dir,
                 duplicates_dir=self.duplicates_dir,
                 debounce=self.debounce,
@@ -514,7 +565,9 @@ def process_pdf(
     pdf: Path,
     *,
     store: Store,
+    watch_dir: Path,
     corpus_dir: Path,
+    corpus_pres_dir: Path,
     errors_dir: Path,
     duplicates_dir: Path,
     debounce: float = DEFAULT_DEBOUNCE,
@@ -528,14 +581,21 @@ def process_pdf(
 
     1. Wait for the file to settle (size stable across ``debounce`` s).
        Returns ``None`` if the file disappears during the wait.
-    2. Call :func:`precis_add` with a :class:`PdfInput`.
-       :func:`precis_add` acquires a Postgres advisory-lock claim
-       keyed on ``pdf_sha256`` before running Marker. If the claim is
-       already held by another host, ``precis_add`` returns ``None``
-       and we leave the file in place so the owning host can finish.
-    3. On ``inserted=True`` move to corpus.
-    4. On ``inserted=False`` move to ``errors/duplicates``.
-    5. On exception write ``.error.txt`` next to the PDF in
+    2. Route by path: ``inbox/presentations/`` files build a
+       :class:`PresInput`; ``inbox/books/`` and ``inbox/papers/``
+       (and the flat-inbox fallback) build :class:`PdfInput`.
+       Components under any ``tagging/`` segment become
+       ``topic:<slug>`` open tags; ``books/`` also gets the
+       ``subtype:book`` + ``topic:book`` sentinel pair.
+    3. Call :func:`precis_add`. It acquires a Postgres advisory-lock
+       claim keyed on ``pdf_sha256`` before running Marker. If the
+       claim is already held by another host, ``precis_add`` returns
+       ``None`` and we leave the file in place so the owning host
+       can finish.
+    4. On ``inserted=True`` move to corpus (``corpus_dir`` for paper,
+       ``corpus_pres_dir`` for pres).
+    5. On ``inserted=False`` move to ``errors/duplicates``.
+    6. On exception write ``.error.txt`` next to the PDF in
        ``errors/<ts>/`` and swallow — exceptions are contained
        within process_pdf so the watcher loop survives a single
        bad PDF.
@@ -544,8 +604,15 @@ def process_pdf(
         log.warning("precis watch: file disappeared before stable: %s", pdf)
         return None
 
+    routing = route_pdf(pdf, watch_dir)
+    input_: PdfInput | PresInput
+    if routing.kind == "pres":
+        input_ = PresInput(pdf_path=pdf, extra_tags=routing.extra_tags)
+    else:
+        input_ = PdfInput(pdf_path=pdf, extra_tags=routing.extra_tags)
+
     try:
-        result = precis_add(PdfInput(pdf_path=pdf), store=store)
+        result = precis_add(input_, store=store)
     except FileNotFoundError as exc:
         # Race on a shared inbox: another host ingested this PDF and
         # moved it between our ``_wait_stable`` success and the read
@@ -588,6 +655,7 @@ def process_pdf(
         pdf,
         result,
         corpus_dir=corpus_dir,
+        corpus_pres_dir=corpus_pres_dir,
         duplicates_dir=duplicates_dir,
         user=user,
     )
@@ -598,29 +666,48 @@ def _handle_success(
     result: IngestResult,
     *,
     corpus_dir: Path,
+    corpus_pres_dir: Path,
     duplicates_dir: Path,
     user: str,
 ) -> Path:
-    """Move the PDF based on ``result.inserted`` and append a TSV log
-    line. Returns the post-move path."""
+    """Move the PDF based on ``result.inserted`` + ``result.kind``
+    and append a TSV log line. Returns the post-move path.
+
+    For ``kind='pres'`` the destination is ``corpus_pres_dir`` and
+    the slug (``result.cite_key`` carries the pres slug uniformly
+    across slug-addressed kinds) is the filename. Status strings
+    on the log line carry a ``_pres`` suffix so operators grepping
+    ingest.log can distinguish kinds without joining against the DB.
+    """
+    is_pres = result.kind == "pres"
     if result.inserted:
-        dest = _move_to_corpus(pdf, cite_key=result.cite_key, corpus_dir=corpus_dir)
+        if is_pres:
+            dest = _move_to_pres_corpus(
+                pdf, slug=result.cite_key, corpus_pres_dir=corpus_pres_dir
+            )
+            status = "inserted_pres"
+        else:
+            dest = _move_to_corpus(
+                pdf, cite_key=result.cite_key, corpus_dir=corpus_dir
+            )
+            status = "inserted"
         log.info(
-            "precis watch: ingested %s as %s (ref_id=%d)",
+            "precis watch: ingested %s as %s (ref_id=%d, kind=%s)",
             pdf.name,
             result.cite_key,
             result.ref_id,
+            result.kind,
         )
-        status = "inserted"
     else:
         dest = _move_to(pdf, duplicates_dir)
+        status = "existed_pres" if is_pres else "existed"
         log.info(
-            "precis watch: duplicate %s (existing ref_id=%d, cite_key=%s)",
+            "precis watch: duplicate %s (existing ref_id=%d, cite_key=%s, kind=%s)",
             pdf.name,
             result.ref_id,
             result.cite_key,
+            result.kind,
         )
-        status = "existed"
 
     _append_ingest_log(corpus_dir, user=user, result=result, pdf=pdf, status=status)
     return dest
@@ -629,7 +716,9 @@ def _handle_success(
 def _spawn_batch_subprocess(
     pdfs: list[Path],
     *,
+    watch_dir: Path,
     corpus_dir: Path,
+    corpus_pres_dir: Path,
     errors_dir: Path,
     duplicates_dir: Path,
     debounce: float,
@@ -654,8 +743,12 @@ def _spawn_batch_subprocess(
         "-m",
         "precis",
         "_watch_batch_ingest",
+        "--watch-dir",
+        str(watch_dir),
         "--corpus-dir",
         str(corpus_dir),
+        "--corpus-pres-dir",
+        str(corpus_pres_dir),
         "--errors-dir",
         str(errors_dir),
         "--duplicates-dir",
@@ -727,6 +820,77 @@ def _should_skip(path: Path, watch_dir: Path) -> bool:
     return bool(parts) and parts[0] in _MANAGED_DIRS
 
 
+# ---------------------------------------------------------------------------
+# Path → ingest input routing
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Routing:
+    """How to ingest a PDF based on its position in the inbox tree.
+
+    * ``kind`` — ``"paper"`` or ``"pres"``. Determines which
+      ``precis_add`` input variant the watcher builds and which
+      corpus directory the file moves to on success.
+    * ``extra_tags`` — open tags to apply post-commit. Always
+      contains the ``books/`` sentinel tags when relevant, plus
+      one ``topic:<slug>`` per component after a ``tagging/``
+      segment.
+    """
+
+    kind: str
+    extra_tags: tuple[str, ...]
+
+
+def route_pdf(pdf: Path, watch_dir: Path) -> _Routing:
+    """Decide kind + extra tags from a PDF's position under ``watch_dir``.
+
+    Layout convention:
+
+    * ``inbox/papers/...`` → :class:`PdfInput`
+    * ``inbox/books/...``  → :class:`PdfInput` + ``subtype:book`` +
+      ``topic:book``
+    * ``inbox/presentations/...`` → :class:`PresInput` (one chunk
+      per slide, ``subtype:slides`` applied by the ingester)
+    * Anywhere under a ``tagging/`` segment: each remaining path
+      component becomes a ``topic:<kebab-slug>`` open tag.
+    * Files flat in ``inbox/`` (no kind dir, or unrecognized first
+      segment) fall back to :class:`PdfInput` so existing files
+      stay ingestable across the routing landing without
+      re-staging.
+
+    The routing is computed purely from the path — no FS reads,
+    no DB hits — so it's cheap to call from both the live event
+    handler and the subprocess batch path.
+    """
+    try:
+        rel = pdf.resolve().relative_to(watch_dir.resolve())
+    except ValueError:
+        # Outside the watch dir entirely (shouldn't happen in
+        # production but defensive for tests). Treat as paper.
+        return _Routing(kind="paper", extra_tags=())
+
+    parts = list(rel.parts[:-1])  # drop the filename itself
+    extra_tags: list[str] = []
+    kind = "paper"
+
+    if parts and parts[0] in _KIND_DIRS:
+        first = parts.pop(0)
+        if first == "presentations":
+            kind = "pres"
+        elif first == "books":
+            extra_tags.extend(["subtype:book", "topic:book"])
+
+    if _TAGGING_SENTINEL in parts:
+        idx = parts.index(_TAGGING_SENTINEL)
+        for seg in parts[idx + 1 :]:
+            slug = kebab_slug(seg)
+            if slug:
+                extra_tags.append(f"topic:{slug}")
+
+    return _Routing(kind=kind, extra_tags=tuple(extra_tags))
+
+
 def _wait_stable(path: Path, *, debounce: float) -> bool:
     """Wait until the file's size is stable across two consecutive
     polls. Returns ``False`` if the file disappears during the wait.
@@ -770,6 +934,33 @@ def _move_to(src: Path, dest_dir: Path) -> Path:
         # tolerate — the other host is handling the file, just
         # report the would-be destination.
         log.info("precis watch: %s already moved by another host", src.name)
+    return dest
+
+
+def _move_to_pres_corpus(pdf: Path, *, slug: str, corpus_pres_dir: Path) -> Path:
+    """Move a slide deck PDF into ``<corpus_pres_dir>/<letter>/<slug>.pdf``.
+
+    Mirrors :func:`_move_to_corpus` but uses the pres slug (already
+    suffix-resolved by :func:`write_pres`) instead of a cite_key.
+    A separate corpus root keeps the ``ls corpus_pres/m/`` listing
+    useful — pres slugs are time-prefixed and look distinct from
+    author-year paper cite_keys.
+    """
+    letter = slug[0].lower() if slug and slug[0].isalnum() else "_"
+    bucket = corpus_pres_dir / letter
+    bucket.mkdir(parents=True, exist_ok=True)
+    dest = bucket / f"{slug}{pdf.suffix.lower()}"
+    if dest.exists() and dest.resolve() != pdf.resolve():
+        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        dest = bucket / f"{slug}_{ts}{pdf.suffix.lower()}"
+    try:
+        shutil.move(str(pdf), str(dest))
+    except FileNotFoundError:
+        log.info(
+            "precis watch: %s already moved by another host (pres slug=%s)",
+            pdf.name,
+            slug,
+        )
     return dest
 
 

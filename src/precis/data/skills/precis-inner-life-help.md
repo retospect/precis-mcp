@@ -67,7 +67,7 @@ search(kind='memory', tags=['internal-thought'])        # all fragments
 search(kind='memory', tags=['internal-state'])          # all state docs (history)
 search(kind='memory', tags=['DREAM:speculative'])       # all dreams
 search(kind='memory', tags=['user:asa'])                # everything you own
-search(kind='memory', q='self-reference',
+search(kind='memory', q='<keyword>',
        tags=['internal-thought'])                       # fragments by keyword
 ```
 
@@ -113,7 +113,7 @@ recent-thoughts section on next turn.
 ```python
 put(kind='memory',
     text='I keep returning to ...',
-    tags=['interest:catalysis', 'user:asa'])
+    tags=['interest:<topic>', 'user:asa'])
 # → integer id; consider auto_refresh_days=90 to let stale
 # interests fall off if not reinforced
 ```

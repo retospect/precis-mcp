@@ -43,7 +43,12 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import NotFound
-from precis.store._mappers import _REFS_COLS, _REFS_COLS_ALIASED, _row_to_ref
+from precis.store._mappers import (
+    _REFS_COLS,
+    _REFS_COLS_ALIASED,
+    _REFS_COLS_LEN,
+    _row_to_ref,
+)
 from precis.store._tag_filter import build_tag_filter
 from precis.store.types import ActorSlug, Ref, Tag
 
@@ -953,12 +958,13 @@ class RefsMixin:
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
-        # rows are tuples in column order; rank is the last column.
-        # _REFS_COLS projects 23 columns; rank is at index 23.
+        # rows are tuples in column order; rank is the trailing column
+        # added after the ref projection. Use the named constant so this
+        # tracks ``_REFS_COLS_LEN`` automatically as ref columns evolve.
         result: list[tuple[Ref, float]] = []
         for r in rows:
-            ref = _row_to_ref(r[:23])
-            result.append((ref, float(r[23])))
+            ref = _row_to_ref(r[:_REFS_COLS_LEN])
+            result.append((ref, float(r[_REFS_COLS_LEN])))
         return result
 
     def count_refs(

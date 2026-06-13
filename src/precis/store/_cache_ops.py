@@ -51,7 +51,12 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from precis.store._mappers import _REFS_COLS, _row_to_cache_entry, _row_to_ref
+from precis.store._mappers import (
+    _REFS_COLS,
+    _REFS_COLS_LEN,
+    _row_to_cache_entry,
+    _row_to_ref,
+)
 from precis.store.types import Block, BlockInsert, CacheEntry, Ref
 
 
@@ -117,8 +122,8 @@ class CacheMixin:
             row = conn.execute(sql, (provider, request_hash)).fetchone()
         if row is None:
             return None
-        ref = _row_to_ref(row[:23])
-        cache = _row_to_cache_entry(row[23:31])
+        ref = _row_to_ref(row[:_REFS_COLS_LEN])
+        cache = _row_to_cache_entry(row[_REFS_COLS_LEN : _REFS_COLS_LEN + _CACHE_COLS_LEN])
         return (ref, cache)
 
     def get_cache_entry_by_slug(
@@ -157,8 +162,8 @@ class CacheMixin:
             row = conn.execute(sql, (kind, slug)).fetchone()
         if row is None:
             return None
-        ref = _row_to_ref(row[:23])
-        cache = _row_to_cache_entry(row[23:31])
+        ref = _row_to_ref(row[:_REFS_COLS_LEN])
+        cache = _row_to_cache_entry(row[_REFS_COLS_LEN : _REFS_COLS_LEN + _CACHE_COLS_LEN])
         return (ref, cache)
 
     def update_cache_entry(
@@ -385,7 +390,28 @@ _REFS_COLS_FOR_CACHE = (
     "refs.human_verified_at, refs.human_verified_by, refs.human_verified_note, "
     "refs.retraction_status, refs.retracted_at, refs.retraction_reason, "
     "refs.retraction_url, refs.retraction_checked_at, "
-    "refs.pdf_sha256, refs.pdf_pages::text AS pdf_pages, refs.pdf_role"
+    "refs.pdf_sha256, refs.pdf_pages::text AS pdf_pages, refs.pdf_role, "
+    "refs.auto_refresh_days, refs.refreshed_at"
+)
+
+#: Number of ``cache_state`` columns appended after the ref projection
+#: in :meth:`CacheMixin.get_cache_entry` and friends. Pinned to a
+#: named constant so the slice positions in those methods don't have
+#: to track the SELECT list by hand.
+_CACHE_COLS_LEN = 8
+
+# Drift guard. If a future ref-column migration bumps ``_REFS_COLS_LEN``
+# (in ``_mappers.py``) without a matching entry being added to
+# ``_REFS_COLS_FOR_CACHE`` above, this assertion fires at import time —
+# loud, immediate, instead of cascading dozens of "tuple index out of
+# range" failures across the cache_state / perplexity / web caches.
+# v8.7.1 patched the same drift class in ``_blocks_ops.py``; this is
+# the equivalent guard for the cache path.
+assert _REFS_COLS_FOR_CACHE.count(",") + 1 == _REFS_COLS_LEN, (
+    f"_REFS_COLS_FOR_CACHE drift: projects "
+    f"{_REFS_COLS_FOR_CACHE.count(',') + 1} columns but "
+    f"_REFS_COLS_LEN={_REFS_COLS_LEN}. Update the projection above to "
+    f"match the columns added to refs in the latest migration."
 )
 
 

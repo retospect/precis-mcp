@@ -45,6 +45,11 @@ from precis.ingest.db_writer import (
     write_paper,
 )
 from precis.ingest.pdf_writer import PatchInfo, patch_pdf_metadata
+from precis.ingest.pres import (
+    PresWriteResult,
+    extract_pres,
+    write_pres,
+)
 from precis.store import Store
 
 log = logging.getLogger(__name__)
@@ -67,6 +72,14 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class PdfInput:
     pdf_path: Path
+    #: Open tags applied to the ref after ingest. Used by the watcher
+    #: to forward ``inbox/.../tagging/<slug>/`` directory tokens as
+    #: ``topic:<slug>`` and (for ``books/``) the synthetic
+    #: ``subtype:book`` / ``topic:book`` pair. Applied on both the
+    #: fresh-insert and the sha256-hit branches so re-dropping a PDF
+    #: under a new tagging dir merges tags additively instead of
+    #: silently no-op'ing.
+    extra_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,7 +92,27 @@ class ArxivInput:
     arxiv_id: str
 
 
-PrecisAddInput = PdfInput | DoiInput | ArxivInput
+@dataclass(frozen=True)
+class PresInput:
+    """Local slide PDF → ``kind='pres'`` (one chunk per slide).
+
+    ``slug_hint`` and ``title_hint`` override the defaults derived
+    from the filename. Both are advisory — :func:`extract_pres`
+    accepts them as starting points and the writer applies the
+    ``-2``/``-3``/… suffix policy if the slug is already taken.
+
+    ``extra_tags`` follows the same shape as :class:`PdfInput`: open
+    tags pushed onto the ref after commit. The watcher uses this to
+    forward ``inbox/.../tagging/<slug>/`` directory tokens.
+    """
+
+    pdf_path: Path
+    slug_hint: str | None = None
+    title_hint: str | None = None
+    extra_tags: tuple[str, ...] = ()
+
+
+PrecisAddInput = PdfInput | DoiInput | ArxivInput | PresInput
 
 
 @dataclass(frozen=True)
@@ -90,6 +123,13 @@ class IngestResult:
     of its identifiers) was already in the DB and we returned the
     existing ``ref_id`` unchanged. ``inserted=True`` means the writer
     produced new rows in this call.
+
+    For pres ingests, ``cite_key`` carries the pres slug (slug
+    kinds uniformly store under ``id_kind='cite_key'`` in
+    ``ref_identifiers``), ``paper_id`` is empty, and ``content_hash``
+    is None. The ``kind`` field disambiguates so callers (notably
+    the watcher) can route the on-disk move and the ingest.log
+    status correctly.
     """
 
     ref_id: int
@@ -101,6 +141,7 @@ class IngestResult:
     content_hash: str | None
     chunks_written: int
     identifiers: dict[str, str]
+    kind: str = "paper"
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +170,10 @@ def precis_add(
       :func:`precis.ingest.pipeline.fetch_paper_by_doi`.
     * :class:`ArxivInput` — Semantic Scholar via
       :func:`precis.ingest.pipeline.fetch_paper_by_arxiv`.
+    * :class:`PresInput` — local slide PDF → ``kind='pres'`` via
+      :func:`precis.ingest.pres.extract_pres`. Same ``pdf_sha256``
+      probe as :class:`PdfInput`; on hit, idempotent. ``subtype:slides``
+      and ``extra_tags`` applied post-commit.
 
     Returns ``None`` if another host already holds a
     :class:`precis.ingest.claim.Claim` on this PDF's ``pdf_sha256``
@@ -141,6 +186,9 @@ def precis_add(
     # The hash is bytes-cheap (~1 ms/PDF); the probe is one round
     # trip. A hit here skips both extraction and the slow-path
     # probe entirely — that's the whole point of the optimisation.
+    if isinstance(input, PresInput):
+        return _precis_add_pres(input, store=store)
+
     if isinstance(input, PdfInput):
         pdf_sha256 = _compute_pdf_sha256(input.pdf_path)
         if pdf_sha256 is None:
@@ -150,6 +198,11 @@ def precis_add(
         with store.pool.connection() as conn:
             existing_ref_id = probe_existing(pdf_sha256=pdf_sha256, conn=conn)
         if existing_ref_id is not None:
+            # Fast-path hit: re-applying ``extra_tags`` is the watcher's
+            # signal that re-dropping a known PDF under a different
+            # ``tagging/`` dir should merge tags additively (rather than
+            # silently no-op'ing because the sha is known).
+            _apply_extra_tags(store, "paper", existing_ref_id, input.extra_tags)
             with store.pool.connection() as conn:
                 return _hit_result_from_db(existing_ref_id, conn=conn)
 
@@ -238,6 +291,7 @@ def _ingest_pdf(
                 existing, paper, conn=conn
             )
             conn.commit()
+            _apply_extra_tags(store, "paper", existing, input.extra_tags)
             return _hit_result_from_db(
                 existing,
                 conn=conn,
@@ -254,6 +308,7 @@ def _ingest_pdf(
         result = write_paper(paper, conn=conn)
         conn.commit()
 
+    _apply_extra_tags(store, "paper", result.ref_id, input.extra_tags)
     return IngestResult(
         ref_id=result.ref_id,
         inserted=True,
@@ -265,6 +320,133 @@ def _ingest_pdf(
         chunks_written=result.chunks_written,
         identifiers=result.identifiers_written,
     )
+
+
+def _precis_add_pres(
+    input: PresInput,
+    *,
+    store: Store,
+) -> IngestResult | None:
+    """Top-level dispatch for :class:`PresInput`.
+
+    Mirrors the :class:`PdfInput` arm of :func:`precis_add`:
+    compute sha → fast-path probe → on miss, acquire cross-host
+    claim → run extract_pres → write_pres. The probe is the same
+    ``probe_existing(pdf_sha256=...)`` query papers use; it returns
+    whichever ref already owns these bytes regardless of kind. So
+    a deck whose bytes already landed as a paper (extremely
+    unlikely but possible if the operator dropped the same file in
+    both ``papers/`` and ``presentations/``) returns an
+    ``inserted=False`` for the existing paper ref. Tags still apply
+    additively to whatever ref won.
+
+    Returns ``None`` for the cross-host-claim-already-held case.
+    """
+    pdf_sha256 = _compute_pdf_sha256(input.pdf_path)
+    if pdf_sha256 is None:
+        return None
+
+    with store.pool.connection() as conn:
+        existing_ref_id = probe_existing(pdf_sha256=pdf_sha256, conn=conn)
+    if existing_ref_id is not None:
+        # Same bytes already ingested under some kind. Merge the
+        # caller's extra_tags onto whichever ref owns them; do *not*
+        # try to retag with ``subtype:slides`` because the existing
+        # ref might be a paper that legitimately doesn't carry that
+        # axis. Operator can manually relabel if they really intended
+        # a re-ingest as pres.
+        _apply_extra_tags(store, "pres", existing_ref_id, input.extra_tags)
+        with store.pool.connection() as conn:
+            result = _hit_result_from_db(existing_ref_id, conn=conn)
+            stored_kind = _lookup_kind(existing_ref_id, conn=conn)
+        return _with_kind(result, kind=stored_kind)
+
+    if store.dsn is None:
+        return _ingest_pres_pdf(input, store=store, pdf_sha256=pdf_sha256)
+
+    with Claim(store.dsn, pdf_sha256) as claim:
+        if not claim.acquired:
+            log.info(
+                "precis_add (pres): skipping %s — claimed by another host",
+                input.pdf_path.name,
+            )
+            return None
+        return _ingest_pres_pdf(input, store=store, pdf_sha256=pdf_sha256)
+
+
+def _ingest_pres_pdf(
+    input: PresInput,
+    *,
+    store: Store,
+    pdf_sha256: str,
+) -> IngestResult:
+    """Slow path for a :class:`PresInput`, assuming the claim is held."""
+    pres = extract_pres(
+        input.pdf_path,
+        slug_hint=input.slug_hint,
+        title_hint=input.title_hint,
+    )
+    # Marker's own per-file sha can drift from our pre-claim hash if
+    # someone touched the file mid-flight (unlikely but possible on
+    # NFS retries). Trust the value we hashed for the claim — that's
+    # what idempotency keys off.
+    if pres.pdf_sha256 != pdf_sha256:
+        log.warning(
+            "precis_add (pres): sha drift for %s (claim=%s, post-marker=%s); "
+            "trusting claim hash",
+            input.pdf_path.name,
+            pdf_sha256,
+            pres.pdf_sha256,
+        )
+        from dataclasses import replace as _replace
+
+        pres = _replace(pres, pdf_sha256=pdf_sha256)
+
+    with store.pool.connection() as conn:
+        result: PresWriteResult = write_pres(pres, conn=conn)
+        conn.commit()
+
+    # subtype:slides + caller tags, in one apply so the validation
+    # batch is one round-trip.
+    tags_to_apply: tuple[str, ...] = ("subtype:slides", *input.extra_tags)
+    _apply_extra_tags(store, "pres", result.ref_id, tags_to_apply)
+
+    return IngestResult(
+        ref_id=result.ref_id,
+        inserted=True,
+        paper_id="",
+        pub_id=None,
+        cite_key=result.slug,
+        pdf_sha256=pres.pdf_sha256,
+        content_hash=None,
+        chunks_written=result.n_slides,
+        identifiers={"cite_key": result.slug, "pdf_sha256": pres.pdf_sha256 or ""},
+        kind="pres",
+    )
+
+
+def _with_kind(result: IngestResult, *, kind: str) -> IngestResult:
+    """Return ``result`` with ``kind`` overridden so the caller
+    sees what's actually stored. ``_hit_result_from_db`` defaults
+    ``kind='paper'``; on the pres dispatch hit branch we look up
+    the stored kind and apply it here."""
+    from dataclasses import replace as _replace
+
+    return _replace(result, kind=kind)
+
+
+def _lookup_kind(ref_id: int, *, conn: Any) -> str:
+    """Look up ``refs.kind`` for ``ref_id``. Used on the pres-dispatch
+    hit branch so the returned :class:`IngestResult` reflects what
+    actually got stored — the same bytes might already live as a
+    paper if the operator cross-dropped."""
+    row = conn.execute(
+        "SELECT kind FROM refs WHERE ref_id = %s",
+        (ref_id,),
+    ).fetchone()
+    if row is None:
+        return "paper"
+    return str(row[0])
 
 
 def _ingest_metadata(
@@ -405,6 +587,51 @@ def _format_authors_for_pdf(authors: list[dict[str, Any]] | None) -> list[str]:
     return out
 
 
+def _apply_extra_tags(
+    store: Store,
+    kind: str,
+    ref_id: int,
+    tags: tuple[str, ...],
+) -> None:
+    """Apply open tags to ``ref_id`` in a post-commit transaction.
+
+    Used by both the paper and pres ingest paths to push the
+    watcher's ``tagging/<slug>/`` (and ``books/`` sentinel) tags
+    onto the ref. Runs outside the writer's transaction so a
+    constraint violation here doesn't roll back the just-written
+    ingest — by the time we get here the ref is durable and
+    re-runs apply the same tags idempotently via
+    ``ON CONFLICT DO UPDATE`` inside :meth:`Store.add_tag`.
+
+    Failures are logged but not raised: a tagged ingest where the
+    tag step fails is still better than a rolled-back ingest, and
+    the next watcher pass over the same PDF (sha256 hit path) will
+    re-attempt.
+    """
+    if not tags:
+        return
+    # Deferred import — ``precis.handlers`` pulls in the dispatch
+    # graph; we keep the ingest module importable without it for
+    # the bare-install path (``precis migrate`` / ``precis serve``).
+    from precis.handlers._link_tag_ops import apply_tag_ops
+
+    try:
+        apply_tag_ops(
+            store,
+            kind,
+            ref_id,
+            tags=list(tags),
+            untags=None,
+        )
+    except Exception:
+        log.exception(
+            "precis_add: failed to apply extra_tags %r to ref_id=%d (kind=%s)",
+            tags,
+            ref_id,
+            kind,
+        )
+
+
 def _compute_pdf_sha256(pdf_path: Path) -> str | None:
     """Compute ``pdf_sha256`` for ``pdf_path``.
 
@@ -481,5 +708,6 @@ __all__ = [
     "IngestResult",
     "PdfInput",
     "PrecisAddInput",
+    "PresInput",
     "precis_add",
 ]

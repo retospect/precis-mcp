@@ -29,7 +29,9 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from precis.errors import BadInput
+from psycopg.errors import ForeignKeyViolation
+
+from precis.errors import BadInput, Upstream
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -210,18 +212,38 @@ class GripeHandler(NumericRefHandler):
         # (ord<0) so the count is exactly the body + comment count.
         existing = self.store.list_blocks_for_ref(ref.id)
         next_pos = len(existing)
-        with self.store.tx() as conn:
-            self.store.insert_blocks(
-                ref.id,
-                [
-                    BlockInsert(
-                        pos=next_pos,
-                        text=text,
-                        meta={"chunk_kind": _COMMENT_KIND},
-                    )
+        try:
+            with self.store.tx() as conn:
+                self.store.insert_blocks(
+                    ref.id,
+                    [
+                        BlockInsert(
+                            pos=next_pos,
+                            text=text,
+                            meta={"chunk_kind": _COMMENT_KIND},
+                        )
+                    ],
+                    conn=conn,
+                )
+        except ForeignKeyViolation as e:
+            # Most likely culprit: ``chunks.chunk_kind`` FK against
+            # ``chunk_kinds.slug`` — i.e. the ``gripe_comment`` row
+            # seeded by migration 0005 is missing on this DB. Surface
+            # as Upstream (server-side schema drift, not user error)
+            # with a copy-pasteable diagnostic so the operator knows
+            # what to check. Broad-pass finding #3.
+            raise Upstream(
+                f"could not append {_COMMENT_KIND} chunk to "
+                f"{self._sense()} id={ref.id} — likely missing "
+                f"chunk_kind seed",
+                next=[
+                    f"verify: SELECT slug FROM chunk_kinds WHERE "
+                    f"slug='{_COMMENT_KIND}'",
+                    "re-apply migration "
+                    "0005_gripe_first_class_and_jobs.sql against "
+                    "this DB if the row is absent",
                 ],
-                conn=conn,
-            )
+            ) from e
         return Response(
             body=(
                 f"appended comment to {self._sense()} id={ref.id} "

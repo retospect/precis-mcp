@@ -112,6 +112,7 @@ class TestBackfillSubprocess:
         return _PdfHandler(
             watch_dir=watch_dir,
             corpus_dir=tmp_path / "corpus",
+            corpus_pres_dir=tmp_path / "corpus_pres",
             errors_dir=tmp_path / "errors",
             duplicates_dir=tmp_path / "duplicates",
             store=MagicMock(),
@@ -223,7 +224,9 @@ class TestBackfillSubprocess:
         with patch("precis.cli.watch.subprocess.run", side_effect=fake_run):
             _spawn_batch_subprocess(
                 [tmp_path / "a.pdf", tmp_path / "b.pdf"],
+                watch_dir=tmp_path / "watch",
                 corpus_dir=tmp_path / "corpus",
+                corpus_pres_dir=tmp_path / "corpus_pres",
                 errors_dir=tmp_path / "errors",
                 duplicates_dir=tmp_path / "dup",
                 debounce=0.5,
@@ -258,6 +261,7 @@ class TestBackfillOrder:
         return _PdfHandler(
             watch_dir=watch_dir,
             corpus_dir=tmp_path / "corpus",
+            corpus_pres_dir=tmp_path / "corpus_pres",
             errors_dir=tmp_path / "errors",
             duplicates_dir=tmp_path / "duplicates",
             store=MagicMock(),
@@ -440,7 +444,9 @@ class TestProcessPdf:
             dest = process_pdf(
                 pdf,
                 store=object(),  # type: ignore[arg-type]  # stubbed precis_add ignores it
+                watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,
@@ -483,7 +489,9 @@ class TestProcessPdf:
             dest = process_pdf(
                 pdf,
                 store=object(),  # type: ignore[arg-type]
+                watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,
@@ -511,7 +519,9 @@ class TestProcessPdf:
             dest = process_pdf(
                 pdf,
                 store=object(),  # type: ignore[arg-type]
+                watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,
@@ -543,7 +553,9 @@ class TestProcessPdf:
             dest = process_pdf(
                 pdf,
                 store=object(),  # type: ignore[arg-type]
+                watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,
@@ -567,7 +579,9 @@ class TestProcessPdf:
             dest = process_pdf(
                 pdf,
                 store=object(),  # type: ignore[arg-type]
+                watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,
@@ -595,7 +609,9 @@ class TestProcessPdf:
             dest = process_pdf(
                 pdf,
                 store=object(),  # type: ignore[arg-type]
+                watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,
@@ -627,7 +643,9 @@ class TestProcessPdf:
             dest = process_pdf(
                 pdf,
                 store=object(),  # type: ignore[arg-type]
+                watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,

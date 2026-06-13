@@ -361,6 +361,12 @@ def put(
     # conversation (see precis-conv-help):
     author: str | None = None,
     msg_id: str | None = None,
+    # cron (see precis-cron-help):
+    target: str | None = None,
+    when: str | None = None,
+    in_: str | None = None,
+    recurring: str | None = None,
+    catch_up: bool | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -419,6 +425,11 @@ def put(
             "chunk_kind": chunk_kind,
             "author": author,
             "msg_id": msg_id,
+            "target": target,
+            "when": when,
+            "in_": in_,
+            "recurring": recurring,
+            "catch_up": catch_up,
         },
     )
 
