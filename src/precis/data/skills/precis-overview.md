@@ -48,8 +48,12 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `gripe` | `9` (int) | Annoyance / niggle | store |
 | `fc` | `204` (int) | Flashcard (SM-2 spaced rep) | store |
 | `citation` | `18` (int) | Verified claim → source quote | store |
+| `finding` | `73` (int) | Chain-of-evidence head over a citation chase | store |
+| `job` | `55` (int) | Long-running cluster-side task (e.g. fix_gripe) | store |
 | `cron` | `42` (int) | Scheduled wakeup / reminder | store |
 | `message` | `11` (int) | Proactive outbound (Discord post) | store |
+| `provenance` | `92` (int) | Per-ref provenance audit (sources, transforms) | store |
+| `tag` | `topic:co2-capture` | Discoverable tag row (`get`/`search` only) | store |
 
 Rows with an env var in *Needs* are only active when that var is set.
 For the live list use `get(kind='skill', id='precis-help')`.

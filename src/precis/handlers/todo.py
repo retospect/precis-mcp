@@ -122,18 +122,21 @@ class TodoHandler(NumericRefHandler):
         return Response(body=body)
 
     def _render_create_ack(self, ref_id: int) -> Response:
-        body = f"created todo id={ref_id} (status: open)"
+        # Unified shape (broad-pass finding #9): "created {kind} id=N
+        # (STATUS:open).\nNext: ..." — uppercase axis form, kwarg
+        # spelling, TOON Next: trailer.
+        body = f"created {self.kind} id={ref_id} (STATUS:open)."
         body += render_next_section(
             [
                 (
-                    f"tag(kind='todo', id={ref_id}, add=['STATUS:doing'])",
+                    f"tag(kind={self.kind!r}, id={ref_id}, add=['STATUS:doing'])",
                     "start work on this todo",
                 ),
                 (
-                    f"delete(kind='todo', id={ref_id})",
+                    f"delete(kind={self.kind!r}, id={ref_id})",
                     "delete this todo",
                 ),
-                ("get(kind='todo', id='/open')", "list open todos"),
+                (f"get(kind={self.kind!r}, id='/open')", "list open todos"),
             ]
         )
         return Response(body=body)

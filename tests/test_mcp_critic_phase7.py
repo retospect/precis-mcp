@@ -205,9 +205,18 @@ class TestSkillIndexFiltering:
 
 
 class TestUnregisteredPrefixesRejected:
-    def test_density_prefix_rejected(self) -> None:
-        with pytest.raises(BadInput, match="unknown closed-prefix axis"):
-            Tag.parse_strict("DENSITY:sparse")
+    def test_density_prefix_registered_but_not_ref_level(self) -> None:
+        # 2026-06-13: DENSITY is registered as a closed axis (it's used
+        # at chunk level by the chunk pipeline), so the bare parse no
+        # longer rejects with "unknown closed-prefix axis." But it's
+        # not on any kind's _KIND_ALLOWED_AXES set, so trying to attach
+        # it to a ref-level kind like memory fails with the clearer
+        # "axis not allowed on kind" error. Captures broad-pass
+        # finding #4 — the old "unknown axis" message was misleading
+        # because the corpus already had 1009 DENSITY-tagged chunks.
+        Tag.parse_strict("DENSITY:sparse")  # bare parse succeeds
+        with pytest.raises(BadInput, match="axis not allowed on kind"):
+            Tag.parse_strict("DENSITY:sparse", kind="memory")
 
     def test_confidence_prefix_rejected(self) -> None:
         with pytest.raises(BadInput, match="unknown closed-prefix axis"):

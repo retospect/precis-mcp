@@ -1102,6 +1102,7 @@ class PrecisRuntime:
         # fall through the same TypeError-degradation chain as
         # ``exclude=`` / ``tags=``.
         base_kwargs: dict[str, Any] = {"q": q, "top_k": top_k}
+        semantic_degraded = False
         embedder = getattr(self.hub, "embedder", None)
         if embedder is not None:
             try:
@@ -1134,6 +1135,7 @@ class PrecisRuntime:
                     "cross-kind: embedder unavailable; "
                     "falling back to lexical (%s)", exc.cause
                 )
+                semantic_degraded = True
             except Exception:
                 # An embed failure here shouldn't kill the whole
                 # cross-kind search — fall back to per-kind embed
@@ -1171,13 +1173,25 @@ class PrecisRuntime:
             per_kind_counts.append((k, len(hits_list)))
             streams.append(hits_list)
 
+        # When the embedder was unavailable for this turn, change the
+        # empty-result wording from "no matches" to a partial-result
+        # headline — semantic side genuinely couldn't run, so claiming
+        # zero matches is overconfident. Broad-pass finding #13.
+        if semantic_degraded:
+            empty_body = (
+                f"no lexical matches across {', '.join(kinds)} for {q!r}; "
+                "semantic search degraded to lexical-only this turn — "
+                "retry in ~30s for ranked semantic fan-out"
+            )
+        else:
+            empty_body = f"no matches across {', '.join(kinds)} for {q!r}"
         response = merge_and_render(
             streams,
             page_size=top_k,
             query=q,
             header_noun="match",
             mode="rrf",
-            empty_body=(f"no matches across {', '.join(kinds)} for {q!r}"),
+            empty_body=empty_body,
         )
 
         # Round-2 picky F-8: prepend a per-kind hit-count line under the

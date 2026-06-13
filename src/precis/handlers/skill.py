@@ -580,10 +580,30 @@ class SkillHandler(Handler):
             merged[slug] = _lexical_row(slug, count, preview)
 
         if not merged:
+            # Distinguish "genuinely no match" from "lexical drew blank
+            # while semantic was unavailable" — the latter is recoverable
+            # by retrying once the embedder warms (or by pointing the MCP
+            # at the always-hot precis serve-embeddings via
+            # PRECIS_EMBEDDER=remote). Broad-pass finding #1: the
+            # previous unconditional "no skills mention" was over-
+            # confident during the bge-m3 cold-start window.
+            semantic_available = self._semantic_available()
+            if semantic_available:
+                headline = f"no skills mention {q!r}"
+                tip = "Try a different phrasing, or fall back to the index:"
+            else:
+                headline = (
+                    f"no lexical matches for {q!r}; semantic search is "
+                    "warming and didn't contribute this turn"
+                )
+                tip = (
+                    "Retry in ~30s once the embedder warms, or fall back "
+                    "to the index:"
+                )
             return Response(
                 body=(
-                    f"no skills mention {q!r}\n\n"
-                    "Try a different phrasing, or fall back to the index:"
+                    f"{headline}\n\n"
+                    f"{tip}"
                     + render_next_section(
                         [
                             (
@@ -698,6 +718,28 @@ class SkillHandler(Handler):
         if index is None:
             return []
         return index.search(q, page_size=page_size)
+
+    def _semantic_available(self) -> bool:
+        """True when the semantic side of skill search can answer.
+
+        Used by the empty-result path to distinguish "lexical empty AND
+        semantic genuinely returned nothing" from "lexical empty AND
+        semantic couldn't run because the embedder is cold." The latter
+        deserves a "retry soon" hint instead of an overconfident "no
+        skills mention." Broad-pass finding #1.
+        """
+        index = self._get_index()
+        if index is None:
+            return False
+        embedder = getattr(index, "_embedder", None)
+        if embedder is None:
+            return False
+        is_ready = getattr(embedder, "is_ready", None)
+        if callable(is_ready):
+            return bool(is_ready())
+        # Backends without is_ready() (RemoteEmbedder, MockEmbedder)
+        # are always-ready by construction.
+        return True
 
     def _lexical_hits(self, q: str) -> list[tuple[str, int, str]]:
         """Substring-match every skill body against ``q``.

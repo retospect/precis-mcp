@@ -702,6 +702,59 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (ref_id,))
 
+    def replace_ref_text(
+        self,
+        ref_id: int,
+        new_text: str,
+        *,
+        source: str = "agent",
+        conn: Connection | None = None,
+    ) -> str | None:
+        """In-place rewrite of a numeric-ref kind's body (``refs.title``).
+
+        Updates the body, bumps ``updated_at``, and writes a
+        ``body_replaced`` row to ``ref_events`` with the old body as
+        payload — so ``view='log'`` surfaces the rewrite history.
+        Returns the old text (for callers that want to render a diff
+        or re-embed the survivor's card chunk).
+
+        Distinct from ``supersede``: same id stays, links stay attached,
+        no consolidation. The "polish a thought" verb. Broad-pass
+        finding #5 — agents had no way to fix wording without
+        delete + re-put, which breaks every inbound edge.
+        """
+        def _do(c: Connection) -> str | None:
+            row = c.execute(
+                "SELECT title FROM refs "
+                "WHERE ref_id = %s AND deleted_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            old_text = row[0]
+            c.execute(
+                "UPDATE refs SET title = %s, updated_at = now() "
+                "WHERE ref_id = %s",
+                (new_text, ref_id),
+            )
+            c.execute(
+                "INSERT INTO ref_events "
+                "(ref_id, source, event, payload) "
+                "VALUES (%s, %s, %s, %s::jsonb)",
+                (
+                    ref_id,
+                    source,
+                    "body_replaced",
+                    Jsonb({"old_text": old_text, "new_text": new_text}),
+                ),
+            )
+            return old_text
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def soft_delete_ref(
         self,
         ref_id: int,

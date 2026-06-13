@@ -423,16 +423,32 @@ class GripeHandler(NumericRefHandler):
         return "\n".join(lines)
 
     def _render_create_ack(self, ref_id: int) -> Response:
-        return Response(
-            body=(
-                f"created {self._sense()} id={ref_id} (STATUS:open). "
-                f"add context: put(kind={self.kind!r}, id={ref_id}, "
-                "text='more details'). "
-                f"hand off to an agent: put(kind='job', "
-                f"job_type='fix_gripe', link='gripe:{ref_id}', "
-                "rel='fixes')."
-            )
+        # Unified shape (broad-pass finding #9): kwarg spelling +
+        # uppercase STATUS axis + TOON Next: trailer. Previous inline-
+        # prose breadcrumb was harder to paste and bunched two
+        # very different actions onto one line.
+        from precis.utils.next_block import render_next_section
+
+        body = f"created {self.kind} id={ref_id} (STATUS:open)."
+        body += render_next_section(
+            [
+                (
+                    f"put(kind={self.kind!r}, id={ref_id}, "
+                    "text='more details')",
+                    "append a comment",
+                ),
+                (
+                    f"put(kind='job', job_type='fix_gripe', "
+                    f"link={self.kind!r}+':{ref_id}', rel='fixes')",
+                    "hand off to an agent",
+                ),
+                (
+                    f"get(kind={self.kind!r}, id='/recent')",
+                    f"recent {self._sense()} entries",
+                ),
+            ]
         )
+        return Response(body=body)
 
 
 def _snippet(text: str, *, max_chars: int = 200) -> str:

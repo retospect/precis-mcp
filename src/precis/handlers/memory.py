@@ -47,6 +47,10 @@ class MemoryHandler(NumericRefHandler):
         supports_search=True,
         supports_search_hits=True,
         supports_put=True,
+        # In-place rewrite via edit(mode='replace', text='...') (broad-pass
+        # finding #5). Same id, links stay attached, audit trail lands
+        # in ref_events as a ``body_replaced`` row (view='log').
+        supports_edit=True,
         supports_delete=True,
         supports_tag=True,
         supports_link=True,
@@ -63,6 +67,67 @@ class MemoryHandler(NumericRefHandler):
     # `search(like=...)` finds true semantic neighbours. Foundation for
     # the dreaming capability (docs/design/dreaming.md).
     emits_card: ClassVar[bool] = True
+
+    # ── edit: in-place body rewrite ─────────────────────────────────
+
+    def edit(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        mode: str = "replace",
+        text: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """In-place rewrite of a memory's body.
+
+        Only ``mode='replace'`` is supported. ``text=`` carries the new
+        body; the old text is preserved in ``ref_events`` so the rewrite
+        is recoverable / auditable via ``get(kind='memory', id=N,
+        view='log')``. The card_combined chunk is refreshed so semantic
+        search reflects the new body instead of the stale one.
+
+        Distinct from ``supersede`` (which is the consolidate-into-new
+        verb): replace keeps the same id and every inbound link
+        (``cites``/``derived-from``/etc.) — the "polish the wording"
+        affordance. Broad-pass finding #5.
+        """
+        if id is None:
+            raise BadInput(
+                "edit(kind='memory') requires id=",
+                next="edit(kind='memory', id=N, mode='replace', text='new body')",
+            )
+        if mode != "replace":
+            raise BadInput(
+                f"edit(kind='memory') only supports mode='replace', got {mode!r}",
+                next=(
+                    "edit(kind='memory', id=N, mode='replace', text='new body')"
+                ),
+            )
+        if text is None or not text.strip():
+            raise BadInput(
+                "edit(kind='memory', mode='replace') requires text=",
+                next="edit(kind='memory', id=N, mode='replace', text='new body')",
+            )
+        ref_id = self._coerce_id(id)
+        # _resolve_live_ref raises NotFound/Gone with the right
+        # taxonomy if the memory doesn't exist or was soft-deleted.
+        ref = self._resolve_live_ref(ref_id)
+        with self.store.tx() as conn:
+            old_text = self.store.replace_ref_text(
+                ref.id, text, source="agent", conn=conn
+            )
+            self.store.upsert_card_combined(ref.id, text, conn=conn)
+        # Render a confirmation with both old and new word counts so
+        # the agent can audit "did the rewrite actually shrink it?"
+        old_words = len((old_text or "").split())
+        new_words = len(text.split())
+        return Response(
+            body=(
+                f"replaced body of {self._sense()} id={ref.id} "
+                f"({old_words} → {new_words} words). "
+                f"view='log' for the full diff."
+            )
+        )
 
     # ── supersede: the one guarded destructive verb (dreaming) ──────
 

@@ -493,6 +493,17 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # validated tag/put verb needs the axis registered to pass
     # ``parse_strict``. Closed vocab also gives typo protection.
     "DREAM": frozenset({"consolidated", "speculative", "acquire"}),
+    # Chunk-level information density (broad-pass usability finding #4).
+    # Written by the chunk pipeline into ``chunk_tags`` (see
+    # ``_blocks_ops.py`` — namespace='DENSITY' tags on chunks). Registered
+    # here so the namespace is known to the validation layer — an agent
+    # tagging a ref with ``DENSITY:dense`` now gets "axis 'DENSITY' not
+    # allowed on kind X" (via ``_KIND_ALLOWED_AXES``) instead of the
+    # misleading "unknown closed-prefix axis." DENSITY is not added to
+    # any kind's allowed-axes list because density is a chunk property,
+    # not a ref property — chunk-level inspection lives behind
+    # ``get(kind='<file>', view='log')`` and per-chunk tag queries.
+    "DENSITY": frozenset({"dense", "medium", "sparse"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as

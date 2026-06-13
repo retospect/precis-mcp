@@ -138,6 +138,7 @@ the canonical list:
 | `CACHE:` | `fresh` / `stale` / `pinned` | system |
 | `WATCH:` | `hourly` / `daily` / `weekly` / `monthly` | agent (cache-backed refs) |
 | `DREAM:` | `consolidated` / `speculative` / `acquire` | dreaming worker |
+| `DENSITY:` | `dense` / `medium` / `sparse` | chunk pipeline (chunk-level — not applied to refs) |
 
 Any UPPERCASE prefix outside that table is rejected — coin concepts
 as lowercase tags (`density:dense`, `confidence:strong`) instead.

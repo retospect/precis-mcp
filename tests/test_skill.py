@@ -89,7 +89,13 @@ def test_search_finds_term(skill: SkillHandler) -> None:
 
 def test_search_no_match(skill: SkillHandler) -> None:
     out = skill.search(q="xyzzy-no-such-token-anywhere")
-    assert "no skills mention" in out.body
+    # Two acceptable headlines depending on whether the test rig wired
+    # an embedder (then "no skills mention" — semantic genuinely found
+    # nothing) or didn't (then the warming-hint shape from broad-pass
+    # finding #1, so the agent knows to retry). Either is honest.
+    assert "no skills mention" in out.body or (
+        "no lexical matches" in out.body and "warming" in out.body
+    )
 
 
 def test_search_hyphen_space_equivalence(skill: SkillHandler) -> None:
@@ -459,7 +465,11 @@ def test_search_falls_back_to_substring_when_no_embedder(skill: SkillHandler) ->
     # row, OR we hit the empty-result branch which has a different
     # body shape entirely. Both are acceptable; what matters is no
     # crash and no fallback to ``BadInput``.
-    assert "no skills mention" in out.body or "skill match" in out.body
+    assert (
+        "no skills mention" in out.body
+        or "skill match" in out.body
+        or ("no lexical matches" in out.body and "warming" in out.body)
+    )
 
 
 # ── search hides unwired skills + surfaces escalation hint ───────────
@@ -766,4 +776,47 @@ def test_precis_overview_kind_table_covers_live_registry(hub: Hub) -> None:
         f"missing kinds: {missing}. "
         "Add a row to the refs/tools/discovery table for each, "
         "or mark explicitly as env-gated in the Needs column."
+    )
+
+
+def test_precis_overview_ref_kinds_table_matches_registry(hub: Hub) -> None:
+    """The "ref kinds" table specifically must list every kind that
+    supports the full get/search/tag/link surface.
+
+    The looser sibling test above passes when a kind is mentioned
+    anywhere in the markdown, which let ``finding``/``job``/
+    ``provenance``/``tag`` drop out of the canonical table even though
+    they were referenced elsewhere — broad-pass usability finding #8.
+
+    This test extracts the rows under the "## The ref kinds" heading
+    and asserts every full-verb-surface kind in ``hub.kinds`` is
+    listed as a row by its inline-code slug in the first column.
+    """
+    import re
+
+    from precis.handlers.skill import _load_skill
+
+    text = _load_skill("precis-overview")
+    assert text is not None, "precis-overview.md missing from package data"
+
+    m = re.search(
+        r"^## The ref kinds[^\n]*\n(.*?)(?=\n## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert m, "precis-overview missing the 'ref kinds' table heading"
+    table_block = m.group(1)
+    listed = set(re.findall(r"^\|\s*`([^`]+)`\s*\|", table_block, re.MULTILINE))
+
+    full_surface = (
+        hub.kinds_supporting("get")
+        & hub.kinds_supporting("search")
+        & hub.kinds_supporting("tag")
+        & hub.kinds_supporting("link")
+    )
+    missing = sorted(full_surface - listed)
+    assert not missing, (
+        "precis-overview 'ref kinds' table drifts from registry — "
+        f"missing rows for: {missing}. Add a row each, or change the "
+        "table's stated contract."
     )

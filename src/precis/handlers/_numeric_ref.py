@@ -1040,9 +1040,41 @@ class NumericRefHandler(Handler):
         return render_agent_table(rows, schema=schema)
 
     def _render_create_ack(self, ref_id: int) -> Response:
-        """Acknowledgement returned by `put` on create. Subclasses
-        override to attach a Next: trailer with kind-specific hints."""
-        return Response(body=f"created {self._sense()} id={ref_id}")
+        """Acknowledgement returned by `put` on create.
+
+        Default shape: ``created <kind> id=N.`` + TOON Next: trailer
+        listing one or two useful follow-ups. Uses ``self.kind`` (the
+        kwarg spelling, e.g. ``fc``) — *not* ``self._sense()`` (the
+        prose noun, e.g. ``flashcard``) — so the header matches the
+        kwarg agents pass on put/tag/link/get. Broad-pass finding #9.
+
+        Subclasses override to add kind-specific hints (e.g. todo's
+        STATUS:doing transition, gripe's append-comment recipe).
+        """
+        body = f"created {self.kind} id={ref_id}."
+        body += render_next_section(self._create_ack_next_hints(ref_id))
+        return Response(body=body)
+
+    def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:
+        """Default TOON Next: rows for the create-ack trailer.
+
+        Generic recipes that work on every numeric-ref kind. Subclasses
+        prepend their own (status transitions, comment appends, etc.).
+        """
+        return [
+            (
+                f"get(kind={self.kind!r}, id={ref_id})",
+                f"read this {self._sense()}",
+            ),
+            (
+                f"tag(kind={self.kind!r}, id={ref_id}, add=[...])",
+                "add tags",
+            ),
+            (
+                f"delete(kind={self.kind!r}, id={ref_id})",
+                f"delete this {self._sense()}",
+            ),
+        ]
 
     def _supported_list_views(self) -> tuple[str, ...]:
         """Names of the list views this kind accepts via ``id='/<view>'``.
