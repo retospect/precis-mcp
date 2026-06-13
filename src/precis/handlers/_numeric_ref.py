@@ -48,6 +48,47 @@ from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 # this tuple via a class-level hook.
 _BASE_VIEWS: tuple[str, ...] = ("links", "log")
 
+# Summary budget for the TOON list view's first-line cell. Memories
+# written before the SOUL's first-line discipline landed are often a
+# single ~400-word paragraph with no newlines; without a cap the
+# whole body lands in the summary cell and the table becomes
+# unreadable. Cap at the first sentence terminator within budget;
+# fall back to a hard char cut + ellipsis.
+_SUMMARY_MAX_CHARS = 180
+_SENTENCE_TERMINATORS = (". ", "! ", "? ")
+
+
+def _extract_summary(body: str) -> tuple[str, int]:
+    """Return ``(summary, remaining_words)`` for the list-view TOON row.
+
+    The summary is the natural author-written first line when one
+    exists (i.e. there's a ``\\n`` within budget). Failing that, the
+    first sentence within ``_SUMMARY_MAX_CHARS`` of the start. Failing
+    that, a hard cut + ``…``. ``remaining_words`` counts the words in
+    everything past the summary so the budget signal stays honest.
+    """
+    if not body:
+        return "", 0
+    first_line, sep, rest = body.partition("\n")
+    first_line = first_line.rstrip()
+    if sep and len(first_line) <= _SUMMARY_MAX_CHARS:
+        return first_line, len(rest.split())
+    head = body[:_SUMMARY_MAX_CHARS]
+    cut = -1
+    for term in _SENTENCE_TERMINATORS:
+        idx = head.rfind(term)
+        if idx > cut:
+            cut = idx
+    if cut > 0:
+        summary = body[: cut + 1].rstrip()
+        tail = body[cut + 1:]
+    elif len(body) > _SUMMARY_MAX_CHARS:
+        summary = body[:_SUMMARY_MAX_CHARS].rstrip() + "…"
+        tail = body[_SUMMARY_MAX_CHARS:]
+    else:
+        return body.rstrip(), 0
+    return summary, len(tail.split())
+
 
 class NumericRefHandler(Handler):
     """Base class for numeric-id ref kinds (memory, todo, gripe, fc, …)."""
@@ -983,15 +1024,13 @@ class NumericRefHandler(Handler):
         rows: list[dict[str, str]] = []
         for r in refs:
             body = r.title or ""
-            first_line, _, rest = body.partition("\n")
-            first_line = first_line.rstrip()
-            remaining_words = len(rest.split())
+            summary, remaining_words = _extract_summary(body)
             age_days = max(0, (now - r.updated_at).days)
             rows.append(
                 {
                     "kind": self.kind,
                     "id": str(r.id),
-                    "summary": first_line,
+                    "summary": summary,
                     "remaining_words": str(remaining_words),
                     "links": str(link_counts.get(r.id, 0)),
                     "age": str(age_days),
