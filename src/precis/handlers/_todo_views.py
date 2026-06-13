@@ -317,64 +317,79 @@ def _active_strategic_ids(store: Store) -> list[int]:
 
 
 def render_strategic(store: Store) -> Response:
-    """Strategic + tactical layer with leaf counts under each tactical."""
+    """Strategic + tactical layer with leaf counts under each tactical.
+
+    For each strategic root, list its direct children (the tactical
+    tier) along with a ``[open/total]`` count of leaves anywhere in
+    that tactical's subtree. ``open`` = status not in (done, won't-do).
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            WITH leaves AS (
-                SELECT r.ref_id AS leaf_id, r.parent_id AS direct_parent
-                  FROM refs r
-                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
-                   AND NOT EXISTS (
-                       SELECT 1 FROM refs c
-                        WHERE c.parent_id = r.ref_id
-                          AND c.deleted_at IS NULL
+            WITH RECURSIVE
+              tac AS (
+                SELECT t.ref_id AS tactical_id, t.title AS tactical_title,
+                       t.parent_id AS strategic_id
+                  FROM refs t
+                 WHERE t.kind = 'todo' AND t.deleted_at IS NULL
+                   AND EXISTS (
+                       SELECT 1 FROM refs s
+                        WHERE s.ref_id = t.parent_id
+                          AND s.kind = 'todo' AND s.deleted_at IS NULL
+                          AND s.parent_id IS NULL
+                          AND EXISTS (
+                              SELECT 1 FROM ref_tags rt
+                                JOIN tags tg ON tg.tag_id = rt.tag_id
+                               WHERE rt.ref_id = s.ref_id
+                                 AND tg.namespace = 'OPEN'
+                                 AND tg.value = 'level:strategic'
+                          )
                    )
-            ),
-            leaf_status AS (
-                SELECT l.leaf_id, l.direct_parent,
+              ),
+              tac_subtree AS (
+                SELECT tac.tactical_id, tac.tactical_id AS desc_id FROM tac
+                UNION ALL
+                SELECT ts.tactical_id, r.ref_id
+                  FROM tac_subtree ts
+                  JOIN refs r ON r.parent_id = ts.desc_id
+                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+              ),
+              leaves AS (
+                SELECT ts.tactical_id, ts.desc_id AS leaf_id,
                        COALESCE(
                          (SELECT t.value FROM ref_tags rt
                             JOIN tags t ON t.tag_id = rt.tag_id
-                           WHERE rt.ref_id = l.leaf_id
+                           WHERE rt.ref_id = ts.desc_id
                              AND t.namespace = 'STATUS'
                            LIMIT 1),
                          'open'
                        ) AS status
-                  FROM leaves l
-            ),
-            ancestor AS (
-                -- walk each leaf up to its tactical ancestor (or strategic
-                -- if a tactical isn't in the chain).
-                SELECT ls.leaf_id, ls.status, r.ref_id AS anc_id, 0 AS depth
-                  FROM leaf_status ls JOIN refs r ON r.ref_id = ls.leaf_id
-                UNION ALL
-                SELECT a.leaf_id, a.status, r.ref_id, a.depth + 1
-                  FROM ancestor a
-                  JOIN refs r ON r.ref_id = (
-                      SELECT parent_id FROM refs WHERE ref_id = a.anc_id
-                  )
-                 WHERE a.depth < 10
-            )
-            SELECT
-              s.ref_id AS strategic_id, s.title AS strategic_title,
-              tac.ref_id AS tactical_id, tac.title AS tactical_title,
-              COUNT(*) FILTER (WHERE a.status NOT IN ('done', 'won''t-do')) AS open_count,
-              COUNT(*) AS total_count
-            FROM refs s
-            LEFT JOIN refs tac ON tac.parent_id = s.ref_id
-                              AND tac.kind = 'todo'
-                              AND tac.deleted_at IS NULL
-            LEFT JOIN ancestor a ON a.anc_id = tac.ref_id
-            WHERE s.kind = 'todo' AND s.deleted_at IS NULL
-              AND s.parent_id IS NULL
-              AND EXISTS (
-                  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                   WHERE rt.ref_id = s.ref_id AND t.namespace = 'OPEN'
-                     AND t.value = 'level:strategic'
+                  FROM tac_subtree ts
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM refs c
+                      WHERE c.parent_id = ts.desc_id
+                        AND c.kind = 'todo'
+                        AND c.deleted_at IS NULL
+                 )
               )
-            GROUP BY s.ref_id, s.title, tac.ref_id, tac.title
-            ORDER BY s.ref_id, tac.ref_id NULLS FIRST
+            SELECT s.ref_id AS strategic_id, s.title AS strategic_title,
+                   tac.tactical_id, tac.tactical_title,
+                   COUNT(l.leaf_id) FILTER (
+                       WHERE l.status NOT IN ('done', 'won''t-do')
+                   ) AS open_count,
+                   COUNT(l.leaf_id) AS total_count
+              FROM refs s
+              LEFT JOIN tac ON tac.strategic_id = s.ref_id
+              LEFT JOIN leaves l ON l.tactical_id = tac.tactical_id
+             WHERE s.kind = 'todo' AND s.deleted_at IS NULL
+               AND s.parent_id IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = s.ref_id AND t.namespace = 'OPEN'
+                      AND t.value = 'level:strategic'
+               )
+             GROUP BY s.ref_id, s.title, tac.tactical_id, tac.tactical_title
+             ORDER BY s.ref_id, tac.tactical_id NULLS FIRST
             """,
         ).fetchall()
     if not rows:
