@@ -10,6 +10,37 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **Hierarchical todo tree — Slice 1 of `docs/design/todo-tree-plan.md`.**
+  New `parent_id` column on `refs` wires todos into a tree
+  (migration `0013_todo_tree.sql`). `kind='todo'` gains a tree-aware
+  view family — `search(view=...)` accepts `roots`, `strategic`,
+  `doable`, `waiting`, `blocked`, `asking-reto`; `get(id=N,
+  view='tree')` renders the subtree under a ref. The doable filter
+  walks the ancestor chain, skips paused subtrees, drops leaves with
+  live `blocked-by` links / `waiting-for:*` / `asking-reto` tags,
+  and orders by least-picked strategic in the rolling 7-day window
+  (sourced from `ref_events`). Walk-on-read ancestry: every
+  `get(kind='todo', id=N)` reply appends the chain from the strategic
+  root down to the leaf. Authority gradient via `level:strategic`
+  / `level:tactical` tags (owner-only, gated by `PRECIS_SOURCE`:
+  `asa-*` is worker, everything else is owner). Hard depth-10 cap
+  with the recovery hint baked into the error
+  (`waiting-for:` / `blocked-by` instead of splitting). Cycle check
+  on re-parent paths (read-only today, ready for the Slice 2 web
+  editor). `STATUS:` closed vocab grows `paused` and `auto-timeout`.
+  New skill: `precis-tasks-help`. Implementation lives in
+  `handlers/_todo_guards.py`, `handlers/_todo_views.py`, and the
+  extended `handlers/todo.py`. Auto-tasks (Slice 1b), worker
+  integration (Slice 2), and review cadence (Slice 3) are queued.
+- **`search(view='stubs')` — the "papers we still need to get"
+  backlog over MCP.** Lists `paper` refs with an external identifier
+  (DOI / arXiv / S2) but no PDF yet — the queue the chase worker and
+  the dream `acquire` tool both feed. Paper-only; `q=` ignored, `n=`
+  caps rows. Renders newest-first with a one-line state per stub and
+  a `Next:` block. The CLI (`precis stubs`) and the new MCP view now
+  render from one shared query (`Store.stub_backlog`). New skill
+  `precis-stubs-help` teaches the backlog, the `DREAM:acquire` tag,
+  and the `acquire` tool.
 - **`precis watch` routes by inbox subtree, ingests slide decks as
   `kind='pres'`.** `inbox/papers/` → paper (current behaviour),
   `inbox/books/` → paper with auto `subtype:book` + `topic:book`,

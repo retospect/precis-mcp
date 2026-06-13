@@ -210,6 +210,13 @@ class PrecisRuntime:
         if verb == "search" and str(args.get("view") or "").strip() == "dreamable":
             return self._dispatch_dreamable(kind, dict(args))
 
+        # Backlog view: ``search(view='stubs')`` is the "papers we still
+        # need to get" list — paper refs with an external id but no PDF
+        # yet (docs/design/stubs-mcp-and-skill.md). Paper-only; ignores
+        # ``q=``. Intercept before kind resolution.
+        if verb == "search" and str(args.get("view") or "").strip() == "stubs":
+            return self._dispatch_stubs(dict(args))
+
         # Angle spray: ``search`` with ``angle=`` or ``like=`` is the
         # diverse-cone semantic sampler (docs/design/dreaming.md), not
         # the lexical+RRF path. Intercept before kind resolution — it
@@ -840,6 +847,65 @@ class PrecisRuntime:
     # enough to read a theme, small enough to stay in one prompt.
     _DREAMABLE_DEFAULT_N: int = 12
 
+    # Default backlog size for ``search(view='stubs')`` — enough to
+    # scan in one prompt without dumping the whole queue.
+    _STUBS_DEFAULT_N: int = 25
+
+    def _dispatch_stubs(self, args: dict[str, Any]) -> Response:
+        """The required-papers backlog: ``search(view='stubs')``.
+
+        Lists ``paper`` refs with an external identifier (DOI / arXiv /
+        S2) registered but no PDF yet — the "papers we still need to
+        get" queue the chase worker and the dream ``acquire`` tool both
+        feed (docs/design/stubs-mcp-and-skill.md). Paper-only; ``q=`` is
+        ignored (the view *is* the filter). ``n=`` / ``page_size=`` cap
+        the row count; newest stub first. Read-only — surfacing the
+        backlog does not touch salience or the fetch pipeline.
+        """
+        from precis.utils.next_block import render_next_section
+
+        store = self.hub.store
+        if store is None:
+            raise Unsupported("view='stubs' needs a store-backed deployment")
+
+        n = int(args.get("n") or args.get("page_size") or self._STUBS_DEFAULT_N)
+        if n < 1:
+            raise BadInput("n must be >= 1", next="search(view='stubs', n=25)")
+
+        rows = store.stub_backlog(limit=n)
+        if not rows:
+            return Response(
+                body=(
+                    "no stub papers — every paper has a PDF or no external "
+                    "identifier to fetch one with. Nothing to acquire."
+                )
+            )
+
+        lines = [f"papers we still need to get ({len(rows)} shown):", ""]
+        for r in rows:
+            ident = r["identifier"] or "(no external id)"
+            cite = r["cite_key"] or f"ref {r['ref_id']}"
+            lines.append(f"  ref {r['ref_id']}  {ident}  [{cite}]")
+            lines.append(f"      {r['state']}")
+        body = "\n".join(lines)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='paper', id={rows[0]['ref_id']})",
+                    "open a stub to see what links to it",
+                ),
+                (
+                    "search(kind='paper', tags=['DREAM:acquire'])",
+                    "just the papers a dream wanted",
+                ),
+                (
+                    "get(kind='skill', id='precis-stubs-help')",
+                    "how the backlog works",
+                ),
+            ]
+        )
+        return Response(body=body)
+
     def _dispatch_dreamable(self, kind: Any, args: dict[str, Any]) -> Response:
         """The focus region: the salience seed + its ANN neighbourhood.
 
@@ -1132,8 +1198,8 @@ class PrecisRuntime:
                     )
                 )
                 log.info(
-                    "cross-kind: embedder unavailable; "
-                    "falling back to lexical (%s)", exc.cause
+                    "cross-kind: embedder unavailable; falling back to lexical (%s)",
+                    exc.cause,
                 )
                 semantic_degraded = True
             except Exception:

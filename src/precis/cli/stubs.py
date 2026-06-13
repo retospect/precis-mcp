@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Any
 
 from precis.cli._common import (
     add_format_argument,
@@ -90,7 +89,7 @@ def run(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url)
     store = Store.connect(dsn)
     try:
-        rows = _query_stubs(store, limit=args.limit, awaiting=args.awaiting)
+        rows = store.stub_backlog(limit=args.limit, awaiting=args.awaiting)
     finally:
         store.close()
 
@@ -102,101 +101,6 @@ def run(args: argparse.Namespace) -> None:
         )
         return
     print(serialize(rows, format=resolve_format(args), schema=_SCHEMA))
-
-
-def _query_stubs(store: Store, *, limit: int, awaiting: bool) -> list[dict[str, Any]]:
-    """Return one dict per stub paper ref, newest-stub-first.
-
-    Joins ``refs`` (stub predicate) with the latest ``ref_events``
-    row per ref where ``source LIKE 'fetcher:%'``. The ``state``
-    column is a one-line summary the operator can scan: "awaiting
-    fetch" / "OK — PDF expected soon" / "no OA version" / etc.
-
-    When ``awaiting=True``, restricts to rows where the last
-    attempt is NULL or older than 24h AND the event isn't
-    ``fetch_ok`` (the watcher would have picked the file up by now
-    so the row would have left this query's result set the next
-    time precis_add ran). Practical filter: "what would
-    ``precis worker --only fetch`` actually try?".
-    """
-    sql = """
-        WITH stubs AS (
-            SELECT r.ref_id,
-                   (SELECT id_value FROM ref_identifiers
-                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
-                   COALESCE(
-                     (SELECT id_value FROM ref_identifiers
-                       WHERE ref_id = r.ref_id AND id_kind = 'doi'),
-                     (SELECT 'arxiv:' || id_value FROM ref_identifiers
-                       WHERE ref_id = r.ref_id AND id_kind = 'arxiv'),
-                     (SELECT 's2:' || id_value FROM ref_identifiers
-                       WHERE ref_id = r.ref_id AND id_kind = 's2')
-                   ) AS identifier,
-                   r.ref_id AS sort_key
-              FROM refs r
-             WHERE r.kind = 'paper'
-               AND r.pdf_sha256 IS NULL
-               AND r.deleted_at IS NULL
-               AND EXISTS (
-                     SELECT 1 FROM ref_identifiers ri
-                      WHERE ri.ref_id = r.ref_id
-                        AND ri.id_kind IN ('doi', 'arxiv', 's2')
-               )
-        ),
-        latest_event AS (
-            SELECT DISTINCT ON (ref_id) ref_id, ts, source, event
-              FROM ref_events
-             WHERE source LIKE 'fetcher:%%'
-             ORDER BY ref_id, ts DESC
-        )
-        SELECT s.ref_id, s.cite_key, s.identifier,
-               le.ts, le.source, le.event
-          FROM stubs s
-          LEFT JOIN latest_event le ON le.ref_id = s.ref_id
-         WHERE
-            CASE WHEN %s::bool THEN
-                (le.ref_id IS NULL
-                 OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
-            ELSE TRUE END
-         ORDER BY s.sort_key DESC
-         LIMIT %s
-    """
-    out: list[dict[str, Any]] = []
-    with store.pool.connection() as conn:
-        rows = conn.execute(sql, (awaiting, limit)).fetchall()
-    for row in rows:
-        out.append(
-            {
-                "ref_id": int(row[0]),
-                "cite_key": row[1] or "",
-                "identifier": row[2] or "",
-                "last_attempt": row[3].isoformat() if row[3] is not None else "",
-                "last_source": row[4] or "",
-                "last_event": row[5] or "",
-                "state": _state_summary(row[5], row[3]),
-            }
-        )
-    return out
-
-
-def _state_summary(last_event: str | None, last_ts: Any) -> str:
-    """One-line state per stub for operator triage."""
-    if last_event is None:
-        return "awaiting fetch (never tried)"
-    if last_event == "fetch_ok":
-        # If the file is on disk and the watcher hasn't ingested it
-        # yet, the row will leave the stub backlog as soon as
-        # precis_add runs. Until then it lingers — flag explicitly.
-        return "PDF downloaded; awaiting watcher ingest"
-    if last_event == "no_oa_version":
-        return "no OA version available"
-    if last_event in ("fetch_failed", "api_error"):
-        return f"{last_event} — will retry in 24h"
-    if last_event == "rate_limited":
-        return "rate-limited — backed off"
-    if last_event == "invalid_identifier":
-        return "identifier rejected — operator review"
-    return last_event
 
 
 __all__ = ["add_parser", "run"]

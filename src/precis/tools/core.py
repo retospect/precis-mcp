@@ -244,7 +244,8 @@ def search(
     **Angle spray**: `angle=` (cosine in `[-1,1]`) +/- `like='kind:id'`
     returns `n` diverse items at that cosine from the seed (a cone
     sample, not a ranked list). **`view='dreamable'`**: the most-due
-    salient seed + its neighbourhood. See the skill help for both.
+    salient seed + its neighbourhood. **`view='stubs'`**: the
+    paper-acquisition backlog (an id but no PDF). See the skill help.
 
     Full reference: get(kind='skill', id='precis-search-help'), or
     search(kind='skill', q='finding things by topic') for a topical

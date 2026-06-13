@@ -152,6 +152,12 @@ class Ref:
     # via store.touch_ref().
     auto_refresh_days: int | None = None
     refreshed_at: datetime | None = None
+    # Migration 0013 / todo-tree. NULL for refs not in a tree (everything
+    # but todo branches/leaves today). Self-referencing FK with ON DELETE
+    # SET NULL — orphaned children survive parent deletion. Cycle / depth
+    # / level-gradient guards live in ``handlers/_todo_guards.py`` and run
+    # at write time.
+    parent_id: int | None = None
 
     @property
     def public_id(self) -> str:
@@ -464,6 +470,15 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "failed",
             "cancelled",
             "cancel_requested",
+            # todo-tree (migration 0013 / Slice 1). ``paused`` pauses
+            # a subtree — its leaves drop out of ``view='doable'`` until
+            # the branch is unpaused (the doable filter walks the
+            # ancestor chain). ``auto-timeout`` is written by the
+            # auto-check worker (Slice 1b) when an auto-task leaf
+            # exceeds its ``meta.auto_check.timeout_at`` without
+            # resolving; the nursery sweep surfaces these for triage.
+            "paused",
+            "auto-timeout",
         }
     ),
     "PRIO": frozenset({"low", "normal", "high", "urgent"}),

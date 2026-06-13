@@ -105,6 +105,7 @@ class RefsMixin:
         authors: list[dict[str, Any]] | None = None,
         year: int | None = None,
         auto_refresh_days: int | None = None,
+        parent_id: int | None = None,
         conn: Connection | None = None,
     ) -> Ref:
         """Insert a ref. Slug rules:
@@ -135,12 +136,18 @@ class RefsMixin:
         # the next N days unless refreshed via ``touch``. NULL =
         # permanent (default). Initial ``refreshed_at = now()`` so
         # the decay clock starts immediately.
+        #
+        # ``parent_id`` (migration 0013 / todo-tree) wires the ref
+        # into a hierarchical task graph. NULL for refs not in a
+        # tree. Cycle / depth / level-gradient guards run at the
+        # handler layer (see ``handlers/_todo_guards.py``) before
+        # this insert, so the store layer trusts the caller.
         if auto_refresh_days is not None:
             insert_sql = (
                 "INSERT INTO refs "
                 "(kind, title, authors, year, provider, meta, "
-                " auto_refresh_days, refreshed_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, now()) "
+                " auto_refresh_days, refreshed_at, parent_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s) "
                 "RETURNING ref_id"
             )
             insert_params: tuple[Any, ...] = (
@@ -151,11 +158,13 @@ class RefsMixin:
                 provider,
                 Jsonb(meta or {}),
                 auto_refresh_days,
+                parent_id,
             )
         else:
             insert_sql = (
-                "INSERT INTO refs (kind, title, authors, year, provider, meta) "
-                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "INSERT INTO refs "
+                "(kind, title, authors, year, provider, meta, parent_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                 "RETURNING ref_id"
             )
             insert_params = (
@@ -165,6 +174,7 @@ class RefsMixin:
                 year,
                 provider,
                 Jsonb(meta or {}),
+                parent_id,
             )
 
         def _do(c: Connection) -> Ref:
@@ -275,6 +285,89 @@ class RefsMixin:
             return _do(conn)
         with self.pool.connection() as c:
             return _do(c)
+
+    def stub_backlog(
+        self,
+        *,
+        limit: int = 50,
+        awaiting: bool = False,
+    ) -> list[dict[str, Any]]:
+        """The "papers we still need to get" backlog, newest-stub-first.
+
+        A *stub* is a ``paper`` ref with an external identifier
+        (DOI / arXiv / S2) registered but ``pdf_sha256 IS NULL`` — the
+        chase worker and the dream ``acquire`` tool both mint these so
+        the ``fetch_oa`` worker can auto-grab an OA PDF later. This
+        method surfaces them joined with the latest ``fetcher:%``
+        attempt per ref, returning one dict per stub with a one-line
+        ``state`` summary an operator (or agent) can scan.
+
+        Shared by ``precis stubs`` (CLI) and ``search(view='stubs')``
+        (MCP) so both render from one query
+        (docs/design/stubs-mcp-and-skill.md).
+
+        ``awaiting=True`` restricts to rows the fetcher would actually
+        try on its next pass: never attempted, or attempted >24h ago
+        and not yet ``fetch_ok``.
+        """
+        sql = """
+            WITH stubs AS (
+                SELECT r.ref_id,
+                       (SELECT id_value FROM ref_identifiers
+                         WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
+                       COALESCE(
+                         (SELECT id_value FROM ref_identifiers
+                           WHERE ref_id = r.ref_id AND id_kind = 'doi'),
+                         (SELECT 'arxiv:' || id_value FROM ref_identifiers
+                           WHERE ref_id = r.ref_id AND id_kind = 'arxiv'),
+                         (SELECT 's2:' || id_value FROM ref_identifiers
+                           WHERE ref_id = r.ref_id AND id_kind = 's2')
+                       ) AS identifier,
+                       r.ref_id AS sort_key
+                  FROM refs r
+                 WHERE r.kind = 'paper'
+                   AND r.pdf_sha256 IS NULL
+                   AND r.deleted_at IS NULL
+                   AND EXISTS (
+                         SELECT 1 FROM ref_identifiers ri
+                          WHERE ri.ref_id = r.ref_id
+                            AND ri.id_kind IN ('doi', 'arxiv', 's2')
+                   )
+            ),
+            latest_event AS (
+                SELECT DISTINCT ON (ref_id) ref_id, ts, source, event
+                  FROM ref_events
+                 WHERE source LIKE 'fetcher:%%'
+                 ORDER BY ref_id, ts DESC
+            )
+            SELECT s.ref_id, s.cite_key, s.identifier,
+                   le.ts, le.source, le.event
+              FROM stubs s
+              LEFT JOIN latest_event le ON le.ref_id = s.ref_id
+             WHERE
+                CASE WHEN %s::bool THEN
+                    (le.ref_id IS NULL
+                     OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
+                ELSE TRUE END
+             ORDER BY s.sort_key DESC
+             LIMIT %s
+        """
+        out: list[dict[str, Any]] = []
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (awaiting, limit)).fetchall()
+        for row in rows:
+            out.append(
+                {
+                    "ref_id": int(row[0]),
+                    "cite_key": row[1] or "",
+                    "identifier": row[2] or "",
+                    "last_attempt": row[3].isoformat() if row[3] is not None else "",
+                    "last_source": row[4] or "",
+                    "last_event": row[5] or "",
+                    "state": _stub_state_summary(row[5], row[3]),
+                }
+            )
+        return out
 
     def get_ref(
         self,
@@ -723,18 +816,17 @@ class RefsMixin:
         finding #5 — agents had no way to fix wording without
         delete + re-put, which breaks every inbound edge.
         """
+
         def _do(c: Connection) -> str | None:
             row = c.execute(
-                "SELECT title FROM refs "
-                "WHERE ref_id = %s AND deleted_at IS NULL",
+                "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
                 (ref_id,),
             ).fetchone()
             if row is None:
                 return None
             old_text = row[0]
             c.execute(
-                "UPDATE refs SET title = %s, updated_at = now() "
-                "WHERE ref_id = %s",
+                "UPDATE refs SET title = %s, updated_at = now() WHERE ref_id = %s",
                 (new_text, ref_id),
             )
             c.execute(
@@ -1054,6 +1146,30 @@ class RefsMixin:
             row = conn.execute(sql, params).fetchone()
         assert row is not None
         return int(row[0])
+
+
+def _stub_state_summary(last_event: str | None, last_ts: Any) -> str:
+    """One-line state per stub for operator / agent triage.
+
+    Shared by :meth:`RefsMixin.stub_backlog` so the CLI
+    (``precis stubs``) and the MCP ``search(view='stubs')`` render the
+    same human-readable status string.
+    """
+    if last_event is None:
+        return "awaiting fetch (never tried)"
+    if last_event == "fetch_ok":
+        # File on disk, watcher hasn't ingested yet; the row leaves the
+        # backlog as soon as precis_add runs. Flag the in-between state.
+        return "PDF downloaded; awaiting watcher ingest"
+    if last_event == "no_oa_version":
+        return "no OA version available"
+    if last_event in ("fetch_failed", "api_error"):
+        return f"{last_event} — will retry in 24h"
+    if last_event == "rate_limited":
+        return "rate-limited — backed off"
+    if last_event == "invalid_identifier":
+        return "identifier rejected — operator review"
+    return last_event
 
 
 __all__ = ["RefsMixin"]
