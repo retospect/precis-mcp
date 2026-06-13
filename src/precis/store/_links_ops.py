@@ -300,6 +300,30 @@ class LinksMixin:
             out.append(_row_to_link(r))
         return out
 
+    def count_links_for_refs(self, ref_ids: list[int]) -> dict[int, int]:
+        """Return ``{ref_id: total_link_count}`` for a batch of refs.
+
+        Total = incoming + outgoing edges, undeduped at the link_id
+        level (a link with the same src and dst would count twice —
+        not a real case in the schema). Designed for the list-view
+        TOON column so a single SQL round-trip covers a page.
+        Missing ref ids in the result dict mean zero links.
+        """
+        if not ref_ids:
+            return {}
+        sql = (
+            "SELECT ref_id, COUNT(*)::int FROM ("
+            "  SELECT src_ref_id AS ref_id FROM links "
+            "    WHERE src_ref_id = ANY(%s)"
+            "  UNION ALL"
+            "  SELECT dst_ref_id AS ref_id FROM links "
+            "    WHERE dst_ref_id = ANY(%s)"
+            ") sub GROUP BY ref_id"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (ref_ids, ref_ids)).fetchall()
+        return {int(r[0]): int(r[1]) for r in rows}
+
     def migrate_links(
         self,
         old_ref_id: int,

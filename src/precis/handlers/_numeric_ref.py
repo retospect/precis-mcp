@@ -28,6 +28,7 @@ spaced-repetition scheduling) override the relevant hook.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -277,17 +278,14 @@ class NumericRefHandler(Handler):
         # readout as a pagination footgun (the agent couldn't tell
         # whether it had everything or just the first page).
         total = self.store.count_refs_lexical(q=q, kind=self.kind, tags=normalized_tags)
-        lines = [
-            format_search_headline(
-                n_returned=len(hits),
-                total=total,
-                noun=f"{self._sense()} match",
-                query=q,
-            )
-        ]
-        for ref, rank in hits:
-            lines.append(self._render_search_hit(ref, rank))
-        return Response(body="\n".join(lines))
+        header = format_search_headline(
+            n_returned=len(hits),
+            total=total,
+            noun=f"{self._sense()} match",
+            query=q,
+        )
+        table = self._render_hits_table([ref for ref, _ in hits])
+        return Response(body=f"{header}\n{table}")
 
     def _list_by_tags(self, tags: list[str], *, page_size: int) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
@@ -313,16 +311,13 @@ class NumericRefHandler(Handler):
                 ]
             )
             return Response(body=body)
-        lines = [
+        header = (
             f"# {len(refs)} {self._sense()} entr"
             f"{'y' if len(refs) == 1 else 'ies'} tagged {tags} "
             f"(by recency)"
-        ]
-        for ref in refs:
-            # Reuse the search-hit renderer with rank=None — list mode
-            # has no score, so the hit shape degrades to slug + title.
-            lines.append(self._render_search_hit(ref, None))
-        return Response(body="\n".join(lines))
+        )
+        table = self._render_hits_table(refs)
+        return Response(body=f"{header}\n{table}")
 
     # ── search_hits: structured form for cross-kind merge ──────────
 
@@ -957,10 +952,53 @@ class NumericRefHandler(Handler):
             out.append("tags: " + " ".join(str(t) for t in tags))
         return "\n".join(out)
 
-    def _render_search_hit(self, ref: Ref, rank: float | None) -> str:
-        preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
-        rank_str = f"  (rank={rank:.2f})" if rank is not None else ""
-        return f"\n## {self._sense()} {ref.id}{rank_str}\n{preview}"
+    def _render_hits_table(self, refs: list[Ref]) -> str:
+        """Render a list of refs as a single TOON table.
+
+        Columns: ``kind | id | summary | remaining_words | links``.
+        Columns:
+          - ``kind``: the ref kind (constant per single-kind list, useful
+            cross-kind once that path adopts the same shape).
+          - ``id``: ref.id as string.
+          - ``summary``: the body's first line in full (no truncation —
+            scannable in one glance is the whole point).
+          - ``remaining_words``: words *after* the first line, so the
+            agent knows how much body is hiding behind the id.
+          - ``links``: total edges touching this ref (in + out),
+            batched into one COUNT across the page.
+          - ``age``: integer days since ``updated_at``. Answers "is
+            this stale?" at a glance; a re-tag/edit bumps it back to 0.
+
+        Body source is ``ref.title`` for numeric-ref kinds (memory,
+        todo, gripe-body, fc-question). Side chunks (gripe comments,
+        fc answers) aren't included — they show up on the get= fetch.
+        2026-06-13 redesign per "scan in one glance" SOUL guidance.
+        """
+        from precis.format import render_agent_table
+
+        if not refs:
+            return ""
+        link_counts = self.store.count_links_for_refs([r.id for r in refs])
+        now = datetime.now(UTC)
+        rows: list[dict[str, str]] = []
+        for r in refs:
+            body = r.title or ""
+            first_line, _, rest = body.partition("\n")
+            first_line = first_line.rstrip()
+            remaining_words = len(rest.split())
+            age_days = max(0, (now - r.updated_at).days)
+            rows.append(
+                {
+                    "kind": self.kind,
+                    "id": str(r.id),
+                    "summary": first_line,
+                    "remaining_words": str(remaining_words),
+                    "links": str(link_counts.get(r.id, 0)),
+                    "age": str(age_days),
+                }
+            )
+        schema = ["kind", "id", "summary", "remaining_words", "links", "age"]
+        return render_agent_table(rows, schema=schema)
 
     def _render_create_ack(self, ref_id: int) -> Response:
         """Acknowledgement returned by `put` on create. Subclasses
