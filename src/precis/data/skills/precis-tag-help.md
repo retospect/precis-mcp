@@ -1,6 +1,7 @@
 ---
 id: precis-tag-help
 title: precis — the tag verb (add and remove tags)
+summary: the tag verb mechanics — atomic add/remove, axis replacement, state transitions
 applies-to: tag (every kind that supports it)
 status: active
 ---

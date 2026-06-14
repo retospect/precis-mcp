@@ -10,14 +10,15 @@ shape with four first-class extensions:
 2. **Hierarchical tree** (Slice 1 of ``docs/design/todo-tree-plan.md``):
    each todo carries an optional ``parent_id`` pointing at another
    todo. Branches are outcomes (the first line reads as "what does
-   done look like"); leaves are next physical actions. Reto owns the
+   done look like"); leaves are next physical actions. The owner owns the
    top tiers via the ``level:strategic|tactical`` tag gradient; the
    guards in :mod:`precis.handlers._todo_guards` enforce who can
    write what.
 
 3. **Tree-aware views** — ``roots``, ``strategic``, ``tree``,
-   ``doable``, ``waiting``, ``blocked``, ``asking-reto``. Renderers
-   live in :mod:`precis.handlers._todo_views`; this module routes.
+   ``doable``, ``waiting``, ``blocked``, ``ask-user`` (alias:
+   ``asking-reto``). Renderers live in :mod:`precis.handlers._todo_views`;
+   this module routes.
 
 4. **PRIO column + recurring schedule** (Slice 4): ``prio`` is a
    small int (1..10) on ``refs`` driving the doable ORDER BY;
@@ -31,7 +32,7 @@ List views via ``id='/<view>'`` (legacy flat surface):
     /recent /open /doing /blocked /done /queue
 Tree views via ``view='<name>'`` on search / get:
     search(kind='todo', view='roots'|'strategic'|'doable'|'waiting'
-                              |'blocked'|'asking-reto')
+                              |'blocked'|'ask-user')
     get(kind='todo', id=N, view='tree')
 
 A ``get(kind='todo', id=N)`` response always includes the walk-up
@@ -55,7 +56,16 @@ from precis.utils.next_block import render_next_section
 #: View names that ``search(kind='todo', view=...)`` accepts. Each
 #: name routes to a renderer in :mod:`._todo_views`.
 _TREE_SEARCH_VIEWS: frozenset[str] = frozenset(
-    {"roots", "strategic", "doable", "waiting", "blocked", "asking-reto", "attention"}
+    {
+        "roots",
+        "strategic",
+        "doable",
+        "waiting",
+        "blocked",
+        "ask-user",
+        "asking-reto",  # deprecated alias for ``ask-user``
+        "attention",
+    }
 )
 
 #: View names that ``get(kind='todo', id=N, view=...)`` accepts on
@@ -307,7 +317,7 @@ class TodoHandler(NumericRefHandler):
                 return views.render_waiting(self.store)
             if view == "blocked":
                 return views.render_blocked(self.store)
-            if view == "asking-reto":
+            if view in ("ask-user", "asking-reto"):
                 return views.render_asking_reto(self.store)
             if view == "attention":
                 return views.render_attention(self.store)
@@ -375,6 +385,8 @@ class TodoHandler(NumericRefHandler):
         else:
             parent_int = None
         guards.check_level_tags_on_create(tags)
+        guards.check_llm_tag(tags)
+        guards.check_executor_tag(tags)
         # Default parent_id for a ``level:recurring`` root to the
         # seeded Watches umbrella — every recurring lives under it by
         # default, so the operator gets a tidy two-panel ``view='roots'``
@@ -518,6 +530,8 @@ class TodoHandler(NumericRefHandler):
             remove = kept or None
         guards.check_level_tags_on_tag(add=add, remove=remove)
         guards.check_halt_remove(remove=remove)
+        guards.check_llm_tag(add)
+        guards.check_executor_tag(add)
         ref_id = self._coerce_id(id)
         if prio is not None or clear_prio:
             self.store.set_prio(ref_id, None if clear_prio else prio)

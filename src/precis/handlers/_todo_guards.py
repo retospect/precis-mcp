@@ -21,9 +21,9 @@ Identity routing
 The "who is calling?" verdict is read from ``$PRECIS_SOURCE`` at
 guard time (Hub doesn't carry config today; we read env directly).
 
-* unset / empty / ``cli`` / ``user`` → **owner** (interactive Reto)
+* unset / empty / ``cli`` / ``user`` → **owner** (interactive operator)
 * starts with ``web:`` → **owner** (the precis-web UI passes
-  ``web:reto`` per the precis-web plan)
+  ``web:owner`` per the precis-web plan)
 * starts with ``asa-`` → **worker** (chatter / worker / dreamer all
   share the same authority verdict — they're all asa)
 * anything else → **owner** (forward-compatible — unknown sources
@@ -75,6 +75,75 @@ LEVEL_RECURRING = "level:recurring"
 _OWNER_ONLY_LEVELS: frozenset[str] = frozenset(
     {LEVEL_STRATEGIC, LEVEL_TACTICAL, LEVEL_RECURRING}
 )
+
+
+# ── auto-run tag namespaces (closed-vocab values) ──────────────────
+
+
+#: Allowed values for the ``LLM:<model>`` open tag. Presence of any
+#: ``LLM:*`` tag flips a todo into the dispatch worker's candidate set
+#: (planner-coroutine slice); the value picks the model
+#: ``claude_inproc`` shells out with. Closed vocab so a typo
+#: (``LLM:opos``) is rejected at write time rather than producing a
+#: silent dispatch miss or a budget burn against a wrong model.
+_LLM_TAG_VALUES: frozenset[str] = frozenset({"opus", "sonnet", "haiku"})
+
+
+#: Allowed values for the ``executor:<runner>`` open tag — runners that
+#: are NOT an LLM (deterministic code paths). v1 has none registered;
+#: future entries: ``fetch`` (web-search + ingest), ``ingest``
+#: (file → corpus), ``calc`` (sympy). Same closed-vocab discipline as
+#: ``LLM:*`` so unknown values reject at write time.
+_EXECUTOR_TAG_VALUES: frozenset[str] = frozenset()
+
+
+def _check_namespaced_tag(
+    tags: list[str] | None,
+    *,
+    prefix: str,
+    allowed: frozenset[str],
+) -> None:
+    """Reject ``prefix:<value>`` tags whose value isn't in ``allowed``.
+
+    Used by both the ``LLM:`` and ``executor:`` guards. Shared so the
+    error shape stays consistent and adding a new namespace is one
+    call site.
+    """
+    if not tags:
+        return
+    if not allowed:
+        # Nothing registered yet — let the tag through. The namespace
+        # is reserved but its vocab is being grown over time. Without
+        # this short-circuit, the FIRST writer of the namespace hits a
+        # 100% rejection wall, which is worse than letting the tag
+        # land and rejecting at dispatch time if needed.
+        return
+    for t in tags:
+        if not t.startswith(prefix):
+            continue
+        value = t.removeprefix(prefix)
+        if value not in allowed:
+            sorted_allowed = ", ".join(sorted(allowed))
+            raise BadInput(
+                f"{t!r}: unknown {prefix}<value>; allowed values are "
+                f"[{sorted_allowed}]",
+                next=(
+                    f"use one of [{sorted_allowed}] or omit the {prefix}* tag "
+                    "if this work isn't dispatchable"
+                ),
+            )
+
+
+def check_llm_tag(tags: list[str] | None) -> None:
+    """Reject ``LLM:<value>`` where value is not a registered model."""
+    _check_namespaced_tag(tags, prefix="LLM:", allowed=_LLM_TAG_VALUES)
+
+
+def check_executor_tag(tags: list[str] | None) -> None:
+    """Reject ``executor:<value>`` where value is not a registered runner."""
+    _check_namespaced_tag(
+        tags, prefix="executor:", allowed=_EXECUTOR_TAG_VALUES
+    )
 
 
 def _caller_source() -> str:
@@ -310,7 +379,7 @@ def check_level_tags_on_create(tags: list[str] | None) -> None:
                 f"{t!r} is owner-only; the current source has worker authority",
                 next=(
                     "propose via tag='level:proposed-tactical' instead, "
-                    "or run from a non-worker source (web:reto / cli)"
+                    "or run from a non-worker source (web:owner / cli)"
                 ),
             )
 
@@ -336,36 +405,39 @@ def check_level_tags_on_tag(
                 f"{t!r} is owner-only; the current source has worker authority",
                 next=(
                     "propose via tag='level:proposed-tactical' instead, "
-                    "or run from a non-worker source (web:reto / cli)"
+                    "or run from a non-worker source (web:owner / cli)"
                 ),
             )
 
 
 def check_halt_remove(remove: list[str] | None) -> None:
-    """Reject ``remove=['halt']`` from worker sources.
+    """Reject ``remove=['halt']`` / ``halt:<reason>`` from worker sources.
 
-    Asymmetric to the level-gradient guard: workers MAY add ``halt``
-    (an escalation — "I think this needs human eyes") but only the
-    owner may remove it (the resume decision). Adds are unrestricted
-    so a worker that hits something it can't handle can stop the
-    bleeding without waiting for human attention.
+    Asymmetric to the level-gradient guard: workers MAY add ``halt`` /
+    ``halt:<reason>`` (an escalation — "I think this needs human eyes,"
+    or a self-imposed brake like ``halt:cost-cap``) but only the owner
+    may remove it (the resume decision). Adds are unrestricted so a
+    worker that hits something it can't handle can stop the bleeding
+    without waiting for human attention.
 
-    The doable view and dispatch worker both honour ``halt`` via the
-    shared ``_DOABLE_EXCLUSION_TAGS`` registry in ``_todo_views``;
-    this guard just protects the resume edge.
+    The doable view and dispatch worker both honour ``halt`` /
+    ``halt:*`` via the shared ``_DOABLE_EXCLUSION_TAGS`` registry in
+    ``_todo_views``; this guard just protects the resume edge.
     """
     if is_owner():
         return
     if not remove:
         return
-    if "halt" in remove:
-        raise BadInput(
-            "removing 'halt' is owner-only; workers may add it but not clear it",
-            next=(
-                "the halt marker is the owner's resume edge — run from "
-                "a non-worker source (web:reto / cli) to lift it"
-            ),
-        )
+    for t in remove:
+        if t == "halt" or t.startswith("halt:"):
+            raise BadInput(
+                f"removing {t!r} is owner-only; workers may add halt "
+                "but not clear it",
+                next=(
+                    "the halt marker is the owner's resume edge — run from "
+                    "a non-worker source (web:owner / cli) to lift it"
+                ),
+            )
 
 
 # ── ref-level authority check (delete / re-parent) ─────────────────
@@ -400,7 +472,7 @@ def check_owner_only_ref(store: Store, ref_id: int) -> None:
     if hits:
         raise BadInput(
             f"todo id={ref_id} carries {hits[0]!r} and is owner-only",
-            next="run this from a non-worker source (web:reto / cli)",
+            next="run this from a non-worker source (web:owner / cli)",
         )
 
 
@@ -473,9 +545,11 @@ __all__ = [
     "LEVEL_TACTICAL",
     "MAX_DEPTH",
     "check_depth_under",
+    "check_executor_tag",
     "check_halt_remove",
     "check_level_tags_on_create",
     "check_level_tags_on_tag",
+    "check_llm_tag",
     "check_no_cycle",
     "check_not_builtin",
     "check_owner_only_ref",

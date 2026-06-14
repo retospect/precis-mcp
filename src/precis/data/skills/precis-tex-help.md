@@ -1,6 +1,7 @@
 ---
 id: precis-tex-help
 title: precis — read and edit LaTeX files
+summary: LaTeX files — section-aware blocks, recursive TOC, literal-source edits against LaTeX syntax
 applies-to: get/search/put/edit/delete (kind='tex')
 status: active
 ---

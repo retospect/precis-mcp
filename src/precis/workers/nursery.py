@@ -344,6 +344,8 @@ def _detect_stuck_doable(store: Store) -> list[Finding]:
                       AND t.namespace = 'OPEN'
                       AND (t.value LIKE 'claimed-by:%%'
                            OR t.value LIKE 'waiting-for:%%'
+                           OR t.value = 'ask-user'
+                           OR t.value LIKE 'ask-user:%%'
                            OR t.value = 'asking-reto'
                            OR t.value LIKE 'asking-reto:%%'
                            OR t.value = 'level:recurring')

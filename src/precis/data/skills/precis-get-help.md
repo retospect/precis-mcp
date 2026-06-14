@@ -1,6 +1,7 @@
 ---
 id: precis-get-help
 title: precis — the get verb (read or compute)
+summary: the get verb — read existing refs by id, or compute fresh results via q=
 applies-to: get (every kind that supports it)
 status: active
 ---

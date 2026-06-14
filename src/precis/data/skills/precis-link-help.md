@@ -1,6 +1,7 @@
 ---
 id: precis-link-help
 title: precis — the link verb (typed edges between refs)
+summary: the link verb — typed directional edges between refs, target addressing, idempotency
 applies-to: link (every kind that supports it)
 status: active
 ---

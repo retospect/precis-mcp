@@ -1,6 +1,7 @@
 ---
 id: precis-tags
 title: precis — set, filter by, and discover tags
+summary: tag taxonomy — UPPERCASE axes, lowercase open axes, bare flags, filter and discover
 applies-to: tag (add=, remove=), search (tags=), put (tags= on create), get/search (kind='tag')
 status: active
 ---

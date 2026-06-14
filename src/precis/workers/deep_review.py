@@ -163,7 +163,7 @@ section with no recommendations):
 
 5. **Long-running waits** — `waiting-for:*` leaves > 7d that
    probably need the dependency replaced or the wait converted to
-   an asking-reto leaf.
+   an ask-user leaf.
 
 End with one or two paragraphs of qualitative narrative — what's
 the tree telling you about how the week went? Use this for

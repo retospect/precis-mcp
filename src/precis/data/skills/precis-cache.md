@@ -1,6 +1,7 @@
 ---
 id: precis-cache
 title: precis — paid tools cache automatically
+summary: cache mechanics for paid tools — TTLs, freshness, force-refresh, cost control
 applies-to: get (kind in math/web/websearch/think/research/youtube)
 status: active
 ---

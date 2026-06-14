@@ -249,7 +249,7 @@ class TestVerifyCli:
                 "verify",
                 pub_id,
                 "--by",
-                "reto",
+                "owner",
                 "--note",
                 "walked the chain",
                 "--database-url",
@@ -259,7 +259,7 @@ class TestVerifyCli:
         cli_main()
         out = capsys.readouterr().out
         assert f"ref_id={ref_id}" in out
-        assert "reto" in out
+        assert "owner" in out
 
         finding = _lookup_finding(store, pub_id)
         assert finding is not None

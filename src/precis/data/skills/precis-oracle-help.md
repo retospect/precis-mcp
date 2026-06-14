@@ -1,6 +1,7 @@
 ---
 id: precis-oracle-help
 title: precis — consult an oracle for a perspective shift
+summary: wisdom-tradition consultation — stoic, zen, iching collections; random or numbered entries
 applies-to: get/search/tag/link (kind='oracle')
 status: active
 ---

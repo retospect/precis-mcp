@@ -1,6 +1,7 @@
 ---
 id: precis-tasks-help
 title: precis — hierarchical task tree (strategic / tactical / subtask)
+summary: the todo tree — strategic/tactical/subtask levels, doable rotation, halt/ask-user yielding
 applies-to: get/search/put/delete/tag/link (kind='todo'; tree views)
 status: active
 ---
@@ -143,6 +144,7 @@ the agent a follow-up call to figure out why this leaf exists.
 | `waiting-for:<target>` | External wait | anyone |
 | `asking-reto` / `asking-reto:<msg_id>` | Parked on Reto's Discord reply | anyone |
 | `child-failed:<job_id>` | Slice 5: a child `kind='job'` failed; the parent's owner must decide next move (retry / switch / give up). Doable view skips parents with this tag | written by the executor / `JobHandler.tag` on STATUS:failed |
+| `halt` | Explicit "robot stay away" marker. Pulls the leaf out of `view='doable'` AND out of the dispatch worker's candidate query. Workers MAY add it (escalation: "I think this needs human eyes / I don't know how to proceed") but only the owner may remove it (the resume edge). Surfaces under `view='attention'` so halted leaves don't vanish. | anyone may add; owner only removes |
 
 `PRIO:urgent|high|normal|low` keeps working as a back-compat tag
 that translates to a `prio` int column write at the handler

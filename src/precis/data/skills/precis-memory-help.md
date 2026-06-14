@@ -1,6 +1,7 @@
 ---
 id: precis-memory-help
 title: precis — capture notes, decisions, ideas, questions
+summary: scratchpad for notes, decisions, ideas, questions — open tags, no enforced sub-kind
 applies-to: get/search (kind='memory'), put (kind='memory')
 status: active
 ---

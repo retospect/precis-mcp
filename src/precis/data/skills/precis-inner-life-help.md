@@ -1,6 +1,7 @@
 ---
 id: precis-inner-life-help
 title: precis — inner-life tag conventions for asa
+summary: inner-life tag protocol — internal-state, internal-thought, dreams, interests, identity scoping
 applies-to: put/get/search/tag (kind='memory'), tags=['internal-state'|'internal-thought'|'DREAM:speculative'|'user:asa'|'interest:*'|'changed-mind:*']
 status: active
 ---

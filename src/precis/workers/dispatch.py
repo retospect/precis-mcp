@@ -109,14 +109,28 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
 def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
     """Return ref ids of dispatchable parent todos.
 
-    Eligibility:
+    Eligibility (planner-coroutine slice):
 
-    * ``kind='todo'`` and not deleted
-    * ``meta.executor`` is set
-    * STATUS in ``open|doing`` (paused / done / blocked skip)
-    * No existing non-deleted child of ``kind='job'`` (no
-      previous attempt; the bubble-up discipline says "one
-      attempt per parent until the owner intervenes")
+    * ``kind='todo'`` and not deleted.
+    * Auto-run signal: either a closed-vocab ``LLM:<model>`` tag
+      (opus / sonnet / haiku — runs the LLM planner) OR an
+      ``executor:<runner>`` tag (code-path runner) OR — legacy —
+      ``meta.executor`` set (back-compat with the v1 ``fix_gripe``
+      shape; new code uses the tag forms).
+    * STATUS in ``open|doing`` (paused / done / blocked skip).
+    * No **live** child job — a child of ``kind='job'`` whose own
+      STATUS is anything other than ``done`` / ``won't-do`` /
+      ``failed``. Completed jobs from prior ticks are fine; only an
+      in-flight job blocks. (Failed jobs bubble ``child-failed:N``
+      to the parent which the exclusion registry handles.)
+    * No **live** child todo — a child of ``kind='todo'`` whose own
+      STATUS is open / doing (the planner spawned children and they
+      are still working). This is the coroutine yield: a parent that
+      minted children sits silent until they all resolve, then
+      re-becomes a candidate so the planner can read the
+      ``job_summary`` chunks and continue.
+    * No exclusion tag (registry: halt / halt:* / ask-user* /
+      asking-reto* / waiting-for:* / child-failed:*).
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -124,7 +138,15 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
             SELECT r.ref_id
               FROM refs r
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
-               AND r.meta ? 'executor'
+               AND (
+                   r.meta ? 'executor'
+                   OR EXISTS (
+                       SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                        WHERE rt.ref_id = r.ref_id
+                          AND t.namespace = 'OPEN'
+                          AND (t.value LIKE 'LLM:%%' OR t.value LIKE 'executor:%%')
+                   )
+               )
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -135,13 +157,24 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                     WHERE c.parent_id = r.ref_id
                       AND c.kind = 'job'
                       AND c.deleted_at IS NULL
+                      AND COALESCE(
+                            (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                              WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                            'open'
+                          ) NOT IN ('done', 'failed', 'won''t-do')
                )
                AND NOT EXISTS (
-                   -- Shared ``_DOABLE_EXCLUSION_TAGS`` registry: keep
-                   -- the dispatch candidate filter in lock-step with
-                   -- ``view='doable'``. ``halt`` (owner-applied) plus
-                   -- the existing waiting-for / asking-reto / child-
-                   -- failed forms all block dispatch the same way.
+                   SELECT 1 FROM refs c
+                    WHERE c.parent_id = r.ref_id
+                      AND c.kind = 'todo'
+                      AND c.deleted_at IS NULL
+                      AND COALESCE(
+                            (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                              WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                            'open'
+                          ) NOT IN ('done', 'won''t-do')
+               )
+               AND NOT EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id
                       AND t.namespace = 'OPEN'
@@ -177,12 +210,32 @@ def _claim_and_dispatch(
                    r.meta->>'executor' AS executor,
                    r.meta->>'job_type' AS job_type,
                    r.meta->'params' AS params,
-                   r.meta ? 'auto_check' AS has_auto_check
+                   r.meta ? 'auto_check' AS has_auto_check,
+                   (SELECT t.value FROM ref_tags rt
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = r.ref_id
+                       AND t.namespace = 'OPEN'
+                       AND t.value LIKE 'LLM:%%'
+                     LIMIT 1) AS llm_tag,
+                   (SELECT t.value FROM ref_tags rt
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = r.ref_id
+                       AND t.namespace = 'OPEN'
+                       AND t.value LIKE 'executor:%%'
+                     LIMIT 1) AS executor_tag
               FROM refs r
              WHERE r.ref_id = %s
                AND r.kind = 'todo'
                AND r.deleted_at IS NULL
-               AND r.meta ? 'executor'
+               AND (
+                   r.meta ? 'executor'
+                   OR EXISTS (
+                       SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                        WHERE rt.ref_id = r.ref_id
+                          AND t.namespace = 'OPEN'
+                          AND (t.value LIKE 'LLM:%%' OR t.value LIKE 'executor:%%')
+                   )
+               )
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -193,11 +246,28 @@ def _claim_and_dispatch(
                     WHERE c.parent_id = r.ref_id
                       AND c.kind = 'job'
                       AND c.deleted_at IS NULL
+                      AND COALESCE(
+                            (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                              WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                            'open'
+                          ) NOT IN ('done', 'failed', 'won''t-do')
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM refs c
+                    WHERE c.parent_id = r.ref_id
+                      AND c.kind = 'todo'
+                      AND c.deleted_at IS NULL
+                      AND COALESCE(
+                            (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                              WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                            'open'
+                          ) NOT IN ('done', 'won''t-do')
                )
                AND NOT EXISTS (
                    -- Re-check the exclusion registry inside the
-                   -- FOR UPDATE — guards against a halt tag landing
-                   -- between candidate enumeration and the lock.
+                   -- FOR UPDATE — guards against a halt / ask-user
+                   -- tag landing between candidate enumeration and
+                   -- the lock.
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id
                       AND t.namespace = 'OPEN'
@@ -217,6 +287,30 @@ def _claim_and_dispatch(
         job_type = row[2]
         params = dict(row[3] or {})
         has_auto_check = bool(row[4])
+        llm_tag = row[5]
+        executor_tag = row[6]
+
+        # Planner-coroutine path: when a todo is LLM:*-tagged but lacks
+        # ``meta.executor``, synthesize the dispatch parameters from the
+        # tag. The model picker IS the tag value (``LLM:opus`` →
+        # ``model=opus``); the job_type is the generic planner tick
+        # (``plan_tick``) which knows how to read the parent's body,
+        # ancestry, and prior child summaries into a single prompt.
+        # ``executor:<runner>`` tags route to code-path runners with a
+        # parallel synthesis (job_type = ``executor:<runner>``).
+        if not isinstance(executor, str) and llm_tag:
+            model = str(llm_tag).removeprefix("LLM:")
+            executor = "claude_inproc"
+            job_type = job_type or "plan_tick"
+            params.setdefault("model", model)
+        elif not isinstance(executor, str) and executor_tag:
+            runner = str(executor_tag).removeprefix("executor:")
+            # Reserved; v1 has no registered executor:* values, so
+            # this branch only fires if the closed-vocab guard is
+            # widened in a future slice. The runner name is the
+            # job_type by convention.
+            executor = runner
+            job_type = job_type or runner
 
         # Validate executor + job_type at dispatch time. The TodoHandler
         # doesn't validate ``meta.executor`` / ``meta.job_type`` on

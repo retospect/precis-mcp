@@ -1,6 +1,7 @@
 ---
 id: precis-polish-paper
 title: precis — paper polish runbook
+summary: pre-submission paper review runbook — orchestrate adversarial/citation reviewer personas, severity ranking
 flavor: runbook
 status: active
 applies-to: orchestrating multi-pass paper review before submission

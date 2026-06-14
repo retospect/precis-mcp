@@ -1,4 +1,4 @@
-"""``type='discord_reply_received'`` — wait for Reto's Discord reply.
+"""``type='discord_reply_received'`` — wait for the owner's Discord reply.
 
 Resolves to ``True`` when a memory exists tagged
 ``replied-to:<ask_message_id>``. The asa-bot chatter writes this

@@ -1,6 +1,7 @@
 ---
 id: precis-paper-help
 title: precis — find, read, cite papers
+summary: scientific paper corpus — find, read, address by slug or DOI, views and chunk selectors
 applies-to: get/search/tag/link (kind='paper')
 status: active
 ---

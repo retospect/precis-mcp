@@ -141,7 +141,7 @@ class FakeStore:
                 SimpleNamespace(
                     ts=datetime(2026, 6, 14, 20, 0, tzinfo=UTC),
                     event="status:done",
-                    source="web:reto",
+                    source="web:owner",
                 )
             ]
         return []

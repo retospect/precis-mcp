@@ -1,6 +1,7 @@
 ---
 id: precis-youtube-help
 title: precis — YouTube transcripts
+summary: YouTube transcript fetch — captions by video id or URL, 30-day cache, free
 applies-to: get (kind='youtube')
 status: active
 ---

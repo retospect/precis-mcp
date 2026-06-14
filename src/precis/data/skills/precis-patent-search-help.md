@@ -1,6 +1,7 @@
 ---
 id: precis-patent-search-help
 title: precis — search patents (local + EPO OPS)
+summary: patent discovery — merge local hits with EPO OPS, source selection, deduped by DOCDB id
 applies-to: search (kind='patent')
 status: active
 ---

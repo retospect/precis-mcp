@@ -1,6 +1,7 @@
 ---
 id: precis-patent-power
 title: precis — raw CQL for patent search (power-user)
+summary: raw CQL patent search — Boolean queries, field-scoped lookups, date windows, citation-graph filters
 applies-to: search (kind='patent', q=<CQL>)
 status: active
 ---

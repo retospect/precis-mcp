@@ -230,14 +230,14 @@ class TestBackfillSubprocess:
                 errors_dir=tmp_path / "errors",
                 duplicates_dir=tmp_path / "dup",
                 debounce=0.5,
-                user="reto",
+                user="owner",
                 database_url="postgresql://x/y",
             )
 
         cmd = captured["cmd"]
         assert "_watch_batch_ingest" in cmd
         assert "--corpus-dir" in cmd
-        assert "--user" in cmd and "reto" in cmd
+        assert "--user" in cmd and "owner" in cmd
         # The DSN no longer rides in argv — exposing credentials via
         # /proc/<pid>/cmdline was an SSRF / leak risk. It now flows
         # through the subprocess environment instead.
@@ -450,7 +450,7 @@ class TestProcessPdf:
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,
-                user="reto",
+                user="owner",
             )
 
         assert dest is not None
@@ -462,7 +462,7 @@ class TestProcessPdf:
         log_lines = (corpus_dir / "ingest.log").read_text().splitlines()
         assert len(log_lines) == 1
         cols = log_lines[0].split("\t")
-        assert cols[1] == "reto"
+        assert cols[1] == "owner"
         assert cols[2] == "smith24"
         assert cols[3] == "42"
         assert cols[4] == "inserted"
@@ -495,7 +495,7 @@ class TestProcessPdf:
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,
-                user="reto",
+                user="owner",
             )
 
         assert dest is not None
@@ -525,7 +525,7 @@ class TestProcessPdf:
                 errors_dir=errors_dir,
                 duplicates_dir=duplicates_dir,
                 debounce=0.01,
-                user="reto",
+                user="owner",
             )
 
         # Failure path returns None, the watcher loop survives.

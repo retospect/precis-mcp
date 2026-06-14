@@ -1,6 +1,7 @@
 ---
 id: precis-todo-help
 title: precis — create, prioritise, complete todos
+summary: basic todo CRUD — create, prioritise, complete; status workflow, project and topic tagging
 applies-to: get/search/put/delete/tag/link (kind='todo')
 status: active
 ---

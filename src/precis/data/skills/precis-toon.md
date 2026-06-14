@@ -1,6 +1,7 @@
 ---
 id: precis-toon
 title: precis — TOON tabular output format
+summary: tabular output format — header in braces, tab-separated rows, used across search and TOC views
 applies-to: tabular responses from search, get(view='toc'), and list views
 status: active
 ---

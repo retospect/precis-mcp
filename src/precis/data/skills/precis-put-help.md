@@ -1,6 +1,7 @@
 ---
 id: precis-put-help
 title: precis — the put verb (create, annotate, import)
+summary: the put verb — mint new refs, attach tags and links on create, mode selection
 applies-to: put (every kind that supports it)
 status: active
 ---

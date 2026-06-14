@@ -1,6 +1,7 @@
 ---
 id: precis-fix-gripe-help
 title: precis — drive a gripe to a candidate fix branch
+summary: end-to-end bug fix recipe — gripe to job to candidate branch, iteration, review handoff
 applies-to: put (kind='job', job_type='fix_gripe')
 status: active
 ---

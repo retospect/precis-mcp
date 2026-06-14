@@ -147,7 +147,7 @@ def test_worker_cannot_remove_tactical_tag(
 def test_web_source_treated_as_owner(
     handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PRECIS_SOURCE", "web:reto")
+    monkeypatch.setenv("PRECIS_SOURCE", "web:owner")
     r = handler.put(text="strategic from web", tags=["level:strategic"])
     rid = _id_of(r.body)
     tags = {str(t) for t in handler.store.tags_for(rid)}

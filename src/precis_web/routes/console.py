@@ -8,7 +8,7 @@ ints / bools / lists behave the same as on the CLI.
 
 Read-only by habit but not by enforcement: every verb is reachable
 (including ``put`` / ``delete``), exactly like the REPL. The web
-process runs as ``web:reto`` (owner), so tree guards treat it as Reto.
+process runs as ``web:owner`` (owner), so tree guards treat it as the owner.
 """
 
 from __future__ import annotations

@@ -37,17 +37,33 @@ if TYPE_CHECKING:
 #: Each entry is one of two shapes:
 #:
 #: * **bare value** (no trailing ``:``) — matched exactly against
-#:   ``tags.value``. Examples: ``halt``, ``asking-reto``.
+#:   ``tags.value``. Examples: ``halt``, ``ask-user`` (and the legacy
+#:   ``asking-reto`` alias).
 #: * **prefix value** (ends in ``:``) — matched as a SQL LIKE prefix.
-#:   Examples: ``waiting-for:`` covers ``waiting-for:reto``,
+#:   Examples: ``waiting-for:`` covers ``waiting-for:owner``,
 #:   ``waiting-for:paper:10.x/y1``, etc.
 #:
-#: Slice-5+: ``halt`` is the explicit "robot don't touch this" marker.
-#: A worker source can ADD it (escalation) but only the owner can
-#: REMOVE it — see :func:`precis.handlers._todo_guards.check_halt_remove`.
+#: Slice-5+:
+#:
+#: * ``halt`` / ``halt:<reason>`` — explicit "robot don't touch this"
+#:   marker. A worker source can ADD it (escalation) but only the
+#:   owner can REMOVE it — see
+#:   :func:`precis.handlers._todo_guards.check_halt_remove`. The
+#:   ``halt:<reason>`` prefix form lets the runtime self-halt with a
+#:   reason (``halt:cost-cap``, ``halt:tick-cap``, ``halt:planner-stuck``)
+#:   so the attention view can show *why* without a separate lookup.
+#: * ``ask-user`` / ``ask-user:<who-or-question>`` — yield to a human.
+#:   Bare = "any human will do"; ``ask-user:<handle>`` = specific person;
+#:   ``ask-user:<freeform>`` = the question itself, so the attention
+#:   view can render it inline. ``asking-reto`` / ``asking-reto:`` is
+#:   the legacy form kept here for back-compat with refs tagged before
+#:   the rename — production writes use ``ask-user`` going forward.
 _DOABLE_EXCLUSION_TAGS: tuple[str, ...] = (
     "halt",
+    "halt:",
     "waiting-for:",
+    "ask-user",
+    "ask-user:",
     "asking-reto",
     "asking-reto:",
     "child-failed:",
@@ -677,7 +693,13 @@ def _render_node(
     tags = tags_by_ref.get(node["id"], [])
     claimed = next((t for t in tags if t.startswith("claimed-by:")), None)
     waiting = next((t for t in tags if t.startswith("waiting-for:")), None)
-    asking = any(t == "asking-reto" or t.startswith("asking-reto:") for t in tags)
+    asking = any(
+        t == "asking-reto"
+        or t.startswith("asking-reto:")
+        or t == "ask-user"
+        or t.startswith("ask-user:")
+        for t in tags
+    )
     # Slice-5: distinguish kind='job' rows so the operator sees
     # execution attempts as different from intent nodes. ⚙ is the
     # gear glyph the Watches panel already uses for scheduler-y
@@ -724,7 +746,7 @@ def _status_icon(
     if waiting:
         return f"⏸ {waiting}"
     if asking:
-        return "⏸ asking-reto"
+        return "⏸ ask-user"
     if status == "blocked":
         return "⏸ blocked"
     if status == "doing":
@@ -744,7 +766,7 @@ def render_doable(
     """Flat list of doable leaves with inline ancestry.
 
     "Doable" means: leaf (no live children), STATUS open / doing,
-    no live blocked-by edges, no ``waiting-for:`` or ``asking-reto``
+    no live blocked-by edges, no ``waiting-for:`` or ``ask-user``
     tag, no paused ancestor. Ordering follows the plan: least-picked
     strategic first, then per-leaf priority, then sibling order.
     """
@@ -892,8 +914,8 @@ def _fetch_doable(
            )
            AND NOT EXISTS (
                -- ``_DOABLE_EXCLUSION_TAGS`` registry: every "robot
-               -- stay away" reason in one place — waiting-for / asking-
-               -- reto / child-failed (Slice 5 bubble) / halt (explicit
+               -- stay away" reason in one place — waiting-for / ask-
+               -- user / child-failed (Slice 5 bubble) / halt (explicit
                -- owner-applied marker). Adding a new exclusion form
                -- means appending to the registry above, no SQL edits
                -- needed here or in dispatch.
@@ -968,7 +990,8 @@ def _doable_counters(store: Store) -> dict[str, int]:
                 WHERE EXISTS (
                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
-                     AND (t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
+                     AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%'
+                          OR t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
                 )
               ) AS asking
               FROM refs r
@@ -985,7 +1008,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
     }
 
 
-# ── view: waiting / blocked / asking-reto ──────────────────────────
+# ── view: waiting / blocked / ask-user (legacy: asking-reto) ──────
 
 
 def render_waiting(store: Store) -> Response:
@@ -1049,7 +1072,8 @@ def render_blocked(store: Store) -> Response:
 
 
 def render_asking_reto(store: Store) -> Response:
-    """Leaves carrying the ``asking-reto`` / ``asking-reto:*`` open tag.
+    """Leaves carrying the ``ask-user`` / ``ask-user:*`` open tag
+    (also matches the legacy ``asking-reto`` / ``asking-reto:*`` form).
 
     The render is intentionally compact — chatter renders this into
     the preamble as a "Pending asks" block (slice 2).
@@ -1063,7 +1087,8 @@ def render_asking_reto(store: Store) -> Response:
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND t.namespace = 'OPEN'
-               AND (t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
+               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%'
+                    OR t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
@@ -1095,7 +1120,7 @@ def render_asking_reto(store: Store) -> Response:
     return Response(body=body)
 
 
-# ── view: attention (asking-reto + child-failed parents) ──────────
+# ── view: attention (ask-user + child-failed parents) ──────────
 
 
 def render_attention(store: Store) -> Response:
@@ -1103,8 +1128,9 @@ def render_attention(store: Store) -> Response:
 
     Signal sources (Slice 5+):
 
-    * **asking-reto** leaves — work parked on Reto's Discord reply
-      (Slice 1; ``view='asking-reto'`` covers this in isolation).
+    * **ask-user** leaves — work parked on the owner's Discord reply
+      (Slice 1; ``view='ask-user'`` covers this in isolation; the
+      legacy ``view='asking-reto'`` alias still works).
     * **child-failed parents** — todos carrying ``child-failed:<job_id>``
       open tags because a child ``kind='job'`` ref hit
       ``STATUS:failed``. The owner (asa-bot) decides next move:
@@ -1118,7 +1144,7 @@ def render_attention(store: Store) -> Response:
       same renderer with one more ``LIKE`` clause.
 
     The chatter preamble renders this alongside the doable queue
-    so Reto sees all of "what needs me" in one block. ``view='doable'``
+    so the owner sees all of "what needs me" in one block. ``view='doable'``
     excludes all four signal classes via the
     ``_DOABLE_EXCLUSION_TAGS`` registry, so the two surfaces are
     disjoint by construction.
@@ -1139,7 +1165,7 @@ def render_attention(store: Store) -> Response:
     lines: list[str] = [f"# {total} todo{'' if total == 1 else 's'} need attention"]
     if asks:
         lines.append("")
-        lines.append(f"## Asking Reto ({len(asks)})")
+        lines.append(f"## Ask user ({len(asks)})")
         lines.append("")
         for a in asks:
             first = (a["title"] or "").split("\n", 1)[0]
@@ -1193,7 +1219,8 @@ def _attention_asking_reto(store: Store) -> list[dict[str, Any]]:
 
     Splitting the data side from the render side keeps
     ``render_attention`` from re-querying the same rows
-    ``render_asking_reto`` already knows how to fetch.
+    ``render_asking_reto`` already knows how to fetch. Matches both
+    the new ``ask-user`` form and the legacy ``asking-reto`` form.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -1204,7 +1231,8 @@ def _attention_asking_reto(store: Store) -> list[dict[str, Any]]:
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND t.namespace = 'OPEN'
-               AND (t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
+               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%'
+                    OR t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
@@ -1220,36 +1248,51 @@ def _attention_asking_reto(store: Store) -> list[dict[str, Any]]:
 
 
 def _attention_halted(store: Store) -> list[dict[str, Any]]:
-    """Open todos carrying the explicit ``halt`` open tag.
+    """Open todos carrying ``halt`` or ``halt:<reason>``.
 
-    Bare-value match (no prefix shape) — the registry intentionally
-    keeps ``halt`` as a single binary marker rather than a
-    ``halt:<reason>`` family. If a reason needs surfacing, the owner
-    adds a body chunk or a separate ``reason:*`` tag; halt itself
-    stays one bit.
+    Bare ``halt`` = owner-applied "robot stay away."
+    ``halt:<reason>`` = system-applied self-halt with a reason
+    (``halt:cost-cap``, ``halt:tick-cap``, ``halt:planner-stuck``).
+    Both surface here; the reason (if present) is rendered alongside
+    the title so the operator sees *why* without a follow-up lookup.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT r.ref_id, r.title, r.created_at
+            SELECT r.ref_id, r.title, r.created_at,
+                   array_agg(t.value ORDER BY t.value) AS halt_tags
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND t.namespace = 'OPEN'
-               AND t.value = 'halt'
+               AND (t.value = 'halt' OR t.value LIKE 'halt:%%')
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) NOT IN ('done', 'won''t-do')
+             GROUP BY r.ref_id, r.title, r.created_at
              ORDER BY r.created_at DESC
              LIMIT 50
             """,
         ).fetchall()
-    return [
-        {"id": int(r[0]), "title": r[1], "created_at": r[2]} for r in rows
-    ]
+    out: list[dict[str, Any]] = []
+    for ref_id, title, created_at, halt_tags in rows:
+        reasons: list[str] = []
+        for t in (halt_tags or []):
+            t_str = str(t)
+            if t_str.startswith("halt:"):
+                reasons.append(t_str.removeprefix("halt:"))
+        out.append(
+            {
+                "id": int(ref_id),
+                "title": title,
+                "created_at": created_at,
+                "reasons": reasons,
+            }
+        )
+    return out
 
 
 def _attention_child_failed(store: Store) -> list[dict[str, Any]]:

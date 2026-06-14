@@ -1,6 +1,7 @@
 ---
 id: precis-pres-help
 title: precis — store and search slide decks + unpublished writeups
+summary: internal artefacts — slide decks, unpublished writeups, course notes; subtype taxonomy
 applies-to: get/search/put/tag/link (kind='pres')
 status: active
 ---

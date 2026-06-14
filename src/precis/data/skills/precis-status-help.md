@@ -1,6 +1,7 @@
 ---
 id: precis-status-help
 title: precis — what version am I, what DB, what build?
+summary: runtime introspection — build version, container, DB connection, migration state, dependencies
 applies-to: precis-status (synthesised skill)
 status: active
 ---

@@ -1,6 +1,7 @@
 ---
 id: precis-doi-resolution
 title: precis — resolve a DOI to a paper at the agent boundary
+summary: DOI handling — bare DOIs as paper identifiers, slug fallback, view-kwarg discipline
 applies-to: get(kind='paper', id='<DOI>')
 status: active
 ---

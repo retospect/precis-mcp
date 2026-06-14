@@ -1,6 +1,7 @@
 ---
 id: precis-delete-help
 title: precis — soft-delete a ref or remove a region of a file
+summary: the delete verb — soft-delete numeric refs, remove file regions via selectors
 applies-to: delete (every kind that supports it)
 status: active
 ---

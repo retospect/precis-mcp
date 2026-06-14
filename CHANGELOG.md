@@ -10,6 +10,19 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **`halt` tag — explicit "robot stay away" marker on todos.** Workers
+  may add it (escalation: "I think this needs human eyes"), only the
+  owner may remove it (the resume edge). The doable view and the
+  dispatch worker both honour it via a new shared
+  `_DOABLE_EXCLUSION_TAGS` registry in `handlers/_todo_views.py` —
+  one place to add future "robot stay away" reasons, no SQL drift
+  between the two surfaces. Halted leaves surface under
+  `view='attention'` so they don't vanish from the rotation while
+  hidden from doable. New guard
+  `check_halt_remove` rejects removal from worker sources;
+  `TodoHandler.tag` wires it in alongside the existing level-tag
+  guard. Skill: `precis-tasks-help` (tag vocabulary table).
+
 - **precis-web: per-kind ref browsers, filters/sort, and task tags.**
   New `/refs/{kind}` surface (one generic route module +
   `refs/index.html.j2` / `refs/detail.html.j2`) with a top-nav tab per

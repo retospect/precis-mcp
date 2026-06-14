@@ -1,6 +1,7 @@
 ---
 id: precis-citation-help
 title: precis — verified claim → source pointer
+summary: kind='citation' verifier workflow — claim, source quote, confidence, verification loop
 applies-to: put (kind='citation'), get (kind='citation')
 status: active
 ---

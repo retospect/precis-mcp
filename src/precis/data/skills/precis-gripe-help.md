@@ -1,6 +1,7 @@
 ---
 id: precis-gripe-help
 title: precis — the project's bug tracker
+summary: bug tracking — file complaints, comment timeline, status workflow, resolution handoff
 applies-to: get/search/put/delete/tag/link (kind='gripe')
 status: active
 ---

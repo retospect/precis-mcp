@@ -1,6 +1,7 @@
 ---
 id: precis-message-help
 title: precis — proactive outbound messages (Discord posts)
+summary: proactive outbound messaging — unprompted channel posts, stored for introspection
 applies-to: get/search/put/delete/tag/link (kind='message')
 status: active
 ---

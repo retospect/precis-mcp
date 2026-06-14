@@ -249,11 +249,11 @@ def test_stale_claim_detector_ignores_done_leaf(
 def test_long_wait_detector_flags_old_waiting_for(
     handler: TodoHandler, store: Store
 ) -> None:
-    r = handler.put(text="Waiting on reto")
+    r = handler.put(text="Waiting on owner")
     rid = _id_of(r.body)
-    store.add_tag(rid, Tag.open("waiting-for:reto"), set_by="agent")
+    store.add_tag(rid, Tag.open("waiting-for:owner"), set_by="agent")
     _backdate_tag(
-        store, rid, "waiting-for:reto", (LONG_WAIT_DAYS + 1) * 24
+        store, rid, "waiting-for:owner", (LONG_WAIT_DAYS + 1) * 24
     )
 
     findings = _detect_long_waits(store)

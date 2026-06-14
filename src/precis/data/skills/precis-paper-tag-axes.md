@@ -1,6 +1,7 @@
 ---
 id: precis-paper-tag-axes
 title: precis — paper auto-tagging taxonomy
+summary: paper auto-tag taxonomy — domain, scale, dim, transport, studytype, material, property axes
 applies-to: tag (kind='paper'), search (tags=, kind='paper')
 status: active
 ---

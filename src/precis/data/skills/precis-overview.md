@@ -1,6 +1,7 @@
 ---
 id: precis-overview
 title: precis — seven verbs, one address scheme
+summary: top-level orientation — seven verbs, address scheme, kinds table, skill index
 applies-to: all
 status: active
 ---

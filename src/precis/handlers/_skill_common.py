@@ -66,6 +66,14 @@ class SkillFrontmatter:
     #: kind(s) the skill applies to.
     applies_to: str | None = None
 
+    #: One-line summary used in the planner's skill index. Hand-
+    #: written; describes what topic / discipline the skill covers
+    #: in concrete terms an LLM planner can grep against. The
+    #: precis-mcp boot scanner aggregates these into a single block
+    #: cached into the planner's system prompt — see
+    #: :mod:`precis.workers.planner_prompt`.
+    summary: str | None = None
+
     #: ISO-ish date the skill was last edited. Authored manually.
     last_updated: str | None = None
 
@@ -110,6 +118,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "tier",
         "floor",
         "applies_to",
+        "summary",
         "last_updated",
         "flavor",
         "invokes_personas",

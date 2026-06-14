@@ -1,6 +1,7 @@
 ---
 id: precis-session-context-help
 title: precis — session context (pinned skills, disabled kinds, default tags)
+summary: per-session configuration — pinned skills, disabled kinds, default tags via env vars
 applies-to: env (PRECIS_STARTUP_SKILLS, PRECIS_KINDS_DISABLED, PRECIS_DEFAULT_TAGS)
 status: active
 ---

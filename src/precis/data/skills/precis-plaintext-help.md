@@ -1,6 +1,7 @@
 ---
 id: precis-plaintext-help
 title: precis — read and edit plaintext files
+summary: plaintext files — txt/log paragraphs and lines, content-slug selectors, raw views
 applies-to: get/search/put/edit/delete (kind='plaintext')
 status: active
 ---

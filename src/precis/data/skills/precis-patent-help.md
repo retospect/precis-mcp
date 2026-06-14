@@ -1,6 +1,7 @@
 ---
 id: precis-patent-help
 title: precis — find, read, cite patents
+summary: patent reading — DOCDB ids, EPO OPS fetch, biblio/claims/description/abstract views
 applies-to: get/search/tag/link (kind='patent')
 status: active
 ---

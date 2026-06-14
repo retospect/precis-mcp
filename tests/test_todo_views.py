@@ -1,5 +1,5 @@
 """Slice-1 todo-tree view tests: roots, strategic, tree, doable,
-waiting, blocked, asking-reto.
+waiting, blocked, ask-user / asking-reto.
 
 Each view is exercised through ``TodoHandler.search`` / ``TodoHandler.get``
 so the test verifies both the renderer (``_todo_views``) and the
@@ -278,13 +278,13 @@ def test_attention_view_lists_asking_reto_leaves(
     from precis.store.types import Tag
     from tests.conftest import id_of
 
-    r = handler.put(text="Need Reto's call on Tanaka 2024")
+    r = handler.put(text="Need the owner's call on Tanaka 2024")
     rid = id_of(r.body)
     store.add_tag(rid, Tag.open("asking-reto"), set_by="agent")
     out = handler.search(view="attention")
-    assert "Asking Reto (1)" in out.body
+    assert "Ask user (1)" in out.body
     assert f"#{rid}" in out.body
-    assert "Need Reto" in out.body
+    assert "Need the owner" in out.body
 
 
 def test_attention_view_lists_child_failed_parents(
@@ -324,7 +324,7 @@ def test_attention_view_unions_both_signals(
     from precis.store.types import Tag
     from tests.conftest import id_of
 
-    a = handler.put(text="Asking reto")
+    a = handler.put(text="Ask the owner")
     a_id = id_of(a.body)
     store.add_tag(a_id, Tag.open("asking-reto"), set_by="agent")
     b = handler.put(text="Failed child")
@@ -333,7 +333,7 @@ def test_attention_view_unions_both_signals(
 
     out = handler.search(view="attention")
     assert "2 todos need attention" in out.body
-    assert "Asking Reto (1)" in out.body
+    assert "Ask user (1)" in out.body
     assert "Child-failed parents (1)" in out.body
 
 

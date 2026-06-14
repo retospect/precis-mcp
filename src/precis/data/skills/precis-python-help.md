@@ -1,6 +1,7 @@
 ---
 id: precis-python-help
 title: precis — navigate and edit Python codebases
+summary: Python code navigation and edits — qualname or file/line addressing, ruff-gated writes
 applies-to: get/search/put/edit/delete (kind='python')
 status: active
 ---

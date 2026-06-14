@@ -1,6 +1,7 @@
 ---
 id: precis-stubs-help
 title: precis — papers we still need to get
+summary: paper acquisition backlog — stub list, fetch state, reason each is waiting
 applies-to: search(kind='paper', view='stubs')
 status: active
 ---

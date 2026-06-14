@@ -1019,7 +1019,7 @@ def _append_ingest_log(
 
     Format: ``<ts>\\t<user>\\t<cite_key>\\t<ref_id>\\t<status>\\t<pdf_name>``
 
-    Greppable by user (``grep '\\treto\\t' ingest.log``) or by status
+    Greppable by user (``grep '\\towner\\t' ingest.log``) or by status
     (``grep -c '\\tinserted\\t' ingest.log``). Created on first append."""
     log_file = corpus_dir / "ingest.log"
     ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")

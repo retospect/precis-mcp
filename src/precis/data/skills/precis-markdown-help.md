@@ -1,6 +1,7 @@
 ---
 id: precis-markdown-help
 title: precis — read and edit markdown files
+summary: markdown files — block grammar, available views, slug stability, line and name selectors
 applies-to: get/search/put/edit/delete (kind='markdown')
 status: active
 ---

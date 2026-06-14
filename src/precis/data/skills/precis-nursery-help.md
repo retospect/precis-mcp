@@ -1,6 +1,7 @@
 ---
 id: precis-nursery-help
 title: precis — nursery digest of todo-tree incoherence
+summary: hourly tree-incoherence digest — orphans, stale claims, long waits, stuck doable detection
 applies-to: precis worker --only nursery; tree-review:* tagged memories
 status: active
 ---

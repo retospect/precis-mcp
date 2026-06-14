@@ -1,6 +1,7 @@
 ---
 id: precis-toc-help
 title: precis — table of contents for any TOC-capable kind
+summary: TOC views — drillable handles for long documents, keyword-labelled ranges, reading entry point
 applies-to: get(view='toc'), slug~N / slug~A..B / slug/toc
 status: active
 ---

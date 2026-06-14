@@ -1,6 +1,7 @@
 ---
 id: precis-files-help
 title: precis — read and edit files (markdown, plaintext, tex, python)
+summary: shared file-kind conventions — roots, workspace tag scoping, two-track addressing, write modes
 applies-to: cross-cutting (file-rooted kinds)
 status: active
 ---

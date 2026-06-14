@@ -1,6 +1,7 @@
 ---
 id: precis-provenance-help
 title: precis — retraction and amendment checks for DOIs
+summary: publication health checks — retractions, expressions of concern, corrections by DOI
 applies-to: get (kind='provenance')
 status: active
 ---

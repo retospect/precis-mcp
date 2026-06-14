@@ -1,6 +1,7 @@
 ---
 id: precis-preflight
 title: precis — manuscript preflight (retraction + citation audit)
+summary: manuscript preflight — retraction checks, citation audit, severity reporting before submission
 applies-to: get (kind='provenance'), jobs check-provenance
 status: active
 ---

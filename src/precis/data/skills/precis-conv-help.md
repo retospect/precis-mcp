@@ -1,6 +1,7 @@
 ---
 id: precis-conv-help
 title: precis — find, read, tag past conversations
+summary: captured chat transcripts — address by slug, read turns, browse recent conversations
 applies-to: get/search/put/tag/link (kind='conv')
 status: active
 ---

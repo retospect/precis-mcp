@@ -694,7 +694,7 @@ class TestRetractionPropagation:
             set_by="chase",
             replace_prefix=True,
         )
-        store.set_human_verified(finding_id, by="reto", note="reviewed")
+        store.set_human_verified(finding_id, by="owner", note="reviewed")
         return finding_id, primary_id
 
     def _status_value(self, store, ref_id: int) -> str | None:

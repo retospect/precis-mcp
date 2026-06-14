@@ -1,6 +1,7 @@
 ---
 id: precis-dispatch-help
 title: precis — the dispatch worker (todo intent → kind='job' execution)
+summary: bridging intent to execution — meta.executor markers, dispatch worker, auto-injected resolution
 applies-to: put (kind='todo' with meta.executor); the precis worker --only dispatch pass
 status: active
 ---

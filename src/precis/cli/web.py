@@ -6,7 +6,7 @@ extra. This subcommand imports it lazily so a base install without
 FastAPI keeps the rest of the CLI working; a missing extra surfaces
 as a clear install hint rather than an ImportError traceback.
 
-The process presents ``PRECIS_SOURCE=web:reto`` to the handler guards
+The process presents ``PRECIS_SOURCE=web:owner`` to the handler guards
 (owner authority over the todo tree) unless the operator overrides it.
 No auth in cut 1 — bind loopback and reach it over Tailscale.
 """
@@ -36,7 +36,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--source",
         default=None,
-        help="Caller identity for handler guards (default web:reto).",
+        help="Caller identity for handler guards (default web:owner).",
     )
     p.set_defaults(func=run)
 
@@ -62,7 +62,7 @@ def run(args: argparse.Namespace) -> None:
     # the same values.
     if args.corpus_dir:
         os.environ["PRECIS_CORPUS_DIR"] = args.corpus_dir
-    os.environ.setdefault("PRECIS_SOURCE", args.source or "web:reto")
+    os.environ.setdefault("PRECIS_SOURCE", args.source or "web:owner")
 
     cfg = WebConfig.from_env()
     host = args.host or cfg.host

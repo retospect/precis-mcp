@@ -1,6 +1,7 @@
 ---
 id: precis-edit-help
 title: precis — anchored region edits across file kinds
+summary: anchored region edits — find-replace grammar, before/after anchors, per-kind validation
 applies-to: edit (kind='markdown'|'plaintext'|'tex'|'python')
 status: active
 ---

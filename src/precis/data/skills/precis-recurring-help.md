@@ -1,6 +1,7 @@
 ---
 id: precis-recurring-help
 title: precis — recurring tasks via level:recurring + meta.schedule
+summary: recurring task patterns — Watches umbrella, cron or every: shorthand, per-tick subtask spawning
 applies-to: put (kind='todo' with level:recurring + meta.schedule); precis worker --only schedule
 status: active
 ---

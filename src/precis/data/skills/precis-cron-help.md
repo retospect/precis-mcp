@@ -1,6 +1,7 @@
 ---
 id: precis-cron-help
 title: precis — schedule wakeups, reminders, recurring tasks
+summary: scheduling future prompts — wakeups, reminders, delivery to a target conversation
 applies-to: get/search/put/delete/tag/link (kind='cron')
 status: active
 ---

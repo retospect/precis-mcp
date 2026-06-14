@@ -1,6 +1,7 @@
 ---
 id: precis-common-reviewer
 title: precis — shared conventions for reviewer personas
+summary: shared reviewer discipline — picky stance, findings table format, includable blocks
 flavor: reference
 status: active
 applies-to: every reviewer persona under src/precis/data/skills/personas/

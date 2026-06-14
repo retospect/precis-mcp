@@ -1,6 +1,7 @@
 ---
 id: precis-math-help
 title: precis — facts and world data via Wolfram Alpha
+summary: computational knowledge via Wolfram Alpha — facts, world data, unit conversion, math expressions
 applies-to: get (kind='math')
 status: active
 ---

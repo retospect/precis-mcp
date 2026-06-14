@@ -1,6 +1,7 @@
 ---
 id: precis-relations
 title: precis — relation vocabulary for link(rel=)
+summary: closed relation vocabulary — cites, supports, contradicts, derived-from, blocks, retracts, corrects
 applies-to: link (rel=), put (rel= on create)
 status: active
 ---

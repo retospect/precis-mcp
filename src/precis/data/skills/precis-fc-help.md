@@ -1,6 +1,7 @@
 ---
 id: precis-fc-help
 title: precis — spaced-repetition flashcards
+summary: spaced-repetition flashcards — atomic facts, scheduled review, recall rating
 applies-to: get/search/put/delete/tag/link (kind='fc')
 status: active
 ---

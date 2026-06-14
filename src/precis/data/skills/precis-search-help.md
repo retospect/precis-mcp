@@ -1,6 +1,7 @@
 ---
 id: precis-search-help
 title: precis — the search verb (mechanics, pagination, filters)
+summary: hybrid lexical and semantic search — pagination, tag filters, scope, exclude, cross-kind fan-out
 applies-to: search (every kind that supports it)
 status: active
 ---

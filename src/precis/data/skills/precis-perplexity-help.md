@@ -1,6 +1,7 @@
 ---
 id: precis-perplexity-help
 title: precis — Perplexity (websearch / think / research)
+summary: Perplexity Sonar tiers — websearch, think, research; latency/cost trade-offs, import mode
 applies-to: get/search/put/tag/link (kind='websearch' | 'think' | 'research')
 status: active
 ---
