@@ -159,12 +159,23 @@ def run_loop(
                 # single hiccup to kill the whole worker.
                 log.exception("worker: %s batch raised; continuing", handler.name)
                 continue
+            # Structured payload travels via the DBLogHandler's
+            # ``extra={'payload': ...}`` channel so worker_logs.payload
+            # carries the BatchResult shape directly — `precis logs
+            # --pass X` filters can roll up claimed / ok / failed
+            # without re-parsing the message.
             log.info(
                 "worker: %s claimed=%d ok=%d failed=%d",
                 result.handler,
                 result.claimed,
                 result.ok,
                 result.failed,
+                extra={"payload": {
+                    "handler":  result.handler,
+                    "claimed":  result.claimed,
+                    "ok":       result.ok,
+                    "failed":   result.failed,
+                }},
             )
             if result.claimed > 0:
                 any_work = True
@@ -184,6 +195,12 @@ def run_loop(
                 result.claimed,
                 result.ok,
                 result.failed,
+                extra={"payload": {
+                    "handler":  result.handler,
+                    "claimed":  result.claimed,
+                    "ok":       result.ok,
+                    "failed":   result.failed,
+                }},
             )
             if result.claimed > 0:
                 any_work = True

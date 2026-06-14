@@ -76,7 +76,11 @@ class TestRestrictedEnv:
 
     def test_sets_pwd_to_cwd(self) -> None:
         env = _restricted_env(cwd_for_test())
-        assert env["PWD"] == "/fake/clone"
+        # ``str(Path)`` uses native separators (``\\`` on Windows,
+        # ``/`` on POSIX). The runtime stamps the PWD using
+        # ``str(cwd)``; compare via the same conversion so the test
+        # is cross-platform.
+        assert env["PWD"] == str(cwd_for_test())
 
 
 def cwd_for_test() -> Path:
@@ -157,7 +161,11 @@ class TestLoadConfig:
         assert isinstance(cfg, FixGripeConfig)
         assert cfg.claude_bin == "claude"
         assert cfg.timeout_seconds == 1800
-        assert cfg.default_repo_dir == Path("/tmp/repo")
+        # ``load_config_from_env`` calls ``.resolve()`` on the path —
+        # which on macOS turns ``/tmp/...`` into ``/private/tmp/...``
+        # (the symlink target) and on Windows applies the current drive
+        # letter. Compare resolved-form to keep the test cross-platform.
+        assert cfg.default_repo_dir == Path("/tmp/repo").resolve()
         assert cfg.repos == {}
 
     def test_repos_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,9 +177,10 @@ class TestLoadConfig:
         monkeypatch.delenv("PRECIS_FIX_REPO_DIR", raising=False)
         cfg = load_config_from_env()
         assert cfg.default_repo_dir is None
+        # Symlink + drive normalisation — see test_defaults above.
         assert cfg.repos == {
-            "precis-mcp": Path("/tmp/precis-mcp"),
-            "other": Path("/tmp/other"),
+            "precis-mcp": Path("/tmp/precis-mcp").resolve(),
+            "other": Path("/tmp/other").resolve(),
         }
 
     def test_repos_json_malformed(self, monkeypatch: pytest.MonkeyPatch) -> None:

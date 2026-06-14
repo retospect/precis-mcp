@@ -29,6 +29,8 @@ from precis.handlers.memory import MemoryHandler
 from precis.store import BlockInsert, Store
 from precis.store.types import Relation
 
+from tests.conftest import id_of
+
 # ── unit: parse_link_target ─────────────────────────────────────────
 
 
@@ -296,7 +298,7 @@ class TestMemoryHandlerLink:
         target = _seed_paper(store)
         out = memory_handler.put(text="see this paper", link="paper:wang2020state")
         # Extract memory id from "created memory id=N"
-        new_id = int(out.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(out.body)
         links = store.links_for(new_id, direction="out")
         assert len(links) == 1
         assert links[0].dst_ref_id == target
@@ -309,7 +311,7 @@ class TestMemoryHandlerLink:
         out = memory_handler.put(
             text="rebuts", link="paper:wang2020state", rel="contradicts"
         )
-        new_id = int(out.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(out.body)
         links = store.links_for(new_id, direction="out")
         assert links[0].relation == "contradicts"
 
@@ -318,7 +320,7 @@ class TestMemoryHandlerLink:
         out = memory_handler.put(
             text="cites block 3", link="paper:wang2020state~3", rel="cites"
         )
-        new_id = int(out.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(out.body)
         links = store.links_for(new_id, direction="out")
         assert links[0].dst_ref_id == target
         assert links[0].dst_pos == 3
@@ -326,7 +328,7 @@ class TestMemoryHandlerLink:
     def test_link_on_update(self, memory_handler: MemoryHandler, store: Store) -> None:
         _seed_paper(store)
         m = memory_handler.put(text="just a memory")
-        new_id = int(m.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(m.body)
 
         memory_handler.link(id=new_id, target="paper:wang2020state", rel="cites")
 
@@ -339,7 +341,7 @@ class TestMemoryHandlerLink:
     ) -> None:
         _seed_paper(store)
         m = memory_handler.put(text="m", link="paper:wang2020state", rel="cites")
-        new_id = int(m.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(m.body)
         memory_handler.link(id=new_id, target="paper:wang2020state", rel="contradicts")
         assert len(store.links_for(new_id, direction="out")) == 2
 
@@ -355,7 +357,7 @@ class TestMemoryHandlerLink:
     ) -> None:
         _seed_paper(store)
         m = memory_handler.put(text="m", link="paper:wang2020state", rel="cites")
-        new_id = int(m.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(m.body)
         memory_handler.link(id=new_id, target="paper:wang2020state", rel="contradicts")
 
         memory_handler.link(id=new_id, target="paper:wang2020state", mode="remove")
@@ -370,7 +372,7 @@ class TestMemoryHandlerLink:
         """
         _seed_paper(store)
         m = memory_handler.put(text="m")
-        new_id = int(m.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(m.body)
         with pytest.raises(BadInput, match="put on existing memory"):
             memory_handler.put(
                 id=new_id,
@@ -425,7 +427,7 @@ class TestMemoryHandlerLinksView:
         ``put(link=, rel=)`` form which no longer works on most
         kinds."""
         m = memory_handler.put(text="alone")
-        new_id = int(m.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(m.body)
         out = memory_handler.get(id=new_id, view="links")
         assert "(no links)" in out.body
         # Hint points at the ``link()`` verb.
@@ -440,7 +442,7 @@ class TestMemoryHandlerLinksView:
     ) -> None:
         _seed_paper(store, slug="wang2020state")
         m = memory_handler.put(text="m", link="paper:wang2020state", rel="cites")
-        new_id = int(m.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(m.body)
         out = memory_handler.get(id=new_id, view="links")
         assert "outbound" in out.body
         assert "→ paper:wang2020state" in out.body
@@ -452,8 +454,8 @@ class TestMemoryHandlerLinksView:
         # mem_a links to mem_b; viewing mem_b's links shows mem_a inbound.
         a_resp = memory_handler.put(text="alpha")
         b_resp = memory_handler.put(text="beta")
-        a_id = int(a_resp.body.split("=")[-1].strip().split()[0])
-        b_id = int(b_resp.body.split("=")[-1].strip().split()[0])
+        a_id = id_of(a_resp.body)
+        b_id = id_of(b_resp.body)
         memory_handler.link(id=a_id, target=f"memory:{b_id}", rel="cites")
 
         out = memory_handler.get(id=b_id, view="links")
@@ -470,7 +472,7 @@ class TestMemoryHandlerLinksView:
             link="paper:wang2020state~2",
             rel="cites",
         )
-        new_id = int(m.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(m.body)
         out = memory_handler.get(id=new_id, view="links")
         assert "→ paper:wang2020state~2" in out.body
 
@@ -478,7 +480,7 @@ class TestMemoryHandlerLinksView:
         self, memory_handler: MemoryHandler, store: Store
     ) -> None:
         m = memory_handler.put(text="m")
-        new_id = int(m.body.split("=")[-1].strip().split()[0])
+        new_id = id_of(m.body)
         with pytest.raises(Unsupported, match="unknown view 'banana'"):
             memory_handler.get(id=new_id, view="banana")
 
@@ -488,8 +490,8 @@ class TestMemoryHandlerLinksView:
         # Link to a memory, then soft-delete that memory.
         a = memory_handler.put(text="alpha")
         b = memory_handler.put(text="beta")
-        a_id = int(a.body.split("=")[-1].strip().split()[0])
-        b_id = int(b.body.split("=")[-1].strip().split()[0])
+        a_id = id_of(a.body)
+        b_id = id_of(b.body)
         memory_handler.link(id=a_id, target=f"memory:{b_id}")
         store.soft_delete_ref(b_id)
 

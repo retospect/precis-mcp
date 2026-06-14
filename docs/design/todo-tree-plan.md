@@ -1571,6 +1571,30 @@ Total: ~6.5–7.5 sessions to ship the full surface (Slice 2 risk-
 adjusted to 1.5–2.5). Each slice ships independently with
 user-visible value, so partial landing is fine.
 
+## Kinds that fold into the todo tree (audit, post-Slice 5)
+
+Once `meta.executor` + the dispatch worker exist, several ref kinds
+that currently have their own substrate are revealed to be specific
+cases of "a thing-to-do" with kind-specific execution:
+
+| Kind | Folds? | Sketch |
+|---|---|---|
+| `job` | **Already folded (Slice 5)** | A job is a `kind='todo'` child carrying `meta.executor` + `meta.job_type`; `dispatch` worker mints it from a parent todo with the same meta. Existing `kind='job'` rows keep working alongside as soft-cutover. |
+| `cron` | **Already folded (Slice 4)** | Replaced by `level:recurring` todos under the **Watches** umbrella. Legacy `kind='cron'` infra retires when nothing references it. |
+| `finding` (citation chase) | **Should fold** | A finding is "claim X needs investigating" — exactly a todo with `meta.executor='chase'` and the chain stored as job_event-style chunks. The chase worker (`workers/chase.py`) becomes a chase executor; its current claim queue (`status='tracing'` rows) collapses into the dispatch substrate. *Even less specialised than a `fix_gripe` job* — no repo, no git push, just a SQL-driven walk + an optional LLM call for disambiguation. Move to a follow-up slice. |
+| `gripe` | **Could fold** | A gripe is "bug Y to triage." Could be a `level:tactical` todo under "Engineering hygiene" with `meta.gripe_state` for the lifecycle. Keep separate for now — the comment-timeline UI is established and the cost of migrating live gripes outweighs the tidiness win. Re-evaluate when the gripe count is small. |
+| `message` (outbound Discord) | **Probably don't fold** | A message is a *side-effect output*, not a workspace item. The producing worker emits the message as part of its job (asa-bot reply, daily digest); a todo for "send this message" is overkill. The kind stays as the delivery substrate. |
+| `paper` / `patent` / `skill` / `oracle` / `conv` / `pres` / `markdown` / `plaintext` / `tex` / `python` / `memory` / `citation` / `fc` / `provenance` / `tag` / `random` | No | Content kinds, tool kinds, and the discovery kind aren't work items — they're what work *operates on*. Folding them would invert the dependency. |
+
+The pattern: **anything that has a `STATUS:` lifecycle + a worker
+substrate folds.** Things that are pure content, pure tool output,
+or pure metadata don't.
+
+The chase fold is the next concrete simplification — once the
+dispatch worker has a `chase` executor, `kind='finding'` becomes a
+soft-cutover the same way `kind='job'` did in Slice 5. Tracking as
+a Slice 6 candidate.
+
 ## Relationship to existing infrastructure
 
 | Existing piece | How this plan composes |

@@ -64,6 +64,7 @@ for doi in ['10.x/y1', '10.x/y2', '10.x/y3']:
                    'timeout_at': '2026-06-20T00:00:00+00:00',
                }})
     link(kind='todo', id=108, target=f'todo:{wait.id}', rel='blocked-by')
+
 tag(kind='todo', id=103, add=['STATUS:done'])     # discovery is done
 ```
 

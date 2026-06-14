@@ -247,10 +247,9 @@ def search(
     salient seed + its neighbourhood. **`view='stubs'`**: the
     paper-acquisition backlog (an id but no PDF). See the skill help.
 
-    Full reference: get(kind='skill', id='precis-search-help'), or
-    search(kind='skill', q='finding things by topic') for a topical
-    lookup. For per-kind nuances (e.g. patent's prior-art sweep)
-    search the skill index with a natural-language goal.
+    Full reference: get(kind='skill', id='precis-search-help'). For
+    per-kind nuances (patent prior-art, finding chase, etc.) search
+    the skill index with a natural-language goal.
     """
     # Validate page_size at the boundary. Errors round-trip via
     # ``_validation_error`` so the MCP ``isError`` flag survives.

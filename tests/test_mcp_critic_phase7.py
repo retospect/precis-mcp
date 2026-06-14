@@ -43,6 +43,8 @@ from precis.handlers.skill import (
 from precis.runtime import PrecisRuntime
 from precis.store import BlockInsert, Store, Tag
 
+from tests.conftest import id_of
+
 # ── helpers ────────────────────────────────────────────────────────
 
 
@@ -93,7 +95,7 @@ class TestPutNarrowedToCreateOnly:
         """``id=`` on put points the caller at tag/link/delete."""
         h = MemoryHandler(hub=Hub(store=store))
         m = h.put(text="m")
-        rid = int(m.body.split("=")[-1].strip().split()[0])
+        rid = id_of(m.body)
         with pytest.raises(BadInput, match="put on existing memory"):
             h.put(id=rid)
 
@@ -102,7 +104,7 @@ class TestPutNarrowedToCreateOnly:
         — the dedicated ``delete`` verb soft-deletes the ref."""
         h = MemoryHandler(hub=Hub(store=store))
         m = h.put(text="m")
-        rid = int(m.body.split("=")[-1].strip().split()[0])
+        rid = id_of(m.body)
         out = h.delete(id=rid)
         assert "deleted" in out.body
 
