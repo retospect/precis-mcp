@@ -10,6 +10,31 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **Reparent todos via `link(kind='todo', rel='parent')`.** Moving an
+  existing todo in the tree was the one mutation without an MCP
+  surface (ADR 0026 deferred it). `TodoHandler.link()` now intercepts
+  the reserved `parent` relation and re-points `refs.parent_id`
+  through the same cycle / depth / owner guards as create-time
+  parenting, plus a new subtree-aware `check_reparent_depth`
+  (accounts for the moved subtree's height, not just the parent
+  depth). `mode='remove'` detaches the todo to a root; an optional
+  `target=` on remove must name the current parent. The todo
+  `view='links'` synthesizes a `## parent` section so the edge
+  round-trips. To agents, `parent` reads as an ordinary todo relation;
+  it is not added to the closed `Relation` vocabulary (it re-points a
+  column, not a `links` row — see ADR 0027). Web: `POST
+  /tasks/{id}/move` dispatches the same call, and the Tasks dashboard
+  gains native drag-to-reparent (drop on a task to nest, on the top
+  bar to promote to a root) plus a numeric "move under #__" fallback.
+  The Tasks tree also surfaces both processing signals per node — a
+  live `pg_locks` row lock (via new `Store.locked_ref_ids()`, a
+  `FOR UPDATE SKIP LOCKED` probe) and the `STATUS:running` +
+  `meta.lease_until` worker lease — with child `kind='job'` rows shown
+  under their parent todo. Tests: `tests/test_todo_tree.py` (move,
+  detach, cycle/depth/owner rejects, links round-trip),
+  `tests/precis_web/test_routes.py` (move route dispatch). Skills
+  `precis-todo-help`, `precis-link-help`, `precis-relations` updated.
+
 - **Centralised worker logs via `worker_logs` + `precis logs` CLI.**
   Migration 0015 adds `worker_logs (log_id, ts, host, process,
   pass, level, logger, message, payload JSONB)` with three partial

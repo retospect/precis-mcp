@@ -84,6 +84,24 @@ link(kind='todo', id=141, target='paper:wang2020state', rel='blocked-by')
 records what it's waiting on. Targets carry an explicit kind prefix
 (`todo:158`, `paper:<slug>`, `markdown:notes/x.md`).
 
+## Move a todo under another (reparent)
+## Change a todo's parent in the tree
+## How do I nest one task under another?
+
+Todos form a tree. Move an existing todo with the `parent` relation
+on the `link` verb:
+
+```python
+link(kind='todo', id=141, target='todo:158', rel='parent')   # 141 becomes a child of 158
+link(kind='todo', id=141, rel='parent', mode='remove')        # detach 141 to a top-level root
+```
+
+A move that would form a cycle, nest deeper than the tree's depth
+cap, or touch a strategic / tactical node from a worker source is
+rejected. To set the parent when *creating* a todo, pass `parent_id=`
+on `put` instead. The current parent shows under `## parent` in
+`get(kind='todo', id=141, view='links')`.
+
 ## Schedule a todo for a date
 ## Add a due date to a todo
 ## How do I track when something is due?

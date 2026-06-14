@@ -98,6 +98,22 @@ link(kind='todo', id=158,
      target='gripe:7', rel='blocks')
 ```
 
+## Reparent a todo (`rel='parent'`)
+
+Todos form a tree. `rel='parent'` places one todo under another;
+`mode='remove'` lifts it back out to a top-level root. The `parent`
+relation applies to `kind='todo'`.
+
+```python
+link(kind='todo', id=141, target='todo:158', rel='parent')   # move 141 under 158
+link(kind='todo', id=141, rel='parent', mode='remove')        # detach 141 to a root
+```
+
+A move that would form a cycle or nest deeper than the tree's depth
+cap is rejected. The current parent shows under `## parent` in
+`get(kind='todo', id=141, view='links')`. See `precis-todo-help` for
+the full tree workflow.
+
 ## See also
 
 ```python
