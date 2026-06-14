@@ -341,6 +341,33 @@ def check_level_tags_on_tag(
             )
 
 
+def check_halt_remove(remove: list[str] | None) -> None:
+    """Reject ``remove=['halt']`` from worker sources.
+
+    Asymmetric to the level-gradient guard: workers MAY add ``halt``
+    (an escalation — "I think this needs human eyes") but only the
+    owner may remove it (the resume decision). Adds are unrestricted
+    so a worker that hits something it can't handle can stop the
+    bleeding without waiting for human attention.
+
+    The doable view and dispatch worker both honour ``halt`` via the
+    shared ``_DOABLE_EXCLUSION_TAGS`` registry in ``_todo_views``;
+    this guard just protects the resume edge.
+    """
+    if is_owner():
+        return
+    if not remove:
+        return
+    if "halt" in remove:
+        raise BadInput(
+            "removing 'halt' is owner-only; workers may add it but not clear it",
+            next=(
+                "the halt marker is the owner's resume edge — run from "
+                "a non-worker source (web:reto / cli) to lift it"
+            ),
+        )
+
+
 # ── ref-level authority check (delete / re-parent) ─────────────────
 
 
@@ -446,6 +473,7 @@ __all__ = [
     "LEVEL_TACTICAL",
     "MAX_DEPTH",
     "check_depth_under",
+    "check_halt_remove",
     "check_level_tags_on_create",
     "check_level_tags_on_tag",
     "check_no_cycle",

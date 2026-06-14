@@ -91,6 +91,30 @@
                 onsubmit="return confirm('Delete #{{ r.id }}? Children re-parent to top level.')">
             <button class="rounded text-xs px-2 py-0.5 text-rose-600 hover:bg-rose-50">delete</button>
           </form>
+          <!-- History: lazy-load attempts (jobs) + event log via htmx. -->
+          <button type="button"
+                  class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100"
+                  hx-get="/tasks/{{ r.id }}/history"
+                  hx-target="#hist-{{ r.id }}" hx-swap="innerHTML">history</button>
+          <div id="hist-{{ r.id }}" class="w-full"></div>
+          <!-- Tags: removable chips + add input (via the tag verb).
+               Stacked vertically so long tag sets don't fan out wide. -->
+          <div class="w-full flex flex-col items-start gap-1 mt-1">
+            {% for t in r.tags %}
+            <span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+              {{ t }}
+              <form method="post" action="/tasks/{{ r.id }}/tags" class="inline">
+                <input type="hidden" name="remove" value="{{ t }}" />
+                <button class="text-slate-400 hover:text-rose-600" title="remove tag">&times;</button>
+              </form>
+            </span>
+            {% endfor %}
+            <form method="post" action="/tasks/{{ r.id }}/tags" class="flex items-center gap-1">
+              <input name="add" placeholder="add tag…"
+                     class="rounded border-slate-300 text-xs border px-2 py-0.5 w-32" />
+              <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100">+ tag</button>
+            </form>
+          </div>
         </div>
         {% endif %}
       </li>

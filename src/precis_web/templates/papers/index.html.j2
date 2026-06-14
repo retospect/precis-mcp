@@ -12,9 +12,9 @@
 {% if not papers %}
   <p class="text-sm text-slate-500">No papers{% if q %} match “{{ q }}”{% endif %}.</p>
 {% else %}
-<ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+<ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white overflow-visible">
   {% for p in papers %}
-  <li class="px-4 py-3 flex items-center gap-3">
+  <li class="group relative px-4 py-3 flex items-center gap-3">
     <span class="text-xs text-slate-400 w-12 shrink-0">#{{ p.id }}</span>
     <a href="/papers/{{ p.id }}" class="text-sm font-medium text-sky-700 hover:underline flex-1">
       {{ p.title }}{% if p.year %} <span class="text-slate-400">({{ p.year }})</span>{% endif %}
@@ -24,6 +24,19 @@
     {% else %}
       <span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500">stub</span>
     {% endif %}
+    {# Hover card: authors + abstract. Shown on row hover; positioned
+       below the row, doesn't intercept clicks. #}
+    <div class="pointer-events-none absolute left-12 top-full z-20 hidden group-hover:block
+                w-[40rem] max-w-[90vw] rounded-lg border border-slate-200 bg-white shadow-xl p-3">
+      {% if p.authors %}
+      <p class="text-xs font-medium text-slate-700 mb-1">{{ p.authors }}</p>
+      {% endif %}
+      {% if p.abstract %}
+      <p class="text-xs leading-relaxed text-slate-600">{{ p.abstract }}</p>
+      {% else %}
+      <p class="text-xs text-slate-400 italic">No abstract on file.</p>
+      {% endif %}
+    </div>
   </li>
   {% endfor %}
 </ul>

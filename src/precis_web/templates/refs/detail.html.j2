@@ -1,0 +1,19 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ ref.title }}{% endblock %}
+{% block content %}
+<a href="/refs/{{ kind }}" class="text-sm text-slate-500 underline">&larr; {{ kind_label }}</a>
+<div class="mt-2 mb-4">
+  <h1 class="text-lg font-semibold">{{ ref.title }}</h1>
+  <p class="text-sm text-slate-500">
+    #{{ ref.id }}
+    {% if ref.slug %}· <span class="font-mono">{{ ref.slug }}</span>{% endif %}
+    {% if ref.updated %}· updated {{ ref.updated }}{% endif %}
+  </p>
+</div>
+
+{% if is_error %}
+<div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 whitespace-pre-wrap">{{ body }}</div>
+{% else %}
+<pre class="rounded-lg border border-slate-200 bg-white p-4 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto">{{ body }}</pre>
+{% endif %}
+{% endblock %}

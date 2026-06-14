@@ -10,6 +10,7 @@ ref's cite_key (``Ref.slug``) and the ``precis watch`` shard layout
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,12 @@ from precis.errors import NotFound
 from precis_web.deps import get_store, get_web_config, templates
 
 router = APIRouter(prefix="/papers", tags=["papers"])
+
+#: Cap on the abstract length shown in the hover card (chars).
+_ABSTRACT_PREVIEW = 900
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
 
 
 def _pdf_path(corpus_dir: Path, cite_key: str) -> Path:
@@ -32,6 +39,46 @@ def _pdf_path(corpus_dir: Path, cite_key: str) -> Path:
     return corpus_dir / letter / f"{cite_key}.pdf"
 
 
+def _authors_str(ref: Any) -> str:
+    """Join an authors list (dicts with family/given) into a string.
+
+    Tolerant of the various author shapes in ``refs.authors`` — dicts
+    with ``family``/``given``, plain strings, or missing entirely.
+    """
+    authors = getattr(ref, "authors", None) or []
+    names: list[str] = []
+    for a in authors:
+        if isinstance(a, dict):
+            name = (a.get("family") or a.get("name") or "").strip()
+            given = (a.get("given") or "").strip()
+            if name and given:
+                name = f"{given} {name}"
+            elif not name:
+                name = given
+        else:
+            name = str(a).strip()
+        if name:
+            names.append(name)
+    return ", ".join(names)
+
+
+def _abstract_str(ref: Any) -> str:
+    """Plain-text abstract for the hover card.
+
+    The publisher abstract in ``refs.meta['abstract']`` is often
+    JATS/HTML-wrapped; strip tags and collapse whitespace, then cap to
+    a preview length so the tooltip stays bounded.
+    """
+    meta = getattr(ref, "meta", None) or {}
+    raw = meta.get("abstract")
+    if not raw:
+        return ""
+    text = _WS_RE.sub(" ", _TAG_RE.sub(" ", str(raw))).strip()
+    if len(text) > _ABSTRACT_PREVIEW:
+        text = text[:_ABSTRACT_PREVIEW].rstrip() + "…"
+    return text
+
+
 def _paper_row(ref: Any) -> dict[str, Any]:
     return {
         "id": ref.id,
@@ -39,6 +86,8 @@ def _paper_row(ref: Any) -> dict[str, Any]:
         "title": ref.title,
         "year": ref.year,
         "has_pdf": bool(ref.pdf_sha256),
+        "authors": _authors_str(ref),
+        "abstract": _abstract_str(ref),
     }
 
 
@@ -73,7 +122,8 @@ async def detail(request: Request, ref_id: int) -> HTMLResponse:
         raise NotFound(f"paper id={ref_id} not found")
     cfg = get_web_config(request)
     cite_key = ref.slug or ""
-    pdf_on_disk = bool(cite_key) and _pdf_path(cfg.corpus_dir, cite_key).is_file()
+    lookup_path = _pdf_path(cfg.corpus_dir, cite_key) if cite_key else None
+    pdf_on_disk = lookup_path is not None and lookup_path.is_file()
     return templates.TemplateResponse(
         request,
         "papers/detail.html.j2",
@@ -82,6 +132,11 @@ async def detail(request: Request, ref_id: int) -> HTMLResponse:
             "paper": _paper_row(ref),
             "authors": ref.authors or [],
             "pdf_on_disk": pdf_on_disk,
+            # Diagnostics for the "file expected but missing" case (a
+            # held paper whose corpus_dir / mount is misconfigured):
+            # show exactly where we looked so it's self-diagnosing.
+            "pdf_lookup_path": str(lookup_path) if lookup_path else "",
+            "corpus_dir": str(cfg.corpus_dir),
         },
     )
 
@@ -98,7 +153,11 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
     cfg = get_web_config(request)
     path = _pdf_path(cfg.corpus_dir, cite_key)
     if not cite_key or not path.is_file():
-        raise NotFound(f"no PDF on disk for paper id={ref_id} (cite_key={cite_key!r})")
+        raise NotFound(
+            f"no PDF on disk for paper id={ref_id} (cite_key={cite_key!r}); "
+            f"looked at {str(path)!r} under corpus_dir={str(cfg.corpus_dir)!r}. "
+            "If the file exists elsewhere, set PRECIS_CORPUS_DIR for the web process."
+        )
     return FileResponse(
         path,
         media_type="application/pdf",

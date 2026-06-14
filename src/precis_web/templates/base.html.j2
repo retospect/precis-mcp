@@ -12,11 +12,29 @@
   <div class="min-h-full">
     <header class="bg-slate-900 text-slate-100">
       <div class="mx-auto max-w-6xl px-4">
-        <nav class="flex items-center gap-1 h-14">
+        <nav class="flex flex-wrap items-center gap-1 py-2">
           <span class="font-semibold tracking-tight text-emerald-400 mr-4">precis</span>
-          {% set tabs = [('tasks','Tasks','/tasks'), ('papers','Papers','/papers'),
-                         ('console','Console','/console'), ('status','Status','/status')] %}
+          {% set tabs = [('tasks','Tasks','/tasks'), ('papers','Papers','/papers')] %}
           {% for key, label, href in tabs %}
+          <a href="{{ href }}"
+             class="px-3 py-2 rounded-md text-sm font-medium transition
+                    {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+            {{ label }}
+          </a>
+          {% endfor %}
+          <span class="mx-2 h-5 w-px bg-slate-700"></span>
+          {% set ref_tabs = [('memory','Memory'), ('conv','Conv'), ('oracle','Oracle'),
+                             ('gripe','Gripes'), ('patent','Patents'), ('pres','Pres')] %}
+          {% for key, label in ref_tabs %}
+          <a href="/refs/{{ key }}"
+             class="px-3 py-2 rounded-md text-sm font-medium transition
+                    {% if active_tab == 'refs:' + key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+            {{ label }}
+          </a>
+          {% endfor %}
+          <span class="mx-2 h-5 w-px bg-slate-700"></span>
+          {% set util_tabs = [('console','Console','/console'), ('status','Status','/status')] %}
+          {% for key, label, href in util_tabs %}
           <a href="{{ href }}"
              class="px-3 py-2 rounded-md text-sm font-medium transition
                     {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">

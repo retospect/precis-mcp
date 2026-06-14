@@ -19,9 +19,19 @@
 {% if pdf_on_disk %}
   <iframe src="/papers/{{ paper.id }}/pdf" class="w-full rounded-lg border border-slate-200 bg-white"
           style="height: 80vh"></iframe>
-{% else %}
+{% elif not paper.has_pdf %}
   <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-    No PDF on disk for this paper{% if not paper.has_pdf %} (it's a stub — queued for fetch){% endif %}.
+    No PDF on disk for this paper (it's a stub — queued for fetch).
+  </div>
+{% else %}
+  <div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+    <p class="font-medium">This paper is held but the file isn't where the server looked.</p>
+    <p class="mt-1">Looked at: <span class="font-mono break-all">{{ pdf_lookup_path }}</span></p>
+    <p class="mt-1">corpus_dir: <span class="font-mono break-all">{{ corpus_dir }}</span></p>
+    <p class="mt-2 text-rose-700">
+      If the file lives elsewhere (e.g. an NFS mount), set
+      <span class="font-mono">PRECIS_CORPUS_DIR</span> for the web process and restart.
+    </p>
   </div>
 {% endif %}
 {% endblock %}

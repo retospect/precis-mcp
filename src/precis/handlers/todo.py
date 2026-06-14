@@ -517,6 +517,7 @@ class TodoHandler(NumericRefHandler):
                 kept.append(t)
             remove = kept or None
         guards.check_level_tags_on_tag(add=add, remove=remove)
+        guards.check_halt_remove(remove=remove)
         ref_id = self._coerce_id(id)
         if prio is not None or clear_prio:
             self.store.set_prio(ref_id, None if clear_prio else prio)

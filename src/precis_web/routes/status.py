@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from precis_web.deps import get_store, templates
+from precis_web.deps import get_store, get_web_config, templates
 
 router = APIRouter(prefix="/status", tags=["status"])
 
@@ -91,6 +91,7 @@ def _recent_events(store: Any, limit: int = 20) -> list[dict[str, Any]]:
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     store = get_store(request)
+    cfg = get_web_config(request)
     return templates.TemplateResponse(
         request,
         "status.html.j2",
@@ -100,5 +101,6 @@ async def index(request: Request) -> HTMLResponse:
             "papers": _safe(lambda: _paper_summary(store)) or {},
             "todo_status": _safe(lambda: _todo_status(store)) or [],
             "events": _safe(lambda: _recent_events(store)) or [],
+            "corpus_dir": str(cfg.corpus_dir),
         },
     )

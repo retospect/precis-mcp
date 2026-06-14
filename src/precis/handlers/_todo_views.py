@@ -25,6 +25,56 @@ if TYPE_CHECKING:
     from precis.store import Store
 
 
+# ── doable / dispatch exclusion registry ──────────────────────────
+
+
+#: Open-tag forms that pull a leaf out of ``view='doable'`` AND out of
+#: the dispatch worker's candidate query. The shared registry keeps
+#: the doable filter and the dispatch filter in lock-step — adding a
+#: new "robot stay away" reason is a one-line append here, no SQL
+#: edits in two places.
+#:
+#: Each entry is one of two shapes:
+#:
+#: * **bare value** (no trailing ``:``) — matched exactly against
+#:   ``tags.value``. Examples: ``halt``, ``asking-reto``.
+#: * **prefix value** (ends in ``:``) — matched as a SQL LIKE prefix.
+#:   Examples: ``waiting-for:`` covers ``waiting-for:reto``,
+#:   ``waiting-for:paper:10.x/y1``, etc.
+#:
+#: Slice-5+: ``halt`` is the explicit "robot don't touch this" marker.
+#: A worker source can ADD it (escalation) but only the owner can
+#: REMOVE it — see :func:`precis.handlers._todo_guards.check_halt_remove`.
+_DOABLE_EXCLUSION_TAGS: tuple[str, ...] = (
+    "halt",
+    "waiting-for:",
+    "asking-reto",
+    "asking-reto:",
+    "child-failed:",
+)
+
+
+def _doable_exclusion_clause(tag_alias: str = "t") -> str:
+    """Return the SQL OR clause matching every exclusion tag.
+
+    The returned expression is parenthesised, suitable for embedding
+    in a ``NOT EXISTS (... AND <clause>)`` shape. The caller is
+    responsible for the surrounding ``ref_tags`` ⋈ ``tags`` join and
+    the ``namespace = 'OPEN'`` filter.
+
+    Centralising the clause means the doable view, the dispatch
+    candidate query, and any future "skip robot-stay-away leaves"
+    surface share the same logic — drift between them is impossible.
+    """
+    parts: list[str] = []
+    for t in _DOABLE_EXCLUSION_TAGS:
+        if t.endswith(":"):
+            parts.append(f"{tag_alias}.value LIKE '{t}%%'")
+        else:
+            parts.append(f"{tag_alias}.value = '{t}'")
+    return "(" + " OR ".join(parts) + ")"
+
+
 # ── shared helpers ─────────────────────────────────────────────────
 
 
@@ -765,6 +815,7 @@ def _fetch_doable(
             ")"
         )
         under_params = (under,)
+    exclusion_clause = _doable_exclusion_clause()
     sql = f"""
         WITH RECURSIVE
           strat AS (
@@ -840,15 +891,16 @@ def _fetch_doable(
                       ) NOT IN ('done', 'won''t-do')
            )
            AND NOT EXISTS (
+               -- ``_DOABLE_EXCLUSION_TAGS`` registry: every "robot
+               -- stay away" reason in one place — waiting-for / asking-
+               -- reto / child-failed (Slice 5 bubble) / halt (explicit
+               -- owner-applied marker). Adding a new exclusion form
+               -- means appending to the registry above, no SQL edits
+               -- needed here or in dispatch.
                SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                 WHERE rt.ref_id = r.ref_id
                   AND t.namespace = 'OPEN'
-                  AND (t.value LIKE 'waiting-for:%%' OR t.value = 'asking-reto'
-                       OR t.value LIKE 'asking-reto:%%'
-                       -- Slice-5: a child job failed and the parent
-                       -- is awaiting its owner's decision. Skip
-                       -- until the bubble flag is cleared.
-                       OR t.value LIKE 'child-failed:%%')
+                  AND {exclusion_clause}
            )
            AND NOT EXISTS (
                SELECT 1 FROM ancestry_paused ap WHERE ap.ref_id = r.ref_id
@@ -1049,7 +1101,7 @@ def render_asking_reto(store: Store) -> Response:
 def render_attention(store: Store) -> Response:
     """Union of every signal that needs the owner's attention.
 
-    Three signal sources today (Slice 5):
+    Signal sources (Slice 5+):
 
     * **asking-reto** leaves — work parked on Reto's Discord reply
       (Slice 1; ``view='asking-reto'`` covers this in isolation).
@@ -1057,17 +1109,24 @@ def render_attention(store: Store) -> Response:
       open tags because a child ``kind='job'`` ref hit
       ``STATUS:failed``. The owner (asa-bot) decides next move:
       retry, switch executor, ask the user.
+    * **halted leaves** — todos carrying the explicit ``halt`` open
+      tag (owner-applied "robot stay away", or worker-applied
+      escalation). The doable view skips them entirely so they'd
+      otherwise vanish from the rotation; surfacing them here keeps
+      them visible until the owner lifts the tag.
     * Future tags (``escalated:*``, ``human-review:*``) slot into the
       same renderer with one more ``LIKE`` clause.
 
     The chatter preamble renders this alongside the doable queue
     so Reto sees all of "what needs me" in one block. ``view='doable'``
-    excludes both ``asking-reto`` and ``child-failed:*`` parents, so
-    the two surfaces are disjoint by construction.
+    excludes all four signal classes via the
+    ``_DOABLE_EXCLUSION_TAGS`` registry, so the two surfaces are
+    disjoint by construction.
     """
     asks = _attention_asking_reto(store)
     child_failed = _attention_child_failed(store)
-    total = len(asks) + len(child_failed)
+    halted = _attention_halted(store)
+    total = len(asks) + len(child_failed) + len(halted)
     if total == 0:
         body = "no todos need attention"
         body += render_next_section(
@@ -1100,6 +1159,15 @@ def render_attention(store: Store) -> Response:
                 # Strip ``child-failed:`` prefix → the bare job id.
                 job_id = tag.removeprefix("child-failed:")
                 lines.append(f"      job #{job_id}: {f['reasons'].get(job_id, '(no event chunk yet)')}")
+    if halted:
+        lines.append("")
+        lines.append(f"## Halted ({len(halted)})")
+        lines.append("")
+        for h in halted:
+            first = (h["title"] or "").split("\n", 1)[0]
+            if len(first) > 76:
+                first = first[:76].rstrip() + "…"
+            lines.append(f"#{h['id']:<4} {first}")
     body = "\n".join(lines)
     body += render_next_section(
         [
@@ -1110,6 +1178,10 @@ def render_attention(store: Store) -> Response:
             (
                 "tag(kind='todo', id=N, remove=['child-failed:<job_id>'])",
                 "after deciding to retry: clear the bubble flag",
+            ),
+            (
+                "tag(kind='todo', id=N, remove=['halt'])",
+                "lift the halt (owner-only; resumes doable / dispatch)",
             ),
         ]
     )
@@ -1133,6 +1205,39 @@ def _attention_asking_reto(store: Store) -> list[dict[str, Any]]:
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND t.namespace = 'OPEN'
                AND (t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) NOT IN ('done', 'won''t-do')
+             ORDER BY r.created_at DESC
+             LIMIT 50
+            """,
+        ).fetchall()
+    return [
+        {"id": int(r[0]), "title": r[1], "created_at": r[2]} for r in rows
+    ]
+
+
+def _attention_halted(store: Store) -> list[dict[str, Any]]:
+    """Open todos carrying the explicit ``halt`` open tag.
+
+    Bare-value match (no prefix shape) — the registry intentionally
+    keeps ``halt`` as a single binary marker rather than a
+    ``halt:<reason>`` family. If a reason needs surfacing, the owner
+    adds a body chunk or a separate ``reason:*`` tag; halt itself
+    stays one bit.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT r.ref_id, r.title, r.created_at
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND t.value = 'halt'
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),

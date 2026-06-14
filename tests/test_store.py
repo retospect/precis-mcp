@@ -148,6 +148,29 @@ def test_list_refs_filters(store: Store) -> None:
     assert len(everything) == 3
 
 
+def test_list_refs_order_by_whitelist(store: Store) -> None:
+    store.insert_ref(kind="memory", slug=None, title="banana")
+    store.insert_ref(kind="memory", slug=None, title="apple")
+    store.insert_ref(kind="memory", slug=None, title="cherry")
+
+    by_title = store.list_refs(kind="memory", order_by="title_asc")
+    assert [r.title for r in by_title] == ["apple", "banana", "cherry"]
+
+    by_title_desc = store.list_refs(kind="memory", order_by="title_desc")
+    assert [r.title for r in by_title_desc] == ["cherry", "banana", "apple"]
+
+    by_id = store.list_refs(kind="memory", order_by="id_asc")
+    assert [r.id for r in by_id] == sorted(r.id for r in by_id)
+
+
+def test_list_refs_unknown_order_by_falls_back(store: Store) -> None:
+    # A stale/garbage order_by must not 500 — it falls back to the
+    # default (updated_desc) rather than interpolating into the SQL.
+    store.insert_ref(kind="memory", slug=None, title="x")
+    refs = store.list_refs(kind="memory", order_by="; DROP TABLE refs --")
+    assert len(refs) == 1
+
+
 def test_search_refs_lexical(store: Store) -> None:
     store.insert_ref(
         kind="memory",

@@ -10,6 +10,29 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **precis-web: per-kind ref browsers, filters/sort, and task tags.**
+  New `/refs/{kind}` surface (one generic route module +
+  `refs/index.html.j2` / `refs/detail.html.j2`) with a top-nav tab per
+  browsable kind: `memory, conv, oracle, gripe, patent, pres`. Lists
+  read off the DB — ranked `search_refs_lexical` when a query is
+  present, else `list_refs` with a date-window preset
+  (`any/24h/7d/30d/90d` → `updated_after`), a tag filter, whitelisted
+  sort, and offset pagination. Detail is read-only: it renders the
+  handler's own `get` output through the in-process runtime (slug
+  kinds addressed by slug, numeric kinds by id). `Store.list_refs`
+  gains an `order_by` parameter resolved against a class-level
+  whitelist (`_LIST_ORDER_BY`); unknown keys fall back to
+  `updated_desc` instead of erroring (no caller string ever reaches
+  the SQL). The Tasks tree gains tag editing —
+  `POST /tasks/{id}/tags` dispatches the `tag` verb and the dashboard
+  shows removable chips (excluding `STATUS:`/`level:`) plus an add
+  input. Each task's `...` panel also gains a lazy (htmx) **History**
+  fragment (`GET /tasks/{id}/history`) listing its job attempts
+  (one row per `kind='job'` run, with STATUS) and its `ref_events`
+  log (e.g. `status:done`). (Task *text* editing is intentionally not included: numeric
+  refs are create-only and a title edit needs its own verb + card
+  re-synthesis — see `docs/design/precis-web-refs-and-filters.md`.)
+
 - **Reparent todos via `link(kind='todo', rel='parent')`.** Moving an
   existing todo in the tree was the one mutation without an MCP
   surface (ADR 0026 deferred it). `TodoHandler.link()` now intercepts
@@ -70,6 +93,15 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   it when the DB is itself the problem.
 
 ### Changed
+
+- **precis-web: self-diagnosing PDF path.** When a held paper's file
+  isn't found, the `/papers/{id}/pdf` 404 and the detail page now name
+  the resolved path and `corpus_dir` and point at `PRECIS_CORPUS_DIR`;
+  the detail page distinguishes a stub (queued for fetch) from a
+  held-but-missing file. The Status tab shows the active corpus root.
+  (Root cause of the operator's "No PDF on disk": `PRECIS_CORPUS_DIR`
+  unset on the web host, so the default `~/work/corpus` was searched
+  instead of the NFS mount.)
 
 - **LLM-facing skill catalogue refreshed for Slices 3/4/5 +
   consolidation.** New `precis-dispatch-help` documents the

@@ -1,0 +1,33 @@
+{# Bare fragment swapped into a task row's "..." panel via htmx. #}
+<div class="w-full mt-1 rounded border border-slate-200 bg-slate-50 p-2 text-xs">
+  <div class="font-medium text-slate-500 mb-1">Attempts (jobs)</div>
+  {% if attempts %}
+  <ul class="space-y-0.5 mb-2">
+    {% for a in attempts %}
+    {% set sc = {'succeeded':'text-emerald-700','done':'text-emerald-700','failed':'text-rose-700','running':'text-amber-700','cancelled':'text-slate-400'} %}
+    <li class="flex items-center gap-2">
+      <span class="text-slate-400">#{{ a.id }}</span>
+      <span class="{{ sc.get(a.status, 'text-sky-700') }}">[{{ a.status }}]</span>
+      <span class="text-slate-600 truncate">{{ a.title }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-slate-400 mb-2">No job attempts.</p>
+  {% endif %}
+
+  <div class="font-medium text-slate-500 mb-1">Event log</div>
+  {% if events %}
+  <ul class="space-y-0.5">
+    {% for e in events %}
+    <li class="flex items-center gap-2">
+      <span class="text-slate-400 w-28 shrink-0">{{ e.ts }}</span>
+      <span class="font-mono text-slate-600">{{ e.event }}</span>
+      <span class="text-slate-400">{{ e.source }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-slate-400">No recorded events yet.</p>
+  {% endif %}
+</div>

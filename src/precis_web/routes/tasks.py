@@ -46,6 +46,42 @@ STATUS_CHOICES: tuple[str, ...] = (
 _CLOSED = {"done", "won't-do"}
 
 
+def _split_tags(raw: str) -> list[str]:
+    """Split a comma/space separated tag string into a clean list."""
+    if not raw:
+        return []
+    parts = [p.strip() for chunk in raw.split(",") for p in chunk.split()]
+    return [p for p in parts if p]
+
+
+def _load_freeform_tags(store: Any, ref_ids: list[int]) -> dict[int, list[str]]:
+    """Return removable free tags per ref (canonical strings).
+
+    Excludes ``STATUS:`` (dedicated dropdown) and ``level:`` (dedicated
+    badge) since those have their own controls. ``OPEN`` namespace tags
+    store the full ``key:value`` in ``value``; closed namespaces render
+    as ``NAMESPACE:value``.
+    """
+    out: dict[int, list[str]] = {rid: [] for rid in ref_ids}
+    if not ref_ids:
+        return out
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id, t.namespace, t.value FROM ref_tags rt "
+            "JOIN tags t ON t.tag_id = rt.tag_id WHERE rt.ref_id = ANY(%s)",
+            (ref_ids,),
+        ).fetchall()
+    for ref_id, namespace, value in rows:
+        rid = int(ref_id)
+        tag_str = str(value) if namespace == "OPEN" else f"{namespace}:{value}"
+        if tag_str.startswith(("STATUS:", "level:")):
+            continue
+        out[rid].append(tag_str)
+    for tags in out.values():
+        tags.sort()
+    return out
+
+
 def _load_tags(store: Any, ref_ids: list[int]) -> dict[int, dict[str, str]]:
     """Bulk-fetch STATUS + ``level:`` for each todo in one query.
 
@@ -135,6 +171,7 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
 
     all_ids = todo_ids + [j["id"] for j in jobs]
     tags = _load_tags(store, all_ids)
+    freeform = _load_freeform_tags(store, todo_ids)
     locked = store.locked_ref_ids(all_ids)
 
     # Normalise todos + jobs into a single node dict so the walk is
@@ -186,6 +223,7 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
                 "locked": node["id"] in locked,
                 "lease_until": lease_until,
                 "lease_active": _lease_active(lease_until),
+                "tags": freeform.get(node["id"], []) if node["kind"] == "todo" else [],
             }
         )
         for k in kids:
@@ -294,6 +332,76 @@ async def move_task(
             {"kind": "todo", "id": ref_id, "rel": "parent", "mode": "remove"},
         )
     return RedirectResponse(url="/tasks", status_code=303)
+
+
+@router.post("/{ref_id}/tags")
+async def edit_tags(
+    request: Request,
+    ref_id: int,
+    add: str = Form(""),
+    remove: str = Form(""),
+) -> RedirectResponse:
+    """Add and/or remove free tags on a todo via the ``tag`` verb.
+
+    ``add`` is a comma/space separated tag string the operator typed;
+    ``remove`` is a single tag (from a chip's remove button). Both flow
+    through the handler so tag-vocabulary validation stays single-
+    sourced — an invalid tag returns the handler's BadInput.
+    """
+    add_list = _split_tags(add)
+    remove_list = _split_tags(remove)
+    args: dict[str, Any] = {"kind": "todo", "id": ref_id}
+    if add_list:
+        args["add"] = add_list
+    if remove_list:
+        args["remove"] = remove_list
+    if add_list or remove_list:
+        dispatch(request, "tag", args)
+    return RedirectResponse(url="/tasks", status_code=303)
+
+
+@router.get("/{ref_id}/history", response_class=HTMLResponse)
+async def history(request: Request, ref_id: int) -> HTMLResponse:
+    """Lazy (htmx) history fragment for one todo.
+
+    Two strands the tree itself doesn't surface inline:
+
+    * **Attempts** — every child ``kind='job'`` (one execution attempt
+      each), newest first, with its STATUS so succeeded/failed/running
+      runs are all legible in one place.
+    * **Event log** — ``ref_events`` for this todo (e.g. ``status:done``
+      with its timestamp + source).
+
+    Rendered as a bare fragment so htmx can swap it into the row's
+    expander without a full page reload.
+    """
+    store = get_store(request)
+    jobs = _child_jobs(store, [ref_id])
+    job_status = _load_tags(store, [j["id"] for j in jobs])
+    attempts = [
+        {
+            "id": j["id"],
+            "title": j["title"],
+            "status": job_status.get(j["id"], {}).get("status", "open"),
+        }
+        for j in jobs
+    ]
+    attempts.sort(key=lambda a: a["id"], reverse=True)
+
+    events: list[dict[str, Any]] = []
+    for e in store.events_for(ref_id, limit=50):
+        events.append(
+            {
+                "ts": e.ts.strftime("%Y-%m-%d %H:%M") if e.ts else "",
+                "event": e.event,
+                "source": e.source,
+            }
+        )
+    return templates.TemplateResponse(
+        request,
+        "tasks/_history.html.j2",
+        {"ref_id": ref_id, "attempts": attempts, "events": events},
+    )
 
 
 @router.post("/{ref_id}/delete")

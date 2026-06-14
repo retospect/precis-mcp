@@ -95,6 +95,25 @@ def test_skips_done_parent(handler: TodoHandler, store: Store) -> None:
     assert result.claimed == 0
 
 
+def test_skips_halted_parent(handler: TodoHandler, store: Store) -> None:
+    """Halt tag on the parent must keep the dispatcher off it.
+
+    Same registry as ``view='doable'``: ``halt`` belongs in
+    ``_DOABLE_EXCLUSION_TAGS`` and both surfaces honour it.
+    """
+    from precis.store.types import Tag
+
+    r = handler.put(
+        text="halted dispatch target",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe"},
+    )
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("halt"), set_by="user")
+    result = run_dispatch_pass(store)
+    assert result.claimed == 0
+    assert _child_jobs_under(store, rid) == []
+
+
 # ── happy path ───────────────────────────────────────────────────
 
 

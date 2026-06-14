@@ -61,10 +61,11 @@ def create_app(
 
     # Routers — one per tab. Imported here (not at module top) so the
     # package import surface stays light and circular-import-free.
-    from precis_web.routes import console, papers, status, tasks
+    from precis_web.routes import console, papers, refs, status, tasks
 
     app.include_router(tasks.router)
     app.include_router(papers.router)
+    app.include_router(refs.router)
     app.include_router(console.router)
     app.include_router(status.router)
 

@@ -36,6 +36,8 @@ def make_ref(**kw: Any) -> SimpleNamespace:
         "parent_id": None,
         "pdf_sha256": None,
         "authors": None,
+        "updated_at": None,
+        "meta": {},
     }
     base.update(kw)
     return SimpleNamespace(**base)
@@ -78,28 +80,71 @@ class FakeStore:
                 title="A paper",
                 year=2024,
                 pdf_sha256="abc",
+                authors=[{"family": "Smith", "given": "Jane"}],
+                meta={"abstract": "<jats:p>We study <b>X</b> in depth.</jats:p>"},
             ),
         ]
+        self.memories = [
+            make_ref(id=20, kind="memory", title="A decision"),
+            make_ref(id=21, kind="memory", title="An idea"),
+        ]
+        self.oracles = [
+            make_ref(id=30, kind="oracle", slug="planck-constant", title="Planck"),
+        ]
 
-    def list_refs(self, *, kind: str | None = None, limit: int = 50, **kw: Any):
-        if kind == "todo":
-            return list(self.todos)
-        if kind == "paper":
-            return list(self.papers)
-        return []
+    def _for_kind(self, kind: str | None) -> list[Any]:
+        return {
+            "todo": self.todos,
+            "paper": self.papers,
+            "memory": self.memories,
+            "oracle": self.oracles,
+        }.get(kind or "", [])
 
-    def search_refs_lexical(self, *, q: str, kind: str | None = None, limit: int = 50):
-        refs = self.list_refs(kind=kind, limit=limit)
-        return [(r, 1.0) for r in refs]
+    def list_refs(
+        self,
+        *,
+        kind: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        **kw: Any,
+    ):
+        return list(self._for_kind(kind))[offset : offset + limit]
+
+    def search_refs_lexical(
+        self,
+        *,
+        q: str,
+        kind: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 50,
+    ):
+        return [(r, 1.0) for r in self._for_kind(kind)[:limit]]
 
     def fetch_refs_by_ids(self, ids, *, include_deleted: bool = False):
-        pool = {r.id: r for r in self.todos + self.papers}
+        pool = {
+            r.id: r for r in self.todos + self.papers + self.memories + self.oracles
+        }
         return {i: pool[i] for i in ids if i in pool}
 
     def locked_ref_ids(self, ref_ids):
         # No live Postgres locks under the fake; the Tasks tab's
         # processing probe degrades to "nothing locked".
         return set()
+
+    def events_for(self, ref_id, *, limit: int = 100, **kw: Any):
+        # One canned status:done event so the history fragment has a
+        # row to render; other refs return an empty log.
+        if ref_id == 2:
+            from datetime import UTC, datetime
+
+            return [
+                SimpleNamespace(
+                    ts=datetime(2026, 6, 14, 20, 0, tzinfo=UTC),
+                    event="status:done",
+                    source="web:reto",
+                )
+            ]
+        return []
 
 
 class FakeRuntime:

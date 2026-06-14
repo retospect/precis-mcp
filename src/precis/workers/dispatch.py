@@ -50,6 +50,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from precis.handlers._todo_views import _doable_exclusion_clause
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors import (
@@ -135,6 +136,17 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                       AND c.kind = 'job'
                       AND c.deleted_at IS NULL
                )
+               AND NOT EXISTS (
+                   -- Shared ``_DOABLE_EXCLUSION_TAGS`` registry: keep
+                   -- the dispatch candidate filter in lock-step with
+                   -- ``view='doable'``. ``halt`` (owner-applied) plus
+                   -- the existing waiting-for / asking-reto / child-
+                   -- failed forms all block dispatch the same way.
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'OPEN'
+                      AND """ + _doable_exclusion_clause() + """
+               )
              ORDER BY r.ref_id
              LIMIT %s
             """,
@@ -181,6 +193,15 @@ def _claim_and_dispatch(
                     WHERE c.parent_id = r.ref_id
                       AND c.kind = 'job'
                       AND c.deleted_at IS NULL
+               )
+               AND NOT EXISTS (
+                   -- Re-check the exclusion registry inside the
+                   -- FOR UPDATE — guards against a halt tag landing
+                   -- between candidate enumeration and the lock.
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'OPEN'
+                      AND """ + _doable_exclusion_clause() + """
                )
              FOR UPDATE OF r SKIP LOCKED
             """,

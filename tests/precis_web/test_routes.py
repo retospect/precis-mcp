@@ -115,6 +115,16 @@ def test_paper_detail_renders(client) -> None:
     assert "smith2024" in resp.text
 
 
+def test_papers_index_hover_card_has_authors_and_abstract(client) -> None:
+    resp = client.get("/papers")
+    assert resp.status_code == 200
+    # Author name (given + family) rendered in the hover card.
+    assert "Jane Smith" in resp.text
+    # Abstract with JATS/HTML tags stripped to plain text.
+    assert "We study X in depth." in resp.text
+    assert "<jats:p>" not in resp.text
+
+
 def test_paper_pdf_404_when_missing(client) -> None:
     resp = client.get("/papers/10/pdf")
     assert resp.status_code == 400  # NotFound -> PrecisError handler
@@ -129,6 +139,121 @@ def test_paper_pdf_streams_when_present(client, tmp_path) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/pdf"
     assert resp.content.startswith(b"%PDF")
+
+
+def test_paper_pdf_error_reports_resolved_path(client) -> None:
+    # Held paper (pdf_sha256 set) but no file on disk → the error must
+    # name the resolved path so a corpus_dir misconfig is diagnosable.
+    resp = client.get("/papers/10/pdf")
+    assert resp.status_code == 400
+    assert "smith2024.pdf" in resp.text
+    assert "PRECIS_CORPUS_DIR" in resp.text
+
+
+def test_paper_detail_shows_lookup_path_when_held_but_missing(client) -> None:
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    # smith2024 has pdf_sha256 but no file under the tmp corpus_dir.
+    assert "isn't where the server looked" in resp.text
+    assert "smith2024.pdf" in resp.text
+
+
+# ── refs (per-kind browse) ─────────────────────────────────────────
+
+
+def test_refs_index_lists(client) -> None:
+    resp = client.get("/refs/memory")
+    assert resp.status_code == 200
+    assert "A decision" in resp.text
+    assert "An idea" in resp.text
+
+
+def test_refs_index_search(client) -> None:
+    resp = client.get("/refs/memory", params={"q": "idea"})
+    assert resp.status_code == 200
+    assert "relevance" in resp.text  # search-mode banner
+
+
+def test_refs_unknown_kind_rejected(client) -> None:
+    resp = client.get("/refs/banana")
+    assert resp.status_code == 400  # NotFound -> PrecisError handler
+
+
+def test_refs_detail_dispatches_get_by_id(client, runtime) -> None:
+    resp = client.get("/refs/memory/20")
+    assert resp.status_code == 200
+    verb, args = runtime.calls[-1]
+    assert verb == "get"
+    assert args == {"kind": "memory", "id": 20}
+
+
+def test_refs_detail_slug_kind_addresses_by_slug(client, runtime) -> None:
+    resp = client.get("/refs/oracle/30")
+    assert resp.status_code == 200
+    verb, args = runtime.calls[-1]
+    assert verb == "get"
+    assert args == {"kind": "oracle", "id": "planck-constant"}
+
+
+def test_refs_detail_wrong_kind_404(client) -> None:
+    # id 20 is a memory; requesting it under /refs/oracle must not match.
+    resp = client.get("/refs/oracle/20")
+    assert resp.status_code == 400
+
+
+def test_refs_nav_tabs_present(client) -> None:
+    resp = client.get("/refs/memory")
+    for href in (
+        "/refs/conv",
+        "/refs/oracle",
+        "/refs/gripe",
+        "/refs/patent",
+        "/refs/pres",
+    ):
+        assert href in resp.text
+
+
+# ── task tags ──────────────────────────────────────────────────────
+
+
+def test_task_add_tag_dispatches_tag_add(client, runtime) -> None:
+    resp = client.post(
+        "/tasks/2/tags",
+        data={"add": "project:precis context:work"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "tag"
+    assert args == {"kind": "todo", "id": 2, "add": ["project:precis", "context:work"]}
+
+
+def test_task_remove_tag_dispatches_tag_remove(client, runtime) -> None:
+    client.post(
+        "/tasks/2/tags", data={"remove": "project:precis"}, follow_redirects=False
+    )
+    verb, args = runtime.calls[-1]
+    assert verb == "tag"
+    assert args == {"kind": "todo", "id": 2, "remove": ["project:precis"]}
+
+
+def test_task_empty_tag_call_is_noop(client, runtime) -> None:
+    client.post("/tasks/2/tags", data={}, follow_redirects=False)
+    assert runtime.calls == []  # nothing dispatched
+
+
+def test_task_history_renders_event_log(client) -> None:
+    resp = client.get("/tasks/2/history")
+    assert resp.status_code == 200
+    assert "Event log" in resp.text
+    assert "status:done" in resp.text
+    assert "Attempts" in resp.text
+
+
+def test_task_history_empty_log(client) -> None:
+    resp = client.get("/tasks/1/history")
+    assert resp.status_code == 200
+    assert "No recorded events yet" in resp.text
 
 
 # ── console ────────────────────────────────────────────────────────

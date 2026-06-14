@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -1048,6 +1048,22 @@ class RefsMixin:
             row = conn.execute(sql, params).fetchone()
         return None if row is None else str(row[0])
 
+    #: Whitelisted ``ORDER BY`` clauses for :meth:`list_refs`. Keys are
+    #: the safe identifiers a caller (e.g. the web Refs tab) may pass as
+    #: ``order_by``; values are the literal SQL (column already aliased
+    #: ``r``). Never interpolate a caller string into the ORDER BY — only
+    #: values from this map reach the query.
+    _LIST_ORDER_BY: ClassVar[dict[str, str]] = {
+        "updated_desc": "r.updated_at DESC",
+        "updated_asc": "r.updated_at ASC",
+        "created_desc": "r.created_at DESC",
+        "created_asc": "r.created_at ASC",
+        "title_asc": "r.title ASC",
+        "title_desc": "r.title DESC",
+        "id_desc": "r.ref_id DESC",
+        "id_asc": "r.ref_id ASC",
+    }
+
     def list_refs(
         self,
         *,
@@ -1055,10 +1071,17 @@ class RefsMixin:
         provider: str | None = None,
         updated_after: datetime | None = None,
         tags: list[str] | None = None,
+        order_by: str = "updated_desc",
         limit: int = 50,
         offset: int = 0,
     ) -> list[Ref]:
-        """Paginated list of live refs, filter by kind/provider/tags."""
+        """Paginated list of live refs, filter by kind/provider/tags.
+
+        ``order_by`` is one of :attr:`_LIST_ORDER_BY`'s keys
+        (default ``updated_desc``); an unknown key falls back to
+        ``updated_desc`` rather than erroring, so a stale client
+        bookmark can't 500 the list.
+        """
         # Aliased as ``r`` so the tag-filter helper can reference
         # ``r.ref_id`` uniformly across all store query shapes.
         clauses = ["r.deleted_at IS NULL"]
@@ -1081,12 +1104,15 @@ class RefsMixin:
             clauses.append(tag_frag.removeprefix(" AND "))
             params.extend(tag_params)
 
+        order_sql = self._LIST_ORDER_BY.get(
+            order_by, self._LIST_ORDER_BY["updated_desc"]
+        )
         params.append(limit)
         params.append(offset)
         sql = (
             f"SELECT {_REFS_COLS_ALIASED} FROM refs r WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY r.updated_at DESC LIMIT %s OFFSET %s"
+            + f" ORDER BY {order_sql} LIMIT %s OFFSET %s"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()

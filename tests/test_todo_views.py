@@ -337,6 +337,77 @@ def test_attention_view_unions_both_signals(
     assert "Child-failed parents (1)" in out.body
 
 
+def test_doable_excludes_halted_leaves(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Halt tag pulls a leaf out of the doable rotation.
+
+    Owner adds ``halt`` → the worker / chatter never proposes the
+    leaf again until the owner lifts the tag.
+    """
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    r = handler.put(text="paused work")
+    rid = id_of(r.body)
+    out_before = handler.search(view="doable")
+    assert f"#{rid}" in out_before.body
+    store.add_tag(rid, Tag.open("halt"), set_by="user")
+    out = handler.search(view="doable")
+    assert f"#{rid}" not in out.body
+
+
+def test_attention_view_lists_halted_leaves(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Halted leaves surface under the attention view.
+
+    Since doable hides them, attention is where they have to land
+    or they vanish from every chatter surface.
+    """
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    r = handler.put(text="Need a thought before resuming")
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("halt"), set_by="user")
+    out = handler.search(view="attention")
+    assert "Halted (1)" in out.body
+    assert f"#{rid}" in out.body
+    assert "Need a thought" in out.body
+
+
+def test_halt_remove_is_owner_only(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Workers can ADD halt (escalation) but only owner removes it."""
+    from precis.errors import BadInput
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    # Pre-tag from the owner side so the row already carries halt.
+    r = handler.put(text="halted by owner")
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("halt"), set_by="user")
+
+    # Worker source: removing halt is rejected.
+    monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
+    with pytest.raises(BadInput, match="halt"):
+        handler.tag(id=rid, remove=["halt"])
+
+    # Worker source: ADDING halt to a different ref is allowed —
+    # that's the escalation path.
+    r2 = handler.put(text="worker-escalated")
+    r2id = id_of(r2.body)
+    handler.tag(id=r2id, add=["halt"])
+
+    # Owner can remove. Reset env to default (owner).
+    monkeypatch.delenv("PRECIS_SOURCE", raising=False)
+    handler.tag(id=rid, remove=["halt"])
+    out = handler.search(view="doable")
+    assert f"#{rid}" in out.body
+
+
 def test_tree_view_includes_child_jobs(handler: TodoHandler) -> None:
     """Slice-5: kind='job' children show up under their todo parent
     in view='tree', distinguished by a gear marker."""
