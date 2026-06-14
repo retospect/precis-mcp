@@ -188,10 +188,15 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/precis", "src/precis_web"]
 
-# Ship the Jinja templates (non-.py files) alongside the precis_web
-# package so an installed wheel can render the four tabs.
-[tool.hatch.build.targets.wheel.force-include]
-"src/precis_web/templates" = "precis_web/templates"
+# Note: hatchling ≥ 1.20 already includes non-Python files inside a
+# packaged directory (Jinja .j2 templates under
+# ``src/precis_web/templates`` ship automatically with the
+# ``src/precis_web`` package). Earlier versions of this file carried
+# a ``[tool.hatch.build.targets.wheel.force-include]`` block that
+# duplicated the templates path; the newer hatchling detects the
+# duplicate and refuses to build with
+# "A second file is being added to the wheel archive at the same
+# path". The block was deleted in this commit.
 
 # Source distribution includes docker/ so packagers / downstream image
 # builders get the Dockerfile and entrypoint alongside the Python source
