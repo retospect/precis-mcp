@@ -16,8 +16,36 @@ enough to merge. Joins `precis-gripe-help` (the bug tracker) and
 ## Auto-fix this bug
 ## Get an agent to prepare a fix branch for me
 
+**Slice-5 canonical pattern — write the intent as a todo; the
+dispatch worker mints the job under it.**
+
 ```python
-put(kind='job', job_type='fix_gripe', link='gripe:42', rel='fixes')
+# 1) Create the intent under whichever strategic owns code
+#    quality (or a one-off if there's no strategic home).
+parent_id = put(kind='todo',
+                text='Fix gripe:42 (rate-limit edge case)',
+                parent_id=engineering_hygiene_strategic_id,
+                meta={'executor': 'claude_inproc',
+                      'job_type':  'fix_gripe'})  # → returns the new ref
+
+# 2) Link the todo to the gripe so the lineage is queryable.
+link(kind='todo', id=parent_id, target='gripe:42', rel='fixes')
+
+# 3) Walk away. Within ~1 minute the dispatch worker mints a
+#    kind='job' under the todo; claude_inproc claims it and
+#    runs the fix; on success the parent todo auto-flips to
+#    STATUS:done via meta.auto_check={'type':'child_job_succeeded'}
+#    (auto-injected by the dispatcher).
+```
+
+**Ad-hoc submit** (skip the todo layer — useful for one-off
+direct submits):
+
+```python
+put(kind='job',
+    parent_id=<some_todo_id>,         # required — orphan jobs rejected
+    job_type='fix_gripe',
+    link='gripe:42', rel='fixes')
 # → created job id=101
 # gripe auto-tagged STATUS:ready_for_fix as a side effect.
 ```
@@ -26,6 +54,18 @@ One call. The worker clones the repo, runs `claude -p` on a
 `gripe_42` branch, pushes the branch to `origin` (the source
 repo), and posts a comment on the gripe when it's ready for
 review.
+
+## What happens when a fix fails?
+
+* `STATUS:failed` on the job + a `job_event` chunk with the reason.
+* `child-failed:<job_id>` tag bubbles to the parent todo. The
+  doable view skips the parent until the flag is cleared.
+* The nursery digest surfaces the stuck parent.
+* The parent's owner (asa-bot) decides next move — see
+  "Re-submit a failed job" in `precis-job-help`.
+
+**No auto-retry.** The substrate refuses to multiply attempts
+silently; you (or asa-bot) make the retry call explicitly.
 
 ## Which repo does the agent operate on?
 

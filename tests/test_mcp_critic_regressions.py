@@ -707,8 +707,10 @@ class TestTransactionalPut:
         from precis.handlers.memory import MemoryHandler
 
         h = MemoryHandler(hub=Hub(store=store))
+        from tests.conftest import id_of
+
         out = h.put(text="original")
-        ref_id = int(out.body.rsplit("=", 1)[1])
+        ref_id = id_of(out.body)
         with pytest.raises(BadInput):
             h.put(id=ref_id, text="should-not-stick", tags=["urgent"])
         # Text must be the original — the tag rejection should have

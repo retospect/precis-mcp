@@ -11,6 +11,8 @@ from precis.response import Response
 from precis.runtime import PrecisRuntime
 from precis.store import Store, as_dream_actor
 
+from tests.conftest import id_of
+
 # ---------------------------------------------------------------------------
 # Handler-level tests (skip MCP, skip dispatch)
 # ---------------------------------------------------------------------------
@@ -34,7 +36,7 @@ def test_create_requires_text(handler: MemoryHandler) -> None:
 def test_create_then_get(handler: MemoryHandler) -> None:
     r = handler.put(text="findable memory body")
     # parse out the id
-    new_id = int(r.body.rsplit("=", 1)[1])
+    new_id = id_of(r.body)
 
     got = handler.get(id=new_id)
     assert "findable memory body" in got.body
@@ -48,7 +50,7 @@ def test_get_unknown_raises(handler: MemoryHandler) -> None:
 
 def test_get_string_id_coerced(handler: MemoryHandler) -> None:
     r = handler.put(text="numeric coercion")
-    new_id = int(r.body.rsplit("=", 1)[1])
+    new_id = id_of(r.body)
     got = handler.get(id=str(new_id))
     assert "numeric coercion" in got.body
 
@@ -67,7 +69,7 @@ def test_put_on_existing_id_rejected(handler: MemoryHandler) -> None:
     dedicated verbs.
     """
     r = handler.put(text="original")
-    new_id = int(r.body.rsplit("=", 1)[1])
+    new_id = id_of(r.body)
 
     with pytest.raises(BadInput, match="put on existing memory"):
         handler.put(id=new_id, text="updated")
@@ -82,7 +84,7 @@ def test_update_tags_only(handler: MemoryHandler) -> None:
     # enforcement) — memory uses only open tags. Demonstrate updating
     # a memory with two open tags from the documented vocabulary.
     r = handler.put(text="memory with tags")
-    new_id = int(r.body.rsplit("=", 1)[1])
+    new_id = id_of(r.body)
 
     handler.tag(id=new_id, add=["kind:decision", "confidence-strong"])
 
@@ -97,7 +99,7 @@ def test_update_open_tags_accumulate(handler: MemoryHandler) -> None:
     untagging the old value, exactly the pattern documented in
     ``precis-memory-help`` for the open-tag confidence axis."""
     r = handler.put(text="x", tags=["confidence-tentative"])
-    new_id = int(r.body.rsplit("=", 1)[1])
+    new_id = id_of(r.body)
 
     handler.tag(id=new_id, add=["confidence-strong"])
 
@@ -116,7 +118,7 @@ def test_status_axis_rejected_on_memory(handler: MemoryHandler) -> None:
     query against ``kind='memory'`` can find it. Reject at the write
     boundary instead."""
     r = handler.put(text="m")
-    new_id = int(r.body.rsplit("=", 1)[1])
+    new_id = id_of(r.body)
     with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
         handler.tag(id=new_id, add=["STATUS:open"])
 
@@ -125,14 +127,14 @@ def test_tag_no_op_rejected(handler: MemoryHandler) -> None:
     """``tag()`` with no add= and no remove= is a misuse — reject
     rather than silently no-op so a typo doesn't vanish."""
     r = handler.put(text="x")
-    new_id = int(r.body.rsplit("=", 1)[1])
+    new_id = id_of(r.body)
     with pytest.raises(BadInput, match="requires add= or remove="):
         handler.tag(id=new_id)
 
 
 def test_delete(handler: MemoryHandler) -> None:
     r = handler.put(text="goodbye")
-    new_id = int(r.body.rsplit("=", 1)[1])
+    new_id = id_of(r.body)
 
     deleted = handler.delete(id=new_id)
     assert "deleted" in deleted.body
@@ -181,7 +183,7 @@ def test_create_emits_card_combined(handler: MemoryHandler) -> None:
     holding its text, so the embed worker can vectorize it and semantic
     search finds true neighbours (docs/design/dreaming.md)."""
     r = handler.put(text="electrochemical CO2 reduction on copper")
-    new_id = int(r.body.rsplit("=", 1)[1])
+    new_id = id_of(r.body)
     with handler.store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ord, chunk_kind, text FROM chunks WHERE ref_id = %s",
@@ -210,13 +212,19 @@ def test_upsert_card_combined_is_idempotent(store: Store) -> None:
 
 
 def _id_of(resp: Response) -> int:
-    """Parse the id off a ``put`` create-ack (``...id=N``)."""
-    return int(resp.body.rsplit("=", 1)[1])
+    """Parse the id off a ``put`` create-ack (``...id=N``).
+
+    Delegates to the shared :func:`tests.conftest.id_of` helper which
+    handles trailing punctuation in the TOON ``Next:`` trailer
+    (``delete(..., id=N)``) — historical inline ``rsplit("=", 1)[1]``
+    parses broke when the trailer changed.
+    """
+    return id_of(resp.body)
 
 
 def _new_id(resp: Response) -> int:
     """Parse the survivor id off a ``supersede`` ack (``...id=N (...)``)."""
-    return int(resp.body.split("id=", 1)[1].split()[0])
+    return id_of(resp.body)
 
 
 def test_supersede_merges_and_soft_deletes(
@@ -345,7 +353,7 @@ def test_runtime_create_then_get(runtime_with_store: PrecisRuntime) -> None:
     create = runtime_with_store.dispatch(
         "put", {"kind": "memory", "text": "round trip"}
     )
-    new_id = int(create.rsplit("=", 1)[1].split()[0])
+    new_id = id_of(create)
 
     got = runtime_with_store.dispatch("get", {"kind": "memory", "id": new_id})
     assert "round trip" in got

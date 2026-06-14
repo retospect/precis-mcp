@@ -1,0 +1,80 @@
+{% extends "base.html.j2" %}
+{% block title %}Tasks{% endblock %}
+{% block content %}
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+  <!-- Tree (2/3) -->
+  <section class="lg:col-span-2">
+    <div class="flex items-center justify-between mb-3">
+      <h1 class="text-lg font-semibold">Task tree</h1>
+      <form method="post" action="/tasks/roots" class="flex items-center gap-2"
+            x-data="{open:false}">
+        <template x-if="open">
+          <span class="flex items-center gap-2">
+            <input name="text" required placeholder="New strategic root…"
+                   class="rounded-md border-slate-300 text-sm px-2 py-1 border w-56" />
+            <select name="level" class="rounded-md border-slate-300 text-sm border px-1 py-1">
+              <option value="strategic">strategic</option>
+              <option value="tactical">tactical</option>
+            </select>
+            <button class="rounded-md bg-emerald-600 text-white text-sm px-3 py-1">Add</button>
+          </span>
+        </template>
+        <button type="button" @click="open=!open"
+                class="rounded-md border border-slate-300 text-sm px-3 py-1 hover:bg-slate-100">
+          + Strategic
+        </button>
+      </form>
+    </div>
+
+    {% if not rows %}
+      <p class="text-sm text-slate-500">No tasks yet. Add a strategic root to begin.</p>
+    {% endif %}
+
+    <ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+      {% for r in rows %}
+      <li class="px-3 py-2" x-data="{actions:false}">
+        <div class="flex items-center gap-2" style="padding-left: {{ r.depth * 1.25 }}rem">
+          <span class="text-xs text-slate-400 w-10 shrink-0">#{{ r.id }}</span>
+          {% set sc = {'done':'bg-emerald-100 text-emerald-700','doing':'bg-amber-100 text-amber-700','blocked':'bg-rose-100 text-rose-700','paused':'bg-slate-200 text-slate-600',"won't-do":'bg-slate-200 text-slate-500'} %}
+          <span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.status, 'bg-sky-100 text-sky-700') }}">{{ r.status }}</span>
+          {% if r.level %}<span class="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">{{ r.level }}</span>{% endif %}
+          <span class="text-sm {% if r.status in ['done',"won't-do"] %}line-through text-slate-400{% endif %}">{{ r.title }}</span>
+          {% if not r.is_leaf %}<span class="text-xs text-slate-400">[{{ r.done }}/{{ r.total }}]</span>{% endif %}
+          <button type="button" @click="actions=!actions"
+                  class="ml-auto text-xs text-slate-400 hover:text-slate-700">⋯</button>
+        </div>
+        <div x-show="actions" x-cloak class="mt-2 flex flex-wrap items-center gap-2"
+             style="padding-left: {{ r.depth * 1.25 }}rem">
+          <form method="post" action="/tasks/{{ r.id }}/status" class="flex items-center gap-1">
+            <select name="status" class="rounded border-slate-300 text-xs border px-1 py-0.5">
+              {% for s in status_choices %}
+              <option value="{{ s }}" {% if s == r.status %}selected{% endif %}>{{ s }}</option>
+              {% endfor %}
+            </select>
+            <button class="rounded bg-slate-700 text-white text-xs px-2 py-0.5">Set</button>
+          </form>
+          <form method="post" action="/tasks/{{ r.id }}/children" class="flex items-center gap-1">
+            <input name="text" required placeholder="add child…"
+                   class="rounded border-slate-300 text-xs border px-2 py-0.5 w-40" />
+            <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100">+ child</button>
+          </form>
+          <form method="post" action="/tasks/{{ r.id }}/delete"
+                onsubmit="return confirm('Delete #{{ r.id }}? Children re-parent to top level.')">
+            <button class="rounded text-xs px-2 py-0.5 text-rose-600 hover:bg-rose-50">delete</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <!-- Doable (1/3) -->
+  <section>
+    <h2 class="text-lg font-semibold mb-3">Doable next</h2>
+    <pre class="rounded-lg border border-slate-200 bg-white p-3 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto">{{ doable_body }}</pre>
+  </section>
+
+</div>
+<style>[x-cloak]{display:none!important}</style>
+{% endblock %}

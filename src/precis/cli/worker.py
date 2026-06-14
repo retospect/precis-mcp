@@ -103,6 +103,21 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "claimed rows (default 2.0).",
     )
     p.add_argument(
+        "--profile",
+        choices=("system", "agent"),
+        default="system",
+        help="Which pass rotation to run. 'system' (default) = the "
+        "everything-except-heavy-LLM rotation: embed, summarize, "
+        "chunk_keywords, chase, fetch, tag_embeddings, auto_check, "
+        "schedule, nursery, dispatch, job_claude_inproc. 'agent' = "
+        "the LLM-heavy rotation: dream_agent, structural, deep_review. "
+        "Each of those gates itself via env (PRECIS_DREAM_AGENT=1, "
+        "PRECIS_STRUCTURAL_REVIEW=1, PRECIS_DEEP_REVIEW=1) and via the "
+        "PRECIS_LOAD_CEILING load-avg gate, so an agent profile worker "
+        "that hits a tick with nothing to do exits in milliseconds. "
+        "Slice-5 consolidation: deploy one LaunchDaemon per profile.",
+    )
+    p.add_argument(
         "--only",
         choices=(
             "embed",
@@ -113,16 +128,18 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "tag_embeddings",
             "job_claude_inproc",
             "dream",
+            "dream_agent",
+            "auto_check",
+            "schedule",
+            "nursery",
+            "structural",
+            "deep_review",
+            "dispatch",
         ),
         default=None,
-        help="Restrict to one handler kind. Default: all of them — "
-        "embed + summarize (chunk-level), chunk_keywords (per-chunk "
-        "KeyBERT), chase (ref-level finding-chase), fetch (ref-level "
-        "Unpaywall OA fetch for stub papers), tag_embeddings "
-        "(corpus-wide tag vocabulary for kind='tag' discovery), and "
-        "job_claude_inproc (drives `kind='job'` rows whose "
-        "meta.executor=='claude_inproc'). Each --only value drains "
-        "its queue alone; useful for ad-hoc backfills.",
+        help="Restrict to one handler kind. Overrides --profile when "
+        "set. Useful for ad-hoc backfills (`--only embed --once`) and "
+        "debugging.",
     )
     p.add_argument(
         "--with-llm",
@@ -230,11 +247,49 @@ def run(args: argparse.Namespace) -> None:
 
     dsn = resolve_dsn(args.database_url)
     store = Store.connect(dsn)
+    # Attach the centralised DB log handler now that we have a
+    # working DSN. The file handler the worker's parent process
+    # already set up stays in place as the bootstrap + fallback
+    # channel (the DB handler degrades to it on flush failure).
+    # Migration 0015 introduced worker_logs; older DBs that haven't
+    # been migrated will fail INSERTs gracefully via the demote
+    # path, so unattended deploys to a fresh DB don't die at boot.
+    _attach_db_log_handler(dsn)
     try:
         handlers = _build_handlers(args, store)
         if args.status:
             _print_status(handlers, store, format=resolve_format(args))
             return
+
+        # Slice-5 consolidation: passes group into two profiles. The
+        # LaunchDaemon picks one via --profile=system|agent; --only
+        # still overrides for ad-hoc backfills.
+        system_passes: frozenset[str] = frozenset({
+            "embed", "summarize", "chunk_keywords", "chase", "fetch",
+            "tag_embeddings", "auto_check", "schedule", "nursery",
+            "dispatch", "job_claude_inproc",
+        })
+        # dream_agent stays out of the profile — it has its own
+        # cadence (15-min LaunchDaemon via dream-pass.sh) and gates
+        # via PRECIS_DREAM_AGENT=1. The agent profile sticks to
+        # the dedup-window reviewers (structural / deep_review).
+        agent_passes: frozenset[str] = frozenset({
+            "structural", "deep_review",
+        })
+        profile_passes = {
+            "system": system_passes,
+            "agent":  agent_passes,
+        }[args.profile]
+
+        def _pass_enabled(name: str) -> bool:
+            """True when this pass should run on this invocation.
+
+            ``--only X`` wins over the profile when set (single-pass
+            backfills). Otherwise the profile's pass set decides.
+            """
+            if args.only is not None:
+                return args.only == name
+            return name in profile_passes
 
         # Chunk-keybert pass (F20). Replaces the v1 segment_toc worker.
         # Runs after embeddings exist (the claim query requires
@@ -245,7 +300,7 @@ def run(args: argparse.Namespace) -> None:
         from precis.workers.runner import RefPass
 
         ref_passes: list[RefPass] = []
-        if args.only in (None, "chunk_keywords"):
+        if _pass_enabled("chunk_keywords"):
             from precis.workers.chunk_keywords import run_chunk_keywords_pass
 
             # Narrow to EmbedHandler so mypy sees the .embedder
@@ -282,7 +337,7 @@ def run(args: argparse.Namespace) -> None:
         # STATUS:tracing findings. Default-off LLM hooks via
         # --with-llm or PRECIS_CHASE_LLM=1. See ADR 0018 §"Worker"
         # for the sibling-vs-base-class rationale.
-        if args.only in (None, "chase"):
+        if _pass_enabled("chase"):
             from precis.workers.chase import run_finding_chase_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -303,7 +358,7 @@ def run(args: argparse.Namespace) -> None:
         # kind='tag' handler can serve semantic discovery
         # ("find tags related to carbon capture"). Idle most of the
         # time; one batched embed call per pass keeps cost flat.
-        if args.only in (None, "tag_embeddings"):
+        if _pass_enabled("tag_embeddings"):
             # Reuse the embed handler's embedder when available so we
             # don't double-load weights.
             from precis.workers.embed import EmbedHandler as _EmbedHandler
@@ -340,7 +395,7 @@ def run(args: argparse.Namespace) -> None:
         # job_claude_inproc — drains the `kind='job'` queue for jobs
         # whose meta.executor=='claude_inproc'. v1 only job_type is
         # fix_gripe; see precis-fix-gripe-help for the recipe.
-        if args.only in (None, "job_claude_inproc"):
+        if _pass_enabled("job_claude_inproc"):
             from precis.workers.executors.claude_inproc import (
                 run_claude_inproc_pass,
             )
@@ -365,7 +420,7 @@ def run(args: argparse.Namespace) -> None:
         # for an OA URL and downloading to the watch inbox. The
         # watcher's existing ingest path picks the file up and C7's
         # stub-upgrade promotes the row in place.
-        if args.only in (None, "fetch"):
+        if _pass_enabled("fetch"):
             from precis.workers.fetch_oa import run_oa_fetch_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -387,6 +442,110 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_fetch_pass)
+
+        # Auto-check pass — drains the todo-tree's auto-task queue
+        # (Slice 1b of todo-tree-plan.md). Cheap and SQL-only by
+        # default — the registered evaluators are SQL queries, not
+        # LLM calls — so it stays in the default cycle.
+        if _pass_enabled("auto_check"):
+            from precis.workers.auto_check import run_auto_check_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _auto_check_pass(batch_size: int) -> _BatchResult:
+                return run_auto_check_pass(store, limit=batch_size)
+
+            ref_passes.append(_auto_check_pass)
+
+        # Schedule pass — Slice 4 of todo-tree-plan.md. Walks
+        # level:recurring refs, mints subtasks for due ticks under
+        # the Watches umbrella. SQL-only and idempotent
+        # (meta.spawned_for_tick stamp), so it shares the default
+        # cycle with auto_check.
+        if _pass_enabled("schedule"):
+            from precis.workers.runner import BatchResult as _BatchResult
+            from precis.workers.schedule import run_schedule_pass
+
+            def _schedule_pass(batch_size: int) -> _BatchResult:
+                return run_schedule_pass(store, limit=batch_size)
+
+            ref_passes.append(_schedule_pass)
+
+        # Nursery pass — Slice 3 of todo-tree-plan.md. SQL-only
+        # pattern matcher that surfaces local incoherence (orphans,
+        # stale claims, long waits, stuck doable, stalled recurrings)
+        # as a tier:nursery digest memory. Idempotent on findings —
+        # passes whose finding fingerprint matches the most recent
+        # digest don't write again, so the default rotation can
+        # include this without spamming memory.
+        if _pass_enabled("nursery"):
+            from precis.workers.nursery import run_nursery_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _nursery_pass(batch_size: int) -> _BatchResult:
+                return run_nursery_pass(store, limit=batch_size)
+
+            ref_passes.append(_nursery_pass)
+
+        # Structural review pass — Slice 3 of todo-tree-plan.md.
+        # Opus-class semantic review of the tree's shape (drift
+        # between outcomes and child actions, sibling
+        # contradictions, depth/fanout warnings). Explicit-only:
+        # NOT in the default rotation, since each pass is an
+        # opus call. Gated by PRECIS_STRUCTURAL_REVIEW=1; the
+        # Ansible role at cluster/roles/precis_structural sets
+        # the env + fires the LaunchDaemon at 6h cadence.
+        if _pass_enabled("structural"):
+            from precis.workers.runner import BatchResult as _BatchResult
+            from precis.workers.structural import run_structural_pass
+
+            def _structural_pass(batch_size: int) -> _BatchResult:
+                return run_structural_pass(store)
+
+            ref_passes.append(_structural_pass)
+
+        # Deep review pass — Slice 3 of todo-tree-plan.md. Weekly
+        # full Allen-review. Explicit-only; gated by
+        # PRECIS_DEEP_REVIEW=1. Same shape as structural with a
+        # longer prompt, longer timeout, larger turn cap, and a
+        # 6-day dedup window.
+        if _pass_enabled("deep_review"):
+            from precis.workers.deep_review import run_deep_review_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _deep_review_pass(batch_size: int) -> _BatchResult:
+                return run_deep_review_pass(store)
+
+            ref_passes.append(_deep_review_pass)
+
+        # Dispatch pass — Slice 5 of todo-tree-plan.md. Walks open
+        # todos with meta.executor set, mints kind='job' children
+        # under them so the executor pool can run the work. SQL-only,
+        # cheap, multi-host safe via FOR UPDATE SKIP LOCKED. Shares
+        # the default rotation with auto_check + schedule + nursery.
+        if _pass_enabled("dispatch"):
+            from precis.workers.dispatch import run_dispatch_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _dispatch_pass(batch_size: int) -> _BatchResult:
+                return run_dispatch_pass(store, limit=batch_size)
+
+            ref_passes.append(_dispatch_pass)
+
+        # dream_agent — replaces the legacy bash dream-pass.sh with
+        # a Python-side dispatch through call_claude_agent. Loads the
+        # directive prompt + soul + MCP config from env-pointed file
+        # paths; same flag set as the bash script (no Web tools,
+        # bypass permissions, 20 turns). Explicit-only; gated by
+        # PRECIS_DREAM_AGENT=1. The cluster's precis_dream role
+        # owns the file installation.
+        if _pass_enabled("dream_agent"):
+            from precis.workers.dream_agent import run_dream_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _dream_agent_pass(batch_size: int) -> _BatchResult:
+                return run_dream_pass(store)
+
+            ref_passes.append(_dream_agent_pass)
 
         # Dreaming pass — the in-process agentic janitor (ADR 0024).
         # Explicit-only: never in the default cycle (expensive, scheduled
@@ -455,15 +614,29 @@ def _resolve_embedder(
 def _build_handlers(
     args: argparse.Namespace, store: Store | None = None
 ) -> list[WorkerHandler]:
-    """Materialise the handler list per ``--only`` / model flags."""
+    """Materialise the handler list per ``--only`` / ``--profile`` flags.
+
+    Embed / summarize handlers belong to the ``system`` profile; the
+    ``agent`` profile is purely ref-pass driven (LLM reviewers + dream)
+    and skips the heavy embedder load when it doesn't need it. Honour
+    ``--only`` as the override for ad-hoc invocations.
+    """
     handlers: list[WorkerHandler] = []
-    if args.only in (None, "embed"):
+    profile = getattr(args, "profile", "system")
+    is_system = profile == "system"
+
+    def _want(name: str) -> bool:
+        if args.only is not None:
+            return args.only == name
+        return is_system
+
+    if _want("embed"):
         # MockEmbedder.dim defaults to 1024 to match the seeded
         # bge-m3 embedder column dim, so swapping it in for tests
         # does not require schema changes.
         embedder = _resolve_embedder(args, store)
         handlers.append(EmbedHandler(embedder))
-    if args.only in (None, "summarize"):
+    if _want("summarize"):
         handlers.append(
             RakeLemmaHandler(
                 max_keywords=args.max_keywords,
@@ -473,6 +646,47 @@ def _build_handlers(
             )
         )
     return handlers
+
+
+def _attach_db_log_handler(dsn: str) -> None:
+    """Attach the BufferedDBLogHandler to the root logger.
+
+    Best-effort: a failure to construct the handler (bad DSN, table
+    missing, network) shouldn't kill the worker — the file handler
+    that systemd / launchd / docker piped stdout to keeps catching
+    everything regardless.
+    """
+    try:
+        from precis.utils.db_log_handler import BufferedDBLogHandler
+
+        root = logging.getLogger()
+        # Avoid double-attach when run() is called twice in the same
+        # process (tests, signal-driven restarts).
+        for existing in list(root.handlers):
+            if isinstance(existing, BufferedDBLogHandler):
+                return
+        handler = BufferedDBLogHandler(dsn)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s: %(message)s"
+            )
+        )
+        root.addHandler(handler)
+        # If the root logger's effective level is WARNING (Python
+        # default), elevate to INFO so worker pass summaries land
+        # in the table. Operators who want quieter logs can override
+        # via PRECIS_LOG_LEVEL.
+        env_level = os.environ.get("PRECIS_LOG_LEVEL", "INFO").upper()
+        try:
+            root.setLevel(getattr(logging, env_level))
+        except AttributeError:
+            root.setLevel(logging.INFO)
+    except Exception:
+        # The worker still works without DB logging; surface via
+        # whatever handlers are already attached.
+        logging.getLogger(__name__).exception(
+            "failed to attach BufferedDBLogHandler — continuing without DB logs"
+        )
 
 
 def _print_status(

@@ -10,6 +10,313 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **Centralised worker logs via `worker_logs` + `precis logs` CLI.**
+  Migration 0015 adds `worker_logs (log_id, ts, host, process,
+  pass, level, logger, message, payload JSONB)` with three partial
+  indexes — `(host, ts DESC)` for the canonical "what is this box
+  doing", `(pass, ts DESC) WHERE pass IS NOT NULL` for per-pass
+  filtering, `(level, ts DESC) WHERE level IN ('WARNING','ERROR')`
+  for error grep without bloating the btree.
+  `utils/db_log_handler.py` adds `BufferedDBLogHandler`, a
+  Python `logging.Handler` that buffers records in-process (flush
+  every 5s OR 50 records — both env-overridable via
+  `PRECIS_LOG_MAX_INTERVAL_SECONDS` / `PRECIS_LOG_MAX_BUFFER`),
+  uses a dedicated psycopg connection in autocommit mode so
+  logging doesn't fight with the worker's main pool, demotes to
+  the stdlib file handler on flush failure (so a DB outage drops
+  to the existing `/var/log/precis-*.log` channel automatically),
+  registers `atexit` for the tail-flush, and has a 10× hard cap
+  on buffer size to bound memory during sustained DB outages.
+  Records carry `host` (from `PRECIS_HOST_NAME` env, falls back to
+  `socket.gethostname()`), `process` (from `PRECIS_PROCESS` env),
+  and `pass` (derived from logger name `precis.workers.<X>`).
+  `cli/worker.py` attaches the handler right after `Store.connect()`
+  succeeds; failures to attach are non-fatal (the file handler
+  keeps catching everything regardless). New `precis logs` CLI
+  reads the table with `--since` (durations like `1h`/`7d` or ISO
+  timestamps), `--host`, `--process`, `--pass`, `--level`,
+  `--limit`, `--tail` (shortcut for `--since=24h --limit=50`),
+  `--payload` (include the JSONB column), `--format` (toon /
+  table / json — for jq pipelines). Tests:
+  `tests/test_db_log_handler.py` (12 — unit tests with mocked
+  psycopg + one DB integration test that round-trips a row through
+  the live table). The text file at `/var/log/precis-*.log` stays
+  in place as the bootstrap + fallback channel — operators tail
+  it when the DB is itself the problem.
+
+### Changed
+
+- **LLM-facing skill catalogue refreshed for Slices 3/4/5 +
+  consolidation.** New `precis-dispatch-help` documents the
+  `meta.executor` → dispatch worker → `kind='job'` bridge
+  end-to-end, including the failure-bubble + retry decision tree. `precis-job-help` rewritten for the parent_id requirement
+  + dispatch pattern + `child-failed:<job_id>` bubble.
+  `precis-fix-gripe-help` shows the todo-first canonical pattern.
+  `precis-tasks-help` documents the `child-failed:*` tag, the
+  `⚙` job marker in `view='tree'`, and the doable view's
+  exclusion rules. `precis-auto-tasks-help` adds the
+  `child_job_succeeded` evaluator entry + a worked Pattern 4.
+  `precis-overview` kinds table updated; both READMEs (CLAUDE.md
+  + README.md) carry "what just landed" entries pointing readers
+  at the toolpath index. No behavior change.
+
+### Added
+
+- **`view='attention'` + child-failed parents excluded from doable.**
+  Union of `asking-reto` leaves + `child-failed:<job_id>`-tagged
+  parents in one digest, with each child-failed entry quoting the
+  most recent `job_event` chunk (truncated) as the failure reason.
+  The chatter preamble can render this next to the doable queue so
+  asa sees "what needs me" in one block. Companion change: the
+  doable view's exclusion list now skips parents carrying any
+  `child-failed:*` tag, so stuck parents drop out of the rotation
+  until the bubble flag is cleared. 5 new tests in
+  `tests/test_todo_views.py`.
+
+- **Load-aware gate on heavy passes.** `utils/load_gate.py`'s
+  `skip_if_high_load(name)` reads `os.getloadavg()[0]` and returns
+  True when the 1-min load avg exceeds `PRECIS_LOAD_CEILING`
+  (defaults to `os.cpu_count() * 1.5`, env-override-able). Applied
+  in `workers/review.py` (structural + deep_review) and
+  `workers/dream_agent.py` so the agentic passes self-throttle
+  when the host is busy. SQL-only passes (dispatch, schedule,
+  nursery, auto_check) skip the gate — they're idempotent and
+  short enough that even a busy box drains them. Tests:
+  `tests/test_load_gate.py` (7).
+
+- **Worker profile flag — Slice-5 consolidation.** `precis worker
+  --profile=system|agent` selects which rotation runs.
+  `system` (default) covers the cheap SQL + chunk-level passes
+  (embed, summarize, chunk_keywords, chase, fetch, tag_embeddings,
+  auto_check, schedule, nursery, dispatch, job_claude_inproc);
+  `agent` covers the heavy LLM reviewers (structural, deep_review).
+  `--only X` still works and overrides the profile for ad-hoc
+  backfills. `dream_agent` stays out of the profile because it has
+  its own 15-min cadence via `dream-pass.sh` (which uses
+  `--only dream_agent` explicit override). Cluster: new
+  `precis_worker_agent` role + playbook `37-precis-worker-agent.yml`
+  deploys the agent profile worker on melchior as hermes (OAuth
+  for claude `-p`); existing `precis_worker` plist gains
+  `--profile system`. Retired in the same commit: `precis_schedule`,
+  `precis_nursery`, `precis_structural`, `precis_deep_review`
+  roles + their playbooks (33-36) — none had reached production.
+
+- **Slice 5 — jobs become children of todos.** The todo tree (intent)
+  and the job substrate (execution) are unified via `parent_id` on
+  `refs`: a `kind='job'` ref now requires a `parent_id` pointing at
+  a live `kind='todo'`. New `dispatch` worker (`workers/dispatch.py`)
+  walks open todos with `meta.executor` set, mints a child
+  `kind='job'` under each, leaves the existing executor pool
+  (`job_claude_inproc`) to actually run the work. Multi-host safe
+  via `SELECT … FOR UPDATE OF r SKIP LOCKED` per parent. Dispatcher
+  auto-injects `meta.auto_check={'type':'child_job_succeeded'}` when
+  the writer didn't set one so the parent todo resolves to
+  `STATUS:done` when the child job succeeds. New auto_check
+  evaluator `child_job_succeeded` returns True when any non-deleted
+  child of the leaf is a `kind='job'` ref with `STATUS:succeeded`.
+  Failure-bubble: when a child job hits `STATUS:failed` (via the
+  executor's `_record_failure` or `JobHandler.tag(['STATUS:failed'])`),
+  the parent todo gets a `child-failed:<job_id>` open tag so the
+  parent shows up in the nursery digest's stuck-leaf detectors. No
+  auto-retry — the parent's owner (asa or human) decides next.
+  `view='tree'` now walks `kind IN ('todo', 'job')` so child jobs
+  surface in the subtree render with a `⚙` gear marker; `view='doable'`
+  still excludes jobs (they're execution detail, not actions). CLI
+  `--only dispatch` runs the spawner alone; default rotation includes
+  it alongside `auto_check` + `schedule` + `nursery`. Evaluator
+  protocol now passes `ref_id` as a kwarg so tree-scoped evaluators
+  can look up children of the calling leaf; existing evaluators
+  accept `**_kw`. Tests: `tests/test_dispatch_worker.py` (15),
+  `tests/test_auto_check.py` grew by 5 (`child_job_succeeded`),
+  `tests/test_todo_views.py` grew by 1 (`view='tree'` shows jobs).
+
+- **Reviewer driver refactor — `Reviewer` config + `run_review_pass`
+  driver.** `workers/structural.py` and `workers/deep_review.py` had
+  ~80% duplicate plumbing (gate / dedup / prompt-format /
+  digest-write / mcp-resolution). All of it now lives once in
+  `workers/review.py` keyed off a frozen `Reviewer(name, tier_tag,
+  gate_env, meta_prefix, model, max_turns, timeout_s,
+  min_interval_hours, context_builder, prompt_template)` dataclass.
+  Structural and deep_review collapse into thin shims that hold only
+  the reviewer-specific context-builder SQL + prompt template +
+  Reviewer instance + back-compat helper layer for existing tests.
+  Adding a new reviewer is now ~150 LOC instead of ~300. The unified
+  driver also reads `PRECIS_<NAME>_MODEL` env automatically.
+
+- **Slice 3 structural + deep review tiers, on a unified
+  `claude_agent` dispatch.** Two new opus-class reviewers:
+  `workers/structural.py` (6h cadence, semantic review of branch
+  outcomes / sibling contradictions / depth-fanout / drift) writes
+  `tier:structural` digests; `workers/deep_review.py` (weekly
+  Sunday-night Allen-review of archive candidates / pruning / 1/N
+  rebalancing / long waits) writes `tier:deep` digests. Both gated
+  by env (`PRECIS_STRUCTURAL_REVIEW=1`, `PRECIS_DEEP_REVIEW=1`) so
+  cost can be muted without uninstalling; both dedup against the
+  most recent digest of their tier (5h / 144h windows) so
+  double-fires no-op. Multi-host safe via the shared-DB dedup
+  window. CLI: `--only structural` / `--only deep_review`, both
+  explicit-only (never in the default rotation). Ansible roles
+  `precis_structural` (cluster repo) + `precis_deep_review` deploy
+  the LaunchDaemons on melchior. Skills land in a follow-up.
+  Tests: `tests/test_structural.py` (23), `tests/test_deep_review.py`
+  (13).
+
+- **Unified `claude -p` agentic dispatch — `utils/claude_agent.py`.**
+  Peer to `utils/claude_p.py` (which stays as the one-shot JSON
+  judge surface used by the chase verifier). `call_claude_agent`
+  carries the agentic-shape flags
+  (`--mcp-config`/`--strict-mcp-config`, `--append-system-prompt`,
+  `--max-turns`, `--permission-mode`, `--output-format`, optional
+  `--bare`, `--disallowed-tools`) and adds cost cap, wall-clock
+  timeout, structured `log_event=(store, ref_id, source)` hook
+  that appends an `agent:done` event with model + cost + duration
+  to `ref_events`. Env defaults
+  (`PRECIS_CLAUDE_AGENT_MODEL`/`_MAX_USD`/`_TIMEOUT_S`) so
+  reviewers don't redeclare each. The structural + deep + dream
+  passes all share this dispatch surface. Stub-binary tests via
+  `PRECIS_CLAUDE_BIN` (same trick `claude_p` uses). Tests:
+  `tests/test_claude_agent.py` (19).
+
+- **Dream worker on `claude_agent` — `workers/dream_agent.py`.**
+  Reads the directive prompt from `PRECIS_DREAM_PROMPT_PATH`,
+  asa's SOUL from `PRECIS_DREAM_SOUL_PATH`, MCP config from
+  `PRECIS_MCP_CONFIG`, dispatches via the unified helper with the
+  same flag set the legacy `dream-pass.sh` had (no
+  WebFetch/WebSearch, bypassPermissions, 20 turns). Gate:
+  `PRECIS_DREAM_AGENT=1`. The cluster's existing
+  `roles/precis_dream/files/dream-pass.sh` becomes a thin
+  wrapper that just exports the env and execs
+  `precis worker --only dream_agent --once` — the role now also
+  installs `dream-prompt.md` to `/opt/asa/files/`. Tests:
+  `tests/test_dream_agent.py` (5).
+
+### Fixed
+
+- **Brittle `int(body.rsplit("=", 1)[1])` parses across
+  `test_memory.py` / `test_untags_on_put.py` /
+  `test_mcp_critic_regressions.py`.** The TOON `Next:` trailer
+  rendered by `_create_ack_next_hints` ends in
+  `delete(kind='memory', id=N)`; the trailing `)` made the
+  rsplit parse `N)` instead of `N`. Added a shared
+  `tests.conftest.id_of(body)` helper (parses `id=N` after the
+  first leading clause and strips trailing `,.()`) and ported
+  ~28 sites to use it. Same helper now drives the Slice-1+
+  test suites that already had inline equivalents.
+
+- **Slice 3 nursery tier of `docs/design/todo-tree-plan.md`.**
+  SQL-only pattern matcher that walks the todo tree for local
+  incoherence (orphans without a `level:strategic` ancestor, stale
+  claims older than 3 h, waits older than 7 d, doable leaves stuck
+  >24 h, recurrings whose last spawned child has been open >1 h)
+  and writes a markdown digest as a `kind='memory'` ref tagged
+  `tree-review:YYYY-MM-DD` + `tier:nursery` + `user:asa` +
+  `internal-thought`. asa-bot's preamble surfaces recent
+  `internal-thought` rows already, so digests reach chatter
+  without a dedicated channel. Fingerprint-dedup on
+  `meta.nursery_fingerprint` — repeat passes with the same
+  findings skip the write; empty findings never write. The Slice-3
+  plan called for a sonnet call here, but the detectors are
+  deterministic rules ("orphan", "stale", "stuck") that don't need
+  reasoning, so the worker is pure SQL and shares the default
+  `precis worker` rotation with `auto_check` + `schedule`. Run
+  alone with `precis worker --only nursery`. Cluster: hourly via
+  the new `precis_nursery` Ansible role on melchior. Skill:
+  `precis-nursery-help`. Tests: `tests/test_nursery.py` (28).
+  Multi-host safe via the fingerprint dedup (duplicate concurrent
+  writes catch up on the next pass).
+
+- **Multi-host schedule worker — `SELECT … FOR UPDATE SKIP LOCKED`
+  claim on the recurring's `refs` row.** The Slice-4 schedule
+  worker's spawn loop now holds a per-row exclusive lock from claim
+  through mint + ref_event commit. Two workers (same host or
+  different hosts) racing on the same recurring serialise on the
+  refs row's tx lock; the loser walks past via `SKIP LOCKED`. Crash
+  safety from the connection's tx lifetime — Postgres releases the
+  lock on session close, no heartbeat / TTL reaper. New
+  `precis_schedule` Ansible role (cluster repo) deploys the
+  per-minute LaunchDaemon; supports deployment on every asa host.
+  Test: `test_schedule_pass_row_lock_serialises_concurrent_workers`
+  opens a held lock in one tx and confirms the parallel pass
+  returns `claimed=0`.
+
+- **Slice 4 of `docs/design/todo-tree-plan.md` — recurring schedule
+  + PRIO column.** Scheduled work (dreams, weather, conference
+  watches, birthday reminders) lives in the same tree as everything
+  else: a `level:recurring` root carries the schedule + spawn rule,
+  each tick mints a fresh `level:subtask` child. `0014_refs_prio.sql`
+  adds a `prio SMALLINT` column (1..10, CHECK + partial index) so
+  the doable ORDER BY sorts on `COALESCE(r.prio, 5)` instead of
+  joining through `ref_tags`/`tags` for a closed-prefix `PRIO:`
+  vocabulary; the rotation becomes `prio ASC, picks_7d ASC,
+  ref_id ASC` so PRIO 1 (chat) and PRIO 2 (cron) preempt the
+  strategic 1/N share. The `PRIO:urgent|high|normal|low` tag stays
+  as a write-time alias that translates to a column write at the
+  handler boundary. A seeded `Watches` umbrella (`meta.builtin=
+  'watches-root'`, undeletable via `check_not_builtin`) is the
+  default parent for `level:recurring` refs created without an
+  explicit `parent_id`; `level:recurring` joins
+  `level:strategic|tactical` on the owner-only authority gradient
+  so workers can't mint a `* * * * *` cron. `meta.schedule` accepts
+  a canonical `cron` field or `every:` shorthand (`Nm` / `Nh` /
+  `1d` / `mon HH:MM`); the handler validates at write time and
+  rewrites the block to the canonical cron form, so the runtime
+  sees one shape. Idempotency is `meta.spawned_for_tick=
+  'YYYY-MM-DDTHH:MM'` on the spawned child; collision policy is
+  skip-when-previous-still-open so a stalled queue doesn't pile up.
+  `backfill_missed` (default false) controls catch-up: weather drops
+  missed ticks, birthdays don't. `precis worker --only schedule`
+  runs the spawner; default rotation includes it alongside
+  `auto_check`. `view='roots'` grows a second `## Watches` panel
+  (orthogonal to picks-7d, so a noisy cron can't crowd a strategic
+  out). Skill: `precis-recurring-help`. Tests:
+  `tests/test_schedule.py`.
+
+- **Inner-life skill — actionable future-facing items.**
+  `precis-inner-life-help` gains a "Write future-facing items so
+  they're actionable" section distinguishing the *scannable* axis
+  (first-line discipline) from the *actionable* axis (trigger /
+  action / why + anchor) for anything that resurfaces later
+  (`internal-thought`, `interest:*`, `changed-mind:*`, `todo`,
+  promoted dreams). Mirrors the matching guidance added to asa's
+  SOUL (`grimoire/agents/asa.md`).
+- **Web surface — `precis web` (ADR 0026,
+  `docs/design/precis-web-build.md`).** New optional `precis-mcp[web]`
+  extra ships a FastAPI service (`precis_web`, sibling package) with
+  four server-rendered tabs over the Tailscale LAN (no auth in cut 1):
+  **Tasks** (the hierarchical todo tree — reads off the DB, writes
+  through the in-process runtime so the level-gradient guard / depth
+  check / STATUS vocab stay single-sourced), **Papers** (corpus search
+  + in-browser PDF viewer streamed from `corpus_dir`), **Console**
+  (interactive seven-verb precis-query reusing `runtime.dispatch`),
+  and **Status** (refs-by-kind, paper held/stub counts, todo status
+  breakdown, recent `ref_events`). New `PrecisConfig.corpus_dir`
+  (`PRECIS_CORPUS_DIR`, default `~/work/corpus`) names the PDF root
+  laid out by `precis watch`. Authority reuses the existing
+  `PRECIS_SOURCE` env (the web process runs as `web:reto` = owner);
+  no new identity mechanism. Launch with `precis web --host … --port
+  …`; binds loopback, reached over Tailscale. Stack: FastAPI + Jinja +
+  HTMX/Alpine/Tailwind (CDN), single uvicorn worker. Tests under
+  `tests/precis_web/` run without Postgres via a fake runtime/store.
+- **Auto-check worker — Slice 1b of `docs/design/todo-tree-plan.md`.**
+  A todo leaf can carry `meta.auto_check = {'type': '<evaluator>',
+  ...}` so a SQL-checkable condition releases it without an LLM
+  pass. `precis worker --only auto_check` (default-on in the
+  rotation) polls open leaves with non-null `meta.auto_check`,
+  dispatches the registered evaluator, and flips `STATUS:done` (+
+  `auto-resolved` ref_event) when the verdict is true. Optional
+  `timeout_at` flips a stuck leaf to `STATUS:auto-timeout` so the
+  nursery sweep can triage it. v1 evaluator catalogue:
+  `paper_ingested` (DOI / arXiv / S2 / PubMed → live paper +
+  embedded chunk), `discord_reply_received` (memory tagged
+  `replied-to:<msg_id>`), `time_past` (ISO timestamp), `tag_present`
+  (any tag, optionally narrowed by kind). The handler validates
+  `meta.auto_check.type` at write boundary so typos surface
+  immediately. New skill: `precis-auto-tasks-help` with two worked
+  patterns (paper-wait, discord-ask) and the timeout recipe.
+  Implementation: `src/precis/workers/auto_check.py`,
+  `src/precis/workers/auto_check_evaluators/`. Wires into
+  `src/precis/cli/worker.py` via the same `RefPass` shape as
+  chunk_keywords / chase.
 - **Hierarchical todo tree — Slice 1 of `docs/design/todo-tree-plan.md`.**
   New `parent_id` column on `refs` wires todos into a tree
   (migration `0013_todo_tree.sql`). `kind='todo'` gains a tree-aware

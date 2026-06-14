@@ -7,6 +7,78 @@
 > discovery / search / chase paths. Update it the same commit you
 > change the things it describes.
 
+## What just landed (2026-06-14 — Slices 3/4/5 + worker consolidation)
+
+The todo tree is now a five-slice system unifying intent, scheduling,
+execution, and review:
+
+* **Slice 1** (shipped earlier) — `parent_id` column on refs, the
+  todo hierarchy with strategic/tactical/subtask gradient, walk-on-read
+  ancestry, the 1/N rotation across strategics by 7d picks.
+* **Slice 1b** — `meta.auto_check` evaluator pattern. Evaluators:
+  `paper_ingested` / `discord_reply_received` / `time_past` /
+  `tag_present` / `child_job_succeeded` (new — see Slice 5).
+* **Slice 4** — `level:recurring` umbrella ("Watches"),
+  `meta.schedule` (cron or `every:` shorthand), per-minute spawner.
+  PRIO is an int column on refs, 1..10. `PRIO:*` tag stays as
+  back-compat alias.
+* **Slice 3** — three review tiers writing memory digests:
+  * `nursery` (SQL-only, every minute via system worker, idempotent
+    on fingerprint) — orphans, stale claims, long waits, stuck
+    doable, stalled recurrings.
+  * `structural` (opus, 6h dedup, agent profile) — drift, sibling
+    contradictions, depth/fanout warnings.
+  * `deep_review` (opus, weekly dedup, agent profile) — Allen-style
+    archive / prune / rebalance / long-wait review.
+  Reviewers are factored into `workers/review.py` (`Reviewer`
+  dataclass + `run_review_pass` driver); structural / deep are thin
+  shims. Adding a new reviewer is a `Reviewer(...)` instance.
+* **Slice 5** — jobs are now **children of todos**. `JobHandler.put`
+  requires `parent_id` pointing at a `kind='todo'`. The `dispatch`
+  worker (`workers/dispatch.py`) walks open todos with
+  `meta.executor`, mints `kind='job'` under each with
+  `FOR UPDATE SKIP LOCKED`, auto-injects
+  `meta.auto_check={'type':'child_job_succeeded'}`. On job failure,
+  the parent gets a `child-failed:<job_id>` open tag (the
+  failure-bubble — `handlers/_job_bubble.py`); the doable view
+  excludes parents with the tag so they stop re-entering the
+  rotation until the owner decides retry / switch / give up.
+  `view='tree'` walks `kind IN ('todo', 'job')` so child jobs
+  render with a `⚙` marker. New `view='attention'` unions
+  `asking-reto` leaves + `child-failed` parents for asa-bot's
+  preamble.
+
+**Worker consolidation** — the seven per-pass LaunchDaemons are
+down to four (system worker, agent worker, dream, cron-tick).
+`precis worker --profile=system` runs every chunk-level + SQL
+ref-level pass (embed, summarize, chunk_keywords, chase, fetch,
+tag_embeddings, auto_check, schedule, nursery, dispatch,
+job_claude_inproc) on every cluster node. `precis worker
+--profile=agent` runs structural + deep_review on melchior as
+hermes (OAuth for claude `-p`). Each heavy pass internally
+dedups on its tier-tagged memory + load-gates on
+`PRECIS_LOAD_CEILING` (default `os.cpu_count() * 1.5`).
+`dream_agent` keeps its own 15-min cron via the unchanged
+`dream-pass.sh`.
+
+**Unified `claude -p` agentic dispatch — `utils/claude_agent.py`.**
+Peer to `utils/claude_p.py` (one-shot JSON judge). Carries the
+agentic flag set (`--mcp-config` / `--strict-mcp-config`,
+`--append-system-prompt`, `--max-turns`, `--permission-mode`,
+optional `--bare`, `--disallowed-tools`) + cost cap + wall-clock
+timeout + structured `log_event` to `ref_events`. All three
+reviewers (structural / deep_review / dream_agent) share this
+dispatch surface. Stub-binary tests via `PRECIS_CLAUDE_BIN`.
+
+**LLM-facing skill index** lives under
+`src/precis/data/skills/precis-*-help.md`. Start at
+`precis-toolpath-help` (canonical call sequences per scenario).
+Cross-refs: `precis-tasks-help`, `precis-decomposition-help`,
+`precis-auto-tasks-help`, `precis-recurring-help`,
+`precis-dispatch-help`, `precis-job-help`,
+`precis-fix-gripe-help`, `precis-nursery-help`. `precis-overview`
+has the master kinds table + skill index.
+
 ## What just landed (2026-06-05, follow-up)
 
 **Gripe → first-class bug tracker + `job` substrate for offline

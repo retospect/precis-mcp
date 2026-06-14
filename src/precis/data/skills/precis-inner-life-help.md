@@ -142,6 +142,39 @@ search(kind='memory', tags=['internal-thought'],
 # Touch the ones still alive; let the rest go.
 ```
 
+## Write future-facing items so they're actionable
+
+Two axes govern anything you write that resurfaces later:
+
+- **Scannable** (first-line discipline): lead with the conclusion, one
+  distinguishing detail, no filler. Gets the note *seen*.
+- **Actionable** (this section): for anything that points *forward* — a
+  thought you'll re-read next turn, an `interest:<topic>` you'll pick
+  back up, a `changed-mind:<topic>`, a `todo` — carry three things or
+  it's inert when it resurfaces:
+  - **trigger** — when does this matter? (*"next time I touch the
+    watcher routing…"*)
+  - **action** — the concrete next physical step, not the vibe.
+  - **why + anchor** — the reason, plus a `kind:id` ref so a future
+    reader can verify instead of trusting a dangling pronoun.
+
+No dangling "this / that / it" — name the thing. A `DREAM:speculative`
+item you promote should be rewritten to this shape before it earns a
+spot in the recent-thoughts section.
+
+```python
+# inert: scans fine, useless next turn
+put(kind='memory', text='I keep thinking about the embedding cold-start',
+    tags=['internal-thought', 'user:asa'])
+
+# actionable: trigger + action + why/anchor
+put(kind='memory',
+    text="Next time bge-m3 cold-start bites skill search: point MCP at "
+         "PRECIS_EMBEDDER=remote (always-hot serve-embeddings) rather "
+         "than retrying. See skill:precis-search-help.",
+    tags=['internal-thought', 'user:asa'])
+```
+
 ## Related skills
 
 - `precis-memory-help` — the general memory verb surface

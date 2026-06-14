@@ -1,0 +1,27 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ paper.title }}{% endblock %}
+{% block content %}
+<a href="/papers" class="text-sm text-slate-500 underline">&larr; papers</a>
+<div class="mt-2 mb-4">
+  <h1 class="text-lg font-semibold">{{ paper.title }}</h1>
+  <p class="text-sm text-slate-500">
+    #{{ paper.id }}
+    {% if paper.slug %}· <span class="font-mono">{{ paper.slug }}</span>{% endif %}
+    {% if paper.year %}· {{ paper.year }}{% endif %}
+  </p>
+  {% if authors %}
+  <p class="text-sm text-slate-600 mt-1">
+    {{ authors | map(attribute='family') | select | join(', ') }}
+  </p>
+  {% endif %}
+</div>
+
+{% if pdf_on_disk %}
+  <iframe src="/papers/{{ paper.id }}/pdf" class="w-full rounded-lg border border-slate-200 bg-white"
+          style="height: 80vh"></iframe>
+{% else %}
+  <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+    No PDF on disk for this paper{% if not paper.has_pdf %} (it's a stub — queued for fetch){% endif %}.
+  </div>
+{% endif %}
+{% endblock %}

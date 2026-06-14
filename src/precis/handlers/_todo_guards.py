@@ -64,10 +64,17 @@ LEVEL_STRATEGIC = "level:strategic"
 LEVEL_TACTICAL = "level:tactical"
 LEVEL_SUBTASK = "level:subtask"
 LEVEL_PROPOSED_TACTICAL = "level:proposed-tactical"
+#: Slice-4 schedule tier. The recurring root carries the schedule + the
+#: spawn rule; spawned children carry ``level:subtask``. Owner-only —
+#: so a worker can't mint a ``* * * * *`` cron that burns the budget.
+LEVEL_RECURRING = "level:recurring"
 
 #: Tier names that are owner-only. Workers may neither create refs
-#: carrying these tags nor add them via ``tag`` later.
-_OWNER_ONLY_LEVELS: frozenset[str] = frozenset({LEVEL_STRATEGIC, LEVEL_TACTICAL})
+#: carrying these tags nor add them via ``tag`` later. Slice 4 added
+#: ``level:recurring`` so workers can't mint scheduled work.
+_OWNER_ONLY_LEVELS: frozenset[str] = frozenset(
+    {LEVEL_STRATEGIC, LEVEL_TACTICAL, LEVEL_RECURRING}
+)
 
 
 def _caller_source() -> str:
@@ -314,8 +321,70 @@ def check_owner_only_ref(store: Store, ref_id: int) -> None:
         )
 
 
+# ── builtin (Watches umbrella, etc.) ───────────────────────────────
+
+
+def check_not_builtin(store: Store, ref_id: int) -> None:
+    """Reject destructive ops on refs flagged ``meta.builtin`` non-null.
+
+    Slice 4 footgun protection: the seeded Watches umbrella root
+    carries ``meta.builtin='watches-root'`` and would orphan every
+    recurring beneath it if deleted. Any future seeded "folder" ref
+    (a structural anchor the system depends on) carries the same
+    marker and gets the same protection — the check is on the
+    presence of the key, not on a specific value, so adding new
+    builtins doesn't need a new guard.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'builtin' FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+    if row is None:
+        return
+    builtin = row[0]
+    if builtin:
+        raise BadInput(
+            f"todo id={ref_id} is the {builtin!r} builtin and cannot be deleted",
+            next=(
+                "this ref is a structural anchor (e.g. the Watches umbrella). "
+                "If you really need to retire it, clear meta.builtin first "
+                "via an explicit DB write."
+            ),
+        )
+
+
+# ── schedule (Slice 4) ─────────────────────────────────────────────
+
+
+def check_schedule_in_meta(meta: dict[str, object] | None):
+    """Validate ``meta.schedule`` if present; return the canonical block.
+
+    Returns ``None`` when no schedule is set. Returns the parsed
+    :class:`~precis.workers.schedule.parse.Schedule` so the handler can
+    rewrite ``meta.schedule`` to its canonical form (``every:``
+    shorthand translated to cron) before persistence. Raises
+    :class:`BadInput` on any malformed input.
+
+    Kept here next to the level-recurring guard so the two pieces of
+    Slice 4 write-time policy live together.
+    """
+    if not meta:
+        return None
+    spec = meta.get("schedule")
+    if spec is None:
+        return None
+    # Local import — workers and handlers are imported in either order
+    # depending on the entry point, and the parser module is the
+    # leaf, so this stays cycle-safe.
+    from precis.workers.schedule.parse import validate_schedule
+
+    return validate_schedule(spec)
+
+
 __all__ = [
     "LEVEL_PROPOSED_TACTICAL",
+    "LEVEL_RECURRING",
     "LEVEL_STRATEGIC",
     "LEVEL_SUBTASK",
     "LEVEL_TACTICAL",
@@ -324,7 +393,9 @@ __all__ = [
     "check_level_tags_on_create",
     "check_level_tags_on_tag",
     "check_no_cycle",
+    "check_not_builtin",
     "check_owner_only_ref",
     "check_parent_exists",
+    "check_schedule_in_meta",
     "is_owner",
 ]

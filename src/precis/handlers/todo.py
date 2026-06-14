@@ -1,7 +1,7 @@
 """TodoHandler — task / action items with status transitions and tree shape.
 
 Numeric-id ref kind. Builds on the shared :class:`NumericRefHandler`
-shape with three first-class extensions:
+shape with four first-class extensions:
 
 1. **`STATUS:` closed-prefix tag** (v1 lifecycle, unchanged):
    ``open|doing|blocked|done|won't-do|paused|auto-timeout``.
@@ -18,6 +18,14 @@ shape with three first-class extensions:
 3. **Tree-aware views** — ``roots``, ``strategic``, ``tree``,
    ``doable``, ``waiting``, ``blocked``, ``asking-reto``. Renderers
    live in :mod:`precis.handlers._todo_views`; this module routes.
+
+4. **PRIO column + recurring schedule** (Slice 4): ``prio`` is a
+   small int (1..10) on ``refs`` driving the doable ORDER BY;
+   ``level:recurring`` is the schedule tier — owner-only at the
+   root, spawned children carry ``level:subtask``. ``meta.schedule``
+   gets canonicalised (every-shorthand → cron) and validated at
+   write time. The seeded Watches umbrella is the default parent
+   for recurring roots without an explicit ``parent_id``.
 
 List views via ``id='/<view>'`` (legacy flat surface):
     /recent /open /doing /blocked /done /queue
@@ -47,12 +55,74 @@ from precis.utils.next_block import render_next_section
 #: View names that ``search(kind='todo', view=...)`` accepts. Each
 #: name routes to a renderer in :mod:`._todo_views`.
 _TREE_SEARCH_VIEWS: frozenset[str] = frozenset(
-    {"roots", "strategic", "doable", "waiting", "blocked", "asking-reto"}
+    {"roots", "strategic", "doable", "waiting", "blocked", "asking-reto", "attention"}
 )
 
 #: View names that ``get(kind='todo', id=N, view=...)`` accepts on
 #: top of the base class's ``links`` / ``log`` views.
 _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
+
+#: Backwards-compat translation table for the old ``PRIO:`` closed-prefix
+#: tag (now superseded by the int column). When an agent / cached prompt
+#: still writes ``tags=['PRIO:urgent']``, the handler strips that tag
+#: from the list and writes the equivalent ``prio`` column value
+#: instead. New code should pass ``prio=N`` directly.
+_PRIO_TAG_TO_INT: dict[str, int] = {
+    "PRIO:urgent": 1,
+    "PRIO:high": 3,
+    "PRIO:normal": 5,
+    "PRIO:low": 8,
+}
+
+
+def _split_prio_from_tags(
+    tags: list[str] | None,
+) -> tuple[list[str] | None, int | None]:
+    """Pull out the first ``PRIO:`` tag from ``tags`` and translate it.
+
+    Returns ``(filtered_tags, prio_from_tag)``. ``filtered_tags`` is
+    ``tags`` minus any ``PRIO:*`` entries. ``prio_from_tag`` is the
+    int translation of the *last* ``PRIO:`` tag in the list (so
+    callers writing ``['PRIO:low', 'PRIO:urgent']`` get the urgent
+    intent), or ``None`` when no ``PRIO:`` tag appeared.
+
+    Unknown ``PRIO:`` values pass through untouched so the strict
+    tag validator can surface them with the closed-vocab options
+    list — silently dropping a typo would be worse.
+    """
+    if not tags:
+        return tags, None
+    out: list[str] = []
+    found: int | None = None
+    for t in tags:
+        if t in _PRIO_TAG_TO_INT:
+            found = _PRIO_TAG_TO_INT[t]
+            continue
+        out.append(t)
+    return (out if out else None), found
+
+
+def _validate_prio(prio: int | None) -> int | None:
+    """Range-check ``prio`` (1..10) at the handler boundary.
+
+    Returns ``prio`` on success (None passes through). Raises
+    :class:`BadInput` with the catalogue on out-of-range / non-int
+    input — the DB CHECK would catch it too, but we want the message
+    to mention ``put(prio=N)`` rather than ``check_violation``.
+    """
+    if prio is None:
+        return None
+    if not isinstance(prio, int) or isinstance(prio, bool):
+        raise BadInput(
+            f"prio must be an int 1..10, got {type(prio).__name__} {prio!r}",
+            next="prio=1 (chat / preempt), prio=2 (cron), prio=5 (default)",
+        )
+    if prio < 1 or prio > 10:
+        raise BadInput(
+            f"prio out of range: {prio} (must be 1..10)",
+            next="prio=1 preempts strategic rotation; 3..10 ride the 1/N share",
+        )
+    return prio
 
 
 class TodoHandler(NumericRefHandler):
@@ -231,6 +301,8 @@ class TodoHandler(NumericRefHandler):
                 return views.render_blocked(self.store)
             if view == "asking-reto":
                 return views.render_asking_reto(self.store)
+            if view == "attention":
+                return views.render_attention(self.store)
         if view is not None and view not in _TREE_SEARCH_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind={self.kind!r} search",
@@ -257,8 +329,31 @@ class TodoHandler(NumericRefHandler):
         rel: str | None = None,
         auto_refresh_days: int | None = None,
         parent_id: int | str | None = None,
+        prio: int | None = None,
+        meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``PRIO:*`` tag form is back-compat — translate to the int
+        # column write before the level-gradient guard so the tag
+        # never lands as an open-tag row. An explicit ``prio=`` kwarg
+        # always wins over the tag form.
+        tags, prio_from_tag = _split_prio_from_tags(tags)
+        if prio is None:
+            prio = prio_from_tag
+        prio = _validate_prio(prio)
+        # ``meta.schedule`` may carry the ``every:`` shorthand; validate
+        # and rewrite to canonical cron so the runtime only ever sees
+        # one shape. The recurring spawner trusts the stored form.
+        if meta is not None and "schedule" in meta:
+            parsed = guards.check_schedule_in_meta(meta)
+            if parsed is not None:
+                meta = {
+                    **meta,
+                    "schedule": {
+                        "cron": parsed.cron,
+                        "backfill_missed": parsed.backfill_missed,
+                    },
+                }
         if parent_id is not None:
             try:
                 parent_int = parent_id if isinstance(parent_id, int) else int(parent_id)
@@ -272,11 +367,37 @@ class TodoHandler(NumericRefHandler):
         else:
             parent_int = None
         guards.check_level_tags_on_create(tags)
+        # Default parent_id for a ``level:recurring`` root to the
+        # seeded Watches umbrella — every recurring lives under it by
+        # default, so the operator gets a tidy two-panel ``view='roots'``
+        # without per-write boilerplate. Owner can override by passing
+        # ``parent_id=<some-strategic>`` to nest under a goal.
+        if (
+            parent_int is None
+            and tags
+            and guards.LEVEL_RECURRING in tags
+        ):
+            from precis.workers.schedule.seed import ensure_watches_root
+
+            parent_int = ensure_watches_root(self.store)
+        # Validate ``meta.auto_check`` shape so a typo in the
+        # evaluator name surfaces at write-time instead of at the
+        # next poll. The check is lightweight — type-specific arg
+        # validation happens in the evaluator itself.
+        if meta is not None and "auto_check" in meta:
+            from precis.workers.auto_check_evaluators import (
+                validate_auto_check_spec,
+            )
+
+            validate_auto_check_spec(meta["auto_check"])
         # Delegate to the base put for D6 guardrails (id=/mode=/etc.
         # rejection, tag validation, link target resolution, atomic
         # tx). It calls back into ``_create``, which we override to
-        # plumb ``parent_id`` through to the store layer.
+        # plumb ``parent_id``, ``meta``, and ``prio`` through to the
+        # store layer.
         self._pending_parent_id = parent_int
+        self._pending_meta = meta
+        self._pending_prio = prio
         try:
             return super().put(
                 text=text,
@@ -292,11 +413,14 @@ class TodoHandler(NumericRefHandler):
             # Always clear so a follow-up put without parent_id can't
             # accidentally inherit the prior call's value.
             self._pending_parent_id = None
+            self._pending_meta = None
+            self._pending_prio = None
 
-    # Per-call slot for plumbing parent_id from ``put`` into ``_create``
-    # without changing the base class's signature. Initialised on
-    # first use.
+    # Per-call slots for plumbing parent_id / meta / prio from ``put``
+    # into ``_create`` without changing the base class's signature.
     _pending_parent_id: int | None = None
+    _pending_meta: dict[str, Any] | None = None
+    _pending_prio: int | None = None
 
     def _create(
         self,
@@ -332,9 +456,10 @@ class TodoHandler(NumericRefHandler):
                 kind=self.kind,
                 slug=None,
                 title=text,
-                meta={},
+                meta=self._pending_meta or {},
                 auto_refresh_days=auto_refresh_days,
                 parent_id=self._pending_parent_id,
+                prio=self._pending_prio,
                 conn=conn,
             )
             for tag in parsed_tags:
@@ -365,9 +490,39 @@ class TodoHandler(NumericRefHandler):
         id: str | int,
         add: list[str] | None = None,
         remove: list[str] | None = None,
+        prio: int | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``PRIO:*`` form on ``add`` translates to a column write —
+        # same back-compat path as ``put``. Explicit ``prio=`` wins.
+        add, prio_from_tag = _split_prio_from_tags(add)
+        if prio is None:
+            prio = prio_from_tag
+        prio = _validate_prio(prio)
+        # ``PRIO:*`` form on ``remove`` doesn't have a single column
+        # equivalent (which PRIO does the caller mean?). Strip the
+        # alias and clear the column outright if any ``PRIO:`` value
+        # showed up in ``remove``.
+        clear_prio = False
+        if remove:
+            kept: list[str] = []
+            for t in remove:
+                if t in _PRIO_TAG_TO_INT:
+                    clear_prio = True
+                    continue
+                kept.append(t)
+            remove = kept or None
         guards.check_level_tags_on_tag(add=add, remove=remove)
+        ref_id = self._coerce_id(id)
+        if prio is not None or clear_prio:
+            self.store.set_prio(ref_id, None if clear_prio else prio)
+        if not add and not remove and (prio is not None or clear_prio):
+            # Only a PRIO column write happened; the base handler
+            # would reject an empty ``tag`` call.
+            return Response(
+                body=f"set prio={prio if not clear_prio else None} "
+                f"on {self._sense()} id={ref_id}"
+            )
         resp = super().tag(id=id, add=add, remove=remove, **_kw)
         # Picks-7d accounting (plan's Accounting section): when a
         # leaf flips to STATUS:done, append a ``status:done`` event
@@ -387,6 +542,11 @@ class TodoHandler(NumericRefHandler):
     def delete(self, *, id: str | int, **_kw: Any) -> Response:  # type: ignore[override]
         ref_id = self._coerce_id(id)
         guards.check_owner_only_ref(self.store, ref_id)
+        # Slice 4 footgun: refuse to delete refs that carry a
+        # ``meta.builtin`` marker (the Watches umbrella, future
+        # seeded folders). The check is on key presence so adding
+        # new builtins doesn't need a new guard.
+        guards.check_not_builtin(self.store, ref_id)
         return super().delete(id=id, **_kw)
 
     # ── single-ref render: include parent header when present ─────
@@ -395,6 +555,9 @@ class TodoHandler(NumericRefHandler):
         out = [f"# {self._sense()} {ref.id}", ""]
         if ref.parent_id is not None:
             out.append(f"parent: #{ref.parent_id}")
+        if ref.prio is not None:
+            out.append(f"prio: {ref.prio}")
+        if ref.parent_id is not None or ref.prio is not None:
             out.append("")
         out.append(ref.title)
         if tags:

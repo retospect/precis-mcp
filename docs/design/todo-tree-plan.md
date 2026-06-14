@@ -63,7 +63,13 @@ with the existing `ref_level_decay` semantic in `0011`):
 |---|---|---|---|
 | `level:strategic` | Reto | ❌ | ❌ |
 | `level:tactical` | Reto (asa may propose via `level:proposed-tactical`) | ❌ | ❌ |
+| `level:recurring` | Reto | ❌ | ❌ |
 | `level:subtask` (default) | any worker | ✅ | ✅ if `tag='claimed-by:<self>'` or unclaimed |
+
+`level:recurring` is the schedule tier — see "Recurring + schedule
+(Slice 4)" below. Owner-only at the root so a worker can't mint a
+`* * * * *` cron that burns the budget. Spawned children carry
+`level:subtask` and follow the normal subtask rules.
 
 Enforced in `TodoHandler.put`/`edit`/`delete` by inspecting the
 caller's `source` identity:
@@ -153,6 +159,202 @@ call):
 | `link_exists` | a links row from A to B with relation R exists | structural dependency |
 | `time_past` | `now() >= meta.auto_check.at` | scheduled wake |
 | `composite` | AND/OR of others | combined waits |
+
+### Recurring + schedule (Slice 4)
+
+Scheduled work (dreams, weather checks, "look for xyz conferences",
+birthday reminders) lives in the same tree as everything else. The
+pattern: a `level:recurring` root carries the schedule and the
+spawn rule; each tick mints a fresh `level:subtask` child that runs
+once. The recurring root never appears in the doable queue — it's
+the *pattern*; only its spawned subtasks are *actions*.
+
+#### Watches umbrella
+
+A single seeded `level:recurring` ref titled **Watches** sits at
+the top — every recurring lands under it by default. The seed is
+done by the schedule worker on first run, idempotent on
+`meta.builtin='watches-root'` (not a SQL migration):
+
+```sql
+INSERT INTO refs (kind, title, meta, set_by)
+SELECT 'todo', 'Watches', '{"builtin":"watches-root"}'::jsonb, 'system'
+ WHERE NOT EXISTS (
+   SELECT 1 FROM refs
+    WHERE kind='todo' AND meta->>'builtin'='watches-root'
+ );
+-- + level:recurring tag, applied in the same tx
+```
+
+The Watches root carries `meta.schedule = null` — it's a *folder*,
+not a schedule. The spawner skips folder rows; only its children
+tick. Recurring refs with `meta.builtin` non-null reject `delete`
+at the handler boundary (footgun protection — deleting the
+umbrella would orphan every watch).
+
+New recurrings default `parent_id` to the Watches root; an
+explicit `parent_id=<some-strategic>` lets a recurring nest under
+a goal when it serves one ("Birthday reminders" under "Personal
+life", for instance).
+
+```
+[Watches]                  level:recurring, schedule=null      (folder root)
+  ├─ Check arxiv weekly    level:recurring, cron='0 9 * * 1'
+  │   └─ Check arxiv 2026-06-14   level:subtask                (spawned)
+  ├─ Weather               level:recurring, cron='0 7 * * *'
+  │   └─ Weather 2026-06-14       level:subtask
+  └─ Dream nightly         level:recurring, cron='0 3 * * *'
+      └─ Dream 2026-06-14         level:subtask
+```
+
+#### Schedule format
+
+Canonical: a cron string in `meta.schedule.cron`. Shorthand
+optional: `meta.schedule.every` (`'1d'`, `'mon 09:00'`, `'1h'`)
+translates to cron at write time so the runtime only ever sees one
+shape. Validation at write time mirrors the auto-check pattern:
+malformed cron → `BadInput` at `put`, not at the next tick.
+
+```json
+"schedule": {
+  "cron": "0 9 * * 1",
+  "backfill_missed": false
+}
+```
+
+`backfill_missed` defaults to `false` (skip): weather, news,
+"yesterday's headlines." Opt-in `true` for birthdays and
+anniversaries where missing the tick still owes the action.
+
+#### Tick mechanics
+
+Each tick mints exactly **one** subtask under the recurring root.
+Idempotency is via `meta.spawned_for_tick='YYYY-MM-DDTHH:MM'` on
+the spawned child — the spawner checks for an existing child with
+the same tick stamp before minting. Same-minute reruns are no-ops.
+
+Collision policy: if the previous tick's subtask is **still open**
+when the next tick fires, the spawner **skips the new tick**. A
+stalled queue doesn't pile up; the operator notices the stuck leaf
+in the nursery sweep. (Mint-anyway and auto-timeout-previous were
+rejected — both hide problems behind extra writes.)
+
+#### Spawning
+
+```python
+# Schedule worker pseudocode — runs as a precis worker --only schedule pass.
+for recurring in level_recurring_refs(active=True):
+    if recurring.meta.schedule is None:
+        continue                       # folder, not a schedule
+    schedule = parse(recurring.meta.schedule)
+    for tick_ts in ticks_since(recurring.last_tick(), schedule,
+                                backfill=schedule.backfill_missed):
+        tick_stamp = tick_ts.isoformat(timespec='minutes')
+        if child_with_tick_exists(recurring.id, tick_stamp):
+            continue                   # idempotency
+        if has_open_previous_tick(recurring.id):
+            log.info('skipping tick: previous still open')
+            continue                   # collision = skip
+        precis.put(kind='todo',
+                   parent_id=recurring.id,
+                   text=render_title(recurring, tick_ts),
+                   prio=2,             # cron-spawned default
+                   meta={'spawned_for_tick': tick_stamp,
+                         'executor': recurring.meta.executor})
+        store.append_event(recurring.id,
+                           source='schedule',
+                           event='spawn',
+                           payload={'tick': tick_stamp})
+```
+
+`source='schedule'` on the event is the provenance answer to "what
+spawned this leaf?" — no new tag needed. Structural identity is
+`parent_id` chain → `level:recurring`. Two channels, both queryable
+without invention.
+
+#### View shape
+
+`view='roots'` grows a second panel below the strategic dashboard:
+
+```
+## Goals (4 strategics)        7d picks                                    (panel 1)
+#42 Build nanocube AI compute platform   7d:  9 picks       
+#56 Personal life                        7d:  2 picks  ← next pick (lowest)
+#67 Reading                              7d:  2 picks
+#88 Engineering hygiene                  7d: 11 picks
+Active: 4    Total picks: 24    Expected share: 6 each
+
+## Watches (3 recurring)        last tick                                  (panel 2)
+#12 Check arxiv weekly                   last:  2d ago    next: 5d
+#13 Weather                              last:  3h ago    next: 21h
+#14 Dream nightly                        last:  9h ago    next: 15h
+```
+
+The Watches panel doesn't compete in picks-7d — recurring is
+orthogonal to the strategic rotation, so a noisy cron can't crowd
+a small strategic out of its 1/N share.
+
+#### Soft cutover of existing schedulers
+
+Slice 4 ships additive. The existing `kind='cron'` infra
+(migration 0010) and the dream cron continue to work; new
+scheduled work uses `level:recurring`. The legacy schedulers
+retire when nothing references them — no rewrite, no migration
+risk, rollback is "ignore the recurring rows."
+
+### Priority — a small int column, 1–10
+
+PRIO becomes a first-class column on `refs` rather than a
+closed-prefix tag. Reasoning: it's a sort key on every doable
+query, and the relational answer ("`r.prio` ASC") beats the
+join-through-ref_tags-and-tags path on every dimension —
+clarity, query plan, write surface.
+
+```sql
+-- migration 0014_refs_prio.sql (Slice 4)
+ALTER TABLE refs
+    ADD COLUMN IF NOT EXISTS prio SMALLINT
+    CHECK (prio IS NULL OR prio BETWEEN 1 AND 10);
+CREATE INDEX IF NOT EXISTS refs_prio_idx
+    ON refs (prio) WHERE prio IS NOT NULL;
+```
+
+`NULL` = "no explicit priority, use the kind's default at sort
+time" (so untouched refs cost nothing). The doable view's order-by
+clause becomes:
+
+```
+ORDER BY
+  is_paused_ancestor ASC,                -- skip paused subtrees
+  has_waiting_or_block ASC,              -- skip waiting / blocked leaves
+  COALESCE(r.prio, 5) ASC,               -- 1 = chat, 2 = cron, 5 = default
+  strategic_picks_7d ASC,                -- least-picked strategic among ties
+  r.ref_id ASC                           -- deterministic tiebreak
+```
+
+PRIO 1 and 2 preempt the strategic rotation; PRIO 3-10 still get
+the 1/N share via picks-7d within their tier. Numerical, no labels
+— `PRIO:urgent`-style vocabulary is intentionally retired (the
+closed prefix stays on `Tag.parse_strict` as an alias that
+translates to a column write at the handler boundary for
+backward compat, but new code writes the column directly via
+`put(prio=N)` / `tag(prio=N)`).
+
+Default PRIO by spawner:
+
+| Spawner | Default PRIO |
+|---|---|
+| Chatter (Discord reply, mid-turn ask) | 1 |
+| User (web UI, CLI) | 1 |
+| Cron / recurring tick | 2 |
+| Worker mid-split (sibling under claimed leaf) | 5 |
+| Dreamer proposal | 8 |
+
+Resolution-on-unblock is pure: when a wait (`asking-reto`,
+`paper_ingested`, etc.) closes, the consumer becomes doable at
+the PRIO it was written with. No machinery bumps it. If a writer
+wants "do this right after Reto answers," they set `prio=1` at
+write time (or the chatter default of 1 already does it).
 
 Optional `meta.auto_check.timeout_at` (ISO timestamp) → on timeout
 the leaf flips to `status='auto-timeout'` and surfaces in the
@@ -638,17 +840,24 @@ Why this gives every project "eventually done":
 ORDER BY
   is_paused_ancestor ASC,                -- skip paused subtrees
   has_waiting_or_block ASC,              -- skip waiting / blocked leaves
-  strategic_picks_7d ASC,                -- least-picked strategic first
-  priority_tag ASC NULLS LAST,           -- per-leaf urgent override
-  sibling_position ASC                   -- depth-first within strategic
+  COALESCE(r.prio, 5) ASC,               -- 1 = chat, 2 = cron, 5 = default (Slice 4)
+  strategic_picks_7d ASC,                -- least-picked strategic among PRIO ties
+  r.ref_id ASC                           -- deterministic tiebreak
 ```
 
-Within a strategic, sibling order means depth-first by writer's
-intent — half-finished branches finish before new ones start.
+PRIO outranks picks-7d so chat (PRIO 1) and cron (PRIO 2) preempt
+the strategic rotation; PRIO 3-10 still get fair 1/N share via
+picks-7d within their tier.
 
-`priority:N` stays a per-leaf override Reto/asa can attach when
-something genuinely needs to jump the queue. Strategic-level
-weighting is intentionally absent (see Not-tracked above).
+Recurring tasks (`level:recurring` roots and their spawned
+subtasks) are excluded from picks-7d — recurring is orthogonal to
+the strategic rotation. A spawned subtask with PRIO 2 lands in the
+queue ahead of PRIO 3-10 strategic work but doesn't count against
+any strategic's share. See "Recurring + schedule" above.
+
+Strategic-level weighting (varying a strategic's share via a
+`weight:N` tag) is intentionally absent — equal share is the
+default and the only mode until a concrete need surfaces.
 
 ### Why deterministic round-robin (not randomization)
 
@@ -1044,6 +1253,60 @@ Independent of the rest of Slice 1; can ship in parallel.
 - Skill: `precis-auto-tasks-help` covering both patterns
   (paper-wait, discord-ask) with worked examples.
 
+### Slice 4 — Recurring + schedule (PRIO column)
+
+The scheduler surface. Folds dreams, weather/conf watches, birthday
+reminders into the same tree.
+
+- `0014_refs_prio.sql` migration — `prio SMALLINT` column on refs
+  + range CHECK + partial index. Old `PRIO:` tag stays as a
+  write-time alias that translates to a column write at the handler
+  boundary for backward compat.
+- `TodoHandler` extensions:
+  - `put(prio=N)` / `tag(prio=N)` kwargs that write the column
+    directly.
+  - Owner-only guard on `level:recurring` root creation /
+    delete / re-parent.
+  - Refuse `delete` on refs with `meta.builtin` non-null
+    (Watches root protection).
+  - `meta.schedule` validation at write time (malformed cron →
+    `BadInput`).
+- View implementations: the `view='roots'` Watches panel.
+  Doable view ordering changes to sort on `r.prio` (Slice 4
+  ships the new ORDER BY).
+- Schedule worker (`src/precis/workers/schedule.py` +
+  `precis worker --only schedule`):
+  - Seeds the Watches root idempotently on first run
+    (`meta.builtin='watches-root'`).
+  - Walks `level:recurring` rows whose `meta.schedule` is
+    non-null and whose status isn't paused.
+  - For each, computes ticks since `last_tick` (from
+    `ref_events` where `event='spawn'`); honours
+    `backfill_missed` (default false).
+  - Per-tick guards: skip if `meta.spawned_for_tick=...` child
+    already exists; skip if previous tick's subtask is still
+    open (collision = skip, see plan).
+  - Mints each due child with `prio=2`, `parent_id=<recurring>`,
+    `meta.spawned_for_tick=<ISO>`, optional `meta.executor`
+    copied from the recurring.
+  - Appends `ref_events(source='schedule', event='spawn',
+    payload={'tick': ...})` on the recurring at every mint.
+- Schedule parser (`src/precis/workers/schedule/parse.py`):
+  cron canonical, `every:` shorthand translation, write-time
+  validation. Reuses a vetted cron lib if there's a sensible one
+  in the dep tree; otherwise minimal hand-rolled parser
+  (5-field cron only, no aliases).
+- Tests: tick idempotency, collision-skip, backfill on/off,
+  Watches-root seed idempotency, delete guard on builtin refs,
+  parser fuzz on cron + every shapes, PRIO column read/write.
+- Skill: `precis-recurring-help` covering the Watches umbrella,
+  the schedule format, when to use backfill, and how to nest a
+  recurring under a strategic.
+
+Slice 4 is reviewable on its own — it ships the scheduler without
+asa-bot doing anything new with it. The dream cron migrates to a
+`level:recurring` row in a follow-up pass-2.
+
 ### Slice 2 — Worker integration (mode separation)
 
 The UX surface for asa, now mode-aware.
@@ -1129,18 +1392,23 @@ slice 3.
 New in precis-mcp:
 
 - `src/precis/migrations/0013_todo_tree.sql`
+- `src/precis/migrations/0014_refs_prio.sql` (Slice 4)
 - `src/precis/handlers/_todo_views.py` (view renderers split out to
   keep `todo.py` readable)
 - `src/precis/handlers/_todo_guards.py` (depth, level, cycle checks)
 - `src/precis/workers/auto_check.py` (worker entry point)
 - `src/precis/workers/auto_check_evaluators/` (one module per type)
+- `src/precis/workers/schedule.py` (Slice 4 spawner)
+- `src/precis/workers/schedule/parse.py` (Slice 4 cron+every parser)
 - `src/precis/data/skills/precis-tasks-help.md`
 - `src/precis/data/skills/precis-decomposition-help.md`
 - `src/precis/data/skills/precis-auto-tasks-help.md`
+- `src/precis/data/skills/precis-recurring-help.md` (Slice 4)
 - `tests/test_todo_tree.py`
 - `tests/test_todo_views.py`
 - `tests/test_todo_guards.py`
 - `tests/test_auto_check.py`
+- `tests/test_schedule.py` (Slice 4)
 
 Changed in precis-mcp:
 
@@ -1222,6 +1490,46 @@ questions.)
    not enter worker mode mid-turn. Debug tools to claim manually
    remain available via skills.
 
+9. **PRIO is an int column on refs, 1–10.** Slice 4 adds
+   `refs.prio SMALLINT` with `CHECK (prio BETWEEN 1 AND 10)`. The
+   relational model fits a sort key better than the prior
+   closed-prefix tag join. NULL = "use the default" (5). Old
+   `PRIO:` tag writes stay as aliases at the handler boundary so
+   existing tests / skills don't break, but new code writes the
+   column.
+
+10. **Recurring lives under a single seeded "Watches" umbrella
+    root.** `meta.builtin='watches-root'` marks the umbrella;
+    delete is rejected on `meta.builtin` non-null refs (footgun
+    protection). New recurrings default `parent_id` to this root;
+    `parent_id=<some-strategic>` lets a recurring nest under a
+    goal when it serves one.
+
+11. **Tick mechanics — idempotency by stamp, collision by skip.**
+    Each scheduled subtask carries
+    `meta.spawned_for_tick='YYYY-MM-DDTHH:MM'`; the spawner skips
+    when a child with that stamp already exists. When the
+    previous tick's subtask is still open as the next tick
+    fires, the spawner skips the new tick — a stalled queue
+    doesn't pile up; the nursery surfaces the stuck leaf.
+    `backfill_missed: true|false` on the recurring (default
+    false) controls catch-up on worker restart.
+
+12. **Cron-spawn provenance is structural, not tagged.**
+    `parent_id` chain → `level:recurring` answers "is this
+    cron-spawned?"; `ref_events.source='schedule'` answers "when
+    was it spawned and by whom?" No new tag invented.
+
+13. **Resolution doesn't bump PRIO.** When a wait closes, the
+    consumer becomes doable at whatever PRIO it was written
+    with. No nudge machinery. The spawn defaults (chatter / user
+    → PRIO 1) already handle the "Reto-engaged" case.
+
+14. **Soft cutover of existing schedulers.** `kind='cron'` and
+    the legacy dream cron keep running; new scheduled work uses
+    `level:recurring`. No rewrite, no migration; legacy retires
+    when nothing references it.
+
 ## Not in scope (this plan)
 
 - **DAG support.** Strict tree only — single `parent_id`. A task
@@ -1235,9 +1543,9 @@ questions.)
   goal-kind plan lands, but this plan doesn't depend on goal-kind
   and goal-kind doesn't depend on this. Composition is orthogonal.
 
-- **Recurring leaves.** A leaf that should reappear after being
-  done ("water the plants every week"). Cron territory; out of
-  scope until asked.
+<!-- Recurring leaves: WAS out-of-scope, now promoted to Slice 4. See
+"Recurring + schedule" above. -->
+
 
 - **Rich due-date semantics.** A `due:<iso-date>` tag is fine; no
   server-side filtering until a real consumer asks.
@@ -1248,16 +1556,20 @@ questions.)
 
 ## Estimated work
 
-- Slice 1: ~1.5 sessions (migration + handler + views + tests).
-- Slice 1b: ~1 session (auto-check worker + evaluators + tests).
+- Slice 1: ~1.5 sessions (migration + handler + views + tests). ✅ shipped
+- Slice 1b: ~1 session (auto-check worker + evaluators + tests). ✅ shipped
+- Slice 4: ~1.5 sessions (PRIO column migration + schedule worker
+  + Watches umbrella + tests + skill). Independent of Slice 2/3;
+  ships value alone (the scheduler unifies dreams + crons +
+  watches under one runtime).
 - Slice 2: ~1.5 sessions (preamble renderers + mode addon files +
   asa.md refactor + reply-tagging + worker-pass.sh + smoke).
 - Slice 3 (nursery only): ~0.5 session.
 - Slice 3 (structural + deep): ~1 session.
 
-Total: ~5–6 sessions to ship the full surface (Slice 2 risk-
-adjusted to 1.5–2.5). Slice 1, 1b, 2 each ship independently
-with user-visible value, so partial landing is fine.
+Total: ~6.5–7.5 sessions to ship the full surface (Slice 2 risk-
+adjusted to 1.5–2.5). Each slice ships independently with
+user-visible value, so partial landing is fine.
 
 ## Relationship to existing infrastructure
 

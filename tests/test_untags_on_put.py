@@ -27,6 +27,8 @@ from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store, Tag
 
+from tests.conftest import id_of
+
 # ── plumbing ────────────────────────────────────────────────────────
 
 
@@ -37,11 +39,7 @@ def memory(hub: Hub) -> MemoryHandler:
 
 def _create_with_tags(h: MemoryHandler, *tags: str, text: str = "hello") -> int:
     """Create a memory carrying ``*tags`` and return its id."""
-    out = h.put(text=text, tags=list(tags))
-    # Response body looks like: ``created memory id=42``. Extract.
-    body = out.body
-    last = body.split("=")[-1].strip()
-    return int(last.split()[0])
+    return id_of(h.put(text=text, tags=list(tags)).body)
 
 
 # ── basic untag flows ──────────────────────────────────────────────
@@ -79,7 +77,7 @@ def test_untag_closed_prefix_value_match(store: Store) -> None:
 
     todo = TodoHandler(hub=Hub(store=store))
     out = todo.put(text="task")
-    rid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
+    rid = id_of(out.body)
 
     # Todos create with STATUS:open by default. Bump to STATUS:done.
     todo.tag(id=rid, add=["STATUS:done"])
@@ -134,7 +132,7 @@ def test_untag_rejects_bare_collision(store: Store) -> None:
 
     todo = TodoHandler(hub=Hub(store=store))
     out = todo.put(text="task", tags=["topic-x"])
-    rid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
+    rid = id_of(out.body)
     with pytest.raises(BadInput, match="bare flag 'urgent'"):
         todo.tag(id=rid, remove=["urgent"])
 
@@ -147,7 +145,7 @@ def test_untag_rejects_unknown_status(store: Store) -> None:
 
     todo = TodoHandler(hub=Hub(store=store))
     out = todo.put(text="task")
-    rid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
+    rid = id_of(out.body)
     with pytest.raises(BadInput, match="invalid STATUS value"):
         todo.tag(id=rid, remove=["STATUS:bogus"])
 

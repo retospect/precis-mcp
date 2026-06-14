@@ -240,3 +240,114 @@ def test_unknown_view_rejected_with_options(handler: TodoHandler) -> None:
 
     with pytest.raises(Unsupported, match="unknown view"):
         handler.search(view="frobnicate")
+
+
+def test_doable_excludes_child_failed_parents(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Slice-5: a parent carrying child-failed:N shouldn't be doable.
+
+    The parent's owner has to decide retry/switch/give-up before the
+    leaf re-enters the doable rotation."""
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    r = handler.put(text="parent of failed job")
+    rid = id_of(r.body)
+    # Pre-flight: the parent IS doable.
+    out_before = handler.search(view="doable")
+    assert f"#{rid}" in out_before.body
+    # Bubble a child-failed tag on it.
+    store.add_tag(rid, Tag.open("child-failed:999"), set_by="system")
+    out = handler.search(view="doable")
+    assert f"#{rid}" not in out.body
+
+
+def test_attention_view_empty_when_nothing_pending(
+    handler: TodoHandler, store: Store
+) -> None:
+    out = handler.search(view="attention")
+    assert "no todos need attention" in out.body
+    assert "view='doable'" in out.body
+
+
+def test_attention_view_lists_asking_reto_leaves(
+    handler: TodoHandler, store: Store
+) -> None:
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    r = handler.put(text="Need Reto's call on Tanaka 2024")
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("asking-reto"), set_by="agent")
+    out = handler.search(view="attention")
+    assert "Asking Reto (1)" in out.body
+    assert f"#{rid}" in out.body
+    assert "Need Reto" in out.body
+
+
+def test_attention_view_lists_child_failed_parents(
+    handler: TodoHandler, store: Store
+) -> None:
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    r = handler.put(text="Fix the rate-limit gripe")
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("child-failed:143"), set_by="system")
+    # Add a job_event so the digest can quote a reason.
+    from precis.store.types import BlockInsert
+
+    job = store.insert_ref(
+        kind="job", slug=None, title="fix attempt", meta={}, parent_id=rid
+    )
+    # Use the store's chunk-insert path so chunk_kind lands correctly.
+    store.insert_blocks(
+        job.id,
+        [BlockInsert(pos=0, text="claude -p exited 2", meta={"chunk_kind": "job_event"})],
+    )
+    # The bubble tag references the synthetic job_id 143, not the
+    # one we just inserted. Test focuses on the parent surface; the
+    # reason lookup uses the tag's job_id which won't have an event
+    # chunk — so the reason placeholder shows.
+    _ = job
+    out = handler.search(view="attention")
+    assert "Child-failed parents (1)" in out.body
+    assert f"#{rid}" in out.body
+    assert "job #143" in out.body
+
+
+def test_attention_view_unions_both_signals(
+    handler: TodoHandler, store: Store
+) -> None:
+    from precis.store.types import Tag
+    from tests.conftest import id_of
+
+    a = handler.put(text="Asking reto")
+    a_id = id_of(a.body)
+    store.add_tag(a_id, Tag.open("asking-reto"), set_by="agent")
+    b = handler.put(text="Failed child")
+    b_id = id_of(b.body)
+    store.add_tag(b_id, Tag.open("child-failed:99"), set_by="system")
+
+    out = handler.search(view="attention")
+    assert "2 todos need attention" in out.body
+    assert "Asking Reto (1)" in out.body
+    assert "Child-failed parents (1)" in out.body
+
+
+def test_tree_view_includes_child_jobs(handler: TodoHandler) -> None:
+    """Slice-5: kind='job' children show up under their todo parent
+    in view='tree', distinguished by a gear marker."""
+    from tests.conftest import id_of
+
+    r = handler.put(text="Parent todo")
+    rid = id_of(r.body)
+    job = handler.store.insert_ref(
+        kind="job", slug=None, title="fix_gripe attempt", meta={}, parent_id=rid
+    )
+    out = handler.get(id=rid, view="tree")
+    assert f"#{job.id}" in out.body
+    assert "fix_gripe attempt" in out.body
+    # Gear glyph distinguishes the job row from todo rows.
+    assert "⚙" in out.body

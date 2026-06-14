@@ -1,0 +1,56 @@
+{% extends "base.html.j2" %}
+{% block title %}Status{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-4">Status</h1>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+  <div class="rounded-lg border border-slate-200 bg-white p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-400">Papers</div>
+    <div class="mt-1 text-2xl font-semibold">{{ papers.get('total', 0) }}</div>
+    <div class="text-sm text-slate-500">
+      {{ papers.get('held', 0) }} held · {{ papers.get('stub', 0) }} stubs
+    </div>
+  </div>
+  <div class="rounded-lg border border-slate-200 bg-white p-4 md:col-span-2">
+    <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Refs by kind</div>
+    <div class="flex flex-wrap gap-2">
+      {% for k in kind_counts %}
+      <span class="text-xs px-2 py-1 rounded bg-slate-100 text-slate-700">
+        {{ k.kind }} <span class="font-semibold">{{ k.count }}</span>
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+  <section>
+    <h2 class="text-sm font-semibold mb-2">Todos by status</h2>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for t in todo_status %}
+      <li class="px-4 py-2 flex justify-between text-sm">
+        <span>{{ t.status }}</span><span class="font-semibold">{{ t.count }}</span>
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no todos</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section>
+    <h2 class="text-sm font-semibold mb-2">Recent activity</h2>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for e in events %}
+      <li class="px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-slate-400 w-28 shrink-0">{{ e.ts }}</span>
+        <span class="font-mono text-slate-600">{{ e.event }}</span>
+        <span class="text-slate-400">{{ e.source }}</span>
+        {% if e.ref_id %}<span class="ml-auto text-slate-400">#{{ e.ref_id }}</span>{% endif %}
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no events</li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+{% endblock %}

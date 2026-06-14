@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.errors import BadInput
+from precis.handlers import _todo_guards as todo_guards
 from precis.handlers._link_tag_ops import validate_relation
 from precis.handlers._link_target import parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
@@ -78,6 +79,7 @@ class JobHandler(NumericRefHandler):
         executor: str | None = None,
         params: dict[str, Any] | None = None,
         idem_key: str | None = None,
+        parent_id: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         if id is not None:
@@ -191,6 +193,42 @@ class JobHandler(NumericRefHandler):
                     )
                 )
 
+        # ── tree-position guard (Slice 5: jobs are children of todos) ──
+        # Every new job must declare its parent todo. Orphan jobs are a
+        # leftover from the pre-tree v1 substrate; new callers go via
+        # the dispatch worker, which mints jobs under the claimed todo.
+        # The handler is the boundary that enforces it. The check fires
+        # AFTER the existing job_type / executor / link validations so
+        # rejection messages from earlier paths stay unchanged for the
+        # tests that exercise them — only happy-path puts need the
+        # parent_id kwarg.
+        if parent_id is None:
+            raise BadInput(
+                "put(kind='job') requires parent_id pointing at the "
+                "todo this job executes",
+                next=(
+                    "canonical pattern: put(kind='todo', "
+                    "meta={'executor': ..., 'job_type': ...}) then let "
+                    "the dispatch worker mint the job under it. For an "
+                    "ad-hoc submit: put(kind='job', parent_id=<todo_id>, "
+                    "job_type=..., link='gripe:N', rel='fixes')."
+                ),
+            )
+        try:
+            parent_int = (
+                parent_id if isinstance(parent_id, int) else int(parent_id)
+            )
+        except (TypeError, ValueError) as exc:
+            raise BadInput(
+                f"parent_id must be an integer, got {parent_id!r}",
+                next="parent_id=<int> (the parent todo's id)",
+            ) from exc
+        # Re-uses the todo-tree parent check — same SQL, same
+        # rejection for non-todo / soft-deleted / missing parents.
+        # The guard already enforces parent kind='todo' so jobs
+        # can never have a non-todo parent. No code change needed there.
+        todo_guards.check_parent_exists(self.store, parent_int)
+
         # Compose title + meta + queued tag.
         title = f"{spec.name} ({link or 'unlinked'})"
         meta: dict[str, Any] = {
@@ -211,6 +249,7 @@ class JobHandler(NumericRefHandler):
                 slug=None,
                 title=title,
                 meta=meta,
+                parent_id=parent_int,
                 conn=conn,
             )
             for tag in parsed_tags:
@@ -250,6 +289,33 @@ class JobHandler(NumericRefHandler):
                 f"poll: get(kind='job', id={ref.id})."
             )
         )
+
+    # ── tag override: failure-bubble to parent todo ──────────────
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Tag a job + bubble ``child-failed:<job_id>`` to the parent todo
+        when STATUS:failed is added.
+
+        Slice-5: a job failure surfaces on the parent so the operator
+        decides next move (re-dispatch, switch executor, ask user).
+        The bubble fires only on the ``STATUS:failed`` add — other
+        status transitions don't surface (a success resolves the
+        parent via ``auto_check.child_job_succeeded`` instead).
+        """
+        resp = super().tag(id=id, add=add, remove=remove, **_kw)
+        if add and any(a == "STATUS:failed" for a in add):
+            from precis.handlers._job_bubble import bubble_job_failure
+
+            job_id = self._coerce_id(id)
+            bubble_job_failure(self.store, job_id)
+        return resp
 
     # ── render: header + status + summary + recent events ──────────
 

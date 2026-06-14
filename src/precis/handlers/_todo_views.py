@@ -243,6 +243,24 @@ def render_roots(store: Store) -> Response:
             f"Total picks (7d): {total_picks}    "
             f"Expected share: {expected:.1f} each"
         )
+    # Slice-4: second panel — recurring roots (Watches). Orthogonal to
+    # the picks-7d rotation; recurring is the schedule tier, not the
+    # 1/N share, so a noisy cron can't crowd a strategic out.
+    watches = _watches_panel_rows(store)
+    if watches:
+        lines.append("")
+        lines.append("")
+        lines.append(f"## Watches ({len(watches)} recurring)")
+        lines.append("")
+        for w in watches:
+            first_line = (w["title"] or "").split("\n", 1)[0]
+            if len(first_line) > 50:
+                first_line = first_line[:50].rstrip() + "…"
+            cron = w["cron"] or "(folder)"
+            last = w["last_tick"] or "never"
+            lines.append(
+                f"#{w['id']:<4} {first_line:<50}  cron: {cron:<14}  last: {last}"
+            )
     body = "\n".join(lines)
     body += render_next_section(
         [
@@ -257,6 +275,50 @@ def render_roots(store: Store) -> Response:
         ]
     )
     return Response(body=body)
+
+
+def _watches_panel_rows(store: Store) -> list[dict[str, Any]]:
+    """Return one row per non-umbrella recurring with its last tick.
+
+    The umbrella folder (``meta.builtin='watches-root'``) is excluded
+    from the listing — it's the parent, not a watch. Each row carries:
+
+    * ``id`` — the recurring's ref id
+    * ``title`` — for display
+    * ``cron`` — the canonical cron string (None when folder)
+    * ``last_tick`` — ISO timestamp of the most recent ``spawn`` event
+      on this recurring, or ``None`` when it hasn't fired
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title,
+                   r.meta->'schedule'->>'cron' AS cron,
+                   (SELECT max(e.ts)::text FROM ref_events e
+                     WHERE e.ref_id = r.ref_id
+                       AND e.source = 'schedule'
+                       AND e.event = 'spawn') AS last_tick
+              FROM refs r
+             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'OPEN'
+                      AND t.value = 'level:recurring'
+               )
+               AND (r.meta->>'builtin') IS NULL
+             ORDER BY r.ref_id
+            """,
+        ).fetchall()
+    return [
+        {
+            "id": int(r[0]),
+            "title": r[1],
+            "cron": r[2],
+            "last_tick": r[3],
+        }
+        for r in rows
+    ]
 
 
 def _active_strategic_ids(store: Store) -> list[int]:
@@ -486,30 +548,42 @@ def render_tree(store: Store, root_id: int) -> Response:
 
 
 def _fetch_subtree(store: Store, root_id: int) -> list[dict[str, Any]]:
-    """Return ``[{id, parent_id, title, depth}]`` for the subtree at root."""
+    """Return ``[{id, parent_id, title, depth, kind}]`` for the subtree at root.
+
+    The walk widens to ``kind IN ('todo', 'job')`` so child jobs (Slice
+    5) surface under their parent todo in ``view='tree'``. The root
+    itself must still be a ``kind='todo'`` — a job is execution detail,
+    not a tree anchor — so the seed row carries the kind filter.
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            WITH RECURSIVE walk(ref_id, parent_id, title, depth) AS (
-                SELECT ref_id, parent_id, title, 0
+            WITH RECURSIVE walk(ref_id, parent_id, title, depth, kind) AS (
+                SELECT ref_id, parent_id, title, 0, kind
                   FROM refs WHERE ref_id = %s
                               AND kind = 'todo'
                               AND deleted_at IS NULL
                 UNION ALL
-                SELECT r.ref_id, r.parent_id, r.title, w.depth + 1
+                SELECT r.ref_id, r.parent_id, r.title, w.depth + 1, r.kind
                   FROM refs r
                   JOIN walk w ON r.parent_id = w.ref_id
-                 WHERE r.kind = 'todo'
+                 WHERE r.kind IN ('todo', 'job')
                    AND r.deleted_at IS NULL
                    AND w.depth < 10
             )
-            SELECT ref_id, parent_id, title, depth FROM walk
+            SELECT ref_id, parent_id, title, depth, kind FROM walk
              ORDER BY depth, ref_id
             """,
             (root_id,),
         ).fetchall()
     return [
-        {"id": int(r[0]), "parent_id": r[1], "title": r[2], "depth": int(r[3])}
+        {
+            "id": int(r[0]),
+            "parent_id": r[1],
+            "title": r[2],
+            "depth": int(r[3]),
+            "kind": r[4],
+        }
         for r in rows
     ]
 
@@ -554,8 +628,13 @@ def _render_node(
     claimed = next((t for t in tags if t.startswith("claimed-by:")), None)
     waiting = next((t for t in tags if t.startswith("waiting-for:")), None)
     asking = any(t == "asking-reto" or t.startswith("asking-reto:") for t in tags)
+    # Slice-5: distinguish kind='job' rows so the operator sees
+    # execution attempts as different from intent nodes. ⚙ is the
+    # gear glyph the Watches panel already uses for scheduler-y
+    # things; we reuse it for jobs.
+    kind_marker = "⚙ " if node.get("kind") == "job" else ""
     icon = _status_icon(status, claimed=claimed, waiting=waiting, asking=asking)
-    line += f"#{node['id']} {icon} {first_line}"
+    line += f"#{node['id']} {kind_marker}{icon} {first_line}"
     out.append(line)
     children = by_parent.get(node["id"], [])
     if not children:
@@ -735,11 +814,7 @@ def _fetch_doable(
         SELECT
           r.ref_id, r.title, COALESCE(st.strategic_id, 0) AS strategic_id,
           COALESCE(p.picks_7d, 0) AS picks_7d,
-          COALESCE(
-            (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-              WHERE rt.ref_id = r.ref_id AND t.namespace = 'PRIO' LIMIT 1),
-            'zzz'
-          ) AS prio
+          COALESCE(r.prio, 5) AS prio
           FROM refs r
           LEFT JOIN subtree st ON st.ref_id = r.ref_id
           LEFT JOIN picks p ON p.strategic_id = st.strategic_id
@@ -769,13 +844,28 @@ def _fetch_doable(
                 WHERE rt.ref_id = r.ref_id
                   AND t.namespace = 'OPEN'
                   AND (t.value LIKE 'waiting-for:%%' OR t.value = 'asking-reto'
-                       OR t.value LIKE 'asking-reto:%%')
+                       OR t.value LIKE 'asking-reto:%%'
+                       -- Slice-5: a child job failed and the parent
+                       -- is awaiting its owner's decision. Skip
+                       -- until the bubble flag is cleared.
+                       OR t.value LIKE 'child-failed:%%')
            )
            AND NOT EXISTS (
                SELECT 1 FROM ancestry_paused ap WHERE ap.ref_id = r.ref_id
            )
+           -- Slice 4: the recurring umbrella itself (level:recurring root)
+           -- is a folder, not an action; its spawned children are normal
+           -- subtasks. Skip the umbrella by tag — the spawned children
+           -- pass through because they carry ``level:subtask`` (or no
+           -- explicit level), not ``level:recurring``.
+           AND NOT EXISTS (
+               SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                WHERE rt.ref_id = r.ref_id
+                  AND t.namespace = 'OPEN'
+                  AND t.value = 'level:recurring'
+           )
            {under_clause}
-         ORDER BY picks_7d ASC, prio ASC, r.ref_id ASC
+         ORDER BY prio ASC, picks_7d ASC, r.ref_id ASC
          LIMIT %s
     """
     with store.pool.connection() as conn:
@@ -953,6 +1043,191 @@ def render_asking_reto(store: Store) -> Response:
     return Response(body=body)
 
 
+# ── view: attention (asking-reto + child-failed parents) ──────────
+
+
+def render_attention(store: Store) -> Response:
+    """Union of every signal that needs the owner's attention.
+
+    Three signal sources today (Slice 5):
+
+    * **asking-reto** leaves — work parked on Reto's Discord reply
+      (Slice 1; ``view='asking-reto'`` covers this in isolation).
+    * **child-failed parents** — todos carrying ``child-failed:<job_id>``
+      open tags because a child ``kind='job'`` ref hit
+      ``STATUS:failed``. The owner (asa-bot) decides next move:
+      retry, switch executor, ask the user.
+    * Future tags (``escalated:*``, ``human-review:*``) slot into the
+      same renderer with one more ``LIKE`` clause.
+
+    The chatter preamble renders this alongside the doable queue
+    so Reto sees all of "what needs me" in one block. ``view='doable'``
+    excludes both ``asking-reto`` and ``child-failed:*`` parents, so
+    the two surfaces are disjoint by construction.
+    """
+    asks = _attention_asking_reto(store)
+    child_failed = _attention_child_failed(store)
+    total = len(asks) + len(child_failed)
+    if total == 0:
+        body = "no todos need attention"
+        body += render_next_section(
+            [
+                ("search(kind='todo', view='doable')", "see the doable queue"),
+                ("search(kind='todo', view='roots')", "see strategic dashboard"),
+            ]
+        )
+        return Response(body=body)
+    lines: list[str] = [f"# {total} todo{'' if total == 1 else 's'} need attention"]
+    if asks:
+        lines.append("")
+        lines.append(f"## Asking Reto ({len(asks)})")
+        lines.append("")
+        for a in asks:
+            first = (a["title"] or "").split("\n", 1)[0]
+            if len(first) > 76:
+                first = first[:76].rstrip() + "…"
+            lines.append(f"#{a['id']:<4} {first}")
+    if child_failed:
+        lines.append("")
+        lines.append(f"## Child-failed parents ({len(child_failed)})")
+        lines.append("")
+        for f in child_failed:
+            first = (f["title"] or "").split("\n", 1)[0]
+            if len(first) > 70:
+                first = first[:70].rstrip() + "…"
+            lines.append(f"#{f['id']:<4} {first}")
+            for tag in f["child_failed_tags"]:
+                # Strip ``child-failed:`` prefix → the bare job id.
+                job_id = tag.removeprefix("child-failed:")
+                lines.append(f"      job #{job_id}: {f['reasons'].get(job_id, '(no event chunk yet)')}")
+    body = "\n".join(lines)
+    body += render_next_section(
+        [
+            (
+                "get(kind='todo', id=N)",
+                "read the leaf + its ancestry chain to triage",
+            ),
+            (
+                "tag(kind='todo', id=N, remove=['child-failed:<job_id>'])",
+                "after deciding to retry: clear the bubble flag",
+            ),
+        ]
+    )
+    return Response(body=body)
+
+
+def _attention_asking_reto(store: Store) -> list[dict[str, Any]]:
+    """Same shape as ``render_asking_reto`` data, but as dicts.
+
+    Splitting the data side from the render side keeps
+    ``render_attention`` from re-querying the same rows
+    ``render_asking_reto`` already knows how to fetch.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT r.ref_id, r.title, r.created_at
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND (t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) NOT IN ('done', 'won''t-do')
+             ORDER BY r.created_at DESC
+             LIMIT 50
+            """,
+        ).fetchall()
+    return [
+        {"id": int(r[0]), "title": r[1], "created_at": r[2]} for r in rows
+    ]
+
+
+def _attention_child_failed(store: Store) -> list[dict[str, Any]]:
+    """Parents tagged ``child-failed:<job_id>``. One row per parent.
+
+    For each parent collects every ``child-failed:<job_id>`` tag,
+    plus the most recent ``job_event`` chunk text on each named
+    job (truncated) so the digest shows *why* without an extra
+    round-trip.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title,
+                   array_agg(t.value ORDER BY t.value) AS bubble_tags
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND t.value LIKE 'child-failed:%%'
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) NOT IN ('done', 'won''t-do')
+             GROUP BY r.ref_id, r.title
+             ORDER BY r.ref_id DESC
+             LIMIT 50
+            """,
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for ref_id, title, bubble_tags in rows:
+        tag_list = [str(t) for t in bubble_tags or []]
+        job_ids: list[int] = []
+        for t in tag_list:
+            suffix = t.removeprefix("child-failed:")
+            try:
+                job_ids.append(int(suffix))
+            except ValueError:
+                continue
+        reasons = _latest_job_event_reasons(store, job_ids) if job_ids else {}
+        out.append(
+            {
+                "id": int(ref_id),
+                "title": title,
+                "child_failed_tags": tag_list,
+                "reasons": reasons,
+            }
+        )
+    return out
+
+
+def _latest_job_event_reasons(
+    store: Store, job_ids: list[int]
+) -> dict[str, str]:
+    """Return ``{job_id_str: latest job_event text}`` for the given jobs.
+
+    Truncated to ~120 chars per reason so the attention digest stays
+    readable. Jobs without an event chunk silently drop out.
+    """
+    if not job_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (c.ref_id) c.ref_id, c.text
+              FROM chunks c
+             WHERE c.ref_id = ANY(%s)
+               AND c.chunk_kind = 'job_event'
+             ORDER BY c.ref_id, c.ord DESC
+            """,
+            (job_ids,),
+        ).fetchall()
+    out: dict[str, str] = {}
+    for ref_id, text in rows:
+        s = (text or "").split("\n", 1)[0]
+        if len(s) > 120:
+            s = s[:120].rstrip() + "…"
+        out[str(int(ref_id))] = s
+    return out
+
+
 # ── walk-on-read ancestry (used by handler.get) ────────────────────
 
 
@@ -984,6 +1259,7 @@ def render_ancestry_section(store: Store, ref_id: int) -> str:
 __all__ = [
     "render_ancestry_section",
     "render_asking_reto",
+    "render_attention",
     "render_blocked",
     "render_doable",
     "render_roots",

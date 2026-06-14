@@ -1,0 +1,32 @@
+{% extends "base.html.j2" %}
+{% block title %}Console{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-3">Tool console</h1>
+<p class="text-sm text-slate-500 mb-4">
+  Call the seven verbs interactively. Arguments are
+  <span class="font-mono">key=value</span> tokens (quote values with spaces),
+  e.g. <span class="font-mono">q="two-photon absorption" kind=paper page_size=5</span>.
+</p>
+
+<form method="post" action="/console/run" class="space-y-3">
+  <div class="flex items-center gap-2">
+    <select name="verb" class="rounded-md border border-slate-300 text-sm px-2 py-2">
+      {% for v in verbs %}
+      <option value="{{ v }}" {% if v == verb %}selected{% endif %}>{{ v }}</option>
+      {% endfor %}
+    </select>
+    <input name="args_text" value="{{ args_text }}" placeholder="key=value key=value …"
+           class="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm font-mono" />
+    <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2">Run</button>
+  </div>
+</form>
+
+{% if result is not none %}
+<div class="mt-5">
+  <h2 class="text-sm font-semibold mb-2 {% if is_error %}text-rose-700{% else %}text-slate-700{% endif %}">
+    {% if is_error %}error{% else %}result{% endif %}
+  </h2>
+  <pre class="rounded-lg border {% if is_error %}border-rose-200 bg-rose-50 text-rose-800{% else %}border-slate-200 bg-white text-slate-700{% endif %} p-3 text-xs whitespace-pre-wrap overflow-x-auto">{{ result }}</pre>
+</div>
+{% endif %}
+{% endblock %}

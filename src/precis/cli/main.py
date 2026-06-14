@@ -29,6 +29,7 @@ from precis.cli import (
     dedupe,
     gripe,
     ingest,
+    logs,
     maintenance,
     migrate,
     patent,
@@ -42,6 +43,7 @@ from precis.cli import (
     tools,
     verify,
     watch,
+    web,
     worker,
 )
 
@@ -102,6 +104,10 @@ def main() -> None:
         worker.run(args)
         return
 
+    if args.cmd == "logs":
+        logs.run(args)
+        return
+
     if args.cmd == "stubs":
         stubs.run(args)
         return
@@ -128,6 +134,10 @@ def main() -> None:
 
     if args.cmd == "repl":
         repl.run(args)
+        return
+
+    if args.cmd == "web":
+        web.run(args)
         return
 
     if args.cmd == "cron":
@@ -165,12 +175,14 @@ def _build_parser() -> argparse.ArgumentParser:
     watch.add_parser(sub)
     watch.add_batch_parser(sub)
     worker.add_parser(sub)
+    logs.add_parser(sub)
     stubs.add_parser(sub)
     stats.add_parser(sub)
     resolve.add_parser(sub)
     verify.add_parser(sub)
     tools.add_parser(sub)
     repl.add_parser(sub)
+    web.add_parser(sub)
     cron.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")

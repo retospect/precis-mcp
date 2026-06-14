@@ -106,6 +106,7 @@ class RefsMixin:
         year: int | None = None,
         auto_refresh_days: int | None = None,
         parent_id: int | None = None,
+        prio: int | None = None,
         conn: Connection | None = None,
     ) -> Ref:
         """Insert a ref. Slug rules:
@@ -146,8 +147,8 @@ class RefsMixin:
             insert_sql = (
                 "INSERT INTO refs "
                 "(kind, title, authors, year, provider, meta, "
-                " auto_refresh_days, refreshed_at, parent_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s) "
+                " auto_refresh_days, refreshed_at, parent_id, prio) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s, %s) "
                 "RETURNING ref_id"
             )
             insert_params: tuple[Any, ...] = (
@@ -159,12 +160,13 @@ class RefsMixin:
                 Jsonb(meta or {}),
                 auto_refresh_days,
                 parent_id,
+                prio,
             )
         else:
             insert_sql = (
                 "INSERT INTO refs "
-                "(kind, title, authors, year, provider, meta, parent_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "(kind, title, authors, year, provider, meta, parent_id, prio) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                 "RETURNING ref_id"
             )
             insert_params = (
@@ -175,6 +177,7 @@ class RefsMixin:
                 provider,
                 Jsonb(meta or {}),
                 parent_id,
+                prio,
             )
 
         def _do(c: Connection) -> Ref:
@@ -516,6 +519,31 @@ class RefsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (ids,)).fetchall()
         return {r[0]: _row_to_ref(r) for r in rows}
+
+    def set_prio(
+        self,
+        ref_id: int,
+        prio: int | None,
+        *,
+        conn: Connection | None = None,
+    ) -> None:
+        """Set or clear the ``refs.prio`` column (migration 0014).
+
+        Range-checked at the DB layer (``CHECK (prio BETWEEN 1 AND
+        10)``); the handler boundary validates before calling so an
+        agent gets ``BadInput`` with the catalogue instead of a raw
+        Postgres ``check_violation``. ``prio=None`` clears the column
+        back to NULL (= "use the default at sort time").
+        """
+        sql = (
+            "UPDATE refs SET prio = %s, updated_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL"
+        )
+        if conn is not None:
+            conn.execute(sql, (prio, ref_id))
+        else:
+            with self.pool.connection() as c:
+                c.execute(sql, (prio, ref_id))
 
     def update_ref(
         self,

@@ -11,16 +11,36 @@ and searching across papers, documents, personal state, code, and
 cached tool calls. Small-model-friendly (7B-class agents are the design
 target); stores content in PostgreSQL with `pgvector`.
 
-> **Status.** v8.6.0 — see [`CHANGELOG.md`](CHANGELOG.md) for the
+> **Status.** v8.8.5 — see [`CHANGELOG.md`](CHANGELOG.md) for the
 > live story. v5.2.6 on PyPI is the last v1-line release.
 >
-> **README is stale beyond this banner.** The kinds list below
-> covers ~half of what's now shipped; the v8.5+v8.6 additions
-> (`pres` / `cron` / `message`, `ref_tags.expires_at` TTL, conv
-> preamble views, `pg_notify` event bus, embedding-priority for
-> conv) live only in `CHANGELOG.md` + the per-kind skill docs for
-> now. Treat the architecture section + verb table as still
-> correct; treat the ref-kinds list as a non-exhaustive sample.
+> **README is stale beyond this banner.** Things the architecture
+> section + verb table below still capture correctly: seven-verb
+> surface, `kind=` dispatch, `pgvector` hybrid search, content
+> kinds vs tool kinds. Things you should treat the ref-kinds list
+> as a sample of, not a catalogue:
+>
+> * **The todo tree (Slices 1–5).** `kind='todo'` is now a
+>   hierarchical task graph with `parent_id`, level gradient
+>   (`strategic|tactical|recurring|subtask`), PRIO column on
+>   refs, `meta.auto_check` wait-for-condition leaves,
+>   `meta.schedule` recurring spawn (Watches umbrella), and
+>   review tiers (`nursery` SQL-only hourly, `structural` 6h
+>   opus, `deep_review` weekly opus).
+> * **`kind='job'` as child of `kind='todo'`.** Slice 5: every
+>   new job requires `parent_id` pointing at a todo. The
+>   `dispatch` worker is the canonical path from `meta.executor`
+>   on a todo to a queued job.
+> * **Worker consolidation.** Two long-running worker daemons
+>   (`precis worker --profile=system` everywhere,
+>   `--profile=agent` on gateway) handle every pass between
+>   them; per-pass LaunchDaemons are retired.
+>
+> The skill catalogue under
+> `src/precis/data/skills/precis-*-help.md` is authoritative for
+> the LLM-facing surface. Start at `precis-toolpath-help`
+> ("I want to X — what do I call?") and
+> `precis-overview` (the kinds + skill index).
 
 ## What it does
 
@@ -76,6 +96,7 @@ Extras (each enables its kinds; omit any you don't want):
 | `calc`      | `calc` kind (sympy)                               | no |
 | `external`  | `math` (Wolfram), `youtube`, `web`, Perplexity trio | no |
 | `patent`    | `patent` kind (EPO Open Patent Services)          | no |
+| `web`       | `precis web` browser UI (FastAPI + Jinja + HTMX)  | no |
 | `docx`      | (queued — not yet wired)                          | — |
 | `tex`       | (queued — not yet wired)                          | — |
 | `plot`      | (queued — not yet wired)                          | — |
@@ -213,6 +234,10 @@ the server.
 
 ```text
 precis serve                       # Start the MCP stdio server.
+precis web [--host H --port P]      # Browser UI: Tasks / Papers / Console /
+                                   #   Status tabs (needs the [web] extra;
+                                   #   binds 127.0.0.1:9100, no auth — reach
+                                   #   it over Tailscale).
 precis serve-embeddings            # Run the HTTP embedding service (the
                                    #   server side of PRECIS_EMBEDDER=remote;
                                    #   /healthz /readyz /model /embed /metrics).

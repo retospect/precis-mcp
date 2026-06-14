@@ -1,0 +1,31 @@
+{% extends "base.html.j2" %}
+{% block title %}Papers{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-3">Papers</h1>
+<form method="get" action="/papers" class="mb-4 flex items-center gap-2">
+  <input name="q" value="{{ q }}" placeholder="Search the corpus…"
+         class="w-80 rounded-md border border-slate-300 px-3 py-2 text-sm" />
+  <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2">Search</button>
+  {% if q %}<a href="/papers" class="text-sm text-slate-500 underline">clear</a>{% endif %}
+</form>
+
+{% if not papers %}
+  <p class="text-sm text-slate-500">No papers{% if q %} match “{{ q }}”{% endif %}.</p>
+{% else %}
+<ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+  {% for p in papers %}
+  <li class="px-4 py-3 flex items-center gap-3">
+    <span class="text-xs text-slate-400 w-12 shrink-0">#{{ p.id }}</span>
+    <a href="/papers/{{ p.id }}" class="text-sm font-medium text-sky-700 hover:underline flex-1">
+      {{ p.title }}{% if p.year %} <span class="text-slate-400">({{ p.year }})</span>{% endif %}
+    </a>
+    {% if p.has_pdf %}
+      <span class="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">PDF</span>
+    {% else %}
+      <span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500">stub</span>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

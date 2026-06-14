@@ -158,6 +158,11 @@ class Ref:
     # / level-gradient guards live in ``handlers/_todo_guards.py`` and run
     # at write time.
     parent_id: int | None = None
+    # Migration 0014 / Slice 4 priority column. 1..10 inclusive. NULL =
+    # "use the default at sort time" (5). 1 preempts strategic rotation;
+    # 2 = cron tick spawns; 3..10 share the 1/N strategic rotation. See
+    # docs/design/todo-tree-plan.md for the spawn-default table.
+    prio: int | None = None
 
     @property
     def public_id(self) -> str:

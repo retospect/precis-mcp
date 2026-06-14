@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "8.7.7"
+version = "8.8.7"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -155,7 +155,17 @@ patent = [
     "python-epo-ops-client>=4.0",
     "lxml>=5.0",
 ]
-all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent]"]
+# Web surface — the precis_web FastAPI service (Tasks / Papers /
+# Console / Status tabs). Server-rendered (Jinja + HTMX from CDN), so
+# the only runtime deps are the framework + template + form parser.
+# See docs/design/precis-web-build.md.
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+]
+all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,web]"]
 
 [project.scripts]
 precis = "precis.cli:main"
@@ -170,10 +180,18 @@ dev = [
     "ruff>=0.11",
     "mypy>=1.15",
     "pre-commit>=4",
+    # FastAPI's TestClient (starlette) needs httpx; used by the
+    # precis_web route tests under tests/precis_web/.
+    "httpx>=0.27",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis"]
+packages = ["src/precis", "src/precis_web"]
+
+# Ship the Jinja templates (non-.py files) alongside the precis_web
+# package so an installed wheel can render the four tabs.
+[tool.hatch.build.targets.wheel.force-include]
+"src/precis_web/templates" = "precis_web/templates"
 
 # Source distribution includes docker/ so packagers / downstream image
 # builders get the Dockerfile and entrypoint alongside the Python source

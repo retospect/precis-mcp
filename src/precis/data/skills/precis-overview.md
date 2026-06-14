@@ -43,14 +43,14 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `plaintext` | `notes--log` | A `.txt` / `.log` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
 | `python` | `precis::precis.cli.main` | Symbol or file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
-| `todo` | `122` (int) | A task | store |
+| `todo` | `122` (int) | A task in the hierarchical tree (Slice 1–5). Branches read as outcomes; leaves as next actions. See `precis-tasks-help`. | store |
 | `memory` | `47` (int) | Agent note / scratchpad | store |
 | `gripe` | `9` (int) | Annoyance / niggle | store |
 | `fc` | `204` (int) | Flashcard (SM-2 spaced rep) | store |
 | `citation` | `18` (int) | Verified claim → source quote | store |
 | `finding` | `73` (int) | Chain-of-evidence head over a citation chase | store |
-| `job` | `55` (int) | Long-running cluster-side task (e.g. fix_gripe) | store |
-| `cron` | `42` (int) | Scheduled wakeup / reminder | store |
+| `job` | `55` (int) | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-dispatch-help`. | store |
+| `cron` | `42` (int) | Scheduled wakeup / reminder (legacy — new scheduled work uses `level:recurring` todos under the **Watches** umbrella; see `precis-recurring-help`) | store |
 | `message` | `11` (int) | Proactive outbound (Discord post) | store |
 | `provenance` | `92` (int) | Per-ref provenance audit (sources, transforms) | store |
 | `tag` | `topic:co2-capture` | Discoverable tag row (`get`/`search` only) | store |
@@ -113,6 +113,26 @@ get(kind='skill')                            # list every active skill
 ```
 
 `precis-toc` is the long-form alias for `id='toc'`.
+
+## The todo tree — task substrate (Slices 1–5)
+
+The todo tree is the unified surface for *intent*, *execution*,
+*scheduling*, and *review* over the corpus:
+
+| Skill | What it teaches |
+|---|---|
+| `precis-tasks-help` | Tree shape (strategic/tactical/subtask), claim/release/done, doable view rules |
+| `precis-decomposition-help` | The GTD interrogation: when to split, when to block, when to wait |
+| `precis-auto-tasks-help` | Wait-for-condition leaves via `meta.auto_check` |
+| `precis-recurring-help` | `level:recurring` schedule format + the **Watches** umbrella |
+| `precis-dispatch-help` | When to set `meta.executor` on a todo so a `kind='job'` runs under it |
+| `precis-job-help` | The job substrate. New jobs require `parent_id` pointing at a todo |
+| `precis-fix-gripe-help` | First concrete job_type, end-to-end recipe |
+| `precis-nursery-help` | Hourly SQL-only review tier (`tier:nursery` memories) |
+
+PRIO sort key + 1/N rotation across active strategics + dedup-aware
+nursery / structural / deep reviewers are the operational discipline
+on top. See `docs/design/todo-tree-plan.md` for the full design.
 
 ## Worked examples
 

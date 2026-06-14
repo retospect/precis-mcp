@@ -251,6 +251,30 @@ def hub_no_embedder(store: Store) -> Hub:
 
 
 # ---------------------------------------------------------------------------
+# Cross-suite parse helpers
+# ---------------------------------------------------------------------------
+
+
+def id_of(body: str) -> int:
+    """Parse ``id=N`` out of a create / update / tag ack response body.
+
+    Robust against trailing punctuation in the TOON ``Next:`` trailer
+    (``delete(kind='memory', id=42)`` would otherwise pollute a
+    ``rsplit("=", 1)[1]`` parse with the close paren). Looks for the
+    first occurrence of ``id=`` after the leading ``created <kind>``
+    / ``updated <kind>`` / ``tagged <kind>`` clause and strips any
+    trailing ``).,`` characters.
+
+    Used by every per-handler test that needs the assigned numeric id
+    of a freshly-put numeric ref. The same shape lives inline in
+    test_todo_tree / test_schedule / test_nursery — moved here so a
+    future trailer reword (Slice-3 ack changes, etc.) is a one-line
+    fix instead of a sweep.
+    """
+    return int(body.split("id=", 1)[1].split()[0].rstrip(",.()"))
+
+
+# ---------------------------------------------------------------------------
 # Schema lifecycle helpers
 # ---------------------------------------------------------------------------
 

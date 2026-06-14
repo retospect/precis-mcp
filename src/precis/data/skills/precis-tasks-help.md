@@ -80,7 +80,8 @@ get(kind='todo', id=42, view='tree')      # ASCII subtree under #42
 ```
 
 Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
-`⏸` waiting / paused / asking-reto · `✓` done · `✗` won't-do.
+`⏸` waiting / paused / asking-reto · `✓` done · `✗` won't-do ·
+`⚙` job (Slice 5: execution attempt under a todo parent).
 
 ## Doable leaves — what to pull next
 
@@ -91,8 +92,11 @@ search(kind='todo', view='doable', args={'under': 67})  # within a subtree
 
 "Doable" = leaf with no live children, status open / doing, no
 open blocked-by links, no `waiting-for:*` tag, no `asking-reto`
-tag, and no `paused` ancestor. Ordering: least-picked strategic
-first, then `PRIO:` value, then ref_id (sibling order).
+tag, no `child-failed:*` tag (a child job failed and is awaiting
+the owner's decision), no `paused` ancestor, and not a
+`level:recurring` umbrella row. Ordering: `prio` int column ASC,
+then least-picked strategic, then ref_id (sibling order). PRIO 1
+preempts the 1/N rotation; cron-spawned subtasks default to PRIO 2.
 
 ## Pausing a subtree
 
@@ -132,11 +136,17 @@ the agent a follow-up call to figure out why this leaf exists.
 |---|---|---|
 | `level:strategic` | Top-tier outcome | owner only |
 | `level:tactical` | Sub-strategic outcome | owner only |
+| `level:recurring` | Scheduled root carrying `meta.schedule` (Slice 4) | owner only |
 | `level:subtask` (default if omitted) | Worker-level | anyone |
 | `level:proposed-tactical` | Worker's tactical pitch | anyone |
 | `claimed-by:<handle>` | Atomic claim marker | the claimer |
 | `waiting-for:<target>` | External wait | anyone |
 | `asking-reto` / `asking-reto:<msg_id>` | Parked on Reto's Discord reply | anyone |
+| `child-failed:<job_id>` | Slice 5: a child `kind='job'` failed; the parent's owner must decide next move (retry / switch / give up). Doable view skips parents with this tag | written by the executor / `JobHandler.tag` on STATUS:failed |
+
+`PRIO:urgent|high|normal|low` keeps working as a back-compat tag
+that translates to a `prio` int column write at the handler
+boundary (Slice 4). New code passes `prio=N` directly (1..10).
 
 The flat list surface (`/recent`, `/open`, `/done`, …) keeps
 working — see `precis-todo-help`. This skill adds the tree
@@ -158,8 +168,14 @@ Worker authority is the constraint; the rest is unconstrained.
 ## See also
 
 ```python
-get(kind='skill', id='precis-todo-help')         # flat todo surface
-get(kind='skill', id='precis-decomposition-help')# GTD interrogation, split rule (Slice 2)
-get(kind='skill', id='precis-tags')              # STATUS / PRIO vocabulary
-get(kind='skill', id='precis-relations')         # blocked-by / blocks / note-for
+get(kind='skill', id='precis-todo-help')          # flat todo surface
+get(kind='skill', id='precis-decomposition-help') # GTD interrogation, split rule (Slice 2)
+get(kind='skill', id='precis-auto-tasks-help')    # meta.auto_check leaves (Slice 1b/5)
+get(kind='skill', id='precis-recurring-help')     # level:recurring + Watches umbrella (Slice 4)
+get(kind='skill', id='precis-dispatch-help')      # meta.executor + dispatch worker (Slice 5)
+get(kind='skill', id='precis-job-help')           # the kind='job' substrate
+get(kind='skill', id='precis-nursery-help')       # hourly review digest tier (Slice 3)
+get(kind='skill', id='precis-tags')               # STATUS / PRIO vocabulary
+get(kind='skill', id='precis-relations')          # blocked-by / blocks / note-for
+search(kind='skill', q='your goal')               # if none of the above fit
 ```
