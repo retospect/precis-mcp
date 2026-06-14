@@ -209,13 +209,13 @@ delete(kind='job', id=<failed_job_id>)
 put(kind='todo',
     parent_id=<parent_id>,
     text='Job #N failed with X — should I retry, switch executor, or skip?',
-    tags=['asking-reto'],
+    tags=['ask-user'],
     meta={'auto_check': {
         'type': 'discord_reply_received',
         'ask_message_id': '<discord msg id>'}})
 put(kind='message',
     target='discord/<guild>/<channel>/<thread>',
-    text='Hey reto, parent #N needs your call: ...')
+    text='Hey, parent #N needs your call: ...')
 ```
 
 `idem_key` defaults to the link target so a stray duplicate submit

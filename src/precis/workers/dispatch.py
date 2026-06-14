@@ -53,6 +53,7 @@ from typing import Any
 from precis.handlers._todo_views import _doable_exclusion_clause
 from precis.store import Store
 from precis.store.types import Tag
+from precis.workers import planner_guardrails
 from precis.workers.executors import (
     EXECUTOR_PROVIDES,
     is_known_executor,
@@ -85,6 +86,26 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
     n_ok = 0
     n_failed = 0
     for parent_id in candidate_ids:
+        # Planner-coroutine guardrails: tick cap, per-todo cost cap,
+        # global daily ceiling. The first two halt the parent
+        # in-place (tag halt:tick-cap / halt:cost-cap so attention
+        # view surfaces it); the third skips the whole dispatch
+        # round. See workers/planner_guardrails.py.
+        verdict = planner_guardrails.check_parent(
+            store, parent_ref_id=parent_id
+        )
+        if not verdict.allow:
+            if verdict.halt_tag is None:
+                # Global ceiling — stop dispatching anything until
+                # the rolling window clears. Other candidates would
+                # hit the same gate.
+                log.info(
+                    "dispatch: aborting round, daily ceiling: %s",
+                    verdict.reason,
+                )
+                break
+            # Per-todo halt — counted as a skip, not a failure.
+            continue
         try:
             claimed, minted = _claim_and_dispatch(store, parent_id)
         except Exception:
@@ -96,6 +117,9 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
         n_claimed += claimed
         if minted:
             n_ok += 1
+            # Bump tick count so the next sweep sees the increment;
+            # caps land on the next candidate enumeration.
+            planner_guardrails.bump_tick_count(store, parent_id)
         elif claimed:
             n_failed += 1
     return BatchResult(
@@ -143,8 +167,10 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                    OR EXISTS (
                        SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                         WHERE rt.ref_id = r.ref_id
-                          AND t.namespace = 'OPEN'
-                          AND (t.value LIKE 'LLM:%%' OR t.value LIKE 'executor:%%')
+                          AND (
+                              t.namespace = 'LLM'
+                              OR (t.namespace = 'OPEN' AND t.value LIKE 'executor:%%')
+                          )
                    )
                )
                AND COALESCE(
@@ -211,11 +237,10 @@ def _claim_and_dispatch(
                    r.meta->>'job_type' AS job_type,
                    r.meta->'params' AS params,
                    r.meta ? 'auto_check' AS has_auto_check,
-                   (SELECT t.value FROM ref_tags rt
+                   (SELECT 'LLM:' || t.value FROM ref_tags rt
                       JOIN tags t ON t.tag_id = rt.tag_id
                      WHERE rt.ref_id = r.ref_id
-                       AND t.namespace = 'OPEN'
-                       AND t.value LIKE 'LLM:%%'
+                       AND t.namespace = 'LLM'
                      LIMIT 1) AS llm_tag,
                    (SELECT t.value FROM ref_tags rt
                       JOIN tags t ON t.tag_id = rt.tag_id
@@ -232,8 +257,10 @@ def _claim_and_dispatch(
                    OR EXISTS (
                        SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                         WHERE rt.ref_id = r.ref_id
-                          AND t.namespace = 'OPEN'
-                          AND (t.value LIKE 'LLM:%%' OR t.value LIKE 'executor:%%')
+                          AND (
+                              t.namespace = 'LLM'
+                              OR (t.namespace = 'OPEN' AND t.value LIKE 'executor:%%')
+                          )
                    )
                )
                AND COALESCE(

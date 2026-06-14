@@ -72,17 +72,17 @@ tag(kind='todo', id=103, add=['STATUS:done'])     # discovery is done
 The consumer leaf (`#108`) drops out of `view='doable'` until every
 linked `wait` resolves.
 
-## Pattern 2 — ask Reto on Discord
+## Pattern 2 — ask the owner on Discord
 
 ```python
 msg = put(kind='message',
-          text='Reto: should §3 cite Tanaka 2024, or skip?',
+          text='Owner: should §3 cite Tanaka 2024, or skip?',
           target='discord/<guild>/<channel>/<thread>')
 
 ask = put(kind='todo',
           parent_id=98,
-          text='Decide: cite Tanaka 2024 in §3 — asked Reto',
-          tags=['asking-reto'],
+          text='Decide: cite Tanaka 2024 in §3 — asked the owner',
+          tags=['ask-user'],
           meta={'auto_check': {
               'type': 'discord_reply_received',
               'ask_message_id': str(msg.id),
@@ -93,7 +93,7 @@ link(kind='todo', id=consumer_leaf, target=f'todo:{ask.id}',
      rel='blocked-by')
 ```
 
-The chatter side detects Reto's in-thread reply and stamps a
+The chatter side detects the owner's in-thread reply and stamps a
 memory `replied-to:<msg_id>`; the auto-check worker resolves the
 ask on the next tick.
 

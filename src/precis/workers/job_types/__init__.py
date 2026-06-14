@@ -63,6 +63,22 @@ def _load_fix_gripe() -> JobTypeSpec:
     )
 
 
+def _load_plan_tick() -> JobTypeSpec:
+    # The planner-coroutine tick. Synthesized at dispatch time from
+    # an ``LLM:*`` tag on the parent todo (see workers/dispatch.py).
+    from precis.workers.job_types import plan_tick
+
+    return JobTypeSpec(
+        name="plan_tick",
+        params_schema=plan_tick.PARAMS_SCHEMA,
+        compatible_executors=plan_tick.COMPATIBLE_EXECUTORS,
+        requires=plan_tick.REQUIRES,
+        description=plan_tick.DESCRIPTION,
+        run=plan_tick.run,
+        validate_submit=plan_tick.validate_submit,
+    )
+
+
 #: Name → spec. Populated lazily on first access so the import
 #: graph stays cheap for the MCP server.
 _REGISTRY: dict[str, JobTypeSpec] = {}
@@ -74,12 +90,15 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "fix_gripe":
         _REGISTRY["fix_gripe"] = _load_fix_gripe()
         return _REGISTRY["fix_gripe"]
+    if name == "plan_tick":
+        _REGISTRY["plan_tick"] = _load_plan_tick()
+        return _REGISTRY["plan_tick"]
     return None
 
 
 def known_job_types() -> list[str]:
     """List of registered job_type names (for error messages)."""
-    return ["fix_gripe"]
+    return ["fix_gripe", "plan_tick"]
 
 
 __all__ = ["JobTypeSpec", "get_job_type", "known_job_types"]

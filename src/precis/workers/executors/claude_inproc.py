@@ -277,13 +277,117 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
 
     if spec.name == "fix_gripe":
         _run_fix_gripe(store, ref_id, spec)
-    else:  # pragma: no cover — registry only knows fix_gripe in v1
+    elif spec.name == "plan_tick":
+        _run_plan_tick(store, ref_id, spec)
+    else:  # pragma: no cover
         _record_failure(
             store,
             ref_id,
             f"no dispatcher for job_type {spec.name!r}",
             gripe_rollback=None,
         )
+
+
+def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
+    """plan_tick dispatch: invoke the planner LLM under a parent todo.
+
+    The job's ``parent_id`` points at the todo being worked on; the
+    planner reads body + ancestry + completed child summaries and
+    decides on subtasks / yield / done. Status writes the job row;
+    no side effects on a hypothetical "linked gripe" — plan_tick
+    parents are todos, not gripes.
+    """
+    parent_id = _parent_todo_id(store, ref_id)
+    if parent_id is None:
+        _record_failure(
+            store,
+            ref_id,
+            "plan_tick job has no parent todo",
+            gripe_rollback=None,
+        )
+        return
+
+    # ``meta.params`` carries the model (synthesized from the parent's
+    # ``LLM:<value>`` tag at dispatch time). Pull it from the job ref.
+    params = _job_params(store, ref_id)
+
+    t0 = time.perf_counter()
+    try:
+        outcome = spec.run(
+            store=store,
+            job_ref_id=ref_id,
+            parent_ref_id=parent_id,
+            params=params,
+        )
+    except Exception as exc:
+        wall = time.perf_counter() - t0
+        with store.pool.connection() as conn:
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                f"runner: plan_tick raised after {wall:.1f}s: {exc!r}",
+                conn=conn,
+            )
+            _set_status(store, ref_id, _FAILED, conn=conn)
+            _set_meta(conn, ref_id, wall_seconds=wall)
+            conn.commit()
+            from precis.handlers._job_bubble import bubble_job_failure
+
+            bubble_job_failure(store, job_ref_id=ref_id)
+        return
+
+    with store.pool.connection() as conn:
+        _append_chunk(
+            store, ref_id, _JOB_SUMMARY_KIND, outcome.stdout or "(no output)",
+            conn=conn,
+        )
+        if outcome.stderr:
+            _append_chunk(
+                store, ref_id, _JOB_EVENT_KIND,
+                f"stderr ({len(outcome.stderr)} chars):\n{outcome.stderr[:4000]}",
+                conn=conn,
+            )
+        _set_meta(conn, ref_id, wall_seconds=outcome.duration_s)
+        if outcome.exit_code == 0:
+            _set_status(store, ref_id, _SUCCEEDED, conn=conn)
+        else:
+            _set_status(store, ref_id, _FAILED, conn=conn)
+            conn.commit()
+            from precis.handlers._job_bubble import bubble_job_failure
+
+            bubble_job_failure(store, job_ref_id=ref_id)
+            return
+        conn.commit()
+
+
+def _parent_todo_id(store: Any, job_ref_id: int) -> int | None:
+    """Return the parent todo id of a job ref, or None when orphaned."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT p.ref_id
+              FROM refs j
+              JOIN refs p ON p.ref_id = j.parent_id
+             WHERE j.ref_id = %s
+               AND p.kind = 'todo'
+               AND p.deleted_at IS NULL
+            """,
+            (job_ref_id,),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _job_params(store: Any, job_ref_id: int) -> dict[str, Any]:
+    """Pull ``meta.params`` from a job ref as a plain dict."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'params' FROM refs WHERE ref_id = %s",
+            (job_ref_id,),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return {}
+    return dict(row[0])
 
 
 def _run_fix_gripe(store: Any, ref_id: int, spec: Any) -> None:

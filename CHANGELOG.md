@@ -10,6 +10,92 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **Planner-coroutine slice — default-on auto-run for LLM:*-tagged todos.**
+  Every open todo carrying a closed-vocab `LLM:opus|sonnet|haiku` tag
+  is now dispatched automatically: the worker mints a `plan_tick` job,
+  shells out to `claude -p` with the chosen model, captures stdout as
+  a `job_summary` chunk, and re-ticks the parent on the next sweep
+  once children resolve. The pattern is recursive — opus reads body
+  + accumulated child summaries, mints subtasks (each carrying its
+  own `LLM:*` tag), and yields. Children inherit a budget; parents
+  re-fire as children complete; chain bottoms out when the planner
+  tags itself `STATUS:done` or yields via `ask-user:*` / `halt:*`.
+  See `src/precis/data/skills/precis-tasks-help.md` and the new
+  depth-discipline skills (`precis-decomposition-help`,
+  `precis-research-help`, `precis-write-paper-help`,
+  `precis-review-paper-help`).
+
+  - `LLM:` registered as a closed-vocab axis on `todo` in
+    `precis.store.types._CLOSED_VOCAB` (values: opus / sonnet /
+    haiku). Typos reject at write time.
+  - `executor:` is the parallel namespace for code-path runners
+    (`fetch`, `ingest`, etc.) — open tag, lowercase, allowlist via
+    `_todo_guards._EXECUTOR_TAG_VALUES`. v1 ships no registered
+    runners; the namespace is reserved.
+  - Dispatch query rewrite in `workers/dispatch.py`:
+    * candidate = `LLM:*` tag present OR `executor:*` tag present
+      OR legacy `meta.executor` set;
+    * coroutine idempotency — skip when any live (open) child todo
+      or live (queued/running) child job exists.
+  - New job_type `plan_tick` (`workers/job_types/plan_tick.py`)
+    invoked by `claude_inproc`. Reads `meta.params.model`, shells
+    `claude -p --model …`, captures stdout as `job_summary` chunk.
+  - Prompt builder `workers/planner_prompt.py` returns
+    `(system, user)` with strict cache layering: system carries
+    the pinned `precis-tasks-help` skill, the skill index built
+    from each skill's new `summary:` front-matter field, and the
+    planner contract (the four output shapes + depth discipline).
+    User carries TOON-formatted ancestry chain (`{id, title, from}`),
+    the todo's body, and accumulated `job_summary` chunks from
+    completed children.
+  - Three guardrails (`workers/planner_guardrails.py`):
+    * per-todo tick cap (`PRECIS_MAX_TICKS`, default 10) → auto
+      `halt:tick-cap`.
+    * per-todo cost cap (`PRECIS_MAX_TODO_USD`, default $2) → auto
+      `halt:cost-cap`.
+    * global daily ceiling (`PRECIS_DAILY_COST_CEILING`, default
+      $20/day) → round-wide dispatch pause until rolling window
+      clears.
+
+- **`halt` namespace — `halt:<reason>` for system self-halts.**
+  Extension of the previous bare `halt` mechanism. Workers may now
+  self-halt with a reason (`halt:cost-cap`, `halt:tick-cap`,
+  `halt:planner-stuck`); the attention view renders the reason
+  inline. Guard `check_halt_remove` rejects removal of any
+  `halt` / `halt:*` value from worker sources.
+
+- **`ask-user` tag — generalises `asking-reto` to any user.**
+  New canonical form: bare `ask-user` (any human will do),
+  `ask-user:<handle>` (specific person), or `ask-user:<question>`
+  (the freeform question itself for inline rendering). The legacy
+  `asking-reto` / `asking-reto:` form continues to match in the
+  doable-exclusion registry and SQL queries — existing production
+  tags don't need migration. The attention view renders the section
+  as "Ask user (N)".
+
+- **Depersonalisation sweep.** Removed personal-name references
+  (`Reto` / `reto`) from active runtime code, skill docs, and tests.
+  Owner identity now passes via the generic `web:owner` source
+  prefix; the guard still recognises `web:*` as owner authority.
+  Sealed history (`docs/decisions/`, `docs/design/` historical plans,
+  `docs/user-facing/` specs) unchanged.
+
+- **Four depth-discipline skills.** New skills under
+  `data/skills/`: `precis-decomposition-help` (split vs do, sibling
+  sizing, depth-at-leaves principle), `precis-research-help`
+  (corpus-grounded research with primary-source rule),
+  `precis-write-paper-help` (claim-level citation density),
+  `precis-review-paper-help` (adversarial review). Each carries a
+  laundry-list quality bar so opus children produce depth rather
+  than Perplexity-grade summaries.
+
+- **`summary:` front-matter on every skill.** New field on the
+  `SkillFrontmatter` dataclass. Hand-written one-liner per skill
+  describing what topic / discipline the file covers — aggregated
+  at server boot into the planner's skill-index block (cached in
+  the system prompt). Full skill content stays on-demand via
+  `get(kind='skill', id=…)`.
+
 - **`halt` tag — explicit "robot stay away" marker on todos.** Workers
   may add it (escalation: "I think this needs human eyes"), only the
   owner may remove it (the resume edge). The doable view and the

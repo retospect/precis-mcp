@@ -524,6 +524,15 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # not a ref property — chunk-level inspection lives behind
     # ``get(kind='<file>', view='log')`` and per-chunk tag queries.
     "DENSITY": frozenset({"dense", "medium", "sparse"}),
+    # Planner-coroutine slice (workers/dispatch.py + workers/planner_prompt.py).
+    # An ``LLM:<model>`` tag flips a todo into the dispatch worker's
+    # candidate set and picks which Claude tier ``claude_inproc``
+    # shells out with. Closed vocab so a typo (``LLM:opos``) rejects
+    # at write time instead of producing a silent dispatch miss.
+    # ``executor:<runner>`` (lowercase, open tag) is the parallel
+    # namespace for code-path runners — see
+    # :data:`precis.handlers._todo_guards._EXECUTOR_TAG_VALUES`.
+    "LLM": frozenset({"opus", "sonnet", "haiku"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as
@@ -549,8 +558,11 @@ _RESERVED_FLAGS: dict[str, str] = {
 # from the map (no restriction). See docs/precis-v2-skills/ for the
 # narrative discipline each kind follows.
 _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
-    # Workflow kinds — STATUS + priority.
-    "todo": frozenset({"STATUS", "PRIO"}),
+    # Workflow kinds — STATUS + priority. Planner-coroutine slice adds
+    # ``LLM`` so an ``LLM:opus`` / ``LLM:sonnet`` / ``LLM:haiku`` tag on
+    # a todo flips it into the dispatch worker's candidate set and
+    # picks the model.
+    "todo": frozenset({"STATUS", "PRIO", "LLM"}),
     "gripe": frozenset({"STATUS", "PRIO"}),
     # Job state machine — STATUS only. PRIO not used (jobs run on
     # demand; if you want one prioritised, just submit it later).

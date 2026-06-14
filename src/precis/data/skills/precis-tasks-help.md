@@ -12,8 +12,8 @@ Built on top of `kind='todo'`. Every todo is a node; an optional
 `parent_id` wires it under another todo to form a tree:
 
 ```
-strategic root  (Reto-owned, level:strategic)
-  └─ tactical    (Reto-owned, level:tactical)
+strategic root  (owner-only, level:strategic)
+  └─ tactical    (owner-only, level:tactical)
       └─ subtask (worker-owned by default)
          └─ subtask
             └─ ...   (depth-10 wall)
@@ -39,7 +39,7 @@ put(kind='todo', text='Build the nanocube AI compute platform.',
 
 Strategic and tactical tiers are gated: workers (`PRECIS_SOURCE`
 starting with `asa-`) cannot create or mutate them. CLI sessions,
-interactive Python, and the precis-web UI (`web:reto`) pass through.
+interactive Python, and the precis-web UI (`web:owner`) pass through.
 
 Workers may **propose** a tactical via the open
 `level:proposed-tactical` tag for owner triage:
@@ -81,7 +81,7 @@ get(kind='todo', id=42, view='tree')      # ASCII subtree under #42
 ```
 
 Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
-`⏸` waiting / paused / asking-reto · `✓` done · `✗` won't-do ·
+`⏸` waiting / paused / ask-user · `✓` done · `✗` won't-do ·
 `⚙` job (Slice 5: execution attempt under a todo parent).
 
 ## Doable leaves — what to pull next
@@ -92,8 +92,9 @@ search(kind='todo', view='doable', args={'under': 67})  # within a subtree
 ```
 
 "Doable" = leaf with no live children, status open / doing, no
-open blocked-by links, no `waiting-for:*` tag, no `asking-reto`
-tag, no `child-failed:*` tag (a child job failed and is awaiting
+open blocked-by links, no `waiting-for:*` tag, no `ask-user`
+tag (or its legacy `asking-reto` alias), no `child-failed:*` tag
+(a child job failed and is awaiting
 the owner's decision), no `paused` ancestor, and not a
 `level:recurring` umbrella row. Ordering: `prio` int column ASC,
 then least-picked strategic, then ref_id (sibling order). PRIO 1
@@ -115,15 +116,16 @@ Nothing in the subtree gets touched; counts and decay continue.
 ```python
 search(kind='todo', view='waiting')     # any waiting-for:* tagged leaf
 search(kind='todo', view='blocked')     # any open blocked-by link
-search(kind='todo', view='asking-reto') # parked-on-Reto-reply leaves
+search(kind='todo', view='ask-user')    # parked-on-owner-reply leaves
+                                        # (legacy alias: view='asking-reto')
 ```
 
 - `waiting-for:reviewer-x` — generic external wait. Open tag; any
   value lower-cased is fine.
 - `blocked-by` link — the wait target is another ref in the tree
   (`link(rel='blocked-by', target='todo:104')`).
-- `asking-reto` — chatter renders these in her preamble so Reto
-  sees pending asks at a glance (Slice 2).
+- `ask-user` (legacy: `asking-reto`) — chatter renders these in her
+  preamble so the owner sees pending asks at a glance (Slice 2).
 
 ## Walk-on-read ancestry
 
@@ -142,7 +144,7 @@ the agent a follow-up call to figure out why this leaf exists.
 | `level:proposed-tactical` | Worker's tactical pitch | anyone |
 | `claimed-by:<handle>` | Atomic claim marker | the claimer |
 | `waiting-for:<target>` | External wait | anyone |
-| `asking-reto` / `asking-reto:<msg_id>` | Parked on Reto's Discord reply | anyone |
+| `ask-user` / `ask-user:<msg_id>` (legacy: `asking-reto` / `asking-reto:<msg_id>`) | Parked on the owner's Discord reply | anyone |
 | `child-failed:<job_id>` | Slice 5: a child `kind='job'` failed; the parent's owner must decide next move (retry / switch / give up). Doable view skips parents with this tag | written by the executor / `JobHandler.tag` on STATUS:failed |
 | `halt` | Explicit "robot stay away" marker. Pulls the leaf out of `view='doable'` AND out of the dispatch worker's candidate query. Workers MAY add it (escalation: "I think this needs human eyes / I don't know how to proceed") but only the owner may remove it (the resume edge). Surfaces under `view='attention'` so halted leaves don't vanish. | anyone may add; owner only removes |
 
@@ -159,8 +161,8 @@ discipline on top.
 The level gradient is gated by `PRECIS_SOURCE` (an env var set
 once per process):
 
-- unset / `cli` / `user` → **owner** (interactive Reto)
-- starts with `web:` → **owner** (precis-web UI passes `web:reto`)
+- unset / `cli` / `user` → **owner** (interactive operator)
+- starts with `web:` → **owner** (precis-web UI passes `web:owner`)
 - starts with `asa-` → **worker** (`asa-chatter`, `asa-worker`,
   `asa-dreamer`)
 - anything else → **owner** (forward-compatible default)

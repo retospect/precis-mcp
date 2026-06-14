@@ -31,7 +31,7 @@ not for recurring intent.
 
 | You're writing a todo that… | Set `meta.executor`? |
 |---|---|
-| …Reto / asa will work by hand | no |
+| …the owner / asa will work by hand | no |
 | …needs an offline `claude -p` run on a repo | yes (`'claude_inproc'`) |
 | …needs to wait for a paper to ingest | no — use `meta.auto_check={'type':'paper_ingested', ...}` |
 | …is the umbrella of recurring scheduled work | no — `level:recurring` + `meta.schedule` (see `precis-recurring-help`) |
@@ -127,17 +127,17 @@ delete(kind='job', id=143)
 # Option B — switch executor (once we have more than claude_inproc).
 # Edit the parent's meta.executor, then clear + delete as above.
 
-# Option C — ask Reto.
+# Option C — ask the owner.
 ask = put(kind='todo',
           parent_id=98,
           text='Job #143 failed with X — retry / switch / skip?',
-          tags=['asking-reto'],
+          tags=['ask-user'],
           meta={'auto_check': {
               'type': 'discord_reply_received',
               'ask_message_id': '<discord msg id>'}})
 put(kind='message',
     target='discord/<guild>/<channel>/<thread>',
-    text='Hey reto, #98 needs your call: ...')
+    text='Hey, #98 needs your call: ...')
 
 # Option D — give up.
 tag(kind='todo', id=98, add=["STATUS:won't-do"])
