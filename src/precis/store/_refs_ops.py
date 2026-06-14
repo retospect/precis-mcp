@@ -545,6 +545,56 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (prio, ref_id))
 
+    def set_parent(
+        self,
+        ref_id: int,
+        new_parent_id: int | None,
+        *,
+        conn: Connection | None = None,
+    ) -> None:
+        """Re-point ``refs.parent_id`` (the todo-tree move operation).
+
+        ``new_parent_id=None`` detaches the ref to a root. The
+        self-referencing FK (migration 0013, ``ON DELETE SET NULL``)
+        permits any target the row exists for; the cycle/depth/level
+        guards that make a move *safe* live in
+        :mod:`precis.handlers._todo_guards` and run at the handler
+        boundary before this is called. This method is the bare
+        column write so the guards stay the single source of truth.
+        """
+        sql = (
+            "UPDATE refs SET parent_id = %s, updated_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL"
+        )
+        if conn is not None:
+            conn.execute(sql, (new_parent_id, ref_id))
+        else:
+            with self.pool.connection() as c:
+                c.execute(sql, (new_parent_id, ref_id))
+
+    def locked_ref_ids(self, ref_ids: list[int]) -> set[int]:
+        """Return the subset of ``ref_ids`` currently row-locked.
+
+        Used by the web Tasks tab to flag "locked right now" nodes —
+        e.g. a ``kind='job'`` ref a worker holds ``FOR UPDATE`` during
+        its claim window. Implemented as a ``SELECT … FOR UPDATE SKIP
+        LOCKED`` diff: rows another transaction holds are *skipped*, so
+        the ids we fail to re-select are exactly the locked ones. We
+        ``rollback()`` immediately so the brief locks we take on the
+        free rows are released before returning — this is a read-only
+        probe, never a real claim.
+        """
+        if not ref_ids:
+            return set()
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) FOR UPDATE SKIP LOCKED",
+                (ref_ids,),
+            ).fetchall()
+            conn.rollback()
+        free = {int(r[0]) for r in rows}
+        return {rid for rid in ref_ids if rid not in free}
+
     def update_ref(
         self,
         ref_id: int,

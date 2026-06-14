@@ -29,21 +29,42 @@
 
     {% if not rows %}
       <p class="text-sm text-slate-500">No tasks yet. Add a strategic root to begin.</p>
+    {% else %}
+      <p class="text-xs text-slate-400 mb-2">
+        Drag a task onto another to reparent it; drop on the bar below to promote it to a root.
+      </p>
+      <!-- Detach-to-root drop zone -->
+      <div data-droptop="1"
+           class="mb-2 rounded-md border border-dashed border-slate-300 text-xs text-slate-400 text-center py-1.5 transition-colors">
+        ↥ drop here to move to top level
+      </div>
     {% endif %}
 
-    <ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+    <ul id="tree" class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
       {% for r in rows %}
-      <li class="px-3 py-2" x-data="{actions:false}">
+      <li class="px-3 py-2{% if r.kind == 'job' %} bg-slate-50/60{% endif %}"
+          x-data="{actions:false}"
+          data-id="{{ r.id }}"
+          data-kind="{{ r.kind }}"
+          {% if r.kind == 'todo' %}draggable="true"{% endif %}>
         <div class="flex items-center gap-2" style="padding-left: {{ r.depth * 1.25 }}rem">
+          {% if r.kind == 'todo' %}<span class="cursor-grab text-slate-300 select-none" title="drag to reparent">⠿</span>{% endif %}
           <span class="text-xs text-slate-400 w-10 shrink-0">#{{ r.id }}</span>
+          {% if r.kind == 'job' %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-600">job</span>{% endif %}
           {% set sc = {'done':'bg-emerald-100 text-emerald-700','doing':'bg-amber-100 text-amber-700','blocked':'bg-rose-100 text-rose-700','paused':'bg-slate-200 text-slate-600',"won't-do":'bg-slate-200 text-slate-500'} %}
           <span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.status, 'bg-sky-100 text-sky-700') }}">{{ r.status }}</span>
           {% if r.level %}<span class="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">{{ r.level }}</span>{% endif %}
+          {# Processing signals: live row lock and worker lease. #}
+          {% if r.locked %}<span class="text-xs px-1.5 py-0.5 rounded bg-rose-600 text-white" title="row-locked right now (a worker holds it)">🔒 locked</span>{% endif %}
+          {% if r.lease_active %}<span class="text-xs px-1.5 py-0.5 rounded bg-amber-500 text-white" title="leased until {{ r.lease_until }}">⏱ running</span>{% elif r.lease_until %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500" title="lease expired {{ r.lease_until }}">lease expired</span>{% endif %}
           <span class="text-sm {% if r.status in ['done',"won't-do"] %}line-through text-slate-400{% endif %}">{{ r.title }}</span>
           {% if not r.is_leaf %}<span class="text-xs text-slate-400">[{{ r.done }}/{{ r.total }}]</span>{% endif %}
+          {% if r.kind == 'todo' %}
           <button type="button" @click="actions=!actions"
                   class="ml-auto text-xs text-slate-400 hover:text-slate-700">⋯</button>
+          {% endif %}
         </div>
+        {% if r.kind == 'todo' %}
         <div x-show="actions" x-cloak class="mt-2 flex flex-wrap items-center gap-2"
              style="padding-left: {{ r.depth * 1.25 }}rem">
           <form method="post" action="/tasks/{{ r.id }}/status" class="flex items-center gap-1">
@@ -59,11 +80,19 @@
                    class="rounded border-slate-300 text-xs border px-2 py-0.5 w-40" />
             <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100">+ child</button>
           </form>
+          <!-- Manual reparent fallback (keyboard / non-DnD path). -->
+          <form method="post" action="/tasks/{{ r.id }}/move" class="flex items-center gap-1">
+            <input name="new_parent_id" type="number" min="1" placeholder="parent #"
+                   class="rounded border-slate-300 text-xs border px-2 py-0.5 w-20" />
+            <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100"
+                    title="empty = move to top level">move</button>
+          </form>
           <form method="post" action="/tasks/{{ r.id }}/delete"
                 onsubmit="return confirm('Delete #{{ r.id }}? Children re-parent to top level.')">
             <button class="rounded text-xs px-2 py-0.5 text-rose-600 hover:bg-rose-50">delete</button>
           </form>
         </div>
+        {% endif %}
       </li>
       {% endfor %}
     </ul>
@@ -76,5 +105,67 @@
   </section>
 
 </div>
-<style>[x-cloak]{display:none!important}</style>
+<style>
+  [x-cloak]{display:none!important}
+  .drop-target{background-color:#e0f2fe;outline:2px solid #38bdf8;outline-offset:-2px}
+</style>
+<script>
+(function () {
+  // Drag-to-reparent. A todo <li> is the draggable; dropping it on
+  // another todo <li> (or the top-level bar) POSTs to /tasks/{id}/move,
+  // which dispatches link(rel='parent') with the tree guards. We submit
+  // a real form (full reload) to stay consistent with the no-SPA UI.
+  let draggingId = null;
+
+  function moveTask(childId, newParentId) {
+    if (childId == null) return;
+    if (String(childId) === String(newParentId)) return;  // no-op onto self
+    const f = document.createElement('form');
+    f.method = 'post';
+    f.action = '/tasks/' + childId + '/move';
+    const inp = document.createElement('input');
+    inp.type = 'hidden';
+    inp.name = 'new_parent_id';
+    inp.value = newParentId == null ? '' : String(newParentId);
+    f.appendChild(inp);
+    document.body.appendChild(f);
+    f.submit();
+  }
+
+  document.querySelectorAll('#tree li[draggable="true"]').forEach(function (li) {
+    li.addEventListener('dragstart', function (e) {
+      draggingId = li.dataset.id;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', draggingId);
+    });
+    li.addEventListener('dragover', function (e) {
+      if (draggingId && draggingId !== li.dataset.id) {
+        e.preventDefault();
+        li.classList.add('drop-target');
+      }
+    });
+    li.addEventListener('dragleave', function () {
+      li.classList.remove('drop-target');
+    });
+    li.addEventListener('drop', function (e) {
+      e.preventDefault();
+      li.classList.remove('drop-target');
+      moveTask(draggingId, li.dataset.id);
+    });
+  });
+
+  const top = document.querySelector('[data-droptop]');
+  if (top) {
+    top.addEventListener('dragover', function (e) {
+      if (draggingId) { e.preventDefault(); top.classList.add('drop-target'); }
+    });
+    top.addEventListener('dragleave', function () { top.classList.remove('drop-target'); });
+    top.addEventListener('drop', function (e) {
+      e.preventDefault();
+      top.classList.remove('drop-target');
+      moveTask(draggingId, '');  // empty parent = detach to root
+    });
+  }
+})();
+</script>
 {% endblock %}

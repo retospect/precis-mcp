@@ -71,6 +71,29 @@ def test_delete_dispatches_delete(client, runtime) -> None:
     assert args == {"kind": "todo", "id": 2}
 
 
+def test_move_dispatches_parent_link(client, runtime) -> None:
+    resp = client.post(
+        "/tasks/2/move", data={"new_parent_id": "1"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "link"
+    assert args == {
+        "kind": "todo",
+        "id": 2,
+        "target": "todo:1",
+        "rel": "parent",
+        "mode": "add",
+    }
+
+
+def test_move_empty_parent_detaches_to_root(client, runtime) -> None:
+    client.post("/tasks/2/move", data={"new_parent_id": ""}, follow_redirects=False)
+    verb, args = runtime.calls[-1]
+    assert verb == "link"
+    assert args == {"kind": "todo", "id": 2, "rel": "parent", "mode": "remove"}
+
+
 # ── papers ─────────────────────────────────────────────────────────
 
 

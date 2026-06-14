@@ -11,11 +11,18 @@ Routes:
 * ``POST /tasks/roots``                 — create a strategic root
 * ``POST /tasks/{parent_id}/children``  — create a child leaf
 * ``POST /tasks/{id}/status``           — set STATUS
+* ``POST /tasks/{id}/move``             — reparent (link rel='parent')
 * ``POST /tasks/{id}/delete``           — soft-delete
+
+The move route is a thin shell over the reserved virtual relation
+``link(kind='todo', rel='parent')`` so the cycle / depth / owner
+guards stay single-sourced in the handler — the web layer never
+touches ``parent_id`` directly.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
@@ -70,41 +77,115 @@ def _load_tags(store: Any, ref_ids: list[int]) -> dict[int, dict[str, str]]:
     return out
 
 
-def _build_rows(store: Any) -> list[dict[str, Any]]:
-    """Flatten the todo tree into DFS-ordered rows for the template.
+def _child_jobs(store: Any, todo_ids: list[int]) -> list[dict[str, Any]]:
+    """Return ``kind='job'`` children of the given todos.
 
-    Each row carries ``id, title, status, level, depth, done, total``
-    where ``done/total`` count direct children (the branch progress
-    readout). Roots are ``parent_id IS NULL``; orphans (parent missing)
-    are surfaced as roots so nothing silently disappears.
+    Jobs are where processing actually happens — a worker claims a
+    job ref and writes ``meta.lease_until`` for the run window. We
+    surface them under their parent todo so the lock/lease badges have
+    a node to attach to. Degrades to ``[]`` cleanly when the query
+    returns nothing (and under the test fake's empty cursor).
     """
-    refs = store.list_refs(kind="todo", limit=5000)
-    by_id = {r.id: r for r in refs}
-    tags = _load_tags(store, [r.id for r in refs])
+    if not todo_ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, parent_id, title, meta->>'lease_until' "
+            "FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+            "AND parent_id = ANY(%s)",
+            (todo_ids,),
+        ).fetchall()
+    return [
+        {
+            "id": int(r[0]),
+            "parent_id": int(r[1]) if r[1] is not None else None,
+            "title": r[2],
+            "lease_until": r[3],
+        }
+        for r in rows
+    ]
 
-    children: dict[int | None, list[Any]] = {}
-    for r in refs:
-        # Treat a parent that isn't a live todo as a root (orphan).
-        parent = r.parent_id if r.parent_id in by_id else None
-        children.setdefault(parent, []).append(r)
+
+def _lease_active(lease_until: str | None) -> bool:
+    """True when ``lease_until`` parses and lies in the future."""
+    if not lease_until:
+        return False
+    try:
+        ts = datetime.fromisoformat(lease_until)
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts > datetime.now(UTC)
+
+
+def _build_rows(store: Any) -> list[dict[str, Any]]:
+    """Flatten the todo tree (with child jobs) into DFS-ordered rows.
+
+    Each row carries ``id, kind, title, status, level, depth, done,
+    total`` plus processing signals ``locked`` (a live ``pg_locks``
+    row lock) and ``lease_until`` / ``lease_active`` (the durable
+    marker a worker writes). Roots are ``parent_id IS NULL``; orphans
+    (parent missing) surface as roots so nothing silently disappears.
+    """
+    todos = store.list_refs(kind="todo", limit=5000)
+    by_id = {r.id: r for r in todos}
+    todo_ids = [r.id for r in todos]
+    jobs = _child_jobs(store, todo_ids)
+
+    all_ids = todo_ids + [j["id"] for j in jobs]
+    tags = _load_tags(store, all_ids)
+    locked = store.locked_ref_ids(all_ids)
+
+    # Normalise todos + jobs into a single node dict so the walk is
+    # kind-agnostic.
+    nodes: dict[int, dict[str, Any]] = {}
+    for r in todos:
+        nodes[r.id] = {
+            "id": r.id,
+            "kind": "todo",
+            "title": r.title,
+            "parent_id": r.parent_id if r.parent_id in by_id else None,
+            "lease_until": None,
+        }
+    for j in jobs:
+        # A job whose parent todo vanished is dropped (no orphan jobs).
+        if j["parent_id"] not in by_id:
+            continue
+        nodes[j["id"]] = {
+            "id": j["id"],
+            "kind": "job",
+            "title": j["title"],
+            "parent_id": j["parent_id"],
+            "lease_until": j["lease_until"],
+        }
+
+    children: dict[int | None, list[dict[str, Any]]] = {}
+    for n in nodes.values():
+        children.setdefault(n["parent_id"], []).append(n)
     for kids in children.values():
-        kids.sort(key=lambda r: r.id)
+        kids.sort(key=lambda n: n["id"])
 
     rows: list[dict[str, Any]] = []
 
-    def walk(node: Any, depth: int) -> None:
-        kids = children.get(node.id, [])
-        done = sum(1 for k in kids if tags[k.id]["status"] in _CLOSED)
+    def walk(node: dict[str, Any], depth: int) -> None:
+        kids = children.get(node["id"], [])
+        done = sum(1 for k in kids if tags[k["id"]]["status"] in _CLOSED)
+        lease_until = node["lease_until"]
         rows.append(
             {
-                "id": node.id,
-                "title": node.title,
-                "status": tags[node.id]["status"],
-                "level": tags[node.id]["level"],
+                "id": node["id"],
+                "kind": node["kind"],
+                "title": node["title"],
+                "status": tags[node["id"]]["status"],
+                "level": tags[node["id"]]["level"],
                 "depth": depth,
                 "done": done,
                 "total": len(kids),
                 "is_leaf": not kids,
+                "locked": node["id"] in locked,
+                "lease_until": lease_until,
+                "lease_active": _lease_active(lease_until),
             }
         )
         for k in kids:
@@ -177,6 +258,41 @@ async def set_status(
         "tag",
         {"kind": "todo", "id": ref_id, "add": [f"STATUS:{status}"]},
     )
+    return RedirectResponse(url="/tasks", status_code=303)
+
+
+@router.post("/{ref_id}/move")
+async def move_task(
+    request: Request,
+    ref_id: int,
+    new_parent_id: str = Form(""),
+) -> RedirectResponse:
+    """Reparent a todo via the reserved ``link(rel='parent')`` surface.
+
+    An empty / blank ``new_parent_id`` detaches the todo to a root
+    (``mode='remove'``); otherwise the todo moves under that parent
+    (``mode='add'``). All tree guards (cycle / depth / owner) fire in
+    the handler — a rejected move returns the handler's BadInput.
+    """
+    npid = new_parent_id.strip()
+    if npid:
+        dispatch(
+            request,
+            "link",
+            {
+                "kind": "todo",
+                "id": ref_id,
+                "target": f"todo:{int(npid)}",
+                "rel": "parent",
+                "mode": "add",
+            },
+        )
+    else:
+        dispatch(
+            request,
+            "link",
+            {"kind": "todo", "id": ref_id, "rel": "parent", "mode": "remove"},
+        )
     return RedirectResponse(url="/tasks", status_code=303)
 
 

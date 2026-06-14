@@ -62,6 +62,14 @@ _TREE_SEARCH_VIEWS: frozenset[str] = frozenset(
 #: top of the base class's ``links`` / ``log`` views.
 _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 
+#: Reserved *virtual* link relation. ``link(rel='parent')`` is a
+#: façade over the ``refs.parent_id`` column — it re-points the tree
+#: edge (running the cycle/depth/owner guards) instead of inserting a
+#: ``links`` row, and is synthesized on read in the links view. It is
+#: deliberately NOT in the closed ``Relation`` vocabulary so it never
+#: leaks into ``link`` for kinds where "parent" is meaningless.
+_RESERVED_PARENT_REL = "parent"
+
 #: Backwards-compat translation table for the old ``PRIO:`` closed-prefix
 #: tag (now superseded by the int column). When an agent / cached prompt
 #: still writes ``tags=['PRIO:urgent']``, the handler strips that tag
@@ -372,11 +380,7 @@ class TodoHandler(NumericRefHandler):
         # default, so the operator gets a tidy two-panel ``view='roots'``
         # without per-write boilerplate. Owner can override by passing
         # ``parent_id=<some-strategic>`` to nest under a goal.
-        if (
-            parent_int is None
-            and tags
-            and guards.LEVEL_RECURRING in tags
-        ):
+        if parent_int is None and tags and guards.LEVEL_RECURRING in tags:
             from precis.workers.schedule.seed import ensure_watches_root
 
             parent_int = ensure_watches_root(self.store)
@@ -537,6 +541,89 @@ class TodoHandler(NumericRefHandler):
             )
         return resp
 
+    # ── link: reserved virtual rel='parent' is the move surface ───
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Intercept the reserved ``rel='parent'`` relation as a move.
+
+        ``parent`` is a *virtual* relation: it never lands in the
+        ``links`` table. Instead it re-points ``refs.parent_id`` via
+        :meth:`_reparent`, running the same cycle / depth / owner
+        guards as a create-time parent assignment. Every other
+        relation falls through to the stored-link machinery in
+        :class:`NumericRefHandler`.
+
+        * ``mode='add'``    — move ``id`` under ``target`` (a ``todo:N``).
+        * ``mode='remove'`` — detach ``id`` to a root (``parent_id=NULL``).
+
+        Reads round-trip: ``get(kind='todo', id=N, view='links')``
+        synthesizes the ``parent`` edge from the column, so a client
+        that sets the edge via ``link`` sees it back via ``link``.
+        """
+        if rel == _RESERVED_PARENT_REL:
+            return self._reparent(id=id, target=target, mode=mode)
+        return super().link(id=id, target=target, mode=mode, rel=rel, **_kw)
+
+    def _reparent(self, *, id: str | int, target: str | None, mode: str) -> Response:
+        """Apply a ``rel='parent'`` move/detach with full tree guards."""
+        from precis.handlers._link_target import parse_link_target
+
+        if mode not in ("add", "remove"):
+            raise BadInput(
+                f"link mode must be 'add' or 'remove', got {mode!r}",
+                options=["add", "remove"],
+            )
+        child_id = self._coerce_id(id)
+        # Owner-only refs (strategic / tactical) can't be moved by a
+        # worker source — same veto as delete. Fires before any target
+        # resolution so a worker gets the authority error first.
+        guards.check_owner_only_ref(self.store, child_id)
+
+        if mode == "remove":
+            # Detach to a root. ``target`` is optional; when given it
+            # must name the *current* parent so a stale "remove parent
+            # X" can't silently detach from a different parent Y.
+            if target is not None:
+                claimed = parse_link_target(target, store=self.store)
+                current = self._resolve_live_ref(child_id)
+                if current.parent_id != claimed.ref_id:
+                    raise BadInput(
+                        f"todo id={child_id} is not parented under "
+                        f"{target!r} (current parent: "
+                        f"{'#' + str(current.parent_id) if current.parent_id else 'none'})",
+                        next=(
+                            "omit target= to detach, or pass the actual current parent"
+                        ),
+                    )
+            self.store.set_parent(child_id, None)
+            return Response(body=f"detached {self._sense()} id={child_id} to a root")
+
+        # mode == "add" — move under a new parent.
+        if target is None:
+            raise BadInput(
+                f"link(kind={self.kind!r}, id=..., rel='parent') requires target=",
+                next=f"link(kind={self.kind!r}, id={child_id}, target='todo:N', rel='parent')",
+            )
+        new_parent = parse_link_target(target, store=self.store)
+        new_parent_id = new_parent.ref_id
+        guards.check_parent_exists(self.store, new_parent_id)
+        guards.check_no_cycle(self.store, child_id=child_id, parent_id=new_parent_id)
+        guards.check_reparent_depth(
+            self.store, child_id=child_id, new_parent_id=new_parent_id
+        )
+        self.store.set_parent(child_id, new_parent_id)
+        return Response(
+            body=f"moved {self._sense()} id={child_id} under #{new_parent_id}"
+        )
+
     # ── delete: owner-only guard on strategic / tactical ──────────
 
     def delete(self, *, id: str | int, **_kw: Any) -> Response:  # type: ignore[override]
@@ -548,6 +635,36 @@ class TodoHandler(NumericRefHandler):
         # new builtins doesn't need a new guard.
         guards.check_not_builtin(self.store, ref_id)
         return super().delete(id=id, **_kw)
+
+    # ── links view: synthesize the virtual parent edge ───────────
+
+    def _render_links_view(self, ref: Ref) -> Response:  # type: ignore[override]
+        """Prepend the virtual ``parent`` edge to the stored-link view.
+
+        ``parent`` lives in the ``refs.parent_id`` column, not the
+        ``links`` table, so the base renderer never sees it. We inject
+        it as an outbound ``(parent)`` row so a client that set the
+        edge via ``link(rel='parent')`` reads it back here in the same
+        ``kind:identifier`` form it can round-trip into a future call.
+        Children aren't synthesized — ``view='tree'`` already shows the
+        full subtree downward.
+        """
+        base = super()._render_links_view(ref)
+        if ref.parent_id is None:
+            return base
+        header = f"# {self._sense()} {ref.id} - links"
+        rest = base.body
+        if rest.startswith(header):
+            rest = rest[len(header) :].lstrip("\n")
+        # With a parent edge present the ref is never link-less, so the
+        # base "(no links)" placeholder (and its add-a-link hint) is
+        # dropped in favour of the synthesized section.
+        if rest.startswith("(no links)"):
+            rest = ""
+        parts = [header, "", "## parent", f"→ todo:{ref.parent_id}  (parent)"]
+        if rest:
+            parts.extend(["", rest])
+        return Response(body="\n".join(parts))
 
     # ── single-ref render: include parent header when present ─────
 

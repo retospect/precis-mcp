@@ -207,6 +207,62 @@ def check_depth_under(store: Store, parent_id: int) -> int:
     return depth
 
 
+def check_reparent_depth(store: Store, *, child_id: int, new_parent_id: int) -> None:
+    """Reject a move that would push the moved subtree past MAX_DEPTH.
+
+    ``check_depth_under`` only measures the *parent* — correct when a
+    leaf is being created. A re-parent moves a whole subtree, so the
+    deepest resulting node is::
+
+        depth(new_parent) + 1 + height(subtree under child)
+
+    where ``height`` is 0 for a leaf. Rejected on the same boundary
+    as the create-time check (``>= MAX_DEPTH``) so a leaf move and a
+    leaf create behave identically.
+    """
+    new_parent_depth = _depth_of(store, new_parent_id)
+    height = _subtree_height(store, child_id)
+    deepest = new_parent_depth + 1 + height
+    if deepest >= MAX_DEPTH:
+        raise BadInput(
+            f"move rejected: todo id={child_id} has a subtree {height} deep; "
+            f"under id={new_parent_id} (depth {new_parent_depth}) the deepest "
+            f"node would reach depth {deepest} (max is {MAX_DEPTH})",
+            next=(
+                "pick a shallower parent, or flatten the subtree first "
+                "(record dependencies via rel='blocks' instead of nesting)"
+            ),
+        )
+
+
+def _subtree_height(store: Store, ref_id: int) -> int:
+    """Return the height of the subtree rooted at ``ref_id`` (leaf → 0).
+
+    Descends ``parent_id`` the other way (children of children), so
+    the cost is bounded by the subtree size. Soft-deleted rows are
+    excluded — a tombstoned branch doesn't constrain a move.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            WITH RECURSIVE sub(ref_id, lvl) AS (
+                SELECT ref_id, 0
+                  FROM refs WHERE ref_id = %s AND deleted_at IS NULL
+                UNION ALL
+                SELECT r.ref_id, s.lvl + 1
+                  FROM refs r
+                  JOIN sub s ON r.parent_id = s.ref_id
+                 WHERE r.deleted_at IS NULL
+            )
+            SELECT max(lvl) FROM sub
+            """,
+            (ref_id,),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return 0
+    return int(row[0])
+
+
 def _depth_of(store: Store, ref_id: int) -> int:
     """Return ``ref_id``'s depth from the strategic root (root → 0).
 
@@ -396,6 +452,7 @@ __all__ = [
     "check_not_builtin",
     "check_owner_only_ref",
     "check_parent_exists",
+    "check_reparent_depth",
     "check_schedule_in_meta",
     "is_owner",
 ]

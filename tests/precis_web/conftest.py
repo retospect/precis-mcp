@@ -96,6 +96,11 @@ class FakeStore:
         pool = {r.id: r for r in self.todos + self.papers}
         return {i: pool[i] for i in ids if i in pool}
 
+    def locked_ref_ids(self, ref_ids):
+        # No live Postgres locks under the fake; the Tasks tab's
+        # processing probe degrades to "nothing locked".
+        return set()
+
 
 class FakeRuntime:
     def __init__(self, store: FakeStore) -> None:

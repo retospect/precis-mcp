@@ -238,3 +238,107 @@ def test_put_ack_mentions_parent(handler: TodoHandler) -> None:
 def test_put_without_parent_has_no_under_phrase(handler: TodoHandler) -> None:
     r = handler.put(text="bare")
     assert "under #" not in r.body
+
+
+# ── reparent via reserved link(rel='parent') ──────────────────────
+
+
+def test_reparent_via_link_moves_under_new_parent(handler: TodoHandler) -> None:
+    a = handler.put(text="root A")
+    a_id = _id_of(a.body)
+    b = handler.put(text="root B")
+    b_id = _id_of(b.body)
+    leaf = handler.put(text="leaf", parent_id=a_id)
+    leaf_id = _id_of(leaf.body)
+    resp = handler.link(id=leaf_id, target=f"todo:{b_id}", rel="parent")
+    assert f"under #{b_id}" in resp.body
+    ref = handler.store.get_ref(kind="todo", id=leaf_id)
+    assert ref is not None and ref.parent_id == b_id
+
+
+def test_reparent_remove_detaches_to_root(handler: TodoHandler) -> None:
+    root = handler.put(text="root")
+    root_id = _id_of(root.body)
+    child = handler.put(text="child", parent_id=root_id)
+    child_id = _id_of(child.body)
+    resp = handler.link(id=child_id, rel="parent", mode="remove")
+    assert "detached" in resp.body
+    ref = handler.store.get_ref(kind="todo", id=child_id)
+    assert ref is not None and ref.parent_id is None
+
+
+def test_reparent_rejects_cycle(handler: TodoHandler) -> None:
+    a = handler.put(text="A")
+    a_id = _id_of(a.body)
+    b = handler.put(text="B", parent_id=a_id)
+    b_id = _id_of(b.body)
+    # Moving A under its own descendant B would create A→B→A.
+    with pytest.raises(BadInput, match="cycle"):
+        handler.link(id=a_id, target=f"todo:{b_id}", rel="parent")
+
+
+def test_reparent_rejects_subtree_depth_overflow(handler: TodoHandler) -> None:
+    """A 2-deep subtree can't move under a parent at depth 9."""
+    # Build a chain to depth 8 (root=0 .. depth 8 = 9 nodes).
+    parent_id: int | None = None
+    deep_id = 0
+    for i in range(9):
+        resp = handler.put(text=f"chain {i}", parent_id=parent_id)
+        deep_id = _id_of(resp.body)
+        parent_id = deep_id
+    # A subtree of height 1 (parent + one child).
+    top = handler.put(text="movable top")
+    top_id = _id_of(top.body)
+    handler.put(text="movable child", parent_id=top_id)
+    # depth(deep)=8, +1 for top, +1 for its child = 10 >= MAX_DEPTH.
+    with pytest.raises(BadInput, match="move rejected"):
+        handler.link(id=top_id, target=f"todo:{deep_id}", rel="parent")
+
+
+def test_reparent_owner_only_guard(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strat = handler.put(text="strategic", tags=["level:strategic"])
+    strat_id = _id_of(strat.body)
+    dest = handler.put(text="dest")
+    dest_id = _id_of(dest.body)
+    monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
+    with pytest.raises(BadInput, match="owner-only"):
+        handler.link(id=strat_id, target=f"todo:{dest_id}", rel="parent")
+
+
+def test_reparent_remove_with_wrong_current_parent_rejects(
+    handler: TodoHandler,
+) -> None:
+    a = handler.put(text="A")
+    a_id = _id_of(a.body)
+    b = handler.put(text="B")
+    b_id = _id_of(b.body)
+    child = handler.put(text="child", parent_id=a_id)
+    child_id = _id_of(child.body)
+    with pytest.raises(BadInput, match="not parented under"):
+        handler.link(id=child_id, target=f"todo:{b_id}", rel="parent", mode="remove")
+
+
+def test_parent_edge_round_trips_in_links_view(handler: TodoHandler) -> None:
+    root = handler.put(text="root")
+    root_id = _id_of(root.body)
+    child = handler.put(text="child", parent_id=root_id)
+    child_id = _id_of(child.body)
+    out = handler.get(id=child_id, view="links")
+    assert "## parent" in out.body
+    assert f"todo:{root_id}" in out.body
+    assert "(parent)" in out.body
+
+
+def test_non_parent_relation_still_stores_a_link(handler: TodoHandler) -> None:
+    a = handler.put(text="A")
+    a_id = _id_of(a.body)
+    b = handler.put(text="B")
+    b_id = _id_of(b.body)
+    handler.link(id=a_id, target=f"todo:{b_id}", rel="related-to")
+    out = handler.get(id=a_id, view="links")
+    assert "related-to" in out.body
+    # The stored link must not have leaked into the parent column.
+    ref = handler.store.get_ref(kind="todo", id=a_id)
+    assert ref is not None and ref.parent_id is None
