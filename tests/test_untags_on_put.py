@@ -26,7 +26,6 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store, Tag
-
 from tests.conftest import id_of
 
 # ── plumbing ────────────────────────────────────────────────────────

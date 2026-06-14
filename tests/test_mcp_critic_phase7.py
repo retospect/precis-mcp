@@ -42,7 +42,6 @@ from precis.handlers.skill import (
 )
 from precis.runtime import PrecisRuntime
 from precis.store import BlockInsert, Store, Tag
-
 from tests.conftest import id_of
 
 # ── helpers ────────────────────────────────────────────────────────

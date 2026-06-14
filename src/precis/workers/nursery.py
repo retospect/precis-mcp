@@ -197,9 +197,9 @@ def _detect_orphans(store: Store) -> list[Finding]:
             ref_id=int(r[0]),
             title=_first_line(r[1]),
             detail=(
-                f"open todo with no strategic ancestor — root needs "
-                f"a ``level:strategic`` tag or this leaf needs to be "
-                f"re-parented under one"
+                "open todo with no strategic ancestor — root needs "
+                "a ``level:strategic`` tag or this leaf needs to be "
+                "re-parented under one"
             ),
         )
         for r in rows
@@ -585,10 +585,10 @@ def _days_since(ts: datetime | None) -> float:
 
 
 __all__ = [
-    "Finding",
     "LONG_WAIT_DAYS",
     "STALE_CLAIM_HOURS",
     "STUCK_DOABLE_HOURS",
+    "Finding",
     "run_nursery_pass",
 ]
 

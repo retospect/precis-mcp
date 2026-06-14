@@ -16,15 +16,22 @@ from __future__ import annotations
 from precis.store import Store
 from precis.workers.review import (
     Reviewer,
-    _build_prompt as _review_build_prompt,
-    _gate_enabled as _review_gate_enabled,
     _mcp_config_path,
-    _recent_digest_exists as _review_recent_digest_exists,
-    _write_digest as _review_write_digest,
     run_review_pass,
 )
+from precis.workers.review import (
+    _build_prompt as _review_build_prompt,
+)
+from precis.workers.review import (
+    _gate_enabled as _review_gate_enabled,
+)
+from precis.workers.review import (
+    _recent_digest_exists as _review_recent_digest_exists,
+)
+from precis.workers.review import (
+    _write_digest as _review_write_digest,
+)
 from precis.workers.runner import BatchResult
-
 
 # ── reviewer-specific config ─────────────────────────────────────
 
@@ -229,10 +236,9 @@ def _build_prompt(store: Store) -> str:
     return _review_build_prompt(STRUCTURAL, store)
 
 
-# Tests `monkeypatch.setattr("precis.workers.structural.call_claude_agent", ...)`
-# — keep that name resolvable from this module.
-from precis.utils.claude_agent import call_claude_agent  # noqa: E402,F401
-
+# After the reviewer refactor, tests patch
+# ``precis.workers.review.call_claude_agent`` (the actual call site)
+# rather than this module — no late re-export needed.
 
 # Silence unused-import lints on the things we re-export for tests
 # but don't reference here.

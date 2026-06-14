@@ -31,9 +31,9 @@ from precis.workers.schedule.seed import (
 from precis.workers.schedule.worker import run_schedule_pass
 
 __all__ = [
-    "Schedule",
     "WATCHES_BUILTIN",
     "WATCHES_TITLE",
+    "Schedule",
     "ensure_watches_root",
     "parse_schedule",
     "run_schedule_pass",

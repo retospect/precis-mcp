@@ -22,7 +22,6 @@ from precis.workers.structural import (
     _write_digest,
     run_structural_pass,
 )
-
 from tests.conftest import id_of
 
 

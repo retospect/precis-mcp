@@ -25,7 +25,6 @@ from precis.utils.db_log_handler import (
     _resolve_host_name,
 )
 
-
 # ── pass-name derivation (pure) ───────────────────────────────────
 
 

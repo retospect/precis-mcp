@@ -28,7 +28,6 @@ from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers.memory import MemoryHandler
 from precis.store import BlockInsert, Store
 from precis.store.types import Relation
-
 from tests.conftest import id_of
 
 # ── unit: parse_link_target ─────────────────────────────────────────

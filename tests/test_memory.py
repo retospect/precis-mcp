@@ -10,7 +10,6 @@ from precis.handlers.memory import MemoryHandler
 from precis.response import Response
 from precis.runtime import PrecisRuntime
 from precis.store import Store, as_dream_actor
-
 from tests.conftest import id_of
 
 # ---------------------------------------------------------------------------

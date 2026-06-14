@@ -25,8 +25,9 @@ from typing import TYPE_CHECKING
 from precis.store.types import Tag
 
 if TYPE_CHECKING:
-    from precis.store import Store
     from psycopg import Connection
+
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 

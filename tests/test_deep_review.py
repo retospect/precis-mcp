@@ -22,7 +22,6 @@ from precis.workers.deep_review import (
     _write_digest,
     run_deep_review_pass,
 )
-
 from tests.conftest import id_of
 
 

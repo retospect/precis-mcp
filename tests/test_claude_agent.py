@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 import textwrap
 from pathlib import Path
 
@@ -322,7 +323,7 @@ def test_log_event_swallows_store_errors(stub_bin: Path) -> None:
     _write_stub(stub_bin, stdout="done")
 
     class _BrokenStore:
-        def append_event(self, *a, **kw):  # noqa: D401
+        def append_event(self, *a, **kw):
             raise RuntimeError("nope")
 
     # Should not raise.
@@ -347,12 +348,16 @@ def test_helpers_handle_bytes_and_none() -> None:
     assert _extract_cost_usd("nothing relevant here") is None
 
 
-# Skip the whole module when there's no bash available — the stub
-# pattern assumes a POSIX shell. CI without bash falls back to a
-# graceful skip.
+# Skip the whole module on Windows, where ``shutil.which("bash")``
+# may find ``bash.exe`` (Git Bash) but ``#!/usr/bin/env bash``
+# shebangs can't be invoked directly via ``subprocess.run`` —
+# Windows can't execute POSIX shell scripts as if they were native
+# binaries. Same family of failures shows up on CI runners with
+# no ``bash`` at all (an Ubuntu image that didn't install it),
+# hence the second branch of the OR.
 pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None,
-    reason="bash required for the stub-binary pattern",
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="POSIX bash + execute-shebang support required for the stub-binary pattern",
 )
 
 

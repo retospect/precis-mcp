@@ -14,7 +14,6 @@ from precis.dispatch import Hub
 from precis.handlers.todo import TodoHandler
 from precis.store import Store
 from precis.workers.dispatch import run_dispatch_pass
-
 from tests.conftest import id_of
 
 

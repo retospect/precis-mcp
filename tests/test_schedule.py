@@ -23,8 +23,8 @@ from precis.handlers.todo import TodoHandler
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.schedule import (
-    Schedule,
     WATCHES_BUILTIN,
+    Schedule,
     ensure_watches_root,
     run_schedule_pass,
     ticks_since,

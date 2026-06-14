@@ -12,6 +12,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.todo import TodoHandler
+from precis.store import Store
 
 
 @pytest.fixture

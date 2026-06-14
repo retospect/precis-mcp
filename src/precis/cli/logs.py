@@ -36,7 +36,6 @@ from precis.cli._common import (
 from precis.format import render_agent_table
 from precis.store import Store
 
-
 # ── parser ────────────────────────────────────────────────────────
 
 
