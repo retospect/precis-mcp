@@ -301,6 +301,71 @@ tick (or the last 24h). The guardrail rejects worker-source
 declare victory without evidence. If you're genuinely blocked,
 use `ask-user:<question>` or `halt:<reason>` instead.
 
+## End every tick with a conclusion block
+
+After all your tool calls and before claude -p hands back control,
+print a structured conclusion block. The runner extracts it and
+embeds the verdict + one-paragraph summary at the top of the
+job_result audit chunk, so the parent's next tick reads your synth
+*before* it sees the counts. Without this block the parent sees only
+"3 subtasks minted, 1 citation minted" and has to read your stdout
+to figure out the gist — expensive and lossy.
+
+Format (copy verbatim, fill in the values):
+
+    === TICK CONCLUSION ===
+    verdict: done | continue | yield | halt
+    summary: One paragraph synthesising what this tick produced —
+             what was written, what was cited, what's left for
+             the parent to do.
+    files: tex/intro.tex, tex/methods.tex
+    === END ===
+
+Verdict semantics — informational; the actual state transition is
+still your `tag(id=N, add=['STATUS:done'])` / `ask-user:` / `halt:`
+call earlier in the tick:
+
+* `done` — you tagged STATUS:done and the parent can read your files
+* `continue` — you minted subtasks; the parent will be re-summoned
+  once they resolve
+* `yield` — you tagged `ask-user:<question>`; awaiting human input
+* `halt` — you tagged `halt:<reason>`; needs human intervention
+
+`files:` lists the workspace-relative paths you wrote this tick (or
+omit if you wrote none). `summary:` is your gist — what a reader
+who skips your stdout still needs to know.
+
+## Writing happens at any level — but the *shape* differs
+
+Writing is not exclusive to leaves. Where in the tree you sit shapes
+what you write:
+
+* **Leaves** (no children) write *substrate*: section bodies,
+  citations, raw findings. One file per leaf is the typical pattern.
+* **Mid-level synthesis nodes** (you minted children, they finished,
+  you're re-ticking with their summaries) write *connective tissue*:
+  transitions between sibling sections, intro/outro of a multi-part
+  topic, updated `\\input{}` ordering in `main.tex`.
+* **Strategic root** writes the *frame*: executive summary, outlook,
+  the highest-level transitions. Often writing `main.tex`'s prose
+  scaffolding around the leaves' `\\input{}` calls.
+
+If you're a mid-level node and your children's summaries already
+cover the substrate, your job is the stitching — not minting another
+leaf to write a transition. If you're a leaf, your job is the
+substrate — not a meta-commentary on the corpus.
+
+Information flow:
+
+* **Downward**: briefs propagate from parent to child via the body
+  you write at mint time. Be specific — name the deliverable, depth
+  target, the considerations to weigh. A vague brief produces a
+  vague leaf.
+* **Upward**: leaves produce artefacts (files on disk) + structured
+  conclusion summaries (the block above) + minted refs (citations,
+  findings). Parents re-tick and see workspace status + children
+  status without re-reading the raw stdouts.
+
 ## Depth discipline (the value proposition)
 
 The bar to beat is Perplexity. Every output should be quantified

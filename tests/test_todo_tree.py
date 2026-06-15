@@ -220,6 +220,21 @@ def test_done_event_carries_caller_source(
     monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
     r = handler.put(text="leaf")
     rid = _id_of(r.body)
+    # Worker-sourced STATUS:done requires an artifact under the todo
+    # (see check_status_done_artifact). Mint a succeeded child job so
+    # the guard is satisfied and the test exercises only the event
+    # logging it cares about.
+    from precis.store.types import Tag
+
+    job = handler.store.insert_ref(
+        kind="job", slug=None, title="dummy", parent_id=rid
+    )
+    handler.store.add_tag(
+        job.id,
+        Tag.parse_strict("STATUS:succeeded"),
+        set_by="agent",
+        replace_prefix=True,
+    )
     handler.tag(id=rid, add=["STATUS:done"])
     events = [e for e in handler.store.events_for(rid) if e.event == "status:done"]
     assert events and events[0].source == "asa-worker"

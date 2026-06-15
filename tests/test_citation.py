@@ -69,6 +69,9 @@ class TestPutValidation:
 class TestPutHappy:
     def test_creates_with_meta_populated(self, store) -> None:
         h = _make_handler(store)
+        store.insert_ref(
+            kind="paper", slug="collins06", title="Collins 2006 CO2 study"
+        )
         resp = h.put(
             text="MOF X achieves 12% FE for CO2 reduction",
             source_handle="collins06~7",
@@ -97,6 +100,7 @@ class TestPutHappy:
 
     def test_create_ack_carries_summary(self, store) -> None:
         h = _make_handler(store)
+        store.insert_ref(kind="paper", slug="paperA", title="Paper A")
         resp = h.put(
             text="X improves Y by 12%",
             source_handle="paperA~3",
@@ -115,6 +119,9 @@ class TestPutHappy:
 class TestRoundTrip:
     def test_get_renders_stored_record(self, store) -> None:
         h = _make_handler(store)
+        store.insert_ref(
+            kind="paper", slug="smith21", title="Smith 2021 MOF synthesis"
+        )
         resp = h.put(
             text="MOF synthesis yields 85%",
             source_handle="smith21~5",
@@ -131,3 +138,62 @@ class TestRoundTrip:
         assert "Yields exceeded 85 percent" in body
         assert "0.88" in body
         assert "single replicate" in body
+
+
+# ── paper-must-exist validation ─────────────────────────────────────
+
+
+class TestPaperMustExist:
+    """The source_handle must resolve to a real ``kind='paper'`` ref.
+
+    Catches the "LLM hallucinates a bib key, latexmk explodes" failure
+    mode at put time instead of compile time.
+    """
+
+    def test_rejects_when_paper_absent(self, store) -> None:
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                text="Claim about a paper not in the corpus",
+                source_handle="ghost2099~1",
+                source_quote="hallucinated quote",
+                verifier_confidence=0.9,
+            )
+        msg = str(excinfo.value)
+        assert "ghost2099" in msg
+        assert "no such paper" in msg
+
+    def test_rejects_when_paper_absent_with_kind_prefix(self, store) -> None:
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                text="Claim about a paper not in the corpus",
+                source_handle="paper:ghost2099",
+                source_quote="hallucinated quote",
+                verifier_confidence=0.9,
+            )
+        assert "ghost2099" in str(excinfo.value)
+
+    def test_accepts_when_paper_present(self, store) -> None:
+        h = _make_handler(store)
+        store.insert_ref(
+            kind="paper", slug="real2024", title="A real paper that exists"
+        )
+        resp = h.put(
+            text="Real claim from a real paper",
+            source_handle="real2024~3",
+            source_quote="this is what the paper actually says",
+            verifier_confidence=0.95,
+        )
+        assert "created citation id=" in resp.body
+
+    def test_strips_chunk_range(self, store) -> None:
+        h = _make_handler(store)
+        store.insert_ref(kind="paper", slug="range2024", title="Range")
+        resp = h.put(
+            text="A claim with a chunk-range handle",
+            source_handle="range2024~5..8",
+            source_quote="quote spanning multiple chunks",
+            verifier_confidence=0.7,
+        )
+        assert "created citation id=" in resp.body

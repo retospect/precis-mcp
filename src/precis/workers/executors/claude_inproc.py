@@ -354,6 +354,10 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             bubble_job_failure(store, ref_id)
         return
 
+    from precis.utils.tick_conclusion import parse as parse_tick_conclusion
+
+    conclusion = parse_tick_conclusion(outcome.stdout or "")
+
     with store.pool.connection() as conn:
         _append_chunk(
             store, ref_id, _JOB_SUMMARY_KIND, outcome.stdout or "(no output)",
@@ -362,7 +366,10 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
         # Structured per-tick audit chunk — slim, grepable summary of
         # what the LLM did. Replaces dumping raw stdout into the
         # parent's re-tick prompt. Builds from the worker_logs query
-        # over MCP tool calls correlated by parent_todo.
+        # over MCP tool calls correlated by parent_todo. When the LLM
+        # included a structured tick-conclusion block at the tail of
+        # stdout, its verdict + one-paragraph summary go at the top of
+        # this chunk so the parent re-tick reads the synth first.
         result_text = _build_job_result_text(
             store=store,
             job_ref_id=ref_id,
@@ -370,6 +377,7 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             model=spec.name,  # actually plan_tick; model is in meta.params.model
             exit_code=outcome.exit_code,
             duration_s=outcome.duration_s,
+            conclusion=conclusion,
         )
         _append_chunk(store, ref_id, "job_result", result_text, conn=conn)
         if outcome.stderr:
@@ -399,6 +407,7 @@ def _build_job_result_text(
     model: str,
     exit_code: int,
     duration_s: float,
+    conclusion: Any = None,
 ) -> str:
     """Render the structured ``chunk_kind='job_result'`` audit text.
 
@@ -470,21 +479,37 @@ def _build_job_result_text(
                 (parent_ref_id, ts_started),
             ).fetchone()[0]
         )
-    # Build the text — terse, structured.
-    lines = [
-        f"ts: {ts_started} → {ts_finished}",
-        f"job: #{job_ref_id}  parent: #{parent_ref_id}  model: {model}",
-        f"duration: {duration_s:.1f}s  exit: {exit_code}",
-        "",
-        "Produced this tick:",
-        f"  - subtasks minted: {child_count}",
-        f"  - citations minted: {cit_count}",
-        f"  - findings minted: {finding_count}",
-    ]
+    # Build the text — terse, structured. When the LLM emitted a
+    # tick-conclusion block, its synth lives at the top so the parent
+    # re-tick reads it before the counts.
+    lines: list[str] = []
+    if conclusion is not None:
+        if conclusion.verdict:
+            lines.append(f"verdict (LLM): {conclusion.verdict}")
+        if conclusion.summary:
+            lines.append("summary (LLM):")
+            for ln in conclusion.summary.splitlines():
+                lines.append(f"  {ln}")
+        if conclusion.files:
+            lines.append("files (LLM-claimed): " + ", ".join(conclusion.files))
+        if lines:
+            lines.append("")
+    lines.extend(
+        [
+            f"ts: {ts_started} → {ts_finished}",
+            f"job: #{job_ref_id}  parent: #{parent_ref_id}  model: {model}",
+            f"duration: {duration_s:.1f}s  exit: {exit_code}",
+            "",
+            "Produced this tick:",
+            f"  - subtasks minted: {child_count}",
+            f"  - citations minted: {cit_count}",
+            f"  - findings minted: {finding_count}",
+        ]
+    )
     if exit_code == 0:
-        lines.append("verdict: succeeded")
+        lines.append("verdict (runner): succeeded")
     else:
-        lines.append("verdict: failed")
+        lines.append("verdict (runner): failed")
     return "\n".join(lines)
 
 

@@ -160,6 +160,31 @@ class CitationHandler(NumericRefHandler):
                 "verifier_confidence must be between 0.0 and 1.0",
                 next=f"verifier_confidence={verifier_confidence!r}",
             )
+        # Resolve the source_handle's paper slug and verify the paper
+        # exists in the corpus. A citation that doesn't point at a real
+        # paper is by definition not a citation — it's a guess. Before
+        # this check, the LLM could mint citations against fabricated
+        # bib keys ("smith2024quantum") that downstream broke bibtex
+        # generation at compile time. Now they fail at put time with a
+        # next-hint that routes to the right recovery: mint a finding
+        # to start the chase. Runs after the shape checks so callers
+        # that get the shape wrong still see the shape error first.
+        paper_slug = _extract_paper_slug(str(source_handle).strip())
+        if paper_slug is not None:
+            paper_ref = self.store.get_ref(kind="paper", id=paper_slug)
+            if paper_ref is None:
+                raise BadInput(
+                    f"source_handle={source_handle!r} references "
+                    f"paper {paper_slug!r}, but no such paper exists in the "
+                    "corpus. Citations must point at real papers; mint a "
+                    "kind='finding' first to start the chase, then write the "
+                    "citation once it lands.",
+                    next=(
+                        f"put(kind='finding', body='<claim>', "
+                        f"cited_in='paper:{paper_slug}', "
+                        "verifier_confidence=0.5)"
+                    ),
+                )
 
         verified_iso = verified_at or datetime.now(UTC).isoformat()
 
@@ -259,6 +284,26 @@ class CitationHandler(NumericRefHandler):
             lines.append("")
             lines.append("tags: " + " ".join(str(t) for t in tags))
         return "\n".join(lines)
+
+
+def _extract_paper_slug(source_handle: str) -> str | None:
+    """Return the paper slug embedded in a ``source_handle``, or ``None``.
+
+    Accepts the kind-qualified form (``paper:tsmc2024iedm``) and the
+    bare-slug form (``tsmc2024iedm``, with or without a ``~N`` chunk
+    suffix or ``~A..B`` range). Returns ``None`` only when the handle
+    is structurally an explicit non-paper kind we don't validate
+    against (e.g. a future ``patent:`` handle).
+    """
+    h = source_handle.strip()
+    if ":" in h:
+        kind, _, rest = h.partition(":")
+        if kind.lower() != "paper":
+            return None
+        h = rest
+    # Strip chunk address (``~N`` or ``~A..B``)
+    h = h.split("~", 1)[0]
+    return h.strip() or None
 
 
 def _one_line(text: str, limit: int) -> str:

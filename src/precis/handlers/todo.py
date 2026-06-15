@@ -93,6 +93,20 @@ _PRIO_TAG_TO_INT: dict[str, int] = {
 }
 
 
+#: Tag namespaces whose values are LLM-authored prose and routinely
+#: want more than a tag's worth of room. Long values get redirected
+#: into a ``chunk_kind='tag_overflow'`` chunk on the ref and the tag
+#: is rewritten to a short ``see-chunk-N`` handle.
+_REDIRECTABLE_NAMESPACES: frozenset[str] = frozenset({"ask-user", "halt"})
+
+
+#: Threshold above which an ``ask-user:`` / ``halt:`` value gets
+#: redirected to a chunk. Picked to comfortably accept the short
+#: structured labels we expect ("missing-credentials",
+#: "impossible-as-specified") while catching paragraph-style prose.
+_TAG_VALUE_REDIRECT_THRESHOLD: int = 80
+
+
 def _inherit_workspace_from_parent(store: Any, parent_id: int) -> dict[str, Any] | None:
     """Pull ``meta.workspace`` from the parent ref, or None if unset.
 
@@ -650,6 +664,9 @@ class TodoHandler(NumericRefHandler):
             add, _redirected_chunks = self._redirect_long_tag_values(
                 ref_id=self._coerce_id(id), tags=add
             )
+        guards.check_level_tags_on_tag(add=add, remove=remove)
+        guards.check_halt_remove(remove=remove)
+        guards.check_llm_tag(add)
         # No STATUS:done from a worker without artifact evidence.
         # Prevents the cheating mode where the LLM marks itself done
         # without producing a file / citation / successful child job.
@@ -817,6 +834,66 @@ class TodoHandler(NumericRefHandler):
         return Response(body="\n".join(parts))
 
     # ── single-ref render: include parent header when present ─────
+
+    def _redirect_long_tag_values(
+        self, *, ref_id: int, tags: list[str]
+    ) -> tuple[list[str], list[int]]:
+        """Move long ``ask-user:`` / ``halt:`` value prose into chunks.
+
+        The 200-char hard cap on tag values (see ``Tag.parse_strict``)
+        keeps the tag table sane, but the LLM's natural explanation
+        prose for ``ask-user:`` and ``halt:`` runs longer than the
+        threshold here (80 chars) — at which point a one-line
+        recap-handle is more useful than truncating mid-sentence.
+
+        Behaviour: for each tag ``ns:value`` where ``ns`` is in
+        :data:`_REDIRECTABLE_NAMESPACES` and ``value`` is longer than
+        :data:`_TAG_VALUE_REDIRECT_THRESHOLD`, write a ``chunk_kind=
+        'tag_overflow'`` chunk carrying the full text on ``ref_id`` and
+        replace the tag value with a short ``see-chunk-N`` handle. The
+        guards downstream see the short form; ``get(kind='todo',
+        id=ref_id)`` reads the chunk for the full explanation.
+
+        Returns ``(rewritten_tags, chunk_ids)``. ``chunk_ids`` is
+        empty when nothing tripped the threshold.
+        """
+        from precis.store.types import BlockInsert
+
+        rewritten: list[str] = []
+        chunk_ids: list[int] = []
+        for raw in tags:
+            if ":" not in raw:
+                rewritten.append(raw)
+                continue
+            ns, _, value = raw.partition(":")
+            if ns not in _REDIRECTABLE_NAMESPACES:
+                rewritten.append(raw)
+                continue
+            if len(value) <= _TAG_VALUE_REDIRECT_THRESHOLD:
+                rewritten.append(raw)
+                continue
+            text = f"{ns}: {value}"
+            with self.store.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(ord) + 1, 0) FROM chunks "
+                    "WHERE ref_id = %s AND ord >= 0",
+                    (ref_id,),
+                ).fetchone()
+                next_pos = int(row[0]) if row and row[0] is not None else 0
+                self.store.insert_blocks(
+                    ref_id,
+                    [
+                        BlockInsert(
+                            pos=next_pos,
+                            text=text,
+                            meta={"chunk_kind": "tag_overflow", "tag_namespace": ns},
+                        )
+                    ],
+                    conn=conn,
+                )
+            chunk_ids.append(next_pos)
+            rewritten.append(f"{ns}:see-chunk-{next_pos}")
+        return rewritten, chunk_ids
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         out = [f"# {self._sense()} {ref.id}", ""]
