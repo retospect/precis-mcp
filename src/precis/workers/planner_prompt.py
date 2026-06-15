@@ -309,7 +309,7 @@ def _load_ref_body(store: Store, ref_id: int) -> str:
               FROM chunks
              WHERE ref_id = %s
                AND COALESCE(meta->>'chunk_kind', '') != 'job_event'
-             ORDER BY pos
+             ORDER BY ord
             """,
             (ref_id,),
         ).fetchall()
@@ -332,7 +332,7 @@ def _load_child_summaries(store: Store, ref_id: int) -> str:
         rows = conn.execute(
             """
             SELECT c.ref_id, c.kind, c.title,
-                   string_agg(ch.text, E'\n' ORDER BY ch.pos) AS summary_text
+                   string_agg(ch.text, E'\n' ORDER BY ch.ord) AS summary_text
               FROM refs c
               LEFT JOIN chunks ch ON ch.ref_id = c.ref_id
                                   AND ch.meta->>'chunk_kind' = 'job_summary'
