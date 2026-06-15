@@ -264,17 +264,30 @@ def run(args: argparse.Namespace) -> None:
         # Slice-5 consolidation: passes group into two profiles. The
         # LaunchDaemon picks one via --profile=system|agent; --only
         # still overrides for ad-hoc backfills.
+        #
+        # Planner-coroutine slice (2026-06-15): ``job_claude_inproc``
+        # moved off the system profile and onto the agent profile. The
+        # runner shells out to ``claude -p`` with ``--mcp-config`` so
+        # the in-process planner can call back via MCP; that requires
+        # the hermes-owned ``~/.claude/mcp.json`` + OAuth state, which
+        # only lives on the agent host (melchior). On data-host system
+        # workers the runner used to claim plan_tick / fix_gripe jobs,
+        # fail because PRECIS_MCP_CONFIG / OAuth was missing, and
+        # bubble ``child-failed:<job>`` to the parent — a routing-
+        # induced false negative. Moving the pass to the agent profile
+        # restricts claims to the host that can actually execute.
         system_passes: frozenset[str] = frozenset({
             "embed", "summarize", "chunk_keywords", "chase", "fetch",
             "tag_embeddings", "auto_check", "schedule", "nursery",
-            "dispatch", "job_claude_inproc",
+            "dispatch",
         })
         # dream_agent stays out of the profile — it has its own
         # cadence (15-min LaunchDaemon via dream-pass.sh) and gates
-        # via PRECIS_DREAM_AGENT=1. The agent profile sticks to
-        # the dedup-window reviewers (structural / deep_review).
+        # via PRECIS_DREAM_AGENT=1. The agent profile carries the
+        # dedup-window reviewers (structural / deep_review) PLUS
+        # ``job_claude_inproc`` (planner-coroutine slice).
         agent_passes: frozenset[str] = frozenset({
-            "structural", "deep_review",
+            "structural", "deep_review", "job_claude_inproc",
         })
         profile_passes = {
             "system": system_passes,
