@@ -11,7 +11,7 @@ and searching across papers, documents, personal state, code, and
 cached tool calls. Small-model-friendly (7B-class agents are the design
 target); stores content in PostgreSQL with `pgvector`.
 
-> **Status.** v8.8.5 — see [`CHANGELOG.md`](CHANGELOG.md) for the
+> **Status.** v8.13.0 — see [`CHANGELOG.md`](CHANGELOG.md) for the
 > live story. v5.2.6 on PyPI is the last v1-line release.
 >
 > **README is stale beyond this banner.** Things the architecture
@@ -158,6 +158,7 @@ config:
 | `EPO_OPS_CLIENT_KEY` + `_SECRET` + `PRECIS_PATENT_RAW_ROOT` | Enables `patent` kind. |
 | `WOLFRAM_APP_ID`              | Enables `math` kind.                             |
 | `PERPLEXITY_API_KEY`          | Enables `websearch` / `think` / `research`.      |
+| `PRECIS_CORPUS_DIR`           | Corpus root(s) for the `precis web` paper viewer. An `os.pathsep`-separated list is allowed (e.g. `/opt/a/corpus:/opt/b/corpus`); the web tries each `<root>/<letter>/<cite_key>.pdf` in order and serves the first that exists. Point it at the same path the ingest watcher writes to. |
 | `LOG_LEVEL`                   | `DEBUG` / `INFO` / `WARNING` / `ERROR`.          |
 
 ## Design highlights
@@ -235,9 +236,12 @@ the server.
 ```text
 precis serve                       # Start the MCP stdio server.
 precis web [--host H --port P]      # Browser UI: Tasks / Papers / Console /
-                                   #   Status tabs (needs the [web] extra;
-                                   #   binds 127.0.0.1:9100, no auth — reach
-                                   #   it over Tailscale).
+                                   #   Conversations / Status tabs (needs the
+                                   #   [web] extra; binds 127.0.0.1:9100, no
+                                   #   auth — reach it over Tailscale). Papers
+                                   #   carry DOI/arXiv verify links; PDFs serve
+                                   #   from PRECIS_CORPUS_DIR (multi-root);
+                                   #   conversations render as a transcript.
 precis serve-embeddings            # Run the HTTP embedding service (the
                                    #   server side of PRECIS_EMBEDDER=remote;
                                    #   /healthz /readyz /model /embed /metrics).
@@ -290,6 +294,9 @@ high-traffic ones:
 - [`docs/user-facing/patent-kind-spec.md`](docs/user-facing/patent-kind-spec.md) — EPO OPS integration.
 - [`docs/user-facing/paper_ingest.md`](docs/user-facing/paper_ingest.md) — `.acatome` bundle ingest path.
 - [`docs/design/storage-v2.md`](docs/design/storage-v2.md) — full schema + discovery-layer design.
+- [`docs/decisions/0026-precis-web-surface.md`](docs/decisions/0026-precis-web-surface.md) — the `precis web` browser UI (Tasks / Papers / Conversations / Console / Status).
+- [`docs/design/precis-web-papers-conv-polish.md`](docs/design/precis-web-papers-conv-polish.md) — paper DOI/arXiv links, multi-root corpus PDF serving, conversation transcript view.
+- [`docs/decisions/0029-multi-root-corpus-pdf.md`](docs/decisions/0029-multi-root-corpus-pdf.md) — why `PRECIS_CORPUS_DIR` accepts a list of roots.
 - [`src/precis/data/skills/precis-citation-help.md`](src/precis/data/skills/precis-citation-help.md) — `citation` kind + verifier-workflow agent surface.
 - [`src/precis/data/skills/precis-toc-help.md`](src/precis/data/skills/precis-toc-help.md) — TOC machinery (segments, sentences, matryoshka keywords).
 - [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each phase.

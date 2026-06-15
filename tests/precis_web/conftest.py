@@ -101,6 +101,30 @@ class FakeStore:
         self.oracles = [
             make_ref(id=30, kind="oracle", slug="planck-constant", title="Planck"),
         ]
+        self.convs = [
+            make_ref(
+                id=40,
+                kind="conv",
+                slug="discord/111/222/333",
+                title="A thread",
+            ),
+        ]
+        # Canned turns for conv id=40, keyed by ref_id. Blocks expose
+        # pos / text / meta (author, ts) like the real Block dataclass.
+        self._conv_blocks: dict[int, list[Any]] = {
+            40: [
+                SimpleNamespace(
+                    pos=0,
+                    text="hello there",
+                    meta={"author": "alice", "ts": "2026-06-14T20:00:00Z"},
+                ),
+                SimpleNamespace(
+                    pos=1,
+                    text="general kenobi",
+                    meta={"author": "bob", "ts": "2026-06-14T20:01:00Z"},
+                ),
+            ]
+        }
 
     def _for_kind(self, kind: str | None) -> list[Any]:
         return {
@@ -108,7 +132,11 @@ class FakeStore:
             "paper": self.papers,
             "memory": self.memories,
             "oracle": self.oracles,
+            "conv": self.convs,
         }.get(kind or "", [])
+
+    def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
+        return list(self._conv_blocks.get(ref_id, []))
 
     def list_refs(
         self,
@@ -132,7 +160,12 @@ class FakeStore:
 
     def fetch_refs_by_ids(self, ids, *, include_deleted: bool = False):
         pool = {
-            r.id: r for r in self.todos + self.papers + self.memories + self.oracles
+            r.id: r
+            for r in self.todos
+            + self.papers
+            + self.memories
+            + self.oracles
+            + self.convs
         }
         return {i: pool[i] for i in ids if i in pool}
 

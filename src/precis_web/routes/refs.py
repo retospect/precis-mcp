@@ -94,6 +94,68 @@ def _row(ref: Any) -> dict[str, Any]:
     }
 
 
+def _fmt_turn_ts(ts: Any) -> str:
+    """Best-effort human timestamp for a conv turn's ``meta['ts']``.
+
+    Turns carry ``ts`` as an ISO string (Discord bridge) or a
+    datetime; tolerate both and anything else by stringifying. Empty
+    when absent.
+    """
+    if not ts:
+        return ""
+    if isinstance(ts, datetime):
+        return ts.strftime("%Y-%m-%d %H:%M")
+    s = str(ts)
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+    except ValueError:
+        return s
+
+
+#: Author dot colours for the transcript, picked deterministically by
+#: author name so the same speaker keeps one colour down a thread.
+_AUTHOR_DOTS: tuple[str, ...] = (
+    "bg-sky-500",
+    "bg-emerald-500",
+    "bg-violet-500",
+    "bg-amber-500",
+    "bg-rose-500",
+    "bg-teal-500",
+)
+
+
+def _author_dot(author: str) -> str:
+    """Stable colour class for an author (presentation only)."""
+    idx = sum(ord(c) for c in author) % len(_AUTHOR_DOTS)
+    return _AUTHOR_DOTS[idx]
+
+
+def _conv_turns(store: Any, ref_id: int) -> list[dict[str, Any]]:
+    """Structured turns for the conversation transcript view.
+
+    Reads body chunks (one per turn) straight off the store so the web
+    renders a human-readable chat transcript — the handler's ``get``
+    overview is the agent-facing card (with ``Next:`` call
+    affordances), which is noise for a person reading a thread.
+    """
+    turns: list[dict[str, Any]] = []
+    for b in store.list_blocks_for_ref(ref_id):
+        meta = getattr(b, "meta", None) or {}
+        author = meta.get("author") or "?"
+        turns.append(
+            {
+                "pos": b.pos,
+                "author": author,
+                "dot": _author_dot(author),
+                "ts": _fmt_turn_ts(meta.get("ts")),
+                "text": b.text or "",
+            }
+        )
+    return turns
+
+
 @router.get("/{kind}", response_class=HTMLResponse)
 async def index(
     request: Request,
@@ -169,8 +231,25 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     if ref is None or ref.kind != kind:
         raise NotFound(f"{kind} id={ref_id} not found")
 
-    # Slug kinds (conv/oracle/patent/pres) address get() by slug;
-    # numeric kinds (memory/gripe) by id. Prefer the slug when present.
+    # Conversations render as a human-readable chat transcript (one
+    # turn per body chunk) rather than the handler's agent-facing
+    # overview card — a person clicking a thread wants the turns, not
+    # the `Next:` call affordances meant for the LLM.
+    if kind == "conv":
+        return templates.TemplateResponse(
+            request,
+            "refs/conv_detail.html.j2",
+            {
+                "active_tab": f"refs:{kind}",
+                "kind": kind,
+                "kind_label": _REF_KIND_LABEL[kind],
+                "ref": _row(ref),
+                "turns": _conv_turns(store, ref.id),
+            },
+        )
+
+    # Slug kinds (oracle/patent/pres) address get() by slug; numeric
+    # kinds (memory/gripe) by id. Prefer the slug when present.
     addr: str | int = ref.slug if ref.slug else ref.id
     body, is_error = dispatch(request, "get", {"kind": kind, "id": addr})
 

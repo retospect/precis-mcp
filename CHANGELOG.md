@@ -20,6 +20,15 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   label, which is stripped — before falling back to the first
   substantial leading paragraph.
 
+- **Conversations tab renders a readable transcript.** Clicking a
+  `conv` in the Conversations tab previously dumped the handler's
+  agent-facing overview card (the `Next: {if you want to execute this
+  call}` affordances meant for an LLM) into a `<pre>`. The web detail
+  view now reads the turn chunks directly and renders a chat-style
+  transcript — per-turn author (with a stable colour dot), timestamp,
+  anchor, and body — with a turn count in the header. Other ref kinds
+  are unchanged.
+
 - **Multiple corpus roots for PDF serving.** `PRECIS_CORPUS_DIR` now
   accepts an `os.pathsep`-separated list of roots (e.g.
   `/opt/shared/corpus:/opt/nas/botshome/papers/corpus`); the web tries

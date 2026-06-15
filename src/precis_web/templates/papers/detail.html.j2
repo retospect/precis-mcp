@@ -42,7 +42,7 @@
       <p class="mt-1">cite_key: <span class="font-mono break-all">{{ cite_key }}</span></p>
       <p class="mt-1">Looked at:</p>
       <ul class="mt-0.5 ml-4 list-disc">
-        {% for p in pdf_lookup_paths %}
+        {% for p in pdf_lookup_paths | default([], true) %}
         <li class="font-mono break-all">{{ p }}</li>
         {% else %}
         <li>(none)</li>
@@ -60,7 +60,7 @@
         so the server can't address a file for it on disk
         (layout is <span class="font-mono">&lt;corpus_dir&gt;/&lt;letter&gt;/&lt;cite_key&gt;.pdf</span>).</p>
       <p class="mt-1">corpus roots:
-        <span class="font-mono break-all">{{ corpus_dirs | join(', ') or "(unset)" }}</span></p>
+        <span class="font-mono break-all">{{ (corpus_dirs | default([], true)) | join(', ') or "(unset)" }}</span></p>
     {% endif %}
   </div>
 {% endif %}

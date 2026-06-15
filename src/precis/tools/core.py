@@ -47,6 +47,72 @@ _ToolReturn = Any  # documents runtime: str on success, CallToolResult on error.
 _runtime = None
 
 
+def _monotonic() -> float:
+    """Late-binding monotonic; lazy import so test stubs don't break boot."""
+    import time as _t
+    return _t.monotonic()
+
+
+_TOOL_CALL_LOGGER = logging.getLogger("precis.tools.mcp_calls")
+
+
+def _log_tool_call(
+    *,
+    verb: str,
+    payload: dict[str, Any],
+    duration_ms: float,
+    error: bool,
+) -> None:
+    """Emit one structured log line per MCP tool call.
+
+    Correlation keys come from the per-tick env vars the planner
+    runner sets (``PRECIS_CURRENT_TODO``, ``PRECIS_WORKSPACE``,
+    ``PRECIS_CURRENT_MODEL``). Without that env we still log, with
+    None markers — useful for distinguishing operator-driven calls
+    from cascade calls during diagnosis.
+
+    Payload fields are sampled (kind, id, name, mode, length of
+    text= for puts) rather than dumped wholesale — we want a
+    grep-friendly audit, not the full LLM payload that lives in
+    ``job_summary``.
+    """
+    import os
+
+    parent_todo = os.environ.get("PRECIS_CURRENT_TODO", "-")
+    workspace = os.environ.get("PRECIS_WORKSPACE", "-")
+    model = os.environ.get("PRECIS_CURRENT_MODEL", "-")
+
+    sample: dict[str, Any] = {}
+    for key in ("kind", "id", "name", "mode", "rel", "view"):
+        if key in payload:
+            v = payload[key]
+            if isinstance(v, str) and len(v) > 80:
+                v = v[:80] + "…"
+            sample[key] = v
+    if "text" in payload:
+        text = payload.get("text")
+        if isinstance(text, str):
+            sample["text_chars"] = len(text)
+    if "tags" in payload:
+        tags = payload.get("tags")
+        if isinstance(tags, list):
+            sample["tags"] = tags[:8]
+    if "args" in payload and isinstance(payload["args"], dict):
+        sample["args_keys"] = sorted(payload["args"].keys())[:8]
+
+    _TOOL_CALL_LOGGER.info(
+        "mcp_call verb=%s parent_todo=%s workspace=%s model=%s "
+        "duration_ms=%.1f error=%s payload=%s",
+        verb,
+        parent_todo,
+        workspace,
+        model,
+        duration_ms,
+        error,
+        sample,
+    )
+
+
 def _get_runtime():
     """Get the current runtime instance.
 
@@ -91,6 +157,8 @@ def _dispatch(verb: str, payload: dict[str, Any]) -> _ToolReturn:
     errors before treating the value as text.
     """
     runtime = _get_runtime()
+    started = _monotonic()
+    is_error = False
     try:
         body, is_error = runtime.dispatch_with_status(verb, payload)
         if is_error:
@@ -100,12 +168,32 @@ def _dispatch(verb: str, payload: dict[str, Any]) -> _ToolReturn:
             )
         return body
     except Exception as e:
+        is_error = True
         # Handle unexpected exceptions
         error_body = runtime.render_error(e)
         return CallToolResult(
             content=[TextContent(type="text", text=error_body)],
             isError=True,
         )
+    finally:
+        # Structured per-tool-call audit log. The single line per MCP
+        # call is the diagnostic surface that's been missing — without
+        # it, "what did the LLM do?" requires reading the raw stdout
+        # captured in job_summary. With it, ``precis logs --process
+        # precis-serve --since 5m`` shows every put/get/search/tag/etc
+        # the cascade made, correlated by parent_todo so you can pull
+        # the trace for one leaf's tick.
+        try:
+            _log_tool_call(
+                verb=verb,
+                payload=payload or {},
+                duration_ms=(_monotonic() - started) * 1000.0,
+                error=is_error,
+            )
+        except Exception:
+            # Logging is best-effort — never fail a tool call because
+            # the audit emitter threw.
+            pass
 
 
 def _validation_error(body: str) -> _ToolReturn:

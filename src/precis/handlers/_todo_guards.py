@@ -410,6 +410,145 @@ def check_level_tags_on_tag(
             )
 
 
+def check_status_done_artifact(
+    store: "Store",
+    ref_id: int,
+    add: list[str] | None,
+) -> None:
+    """Reject ``STATUS:done`` from worker sources when no artifact landed.
+
+    The planner-coroutine cascade can "cheat" by tagging itself
+    ``STATUS:done`` without producing any durable output — no file
+    written, no citation minted, no successful child job. The parent
+    re-tick then assumes the leaf finished its work and moves on, but
+    the actual deliverable doesn't exist. This guardrail prevents that
+    by demanding evidence of work before letting the worker close a
+    leaf.
+
+    Evidence is any one of:
+
+    * **A file written under the workspace** during this tick —
+      detected via ``ref_events`` of source ``write_file`` linked to
+      this ref.
+    * **A citation minted that points at this todo** — any
+      ``kind='citation'`` ref linked from this todo or sharing its
+      project tag.
+    * **A successful child job** under this todo — at least one
+      ``kind='job'`` ref with ``STATUS='succeeded'``.
+    * **All live child todos are done** — the parent's role is
+      stitching, not writing; if its children resolved, it can close.
+
+    Owner callers pass straight through — the owner can declare
+    anything done manually. Workers are bound by the evidence rule.
+
+    Wired into ``TodoHandler.tag`` so it fires on every tag-add by
+    workers. Raises :class:`BadInput` when evidence is absent so the
+    LLM sees a structured "no, you didn't do the work yet" rather
+    than the tag silently sticking.
+    """
+    if is_owner():
+        return
+    if not add or "STATUS:done" not in add:
+        return
+    with store.pool.connection() as conn:
+        # 1. Successful child job under this todo?
+        cur = conn.execute(
+            """
+            SELECT 1 FROM refs c
+              JOIN ref_tags rt ON rt.ref_id = c.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE c.parent_id = %s
+               AND c.kind = 'job'
+               AND c.deleted_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value = 'succeeded'
+             LIMIT 1
+            """,
+            (ref_id,),
+        ).fetchone()
+        if cur:
+            return
+        # 2. All live child todos are STATUS:done / won't-do (stitching role)?
+        cur = conn.execute(
+            """
+            SELECT count(*) FILTER (WHERE c.kind = 'todo' AND c.deleted_at IS NULL
+                                     AND COALESCE(
+                                       (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                                         WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                                       'open'
+                                     ) NOT IN ('done', 'won''t-do')) AS open_kids,
+                   count(*) FILTER (WHERE c.kind = 'todo' AND c.deleted_at IS NULL) AS total_kids
+              FROM refs c WHERE c.parent_id = %s
+            """,
+            (ref_id,),
+        ).fetchone()
+        open_kids = int(cur[0] or 0)
+        total_kids = int(cur[1] or 0)
+        if total_kids > 0 and open_kids == 0:
+            return
+        # 3. Citation minted under the same project tag?
+        cur = conn.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM refs cit
+                  JOIN ref_tags rt_cit ON rt_cit.ref_id = cit.ref_id
+                  JOIN tags t_cit ON t_cit.tag_id = rt_cit.tag_id
+                 WHERE cit.kind = 'citation'
+                   AND cit.deleted_at IS NULL
+                   AND t_cit.namespace = 'OPEN'
+                   AND t_cit.value LIKE 'project:%%'
+                   AND t_cit.value IN (
+                       SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                         WHERE rt.ref_id = %s AND t.namespace = 'OPEN'
+                           AND t.value LIKE 'project:%%'
+                   )
+                   AND cit.created_at > now() - interval '24 hours'
+            )
+            """,
+            (ref_id,),
+        ).fetchone()
+        if cur and cur[0]:
+            return
+        # 4. File written under the workspace? Detected via ref_events
+        #    'put_file' source on a ref tagged the same project. (Best-effort;
+        #    the put handlers append these events when wired to.)
+        cur = conn.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM ref_events ev
+                  JOIN refs r ON r.ref_id = ev.ref_id
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind IN ('tex','markdown','plaintext','pic')
+                   AND r.deleted_at IS NULL
+                   AND t.namespace = 'OPEN' AND t.value LIKE 'project:%%'
+                   AND t.value IN (
+                       SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                         WHERE rt2.ref_id = %s AND t2.namespace = 'OPEN'
+                           AND t2.value LIKE 'project:%%'
+                   )
+                   AND ev.ts > now() - interval '24 hours'
+            )
+            """,
+            (ref_id,),
+        ).fetchone()
+        if cur and cur[0]:
+            return
+    raise BadInput(
+        f"STATUS:done rejected on todo id={ref_id}: no artifact found "
+        "(no file written, no citation minted, no successful child job, "
+        "no resolved child todos in the last 24h)",
+        next=(
+            "do the work first: put(kind='tex', name='<slug>', text='...') "
+            "OR put(kind='citation', text='<claim>', source_handle='...', ...) "
+            "OR mint subtasks via put(kind='todo', tags=['LLM:<model>'], ...) "
+            "and let them resolve. Yield via ask-user:<question> if blocked. "
+            "Halt via halt:<reason> if structurally stuck. STATUS:done means "
+            "your deliverable EXISTS — not that you thought about it."
+        ),
+    )
+
+
 def check_halt_remove(remove: list[str] | None) -> None:
     """Reject ``remove=['halt']`` / ``halt:<reason>`` from worker sources.
 
@@ -547,6 +686,7 @@ __all__ = [
     "check_depth_under",
     "check_executor_tag",
     "check_halt_remove",
+    "check_status_done_artifact",
     "check_level_tags_on_create",
     "check_level_tags_on_tag",
     "check_llm_tag",

@@ -257,6 +257,43 @@ the corpus yet, mint `put(kind='finding', text='<claim>', ...)` to
 flag the gap, AND write `[citation pending]` in your prose. NEVER
 write `\\cite{TODO}` or a guessed bib key — it breaks the compile.
 
+**Literature hunt**: if you identify primary sources that you need
+but the corpus doesn't have, **DO NOT** write them as a memory
+note ("References needed: ..."). Mint a literature-hunt subtask:
+
+  put(kind='todo', tags=['LLM:sonnet'], text='''
+  Literature hunt — find and ingest these N papers. For each:
+  1. search(kind='paper', q='<title or DOI>') to check the corpus.
+  2. If not in corpus, mint
+       put(kind='finding', text='<claim>',
+           source_handle='<paper:slug-guess>',
+           verifier_confidence=0.5)
+     The finding_chase worker auto-resolves via Unpaywall / arXiv /
+     S2 / EPO OPS.
+  3. STATUS:done when all are minted.
+
+  Papers needed:
+    1. <citation-style identifier> — <topic>
+    2. ...
+  ''')
+
+When the chase resolves a paper into the corpus, your parent's
+re-tick can `\\cite{<slug>}` it. Reference notes that linger in
+memory are PROHIBITED — they trigger nursery flags and the chase
+loop never starts.
+
+## STATUS:done has a guardrail
+
+You may **not** tag yourself `STATUS:done` unless one of these is
+true: (a) a successful child job exists under this todo,
+(b) all your live child todos are STATUS:done / won't-do,
+(c) you minted at least one citation tagged with your project,
+or (d) you wrote at least one file under your workspace in this
+tick (or the last 24h). The guardrail rejects worker-source
+`STATUS:done` calls that fail all four; the LLM doesn't get to
+declare victory without evidence. If you're genuinely blocked,
+use `ask-user:<question>` or `halt:<reason>` instead.
+
 ## Depth discipline (the value proposition)
 
 The bar to beat is Perplexity. Every output should be quantified

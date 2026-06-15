@@ -279,6 +279,27 @@ def test_refs_detail_wrong_kind_404(client) -> None:
     assert resp.status_code == 400
 
 
+def test_conv_detail_renders_transcript_not_agent_card(client, runtime) -> None:
+    # Clicking a conversation shows the turns, not the handler's
+    # agent-facing overview card (no `get` dispatch, no `Next:` call
+    # affordances).
+    resp = client.get("/refs/conv/40")
+    assert resp.status_code == 200
+    assert "hello there" in resp.text
+    assert "general kenobi" in resp.text
+    assert "alice" in resp.text
+    assert "bob" in resp.text
+    # The transcript view reads blocks directly; it must not route
+    # through the get verb (which would emit the agent card).
+    assert not any(verb == "get" for verb, _ in runtime.calls)
+
+
+def test_conv_detail_shows_turn_count(client) -> None:
+    resp = client.get("/refs/conv/40")
+    assert resp.status_code == 200
+    assert "2 turns" in resp.text
+
+
 def test_refs_nav_tabs_present(client) -> None:
     resp = client.get("/refs/memory")
     for href in (

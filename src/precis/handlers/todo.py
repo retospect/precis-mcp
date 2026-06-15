@@ -644,6 +644,12 @@ class TodoHandler(NumericRefHandler):
         guards.check_level_tags_on_tag(add=add, remove=remove)
         guards.check_halt_remove(remove=remove)
         guards.check_llm_tag(add)
+        # No STATUS:done from a worker without artifact evidence.
+        # Prevents the cheating mode where the LLM marks itself done
+        # without producing a file / citation / successful child job.
+        guards.check_status_done_artifact(
+            self.store, self._coerce_id(id), add
+        )
         guards.check_executor_tag(add)
         ref_id = self._coerce_id(id)
         if prio is not None or clear_prio:

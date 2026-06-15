@@ -1,0 +1,37 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ ref.title }}{% endblock %}
+{% block content %}
+<a href="/refs/{{ kind }}" class="text-sm text-slate-500 underline">&larr; {{ kind_label }}</a>
+<div class="mt-2 mb-4">
+  <h1 class="text-lg font-semibold">{{ ref.title }}</h1>
+  <p class="text-sm text-slate-500">
+    #{{ ref.id }}
+    {% if ref.slug %}· <span class="font-mono break-all">{{ ref.slug }}</span>{% endif %}
+    {% if ref.updated %}· updated {{ ref.updated }}{% endif %}
+    · {{ turns | length }} turn{{ '' if turns | length == 1 else 's' }}
+  </p>
+</div>
+
+{% if not turns %}
+  <p class="text-sm text-slate-500">No turns recorded for this conversation.</p>
+{% else %}
+<ol class="space-y-3">
+  {% for t in turns %}
+  <li id="t{{ t.pos }}" class="rounded-lg border border-slate-200 bg-white p-3">
+    <div class="flex items-baseline justify-between gap-2 mb-1">
+      <span class="text-sm font-medium text-slate-800">
+        {# Deterministic dot colour per author (computed in the route)
+           so a thread is easy to skim. #}
+        <span class="inline-block w-2 h-2 rounded-full align-middle mr-1 {{ t.dot }}"></span>
+        {{ t.author }}
+      </span>
+      <span class="text-xs text-slate-400 shrink-0">
+        {% if t.ts %}{{ t.ts }} · {% endif %}<a href="#t{{ t.pos }}" class="hover:underline">~{{ t.pos }}</a>
+      </span>
+    </div>
+    <div class="text-sm leading-relaxed text-slate-700 whitespace-pre-wrap break-words">{{ t.text }}</div>
+  </li>
+  {% endfor %}
+</ol>
+{% endif %}
+{% endblock %}
