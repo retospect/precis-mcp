@@ -153,6 +153,13 @@ def _author_dot(author: str) -> str:
     return _AUTHOR_DOTS[idx]
 
 
+#: Meta keys rendered as dedicated fields on a turn. Everything else
+#: in ``Block.meta`` falls into ``extra_meta`` and is shown as a
+#: key/value strip so the operator sees the full per-turn record
+#: (stop_reason, token counts, msg_id, source flags, …).
+_TURN_SPECIAL_META: frozenset[str] = frozenset({"author", "ts", "chunk_kind"})
+
+
 def _conv_turns(store: Any, ref_id: int) -> list[dict[str, Any]]:
     """Structured turns for the conversation transcript view.
 
@@ -160,11 +167,23 @@ def _conv_turns(store: Any, ref_id: int) -> list[dict[str, Any]]:
     renders a human-readable chat transcript — the handler's ``get``
     overview is the agent-facing card (with ``Next:`` call
     affordances), which is noise for a person reading a thread.
+
+    Each turn carries ``chunk_kind`` (paragraph / conv_message / …)
+    and ``extra_meta`` — every ``meta`` key not consumed by a
+    dedicated field. The strip surfaces stop_reason / input_tokens /
+    output_tokens / msg_id and any other bridge-stamped fields so a
+    reader sees the complete per-turn record without needing to drop
+    into the MCP get(view='last-meta').
     """
     turns: list[dict[str, Any]] = []
     for b in store.list_blocks_for_ref(ref_id):
         meta = getattr(b, "meta", None) or {}
         author = meta.get("author") or "?"
+        extra = [
+            (k, v)
+            for k, v in sorted(meta.items())
+            if k not in _TURN_SPECIAL_META and v is not None and v != ""
+        ]
         turns.append(
             {
                 "pos": b.pos,
@@ -172,6 +191,12 @@ def _conv_turns(store: Any, ref_id: int) -> list[dict[str, Any]]:
                 "dot": _author_dot(author),
                 "ts": _fmt_turn_ts(meta.get("ts")),
                 "text": b.text or "",
+                "chunk_kind": (
+                    meta.get("chunk_kind")
+                    or getattr(b, "chunk_kind", "")
+                    or ""
+                ),
+                "extra_meta": extra,
             }
         )
     return turns
@@ -274,6 +299,22 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     addr: str | int = ref.slug if ref.slug else ref.id
     body, is_error = dispatch(request, "get", {"kind": kind, "id": addr})
 
+    # Patent body text lives in body chunks; the handler's overview
+    # only renders the bibliographic header + abstract excerpt. Pull
+    # the chunks so the detail view can show the full text (description
+    # + claims) as one row per chunk — what's actually in the corpus.
+    chunks: list[dict[str, Any]] = []
+    if kind == "patent":
+        for b in store.list_blocks_for_ref(ref.id):
+            chunks.append(
+                {
+                    "pos": b.pos,
+                    "chunk_kind": getattr(b, "chunk_kind", "paragraph"),
+                    "slug": b.slug or "",
+                    "text": b.text or "",
+                }
+            )
+
     return templates.TemplateResponse(
         request,
         "refs/detail.html.j2",
@@ -284,5 +325,6 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             "ref": _row(ref),
             "body": body,
             "is_error": is_error,
+            "chunks": chunks,
         },
     )

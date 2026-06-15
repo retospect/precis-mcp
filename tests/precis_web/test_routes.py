@@ -300,6 +300,74 @@ def test_conv_detail_shows_turn_count(client) -> None:
     assert "2 turns" in resp.text
 
 
+def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
+    """Every meta field on a turn surfaces — chunk_kind badge + extra strip.
+
+    The transcript shows author + ts inline (dedicated fields) and
+    flattens everything else (stop_reason, token counts, msg_id, …)
+    into a key/value strip per turn. The operator should see the full
+    record without dropping into ``get(view='last-meta')``.
+    """
+    from types import SimpleNamespace
+
+    original_blocks = runtime.store.list_blocks_for_ref
+
+    fake_turns = [
+        SimpleNamespace(
+            pos=0,
+            text="user said hi",
+            chunk_kind="conv_message",
+            meta={
+                "author": "reto",
+                "ts": "2026-06-15T20:00:00Z",
+                "chunk_kind": "conv_message",
+                "msg_id": "discord:111",
+            },
+        ),
+        SimpleNamespace(
+            pos=1,
+            text="assistant replied",
+            chunk_kind="conv_message",
+            meta={
+                "author": "asa",
+                "ts": "2026-06-15T20:00:05Z",
+                "chunk_kind": "conv_message",
+                "stop_reason": "end_turn",
+                "input_tokens": 420,
+                "output_tokens": 137,
+                "model": "claude-opus-4-7",
+            },
+        ),
+    ]
+
+    def blocks(ref_id, **kw):
+        if ref_id == 40:
+            return list(fake_turns)
+        return original_blocks(ref_id, **kw)
+
+    runtime.store.list_blocks_for_ref = blocks  # type: ignore[assignment]
+    try:
+        resp = client.get("/refs/conv/40")
+    finally:
+        runtime.store.list_blocks_for_ref = original_blocks  # type: ignore[assignment]
+
+    assert resp.status_code == 200
+    # chunk_kind badge per turn.
+    assert resp.text.count("conv_message") >= 2
+    # Author + text still visible.
+    assert "reto" in resp.text and "asa" in resp.text
+    assert "user said hi" in resp.text and "assistant replied" in resp.text
+    # Every extra-meta field surfaces (key + value).
+    for needle in (
+        "msg_id", "discord:111",
+        "stop_reason", "end_turn",
+        "input_tokens", "420",
+        "output_tokens", "137",
+        "model", "claude-opus-4-7",
+    ):
+        assert needle in resp.text, f"{needle!r} missing from rendered transcript"
+
+
 def test_refs_nav_tabs_present(client) -> None:
     resp = client.get("/refs/memory")
     for href in (
@@ -794,6 +862,82 @@ def test_post_preserves_focus_in_redirect(client) -> None:
     )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/tasks?focus=1"
+
+
+# ── patent detail chunks ───────────────────────────────────────────
+
+
+def test_patent_detail_renders_chunks(client, runtime) -> None:
+    """The patent detail view shows every body chunk in full.
+
+    The handler's overview is just bibliographic header + abstract;
+    body text lives in chunks. The detail view fetches them via
+    ``Store.list_blocks_for_ref`` and renders one card per chunk
+    showing ``~pos``, the chunk_kind badge, and the full text.
+    """
+    from types import SimpleNamespace
+
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.patents = [
+        make_ref(id=6172, kind="patent", slug="cn112562800a", title="A patent")
+    ]
+    # Hook the fake's fetch + blocks for patent 6172.
+    original_fetch = runtime.store.fetch_refs_by_ids
+    original_blocks = runtime.store.list_blocks_for_ref
+
+    def fetch(ids, *, include_deleted=False):
+        out = original_fetch(ids, include_deleted=include_deleted)
+        for p in runtime.store.patents:
+            if p.id in ids:
+                out[p.id] = p
+        return out
+
+    fake_blocks = [
+        SimpleNamespace(
+            pos=0,
+            slug="cn112562800a~p0",
+            text="First chunk text.",
+            meta={},
+            chunk_kind="paragraph",
+        ),
+        SimpleNamespace(
+            pos=1,
+            slug=None,
+            text="Second chunk has more text\nover multiple lines.",
+            meta={},
+            chunk_kind="claim",
+        ),
+    ]
+
+    def blocks(ref_id, **kw):
+        if ref_id == 6172:
+            return list(fake_blocks)
+        return original_blocks(ref_id, **kw)
+
+    runtime.store.fetch_refs_by_ids = fetch  # type: ignore[assignment]
+    runtime.store.list_blocks_for_ref = blocks  # type: ignore[assignment]
+    try:
+        resp = client.get("/refs/patent/6172")
+    finally:
+        runtime.store.fetch_refs_by_ids = original_fetch  # type: ignore[assignment]
+        runtime.store.list_blocks_for_ref = original_blocks  # type: ignore[assignment]
+
+    assert resp.status_code == 200
+    assert "Chunks" in resp.text
+    assert "(2)" in resp.text
+    assert "~0" in resp.text and "~1" in resp.text
+    assert "paragraph" in resp.text and "claim" in resp.text
+    assert "First chunk text." in resp.text
+    assert "Second chunk has more text" in resp.text
+
+
+def test_memory_detail_omits_chunks_section(client) -> None:
+    """Non-patent kinds don't render the chunks section — for now."""
+    resp = client.get("/refs/memory/20")
+    assert resp.status_code == 200
+    # Section heading is patent-only at the route level.
+    assert "Chunks" not in resp.text
 
 
 # ── jinja resilience ───────────────────────────────────────────────
