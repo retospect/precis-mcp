@@ -641,9 +641,15 @@ class TodoHandler(NumericRefHandler):
                     continue
                 kept.append(t)
             remove = kept or None
-        guards.check_level_tags_on_tag(add=add, remove=remove)
-        guards.check_halt_remove(remove=remove)
-        guards.check_llm_tag(add)
+        # Auto-redirect long ask-user:/halt: values into a chunk so the
+        # tag stays a short structured label and the LLM's natural
+        # explanation prose lands somewhere queryable. Triggers before
+        # the level/halt/llm guards because those guards inspect the
+        # final tag forms.
+        if add:
+            add, _redirected_chunks = self._redirect_long_tag_values(
+                ref_id=self._coerce_id(id), tags=add
+            )
         # No STATUS:done from a worker without artifact evidence.
         # Prevents the cheating mode where the LLM marks itself done
         # without producing a file / citation / successful child job.

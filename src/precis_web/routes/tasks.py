@@ -24,8 +24,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Request, Response
+from fastapi import APIRouter, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis_web.deps import dispatch, get_store, templates
@@ -44,6 +45,74 @@ STATUS_CHOICES: tuple[str, ...] = (
 )
 
 _CLOSED = {"done", "won't-do"}
+
+
+def _tasks_url(require: list[str], exclude: list[str]) -> str:
+    """Build the ``/tasks`` URL with the current tag filter applied.
+
+    Each value becomes its own ``require=`` / ``exclude=`` param so a
+    filter with multiple tags round-trips through the form / redirect
+    cycle without re-joining. Returns the bare path when empty.
+    """
+    params: list[tuple[str, str]] = [("require", r) for r in require] + [
+        ("exclude", x) for x in exclude
+    ]
+    qs = urlencode(params)
+    return f"/tasks?{qs}" if qs else "/tasks"
+
+
+def _filter_rows(
+    rows: list[dict[str, Any]],
+    *,
+    require: list[str],
+    exclude: list[str],
+) -> list[dict[str, Any]]:
+    """Keep rows matching the require/exclude tag sets, plus ancestors.
+
+    Match semantics (AND on both lists): a todo matches when **every**
+    ``require`` tag is on it and **no** ``exclude`` tag is. The match
+    set is checked against the union of the todo's free tags + its
+    closed ``STATUS:<v>`` + ``level:<v>``, so the operator can filter
+    by status / level the same way they filter by free tags.
+
+    Tree context is preserved — every matched todo also pulls its
+    ancestor chain into the kept set so a deep match doesn't render as
+    a context-less orphan. Job rows ride along with their parent todo.
+    """
+    if not require and not exclude:
+        return rows
+    req_set = set(require)
+    exc_set = set(exclude)
+
+    matching: set[int] = set()
+    for r in rows:
+        if r["kind"] != "todo":
+            continue
+        row_tags = set(r["tags"])
+        if r["status"]:
+            row_tags.add(f"STATUS:{r['status']}")
+        if r["level"]:
+            row_tags.add(f"level:{r['level']}")
+        if req_set and not req_set.issubset(row_tags):
+            continue
+        if exc_set & row_tags:
+            continue
+        matching.add(r["id"])
+
+    keep = set(matching)
+    by_id = {r["id"]: r for r in rows if r["kind"] == "todo"}
+    for rid in list(matching):
+        cur = by_id[rid].get("parent_id")
+        while cur is not None and cur in by_id and cur not in keep:
+            keep.add(cur)
+            cur = by_id[cur].get("parent_id")
+
+    return [
+        r
+        for r in rows
+        if (r["kind"] == "todo" and r["id"] in keep)
+        or (r["kind"] == "job" and r["parent_id"] in keep)
+    ]
 
 
 def _redirect_or_error(
@@ -295,6 +364,7 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
             {
                 "id": node["id"],
                 "kind": node["kind"],
+                "parent_id": node["parent_id"],
                 "title": node["title"],
                 "status": tags[node["id"]]["status"],
                 "level": tags[node["id"]]["level"],
@@ -319,10 +389,24 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request) -> HTMLResponse:
-    """Strategic tree + doable queue."""
+async def dashboard(
+    request: Request,
+    require: list[str] = Query(default=[]),
+    exclude: list[str] = Query(default=[]),
+) -> HTMLResponse:
+    """Strategic tree + doable queue.
+
+    ``require`` / ``exclude`` are repeating query params — every value
+    is its own tag. AND semantics within each list: a row must carry
+    every required tag and no excluded tag. Matching todos drag in
+    their ancestor chain so the tree shape stays legible; job rows
+    ride along with the parent todo.
+    """
     store = get_store(request)
     rows = _build_rows(store)
+    require = [r for r in require if r]
+    exclude = [x for x in exclude if x]
+    filtered = _filter_rows(rows, require=require, exclude=exclude)
     doable_body, _ = dispatch(
         request, "search", {"kind": "todo", "view": "doable", "page_size": 20}
     )
@@ -331,7 +415,12 @@ async def dashboard(request: Request) -> HTMLResponse:
         "tasks/dashboard.html.j2",
         {
             "active_tab": "tasks",
-            "rows": rows,
+            "rows": filtered,
+            "total_rows": len(rows),
+            "filtered_rows": len(filtered),
+            "filter_active": bool(require or exclude),
+            "require_tags": require,
+            "exclude_tags": exclude,
             "doable_body": doable_body,
             "status_choices": STATUS_CHOICES,
         },
@@ -343,11 +432,16 @@ async def create_root(
     request: Request,
     text: str = Form(...),
     level: str = Form("strategic"),
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
 ) -> Response:
     """Create a top-level (strategic) root."""
     tags = [f"level:{level}"] if level else None
     return _redirect_or_error(
-        request, "put", {"kind": "todo", "text": text, "tags": tags}
+        request,
+        "put",
+        {"kind": "todo", "text": text, "tags": tags},
+        redirect=_tasks_url(require, exclude),
     )
 
 
@@ -357,6 +451,8 @@ async def create_child(
     parent_id: int,
     text: str = Form(...),
     level: str = Form("subtask"),
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
 ) -> Response:
     """Create a child under ``parent_id``."""
     tags = [f"level:{level}"] if level else None
@@ -364,6 +460,7 @@ async def create_child(
         request,
         "put",
         {"kind": "todo", "text": text, "parent_id": parent_id, "tags": tags},
+        redirect=_tasks_url(require, exclude),
     )
 
 
@@ -372,12 +469,15 @@ async def set_status(
     request: Request,
     ref_id: int,
     status: str = Form(...),
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
 ) -> Response:
     """Set a todo's STATUS via the tag verb (closed-prefix replace)."""
     return _redirect_or_error(
         request,
         "tag",
         {"kind": "todo", "id": ref_id, "add": [f"STATUS:{status}"]},
+        redirect=_tasks_url(require, exclude),
     )
 
 
@@ -386,6 +486,8 @@ async def move_task(
     request: Request,
     ref_id: int,
     new_parent_id: str = Form(""),
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
 ) -> Response:
     """Reparent a todo via the reserved ``link(rel='parent')`` surface.
 
@@ -394,6 +496,7 @@ async def move_task(
     (``mode='add'``). All tree guards (cycle / depth / owner) fire in
     the handler — a rejected move returns the handler's BadInput.
     """
+    redirect = _tasks_url(require, exclude)
     npid = new_parent_id.strip()
     if npid:
         return _redirect_or_error(
@@ -406,11 +509,13 @@ async def move_task(
                 "rel": "parent",
                 "mode": "add",
             },
+            redirect=redirect,
         )
     return _redirect_or_error(
         request,
         "link",
         {"kind": "todo", "id": ref_id, "rel": "parent", "mode": "remove"},
+        redirect=redirect,
     )
 
 
@@ -419,6 +524,8 @@ async def edit_text(
     request: Request,
     ref_id: int,
     text: str = Form(""),
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
 ) -> Response:
     """Rewrite a todo's text in place via the ``edit`` verb.
 
@@ -427,12 +534,14 @@ async def edit_text(
     whitespace ``text`` is a no-op. Owner-only on strategic / tactical
     nodes — the web process runs as owner, so the guard passes here.
     """
+    redirect = _tasks_url(require, exclude)
     if not text.strip():
-        return RedirectResponse(url="/tasks", status_code=303)
+        return RedirectResponse(url=redirect, status_code=303)
     return _redirect_or_error(
         request,
         "edit",
         {"kind": "todo", "id": ref_id, "mode": "replace", "text": text.strip()},
+        redirect=redirect,
     )
 
 
@@ -442,6 +551,8 @@ async def edit_tags(
     ref_id: int,
     add: str = Form(""),
     remove: str = Form(""),
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
 ) -> Response:
     """Add and/or remove free tags on a todo via the ``tag`` verb.
 
@@ -459,9 +570,10 @@ async def edit_tags(
         args["add"] = add_list
     if remove_list:
         args["remove"] = remove_list
+    redirect = _tasks_url(require, exclude)
     if not add_list and not remove_list:
-        return RedirectResponse(url="/tasks", status_code=303)
-    return _redirect_or_error(request, "tag", args)
+        return RedirectResponse(url=redirect, status_code=303)
+    return _redirect_or_error(request, "tag", args, redirect=redirect)
 
 
 @router.get("/{ref_id}/history", response_class=HTMLResponse)
@@ -513,7 +625,12 @@ async def history(request: Request, ref_id: int) -> HTMLResponse:
 
 
 @router.post("/{ref_id}/delete")
-async def delete_task(request: Request, ref_id: int) -> RedirectResponse:
+async def delete_task(
+    request: Request,
+    ref_id: int,
+    require: list[str] = Form(default=[]),
+    exclude: list[str] = Form(default=[]),
+) -> RedirectResponse:
     """Soft-delete a todo (children re-parent to NULL via FK)."""
     dispatch(request, "delete", {"kind": "todo", "id": ref_id})
-    return RedirectResponse(url="/tasks", status_code=303)
+    return RedirectResponse(url=_tasks_url(require, exclude), status_code=303)

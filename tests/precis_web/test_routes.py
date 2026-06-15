@@ -550,3 +550,296 @@ def test_status_ago_formatter() -> None:
     assert _ago(now - timedelta(hours=5)).endswith("h ago")
     assert _ago(now - timedelta(days=3)).endswith("d ago")
     assert _ago(None) == ""
+
+
+# ── tasks tag filter ───────────────────────────────────────────────
+
+
+def test_tasks_url_helper_encodes_each_tag_separately() -> None:
+    from precis_web.routes.tasks import _tasks_url
+
+    assert _tasks_url([], []) == "/tasks"
+    assert _tasks_url(["a"], []) == "/tasks?require=a"
+    assert (
+        _tasks_url(["a", "STATUS:doing"], ["level:strategic"])
+        == "/tasks?require=a&require=STATUS%3Adoing&exclude=level%3Astrategic"
+    )
+
+
+def _row(id, kind="todo", parent_id=None, status="open", level="", tags=None):
+    return {
+        "id": id,
+        "kind": kind,
+        "parent_id": parent_id,
+        "title": f"row {id}",
+        "status": status,
+        "level": level,
+        "tags": list(tags or []),
+        "depth": 0,
+        "done": 0,
+        "total": 0,
+        "is_leaf": True,
+        "locked": False,
+        "lease_until": None,
+        "lease_active": False,
+        "note": "",
+    }
+
+
+def test_filter_rows_passthrough_when_no_filter() -> None:
+    from precis_web.routes.tasks import _filter_rows
+
+    rows = [_row(1), _row(2, parent_id=1)]
+    assert _filter_rows(rows, require=[], exclude=[]) == rows
+
+
+def test_filter_rows_require_and_exclude_and_ancestors() -> None:
+    from precis_web.routes.tasks import _filter_rows
+
+    rows = [
+        _row(1, tags=["project:precis"]),
+        _row(2, parent_id=1, tags=["project:precis", "ask-user:Q"]),
+        _row(3, parent_id=2, tags=["ask-user:Q"]),
+        _row(4, parent_id=1, tags=["project:precis"]),
+    ]
+    kept = _filter_rows(rows, require=["ask-user:Q"], exclude=[])
+    kept_ids = [r["id"] for r in kept]
+    # 2 and 3 match; 1 pulled in as ancestor context; 4 dropped.
+    assert kept_ids == [1, 2, 3]
+
+
+def test_filter_rows_status_and_level_match() -> None:
+    """STATUS:* and level:* are matchable like free tags."""
+    from precis_web.routes.tasks import _filter_rows
+
+    rows = [
+        _row(1, status="doing", level="strategic"),
+        _row(2, status="done", level="subtask"),
+    ]
+    kept = _filter_rows(rows, require=["STATUS:doing"], exclude=[])
+    assert [r["id"] for r in kept] == [1]
+    kept = _filter_rows(rows, require=[], exclude=["STATUS:done"])
+    assert [r["id"] for r in kept] == [1]
+
+
+def test_filter_rows_jobs_ride_along_with_matching_parent() -> None:
+    from precis_web.routes.tasks import _filter_rows
+
+    rows = [
+        _row(1, tags=["ask-user:Q"]),
+        _row(99, kind="job", parent_id=1, tags=[]),
+        _row(2, tags=["project:other"]),
+        _row(98, kind="job", parent_id=2, tags=[]),
+    ]
+    kept = _filter_rows(rows, require=["ask-user:Q"], exclude=[])
+    assert [r["id"] for r in kept] == [1, 99]
+
+
+def test_dashboard_query_filters_rows(client, runtime) -> None:
+    """Tags supplied via query string filter the rendered tree."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [
+        make_ref(id=1, kind="todo", title="Build the thing"),
+        make_ref(id=2, kind="todo", title="Draft the spec", parent_id=1),
+    ]
+    # Inject filtering at the helper level so we don't need the fake
+    # tag-join SQL to wire up ask-user tags.
+    import precis_web.routes.tasks as tasks_mod
+
+    monkey_calls: list[tuple[list[str], list[str]]] = []
+    real_filter = tasks_mod._filter_rows
+
+    def spy(rows, *, require, exclude):
+        monkey_calls.append((list(require), list(exclude)))
+        return real_filter(rows, require=require, exclude=exclude)
+
+    tasks_mod._filter_rows = spy
+    try:
+        resp = client.get("/tasks?require=ask-user%3AQ&exclude=STATUS%3Adone")
+    finally:
+        tasks_mod._filter_rows = real_filter
+
+    assert resp.status_code == 200
+    assert monkey_calls and monkey_calls[-1] == (["ask-user:Q"], ["STATUS:done"])
+    # The filter form pre-fills the operator's input back into the box.
+    assert 'value="ask-user:Q"' in resp.text
+    assert 'value="STATUS:done"' in resp.text
+
+
+def test_status_post_preserves_filter_in_redirect(client) -> None:
+    resp = client.post(
+        "/tasks/2/status",
+        data={
+            "status": "done",
+            "require": ["ask-user:Q"],
+            "exclude": ["STATUS:done"],
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    loc = resp.headers["location"]
+    assert loc.startswith("/tasks?")
+    assert "require=ask-user%3AQ" in loc
+    assert "exclude=STATUS%3Adone" in loc
+
+
+def test_delete_post_preserves_filter_in_redirect(client) -> None:
+    resp = client.post(
+        "/tasks/2/delete",
+        data={"require": ["level:strategic"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/tasks?require=level%3Astrategic"
+
+
+# ── asks ───────────────────────────────────────────────────────────
+
+
+def test_asks_page_renders_empty(client) -> None:
+    """Empty state under the fake store (cursor returns no rows)."""
+    resp = client.get("/asks")
+    assert resp.status_code == 200
+    assert "Asks" in resp.text
+    assert "Nothing&#39;s waiting on you" in resp.text or "Nothing's waiting on you" in resp.text
+
+
+def test_asks_page_renders_data(client, monkeypatch) -> None:
+    """A populated ask renders the question + an unlock form per row."""
+    from precis_web.routes import asks as asks_mod
+
+    monkeypatch.setattr(
+        asks_mod,
+        "_load_asks",
+        lambda store: [
+            {
+                "id": 14634,
+                "title": "Write the technical section",
+                "created_at": None,
+                "questions": ["two blockers — fill in the body first"],
+                "tags": ["ask-user:two blockers — fill in the body first"],
+            }
+        ],
+    )
+    resp = client.get("/asks")
+    assert resp.status_code == 200
+    assert "#14634" in resp.text
+    assert "Write the technical section" in resp.text
+    assert "two blockers" in resp.text
+    assert 'action="/asks/14634/answer"' in resp.text
+    # Hidden remove input carries the raw tag so the unlock dispatch
+    # doesn't re-query.
+    assert 'name="remove"' in resp.text
+
+
+def test_ask_value_strips_prefix() -> None:
+    from precis_web.routes.asks import _ask_value
+
+    assert _ask_value("ask-user:hello") == "hello"
+    assert _ask_value("asking-reto:foo") == "foo"
+    assert _ask_value("ask-user") == ""
+    assert _ask_value("other") == ""
+
+
+def test_answer_dispatches_edit_then_tag_remove(client, runtime) -> None:
+    """The unlock flow: edit appends the response, then tag removes the asks."""
+    # Inject a todo on the fake store so fetch_refs_by_ids resolves.
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos.append(
+        make_ref(id=99, kind="todo", title="Pending question")
+    )
+    resp = client.post(
+        "/asks/99/answer",
+        data={
+            "response": "use scope X",
+            "remove": ["ask-user:what scope?"],
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    verbs = [v for v, _ in runtime.calls]
+    assert verbs[-2:] == ["edit", "tag"]
+    edit_args = runtime.calls[-2][1]
+    assert edit_args["kind"] == "todo"
+    assert edit_args["id"] == 99
+    assert edit_args["mode"] == "replace"
+    assert "Response: use scope X" in edit_args["text"]
+    assert "Pending question" in edit_args["text"]
+    tag_args = runtime.calls[-1][1]
+    assert tag_args == {
+        "kind": "todo",
+        "id": 99,
+        "remove": ["ask-user:what scope?"],
+    }
+
+
+def test_answer_empty_response_redirects_without_dispatch(client, runtime) -> None:
+    """Whitespace-only response is a no-op (no edit, no tag)."""
+    before = len(runtime.calls)
+    resp = client.post(
+        "/asks/1/answer",
+        data={"response": "   "},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert len(runtime.calls) == before  # nothing dispatched
+
+
+def test_answer_edit_failure_skips_tag_remove(client, runtime) -> None:
+    """If edit fails the unlock tag-remove must not fire."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos.append(
+        make_ref(id=77, kind="todo", title="Need input")
+    )
+    runtime.error_verbs.add("edit")
+    resp = client.post(
+        "/asks/77/answer",
+        data={"response": "answer text", "remove": ["ask-user:q"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    verbs = [v for v, _ in runtime.calls]
+    assert "edit" in verbs
+    assert "tag" not in verbs
+
+
+# ── refs title preview ─────────────────────────────────────────────
+
+
+def test_title_preview_first_two_nonempty_lines() -> None:
+    from precis_web.routes.refs import _title_preview
+
+    md = (
+        "# Structural review digest — 2026-06-15\n"
+        "\n"
+        "Strategic root #6649 (Nano-transistors) is mislabelled.\n"
+        "\n"
+        "## Branches missing an outcome line\n"
+    )
+    out = str(_title_preview(md))
+    assert (
+        out
+        == "# Structural review digest — 2026-06-15"
+        "<br>"
+        "Strategic root #6649 (Nano-transistors) is mislabelled."
+    )
+
+
+def test_title_preview_escapes_per_line_html() -> None:
+    """Per-line content is HTML-escaped; only the <br> is raw."""
+    from precis_web.routes.refs import _title_preview
+
+    out = str(_title_preview("<script>x</script>\nplain"))
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+    assert "<br>" in out
+
+
+def test_title_preview_handles_empty() -> None:
+    from precis_web.routes.refs import _title_preview
+
+    assert str(_title_preview("")) == "(untitled)"
+    assert str(_title_preview("\n\n")) == "(untitled)"

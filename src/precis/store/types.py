@@ -278,6 +278,24 @@ class Tag:
                 f"invalid tag: {s!r}",
                 next="tags must be non-empty strings (e.g. 'STATUS:done')",
             )
+        # Hard length cap. Tags are short structured labels that the
+        # `tags` table indexes — a 600-char "ask-user:<paragraph of
+        # analysis>" value bloats the index, breaks attention-view
+        # rendering, and rotted state in production (June 2026). Above
+        # this cap, write a chunk under the ref via
+        # put(kind='memory', text='<long context>', link='todo:N',
+        # rel='note-for') and tag with just the bare handle. The
+        # TodoHandler.tag auto-redirect path catches the common
+        # ask-user:/halt: offenders before this hard cap fires.
+        if len(s) > 200:
+            raise BadInput(
+                f"tag value too long ({len(s)} chars, max 200); for longer "
+                "messages, write a chunk and tag with a short handle",
+                next=(
+                    "put(kind='memory', text='<long context>', link='todo:N', "
+                    "rel='note-for') then tag(id=N, add=['ask-user:<short>'])"
+                ),
+            )
 
         if ":" in s:
             prefix, _, value = s.partition(":")

@@ -49,14 +49,14 @@
 {% else %}
 <ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
   {% for r in rows %}
-  <li class="px-4 py-3 flex items-center gap-3">
-    <span class="text-xs text-slate-400 w-14 shrink-0">#{{ r.id }}</span>
+  <li class="px-4 py-3 flex items-start gap-3">
+    <span class="text-xs text-slate-400 w-14 shrink-0 pt-0.5">#{{ r.id }}</span>
     <a href="/refs/{{ kind }}/{{ r.id }}"
-       class="text-sm font-medium text-sky-700 hover:underline flex-1 truncate">
-      {{ r.title }}
+       class="text-sm font-medium text-sky-700 hover:underline flex-1 break-words">
+      {{ r.title_preview }}
     </a>
-    {% if r.slug %}<span class="text-xs font-mono text-slate-400 truncate max-w-xs">{{ r.slug }}</span>{% endif %}
-    <span class="text-xs text-slate-400 w-32 shrink-0 text-right">{{ r.updated }}</span>
+    {% if r.slug %}<span class="text-xs font-mono text-slate-400 truncate max-w-xs pt-0.5">{{ r.slug }}</span>{% endif %}
+    <span class="text-xs text-slate-400 w-32 shrink-0 text-right pt-0.5">{{ r.updated }}</span>
   </li>
   {% endfor %}
 </ul>

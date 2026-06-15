@@ -1,6 +1,62 @@
 {% extends "base.html.j2" %}
 {% block title %}Tasks{% endblock %}
+{# Inline the current tag filter as hidden inputs so write POSTs
+   round-trip the filter and the redirect lands on the same view. #}
+{% macro filter_inputs() %}
+  {% for r in require_tags %}<input type="hidden" name="require" value="{{ r }}"/>{% endfor %}
+  {% for x in exclude_tags %}<input type="hidden" name="exclude" value="{{ x }}"/>{% endfor %}
+{% endmacro %}
 {% block content %}
+{# Tag filter bar. ``require`` and ``exclude`` are repeating GET
+   params; AND semantics within each list; matching todos pull in
+   their ancestor chain so the tree shape stays legible. #}
+<form method="get" action="/tasks"
+      class="mb-4 rounded-lg border border-slate-200 bg-white px-4 py-3 flex flex-wrap items-end gap-3">
+  <div class="flex flex-col">
+    <label class="text-xs text-slate-400 mb-0.5">Require tags (AND)</label>
+    <input name="require" value="{{ require_tags|join(' ') }}"
+           placeholder="e.g. STATUS:doing ask-user"
+           class="w-64 rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
+    <span class="text-xs text-slate-400 mt-0.5">space / comma separated</span>
+  </div>
+  <div class="flex flex-col">
+    <label class="text-xs text-slate-400 mb-0.5">Exclude tags</label>
+    <input name="exclude" value="{{ exclude_tags|join(' ') }}"
+           placeholder="e.g. STATUS:done level:strategic"
+           class="w-64 rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
+    <span class="text-xs text-slate-400 mt-0.5">matches STATUS:*, level:*, or free tags</span>
+  </div>
+  <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-1.5">Apply</button>
+  {% if filter_active %}
+  <a href="/tasks" class="text-sm text-slate-500 underline pb-1.5">clear</a>
+  <span class="ml-auto text-xs text-slate-500">
+    showing {{ filtered_rows }} of {{ total_rows }} rows
+  </span>
+  {% endif %}
+</form>
+<script>
+  // Repeating ``require=`` / ``exclude=`` params is how the route
+  // expects multi-tag filters. Split the bare input the operator
+  // typed (space / comma) into one hidden field per token so the
+  // ergonomics match the refs tab.
+  document.currentScript.previousElementSibling.addEventListener('submit', function (ev) {
+    const form = ev.target;
+    ['require', 'exclude'].forEach(function (name) {
+      const inp = form.querySelector('input[name="' + name + '"]');
+      if (!inp) return;
+      const raw = inp.value || '';
+      const parts = raw.split(/[\s,]+/).filter(Boolean);
+      inp.remove();
+      parts.forEach(function (p) {
+        const h = document.createElement('input');
+        h.type = 'hidden';
+        h.name = name;
+        h.value = p;
+        form.appendChild(h);
+      });
+    });
+  });
+</script>
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
   <!-- Tree (2/3) -->
@@ -9,6 +65,7 @@
       <h1 class="text-lg font-semibold">Task tree</h1>
       <form method="post" action="/tasks/roots" class="flex items-center gap-2"
             x-data="{open:false}">
+        {{ filter_inputs() }}
         <template x-if="open">
           <span class="flex items-start gap-2">
             <textarea name="text" required rows="2" placeholder="New strategic root…"
@@ -76,6 +133,7 @@
           <span class="inline-flex items-center gap-1 text-xs pl-2 pr-1 py-0.5 rounded-full bg-slate-100 text-slate-600">
             <span>{{ t }}</span>
             <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex">
+              {{ filter_inputs() }}
               <input type="hidden" name="remove" value="{{ t }}" />
               <button class="leading-none text-slate-400 hover:text-rose-600"
                       title="remove tag" aria-label="remove tag {{ t }}">&times;</button>
@@ -83,6 +141,7 @@
           </span>
           {% endfor %}
           <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex items-center gap-1">
+            {{ filter_inputs() }}
             <input name="add" placeholder="+ tag…"
                    class="rounded border-slate-300 text-xs border px-2 py-0.5 w-24" />
             <button class="rounded border border-slate-300 text-xs px-1.5 py-0.5 hover:bg-slate-100">add</button>
@@ -95,11 +154,13 @@
           <!-- Edit text: in-place rewrite via the edit verb (same id).
                Textarea so multiline task bodies edit + save verbatim. -->
           <form method="post" action="/tasks/{{ r.id }}/edit" class="flex items-start gap-1 w-full">
+            {{ filter_inputs() }}
             <textarea name="text" required rows="3"
                       class="rounded border-slate-300 text-xs border px-2 py-1 flex-1 font-mono">{{ r.title }}</textarea>
             <button class="rounded bg-slate-700 text-white text-xs px-2 py-0.5">Save text</button>
           </form>
           <form method="post" action="/tasks/{{ r.id }}/status" class="flex items-center gap-1">
+            {{ filter_inputs() }}
             <select name="status" class="rounded border-slate-300 text-xs border px-1 py-0.5">
               {% for s in status_choices %}
               <option value="{{ s }}" {% if s == r.status %}selected{% endif %}>{{ s }}</option>
@@ -108,12 +169,14 @@
             <button class="rounded bg-slate-700 text-white text-xs px-2 py-0.5">Set</button>
           </form>
           <form method="post" action="/tasks/{{ r.id }}/children" class="flex items-start gap-1">
+            {{ filter_inputs() }}
             <textarea name="text" required rows="2" placeholder="add child…"
                       class="rounded border-slate-300 text-xs border px-2 py-1 w-48"></textarea>
             <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100">+ child</button>
           </form>
           <!-- Manual reparent fallback (keyboard / non-DnD path). -->
           <form method="post" action="/tasks/{{ r.id }}/move" class="flex items-center gap-1">
+            {{ filter_inputs() }}
             <input name="new_parent_id" type="number" min="1" placeholder="parent #"
                    class="rounded border-slate-300 text-xs border px-2 py-0.5 w-20" />
             <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100"
@@ -121,6 +184,7 @@
           </form>
           <form method="post" action="/tasks/{{ r.id }}/delete"
                 onsubmit="return confirm('Delete #{{ r.id }}? Children re-parent to top level.')">
+            {{ filter_inputs() }}
             <button class="rounded text-xs px-2 py-0.5 text-rose-600 hover:bg-rose-50">delete</button>
           </form>
           <!-- History: lazy-load attempts (jobs) + event log via htmx. -->
@@ -155,6 +219,12 @@
   // a real form (full reload) to stay consistent with the no-SPA UI.
   let draggingId = null;
 
+  // The current ``require=`` / ``exclude=`` filter, threaded through
+  // the synthetic DnD form so a drag-reparent lands back on the same
+  // filtered view instead of resetting to the full tree.
+  const REQUIRE = {{ require_tags|tojson }};
+  const EXCLUDE = {{ exclude_tags|tojson }};
+
   function moveTask(childId, newParentId) {
     if (childId == null) return;
     if (String(childId) === String(newParentId)) return;  // no-op onto self
@@ -166,6 +236,16 @@
     inp.name = 'new_parent_id';
     inp.value = newParentId == null ? '' : String(newParentId);
     f.appendChild(inp);
+    REQUIRE.forEach(function (t) {
+      const h = document.createElement('input');
+      h.type = 'hidden'; h.name = 'require'; h.value = t;
+      f.appendChild(h);
+    });
+    EXCLUDE.forEach(function (t) {
+      const h = document.createElement('input');
+      h.type = 'hidden'; h.name = 'exclude'; h.value = t;
+      f.appendChild(h);
+    });
     document.body.appendChild(f);
     f.submit();
   }
