@@ -147,6 +147,90 @@ def current_from_env() -> str | None:
     return raw
 
 
+def current_project_tag_from_env() -> str | None:
+    """Return the ``project:<slug>`` tag derived from the workspace path.
+
+    Cross-cutting query handle: every ref the LLM mints under this
+    workspace (todos, citations, findings, file refs) gets this tag
+    auto-injected so ``search(tags=['project:nanotrans_auto'])``
+    returns the full project surface regardless of kind. Bib
+    generation, project archive, cleanup operations all use the same
+    tag. The LLM never thinks about which project it's working on —
+    the env propagates the context.
+
+    Derived from the basename of ``PRECIS_WORKSPACE``:
+    ``projects/nanotrans_auto`` → ``project:nanotrans_auto``.
+    """
+    ws_path = current_from_env()
+    if not ws_path:
+        return None
+    slug = ws_path.rstrip("/").split("/")[-1]
+    if not slug:
+        return None
+    return f"project:{slug}"
+
+
+def current_model_from_env() -> str | None:
+    """Return the model the current tick is running on (opus / sonnet / haiku).
+
+    Planner runner sets ``PRECIS_CURRENT_MODEL`` on the ``claude -p``
+    subprocess so the LLM knows its own tier — and can make
+    degradation/escalation decisions:
+
+    * Too hard for haiku? Mint a child with ``LLM:opus``.
+    * Sonnet on a topic needing external state? Mint
+      ``LLM:sonnet`` child with ``executor:fetch`` to pull missing
+      papers, OR call ``get(kind='research', q='...')`` inline for
+      a perplexity research dive.
+    * Opus on a topic that's clear and obvious? Do it yourself
+      without a model upgrade.
+
+    Returns ``None`` when unset (operator CLI session, tests).
+    """
+    raw = os.environ.get("PRECIS_CURRENT_MODEL")
+    if not raw:
+        return None
+    raw = raw.strip().lower()
+    if raw not in ("opus", "sonnet", "haiku"):
+        return None
+    return raw
+
+
+def current_todo_from_env() -> int | None:
+    """Return the parent todo ref id from ``PRECIS_CURRENT_TODO``, or None.
+
+    The planner runner sets this on the ``claude -p`` subprocess env
+    to the parent todo's ref_id. The MCP server reads it from
+    ``os.environ``. ``TodoHandler.put`` auto-injects ``parent_id=`` from
+    here when the caller doesn't pass one explicitly — so the LLM can
+    mint subtasks without remembering its own id every call.
+
+    Pattern parallel to :func:`current_from_env` for ``PRECIS_WORKSPACE``:
+    runtime context flows via env vars set by the runner, not via
+    every MCP call carrying redundant identity.
+
+    Returns ``None`` on unset / non-integer / negative values
+    (the LLM should still be able to mint a root todo explicitly when
+    ``parent_id=None`` is passed; this helper only handles defaulting).
+    """
+    raw = os.environ.get("PRECIS_CURRENT_TODO")
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        parent_id = int(raw)
+    except ValueError:
+        log.warning(
+            "PRECIS_CURRENT_TODO rejected (must be int): %r", raw
+        )
+        return None
+    if parent_id <= 0:
+        return None
+    return parent_id
+
+
 # ── lazy init ────────────────────────────────────────────────────
 
 

@@ -523,11 +523,18 @@ class PlaintextHandler(Handler):
                     "deletes"
                 ),
             )
+        # Default mode='create' when the caller used the slug-only
+        # ``name=`` form. ``name=`` always means "create a fresh file";
+        # there's no ambiguity to resolve. The explicit ``id=`` form
+        # still requires ``mode='create'`` so existing path-form
+        # callers stay strict. Removes a footgun the LLM hits often.
+        if mode is None and name is not None and id is None:
+            mode = "create"
         if mode != "create":
             raise BadInput(
                 f"mode= is required and must be 'create' (got {mode!r})",
                 options=["create"],
-                next=f"put(kind='{self._KIND}', id='foo', text='...', mode='create')",
+                next=f"put(kind='{self._KIND}', name='foo', text='...')  # mode defaults to create when name= is passed",
             )
         # Slug-only convention path: when the caller passes ``name=``
         # AND a workspace is ambient (``PRECIS_WORKSPACE`` env), the

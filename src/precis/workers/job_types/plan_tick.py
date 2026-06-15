@@ -144,6 +144,21 @@ def run(
     subprocess_env = dict(os.environ)
     if workspace is not None:
         subprocess_env["PRECIS_WORKSPACE"] = workspace.path
+    # PRECIS_CURRENT_TODO: the runtime parent todo for this tick. The
+    # MCP server reads this via utils/workspace.current_todo_from_env;
+    # TodoHandler.put auto-defaults parent_id= to it when the caller
+    # omits parent_id. So the LLM can mint subtasks via
+    # put(kind='todo', tags=['LLM:sonnet'], text='...') without
+    # remembering its own ref_id every call. Same back-door pattern
+    # as PRECIS_WORKSPACE.
+    subprocess_env["PRECIS_CURRENT_TODO"] = str(parent_ref_id)
+    # PRECIS_CURRENT_MODEL: tells the LLM what tier it's running on.
+    # Lets it make degradation/escalation decisions — too hard for
+    # haiku? mint a child with LLM:opus. Sonnet on a topic needing
+    # external state? call get(kind='research', q='...') for a
+    # perplexity research dive. Opus on something straightforward?
+    # do it inline.
+    subprocess_env["PRECIS_CURRENT_MODEL"] = model
 
     cmd: list[str] = [
         claude_bin,

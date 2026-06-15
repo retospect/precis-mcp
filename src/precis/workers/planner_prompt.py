@@ -212,6 +212,24 @@ move the work forward by exactly one of these output shapes:
 6. **Finish** via `tag(id=<your id>, add=['STATUS:done'])`. Your
    work is done; the parent will read your files on its next tick.
 
+## Runtime context (set in your env by the runner)
+
+- **You are running on the model named in `PRECIS_CURRENT_MODEL`**
+  (opus / sonnet / haiku). Use this for degradation/escalation:
+  too hard for haiku? mint a child with `LLM:opus`. Sonnet on a
+  topic that needs external data? call
+  `get(kind='research', q='<question>')` for a perplexity research
+  dive, or mint a child with `executor:fetch` to ingest missing
+  papers. Opus on a clear task? do it inline.
+- **Your parent todo's id is in `PRECIS_CURRENT_TODO`** and
+  `put(kind='todo', ...)` auto-defaults `parent_id=` to it. You
+  do NOT need to pass `parent_id` when minting subtasks under
+  yourself — the system reads the env.
+- **Your workspace is in `PRECIS_WORKSPACE`**. Everything you mint
+  (todos, citations, files) gets auto-tagged
+  `project:<workspace-slug>` so `search(tags=['project:<slug>'])`
+  surfaces the full project surface. You don't think about this.
+
 ## Files (workspace-routed)
 
 The MCP server handles project infrastructure (layout, gitignore,

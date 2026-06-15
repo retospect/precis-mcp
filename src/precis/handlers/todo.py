@@ -401,6 +401,17 @@ class TodoHandler(NumericRefHandler):
                         "backfill_missed": parsed.backfill_missed,
                     },
                 }
+        # Auto-inject parent_id from the runtime context
+        # (PRECIS_CURRENT_TODO env). The runner sets this to the parent
+        # todo's ref_id on the claude -p subprocess; the LLM doesn't
+        # have to remember its own id every put call. The "I am at the
+        # root" case still works — caller passes parent_id explicitly
+        # (or no env is set when the operator is in an interactive
+        # session and is minting a fresh root).
+        if parent_id is None:
+            from precis.utils.workspace import current_todo_from_env
+
+            parent_id = current_todo_from_env()
         if parent_id is not None:
             try:
                 parent_int = parent_id if isinstance(parent_id, int) else int(parent_id)
@@ -425,6 +436,17 @@ class TodoHandler(NumericRefHandler):
             inherited = _inherit_workspace_from_parent(self.store, parent_int)
             if inherited is not None:
                 meta = {**(meta or {}), "workspace": inherited}
+        # Auto-inject ``project:<slug>`` cross-cutting tag from the
+        # runtime workspace context. Every ref minted under a workspace
+        # carries this tag so search(tags=['project:nanotrans_auto'])
+        # surfaces the full project surface (todos + citations +
+        # findings + file refs) regardless of kind. The LLM doesn't
+        # think about it; the env propagates it.
+        from precis.utils.workspace import current_project_tag_from_env
+
+        project_tag = current_project_tag_from_env()
+        if project_tag and (not tags or project_tag not in tags):
+            tags = [*(tags or []), project_tag]
         # Default parent_id for a ``level:recurring`` root to the
         # seeded Watches umbrella — every recurring lives under it by
         # default, so the operator gets a tidy two-panel ``view='roots'``
