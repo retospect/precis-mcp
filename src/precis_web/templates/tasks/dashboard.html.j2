@@ -5,6 +5,16 @@
 {% macro filter_inputs() %}
   {% for r in require_tags %}<input type="hidden" name="require" value="{{ r }}"/>{% endfor %}
   {% for x in exclude_tags %}<input type="hidden" name="exclude" value="{{ x }}"/>{% endfor %}
+  {% if focus_id %}<input type="hidden" name="focus" value="{{ focus_id }}"/>{% endif %}
+{% endmacro %}
+{# Build the focus-preserving suffix for GET links so a row's drill-up
+   / drill-down link doesn't lose the active tag filter. #}
+{% macro focus_qs(new_focus) %}
+  {%- set parts = [] -%}
+  {%- for r in require_tags -%}{%- set _ = parts.append('require=' ~ r|urlencode) -%}{%- endfor -%}
+  {%- for x in exclude_tags -%}{%- set _ = parts.append('exclude=' ~ x|urlencode) -%}{%- endfor -%}
+  {%- if new_focus -%}{%- set _ = parts.append('focus=' ~ new_focus) -%}{%- endif -%}
+  {%- if parts -%}?{{ parts|join('&') }}{%- endif -%}
 {% endmacro %}
 {% block content %}
 {# Tag filter bar. ``require`` and ``exclude`` are repeating GET
@@ -61,8 +71,27 @@
 
   <!-- Tree (2/3) -->
   <section class="lg:col-span-2">
+    {# Drill-up breadcrumb: each ancestor is a clickable focus link;
+       the final entry is the focused node itself (rendered as plain
+       text since it's the current scope). The "All tasks" link drops
+       focus entirely but keeps the tag filter. #}
+    {% if focus_id %}
+    <nav class="mb-3 flex flex-wrap items-center gap-1 text-xs text-slate-500">
+      <a href="/tasks{{ focus_qs(none) }}" class="hover:text-emerald-700 underline">All tasks</a>
+      {% for b in breadcrumb %}
+      <span class="text-slate-300">›</span>
+      <a href="/tasks{{ focus_qs(b.id) }}" class="hover:text-emerald-700">#{{ b.id }} {{ b.title }}</a>
+      {% endfor %}
+      {% if focus_row %}
+      <span class="text-slate-300">›</span>
+      <span class="text-slate-800 font-medium">#{{ focus_row.id }} {{ (focus_row.title or '').split('\n', 1)[0] }}</span>
+      {% endif %}
+    </nav>
+    {% endif %}
     <div class="flex items-center justify-between mb-3">
-      <h1 class="text-lg font-semibold">Task tree</h1>
+      <h1 class="text-lg font-semibold">
+        {% if focus_id %}Subtree of #{{ focus_id }}{% else %}Task tree{% endif %}
+      </h1>
       <form method="post" action="/tasks/roots" class="flex items-center gap-2"
             x-data="{open:false}">
         {{ filter_inputs() }}
@@ -115,11 +144,31 @@
           {# Processing signals: live row lock and worker lease. #}
           {% if r.locked %}<span class="text-xs px-1.5 py-0.5 rounded bg-rose-600 text-white" title="row-locked right now (a worker holds it)">🔒 locked</span>{% endif %}
           {% if r.lease_active %}<span class="text-xs px-1.5 py-0.5 rounded bg-amber-500 text-white" title="leased until {{ r.lease_until }}">⏱ running</span>{% elif r.lease_until %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500" title="lease expired {{ r.lease_until }}">lease expired</span>{% endif %}
+          {% for ai in r.attention_icons %}
+          <a href="{{ ai.href }}" class="text-base leading-none" title="{{ ai.title }}">{{ ai.icon }}</a>
+          {% endfor %}
           <span class="text-sm whitespace-pre-line break-words {% if r.status in ['done',"won't-do"] %}line-through text-slate-400{% endif %}">{{ r.title }}</span>
-          {% if not r.is_leaf %}<span class="text-xs text-slate-400">[{{ r.done }}/{{ r.total }}]</span>{% endif %}
+          {% if r.rollup and r.rollup.total %}
+          {# 3-bucket rollup: active · waiting · done over direct todo
+             children. Inline coloured chips so the operator can scan
+             progress without hovering. #}
+          <span class="inline-flex items-center gap-0.5 text-xs ml-1" title="active · waiting · done">
+            <span class="px-1 py-0.5 rounded-l bg-sky-100 text-sky-700 font-medium" title="active (open / doing)">{{ r.rollup.active }}</span>
+            <span class="px-1 py-0.5 bg-amber-100 text-amber-700 font-medium" title="waiting (blocked / paused / waiting-for / ask-user)">{{ r.rollup.waiting }}</span>
+            <span class="px-1 py-0.5 rounded-r bg-emerald-100 text-emerald-700 font-medium" title="done (done / won't-do)">{{ r.rollup.done }}</span>
+          </span>
+          {% endif %}
           {% if r.kind == 'todo' %}
+          {# Drill-down link — focus this node's subtree. #}
+          {% if r.id != focus_id %}
+          <a href="/tasks{{ focus_qs(r.id) }}"
+             class="ml-auto text-xs text-slate-400 hover:text-emerald-700"
+             title="focus this subtree">🔍</a>
+          {% else %}
+          <span class="ml-auto"></span>
+          {% endif %}
           <button type="button" @click="actions=!actions"
-                  class="ml-auto text-xs text-slate-400 hover:text-slate-700">⋯</button>
+                  class="text-xs text-slate-400 hover:text-slate-700">⋯</button>
           {% endif %}
         </div>
         {% if r.kind == 'todo' %}
@@ -219,11 +268,12 @@
   // a real form (full reload) to stay consistent with the no-SPA UI.
   let draggingId = null;
 
-  // The current ``require=`` / ``exclude=`` filter, threaded through
-  // the synthetic DnD form so a drag-reparent lands back on the same
-  // filtered view instead of resetting to the full tree.
+  // The current ``require=`` / ``exclude=`` / ``focus=`` state,
+  // threaded through the synthetic DnD form so a drag-reparent lands
+  // back on the same filtered + focused view instead of resetting.
   const REQUIRE = {{ require_tags|tojson }};
   const EXCLUDE = {{ exclude_tags|tojson }};
+  const FOCUS = {{ focus_id|tojson }};
 
   function moveTask(childId, newParentId) {
     if (childId == null) return;
@@ -246,6 +296,11 @@
       h.type = 'hidden'; h.name = 'exclude'; h.value = t;
       f.appendChild(h);
     });
+    if (FOCUS != null) {
+      const h = document.createElement('input');
+      h.type = 'hidden'; h.name = 'focus'; h.value = String(FOCUS);
+      f.appendChild(h);
+    }
     document.body.appendChild(f);
     f.submit();
   }

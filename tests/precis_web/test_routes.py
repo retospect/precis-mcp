@@ -566,7 +566,7 @@ def test_tasks_url_helper_encodes_each_tag_separately() -> None:
     )
 
 
-def _row(id, kind="todo", parent_id=None, status="open", level="", tags=None):
+def _row(id, kind="todo", parent_id=None, status="open", level="", tags=None, depth=0):
     return {
         "id": id,
         "kind": kind,
@@ -575,13 +575,13 @@ def _row(id, kind="todo", parent_id=None, status="open", level="", tags=None):
         "status": status,
         "level": level,
         "tags": list(tags or []),
-        "depth": 0,
-        "done": 0,
-        "total": 0,
+        "depth": depth,
+        "rollup": {"active": 0, "waiting": 0, "done": 0, "total": 0},
         "is_leaf": True,
         "locked": False,
         "lease_until": None,
         "lease_active": False,
+        "attention_icons": [],
         "note": "",
     }
 
@@ -692,6 +692,134 @@ def test_delete_post_preserves_filter_in_redirect(client) -> None:
     )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/tasks?require=level%3Astrategic"
+
+
+# ── tasks: row classification, attention icons, rollup ─────────────
+
+
+def test_classify_row_buckets() -> None:
+    from precis_web.routes.tasks import _classify_row
+
+    assert _classify_row("done", []) == "done"
+    assert _classify_row("won't-do", []) == "done"
+    assert _classify_row("doing", []) == "active"
+    assert _classify_row("open", []) == "active"
+    assert _classify_row("blocked", []) == "waiting"
+    assert _classify_row("paused", []) == "waiting"
+    # Tag-driven waiting overrides plain "open".
+    assert _classify_row("open", ["ask-user:Q"]) == "waiting"
+    assert _classify_row("open", ["waiting-for:paper:10.x/y"]) == "waiting"
+    assert _classify_row("open", ["halt"]) == "waiting"
+    assert _classify_row("open", ["child-failed:42"]) == "waiting"
+
+
+def test_attention_icons_for_ask_and_paper() -> None:
+    from precis_web.routes.tasks import _attention_icons
+
+    icons = _attention_icons(["ask-user:what scope?"])
+    assert len(icons) == 1 and icons[0]["icon"] == "🔔"
+    assert icons[0]["href"] == "/asks"
+
+    icons = _attention_icons(["waiting-for:paper:10.1234/foo"])
+    assert len(icons) == 1 and icons[0]["icon"] == "📝"
+    assert icons[0]["href"].startswith("/papers?q=")
+
+    # Both signals present → both icons; legacy asking-reto matches too.
+    icons = _attention_icons(["asking-reto:Q", "waiting-for:paper:abc"])
+    assert {i["icon"] for i in icons} == {"🔔", "📝"}
+
+    assert _attention_icons(["project:precis"]) == []
+
+
+def test_attention_icons_deduplicate_same_class() -> None:
+    """Multiple ask-user tags collapse to one 🔔 (not five)."""
+    from precis_web.routes.tasks import _attention_icons
+
+    icons = _attention_icons(["ask-user:Q1", "ask-user:Q2", "asking-reto:Q3"])
+    assert [i["icon"] for i in icons] == ["🔔"]
+
+
+# ── tasks: focus / drill-down ──────────────────────────────────────
+
+
+def test_focus_rows_returns_subtree_and_breadcrumb() -> None:
+    from precis_web.routes.tasks import _focus_rows
+
+    rows = [
+        _row(1, parent_id=None, depth=0),
+        _row(2, parent_id=1, depth=1),
+        _row(3, parent_id=2, depth=2),
+        _row(4, parent_id=1, depth=1),
+    ]
+    focused, breadcrumb = _focus_rows(rows, focus_id=2)
+    assert [r["id"] for r in focused] == [2, 3]
+    # Depth rebased so the focused node sits at 0.
+    assert focused[0]["depth"] == 0 and focused[1]["depth"] == 1
+    assert [b["id"] for b in breadcrumb] == [1]
+
+
+def test_focus_rows_missing_id_is_noop() -> None:
+    """A stale ``focus`` (e.g. after a delete) doesn't crash."""
+    from precis_web.routes.tasks import _focus_rows
+
+    rows = [_row(1)]
+    focused, breadcrumb = _focus_rows(rows, focus_id=999)
+    assert focused == rows
+    assert breadcrumb == []
+
+
+def test_focus_rows_none_is_passthrough() -> None:
+    from precis_web.routes.tasks import _focus_rows
+
+    rows = [_row(1)]
+    focused, breadcrumb = _focus_rows(rows, focus_id=None)
+    assert focused == rows and breadcrumb == []
+
+
+def test_focus_url_round_trips_in_helper() -> None:
+    from precis_web.routes.tasks import _tasks_url
+
+    assert _tasks_url([], [], focus=42) == "/tasks?focus=42"
+    assert (
+        _tasks_url(["ask-user"], ["STATUS:done"], focus=7)
+        == "/tasks?require=ask-user&exclude=STATUS%3Adone&focus=7"
+    )
+
+
+def test_post_preserves_focus_in_redirect(client) -> None:
+    resp = client.post(
+        "/tasks/2/status",
+        data={"status": "doing", "focus": "1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/tasks?focus=1"
+
+
+# ── jinja resilience ───────────────────────────────────────────────
+
+
+def test_template_missing_key_does_not_500(client, monkeypatch) -> None:
+    """A context dict missing a key the template references must render.
+
+    The melchior incident: a stale process omitted ``usage`` and the
+    page 500'd on ``usage.get(...)``. ``ChainableUndefined`` keeps
+    chained access silent.
+    """
+    from precis_web.routes import status as status_mod
+
+    # Drop ``usage`` (and any other section) from the context by making
+    # every section query raise — _safe returns None, the page should
+    # render anyway with empty panels.
+    def _boom(store):  # type: ignore[no-untyped-def]
+        raise RuntimeError("simulated stale schema")
+
+    for name in ("_kind_counts", "_paper_summary", "_todo_status", "_recent_events", "_claude_usage", "_hosts", "_heartbeats"):
+        monkeypatch.setattr(status_mod, name, _boom)
+
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert "Status" in resp.text
 
 
 # ── asks ───────────────────────────────────────────────────────────

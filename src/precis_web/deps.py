@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import jinja2
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
@@ -18,9 +19,24 @@ from precis_web.config import WebConfig
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-#: Process-wide Jinja environment. Autoescape is on (FastAPI default
-#: for ``.html``) so handler output rendered into pages is escaped.
-templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+#: Process-wide Jinja environment.
+#:
+#: ``ChainableUndefined`` is the defensive choice: a missing context
+#: key renders as empty string and tolerates chained access
+#: (``missing.foo.bar`` → empty, not 500). The trigger was the live
+#: incident on melchior — a stale process omitted ``usage`` from the
+#: status context and Jinja's default ``Undefined`` raised
+#: ``UndefinedError`` on ``usage.get(...)``, blanking the whole page.
+#: Routes still pass full context dicts; this only catches the
+#: stale-deploy / context-drift case so the page degrades to empty
+#: panels instead of a 500.
+templates = Jinja2Templates(
+    env=jinja2.Environment(
+        loader=jinja2.FileSystemLoader(str(_TEMPLATES_DIR)),
+        autoescape=jinja2.select_autoescape(),
+        undefined=jinja2.ChainableUndefined,
+    ),
+)
 
 
 def get_runtime(request: Request) -> Any:

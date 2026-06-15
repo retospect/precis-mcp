@@ -46,19 +46,161 @@ STATUS_CHOICES: tuple[str, ...] = (
 
 _CLOSED = {"done", "won't-do"}
 
+#: STATUS values that count as "actively in flight" for the row rollup.
+_ACTIVE_STATUSES = {"open", "doing"}
 
-def _tasks_url(require: list[str], exclude: list[str]) -> str:
-    """Build the ``/tasks`` URL with the current tag filter applied.
+#: STATUS values that count as "waiting on something" for the rollup.
+#: Free tags (``waiting-for:*``, ``ask-user``, ``halt``, …) also push a
+#: child into the waiting bucket — see :func:`_classify_row`.
+_WAITING_STATUSES = {"blocked", "paused"}
+
+
+def _row_waits_on_tag(tags: list[str]) -> bool:
+    """True when any tag marks the row as waiting on an external event.
+
+    Mirrors the ``_DOABLE_EXCLUSION_TAGS`` shape — anything the doable
+    rotation skips counts as "waiting" for the rollup. Keeps the
+    rollup and the doable queue's view of "in flight" consistent.
+    """
+    for t in tags:
+        if t == "halt" or t.startswith("halt:"):
+            return True
+        if t.startswith("waiting-for:"):
+            return True
+        if t == "ask-user" or t.startswith("ask-user:"):
+            return True
+        if t == "asking-reto" or t.startswith("asking-reto:"):
+            return True
+        if t.startswith("child-failed:"):
+            return True
+    return False
+
+
+def _classify_row(status: str, tags: list[str]) -> str:
+    """Return ``'done'`` / ``'waiting'`` / ``'active'`` for the row rollup."""
+    if status in _CLOSED:
+        return "done"
+    if status in _WAITING_STATUSES or _row_waits_on_tag(tags):
+        return "waiting"
+    return "active"
+
+
+def _attention_icons(tags: list[str]) -> list[dict[str, str]]:
+    """Map free tags to small status icons rendered next to the title.
+
+    Returns ``[{icon, title, href}]`` per signal so the template can
+    walk a single loop. Each icon links to the surface where the
+    operator handles it (Asks tab for ask-user; the paper viewer for
+    a known DOI / arxiv id).
+    """
+    out: list[dict[str, str]] = []
+    has_ask = False
+    has_paper = False
+    paper_ref = ""
+    for t in tags:
+        if (
+            t == "ask-user"
+            or t.startswith("ask-user:")
+            or t == "asking-reto"
+            or t.startswith("asking-reto:")
+        ) and not has_ask:
+            has_ask = True
+            out.append(
+                {
+                    "icon": "🔔",
+                    "title": "ask-user — needs your response",
+                    "href": "/asks",
+                }
+            )
+        if t.startswith("waiting-for:paper:") and not has_paper:
+            has_paper = True
+            paper_ref = t.removeprefix("waiting-for:paper:")
+            out.append(
+                {
+                    "icon": "📝",
+                    "title": f"waiting on paper {paper_ref}",
+                    "href": f"/papers?q={paper_ref}" if paper_ref else "/papers",
+                }
+            )
+    return out
+
+
+def _tasks_url(
+    require: list[str],
+    exclude: list[str],
+    focus: int | None = None,
+) -> str:
+    """Build the ``/tasks`` URL with the current filter + focus applied.
 
     Each value becomes its own ``require=`` / ``exclude=`` param so a
     filter with multiple tags round-trips through the form / redirect
-    cycle without re-joining. Returns the bare path when empty.
+    cycle without re-joining. ``focus`` rides along as a scalar
+    ``focus=<id>`` so a write inside a drilled-down subtree lands back
+    on the same subtree.
     """
     params: list[tuple[str, str]] = [("require", r) for r in require] + [
         ("exclude", x) for x in exclude
     ]
+    if focus is not None:
+        params.append(("focus", str(focus)))
     qs = urlencode(params)
     return f"/tasks?{qs}" if qs else "/tasks"
+
+
+def _focus_rows(
+    rows: list[dict[str, Any]], focus_id: int | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Drill down to ``focus_id``'s subtree + build the ancestor breadcrumb.
+
+    Returns ``(focused_rows, breadcrumb)``. ``focused_rows`` carries
+    the focused node + every descendant (todos and jobs); ``depth`` is
+    rebased so the focused node renders at depth 0. ``breadcrumb`` is
+    the ancestor chain root → parent (the focused node itself is not
+    in the breadcrumb — it's the page heading).
+
+    A missing / non-todo ``focus_id`` is a silent no-op (returns the
+    rows unchanged + an empty breadcrumb) so a stale query string
+    doesn't crash the page after a delete.
+    """
+    if focus_id is None:
+        return rows, []
+    by_id = {r["id"]: r for r in rows}
+    if focus_id not in by_id or by_id[focus_id]["kind"] != "todo":
+        return rows, []
+
+    children_of: dict[int | None, list[int]] = {}
+    for r in rows:
+        children_of.setdefault(r.get("parent_id"), []).append(r["id"])
+
+    keep: set[int] = set()
+    stack = [focus_id]
+    while stack:
+        nid = stack.pop()
+        if nid in keep:
+            continue
+        keep.add(nid)
+        stack.extend(children_of.get(nid, []))
+
+    breadcrumb: list[dict[str, Any]] = []
+    cur = by_id[focus_id].get("parent_id")
+    while cur is not None and cur in by_id:
+        n = by_id[cur]
+        first = (n["title"] or "").split("\n", 1)[0]
+        if len(first) > 60:
+            first = first[:60].rstrip() + "…"
+        breadcrumb.append({"id": n["id"], "title": first})
+        cur = n.get("parent_id")
+    breadcrumb.reverse()
+
+    focus_depth = by_id[focus_id]["depth"]
+    focused: list[dict[str, Any]] = []
+    for r in rows:
+        if r["id"] not in keep:
+            continue
+        r2 = dict(r)
+        r2["depth"] = max(0, r["depth"] - focus_depth)
+        focused.append(r2)
+    return focused, breadcrumb
 
 
 def _filter_rows(
@@ -349,7 +491,23 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
 
     def walk(node: dict[str, Any], depth: int) -> None:
         kids = children.get(node["id"], [])
-        done = sum(1 for k in kids if tags[k["id"]]["status"] in _CLOSED)
+        # Three-bucket rollup over direct todo children (jobs aren't
+        # progress units — they're attempts at the parent's work).
+        rollup_done = 0
+        rollup_waiting = 0
+        rollup_active = 0
+        for k in kids:
+            if k["kind"] != "todo":
+                continue
+            cls = _classify_row(
+                tags[k["id"]]["status"], freeform.get(k["id"], [])
+            )
+            if cls == "done":
+                rollup_done += 1
+            elif cls == "waiting":
+                rollup_waiting += 1
+            else:
+                rollup_active += 1
         lease_until = node["lease_until"]
         # Job rows carry a hover tooltip built from their failure /
         # summary chunks; todos have none (they get the history panel).
@@ -360,6 +518,10 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
             if jn.get("summary"):
                 parts.append(jn["summary"])
             note = "\n".join(p for p in parts if p).strip()
+        row_tags = (
+            freeform.get(node["id"], []) if node["kind"] == "todo" else []
+        )
+        rollup_total = rollup_done + rollup_waiting + rollup_active
         rows.append(
             {
                 "id": node["id"],
@@ -369,13 +531,18 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
                 "status": tags[node["id"]]["status"],
                 "level": tags[node["id"]]["level"],
                 "depth": depth,
-                "done": done,
-                "total": len(kids),
+                "rollup": {
+                    "active": rollup_active,
+                    "waiting": rollup_waiting,
+                    "done": rollup_done,
+                    "total": rollup_total,
+                },
                 "is_leaf": not kids,
                 "locked": node["id"] in locked,
                 "lease_until": lease_until,
                 "lease_active": _lease_active(lease_until),
-                "tags": freeform.get(node["id"], []) if node["kind"] == "todo" else [],
+                "tags": row_tags,
+                "attention_icons": _attention_icons(row_tags),
                 "note": note,
             }
         )
@@ -393,23 +560,37 @@ async def dashboard(
     request: Request,
     require: list[str] = Query(default=[]),
     exclude: list[str] = Query(default=[]),
+    focus: int | None = Query(default=None),
 ) -> HTMLResponse:
     """Strategic tree + doable queue.
 
-    ``require`` / ``exclude`` are repeating query params — every value
-    is its own tag. AND semantics within each list: a row must carry
-    every required tag and no excluded tag. Matching todos drag in
-    their ancestor chain so the tree shape stays legible; job rows
-    ride along with the parent todo.
+    Three orthogonal narrowing controls:
+
+    * ``focus=<id>`` — drill down to one node's subtree (with an
+      ancestor breadcrumb back to the root).
+    * ``require`` / ``exclude`` repeating params — tag filter, AND
+      within each list, evaluated *after* focus.
+    * Both compose: focusing first restricts the search universe,
+      then the tag filter narrows what's surfaced inside it.
     """
     store = get_store(request)
     rows = _build_rows(store)
     require = [r for r in require if r]
     exclude = [x for x in exclude if x]
-    filtered = _filter_rows(rows, require=require, exclude=exclude)
+    focused_rows, breadcrumb = _focus_rows(rows, focus)
+    filtered = _filter_rows(focused_rows, require=require, exclude=exclude)
     doable_body, _ = dispatch(
         request, "search", {"kind": "todo", "view": "doable", "page_size": 20}
     )
+    focus_row: dict[str, Any] | None = None
+    if focus is not None:
+        # The focused node itself is the heading; everything below it
+        # in ``focused_rows`` is the subtree. Pull it out so the
+        # template can render the heading separately.
+        for r in focused_rows:
+            if r["id"] == focus:
+                focus_row = r
+                break
     return templates.TemplateResponse(
         request,
         "tasks/dashboard.html.j2",
@@ -421,6 +602,9 @@ async def dashboard(
             "filter_active": bool(require or exclude),
             "require_tags": require,
             "exclude_tags": exclude,
+            "focus_id": focus,
+            "focus_row": focus_row,
+            "breadcrumb": breadcrumb,
             "doable_body": doable_body,
             "status_choices": STATUS_CHOICES,
         },
@@ -434,6 +618,7 @@ async def create_root(
     level: str = Form("strategic"),
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
 ) -> Response:
     """Create a top-level (strategic) root."""
     tags = [f"level:{level}"] if level else None
@@ -441,7 +626,7 @@ async def create_root(
         request,
         "put",
         {"kind": "todo", "text": text, "tags": tags},
-        redirect=_tasks_url(require, exclude),
+        redirect=_tasks_url(require, exclude, focus),
     )
 
 
@@ -453,6 +638,7 @@ async def create_child(
     level: str = Form("subtask"),
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
 ) -> Response:
     """Create a child under ``parent_id``."""
     tags = [f"level:{level}"] if level else None
@@ -460,7 +646,7 @@ async def create_child(
         request,
         "put",
         {"kind": "todo", "text": text, "parent_id": parent_id, "tags": tags},
-        redirect=_tasks_url(require, exclude),
+        redirect=_tasks_url(require, exclude, focus),
     )
 
 
@@ -471,13 +657,14 @@ async def set_status(
     status: str = Form(...),
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
 ) -> Response:
     """Set a todo's STATUS via the tag verb (closed-prefix replace)."""
     return _redirect_or_error(
         request,
         "tag",
         {"kind": "todo", "id": ref_id, "add": [f"STATUS:{status}"]},
-        redirect=_tasks_url(require, exclude),
+        redirect=_tasks_url(require, exclude, focus),
     )
 
 
@@ -488,6 +675,7 @@ async def move_task(
     new_parent_id: str = Form(""),
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
 ) -> Response:
     """Reparent a todo via the reserved ``link(rel='parent')`` surface.
 
@@ -496,7 +684,7 @@ async def move_task(
     (``mode='add'``). All tree guards (cycle / depth / owner) fire in
     the handler — a rejected move returns the handler's BadInput.
     """
-    redirect = _tasks_url(require, exclude)
+    redirect = _tasks_url(require, exclude, focus)
     npid = new_parent_id.strip()
     if npid:
         return _redirect_or_error(
@@ -526,6 +714,7 @@ async def edit_text(
     text: str = Form(""),
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
 ) -> Response:
     """Rewrite a todo's text in place via the ``edit`` verb.
 
@@ -534,7 +723,7 @@ async def edit_text(
     whitespace ``text`` is a no-op. Owner-only on strategic / tactical
     nodes — the web process runs as owner, so the guard passes here.
     """
-    redirect = _tasks_url(require, exclude)
+    redirect = _tasks_url(require, exclude, focus)
     if not text.strip():
         return RedirectResponse(url=redirect, status_code=303)
     return _redirect_or_error(
@@ -553,6 +742,7 @@ async def edit_tags(
     remove: str = Form(""),
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
 ) -> Response:
     """Add and/or remove free tags on a todo via the ``tag`` verb.
 
@@ -570,7 +760,7 @@ async def edit_tags(
         args["add"] = add_list
     if remove_list:
         args["remove"] = remove_list
-    redirect = _tasks_url(require, exclude)
+    redirect = _tasks_url(require, exclude, focus)
     if not add_list and not remove_list:
         return RedirectResponse(url=redirect, status_code=303)
     return _redirect_or_error(request, "tag", args, redirect=redirect)
@@ -630,7 +820,8 @@ async def delete_task(
     ref_id: int,
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
+    focus: int | None = Form(default=None),
 ) -> RedirectResponse:
     """Soft-delete a todo (children re-parent to NULL via FK)."""
     dispatch(request, "delete", {"kind": "todo", "id": ref_id})
-    return RedirectResponse(url=_tasks_url(require, exclude), status_code=303)
+    return RedirectResponse(url=_tasks_url(require, exclude, focus), status_code=303)
