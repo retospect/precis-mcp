@@ -341,13 +341,32 @@ for novel territory.
 def _build_user_prompt(
     store: Store, *, ref_id: int, model: str
 ) -> str:
-    """Build the per-tick user message: ancestry + body + child summaries."""
+    """Build the per-tick user message.
+
+    Structure (deliverable-centric, slim):
+
+    1. Identity (id + model)
+    2. Ancestry chain (TOON)
+    3. Body (the brief — what you're being asked to do)
+    4. Workspace status — current file inventory + per-file author/size
+       (so you see what's *already written* without re-reading every file)
+    5. Children status — id + status + 1-line Result hint per child
+       (NOT raw stdout dumps — that's gigantic and unstructured)
+
+    The big change from prior versions: child stdouts are NOT dumped
+    into the parent's prompt. We assume each child wrote either a
+    file (visible in the workspace status block) or a citation
+    (visible via search). The parent's job is to read those if it
+    needs them, not to re-process every word the children emitted.
+    Saves thousands of tokens per re-tick.
+    """
     from precis.handlers._todo_views import _ancestor_chain
 
     ancestry = _ancestor_chain(store, ref_id)
     ancestry_block = _render_ancestry_toon(ancestry, leaf_id=ref_id)
     body = _load_ref_body(store, ref_id)
-    child_summaries = _load_child_summaries(store, ref_id)
+    workspace_block = _render_workspace_status(store, ref_id)
+    children_block = _render_children_status(store, ref_id)
     parts: list[str] = [
         f"You are working on todo #{ref_id}. Model: {model}.",
         "",
@@ -356,11 +375,129 @@ def _build_user_prompt(
         "## Body",
         body or "(empty)",
     ]
-    if child_summaries:
+    if workspace_block:
         parts.append("")
-        parts.append("## Prior child results")
-        parts.append(child_summaries)
+        parts.append(workspace_block)
+    if children_block:
+        parts.append("")
+        parts.append(children_block)
     return "\n".join(parts)
+
+
+def _render_workspace_status(store: Store, ref_id: int) -> str:
+    """List files already written under this todo's workspace.
+
+    Reads the workspace path from this ref's ``meta.workspace`` and
+    walks the on-disk dir. Returns a slim listing — one line per
+    file with size + age — so the parent re-tick sees the state of
+    the deliverable without reading every file. If the file is
+    relevant, the LLM can ``get(kind='tex', id='tex--<slug>')`` it
+    explicitly.
+
+    No-op when there's no workspace on the ref. No-op when the dir
+    doesn't exist yet (init hasn't fired).
+    """
+    import os
+    from pathlib import Path
+
+    from precis.utils.workspace import Workspace
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    if not row:
+        return ""
+    workspace = Workspace.from_meta(row[0])
+    if workspace is None:
+        return ""
+    precis_root_str = os.environ.get("PRECIS_ROOT", "")
+    if not precis_root_str:
+        return ""
+    ws_root = workspace.absolute_root(Path(precis_root_str))
+    if not ws_root.exists():
+        return ""
+    lines: list[str] = [
+        "## Workspace status",
+        "",
+        f"Workspace: {workspace.path} (format={workspace.format}, "
+        f"entrypoint={workspace.entrypoint})",
+        "",
+        "Files present:",
+    ]
+    found = False
+    for sub in ("", "tex", "sections", "pics", "data"):
+        sub_root = ws_root / sub if sub else ws_root
+        if not sub_root.is_dir():
+            continue
+        for entry in sorted(sub_root.iterdir()):
+            if entry.is_dir() or entry.name.startswith("."):
+                continue
+            rel = entry.relative_to(ws_root)
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                continue
+            kind_hint = ""
+            if entry.suffix == ".tex":
+                kind_hint = "  (get via id='tex--" + entry.stem + "')"
+            elif entry.suffix == ".md":
+                kind_hint = "  (get via id='markdown--" + entry.stem + "')"
+            lines.append(f"  - {rel} ({size} bytes){kind_hint}")
+            found = True
+    if not found:
+        lines.append("  (none yet — workspace empty)")
+    return "\n".join(lines)
+
+
+def _render_children_status(store: Store, ref_id: int) -> str:
+    """Per-child digest: id, kind, STATUS, last result hint.
+
+    Slim replacement for the prior child-stdout dump. Reads each
+    child's most recent ``chunk_kind='job_result'`` chunk if
+    present (~200 token structured summary). Falls back to a single
+    line stating "no result chunk yet" for never-ticked children.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.ref_id, c.kind, c.title,
+                   (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1
+                   ) AS status,
+                   (SELECT ch.text FROM chunks ch
+                     WHERE ch.ref_id = c.ref_id
+                       AND ch.meta->>'chunk_kind' = 'job_result'
+                     ORDER BY ch.ord DESC LIMIT 1
+                   ) AS last_result
+              FROM refs c
+             WHERE c.parent_id = %s
+               AND c.deleted_at IS NULL
+               AND c.kind IN ('todo', 'job')
+             ORDER BY c.ref_id
+            """,
+            (ref_id,),
+        ).fetchall()
+    if not rows:
+        return ""
+    lines: list[str] = ["## Children", ""]
+    for child_ref_id, kind, title, status, last_result in rows:
+        title_one_line = (title or "").splitlines()[0][:80]
+        lines.append(
+            f"#{int(child_ref_id)} ({kind}, STATUS:{status or 'open'}) — "
+            f"{title_one_line}"
+        )
+        if last_result:
+            for ln in str(last_result).splitlines()[:8]:
+                lines.append(f"    {ln}")
+        else:
+            lines.append("    (no job_result yet — child hasn't ticked or is mid-tick)")
+        lines.append("")
+    lines.append(
+        "To read a child's full output: get(kind='todo', id=N) for the body, "
+        "or get(kind='job', id=M) for the job's stdout chunk."
+    )
+    return "\n".join(lines)
 
 
 def _render_ancestry_toon(

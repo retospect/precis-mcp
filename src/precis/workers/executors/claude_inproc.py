@@ -359,6 +359,19 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             store, ref_id, _JOB_SUMMARY_KIND, outcome.stdout or "(no output)",
             conn=conn,
         )
+        # Structured per-tick audit chunk — slim, grepable summary of
+        # what the LLM did. Replaces dumping raw stdout into the
+        # parent's re-tick prompt. Builds from the worker_logs query
+        # over MCP tool calls correlated by parent_todo.
+        result_text = _build_job_result_text(
+            store=store,
+            job_ref_id=ref_id,
+            parent_ref_id=parent_id,
+            model=spec.name,  # actually plan_tick; model is in meta.params.model
+            exit_code=outcome.exit_code,
+            duration_s=outcome.duration_s,
+        )
+        _append_chunk(store, ref_id, "job_result", result_text, conn=conn)
         if outcome.stderr:
             _append_chunk(
                 store, ref_id, _JOB_EVENT_KIND,
@@ -376,6 +389,103 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             bubble_job_failure(store, ref_id)
             return
         conn.commit()
+
+
+def _build_job_result_text(
+    *,
+    store: Any,
+    job_ref_id: int,
+    parent_ref_id: int,
+    model: str,
+    exit_code: int,
+    duration_s: float,
+) -> str:
+    """Render the structured ``chunk_kind='job_result'`` audit text.
+
+    Pulls counts from the DB: files written under the parent's
+    workspace during this tick (via ref_events / put-time tagging),
+    citations + findings + child todos minted with the project tag.
+    Cheap query, runs in the worker's connection.
+    """
+    # Job timing
+    with store.pool.connection() as conn:
+        cur = conn.execute(
+            "SELECT created_at, updated_at FROM refs WHERE ref_id = %s",
+            (job_ref_id,),
+        ).fetchone()
+        if cur is None:
+            ts_started, ts_finished = "?", "?"
+        else:
+            ts_started, ts_finished = str(cur[0]), str(cur[1])
+        # Workspace path & project tag from parent
+        meta_cur = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s",
+            (parent_ref_id,),
+        ).fetchone()
+        ws_path = ""
+        if meta_cur and meta_cur[0]:
+            ws_block = meta_cur[0].get("workspace")
+            if isinstance(ws_block, dict):
+                ws_path = ws_block.get("path") or ""
+        project_tag = ""
+        if ws_path:
+            project_tag = (
+                "project:" + ws_path.rstrip("/").split("/")[-1]
+            )
+        # Counts under the parent during this tick window
+        cit_count = 0
+        finding_count = 0
+        child_count = 0
+        if project_tag:
+            cit_count = int(
+                conn.execute(
+                    """
+                    SELECT count(*) FROM refs r
+                      JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE r.kind = 'citation' AND r.deleted_at IS NULL
+                       AND t.namespace = 'OPEN' AND t.value = %s
+                       AND r.created_at >= %s
+                    """,
+                    (project_tag, ts_started),
+                ).fetchone()[0]
+            )
+            finding_count = int(
+                conn.execute(
+                    """
+                    SELECT count(*) FROM refs r
+                      JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+                       AND t.namespace = 'OPEN' AND t.value = %s
+                       AND r.created_at >= %s
+                    """,
+                    (project_tag, ts_started),
+                ).fetchone()[0]
+            )
+        child_count = int(
+            conn.execute(
+                "SELECT count(*) FROM refs WHERE parent_id = %s AND kind = 'todo' "
+                "AND deleted_at IS NULL AND created_at >= %s",
+                (parent_ref_id, ts_started),
+            ).fetchone()[0]
+        )
+    # Build the text — terse, structured.
+    lines = [
+        f"ts: {ts_started} → {ts_finished}",
+        f"job: #{job_ref_id}  parent: #{parent_ref_id}  model: {model}",
+        f"duration: {duration_s:.1f}s  exit: {exit_code}",
+        "",
+        "Produced this tick:",
+        f"  - subtasks minted: {child_count}",
+        f"  - citations minted: {cit_count}",
+        f"  - findings minted: {finding_count}",
+    ]
+    if exit_code == 0:
+        lines.append("verdict: succeeded")
+    else:
+        lines.append("verdict: failed")
+    return "\n".join(lines)
 
 
 def _parent_todo_id(store: Any, job_ref_id: int) -> int | None:
