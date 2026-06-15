@@ -163,9 +163,26 @@ def _append_chunk(
     *,
     conn: Connection | None = None,
 ) -> None:
-    """Append a chunk at the next ``ord`` for the ref."""
-    blocks = store.list_blocks_for_ref(ref_id)
-    next_pos = len(blocks)
+    """Append a chunk at the next ``ord`` for the ref.
+
+    When ``conn`` is provided we count via that connection so back-to-
+    back appends inside the same tx see each other's INSERTs. The
+    previous implementation called ``store.list_blocks_for_ref`` which
+    opens its own pool connection — uncommitted INSERTs in ``conn``
+    were invisible, leading to two calls computing the same
+    ``next_pos`` and a unique-constraint violation on
+    ``(ref_id, ord)``.
+    """
+    if conn is not None:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(ord) + 1, 0) FROM chunks "
+            "WHERE ref_id = %s AND ord >= 0",
+            (ref_id,),
+        ).fetchone()
+        next_pos = int(row[0]) if row and row[0] is not None else 0
+    else:
+        blocks = store.list_blocks_for_ref(ref_id)
+        next_pos = len(blocks)
     store.insert_blocks(
         ref_id,
         [BlockInsert(pos=next_pos, text=text, meta={"chunk_kind": chunk_kind})],
