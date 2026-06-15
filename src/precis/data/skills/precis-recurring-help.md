@@ -137,5 +137,8 @@ backfills); the default rotation includes it alongside `auto_check`.
 * `precis-tasks-help` — the tree shape, level gradient, doable rules
 * `precis-auto-tasks-help` — `meta.auto_check` leaves (the other
   worker-driven leaf pattern; orthogonal to `meta.schedule`)
-* `precis-cron-help` — legacy `kind='cron'` (still works; new code
-  uses `level:recurring`)
+* `precis-cron-help` — **different use case**: `kind='cron'` is the
+  push-notification system (launchd + pg_notify → asa_bot delivers
+  a synthetic prompt to an external conversation). `level:recurring`
+  is the pull-into-queue system (worker mints subtasks into the
+  doable queue). Both kept on purpose. See ADR 0030.

@@ -177,12 +177,12 @@ class NumericRefHandler(Handler):
                 return list_resp
             # Enumerate the actual list views this handler supports
             # rather than pointing at a per-kind help skill that may
-            # not exist (e.g. ``precis-fc-help``). The MCP critic
-            # flagged the dangling reference as MINOR #5: a caller
-            # who follows the "see precis-fc-help" hint dead-ends
-            # because the skill file was never written. Always
-            # spell the supported views inline so the agent has a
-            # working recovery path. (Critic MINOR #5.)
+            # not exist (e.g. ``precis-flashcard-help``). The MCP
+            # critic flagged the dangling reference as MINOR #5: a
+            # caller who follows the "see precis-flashcard-help"
+            # hint dead-ends because the skill file was never written.
+            # Always spell the supported views inline so the agent has
+            # a working recovery path. (Critic MINOR #5.)
             views = self._supported_list_views()
             view_list = ", ".join(f"/{v}" for v in views) if views else "(none)"
             raise Unsupported(
@@ -1081,7 +1081,7 @@ class NumericRefHandler(Handler):
 
         Used by the unsupported-view error path to surface a working
         list of recovery options (the MCP critic flagged a dangling
-        ``see precis-fc-help`` hint pointing at a skill file that
+        ``see precis-flashcard-help`` hint pointing at a skill file that
         doesn't exist; enumerating views inline avoids that whole
         class of bug).
 
