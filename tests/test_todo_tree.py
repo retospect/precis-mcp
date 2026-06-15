@@ -342,3 +342,36 @@ def test_non_parent_relation_still_stores_a_link(handler: TodoHandler) -> None:
     # The stored link must not have leaked into the parent column.
     ref = handler.store.get_ref(kind="todo", id=a_id)
     assert ref is not None and ref.parent_id is None
+
+
+# ── edit: in-place text rewrite ────────────────────────────────────
+
+
+def test_edit_replaces_text_in_place(handler: TodoHandler) -> None:
+    t = handler.put(text="Draft the spec.")
+    tid = _id_of(t.body)
+    handler.edit(id=tid, mode="replace", text="Draft the v2 spec.")
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None and ref.title == "Draft the v2 spec."
+
+
+def test_edit_keeps_tree_position_and_links(handler: TodoHandler) -> None:
+    root = handler.put(text="root")
+    root_id = _id_of(root.body)
+    child = handler.put(text="child", parent_id=root_id)
+    child_id = _id_of(child.body)
+    handler.edit(id=child_id, mode="replace", text="renamed child")
+    ref = handler.store.get_ref(kind="todo", id=child_id)
+    # Same id, same parent — edit is a rewrite, not a delete + re-put.
+    assert ref is not None
+    assert ref.title == "renamed child"
+    assert ref.parent_id == root_id
+
+
+def test_edit_rejects_blank_and_bad_mode(handler: TodoHandler) -> None:
+    t = handler.put(text="something")
+    tid = _id_of(t.body)
+    with pytest.raises(BadInput, match="requires text"):
+        handler.edit(id=tid, mode="replace", text="   ")
+    with pytest.raises(BadInput, match="only supports mode='replace'"):
+        handler.edit(id=tid, mode="append", text="x")

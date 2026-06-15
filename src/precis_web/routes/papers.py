@@ -101,13 +101,21 @@ async def index(request: Request, q: str | None = None) -> HTMLResponse:
         refs = [ref for ref, _score in hits]
     else:
         refs = store.list_refs(kind="paper", limit=50)
+    rows = [_paper_row(r) for r in refs]
+    # Most papers have no publisher abstract in meta; backfill the
+    # hover-card text from the leading body chunks in one batched query.
+    missing = [row for row in rows if not row["abstract"]]
+    if missing:
+        previews = store.abstract_previews([row["id"] for row in missing])
+        for row in missing:
+            row["abstract"] = previews.get(row["id"], "")
     return templates.TemplateResponse(
         request,
         "papers/index.html.j2",
         {
             "active_tab": "papers",
             "q": q or "",
-            "papers": [_paper_row(r) for r in refs],
+            "papers": rows,
         },
     )
 
@@ -133,8 +141,10 @@ async def detail(request: Request, ref_id: int) -> HTMLResponse:
             "authors": ref.authors or [],
             "pdf_on_disk": pdf_on_disk,
             # Diagnostics for the "file expected but missing" case (a
-            # held paper whose corpus_dir / mount is misconfigured):
-            # show exactly where we looked so it's self-diagnosing.
+            # held paper whose corpus_dir / mount is misconfigured, or
+            # a paper with no cite_key to address the file by): show
+            # exactly where we looked so it's self-diagnosing.
+            "cite_key": cite_key,
             "pdf_lookup_path": str(lookup_path) if lookup_path else "",
             "corpus_dir": str(cfg.corpus_dir),
         },

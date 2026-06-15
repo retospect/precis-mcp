@@ -157,6 +157,10 @@ class TodoHandler(NumericRefHandler):
         supports_search=True,
         supports_search_hits=True,
         supports_put=True,
+        # In-place text rewrite via edit(mode='replace', text='...'):
+        # same id, parent, links, and tags survive; old body audited in
+        # ref_events (view='log'). Owner-only on strategic / tactical.
+        supports_edit=True,
         supports_delete=True,
         supports_tag=True,
         supports_link=True,
@@ -497,6 +501,59 @@ class TodoHandler(NumericRefHandler):
             if self.emits_card:
                 self.store.upsert_card_combined(ref.id, text, conn=conn)
         return self._render_create_ack(ref.id)
+
+    # ── edit: in-place text rewrite (polish the wording) ──────────
+
+    def edit(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        mode: str = "replace",
+        text: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """In-place rewrite of a todo's text (``mode='replace'``).
+
+        Same id; parent, links, and tags all stay attached — the old
+        body lands in ``ref_events`` as a ``body_replaced`` row
+        (``view='log'``). Owner-only on strategic / tactical nodes,
+        the same authority veto as delete / reparent. Distinct from
+        delete + re-put, which would break every inbound edge and the
+        tree position.
+        """
+        if id is None:
+            raise BadInput(
+                "edit(kind='todo') requires id=",
+                next="edit(kind='todo', id=N, mode='replace', text='new text')",
+            )
+        if mode != "replace":
+            raise BadInput(
+                f"edit(kind='todo') only supports mode='replace', got {mode!r}",
+                next="edit(kind='todo', id=N, mode='replace', text='new text')",
+            )
+        if text is None or not text.strip():
+            raise BadInput(
+                "edit(kind='todo', mode='replace') requires text=",
+                next="edit(kind='todo', id=N, mode='replace', text='new text')",
+            )
+        ref_id = self._coerce_id(id)
+        guards.check_owner_only_ref(self.store, ref_id)
+        ref = self._resolve_live_ref(ref_id)
+        with self.store.tx() as conn:
+            old_text = self.store.replace_ref_text(
+                ref.id, text, source=guards._caller_source(), conn=conn
+            )
+            if self.emits_card:
+                self.store.upsert_card_combined(ref.id, text, conn=conn)
+        old_words = len((old_text or "").split())
+        new_words = len(text.split())
+        return Response(
+            body=(
+                f"replaced text of todo id={ref.id} "
+                f"({old_words} → {new_words} words). "
+                "view='log' for the full diff."
+            )
+        )
 
     # ── tag: gradient guard + STATUS:done event emission ──────────
 

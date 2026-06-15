@@ -26,12 +26,20 @@
 {% else %}
   <div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
     <p class="font-medium">This paper is held but the file isn't where the server looked.</p>
-    <p class="mt-1">Looked at: <span class="font-mono break-all">{{ pdf_lookup_path }}</span></p>
-    <p class="mt-1">corpus_dir: <span class="font-mono break-all">{{ corpus_dir }}</span></p>
-    <p class="mt-2 text-rose-700">
-      If the file lives elsewhere (e.g. an NFS mount), set
-      <span class="font-mono">PRECIS_CORPUS_DIR</span> for the web process and restart.
-    </p>
+    {% if cite_key %}
+      <p class="mt-1">cite_key: <span class="font-mono break-all">{{ cite_key }}</span></p>
+      <p class="mt-1">Looked at: <span class="font-mono break-all">{{ pdf_lookup_path or "(none)" }}</span></p>
+      <p class="mt-1">corpus_dir: <span class="font-mono break-all">{{ corpus_dir or "(unset)" }}</span></p>
+      <p class="mt-2 text-rose-700">
+        If the file lives elsewhere (e.g. an NFS mount), set
+        <span class="font-mono">PRECIS_CORPUS_DIR</span> for the web process and restart.
+      </p>
+    {% else %}
+      <p class="mt-1">This paper has no <span class="font-mono">cite_key</span> (slug),
+        so the server can't address a file for it on disk
+        (layout is <span class="font-mono">&lt;corpus_dir&gt;/&lt;letter&gt;/&lt;cite_key&gt;.pdf</span>).</p>
+      <p class="mt-1">corpus_dir: <span class="font-mono break-all">{{ corpus_dir or "(unset)" }}</span></p>
+    {% endif %}
   </div>
 {% endif %}
 {% endblock %}

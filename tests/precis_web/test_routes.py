@@ -125,6 +125,14 @@ def test_papers_index_hover_card_has_authors_and_abstract(client) -> None:
     assert "<jats:p>" not in resp.text
 
 
+def test_papers_index_abstract_backfilled_from_chunks(client) -> None:
+    # Paper 11 has no meta abstract -> the body-chunk backfill fills the
+    # hover card so it doesn't read "No abstract on file."
+    resp = client.get("/papers")
+    assert resp.status_code == 200
+    assert "Body-derived abstract text for the second paper." in resp.text
+
+
 def test_paper_pdf_404_when_missing(client) -> None:
     resp = client.get("/papers/10/pdf")
     assert resp.status_code == 400  # NotFound -> PrecisError handler
@@ -240,6 +248,46 @@ def test_task_remove_tag_dispatches_tag_remove(client, runtime) -> None:
 def test_task_empty_tag_call_is_noop(client, runtime) -> None:
     client.post("/tasks/2/tags", data={}, follow_redirects=False)
     assert runtime.calls == []  # nothing dispatched
+
+
+def test_task_edit_text_dispatches_edit_verb(client, runtime) -> None:
+    client.post(
+        "/tasks/2/edit", data={"text": "Polished title"}, follow_redirects=False
+    )
+    verb, args = runtime.calls[-1]
+    assert verb == "edit"
+    assert args == {
+        "kind": "todo",
+        "id": 2,
+        "mode": "replace",
+        "text": "Polished title",
+    }
+
+
+def test_task_edit_blank_text_is_noop(client, runtime) -> None:
+    client.post("/tasks/2/edit", data={"text": "   "}, follow_redirects=False)
+    assert runtime.calls == []  # nothing dispatched
+
+
+def test_task_tag_error_renders_inline_instead_of_silent_redirect(
+    client, runtime
+) -> None:
+    # A rejected tag (invalid vocab, guard veto) must surface the
+    # handler message, not silently redirect leaving the operator
+    # wondering why the tag "didn't show up".
+    runtime.error_verbs = {"tag"}
+    resp = client.post("/tasks/2/tags", data={"add": "bogus"}, follow_redirects=False)
+    assert resp.status_code == 400
+    assert "rejected by handler" in resp.text
+
+
+def test_task_edit_error_renders_inline(client, runtime) -> None:
+    runtime.error_verbs = {"edit"}
+    resp = client.post(
+        "/tasks/2/edit", data={"text": "new text"}, follow_redirects=False
+    )
+    assert resp.status_code == 400
+    assert "rejected by handler" in resp.text
 
 
 def test_task_history_renders_event_log(client) -> None:

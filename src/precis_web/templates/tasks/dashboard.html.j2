@@ -10,9 +10,9 @@
       <form method="post" action="/tasks/roots" class="flex items-center gap-2"
             x-data="{open:false}">
         <template x-if="open">
-          <span class="flex items-center gap-2">
-            <input name="text" required placeholder="New strategic root…"
-                   class="rounded-md border-slate-300 text-sm px-2 py-1 border w-56" />
+          <span class="flex items-start gap-2">
+            <textarea name="text" required rows="2" placeholder="New strategic root…"
+                      class="rounded-md border-slate-300 text-sm px-2 py-1 border w-56"></textarea>
             <select name="level" class="rounded-md border-slate-300 text-sm border px-1 py-1">
               <option value="strategic">strategic</option>
               <option value="tactical">tactical</option>
@@ -57,7 +57,7 @@
           {# Processing signals: live row lock and worker lease. #}
           {% if r.locked %}<span class="text-xs px-1.5 py-0.5 rounded bg-rose-600 text-white" title="row-locked right now (a worker holds it)">🔒 locked</span>{% endif %}
           {% if r.lease_active %}<span class="text-xs px-1.5 py-0.5 rounded bg-amber-500 text-white" title="leased until {{ r.lease_until }}">⏱ running</span>{% elif r.lease_until %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500" title="lease expired {{ r.lease_until }}">lease expired</span>{% endif %}
-          <span class="text-sm {% if r.status in ['done',"won't-do"] %}line-through text-slate-400{% endif %}">{{ r.title }}</span>
+          <span class="text-sm whitespace-pre-line break-words {% if r.status in ['done',"won't-do"] %}line-through text-slate-400{% endif %}">{{ r.title }}</span>
           {% if not r.is_leaf %}<span class="text-xs text-slate-400">[{{ r.done }}/{{ r.total }}]</span>{% endif %}
           {% if r.kind == 'todo' %}
           <button type="button" @click="actions=!actions"
@@ -65,8 +65,39 @@
           {% endif %}
         </div>
         {% if r.kind == 'todo' %}
+        <!-- Tags strip: always visible (not gated by the ⋯ panel, which
+             collapses on the post-redirect reload) so a just-added tag
+             shows immediately. Each chip carries a right-side × that
+             removes it via the tag verb. -->
+        <div class="mt-1 flex flex-wrap items-center gap-1"
+             style="padding-left: {{ (r.depth * 1.25) + 1.5 }}rem">
+          {% for t in r.tags %}
+          <span class="inline-flex items-center gap-1 text-xs pl-2 pr-1 py-0.5 rounded-full bg-slate-100 text-slate-600">
+            <span>{{ t }}</span>
+            <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex">
+              <input type="hidden" name="remove" value="{{ t }}" />
+              <button class="leading-none text-slate-400 hover:text-rose-600"
+                      title="remove tag" aria-label="remove tag {{ t }}">&times;</button>
+            </form>
+          </span>
+          {% endfor %}
+          <form method="post" action="/tasks/{{ r.id }}/tags" class="inline-flex items-center gap-1">
+            <input name="add" placeholder="+ tag…"
+                   class="rounded border-slate-300 text-xs border px-2 py-0.5 w-24" />
+            <button class="rounded border border-slate-300 text-xs px-1.5 py-0.5 hover:bg-slate-100">add</button>
+          </form>
+        </div>
+        {% endif %}
+        {% if r.kind == 'todo' %}
         <div x-show="actions" x-cloak class="mt-2 flex flex-wrap items-center gap-2"
              style="padding-left: {{ r.depth * 1.25 }}rem">
+          <!-- Edit text: in-place rewrite via the edit verb (same id).
+               Textarea so multiline task bodies edit + save verbatim. -->
+          <form method="post" action="/tasks/{{ r.id }}/edit" class="flex items-start gap-1 w-full">
+            <textarea name="text" required rows="3"
+                      class="rounded border-slate-300 text-xs border px-2 py-1 flex-1 font-mono">{{ r.title }}</textarea>
+            <button class="rounded bg-slate-700 text-white text-xs px-2 py-0.5">Save text</button>
+          </form>
           <form method="post" action="/tasks/{{ r.id }}/status" class="flex items-center gap-1">
             <select name="status" class="rounded border-slate-300 text-xs border px-1 py-0.5">
               {% for s in status_choices %}
@@ -75,9 +106,9 @@
             </select>
             <button class="rounded bg-slate-700 text-white text-xs px-2 py-0.5">Set</button>
           </form>
-          <form method="post" action="/tasks/{{ r.id }}/children" class="flex items-center gap-1">
-            <input name="text" required placeholder="add child…"
-                   class="rounded border-slate-300 text-xs border px-2 py-0.5 w-40" />
+          <form method="post" action="/tasks/{{ r.id }}/children" class="flex items-start gap-1">
+            <textarea name="text" required rows="2" placeholder="add child…"
+                      class="rounded border-slate-300 text-xs border px-2 py-1 w-48"></textarea>
             <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100">+ child</button>
           </form>
           <!-- Manual reparent fallback (keyboard / non-DnD path). -->
@@ -97,24 +128,6 @@
                   hx-get="/tasks/{{ r.id }}/history"
                   hx-target="#hist-{{ r.id }}" hx-swap="innerHTML">history</button>
           <div id="hist-{{ r.id }}" class="w-full"></div>
-          <!-- Tags: removable chips + add input (via the tag verb).
-               Stacked vertically so long tag sets don't fan out wide. -->
-          <div class="w-full flex flex-col items-start gap-1 mt-1">
-            {% for t in r.tags %}
-            <span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-              {{ t }}
-              <form method="post" action="/tasks/{{ r.id }}/tags" class="inline">
-                <input type="hidden" name="remove" value="{{ t }}" />
-                <button class="text-slate-400 hover:text-rose-600" title="remove tag">&times;</button>
-              </form>
-            </span>
-            {% endfor %}
-            <form method="post" action="/tasks/{{ r.id }}/tags" class="flex items-center gap-1">
-              <input name="add" placeholder="add tag…"
-                     class="rounded border-slate-300 text-xs border px-2 py-0.5 w-32" />
-              <button class="rounded border border-slate-300 text-xs px-2 py-0.5 hover:bg-slate-100">+ tag</button>
-            </form>
-          </div>
         </div>
         {% endif %}
       </li>

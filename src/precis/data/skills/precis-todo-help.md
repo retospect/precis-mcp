@@ -103,6 +103,21 @@ rejected. To set the parent when *creating* a todo, pass `parent_id=`
 on `put` instead. The current parent shows under `## parent` in
 `get(kind='todo', id=141, view='links')`.
 
+## Rewrite a todo's text
+## Edit / fix the wording of a todo
+## How do I change what a todo says without losing its place?
+
+```python
+edit(kind='todo', id=122, mode='replace', text='Review section 3 of abazari2024design (focus on the kinetics).')
+```
+
+In-place rewrite: the id, parent, links, and tags all stay attached —
+the old body is preserved in `ref_events` (read it back via
+`get(kind='todo', id=122, view='log')`). Only `mode='replace'` is
+supported. Prefer this over delete + re-`put`, which would break every
+inbound edge and the tree position. Owner-only on strategic / tactical
+nodes (same authority as delete / reparent).
+
 ## Schedule a todo for a date
 ## Add a due date to a todo
 ## How do I track when something is due?

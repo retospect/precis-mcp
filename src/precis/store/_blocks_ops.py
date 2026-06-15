@@ -270,9 +270,7 @@ class BlocksMixin:
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [
-            _unpack_search_row(r) for r in rows
-        ]
+        return [_unpack_search_row(r) for r in rows]
 
     def search_blocks_semantic(
         self,
@@ -350,9 +348,7 @@ class BlocksMixin:
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [
-            _unpack_search_row(r) for r in rows
-        ]
+        return [_unpack_search_row(r) for r in rows]
 
     def search_blocks_fused(
         self,
@@ -507,9 +503,7 @@ class BlocksMixin:
 
         with self.pool.connection() as conn:
             rows = conn.execute(sql, full_params).fetchall()
-        return [
-            _unpack_search_row(r) for r in rows
-        ]
+        return [_unpack_search_row(r) for r in rows]
 
     # -- CRUD (Phase 2 — v2 chunks table) ----------------------------------
 
@@ -1014,6 +1008,49 @@ class BlocksMixin:
             ).fetchone()
         assert row is not None
         return int(row[0])
+
+    def abstract_previews(
+        self, ref_ids: list[int], *, max_chars: int = 900
+    ) -> dict[int, str]:
+        """Best-effort abstract text per ref, drawn from leading chunks.
+
+        Most Marker-ingested papers carry no publisher abstract in
+        ``refs.meta['abstract']`` — the abstract prose lives in the
+        first body chunks instead. This returns, per ref, the first
+        substantial leading paragraph (``len >= 200``), falling back to
+        the longest of the first few body chunks. Used by the web
+        papers list to populate the hover card when the meta abstract
+        is absent.
+
+        One batched query over the leading body chunks
+        (``0 <= ord < 8``, excluding bibliography blocks); selection
+        happens in Python so the heuristic stays legible.
+        """
+        if not ref_ids:
+            return {}
+        sql = (
+            "SELECT ref_id, ord, text FROM chunks "
+            "WHERE ref_id = ANY(%s) AND ord >= 0 AND ord < 8 "
+            "AND chunk_kind <> 'references' "
+            "ORDER BY ref_id, ord"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (list(ref_ids),)).fetchall()
+        by_ref: dict[int, list[str]] = {}
+        for rid, _ord, text in rows:
+            by_ref.setdefault(int(rid), []).append(text or "")
+        out: dict[int, str] = {}
+        for rid, texts in by_ref.items():
+            pick = next((t for t in texts if len(t.strip()) >= 200), "")
+            if not pick and texts:
+                pick = max(texts, key=lambda t: len(t.strip()))
+            pick = pick.strip()
+            if not pick:
+                continue
+            if len(pick) > max_chars:
+                pick = pick[:max_chars].rstrip() + "…"
+            out[rid] = pick
+        return out
 
     def random_embedded_block(self) -> tuple[Block, Ref] | None:
         """Pick one random undeleted body chunk that has an embedding.

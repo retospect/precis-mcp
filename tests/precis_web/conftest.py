@@ -83,6 +83,16 @@ class FakeStore:
                 authors=[{"family": "Smith", "given": "Jane"}],
                 meta={"abstract": "<jats:p>We study <b>X</b> in depth.</jats:p>"},
             ),
+            make_ref(
+                id=11,
+                kind="paper",
+                slug="jones2025",
+                title="Another paper",
+                year=2025,
+                pdf_sha256="def",
+                authors=[{"family": "Jones", "given": "Bob"}],
+                meta={},  # no publisher abstract -> backfilled from chunks
+            ),
         ]
         self.memories = [
             make_ref(id=20, kind="memory", title="A decision"),
@@ -126,6 +136,12 @@ class FakeStore:
         }
         return {i: pool[i] for i in ids if i in pool}
 
+    def abstract_previews(self, ref_ids, *, max_chars: int = 900):
+        # Stand in for the leading-chunk backfill: only paper 11 has a
+        # body-derived abstract under the fake.
+        canned = {11: "Body-derived abstract text for the second paper."}
+        return {i: canned[i] for i in ref_ids if i in canned}
+
     def locked_ref_ids(self, ref_ids):
         # No live Postgres locks under the fake; the Tasks tab's
         # processing probe degrades to "nothing locked".
@@ -151,9 +167,15 @@ class FakeRuntime:
     def __init__(self, store: FakeStore) -> None:
         self.store = store
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        #: Verbs the fake should report as failures (is_error=True), so
+        #: the error-surfacing routes can be exercised without a real
+        #: handler raising. The body mimics a handler BadInput message.
+        self.error_verbs: set[str] = set()
 
     def dispatch_with_status(self, verb: str, args: dict[str, Any]) -> tuple[str, bool]:
         self.calls.append((verb, dict(args)))
+        if verb in self.error_verbs:
+            return (f"invalid {verb}: rejected by handler", True)
         return (f"[{verb}] ok", False)
 
 

@@ -10,6 +10,17 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **`edit(kind='todo', mode='replace', text=...)` — in-place text
+  rewrite for todos.** Todos were create-only (no way to fix wording
+  without delete + re-`put`, which severs every inbound edge and the
+  tree position). `TodoHandler` now exposes `edit` (mirrors
+  `MemoryHandler.edit`): same id; parent, links, and tags survive; the
+  old body lands in `ref_events` as `body_replaced` (`view='log'`).
+  Owner-only on strategic / tactical nodes (same authority veto as
+  delete / reparent). Backed by the existing `Store.replace_ref_text`.
+  Surfaced in precis-web: the task-tree `⋯` panel gains a *Save text*
+  field (`POST /tasks/{id}/edit`). Skill: `precis-todo-help`.
+
 - **Planner-coroutine slice — default-on auto-run for LLM:*-tagged todos.**
   Every open todo carrying a closed-vocab `LLM:opus|sonnet|haiku` tag
   is now dispatched automatically: the worker mints a `plan_tick` job,

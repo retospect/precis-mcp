@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis_web.deps import dispatch, get_store, templates
@@ -44,6 +44,33 @@ STATUS_CHOICES: tuple[str, ...] = (
 )
 
 _CLOSED = {"done", "won't-do"}
+
+
+def _redirect_or_error(
+    request: Request,
+    verb: str,
+    args: dict[str, Any],
+    *,
+    redirect: str = "/tasks",
+) -> Response:
+    """Dispatch one verb; redirect on success, render the error on failure.
+
+    The write routes used to discard the handler result and redirect
+    unconditionally, so a rejected mutation (an invalid tag, a guard
+    veto) failed silently — the operator typed something, hit submit,
+    and the page reloaded unchanged with no explanation. Surfacing the
+    handler's own message (its ``next=`` recovery hint included) makes
+    these self-diagnosing.
+    """
+    body, is_error = dispatch(request, verb, args)
+    if is_error:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Request error", "detail": body, "status": 400},
+            status_code=400,
+        )
+    return RedirectResponse(url=redirect, status_code=303)
 
 
 def _split_tags(raw: str) -> list[str]:
@@ -260,11 +287,12 @@ async def create_root(
     request: Request,
     text: str = Form(...),
     level: str = Form("strategic"),
-) -> RedirectResponse:
+) -> Response:
     """Create a top-level (strategic) root."""
     tags = [f"level:{level}"] if level else None
-    dispatch(request, "put", {"kind": "todo", "text": text, "tags": tags})
-    return RedirectResponse(url="/tasks", status_code=303)
+    return _redirect_or_error(
+        request, "put", {"kind": "todo", "text": text, "tags": tags}
+    )
 
 
 @router.post("/{parent_id}/children")
@@ -273,15 +301,14 @@ async def create_child(
     parent_id: int,
     text: str = Form(...),
     level: str = Form("subtask"),
-) -> RedirectResponse:
+) -> Response:
     """Create a child under ``parent_id``."""
     tags = [f"level:{level}"] if level else None
-    dispatch(
+    return _redirect_or_error(
         request,
         "put",
         {"kind": "todo", "text": text, "parent_id": parent_id, "tags": tags},
     )
-    return RedirectResponse(url="/tasks", status_code=303)
 
 
 @router.post("/{ref_id}/status")
@@ -289,14 +316,13 @@ async def set_status(
     request: Request,
     ref_id: int,
     status: str = Form(...),
-) -> RedirectResponse:
+) -> Response:
     """Set a todo's STATUS via the tag verb (closed-prefix replace)."""
-    dispatch(
+    return _redirect_or_error(
         request,
         "tag",
         {"kind": "todo", "id": ref_id, "add": [f"STATUS:{status}"]},
     )
-    return RedirectResponse(url="/tasks", status_code=303)
 
 
 @router.post("/{ref_id}/move")
@@ -304,7 +330,7 @@ async def move_task(
     request: Request,
     ref_id: int,
     new_parent_id: str = Form(""),
-) -> RedirectResponse:
+) -> Response:
     """Reparent a todo via the reserved ``link(rel='parent')`` surface.
 
     An empty / blank ``new_parent_id`` detaches the todo to a root
@@ -314,7 +340,7 @@ async def move_task(
     """
     npid = new_parent_id.strip()
     if npid:
-        dispatch(
+        return _redirect_or_error(
             request,
             "link",
             {
@@ -325,13 +351,33 @@ async def move_task(
                 "mode": "add",
             },
         )
-    else:
-        dispatch(
-            request,
-            "link",
-            {"kind": "todo", "id": ref_id, "rel": "parent", "mode": "remove"},
-        )
-    return RedirectResponse(url="/tasks", status_code=303)
+    return _redirect_or_error(
+        request,
+        "link",
+        {"kind": "todo", "id": ref_id, "rel": "parent", "mode": "remove"},
+    )
+
+
+@router.post("/{ref_id}/edit")
+async def edit_text(
+    request: Request,
+    ref_id: int,
+    text: str = Form(""),
+) -> Response:
+    """Rewrite a todo's text in place via the ``edit`` verb.
+
+    Same id, parent, links, and tags survive; the old body is audited
+    in ``ref_events``. Multiline text is preserved verbatim. An empty /
+    whitespace ``text`` is a no-op. Owner-only on strategic / tactical
+    nodes — the web process runs as owner, so the guard passes here.
+    """
+    if not text.strip():
+        return RedirectResponse(url="/tasks", status_code=303)
+    return _redirect_or_error(
+        request,
+        "edit",
+        {"kind": "todo", "id": ref_id, "mode": "replace", "text": text.strip()},
+    )
 
 
 @router.post("/{ref_id}/tags")
@@ -340,13 +386,15 @@ async def edit_tags(
     ref_id: int,
     add: str = Form(""),
     remove: str = Form(""),
-) -> RedirectResponse:
+) -> Response:
     """Add and/or remove free tags on a todo via the ``tag`` verb.
 
     ``add`` is a comma/space separated tag string the operator typed;
     ``remove`` is a single tag (from a chip's remove button). Both flow
     through the handler so tag-vocabulary validation stays single-
-    sourced — an invalid tag returns the handler's BadInput.
+    sourced — an invalid tag now renders the handler's BadInput inline
+    instead of silently redirecting (the operator was typing tags that
+    failed validation with no feedback).
     """
     add_list = _split_tags(add)
     remove_list = _split_tags(remove)
@@ -355,9 +403,9 @@ async def edit_tags(
         args["add"] = add_list
     if remove_list:
         args["remove"] = remove_list
-    if add_list or remove_list:
-        dispatch(request, "tag", args)
-    return RedirectResponse(url="/tasks", status_code=303)
+    if not add_list and not remove_list:
+        return RedirectResponse(url="/tasks", status_code=303)
+    return _redirect_or_error(request, "tag", args)
 
 
 @router.get("/{ref_id}/history", response_class=HTMLResponse)
