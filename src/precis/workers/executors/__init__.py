@@ -23,7 +23,17 @@ from __future__ import annotations
 #: any missing capability is reason to reject the submit.
 EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     "claude_inproc": frozenset(
-        {"claude_bin", "git", "clones_dir", "claude_config_mount"}
+        {
+            "claude_bin",
+            "git",
+            "clones_dir",
+            "claude_config_mount",
+            # Planner-coroutine slice: claude_inproc forwards the
+            # ``$PRECIS_MCP_CONFIG`` env into the claude subprocess
+            # (--mcp-config) so the planner can call back via MCP.
+            # See workers/job_types/plan_tick.py for the wiring.
+            "mcp_config",
+        }
     ),
 }
 

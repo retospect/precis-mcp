@@ -48,12 +48,36 @@ _runtime = None
 
 
 def _get_runtime():
-    """Get the current runtime instance."""
+    """Get the current runtime instance.
+
+    Registers an ``atexit`` hook on first build to close the runtime's
+    store before interpreter shutdown. Without this, the psycopg
+    ConnectionPool's ``__del__`` runs during finalization and tries to
+    join its background scheduler thread — Python 3.13+ raises
+    ``PythonFinalizationError: cannot join thread at interpreter
+    shutdown`` because the GIL is locked into teardown by then. The
+    exception is "ignored" but spams every CLI invocation. Closing
+    eagerly via atexit shuts the pool's threads cleanly first.
+    """
     global _runtime
     if _runtime is None:
+        import atexit
+
         from precis.runtime import build_runtime
 
         _runtime = build_runtime()
+
+        def _close_runtime() -> None:
+            try:
+                store = getattr(_runtime, "store", None)
+                if store is not None:
+                    store.close()
+            except Exception:
+                # atexit is best-effort; swallow so nothing else
+                # blocks on a close that failed.
+                pass
+
+        atexit.register(_close_runtime)
     return _runtime
 
 
