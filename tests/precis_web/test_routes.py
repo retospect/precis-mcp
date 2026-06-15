@@ -290,6 +290,65 @@ def test_task_edit_error_renders_inline(client, runtime) -> None:
     assert "rejected by handler" in resp.text
 
 
+def test_job_notes_splits_events_and_summary() -> None:
+    """``_job_notes`` groups job_event (failure reasons) vs job_summary."""
+    from contextlib import contextmanager
+
+    from precis_web.routes.tasks import _job_notes
+
+    rows = [
+        (6689, "job_event", "runner: timeout after 600s"),
+        (6689, "job_summary", "planner minted 3 children, then timed out"),
+        (6690, "job_event", "runner: uncaught exception: ValueError()"),
+    ]
+
+    class _Cur:
+        def fetchall(self):
+            return rows
+
+    class _Conn:
+        def execute(self, *_a, **_k):
+            return _Cur()
+
+    class _Pool:
+        @contextmanager
+        def connection(self):
+            yield _Conn()
+
+    store = type("S", (), {"pool": _Pool()})()
+    out = _job_notes(store, [6689, 6690])
+    assert out[6689]["events"] == ["runner: timeout after 600s"]
+    assert "timed out" in out[6689]["summary"]
+    assert out[6690]["events"] == ["runner: uncaught exception: ValueError()"]
+    assert out[6690]["summary"] == ""
+
+
+def test_history_attempt_detail_renders(client, monkeypatch) -> None:
+    """The history fragment exposes per-attempt failure/summary detail."""
+    from precis_web.routes import tasks as tasks_mod
+
+    # Inject one failed attempt with a failure reason + summary.
+    monkeypatch.setattr(
+        tasks_mod,
+        "_child_jobs",
+        lambda store, ids: (
+            [{"id": 6689, "parent_id": 2, "title": "plan_tick", "lease_until": None}]
+            if 2 in ids
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        tasks_mod,
+        "_job_notes",
+        lambda store, ids: {
+            6689: {"events": ["runner: timeout after 600s"], "summary": "did stuff"}
+        },
+    )
+    resp = client.get("/tasks/2/history")
+    assert resp.status_code == 200
+    assert "timeout after 600s" in resp.text
+
+
 def test_task_history_renders_event_log(client) -> None:
     resp = client.get("/tasks/2/history")
     assert resp.status_code == 200

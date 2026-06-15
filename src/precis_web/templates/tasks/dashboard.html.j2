@@ -52,7 +52,8 @@
           <span class="text-xs text-slate-400 w-10 shrink-0">#{{ r.id }}</span>
           {% if r.kind == 'job' %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-600">job</span>{% endif %}
           {% set sc = {'done':'bg-emerald-100 text-emerald-700','doing':'bg-amber-100 text-amber-700','blocked':'bg-rose-100 text-rose-700','paused':'bg-slate-200 text-slate-600',"won't-do":'bg-slate-200 text-slate-500'} %}
-          <span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.status, 'bg-sky-100 text-sky-700') }}">{{ r.status }}</span>
+          <span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.status, 'bg-sky-100 text-sky-700') }}{% if r.note %} cursor-help{% endif %}"
+                {% if r.note %}title="{{ r.note }}"{% endif %}>{{ r.status }}{% if r.note %} ⓘ{% endif %}</span>
           {% if r.level %}<span class="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">{{ r.level }}</span>{% endif %}
           {# Processing signals: live row lock and worker lease. #}
           {% if r.locked %}<span class="text-xs px-1.5 py-0.5 rounded bg-rose-600 text-white" title="row-locked right now (a worker holds it)">🔒 locked</span>{% endif %}

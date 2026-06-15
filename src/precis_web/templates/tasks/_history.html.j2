@@ -5,10 +5,25 @@
   <ul class="space-y-0.5 mb-2">
     {% for a in attempts %}
     {% set sc = {'succeeded':'text-emerald-700','done':'text-emerald-700','failed':'text-rose-700','running':'text-amber-700','cancelled':'text-slate-400'} %}
-    <li class="flex items-center gap-2">
-      <span class="text-slate-400">#{{ a.id }}</span>
-      <span class="{{ sc.get(a.status, 'text-sky-700') }}">[{{ a.status }}]</span>
-      <span class="text-slate-600 truncate">{{ a.title }}</span>
+    <li>
+      <div class="flex items-center gap-2">
+        <span class="text-slate-400">#{{ a.id }}</span>
+        <span class="{{ sc.get(a.status, 'text-sky-700') }}">[{{ a.status }}]</span>
+        <span class="text-slate-600 truncate">{{ a.title }}</span>
+      </div>
+      {% if a.events or a.summary %}
+      <details class="ml-6 mt-0.5">
+        <summary class="cursor-pointer text-slate-500 hover:text-slate-700">
+          {% if a.status == 'failed' %}why it failed{% else %}details{% endif %}
+        </summary>
+        {% for ev in a.events %}
+        <pre class="mt-1 whitespace-pre-wrap rounded bg-rose-50 border border-rose-200 p-2 text-rose-800">{{ ev }}</pre>
+        {% endfor %}
+        {% if a.summary %}
+        <pre class="mt-1 whitespace-pre-wrap rounded bg-white border border-slate-200 p-2 text-slate-700">{{ a.summary }}</pre>
+        {% endif %}
+      </details>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>

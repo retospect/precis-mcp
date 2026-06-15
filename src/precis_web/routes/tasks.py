@@ -169,6 +169,49 @@ def _child_jobs(store: Any, todo_ids: list[int]) -> list[dict[str, Any]]:
     ]
 
 
+def _job_notes(store: Any, job_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Bulk-fetch the ``job_event`` / ``job_summary`` chunks per job.
+
+    These are where a runner records *why* a job failed (the
+    ``job_event`` reason chunk written by ``_record_failure``) and the
+    captured stdout (``job_summary``). The tree itself only shows a
+    bare ``failed`` badge; surfacing these turns "#6689 failed" into a
+    legible account on hover + in the history panel.
+
+    Returns ``{job_id: {'events': [str, ...], 'summary': str}}``.
+    Degrades to empty dicts under the test fake (no chunks table).
+    """
+    out: dict[int, dict[str, Any]] = {
+        jid: {"events": [], "summary": ""} for jid in job_ids
+    }
+    if not job_ids:
+        return out
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, meta->>'chunk_kind' AS kind, text "
+                "FROM chunks "
+                "WHERE ref_id = ANY(%s) "
+                "AND meta->>'chunk_kind' IN ('job_event', 'job_summary') "
+                "ORDER BY ref_id, ord",
+                (job_ids,),
+            ).fetchall()
+    except Exception:  # pragma: no cover - defensive (fake cursor)
+        return out
+    summaries: dict[int, list[str]] = {jid: [] for jid in job_ids}
+    for ref_id, kind, text in rows:
+        rid = int(ref_id)
+        if rid not in out:
+            continue
+        if kind == "job_event":
+            out[rid]["events"].append(text)
+        elif kind == "job_summary":
+            summaries[rid].append(text)
+    for jid, parts in summaries.items():
+        out[jid]["summary"] = "\n".join(parts)
+    return out
+
+
 def _lease_active(lease_until: str | None) -> bool:
     """True when ``lease_until`` parses and lies in the future."""
     if not lease_until:
@@ -200,6 +243,9 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
     tags = _load_tags(store, all_ids)
     freeform = _load_freeform_tags(store, todo_ids)
     locked = store.locked_ref_ids(all_ids)
+    # Failure reason / summary chunks for each job, so a job row's
+    # bare status badge gets a hover tooltip explaining what happened.
+    job_notes = _job_notes(store, [j["id"] for j in jobs])
 
     # Normalise todos + jobs into a single node dict so the walk is
     # kind-agnostic.
@@ -236,6 +282,15 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
         kids = children.get(node["id"], [])
         done = sum(1 for k in kids if tags[k["id"]]["status"] in _CLOSED)
         lease_until = node["lease_until"]
+        # Job rows carry a hover tooltip built from their failure /
+        # summary chunks; todos have none (they get the history panel).
+        note = ""
+        if node["kind"] == "job":
+            jn = job_notes.get(node["id"], {})
+            parts = list(jn.get("events", []))
+            if jn.get("summary"):
+                parts.append(jn["summary"])
+            note = "\n".join(p for p in parts if p).strip()
         rows.append(
             {
                 "id": node["id"],
@@ -251,6 +306,7 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
                 "lease_until": lease_until,
                 "lease_active": _lease_active(lease_until),
                 "tags": freeform.get(node["id"], []) if node["kind"] == "todo" else [],
+                "note": note,
             }
         )
         for k in kids:
@@ -425,12 +481,16 @@ async def history(request: Request, ref_id: int) -> HTMLResponse:
     """
     store = get_store(request)
     jobs = _child_jobs(store, [ref_id])
-    job_status = _load_tags(store, [j["id"] for j in jobs])
+    job_ids = [j["id"] for j in jobs]
+    job_status = _load_tags(store, job_ids)
+    notes = _job_notes(store, job_ids)
     attempts = [
         {
             "id": j["id"],
             "title": j["title"],
             "status": job_status.get(j["id"], {}).get("status", "open"),
+            "events": notes.get(j["id"], {}).get("events", []),
+            "summary": notes.get(j["id"], {}).get("summary", ""),
         }
         for j in jobs
     ]
