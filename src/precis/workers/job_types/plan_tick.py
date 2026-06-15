@@ -48,7 +48,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "type": "integer",
             "minimum": 30,
             "maximum": 3600,
-            "description": "Wall-clock cap on the tick. Default 600s.",
+            "description": "Wall-clock cap on the tick. Default 1800s (30 min).",
         },
     },
     "required": ["model"],
@@ -118,7 +118,7 @@ def run(
     from precis.workers.planner_prompt import build_planner_prompts
 
     model = params["model"]
-    timeout_s = int(params.get("timeout_s", 600))
+    timeout_s = int(params.get("timeout_s", 1800))
     started = time.monotonic()
 
     prompts = build_planner_prompts(store, ref_id=parent_ref_id, model=model)
