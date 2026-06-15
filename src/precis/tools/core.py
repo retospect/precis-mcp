@@ -7,6 +7,7 @@ the shared registry in tools/__init__.py.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 # Conditional imports for MCP types (not available in all environments)
