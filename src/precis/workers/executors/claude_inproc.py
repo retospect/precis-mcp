@@ -334,7 +334,7 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             conn.commit()
             from precis.handlers._job_bubble import bubble_job_failure
 
-            bubble_job_failure(store, job_ref_id=ref_id)
+            bubble_job_failure(store, ref_id)
         return
 
     with store.pool.connection() as conn:
@@ -356,7 +356,7 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             conn.commit()
             from precis.handlers._job_bubble import bubble_job_failure
 
-            bubble_job_failure(store, job_ref_id=ref_id)
+            bubble_job_failure(store, ref_id)
             return
         conn.commit()
 
