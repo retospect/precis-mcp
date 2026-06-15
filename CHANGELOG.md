@@ -8,6 +8,63 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-15 session)
+
+- **Layer-3 compile guard at STATUS:done** (`utils/compile_guard.py`).
+  When the strategic root attempts `STATUS:done` and all child todos
+  are resolved, the workspace's `latexmk -pdf -interaction=nonstopmode
+  -halt-on-error <entrypoint>` runs. Pass → done sticks. Fail → done
+  is rejected via `BadInput` carrying the last 30 lines of the build
+  log so the LLM's next tick prompt has the actual error to fix.
+  Time-capped at `PRECIS_LATEXMK_TIMEOUT_S` (default 120s). Degrades
+  gracefully when `latexmk` isn't installed (logs + skips). Wired
+  into `TodoHandler.tag` after the artifact guardrail.
+- **Bib generator** (`utils/bib_gen.py`). `write_workspace_bib`
+  enumerates `kind='citation'` refs tagged with `project:<slug>`,
+  joins to the linked paper (`rel='cites'`), and emits a `refs.bib`.
+  Rich-metadata sources render as `@article`, stubs as `@misc` with
+  an explanatory note. Idempotent regen. Called by the compile guard.
+- **`chunk_kind='job_result'` audit chunk per tick** (T1.6).
+  `claude_inproc._build_job_result_text` writes a structured per-tick
+  summary (ts / job / parent / model / duration / counts of
+  subtasks-citations-findings minted / verdict). Parent re-tick
+  prompts now consume these instead of dumping raw stdout.
+- **Re-tick prompt rewrite** (`planner_prompt._build_user_prompt`).
+  New "Workspace status" block lists files currently on disk (with
+  get-by-slug hints); new "Children" block per-child shows
+  `id / kind / STATUS / one-job_result-digest`. Dropped the giant
+  "Prior child results" raw-stdout dump. Token cost per re-tick
+  drops from ~30k to ~3k for a 6-child decomposition.
+- **`STATUS:done` requires-artifact guardrail** (T1.7).
+  Worker-sourced `STATUS:done` rejected unless: successful child
+  job, all live child todos resolved, citation tagged with project,
+  or a file written under the workspace in last 24h. Owner passes
+  through. Stops the cheating mode.
+- **Backdoor env injections** for runtime context:
+  `PRECIS_CURRENT_TODO`, `PRECIS_CURRENT_MODEL`, `PRECIS_WORKSPACE`
+  → `project:<slug>` tag. LLM stops needing to remember its own
+  runtime context every call.
+- **Slug-only API mode default**: `put(kind='tex', name='X', ...)`
+  defaults `mode='create'`. Removes one footgun.
+- **MCP tool-call audit log** (`tools/core._log_tool_call`). One
+  structured line per put/get/search/tag/link/edit/delete with
+  parent_todo correlation. `precis logs --process precis-serve`
+  now shows the per-tick MCP trail.
+- **Workspace init defensive**: `ensure_initialized` splits git
+  init into stages so a `git add -A` failure on NFS doesn't leave
+  `.git/` orphan-without-HEAD. Per-put commits retry independently.
+- **Literature-hunt contract pattern**: planner contract gains a
+  copy-paste template for the lit-hunt subtask (mandatory when the
+  LLM identifies missing sources), prohibits "References needed"
+  memory notes.
+- **`mactex-no-gui` install** in `precis_worker_agent` role + plist
+  `PATH` extended to include `/Library/TeX/texbin` so `latexmk` /
+  `biber` are reachable to the agent worker's MCP subprocesses.
+- **End-to-end validation**: 12 KB high-quality LaTeX section
+  (`tex/manufacturing.tex`) produced by the cascade; compiled to a
+  149 KB / 4-page `main.pdf` via the workspace's templated
+  `main.tex` + `latexmk`.
+
 ### Added
 
 - **Papers hover card — DOI / arXiv verification links + sharper
