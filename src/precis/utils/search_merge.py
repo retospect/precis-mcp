@@ -403,7 +403,7 @@ def ref_hits_to_search_hits(
     """Adapt ``(ref, rank)`` rows into ``SearchHit``s.
 
     For ref-level lexical search (``store.search_refs_lexical``)
-    used by numeric kinds (todo/memory/gripe/fc) and the oracle
+    used by numeric kinds (todo/memory/gripe/flashcard) and the oracle
     title-only search.
 
     Args:

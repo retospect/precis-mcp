@@ -44,7 +44,7 @@ the missing var(s) to the operator.
 | `python` | `PRECIS_PYTHON_ROOTS` |
 
 Store-backed kinds (`paper`, `oracle`, `conv`, `todo`,
-`memory`, `gripe`, `fc`, `citation`) need a configured store; if
+`memory`, `gripe`, `flashcard`, `citation`) need a configured store; if
 absent they report `store required` in the boot banner.
 
 ## Check what's actually live in this build

@@ -112,7 +112,7 @@ class RefsMixin:
         """Insert a ref. Slug rules:
 
         - Slug kinds (paper/book/oracle/conv/skill): slug required.
-        - Numeric kinds (todo/memory/gripe/fc): slug must be None.
+        - Numeric kinds (todo/memory/gripe/flashcard): slug must be None.
 
         Enforced at app layer (the DB ``CHECK`` can't subquery the
         ``kinds`` reference table).

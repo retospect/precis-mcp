@@ -1285,7 +1285,7 @@ class PrecisRuntime:
         forced four single-kind calls. Now a single
         ``search(tags=['<tag>'])`` (kind omitted) returns the kind-mixed
         set in one call. Restricted to live numeric-ref kinds (memory,
-        todo, gripe, fc, conv, finding, job, pres) — the slug-ref and
+        todo, gripe, flashcard, conv, finding, job, pres) — the slug-ref and
         cache-backed kinds don't share the same tag-indexing path.
         """
         store = self.hub.store

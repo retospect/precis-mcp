@@ -1,7 +1,7 @@
 """Shared base class for numeric-id ref kinds.
 
 Memory was the first instance; phase 5 brings four more (todo, gripe,
-fc, conv) plus a couple of slug variants. The CRUD shape is
+flashcard, conv) plus a couple of slug variants. The CRUD shape is
 nearly identical for all of them — only the kind name, default tags,
 landing/list views, and a small render hook differ.
 
@@ -22,7 +22,7 @@ Subclass contract:
         _list_view(view)                   — handle path views like '/recent'
 
 The base provides ``get`` / ``search`` / ``put`` exactly as v1's
-MemoryHandler did. Subclasses that need fancier behaviour (e.g. `fc`'s
+MemoryHandler did. Subclasses that need fancier behaviour (e.g. `flashcard`'s
 spaced-repetition scheduling) override the relevant hook.
 """
 
@@ -91,7 +91,7 @@ def _extract_summary(body: str) -> tuple[str, int]:
 
 
 class NumericRefHandler(Handler):
-    """Base class for numeric-id ref kinds (memory, todo, gripe, fc, …)."""
+    """Base class for numeric-id ref kinds (memory, todo, gripe, flashcard, …)."""
 
     spec: ClassVar[KindSpec]
     kind: ClassVar[str]
@@ -985,7 +985,7 @@ class NumericRefHandler(Handler):
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         """Default single-ref view: id header + body + tag line.
 
-        Subclasses with richer body shape (e.g. fc's Q/A pair) override.
+        Subclasses with richer body shape (e.g. flashcard's Q/A pair) override.
         """
         out = [f"# {self._sense()} {ref.id}", "", ref.title]
         if tags:
@@ -1011,8 +1011,8 @@ class NumericRefHandler(Handler):
             this stale?" at a glance; a re-tag/edit bumps it back to 0.
 
         Body source is ``ref.title`` for numeric-ref kinds (memory,
-        todo, gripe-body, fc-question). Side chunks (gripe comments,
-        fc answers) aren't included — they show up on the get= fetch.
+        todo, gripe-body, flashcard-question). Side chunks (gripe comments,
+        flashcard answers) aren't included — they show up on the get= fetch.
         2026-06-13 redesign per "scan in one glance" SOUL guidance.
         """
         from precis.format import render_agent_table
@@ -1044,7 +1044,7 @@ class NumericRefHandler(Handler):
 
         Default shape: ``created <kind> id=N.`` + TOON Next: trailer
         listing one or two useful follow-ups. Uses ``self.kind`` (the
-        kwarg spelling, e.g. ``fc``) — *not* ``self._sense()`` (the
+        kwarg spelling, e.g. ``flashcard``) — *not* ``self._sense()`` (the
         prose noun, e.g. ``flashcard``) — so the header matches the
         kwarg agents pass on put/tag/link/get. Broad-pass finding #9.
 
@@ -1087,7 +1087,7 @@ class NumericRefHandler(Handler):
 
         Subclasses extending ``_list_view`` should override this and
         include any kind-specific names they handle (todo: ``open``,
-        ``done``, …; fc: ``due``). The base class only ships
+        ``done``, …; flashcard: ``due``). The base class only ships
         ``recent``.
         """
         return ("recent",)
@@ -1097,7 +1097,7 @@ class NumericRefHandler(Handler):
 
         Default returns the most recent 20 refs in reverse-chronological
         order. Subclasses with richer list semantics (todo's open /
-        blocked / done filters; fc's due) override.
+        blocked / done filters; flashcard's due) override.
 
         Returning ``None`` means "I don't recognize this view" — the
         base then raises ``Unsupported``.

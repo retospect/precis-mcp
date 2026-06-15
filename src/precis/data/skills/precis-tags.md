@@ -174,9 +174,9 @@ axes and suggests the lowercase rewrite.
 | `todo`, `gripe` | `STATUS`, `PRIO` |
 | `finding`, `job` | `STATUS` (lifecycle subsets — see table above) |
 | `paper`, `patent` | `SRC`, `CACHE` |
-| `research`, `think`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |
+| `perplexity-research`, `perplexity-reasoning`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |
 | `memory` | `DREAM` (dreaming-worker provenance) |
-| `fc`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |
+| `flashcard`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |
 
 Free-form kinds (`memory` etc.) express the same semantics with open
 tags:

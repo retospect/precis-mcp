@@ -236,7 +236,7 @@ def _handle(ref: Any, block: Any) -> str:
 def _drill_down(ref: Any, block: Any) -> str:
     """Build the ``get(...)`` call that fetches the picked block.
 
-    For numeric kinds (``memory`` / ``todo`` / ``gripe`` / ``fc``)
+    For numeric kinds (``memory`` / ``todo`` / ``gripe`` / ``flashcard``)
     the ref id alone is enough — these kinds render the whole ref
     body on ``get`` and don't split it by block. For slug kinds
     with multi-block content (``paper`` / ``oracle`` / ``conv``)

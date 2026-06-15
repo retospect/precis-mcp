@@ -97,7 +97,7 @@ link(kind='memory', id=23,
      target='memory:51', rel='specialises')          # equivalent edge from the other side
 ```
 
-Use between concept-bearing refs (memory, fc, paper). The auto-mirror
+Use between concept-bearing refs (memory, flashcard, paper). The auto-mirror
 means writing one direction makes the other queryable.
 
 ## Block one todo on another

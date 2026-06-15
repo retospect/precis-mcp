@@ -487,10 +487,11 @@ def put(
       - File kinds (`markdown`, `plaintext`, `tex`, `python`):
         `mode='create'` (region edits live on `edit`,
         whole-file deletes on `delete`).
-      - Paid-import kinds (`websearch`, `think`, `research`):
-        `mode='import'` to ingest an existing payload (e.g. a
-        Perplexity report) without re-running the upstream call.
-      - Numeric-ref kinds (`memory`, `todo`, `gripe`, `conv`, `fc`):
+      - Paid-import kinds (`websearch`, `perplexity-reasoning`,
+        `perplexity-research`): `mode='import'` to ingest an existing
+        payload (e.g. a Perplexity report) without re-running the
+        upstream call.
+      - Numeric-ref kinds (`memory`, `todo`, `gripe`, `conv`, `flashcard`):
         omit `mode=` to create.
     `tags=` adds, `untags=` removes. `link=`/`unlink=` use canonical
     `kind:identifier[~selector]` form; `rel=` defaults to `related-to`.
@@ -615,7 +616,7 @@ def delete(
 ) -> str:
     """Delete a ref or addressed region.
 
-    Numeric-ref kinds (memory, todo, gripe, fc, conv):
+    Numeric-ref kinds (memory, todo, gripe, flashcard, conv):
     soft-delete the ref (recoverable at SQL layer).
 
     File kinds with selector in `id=` (markdown, plaintext, tex,
@@ -649,8 +650,9 @@ def tag(
 
     Per-kind closed-prefix gating (summary):
     todo/gripe: STATUS+PRIO. finding/job: STATUS (lifecycle subsets).
-    memory: DREAM (dreaming-worker provenance). fc/conv: none.
-    paper/patent: SRC+CACHE. web/research/think/websearch/youtube:
+    memory: DREAM (dreaming-worker provenance). flashcard/conv: none.
+    paper/patent: SRC+CACHE.
+    web/perplexity-research/perplexity-reasoning/websearch/youtube:
     CACHE+WATCH. oracle/skill: none. python/calc/math: tag unsupported.
 
     Full reference: get(kind='skill', id='precis-tag-help'), or

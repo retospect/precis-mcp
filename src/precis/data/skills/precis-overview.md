@@ -47,11 +47,11 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `todo` | `122` (int) | A task in the hierarchical tree (Slice 1–5). Branches read as outcomes; leaves as next actions. See `precis-tasks-help`. | store |
 | `memory` | `47` (int) | Agent note / scratchpad | store |
 | `gripe` | `9` (int) | Annoyance / niggle | store |
-| `fc` | `204` (int) | Flashcard (SM-2 spaced rep) | store |
+| `flashcard` | `204` (int) | Flashcard (SM-2 spaced rep) | store |
 | `citation` | `18` (int) | Verified claim → source quote | store |
 | `finding` | `73` (int) | Chain-of-evidence head over a citation chase | store |
 | `job` | `55` (int) | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-dispatch-help`. | store |
-| `cron` | `42` (int) | Scheduled wakeup / reminder (legacy — new scheduled work uses `level:recurring` todos under the **Watches** umbrella; see `precis-recurring-help`) | store |
+| `cron` | `42` (int) | Push-notification scheduler — fires a payload to an external conversation (asa-bot Discord) at the scheduled time. **Different use case** from `level:recurring` todos (which pull recurring work into the doable queue); both kinds kept on purpose. See `precis-cron-help`, `precis-recurring-help`, ADR 0030. | store |
 | `message` | `11` (int) | Proactive outbound (Discord post) | store |
 | `provenance` | `92` (int) | Per-ref provenance audit (sources, transforms) | store |
 | `tag` | `topic:co2-capture` | Discoverable tag row (`get`/`search` only) | store |

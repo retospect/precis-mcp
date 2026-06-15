@@ -1842,7 +1842,7 @@ def _parse_paper_id(
     if isinstance(raw, str) and raw.startswith("/"):
         raise BadInput(
             f"paper has no list view {raw!r} - list-view paths are "
-            "specific to numeric kinds (memory/todo/fc/...)",
+            "specific to numeric kinds (memory/todo/flashcard/...)",
             next=(
                 "papers don't accept '/recent' - use the bare list shape: "
                 "get(kind='paper')"
