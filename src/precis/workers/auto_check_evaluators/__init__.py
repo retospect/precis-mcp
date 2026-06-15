@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from precis.errors import BadInput
 from precis.workers.auto_check_evaluators import (
+    all_child_findings_resolved,
     child_job_succeeded,
     discord_reply_received,
     paper_ingested,
@@ -53,6 +54,7 @@ REGISTRY: dict[str, Evaluator] = {
     "time_past": time_past.evaluate,
     "tag_present": tag_present.evaluate,
     "child_job_succeeded": child_job_succeeded.evaluate,
+    "all_child_findings_resolved": all_child_findings_resolved.evaluate,
 }
 
 

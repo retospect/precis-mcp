@@ -259,9 +259,14 @@ write `\\cite{TODO}` or a guessed bib key — it breaks the compile.
 
 **Literature hunt**: if you identify primary sources that you need
 but the corpus doesn't have, **DO NOT** write them as a memory
-note ("References needed: ..."). Mint a literature-hunt subtask:
+note ("References needed: ..."). Mint a literature-hunt subtask
+with an auto-close evaluator so it closes itself when the chase
+finishes — no follow-up tick from you needed:
 
-  put(kind='todo', tags=['LLM:sonnet'], text='''
+  put(kind='todo',
+      tags=['LLM:sonnet'],
+      meta={'auto_check': {'type': 'all_child_findings_resolved'}},
+      text='''
   Literature hunt — find and ingest these N papers. For each:
   1. search(kind='paper', q='<title or DOI>') to check the corpus.
   2. If not in corpus, mint
@@ -269,8 +274,10 @@ note ("References needed: ..."). Mint a literature-hunt subtask:
            source_handle='<paper:slug-guess>',
            verifier_confidence=0.5)
      The finding_chase worker auto-resolves via Unpaywall / arXiv /
-     S2 / EPO OPS.
-  3. STATUS:done when all are minted.
+     S2 / EPO OPS. No need to tag STATUS:done — your
+     `all_child_findings_resolved` auto_check fires when every
+     finding reaches a terminal state (established, dead_chain, or
+     multi_candidate).
 
   Papers needed:
     1. <citation-style identifier> — <topic>

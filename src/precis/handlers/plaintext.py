@@ -612,6 +612,33 @@ class PlaintextHandler(Handler):
                 mechanical_note = (
                     " — mechanical fixes: " + "; ".join(mech.fixes)
                 )
+            # Layer-2 LLM-fixer. Opt-in via PRECIS_LAYER2_FIXER=1 — adds
+            # a ~$0.003 / 2-3s sonnet call when chktex flags errors that
+            # Layer 1 didn't resolve. Returns a 'hint' verdict (file NOT
+            # written; caller surfaces the proposal and re-submits if it
+            # preserves intent).
+            if os.environ.get("PRECIS_LAYER2_FIXER") == "1":
+                from precis.utils.tex_llm_fix import attempt_llm_fix
+
+                layer2 = attempt_llm_fix(body)
+                if layer2.verdict == "hint":
+                    raise BadInput(
+                        f"tex syntax errors not auto-fixable; review the "
+                        f"proposal below and resubmit if it matches your "
+                        f"intent:\n\n--- proposed correction ---\n"
+                        f"{layer2.proposed_text}\n\n--- chktex errors ---\n"
+                        + "\n".join(layer2.errors),
+                        next=(
+                            f"put(kind='{self._KIND}', name='{slug}', "
+                            "text=<the proposed text above if it preserves "
+                            "your intent>, mode='create')"
+                        ),
+                    )
+                if layer2.verdict == "failed" and layer2.errors:
+                    log.info(
+                        "tex_llm_fix: skipped (%s); proceeding with raw text",
+                        layer2.note,
+                    )
         # Workspace-scoped per-put advisory lock + git commit. The
         # lock is held through the disk write and the commit so two
         # concurrent puts in the same workspace serialize cleanly.
