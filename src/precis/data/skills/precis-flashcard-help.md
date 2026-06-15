@@ -1,12 +1,13 @@
 ---
-id: precis-fc-help
+id: precis-flashcard-help
 title: precis — spaced-repetition flashcards
 summary: spaced-repetition flashcards — atomic facts, scheduled review, recall rating
-applies-to: get/search/put/delete/tag/link (kind='fc')
+applies-to: get/search/put/delete/tag/link (kind='flashcard')
 status: active
+renamed-from: precis-fc-help (kind 'fc' → 'flashcard' on 2026-06-15)
 ---
 
-# precis-fc-help — spaced-repetition knowledge cards
+# precis-flashcard-help — spaced-repetition knowledge cards
 
 Flashcards are numeric-ref knowledge statements scheduled for review.
 One card = one atomic fact you want to remember.
@@ -16,10 +17,10 @@ One card = one atomic fact you want to remember.
 ## Capture a knowledge statement as a card
 
 ```python
-put(kind='fc', text='PIPS needs only 36 molecular configurations to generalise.')
+put(kind='flashcard', text='PIPS needs only 36 molecular configurations to generalise.')
 # → returns integer id (e.g. 204)
 
-put(kind='fc',
+put(kind='flashcard',
     text='PIPS needs only 36 molecular configurations to generalise.',
     tags=['topic:pips'],
     link='paper:acheson2026automated~8', rel='derived-from')
@@ -35,7 +36,7 @@ hurt both recall and the rating signal.
 ## List cards I need to review now
 
 ```python
-get(kind='fc', id='/due')
+get(kind='flashcard', id='/due')
 ```
 
 ```text
@@ -58,12 +59,12 @@ immediately. Empty queue returns `no flashcards due` with hints to
 ## See what cards I already have
 
 ```python
-get(kind='fc')                  # /recent (default)
-get(kind='fc', id='/recent')    # 20 newest
-get(kind='fc', id=204)          # one card — body + schedule meta
+get(kind='flashcard')                  # /recent (default)
+get(kind='flashcard', id='/recent')    # 20 newest
+get(kind='flashcard', id=204)          # one card — body + schedule meta
 ```
 
-Both `id=204` and `id='fc:204'` are accepted.
+Both `id=204` and `id='flashcard:204'` are accepted.
 
 ## Review a card
 ## Quiz myself on a due card
@@ -73,15 +74,15 @@ Read the card, recall the answer, check the body. The rating verb
 (`grade=0..5` → next-interval update) is not yet wired; reviewed
 cards stay on `/due` until it ships. The schedule meta
 (`easiness`, `interval`, `reps`, `next_review`, `last_reviewed`)
-is visible on `get(kind='fc', id=N)`.
+is visible on `get(kind='flashcard', id=N)`.
 
 ## Search across cards
 ## Find a card by topic
 ## Check whether I already made a card about X
 
 ```python
-search(kind='fc', q='rank fusion')
-search(kind='fc', q='photocatalysis', tags=['topic:noxrr'])
+search(kind='flashcard', q='rank fusion')
+search(kind='flashcard', q='photocatalysis', tags=['topic:noxrr'])
 ```
 
 Cards also surface in cross-kind search — useful when writing a
@@ -90,8 +91,8 @@ note to check for an existing card on the same idea.
 ## Tag or link a card
 
 ```python
-tag(kind='fc', id=204, add=['topic:pips'])
-link(kind='fc', id=204, target='paper:acheson2026automated~8', rel='derived-from')
+tag(kind='flashcard', id=204, add=['topic:pips'])
+link(kind='flashcard', id=204, target='paper:acheson2026automated~8', rel='derived-from')
 ```
 
 ## See also

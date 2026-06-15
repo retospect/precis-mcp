@@ -72,7 +72,7 @@ def test_seeds_populated(fresh_db: str) -> None:
     # vocab-table seed checks (actors / kinds / relations) still
     # apply.
     assert {"agent", "user", "system"}.issubset(actors)
-    assert {"paper", "memory", "todo", "fc", "web", "youtube"}.issubset(kinds)
+    assert {"paper", "memory", "todo", "flashcard", "web", "youtube"}.issubset(kinds)
     assert {"related-to", "blocks", "contradicts"}.issubset(relations)
 
 

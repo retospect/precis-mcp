@@ -146,6 +146,8 @@ class CacheBackedHandler(Handler):
         tags: list[str] | None = None,
         untags: list[str] | None = None,
         mode: str | None = None,
+        ttl_days: int | None = None,
+        refresh: bool = False,
         **_kw: Any,
     ) -> Response:
         # Bare get / "/" / "/recent" → listing of the most recent refs.
@@ -166,19 +168,28 @@ class CacheBackedHandler(Handler):
         # ``mode=`` validation. Today only ``refresh`` is honoured —
         # bypass the freshness check, force ``_fetch``, write the
         # new body in-place via ``update_cache_entry`` so tags/links
-        # survive. (gripe:3681 phase 4.)
-        force_refresh = False
+        # survive. (gripe:3681 phase 4.) ``refresh=True`` is a cleaner
+        # spelling of the same intent and wins if both are set.
+        force_refresh = bool(refresh)
         if mode is not None:
             if mode != "refresh":
                 raise BadInput(
                     f"unknown mode={mode!r} for kind={self.spec.kind!r}",
                     options=["refresh"],
                     next=(
-                        "drop mode= or pass mode='refresh' to bypass cache "
-                        "freshness and re-fetch in place"
+                        "drop mode= or pass mode='refresh' / refresh=True "
+                        "to bypass cache freshness and re-fetch in place"
                     ),
                 )
             force_refresh = True
+        # Per-call ``ttl_days=`` override. Translates to seconds at the
+        # cache-write site; None/0/negative collapses to "pin forever".
+        ttl_seconds_override: int | None = None
+        ttl_override_active = False
+        if ttl_days is not None:
+            ttl_override_active = True
+            if ttl_days > 0:
+                ttl_seconds_override = int(ttl_days) * 86400
 
         # Validate ``tags=`` / ``untags=`` BEFORE any upstream call so a
         # bad axis fails the call without paying the API cost. The
@@ -232,6 +243,8 @@ class CacheBackedHandler(Handler):
                                 key=recovered,
                                 tags=tags,
                                 untags=untags,
+                                ttl_seconds_override=ttl_seconds_override,
+                                ttl_override_active=ttl_override_active,
                             )
                         if self._is_fresh(cache):
                             self._apply_tag_ops_if_any(ref.id, tags, untags)
@@ -271,10 +284,15 @@ class CacheBackedHandler(Handler):
                 request_hash=request_hash,
                 tags=tags,
                 untags=untags,
+                ttl_seconds_override=ttl_seconds_override,
+                ttl_override_active=ttl_override_active,
             )
 
         # True miss — fresh ref creation.
         result = self._fetch(key)
+        ttl_to_write = (
+            ttl_seconds_override if ttl_override_active else self.ttl_seconds
+        )
         ref, cache = self.store.put_cache_entry(
             kind=self.spec.kind,
             slug=self._slug_for(key),
@@ -282,7 +300,7 @@ class CacheBackedHandler(Handler):
             body_blocks=result.body_blocks,
             provider=self.provider,
             request_hash=request_hash,
-            ttl_seconds=self.ttl_seconds,
+            ttl_seconds=ttl_to_write,
             model=result.model,
             cost_usd=result.cost_usd,
             cache_meta=result.meta,
@@ -300,6 +318,8 @@ class CacheBackedHandler(Handler):
         request_hash: str | None = None,
         tags: list[str] | None = None,
         untags: list[str] | None = None,
+        ttl_seconds_override: int | None = None,
+        ttl_override_active: bool = False,
     ) -> Response:
         """Re-fetch the upstream body and update the cache row in-place.
 
@@ -308,14 +328,21 @@ class CacheBackedHandler(Handler):
         in :meth:`Store.put_cache_entry`) destroyed those annotations on
         every TTL-expired re-fetch, silently invalidating bookmark
         workflows. (gripe:3681 phase 4.)
+
+        When the caller passes ``ttl_days=`` on ``get``, the resolved
+        seconds ride in via ``ttl_seconds_override`` (``ttl_override_active``
+        distinguishes "asked for forever" from "didn't ask").
         """
         result = self._fetch(key)
+        ttl_to_write = (
+            ttl_seconds_override if ttl_override_active else self.ttl_seconds
+        )
         new_ref, cache = self.store.update_cache_entry(
             ref_id=ref.id,
             title=result.title,
             body_blocks=result.body_blocks,
             request_hash=request_hash if request_hash is not None else self._hash(key),
-            ttl_seconds=self.ttl_seconds,
+            ttl_seconds=ttl_to_write,
             model=result.model,
             cost_usd=result.cost_usd,
             cache_meta=result.meta,

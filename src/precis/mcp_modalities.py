@@ -291,8 +291,8 @@ _TEMPLATE_KINDS: tuple[tuple[str, str, str], ...] = (
         "Gripe entry.  id = integer ref id.",
     ),
     (
-        "fc",
-        "precis://fc/{id}",
+        "flashcard",
+        "precis://flashcard/{id}",
         "Flashcard.  id = integer ref id.",
     ),
     (

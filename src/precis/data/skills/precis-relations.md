@@ -78,7 +78,7 @@ findings. Both work between any two ref kinds.
 link(kind='memory', id=12,
      target='paper:wang2020state', rel='derived-from')
 
-link(kind='research', id=88,
+link(kind='perplexity-research', id=88,
      target='todo:14', rel='derived-from')
 ```
 

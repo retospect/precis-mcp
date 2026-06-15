@@ -226,7 +226,7 @@ class TestPerplexityLinkTagOps:
         research = ResearchHandler(hub=Hub(store=store))
         ack = research.put(id="q", text="body", mode="import")
         slug = ack.body.split("ref '", 1)[1].split("'", 1)[0]
-        with pytest.raises(BadInput, match="axis not allowed on kind 'research'"):
+        with pytest.raises(BadInput, match="axis not allowed on kind 'perplexity-research'"):
             research.tag(id=slug, add=["STATUS:open"])
 
     def test_import_with_link_kwarg_rejected(self, store: Store) -> None:

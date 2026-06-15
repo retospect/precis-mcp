@@ -21,7 +21,7 @@ region.
 delete(kind='memory', id=42)
 delete(kind='todo', id=122)
 delete(kind='gripe', id=9)
-delete(kind='fc', id=204)
+delete(kind='flashcard', id=204)
 delete(kind='citation', id=18)
 ```
 
@@ -98,7 +98,7 @@ delete(kind='web', id='<url>')      # raises Unsupported
 ```
 
 Papers, patents, and cache-backed kinds (`calc`, `math`, `web`,
-`youtube`, `websearch`, `think`, `research`) reject `delete`. Cache
+`youtube`, `websearch`, `perplexity-reasoning`, `perplexity-research`) reject `delete`. Cache
 entries expire on TTL or via `tag(... add=['CACHE:stale'])`. To
 remove an ingested paper, work at the SQL layer or re-fetch by id
 to overwrite the local copy.

@@ -105,14 +105,14 @@ def test_search_hyphen_space_equivalence(skill: SkillHandler) -> None:
     MAJOR-C 2026-05-02; the substring search now folds hyphen and
     whitespace runs to a single space on both needle and haystack.
     """
-    # ``precis-fc-help`` titles itself "spaced-repetition flashcards"
+    # ``precis-flashcard-help`` titles itself "spaced-repetition flashcards"
     # — the hyphenated form is what's actually in the corpus.
     out_natural = skill.search(q="spaced repetition")
     out_hyphen = skill.search(q="spaced-repetition")
-    assert "precis-fc-help" in out_natural.body, (
+    assert "precis-flashcard-help" in out_natural.body, (
         "natural-language query must find the hyphenated corpus term"
     )
-    assert "precis-fc-help" in out_hyphen.body, (
+    assert "precis-flashcard-help" in out_hyphen.body, (
         "hyphenated query must find the hyphenated corpus term"
     )
 

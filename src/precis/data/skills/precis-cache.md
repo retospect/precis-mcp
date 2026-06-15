@@ -2,7 +2,7 @@
 id: precis-cache
 title: precis — paid tools cache automatically
 summary: cache mechanics for paid tools — TTLs, freshness, force-refresh, cost control
-applies-to: get (kind in math/web/websearch/think/research/youtube)
+applies-to: get (kind in math/web/websearch/perplexity-reasoning/perplexity-research/youtube)
 status: active
 ---
 
@@ -21,8 +21,8 @@ hits the cache and skips the upstream cost.
 | `web`       | 7 days  | direct fetch           | free         |
 | `youtube`   | 30 days | youtube-transcript-api | free         |
 | `websearch` | 7 days  | Perplexity Sonar       | ~$0.001      |
-| `think`     | 30 days | Sonar Reasoning Pro    | ~$0.005      |
-| `research`  | pinned  | Sonar Deep Research    | ~$0.50       |
+| `perplexity-reasoning` | 30 days | Sonar Reasoning Pro | ~$0.005   |
+| `perplexity-research`  | pinned  | Sonar Deep Research | ~$0.50    |
 
 `pinned` means never expires automatically. TTLs are stamped on the
 row at write time — changing a handler constant only affects rows
@@ -37,14 +37,14 @@ key, so the same `q=` under different kinds is a different row and a
 fresh paid call:
 
 ```python
-get(kind='websearch', q='post-quantum signature schemes')  # websearch:...
-get(kind='think',     q='post-quantum signature schemes')  # NEW paid call
-get(kind='research',  q='post-quantum signature schemes')  # NEW paid call
+get(kind='websearch', q='post-quantum signature schemes')               # websearch:...
+get(kind='perplexity-reasoning', q='post-quantum signature schemes')    # NEW paid call
+get(kind='perplexity-research',  q='post-quantum signature schemes')    # NEW paid call
 ```
 
 Per-kind canonicalisation:
 
-- `websearch`, `think`, `research` — query text, trimmed, verbatim.
+- `websearch`, `perplexity-reasoning`, `perplexity-research` — query text, trimmed, verbatim.
 - `math` — query text, trimmed.
 - `youtube` — canonical video ID extracted from any URL form.
 - `web` — canonical URL (scheme + host + path + sorted query).
@@ -66,15 +66,15 @@ The `CACHE:` axis is system-applied, closed-vocab:
 Filter on it:
 
 ```python
-search(kind='think', q='photocatalysis', tags=['CACHE:fresh'])
+search(kind='perplexity-reasoning', q='photocatalysis', tags=['CACHE:fresh'])
 search(kind='web',   q='reactor design',  tags=['CACHE:stale'])
 ```
 
 The response footer also reports it inline:
 
 ```text
-(research cache · age 12d · pinned)
-(think cache · age 22d · stale)
+(perplexity-research cache · age 12d · pinned)
+(perplexity-reasoning cache · age 22d · stale)
 ```
 
 ## How do I force a refetch?
@@ -85,8 +85,8 @@ Soft-delete the row, then re-query. The next `get` misses and
 refetches:
 
 ```python
-delete(kind='think', id='<canonical-query>')
-get(kind='think', q='<query>')
+delete(kind='perplexity-reasoning', id='<canonical-query>')
+get(kind='perplexity-reasoning', q='<query>')
 ```
 
 Works on every cache kind. For `web` and `youtube`, `id=` is the
@@ -97,20 +97,20 @@ canonical URL / video ID.
 ## Stop a useful answer from going stale
 
 ```python
-tag(kind='think', id='photocat-mechanism', add=['pinned'])
-tag(kind='think', id='photocat-mechanism', remove=['pinned'])
+tag(kind='perplexity-reasoning', id='photocat-mechanism', add=['pinned'])
+tag(kind='perplexity-reasoning', id='photocat-mechanism', remove=['pinned'])
 ```
 
 `pinned` is a system-recognised flag — it suppresses `CACHE:*` decay
 and the row reports as `CACHE:pinned`. Imported entries (e.g.
-`put(kind='research', ..., mode='import')`) are pinned automatically.
+`put(kind='perplexity-research', ..., mode='import')`) are pinned automatically.
 
 ## See also
 
 ```python
 get(kind='skill', id='precis-overview')          # verbs and kinds
 get(kind='skill', id='precis-tags')              # CACHE:* axis, pinned flag
-get(kind='skill', id='precis-perplexity-help')   # websearch / think / research
+get(kind='skill', id='precis-perplexity-help')   # websearch / perplexity-reasoning / perplexity-research
 get(kind='skill', id='precis-math-help')         # Wolfram Alpha
 get(kind='skill', id='precis-web-help')          # direct page fetch
 get(kind='skill', id='precis-youtube-help')      # transcript fetch

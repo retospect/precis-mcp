@@ -49,12 +49,12 @@ argument — over three categories of content:
 
 - **Ref kinds** (content addressed by slug or integer id): `paper`,
   `skill`, `oracle`, `conv`, `markdown`, `plaintext`,
-  `python`, `todo`, `memory`, `gripe`, `fc` (flashcard),
+  `python`, `todo`, `memory`, `gripe`, `flashcard`,
   `citation` (verified claim → source quote).
 - **Tool kinds** (stateless or cache-backed; pass `q=` or `id=`, get
   text back): `calc`, `math` (Wolfram), `youtube`, `web` (fetch +
-  search + bookmark), `websearch` / `think` / `research` (Perplexity
-  Sonar tiers), `patent` (EPO OPS).
+  search + bookmark), `websearch` / `perplexity-reasoning` /
+  `perplexity-research` (Perplexity Sonar tiers), `patent` (EPO OPS).
 - **Discovery kind**: `random` — pick a random indexed block to
   stumble into content when you don't know what to ask for.
 
@@ -103,7 +103,7 @@ Extras (each enables its kinds; omit any you don't want):
 | `all`       | All of the above.                                 | yes |
 
 A bare `pip install precis-mcp` gives you the state kinds (`todo`,
-`memory`, `gripe`, `fc`, `conv`, `oracle`, `skill`,
+`memory`, `gripe`, `flashcard`, `conv`, `oracle`, `skill`,
 `random`) and the `markdown` / `plaintext` / `python` file kinds.
 Optional deps surface as `InitError` at boot: the kind silently drops
 off the tool surface with a WARNING, the server stays up.
@@ -157,7 +157,7 @@ config:
 | `PRECIS_PYTHON_ALLOW_EXEC=1`  | Gate for `python` runtrace (spawns subprocess).  |
 | `EPO_OPS_CLIENT_KEY` + `_SECRET` + `PRECIS_PATENT_RAW_ROOT` | Enables `patent` kind. |
 | `WOLFRAM_APP_ID`              | Enables `math` kind.                             |
-| `PERPLEXITY_API_KEY`          | Enables `websearch` / `think` / `research`.      |
+| `PERPLEXITY_API_KEY`          | Enables `websearch` / `perplexity-reasoning` / `perplexity-research`. |
 | `PRECIS_CORPUS_DIR`           | Corpus root(s) for the `precis web` paper viewer. An `os.pathsep`-separated list is allowed (e.g. `/opt/a/corpus:/opt/b/corpus`); the web tries each `<root>/<letter>/<cite_key>.pdf` in order and serves the first that exists. Point it at the same path the ingest watcher writes to. |
 | `LOG_LEVEL`                   | `DEBUG` / `INFO` / `WARNING` / `ERROR`.          |
 

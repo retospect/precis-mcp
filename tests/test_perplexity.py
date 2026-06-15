@@ -1,4 +1,4 @@
-"""Tests for ``handlers/perplexity.py`` — websearch / think / research.
+"""Tests for ``handlers/perplexity.py`` — websearch / perplexity-reasoning / perplexity-research.
 
 httpx is patched at the call-site (we replace ``httpx.Client`` with a
 stub) so tests stay offline. Same approach as ``test_web.py``.
@@ -171,17 +171,17 @@ def test_second_call_hits_cache(websearch: WebsearchHandler) -> None:
 def test_same_query_different_kind_caches_separately(
     websearch: WebsearchHandler, think: ThinkHandler
 ) -> None:
-    """Cache key includes the model so websearch + think don't collide."""
+    """Cache key includes the model so websearch + perplexity-reasoning don't collide."""
     websearch.get(id="hello world")
-    # Change response so think gets a different body than websearch.
+    # Change response so perplexity-reasoning gets a different body than websearch.
     _StubClient.response = _StubResp(
         json_data={
-            "choices": [{"message": {"content": "think answer body"}}],
+            "choices": [{"message": {"content": "reasoning answer body"}}],
             "citations": [],
         }
     )
     resp_think = think.get(id="hello world")
-    assert "think answer body" in resp_think.body  # not the cached websearch body
+    assert "reasoning answer body" in resp_think.body  # not the cached websearch body
 
 
 def test_query_canonicalization_trims(websearch: WebsearchHandler) -> None:
@@ -393,7 +393,7 @@ def test_format_response_strips_orphan_opening_think_tag() -> None:
 
 
 def test_format_response_no_think_tag_is_no_op() -> None:
-    """Most websearch / research bodies have no reasoning block;
+    """Most websearch / perplexity-research bodies have no reasoning block;
     the strip must be a no-op there."""
     payload = {
         "choices": [{"message": {"content": "## Plain answer\nNo trace here."}}],
@@ -408,9 +408,18 @@ def test_format_response_no_think_tag_is_no_op() -> None:
 
 
 def test_ttl_per_tier() -> None:
-    """websearch=7d, think=30d, research=pinned."""
+    """websearch=7d, perplexity-reasoning=pinned, perplexity-research=pinned.
+
+    Reasoning + deep-research both default to pinned-forever: citation-grade
+    questions don't decay, and the pollution failure mode (wrong cached
+    answer) is bounded — citations come from the chase/finding pipeline,
+    not from perplexity, so a bad cached row can be link-tagged as wrong
+    or deleted. Agents can opt into a shorter TTL per-call via
+    ``ttl_days=`` on get; default forever beats default-stale-in-30d.
+    Websearch stays at 7d because the fast-tier is mostly current-events.
+    """
     assert WebsearchHandler.ttl_seconds == 7 * 24 * 60 * 60
-    assert ThinkHandler.ttl_seconds == 30 * 24 * 60 * 60
+    assert ThinkHandler.ttl_seconds is None
     assert ResearchHandler.ttl_seconds is None
 
 
@@ -479,7 +488,7 @@ def test_import_then_get_returns_imported_body_at_zero_cost(
 
     put_resp = h.put(id=query, text=_SAMPLE_RESEARCH_REPORT, mode="import")
     assert "imported" in put_resp.body.lower()
-    assert "research" in put_resp.body
+    assert "perplexity-research" in put_resp.body
 
     # First get must hit the cache populated by the import — not the API.
     get_resp = h.get(id=query)
@@ -561,7 +570,7 @@ def test_import_is_idempotent_on_repeat(
 def test_import_different_kinds_use_separate_cache_rows(
     store: Store,
 ) -> None:
-    """Importing the same query into research vs websearch creates two
+    """Importing the same query into perplexity-research vs websearch creates two
     distinct cache entries — the model is part of the key."""
     hub = Hub(store=store, embedder=MockEmbedder(dim=1024))
     research = ResearchHandler(hub=hub)
@@ -580,7 +589,7 @@ def test_import_different_kinds_use_separate_cache_rows(
     )
     assert r_cache is not None and w_cache is not None
     assert r_cache[0].id != w_cache[0].id
-    assert r_cache[0].kind == "research"
+    assert r_cache[0].kind == "perplexity-research"
     assert w_cache[0].kind == "websearch"
 
 
@@ -621,14 +630,14 @@ def test_import_then_search_finds_imported_blocks(
     hits = h.store.search_blocks_fused(
         q="cobalt phthalocyanine",
         query_vec=None,
-        kind="research",
+        kind="perplexity-research",
         scope_ref_id=None,
         limit=5,
     )
     assert hits, "expected lexical hit for 'cobalt phthalocyanine'"
     # Top hit should be a block from our imported report.
     top_block, top_ref, _score = hits[0]
-    assert top_ref.kind == "research"
+    assert top_ref.kind == "perplexity-research"
     assert "cobalt" in top_block.text.lower()
 
 
@@ -647,11 +656,11 @@ def test_recent_empty_shows_helpful_empty_state(
 ) -> None:
     """Empty store → helpful message pointing at both get and put."""
     resp = research.get()
-    assert "no research refs yet" in resp.body.lower()
+    assert "no perplexity-research refs yet" in resp.body.lower()
     assert "mode='import'" in resp.body
     # Also accepts id='/recent' explicitly and id='/'.
-    assert "no research refs yet" in research.get(id="/recent").body.lower()
-    assert "no research refs yet" in research.get(id="/").body.lower()
+    assert "no perplexity-research refs yet" in research.get(id="/recent").body.lower()
+    assert "no perplexity-research refs yet" in research.get(id="/").body.lower()
 
 
 def test_recent_lists_imported_and_fetched_with_provenance(
@@ -792,7 +801,7 @@ def test_fetch_path_block_parses_body(think_with_embedder: ThinkHandler) -> None
     h.get(id="catalyst landscape question")
 
     # Find the cache row and count blocks.
-    refs = h.store.list_refs(kind="think", provider="perplexity", limit=10)
+    refs = h.store.list_refs(kind="perplexity-reasoning", provider="perplexity", limit=10)
     assert len(refs) == 1
     n_blocks = h.store.count_blocks(refs[0].id)
     # Three paragraphs + three headings + the Sources trailer ≥ 4 blocks.
@@ -801,7 +810,7 @@ def test_fetch_path_block_parses_body(think_with_embedder: ThinkHandler) -> None
 
 def test_fetch_path_embeds_blocks(think_with_embedder: ThinkHandler) -> None:
     """The fetch-path blocks must carry vectors when an embedder is
-    wired — otherwise ``search(kind='think', q=...)`` returns nothing
+    wired — otherwise ``search(kind='perplexity-reasoning', q=...)`` returns nothing
     despite the rows existing."""
     _StubClient.response = _StubResp(
         json_data={
@@ -812,7 +821,7 @@ def test_fetch_path_embeds_blocks(think_with_embedder: ThinkHandler) -> None:
     h = think_with_embedder
     h.get(id="another query")
 
-    refs = h.store.list_refs(kind="think", provider="perplexity", limit=10)
+    refs = h.store.list_refs(kind="perplexity-reasoning", provider="perplexity", limit=10)
     # ``with_embedding=True`` is required — the default loads only the
     # block bodies (cheap path for rendering) and leaves the vector
     # column NULL.
@@ -858,7 +867,7 @@ def test_search_returns_empty_state_for_unknown_query(
     think_with_embedder: ThinkHandler,
 ) -> None:
     resp = think_with_embedder.search(q="nothing matches this string xyzpdq")
-    assert "no think blocks match" in resp.body
+    assert "no perplexity-reasoning blocks match" in resp.body
 
 
 def test_search_hits_returns_structured_for_cross_kind_merge(
@@ -877,15 +886,16 @@ def test_search_hits_returns_structured_for_cross_kind_merge(
 
     hits = h.search_hits(q="catalyst landscape")
     assert hits, "expected at least one structured hit"
+
     # Every SearchHit advertises this kind so the merger renders it.
-    assert all(h.kind == "think" for h in hits)
+    assert all(h.kind == "perplexity-reasoning" for h in hits)
 
 
 def test_search_supports_announced_in_kind_spec() -> None:
     """The KindSpec must advertise the verb so the dispatcher routes
-    ``search(kind='think', ...)`` to the handler instead of returning
-    Unsupported. Pin the flags here so a future refactor can't silently
-    revert the cutover."""
+    ``search(kind='perplexity-reasoning', ...)`` to the handler instead of
+    returning Unsupported. Pin the flags here so a future refactor can't
+    silently revert the cutover."""
     for cls in (WebsearchHandler, ThinkHandler, ResearchHandler):
         assert cls.spec.supports_search is True, cls.__name__
         assert cls.spec.supports_search_hits is True, cls.__name__

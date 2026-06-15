@@ -180,7 +180,7 @@ def current_model_from_env() -> str | None:
     * Too hard for haiku? Mint a child with ``LLM:opus``.
     * Sonnet on a topic needing external state? Mint
       ``LLM:sonnet`` child with ``executor:fetch`` to pull missing
-      papers, OR call ``get(kind='research', q='...')`` inline for
+      papers, OR call ``get(kind='perplexity-research', q='...')`` inline for
       a perplexity research dive.
     * Opus on a topic that's clear and obvious? Do it yourself
       without a model upgrade.

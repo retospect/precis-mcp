@@ -111,16 +111,16 @@ Targets always carry the `kind:` prefix. Relation vocabulary
 ## Distil a Sonar deep-research answer into a note
 ## Save the gist of an expensive cache call
 
-`get(kind='research', ...)` returns a long, expensive answer. The
+`get(kind='perplexity-research', ...)` returns a long, expensive answer. The
 durable distillation is a memory linked back to the cache:
 
 ```python
-get(kind='research', q='mechanism of NOxRR')   # populates cache
+get(kind='perplexity-research', q='mechanism of NOxRR')   # populates cache
 
 put(kind='memory',
     text='Distilled mechanism: three-electron pathway via *NO → *N₂O₂ → N₂.',
     tags=['topic:noxrr', 'confidence-moderate'],
-    link='research:mechanism-of-noxrr', rel='derived-from')
+    link='perplexity-research:mechanism-of-noxrr', rel='derived-from')
 ```
 
 The memory survives the cache's TTL and carries your own framing.

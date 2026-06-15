@@ -1,12 +1,13 @@
 ---
-id: precis-research-help
+id: precis-perplexity-research-help
 title: precis — corpus-grounded research with primary-source discipline
 summary: corpus searches, primary-source rule, contradiction flagging, quantification targets
 applies-to: get/search (kind='paper'|'chunk'|'memory'|'citation'), put (kind='citation')
 status: active
+renamed-from: precis-research-help (skill renamed alongside kind 'research' → 'perplexity-research' on 2026-06-15)
 ---
 
-# precis-research-help — depth over Perplexity
+# precis-perplexity-research-help — depth over Perplexity
 
 This skill is the discipline for a research-shaped task: surveying
 the corpus on a topic, finding what's there, finding what's missing,

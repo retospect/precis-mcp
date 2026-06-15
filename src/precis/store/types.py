@@ -116,7 +116,7 @@ class Ref:
     ``migrations/0001_initial.sql``). ``slug`` is populated by a
     correlated subquery against ``ref_identifiers`` with
     ``id_kind='cite_key'`` — the convention every slug-addressed kind
-    uses in v2 per ADR 0008. Numeric kinds (memory/todo/gripe/fc)
+    uses in v2 per ADR 0008. Numeric kinds (memory/todo/gripe/flashcard)
     have no ``ref_identifiers`` row so ``slug`` is ``None``.
     """
 
@@ -592,7 +592,7 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     "memory": frozenset({"DREAM"}),
     # Flashcard doesn't use STATUS (review state lives elsewhere —
     # EASE/DUE on blocks in a future phase), nor PRIO.
-    "fc": frozenset(),
+    "flashcard": frozenset(),
     # Conversation refs don't carry closed axes — conversations
     # aren't workflow objects. Any status belongs on the associated
     # todo.
@@ -610,8 +610,8 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # without per-kind plumbing. ``math`` is intentionally left off
     # the WATCH axis: Wolfram results are deterministic and don't
     # drift, so refreshing them wastes API budget.
-    "research": frozenset({"CACHE", "WATCH"}),
-    "think": frozenset({"CACHE", "WATCH"}),
+    "perplexity-research": frozenset({"CACHE", "WATCH"}),
+    "perplexity-reasoning": frozenset({"CACHE", "WATCH"}),
     "websearch": frozenset({"CACHE", "WATCH"}),
     "web": frozenset({"CACHE", "WATCH"}),
     "youtube": frozenset({"CACHE", "WATCH"}),

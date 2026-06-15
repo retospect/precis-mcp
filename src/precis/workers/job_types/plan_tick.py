@@ -155,7 +155,7 @@ def run(
     # PRECIS_CURRENT_MODEL: tells the LLM what tier it's running on.
     # Lets it make degradation/escalation decisions — too hard for
     # haiku? mint a child with LLM:opus. Sonnet on a topic needing
-    # external state? call get(kind='research', q='...') for a
+    # external state? call get(kind='perplexity-research', q='...') for a
     # perplexity research dive. Opus on something straightforward?
     # do it inline.
     subprocess_env["PRECIS_CURRENT_MODEL"] = model

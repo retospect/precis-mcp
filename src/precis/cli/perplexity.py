@@ -2,9 +2,10 @@
 
 Walks a directory of markdown reports (typically exported from the
 Perplexity web UI by a Pro subscriber) and runs each through
-``put(mode='import')`` on the chosen kind (``websearch`` / ``think``
-/ ``research``). Reuses the existing cache wiring so imported
-content is indistinguishable from content fetched via the paid API.
+``put(mode='import')`` on the chosen kind (``websearch`` /
+``perplexity-reasoning`` / ``perplexity-research``). Reuses the
+existing cache wiring so imported content is indistinguishable from
+content fetched via the paid API.
 
 The ``id=`` query per file is derived with one of two heuristics:
 
@@ -33,9 +34,9 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     ip.add_argument(
         "--kind",
-        choices=("websearch", "think", "research"),
-        default="research",
-        help="Which Perplexity tier to import under (default: research).",
+        choices=("websearch", "perplexity-reasoning", "perplexity-research"),
+        default="perplexity-research",
+        help="Which Perplexity tier to import under (default: perplexity-research).",
     )
     ip.add_argument(
         "--glob",
@@ -93,8 +94,8 @@ def run(args: argparse.Namespace) -> None:
 
     handler_cls = {
         "websearch": WebsearchHandler,
-        "think": ThinkHandler,
-        "research": ResearchHandler,
+        "perplexity-reasoning": ThinkHandler,
+        "perplexity-research": ResearchHandler,
     }[args.kind]
 
     cfg = load_config()

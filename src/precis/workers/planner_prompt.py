@@ -218,7 +218,7 @@ move the work forward by exactly one of these output shapes:
   (opus / sonnet / haiku). Use this for degradation/escalation:
   too hard for haiku? mint a child with `LLM:opus`. Sonnet on a
   topic that needs external data? call
-  `get(kind='research', q='<question>')` for a perplexity research
+  `get(kind='perplexity-research', q='<question>')` for a perplexity research
   dive, or mint a child with `executor:fetch` to ingest missing
   papers. Opus on a clear task? do it inline.
 - **Your parent todo's id is in `PRECIS_CURRENT_TODO`** and

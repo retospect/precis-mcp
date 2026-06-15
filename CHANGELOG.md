@@ -8,6 +8,26 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-15 — kind rename sweep)
+
+- **`kind='fc'` → `kind='flashcard'`.** Numeric-ref flashcards kind
+  renamed for clarity. Chunk_kinds renamed in lockstep:
+  `fc_claim` → `flashcard_claim`, `fc_evidence` → `flashcard_evidence`.
+- **`kind='think'` → `kind='perplexity-reasoning'`.** The Sonar
+  Reasoning Pro cache-backed kind is now namespaced under its provider
+  so the surface advertises what the tier is, not just what it costs.
+- **`kind='research'` → `kind='perplexity-research'`.** Same story
+  for Sonar Deep Research. The `precis-research-help` skill (corpus-
+  grounded research methodology — unrelated to the Perplexity tier
+  but ambiguously named) moves to `precis-perplexity-research-help`.
+- Forward migration: `0018_kind_renames_fc_think_research.sql`
+  rewrites `refs.kind`, the `chunk_kinds` slug catalog, and any
+  meta.chunk_kind pointers. Hard cutover, no alias period — the MCP
+  surface isn't a stable API (agents discover capabilities from the
+  skill index at boot). Skill index headmatter carries `renamed-from`
+  / `renamed-kinds` pointers so an agent with a stale skill cache that
+  searches for the old name finds a "renamed to X" trail.
+
 ### Added (2026-06-15 session)
 
 - **Layer-3 compile guard at STATUS:done** (`utils/compile_guard.py`).

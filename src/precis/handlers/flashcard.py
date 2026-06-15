@@ -1,6 +1,6 @@
 """FlashcardHandler — Q/A pairs with spaced-repetition metadata.
 
-Numeric-id ref kind addressed as ``fc``. The body is the *knowledge
+Numeric-id ref kind addressed as ``flashcard``. The body is the *knowledge
 statement*; the agent generates a quiz dynamically from that statement
 at review time (per v1 design — see grimoire/agents/flashcard-review.md).
 
@@ -37,7 +37,7 @@ from precis.utils.next_block import render_next_section
 
 class FlashcardHandler(NumericRefHandler):
     spec: ClassVar[KindSpec] = KindSpec(
-        kind="fc",
+        kind="flashcard",
         title="Flashcard",
         description=(
             "Spaced-repetition knowledge card. Body is the knowledge "
@@ -56,14 +56,14 @@ class FlashcardHandler(NumericRefHandler):
         note_like=True,
     )
 
-    kind: ClassVar[str] = "fc"
+    kind: ClassVar[str] = "flashcard"
     sense: ClassVar[str] = "flashcard"
 
     def _supported_list_views(self) -> tuple[str, ...]:
         # ``due`` plus every base view (``recent``).  Overrides the
         # base so the unknown-view hint enumerates the actual
-        # surface for ``fc`` rather than dead-pointing at a
-        # ``precis-fc-help`` skill that does not exist.
+        # surface for ``flashcard`` rather than dead-pointing at a
+        # ``precis-flashcard-help`` skill that does not exist.
         return ("recent", "due")
 
     def _list_view(self, view: str) -> Response | None:
@@ -102,11 +102,11 @@ class FlashcardHandler(NumericRefHandler):
             body += render_next_section(
                 [
                     (
-                        "get(kind='fc', id='/recent')",
+                        "get(kind='flashcard', id='/recent')",
                         "list every flashcard regardless of due date",
                     ),
                     (
-                        "put(kind='fc', text='knowledge statement')",
+                        "put(kind='flashcard', text='knowledge statement')",
                         "create a new flashcard",
                     ),
                 ]
@@ -130,8 +130,8 @@ class FlashcardHandler(NumericRefHandler):
         body = "\n".join(lines)
         body += render_next_section(
             [
-                ("get(kind='fc', id=N)", "read the card to quiz yourself"),
-                ("put(kind='fc', text='knowledge statement')", "create a new card"),
+                ("get(kind='flashcard', id=N)", "read the card to quiz yourself"),
+                ("put(kind='flashcard', text='knowledge statement')", "create a new card"),
             ]
         )
         # SM-2 grader lands in a follow-up (see module docstring); the

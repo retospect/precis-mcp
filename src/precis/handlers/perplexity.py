@@ -1,11 +1,11 @@
-"""Perplexity Sonar — three cache-backed kinds (websearch / think / research).
+"""Perplexity Sonar — three cache-backed kinds (websearch / perplexity-reasoning / perplexity-research).
 
 Each subclass picks a different Sonar model + timeout + TTL:
 
-    kind        model                      timeout   TTL       cost
-    websearch   sonar                      30s       7 days    ~$0.001/call
-    think       sonar-reasoning-pro        120s      30 days   ~$0.005/call
-    research    sonar-deep-research        600s      pinned    ~$0.50/call
+    kind                    model                      timeout   TTL       cost
+    websearch               sonar                      30s       7 days    ~$0.001/call
+    perplexity-reasoning    sonar-reasoning-pro        120s      30 days   ~$0.005/call
+    perplexity-research     sonar-deep-research        600s      pinned    ~$0.50/call
 
 Cache key is ``<model>:<query>`` so the same query under different
 models never collides. The cache row provider is ``'perplexity'`` for
@@ -160,7 +160,7 @@ class _PerplexityBase(CacheBackedHandler):
             raise Upstream(
                 f"Perplexity {self.model} timed out after {self.timeout}s",
                 next=(
-                    "try a shorter query, or use kind='research' for "
+                    "try a shorter query, or use kind='perplexity-research' for "
                     "slow-paced multi-step work"
                 ),
             ) from exc
@@ -178,7 +178,7 @@ class _PerplexityBase(CacheBackedHandler):
         if resp.status_code == 429:
             raise Upstream(
                 "Perplexity rate limit (HTTP 429)",
-                next="wait and retry; consider a slower tier (think/research)",
+                next="wait and retry; consider a slower tier (perplexity-reasoning/perplexity-research)",
             )
         if resp.status_code >= 400:
             raise Upstream(
@@ -192,11 +192,11 @@ class _PerplexityBase(CacheBackedHandler):
         title = _title_for_query(query)
 
         # Block-parse + embed via the shared ingestion pipeline so
-        # ``search(kind='think', q=...)`` can find content inside the
+        # ``search(kind='perplexity-reasoning', q=...)`` can find content inside the
         # fetched report — same shape ``put(mode='import')`` uses.
         # Marginal embedding cost (5–20 calls) is negligible against
-        # the API latency (5–30s for think, 2–10 min for research)
-        # and the per-call dollar cost.
+        # the API latency (5–30s for perplexity-reasoning, 2–10 min for
+        # perplexity-research) and the per-call dollar cost.
         body_blocks = self._blocks_from_report(body)
 
         return FetchResult(
@@ -221,18 +221,18 @@ class _PerplexityBase(CacheBackedHandler):
         # formatter), but on cache hit we surface a Next: trailer that
         # points at any other tier the agent might want to escalate to.
         nav: list[tuple[str, str]] = []
-        # Suggest the next tier up, except for research (already top tier).
+        # Suggest the next tier up, except for perplexity-research (already top tier).
         if self.spec.kind == "websearch":
             nav.append(
                 (
-                    f"get(kind='think', id={meta.get('query')!r})",
+                    f"get(kind='perplexity-reasoning', id={meta.get('query')!r})",
                     "deeper analytical answer (~$0.005/call)",
                 )
             )
-        elif self.spec.kind == "think":
+        elif self.spec.kind == "perplexity-reasoning":
             nav.append(
                 (
-                    f"get(kind='research', id={meta.get('query')!r})",
+                    f"get(kind='perplexity-research', id={meta.get('query')!r})",
                     "multi-step deep research (~$0.50/call)",
                 )
             )
@@ -456,11 +456,11 @@ class WebsearchHandler(_PerplexityBase):
 
 
 class ThinkHandler(_PerplexityBase):
-    """``think`` — Sonar Reasoning Pro (~$0.005/call, 5–30s)."""
+    """``perplexity-reasoning`` — Sonar Reasoning Pro (~$0.005/call, 5–30s)."""
 
     spec: ClassVar[KindSpec] = KindSpec(
-        kind="think",
-        title="Think (Perplexity Sonar Reasoning Pro)",
+        kind="perplexity-reasoning",
+        title="Perplexity reasoning (Sonar Reasoning Pro)",
         description=(
             "PAID (~$0.005/call): Perplexity Sonar Reasoning Pro - "
             "detailed analysis with explicit reasoning (5–30s). Use "
@@ -482,18 +482,24 @@ class ThinkHandler(_PerplexityBase):
     model: ClassVar[str] = "sonar-reasoning-pro"
     timeout: ClassVar[int] = 120
     cost_per_call_usd: ClassVar[float] = 0.005
-    ttl_seconds: ClassVar[int | None] = 30 * 24 * 60 * 60  # 30 days
+    # Cache forever by default. The pollution failure mode (a wrong
+    # answer staying around) is bounded: citations come from real papers
+    # (the chase + finding pipeline), not from perplexity, so a wrong
+    # cached answer can be linked-out as wrong via a memory or deleted.
+    # Agents can still override per-call via ``ttl_days=`` or force a
+    # re-fetch via ``refresh=True``.
+    ttl_seconds: ClassVar[int | None] = None
     attribution: ClassVar[str] = _PERPLEXITY_ATTRIBUTION_TEMPLATE.format(
         model="sonar-reasoning-pro"
     )
 
 
 class ResearchHandler(_PerplexityBase):
-    """``research`` — Sonar Deep Research (~$0.50/call, 2–10 min)."""
+    """``perplexity-research`` — Sonar Deep Research (~$0.50/call, 2–10 min)."""
 
     spec: ClassVar[KindSpec] = KindSpec(
-        kind="research",
-        title="Deep research (Perplexity Sonar Deep Research)",
+        kind="perplexity-research",
+        title="Perplexity deep research (Sonar Deep Research)",
         description=(
             "PAID (~$0.50/call, 2–10 MIN): Perplexity Sonar Deep "
             "Research - multi-step investigation with extensive "
@@ -542,14 +548,14 @@ def _format_perplexity_body(data: dict[str, Any]) -> tuple[str, list[str]]:
 
     message = choices[0].get("message") or {}
     content = str(message.get("content") or "").strip()
-    # Sonar-reasoning-pro (``think``) interleaves a
+    # Sonar-reasoning-pro (``perplexity-reasoning``) interleaves a
     # ``<think>…</think>`` scratch block inside the answer that
     # leaks the model's internal reasoning trace.  Callers should
     # see the conclusion, not the scratch — strip the block at
     # render time.  The conclusion follows the closing tag.
-    # ``websearch`` / ``research`` responses never carry the tag,
-    # so the strip is a no-op there.  (MCP critic MINOR-C — think
-    # kind leaks <think>…</think> reasoning trace.)
+    # ``websearch`` / ``perplexity-research`` responses never carry
+    # the tag, so the strip is a no-op there.  (MCP critic MINOR-C
+    # — perplexity-reasoning kind leaks <think>…</think> reasoning trace.)
     content = _strip_reasoning_trace(content)
     citations: list[str] = [str(c) for c in (data.get("citations") or [])]
 

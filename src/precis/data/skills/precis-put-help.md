@@ -62,14 +62,14 @@ Gripes feed the retrieval-misses channel; one sentence per gripe.
 ## How do I queue something to review?
 
 ```python
-put(kind='fc',
+put(kind='flashcard',
     text='Q: What does the bare-DOI form of get(kind=paper) do?\nA: Resolves via metadata, fetches the paper.')
-put(kind='fc',
+put(kind='flashcard',
     text='Q: ...\nA: ...',
     tags=['topic:precis'])
 ```
 
-Card scheduling follows the SM-2 cadence — see `precis-fc-help`.
+Card scheduling follows the SM-2 cadence — see `precis-flashcard-help`.
 
 ## Record a verified citation
 ## Stamp a claim with a source quote
@@ -125,9 +125,9 @@ Same `mode='create'` discipline as `markdown`. The `id=` form for
 put(kind='websearch', mode='import',
     q='latest perovskite tandem efficiencies',
     text='<paste the answer body>')
-put(kind='think', mode='import',
+put(kind='perplexity-reasoning', mode='import',
     q='compare DAC and BECCS', text='...')
-put(kind='research', mode='import',
+put(kind='perplexity-research', mode='import',
     q='mechanism of NOxRR', text='...')
 ```
 

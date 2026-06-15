@@ -168,7 +168,7 @@ def test_import_perplexity_writes_to_db(
             "import-perplexity",
             str(tmp_path),
             "--kind",
-            "research",
+            "perplexity-research",
             "--database-url",
             dsn,
         ],
@@ -178,7 +178,7 @@ def test_import_perplexity_writes_to_db(
     assert "imported=2" in out
     assert "failed=0" in out
 
-    refs = store.list_refs(kind="research", provider="perplexity", limit=10)
+    refs = store.list_refs(kind="perplexity-research", provider="perplexity", limit=10)
     titles = {r.title for r in refs}
     # Titles are derived from the query via _title_for_query (capitalized).
     assert any("Query one" in t or "Query One" in t for t in titles)

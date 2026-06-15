@@ -1,4 +1,4 @@
-"""Tests for the slimmer phase-5 state kinds (gripe, fc, oracle, conv).
+"""Tests for the slimmer phase-5 state kinds (gripe, flashcard, oracle, conv).
 
 Heavy lifting (CRUD shape) lives in `_NumericRefHandler`, exercised
 already via `test_memory.py` and `test_todo.py`. These tests verify
@@ -188,7 +188,7 @@ class TestFlashcard:
     def test_due_view_filters_future_review(self, fc: FlashcardHandler) -> None:
         fc.put(text="card-due")
         fc.put(text="card-far-future")
-        refs = fc.store.list_refs(kind="fc", limit=10)
+        refs = fc.store.list_refs(kind="flashcard", limit=10)
         # Set far-future review on the second card.
         far = (datetime.now(UTC) + timedelta(days=30)).isoformat()
         far_card = next(r for r in refs if "far-future" in r.title)
@@ -201,7 +201,7 @@ class TestFlashcard:
 
     def test_upcoming_within_3_days(self, fc: FlashcardHandler) -> None:
         fc.put(text="card-soon")
-        ref = fc.store.list_refs(kind="fc", limit=10)[0]
+        ref = fc.store.list_refs(kind="flashcard", limit=10)[0]
         soon = (datetime.now(UTC) + timedelta(days=2)).isoformat()
         fc.store.update_ref(ref.id, meta_patch={"next_review": soon})
         out = fc.get(id="/due")
