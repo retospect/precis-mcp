@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "8.11.0"
+version = "8.12.0"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -197,6 +197,21 @@ packages = ["src/precis", "src/precis_web"]
 # duplicate and refuses to build with
 # "A second file is being added to the wheel archive at the same
 # path". The block was deleted in this commit.
+#
+# Workspace templates (LaTeX / Markdown scaffolds copied verbatim
+# into a freshly-initialized workspace by
+# ``precis.utils.workspace.ensure_initialized``) ship as package
+# data under ``src/precis/data/workspace_templates/``. The ``.tex``
+# / ``.md`` files come along automatically, but hatchling skips
+# dotfiles by default — so we widen the artifact pattern below to
+# include them. Without this, ``importlib.resources`` on a wheel
+# install finds ``main.tex`` but not ``.gitignore`` and the
+# initializer silently writes a workspace with no ignore file.
+
+[tool.hatch.build]
+artifacts = [
+    "src/precis/data/workspace_templates/**/.gitignore",
+]
 
 # Source distribution includes docker/ so packagers / downstream image
 # builders get the Dockerfile and entrypoint alongside the Python source

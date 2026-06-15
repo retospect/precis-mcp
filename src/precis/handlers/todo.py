@@ -93,6 +93,31 @@ _PRIO_TAG_TO_INT: dict[str, int] = {
 }
 
 
+def _inherit_workspace_from_parent(store: Any, parent_id: int) -> dict[str, Any] | None:
+    """Pull ``meta.workspace`` from the parent ref, or None if unset.
+
+    Returns a plain dict so the caller can splice it into the child's
+    meta. The shape isn't validated here — :class:`Workspace.from_meta`
+    handles malformed entries downstream (logs + treats as missing).
+
+    Cascade pattern: strategic root owns the workspace block; every
+    descendant inherits it on put unless the put explicitly overrides
+    ``meta.workspace``. No-op when the parent has no workspace set
+    (most legacy todos).
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'workspace' FROM refs WHERE ref_id = %s",
+            (parent_id,),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    ws = row[0]
+    if not isinstance(ws, dict):
+        return None
+    return ws
+
+
 def _split_prio_from_tags(
     tags: list[str] | None,
 ) -> tuple[list[str] | None, int | None]:
@@ -391,6 +416,15 @@ class TodoHandler(NumericRefHandler):
         guards.check_level_tags_on_create(tags)
         guards.check_llm_tag(tags)
         guards.check_executor_tag(tags)
+        # Workspace inheritance: if the parent carries meta.workspace
+        # and this child doesn't specify its own, copy the parent's
+        # workspace dict down. The cascade flows the project context
+        # from strategic root to every leaf without explicit work.
+        # See utils/workspace.Workspace for the shape.
+        if parent_int is not None and (meta is None or "workspace" not in meta):
+            inherited = _inherit_workspace_from_parent(self.store, parent_int)
+            if inherited is not None:
+                meta = {**(meta or {}), "workspace": inherited}
         # Default parent_id for a ``level:recurring`` root to the
         # seeded Watches umbrella — every recurring lives under it by
         # default, so the operator gets a tidy two-panel ``view='roots'``

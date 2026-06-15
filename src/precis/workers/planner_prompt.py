@@ -168,7 +168,7 @@ _PLANNER_CONTRACT: str = """\
 
 You are working on ONE todo. Its body and the results of its prior
 children (if any) appear below in the user message. Your job is to
-move the work forward by exactly one of these four output shapes:
+move the work forward by exactly one of these output shapes:
 
 1. **Mint subtasks** via `put(kind='todo', parent_id=<your id>,
    tags=['LLM:<model>'], text='<specific brief>')`. Each child must
@@ -176,23 +176,68 @@ move the work forward by exactly one of these four output shapes:
    cheapest model that can produce the depth required. Add
    ordering with `link(rel='blocked-by', src=B, dst=A)` for
    sequential pairs; leave unlinked for parallel siblings. You will
-   be re-called once all children resolve, with their
-   `job_summary` outputs visible in your prompt.
+   be re-called once all children resolve. Children automatically
+   inherit your workspace.
 
-2. **Yield to the human** via `tag(id=<your id>, add=
-   ['ask-user:<the question>'])`. Use this when the work needs a
-   value judgement or hard-ambiguity decision only a human can
-   make. The question itself goes in the tag value so the
-   attention view renders it inline.
+2. **Write the artefact directly** via the workspace-routed
+   `put(kind='tex', name='<slug>', text='\\section{...}\\n...')`.
+   The system places the file at the right path under your project's
+   workspace; you don't compute paths. For figures use
+   `put(kind='pic', name='<slug>.svg', text='<svg>')`; for raw data
+   `put(kind='data', name='<slug>.csv', text='...')`. The first
+   `put` in a fresh workspace auto-creates the directory layout
+   (entrypoint `main.tex`, `tex/`, `pics/`, `data/`, `.gitignore`,
+   `git init`). Every successful `put` produces a git commit; on
+   rollback, `git reset --hard <sha>` returns the workspace to that
+   tick's state.
 
-3. **Halt** via `tag(id=<your id>, add=['halt'])` or `halt:<reason>`.
-   Stronger yield: "do not call me again until a human intervenes."
-   Use when the task is genuinely stuck (`halt:planner-stuck`),
-   broken (`halt:impossible-as-specified`), or self-imposed brake
-   (`halt:cost-cap`, `halt:tick-cap`).
+3. **Mint citations** via `put(kind='citation', text='<claim>',
+   source_handle='paper:<slug>', source_quote='<verbatim>')` for
+   every quantitative claim. Citations stay global so the same paper
+   cite is reusable across projects; the system auto-tags your
+   citations with `workspace:<your-workspace>` so `refs.bib`
+   generation finds them. Write `\\cite{<paper-slug>}` in your tex
+   file body; the system resolves it.
 
-4. **Finish** via `tag(id=<your id>, add=['STATUS:done'])`. Your
-   `job_summary` chunk is the final artefact the parent reads.
+4. **Yield to the human** via `tag(id=<your id>, add=
+   ['ask-user:<the question>'])`. Use when the work needs a value
+   judgement or hard-ambiguity decision only a human can make.
+
+5. **Halt** via `tag(id=<your id>, add=['halt'])` or
+   `tag(add=['halt:<reason>'])`. Stronger yield: "do not call me
+   again until a human intervenes." Use when genuinely stuck
+   (`halt:planner-stuck`) or broken
+   (`halt:impossible-as-specified`).
+
+6. **Finish** via `tag(id=<your id>, add=['STATUS:done'])`. Your
+   work is done; the parent will read your files on its next tick.
+
+## Files (workspace-routed)
+
+The MCP server handles project infrastructure (layout, gitignore,
+git init, main.tex skeleton, refs.bib generation) lazily on first
+need. You never think about physical paths.
+
+- `put(kind='tex', name='intro', text='\\section{Introduction}...')`
+- `put(kind='tex', name='main', text='...')` — entrypoint (special)
+- `put(kind='pic', name='timeline.svg', text='<svg>')`
+- `put(kind='data', name='qy-by-node.csv', text='...')`
+- `get(kind='tex', id='tex--intro')` — read your section back
+- `edit(kind='tex', id='tex--intro~scope', mode='replace',
+       text='...')` — block-level edit by slug
+
+The `put` returns one of two verdicts:
+
+- **`ok`**: file landed (possibly with a small mechanical-fix note:
+  unicode escapes, missing `\\usepackage{}`, etc — silently fixed).
+- **`hint`**: file NOT written; the system has a proposed correction
+  for an error it won't auto-resolve without your ack. Read the
+  hint, decide if it preserves your intent, resubmit if it does.
+
+**Paper not in corpus**: if you want to cite a paper that isn't in
+the corpus yet, mint `put(kind='finding', text='<claim>', ...)` to
+flag the gap, AND write `[citation pending]` in your prose. NEVER
+write `\\cite{TODO}` or a guessed bib key — it breaks the compile.
 
 ## Depth discipline (the value proposition)
 

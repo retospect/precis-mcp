@@ -10,6 +10,40 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **Workspace abstraction — project-scoped layout, slug-only API,
+  per-put git commits.** The planner-coroutine cascade now produces
+  durable on-disk artifacts (LaTeX papers, markdown writeups) under
+  a structured project workspace, instead of leaving content stranded
+  in `job_summary` chunks. New module `utils/workspace.py` defines
+  `Workspace(path, format, entrypoint, style)` stored as
+  `meta.workspace` on the strategic root and inherited at `put` time
+  by every descendant. The planner runner sets `PRECIS_WORKSPACE` on
+  the `claude -p` subprocess; file-kind handlers consume it.
+
+  - **Slug-only API**: `put(kind='tex', name='intro', text='...')`
+    routes to `<workspace>/tex/intro.tex` via the layout convention
+    (`utils/workspace_layout.py`). LLM never sees physical paths.
+    Classic `id=<path>` form still works as the escape hatch.
+  - **Lazy workspace init**: first `put` in a fresh workspace runs
+    `git init`, copies `.gitignore` + `main.tex` skeleton + empty
+    `refs.bib` from templates under
+    `data/workspace_templates/<format>/`.
+  - **Per-put git commits**: every successful file write commits
+    under a PG advisory lock (keyed on workspace path) so two
+    concurrent puts in the same project serialize cleanly. Commit
+    SHA returned in the response.
+  - **Layer-1 mechanical fixes** (`utils/tex_mechanical_fix.py`):
+    deterministic unicode escapes + missing `\\usepackage{}`
+    detection applied silently inside `put(kind='tex', ...)`. No
+    LLM in the loop for syntactically obvious corrections.
+  - **Planner contract update**: extends the four output shapes
+    (mint subtasks / yield / halt / done) with two new ones
+    (write artefact / mint citation). Workspace is ambient; LLM
+    expresses intent (file name + content), not paths. Paper-not-
+    in-corpus recovery (mint `kind='finding'` + prose marker, never
+    `\\cite{TODO}`) documented.
+
+
 - **`edit(kind='todo', mode='replace', text=...)` — in-place text
   rewrite for todos.** Todos were create-only (no way to fix wording
   without delete + re-`put`, which severs every inbound edge and the

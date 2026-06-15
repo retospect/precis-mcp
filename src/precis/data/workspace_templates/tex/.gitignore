@@ -1,0 +1,54 @@
+# latexmk auxiliary / intermediate files
+*.aux
+*.log
+*.toc
+*.lof
+*.lot
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# bibtex / biber
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+
+# beamer
+*.nav
+*.snm
+*.vrb
+
+# index / glossaries
+*.idx
+*.ind
+*.ilg
+*.glo
+*.gls
+*.glg
+*.acn
+*.acr
+*.alg
+*.xdy
+
+# misc latex
+*.tdo
+*.thm
+
+# build dir
+build/
+
+# chktex config
+*.chktexrc
+
+# editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+.envrc
+.direnv/

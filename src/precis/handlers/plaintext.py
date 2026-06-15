@@ -485,6 +485,7 @@ class PlaintextHandler(Handler):
         self,
         *,
         id: str | int | None = None,
+        name: str | None = None,
         text: str | None = None,
         mode: str | None = None,
         tags: list[str] | None = None,
@@ -528,10 +529,19 @@ class PlaintextHandler(Handler):
                 options=["create"],
                 next=f"put(kind='{self._KIND}', id='foo', text='...', mode='create')",
             )
+        # Slug-only convention path: when the caller passes ``name=``
+        # AND a workspace is ambient (``PRECIS_WORKSPACE`` env), the
+        # layout convention computes the path. The LLM never sees
+        # physical paths — it just says "write a section called
+        # 'intro'" and the system routes it. The classic
+        # ``id=<path>`` form still works as an escape hatch for
+        # explicit paths or workspace-less callers.
+        if name is not None and id is None:
+            id = self._resolve_workspace_name_to_id(name)
         if id is None:
             raise BadInput(
-                "put requires id= (the file path / slug)",
-                next=f"put(kind='{self._KIND}', id='foo', text='...', mode='create')",
+                "put requires id= (the file path / slug) or name= (workspace-routed)",
+                next=f"put(kind='{self._KIND}', name='<short>', text='...', mode='create')",
             )
         # Extension hint: the caller's raw id (e.g. ``./references.bib``)
         # tells us which extension they want. ``_parse_file_id`` strips
@@ -582,13 +592,89 @@ class PlaintextHandler(Handler):
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         body = (text or "").rstrip() + "\n"
-        _atomic_write(path, body)
+        # Layer-1 mechanical fix (tex kind only). Runs deterministic
+        # tex-syntax fixes (unicode escapes, \\usepackage detection)
+        # before the write. Result note attaches to the response.
+        mechanical_note = ""
+        if self._KIND == "tex":
+            from precis.utils.tex_mechanical_fix import apply_mechanical_fixes
+
+            mech = apply_mechanical_fixes(body)
+            body = mech.text
+            if mech.fixes:
+                mechanical_note = (
+                    " — mechanical fixes: " + "; ".join(mech.fixes)
+                )
+        # Workspace-scoped per-put advisory lock + git commit. The
+        # lock is held through the disk write and the commit so two
+        # concurrent puts in the same workspace serialize cleanly.
+        # ``commit_sha`` is reported in the response.
+        workspace_relpath, commit_sha = self._commit_in_workspace(
+            path, body, slug=slug
+        )
+        if commit_sha is None:
+            # Workspace-less path (no PRECIS_WORKSPACE): write directly.
+            _atomic_write(path, body)
         ref = self._ensure_ingested(slug)
         assert ref is not None
         if tags:
             apply_tag_ops(self.store, self._KIND, ref.id, tags=tags, untags=None)
         n = self.store.count_blocks(ref.id)
-        return Response(body=f"created {self._KIND} {slug!r} ({n} paragraph(s))")
+        suffix = f" [commit={commit_sha[:8]}]" if commit_sha else ""
+        return Response(
+            body=f"created {self._KIND} {slug!r} ({n} paragraph(s)){suffix}"
+            f"{mechanical_note}"
+        )
+
+    def _commit_in_workspace(
+        self, path: Path, body: str, *, slug: str
+    ) -> tuple[str | None, str | None]:
+        """Acquire workspace lock, write the file, commit.
+
+        Returns ``(workspace_relpath, commit_sha)``. When no
+        workspace is active (no ``PRECIS_WORKSPACE``), returns
+        ``(None, None)`` and the caller should write directly.
+        Otherwise the lock + write + commit are atomic.
+        """
+        from precis.utils.workspace import (
+            commit_put,
+            current_from_env,
+        )
+
+        ws_path = current_from_env()
+        if not ws_path:
+            return (None, None)
+        # Compute workspace-relative path for the commit message.
+        try:
+            workspace_relpath = str(
+                path.relative_to((self.root / ws_path).resolve())
+            )
+        except ValueError:
+            # Path landed outside the workspace; skip the commit path
+            # and let the caller do a plain write.
+            return (None, None)
+        # Workspace-scoped PG advisory lock. Keyed on the workspace
+        # path string hash. Auto-released when the connection closes
+        # (we use a session-scoped lock and release explicitly).
+        with self.store.pool.connection() as conn:
+            with conn.transaction():
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"workspace:{ws_path}",),
+                )
+                _atomic_write(path, body)
+                ws_root = (self.root / ws_path).resolve()
+                # Templated commit message; structured per-tick summary
+                # lives in the job_result chunk (T1.6 wires the link).
+                summary = (
+                    f"{workspace_relpath}: write via slug={slug!r}"
+                )
+                commit_sha = commit_put(
+                    ws_root,
+                    summary=summary,
+                    body="",
+                )
+        return (workspace_relpath, commit_sha)
 
     def _put_append(self, slug: str, text: str | None) -> Response:
         if text is None or not text.strip():
@@ -1515,6 +1601,75 @@ class PlaintextHandler(Handler):
         return Response(body=body)
 
     # ── path resolution ────────────────────────────────────────────
+
+    def _resolve_workspace_name_to_id(self, name: str) -> str:
+        """Route a workspace-scoped ``name`` to a concrete path-form id.
+
+        Reads the ambient workspace from ``PRECIS_WORKSPACE``, looks
+        up the layout convention for this handler's kind, and returns
+        the relative path (workspace subdir + name + ext) as the
+        path-form id the rest of put can consume.
+
+        Side effect: ensures the workspace dir exists on disk (lazy
+        init copies templates + runs git init if needed). The first
+        put in a fresh workspace pays this one-time cost.
+
+        Raises :class:`BadInput` when there's no workspace context
+        (caller passed ``name=`` but no ``PRECIS_WORKSPACE`` env) so
+        the LLM gets a clear error rather than a confusing path
+        resolution failure later.
+        """
+        from precis.utils.workspace import (
+            Workspace,
+            current_from_env,
+            ensure_initialized,
+        )
+        from precis.utils.workspace_layout import is_generated, resolve
+
+        ws_path = current_from_env()
+        if not ws_path:
+            raise BadInput(
+                "name= requires an active workspace (PRECIS_WORKSPACE unset)",
+                next=(
+                    "either set PRECIS_WORKSPACE in the MCP env, or pass "
+                    f"id='<explicit/path.{self._DEFAULT_EXT.lstrip('.')}>'"
+                ),
+            )
+        # Build a Workspace stub from the env-provided path + sensible
+        # defaults. The actual workspace meta (format, entrypoint) is
+        # on the parent todo but the file handlers don't have access
+        # to that; derive format from the kind itself.
+        format = "tex" if self._KIND == "tex" else "md"
+        entrypoint = "main.tex" if format == "tex" else "main.md"
+        workspace = Workspace(
+            path=ws_path, format=format, entrypoint=entrypoint
+        )
+        ensure_initialized(workspace, self.root)
+        try:
+            workspace_relpath = resolve(
+                format=format, kind=self._KIND, name=name
+            )
+        except ValueError as exc:
+            raise BadInput(
+                f"workspace layout rejected name={name!r}: {exc}",
+                next=(
+                    "names are lowercase a-z 0-9 hyphens with optional .ext; "
+                    "the layout dict routes by (workspace.format, kind, name)"
+                ),
+            ) from exc
+        if is_generated(workspace_relpath):
+            raise BadInput(
+                f"{workspace_relpath!r} is workspace-generated, not writable "
+                "via put",
+                next=(
+                    "refs.bib regenerates from kind='citation' refs; mint "
+                    "citations instead of writing the bib directly"
+                ),
+            )
+        # Return as the path-form id (with the workspace prefix). The
+        # rest of put consumes it as if the caller had passed
+        # ``id='projects/x/tex/intro.tex'`` directly.
+        return f"{ws_path}/{workspace_relpath}"
 
     def _resolve_path(
         self, slug: str, *, must_exist: bool, preferred_ext: str | None = None

@@ -134,6 +134,17 @@ def run(
             "call back via MCP — children/yield/done won't land"
         )
 
+    # Workspace context propagation: read meta.workspace from the
+    # parent todo and pass its path through PRECIS_WORKSPACE in the
+    # spawned claude -p's env. The MCP server inherits the env from
+    # claude, file-kind handlers read PRECIS_WORKSPACE to route by
+    # the layout convention. Without this, the LLM has to compute
+    # paths manually and can get them wrong.
+    workspace = _load_parent_workspace(store, parent_ref_id)
+    subprocess_env = dict(os.environ)
+    if workspace is not None:
+        subprocess_env["PRECIS_WORKSPACE"] = workspace.path
+
     cmd: list[str] = [
         claude_bin,
         "-p",
@@ -168,6 +179,7 @@ def run(
             text=True,
             timeout=timeout_s,
             check=False,
+            env=subprocess_env,
         )
     except subprocess.TimeoutExpired as exc:
         duration = time.monotonic() - started
@@ -189,6 +201,25 @@ def run(
         stderr=proc.stderr,
         duration_s=duration,
     )
+
+
+def _load_parent_workspace(store: Any, parent_ref_id: int):
+    """Read meta.workspace from the parent todo, parse it.
+
+    Returns a :class:`Workspace` or None when the todo carries no
+    workspace block. Validation is lenient: malformed dicts log a
+    warning and return None rather than raising. Cascade resilience.
+    """
+    from precis.utils.workspace import Workspace
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s",
+            (parent_ref_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return Workspace.from_meta(row[0])
 
 
 def _model_alias(model: str) -> str:
