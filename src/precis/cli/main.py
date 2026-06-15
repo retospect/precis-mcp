@@ -28,6 +28,7 @@ from precis.cli import (
     cron,
     dedupe,
     gripe,
+    heartbeat,
     ingest,
     logs,
     maintenance,
@@ -140,6 +141,10 @@ def main() -> None:
         web.run(args)
         return
 
+    if args.cmd == "heartbeat":
+        heartbeat.run(args)
+        return
+
     if args.cmd == "cron":
         cron.run(args)
         return
@@ -184,6 +189,7 @@ def _build_parser() -> argparse.ArgumentParser:
     repl.add_parser(sub)
     web.add_parser(sub)
     cron.add_parser(sub)
+    heartbeat.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)

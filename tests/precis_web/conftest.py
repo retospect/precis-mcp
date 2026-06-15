@@ -142,6 +142,15 @@ class FakeStore:
         canned = {11: "Body-derived abstract text for the second paper."}
         return {i: canned[i] for i in ref_ids if i in canned}
 
+    def identifiers_for_refs(self, ref_ids):
+        # Paper 10 carries a DOI; paper 11 an arXiv id — exercises both
+        # hover-card link branches.
+        canned = {
+            10: {"doi": "10.1234/example.2024"},
+            11: {"arxiv": "2501.01234"},
+        }
+        return {i: canned[i] for i in ref_ids if i in canned}
+
     def locked_ref_ids(self, ref_ids):
         # No live Postgres locks under the fake; the Tasks tab's
         # processing probe degrades to "nothing locked".

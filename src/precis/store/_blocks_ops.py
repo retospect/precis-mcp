@@ -70,6 +70,43 @@ from precis.utils.angle import angle_anchors
 _DEFAULT_CHUNK_KIND = "paragraph"
 
 
+def _strip_abstract_label(text: str) -> str:
+    """Drop a leading ``Abstract`` / ``ABSTRACT`` heading word."""
+    import re
+
+    return re.sub(r"^\s*abstract[\s.:—-]*", "", text, flags=re.IGNORECASE).strip()
+
+
+def _looks_like_abstract(text: str, section_path: str) -> bool:
+    """True when a chunk's section or leading text marks it abstract."""
+    sp = (section_path or "").lower()
+    if "abstract" in sp:
+        return True
+    head = (text or "").lstrip()[:16].lower()
+    return head.startswith("abstract")
+
+
+def _pick_abstract_text(items: list[tuple[str, str]]) -> str:
+    """Choose the best abstract-preview text from leading chunks.
+
+    ``items`` is the ordered ``(text, section_path)`` list for one
+    ref. See :meth:`BlocksMixin.abstract_previews` for the preference
+    order. Returns ``""`` when nothing usable is present.
+    """
+    # 1. An explicit abstract chunk wins (label stripped).
+    for text, section_path in items:
+        if _looks_like_abstract(text, section_path):
+            stripped = _strip_abstract_label(text)
+            if len(stripped) >= 40:
+                return stripped
+    # 2. First substantial leading paragraph.
+    pick = next((t for t, _ in items if len(t.strip()) >= 200), "")
+    # 3. Longest of the first few chunks.
+    if not pick and items:
+        pick = max((t for t, _ in items), key=lambda t: len(t.strip()))
+    return pick.strip()
+
+
 # Named slice positions for the ``SELECT chunk_cols, ref_cols, score``
 # projection used by every search method below. Derived from the
 # canonical column-count constants in ``_mappers`` so adding a
@@ -1024,27 +1061,38 @@ class BlocksMixin:
 
         One batched query over the leading body chunks
         (``0 <= ord < 8``, excluding bibliography blocks); selection
-        happens in Python so the heuristic stays legible.
+        happens in Python so the heuristic stays legible. Preference
+        order per ref:
+
+        1. A chunk whose ``section_path`` or leading text marks it as
+           the abstract (``"abstract"``) — the publisher's actual
+           abstract, with any leading "Abstract" label stripped.
+        2. The first substantial leading paragraph (``len >= 200``).
+        3. The longest of the first few chunks.
         """
         if not ref_ids:
             return {}
         sql = (
-            "SELECT ref_id, ord, text FROM chunks "
+            "SELECT ref_id, ord, text, section_path FROM chunks "
             "WHERE ref_id = ANY(%s) AND ord >= 0 AND ord < 8 "
             "AND chunk_kind <> 'references' "
             "ORDER BY ref_id, ord"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (list(ref_ids),)).fetchall()
-        by_ref: dict[int, list[str]] = {}
-        for rid, _ord, text in rows:
-            by_ref.setdefault(int(rid), []).append(text or "")
+        by_ref: dict[int, list[tuple[str, str]]] = {}
+        for rid, _ord, text, section_path in rows:
+            # section_path is a TEXT[] (list) at the psycopg edge;
+            # flatten to a string for the abstract-marker check.
+            sp = (
+                " ".join(section_path)
+                if isinstance(section_path, list)
+                else (section_path or "")
+            )
+            by_ref.setdefault(int(rid), []).append((text or "", sp))
         out: dict[int, str] = {}
-        for rid, texts in by_ref.items():
-            pick = next((t for t in texts if len(t.strip()) >= 200), "")
-            if not pick and texts:
-                pick = max(texts, key=lambda t: len(t.strip()))
-            pick = pick.strip()
+        for rid, items in by_ref.items():
+            pick = _pick_abstract_text(items)
             if not pick:
                 continue
             if len(pick) > max_chars:

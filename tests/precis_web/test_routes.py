@@ -133,6 +133,26 @@ def test_papers_index_abstract_backfilled_from_chunks(client) -> None:
     assert "Body-derived abstract text for the second paper." in resp.text
 
 
+def test_papers_index_hover_card_has_doi_link(client) -> None:
+    # Paper 10 carries a DOI -> the hover card surfaces a clickable
+    # doi.org link for quick verification.
+    resp = client.get("/papers")
+    assert resp.status_code == 200
+    assert "https://doi.org/10.1234/example.2024" in resp.text
+
+
+def test_papers_index_hover_card_has_arxiv_link(client) -> None:
+    resp = client.get("/papers")
+    assert resp.status_code == 200
+    assert "https://arxiv.org/abs/2501.01234" in resp.text
+
+
+def test_paper_detail_shows_doi_link(client) -> None:
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "https://doi.org/10.1234/example.2024" in resp.text
+
+
 def test_paper_pdf_404_when_missing(client) -> None:
     resp = client.get("/papers/10/pdf")
     assert resp.status_code == 400  # NotFound -> PrecisError handler
@@ -147,6 +167,56 @@ def test_paper_pdf_streams_when_present(client, tmp_path) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/pdf"
     assert resp.content.startswith(b"%PDF")
+
+
+def test_webconfig_parses_multiple_corpus_roots(monkeypatch) -> None:
+    import os
+
+    from precis_web.config import WebConfig
+
+    monkeypatch.setenv("PRECIS_CORPUS_DIR", f"/opt/shared/corpus{os.pathsep}/opt/nas/c")
+    cfg = WebConfig.from_env()
+    assert str(cfg.corpus_dir) == "/opt/shared/corpus"
+    assert [str(p) for p in cfg.extra_corpus_dirs] == ["/opt/nas/c"]
+    assert [str(p) for p in cfg.corpus_dirs] == ["/opt/shared/corpus", "/opt/nas/c"]
+
+
+def test_pdf_resolves_from_second_corpus_root(runtime, tmp_path) -> None:
+    # The primary root has no file; the PDF lives under a second root
+    # (an NFS mount surfaced at a different path). Resolution must find
+    # it rather than 404.
+    from fastapi.testclient import TestClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    bad = tmp_path / "shared" / "corpus"
+    good = tmp_path / "nas" / "corpus"
+    pdf = good / "s" / "smith2024.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    cfg = WebConfig(corpus_dir=bad, extra_corpus_dirs=(good,))
+    c = TestClient(create_app(runtime=runtime, web_config=cfg))
+    resp = c.get("/papers/10/pdf")
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF")
+
+
+def test_paper_detail_lists_all_searched_roots(runtime, tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    bad1 = tmp_path / "shared"
+    bad2 = tmp_path / "nas"
+    cfg = WebConfig(corpus_dir=bad1, extra_corpus_dirs=(bad2,))
+    c = TestClient(create_app(runtime=runtime, web_config=cfg))
+    resp = c.get("/papers/10")
+    assert resp.status_code == 200
+    # Both candidate paths are listed in the diagnostics.
+    assert str(bad1 / "s" / "smith2024.pdf") in resp.text
+    assert str(bad2 / "s" / "smith2024.pdf") in resp.text
 
 
 def test_paper_pdf_error_reports_resolved_path(client) -> None:
@@ -398,3 +468,64 @@ def test_status_page_renders(client) -> None:
     resp = client.get("/status")
     assert resp.status_code == 200
     assert "Status" in resp.text
+    # New telemetry panels render (empty states under the fake store).
+    assert "Machines" in resp.text
+    assert "Claude usage" in resp.text
+    assert "precis heartbeat" in resp.text  # empty-state hint
+
+
+def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
+    """Heartbeat + usage + host panels render injected data."""
+    from precis_web.routes import status as status_mod
+
+    monkeypatch.setattr(
+        status_mod,
+        "_heartbeats",
+        lambda store: [
+            {
+                "host": "caspar",
+                "ago": "2m ago",
+                "stale": False,
+                "temp_c": 91.5,
+                "load1": 3.21,
+                "load5": 2.10,
+                "load15": 1.05,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        status_mod,
+        "_hosts",
+        lambda store: [
+            {"host": "caspar", "ago": "1m ago", "stale": False, "problems": 4}
+        ],
+    )
+    monkeypatch.setattr(
+        status_mod,
+        "_claude_usage",
+        lambda store: {
+            "day": {"calls": 7, "cost": 1.23},
+            "week": {"calls": 40, "cost": 9.99},
+            "by_model": [{"label": "claude-sonnet-4-6", "calls": 40, "cost": 9.99}],
+        },
+    )
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert "caspar" in resp.text
+    assert "91.5 °C" in resp.text  # hot temp rendered
+    assert "$1.23" in resp.text  # 24h cost
+    assert "claude-sonnet-4-6" in resp.text
+    assert "4 err/warn 24h" in resp.text
+
+
+def test_status_ago_formatter() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from precis_web.routes.status import _ago
+
+    now = datetime.now(UTC)
+    assert _ago(now - timedelta(seconds=30)).endswith("s ago")
+    assert _ago(now - timedelta(minutes=10)).endswith("m ago")
+    assert _ago(now - timedelta(hours=5)).endswith("h ago")
+    assert _ago(now - timedelta(days=3)).endswith("d ago")
+    assert _ago(None) == ""

@@ -29,14 +29,26 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 
-def _pdf_path(corpus_dir: Path, cite_key: str) -> Path:
-    """Resolve a cite_key to its on-disk PDF path.
+def _pdf_candidates(corpus_dirs: tuple[Path, ...], cite_key: str) -> list[Path]:
+    """All on-disk PDF paths to try for a cite_key, one per corpus root.
 
     Mirrors ``precis.cli.watch._move_to_corpus``: the shard letter is
-    the lower-cased first alnum char of the cite_key, else ``_``.
+    the lower-cased first alnum char of the cite_key, else ``_``. One
+    candidate per configured root so a per-host NFS mount difference
+    is searched rather than fatal.
     """
-    letter = cite_key[0].lower() if cite_key and cite_key[0].isalnum() else "_"
-    return corpus_dir / letter / f"{cite_key}.pdf"
+    if not cite_key:
+        return []
+    letter = cite_key[0].lower() if cite_key[0].isalnum() else "_"
+    return [root / letter / f"{cite_key}.pdf" for root in corpus_dirs]
+
+
+def _resolve_pdf(corpus_dirs: tuple[Path, ...], cite_key: str) -> Path | None:
+    """First existing PDF path across the corpus roots, or ``None``."""
+    for path in _pdf_candidates(corpus_dirs, cite_key):
+        if path.is_file():
+            return path
+    return None
 
 
 def _authors_str(ref: Any) -> str:
@@ -79,6 +91,24 @@ def _abstract_str(ref: Any) -> str:
     return text
 
 
+def _links_from_ids(ids: dict[str, str]) -> dict[str, str]:
+    """Build verification links from a ref's external identifiers.
+
+    ``ids`` is the ``{scheme: value}`` map from
+    ``store.identifiers_for_refs``. We surface DOI and arXiv as
+    clickable URLs (the two an operator uses to verify a paper at a
+    glance); other schemes are left for the detail page.
+    """
+    doi = ids.get("doi", "")
+    arxiv = ids.get("arxiv", "")
+    return {
+        "doi": doi,
+        "doi_url": f"https://doi.org/{doi}" if doi else "",
+        "arxiv": arxiv,
+        "arxiv_url": f"https://arxiv.org/abs/{arxiv}" if arxiv else "",
+    }
+
+
 def _paper_row(ref: Any) -> dict[str, Any]:
     return {
         "id": ref.id,
@@ -88,6 +118,7 @@ def _paper_row(ref: Any) -> dict[str, Any]:
         "has_pdf": bool(ref.pdf_sha256),
         "authors": _authors_str(ref),
         "abstract": _abstract_str(ref),
+        "links": {"doi": "", "doi_url": "", "arxiv": "", "arxiv_url": ""},
     }
 
 
@@ -109,6 +140,11 @@ async def index(request: Request, q: str | None = None) -> HTMLResponse:
         previews = store.abstract_previews([row["id"] for row in missing])
         for row in missing:
             row["abstract"] = previews.get(row["id"], "")
+    # DOI / arXiv links for the hover card, fetched in one batched
+    # query so quick verification doesn't cost N round-trips.
+    ids_map = store.identifiers_for_refs([row["id"] for row in rows])
+    for row in rows:
+        row["links"] = _links_from_ids(ids_map.get(row["id"], {}))
     return templates.TemplateResponse(
         request,
         "papers/index.html.j2",
@@ -130,23 +166,28 @@ async def detail(request: Request, ref_id: int) -> HTMLResponse:
         raise NotFound(f"paper id={ref_id} not found")
     cfg = get_web_config(request)
     cite_key = ref.slug or ""
-    lookup_path = _pdf_path(cfg.corpus_dir, cite_key) if cite_key else None
-    pdf_on_disk = lookup_path is not None and lookup_path.is_file()
+    found = _resolve_pdf(cfg.corpus_dirs, cite_key)
+    paper = _paper_row(ref)
+    paper["links"] = _links_from_ids(
+        store.identifiers_for_refs([ref_id]).get(ref_id, {})
+    )
     return templates.TemplateResponse(
         request,
         "papers/detail.html.j2",
         {
             "active_tab": "papers",
-            "paper": _paper_row(ref),
+            "paper": paper,
             "authors": ref.authors or [],
-            "pdf_on_disk": pdf_on_disk,
+            "pdf_on_disk": found is not None,
             # Diagnostics for the "file expected but missing" case (a
-            # held paper whose corpus_dir / mount is misconfigured, or
-            # a paper with no cite_key to address the file by): show
-            # exactly where we looked so it's self-diagnosing.
+            # held paper whose corpus roots / mount are misconfigured,
+            # or a paper with no cite_key to address the file by): list
+            # every path we tried so it's self-diagnosing.
             "cite_key": cite_key,
-            "pdf_lookup_path": str(lookup_path) if lookup_path else "",
-            "corpus_dir": str(cfg.corpus_dir),
+            "pdf_lookup_paths": [
+                str(p) for p in _pdf_candidates(cfg.corpus_dirs, cite_key)
+            ],
+            "corpus_dirs": [str(p) for p in cfg.corpus_dirs],
         },
     )
 
@@ -161,12 +202,14 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
         raise NotFound(f"paper id={ref_id} not found")
     cite_key = ref.slug or ""
     cfg = get_web_config(request)
-    path = _pdf_path(cfg.corpus_dir, cite_key)
-    if not cite_key or not path.is_file():
+    path = _resolve_pdf(cfg.corpus_dirs, cite_key)
+    if path is None:
+        tried = [str(p) for p in _pdf_candidates(cfg.corpus_dirs, cite_key)]
         raise NotFound(
             f"no PDF on disk for paper id={ref_id} (cite_key={cite_key!r}); "
-            f"looked at {str(path)!r} under corpus_dir={str(cfg.corpus_dir)!r}. "
-            "If the file exists elsewhere, set PRECIS_CORPUS_DIR for the web process."
+            f"looked at {tried or '(no cite_key to address a file)'}. "
+            "If the file exists elsewhere, add its root to PRECIS_CORPUS_DIR "
+            "(os.pathsep-separated) for the web process and restart."
         )
     return FileResponse(
         path,

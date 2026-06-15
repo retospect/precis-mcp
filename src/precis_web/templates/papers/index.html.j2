@@ -36,6 +36,20 @@
       {% else %}
       <p class="text-xs text-slate-400 italic">No abstract on file.</p>
       {% endif %}
+      {# Verification links — clickable even though the card itself
+         ignores pointer events (so it doesn't block the row click). #}
+      {% if p.links.doi_url or p.links.arxiv_url %}
+      <div class="pointer-events-auto mt-2 pt-2 border-t border-slate-100 flex flex-wrap gap-3 text-xs">
+        {% if p.links.doi_url %}
+        <a href="{{ p.links.doi_url }}" target="_blank" rel="noopener"
+           class="text-sky-700 hover:underline">DOI: {{ p.links.doi }}</a>
+        {% endif %}
+        {% if p.links.arxiv_url %}
+        <a href="{{ p.links.arxiv_url }}" target="_blank" rel="noopener"
+           class="text-sky-700 hover:underline">arXiv: {{ p.links.arxiv }}</a>
+        {% endif %}
+      </div>
+      {% endif %}
     </div>
   </li>
   {% endfor %}

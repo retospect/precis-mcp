@@ -27,7 +27,95 @@
   <span class="text-xs uppercase tracking-wide text-slate-400">PDF corpus root</span>
   <span class="ml-2 font-mono text-slate-700 break-all">{{ corpus_dir }}</span>
   <span class="text-slate-400">(set via <span class="font-mono">PRECIS_CORPUS_DIR</span>)</span>
+  <span class="ml-2 text-slate-300">·</span>
+  <span class="text-xs uppercase tracking-wide text-slate-400 ml-2">version</span>
+  <span class="ml-1 font-mono text-slate-700">{{ app_version }}</span>
 </div>
+
+<!-- Machines: heartbeat (temp + load) joined with log liveness. -->
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Machines</h2>
+  <div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="text-xs uppercase tracking-wide text-slate-400 bg-slate-50">
+        <tr>
+          <th class="text-left px-4 py-2 font-medium">Host</th>
+          <th class="text-left px-4 py-2 font-medium">Core temp</th>
+          <th class="text-left px-4 py-2 font-medium">Load (1/5/15m)</th>
+          <th class="text-left px-4 py-2 font-medium">Reported</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for h in heartbeats %}
+        <tr>
+          <td class="px-4 py-2 font-mono">
+            <span class="inline-block w-2 h-2 rounded-full mr-1 align-middle {% if h.stale %}bg-slate-300{% else %}bg-emerald-500{% endif %}"></span>
+            {{ h.host }}
+          </td>
+          <td class="px-4 py-2">
+            {% if h.temp_c is not none %}
+            <span class="{% if h.temp_c >= 85 %}text-rose-700 font-semibold{% elif h.temp_c >= 70 %}text-amber-700{% else %}text-slate-700{% endif %}">
+              {{ '%.1f'|format(h.temp_c) }} °C
+            </span>
+            {% else %}
+            <span class="text-slate-400" title="no temperature sensor reported (set PRECIS_TEMP_CMD)">—</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-2 font-mono text-slate-600">
+            {% if h.load1 is not none %}
+            {{ '%.2f'|format(h.load1) }} / {{ '%.2f'|format(h.load5) }} / {{ '%.2f'|format(h.load15) }}
+            {% else %}<span class="text-slate-400">—</span>{% endif %}
+          </td>
+          <td class="px-4 py-2 {% if h.stale %}text-slate-400{% else %}text-slate-600{% endif %}">{{ h.ago or '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="px-4 py-3 text-sm text-slate-500">
+          No heartbeats yet. Run <span class="font-mono">precis heartbeat</span> on each host (on a timer).
+        </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if hosts %}
+  <div class="mt-2 flex flex-wrap gap-2">
+    {% for hl in hosts %}
+    <span class="text-xs px-2 py-1 rounded {% if hl.stale %}bg-slate-100 text-slate-500{% else %}bg-emerald-50 text-emerald-700{% endif %}">
+      {{ hl.host }} · logged {{ hl.ago }}{% if hl.problems %} · <span class="text-rose-600 font-semibold">{{ hl.problems }} err/warn 24h</span>{% endif %}
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<!-- Claude usage rolled up from ref_events.cost_usd. -->
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Claude usage</h2>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-400">Last 24h</div>
+      <div class="mt-1 text-2xl font-semibold">${{ '%.2f'|format(usage.get('day', {}).get('cost', 0)) }}</div>
+      <div class="text-sm text-slate-500">{{ usage.get('day', {}).get('calls', 0) }} calls</div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-400">Last 7d</div>
+      <div class="mt-1 text-2xl font-semibold">${{ '%.2f'|format(usage.get('week', {}).get('cost', 0)) }}</div>
+      <div class="text-sm text-slate-500">{{ usage.get('week', {}).get('calls', 0) }} calls</div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">By model (7d)</div>
+      <ul class="text-sm divide-y divide-slate-100">
+        {% for m in usage.get('by_model', []) %}
+        <li class="py-1 flex justify-between gap-2">
+          <span class="font-mono text-slate-600 truncate">{{ m.label }}</span>
+          <span class="text-slate-500 shrink-0">{{ m.calls }} · ${{ '%.2f'|format(m.cost) }}</span>
+        </li>
+        {% else %}
+        <li class="py-1 text-slate-400">no LLM cost recorded</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</section>
 
 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
   <section>

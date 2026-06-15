@@ -14,6 +14,18 @@
     {{ authors | map(attribute='family') | select | join(', ') }}
   </p>
   {% endif %}
+  {% if paper.links.doi_url or paper.links.arxiv_url %}
+  <p class="mt-2 flex flex-wrap gap-3 text-sm">
+    {% if paper.links.doi_url %}
+    <a href="{{ paper.links.doi_url }}" target="_blank" rel="noopener"
+       class="text-sky-700 hover:underline">DOI: {{ paper.links.doi }}</a>
+    {% endif %}
+    {% if paper.links.arxiv_url %}
+    <a href="{{ paper.links.arxiv_url }}" target="_blank" rel="noopener"
+       class="text-sky-700 hover:underline">arXiv: {{ paper.links.arxiv }}</a>
+    {% endif %}
+  </p>
+  {% endif %}
 </div>
 
 {% if pdf_on_disk %}
@@ -28,17 +40,27 @@
     <p class="font-medium">This paper is held but the file isn't where the server looked.</p>
     {% if cite_key %}
       <p class="mt-1">cite_key: <span class="font-mono break-all">{{ cite_key }}</span></p>
-      <p class="mt-1">Looked at: <span class="font-mono break-all">{{ pdf_lookup_path or "(none)" }}</span></p>
-      <p class="mt-1">corpus_dir: <span class="font-mono break-all">{{ corpus_dir or "(unset)" }}</span></p>
+      <p class="mt-1">Looked at:</p>
+      <ul class="mt-0.5 ml-4 list-disc">
+        {% for p in pdf_lookup_paths %}
+        <li class="font-mono break-all">{{ p }}</li>
+        {% else %}
+        <li>(none)</li>
+        {% endfor %}
+      </ul>
       <p class="mt-2 text-rose-700">
-        If the file lives elsewhere (e.g. an NFS mount), set
-        <span class="font-mono">PRECIS_CORPUS_DIR</span> for the web process and restart.
+        If the file lives elsewhere (e.g. an NFS mount mounted at a
+        different path on this host), add its root to
+        <span class="font-mono">PRECIS_CORPUS_DIR</span> for the web
+        process (multiple roots are
+        <span class="font-mono">{{ ':' }}</span>-separated) and restart.
       </p>
     {% else %}
       <p class="mt-1">This paper has no <span class="font-mono">cite_key</span> (slug),
         so the server can't address a file for it on disk
         (layout is <span class="font-mono">&lt;corpus_dir&gt;/&lt;letter&gt;/&lt;cite_key&gt;.pdf</span>).</p>
-      <p class="mt-1">corpus_dir: <span class="font-mono break-all">{{ corpus_dir or "(unset)" }}</span></p>
+      <p class="mt-1">corpus roots:
+        <span class="font-mono break-all">{{ corpus_dirs | join(', ') or "(unset)" }}</span></p>
     {% endif %}
   </div>
 {% endif %}

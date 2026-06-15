@@ -10,6 +10,51 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ### Added
 
+- **Papers hover card — DOI / arXiv verification links + sharper
+  abstract.** The papers-list popover (and the detail header) now
+  surface clickable `doi.org` / `arxiv.org` links so a paper can be
+  verified at a glance, fetched in one batched
+  `Store.identifiers_for_refs` query for the whole page. The
+  abstract-backfill heuristic (`abstract_previews`) now prefers an
+  explicit "Abstract" chunk — matched by `section_path` or a leading
+  label, which is stripped — before falling back to the first
+  substantial leading paragraph.
+
+- **Multiple corpus roots for PDF serving.** `PRECIS_CORPUS_DIR` now
+  accepts an `os.pathsep`-separated list of roots (e.g.
+  `/opt/shared/corpus:/opt/nas/botshome/papers/corpus`); the web tries
+  each `<root>/<letter>/<cite_key>.pdf` in order and serves the first
+  that exists. This fixes the cluster reality where the same NFS share
+  is mounted at different paths per host — one web config now finds the
+  PDF wherever it's mounted instead of 404-ing. The "file not found"
+  diagnostics list every path tried; the Status tab lists all roots.
+  Single-path configs are unchanged.
+
+- **Web Status tab — system telemetry (Claude spend, host liveness,
+  core temps).** Three new panels answer "what is the cluster doing
+  right now":
+  - **Claude usage** rolled up from `ref_events.cost_usd` — 24h / 7d
+    spend + call counts and a 7d per-model breakdown. No new data:
+    every agentic `claude_agent` call already logs `agent:done` with
+    cost + model.
+  - **Machines** — per-host CPU temperature and load from a new
+    `host_heartbeat` table (migration 0017), with a green/grey
+    liveness dot and "reported Nm ago"; temps colour amber ≥70 °C and
+    red ≥85 °C. A second strip shows log-derived liveness
+    (`worker_logs` last-seen + 24h WARNING/ERROR counts).
+  - Reporter: new `precis heartbeat` one-shot CLI each host runs on a
+    timer. Load via `os.getloadavg()`; temperature best-effort
+    (`PRECIS_TEMP_CMD` env → Linux `/sys/class/thermal` → none), so a
+    macOS box without a sensor command still reports load + liveness.
+    No new dependency. See ADR 0028 and
+    `docs/design/system-status-telemetry.md`.
+  - The Status header now shows the running `precis-mcp` version (for
+    stale-server detection).
+  - Fixed alongside: the Status "Recent activity" panel was silently
+    empty because its query read a non-existent `created_at` column on
+    `ref_events` (the table stamps `ts`) and the error was swallowed by
+    the panel's defensive wrapper. Now reads `ts` and renders.
+
 - **Workspace abstraction — project-scoped layout, slug-only API,
   per-put git commits.** The planner-coroutine cascade now produces
   durable on-disk artifacts (LaTeX papers, markdown writeups) under

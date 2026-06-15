@@ -254,6 +254,35 @@ class IdentifiersMixin:
             cur.executemany(sql, rows)
             return cur.rowcount or 0
 
+    def identifiers_for_refs(
+        self,
+        ref_ids: list[int],
+    ) -> dict[int, dict[str, str]]:
+        """Batch alias lookup: ``{ref_id: {scheme: value, ...}}``.
+
+        One query over ``ref_identifiers`` for many refs — the display
+        path (web papers list / hover card) needs DOI / arXiv links
+        for a page of results without N round-trips. When a ref carries
+        more than one value for a scheme, the first by ``id_value``
+        order wins (deterministic; DOIs are effectively unique per ref
+        anyway). Schemes are returned verbatim (``'doi'``, ``'arxiv'``,
+        ``'s2'``, …) so callers pick what they want.
+        """
+        if not ref_ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, id_kind, id_value FROM ref_identifiers "
+                "WHERE ref_id = ANY(%s) ORDER BY ref_id, id_kind, id_value",
+                (list(ref_ids),),
+            ).fetchall()
+        out: dict[int, dict[str, str]] = {}
+        for ref_id, scheme, value in rows:
+            bucket = out.setdefault(int(ref_id), {})
+            # First value per scheme wins (rows are ordered by id_value).
+            bucket.setdefault(str(scheme), str(value))
+        return out
+
     def list_ref_identifiers(
         self,
         ref_id: int,
