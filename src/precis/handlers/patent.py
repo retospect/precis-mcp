@@ -34,6 +34,7 @@ from precis.handlers._patent_ingest import (
 from precis.handlers._patent_ops import (
     OpsClientProto,
     OpsError,
+    OpsHttpError,
 )
 from precis.handlers._patent_slug import looks_like_docdb, parse_docdb_id
 from precis.handlers._patent_xml import OpsHit, parse_search_response
@@ -267,9 +268,32 @@ class PatentHandler(Handler):
                         range_end=max(page_size, _DEFAULT_REMOTE_PAGE),
                     )
                     remote_hits, _total = parse_search_response(ops_response.xml)
+                except OpsHttpError as e:
+                    # HTTP 400 = OPS rejected the CQL itself (syntax,
+                    # unknown field, malformed value). This is *caller*
+                    # error — silently empty-ing the remote leg made
+                    # the user see "no patents match" when the truth was
+                    # "your query is invalid". Surface the upstream
+                    # complaint so they can fix the query. Other HTTP
+                    # failures (5xx, 403 quota, network) stay best-
+                    # effort below.
+                    if e.status == 400:
+                        raise BadInput(
+                            f"OPS rejected the CQL query "
+                            f"{cql!r}: {e.body_preview[:300]}",
+                            next=(
+                                "bare phrases auto-promote to "
+                                "(ti=\"...\" OR ab=\"...\"); for explicit "
+                                "CQL use field=value with OPS field names "
+                                "(ti / ab / pa / pact / cpc / ipc / pd / "
+                                "famn). Reference: "
+                                "https://worldwide.espacenet.com/help. "
+                                "Skill: get(kind='skill', id='precis-patent-help')"
+                            ),
+                        ) from e
+                    remote_hits = []
                 except OpsError:
-                    # Best-effort remote leg. If OPS is down or
-                    # quota-limited we still serve the local hits.
+                    # Network/auth/quota/5xx — keep best-effort behaviour.
                     remote_hits = []
 
         # source='remote' — dedupe against local so the caller sees

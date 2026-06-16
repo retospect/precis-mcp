@@ -67,6 +67,17 @@ _EXTRAS_KEY = "__extras__"
 _ANGLE_PREVIEW_CHARS = 200
 
 
+#: Kind → skill alias map for the auto-discovery hint.
+#: Used by :meth:`PrecisRuntime._maybe_add_skill_hint` when
+#: ``precis-{kind}-help`` doesn't exist because the kind was renamed
+#: but the skill kept its broader name (provider-rooted vs.
+#: capability-rooted naming — see ADR 0030 + the rename slice).
+_KIND_SKILL_ALIASES: dict[str, str] = {
+    "perplexity-research": "precis-perplexity-help",
+    "perplexity-reasoning": "precis-perplexity-help",
+}
+
+
 def _angle_excerpt(text: str) -> str:
     """One-line, length-capped preview of a snapped chunk's text."""
     flat = " ".join((text or "").split())
@@ -1509,6 +1520,7 @@ class PrecisRuntime:
     def _maybe_add_skill_hint(
         self, err: PrecisError, verb: str, args: dict[str, Any]
     ) -> None:
+        # See _KIND_SKILL_ALIASES below for the module-level map.
         """F6: append a per-kind / per-verb help-skill `next:` hint.
 
         Mutates ``err.next`` in place to add a discoverability pointer
@@ -1535,6 +1547,11 @@ class PrecisRuntime:
             # is always runnable.
             if kind == "skill":
                 hint = "get(kind='skill', id='toc')"
+            elif kind in _KIND_SKILL_ALIASES:
+                # Renamed kinds whose `precis-{kind}-help` doesn't
+                # exist (the skill kept the broader provider-rooted
+                # name). Mapped here so the auto-hint stays runnable.
+                hint = f"get(kind='skill', id='{_KIND_SKILL_ALIASES[kind]}')"
             else:
                 hint = f"get(kind='skill', id='precis-{kind}-help')"
         elif verb in {"get", "search", "put", "edit", "delete", "tag", "link"}:
