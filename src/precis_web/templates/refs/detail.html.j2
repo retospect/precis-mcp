@@ -11,6 +11,37 @@
   </p>
 </div>
 
+{# Tag strip — every browsable kind gets one. Closed-vocab tags
+   render as inert pills (no × button); free OPEN tags carry a ×
+   that posts ``remove=ns:value`` to the edit_tags route. New tags
+   land via the comma/space-separated input on the right. #}
+<div class="mb-4 flex flex-wrap items-center gap-1.5">
+  {% for t in tags %}
+    {% if t.deletable %}
+    <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/tags" class="inline">
+      <input type="hidden" name="remove" value="{{ t.value }}" />
+      <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-200">
+        <span class="font-mono">{{ t.value }}</span>
+        <button class="text-slate-400 hover:text-rose-600" title="remove tag">×</button>
+      </span>
+    </form>
+    {% else %}
+    <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-violet-50 text-violet-700 border border-violet-100"
+          title="closed-vocab tag — remove via tag(kind='{{ kind }}', id={{ ref.id }}, remove=[...])">
+      <span class="font-mono">{{ t.label }}</span>
+    </span>
+    {% endif %}
+  {% else %}
+  <span class="text-xs text-slate-400 italic">no tags yet</span>
+  {% endfor %}
+  <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/tags"
+        class="inline-flex items-center gap-1 ml-auto">
+    <input name="add" placeholder="+ tag (comma-separated)"
+           class="text-xs px-2 py-1 rounded border border-slate-300 w-56" />
+    <button class="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">add</button>
+  </form>
+</div>
+
 {% if is_error %}
 <div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 whitespace-pre-wrap">{{ body | linkify_refs }}</div>
 {% else %}

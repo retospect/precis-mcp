@@ -23,8 +23,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Form, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 from markupsafe import Markup, escape
 
 from precis.errors import NotFound
@@ -444,6 +444,25 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
                 }
             )
 
+    # Tag editor — every browsable kind gets the same chip strip.
+    # Closed-vocab tags (STATUS:*, LLM:*, DREAM:*) appear but the
+    # template doesn't offer a × on them; per-ref removal of a
+    # structural tag goes through the standard tag() verb explicitly.
+    raw_tags = store.tags_for(ref.id)
+    tags = [
+        {
+            "namespace": getattr(t, "namespace", "OPEN"),
+            "value": getattr(t, "value", ""),
+            "label": (
+                f"{getattr(t, 'namespace', 'OPEN')}:{getattr(t, 'value', '')}"
+                if getattr(t, "namespace", "") not in ("", "OPEN")
+                else getattr(t, "value", "")
+            ),
+            "deletable": getattr(t, "namespace", "OPEN") == "OPEN",
+        }
+        for t in raw_tags
+    ]
+
     return templates.TemplateResponse(
         request,
         "refs/detail.html.j2",
@@ -455,5 +474,51 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             "body": body,
             "is_error": is_error,
             "chunks": chunks,
+            "tags": tags,
         },
     )
+
+
+def _split_tag_input(raw: str) -> list[str]:
+    """Split a comma/space-separated tag input into a clean list."""
+    if not raw:
+        return []
+    parts = [p.strip() for chunk in raw.split(",") for p in chunk.split()]
+    return [p for p in parts if p]
+
+
+@router.post("/{kind}/{ref_id}/tags")
+async def edit_tags(
+    request: Request,
+    kind: str,
+    ref_id: int,
+    add: str = Form(""),
+    remove: str = Form(""),
+) -> Response:
+    """Add or remove tags on a browsable ref via the ``tag`` verb.
+
+    Same shape as ``/tasks/{id}/tags`` — ``add`` is a comma/space-
+    separated string the operator typed; ``remove`` is a single
+    ``namespace:value`` from a chip's × button. Both flow through
+    the handler so tag-vocabulary validation stays single-sourced.
+    """
+    _require_kind(kind)
+    add_list = _split_tag_input(add)
+    remove_list = _split_tag_input(remove)
+    redirect_url = f"/refs/{kind}/{ref_id}"
+    if not add_list and not remove_list:
+        return RedirectResponse(url=redirect_url, status_code=303)
+    args: dict[str, Any] = {"kind": kind, "id": ref_id}
+    if add_list:
+        args["add"] = add_list
+    if remove_list:
+        args["remove"] = remove_list
+    body, is_error = await await_dispatch(request, "tag", args)
+    if is_error:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Tag error", "detail": body, "status": 400},
+            status_code=400,
+        )
+    return RedirectResponse(url=redirect_url, status_code=303)

@@ -462,6 +462,57 @@ def test_refs_consolidated_kinds_param_narrows(client) -> None:
     assert 'value="memory"' in resp.text
 
 
+def test_refs_detail_renders_tag_strip_empty_state(client) -> None:
+    """When a ref has no tags, the detail page shows the empty marker
+    and the ``+ tag`` input."""
+    resp = client.get("/refs/memory/20")  # FakeStore canned memory id=20
+    assert resp.status_code == 200
+    assert "no tags yet" in resp.text
+    # The add form is present with the expected action.
+    assert 'action="/refs/memory/20/tags"' in resp.text
+    assert 'name="add"' in resp.text
+
+
+def test_refs_detail_tags_post_dispatches_tag_add(client, runtime) -> None:
+    """POST /refs/{kind}/{ref_id}/tags with ``add=`` flows through the
+    handler dispatch, preserving the single-source vocabulary check."""
+    resp = client.post(
+        "/refs/memory/20/tags",
+        data={"add": "topic:foo"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "tag"
+    assert args["kind"] == "memory"
+    assert args["id"] == 20
+    assert args["add"] == ["topic:foo"]
+
+
+def test_refs_detail_tags_post_dispatches_tag_remove(client, runtime) -> None:
+    resp = client.post(
+        "/refs/memory/20/tags",
+        data={"remove": "topic:foo"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "tag"
+    assert args["remove"] == ["topic:foo"]
+
+
+def test_refs_detail_tags_no_op_redirects(client, runtime) -> None:
+    """Empty add + empty remove → just bounce back, no dispatch."""
+    before = len(runtime.calls)
+    resp = client.post(
+        "/refs/memory/20/tags",
+        data={},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert len(runtime.calls) == before  # no tag verb invoked
+
+
 def test_loupe_in_base_nav(client) -> None:
     """The 🔍 loupe form posts to /refs?all=1 so cross-kind search lands
     on the consolidated browser with everything lit."""

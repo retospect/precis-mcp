@@ -205,6 +205,12 @@ class FakeStore:
         }
         return {i: canned[i] for i in ref_ids if i in canned}
 
+    def tags_for(self, ref_id, *, pos=None):
+        """Empty tag list — refs detail-page tag strip renders the
+        ``no tags yet`` empty state. Routes that exercise add/remove
+        path through the fake runtime call recorder, not this method."""
+        return []
+
     def stub_backlog(self, *, limit: int = 50, awaiting: bool = False):
         # Two canned stubs: one never-attempted (always shown),
         # one attempted >24h ago with a failure (shown in both views).
