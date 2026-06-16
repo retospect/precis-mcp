@@ -818,6 +818,25 @@ class PrecisRuntime:
                 out.append(k)
         return out
 
+    def _cross_kind_excluded_kinds(self) -> list[str]:
+        """Active kinds searchable per-kind but opted out of cross-kind.
+
+        These are kinds with ``supports_search=True`` but
+        ``supports_search_hits=False`` — they carry per-kind result
+        shapes (TOON tables with kind-specific columns, score-
+        annotated skill rows, tag rows from a different table) that
+        the cross-kind SearchHit substrate would have to flatten and
+        lose information from. The wildcard cross-kind footer names
+        them so the agent knows the kinds exist and where to look.
+        Broad-pass finding #7.
+        """
+        out: list[str] = []
+        for k in sorted(self.hub.kinds):
+            spec = self.hub.handler_for(k).spec
+            if spec.supports_search and not spec.supports_search_hits:
+                out.append(k)
+        return out
+
     def _resolve_cross_kind_request(self, kind: str) -> list[str]:
         """Expand ``kind`` into the concrete list of kinds to fan out to.
 
@@ -1289,6 +1308,7 @@ class PrecisRuntime:
             header_noun="match",
             mode="rrf",
             empty_body=empty_body,
+            output_shape="toon",
         )
 
         # Round-2 picky F-8: prepend a per-kind hit-count line under the
@@ -1302,6 +1322,32 @@ class PrecisRuntime:
             lines = response.body.splitlines()
             if lines:
                 lines.insert(1, f"_(per kind: {breakdown})_")
+                response = Response(body="\n".join(lines), cost=response.cost)
+
+        # Broad-pass finding #7: when cross-kind ran with the wildcard
+        # (kind=None or kind='*'), surface the kinds that have search
+        # but opt out of search_hits (skill, citation, finding, tag —
+        # each by design, because their per-kind renderer carries
+        # structure the SearchHit shape would flatten). Lets the agent
+        # know those kinds exist + were skipped on purpose, and where
+        # to look. Only emit for wildcards; an explicit comma-list is
+        # a deliberate choice and doesn't need the breadcrumb.
+        if kind.strip().lower() in _CROSS_KIND_ALIASES:
+            excluded = self._cross_kind_excluded_kinds()
+            if excluded:
+                lines = response.body.splitlines()
+                tip = (
+                    "_(not included: "
+                    + ", ".join(sorted(excluded))
+                    + " — search each kind explicitly for the "
+                    "richer per-kind view)_"
+                )
+                if len(per_kind_counts) >= 2 and len(lines) >= 2:
+                    lines.insert(2, tip)
+                elif lines:
+                    lines.insert(1, tip)
+                else:
+                    lines.append(tip)
                 response = Response(body="\n".join(lines), cost=response.cost)
 
         return response

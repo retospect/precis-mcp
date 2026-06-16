@@ -113,6 +113,13 @@ class SearchHit:
     extra_lines: tuple[str, ...] = ()
     ref_id: int | None = None
     dedupe_key: str | None = None
+    # Optional fields for the cross-kind TOON shape. Producers populate
+    # when they have a meaningful per-hit summary distinct from
+    # ``title`` (e.g. a paper hit's block excerpt vs. its paper title);
+    # the renderer falls back to deriving from ``title`` when unset.
+    # See ``_render_toon_table``.
+    summary: str | None = None
+    remaining_words: int | None = None
 
     @property
     def handle(self) -> str:
@@ -130,6 +137,9 @@ class SearchHit:
         return "?"
 
 
+_OutputShape = Literal["markdown", "toon"]
+
+
 def merge_and_render(
     streams: list[list[SearchHit]],
     *,
@@ -139,6 +149,7 @@ def merge_and_render(
     mode: _MergeMode = "priority",
     show_label: bool = True,
     empty_body: str | None = None,
+    output_shape: _OutputShape = "markdown",
 ) -> Response:
     """Merge ranked ``SearchHit`` streams into a single rendered Response.
 
@@ -205,8 +216,11 @@ def merge_and_render(
             query=query or "",
         )
     ]
-    for i, hit in enumerate(rendered, 1):
-        lines.append(_render_hit(i, hit, show_label=show_label))
+    if output_shape == "toon":
+        lines.append(_render_toon_table(rendered))
+    else:
+        for i, hit in enumerate(rendered, 1):
+            lines.append(_render_hit(i, hit, show_label=show_label))
     return Response(body="\n".join(lines))
 
 
@@ -284,6 +298,83 @@ def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
 # ---------------------------------------------------------------------------
 # Per-hit rendering
 # ---------------------------------------------------------------------------
+
+
+_TOON_SUMMARY_MAX_CHARS = 180
+_TOON_SENTENCE_TERMINATORS = (". ", "! ", "? ")
+
+
+def _derive_toon_summary(hit: SearchHit) -> tuple[str, int]:
+    """Pick the (summary, remaining_words) cell pair for a hit.
+
+    Explicit ``hit.summary`` / ``hit.remaining_words`` win when set.
+    Otherwise derive from ``title`` the same way the per-kind TOON
+    list view does: first sentence within budget, hard-cut + ellipsis
+    as last resort, remaining_words counts the trimmed tail.
+    """
+    if hit.summary is not None:
+        rw = (
+            hit.remaining_words
+            if hit.remaining_words is not None
+            else 0
+        )
+        return hit.summary, rw
+
+    body = hit.title or ""
+    if not body:
+        return "", 0
+    first_line, sep, rest = body.partition("\n")
+    first_line = first_line.rstrip()
+    if sep and len(first_line) <= _TOON_SUMMARY_MAX_CHARS:
+        return first_line, len(rest.split())
+    head = body[:_TOON_SUMMARY_MAX_CHARS]
+    cut = -1
+    for term in _TOON_SENTENCE_TERMINATORS:
+        idx = head.rfind(term)
+        if idx > cut:
+            cut = idx
+    if cut > 0:
+        summary = body[: cut + 1].rstrip()
+        tail = body[cut + 1:]
+        return summary, len(tail.split())
+    if len(body) > _TOON_SUMMARY_MAX_CHARS:
+        summary = body[:_TOON_SUMMARY_MAX_CHARS].rstrip() + "…"
+        return summary, len(body[_TOON_SUMMARY_MAX_CHARS:].split())
+    return body.rstrip(), 0
+
+
+def _render_toon_table(hits: list[SearchHit]) -> str:
+    """Render cross-kind hits as one TOON table.
+
+    Columns: ``kind | id | summary | remaining_words``. ``id`` is the
+    citation handle (``kind:slug`` for slug kinds, the numeric id for
+    numeric refs, ``slug~pos`` for block-level hits). links/age aren't
+    populated here — those require per-kind queries the per-kind list
+    view already covers; the cross-kind table prioritises the
+    discriminating signal an agent needs to choose a kind to drill
+    into.
+    """
+    from precis.format import render_agent_table
+
+    rows: list[dict[str, str]] = []
+    for hit in hits:
+        summary, remaining_words = _derive_toon_summary(hit)
+        if hit.slug:
+            ident = f"{hit.slug}~{hit.pos}" if hit.pos is not None else hit.slug
+        elif hit.ref_id is not None:
+            ident = str(hit.ref_id)
+        else:
+            ident = "?"
+        rows.append(
+            {
+                "kind": hit.kind,
+                "id": ident,
+                "summary": summary,
+                "remaining_words": str(remaining_words),
+            }
+        )
+    schema = ["kind", "id", "summary", "remaining_words"]
+    return render_agent_table(rows, schema=schema)
 
 
 def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:

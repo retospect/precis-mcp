@@ -423,7 +423,8 @@ class TagsMixin:
 
         Output shape::
 
-            {"count": int,
+            {"count": int,         # cumulative incl. soft-deleted refs
+             "live_count": int,    # only attachments to live refs
              "first_seen": datetime,
              "last_seen": datetime,
              "sample_refs": [(kind, slug, ref_id), ...]}
@@ -434,6 +435,12 @@ class TagsMixin:
         (orphan row left after every ref untagged), returns count 0
         with the tag-row created_at timestamp for first/last and an
         empty sample list.
+
+        ``count`` vs ``live_count``: the historical ``count`` includes
+        attachments to soft-deleted refs (audit retention). The
+        live_count column added per broad-pass finding #11 answers
+        "how many live refs carry this tag right now?" — usually the
+        more useful number for an agent considering tag fragmentation.
         """
         with self.pool.connection() as conn:
             tag_row = conn.execute(
@@ -452,21 +459,31 @@ class TagsMixin:
             # keeps duplicates out of the per-target groups but
             # double-counts a (ref, tag) pair that's also attached to
             # one of the ref's chunks — acceptable for a usage_count
-            # hint.
+            # hint. Join refs to compute live_count via a FILTER.
             agg = conn.execute(
                 "WITH all_attachments AS ( "
-                "  SELECT created_at FROM ref_tags WHERE tag_id = %s "
+                "  SELECT rt.created_at, r.deleted_at "
+                "    FROM ref_tags rt "
+                "    JOIN refs r ON r.ref_id = rt.ref_id "
+                "    WHERE rt.tag_id = %s "
                 "  UNION ALL "
-                "  SELECT created_at FROM chunk_tags WHERE tag_id = %s "
+                "  SELECT ct.created_at, r.deleted_at "
+                "    FROM chunk_tags ct "
+                "    JOIN chunks c ON c.chunk_id = ct.chunk_id "
+                "    JOIN refs r ON r.ref_id = c.ref_id "
+                "    WHERE ct.tag_id = %s "
                 ") "
-                "SELECT COUNT(*), MIN(created_at), MAX(created_at) "
+                "SELECT COUNT(*), "
+                "       COUNT(*) FILTER (WHERE deleted_at IS NULL), "
+                "       MIN(created_at), MAX(created_at) "
                 "FROM all_attachments",
                 (tag_id, tag_id),
             ).fetchone()
             assert agg is not None
             count = int(agg[0])
-            first_seen = agg[1] or tag_created_at
-            last_seen = agg[2] or tag_created_at
+            live_count = int(agg[1])
+            first_seen = agg[2] or tag_created_at
+            last_seen = agg[3] or tag_created_at
 
             # Up to five live refs carrying this tag, most recent
             # attachment first. Joins via ref_tags (chunk-only
@@ -491,6 +508,7 @@ class TagsMixin:
         ]
         return {
             "count": count,
+            "live_count": live_count,
             "first_seen": first_seen,
             "last_seen": last_seen,
             "sample_refs": sample_refs,

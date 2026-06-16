@@ -251,11 +251,28 @@ class TagHandler(Handler):
             )
         ns_resolved, val_resolved = resolved
         canonical_slug = _slug_from(ns_resolved, val_resolved)
+        total = meta["count"]
+        live = meta.get("live_count", total)
+        deleted = total - live
+        # Render the live count first (the most useful number for
+        # an agent thinking about fragmentation). Show the cumulative
+        # count alongside it with a soft-deleted note, so the headline
+        # number isn't misleading when most carriers have been
+        # archived. Broad-pass finding #11.
+        if total == 0:
+            count_line = "- count:      0"
+        elif deleted == 0:
+            count_line = f"- count:      {total} live"
+        else:
+            count_line = (
+                f"- count:      {live} live "
+                f"({total} cumulative incl. {deleted} soft-deleted)"
+            )
         lines: list[str] = [
             f"# tag {canonical_slug}",
             f"_axis: {_axis_label(ns_resolved)}_",
             "",
-            f"- count:      {meta['count']}",
+            count_line,
             f"- first seen: {meta['first_seen']}",
             f"- last seen:  {meta['last_seen']}",
         ]

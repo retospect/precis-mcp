@@ -62,6 +62,54 @@ class MemoryHandler(NumericRefHandler):
     kind: ClassVar[str] = "memory"
     sense: ClassVar[str] = "memory"
 
+    # ── list-view filters (id='/<view>') ────────────────────────────
+
+    def _supported_list_views(self) -> tuple[str, ...]:
+        # /recent (base) + /sticky (union of sticky:thread and
+        # sticky:global). Broad-pass finding #10. The sticky scope
+        # distinction (per-thread vs global) lives on the tag; this
+        # view shows the union so the agent can see "what's pinned
+        # right now" at a glance.
+        return ("recent", "sticky")
+
+    def _list_view(self, view: str) -> Response | None:
+        if view == "sticky":
+            return self._render_sticky()
+        return super()._list_view(view)
+
+    def _render_sticky(self) -> Response:
+        """Union of sticky:thread and sticky:global, recency-ordered."""
+        thread = self.store.list_refs(
+            kind=self.kind, tags=["sticky:thread"], limit=50
+        )
+        glob = self.store.list_refs(
+            kind=self.kind, tags=["sticky:global"], limit=50
+        )
+        # Dedup by ref.id (a memory can carry both tags).
+        seen: set[int] = set()
+        refs = []
+        for r in sorted(
+            list(thread) + list(glob),
+            key=lambda r: r.updated_at,
+            reverse=True,
+        ):
+            if r.id in seen:
+                continue
+            seen.add(r.id)
+            refs.append(r)
+        if not refs:
+            return Response(
+                body=(
+                    "no sticky memories. pin one: "
+                    "tag(kind='memory', id=N, add=['sticky:thread'])"
+                )
+            )
+        header = (
+            f"# {len(refs)} sticky {self._sense()} "
+            f"entr{'y' if len(refs) == 1 else 'ies'}"
+        )
+        return Response(body=f"{header}\n{self._render_hits_table(refs)}")
+
     # Memories become embeddable: put-create emits a `card_combined`
     # chunk (ord=-1) so the embed worker vectorizes it and
     # `search(like=...)` finds true semantic neighbours. Foundation for

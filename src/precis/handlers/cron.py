@@ -196,6 +196,55 @@ class CronHandler(NumericRefHandler):
     kind: ClassVar[str] = "cron"
     sense: ClassVar[str] = "cron"
 
+    # ── list-view filters (id='/<view>') ────────────────────────────
+
+    def _supported_list_views(self) -> tuple[str, ...]:
+        return ("recent", "upcoming")
+
+    def _list_view(self, view: str) -> Response | None:
+        if view == "upcoming":
+            return self._render_upcoming()
+        return super()._list_view(view)
+
+    def _render_upcoming(self) -> Response:
+        """Crons in next_fire_at order (soonest first).
+
+        ``meta.status`` 'scheduled' (or absent) only — paused / fired /
+        cancelled rows are uninteresting for the "what's coming?" view.
+        Broad-pass finding #10.
+        """
+        refs = self.store.list_refs(kind=self.kind, limit=200)
+        future: list[tuple[Any, datetime]] = []
+        for r in refs:
+            meta = r.meta or {}
+            status = meta.get("status", "scheduled")
+            if status not in (None, "scheduled"):
+                continue
+            iso = meta.get("next_fire_at")
+            if not iso:
+                continue
+            try:
+                when = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            future.append((r, when))
+        future.sort(key=lambda pair: pair[1])
+        if not future:
+            return Response(
+                body=(
+                    "no upcoming crons. schedule one: "
+                    "put(kind='cron', text='...', in_='10 minutes', "
+                    "target='conv:discord/<g>/<c>/<t>')"
+                )
+            )
+        refs_ordered = [r for r, _ in future[:20]]
+        header = (
+            f"# {len(refs_ordered)} upcoming cron"
+            f"{'s' if len(refs_ordered) != 1 else ''} "
+            "(by next_fire_at)"
+        )
+        return Response(body=f"{header}\n{self._render_hits_table(refs_ordered)}")
+
     # ── put: schedule a cron entry ──────────────────────────────────
 
     def put(  # type: ignore[override]

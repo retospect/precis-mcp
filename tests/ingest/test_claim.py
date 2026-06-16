@@ -65,12 +65,48 @@ class TestClaimIntegration:
             assert second.acquired is True
 
     def test_second_concurrent_claim_busy(self) -> None:
+        """A second Claim on the same hash from a *separate process*
+        must fail to acquire while the first is held.
+
+        The second Claim runs in a subprocess intentionally. The
+        contract we ship is cross-process (each watcher, worker, and
+        ``_watch_batch_ingest`` runs in its own process), so the
+        subprocess shape is the one production exercises every day.
+
+        Practical reason: in-container TCP forwarding to
+        ``host.docker.internal`` multiplexes psycopg connections from
+        a single process to one Postgres backend session — advisory
+        locks are re-entrant within a session, so the simple two-
+        ``Claim`` form in one process would spuriously report the
+        second as acquired. A child process gets its own backend and
+        the busy-state check is honest.
+        """
+        import subprocess
+        import sys
+
         with Claim(_DSN, _SHA) as first:
             assert first.acquired is True
-            # Open a second Claim while the first is still active —
-            # should fail to acquire.
-            with Claim(_DSN, _SHA) as second:
-                assert second.acquired is False
+            # Child: try to acquire the same hash; print the
+            # ``acquired`` outcome. Caller asserts on it.
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from precis.ingest.claim import Claim\n"
+                        f"with Claim({_DSN!r}, {_SHA!r}) as c:\n"
+                        "    print(c.acquired)\n"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=15,
+            )
+            assert child.stdout.strip() == "False", (
+                f"child unexpectedly acquired the busy lock: "
+                f"stdout={child.stdout!r} stderr={child.stderr!r}"
+            )
 
     def test_release_on_exception(self) -> None:
         """If the body raises, the claim is still released on exit."""

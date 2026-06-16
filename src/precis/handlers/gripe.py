@@ -72,6 +72,23 @@ class GripeHandler(NumericRefHandler):
     sense: ClassVar[str] = "gripe"
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
+    # ── list-view filters (id='/<view>') ────────────────────────────
+
+    def _supported_list_views(self) -> tuple[str, ...]:
+        # /recent (base) + /open and /wontfix (status-shorthand). The
+        # full STATUS axis vocabulary lives in tags; these are the two
+        # the agent reaches for daily ("what's still open?", "what did
+        # I decide not to fix?"). Other STATUS values come via the
+        # explicit tag filter: search(kind='gripe', tags=['STATUS:in_review']).
+        return ("recent", "open", "wontfix")
+
+    def _list_view(self, view: str) -> Response | None:
+        if view == "open":
+            return self._list_by_tags(["STATUS:open"], page_size=20)
+        if view == "wontfix":
+            return self._list_by_tags(["STATUS:wontfix"], page_size=20)
+        return super()._list_view(view)
+
     # ── put: create or append-comment ───────────────────────────────
 
     def put(  # type: ignore[override]

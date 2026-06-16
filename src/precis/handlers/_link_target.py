@@ -33,7 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Unsupported
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -91,6 +91,25 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
         raise BadInput(
             f"link target {target!r} has empty identifier after ':'",
             next="link='kind:identifier'",
+        )
+
+    # ``skill`` lives in package data (markdown on disk), not the
+    # refs table. The skill body IS embedded (FileCorpusIndex carries
+    # the vectors for semantic search), but linking requires a
+    # ``refs.ref_id`` to populate ``links.src_ref_id`` / ``dst_ref_id``.
+    # Pre-broad-pass behaviour was a misleading
+    # NotFound("no live skill ref"); now Unsupported with the right
+    # reason so the agent stops retrying and routes to a kind that
+    # has rows. Broad-pass finding #6.
+    if kind == "skill":
+        raise Unsupported(
+            f"link target {target!r}: skill is not linkable — "
+            "served from package data, not the refs table",
+            next=(
+                "to anchor a thought to a skill, write a memory citing "
+                "the skill's id in text and link memory→<the linkable "
+                "target>"
+            ),
         )
 
     # Validate kind against the live kinds table. We intentionally
