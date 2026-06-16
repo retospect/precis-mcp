@@ -23,12 +23,16 @@
           </a>
           {% endfor %}
           <span class="mx-2 h-5 w-px bg-slate-700"></span>
-          {% set ref_tabs = [('memory','Memory'), ('conv','Conv'), ('oracle','Oracle'),
-                             ('gripe','Gripes'), ('patent','Patents'), ('pres','Pres')] %}
-          {% for key, label in ref_tabs %}
-          <a href="/refs/{{ key }}"
+          {# Refs is the consolidated browser (memory/conv/gripe/pres
+             pre-checked + checkboxes for the rest). Oracle and Patents
+             keep their own tabs — Oracle for its "roll the dice" UX,
+             Patents because of the OPS remote-search affordances. #}
+          {% set ref_tabs = [('refs','Refs','/refs'), ('refs:oracle','Oracle','/refs/oracle'),
+                             ('refs:patent','Patents','/refs/patent')] %}
+          {% for key, label, href in ref_tabs %}
+          <a href="{{ href }}"
              class="px-3 py-2 rounded-md text-sm font-medium transition
-                    {% if active_tab == 'refs:' + key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
+                    {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-800 hover:text-white{% endif %}">
             {{ label }}
           </a>
           {% endfor %}
@@ -41,6 +45,14 @@
             {{ label }}
           </a>
           {% endfor %}
+          {# 🔍 loupe — global cross-kind search. Submits to /refs with
+             ``all=1`` so every browsable kind is in scope; the user can
+             then uncheck irrelevant ones on the results page. #}
+          <form method="get" action="/refs" class="ml-auto flex items-center gap-1">
+            <input type="hidden" name="all" value="1" />
+            <input name="q" placeholder="🔍 search everything…"
+                   class="bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 text-sm px-3 py-1 rounded w-48 focus:w-72 focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all" />
+          </form>
         </nav>
       </div>
     </header>

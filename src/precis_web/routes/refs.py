@@ -200,6 +200,137 @@ def _conv_turns(store: Any, ref_id: int) -> list[dict[str, Any]]:
     return turns
 
 
+#: The kinds the Refs tab pre-checks by default — note-like, browsable,
+#: low-friction. The other checkbox-eligible kinds stay unchecked
+#: unless the operator opts in (via ``?all=1`` or by tickering them
+#: manually). Order pinned for stable rendering.
+_DEFAULT_REFS_KINDS: tuple[str, ...] = ("memory", "conv", "gripe", "pres")
+
+#: Every kind the consolidated Refs page knows how to render. Kept as
+#: a static list — extending it is a one-liner when a new browsable
+#: kind ships. We don't trust the hub's full ``kinds`` set here because
+#: it includes non-browsable kinds (calc / random / math) whose
+#: ``list_refs`` would either error or render meaningless.
+_REFS_BROWSABLE_KINDS: tuple[str, ...] = (
+    "memory",
+    "conv",
+    "gripe",
+    "pres",
+    "oracle",
+    "paper",
+    "patent",
+    "todo",
+    "job",
+    "finding",
+    "citation",
+    "flashcard",
+    "perplexity-research",
+    "perplexity-reasoning",
+    "web",
+    "youtube",
+    "websearch",
+    "cron",
+    "message",
+)
+
+_PER_KIND_LIMIT = 20  # cap rows per kind so 19-kind search stays readable
+
+
+@router.get("", response_class=HTMLResponse)
+async def consolidated(
+    request: Request,
+    q: str | None = None,
+    kinds: str | None = None,
+    all: int = 0,
+) -> HTMLResponse:
+    """Consolidated cross-kind ref browser with kind checkboxes.
+
+    Replaces the old per-kind nav tabs for memory / conv / gripe / pres
+    — see ``T12.6`` in the session notes. Each kind has a checkbox;
+    when ``?all=1`` is set, every browsable kind lights regardless of
+    the ``kinds`` query param. The 🔍 loupe in the nav posts here with
+    ``?all=1`` so a global query hits everything we have local.
+
+    Per-kind detail (``/refs/{kind}/{ref_id}``) and the per-kind list
+    pages (``/refs/{kind}``) keep working — they're the long-form
+    affordances for pagination, date filters, sort. The consolidated
+    view is the casual "I half-remember something" surface.
+    """
+    if all:
+        selected: list[str] = list(_REFS_BROWSABLE_KINDS)
+    elif kinds:
+        # Tolerate trailing commas / whitespace / unknown kinds.
+        requested = {k.strip() for k in kinds.split(",") if k.strip()}
+        selected = [k for k in _REFS_BROWSABLE_KINDS if k in requested]
+        # Preserve the operator's ordering for kinds we didn't recognise
+        # so a future-added kind shows up when its checkbox is added.
+        for k in requested:
+            if k not in selected and k not in _REFS_BROWSABLE_KINDS:
+                selected.append(k)
+    else:
+        selected = list(_DEFAULT_REFS_KINDS)
+
+    store = get_store(request)
+    query = (q or "").strip()
+    by_kind: dict[str, list[dict[str, object]]] = {}
+    for kind in selected:
+        try:
+            if query:
+                hits = store.search_refs_lexical(
+                    q=query, kind=kind, limit=_PER_KIND_LIMIT
+                )
+                refs = [ref for ref, _ in hits]
+            else:
+                refs = store.list_refs(kind=kind, limit=_PER_KIND_LIMIT)
+        except Exception:
+            # Unsupported / unregistered kind on this process — skip the
+            # whole bucket rather than 500 the page.
+            continue
+        if not refs:
+            continue
+        rows: list[dict[str, object]] = []
+        for r in refs:
+            title = (getattr(r, "title", "") or "").split("\n", 1)[0]
+            if len(title) > 80:
+                title = title[:80].rstrip() + "…"
+            rows.append(
+                {
+                    "id": r.id,
+                    "title": title or "(untitled)",
+                    "url": _consolidated_ref_url(kind, r.id),
+                }
+            )
+        by_kind[kind] = rows
+
+    return templates.TemplateResponse(
+        request,
+        "refs/consolidated.html.j2",
+        {
+            "active_tab": "refs",
+            "q": query,
+            "selected": set(selected),
+            "all_browsable": list(_REFS_BROWSABLE_KINDS),
+            "default_kinds": list(_DEFAULT_REFS_KINDS),
+            "by_kind": by_kind,
+            "all_lit": bool(all),
+            "total": sum(len(v) for v in by_kind.values()),
+        },
+    )
+
+
+#: Per-kind URL shape for the native detail viewer in consolidated view.
+_CONSOLIDATED_KIND_URLS: dict[str, str] = {
+    "paper": "/papers/{id}",
+    "todo": "/tasks?focus={id}",
+    "job": "/tasks?focus={id}",
+}
+
+
+def _consolidated_ref_url(kind: str, ref_id: int) -> str:
+    template = _CONSOLIDATED_KIND_URLS.get(kind, "/refs/{kind}/{id}")
+    return template.format(kind=kind, id=ref_id)
+
+
 @router.get("/{kind}", response_class=HTMLResponse)
 async def index(
     request: Request,

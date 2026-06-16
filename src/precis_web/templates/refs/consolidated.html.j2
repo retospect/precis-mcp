@@ -1,0 +1,67 @@
+{% extends "base.html.j2" %}
+{% block title %}Refs{% endblock %}
+{% block content %}
+<form method="get" action="/refs" class="mb-4 rounded-lg border border-slate-200 bg-white p-3">
+  <div class="flex items-center gap-2 mb-3">
+    <input name="q" value="{{ q }}" placeholder="search title…"
+           class="w-80 rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
+    <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-1.5">Search</button>
+    {% if q or all_lit %}<a href="/refs" class="text-sm text-slate-500 underline">clear</a>{% endif %}
+    <span class="ml-auto text-xs text-slate-400">{{ total }} ref{{ '' if total == 1 else 's' }} shown</span>
+  </div>
+  <fieldset>
+    <legend class="text-xs uppercase tracking-wide text-slate-500 mb-1">Include kinds</legend>
+    <div class="flex flex-wrap gap-2">
+      {% for k in all_browsable %}
+      <label class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border
+                    {% if k in selected %}border-sky-300 bg-sky-50 text-sky-800
+                    {% else %}border-slate-200 bg-slate-50 text-slate-600{% endif %}">
+        <input type="checkbox" name="kinds" value="{{ k }}"
+               {% if k in selected %}checked{% endif %}
+               class="rounded border-slate-300" />
+        <span class="font-mono">{{ k }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <div class="mt-2 flex items-center gap-3 text-xs text-slate-500">
+      <label class="inline-flex items-center gap-1">
+        <input type="checkbox" name="all" value="1" {% if all_lit %}checked{% endif %} />
+        <span>all kinds (override checkboxes)</span>
+      </label>
+      <span class="text-slate-400">default checked: {{ default_kinds | join(', ') }}</span>
+    </div>
+  </fieldset>
+</form>
+
+{% if not by_kind %}
+<p class="text-sm text-slate-500">
+  No refs match{% if q %} <code>{{ q }}</code>{% endif %}.
+  {% if not q and selected %}Try broadening the kinds or check <strong>all kinds</strong>.{% endif %}
+</p>
+{% else %}
+<div class="space-y-4">
+  {% for kind, rows in by_kind.items() %}
+  <section class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+    <header class="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-200">
+      <h2 class="text-sm font-semibold text-slate-700">
+        <span class="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">{{ kind }}</span>
+        <span class="ml-1 text-slate-500">{{ rows | length }}</span>
+      </h2>
+      <a href="/refs/{{ kind }}{% if q %}?q={{ q | urlencode }}{% endif %}"
+         class="text-xs text-sky-700 hover:underline">open {{ kind }} list →</a>
+    </header>
+    <ul class="divide-y divide-slate-100">
+      {% for ref in rows %}
+      <li class="px-3 py-1.5 flex items-center gap-3 text-sm">
+        <span class="text-xs text-slate-400 w-12 shrink-0">#{{ ref.id }}</span>
+        <a href="{{ ref.url }}" class="flex-1 truncate hover:text-emerald-700">
+          {{ ref.title | linkify_refs }}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

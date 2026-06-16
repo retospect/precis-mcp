@@ -419,15 +419,57 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
 
 
 def test_refs_nav_tabs_present(client) -> None:
+    """After T12.6 the nav collapses memory/conv/gripe/pres into one Refs
+    tab. Oracle and Patents keep their own tabs (per-kind UX they need).
+    The consolidated Refs tab also links to the per-kind list pages from
+    inside the kind sections.
+    """
     resp = client.get("/refs/memory")
     for href in (
-        "/refs/conv",
-        "/refs/oracle",
-        "/refs/gripe",
-        "/refs/patent",
-        "/refs/pres",
+        "/refs",  # consolidated browser
+        "/refs/oracle",  # oracle keeps its own tab (roll the dice)
+        "/refs/patent",  # patents keep their own tab (OPS remote search)
     ):
         assert href in resp.text
+
+
+def test_refs_consolidated_default_renders(client) -> None:
+    """``GET /refs`` (no args) lights the 4 default kinds and renders."""
+    resp = client.get("/refs")
+    assert resp.status_code == 200
+    # Default-checked kinds shown as checkbox labels.
+    for kind in ("memory", "conv", "gripe", "pres"):
+        assert f'value="{kind}"' in resp.text
+    # The all=1 escape hatch is in the form.
+    assert 'name="all"' in resp.text
+
+
+def test_refs_consolidated_all_flag_lights_every_kind(client) -> None:
+    """``?all=1`` selects every browsable kind, regardless of ``kinds``."""
+    resp = client.get("/refs?all=1")
+    assert resp.status_code == 200
+    # Non-default kinds (perplexity-research, paper, etc.) should show
+    # up as checked.
+    assert 'value="paper"' in resp.text
+    assert 'value="patent"' in resp.text
+    assert 'value="perplexity-research"' in resp.text
+
+
+def test_refs_consolidated_kinds_param_narrows(client) -> None:
+    resp = client.get("/refs?kinds=memory")
+    assert resp.status_code == 200
+    # All checkboxes render either way; what changes is which are checked.
+    assert 'value="memory"' in resp.text
+
+
+def test_loupe_in_base_nav(client) -> None:
+    """The 🔍 loupe form posts to /refs?all=1 so cross-kind search lands
+    on the consolidated browser with everything lit."""
+    resp = client.get("/tasks")  # any page; loupe is in base
+    assert resp.status_code == 200
+    assert 'action="/refs"' in resp.text
+    # Hidden ``all=1`` field arms the cross-kind scope.
+    assert 'name="all" value="1"' in resp.text
 
 
 # ── task tags ──────────────────────────────────────────────────────
