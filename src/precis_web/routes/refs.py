@@ -446,6 +446,29 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     addr: str | int = ref.slug if ref.slug else ref.id
     body, is_error = await await_dispatch(request, "get", {"kind": kind, "id": addr})
 
+    # Disabled-but-cached fallback: when the handler is currently
+    # registered-but-disabled (math without WOLFRAM_APP_ID, web without
+    # outbound HTTP, etc.) but the ref already exists with cached body
+    # chunks, render the cached body directly rather than showing the
+    # operator a wall of "[error:Unsupported]". The cache is still
+    # valuable even when fresh fetches can't run — that's why we keep
+    # it. Tag the response so the template can show a quiet banner.
+    body_disabled_notice: str | None = None
+    if is_error and "disabled in this build" in (body or ""):
+        cached_chunks = list(store.list_blocks_for_ref(ref.id))
+        if cached_chunks:
+            cached_text = "\n\n".join(
+                (b.text or "").strip() for b in cached_chunks if b.text
+            )
+            if cached_text:
+                body = cached_text
+                is_error = False
+                body_disabled_notice = (
+                    f"kind {kind!r} is currently disabled in this build; "
+                    "showing the cached body. Fresh fetches will resume "
+                    "once the required env (e.g. WOLFRAM_APP_ID) is set."
+                )
+
     # Patent body text lives in body chunks; the handler's overview
     # only renders the bibliographic header + abstract excerpt. Pull
     # the chunks so the detail view can show the full text (description
@@ -493,6 +516,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             "is_error": is_error,
             "chunks": chunks,
             "tags": tags,
+            "body_disabled_notice": body_disabled_notice,
         },
     )
 

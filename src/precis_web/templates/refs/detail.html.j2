@@ -42,6 +42,11 @@
   </form>
 </div>
 
+{% if body_disabled_notice %}
+<div class="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+  {{ body_disabled_notice }}
+</div>
+{% endif %}
 {% if is_error %}
 <div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 whitespace-pre-wrap">{{ body | linkify_refs }}</div>
 {% else %}

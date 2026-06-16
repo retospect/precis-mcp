@@ -402,3 +402,97 @@ def test_watch_axis_allowed_on_web_kind(store: Store) -> None:
     assert parsed.namespace == "closed"
     assert parsed.prefix == "WATCH"
     assert parsed.value == "daily"
+
+
+# ---- _split_body_blocks: long fetches become multiple chunks ---------
+
+
+def _stub_handler() -> CacheBackedHandler:
+    """A handler instance we can call ``_split_body_blocks`` on directly.
+
+    No DB / store needed — the splitter is a pure function over its
+    arguments. We bypass __init__ so we don't need a Hub.
+    """
+    h = _FakeCacheKindAsMath.__new__(_FakeCacheKindAsMath)
+    return h  # type: ignore[return-value]
+
+
+def test_short_block_passes_through_unchanged() -> None:
+    """Blocks below the target size aren't touched — preserves the
+    "one short answer per cache row" shape for math / wolfram."""
+    h = _stub_handler()
+    blocks = [BlockInsert(pos=0, text="short answer.")]
+    out = h._split_body_blocks(blocks)
+    assert len(out) == 1
+    assert out[0].text == "short answer."
+    assert out[0].pos == 0
+
+
+def test_long_block_splits_into_multiple_chunks() -> None:
+    """A 4 KB transcript-shaped block splits into several ~800-char
+    chunks with sequential ``pos`` values."""
+    h = _stub_handler()
+    sentences = ["This is a real sentence with meaningful content. "] * 80
+    blocks = [BlockInsert(pos=0, text="".join(sentences))]
+    out = h._split_body_blocks(blocks)
+    assert len(out) > 1
+    # Positions are contiguous from 0.
+    assert [b.pos for b in out] == list(range(len(out)))
+    # Each chunk respects the target size (single-word overruns allowed).
+    assert all(len(b.text) <= h.chunk_target_chars + 200 for b in out)
+
+
+def test_split_preserves_block_metadata_via_replace() -> None:
+    """``slug`` / ``meta`` / ``density`` survive the split — only pos
+    and text change. Otherwise per-chunk_kind metadata would silently
+    drop on every cache write."""
+    h = _stub_handler()
+    long_text = " ".join(["sentence."] * 200)
+    blocks = [
+        BlockInsert(
+            pos=0,
+            text=long_text,
+            slug="custom-slug",
+            meta={"source": "yt", "lang": "en"},
+        )
+    ]
+    out = h._split_body_blocks(blocks)
+    assert len(out) > 1
+    for b in out:
+        assert b.slug == "custom-slug"
+        assert b.meta == {"source": "yt", "lang": "en"}
+
+
+def test_pre_embedded_block_is_NEVER_split() -> None:
+    """When the handler computed an embedding for the full block text
+    (perplexity / web do this via ``_blocks_from_report``), the splitter
+    must leave it alone — each piece would otherwise carry a vector
+    that doesn't match its text."""
+    h = _stub_handler()
+    long_text = " ".join(["sentence."] * 200)
+    blocks = [
+        BlockInsert(
+            pos=0,
+            text=long_text,
+            embedding=[0.1] * 768,
+        )
+    ]
+    out = h._split_body_blocks(blocks)
+    assert len(out) == 1, "pre-embedded blocks must not be split"
+    assert out[0].embedding == [0.1] * 768
+
+
+def test_chunk_target_chars_zero_disables_splitting() -> None:
+    """Subclass opt-out: setting ``chunk_target_chars = 0`` bypasses
+    the splitter entirely (kept as an escape hatch for kinds whose
+    natural unit is one cache row = one short answer)."""
+
+    class _NoSplit(_FakeCacheKindAsMath):
+        chunk_target_chars: ClassVar[int] = 0
+
+    h = _NoSplit.__new__(_NoSplit)
+    long_text = " ".join(["sentence."] * 200)
+    blocks = [BlockInsert(pos=0, text=long_text)]
+    out = h._split_body_blocks(blocks)
+    assert len(out) == 1
+    assert out[0].text == long_text

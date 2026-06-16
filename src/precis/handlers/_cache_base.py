@@ -135,6 +135,82 @@ class CacheBackedHandler(Handler):
         # the valid stateless / test-before-embedder-wired shape.
         self.embedder = hub.embedder
 
+    # ── body block chunking ────────────────────────────────────────────
+    #
+    # When ``_fetch`` returns a single block holding the whole body
+    # (the natural shape for transcript / search-results / web-page
+    # fetchers — they don't have native paragraph or section
+    # boundaries), the result lands as ONE huge chunk in the ``chunks``
+    # table. That defeats every downstream surface: chunk_keywords
+    # sees one row with hundreds of keywords, semantic search hits
+    # always return the same monster chunk, ``view='keywords'`` is
+    # noisy, in-doc citation handles (``slug~3``) collapse to
+    # ``slug~0`` for every reference. Split long body blocks at the
+    # base layer so handlers don't each need to remember to do it.
+    #
+    # ``_CHUNK_TARGET_CHARS = 0`` opts out (math / wolfram results
+    # are usually a single small answer — no value to splitting).
+
+    #: Target char count for split chunks. ``0`` disables splitting
+    #: for this handler. Subclasses can override per-kind. Default
+    #: matches ``text_chunker.DEFAULT_CHUNK_SIZE`` (800) — the same
+    #: target the paper / patent ingest path uses.
+    chunk_target_chars: ClassVar[int] = 800
+
+    def _split_body_blocks(
+        self, blocks: list[BlockInsert]
+    ) -> list[BlockInsert]:
+        """Split any oversized ``body_blocks`` into semantic chunks.
+
+        Blocks ≤ ``chunk_target_chars`` pass through unchanged. Larger
+        ones get fed through ``text_chunker.split_text`` (the same
+        recursive-separator splitter the paper ingest uses) and re-
+        emitted with sequential ``pos`` values across the whole result.
+
+        **Blocks that already carry an embedding are NEVER split** —
+        the handler computed that vector for the *whole* block text;
+        splitting would leave each piece pointing at an embedding for
+        text it doesn't fully contain. perplexity / web both embed
+        per-block via ``_blocks_from_report``, so their decisions
+        about block boundaries stay authoritative. Only the un-embedded
+        "one giant blob" shape (youtube transcripts, math results, raw
+        fetches that defer embedding to the worker) goes through the
+        splitter.
+
+        Subclasses can override ``chunk_target_chars = 0`` to opt out
+        entirely (e.g. small fixed-answer caches where splitting just
+        fragments a complete thought).
+        """
+        if self.chunk_target_chars <= 0 or not blocks:
+            return blocks
+        # Lazy import — keeps cold-start light when the handler never
+        # needs to split (math / random / small caches).
+        from dataclasses import replace
+
+        from precis.ingest.text_chunker import split_text
+
+        out: list[BlockInsert] = []
+        pos = 0
+        for block in blocks:
+            text = block.text or ""
+            # Skip splitting when the handler pre-embedded this block:
+            # the embedding is anchored to the full text, splitting
+            # would orphan it.
+            if (
+                block.embedding is not None
+                or len(text) <= self.chunk_target_chars
+            ):
+                out.append(replace(block, pos=pos))
+                pos += 1
+                continue
+            pieces = split_text(text, chunk_size=self.chunk_target_chars)
+            for piece in pieces:
+                # Carry every other BlockInsert field through verbatim
+                # (slug, meta, density) — only pos + text change.
+                out.append(replace(block, pos=pos, text=piece))
+                pos += 1
+        return out
+
     # ── public verb (default `get` implementation) ─────────────────────
 
     def get(  # type: ignore[override]
@@ -297,7 +373,7 @@ class CacheBackedHandler(Handler):
             kind=self.spec.kind,
             slug=self._slug_for(key),
             title=result.title,
-            body_blocks=result.body_blocks,
+            body_blocks=self._split_body_blocks(result.body_blocks),
             provider=self.provider,
             request_hash=request_hash,
             ttl_seconds=ttl_to_write,
@@ -340,7 +416,7 @@ class CacheBackedHandler(Handler):
         new_ref, cache = self.store.update_cache_entry(
             ref_id=ref.id,
             title=result.title,
-            body_blocks=result.body_blocks,
+            body_blocks=self._split_body_blocks(result.body_blocks),
             request_hash=request_hash if request_hash is not None else self._hash(key),
             ttl_seconds=ttl_to_write,
             model=result.model,
