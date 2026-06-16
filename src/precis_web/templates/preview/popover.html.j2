@@ -1,0 +1,23 @@
+{# Compact popover fragment for the inline kind:ref hover preview.
+   Loaded via htmx into a sibling span; see linkify.py for the wrapping
+   anchor + popover slot markup. #}
+<div class="space-y-1">
+  <div class="flex items-center gap-2 text-xs">
+    <span class="font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">{{ kind }}</span>
+    {% if not missing %}
+    <span class="text-slate-400">#{{ ref_id }}</span>
+    {% if deleted %}
+    <span class="text-rose-500">deleted</span>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% if missing %}
+  <p class="text-xs text-slate-500 italic">no such {{ label }}</p>
+  {% else %}
+  <p class="text-sm font-medium text-slate-800">{{ title }}</p>
+  {% if body_preview %}
+  <p class="text-xs text-slate-600 break-words">{{ body_preview }}</p>
+  {% endif %}
+  <p class="text-xs text-sky-700">click to open →</p>
+  {% endif %}
+</div>

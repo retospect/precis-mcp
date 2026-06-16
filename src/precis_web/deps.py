@@ -20,6 +20,7 @@ from precis_web.config import WebConfig
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+
 #: Process-wide Jinja environment.
 #:
 #: ``ChainableUndefined`` is the defensive choice: a missing context
@@ -31,13 +32,27 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 #: Routes still pass full context dicts; this only catches the
 #: stale-deploy / context-drift case so the page degrades to empty
 #: panels instead of a 500.
-templates = Jinja2Templates(
-    env=jinja2.Environment(
+def _make_jinja_env() -> jinja2.Environment:
+    """Compose the Jinja environment with shared filters.
+
+    Kept as a small factory so test fixtures can mint a fresh env
+    without re-registering filters by hand.
+    """
+    env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(str(_TEMPLATES_DIR)),
         autoescape=jinja2.select_autoescape(),
         undefined=jinja2.ChainableUndefined,
-    ),
-)
+    )
+    # Inline ``kind:ref`` → hover-preview anchor + click-through.
+    # Applied via ``{{ value | linkify_refs }}`` on prose surfaces
+    # (dashboard rows, ref detail pages, asks list, console output).
+    from precis_web.linkify import linkify_refs
+
+    env.filters["linkify_refs"] = linkify_refs
+    return env
+
+
+templates = Jinja2Templates(env=_make_jinja_env())
 
 
 def get_runtime(request: Request) -> Any:

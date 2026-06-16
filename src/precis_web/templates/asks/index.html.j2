@@ -21,14 +21,14 @@
     <div class="flex items-baseline gap-2">
       <span class="text-xs text-slate-400 w-12 shrink-0 font-mono">#{{ a.id }}</span>
       <a href="/tasks" class="text-sm font-medium text-slate-800 hover:text-emerald-700 break-words">
-        {{ first_line }}
+        {{ first_line | linkify_refs }}
       </a>
     </div>
     {% if a.questions %}
     <div class="mt-2 ml-14 space-y-2">
       {% for q in a.questions %}
       <div class="text-sm text-slate-700 bg-amber-50 border-l-4 border-amber-300 px-3 py-2 rounded whitespace-pre-line break-words">
-        {{ q }}
+        {{ q | linkify_refs }}
       </div>
       {% endfor %}
     </div>

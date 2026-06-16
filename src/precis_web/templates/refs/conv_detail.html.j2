@@ -32,7 +32,7 @@
         {% if t.ts %}{{ t.ts }} · {% endif %}<a href="#t{{ t.pos }}" class="hover:underline">~{{ t.pos }}</a>
       </span>
     </div>
-    <div class="text-sm leading-relaxed text-slate-700 whitespace-pre-wrap break-words">{{ t.text }}</div>
+    <div class="text-sm leading-relaxed text-slate-700 whitespace-pre-wrap break-words">{{ t.text | linkify_refs }}</div>
     {# Full per-turn meta. Stop reason, token counts, msg_id, and any
        other bridge-stamped fields surface here so the operator sees
        the complete record without leaving the page. #}

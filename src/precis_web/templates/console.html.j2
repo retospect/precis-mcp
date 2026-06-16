@@ -26,7 +26,7 @@
   <h2 class="text-sm font-semibold mb-2 {% if is_error %}text-rose-700{% else %}text-slate-700{% endif %}">
     {% if is_error %}error{% else %}result{% endif %}
   </h2>
-  <pre class="rounded-lg border {% if is_error %}border-rose-200 bg-rose-50 text-rose-800{% else %}border-slate-200 bg-white text-slate-700{% endif %} p-3 text-xs whitespace-pre-wrap overflow-x-auto">{{ result }}</pre>
+  <pre class="rounded-lg border {% if is_error %}border-rose-200 bg-rose-50 text-rose-800{% else %}border-slate-200 bg-white text-slate-700{% endif %} p-3 text-xs whitespace-pre-wrap overflow-x-auto">{{ result | linkify_refs }}</pre>
 </div>
 {% endif %}
 {% endblock %}

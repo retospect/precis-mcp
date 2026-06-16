@@ -66,6 +66,7 @@ def create_app(
         console,
         papers,
         papers_needed,
+        preview,
         refs,
         status,
         tags,
@@ -78,6 +79,7 @@ def create_app(
     app.include_router(papers_needed.router)
     app.include_router(refs.router)
     app.include_router(tags.router)
+    app.include_router(preview.router)
     app.include_router(console.router)
     app.include_router(status.router)
 
