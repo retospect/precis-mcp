@@ -6,16 +6,28 @@
   {% for r in require_tags %}<input type="hidden" name="require" value="{{ r }}"/>{% endfor %}
   {% for x in exclude_tags %}<input type="hidden" name="exclude" value="{{ x }}"/>{% endfor %}
   {% if focus_id %}<input type="hidden" name="focus" value="{{ focus_id }}"/>{% endif %}
+  {% if show_jobs and show_jobs != 'active' %}<input type="hidden" name="show_jobs" value="{{ show_jobs }}"/>{% endif %}
 {% endmacro %}
-{# Build the focus-preserving suffix for GET links so a row's drill-up
-   / drill-down link doesn't lose the active tag filter. #}
-{% macro focus_qs(new_focus) %}
+{# Build a query string preserving the current state with the given
+   overrides. ``require_add`` adds a pseudo-tag to require (so a
+   status / level / kind badge becomes a one-click filter).
+   ``show_jobs_override`` swaps the show_jobs param (used by the
+   toggle); leave None to inherit the current state. #}
+{% macro state_qs(new_focus, require_add=None, exclude_add=None, show_jobs_override=None, tree_override=-1) %}
   {%- set parts = [] -%}
   {%- for r in require_tags -%}{%- set _ = parts.append('require=' ~ r|urlencode) -%}{%- endfor -%}
+  {%- if require_add and require_add not in require_tags -%}{%- set _ = parts.append('require=' ~ require_add|urlencode) -%}{%- endif -%}
   {%- for x in exclude_tags -%}{%- set _ = parts.append('exclude=' ~ x|urlencode) -%}{%- endfor -%}
+  {%- if exclude_add and exclude_add not in exclude_tags -%}{%- set _ = parts.append('exclude=' ~ exclude_add|urlencode) -%}{%- endif -%}
   {%- if new_focus -%}{%- set _ = parts.append('focus=' ~ new_focus) -%}{%- endif -%}
+  {%- set sj = show_jobs_override if show_jobs_override is not none else show_jobs -%}
+  {%- if sj and sj != 'active' -%}{%- set _ = parts.append('show_jobs=' ~ sj) -%}{%- endif -%}
+  {%- set td = tree_override if tree_override != -1 else tree_depth -%}
+  {%- if td -%}{%- set _ = parts.append('tree=' ~ td) -%}{%- endif -%}
   {%- if parts -%}?{{ parts|join('&') }}{%- endif -%}
 {% endmacro %}
+{# Compat alias for existing callsites that just want to swap focus. #}
+{% macro focus_qs(new_focus) %}{{ state_qs(new_focus) }}{% endmacro %}
 {% block content %}
 {# Tag filter bar. ``require`` and ``exclude`` are repeating GET
    params; AND semantics within each list; matching todos pull in
@@ -37,12 +49,39 @@
     <span class="text-xs text-slate-400 mt-0.5">matches STATUS:*, level:*, or free tags</span>
   </div>
   <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-1.5">Apply</button>
+  {# Hidden so the operator's tag input doesn't drop the focus / show_jobs
+     state when they apply the form. #}
+  {% if focus_id %}<input type="hidden" name="focus" value="{{ focus_id }}"/>{% endif %}
+  {% if show_jobs and show_jobs != 'active' %}<input type="hidden" name="show_jobs" value="{{ show_jobs }}"/>{% endif %}
   {% if filter_active %}
-  <a href="/tasks" class="text-sm text-slate-500 underline pb-1.5">clear</a>
-  <span class="ml-auto text-xs text-slate-500">
-    showing {{ filtered_rows }} of {{ total_rows }} rows
-  </span>
+  {%- set clear_parts = [] -%}
+  {%- if focus_id -%}{%- set _ = clear_parts.append('focus=' ~ focus_id) -%}{%- endif -%}
+  {%- if show_jobs and show_jobs != 'active' -%}{%- set _ = clear_parts.append('show_jobs=' ~ show_jobs) -%}{%- endif -%}
+  <a href="/tasks{% if clear_parts %}?{{ clear_parts|join('&') }}{% endif %}"
+     class="text-sm text-slate-500 underline pb-1.5">clear filter</a>
   {% endif %}
+  <div class="flex items-center gap-2 ml-auto">
+    {# show_jobs toggle: hides terminal-state job rows by default so
+       a flurry of failed plan_tick / fix_gripe attempts doesn't bury
+       the live work. #}
+    {% if show_jobs == 'active' %}
+    <a href="/tasks{{ state_qs(focus_id, show_jobs_override='all') }}"
+       class="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
+       title="show kind='job' rows in failed / succeeded / done / won't-do states">
+      + show closed jobs
+    </a>
+    {% else %}
+    <a href="/tasks{{ state_qs(focus_id, show_jobs_override='active') }}"
+       class="text-xs px-2 py-1 rounded bg-amber-100 border border-amber-300 text-amber-800 hover:bg-amber-200">
+      − hide closed jobs
+    </a>
+    {% endif %}
+    {% if filter_active %}
+    <span class="text-xs text-slate-500">
+      showing {{ filtered_rows }} of {{ total_rows }} rows
+    </span>
+    {% endif %}
+  </div>
 </form>
 <script>
   // Repeating ``require=`` / ``exclude=`` params is how the route
@@ -87,6 +126,45 @@
       <span class="text-slate-800 font-medium">#{{ focus_row.id }} {{ (focus_row.title or '').split('\n', 1)[0] }}</span>
       {% endif %}
     </nav>
+    {% endif %}
+    {# When focused: prominent add-child form + mermaid tree toggle so
+       the two most common actions on a drilled-in node are one click,
+       not two (the ⋯ panel below still works the same). #}
+    {% if focus_id and focus_row %}
+    <section class="mb-3 rounded-lg border border-slate-200 bg-white p-3">
+      <form method="post" action="/tasks/{{ focus_id }}/children" class="flex items-start gap-2">
+        {{ filter_inputs() }}
+        <textarea name="text" required rows="2" placeholder="Add a child under #{{ focus_id }}…"
+                  class="flex-1 rounded border-slate-300 text-sm border px-2 py-1"></textarea>
+        <select name="level" class="rounded border-slate-300 text-sm border px-1 py-1">
+          <option value="subtask">subtask</option>
+          <option value="tactical">tactical</option>
+          <option value="strategic">strategic</option>
+        </select>
+        <button class="rounded bg-emerald-600 text-white text-sm px-3 py-1">+ child</button>
+      </form>
+      <div class="mt-2 flex items-center gap-1 text-xs">
+        <span class="text-slate-400">Tree diagram:</span>
+        {% for d in tree_depths %}
+        <a href="/tasks{{ state_qs(focus_id, tree_override=d) }}"
+           class="px-2 py-0.5 rounded {% if d == tree_depth %}bg-emerald-100 text-emerald-700 font-medium{% else %}border border-slate-300 text-slate-600 hover:bg-slate-100{% endif %}">
+          {{ d }} deep
+        </a>
+        {% endfor %}
+        {% if tree_depth %}
+        <a href="/tasks{{ state_qs(focus_id, tree_override=0) }}" class="ml-2 text-slate-500 hover:text-slate-700 underline">hide</a>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
+    {% if tree_diagram %}
+    <section class="mb-4 rounded-lg border border-slate-200 bg-white p-3 overflow-x-auto">
+      <pre class="mermaid">{{ tree_diagram }}</pre>
+    </section>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, securityLevel: "strict", theme: "default" });
+    </script>
     {% endif %}
     <div class="flex items-center justify-between mb-3">
       <h1 class="text-lg font-semibold">
@@ -136,11 +214,23 @@
         <div class="flex items-center gap-2" style="padding-left: {{ r.depth * 1.25 }}rem">
           {% if r.kind == 'todo' %}<span class="cursor-grab text-slate-300 select-none" title="drag to reparent">⠿</span>{% endif %}
           <span class="text-xs text-slate-400 w-10 shrink-0">#{{ r.id }}</span>
-          {% if r.kind == 'job' %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-600">job</span>{% endif %}
+          {# Badges are clickable filter chips: click → add the
+             corresponding pseudo-tag to ``require`` (composes with
+             the current filter, focus, and show_jobs state). #}
+          {% if r.kind == 'job' %}
+          <a href="/tasks{{ state_qs(focus_id, require_add='kind:job') }}"
+             class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 hover:bg-slate-300"
+             title="filter to kind:job">job</a>
+          {% endif %}
           {% set sc = {'done':'bg-emerald-100 text-emerald-700','doing':'bg-amber-100 text-amber-700','blocked':'bg-rose-100 text-rose-700','paused':'bg-slate-200 text-slate-600',"won't-do":'bg-slate-200 text-slate-500'} %}
-          <span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.status, 'bg-sky-100 text-sky-700') }}{% if r.note %} cursor-help{% endif %}"
-                {% if r.note %}title="{{ r.note }}"{% endif %}>{{ r.status }}{% if r.note %} ⓘ{% endif %}</span>
-          {% if r.level %}<span class="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">{{ r.level }}</span>{% endif %}
+          <a href="/tasks{{ state_qs(focus_id, require_add='STATUS:' ~ r.status) }}"
+             class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.status, 'bg-sky-100 text-sky-700') }} hover:opacity-80{% if r.note %} cursor-help{% endif %}"
+             {% if r.note %}title="{{ r.note }} (click to filter to STATUS:{{ r.status }})"{% else %}title="filter to STATUS:{{ r.status }}"{% endif %}>{{ r.status }}{% if r.note %} ⓘ{% endif %}</a>
+          {% if r.level %}
+          <a href="/tasks{{ state_qs(focus_id, require_add='level:' ~ r.level) }}"
+             class="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 hover:bg-violet-200"
+             title="filter to level:{{ r.level }}">{{ r.level }}</a>
+          {% endif %}
           {# Processing signals: live row lock and worker lease. #}
           {% if r.locked %}<span class="text-xs px-1.5 py-0.5 rounded bg-rose-600 text-white" title="row-locked right now (a worker holds it)">🔒 locked</span>{% endif %}
           {% if r.lease_active %}<span class="text-xs px-1.5 py-0.5 rounded bg-amber-500 text-white" title="leased until {{ r.lease_until }}">⏱ running</span>{% elif r.lease_until %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500" title="lease expired {{ r.lease_until }}">lease expired</span>{% endif %}
@@ -159,11 +249,16 @@
           </span>
           {% endif %}
           {% if r.kind == 'todo' %}
-          {# Drill-down link — focus this node's subtree. #}
+          {# Per-row navigation: 🔍 focus (drill into subtree),
+             📊 tree (focus + mermaid 3 deep). 📊 collapses both into
+             one click for the visual-tree path. #}
           {% if r.id != focus_id %}
-          <a href="/tasks{{ focus_qs(r.id) }}"
+          <a href="/tasks{{ state_qs(r.id) }}"
              class="ml-auto text-xs text-slate-400 hover:text-emerald-700"
              title="focus this subtree">🔍</a>
+          <a href="/tasks{{ state_qs(r.id, tree_override=3) }}"
+             class="text-xs text-slate-400 hover:text-emerald-700"
+             title="focus + show tree diagram (3 deep)">📊</a>
           {% else %}
           <span class="ml-auto"></span>
           {% endif %}
@@ -268,12 +363,13 @@
   // a real form (full reload) to stay consistent with the no-SPA UI.
   let draggingId = null;
 
-  // The current ``require=`` / ``exclude=`` / ``focus=`` state,
-  // threaded through the synthetic DnD form so a drag-reparent lands
-  // back on the same filtered + focused view instead of resetting.
+  // The current filter / focus / show_jobs state, threaded through
+  // the synthetic DnD form so a drag-reparent lands back on the same
+  // view instead of resetting.
   const REQUIRE = {{ require_tags|tojson }};
   const EXCLUDE = {{ exclude_tags|tojson }};
   const FOCUS = {{ focus_id|tojson }};
+  const SHOW_JOBS = {{ show_jobs|tojson }};
 
   function moveTask(childId, newParentId) {
     if (childId == null) return;
@@ -299,6 +395,11 @@
     if (FOCUS != null) {
       const h = document.createElement('input');
       h.type = 'hidden'; h.name = 'focus'; h.value = String(FOCUS);
+      f.appendChild(h);
+    }
+    if (SHOW_JOBS && SHOW_JOBS !== 'active') {
+      const h = document.createElement('input');
+      h.type = 'hidden'; h.name = 'show_jobs'; h.value = String(SHOW_JOBS);
       f.appendChild(h);
     }
     document.body.appendChild(f);

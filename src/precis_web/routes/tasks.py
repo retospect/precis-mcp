@@ -129,6 +129,8 @@ def _tasks_url(
     require: list[str],
     exclude: list[str],
     focus: int | None = None,
+    show_jobs: str | None = None,
+    tree: int | None = None,
 ) -> str:
     """Build the ``/tasks`` URL with the current filter + focus applied.
 
@@ -136,15 +138,99 @@ def _tasks_url(
     filter with multiple tags round-trips through the form / redirect
     cycle without re-joining. ``focus`` rides along as a scalar
     ``focus=<id>`` so a write inside a drilled-down subtree lands back
-    on the same subtree.
+    on the same subtree. ``show_jobs='all'`` opts the closed-job
+    auto-hide off; default behaviour omits the param.
     """
     params: list[tuple[str, str]] = [("require", r) for r in require] + [
         ("exclude", x) for x in exclude
     ]
     if focus is not None:
         params.append(("focus", str(focus)))
+    if show_jobs:
+        params.append(("show_jobs", show_jobs))
+    if tree:
+        params.append(("tree", str(tree)))
     qs = urlencode(params)
     return f"/tasks?{qs}" if qs else "/tasks"
+
+
+#: Allowed depths for the mermaid tree view. The values come from a
+#: closed list so the URL param can't request a 100-deep render that
+#: takes a second to draw client-side.
+_TREE_DEPTHS: tuple[int, ...] = (1, 2, 3, 5, 10)
+
+
+def _build_mermaid_tree(
+    rows: list[dict[str, Any]],
+    root_id: int,
+    max_depth: int,
+) -> str:
+    """Return Mermaid ``graph TD`` source for the subtree of ``root_id``.
+
+    Visited todos render as boxed nodes labelled ``#<id> <title>`` and
+    coloured by the same active / waiting / done classification the
+    rollup chips use. ``max_depth`` caps the walk so a 200-node
+    strategic tree doesn't make the browser draw a wall. Jobs are
+    excluded — they're attempts, not structure.
+    """
+    if max_depth < 1:
+        return ""
+    by_id: dict[int, dict[str, Any]] = {
+        r["id"]: r for r in rows if r["kind"] == "todo"
+    }
+    if root_id not in by_id:
+        return ""
+    children_of: dict[int | None, list[int]] = {}
+    for r in by_id.values():
+        children_of.setdefault(r["parent_id"], []).append(r["id"])
+
+    nodes: list[int] = []
+    edges: list[tuple[int, int]] = []
+    truncated: set[int] = set()
+
+    def walk(nid: int, depth: int) -> None:
+        nodes.append(nid)
+        kids = sorted(children_of.get(nid, []))
+        if depth >= max_depth:
+            if kids:
+                truncated.add(nid)
+            return
+        for cid in kids:
+            if cid in by_id:
+                edges.append((nid, cid))
+                walk(cid, depth + 1)
+
+    walk(root_id, 0)
+
+    def _label(n: dict[str, Any]) -> str:
+        title = (n["title"] or "").split("\n", 1)[0]
+        if len(title) > 50:
+            title = title[:50].rstrip() + "…"
+        # Mermaid breaks on quotes / brackets in labels — strip them.
+        return (
+            f"#{n['id']} {title}"
+            .replace('"', "'")
+            .replace("[", "(")
+            .replace("]", ")")
+        )
+
+    lines: list[str] = ["graph TD"]
+    for nid in nodes:
+        n = by_id[nid]
+        cls = _classify_row(n["status"], n.get("tags", []))
+        suffix = " …" if nid in truncated else ""
+        lines.append(f'  N{nid}["{_label(n)}{suffix}"]:::{cls}')
+    for src, dst in edges:
+        lines.append(f"  N{src} --> N{dst}")
+    # Highlight the focused root so the eye finds it immediately.
+    lines.append(f"  class N{root_id} root")
+    lines.append("  classDef active fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e")
+    lines.append("  classDef waiting fill:#fef3c7,stroke:#b45309,color:#78350f")
+    lines.append(
+        "  classDef done fill:#d1fae5,stroke:#047857,color:#064e3b,stroke-dasharray:3 3"
+    )
+    lines.append("  classDef root stroke-width:3px,font-weight:bold")
+    return "\n".join(lines)
 
 
 def _focus_rows(
@@ -203,6 +289,62 @@ def _focus_rows(
     return focused, breadcrumb
 
 
+#: Pseudo-tag namespaces synthesised from a row's structured columns so
+#: the filter form can treat them like free tags. Centralised here so
+#: the clickable-badge URLs in the template and the matching logic
+#: stay in sync.
+_PSEUDO_TAG_COLUMNS: tuple[str, ...] = ("kind", "status", "level")
+
+
+def _row_filterable_tags(row: dict[str, Any]) -> set[str]:
+    """Tags + pseudo-tags ``_filter_rows`` matches against.
+
+    Each pseudo-tag is ``<column>:<value>`` so the input form can offer
+    them in the same syntax as a free tag. Empty / missing values are
+    skipped (a level-less todo won't expose ``level:``).
+    """
+    out: set[str] = set(row.get("tags", []))
+    for col in _PSEUDO_TAG_COLUMNS:
+        v = row.get(col)
+        if v:
+            out.add(f"{col}:{v}")
+    # STATUS:<v> is also recognised in upper-case form because that's
+    # how the closed tag literally lives in the DB (``STATUS:done``).
+    if row.get("status"):
+        out.add(f"STATUS:{row['status']}")
+    return out
+
+
+#: Job STATUS values considered "closed attempts" — failed, succeeded,
+#: done, won't-do. By default the dashboard hides job rows in these
+#: states so a flurry of retries doesn't drown the tree; the operator
+#: opts in with ``show_jobs=all``.
+_CLOSED_JOB_STATUSES: frozenset[str] = frozenset(
+    {"failed", "succeeded", "done", "won't-do"}
+)
+
+
+def _hide_inactive_jobs(
+    rows: list[dict[str, Any]], *, show_all: bool
+) -> list[dict[str, Any]]:
+    """Drop job rows in a terminal state unless the operator opts in.
+
+    Plan_tick / fix_gripe / etc. retries pile up under their parent
+    todo as kind='job' children with ``STATUS:failed`` (and an
+    expired lease). Once a job is over, it's a history entry — visible
+    via the per-todo History panel — not progress state. Hiding closed
+    jobs keeps the tree about *what's in flight* rather than a wall
+    of post-mortems. ``show_all=True`` puts them back.
+    """
+    if show_all:
+        return rows
+    return [
+        r
+        for r in rows
+        if r["kind"] != "job" or r["status"] not in _CLOSED_JOB_STATUSES
+    ]
+
+
 def _filter_rows(
     rows: list[dict[str, Any]],
     *,
@@ -213,9 +355,10 @@ def _filter_rows(
 
     Match semantics (AND on both lists): a todo matches when **every**
     ``require`` tag is on it and **no** ``exclude`` tag is. The match
-    set is checked against the union of the todo's free tags + its
-    closed ``STATUS:<v>`` + ``level:<v>``, so the operator can filter
-    by status / level the same way they filter by free tags.
+    set is the union of the todo's free tags + its structured
+    columns rendered as pseudo-tags (``status:<v>`` /
+    ``STATUS:<v>`` / ``level:<v>`` / ``kind:<v>``), so the operator
+    can filter by any visible badge using the same syntax as a tag.
 
     Tree context is preserved — every matched todo also pulls its
     ancestor chain into the kept set so a deep match doesn't render as
@@ -230,11 +373,7 @@ def _filter_rows(
     for r in rows:
         if r["kind"] != "todo":
             continue
-        row_tags = set(r["tags"])
-        if r["status"]:
-            row_tags.add(f"STATUS:{r['status']}")
-        if r["level"]:
-            row_tags.add(f"level:{r['level']}")
+        row_tags = _row_filterable_tags(r)
         if req_set and not req_set.issubset(row_tags):
             continue
         if exc_set & row_tags:
@@ -561,22 +700,29 @@ async def dashboard(
     require: list[str] = Query(default=[]),
     exclude: list[str] = Query(default=[]),
     focus: int | None = Query(default=None),
+    show_jobs: str = Query(default="active"),
+    tree: int | None = Query(default=None),
 ) -> HTMLResponse:
     """Strategic tree + doable queue.
 
-    Three orthogonal narrowing controls:
+    Four orthogonal narrowing controls:
 
     * ``focus=<id>`` — drill down to one node's subtree (with an
       ancestor breadcrumb back to the root).
     * ``require`` / ``exclude`` repeating params — tag filter, AND
       within each list, evaluated *after* focus.
-    * Both compose: focusing first restricts the search universe,
-      then the tag filter narrows what's surfaced inside it.
+    * ``show_jobs=active|all`` — default ``active`` hides job rows
+      in a terminal state (failed / succeeded / done / won't-do).
+      ``all`` shows every attempt — the same set the per-todo History
+      panel already exposes.
+    * They compose: focus narrows the universe, the job hide trims
+      attempt detritus, and the tag filter narrows what's left.
     """
     store = get_store(request)
     rows = _build_rows(store)
     require = [r for r in require if r]
     exclude = [x for x in exclude if x]
+    rows = _hide_inactive_jobs(rows, show_all=(show_jobs == "all"))
     focused_rows, breadcrumb = _focus_rows(rows, focus)
     filtered = _filter_rows(focused_rows, require=require, exclude=exclude)
     doable_body, _ = dispatch(
@@ -591,6 +737,24 @@ async def dashboard(
             if r["id"] == focus:
                 focus_row = r
                 break
+
+    # Mermaid tree: built only when the operator explicitly opted in
+    # (``?tree=N``) and we have a focus. Validate against the closed
+    # depth list so a hand-crafted URL can't request a 100-deep render.
+    tree_depth: int | None = None
+    tree_diagram: str = ""
+    if tree and focus is not None:
+        if tree in _TREE_DEPTHS:
+            tree_depth = tree
+        else:
+            # Snap to the nearest allowed depth so a stale link
+            # (``?tree=4`` after we tightened the list) still renders.
+            tree_depth = min(
+                _TREE_DEPTHS, key=lambda d: abs(d - tree)
+            )
+        tree_diagram = _build_mermaid_tree(
+            focused_rows, focus, tree_depth
+        )
     return templates.TemplateResponse(
         request,
         "tasks/dashboard.html.j2",
@@ -605,6 +769,10 @@ async def dashboard(
             "focus_id": focus,
             "focus_row": focus_row,
             "breadcrumb": breadcrumb,
+            "show_jobs": show_jobs,
+            "tree_depth": tree_depth,
+            "tree_diagram": tree_diagram,
+            "tree_depths": _TREE_DEPTHS,
             "doable_body": doable_body,
             "status_choices": STATUS_CHOICES,
         },
@@ -619,6 +787,7 @@ async def create_root(
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
     focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
 ) -> Response:
     """Create a top-level (strategic) root."""
     tags = [f"level:{level}"] if level else None
@@ -626,7 +795,7 @@ async def create_root(
         request,
         "put",
         {"kind": "todo", "text": text, "tags": tags},
-        redirect=_tasks_url(require, exclude, focus),
+        redirect=_tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None),
     )
 
 
@@ -639,6 +808,7 @@ async def create_child(
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
     focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
 ) -> Response:
     """Create a child under ``parent_id``."""
     tags = [f"level:{level}"] if level else None
@@ -646,7 +816,7 @@ async def create_child(
         request,
         "put",
         {"kind": "todo", "text": text, "parent_id": parent_id, "tags": tags},
-        redirect=_tasks_url(require, exclude, focus),
+        redirect=_tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None),
     )
 
 
@@ -658,13 +828,14 @@ async def set_status(
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
     focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
 ) -> Response:
     """Set a todo's STATUS via the tag verb (closed-prefix replace)."""
     return _redirect_or_error(
         request,
         "tag",
         {"kind": "todo", "id": ref_id, "add": [f"STATUS:{status}"]},
-        redirect=_tasks_url(require, exclude, focus),
+        redirect=_tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None),
     )
 
 
@@ -676,6 +847,7 @@ async def move_task(
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
     focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
 ) -> Response:
     """Reparent a todo via the reserved ``link(rel='parent')`` surface.
 
@@ -684,7 +856,7 @@ async def move_task(
     (``mode='add'``). All tree guards (cycle / depth / owner) fire in
     the handler — a rejected move returns the handler's BadInput.
     """
-    redirect = _tasks_url(require, exclude, focus)
+    redirect = _tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None)
     npid = new_parent_id.strip()
     if npid:
         return _redirect_or_error(
@@ -715,6 +887,7 @@ async def edit_text(
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
     focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
 ) -> Response:
     """Rewrite a todo's text in place via the ``edit`` verb.
 
@@ -723,7 +896,7 @@ async def edit_text(
     whitespace ``text`` is a no-op. Owner-only on strategic / tactical
     nodes — the web process runs as owner, so the guard passes here.
     """
-    redirect = _tasks_url(require, exclude, focus)
+    redirect = _tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None)
     if not text.strip():
         return RedirectResponse(url=redirect, status_code=303)
     return _redirect_or_error(
@@ -743,6 +916,7 @@ async def edit_tags(
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
     focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
 ) -> Response:
     """Add and/or remove free tags on a todo via the ``tag`` verb.
 
@@ -760,7 +934,7 @@ async def edit_tags(
         args["add"] = add_list
     if remove_list:
         args["remove"] = remove_list
-    redirect = _tasks_url(require, exclude, focus)
+    redirect = _tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None)
     if not add_list and not remove_list:
         return RedirectResponse(url=redirect, status_code=303)
     return _redirect_or_error(request, "tag", args, redirect=redirect)
@@ -821,7 +995,13 @@ async def delete_task(
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
     focus: int | None = Form(default=None),
+    show_jobs: str = Form(default="active"),
 ) -> RedirectResponse:
     """Soft-delete a todo (children re-parent to NULL via FK)."""
     dispatch(request, "delete", {"kind": "todo", "id": ref_id})
-    return RedirectResponse(url=_tasks_url(require, exclude, focus), status_code=303)
+    return RedirectResponse(
+        url=_tasks_url(
+            require, exclude, focus, show_jobs if show_jobs != "active" else None
+        ),
+        status_code=303,
+    )
