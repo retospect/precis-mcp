@@ -162,8 +162,16 @@ class TestIngestFirstCall:
         assert "country:ep" in tags
         assert "kind:b1" in tags
         assert "family:012345678" in tags
-        assert "cpc:b01j27/24" in tags
-        assert "applicant:siemens-ag" in tags
+        # Auto-tags removed 2026-06-16 (T10.4): applicant/cpc/ipc
+        # cluttered the cluster's global tag table (one row per Chinese
+        # university, one per IPC subclass). The data is in
+        # ``meta.applicants`` / ``meta.cpc_classes`` / ``meta.ipc_classes``
+        # already; CQL lift consumes the slug directly without a meta
+        # lookup. Country / kind / family stay — short, distinct, and
+        # useful as plain tag filters.
+        assert not any(t.startswith("applicant:") for t in tags)
+        assert not any(t.startswith("cpc:") for t in tags)
+        assert not any(t.startswith("ipc:") for t in tags)
 
 
 # ---------------------------------------------------------------------------

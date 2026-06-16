@@ -1,0 +1,48 @@
+{% extends "base.html.j2" %}
+{% block title %}Refs with {{ label }}{% endblock %}
+{% block content %}
+<nav class="text-xs text-slate-500 mb-2">
+  <a href="/tags" class="hover:underline">Tags</a>
+  <span class="mx-1">/</span>
+  <span class="text-slate-700">refs carrying <code>{{ label }}</code></span>
+</nav>
+
+<div class="flex items-center justify-between mb-3">
+  <h1 class="text-lg font-semibold">
+    {{ total }} ref{{ '' if total == 1 else 's' }} tagged
+    <code class="text-sm bg-slate-100 px-1.5 py-0.5 rounded">{{ label }}</code>
+  </h1>
+  <a href="/tags" class="text-sm text-slate-500 hover:underline">← all tags</a>
+</div>
+
+{% if not by_kind %}
+<p class="text-sm text-slate-500">No refs carry this tag.</p>
+{% else %}
+<div class="space-y-4">
+  {% for kind, refs in by_kind.items() %}
+  <section class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+    <header class="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-200">
+      <h2 class="text-sm font-semibold text-slate-700">
+        <span class="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">{{ kind }}</span>
+        <span class="ml-1 text-slate-500">{{ refs | length }} ref{{ '' if refs | length == 1 else 's' }}</span>
+      </h2>
+    </header>
+    <ul class="divide-y divide-slate-100">
+      {% for ref in refs %}
+      <li class="px-3 py-1.5 flex items-center gap-3 text-sm">
+        <span class="text-xs text-slate-400 w-12 shrink-0">#{{ ref.id }}</span>
+        <a href="{{ ref.url }}"
+           class="flex-1 truncate hover:text-emerald-700 {% if ref.deleted %}text-slate-400 line-through{% endif %}">
+          {{ ref.title }}
+        </a>
+        {% if ref.deleted %}
+        <span class="text-xs text-rose-500" title="soft-deleted">deleted</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

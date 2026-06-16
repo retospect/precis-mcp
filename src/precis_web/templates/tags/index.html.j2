@@ -13,8 +13,11 @@
 
 <p class="text-sm text-slate-500 mb-3">
   All tags in the cluster, ordered by how many refs carry them.
-  Top {{ rows | length }} shown. Click a row to filter the Tasks
-  dashboard to refs that have this tag.
+  Top {{ rows | length }} shown. Click <strong>view refs</strong> on a
+  row to see every ref carrying that tag (across every kind);
+  <strong>delete</strong> wipes the tag from the entire cluster
+  (closed-vocab tags like <code>STATUS:*</code>, <code>LLM:*</code>
+  are off-limits).
 </p>
 
 {% if not rows %}
@@ -29,7 +32,7 @@
         <th class="text-left px-3 py-2 w-44">Namespace</th>
         <th class="text-left px-3 py-2">Value</th>
         <th class="text-right px-3 py-2 w-20">Refs</th>
-        <th class="text-left px-3 py-2 w-32">Pivot</th>
+        <th class="text-left px-3 py-2 w-40">Actions</th>
       </tr>
     </thead>
     <tbody class="divide-y divide-slate-100">
@@ -39,12 +42,27 @@
           <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">{{ r.namespace }}</span>
         </td>
         <td class="px-3 py-1.5">
-          <code class="text-xs text-slate-700">{{ r.value }}</code>
+          <code class="text-xs text-slate-700 break-all">{{ r.value }}</code>
         </td>
         <td class="px-3 py-1.5 text-right tabular-nums text-slate-600">{{ r.count }}</td>
         <td class="px-3 py-1.5 text-xs">
-          <a href="/tasks?require={{ r.label | urlencode }}"
-             class="text-sky-700 hover:underline">filter Tasks →</a>
+          <div class="flex items-center gap-3">
+            <a href="/tags/refs?namespace={{ r.namespace | urlencode }}&value={{ r.value | urlencode }}"
+               class="text-sky-700 hover:underline">view {{ r.count }} refs →</a>
+            {% if r.deletable %}
+            <form method="post" action="/tags/delete"
+                  class="inline"
+                  onsubmit="return confirm('Delete tag {{ r.label }} from ALL {{ r.count }} refs that carry it? This cannot be undone.');">
+              <input type="hidden" name="namespace" value="{{ r.namespace }}" />
+              <input type="hidden" name="value" value="{{ r.value }}" />
+              <input type="hidden" name="q" value="{{ q }}" />
+              <button class="text-rose-600 hover:text-rose-800"
+                      title="delete this tag from every ref">× delete</button>
+            </form>
+            {% else %}
+            <span class="text-slate-300" title="closed-vocab tag — use the tag(remove=…) verb per ref">(protected)</span>
+            {% endif %}
+          </div>
         </td>
       </tr>
       {% endfor %}

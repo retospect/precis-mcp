@@ -112,7 +112,12 @@ class TestTagLift:
 
 
 class TestApplicantLift:
-    def test_canonical_lookup_via_store(self) -> None:
+    def test_title_case_unslug_always(self) -> None:
+        """The applicant lift now title-cases the slug regardless of
+        store state — the meta-lookup path was retired when patent
+        ingest stopped auto-tagging applicant:* (see commit body for
+        T10.4). OPS phrase matching is case-forgiving so the lossy
+        capitalisation still finds the right records."""
         store = _FakeStore(
             {
                 "applicant:siemens-ag": {
@@ -121,13 +126,6 @@ class TestApplicantLift:
             }
         )
         cql = build_cql(q=None, tags=["applicant:siemens-ag"], store=store)
-        assert cql == 'pa="Siemens AG"'
-
-    def test_canonical_lookup_falls_back_when_meta_missing(self) -> None:
-        # Store has the tag but no matching applicant in meta.
-        store = _FakeStore({"applicant:siemens-ag": {"applicants": []}})
-        cql = build_cql(q=None, tags=["applicant:siemens-ag"], store=store)
-        # Falls back to title-case unslug.
         assert cql == 'pa="Siemens Ag"'
 
     def test_cold_start_no_store(self) -> None:

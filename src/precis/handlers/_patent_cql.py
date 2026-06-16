@@ -174,31 +174,25 @@ def _classification_canonical(slug: str) -> str:
 def _resolve_applicant(slug: str, *, store: _StoreProto | None) -> str:
     """Slugged applicant tag → canonical OPS phrase.
 
-    Strategy:
-        1. Look up any local patent ref tagged ``applicant:<slug>``,
-           read its ``meta.applicants[]``, return the first
-           canonical name whose own slugification matches.
-        2. Fall back to naive ``hyphen→space`` + Title Case.
+    Title-cased ``hyphen→space`` of the slug. OPS phrase matching is
+    case-forgiving (``pa="Siemens Ag"`` finds the same records as
+    ``pa="Siemens AG"``), so the lossy round-trip is fine for the
+    lookup.
 
-    Why: tag-storage is lossy on case and on space-vs-hyphen. The
-    canonical name lives in ``meta.applicants`` from biblio parsing,
-    so use it whenever available.
+    **Removed 2026-06-16**: this used to consult the local store via
+    a ``find_first_meta_for_open_tag('applicant:<slug>')`` lookup so a
+    previously-ingested patent's ``meta.applicants[]`` could supply
+    the canonical capitalisation. That depended on every patent being
+    auto-tagged with ``applicant:<slug>`` at ingest, which is what
+    cluttered the cluster's tag table with one row per Chinese-
+    university applicant. Auto-tagging is gone; the cold-start
+    fallback handles every case.
+
+    The ``store`` parameter is kept on the signature for API
+    compatibility — callers in the patent handler pass it through
+    even though we no longer consume it.
     """
-    if store is not None:
-        meta = store.find_first_meta_for_open_tag(
-            kind="patent", tag=f"applicant:{slug}"
-        )
-        if meta is not None:
-            for app in meta.get("applicants", []) or []:
-                name = app.get("name") if isinstance(app, dict) else None
-                if isinstance(name, str) and slugify_applicant(name) == slug:
-                    return name
-
-    # Cold-start fallback. Title-case ASCII is fine for most western
-    # applicants ('siemens-ag' → 'Siemens Ag'); OPS phrase matching
-    # is forgiving enough that 'pa="Siemens Ag"' still finds the
-    # right records. Once one local patent for the applicant has
-    # been ingested, the meta lookup above wins.
+    del store  # API kept; lookup path retired with applicant: tags
     return slug.replace("-", " ").title()
 
 

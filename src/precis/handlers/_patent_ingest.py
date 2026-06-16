@@ -34,7 +34,6 @@ from pathlib import Path
 
 from precis.embedder import Embedder
 from precis.errors import NotFound
-from precis.handlers._patent_cql import slugify_applicant
 from precis.handlers._patent_ops import (
     OpsClientProto,
     OpsNotFound,
@@ -404,6 +403,16 @@ def _apply_auto_tags(
 
     All tags are lowercase open prefixes; the ``ref_open_tags`` table
     enforces a CHECK constraint that the value is lowercase.
+
+    **Removed 2026-06-16**: ``applicant:*``, ``cpc:*``, ``ipc:*`` used
+    to be auto-tagged here too — denormalised indices for the OPS CQL
+    lift. They clutter the global tag table (one row per Chinese-
+    university applicant, one per IPC subclass like ``g06n3/12ai``) and
+    the canonical data is already in ``refs.meta`` as structured JSONB.
+    The CQL lift now queries ``meta @> '{...}'`` directly; see
+    :mod:`precis.handlers._patent_cql`. ``country:``, ``kind:`` and
+    ``family:`` stay — they're short, distinct, and useful as plain
+    tag filters in the dashboard.
     """
     auto_tags: list[str] = [
         f"country:{docdb.country}",
@@ -411,18 +420,6 @@ def _apply_auto_tags(
     ]
     if parsed.family_id:
         auto_tags.append(f"family:{parsed.family_id.lower()}")
-    for cpc in parsed.cpc_classes:
-        auto_tags.append(f"cpc:{cpc.lower()}")
-    for ipc in parsed.ipc_classes:
-        # IPC values can include whitespace ('B01J 27/24') — slug it
-        # by collapsing whitespace to nothing for storage.
-        normalised = "".join(ipc.lower().split())
-        if normalised:
-            auto_tags.append(f"ipc:{normalised}")
-    for app in parsed.applicants:
-        name = app.get("name") if isinstance(app, dict) else None
-        if isinstance(name, str) and name.strip():
-            auto_tags.append(f"applicant:{slugify_applicant(name)}")
 
     for tag_str in auto_tags:
         try:
