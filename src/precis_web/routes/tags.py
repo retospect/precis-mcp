@@ -87,54 +87,92 @@ async def index(request: Request, q: str | None = None) -> HTMLResponse:
 @router.get("/refs", response_class=HTMLResponse)
 async def refs_by_tag(
     request: Request,
-    namespace: str,
-    value: str,
+    namespace: str | None = None,
+    value: str | None = None,
+    kind: str | None = None,
 ) -> HTMLResponse:
-    """List every ref carrying a tag, grouped by kind.
+    """List refs matching a tag, a kind, or both, grouped by kind.
 
-    Replaces the old "filter Tasks" pivot — tags can land on any ref
-    kind (papers, patents, memories, perplexity caches, todos, …), and
-    the operator coming from the Tags table wants to see *all* of them,
-    not just the todo-shaped slice. The page groups by kind, links each
-    ref to its native detail view (``/refs/{kind}/{ref_id}`` for
-    browsable kinds, ``/papers/{ref_id}`` for papers, ``/tasks?focus=N``
-    for todos).
+    Three call shapes — all hit the same template:
+
+    * ``?namespace=NS&value=V`` — every ref carrying the tag (the
+      original "Tags table → view N refs" pivot)
+    * ``?kind=K`` — every live ref of one kind (the Status page
+      "Refs by kind" chip pivot; DRY with the tag-pivot view above)
+    * ``?namespace=NS&value=V&kind=K`` — intersection: refs of one
+      kind that also carry the tag
+
+    Page groups by kind and links each ref to its native detail view
+    (``/refs/{kind}/{ref_id}`` for browsable kinds, ``/papers/{ref_id}``
+    for papers, ``/tasks?focus=N`` for todos).
     """
+    if namespace is None and value is None and kind is None:
+        raise HTTPException(
+            status_code=400,
+            detail="needs ?namespace=NS&value=V, ?kind=K, or both",
+        )
+    has_tag = namespace is not None and value is not None
     store = get_store(request)
-    sql = """
-        SELECT r.kind, r.ref_id, r.title, r.deleted_at IS NOT NULL AS dropped
-          FROM refs r
-          JOIN ref_tags rt ON rt.ref_id = r.ref_id
-          JOIN tags t USING(tag_id)
-         WHERE t.namespace = %s AND t.value = %s
-         ORDER BY r.kind, r.ref_id
-    """
+    where_parts: list[str] = []
+    params: list[object] = []
+    if has_tag:
+        where_parts.append("t.namespace = %s AND t.value = %s")
+        params.extend([namespace, value])
+    if kind:
+        where_parts.append("r.kind = %s")
+        params.append(kind)
+    where_parts.append("r.deleted_at IS NULL")  # default: hide soft-deleted
+    if has_tag:
+        sql = (
+            "SELECT r.kind, r.ref_id, r.title, r.deleted_at IS NOT NULL AS dropped "
+            "FROM refs r "
+            "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+            "JOIN tags t USING(tag_id) "
+            f"WHERE {' AND '.join(where_parts)} "
+            "ORDER BY r.kind, r.ref_id "
+            "LIMIT 500"
+        )
+    else:
+        sql = (
+            "SELECT r.kind, r.ref_id, r.title, FALSE AS dropped "
+            "FROM refs r "
+            f"WHERE {' AND '.join(where_parts)} "
+            "ORDER BY r.kind, r.ref_id "
+            "LIMIT 500"
+        )
     with store.pool.connection() as conn:  # type: ignore[attr-defined]
-        rows = conn.execute(sql, (namespace, value)).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
     # Group by kind, preserving the SQL order.
     by_kind: dict[str, list[dict[str, object]]] = {}
     for r in rows:
-        kind = str(r[0])
+        row_kind = str(r[0])
         ref_id = int(r[1])
         title = (r[2] or "").split("\n", 1)[0]
         if len(title) > 80:
             title = title[:80].rstrip() + "…"
-        by_kind.setdefault(kind, []).append(
+        by_kind.setdefault(row_kind, []).append(
             {
                 "id": ref_id,
                 "title": title or "(untitled)",
                 "deleted": bool(r[3]),
-                "url": _ref_url(kind, ref_id),
+                "url": _ref_url(row_kind, ref_id),
             }
         )
+    if has_tag and kind:
+        label = f"{namespace}:{value} on kind={kind}"
+    elif has_tag:
+        label = f"{namespace}:{value}"
+    else:
+        label = f"kind={kind}"
     return templates.TemplateResponse(
         request,
         "tags/refs.html.j2",
         {
-            "active_tab": "tags",
-            "namespace": namespace,
-            "value": value,
-            "label": f"{namespace}:{value}",
+            "active_tab": "tags" if has_tag else "status",
+            "namespace": namespace or "",
+            "value": value or "",
+            "kind_filter": kind or "",
+            "label": label,
             "by_kind": by_kind,
             "total": sum(len(v) for v in by_kind.values()),
         },

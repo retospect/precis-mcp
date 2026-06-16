@@ -15,9 +15,10 @@
     <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Refs by kind</div>
     <div class="flex flex-wrap gap-2">
       {% for k in kind_counts %}
-      <span class="text-xs px-2 py-1 rounded bg-slate-100 text-slate-700">
+      <a href="/tags/refs?kind={{ k.kind | urlencode }}"
+         class="text-xs px-2 py-1 rounded bg-slate-100 text-slate-700 hover:bg-sky-100 hover:text-sky-800 transition">
         {{ k.kind }} <span class="font-semibold">{{ k.count }}</span>
-      </span>
+      </a>
       {% endfor %}
     </div>
   </div>
