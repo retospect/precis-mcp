@@ -42,6 +42,26 @@ def test_papers_needed_awaiting_filter(client) -> None:
     assert "Ballistic carbon nanotube" in resp.text
 
 
+# ── tags browser ───────────────────────────────────────────────────
+
+
+def test_tags_index_renders_empty_state(client) -> None:
+    """``/tags`` returns 200 even on a fresh DB (the FakeConn yields no rows)."""
+    resp = client.get("/tags")
+    assert resp.status_code == 200
+    assert "Tags" in resp.text
+    # Empty-state copy.
+    assert "No tags match" in resp.text
+
+
+def test_tags_index_accepts_query_filter(client) -> None:
+    """``?q=foo`` flows through the route without crashing."""
+    resp = client.get("/tags?q=tier")
+    assert resp.status_code == 200
+    # Query value echoed in the search box.
+    assert 'value="tier"' in resp.text
+
+
 # ── tasks ──────────────────────────────────────────────────────────
 
 

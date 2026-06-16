@@ -68,6 +68,7 @@ def create_app(
         papers_needed,
         refs,
         status,
+        tags,
         tasks,
     )
 
@@ -76,6 +77,7 @@ def create_app(
     app.include_router(papers.router)
     app.include_router(papers_needed.router)
     app.include_router(refs.router)
+    app.include_router(tags.router)
     app.include_router(console.router)
     app.include_router(status.router)
 

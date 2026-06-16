@@ -54,16 +54,13 @@ def _backdate_ref(store: Store, ref_id: int, hours: float) -> None:
     """Move ``refs.created_at`` backwards by ``hours``."""
     with store.pool.connection() as conn:
         conn.execute(
-            "UPDATE refs SET created_at = now() - %s::interval "
-            "WHERE ref_id = %s",
+            "UPDATE refs SET created_at = now() - %s::interval WHERE ref_id = %s",
             (f"{hours} hours", ref_id),
         )
         conn.commit()
 
 
-def _backdate_tag(
-    store: Store, ref_id: int, tag_value: str, hours: float
-) -> None:
+def _backdate_tag(store: Store, ref_id: int, tag_value: str, hours: float) -> None:
     """Move ``ref_tags.created_at`` backwards for one open tag."""
     with store.pool.connection() as conn:
         conn.execute(
@@ -252,9 +249,7 @@ def test_long_wait_detector_flags_old_waiting_for(
     r = handler.put(text="Waiting on owner")
     rid = _id_of(r.body)
     store.add_tag(rid, Tag.open("waiting-for:owner"), set_by="agent")
-    _backdate_tag(
-        store, rid, "waiting-for:owner", (LONG_WAIT_DAYS + 1) * 24
-    )
+    _backdate_tag(store, rid, "waiting-for:owner", (LONG_WAIT_DAYS + 1) * 24)
 
     findings = _detect_long_waits(store)
     ids = {f.ref_id for f in findings}
@@ -385,6 +380,68 @@ def test_stalled_recurring_detector_skips_done_child(
     assert rec_id not in ids
 
 
+# ── TTL purge ──────────────────────────────────────────────────────
+
+
+def test_expired_digests_get_soft_deleted_by_run_pass(
+    store: Store,
+) -> None:
+    """A nursery digest older than the TTL is soft-deleted on the next pass.
+
+    Backdate ``refs.created_at`` past the TTL window, ensure the row
+    is still marked deleted_at IS NULL pre-pass, run the pass, then
+    confirm the row carries ``deleted_at IS NOT NULL``.
+    """
+    # Mint a nursery digest by hand (skip the full detector path so the
+    # test stays narrow).
+    ref = store.insert_ref(
+        kind="memory",
+        slug=None,
+        title="stale nursery digest",
+        meta={"nursery_fingerprint": "dead", "nursery_finding_count": 0},
+    )
+    store.add_tag(ref.id, Tag.open("tier:nursery"), set_by="system")
+    # Backdate created_at well past the TTL (default 7 days).
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '10 days' WHERE ref_id = %s",
+            (ref.id,),
+        )
+        conn.commit()
+
+    run_nursery_pass(store)
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] is not None  # soft-deleted
+
+
+def test_recent_digests_are_not_purged(store: Store) -> None:
+    """A digest within the TTL window survives the pass."""
+    ref = store.insert_ref(
+        kind="memory",
+        slug=None,
+        title="fresh nursery digest",
+        meta={"nursery_fingerprint": "alive", "nursery_finding_count": 0},
+    )
+    store.add_tag(ref.id, Tag.open("tier:nursery"), set_by="system")
+    # Don't backdate — created_at is now().
+
+    run_nursery_pass(store)
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] is None  # still live
+
+
 # ── full pass + dedup ──────────────────────────────────────────────
 
 
@@ -423,9 +480,7 @@ def test_full_pass_writes_digest_when_findings_appear(
     _ = aid, bid
 
 
-def test_full_pass_dedups_repeat_findings(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_full_pass_dedups_repeat_findings(handler: TodoHandler, store: Store) -> None:
     r = handler.put(text="Orphan O")
     rid = _id_of(r.body)
     _ = rid
@@ -447,9 +502,7 @@ def test_full_pass_writes_again_after_findings_change(
     assert result2.ok == 1
 
 
-def test_full_pass_empty_returns_clean(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_full_pass_empty_returns_clean(handler: TodoHandler, store: Store) -> None:
     # No todos, no findings.
     result = run_nursery_pass(store)
     assert result.claimed == 0

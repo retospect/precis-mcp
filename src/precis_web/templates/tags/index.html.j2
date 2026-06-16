@@ -1,0 +1,59 @@
+{% extends "base.html.j2" %}
+{% block title %}Tags{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-3">
+  <h1 class="text-lg font-semibold">Tags</h1>
+  <form method="get" action="/tags" class="flex items-center gap-2">
+    <input name="q" value="{{ q }}" placeholder="filter by namespace or value…"
+           class="w-72 rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
+    <button class="rounded-md bg-emerald-600 text-white text-sm px-3 py-1.5">Search</button>
+    {% if q %}<a href="/tags" class="text-sm text-slate-500 underline">clear</a>{% endif %}
+  </form>
+</div>
+
+<p class="text-sm text-slate-500 mb-3">
+  All tags in the cluster, ordered by how many refs carry them.
+  Top {{ rows | length }} shown. Click a row to filter the Tasks
+  dashboard to refs that have this tag.
+</p>
+
+{% if not rows %}
+<p class="text-sm text-slate-500">
+  No tags match{% if q %} <code>{{ q }}</code>{% endif %}.
+</p>
+{% else %}
+<div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+      <tr>
+        <th class="text-left px-3 py-2 w-44">Namespace</th>
+        <th class="text-left px-3 py-2">Value</th>
+        <th class="text-right px-3 py-2 w-20">Refs</th>
+        <th class="text-left px-3 py-2 w-32">Pivot</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for r in rows %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-3 py-1.5 text-xs">
+          <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">{{ r.namespace }}</span>
+        </td>
+        <td class="px-3 py-1.5">
+          <code class="text-xs text-slate-700">{{ r.value }}</code>
+        </td>
+        <td class="px-3 py-1.5 text-right tabular-nums text-slate-600">{{ r.count }}</td>
+        <td class="px-3 py-1.5 text-xs">
+          <a href="/tasks?require={{ r.label | urlencode }}"
+             class="text-sky-700 hover:underline">filter Tasks →</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="text-xs text-slate-400 mt-3">
+  Tags table: {{ rows | length }} rows shown.
+  Refine with the search box above.
+</p>
+{% endif %}
+{% endblock %}

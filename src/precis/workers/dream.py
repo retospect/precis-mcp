@@ -198,12 +198,19 @@ def _tool_schemas(acquire_enabled: bool) -> list[dict[str, Any]]:
         ),
         fn(
             "put",
-            "Write a new memory note (a synthesis or inspiration). Tag "
-            "speculative inspirations with tags=['DREAM:speculative'].",
+            "Write a new memory note (a synthesis or inspiration). "
+            "EVERY memory you write MUST carry the tag 'tier:dream' so "
+            "it groups with other dream-pass output (same convention as "
+            "tier:nursery / tier:structural / tier:deep). Speculative "
+            "inspirations also take tags=['DREAM:speculative', 'tier:dream'].",
             {
                 "kind": {"type": "string", "description": "usually 'memory'"},
                 "text": {"type": "string"},
-                "tags": {"type": "array", "items": {"type": "string"}},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Must include 'tier:dream'.",
+                },
             },
         ),
         fn(

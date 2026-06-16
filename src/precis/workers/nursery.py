@@ -64,6 +64,27 @@ STALE_CLAIM_HOURS = 3
 LONG_WAIT_DAYS = 7
 STUCK_DOABLE_HOURS = 24
 
+#: How long a nursery digest sticks around before the pass soft-deletes
+#: it. The dedup-by-fingerprint check (see :func:`_last_digest_matches`)
+#: keeps churn low — most cycles don't write a fresh digest — so without
+#: a TTL the table accumulates one row per real state change and never
+#: cleans itself up. Override with ``PRECIS_NURSERY_DIGEST_TTL_DAYS``.
+DIGEST_TTL_DAYS = 7
+
+
+def _digest_ttl_days() -> int:
+    """Read the digest TTL from env, default 7. Floor 1 day."""
+    import os
+
+    raw = os.environ.get("PRECIS_NURSERY_DIGEST_TTL_DAYS")
+    if raw is None:
+        return DIGEST_TTL_DAYS
+    try:
+        val = int(raw)
+    except ValueError:
+        return DIGEST_TTL_DAYS
+    return max(1, val)
+
 
 @dataclass(frozen=True, slots=True)
 class Finding:
@@ -83,30 +104,65 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
     * ``claimed`` = number of distinct findings this pass surfaced
     * ``ok`` = 1 if a fresh digest was written, 0 if dedup'd or empty
     * ``failed`` = 0 (no failure mode in the SQL detectors)
+
+    Side-effect: soft-deletes any ``tier:nursery`` digest memory older
+    than :data:`DIGEST_TTL_DAYS` before doing detection. The age check
+    runs once per pass on the same SQL connection the detectors use; on
+    a tree with no findings, the pass still wakes up to expire stale
+    digests.
     """
+    purged = _purge_expired_digests(store)
+    if purged:
+        log.info("nursery: soft-deleted %d expired digest memor(y/ies)", purged)
     findings = _detect_all(store, limit=limit)
     fingerprint = _fingerprint(findings)
     if not findings:
-        return BatchResult(
-            handler="nursery", claimed=0, ok=0, failed=0
-        )
+        return BatchResult(handler="nursery", claimed=0, ok=0, failed=0)
     if _last_digest_matches(store, fingerprint):
         log.info(
             "nursery: %d findings unchanged since last digest; skipping write",
             len(findings),
         )
-        return BatchResult(
-            handler="nursery", claimed=len(findings), ok=0, failed=0
-        )
+        return BatchResult(handler="nursery", claimed=len(findings), ok=0, failed=0)
     digest_id = _write_digest(store, findings, fingerprint=fingerprint)
     log.info(
         "nursery: wrote digest memory id=%d with %d findings",
         digest_id,
         len(findings),
     )
-    return BatchResult(
-        handler="nursery", claimed=len(findings), ok=1, failed=0
-    )
+    return BatchResult(handler="nursery", claimed=len(findings), ok=1, failed=0)
+
+
+# ── digest TTL purge ──────────────────────────────────────────────
+
+
+def _purge_expired_digests(store: Store) -> int:
+    """Soft-delete ``tier:nursery`` digests older than the TTL.
+
+    Idempotent: a row already soft-deleted (``deleted_at IS NOT NULL``)
+    is skipped by the ``WHERE`` clause. Returns the number of rows
+    transitioned this pass — typically zero on a healthy cluster
+    where digests don't pile up faster than the TTL.
+    """
+    ttl_days = _digest_ttl_days()
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            rows = conn.execute(
+                """
+                UPDATE refs SET deleted_at = now()
+                 WHERE kind = 'memory'
+                   AND deleted_at IS NULL
+                   AND created_at < now() - %s::interval
+                   AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING(tag_id)
+                      WHERE rt.ref_id = refs.ref_id
+                        AND t.namespace = 'OPEN' AND t.value = 'tier:nursery'
+                   )
+                 RETURNING ref_id
+                """,
+                (f"{ttl_days} days",),
+            ).fetchall()
+    return len(rows)
 
 
 # ── detector dispatch ─────────────────────────────────────────────
@@ -542,9 +598,7 @@ def _render_digest_body(findings: list[Finding], *, today: str) -> str:
         "long-wait",
         "stuck-doable",
     ]
-    summary_bits = [
-        f"{len(by_cat[c])} {c}" for c in cat_order if c in by_cat
-    ]
+    summary_bits = [f"{len(by_cat[c])} {c}" for c in cat_order if c in by_cat]
     lines: list[str] = [
         f"Nursery digest {today}: {', '.join(summary_bits)}.",
         "",
