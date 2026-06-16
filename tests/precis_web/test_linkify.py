@@ -107,3 +107,64 @@ def test_empty_string_returns_empty() -> None:
 
 def test_none_value_returns_empty() -> None:
     assert str(linkify_refs(None)) == ""  # type: ignore[arg-type]
+
+
+# ---- Allowlist gate (no false positives on prose tokens) -------------
+
+
+def test_user_colon_handle_is_NOT_linkified() -> None:
+    """``user:asa`` is prose shorthand, not a precis kind. Must fall
+    through to plain text so the resolver doesn't get a 404 request."""
+    out = str(linkify_refs("asked user:asa about it"))
+    assert "/r/user/asa" not in out
+    assert "user:asa" in out
+    assert "<a" not in out
+
+
+def test_note_colon_thing_is_NOT_linkified() -> None:
+    out = str(linkify_refs("note:keep this in mind"))
+    assert "/r/note/" not in out
+    assert "<a" not in out
+
+
+def test_tag_colon_value_is_NOT_linkified() -> None:
+    """``tag:open`` etc. are ambient tag namespaces, not refs."""
+    out = str(linkify_refs("filed under tag:open and tier:dream"))
+    assert "/r/tag/" not in out
+    assert "/r/tier/" not in out
+    assert "<a" not in out
+
+
+def test_real_kind_in_allowlist_still_linkifies() -> None:
+    """Regression check — the allowlist gate must not break the
+    happy path for every kind we DO want as a link."""
+    for kind in [
+        "memory",
+        "todo",
+        "paper",
+        "patent",
+        "youtube",
+        "perplexity-research",
+    ]:
+        out = str(linkify_refs(f"see {kind}:foo for context"))
+        assert f"/r/{kind}/foo" in out, f"{kind} should linkify"
+
+
+# ---- Popover layout flags (whitespace + max-height) ------------------
+
+
+def test_popover_breaks_inherited_pre_whitespace() -> None:
+    """The popover lives inside a ``<pre class='whitespace-pre-wrap'>``
+    on detail pages. Without ``whitespace-normal`` on the popover
+    container the popover's own template newlines become visible
+    vertical gaps in the rendered card."""
+    out = str(linkify_refs("paper:acheson26"))
+    assert "whitespace-normal" in out
+
+
+def test_popover_caps_height_for_long_content() -> None:
+    """Long titles / body previews must stay inside a scrollable box
+    rather than growing the popover off-screen."""
+    out = str(linkify_refs("paper:acheson26"))
+    assert "max-h-72" in out
+    assert "overflow-y-auto" in out

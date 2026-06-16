@@ -77,14 +77,52 @@ _SKIP_PATTERN = re.compile(
     flags=re.DOTALL | re.IGNORECASE,
 )
 
-#: Kinds that aren't worth linkifying — they're either ambient (the
-#: word "skill" appears in prose constantly, ``skill:precis-overview``
-#: would be over-eager) or low-signal (``tag``, ``link``). The filter
-#: still emits an anchor for these *only* when the user typed the
-#: full ``kind:`` prefix; we just don't go hunting for them. (This is
-#: vestigial: the pattern requires an explicit ``kind:`` prefix, so
-#: there's no overreach risk today. Kept for future extension when we
-#: might want to linkify bare ``#42`` shorthand.)
+#: Kinds we WILL linkify. The regex itself accepts any
+#: ``[a-z][a-z0-9-]*:something`` pattern, which over-fires on prose
+#: like ``user:asa`` / ``note:foo`` / ``tag:test:case`` — non-precis
+#: kinds that just happen to share the ``noun:value`` shape. Anchor
+#: emission is gated on this allowlist so those false positives fall
+#: through to plain text.
+#:
+#: Keep aligned with ``_REFS_BROWSABLE_KINDS`` in routes/refs.py
+#: (every kind that has a detail page) plus a few extras (``skill``
+#: and friends that route through ``/r/{kind}/{id}`` too).
+_LINKIFY_KINDS: frozenset[str] = frozenset(
+    {
+        "memory",
+        "conv",
+        "gripe",
+        "pres",
+        "oracle",
+        "paper",
+        "patent",
+        "todo",
+        "job",
+        "finding",
+        "citation",
+        "flashcard",
+        "perplexity-research",
+        "perplexity-reasoning",
+        "web",
+        "youtube",
+        "websearch",
+        "cron",
+        "message",
+        "math",
+        "calc",
+        "skill",
+        "provenance",
+        "random",
+    }
+)
+
+#: Vestigial — kept as an explicit blocklist within the allowlist for
+#: cases where a kind name is so noisy in prose that we'd want to
+#: drop even though it's a real kind. ``tag`` and ``link`` are the
+#: classic risks (``tag:open`` could be either a tag namespace or
+#: a reference to a tag-kind ref). Today both are filtered out by
+#: being absent from ``_LINKIFY_KINDS``; this set stays as a place
+#: to opt out something we *did* add and then regret.
 _LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
 
 
@@ -112,6 +150,13 @@ def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
         # ``chunk`` here is the regex group including the leading ``~``;
         # the resolver expects it without.
         suffix_q = f"?chunk={escape(chunk[1:])}"
+    # ``whitespace-normal`` on the popover container resets the
+    # ``white-space: pre-wrap`` it inherits from the parent ``<pre>``
+    # on ref-detail pages — otherwise every newline in the popover
+    # Jinja template becomes visible vertical whitespace and the card
+    # reads like it's been double-spaced. ``max-h-72`` + ``overflow-y-auto``
+    # keep very long previews inside a tidy 18rem-tall box rather than
+    # growing the popover off-screen.
     return (
         f'<span x-data="{{hovered: false}}" class="relative inline-block">'
         f'<a class="text-sky-700 underline decoration-dotted hover:decoration-solid" '
@@ -123,7 +168,8 @@ def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
         f'@mouseleave="hovered = false">'
         f"{display}</a>"
         f'<span class="ref-popover absolute z-50 top-full left-0 mt-1 w-80 '
-        f'rounded-lg border border-slate-200 bg-white shadow-xl p-2 text-sm" '
+        f'rounded-lg border border-slate-200 bg-white shadow-xl p-2 text-sm '
+        f'whitespace-normal max-h-72 overflow-y-auto" '
         f'x-show="hovered" x-cloak></span>'
         f"</span>"
     )
@@ -164,9 +210,11 @@ def _linkify_prose(prose: str) -> str:
         kind = m.group("kind")
         raw_id = m.group("id")
         chunk = m.group("chunk")
-        if kind in _LOW_SIGNAL_KINDS:
-            # Vestigial — see module docstring. Fall through to plain
-            # text if a future caller adds these to the blocklist.
+        # Allowlist gate: only emit anchors for kinds we actually know
+        # how to resolve. Reference shapes like ``user:asa`` /
+        # ``note:foo`` / ``email:reto@x.com`` are common in prose and
+        # would otherwise become broken anchors that 404 the resolver.
+        if kind not in _LINKIFY_KINDS or kind in _LOW_SIGNAL_KINDS:
             return m.group(0)
         return _render_anchor(kind, raw_id, chunk)
 
