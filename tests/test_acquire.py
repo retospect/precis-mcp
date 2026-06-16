@@ -186,9 +186,7 @@ def test_acquire_title_hint_with_unresolved_id_marks_unverified(
 ) -> None:
     """An unresolved identifier + title=hint mints with acquire:unverified tag."""
     monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
-    r = handler.acquire(
-        identifier="doi:10.niche/venue", title="My niche preprint"
-    )
+    r = handler.acquire(identifier="doi:10.niche/venue", title="My niche preprint")
     assert "minted stub" in r.body
     rid = _ref_id(r.body)
     assert "acquire:unverified" in _tags(store, rid)

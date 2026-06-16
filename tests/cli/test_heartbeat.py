@@ -6,10 +6,18 @@ the parsing / fallback logic is exercised deterministically.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
 from precis.cli import heartbeat
+
+# ``os.getloadavg`` is Unix-only; the monkeypatch tests assume the
+# attribute exists on the real module so it can be replaced. Windows
+# never has it, so the tests can't be exercised there.
+_NO_GETLOADAVG = not hasattr(os, "getloadavg")
 
 
 def test_parse_first_float() -> None:
@@ -27,11 +35,13 @@ def test_resolve_host_precedence(monkeypatch) -> None:
     assert heartbeat.resolve_host(None)  # hostname fallback, non-empty
 
 
+@pytest.mark.skipif(_NO_GETLOADAVG, reason="os.getloadavg is Unix-only")
 def test_collect_loads_normal(monkeypatch) -> None:
     monkeypatch.setattr(heartbeat.os, "getloadavg", lambda: (1.5, 1.2, 0.9))
     assert heartbeat.collect_loads() == (1.5, 1.2, 0.9)
 
 
+@pytest.mark.skipif(_NO_GETLOADAVG, reason="os.getloadavg is Unix-only")
 def test_collect_loads_unavailable(monkeypatch) -> None:
     def _boom() -> tuple[float, float, float]:
         raise OSError("no loadavg")
@@ -77,8 +87,10 @@ def test_temp_from_linux_thermal(monkeypatch) -> None:
     monkeypatch.setattr(
         heartbeat.glob,
         "glob",
-        lambda _pat: ["/sys/class/thermal/thermal_zone0/temp",
-                      "/sys/class/thermal/thermal_zone1/temp"],
+        lambda _pat: [
+            "/sys/class/thermal/thermal_zone0/temp",
+            "/sys/class/thermal/thermal_zone1/temp",
+        ],
     )
     contents = {
         "/sys/class/thermal/thermal_zone0/temp": "45000\n",

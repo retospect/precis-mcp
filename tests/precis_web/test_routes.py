@@ -193,13 +193,16 @@ def test_paper_pdf_streams_when_present(client, tmp_path) -> None:
 
 def test_webconfig_parses_multiple_corpus_roots(monkeypatch) -> None:
     import os
+    from pathlib import Path
 
     from precis_web.config import WebConfig
 
     monkeypatch.setenv("PRECIS_CORPUS_DIR", f"/opt/shared/corpus{os.pathsep}/opt/nas/c")
     cfg = WebConfig.from_env()
-    assert str(cfg.corpus_dir) == "/opt/shared/corpus"
-    assert [str(p) for p in cfg.extra_corpus_dirs] == ["/opt/nas/c"]
+    # Compare via Path() so Windows' backslash normalisation
+    # (``\opt\shared\corpus``) matches the POSIX-form input.
+    assert Path(str(cfg.corpus_dir)) == Path("/opt/shared/corpus")
+    assert [Path(str(p)) for p in cfg.extra_corpus_dirs] == [Path("/opt/nas/c")]
     assert [str(p) for p in cfg.corpus_dirs] == ["/opt/shared/corpus", "/opt/nas/c"]
 
 
@@ -381,11 +384,16 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
     assert "user said hi" in resp.text and "assistant replied" in resp.text
     # Every extra-meta field surfaces (key + value).
     for needle in (
-        "msg_id", "discord:111",
-        "stop_reason", "end_turn",
-        "input_tokens", "420",
-        "output_tokens", "137",
-        "model", "claude-opus-4-7",
+        "msg_id",
+        "discord:111",
+        "stop_reason",
+        "end_turn",
+        "input_tokens",
+        "420",
+        "output_tokens",
+        "137",
+        "model",
+        "claude-opus-4-7",
     ):
         assert needle in resp.text, f"{needle!r} missing from rendered transcript"
 
@@ -916,8 +924,12 @@ def test_filter_rows_matches_lowercase_status_too() -> None:
     from precis_web.routes.tasks import _filter_rows
 
     rows = [_row(1, status="doing"), _row(2, status="done")]
-    assert [r["id"] for r in _filter_rows(rows, require=["status:doing"], exclude=[])] == [1]
-    assert [r["id"] for r in _filter_rows(rows, require=["STATUS:doing"], exclude=[])] == [1]
+    assert [
+        r["id"] for r in _filter_rows(rows, require=["status:doing"], exclude=[])
+    ] == [1]
+    assert [
+        r["id"] for r in _filter_rows(rows, require=["STATUS:doing"], exclude=[])
+    ] == [1]
 
 
 def test_hide_inactive_jobs_drops_closed_attempts() -> None:
@@ -1213,7 +1225,15 @@ def test_template_missing_key_does_not_500(client, monkeypatch) -> None:
     def _boom(store):  # type: ignore[no-untyped-def]
         raise RuntimeError("simulated stale schema")
 
-    for name in ("_kind_counts", "_paper_summary", "_todo_status", "_recent_events", "_claude_usage", "_hosts", "_heartbeats"):
+    for name in (
+        "_kind_counts",
+        "_paper_summary",
+        "_todo_status",
+        "_recent_events",
+        "_claude_usage",
+        "_hosts",
+        "_heartbeats",
+    ):
         monkeypatch.setattr(status_mod, name, _boom)
 
     resp = client.get("/status")
@@ -1229,7 +1249,10 @@ def test_asks_page_renders_empty(client) -> None:
     resp = client.get("/asks")
     assert resp.status_code == 200
     assert "Asks" in resp.text
-    assert "Nothing&#39;s waiting on you" in resp.text or "Nothing's waiting on you" in resp.text
+    assert (
+        "Nothing&#39;s waiting on you" in resp.text
+        or "Nothing's waiting on you" in resp.text
+    )
 
 
 def test_asks_page_renders_data(client, monkeypatch) -> None:
@@ -1274,9 +1297,7 @@ def test_answer_dispatches_edit_then_tag_remove(client, runtime) -> None:
     # Inject a todo on the fake store so fetch_refs_by_ids resolves.
     from tests.precis_web.conftest import make_ref
 
-    runtime.store.todos.append(
-        make_ref(id=99, kind="todo", title="Pending question")
-    )
+    runtime.store.todos.append(make_ref(id=99, kind="todo", title="Pending question"))
     resp = client.post(
         "/asks/99/answer",
         data={
@@ -1318,9 +1339,7 @@ def test_answer_edit_failure_skips_tag_remove(client, runtime) -> None:
     """If edit fails the unlock tag-remove must not fire."""
     from tests.precis_web.conftest import make_ref
 
-    runtime.store.todos.append(
-        make_ref(id=77, kind="todo", title="Need input")
-    )
+    runtime.store.todos.append(make_ref(id=77, kind="todo", title="Need input"))
     runtime.error_verbs.add("edit")
     resp = client.post(
         "/asks/77/answer",
@@ -1348,8 +1367,7 @@ def test_title_preview_first_two_nonempty_lines() -> None:
     )
     out = str(_title_preview(md))
     assert (
-        out
-        == "# Structural review digest — 2026-06-15"
+        out == "# Structural review digest — 2026-06-15"
         "<br>"
         "Strategic root #6649 (Nano-transistors) is mislabelled."
     )

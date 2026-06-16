@@ -73,9 +73,7 @@ def _mint_running_job(
     return int(job.id)
 
 
-def test_fresh_running_job_is_left_alone(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_fresh_running_job_is_left_alone(handler: TodoHandler, store: Store) -> None:
     """A STATUS:running tag younger than the threshold is not swept."""
     r = handler.put(text="parent")
     rid = _id_of(r.body)
@@ -110,9 +108,7 @@ def test_stale_running_job_is_swept_and_parent_bubbled(
     assert f"child-failed:{job_id}" in parent_tags
 
 
-def test_already_failed_job_is_skipped(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_already_failed_job_is_skipped(handler: TodoHandler, store: Store) -> None:
     """STATUS:failed jobs are not re-swept (idempotency)."""
     r = handler.put(text="parent")
     rid = _id_of(r.body)

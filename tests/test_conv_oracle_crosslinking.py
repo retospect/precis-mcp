@@ -155,9 +155,7 @@ class TestConvPutRejected:
     slug, path view).
     """
 
-    def test_put_appends_a_turn(
-        self, conv: ConversationHandler, store: Store
-    ) -> None:
+    def test_put_appends_a_turn(self, conv: ConversationHandler, store: Store) -> None:
         """put(text=…) appends a block to the conv ref; not unsupported."""
         rid = _seed_conv(store, "thread-1")
         before = len(store.list_blocks_for_ref(rid))

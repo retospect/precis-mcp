@@ -277,22 +277,36 @@ def run(args: argparse.Namespace) -> None:
         # bubble ``child-failed:<job>`` to the parent — a routing-
         # induced false negative. Moving the pass to the agent profile
         # restricts claims to the host that can actually execute.
-        system_passes: frozenset[str] = frozenset({
-            "embed", "summarize", "chunk_keywords", "chase", "fetch",
-            "tag_embeddings", "auto_check", "schedule", "nursery",
-            "dispatch", "sweeper",
-        })
+        system_passes: frozenset[str] = frozenset(
+            {
+                "embed",
+                "summarize",
+                "chunk_keywords",
+                "chase",
+                "fetch",
+                "tag_embeddings",
+                "auto_check",
+                "schedule",
+                "nursery",
+                "dispatch",
+                "sweeper",
+            }
+        )
         # dream_agent stays out of the profile — it has its own
         # cadence (15-min LaunchDaemon via dream-pass.sh) and gates
         # via PRECIS_DREAM_AGENT=1. The agent profile carries the
         # dedup-window reviewers (structural / deep_review) PLUS
         # ``job_claude_inproc`` (planner-coroutine slice).
-        agent_passes: frozenset[str] = frozenset({
-            "structural", "deep_review", "job_claude_inproc",
-        })
+        agent_passes: frozenset[str] = frozenset(
+            {
+                "structural",
+                "deep_review",
+                "job_claude_inproc",
+            }
+        )
         profile_passes = {
             "system": system_passes,
-            "agent":  agent_passes,
+            "agent": agent_passes,
         }[args.profile]
 
         def _pass_enabled(name: str) -> bool:
@@ -696,9 +710,7 @@ def _attach_db_log_handler(dsn: str) -> None:
                 return
         handler = BufferedDBLogHandler(dsn)
         handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(levelname)s %(name)s: %(message)s"
-            )
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
         )
         root.addHandler(handler)
         # If the root logger's effective level is WARNING (Python

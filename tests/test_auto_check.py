@@ -229,9 +229,7 @@ def test_child_job_succeeded_false_with_no_child(
     r = handler.put(text="parent todo")
     rid = _id_of(r.body)
     assert (
-        child_job_succeeded.evaluate(
-            store, {"type": "child_job_succeeded"}, ref_id=rid
-        )
+        child_job_succeeded.evaluate(store, {"type": "child_job_succeeded"}, ref_id=rid)
         is False
     )
 
@@ -250,13 +248,13 @@ def test_child_job_succeeded_false_when_child_is_queued(
         kind="job", slug=None, title="child job", meta={}, parent_id=rid
     )
     store.add_tag(
-        job.id, Tag.closed("STATUS", "queued"), set_by="agent",
+        job.id,
+        Tag.closed("STATUS", "queued"),
+        set_by="agent",
         replace_prefix=True,
     )
     assert (
-        child_job_succeeded.evaluate(
-            store, {"type": "child_job_succeeded"}, ref_id=rid
-        )
+        child_job_succeeded.evaluate(store, {"type": "child_job_succeeded"}, ref_id=rid)
         is False
     )
 
@@ -273,13 +271,13 @@ def test_child_job_succeeded_true_when_child_succeeded(
         kind="job", slug=None, title="child job", meta={}, parent_id=rid
     )
     store.add_tag(
-        job.id, Tag.closed("STATUS", "succeeded"), set_by="agent",
+        job.id,
+        Tag.closed("STATUS", "succeeded"),
+        set_by="agent",
         replace_prefix=True,
     )
     assert (
-        child_job_succeeded.evaluate(
-            store, {"type": "child_job_succeeded"}, ref_id=rid
-        )
+        child_job_succeeded.evaluate(store, {"type": "child_job_succeeded"}, ref_id=rid)
         is True
     )
 
@@ -298,9 +296,7 @@ def test_child_job_succeeded_ignores_other_kinds(
     )
     store.add_tag(other.id, Tag.closed("STATUS", "succeeded"), set_by="agent")
     assert (
-        child_job_succeeded.evaluate(
-            store, {"type": "child_job_succeeded"}, ref_id=rid
-        )
+        child_job_succeeded.evaluate(store, {"type": "child_job_succeeded"}, ref_id=rid)
         is False
     )
 
@@ -316,11 +312,11 @@ def test_pass_resolves_via_child_job_succeeded(
         meta={"auto_check": {"type": "child_job_succeeded"}},
     )
     rid = _id_of(r.body)
-    job = store.insert_ref(
-        kind="job", slug=None, title="ok", meta={}, parent_id=rid
-    )
+    job = store.insert_ref(kind="job", slug=None, title="ok", meta={}, parent_id=rid)
     store.add_tag(
-        job.id, Tag.closed("STATUS", "succeeded"), set_by="agent",
+        job.id,
+        Tag.closed("STATUS", "succeeded"),
+        set_by="agent",
         replace_prefix=True,
     )
     result = run_auto_check_pass(store, limit=50)

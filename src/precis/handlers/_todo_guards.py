@@ -141,9 +141,7 @@ def check_llm_tag(tags: list[str] | None) -> None:
 
 def check_executor_tag(tags: list[str] | None) -> None:
     """Reject ``executor:<value>`` where value is not a registered runner."""
-    _check_namespaced_tag(
-        tags, prefix="executor:", allowed=_EXECUTOR_TAG_VALUES
-    )
+    _check_namespaced_tag(tags, prefix="executor:", allowed=_EXECUTOR_TAG_VALUES)
 
 
 def _caller_source() -> str:
@@ -411,7 +409,7 @@ def check_level_tags_on_tag(
 
 
 def check_status_done_artifact(
-    store: "Store",
+    store: Store,
     ref_id: int,
     add: list[str] | None,
 ) -> None:
@@ -570,8 +568,7 @@ def check_halt_remove(remove: list[str] | None) -> None:
     for t in remove:
         if t == "halt" or t.startswith("halt:"):
             raise BadInput(
-                f"removing {t!r} is owner-only; workers may add halt "
-                "but not clear it",
+                f"removing {t!r} is owner-only; workers may add halt but not clear it",
                 next=(
                     "the halt marker is the owner's resume edge — run from "
                     "a non-worker source (web:owner / cli) to lift it"
@@ -686,7 +683,6 @@ __all__ = [
     "check_depth_under",
     "check_executor_tag",
     "check_halt_remove",
-    "check_status_done_artifact",
     "check_level_tags_on_create",
     "check_level_tags_on_tag",
     "check_llm_tag",
@@ -696,5 +692,6 @@ __all__ = [
     "check_parent_exists",
     "check_reparent_depth",
     "check_schedule_in_meta",
+    "check_status_done_artifact",
     "is_owner",
 ]
