@@ -70,10 +70,17 @@ _PAGE_SIZE = 50
 
 
 def _require_kind(kind: str) -> None:
-    if kind not in _REF_KIND_SET:
+    # ``_REF_KIND_SET`` is the old per-kind nav list (memory / conv /
+    # oracle / gripe / patent / pres). After T12.6 the detail + list
+    # routes serve every kind in ``_REFS_BROWSABLE_KINDS`` (web,
+    # youtube, perplexity-research, etc. — anything search lists),
+    # so the gate has to use that set or live refs like /refs/youtube/N
+    # 400 with "no browse tab" even though their detail page renders
+    # fine.
+    if kind not in _REFS_BROWSABLE_KINDS:
         raise NotFound(
             f"no browse tab for kind={kind!r}",
-            next=f"browsable kinds: {sorted(_REF_KIND_SET)}",
+            next=f"browsable kinds: {sorted(_REFS_BROWSABLE_KINDS)}",
         )
 
 
@@ -231,6 +238,17 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     "websearch",
     "cron",
     "message",
+    # Cached generators / utility kinds — they still store refs in the
+    # DB so detail pages work; list pages render whatever the kind's
+    # ``list_refs`` returns (empty for the on-demand kinds when the
+    # cache is cold). Added 2026-06-16 after live 400s on
+    # /refs/math/* and /refs/finding/* from hover-preview links.
+    "math",
+    "calc",
+    "skill",
+    "tag",
+    "provenance",
+    "random",
 )
 
 _PER_KIND_LIMIT = 20  # cap rows per kind so 19-kind search stays readable

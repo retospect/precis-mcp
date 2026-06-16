@@ -110,6 +110,31 @@ def test_parse_tolerates_non_numeric_percentage() -> None:
 # ---- stream-json mode (T7.3) --------------------------------------
 
 
+def test_parse_handles_nested_rate_limit_info_envelope() -> None:
+    """Claude Code 2.1.x nests the rate-limit fields under
+    ``rate_limit_info`` on the event. The parser must unwrap that and
+    still find ``rateLimitType`` / ``resetsAt`` / ``status``."""
+    stream = json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed",
+                "resetsAt": 1_781_657_400,
+                "rateLimitType": "five_hour",
+                "overageStatus": "rejected",
+                "overageDisabledReason": "org_level_disabled",
+                "isUsingOverage": False,
+            },
+            "uuid": "27108884-c174-482b-93aa-0a08c54fbf0e",
+        }
+    )
+    snap = parse_rate_limits(stream)
+    assert snap is not None
+    assert "five_hour" in snap.windows
+    assert snap.windows["five_hour"]["status"] == "allowed"
+    assert snap.windows["five_hour"]["resets_at"].endswith("+00:00")
+
+
 def test_parse_extracts_rate_limit_events_from_stream() -> None:
     """NDJSON stream — each non-empty line is a JSON event. We harvest
     ``rate_limit_event`` and project rateLimitType / resetsAt / status."""

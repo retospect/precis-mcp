@@ -153,17 +153,29 @@ def _parse_stream_events(text: str) -> tuple[dict[str, dict[str, Any]], str | No
             if isinstance(inner, dict):
                 candidate = inner
         if candidate.get("type") == "rate_limit_event":
-            key = candidate.get("rateLimitType") or candidate.get("rate_limit_type")
+            # As of Claude Code 2.1.x the per-window fields are nested
+            # under ``rate_limit_info`` on the event:
+            #   {"type":"rate_limit_event",
+            #    "rate_limit_info":{
+            #       "status":"allowed", "resetsAt":..., "rateLimitType":"...",
+            #       "overageStatus":..., ...}}
+            # Older versions had the fields flat on the event. Look in
+            # the nested envelope first; fall back to flat for forward
+            # compat with both shapes.
+            info = candidate.get("rate_limit_info")
+            if not isinstance(info, dict):
+                info = candidate
+            key = info.get("rateLimitType") or info.get("rate_limit_type")
             if not isinstance(key, str):
                 continue
             entry: dict[str, Any] = windows.setdefault(key, {})
-            iso = _normalise_resets(candidate.get("resetsAt") or candidate.get("resets_at"))
+            iso = _normalise_resets(info.get("resetsAt") or info.get("resets_at"))
             if iso is not None:
                 entry["resets_at"] = iso
-            status = candidate.get("status")
+            status = info.get("status")
             if isinstance(status, str):
                 entry["status"] = status
-            used = candidate.get("used_percentage")
+            used = info.get("used_percentage")
             if used is not None:
                 try:
                     entry["used_percentage"] = float(used)
