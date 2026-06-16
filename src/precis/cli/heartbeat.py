@@ -135,6 +135,42 @@ def _temp_from_linux_thermal() -> float | None:
     return max(readings) if readings else None
 
 
+def _temp_from_macos_smc() -> float | None:
+    """Probe macOS CPU temp via ``osx-cpu-temp`` (Homebrew, no sudo).
+
+    macOS doesn't expose thermal sensors as files — userspace reads
+    have to go through IOKit / SMC. ``osx-cpu-temp`` is a 1-binary
+    Homebrew tool that does the SMC call and prints "47.5°C". On
+    Apple Silicon it reads the package temp from the SoC. Returns
+    ``None`` when the binary isn't installed (cluster nodes lacking
+    the brew install still report load + host fine).
+
+    The binary lives at ``/opt/homebrew/bin/osx-cpu-temp`` on Apple
+    Silicon and ``/usr/local/bin/osx-cpu-temp`` on Intel. ``which``
+    via ``/usr/bin/env`` walks PATH for either.
+    """
+    for path in (
+        "/opt/homebrew/bin/osx-cpu-temp",
+        "/usr/local/bin/osx-cpu-temp",
+    ):
+        try:
+            res = subprocess.run(
+                [path],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if res.returncode != 0:
+            continue
+        val = _parse_first_float(res.stdout)
+        if val is not None:
+            return val
+    return None
+
+
 def read_temp_c() -> float | None:
     """Best-effort CPU temperature in °C (see module docstring order)."""
     cmd = os.environ.get("PRECIS_TEMP_CMD")
@@ -144,6 +180,8 @@ def read_temp_c() -> float | None:
             return temp
     if platform.system() == "Linux":
         return _temp_from_linux_thermal()
+    if platform.system() == "Darwin":
+        return _temp_from_macos_smc()
     return None
 
 

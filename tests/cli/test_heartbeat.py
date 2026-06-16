@@ -108,6 +108,52 @@ def test_temp_from_linux_thermal(monkeypatch) -> None:
 
 
 def test_read_temp_none_on_mac_without_cmd(monkeypatch) -> None:
+    """Mac without ``osx-cpu-temp`` installed and without
+    PRECIS_TEMP_CMD → None. Stub the macOS SMC probe to None so we
+    don't accidentally pick up a real brew install in CI."""
     monkeypatch.delenv("PRECIS_TEMP_CMD", raising=False)
     monkeypatch.setattr(heartbeat.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(heartbeat, "_temp_from_macos_smc", lambda: None)
     assert heartbeat.read_temp_c() is None
+
+
+def test_read_temp_uses_macos_smc_when_available(monkeypatch) -> None:
+    """When ``osx-cpu-temp`` returns "47.5°C" we lift that float into
+    the heartbeat reading."""
+    monkeypatch.delenv("PRECIS_TEMP_CMD", raising=False)
+    monkeypatch.setattr(heartbeat.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(heartbeat, "_temp_from_macos_smc", lambda: 47.5)
+    assert heartbeat.read_temp_c() == 47.5
+
+
+def test_temp_from_macos_smc_parses_brew_binary_output(monkeypatch) -> None:
+    """The brew binary outputs "47.5°C\\n"; parse the first float."""
+    import subprocess as _sp
+
+    def _fake_run(cmd, **kw):
+        # Match either Apple Silicon or Intel install path.
+        if cmd[0] in (
+            "/opt/homebrew/bin/osx-cpu-temp",
+            "/usr/local/bin/osx-cpu-temp",
+        ):
+            class _R:
+                returncode = 0
+                stdout = "47.5°C\n"
+                stderr = ""
+            return _R()
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(_sp, "run", _fake_run)
+    monkeypatch.setattr(heartbeat.subprocess, "run", _fake_run)
+    assert heartbeat._temp_from_macos_smc() == 47.5
+
+
+def test_temp_from_macos_smc_returns_none_when_binary_missing(monkeypatch) -> None:
+    """When neither install path exists, the probe returns None
+    (every Mac without the brew install just reports no temp)."""
+
+    def _raise_missing(cmd, **kw):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(heartbeat.subprocess, "run", _raise_missing)
+    assert heartbeat._temp_from_macos_smc() is None
