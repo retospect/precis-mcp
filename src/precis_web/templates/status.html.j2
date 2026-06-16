@@ -87,6 +87,61 @@
   {% endif %}
 </section>
 
+<!-- Claude OAuth quota — snapshot of the Anthropic rate-limit headers
+     written by the agent-worker `quota_check` pass. Mirrors Claude
+     Code's own `/usage` panel. Updated every ~10 min while the agent
+     worker is running; shows "snapshot unavailable" before first
+     refresh. -->
+{% if quota.get('windows') %}
+<section class="mb-6">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-sm font-semibold">Claude OAuth quota</h2>
+    {% if quota.get('ts') %}
+    <span class="text-xs text-slate-400">snapshot {{ quota.ts }}</span>
+    {% endif %}
+  </div>
+  <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for w in quota.windows %}
+    <div class="p-3 flex items-center gap-3">
+      <div class="w-44 shrink-0 text-sm">
+        <div class="font-medium text-slate-700">{{ w.label }}</div>
+        {% if w.resets_at %}
+        <div class="text-xs text-slate-400">resets {{ w.resets_at }}</div>
+        {% endif %}
+      </div>
+      <div class="flex-1">
+        {% set pct = w.used_percentage if w.used_percentage is not none else 0 %}
+        {% set safe_pct = (pct if pct < 100 else 100) %}
+        <div class="h-2 rounded bg-slate-100 overflow-hidden">
+          <div class="h-2 {% if pct >= 90 %}bg-rose-500{% elif pct >= 70 %}bg-amber-500{% else %}bg-emerald-500{% endif %}"
+               style="width: {{ '%.1f'|format(safe_pct) }}%"></div>
+        </div>
+      </div>
+      <div class="w-16 text-right shrink-0 text-sm font-medium tabular-nums
+                  {% if pct >= 90 %}text-rose-600{% elif pct >= 70 %}text-amber-600{% else %}text-slate-700{% endif %}">
+        {{ '%.0f'|format(pct) }}%
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if quota.get('representative_claim') %}
+  <p class="mt-2 text-xs text-slate-500">
+    Binding window: <code>{{ quota.representative_claim }}</code>
+  </p>
+  {% endif %}
+</section>
+{% else %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Claude OAuth quota</h2>
+  <p class="text-sm text-slate-500">
+    No snapshot yet — the agent-worker <code>quota_check</code> pass
+    writes one after its first claude -p call (within ~10 min of
+    deploy). Anthropic only returns rate-limit headers for Claude.ai
+    Pro/Max subscribers, so free-tier accounts will stay empty.
+  </p>
+</section>
+{% endif %}
+
 <!-- Claude usage rolled up from ref_events.cost_usd. -->
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2">Claude usage</h2>

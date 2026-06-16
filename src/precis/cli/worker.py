@@ -136,6 +136,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "deep_review",
             "dispatch",
             "sweeper",
+            "quota_check",
         ),
         default=None,
         help="Restrict to one handler kind. Overrides --profile when "
@@ -302,6 +303,7 @@ def run(args: argparse.Namespace) -> None:
                 "structural",
                 "deep_review",
                 "job_claude_inproc",
+                "quota_check",
             }
         )
         profile_passes = {
@@ -573,6 +575,21 @@ def run(args: argparse.Namespace) -> None:
                 return run_sweeper_pass(store, limit=batch_size)
 
             ref_passes.append(_sweeper_pass)
+
+        # Quota-check pass — refresh the Claude.ai OAuth utilisation
+        # snapshot via one 1-token `claude -p "quota" --output-format
+        # json` call. Agent profile only: hermes's OAuth state lives
+        # there. Short-circuits when the persisted snapshot is younger
+        # than REFRESH_INTERVAL_S (default 600s), so the cost is one
+        # SQL probe per idle cycle + a 2-token completion every 10 min.
+        if _pass_enabled("quota_check"):
+            from precis.workers.quota_check import run_quota_check_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _quota_check_pass(batch_size: int) -> _BatchResult:
+                return run_quota_check_pass(store, limit=batch_size)
+
+            ref_passes.append(_quota_check_pass)
 
         # dream_agent — replaces the legacy bash dream-pass.sh with
         # a Python-side dispatch through call_claude_agent. Loads the

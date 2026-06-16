@@ -235,6 +235,51 @@ def _app_version() -> str:
         return "unknown"
 
 
+_WINDOW_LABEL: dict[str, str] = {
+    "five_hour": "5-hour session",
+    "seven_day": "Week (all models)",
+    "seven_day_sonnet": "Week (Sonnet only)",
+    "seven_day_opus": "Week (Opus only)",
+    "overage": "Overage / pay-per-use",
+}
+
+
+def _claude_quota(store: Any) -> dict[str, Any]:
+    """Render the OAuth utilisation snapshot for the Status panel.
+
+    Reads the singleton ``claude_quota_snapshot`` row written by the
+    agent-worker ``quota_check`` pass. Returns ``{}`` when nothing has
+    been written yet (free tier, or first run before the pass has
+    fired). The template renders "snapshot unavailable" in that case.
+    """
+    row = store.read_claude_quota(scope="unified")
+    if row is None:
+        return {}
+    data = row.data or {}
+    windows = data.get("windows") or {}
+    rendered: list[dict[str, Any]] = []
+    for key, payload in windows.items():
+        if not isinstance(payload, dict):
+            continue
+        rendered.append(
+            {
+                "key": key,
+                "label": _WINDOW_LABEL.get(key, key),
+                "used_percentage": payload.get("used_percentage"),
+                "resets_at": payload.get("resets_at"),
+            }
+        )
+    # Show 5h first, then weeklies, then overage; alphabetical within
+    # each tier matches Claude Code's own ordering in `/usage`.
+    _ORDER = ("five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus", "overage")
+    rendered.sort(key=lambda w: _ORDER.index(w["key"]) if w["key"] in _ORDER else 99)
+    return {
+        "ts": row.ts.isoformat() if row.ts else None,
+        "representative_claim": data.get("representative_claim"),
+        "windows": rendered,
+    }
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
@@ -250,6 +295,7 @@ async def index(request: Request) -> HTMLResponse:
             "todo_status": _safe(lambda: _todo_status(store)) or [],
             "events": _safe(lambda: _recent_events(store)) or [],
             "usage": _safe(lambda: _claude_usage(store)) or {},
+            "quota": _safe(lambda: _claude_quota(store)) or {},
             "hosts": _safe(lambda: _hosts(store)) or [],
             "heartbeats": _safe(lambda: _heartbeats(store)) or [],
             "corpus_dir": "  ".join(str(p) for p in cfg.corpus_dirs),
