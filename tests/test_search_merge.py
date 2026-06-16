@@ -301,3 +301,102 @@ def test_ref_helper_preview_callable() -> None:
         pairs, kind="oracle", preview_for=lambda r: f"custom: {r.title}"
     )
     assert hit.preview == "custom: Title"
+
+
+# ---------------------------------------------------------------------------
+# view='keywords' — compact id|kind|keywords TOON shape (T10.1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeBlockKw:
+    text: str
+    pos: int
+    keywords: tuple[str, ...] = ()
+
+
+def test_block_adapter_propagates_block_keywords_to_hit() -> None:
+    """The adapter must pass ``block.keywords`` through to the SearchHit
+    so the keywords renderer has something to project."""
+    block = _FakeBlockKw(text="body", pos=3, keywords=("photocatalysis", "tio2"))
+    ref = FakeRef("Title", "abc", id=10)
+    [hit] = block_hits_to_search_hits([(block, ref, 0.5)], kind="paper")
+    assert hit.keywords == ("photocatalysis", "tio2")
+
+
+def test_block_adapter_defaults_to_empty_keywords_tuple() -> None:
+    """Producers that don't populate keywords still produce valid hits;
+    the keywords cell renders empty."""
+    block = _FakeBlockKw(text="body", pos=3)
+    ref = FakeRef("Title", "abc", id=10)
+    [hit] = block_hits_to_search_hits([(block, ref, 0.5)], kind="paper")
+    assert hit.keywords == ()
+
+
+def test_keywords_shape_renders_compact_table() -> None:
+    """``output_shape='keywords'`` swaps the renderer for a 3-col table
+    with no preview body — that's the whole point of the shape."""
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="paper",
+            title="Long-title-here that should NOT appear in the cells",
+            preview="this preview SHOULD NOT appear",
+            slug="acheson26",
+            pos=5,
+            keywords=("photocatalysis", "tio2"),
+        )
+    ]
+    s2 = [
+        SearchHit(
+            score=0.8,
+            kind="memory",
+            title="An idea",
+            preview="don't surface this",
+            ref_id=42,
+            keywords=("attention", "dreaming"),
+        )
+    ]
+    out = merge_and_render(
+        [s1, s2],
+        page_size=10,
+        query="topics",
+        mode="rrf",
+        output_shape="keywords",
+    )
+    body = out.body
+    # Headline line first, then the TOON table.
+    assert "match" in body.lower()
+    # Cells: ids + keywords present.
+    assert "acheson26~5" in body
+    assert "42" in body
+    assert "photocatalysis" in body
+    assert "attention" in body
+    # Preview / title bodies absent — that's the whole compaction.
+    assert "should NOT appear" not in body
+    assert "don't surface this" not in body
+
+
+def test_keywords_shape_renders_empty_cell_when_no_keywords() -> None:
+    """A hit with no keywords still surfaces in the table (the agent
+    sees the ref exists) but the keywords cell is empty."""
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="paper",
+            title="t",
+            preview="p",
+            slug="foo",
+            pos=1,
+            keywords=(),
+        )
+    ]
+    out = merge_and_render(
+        [s1],
+        page_size=10,
+        query="topics",
+        mode="rrf",
+        output_shape="keywords",
+    )
+    assert "foo~1" in out.body
+    assert "paper" in out.body

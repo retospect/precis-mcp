@@ -120,6 +120,13 @@ class SearchHit:
     # See ``_render_toon_table``.
     summary: str | None = None
     remaining_words: int | None = None
+    # Per-hit keyword list (canonical lower-case forms from
+    # ``chunks.keywords``). Block-level handlers populate via
+    # ``block_hits_to_search_hits`` reading ``block.keywords``; ref-level
+    # handlers can populate from their own keyword surface. Empty tuple
+    # means "no keywords for this hit" — surfaced as an empty cell in
+    # ``view='keywords'``. See :func:`_render_keywords_table`.
+    keywords: tuple[str, ...] = ()
 
     @property
     def handle(self) -> str:
@@ -137,7 +144,7 @@ class SearchHit:
         return "?"
 
 
-_OutputShape = Literal["markdown", "toon"]
+_OutputShape = Literal["markdown", "toon", "keywords"]
 
 
 def merge_and_render(
@@ -218,6 +225,8 @@ def merge_and_render(
     ]
     if output_shape == "toon":
         lines.append(_render_toon_table(rendered))
+    elif output_shape == "keywords":
+        lines.append(_render_keywords_table(rendered))
     else:
         for i, hit in enumerate(rendered, 1):
             lines.append(_render_hit(i, hit, show_label=show_label))
@@ -377,6 +386,42 @@ def _render_toon_table(hits: list[SearchHit]) -> str:
     return render_agent_table(rows, schema=schema)
 
 
+def _render_keywords_table(hits: list[SearchHit]) -> str:
+    """Render hits as a compact ``id | kind | keywords`` TOON table.
+
+    Designed for the ``view='keywords'`` cross-kind discovery shape —
+    one row per hit, no preview text. Keywords come from
+    ``SearchHit.keywords`` (populated by ``block_hits_to_search_hits``
+    from each block's ``chunks.keywords`` array). Hits with no
+    keywords still appear so the agent sees the ref exists; the
+    ``keywords`` cell is empty for those rows.
+
+    Token economy: ~6 chars per keyword + the row scaffolding. A
+    50-hit page comes in at well under a quarter of the equivalent
+    markdown-preview shape. Built for "what topics span the corpus"
+    LLM scans where the bodies don't matter yet.
+    """
+    from precis.format import render_agent_table
+
+    rows: list[dict[str, str]] = []
+    for hit in hits:
+        if hit.slug:
+            ident = f"{hit.slug}~{hit.pos}" if hit.pos is not None else hit.slug
+        elif hit.ref_id is not None:
+            ident = str(hit.ref_id)
+        else:
+            ident = "?"
+        rows.append(
+            {
+                "id": ident,
+                "kind": hit.kind,
+                "keywords": ", ".join(hit.keywords) if hit.keywords else "",
+            }
+        )
+    schema = ["id", "kind", "keywords"]
+    return render_agent_table(rows, schema=schema)
+
+
 def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
     label = ""
     if show_label:
@@ -466,6 +511,7 @@ def block_hits_to_search_hits(
                 dedupe = f"{kind}:{slug}"
             else:
                 dedupe = f"{kind}:{slug}~{pos}"
+        kw = getattr(block, "keywords", None) or ()
         out.append(
             SearchHit(
                 score=float(score),
@@ -478,6 +524,7 @@ def block_hits_to_search_hits(
                 extra_lines=extras,
                 ref_id=getattr(ref, "id", None),
                 dedupe_key=dedupe,
+                keywords=tuple(kw) if kw else (),
             )
         )
     return out

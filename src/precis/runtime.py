@@ -235,6 +235,21 @@ class PrecisRuntime:
         if verb == "search" and ("angle" in args or "like" in args):
             return self._dispatch_angle(kind, dict(args))
 
+        # Compact keywords-only TOON: ``search(view='keywords', ...)``
+        # — discovery shape that returns just the keyword arrays for
+        # the top hits (no preview text). Cross-kind by default (so
+        # ``view='keywords'`` alone works as "what topics span the
+        # corpus"); a specific ``kind=`` narrows the fan-out the same
+        # way the cross-kind path does.
+        if (
+            verb == "search"
+            and str(args.get("view") or "").strip() == "keywords"
+        ):
+            return self._dispatch_cross_kind(
+                kind if kind is not None else _CROSS_KIND_WILDCARD,
+                dict(args),
+            )
+
         # Cross-kind: ``kind='*'`` or comma-list. Other verbs keep the
         # single-kind contract — multi-kind get is meaningless and
         # multi-kind put would silently scatter writes.
@@ -1301,6 +1316,11 @@ class PrecisRuntime:
             )
         else:
             empty_body = f"no matches across {', '.join(kinds)} for {q!r}"
+        # ``view='keywords'`` swaps the renderer for a compact
+        # id|kind|keywords TOON table — no preview text. Same fan-out
+        # / dedup / RRF; only the projection differs.
+        view = str(args.get("view") or "").strip()
+        output_shape = "keywords" if view == "keywords" else "toon"
         response = merge_and_render(
             streams,
             page_size=top_k,
@@ -1308,7 +1328,7 @@ class PrecisRuntime:
             header_noun="match",
             mode="rrf",
             empty_body=empty_body,
-            output_shape="toon",
+            output_shape=output_shape,
         )
 
         # Round-2 picky F-8: prepend a per-kind hit-count line under the
