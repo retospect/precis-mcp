@@ -693,6 +693,64 @@ def test_console_run_bad_arg_no_dispatch(client, runtime) -> None:
     assert runtime.calls == []  # nothing dispatched
 
 
+def test_console_quick_online_get(client, runtime) -> None:
+    """Online mode → ``get(kind=..., id=<query>)`` for the picked service."""
+    resp = client.post(
+        "/console/quick",
+        data={"service": "math", "mode": "online", "query": "population of Ireland"},
+    )
+    assert resp.status_code == 200
+    verb, args = runtime.calls[-1]
+    assert verb == "get"
+    assert args == {"kind": "math", "id": "population of Ireland"}
+    # Breadcrumb so the operator can verify what ran.
+    assert "get(kind='math'" in resp.text
+
+
+def test_console_quick_cache_search(client, runtime) -> None:
+    """Cache mode → ``search(kind=..., q=<query>)``."""
+    resp = client.post(
+        "/console/quick",
+        data={
+            "service": "perplexity-research",
+            "mode": "cache",
+            "query": "two-photon absorption",
+        },
+    )
+    assert resp.status_code == 200
+    verb, args = runtime.calls[-1]
+    assert verb == "search"
+    assert args == {"kind": "perplexity-research", "q": "two-photon absorption"}
+
+
+def test_console_quick_unknown_service_no_dispatch(client, runtime) -> None:
+    resp = client.post(
+        "/console/quick",
+        data={"service": "bogus", "mode": "online", "query": "anything"},
+    )
+    assert resp.status_code == 200
+    assert "unknown service" in resp.text
+    assert runtime.calls == []
+
+
+def test_console_quick_empty_query_no_dispatch(client, runtime) -> None:
+    resp = client.post(
+        "/console/quick",
+        data={"service": "youtube", "mode": "online", "query": "   "},
+    )
+    assert resp.status_code == 200
+    assert "query is required" in resp.text
+    assert runtime.calls == []
+
+
+def test_console_quick_youtube_hint_rendered(client) -> None:
+    """The YouTube-id hint must surface on the page so newcomers know
+    what to paste."""
+    resp = client.get("/console")
+    assert resp.status_code == 200
+    assert "dQw4w9WgXcQ" in resp.text  # example video id in the hint
+
+
 # ── status ─────────────────────────────────────────────────────────
 
 

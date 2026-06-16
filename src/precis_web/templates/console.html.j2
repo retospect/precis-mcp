@@ -21,6 +21,44 @@
   </div>
 </form>
 
+{# Quick-query shortcuts for the common external-service kinds. The
+   service dropdown picks the kind; the mode dropdown maps to
+   verb (online→get, cache→search). Wires the assembled call into
+   the result panel and echoes it as a breadcrumb so the operator
+   can copy it into the main form to tweak. #}
+<form method="post" action="/console/quick" class="mt-4 space-y-2">
+  <div class="flex items-center gap-2">
+    <select name="service" x-data="{}"
+            class="rounded-md border border-slate-300 text-sm px-2 py-2">
+      {% for s in quick_services %}
+      <option value="{{ s.value }}" {% if s.value == quick_service %}selected{% endif %}>{{ s.label }}</option>
+      {% endfor %}
+    </select>
+    <select name="mode" class="rounded-md border border-slate-300 text-sm px-2 py-2">
+      <option value="online" {% if quick_mode == 'online' %}selected{% endif %}>online · get</option>
+      <option value="cache"  {% if quick_mode == 'cache'  %}selected{% endif %}>cache · search</option>
+    </select>
+    <input name="query" value="{{ quick_query }}" placeholder="query / video id / expression"
+           class="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm font-mono" />
+    <button class="rounded-md bg-sky-600 text-white text-sm px-4 py-2">Quick run</button>
+  </div>
+  <div class="text-xs text-slate-500 space-y-0.5">
+    {% for s in quick_services %}
+    <p><span class="font-medium text-slate-600">{{ s.label }}:</span> {{ s.hint }}</p>
+    {% endfor %}
+    <p class="italic">
+      <span class="font-mono">online</span> hits the upstream API (may
+      cost) and is cached on success; <span class="font-mono">cache</span>
+      searches what's already stored.
+    </p>
+  </div>
+  {% if quick_call %}
+  <p class="text-xs text-sky-700">
+    Ran <span class="font-mono">{{ quick_call }}</span>
+  </p>
+  {% endif %}
+</form>
+
 {% if result is not none %}
 <div class="mt-5">
   <h2 class="text-sm font-semibold mb-2 {% if is_error %}text-rose-700{% else %}text-slate-700{% endif %}">
