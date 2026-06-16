@@ -324,6 +324,17 @@ def test_refs_detail_wrong_kind_404(client) -> None:
     assert resp.status_code == 400
 
 
+def test_refs_detail_kind_outside_legacy_nav_renders_200(client) -> None:
+    """``web`` (and friends) are in ``_REFS_BROWSABLE_KINDS`` but were
+    NOT in the legacy 6-kind nav set ``_REF_KIND_LABEL`` covers.
+    The detail route used to KeyError on the label lookup; verify it
+    falls back to a sensible auto-Title-Case label."""
+    resp = client.get("/refs/web/70")
+    assert resp.status_code == 200
+    # The fallback label uses the kind name title-cased.
+    assert "Web" in resp.text
+
+
 def test_conv_detail_renders_transcript_not_agent_card(client, runtime) -> None:
     # Clicking a conversation shows the turns, not the handler's
     # agent-facing overview card (no `get` dispatch, no `Next:` call

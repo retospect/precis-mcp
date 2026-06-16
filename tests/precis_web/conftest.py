@@ -122,6 +122,19 @@ class FakeStore:
         self.oracles = [
             make_ref(id=30, kind="oracle", slug="planck-constant", title="Planck"),
         ]
+        # Web ref to exercise the expanded-allowlist detail path —
+        # T12.6 expanded ``_REFS_BROWSABLE_KINDS`` to 19+ kinds but
+        # the legacy ``_REF_KIND_LABEL`` only had 6, so /refs/web/N
+        # KeyError'd on the lookup. Carry one fixture so the
+        # regression test can hit the route.
+        self.webs = [
+            make_ref(
+                id=70,
+                kind="web",
+                slug="example.com/page",
+                title="A cached web page",
+            ),
+        ]
         self.convs = [
             make_ref(
                 id=40,
@@ -154,6 +167,7 @@ class FakeStore:
             "memory": self.memories,
             "oracle": self.oracles,
             "conv": self.convs,
+            "web": self.webs,
         }.get(kind or "", [])
 
     def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
@@ -187,6 +201,7 @@ class FakeStore:
             + self.memories
             + self.oracles
             + self.convs
+            + self.webs
         }
         return {i: pool[i] for i in ids if i in pool}
 

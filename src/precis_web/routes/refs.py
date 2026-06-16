@@ -400,7 +400,7 @@ async def index(
         {
             "active_tab": f"refs:{kind}",
             "kind": kind,
-            "kind_label": _REF_KIND_LABEL[kind],
+            "kind_label": _REF_KIND_LABEL.get(kind, kind.replace("-", " ").title()),
             "rows": [_row(r) for r in refs],
             "q": query,
             "tag": tag or "",
@@ -435,7 +435,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             {
                 "active_tab": f"refs:{kind}",
                 "kind": kind,
-                "kind_label": _REF_KIND_LABEL[kind],
+                "kind_label": _REF_KIND_LABEL.get(kind, kind.replace("-", " ").title()),
                 "ref": _row(ref),
                 "turns": _conv_turns(store, ref.id),
             },
@@ -487,7 +487,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
         {
             "active_tab": f"refs:{kind}",
             "kind": kind,
-            "kind_label": _REF_KIND_LABEL[kind],
+            "kind_label": _REF_KIND_LABEL.get(kind, kind.replace("-", " ").title()),
             "ref": _row(ref),
             "body": body,
             "is_error": is_error,
