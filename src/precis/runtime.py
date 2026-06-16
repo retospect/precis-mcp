@@ -390,6 +390,26 @@ class PrecisRuntime:
                     f"likely cause is a missing env var "
                     f"(see get(kind='skill', id='precis-kinds-disabled-help'))."
                 )
+            # Federation hint: if any other process in the cluster
+            # currently advertises this kind via ``kind_provider``,
+            # name the hosts so the caller knows where to route. Pure
+            # informational — the local process still rejects the
+            # call. Skipped on stateless boots (no store) and on any
+            # query error (kind_provider may be absent on a fresh DB
+            # that hasn't run migration 0022 yet).
+            route_hint: str | None = None
+            store = getattr(self.hub, "store", None)
+            if store is not None:
+                try:
+                    hosts = store.find_kind_providers(kind)
+                except Exception:  # pragma: no cover - missing table / DB error
+                    hosts = []
+                if hosts:
+                    route_hint = (
+                        f"kind {kind!r} routes through host(s): {', '.join(hosts)}"
+                    )
+            if route_hint is not None:
+                next_hint = f"{route_hint}; {next_hint}"
             raise NotFound(
                 f"unknown kind: {kind}",
                 options=verb_kinds,

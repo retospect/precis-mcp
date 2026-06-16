@@ -229,6 +229,32 @@ class Hub:
         """All kinds that have at least one ``(kind, verb, *)`` entry."""
         return {k for (k, v, _m) in self.abilities if v == verb}
 
+    def kind_specs(self) -> list[Any]:
+        """Return the :class:`KindSpec` for every registered handler.
+
+        Used by the boot-time kinds-table upsert (see :func:`boot`):
+        each process exports its hub's enabled kinds, the store does
+        ``INSERT ... ON CONFLICT (slug) DO UPDATE`` for each, and the
+        ``kinds`` table stays the union of every-kind-anyone-has-ever-
+        registered. The runtime's per-call validator (numeric-vs-slug
+        on insert_ref) keeps querying the table; the table is now a
+        denormalised cache fed by code rather than a separate registry
+        kept in sync by hand.
+
+        Returned in deterministic slug order so the boot log is stable
+        across runs.
+        """
+        out: list[Any] = []
+        seen: set[str] = set()
+        for kind in sorted(self.handlers):
+            handler = self.handlers[kind]
+            spec = getattr(handler, "spec", None)
+            if spec is None or spec.kind in seen:
+                continue
+            seen.add(spec.kind)
+            out.append(spec)
+        return out
+
     def get(self, kind: str, verb: str, mode: str | None = None) -> Ability | None:
         """Look up one ability. Returns ``None`` on miss.
 
@@ -773,6 +799,33 @@ def boot(
     # first; a plugin attempting to claim an already-registered kind
     # is logged and skipped.
     _load_plugins(hub)
+
+    # Boot-time auto-upsert: every enabled hub kind lands in the
+    # ``kinds`` table so the FK target stays in sync with the code
+    # registry without a hand-maintained migration. See
+    # ``store/_kinds_ops.py`` for the design note. Skipped on stateless
+    # boots (no store): nothing to upsert against.
+    if store is not None:
+        try:
+            from precis.store._kinds_ops import boot_process_identity
+
+            specs = hub.kind_specs()
+            n = store.upsert_kinds(specs)
+            host, process = boot_process_identity()
+            store.upsert_kind_providers(specs, host=host, process=process)
+            log.info(
+                "precis dispatch boot: upserted %d kind row(s) into kinds table "
+                "(host=%s process=%s)",
+                n,
+                host,
+                process,
+            )
+        except Exception:
+            # Boot-time upsert failure is non-fatal — a process can
+            # still serve already-registered kinds; the operator sees
+            # the error in logs and can ship a fix without the cluster
+            # going dark.
+            log.exception("precis dispatch boot: kinds upsert failed (non-fatal)")
 
     log.info(
         "precis dispatch boot: %d kinds live: %s",
