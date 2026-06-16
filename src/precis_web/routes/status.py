@@ -267,6 +267,10 @@ def _claude_quota(store: Any) -> dict[str, Any]:
                 "label": _WINDOW_LABEL.get(key, key),
                 "used_percentage": payload.get("used_percentage"),
                 "resets_at": payload.get("resets_at"),
+                # Stream-json rate_limit_event carries "active" /
+                # "warning" / "exceeded"; legacy --output-format json
+                # has no such field and we get None.
+                "status": payload.get("status"),
             }
         )
     # Show 5h first, then weeklies, then overage; alphabetical within

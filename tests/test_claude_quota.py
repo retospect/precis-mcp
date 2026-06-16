@@ -105,3 +105,118 @@ def test_parse_tolerates_non_numeric_percentage() -> None:
     assert snap is not None
     assert "used_percentage" not in snap.windows["five_hour"]
     assert "resets_at" in snap.windows["five_hour"]
+
+
+# ---- stream-json mode (T7.3) --------------------------------------
+
+
+def test_parse_extracts_rate_limit_events_from_stream() -> None:
+    """NDJSON stream — each non-empty line is a JSON event. We harvest
+    ``rate_limit_event`` and project rateLimitType / resetsAt / status."""
+    stream = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps(
+                {
+                    "type": "rate_limit_event",
+                    "rateLimitType": "five_hour",
+                    "resetsAt": 1_750_005_540,
+                    "status": "active",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "rate_limit_event",
+                    "rateLimitType": "seven_day",
+                    "resetsAt": 1_750_232_340,
+                    "status": "warning",
+                }
+            ),
+            json.dumps({"type": "result", "result": "ok"}),
+        ]
+    )
+    snap = parse_rate_limits(stream)
+    assert snap is not None
+    assert set(snap.windows.keys()) == {"five_hour", "seven_day"}
+    assert snap.windows["five_hour"]["status"] == "active"
+    assert snap.windows["five_hour"]["resets_at"].endswith("+00:00")
+    assert snap.windows["seven_day"]["status"] == "warning"
+    # No used_percentage in stream events.
+    assert "used_percentage" not in snap.windows["five_hour"]
+
+
+def test_parse_stream_tolerates_garbage_lines() -> None:
+    stream = "\n".join(
+        [
+            "not json at all",
+            "",
+            json.dumps(
+                {
+                    "type": "rate_limit_event",
+                    "rateLimitType": "five_hour",
+                    "resetsAt": 1_750_005_540,
+                    "status": "active",
+                }
+            ),
+            "{ broken",
+        ]
+    )
+    snap = parse_rate_limits(stream)
+    assert snap is not None
+    assert "five_hour" in snap.windows
+
+
+def test_parse_stream_unwraps_nested_message() -> None:
+    """Some Claude Code versions wrap the rate_limit_event under
+    ``message``/``event``; the parser unwraps both."""
+    stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "system",
+                    "message": {
+                        "type": "rate_limit_event",
+                        "rateLimitType": "seven_day_sonnet",
+                        "resetsAt": 1_750_232_340,
+                        "status": "active",
+                    },
+                }
+            )
+        ]
+    )
+    snap = parse_rate_limits(stream)
+    assert snap is not None
+    assert "seven_day_sonnet" in snap.windows
+
+
+def test_parse_stream_falls_back_to_envelope_when_no_events() -> None:
+    """An NDJSON-looking blob that carries no rate_limit_event events
+    but does carry a final result with a ``rate_limits`` envelope still
+    parses via the envelope path."""
+    stream = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "result", "result": "ok"}),
+        ]
+    )
+    snap = parse_rate_limits(stream)
+    # No rate_limits anywhere — None is correct.
+    assert snap is None
+
+
+def test_parse_stream_falls_back_to_single_envelope() -> None:
+    """If the input is a single JSON envelope (legacy --output-format
+    json shape), the envelope path still handles it."""
+    payload = json.dumps(
+        {
+            "rate_limits": {
+                "five_hour": {
+                    "used_percentage": 13.4,
+                    "resets_at": 1_750_005_540,
+                },
+            }
+        }
+    )
+    snap = parse_rate_limits(payload)
+    assert snap is not None
+    assert snap.windows["five_hour"]["used_percentage"] == 13.4

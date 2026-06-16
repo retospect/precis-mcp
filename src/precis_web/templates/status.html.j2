@@ -110,8 +110,9 @@
         <div class="text-xs text-slate-400">resets {{ w.resets_at }}</div>
         {% endif %}
       </div>
+      {% if w.used_percentage is not none %}
       <div class="flex-1">
-        {% set pct = w.used_percentage if w.used_percentage is not none else 0 %}
+        {% set pct = w.used_percentage %}
         {% set safe_pct = (pct if pct < 100 else 100) %}
         <div class="h-2 rounded bg-slate-100 overflow-hidden">
           <div class="h-2 {% if pct >= 90 %}bg-rose-500{% elif pct >= 70 %}bg-amber-500{% else %}bg-emerald-500{% endif %}"
@@ -122,6 +123,20 @@
                   {% if pct >= 90 %}text-rose-600{% elif pct >= 70 %}text-amber-600{% else %}text-slate-700{% endif %}">
         {{ '%.0f'|format(pct) }}%
       </div>
+      {% else %}
+      {# Stream-json snapshots carry status but no used_percentage —
+         show the status pill in the bar slot and leave the right
+         column blank rather than misleading with a 0% bar. #}
+      <div class="flex-1">
+        {% set st = w.status or 'unknown' %}
+        <span class="inline-block text-xs px-2 py-0.5 rounded font-medium
+                     {% if st == 'exceeded' %}bg-rose-100 text-rose-700
+                     {% elif st == 'warning' %}bg-amber-100 text-amber-700
+                     {% elif st == 'active' or st == 'allowed' %}bg-emerald-100 text-emerald-700
+                     {% else %}bg-slate-100 text-slate-600{% endif %}">{{ st }}</span>
+      </div>
+      <div class="w-16 text-right shrink-0 text-xs text-slate-400">—</div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
