@@ -20,6 +20,28 @@ def test_healthz(client) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
+# ── papers-needed (stub backlog) ───────────────────────────────────
+
+
+def test_papers_needed_renders_backlog(client) -> None:
+    resp = client.get("/papers-needed")
+    assert resp.status_code == 200
+    # Titled stub
+    assert "Ballistic carbon nanotube" in resp.text
+    # DOI link wraps the identifier with the publisher URL
+    assert "https://doi.org/10.1038/nature01797" in resp.text
+    # arXiv link
+    assert "https://arxiv.org/abs/cond-mat/0410550" in resp.text
+    # State badge text from the fake stub_backlog
+    assert "never attempted" in resp.text
+
+
+def test_papers_needed_awaiting_filter(client) -> None:
+    resp = client.get("/papers-needed?awaiting=1")
+    assert resp.status_code == 200
+    assert "Ballistic carbon nanotube" in resp.text
+
+
 # ── tasks ──────────────────────────────────────────────────────────
 
 
@@ -862,6 +884,239 @@ def test_post_preserves_focus_in_redirect(client) -> None:
     )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/tasks?focus=1"
+
+
+# ── tasks: clickable badges + kind:* pseudo-tag + closed-job hide ──
+
+
+def test_filter_rows_matches_kind_pseudo_tag() -> None:
+    """``kind:job`` is a filterable pseudo-tag like ``STATUS:*``."""
+    from precis_web.routes.tasks import _filter_rows
+
+    rows = [
+        _row(1, tags=[]),
+        _row(99, kind="job", parent_id=1, tags=[]),
+    ]
+    # Requiring kind:todo keeps the todo (job rides along under parent).
+    kept = _filter_rows(rows, require=["kind:todo"], exclude=[])
+    assert [r["id"] for r in kept] == [1, 99]
+    # Excluding kind:job drops jobs even when their parent matched.
+    rows2 = [
+        _row(1, tags=["project:p"]),
+        _row(99, kind="job", parent_id=1, tags=[]),
+    ]
+    # kind:job on a todo never matches → require=kind:job over a todo
+    # set yields no matches, so the kept set is empty.
+    kept = _filter_rows(rows2, require=["kind:job"], exclude=[])
+    assert kept == []
+
+
+def test_filter_rows_matches_lowercase_status_too() -> None:
+    """``status:doing`` matches the same row as ``STATUS:doing``."""
+    from precis_web.routes.tasks import _filter_rows
+
+    rows = [_row(1, status="doing"), _row(2, status="done")]
+    assert [r["id"] for r in _filter_rows(rows, require=["status:doing"], exclude=[])] == [1]
+    assert [r["id"] for r in _filter_rows(rows, require=["STATUS:doing"], exclude=[])] == [1]
+
+
+def test_hide_inactive_jobs_drops_closed_attempts() -> None:
+    """Failed / succeeded / done / won't-do jobs are dropped by default."""
+    from precis_web.routes.tasks import _hide_inactive_jobs
+
+    rows = [
+        _row(1),  # todo, kept
+        _row(10, kind="job", parent_id=1, status="failed"),
+        _row(11, kind="job", parent_id=1, status="succeeded"),
+        _row(12, kind="job", parent_id=1, status="done"),
+        _row(13, kind="job", parent_id=1, status="won't-do"),
+        _row(14, kind="job", parent_id=1, status="running"),
+    ]
+    kept = _hide_inactive_jobs(rows, show_all=False)
+    assert [r["id"] for r in kept] == [1, 14]
+    # show_all opts the hide off.
+    assert _hide_inactive_jobs(rows, show_all=True) == rows
+
+
+def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
+    """``show_jobs=active`` (the default) drops failed job rows."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [
+        make_ref(id=1, kind="todo", title="parent todo"),
+    ]
+    import precis_web.routes.tasks as tasks_mod
+
+    monkeypatch_jobs = [
+        {
+            "id": 99,
+            "parent_id": 1,
+            "title": "plan_tick attempt",
+            "lease_until": None,
+        }
+    ]
+    original_child = tasks_mod._child_jobs
+    original_tags = tasks_mod._load_tags
+
+    def child_jobs(store, todo_ids):
+        return monkeypatch_jobs if 1 in todo_ids else []
+
+    def load_tags(store, ref_ids):
+        out = {rid: {"status": "open", "level": ""} for rid in ref_ids}
+        if 99 in out:
+            out[99] = {"status": "failed", "level": ""}
+        return out
+
+    tasks_mod._child_jobs = child_jobs  # type: ignore[assignment]
+    tasks_mod._load_tags = load_tags  # type: ignore[assignment]
+    try:
+        # Default: closed job hidden.
+        resp = client.get("/tasks")
+        assert resp.status_code == 200
+        assert "plan_tick attempt" not in resp.text
+        # show_jobs=all: closed job visible.
+        resp = client.get("/tasks?show_jobs=all")
+        assert resp.status_code == 200
+        assert "plan_tick attempt" in resp.text
+    finally:
+        tasks_mod._child_jobs = original_child  # type: ignore[assignment]
+        tasks_mod._load_tags = original_tags  # type: ignore[assignment]
+
+
+def test_dashboard_status_badge_is_clickable_filter(client) -> None:
+    """STATUS / level badges render as ``<a>`` links that filter on click."""
+    resp = client.get("/tasks")
+    assert resp.status_code == 200
+    # Fake store seeds two open todos; the open badge should be a link
+    # to ?require=STATUS:open. The kind:todo badge isn't rendered (only
+    # job rows get a kind badge).
+    assert "require=STATUS%3Aopen" in resp.text
+
+
+def test_tasks_url_round_trips_show_jobs() -> None:
+    from precis_web.routes.tasks import _tasks_url
+
+    assert _tasks_url([], [], None, "all") == "/tasks?show_jobs=all"
+    assert _tasks_url([], [], None, None) == "/tasks"
+    assert (
+        _tasks_url(["kind:job"], [], None, "all")
+        == "/tasks?require=kind%3Ajob&show_jobs=all"
+    )
+
+
+# ── tasks: mermaid tree view ───────────────────────────────────────
+
+
+def test_build_mermaid_tree_root_and_children() -> None:
+    """Two-level subtree renders the root and its kids as labelled nodes."""
+    from precis_web.routes.tasks import _build_mermaid_tree
+
+    rows = [
+        _row(1, status="open", depth=0),
+        _row(2, parent_id=1, status="doing", depth=1),
+        _row(3, parent_id=1, status="done", depth=1),
+    ]
+    out = _build_mermaid_tree(rows, root_id=1, max_depth=3)
+    assert "graph TD" in out
+    assert 'N1["#1 row 1"]:::active' in out
+    assert 'N2["#2 row 2"]:::active' in out
+    assert 'N3["#3 row 3"]:::done' in out
+    assert "N1 --> N2" in out and "N1 --> N3" in out
+    # Root highlight class.
+    assert "class N1 root" in out
+    # Class definitions present so the diagram is self-contained.
+    assert "classDef active" in out
+    assert "classDef done" in out
+
+
+def test_build_mermaid_tree_truncates_at_max_depth() -> None:
+    """Nodes beyond max_depth are excluded; the parent gets a … suffix."""
+    from precis_web.routes.tasks import _build_mermaid_tree
+
+    rows = [
+        _row(1, depth=0),
+        _row(2, parent_id=1, depth=1),
+        _row(3, parent_id=2, depth=2),
+        _row(4, parent_id=3, depth=3),
+    ]
+    out = _build_mermaid_tree(rows, root_id=1, max_depth=2)
+    assert "N1" in out and "N2" in out and "N3" in out
+    # N4 is past the depth cap.
+    assert "N4" not in out
+    # N3 gets the truncation marker in its label because it has kids
+    # we didn't expand.
+    assert 'N3["#3 row 3 …"]' in out
+
+
+def test_build_mermaid_tree_missing_root_is_empty() -> None:
+    from precis_web.routes.tasks import _build_mermaid_tree
+
+    assert _build_mermaid_tree([], root_id=42, max_depth=3) == ""
+    assert _build_mermaid_tree([_row(1)], root_id=99, max_depth=3) == ""
+
+
+def test_build_mermaid_tree_excludes_jobs() -> None:
+    """Job rows aren't structure — they don't appear in the diagram."""
+    from precis_web.routes.tasks import _build_mermaid_tree
+
+    rows = [
+        _row(1, depth=0),
+        _row(2, parent_id=1, depth=1),
+        _row(99, kind="job", parent_id=1, depth=1),
+    ]
+    out = _build_mermaid_tree(rows, root_id=1, max_depth=3)
+    assert "N99" not in out and "N1 --> N99" not in out
+
+
+def test_dashboard_emits_mermaid_when_tree_and_focus(client, runtime) -> None:
+    """``?focus=N&tree=3`` renders a Mermaid panel."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [
+        make_ref(id=1, kind="todo", title="parent"),
+        make_ref(id=2, kind="todo", title="child", parent_id=1),
+    ]
+    resp = client.get("/tasks?focus=1&tree=3")
+    assert resp.status_code == 200
+    # Mermaid source block present.
+    assert 'class="mermaid"' in resp.text
+    assert "graph TD" in resp.text
+    # CDN loader present (lazy-loaded only when the diagram is shown).
+    assert "mermaid.esm.min.mjs" in resp.text
+    # Depth selector renders for each allowed value.
+    for d in (1, 2, 3, 5, 10):
+        assert f"{d} deep" in resp.text
+
+
+def test_dashboard_no_mermaid_without_focus(client) -> None:
+    """``?tree=3`` without focus is a no-op (no diagram block)."""
+    resp = client.get("/tasks?tree=3")
+    assert resp.status_code == 200
+    assert "graph TD" not in resp.text
+    assert "mermaid.esm.min.mjs" not in resp.text
+
+
+def test_dashboard_focus_shows_inline_add_child_form(client, runtime) -> None:
+    """Focused node gets a prominent + child form (not buried in ⋯)."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [
+        make_ref(id=1, kind="todo", title="parent"),
+    ]
+    resp = client.get("/tasks?focus=1")
+    assert resp.status_code == 200
+    # Form action targets the focused id directly.
+    assert 'action="/tasks/1/children"' in resp.text
+    # Placeholder mentions the focused id so the operator knows where
+    # the child will land.
+    assert "Add a child under #1" in resp.text
+
+
+def test_tasks_url_round_trips_tree() -> None:
+    from precis_web.routes.tasks import _tasks_url
+
+    assert _tasks_url([], [], 1, None, 3) == "/tasks?focus=1&tree=3"
+    assert _tasks_url([], [], 1, None, None) == "/tasks?focus=1"
 
 
 # ── patent detail chunks ───────────────────────────────────────────

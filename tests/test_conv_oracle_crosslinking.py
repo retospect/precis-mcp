@@ -148,17 +148,21 @@ class TestConvPutAccepted:
 
 
 class TestConvPutRejected:
-    """Conv transcripts are capture-on-write; ``put`` is unwired on
-    this kind after the seven-verb cutover. Tag and link mutation
-    move to the dedicated verbs.
+    """Conv ``put`` is the chat-bridge entry point — it appends a turn
+    to the ref's block list. The historical "put unsupported" case has
+    been superseded by that wiring; the remaining tests in this class
+    cover the shape-level rejections on link (chunk selector, unknown
+    slug, path view).
     """
 
-    def test_put_unsupported(self, conv: ConversationHandler, store: Store) -> None:
-        _seed_conv(store, "thread-1")
-        from precis.errors import Unsupported
-
-        with pytest.raises(Unsupported, match="conv does not support put"):
-            conv.put(id="thread-1", text="rewrite")
+    def test_put_appends_a_turn(
+        self, conv: ConversationHandler, store: Store
+    ) -> None:
+        """put(text=…) appends a block to the conv ref; not unsupported."""
+        rid = _seed_conv(store, "thread-1")
+        before = len(store.list_blocks_for_ref(rid))
+        conv.put(id="thread-1", text="follow-up message", author="alice")
+        assert len(store.list_blocks_for_ref(rid)) == before + 1
 
     def test_unknown_slug_on_link(self, conv: ConversationHandler) -> None:
         with pytest.raises(NotFound, match="conv slug 'no-such' not found"):

@@ -23,8 +23,14 @@ def handler(hub: Hub) -> PaperHandler:
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default: no S2 enrichment (offline). Tests opt in explicitly."""
-    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    """Default: a placeholder S2 lookup that satisfies the verify=True
+    validator without populating any stub fields. Individual tests
+    override to return real metadata, or ``None`` to exercise the
+    hallucinated-identifier rejection path.
+    """
+    monkeypatch.setattr(
+        paper_mod, "_lookup_acquire_metadata", lambda *_: {"_resolved": True}
+    )
 
 
 def _ref_id(body: str) -> int:
@@ -150,6 +156,42 @@ def test_acquire_does_not_retag_existing_paper(
     assert _ref_id(r.body) == existing.id
     # never slap DREAM:acquire onto an already-held paper
     assert "DREAM:acquire" not in _tags(store, existing.id)
+
+
+# ── verify=True (default): reject hallucinated identifiers ─────────
+
+
+def test_acquire_rejects_unresolved_identifier_by_default(
+    handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """verify=True (default) + S2 returns None + no title → BadInput."""
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    with pytest.raises(BadInput, match="did not resolve"):
+        handler.acquire(identifier="doi:10.fake/hallucination")
+
+
+def test_acquire_verify_false_skips_validation(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """verify=False mints even when S2 returns nothing (real-but-unindexed)."""
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    r = handler.acquire(identifier="doi:10.brandnew/preprint", verify=False)
+    assert "minted stub" in r.body
+    rid = _ref_id(r.body)
+    assert ("doi", "10.brandnew/preprint") in _identifiers(store, rid)
+
+
+def test_acquire_title_hint_with_unresolved_id_marks_unverified(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unresolved identifier + title=hint mints with acquire:unverified tag."""
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    r = handler.acquire(
+        identifier="doi:10.niche/venue", title="My niche preprint"
+    )
+    assert "minted stub" in r.body
+    rid = _ref_id(r.body)
+    assert "acquire:unverified" in _tags(store, rid)
 
 
 # ── enrichment ──────────────────────────────────────────────────────

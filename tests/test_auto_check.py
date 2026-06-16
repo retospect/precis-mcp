@@ -74,6 +74,7 @@ def test_validate_known_registry_keys() -> None:
         "time_past",
         "tag_present",
         "child_job_succeeded",
+        "all_child_findings_resolved",
     }
 
 

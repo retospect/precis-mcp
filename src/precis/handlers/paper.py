@@ -274,6 +274,7 @@ class PaperHandler(Handler):
         title: str | None = None,
         reason: str | None = None,
         context_ref_id: int | str | None = None,
+        verify: bool = True,
         **_kw: Any,
     ) -> Response:
         """Queue a missing paper for fetch — the gated dream ``acquire`` tool.
@@ -300,6 +301,15 @@ class PaperHandler(Handler):
 
         Gated behind ``PRECIS_DREAM_ACQUIRE`` at the agent-tool surface
         (not enforced here, mirroring ``supersede``).
+
+        ``verify`` (default ``True``): when set, an unrecognised
+        identifier (Semantic Scholar returns no metadata) is rejected
+        with :class:`BadInput` so a hallucinated DOI / arXiv ID never
+        lands on the "Papers we need" backlog. Pass ``verify=False``
+        when minting a known-real preprint that S2 hasn't indexed yet,
+        or when the resolver is unreachable. Resolver outages mint with
+        ``meta.acquire_unverified=True`` so the operator can re-check
+        on a later pass.
         """
         has_identifier = bool(identifier and identifier.strip())
         has_title = bool(title and title.strip())
@@ -345,6 +355,7 @@ class PaperHandler(Handler):
         stub_title = title.strip() if has_title else None
         year: int | None = None
         identifiers: list[tuple[str, str]] = [id_pair] if id_pair else []
+        unverified = False
         if id_pair is not None:
             meta = _lookup_acquire_metadata(*id_pair)
             if meta:
@@ -364,6 +375,33 @@ class PaperHandler(Handler):
                         )
                         if pair not in identifiers:
                             identifiers.append(pair)
+            elif verify and not has_title:
+                # Strict path: caller gave us only an identifier and the
+                # resolver returned nothing. We cannot distinguish
+                # "DOI doesn't exist" from "S2 is down right now" — the
+                # safe default is to reject hallucinated identifiers, and
+                # let the caller pass ``verify=False`` for known-real
+                # niche / brand-new papers, or add a ``title=`` hint
+                # that converts this from "validate-or-reject" into
+                # "validate-best-effort" (the title path means the
+                # operator can still recognise the stub by hand).
+                kind_key, val = id_pair
+                raise BadInput(
+                    f"acquire: identifier {identifier!r} did not resolve "
+                    "via Semantic Scholar — likely a hallucinated or "
+                    "mistyped ID",
+                    next=(
+                        f"verify {kind_key}:{val} on doi.org / arxiv.org, "
+                        "OR add title='<best-known title>' to mint as a "
+                        "title-only stub for manual ingest, OR pass "
+                        "verify=False if you know the paper is real"
+                    ),
+                )
+            elif verify and has_title:
+                # We had a title hint, so the operator can still find
+                # this in the "Papers we need" tab even though we
+                # couldn't auto-confirm the identifier. Mark unverified.
+                unverified = True
 
         with self.store.tx() as conn:
             ref_id, created = self.store.upsert_stub_paper(
@@ -382,6 +420,16 @@ class PaperHandler(Handler):
                     set_by="agent",
                     conn=conn,
                 )
+                if unverified:
+                    # Open tag so the operator can filter the
+                    # "Papers we need" tab to un-validated stubs;
+                    # the worker fetch cascade still tries them.
+                    self.store.add_tag(
+                        ref_id,
+                        Tag.open("acquire:unverified"),
+                        set_by="agent",
+                        conn=conn,
+                    )
             if ctx_id is not None:
                 self.store.add_link(
                     src_ref_id=ctx_id,

@@ -93,6 +93,27 @@ class FakeStore:
                 authors=[{"family": "Jones", "given": "Bob"}],
                 meta={},  # no publisher abstract -> backfilled from chunks
             ),
+            # Stubs for the Papers-Needed tab — pdf_sha256 None.
+            make_ref(
+                id=90,
+                kind="paper",
+                slug="javey2003",
+                title="Ballistic carbon nanotube field-effect transistors",
+                year=2003,
+                pdf_sha256=None,
+                authors=[],
+                meta={},
+            ),
+            make_ref(
+                id=91,
+                kind="paper",
+                slug="novoselov2004",
+                title="",
+                year=None,
+                pdf_sha256=None,
+                authors=[],
+                meta={},
+            ),
         ]
         self.memories = [
             make_ref(id=20, kind="memory", title="A decision"),
@@ -183,6 +204,33 @@ class FakeStore:
             11: {"arxiv": "2501.01234"},
         }
         return {i: canned[i] for i in ref_ids if i in canned}
+
+    def stub_backlog(self, *, limit: int = 50, awaiting: bool = False):
+        # Two canned stubs: one never-attempted (always shown),
+        # one attempted >24h ago with a failure (shown in both views).
+        all_rows = [
+            {
+                "ref_id": 90,
+                "cite_key": "javey2003",
+                "identifier": "10.1038/nature01797",
+                "last_attempt": "",
+                "last_source": "",
+                "last_event": "",
+                "state": "never attempted",
+            },
+            {
+                "ref_id": 91,
+                "cite_key": "novoselov2004",
+                "identifier": "arxiv:cond-mat/0410550",
+                "last_attempt": "2026-06-13T10:00:00+00:00",
+                "last_source": "fetcher:unpaywall",
+                "last_event": "no_oa_version",
+                "state": "no OA version (24h ago)",
+            },
+        ]
+        # ``awaiting`` filtering — in the real query, recent fetch_ok
+        # would be excluded; both canned rows are awaiting here.
+        return all_rows[:limit]
 
     def locked_ref_ids(self, ref_ids):
         # No live Postgres locks under the fake; the Tasks tab's

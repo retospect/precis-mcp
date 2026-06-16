@@ -8,6 +8,52 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-16 — paper-writing cascade hardening)
+
+- **Stuck-job sweeper.** New worker pass `precis worker --only sweeper`
+  (also part of the default `system` profile rotation). Finds
+  `kind='job'` refs whose `STATUS:running` is older than
+  `PRECIS_STUCK_JOB_HOURS` (default 1.0h) and transitions them to
+  `STATUS:failed` with an `swept:claim-orphaned` open tag. The parent
+  todo's `child-failed:<job_id>` bubble fires automatically so the
+  cascade unblocks. Recovers from deploy-time orphans (the
+  pre-deploy worker dies mid-claim, the post-deploy worker ignores
+  already-running rows). See `src/precis/workers/sweeper.py`.
+- **`\citequote` macro in workspace tex skeleton.** Every cite in body
+  text must be `\citequote{key}{verbatim}` — the macro renders
+  `\cite{key}` plus, in review mode, a footnote with the verbatim
+  quote. `\showquotesfalse` hides the footnote in publish mode; the
+  .tex source carries the audit trail unchanged. See
+  `src/precis/data/workspace_templates/tex/main.tex`. The verbatim is
+  the same `source_quote` persisted on `kind='citation'`
+  (`precis-citation-help`).
+- **DOI extract skill** (`precis-doi-extract-help`). Planner-facing
+  guidance for reading sibling perplexity-research output + corpus
+  search results, identifying cited papers, and calling
+  `paper.acquire(identifier=…)` to mint stubs that the existing
+  `fetch_oa` worker enriches.
+- **Strict identifier validation on `paper.acquire()`.** Default
+  `verify=True` rejects identifiers Semantic Scholar can't resolve,
+  so hallucinated DOIs never land on the "Papers we need" backlog.
+  `verify=False` opts out for known-real preprints S2 hasn't indexed
+  yet; passing both an unresolved identifier *and* a `title=` hint
+  mints with `acquire:unverified` open tag so the operator can
+  re-check.
+- **Review-pass skills.** Three new one-pass-per-skill review
+  disciplines:
+  - `precis-review-citation-faithfulness` — for each `\citequote`,
+    fetch the cited paper's chunks and confirm the verbatim text
+    appears. Mints findings on paraphrased / fabricated / wrong-paper
+    cites.
+  - `precis-review-paragraph-flow` — topic sentence + body +
+    transition check per paragraph.
+  - `precis-review-section-structure` — intro frames contribution,
+    section list matches intro roadmap, conclusion follows from body.
+- **"Papers Needed" web tab.** Lists chunkless paper stubs (the
+  fetch_oa backlog), with optional `?awaiting=1` filter for the
+  fetcher's next-pass queue. DOI / arXiv identifiers are clickable
+  for one-click verification. Mirrors `precis stubs` CLI data shape.
+
 ### Changed (2026-06-15 — kind rename sweep)
 
 - **`kind='fc'` → `kind='flashcard'`.** Numeric-ref flashcards kind

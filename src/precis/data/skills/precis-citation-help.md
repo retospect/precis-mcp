@@ -66,6 +66,27 @@ search(kind='citation', q='MOF CO2 reduction')
 get(kind='citation', id='/recent')
 ```
 
+## When writing LaTeX, the citation bridges to `\citequote`
+
+The workspace's `main.tex` preamble defines a verbatim-quote citation
+macro (see precis-tex-help). When you emit `\citequote{key}{quote}`
+in a `.tex` body, use **exactly** the `source_quote` you persisted on
+`kind='citation'` — same string, same length, no paraphrase. The
+review-pass citation-faithfulness verifier reads the macro's second
+argument and confirms it appears in the cited paper's chunks; if you
+paraphrase between persist and render, the verifier flags the drift.
+
+```latex
+% In tex body — uses the persisted source_quote verbatim:
+Aqueous synthesis yields higher quantum yields than hot-injection
+\citequote{collins06}{we observed 12% Faradaic efficiency for CO2
+reduction at -0.3 V vs RHE}.
+```
+
+Bare `\cite{key}` in body text is a lint failure during the
+citation-faithfulness review — it strips the audit trail the
+verifier needs.
+
 ## Discipline that protects the audit trail
 
 **Store the source quote verbatim.** No paraphrase, no cleanup, no

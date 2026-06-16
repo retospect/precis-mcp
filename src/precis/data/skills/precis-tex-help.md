@@ -61,6 +61,40 @@ grouping. `\begin{equation}...\end{equation}` stays in one block only
 if it has no internal blank lines. `\cite{...}` keys are opaque text;
 for citation-graph navigation use `kind='paper'`.
 
+## Citations: always use `\citequote`, never bare `\cite`
+
+The workspace's `main.tex` preamble defines a verbatim-quote citation
+macro:
+
+```latex
+\newif\ifshowquotes
+\showquotestrue
+\newcommand{\citequote}[2]{\cite{#1}\ifshowquotes\footnote{``#2''}\fi}
+```
+
+**Every citation in body text MUST be written as
+`\citequote{key}{verbatim text from the cited source}`.** Bare
+`\cite{key}` is a lint failure during review — it strips the audit
+trail. The first argument is the bib key (same as you'd pass to
+`\cite`); the second is the exact passage from the cited paper that
+supports the claim — no paraphrase, no cleanup.
+
+```latex
+% Wrong — strips the verbatim quote, can't be audited:
+We see ballistic transport in CNTs \cite{javey2003}.
+
+% Right — verbatim quote travels with the cite:
+We see ballistic transport in CNTs \citequote{javey2003}{mean free
+paths exceeding 1\,\textmu m at room temperature were observed in
+metallic single-walled CNTs}.
+```
+
+The verbatim string is the same `source_quote` you persisted on
+`kind='citation'` — see precis-citation-help. The macro hides the
+footnote when `\showquotesfalse` is set in the file you compile
+(publish mode), so the .tex source remains the durable trace while
+the rendered PDF stays clean.
+
 ## Inspect a project's structure
 ## See the section hierarchy across included files
 ## What sections does main.tex contain?

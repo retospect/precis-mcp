@@ -109,7 +109,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="Which pass rotation to run. 'system' (default) = the "
         "everything-except-heavy-LLM rotation: embed, summarize, "
         "chunk_keywords, chase, fetch, tag_embeddings, auto_check, "
-        "schedule, nursery, dispatch, job_claude_inproc. 'agent' = "
+        "schedule, nursery, dispatch, sweeper. 'agent' = "
         "the LLM-heavy rotation: dream_agent, structural, deep_review. "
         "Each of those gates itself via env (PRECIS_DREAM_AGENT=1, "
         "PRECIS_STRUCTURAL_REVIEW=1, PRECIS_DEEP_REVIEW=1) and via the "
@@ -135,6 +135,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "structural",
             "deep_review",
             "dispatch",
+            "sweeper",
         ),
         default=None,
         help="Restrict to one handler kind. Overrides --profile when "
@@ -279,7 +280,7 @@ def run(args: argparse.Namespace) -> None:
         system_passes: frozenset[str] = frozenset({
             "embed", "summarize", "chunk_keywords", "chase", "fetch",
             "tag_embeddings", "auto_check", "schedule", "nursery",
-            "dispatch",
+            "dispatch", "sweeper",
         })
         # dream_agent stays out of the profile — it has its own
         # cadence (15-min LaunchDaemon via dream-pass.sh) and gates
@@ -543,6 +544,21 @@ def run(args: argparse.Namespace) -> None:
                 return run_dispatch_pass(store, limit=batch_size)
 
             ref_passes.append(_dispatch_pass)
+
+        # Sweeper pass — recovers cascades after orphaned claims.
+        # SQL-only: any kind='job' carrying STATUS:running older than
+        # PRECIS_STUCK_JOB_HOURS (default 1h) is transitioned to
+        # STATUS:failed with an `swept:claim-orphaned` tag, so the
+        # parent todo's child-failed bubble lands and the planner can
+        # re-tick. Multi-host safe via FOR UPDATE SKIP LOCKED.
+        if _pass_enabled("sweeper"):
+            from precis.workers.runner import BatchResult as _BatchResult
+            from precis.workers.sweeper import run_sweeper_pass
+
+            def _sweeper_pass(batch_size: int) -> _BatchResult:
+                return run_sweeper_pass(store, limit=batch_size)
+
+            ref_passes.append(_sweeper_pass)
 
         # dream_agent — replaces the legacy bash dream-pass.sh with
         # a Python-side dispatch through call_claude_agent. Loads the

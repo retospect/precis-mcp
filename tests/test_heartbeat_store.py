@@ -29,11 +29,22 @@ def test_record_and_read_heartbeat(store: Store) -> None:
     assert hb.ts is not None
 
 
+def _by_host(rows, host: str):
+    """Filter recent_heartbeats() output to one host.
+
+    The store fixture's truncate-isolation doesn't always clear
+    ``host_heartbeat`` between tests (it's outside the refs/tags
+    family the canonical truncate sweeps), so each per-host test
+    scopes its assertions to its own host.
+    """
+    return [r for r in rows if r.host == host]
+
+
 def test_record_heartbeat_upserts(store: Store) -> None:
     store.record_heartbeat("balthazar", temp_c=40.0, load1=0.1)
-    first = store.recent_heartbeats()[0].ts
+    first = _by_host(store.recent_heartbeats(), "balthazar")[0].ts
     store.record_heartbeat("balthazar", temp_c=88.0, load1=5.0)
-    rows = store.recent_heartbeats()
+    rows = _by_host(store.recent_heartbeats(), "balthazar")
     assert len(rows) == 1  # still one row for the host
     assert rows[0].temp_c == 88.0  # overwritten
     assert rows[0].load1 == 5.0
@@ -43,7 +54,7 @@ def test_record_heartbeat_upserts(store: Store) -> None:
 def test_record_heartbeat_nullable_temp(store: Store) -> None:
     # macOS-without-sensor case: load reported, temp NULL.
     store.record_heartbeat("melchior", temp_c=None, load1=2.0, load5=1.5, load15=1.0)
-    hb = store.recent_heartbeats()[0]
+    hb = _by_host(store.recent_heartbeats(), "melchior")[0]
     assert hb.temp_c is None
     assert hb.load1 == 2.0
 

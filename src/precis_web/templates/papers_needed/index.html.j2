@@ -1,0 +1,96 @@
+{% extends "base.html.j2" %}
+{% block title %}Papers we need{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-3">
+  <h1 class="text-lg font-semibold">Papers we need</h1>
+  <div class="flex items-center gap-2 text-sm">
+    <a href="/papers-needed"
+       class="px-3 py-1 rounded-md {% if not awaiting %}bg-slate-800 text-white{% else %}bg-slate-100 text-slate-700{% endif %}">
+      All backlog
+    </a>
+    <a href="/papers-needed?awaiting=1"
+       class="px-3 py-1 rounded-md {% if awaiting %}bg-slate-800 text-white{% else %}bg-slate-100 text-slate-700{% endif %}">
+      Awaiting next fetch
+    </a>
+  </div>
+</div>
+
+<p class="text-sm text-slate-500 mb-4">
+  Stub paper refs — minted with a DOI / arXiv ID but no PDF yet. The
+  <code class="text-xs">fetch_oa</code> worker auto-tries Unpaywall → arXiv →
+  Semantic Scholar. Stubs that survive every retry need manual help:
+  paywall pay-out, file upload, or marking the cite won't-do.
+</p>
+
+{% if not rows %}
+  <p class="text-sm text-slate-500">
+    {% if awaiting %}
+      Nothing waiting for the next fetch pass — the cascade is caught up.
+    {% else %}
+      No stub paper refs. Every paper in the corpus has a PDF, or none
+      have external identifiers.
+    {% endif %}
+  </p>
+{% else %}
+<div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+      <tr>
+        <th class="text-left px-3 py-2">#</th>
+        <th class="text-left px-3 py-2">Title / cite key</th>
+        <th class="text-left px-3 py-2">Identifier</th>
+        <th class="text-left px-3 py-2">Last attempt</th>
+        <th class="text-left px-3 py-2">State</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for row in rows %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-3 py-2 text-xs text-slate-400">#{{ row.id }}</td>
+        <td class="px-3 py-2">
+          {% if row.title %}
+            <a href="/papers/{{ row.id }}" class="text-sky-700 hover:underline font-medium">{{ row.title }}</a>
+          {% else %}
+            <a href="/papers/{{ row.id }}" class="text-slate-500 hover:underline italic">title TBD</a>
+          {% endif %}
+          {% if row.cite_key %}
+            <span class="text-xs text-slate-400 ml-2">{{ row.cite_key }}</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs">
+          {% if row.identifier_url %}
+            <a href="{{ row.identifier_url }}" target="_blank" rel="noopener"
+               class="text-sky-700 hover:underline">{{ row.identifier }}</a>
+          {% else %}
+            <span class="text-slate-500">{{ row.identifier }}</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs text-slate-500">
+          {{ row.last_attempt or '—' }}
+          {% if row.last_event %}
+            <span class="block text-slate-400">{{ row.last_event }}</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs">
+          {% if 'fetch_ok' in row.last_event %}
+            <span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">{{ row.state }}</span>
+          {% elif 'failed' in row.last_event or 'no_oa_version' in row.last_event %}
+            <span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">{{ row.state }}</span>
+          {% else %}
+            <span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-600">{{ row.state }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="text-xs text-slate-400 mt-3">
+  {{ rows | length }} row{{ '' if rows | length == 1 else 's' }}.
+  Manual ingest: drop the PDF into <code>~/work/new_papers/</code> on
+  a watch host; the watcher rsyncs into the corpus inbox and the
+  ingest worker upgrades the stub to a full paper.
+</p>
+{% endif %}
+{% endblock %}

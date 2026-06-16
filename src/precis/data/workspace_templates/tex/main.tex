@@ -10,6 +10,17 @@
 \usepackage{graphicx}
 \graphicspath{{pics/}}
 
+% --- Verbatim-quote citation macro ----------------------------------
+% Every cite must carry the verbatim source quote that supports the
+% claim — see precis-citation-help. The macro renders \cite{key} and,
+% in review mode, the quote as a footnote; in publish mode the
+% quote is hidden but stays in the .tex source as the audit trail.
+% Toggle with \showquotestrue / \showquotesfalse in the preamble of
+% the file you're compiling.
+\newif\ifshowquotes
+\showquotestrue
+\newcommand{\citequote}[2]{\cite{#1}\ifshowquotes\footnote{``#2''}\fi}
+
 \bibliographystyle{unsrt}
 
 \title{Title TBD}
