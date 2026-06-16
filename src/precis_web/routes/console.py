@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse
 
 from precis.tools import TOOL_REGISTRY, get_tool_names
 from precis.tools.cli_adapter import _convert_value
-from precis_web.deps import dispatch, templates
+from precis_web.deps import await_dispatch, templates
 
 router = APIRouter(prefix="/console", tags=["console"])
 
@@ -78,7 +78,7 @@ async def run(
     except ValueError as exc:
         result, is_error = f"[input error] {exc}", True
     else:
-        result, is_error = dispatch(request, verb, payload)
+        result, is_error = await await_dispatch(request, verb, payload)
     return templates.TemplateResponse(
         request,
         "console.html.j2",

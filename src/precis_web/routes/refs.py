@@ -28,7 +28,7 @@ from fastapi.responses import HTMLResponse
 from markupsafe import Markup, escape
 
 from precis.errors import NotFound
-from precis_web.deps import dispatch, get_store, templates
+from precis_web.deps import await_dispatch, get_store, templates
 
 router = APIRouter(prefix="/refs", tags=["refs"])
 
@@ -192,9 +192,7 @@ def _conv_turns(store: Any, ref_id: int) -> list[dict[str, Any]]:
                 "ts": _fmt_turn_ts(meta.get("ts")),
                 "text": b.text or "",
                 "chunk_kind": (
-                    meta.get("chunk_kind")
-                    or getattr(b, "chunk_kind", "")
-                    or ""
+                    meta.get("chunk_kind") or getattr(b, "chunk_kind", "") or ""
                 ),
                 "extra_meta": extra,
             }
@@ -297,7 +295,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     # Slug kinds (oracle/patent/pres) address get() by slug; numeric
     # kinds (memory/gripe) by id. Prefer the slug when present.
     addr: str | int = ref.slug if ref.slug else ref.id
-    body, is_error = dispatch(request, "get", {"kind": kind, "id": addr})
+    body, is_error = await await_dispatch(request, "get", {"kind": kind, "id": addr})
 
     # Patent body text lives in body chunks; the handler's overview
     # only renders the bibliographic header + abstract excerpt. Pull

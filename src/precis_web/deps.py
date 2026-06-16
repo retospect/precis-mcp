@@ -8,6 +8,7 @@ fake runtime onto ``app.state`` without monkeypatching globals.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -71,12 +72,37 @@ def get_web_config(request: Request) -> WebConfig:
 
 
 def dispatch(request: Request, verb: str, args: dict[str, Any]) -> tuple[str, bool]:
-    """Run one seven-verb call through the in-process runtime.
+    """Run one seven-verb call through the in-process runtime (sync).
 
     Returns ``(rendered_body, is_error)`` — the same shape the MCP
     server uses. Web writes go through here so the handler validation,
     tree guards, and level gradient stay single-sourced (no surface
     drift between the web and MCP).
+
+    **Use ``await_dispatch`` from FastAPI route handlers.** Calling this
+    sync helper directly from an ``async def`` route blocks the entire
+    uvicorn event loop for the duration of the verb — a 60s Perplexity
+    call freezes every other request on the process, /healthz included.
     """
     runtime = get_runtime(request)
     return runtime.dispatch_with_status(verb, args)
+
+
+async def await_dispatch(
+    request: Request, verb: str, args: dict[str, Any]
+) -> tuple[str, bool]:
+    """Async wrapper: run :func:`dispatch` in a worker thread.
+
+    Same return shape as the sync version. Use from every route
+    handler that might dispatch a verb whose handler does a blocking
+    network call (Perplexity, EPO OPS, Crossref, claude -p). The
+    event loop stays responsive while one slow verb bakes; /healthz
+    and concurrent tabs survive.
+
+    The dispatch itself is single-threaded inside the runtime (the
+    psycopg pool serialises DB writes), so wrapping in a worker
+    thread doesn't change correctness — it just stops one slow call
+    from monopolising the asyncio loop.
+    """
+    runtime = get_runtime(request)
+    return await asyncio.to_thread(runtime.dispatch_with_status, verb, args)

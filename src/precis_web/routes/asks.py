@@ -25,7 +25,7 @@ from typing import Any
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from precis_web.deps import dispatch, get_store, templates
+from precis_web.deps import await_dispatch, get_store, templates
 
 router = APIRouter(prefix="/asks", tags=["asks"])
 
@@ -131,7 +131,7 @@ async def answer(
     original = refs[ref_id].title or ""
     new_text = f"{original.rstrip()}\n\n---\nResponse: {answer_text}"
 
-    body, is_error = dispatch(
+    body, is_error = await await_dispatch(
         request,
         "edit",
         {"kind": "todo", "id": ref_id, "mode": "replace", "text": new_text},
@@ -145,7 +145,7 @@ async def answer(
         )
 
     if remove:
-        body2, is_error2 = dispatch(
+        body2, is_error2 = await await_dispatch(
             request,
             "tag",
             {"kind": "todo", "id": ref_id, "remove": list(remove)},

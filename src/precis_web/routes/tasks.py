@@ -29,7 +29,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from precis_web.deps import dispatch, get_store, templates
+from precis_web.deps import await_dispatch, get_store, templates
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -175,9 +175,7 @@ def _build_mermaid_tree(
     """
     if max_depth < 1:
         return ""
-    by_id: dict[int, dict[str, Any]] = {
-        r["id"]: r for r in rows if r["kind"] == "todo"
-    }
+    by_id: dict[int, dict[str, Any]] = {r["id"]: r for r in rows if r["kind"] == "todo"}
     if root_id not in by_id:
         return ""
     children_of: dict[int | None, list[int]] = {}
@@ -208,10 +206,7 @@ def _build_mermaid_tree(
             title = title[:50].rstrip() + "…"
         # Mermaid breaks on quotes / brackets in labels — strip them.
         return (
-            f"#{n['id']} {title}"
-            .replace('"', "'")
-            .replace("[", "(")
-            .replace("]", ")")
+            f"#{n['id']} {title}".replace('"', "'").replace("[", "(").replace("]", ")")
         )
 
     lines: list[str] = ["graph TD"]
@@ -339,9 +334,7 @@ def _hide_inactive_jobs(
     if show_all:
         return rows
     return [
-        r
-        for r in rows
-        if r["kind"] != "job" or r["status"] not in _CLOSED_JOB_STATUSES
+        r for r in rows if r["kind"] != "job" or r["status"] not in _CLOSED_JOB_STATUSES
     ]
 
 
@@ -396,7 +389,7 @@ def _filter_rows(
     ]
 
 
-def _redirect_or_error(
+async def _redirect_or_error(
     request: Request,
     verb: str,
     args: dict[str, Any],
@@ -411,8 +404,12 @@ def _redirect_or_error(
     and the page reloaded unchanged with no explanation. Surfacing the
     handler's own message (its ``next=`` recovery hint included) makes
     these self-diagnosing.
+
+    Async because the inner ``dispatch`` may issue a blocking network
+    call (Perplexity, EPO OPS, claude -p) that would otherwise freeze
+    the entire uvicorn event loop.
     """
-    body, is_error = dispatch(request, verb, args)
+    body, is_error = await await_dispatch(request, verb, args)
     if is_error:
         return templates.TemplateResponse(
             request,
@@ -638,9 +635,7 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
         for k in kids:
             if k["kind"] != "todo":
                 continue
-            cls = _classify_row(
-                tags[k["id"]]["status"], freeform.get(k["id"], [])
-            )
+            cls = _classify_row(tags[k["id"]]["status"], freeform.get(k["id"], []))
             if cls == "done":
                 rollup_done += 1
             elif cls == "waiting":
@@ -657,9 +652,7 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
             if jn.get("summary"):
                 parts.append(jn["summary"])
             note = "\n".join(p for p in parts if p).strip()
-        row_tags = (
-            freeform.get(node["id"], []) if node["kind"] == "todo" else []
-        )
+        row_tags = freeform.get(node["id"], []) if node["kind"] == "todo" else []
         rollup_total = rollup_done + rollup_waiting + rollup_active
         rows.append(
             {
@@ -725,7 +718,7 @@ async def dashboard(
     rows = _hide_inactive_jobs(rows, show_all=(show_jobs == "all"))
     focused_rows, breadcrumb = _focus_rows(rows, focus)
     filtered = _filter_rows(focused_rows, require=require, exclude=exclude)
-    doable_body, _ = dispatch(
+    doable_body, _ = await await_dispatch(
         request, "search", {"kind": "todo", "view": "doable", "page_size": 20}
     )
     focus_row: dict[str, Any] | None = None
@@ -749,12 +742,8 @@ async def dashboard(
         else:
             # Snap to the nearest allowed depth so a stale link
             # (``?tree=4`` after we tightened the list) still renders.
-            tree_depth = min(
-                _TREE_DEPTHS, key=lambda d: abs(d - tree)
-            )
-        tree_diagram = _build_mermaid_tree(
-            focused_rows, focus, tree_depth
-        )
+            tree_depth = min(_TREE_DEPTHS, key=lambda d: abs(d - tree))
+        tree_diagram = _build_mermaid_tree(focused_rows, focus, tree_depth)
     return templates.TemplateResponse(
         request,
         "tasks/dashboard.html.j2",
@@ -791,11 +780,13 @@ async def create_root(
 ) -> Response:
     """Create a top-level (strategic) root."""
     tags = [f"level:{level}"] if level else None
-    return _redirect_or_error(
+    return await _redirect_or_error(
         request,
         "put",
         {"kind": "todo", "text": text, "tags": tags},
-        redirect=_tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None),
+        redirect=_tasks_url(
+            require, exclude, focus, show_jobs if show_jobs != "active" else None
+        ),
     )
 
 
@@ -812,11 +803,13 @@ async def create_child(
 ) -> Response:
     """Create a child under ``parent_id``."""
     tags = [f"level:{level}"] if level else None
-    return _redirect_or_error(
+    return await _redirect_or_error(
         request,
         "put",
         {"kind": "todo", "text": text, "parent_id": parent_id, "tags": tags},
-        redirect=_tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None),
+        redirect=_tasks_url(
+            require, exclude, focus, show_jobs if show_jobs != "active" else None
+        ),
     )
 
 
@@ -831,11 +824,13 @@ async def set_status(
     show_jobs: str = Form(default="active"),
 ) -> Response:
     """Set a todo's STATUS via the tag verb (closed-prefix replace)."""
-    return _redirect_or_error(
+    return await _redirect_or_error(
         request,
         "tag",
         {"kind": "todo", "id": ref_id, "add": [f"STATUS:{status}"]},
-        redirect=_tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None),
+        redirect=_tasks_url(
+            require, exclude, focus, show_jobs if show_jobs != "active" else None
+        ),
     )
 
 
@@ -856,10 +851,12 @@ async def move_task(
     (``mode='add'``). All tree guards (cycle / depth / owner) fire in
     the handler — a rejected move returns the handler's BadInput.
     """
-    redirect = _tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None)
+    redirect = _tasks_url(
+        require, exclude, focus, show_jobs if show_jobs != "active" else None
+    )
     npid = new_parent_id.strip()
     if npid:
-        return _redirect_or_error(
+        return await _redirect_or_error(
             request,
             "link",
             {
@@ -871,7 +868,7 @@ async def move_task(
             },
             redirect=redirect,
         )
-    return _redirect_or_error(
+    return await _redirect_or_error(
         request,
         "link",
         {"kind": "todo", "id": ref_id, "rel": "parent", "mode": "remove"},
@@ -896,10 +893,12 @@ async def edit_text(
     whitespace ``text`` is a no-op. Owner-only on strategic / tactical
     nodes — the web process runs as owner, so the guard passes here.
     """
-    redirect = _tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None)
+    redirect = _tasks_url(
+        require, exclude, focus, show_jobs if show_jobs != "active" else None
+    )
     if not text.strip():
         return RedirectResponse(url=redirect, status_code=303)
-    return _redirect_or_error(
+    return await _redirect_or_error(
         request,
         "edit",
         {"kind": "todo", "id": ref_id, "mode": "replace", "text": text.strip()},
@@ -934,10 +933,12 @@ async def edit_tags(
         args["add"] = add_list
     if remove_list:
         args["remove"] = remove_list
-    redirect = _tasks_url(require, exclude, focus, show_jobs if show_jobs != "active" else None)
+    redirect = _tasks_url(
+        require, exclude, focus, show_jobs if show_jobs != "active" else None
+    )
     if not add_list and not remove_list:
         return RedirectResponse(url=redirect, status_code=303)
-    return _redirect_or_error(request, "tag", args, redirect=redirect)
+    return await _redirect_or_error(request, "tag", args, redirect=redirect)
 
 
 @router.get("/{ref_id}/history", response_class=HTMLResponse)
@@ -998,7 +999,7 @@ async def delete_task(
     show_jobs: str = Form(default="active"),
 ) -> RedirectResponse:
     """Soft-delete a todo (children re-parent to NULL via FK)."""
-    dispatch(request, "delete", {"kind": "todo", "id": ref_id})
+    await await_dispatch(request, "delete", {"kind": "todo", "id": ref_id})
     return RedirectResponse(
         url=_tasks_url(
             require, exclude, focus, show_jobs if show_jobs != "active" else None
