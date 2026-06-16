@@ -160,6 +160,32 @@ def runtime(runtime_stateless: PrecisRuntime) -> PrecisRuntime:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _force_mock_embedder_for_tests() -> None:
+    """Pin tests to :class:`MockEmbedder` regardless of the host env.
+
+    The compose-driven dev container sets ``PRECIS_EMBEDDER=bge-m3``
+    (the production value) — fine for the running service, but it
+    forces in-process CLI tests (``cli.main()``) to attempt loading
+    the bge-m3 weights and they fail with ``Upstream("embedder
+    warming")`` when the weights aren't on disk. The ``hub`` fixture
+    already binds :class:`MockEmbedder`, but the CLI tests bypass
+    that path and re-resolve via :class:`PrecisConfig`, which reads
+    ``PRECIS_EMBEDDER`` from env.
+
+    Unset both knobs at session start so :class:`PrecisConfig` falls
+    back to its ``"mock"`` default. Tests that genuinely want the
+    hot embedder can ``monkeypatch.setenv("PRECIS_EMBEDDER",
+    "remote")`` per-test. Run *before* ``_initialise_test_db`` purely
+    by declaration order — autouse session fixtures fire in source
+    order.
+    """
+    import os
+
+    os.environ.pop("PRECIS_EMBEDDER", None)
+    os.environ.pop("PRECIS_EMBEDDER_URL", None)
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _initialise_test_db() -> None:
     """Drop all tables + re-apply migrations once per pytest session.
 
