@@ -44,8 +44,8 @@ from precis.store._cache_ops import CacheMixin
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
 from precis.store._events_ops import EventsMixin
 from precis.store._heartbeat_ops import HeartbeatMixin
-from precis.store._kinds_ops import KindsMixin
 from precis.store._identifiers_ops import IdentifiersMixin
+from precis.store._kinds_ops import KindsMixin
 from precis.store._links_ops import LinksMixin
 from precis.store._mappers import (
     _AGENT_WRITABLE_PREFIXES,

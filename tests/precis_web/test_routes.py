@@ -1108,6 +1108,80 @@ def test_dashboard_no_mermaid_without_focus(client) -> None:
     assert "mermaid.esm.min.mjs" not in resp.text
 
 
+def test_dashboard_truncates_title_first_line_with_hover_tooltip(
+    client, runtime
+) -> None:
+    """Body of a todo is shown as just the first line in the row.
+
+    Long multi-line bodies (planner-coroutine prompts) used to render
+    in full in the row, blowing up vertical density. The truncation
+    is at 80 chars + a hover popover with the full body.
+    """
+    from tests.precis_web.conftest import make_ref
+
+    long_body = (
+        "First line summary that should stand alone in the row.\n\n"
+        "Second paragraph with the full prompt body that should not appear "
+        "in the truncated row but does appear in the hover tooltip below."
+    )
+    runtime.store.todos = [
+        make_ref(id=1, kind="todo", title=long_body),
+    ]
+    resp = client.get("/tasks")
+    assert resp.status_code == 200
+    # First line shows.
+    assert "First line summary that should stand alone in the row." in resp.text
+    # Tooltip popover with the full body is also in the DOM (Alpine x-show
+    # hides it until hover) — look for the unique second-paragraph text.
+    assert "Second paragraph with the full prompt body" in resp.text
+
+
+def test_children_popup_returns_immediate_children(client, runtime) -> None:
+    """``/tasks/{id}/children-popup`` returns just one level of children."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [
+        make_ref(id=1, kind="todo", title="root"),
+        make_ref(id=2, kind="todo", title="child A", parent_id=1),
+        make_ref(id=3, kind="todo", title="child B", parent_id=1),
+        make_ref(id=4, kind="todo", title="grandchild", parent_id=2),
+    ]
+    resp = client.get("/tasks/1/children-popup")
+    assert resp.status_code == 200
+    assert "child A" in resp.text
+    assert "child B" in resp.text
+    # Grandchildren are NOT in the depth-0 fragment — they're lazy
+    # via htmx once the operator clicks child A's chip.
+    assert "grandchild" not in resp.text
+
+
+def test_children_popup_max_depth_links_to_mermaid(client, runtime) -> None:
+    """At depth==max, the fragment offers a Mermaid view link instead."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [
+        make_ref(id=1, kind="todo", title="root"),
+        make_ref(id=2, kind="todo", title="child", parent_id=1),
+    ]
+    resp = client.get("/tasks/1/children-popup?depth=4")
+    assert resp.status_code == 200
+    assert "Mermaid tree view" in resp.text
+    # child name should NOT render — we're past the depth cap.
+    assert "child" not in resp.text or "children" in resp.text  # fuzzy
+
+
+def test_children_popup_handles_no_children(client, runtime) -> None:
+    """A leaf node's popup shows a friendly empty state."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [
+        make_ref(id=1, kind="todo", title="lone leaf"),
+    ]
+    resp = client.get("/tasks/1/children-popup")
+    assert resp.status_code == 200
+    assert "No children" in resp.text
+
+
 def test_dashboard_focus_shows_inline_add_child_form(client, runtime) -> None:
     """Focused node gets a prominent + child form (not buried in ⋯)."""
     from tests.precis_web.conftest import make_ref

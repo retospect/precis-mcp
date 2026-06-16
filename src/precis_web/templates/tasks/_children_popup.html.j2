@@ -1,0 +1,55 @@
+{# Recursive child-popup fragment loaded by htmx into a chip's
+   adjacent div. Each child row carries its own chip that fetches
+   the next level (``depth + 1``) into a sibling popup div. Click-
+   outside on the row closes that level; ESC closes the entire
+   chain (the dashboard's outer Alpine listens at the window). #}
+<div class="w-96 max-w-[28rem] rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+  {% if depth >= max_depth %}
+  <p class="text-xs text-slate-500 px-2 py-2">
+    4 levels deep — drill further in the
+    <a href="/tasks?focus={{ parent_id }}&tree=3"
+       class="text-sky-600 hover:underline">Mermaid tree view ↗</a>
+  </p>
+  {% elif children %}
+  <ul class="divide-y divide-slate-100 max-h-96 overflow-y-auto">
+    {% for c in children %}
+    <li class="py-1.5 relative"
+        x-data="{ open: false, loaded: false }"
+        @click.outside="open = false">
+      <div class="flex items-center gap-1.5">
+        <span class="text-xs text-slate-400 w-10 shrink-0">#{{ c.id }}</span>
+        {% set sc = {
+          'open':"bg-sky-100 text-sky-700",
+          'doing':"bg-amber-100 text-amber-700",
+          'blocked':"bg-rose-100 text-rose-700",
+          'paused':"bg-slate-200 text-slate-600",
+          'done':"bg-emerald-100 text-emerald-700",
+          "won't-do":"bg-slate-200 text-slate-500",
+        } %}
+        <span class="text-[10px] px-1 py-0.5 rounded {{ sc.get(c.status, 'bg-slate-100 text-slate-600') }}">{{ c.status }}</span>
+        <a href="/tasks?focus={{ c.id }}"
+           class="text-xs break-words flex-1 hover:text-emerald-700 {% if c.status in ['done',"won't-do"] %}line-through text-slate-400{% endif %}"
+           title="{{ c.title }}">{{ (c.title or '').split('\n', 1)[0] | truncate(60, killwords=False, end='…') }}</a>
+        {% if c.rollup and c.rollup.total %}
+        <button type="button"
+                @click="open = !open; if (open && !loaded) loaded = true"
+                hx-get="/tasks/{{ c.id }}/children-popup?depth={{ depth + 1 }}"
+                hx-target="#subpopup-{{ c.id }}"
+                hx-trigger="click once"
+                class="inline-flex items-center gap-0.5 text-[10px] cursor-pointer hover:opacity-80 shrink-0"
+                title="click to drill in">
+          <span class="px-1 py-0.5 rounded-l bg-sky-100 text-sky-700 font-medium">{{ c.rollup.active }}</span>
+          <span class="px-1 py-0.5 bg-amber-100 text-amber-700 font-medium">{{ c.rollup.waiting }}</span>
+          <span class="px-1 py-0.5 rounded-r bg-emerald-100 text-emerald-700 font-medium">{{ c.rollup.done }}</span>
+        </button>
+        <div id="subpopup-{{ c.id }}" x-show="open" x-cloak
+             class="absolute z-50 left-full top-0 ml-1"></div>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-xs text-slate-400 italic px-2 py-1.5">No children.</p>
+  {% endif %}
+</div>

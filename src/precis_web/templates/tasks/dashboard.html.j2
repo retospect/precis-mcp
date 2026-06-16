@@ -237,15 +237,45 @@
           {% for ai in r.attention_icons %}
           <a href="{{ ai.href }}" class="text-base leading-none" title="{{ ai.title }}">{{ ai.icon }}</a>
           {% endfor %}
-          <span class="text-sm whitespace-pre-line break-words {% if r.status in ['done',"won't-do"] %}line-through text-slate-400{% endif %}">{{ r.title }}</span>
+          {# First-line + full-body popover. The body is the planner's
+             prompt; rendering the whole multi-paragraph thing in the
+             row blows up vertical density. First line goes in the row
+             (truncated at 80 chars); the rest lives in an Alpine
+             popover triggered on row-text hover (touch users tap the
+             ⋯ action menu instead — same content there). #}
+          <span class="relative" x-data="{ tip: false }"
+                @mouseenter="tip = true" @mouseleave="tip = false">
+            <span class="text-sm break-words {% if r.status in ['done',"won't-do"] %}line-through text-slate-400{% endif %}">{{ (r.title or '').split('\n', 1)[0] | truncate(80, killwords=False, end='…') }}</span>
+            {% if r.title and '\n' in r.title or (r.title and r.title|length > 80) %}
+            <div x-show="tip" x-cloak x-transition.opacity.duration.150ms
+                 class="absolute z-40 left-0 top-full mt-1 w-[44rem] max-w-[80vw] rounded-lg border border-slate-200 bg-white p-3 shadow-xl"
+                 style="white-space: pre-line">
+              <p class="text-xs text-slate-700 break-words">{{ r.title }}</p>
+            </div>
+            {% endif %}
+          </span>
           {% if r.rollup and r.rollup.total %}
           {# 3-bucket rollup: active · waiting · done over direct todo
-             children. Inline coloured chips so the operator can scan
-             progress without hovering. #}
-          <span class="inline-flex items-center gap-0.5 text-xs ml-1" title="active · waiting · done">
-            <span class="px-1 py-0.5 rounded-l bg-sky-100 text-sky-700 font-medium" title="active (open / doing)">{{ r.rollup.active }}</span>
-            <span class="px-1 py-0.5 bg-amber-100 text-amber-700 font-medium" title="waiting (blocked / paused / waiting-for / ask-user)">{{ r.rollup.waiting }}</span>
-            <span class="px-1 py-0.5 rounded-r bg-emerald-100 text-emerald-700 font-medium" title="done (done / won't-do)">{{ r.rollup.done }}</span>
+             children. Clicking opens a popover listing the children;
+             each child row has its own rollup chip that drills deeper.
+             Recursion is via a single htmx-loaded fragment template
+             (``_children_popup.html.j2``) — depth-2 lazy. #}
+          <span class="relative" x-data="{ open: false, loaded: false }"
+                @click.outside="open = false"
+                @keyup.escape.window="open = false">
+            <button type="button"
+                    @click="open = !open; if (open && !loaded) loaded = true"
+                    hx-get="/tasks/{{ r.id }}/children-popup?depth=0"
+                    hx-target="#popup-children-{{ r.id }}"
+                    hx-trigger="click once"
+                    class="inline-flex items-center gap-0.5 text-xs ml-1 cursor-pointer hover:opacity-80"
+                    title="click to drill into children">
+              <span class="px-1 py-0.5 rounded-l bg-sky-100 text-sky-700 font-medium">{{ r.rollup.active }}</span>
+              <span class="px-1 py-0.5 bg-amber-100 text-amber-700 font-medium">{{ r.rollup.waiting }}</span>
+              <span class="px-1 py-0.5 rounded-r bg-emerald-100 text-emerald-700 font-medium">{{ r.rollup.done }}</span>
+            </button>
+            <div id="popup-children-{{ r.id }}" x-show="open" x-cloak
+                 class="absolute z-50 left-0 top-full mt-1"></div>
           </span>
           {% endif %}
           {% if r.kind == 'todo' %}

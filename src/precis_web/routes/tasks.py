@@ -768,6 +768,50 @@ async def dashboard(
     )
 
 
+@router.get("/{ref_id}/children-popup", response_class=HTMLResponse)
+async def children_popup(
+    request: Request,
+    ref_id: int,
+    depth: int = 0,
+) -> HTMLResponse:
+    """Return the immediate ``kind='todo'`` children of ``ref_id``.
+
+    Rendered as an HTML fragment for htmx-driven drill-down popups
+    triggered from rollup chips on the Tasks dashboard. Each child row
+    carries its own chip pointing back at this same route (depth + 1)
+    so the popup chain is purely template-recursive.
+
+    ``depth`` is the chain position (0 = chip on the dashboard row, 1
+    = inside the first popup, …). At ``depth >= _POPUP_MAX_DEPTH`` the
+    fragment renders a "drill further in the Mermaid view" pointer
+    instead of yet another nested list — keeps the popover stack
+    bounded.
+    """
+    store = get_store(request)
+    rows = _build_rows(store)
+    children_of: dict[int | None, list[dict[str, Any]]] = {}
+    for r in rows:
+        children_of.setdefault(r.get("parent_id"), []).append(r)
+    direct = [c for c in children_of.get(ref_id, []) if c["kind"] == "todo"]
+    return templates.TemplateResponse(
+        request,
+        "tasks/_children_popup.html.j2",
+        {
+            "parent_id": ref_id,
+            "depth": depth,
+            "children": direct,
+            "max_depth": _POPUP_MAX_DEPTH,
+        },
+    )
+
+
+#: Hard cap on the children-popup chain. Past this the popup links to
+#: the Mermaid tree view instead of nesting further. Picked empirically
+#: — 4 levels covers the strategic-tactical-subtask depth we actually
+#: use, and visually the cascading menu starts to feel cramped past 5.
+_POPUP_MAX_DEPTH = 4
+
+
 @router.post("/roots")
 async def create_root(
     request: Request,
