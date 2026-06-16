@@ -203,7 +203,9 @@
   </section>
 
   <section>
-    <h2 class="text-sm font-semibold mb-2">Recent activity</h2>
+    <h2 class="text-sm font-semibold mb-2">Recent activity
+      <span class="font-normal text-xs text-slate-400">(ref_events — per-ref)</span>
+    </h2>
     <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
       {% for e in events %}
       <li class="px-4 py-2 text-xs flex items-center gap-2">
@@ -214,6 +216,67 @@
       </li>
       {% else %}
       <li class="px-4 py-2 text-sm text-slate-500">no events</li>
+      {% endfor %}
+    </ul>
+    <p class="mt-1 text-xs text-slate-400">
+      Per-ref events only — chunk_keywords, embed, summarize batches
+      log to <code>worker_logs</code> instead (panel below).
+    </p>
+  </section>
+</div>
+
+{# Three focused recent-N panels: dreams, todo work-done, worker
+   passes. These exist so a quiet ref_events stream doesn't read
+   as "the cluster is dead" — dreams + pass batches keep ticking
+   even when no status flips. #}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+  <section>
+    <h2 class="text-sm font-semibold mb-2">Recent dreams</h2>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for d in recent_dreams %}
+      <li class="px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-slate-400 w-16 shrink-0">{{ d.ago }}</span>
+        <a class="text-slate-700 hover:underline truncate"
+           href="/refs/memory/{{ d.ref_id }}">{{ d.title }}</a>
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no dreams yet</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section>
+    <h2 class="text-sm font-semibold mb-2">Recent todo work-done</h2>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for t in recent_todo_done %}
+      <li class="px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-slate-400 w-16 shrink-0">{{ t.ago }}</span>
+        <span class="font-mono text-violet-600 w-20 shrink-0">{{ t.event }}</span>
+        <a class="text-slate-700 hover:underline truncate"
+           href="/tasks#row-{{ t.ref_id }}">{{ t.title }}</a>
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no completions recorded</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section>
+    <h2 class="text-sm font-semibold mb-2">Recent worker passes
+      <span class="font-normal text-xs text-slate-400">(productive)</span>
+    </h2>
+    <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+      {% for p in recent_passes %}
+      <li class="px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-slate-400 w-16 shrink-0">{{ p.ago }}</span>
+        <span class="font-mono text-slate-600 w-32 shrink-0">{{ p.pass }}</span>
+        <span class="text-slate-400 w-20 shrink-0">{{ p.host }}</span>
+        <span class="ml-auto tabular-nums text-slate-500">
+          claimed {{ p.claimed }} · ok {{ p.ok }}{% if p.failed %} · <span class="text-rose-600">failed {{ p.failed }}</span>{% endif %}
+        </span>
+      </li>
+      {% else %}
+      <li class="px-4 py-2 text-sm text-slate-500">no productive batches recorded</li>
       {% endfor %}
     </ul>
   </section>

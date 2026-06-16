@@ -99,6 +99,116 @@ def _todo_status(store: Any) -> list[dict[str, Any]]:
     return [{"status": r[0], "count": int(r[1])} for r in rows]
 
 
+def _recent_dreams(store: Any, limit: int = 5) -> list[dict[str, Any]]:
+    """Most-recent dream-tagged memories.
+
+    Dream-pass writes new memory refs carrying ``tier:dream`` (see
+    ``workers/dream.py``). Surface the latest few so the operator can
+    see at a glance whether dreams are still landing — the dream
+    handler doesn't currently emit ref_events itself, so it would
+    otherwise be invisible on the activity panel.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.updated_at
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'memory'
+               AND r.deleted_at IS NULL
+               AND t.namespace = 'tier' AND t.value = 'dream'
+             ORDER BY r.updated_at DESC
+             LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "ref_id": r[0],
+            "title": (r[1] or "").split("\n", 1)[0][:80] or "—",
+            "ago": _ago(r[2]),
+        }
+        for r in rows
+    ]
+
+
+def _recent_todo_done(store: Any, limit: int = 5) -> list[dict[str, Any]]:
+    """Most-recent todos that flipped to a terminal state.
+
+    Reads ref_events for the ``status:done`` / ``auto-resolved`` /
+    ``auto-timeout`` flips on todo refs. Done IS the "work done"
+    signal; auto-* siblings keep the panel honest about how a todo
+    closed (manual vs evaluator).
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT e.ts, e.event, e.ref_id, r.title
+              FROM ref_events e
+              JOIN refs r ON r.ref_id = e.ref_id
+             WHERE e.event IN ('status:done', 'auto-resolved', 'auto-timeout')
+               AND r.kind = 'todo'
+             ORDER BY e.ts DESC
+             LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "ts": r[0].strftime("%Y-%m-%d %H:%M") if r[0] else "",
+            "ago": _ago(r[0]),
+            "event": r[1] or "",
+            "ref_id": r[2],
+            "title": (r[3] or "").split("\n", 1)[0][:80] or "—",
+        }
+        for r in rows
+    ]
+
+
+def _recent_passes(store: Any, limit: int = 5) -> list[dict[str, Any]]:
+    """Most-recent chunk_keywords / summarize / embed pass batches.
+
+    These workers DON'T write ref_events — pass summaries naturally
+    aren't per-ref (a batch can touch dozens of refs) so the runner
+    logs them as ``worker_logs`` rows with a ``payload`` BatchResult.
+    Surface the last few productive batches so the activity panel
+    doesn't look frozen just because the per-ref event stream has
+    quieted down.
+
+    ``Productive`` means ``claimed > 0`` — quiet idle ticks would
+    otherwise drown out the real activity.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ts, host, pass,
+                   COALESCE((payload->>'claimed')::int, 0) AS claimed,
+                   COALESCE((payload->>'ok')::int, 0)      AS ok,
+                   COALESCE((payload->>'failed')::int, 0)  AS failed
+              FROM worker_logs
+             WHERE pass IN ('chunk_keywords', 'summarize', 'embed',
+                            'tag_embeddings')
+               AND payload IS NOT NULL
+               AND COALESCE((payload->>'claimed')::int, 0) > 0
+             ORDER BY ts DESC
+             LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "ago": _ago(r[0]),
+            "host": r[1] or "?",
+            "pass": r[2] or "?",
+            "claimed": int(r[3]),
+            "ok": int(r[4]),
+            "failed": int(r[5]),
+        }
+        for r in rows
+    ]
+
+
 def _recent_events(store: Any, limit: int = 20) -> list[dict[str, Any]]:
     # NB: ``ref_events`` stamps its timestamp in column ``ts`` (see
     # 0001_initial.sql), not ``created_at`` — the earlier name made
@@ -298,6 +408,9 @@ async def index(request: Request) -> HTMLResponse:
             "papers": _safe(lambda: _paper_summary(store)) or {},
             "todo_status": _safe(lambda: _todo_status(store)) or [],
             "events": _safe(lambda: _recent_events(store)) or [],
+            "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
+            "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
+            "recent_passes": _safe(lambda: _recent_passes(store)) or [],
             "usage": _safe(lambda: _claude_usage(store)) or {},
             "quota": _safe(lambda: _claude_quota(store)) or {},
             "hosts": _safe(lambda: _hosts(store)) or [],
