@@ -294,6 +294,15 @@ def run(args: argparse.Namespace) -> None:
                 "nursery",
                 "dispatch",
                 "sweeper",
+                # Coordinator passes ship on the system profile so every
+                # cluster node can host long-running coordinator jobs
+                # (precis-dft's dft_campaign). The wake_runner is cheap
+                # (status-flip + audit chunk) and benefits from running
+                # everywhere so wake latency stays low. The coordinator
+                # itself does no compute on its own — it dispatches to
+                # plugin job_types whose ``run`` decides what to do.
+                "job_coordinator",
+                "wake_runner",
             }
         )
         # dream_agent stays out of the profile — it has its own
@@ -447,6 +456,41 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_job_claude_inproc_pass)
+
+        # job_coordinator — drains the `kind='job'` queue for jobs
+        # whose meta.executor=='coordinator'. These are long-running
+        # orchestrators (precis-dft's dft_campaign is the first
+        # consumer) that run one short slice per pass and yield
+        # between phases. See workers/executors/coordinator.py.
+        if _pass_enabled("job_coordinator"):
+            from precis.workers.executors.coordinator import (
+                run_coordinator_pass,
+            )
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _job_coordinator_pass(batch_size: int) -> _BatchResult:
+                r = run_coordinator_pass(store, limit=min(batch_size, 4))
+                return _BatchResult(
+                    handler="job_coordinator",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_job_coordinator_pass)
+
+        # wake_runner — re-queues paused coordinator jobs whose wake
+        # condition has fired (children done, time reached, ask-user
+        # tag cleared, manual_kick tag added, or cancel_requested
+        # overlay). Cheap status-flip + chunk write per re-queue;
+        # no compute. See workers/wake_runner.py.
+        if _pass_enabled("wake_runner"):
+            from precis.workers.wake_runner import wake_pass_for_runner
+
+            def _wake_runner_pass(batch_size: int) -> _BatchResult:
+                return wake_pass_for_runner(store, batch_size)
+
+            ref_passes.append(_wake_runner_pass)
 
         # Unpaywall OA fetcher — turns stub paper refs (DOI known,
         # pdf_sha256 IS NULL) into landed PDFs by checking Unpaywall

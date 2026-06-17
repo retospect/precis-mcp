@@ -88,3 +88,44 @@ def test_dim_boundary_check_against_live_service(service_url: str) -> None:
 def test_unknown_route_404(service_url: str) -> None:
     status, _ = _get(service_url + "/nope")
     assert status == 404
+
+
+def test_warm_thread_calls_warmup_not_embed() -> None:
+    """Regression: the warm thread must call ``warmup()``, never the
+    public ``embed()``. Going via ``embed`` makes the warm thread
+    fast-fail on the very ``_raise_if_warming`` gate it's meant to
+    clear, leaving the service permanently in 503 / "warming" state
+    (the 2026-06-15 → 2026-06-16 production regression).
+
+    Use a probe Embedder that distinguishes the two code paths and
+    boot a service with ``warm=True``; assert ``warmup()`` was the
+    one called and the ready flag was set.
+    """
+
+    class WarmProbe:
+        dim = 4
+        model = "probe"
+
+        def __init__(self) -> None:
+            self.embed_calls = 0
+            self.warmup_calls = 0
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            self.embed_calls += 1
+            return [[0.0] * 4 for _ in texts]
+
+        def embed_one(self, text: str) -> list[float]:
+            return [0.0] * 4
+
+        def is_ready(self) -> bool:
+            return True
+
+        def warmup(self) -> None:
+            self.warmup_calls += 1
+
+    probe = WarmProbe()
+    service = EmbedderService(probe, revision="t", max_inflight=4, warm=True)
+    # Warm thread is daemonised; give it a moment to run.
+    assert service._ready.wait(timeout=2.0)
+    assert probe.warmup_calls == 1
+    assert probe.embed_calls == 0

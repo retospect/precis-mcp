@@ -211,4 +211,7 @@ class TestProtocol:
             def is_ready(self) -> bool:
                 return True
 
+            def warmup(self) -> None:
+                return None
+
         assert isinstance(Minimal(), Embedder)

@@ -65,6 +65,14 @@ class Embedder(Protocol):
     # broad-pass usability finding #7.
     def is_ready(self) -> bool: ...
 
+    # ``warmup`` is called by the embedder service's background warm
+    # thread on boot. It must bypass any ``is_ready``/warming gate the
+    # public ``embed`` method has — otherwise the warm thread fast-
+    # fails on the very gate it's meant to clear (the 2026-06-15 →
+    # 2026-06-16 regression). Backends without a warmup phase return
+    # immediately. Added 2026-06-17 as a post-regression fix.
+    def warmup(self) -> None: ...
+
 
 # ---------------------------------------------------------------------------
 # Mock — deterministic, no external deps. Used in all unit tests.
@@ -102,6 +110,10 @@ class MockEmbedder:
     def is_ready(self) -> bool:
         # MockEmbedder has no warmup phase — deterministic hashing.
         return True
+
+    def warmup(self) -> None:
+        # No-op: deterministic hashing has nothing to load.
+        return None
 
     def embed_one(self, text: str) -> list[float]:
         # Fill `dim` floats by hashing the text repeatedly with a
@@ -261,6 +273,24 @@ class BgeM3Embedder:
             next="retry the same call in ~30s, or scope by tags=[...] for lex-only",
         )
 
+    def warmup(self) -> None:
+        """Load the model + run one encode to JIT-compile MPS kernels.
+
+        Bypasses :meth:`_raise_if_warming` — the warming gate exists to
+        fast-fail FOREGROUND callers; the background warm thread is
+        what's supposed to clear it. Earlier code routed warmup through
+        :meth:`embed` which hits the gate first and raises
+        ``Upstream("embedder warming")`` before reaching
+        :meth:`_ensure_loaded`, leaving ``self._st`` permanently None
+        (the 2026-06-15 → 2026-06-16 regression). Call ``_ensure_loaded``
+        directly here and run one tiny encode so the first foreground
+        request lands on a fully-JIT'd model.
+        """
+        st = self._ensure_loaded()
+        # One-token encode kicks off MPS kernel compilation. Discard
+        # the vector — it's the side effect we want.
+        st.encode(["warmup"], normalize_embeddings=True)  # type: ignore[attr-defined]
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -379,6 +409,10 @@ class RemoteEmbedder:
         # genuine transport failures still surface via ``embed()``'s
         # existing retry / RuntimeError path.
         return True
+
+    def warmup(self) -> None:
+        # No-op: the remote backend's model is loaded server-side.
+        return None
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:

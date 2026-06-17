@@ -119,7 +119,13 @@ class EmbedderService:
 
     def _warm(self) -> None:
         try:
-            self._embedder.embed(["warmup"])
+            # Call ``warmup()`` (not ``embed()``) — the public
+            # ``embed`` is gated by ``_raise_if_warming`` which raises
+            # while ``self._st is None``, but THIS thread is the one
+            # supposed to clear that gate. Routing through ``embed``
+            # caused the warm thread to fast-fail on the very gate it
+            # was meant to clear (2026-06-15 → 2026-06-16 regression).
+            self._embedder.warmup()
             self._ready.set()
             log.info(
                 "embedder warm: model=%s dim=%d",
