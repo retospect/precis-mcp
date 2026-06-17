@@ -46,11 +46,11 @@ _WATCH_PLIST = Path("/Library/LaunchDaemons/com.precis.watch.plist")
 def _watch_dir_from_plist() -> str | None:
     """Lift the watch-dir argument out of ``precis watch``'s plist.
 
-    The plist's ``ProgramArguments`` is a list; the watch_dir is the
-    final positional argument (after all the flags). Returns ``None``
-    when the plist isn't readable (running outside the cluster, or
-    file permission issue) — the template then surfaces a fallback
-    hint rather than a broken display.
+    The plist invokes ``bash -c "exec /opt/precis/venv/bin/precis
+    watch <flags> <watch_dir>"`` — the watch_dir is the last
+    whitespace-separated token in the bash command. Returns ``None``
+    when the plist isn't readable so the template falls back to a
+    placeholder hint.
     """
     if not _WATCH_PLIST.exists():
         return None
@@ -58,18 +58,24 @@ def _watch_dir_from_plist() -> str | None:
         with _WATCH_PLIST.open("rb") as fh:
             payload = plistlib.load(fh)
     except Exception:
-        # Plistlib chokes on XML comments containing ``--``; the same
-        # plutil fallback that /env uses would work here, but the
-        # precis-watch plist doesn't have that issue today. Keep simple.
         return None
     args = payload.get("ProgramArguments") or []
     if not isinstance(args, list) or not args:
         return None
-    # Walk backwards for the first positional (skips ``--debounce 3``
-    # and similar flag-value pairs).
-    for tok in reversed(args):
-        if isinstance(tok, str) and not tok.startswith("-") and "/" in tok:
-            return tok
+    # Find the bash -c command argument (longest string, contains
+    # 'precis watch'). The watch_dir is the final positional in it.
+    for tok in args:
+        if isinstance(tok, str) and "precis watch" in tok:
+            # Split into shell-style tokens; walk backwards for the
+            # first absolute path that isn't preceded by a flag.
+            parts = tok.split()
+            for i in range(len(parts) - 1, -1, -1):
+                p = parts[i]
+                # Skip flag values (preceded by a ``--flag``).
+                if i > 0 and parts[i - 1].startswith("--"):
+                    continue
+                if p.startswith("/") and "/" in p[1:]:
+                    return p
     return None
 
 
