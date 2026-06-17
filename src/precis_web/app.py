@@ -64,6 +64,7 @@ def create_app(
     from precis_web.routes import (
         asks,
         console,
+        env,
         papers,
         papers_needed,
         preview,
@@ -82,6 +83,7 @@ def create_app(
     app.include_router(preview.router)
     app.include_router(console.router)
     app.include_router(status.router)
+    app.include_router(env.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> RedirectResponse:

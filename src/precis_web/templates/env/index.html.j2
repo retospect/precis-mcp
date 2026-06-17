@@ -1,0 +1,139 @@
+{% extends "base.html.j2" %}
+{% block title %}Env{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-1">Agent environment</h1>
+<p class="text-sm text-slate-500 mb-4">
+  What each agent would run, right now, if it fired this second.
+  System prompt, directive prompt, MCP tool surface, env vars, gating
+  flags. Pure read-only — picking an agent never invokes it.
+</p>
+
+<form method="get" action="/env" class="mb-4 flex items-center gap-2">
+  <select name="agent" class="rounded-md border border-slate-300 text-sm px-2 py-2">
+    <option value="">— pick an agent —</option>
+    {% for a in agents %}
+    <option value="{{ a.key }}" {% if a.key == selected %}selected{% endif %}>{{ a.label }}</option>
+    {% endfor %}
+  </select>
+  <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2">Show</button>
+</form>
+
+{% if not detail %}
+{# Empty state — list every agent so the operator can scan options. #}
+<ul class="space-y-2">
+  {% for a in agents %}
+  <li class="rounded-lg border border-slate-200 bg-white px-4 py-3">
+    <a href="/env?agent={{ a.key }}"
+       class="text-sm font-semibold text-emerald-700 hover:underline">{{ a.label }}</a>
+    <p class="text-xs text-slate-500 mt-1">{{ a.description }}</p>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+{% set s = detail.spec %}
+<section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+  <h2 class="text-sm font-semibold text-slate-700">{{ s.label }}</h2>
+  <p class="text-xs text-slate-500 mt-1 mb-3">{{ s.description }}</p>
+  <dl class="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+    <dt class="text-slate-500">Model</dt>
+    <dd class="font-mono text-slate-800">{{ detail.model }}</dd>
+    <dt class="text-slate-500">Max turns</dt>
+    <dd class="font-mono text-slate-800">{{ s.max_turns }}</dd>
+    <dt class="text-slate-500">Timeout</dt>
+    <dd class="font-mono text-slate-800">{{ s.timeout_s }}s</dd>
+    <dt class="text-slate-500">Denied tools</dt>
+    <dd class="font-mono text-slate-800">{{ ', '.join(s.disallowed_tools) or '(none)' }}</dd>
+  </dl>
+</section>
+
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Gating</h2>
+  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for key, why in s.gating %}
+    <li class="px-4 py-2 text-xs flex items-center gap-2">
+      <span class="font-mono text-slate-700 w-44">{{ key }}</span>
+      <span class="text-slate-500">{{ why }}</span>
+    </li>
+    {% else %}
+    <li class="px-4 py-2 text-sm text-slate-500">no gating env vars</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Env vars consulted</h2>
+  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for row in detail.env_rows %}
+    <li class="px-4 py-2 text-xs flex items-center gap-2">
+      <span class="font-mono w-56 shrink-0">{{ row.key }}</span>
+      {% if row.present %}
+      <span class="text-emerald-700">✓</span>
+      <span class="text-slate-600 font-mono break-all">{{ row.value }}</span>
+      {% else %}
+      <span class="text-rose-600">✗ unset</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">MCP servers</h2>
+  {% if not detail.mcp.exists %}
+  <p class="text-xs text-rose-700">MCP config not found at <code>{{ detail.mcp.path or '(unset)' }}</code></p>
+  {% elif detail.mcp.error %}
+  <p class="text-xs text-rose-700">MCP config parse failed: {{ detail.mcp.error }}</p>
+  {% elif not detail.mcp.servers %}
+  <p class="text-xs text-amber-700">MCP config has no <code>mcpServers</code> — the agent runs with zero MCP tools.</p>
+  {% else %}
+  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for srv in detail.mcp.servers %}
+    <li class="px-4 py-2 text-xs">
+      <div class="flex items-center gap-2">
+        <span class="font-mono text-slate-800">{{ srv.name }}</span>
+        <span class="text-slate-400">·</span>
+        <span class="text-slate-500">{{ srv.transport }}</span>
+      </div>
+      {% if srv.command %}
+      <div class="text-slate-500 mt-0.5">
+        <span class="font-mono">{{ srv.command }} {{ ' '.join(srv.args) }}</span>
+      </div>
+      {% elif srv.url %}
+      <div class="text-slate-500 mt-0.5"><a href="{{ srv.url }}" class="text-sky-600">{{ srv.url }}</a></div>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="text-xs text-slate-400 mt-1">MCP config: <code>{{ detail.mcp.path }}</code></p>
+  {% endif %}
+</section>
+
+{% if s.system_prompt_env %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">System prompt
+    <span class="text-xs text-slate-400 font-normal">(from <code>{{ s.system_prompt_env }}</code>)</span>
+  </h2>
+  {% if detail.system_prompt.exists %}
+  <p class="text-xs text-slate-400 mb-1">{{ detail.system_prompt.path }} · {{ detail.system_prompt.size }} chars</p>
+  <pre class="rounded-lg border border-slate-200 bg-white p-3 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto max-h-96 overflow-y-auto">{{ detail.system_prompt.text }}</pre>
+  {% else %}
+  <p class="text-xs text-rose-700">Not readable: <code>{{ detail.system_prompt.path or '(unset)' }}</code></p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if s.directive_prompt_env %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Directive prompt
+    <span class="text-xs text-slate-400 font-normal">(from <code>{{ s.directive_prompt_env }}</code>)</span>
+  </h2>
+  {% if detail.directive_prompt.exists %}
+  <p class="text-xs text-slate-400 mb-1">{{ detail.directive_prompt.path }} · {{ detail.directive_prompt.size }} chars</p>
+  <pre class="rounded-lg border border-slate-200 bg-white p-3 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto max-h-96 overflow-y-auto">{{ detail.directive_prompt.text }}</pre>
+  {% else %}
+  <p class="text-xs text-rose-700">Not readable: <code>{{ detail.directive_prompt.path or '(unset)' }}</code></p>
+  {% endif %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -524,6 +524,56 @@ def test_refs_detail_tags_no_op_redirects(client, runtime) -> None:
     assert len(runtime.calls) == before  # no tag verb invoked
 
 
+def test_env_index_lists_all_agents(client) -> None:
+    """``GET /env`` renders the empty-state agent list — one row per
+    AgentSpec — without invoking anything."""
+    resp = client.get("/env")
+    assert resp.status_code == 200
+    # Each agent label must surface so the operator can pick it.
+    for label in (
+        "Dream agent",
+        "Structural reviewer",
+        "Deep review",
+        "Claude in-process executor",
+    ):
+        assert label in resp.text
+
+
+def test_env_select_dream_renders_detail(client, monkeypatch) -> None:
+    """``GET /env?agent=dream_agent`` resolves the system + directive
+    prompt env vars and shows the file contents inline."""
+    # Stub the env vars so the route can resolve to predictable paths
+    # (using the conftest's tmp_path-based corpus_dir is overkill —
+    # just point at /etc/hostname which exists on every host).
+    monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
+    monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", "/etc/hostname")
+    monkeypatch.setenv("PRECIS_DREAM_SOUL_PATH", "/etc/hostname")
+    monkeypatch.delenv("PRECIS_MCP_CONFIG", raising=False)
+    resp = client.get("/env?agent=dream_agent")
+    assert resp.status_code == 200
+    # Model fallback to the default when the model env is unset.
+    assert "claude-sonnet-4-6" in resp.text
+    # Env-var snapshot shows the gating flag as present.
+    assert "PRECIS_DREAM_AGENT" in resp.text
+
+
+def test_env_missing_mcp_config_shows_warning(client, monkeypatch) -> None:
+    """When ``PRECIS_MCP_CONFIG`` points at a non-existent file the
+    template surfaces a "MCP config not found" warning rather than
+    crashing."""
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", "/tmp/no-such-mcp-config.json")
+    resp = client.get("/env?agent=dream_agent")
+    assert resp.status_code == 200
+    assert "MCP config not found" in resp.text
+
+
+def test_env_in_base_nav(client) -> None:
+    """The Env tab is reachable from base.html.j2 nav."""
+    resp = client.get("/tasks")
+    assert resp.status_code == 200
+    assert 'href="/env"' in resp.text
+
+
 def test_loupe_in_base_nav(client) -> None:
     """The 🔍 loupe form posts to /refs?all=1 so cross-kind search lands
     on the consolidated browser with everything lit."""
