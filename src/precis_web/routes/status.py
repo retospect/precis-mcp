@@ -222,6 +222,52 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, int]]:
     return rows
 
 
+def _recent_agent_activity(
+    store: Any, limit: int = 10
+) -> list[dict[str, Any]]:
+    """Last N LLM-agent pass results — dream / reviewer / job runner.
+
+    These passes each shell out to ``claude -p`` so they're the
+    expensive, observable ones. Surface every fire (success AND
+    failure) so a string of silent ``failed=1`` shows up on the
+    Status panel instead of being lost under the "Recent worker
+    passes" filter (which excludes idle ticks). Failed runs render
+    in red so the eye lands on them first.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ts, host, pass,
+                   COALESCE((payload->>'claimed')::int, 0) AS claimed,
+                   COALESCE((payload->>'ok')::int, 0)      AS ok,
+                   COALESCE((payload->>'failed')::int, 0)  AS failed
+              FROM worker_logs
+             WHERE pass IN (
+                       'dream_agent', 'structural', 'deep_review',
+                       'job_claude_inproc', 'quota_check'
+                   )
+               AND payload IS NOT NULL
+               AND COALESCE((payload->>'claimed')::int, 0) > 0
+             ORDER BY ts DESC
+             LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "ago": _ago(r[0]),
+            "ts": r[0].strftime("%Y-%m-%d %H:%M") if r[0] else "",
+            "host": r[1] or "?",
+            "pass": r[2] or "?",
+            "claimed": int(r[3]),
+            "ok": int(r[4]),
+            "failed": int(r[5]),
+            "ok_flag": int(r[5]) == 0 and int(r[4]) > 0,
+        }
+        for r in rows
+    ]
+
+
 def _recent_passes(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     """Most-recent chunk_keywords / summarize / embed pass batches.
 
@@ -467,6 +513,7 @@ async def index(request: Request) -> HTMLResponse:
             "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
             "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
             "recent_passes": _safe(lambda: _recent_passes(store)) or [],
+            "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
             "backlog": _safe(lambda: _backlog_counts(store)) or {},
             "usage": _safe(lambda: _claude_usage(store)) or {},
             "quota": _safe(lambda: _claude_quota(store)) or {},

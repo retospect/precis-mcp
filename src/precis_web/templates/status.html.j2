@@ -282,6 +282,31 @@
   </section>
 </div>
 
+{# Recent LLM-agent fires: dream / structural reviewer / deep_review
+   / job_claude_inproc / quota_check. Each is one ``claude -p`` call
+   per row — failed rows render in red so silent-failure streaks
+   stand out. #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2">Recent LLM agent activity
+    <span class="font-normal text-xs text-slate-400">(dream, reviewers, job runner, quota)</span>
+  </h2>
+  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for a in recent_agents %}
+    <li class="px-4 py-2 text-xs flex items-center gap-2 {% if not a.ok_flag %}bg-rose-50{% endif %}">
+      <span class="text-slate-400 w-16 shrink-0">{{ a.ago }}</span>
+      <span class="font-mono {% if a.ok_flag %}text-violet-700{% else %}text-rose-700{% endif %} w-44 shrink-0">{{ a.pass }}</span>
+      <span class="text-slate-500 w-20 shrink-0">{{ a.host }}</span>
+      <span class="ml-auto tabular-nums {% if a.ok_flag %}text-emerald-700{% else %}text-rose-700 font-medium{% endif %}">
+        {% if a.ok_flag %}ok{% else %}FAILED{% endif %}
+        <span class="text-slate-400">·</span> claimed {{ a.claimed }} · ok {{ a.ok }} · failed {{ a.failed }}
+      </span>
+    </li>
+    {% else %}
+    <li class="px-4 py-2 text-sm text-slate-500">no agent fires recorded yet</li>
+    {% endfor %}
+  </ul>
+</section>
+
 {# Chunk-pipeline backlog: how many chunks are still waiting on each
    pass. ``pending = 0`` means the worker is caught up; a growing
    number means the embedder / keyword extractor / summarizer can't
