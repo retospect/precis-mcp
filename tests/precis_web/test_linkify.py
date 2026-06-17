@@ -168,3 +168,44 @@ def test_popover_caps_height_for_long_content() -> None:
     out = str(linkify_refs("paper:acheson26"))
     assert "max-h-72" in out
     assert "overflow-y-auto" in out
+
+
+# ---- Path-shape slugs (conv handles) ---------------------------------
+
+
+def test_prefixed_conv_path_slug_linkifies() -> None:
+    """``conv:discord/<server>/<channel>/<thread>`` was getting cut at
+    the first ``/`` because the id-group rejected slashes."""
+    handle = "discord/1490327108830892182/1515091538529619979/1515091538529619979"
+    out = str(linkify_refs(f"see conv:{handle} for context"))
+    assert f"/r/conv/{handle}" in out
+    assert f"conv:{handle}" in out  # display preserved
+
+
+def test_prefixed_conv_path_slug_with_chunk_address() -> None:
+    """The ``~N`` chunk suffix rides through path slugs too."""
+    handle = "discord/1490327108830892182/1515091538529619979/1515091538529619979"
+    out = str(linkify_refs(f"conv:{handle}~31"))
+    assert f"/r/conv/{handle}?chunk=31" in out
+
+
+def test_bare_discord_handle_linkifies_to_conv() -> None:
+    """Asa-bot emits ``discord/<server>/<channel>/<thread>`` without a
+    ``conv:`` prefix in memory bodies. The linkifier maps the bare
+    handle to the ``conv`` kind."""
+    handle = "discord/1490327108830892182/1515091538529619979/1515091538529619979"
+    out = str(linkify_refs(f"continued from {handle} earlier"))
+    assert f"/r/conv/{handle}" in out
+
+
+def test_bare_discord_handle_with_chunk_suffix() -> None:
+    handle = "discord/1490327108830892182/1515091538529619979/1515091538529619979"
+    out = str(linkify_refs(f"see {handle}~31"))
+    assert f"/r/conv/{handle}?chunk=31" in out
+
+
+def test_bare_discord_handle_requires_all_three_path_segments() -> None:
+    """``discord/general`` is prose, not a conv handle — don't linkify."""
+    out = str(linkify_refs("posted in discord/general"))
+    assert "/r/conv/" not in out
+    assert "<a" not in out

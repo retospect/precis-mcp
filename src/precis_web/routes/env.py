@@ -49,13 +49,18 @@ _PLIST_DIR = Path("/Library/LaunchDaemons")
 
 #: Patterns for parsing a bash wrapper. Captures ``export X=Y``,
 #: ``X=Y`` (top-level assignment), with optional double-quotes around
-#: the value. We resolve ``"$other"`` references against earlier
-#: assignments so e.g. ``export PRECIS_DREAM_PROMPT_PATH="$prompt"``
-#: surfaces the literal ``/opt/asa/files/dream-prompt.md``.
+#: the value. Identifiers can be upper or lower case — dream-pass.sh
+#: uses lowercase locals like ``soul=…`` / ``prompt=…`` and then
+#: exports them into uppercase env vars (``export
+#: PRECIS_DREAM_PROMPT_PATH="$prompt"``). We resolve ``$other``
+#: references against earlier assignments so the result reads as
+#: ``PRECIS_DREAM_PROMPT_PATH=/opt/asa/files/dream-prompt.md``
+#: instead of the literal ``$prompt``.
 import re as _re
 
+_BASH_IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _BASH_ASSIGN_RE = _re.compile(
-    r'^(?:export\s+)?([A-Z_][A-Z0-9_]*)=(?:"([^"]*)"|(\S+))',
+    r'^(?:export\s+)?(' + _BASH_IDENT + r')=(?:"([^"]*)"|(\S+))',
 )
 
 
@@ -64,10 +69,10 @@ def _parse_wrapper_env(path: str) -> dict[str, str]:
 
     Returns ``{}`` when the path is empty, missing, or unreadable.
     Variable references inside ``"…"`` values (``$prompt`` etc.) are
-    resolved against assignments earlier in the file. This is a
-    deliberately tiny shell-emulator — enough for our wrappers that
-    only do ``X=literal`` and ``export Y=$X``, and we accept losing
-    fidelity on anything fancier.
+    resolved against assignments earlier in the file (lowercase locals
+    AND uppercase exports). This is a deliberately tiny shell-emulator
+    — enough for our wrappers that only do ``x=literal`` and
+    ``export Y=$x``, and we accept losing fidelity on anything fancier.
     """
     if not path:
         return {}
@@ -77,40 +82,61 @@ def _parse_wrapper_env(path: str) -> dict[str, str]:
     except OSError:
         return {}
     locals_map: dict[str, str] = {}
+    ref_re = _re.compile(r"\$\{?(" + _BASH_IDENT + r")\}?")
     for line in raw.splitlines():
         m = _BASH_ASSIGN_RE.match(line.strip())
         if m is None:
             continue
         name = m.group(1)
         value = m.group(2) if m.group(2) is not None else m.group(3)
-        # Resolve ``$other`` against earlier assignments. Single-level
-        # only — we don't recurse.
+
         def _resolve(match: _re.Match[str]) -> str:
             return locals_map.get(match.group(1), match.group(0))
 
-        value = _re.sub(r"\$\{?([A-Z_][A-Z0-9_]*)\}?", _resolve, value)
+        value = ref_re.sub(_resolve, value)
         locals_map[name] = value
-    return locals_map
+    # Only surface UPPERCASE keys — those are the real env exports.
+    # Lowercase locals (``soul=…``) were only used internally during
+    # resolution and aren't part of the runtime env.
+    return {k: v for k, v in locals_map.items() if k.isupper() or k == k.upper()}
 
 
 def _read_plist_env(label: str) -> dict[str, str]:
     """Project a LaunchDaemon's ``EnvironmentVariables`` to a flat dict.
 
     Returns an empty dict when the plist is missing or unreadable.
-    Some macOS plists are stored in the binary plist format which
-    ``plistlib.load`` handles transparently, but malformed XML
-    headers leak a bare ``xml.parsers.expat.ExpatError`` past the
-    typed exception list — catch a broad ``Exception`` here so the
-    /env route degrades to "empty env" instead of 500'ing.
+    macOS's plist tools tolerate XML comments that contain ``--``
+    (e.g. a comment mentioning ``--only dream``), but Python's expat
+    parser rejects them as not-well-formed. Apple's ``plutil`` is the
+    canonical way to round-trip a plist on macOS — fall back to
+    shelling out and reading its JSON output when plistlib chokes.
     """
     path = _PLIST_DIR / f"{label}.plist"
     if not path.exists():
         return {}
+    # First attempt: plistlib direct (fast path, no subprocess).
     try:
         with path.open("rb") as fh:
             payload = plistlib.load(fh)
     except Exception:
-        return {}
+        # Lenient fallback via ``plutil -convert json -o - <path>``.
+        try:
+            import subprocess
+
+            res = subprocess.run(
+                ["/usr/bin/plutil", "-convert", "json", "-o", "-", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if res.returncode != 0:
+                return {}
+            import json as _json
+
+            payload = _json.loads(res.stdout)
+        except Exception:
+            return {}
     env = payload.get("EnvironmentVariables") or {}
     if not isinstance(env, dict):
         return {}

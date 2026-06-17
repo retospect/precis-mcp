@@ -53,6 +53,15 @@ from markupsafe import Markup
 #: * ``~N..M``  — chunk range (existing).
 #: * ``~pN``    — PDF page N (new — bypasses the chunk → page lookup;
 #:   useful when the agent already knows the page number).
+#:
+#: The ``id`` group accepts three shapes:
+#:
+#: * numeric:  ``#?[0-9]+`` (``memory:6184``)
+#: * bare slug: ``[A-Za-z][A-Za-z0-9_-]*`` (``paper:acheson26``)
+#: * path slug: ``[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)+`` — at least one
+#:   ``/`` (``conv:discord/1490327108830892182/1515091538529619979/…``);
+#:   conv refs store their slug as ``discord/<server>/<channel>/<thread>``
+#:   and the linkifier used to drop everything after the first slash.
 _REF_PATTERN = re.compile(
     r"\b"
     r"(?P<kind>[a-z][a-z0-9-]*)"
@@ -60,9 +69,21 @@ _REF_PATTERN = re.compile(
     r"(?P<id>"
     r"#?[0-9]+"
     r"|"
+    r"[A-Za-z][A-Za-z0-9_-]*(?:/[A-Za-z0-9_-]+)+"
+    r"|"
     r"[A-Za-z][A-Za-z0-9_-]*"
     r")"
     r"(?P<chunk>~(?:p[0-9]+|[0-9]+(?:\.\.[0-9]+)?))?"
+    r"(?!\w)"
+)
+
+#: Bare conv-handle shorthand the asa-bot Discord bridge emits in
+#: memories — ``discord/<server>/<channel>/<thread>(~<chunk>)?`` with
+#: no ``conv:`` prefix. We linkify these too, mapping them to the
+#: ``conv`` kind. The pattern requires all three numeric path segments
+#: to keep it from over-matching prose like ``discord/general``.
+_BARE_CONV_PATTERN = re.compile(
+    r"\bdiscord/[0-9]+/[0-9]+/[0-9]+(?:~(?:p[0-9]+|[0-9]+(?:\.\.[0-9]+)?))?"
     r"(?!\w)"
 )
 
@@ -202,7 +223,8 @@ def linkify_refs(value: str) -> Markup:
 
 
 def _linkify_prose(prose: str) -> str:
-    """Replace every ``kind:ref`` in plain prose with an anchor."""
+    """Replace every ``kind:ref`` (and bare conv handle) in plain prose
+    with an anchor."""
     if not prose:
         return ""
 
@@ -218,7 +240,24 @@ def _linkify_prose(prose: str) -> str:
             return m.group(0)
         return _render_anchor(kind, raw_id, chunk)
 
-    return _REF_PATTERN.sub(_sub, prose)
+    # First pass: prefixed ``kind:ref`` matches.
+    out = _REF_PATTERN.sub(_sub, prose)
+
+    # Second pass: bare ``discord/<server>/<channel>/<thread>(~N)?``
+    # shorthand. The asa-bot emits these in memory bodies when it
+    # references conv chunks without prepending ``conv:``. We anchor
+    # them to ``/r/conv/<slug>?chunk=…`` so they behave like every
+    # other ref link.
+    def _conv_sub(m: re.Match[str]) -> str:
+        whole = m.group(0)
+        chunk: str | None = None
+        slug = whole
+        if "~" in slug:
+            slug, _, suffix = slug.partition("~")
+            chunk = "~" + suffix
+        return _render_anchor("conv", slug, chunk)
+
+    return _BARE_CONV_PATTERN.sub(_conv_sub, out)
 
 
 __all__ = ["linkify_refs"]
