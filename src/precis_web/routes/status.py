@@ -166,6 +166,62 @@ def _recent_todo_done(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     ]
 
 
+def _backlog_counts(store: Any) -> dict[str, dict[str, int]]:
+    """Per-pass backlog counts: how many chunks are still waiting?
+
+    Each row maps to a worker pass and reports:
+
+    * ``pending`` — chunks the pass still needs to process. For
+      keywords that's ``keywords IS NULL OR keywords_meta->>'version'
+      != current``, for summaries it's ``summary IS NULL``, for the
+      embedder it's ``embedding IS NULL``. The exact predicate per
+      pass is fragile to schema drift; if any of these queries fails
+      we surface the pass with ``pending = -1`` so the operator sees
+      the panel didn't lie and can dig in.
+    * ``done`` — chunks already done (lets the panel show progress
+      as a fraction).
+
+    Cheap reads: each query is a single index probe; no joins.
+    """
+    rows: dict[str, dict[str, int]] = {}
+
+    def _two_count(label: str, pending_where: str, done_where: str) -> None:
+        try:
+            with store.pool.connection() as conn:
+                p = conn.execute(
+                    f"SELECT count(*)::int FROM chunks WHERE {pending_where}"
+                ).fetchone()
+                d = conn.execute(
+                    f"SELECT count(*)::int FROM chunks WHERE {done_where}"
+                ).fetchone()
+            rows[label] = {
+                "pending": int(p[0]) if p else 0,
+                "done": int(d[0]) if d else 0,
+            }
+        except Exception:
+            log.exception("status: backlog query for %s failed", label)
+            rows[label] = {"pending": -1, "done": 0}
+
+    _two_count(
+        "embed",
+        pending_where="embedding IS NULL",
+        done_where="embedding IS NOT NULL",
+    )
+    _two_count(
+        "chunk_keywords",
+        pending_where="keywords IS NULL",
+        done_where="keywords IS NOT NULL",
+    )
+    # ``summarize`` uses the ``summary`` TEXT column on chunks (a
+    # short rake-lemma extract); chunks not yet covered are NULL.
+    _two_count(
+        "summarize",
+        pending_where="summary IS NULL",
+        done_where="summary IS NOT NULL",
+    )
+    return rows
+
+
 def _recent_passes(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     """Most-recent chunk_keywords / summarize / embed pass batches.
 
@@ -411,6 +467,7 @@ async def index(request: Request) -> HTMLResponse:
             "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
             "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
             "recent_passes": _safe(lambda: _recent_passes(store)) or [],
+            "backlog": _safe(lambda: _backlog_counts(store)) or {},
             "usage": _safe(lambda: _claude_usage(store)) or {},
             "quota": _safe(lambda: _claude_quota(store)) or {},
             "hosts": _safe(lambda: _hosts(store)) or [],

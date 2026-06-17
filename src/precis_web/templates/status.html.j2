@@ -281,4 +281,38 @@
     </ul>
   </section>
 </div>
+
+{# Chunk-pipeline backlog: how many chunks are still waiting on each
+   pass. ``pending = 0`` means the worker is caught up; a growing
+   number means the embedder / keyword extractor / summarizer can't
+   keep up with ingest. -1 = query failed (schema drift). #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2">Chunk pipeline backlog
+    <span class="font-normal text-xs text-slate-400">(0 = caught up)</span>
+  </h2>
+  <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for pass_name, row in backlog.items() %}
+    {% set total = row.pending + row.done %}
+    {% set pct = ((row.done / total) * 100) if total > 0 else 100 %}
+    <div class="px-4 py-2 text-xs flex items-center gap-2">
+      <span class="font-mono text-slate-700 w-36 shrink-0">{{ pass_name }}</span>
+      {% if row.pending == -1 %}
+      <span class="text-rose-600">(query failed — see logs)</span>
+      {% else %}
+      <span class="text-slate-500 w-32 shrink-0">
+        <span class="font-medium {% if row.pending > 0 %}text-amber-700{% else %}text-emerald-700{% endif %}">{{ '{:,}'.format(row.pending) }}</span>
+        / {{ '{:,}'.format(total) }} pending
+      </span>
+      <div class="flex-1 h-2 rounded bg-slate-100 overflow-hidden">
+        <div class="h-2 {% if row.pending == 0 %}bg-emerald-500{% else %}bg-sky-500{% endif %}"
+             style="width: {{ '%.1f'|format(pct) }}%"></div>
+      </div>
+      <span class="w-16 text-right text-slate-500 tabular-nums">{{ '%.1f'|format(pct) }}%</span>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="px-4 py-2 text-sm text-slate-500">no backlog data</div>
+    {% endfor %}
+  </div>
+</section>
 {% endblock %}
