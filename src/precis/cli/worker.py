@@ -487,11 +487,14 @@ def run(args: argparse.Namespace) -> None:
             from precis.workers.runner import BatchResult as _BatchResult
 
             def _gp_fetch_pass(batch_size: int) -> _BatchResult:
-                # Smaller cap than the default chunk batch — one HTTP
-                # roundtrip per patent against a third-party host. The
-                # worker idle-sleeps when nothing is due so a small cap
-                # is friendly without leaving work stranded.
-                r = run_gp_fetch_pass(store, limit=min(batch_size, 5))
+                # Cap at 1 per pass — patents.google.com is a third-
+                # party host and we want only one in-flight request at
+                # a time per host. Combined with the env-gate being
+                # set on only one host (see precis_shared_env), this
+                # keeps the global rate at one request per pass cycle.
+                # The exponential backoff inside the pass handles HTTP
+                # transients without re-hammering.
+                r = run_gp_fetch_pass(store, limit=min(batch_size, 1))
                 return _BatchResult(
                     handler="fetch_google_patents",
                     claimed=r["claimed"],

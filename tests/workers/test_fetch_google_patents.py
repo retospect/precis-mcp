@@ -292,11 +292,12 @@ def test_pass_handles_404_terminal(
     assert "awaiting-fulltext" in tag_values
 
 
-def test_pass_http_error_is_transient(
+def test_pass_http_error_bumps_backoff_and_retries(
     store: Store, gp_enabled: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """HTTP 503 / network failure shouldn't burn the patent's one
-    allowed attempt — gp-attempted is NOT set, so the next pass retries."""
+    """HTTP 503 doesn't burn the patent's allowed attempt — gp-attempted
+    stays off, but ``gp_retry_at`` is set into the future so the next
+    pass skips the patent until the backoff window elapses."""
     _seed_patent(store, cite_key="us20240000004a1", status_tag="awaiting-fulltext")
 
     def _fake_fetch(slug: str) -> tuple[str, str | None, int]:
@@ -311,7 +312,50 @@ def test_pass_http_error_is_transient(
     ref = store.get_ref(kind="patent", id="us20240000004a1")
     assert ref is not None
     tag_values = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
-    assert GP_ATTEMPTED_TAG not in tag_values  # transient — next pass will retry
+    assert GP_ATTEMPTED_TAG not in tag_values  # transient — backoff handles it
+    meta = ref.meta or {}
+    assert meta.get("gp_retry_count") == 1
+    assert "gp_retry_at" in meta
+
+    # Re-run the pass immediately — the backoff predicate should skip
+    # this patent now.
+    out2 = run_gp_fetch_pass(store, limit=5, now=_NOW)
+    assert out2["claimed"] == 0
+
+
+def test_pass_http_error_gives_up_after_max_retries(
+    store: Store, gp_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After exhausting the retry schedule, the patent is marked
+    gp-attempted + gp-http-gave-up and drops out of the pool."""
+    from precis.workers.fetch_google_patents import (
+        _RETRY_DELAY_MINUTES,
+        GP_HTTP_GAVE_UP_TAG,
+    )
+
+    # Seed already at the end of the retry schedule so one more
+    # http-error tips it into give-up territory.
+    _seed_patent(store, cite_key="us20240000006a1", status_tag="awaiting-fulltext")
+    ref = store.get_ref(kind="patent", id="us20240000006a1")
+    assert ref is not None
+    store.update_ref(
+        ref_id=ref.id,
+        meta_patch={"gp_retry_count": len(_RETRY_DELAY_MINUTES)},
+    )
+
+    def _fake_fetch(slug: str) -> tuple[str, str | None, int]:
+        return "http-error", "HTTP 503", 0
+
+    monkeypatch.setattr(gp, "_fetch_one", _fake_fetch)
+    out = run_gp_fetch_pass(store, limit=5, now=_NOW)
+    assert out["claimed"] == 1
+    assert out["failed"] == 1
+
+    ref = store.get_ref(kind="patent", id="us20240000006a1")
+    assert ref is not None
+    tag_values = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
+    assert GP_ATTEMPTED_TAG in tag_values
+    assert GP_HTTP_GAVE_UP_TAG in tag_values
 
 
 def test_pass_parse_error_marks_attempted(

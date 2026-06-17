@@ -43,6 +43,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from datetime import timedelta as _timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.store import Tag
@@ -68,6 +69,15 @@ GP_ATTEMPTED_TAG: str = "gp-attempted"
 GP_FETCHED_TAG: str = "gp-fetched"
 GP_NOT_FOUND_TAG: str = "gp-not-found"
 GP_PARSE_ERROR_TAG: str = "gp-parse-error"
+GP_HTTP_GAVE_UP_TAG: str = "gp-http-gave-up"
+
+#: Exponential backoff schedule for HTTP errors against
+#: patents.google.com. Minutes per attempt; after the last entry,
+#: the patent is marked gp-attempted + gp-http-gave-up and drops out
+#: of the retry pool. Index 0 is the *first* retry delay (after the
+#: first http-error), so a never-seen patent starts with no
+#: ``gp_retry_count`` and is immediately eligible.
+_RETRY_DELAY_MINUTES: tuple[int, ...] = (5, 15, 60, 360, 1440)
 
 #: Awaiting / unavailable tag values — duplicated from
 #: :mod:`precis.handlers._patent_ingest` so this module can run without
@@ -284,6 +294,11 @@ def _claim_patents_for_gp(
         "    AND t2.namespace = 'OPEN' "
         "    AND t2.value = %s"
         ") "
+        # Skip patents in HTTP-error backoff — gp_retry_at is in the
+        # future. NULL means no prior failure, so the predicate stays
+        # tolerant.
+        "AND (r.meta->>'gp_retry_at' IS NULL "
+        "     OR (r.meta->>'gp_retry_at')::timestamptz <= now()) "
     )
     sql = f"""
         SELECT r.ref_id,
@@ -463,12 +478,52 @@ def _fetch_and_ingest(
     if status == "http-error":
         outcome.status = "http-error"
         outcome.error = html_or_err
-        # NB: HTTP errors don't stamp gp-attempted — transient upstream
-        # failure shouldn't burn the patent's one allowed attempt.
+        # Exponential backoff: bump gp_retry_count, stamp the next
+        # gp_retry_at. After exhausting the schedule we give up and
+        # mark gp-attempted + gp-http-gave-up so the patent drops out
+        # of the retry pool.
+        ref = store.get_ref(kind="patent", id=candidate.cite_key)
+        prior_count = 0
+        if ref is not None:
+            prior_count = int((ref.meta or {}).get("gp_retry_count", 0) or 0)
+        next_count = prior_count + 1
+
+        if next_count > len(_RETRY_DELAY_MINUTES):
+            # Out of retries — terminal.
+            _record_attempt(
+                store,
+                ref_id=candidate.ref_id,
+                status="http-error",
+                blocks_added=0,
+                now=now,
+                error=f"gave up after {prior_count} retries: {html_or_err}",
+            )
+            _ensure_tag(store, ref_id=candidate.ref_id, value=GP_HTTP_GAVE_UP_TAG)
+            log.warning(
+                "fetch_google_patents[%s]: http-error - gave up after %d retries: %s",
+                candidate.cite_key,
+                prior_count,
+                html_or_err,
+            )
+            outcome.status = "http-gave-up"
+            return outcome
+
+        delay = _RETRY_DELAY_MINUTES[next_count - 1]
+        next_at = now + _timedelta(minutes=delay)
+        store.update_ref(
+            ref_id=candidate.ref_id,
+            meta_patch={
+                "gp_retry_at": next_at.isoformat(),
+                "gp_retry_count": next_count,
+                "gp_last_error": html_or_err,
+            },
+        )
         log.warning(
-            "fetch_google_patents[%s]: http-error: %s",
+            "fetch_google_patents[%s]: http-error #%d: %s (retry in %dm)",
             candidate.cite_key,
+            next_count,
             html_or_err,
+            delay,
         )
         return outcome
 
@@ -547,6 +602,12 @@ def _fetch_and_ingest(
     existing_abstract = (existing_meta.get("abstract") or "").strip()
     if parsed.abstract and len(parsed.abstract) > len(existing_abstract):
         meta_patch["abstract"] = parsed.abstract
+    # Success clears any prior retry bookkeeping so the row's meta
+    # doesn't carry a ghost backoff timestamp forever.
+    if "gp_retry_at" in existing_meta:
+        meta_patch["gp_retry_at"] = None
+    if "gp_retry_count" in existing_meta:
+        meta_patch["gp_retry_count"] = None
     store.update_ref(ref_id=ref.id, meta_patch=meta_patch)
 
     # Now flip tags: gp-attempted + gp-fetched on; awaiting/unavailable off.
