@@ -310,3 +310,91 @@ class TestParseLanguages:
 
     def test_empty_pieces_default(self) -> None:
         assert _parse_languages(",,,") == ["en"]
+
+
+# ---- watch-page meta scrape (T183) ---------------------------------
+
+
+class TestScrapeWatchPageMeta:
+    """The helper parses og:* + itemprop=* meta tags from the watch
+    page HTML. We monkeypatch ``safe_get`` to return a fixture HTML
+    blob so the tests stay offline."""
+
+    def _stub_response(self, html: str, status: int = 200):
+        import httpx
+
+        return httpx.Response(status, text=html, request=httpx.Request("GET", "https://www.youtube.com/"))
+
+    def test_parses_og_title_description_channel_duration(
+        self, monkeypatch
+    ) -> None:
+        from precis.handlers import youtube as yt_mod
+
+        html = """
+        <html><head>
+          <meta property="og:title" content="Rick Astley - Never Gonna Give You Up">
+          <meta property="og:description" content="The official music video for &quot;Never Gonna Give You Up&quot; by Rick Astley.">
+          <meta property="og:image" content="https://i.ytimg.com/vi/dQw4w9WgXcQ/maxres.jpg">
+          <meta property="og:video:duration" content="213">
+          <meta itemprop="name" content="Rick Astley">
+          <meta itemprop="datePublished" content="2009-10-25">
+          <link itemprop="url" href="https://www.youtube.com/@RickAstleyYT">
+        </head><body></body></html>
+        """
+
+        def _fake_get(client, url):
+            return self._stub_response(html)
+
+        monkeypatch.setattr(yt_mod, "safe_get", _fake_get, raising=False)
+        # The function imports safe_get inside its body; patch the
+        # imported symbol on the module directly so the import line
+        # picks up our stub.
+        import precis.utils.safe_fetch as _sf
+
+        monkeypatch.setattr(_sf, "safe_get", _fake_get)
+        meta = yt_mod._scrape_watch_page_meta("dQw4w9WgXcQ")
+        assert meta["title"] == "Rick Astley - Never Gonna Give You Up"
+        assert (
+            meta["description"]
+            == 'The official music video for "Never Gonna Give You Up" by Rick Astley.'
+        )
+        assert meta["thumbnail_url"] == "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxres.jpg"
+        assert meta["duration_s"] == 213
+        assert meta["channel_name"] == "Rick Astley"
+        assert meta["published_at"] == "2009-10-25"
+        assert meta["channel_url"] == "https://www.youtube.com/@RickAstleyYT"
+        assert meta["watch_url"] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+    def test_empty_dict_on_network_failure(self, monkeypatch) -> None:
+        from precis.handlers import youtube as yt_mod
+        import precis.utils.safe_fetch as _sf
+
+        def _boom(client, url):
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(_sf, "safe_get", _boom)
+        meta = yt_mod._scrape_watch_page_meta("dQw4w9WgXcQ")
+        assert meta == {}
+
+    def test_empty_dict_on_non_200(self, monkeypatch) -> None:
+        from precis.handlers import youtube as yt_mod
+        import precis.utils.safe_fetch as _sf
+
+        def _403(client, url):
+            return self._stub_response("Forbidden", status=403)
+
+        monkeypatch.setattr(_sf, "safe_get", _403)
+        meta = yt_mod._scrape_watch_page_meta("dQw4w9WgXcQ")
+        assert meta == {}
+
+    def test_missing_tags_dont_raise(self, monkeypatch) -> None:
+        from precis.handlers import youtube as yt_mod
+        import precis.utils.safe_fetch as _sf
+
+        def _bare(client, url):
+            return self._stub_response("<html><body>no metadata</body></html>")
+
+        monkeypatch.setattr(_sf, "safe_get", _bare)
+        meta = yt_mod._scrape_watch_page_meta("dQw4w9WgXcQ")
+        # Only watch_url should be present (the rest weren't parseable).
+        assert meta == {"watch_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}

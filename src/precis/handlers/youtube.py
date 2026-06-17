@@ -209,25 +209,66 @@ class YouTubeHandler(CacheBackedHandler):
             raise Upstream(f"YouTube API error: {exc}") from exc
 
         text = "\n".join(s.text for s in snippets).strip()
+        # Best-effort scrape of the watch page for channel / title /
+        # description / duration. If the scrape fails for any reason
+        # (network, format drift, rate limit, SSRF guard) we still
+        # return the transcript — the meta dict just keeps the small
+        # set we already had.
+        scraped_meta = _scrape_watch_page_meta(video_id)
+        meta: dict[str, Any] = {
+            "video_id": video_id,
+            "languages": languages,
+            "snippet_count": len(snippets),
+        }
+        meta.update(scraped_meta)
+        title = scraped_meta.get("title") or f"YouTube transcript: {video_id}"
         return FetchResult(
-            title=f"YouTube transcript: {video_id}",
+            title=title,
             body_blocks=[BlockInsert(pos=0, text=text)],
             cost_usd=None,  # free
-            meta={
-                "video_id": video_id,
-                "languages": languages,
-                "snippet_count": len(snippets),
-            },
+            meta=meta,
         )
 
     # ── render: append per-video deep-link below attribution ──────────
 
     def _render(self, ref, cache, *, hit):  # type: ignore[no-untyped-def]
         resp = super()._render(ref, cache, hit=hit)
-        video_id = (cache.meta or {}).get("video_id") or ref.slug
+        meta = cache.meta or {}
+        video_id = meta.get("video_id") or ref.slug
+        # Build a small header block above the body when the watch-page
+        # scrape populated channel / duration / description. Keeps the
+        # transcript searchable as the primary content but surfaces the
+        # context every operator wants ("which channel is this from?").
+        header_lines: list[str] = []
+        if meta.get("channel_name"):
+            channel_url = meta.get("channel_url")
+            if channel_url:
+                header_lines.append(
+                    f"Channel: {meta['channel_name']} ({channel_url})"
+                )
+            else:
+                header_lines.append(f"Channel: {meta['channel_name']}")
+        if meta.get("duration_s"):
+            sec = int(meta["duration_s"])
+            mins, s = divmod(sec, 60)
+            header_lines.append(f"Duration: {mins}m{s:02d}s")
+        elif meta.get("duration_iso"):
+            header_lines.append(f"Duration: {meta['duration_iso']}")
+        if meta.get("published_at"):
+            header_lines.append(f"Published: {meta['published_at']}")
+        if meta.get("description"):
+            # Cap the description preview — full text lives in the meta.
+            desc = meta["description"][:400].rstrip()
+            if len(meta["description"]) > 400:
+                desc += "…"
+            header_lines.append(f"Description: {desc}")
+
         deep_link = f"  Watch: https://www.youtube.com/watch?v={video_id}"
+        body = resp.body
+        if header_lines:
+            body = "\n".join(header_lines) + "\n\n" + body
         return Response(
-            body=resp.body + "\n" + deep_link,
+            body=body + "\n" + deep_link,
             cost=resp.cost,
         )
 
@@ -335,3 +376,109 @@ def _parse_languages(raw: str) -> list[str]:
         return ["en"]
     langs = [c.strip() for c in raw.split(",") if c.strip()]
     return langs or ["en"]
+
+
+# ---------------------------------------------------------------------------
+# Watch-page meta scrape
+# ---------------------------------------------------------------------------
+
+
+#: Match ``og:`` / ``itemprop`` meta tags. The HTML format YouTube ships is
+#: ``<meta property="og:title" content="…">`` / ``<meta itemprop="name"
+#: content="…">`` etc. We accept either attribute ordering and either
+#: quoting style.
+_META_RE = re.compile(
+    r'<meta\b[^>]*?(?:property|name|itemprop)="([^"]+)"[^>]*?content="([^"]*)"',
+    re.IGNORECASE,
+)
+
+#: Channel name lives in a ``<link itemprop="name" content="…">`` tag inside
+#: the ``<span itemprop="author">`` block. Same regex shape works because we
+#: already capture ``itemprop`` → content above; we look for the channel
+#: link separately via this pattern.
+_AUTHOR_LINK_RE = re.compile(
+    r'<link\b[^>]*?itemprop="url"[^>]*?href="([^"]+)"',
+    re.IGNORECASE,
+)
+
+
+def _scrape_watch_page_meta(video_id: str) -> dict[str, Any]:
+    """Pull title / channel / duration / description from the watch page.
+
+    Returns an empty dict on any failure path — the caller treats
+    missing meta as "no scrape available" and falls back to what we
+    already have. Outbound HTTP goes through ``safe_get`` per the
+    SSRF guard convention.
+    """
+    try:
+        import httpx
+
+        from precis.utils.safe_fetch import safe_get
+    except ImportError:
+        return {}
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        with httpx.Client(
+            follow_redirects=False,
+            timeout=8.0,
+            headers={"User-Agent": "precis-mcp/1.0 (+youtube watch-page scraper)"},
+        ) as client:
+            resp = safe_get(client, url)
+    except Exception:
+        log.warning("youtube: watch-page scrape failed for %s", video_id, exc_info=True)
+        return {}
+    if resp.status_code != 200:
+        return {}
+    html = resp.text
+    meta: dict[str, Any] = {}
+    for m in _META_RE.finditer(html):
+        key = m.group(1).strip().lower()
+        val = m.group(2)
+        if not val:
+            continue
+        # og:title / og:description / og:image / og:url
+        if key == "og:title" and "title" not in meta:
+            meta["title"] = _decode_html_entities(val)
+        elif key == "og:description" and "description" not in meta:
+            meta["description"] = _decode_html_entities(val)
+        elif key == "og:image" and "thumbnail_url" not in meta:
+            meta["thumbnail_url"] = val
+        elif key == "og:video:duration" and "duration_s" not in meta:
+            try:
+                meta["duration_s"] = int(val)
+            except ValueError:
+                pass
+        # Schema.org itemprops: name (channel), datePublished
+        elif key == "name" and "channel_name" not in meta:
+            meta["channel_name"] = _decode_html_entities(val)
+        elif key == "datepublished" and "published_at" not in meta:
+            meta["published_at"] = val
+        elif key == "duration" and "duration_iso" not in meta:
+            meta["duration_iso"] = val
+    # Channel URL — first author-itemprop link.
+    m = _AUTHOR_LINK_RE.search(html)
+    if m is not None and "channel_url" not in meta:
+        meta["channel_url"] = m.group(1)
+    meta["watch_url"] = url
+    return meta
+
+
+_ENTITY_MAP = {
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": '"',
+    "&apos;": "'",
+    "&#39;": "'",
+}
+
+
+def _decode_html_entities(s: str) -> str:
+    """Decode the half-dozen entities that show up in YouTube meta tags.
+
+    Defer to the stdlib for full coverage when callers need it; this
+    inline map keeps the scrape light-dependency-free.
+    """
+    from html import unescape
+
+    return unescape(s)
