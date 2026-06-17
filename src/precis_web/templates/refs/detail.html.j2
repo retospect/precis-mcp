@@ -133,16 +133,29 @@
   <ol class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 list-decimal pl-8">
     {% for r in references %}
     {# data-ref-line is what the copy button pulls — plain-text cite
-       form: "handle — title (kind). preview…". #}
-    <li class="px-3 py-2 text-xs"
-        data-ref-line="{{ r.handle }} — {{ r.title }} ({{ r.kind }}){% if r.preview %}. {{ r.preview }}{% endif %}">
+       form: "handle — title (kind). preview…". id="ref-N" lets the
+       inline [N] footnote markers in the body jump here. #}
+    <li class="px-3 py-2 text-xs" id="ref-{{ r.number }}"
+        data-ref-line="[{{ r.number }}] {{ r.handle }} — {{ r.title }} ({{ r.kind }}){% if r.preview %}. {{ r.preview }}{% endif %}">
       <div class="flex items-start gap-2">
+        {# Verification badge (#191) — colour matches status. #}
+        {% if r.status == 'resolved' %}
+          <span class="text-emerald-600 shrink-0" title="resolves cleanly">✓</span>
+        {% elif r.status == 'stub' %}
+          <span class="text-amber-600 shrink-0" title="ref exists but no body chunks yet (e.g. paper stub awaiting fetch)">?</span>
+        {% elif r.status == 'deleted' %}
+          <span class="text-slate-400 shrink-0" title="soft-deleted">⊘</span>
+        {% else %}
+          <span class="text-rose-600 shrink-0" title="reference doesn't resolve">✗</span>
+        {% endif %}
         <a href="{{ r.url }}" class="font-mono text-sky-700 hover:underline shrink-0">{{ r.handle }}</a>
         <span class="text-slate-400 shrink-0">·</span>
         {% if r.status == 'missing' %}
         <span class="text-rose-700 italic">{{ r.title }}</span>
         {% elif r.status == 'deleted' %}
         <span class="text-slate-400 italic line-through">{{ r.title }}</span>
+        {% elif r.status == 'stub' %}
+        <span class="text-amber-700 break-words">{{ r.title }} <span class="text-slate-400">(stub — awaiting fetch)</span></span>
         {% else %}
         <span class="text-slate-700 break-words">{{ r.title }}</span>
         {% endif %}
@@ -155,9 +168,12 @@
     {% endfor %}
   </ol>
   <p class="mt-2 text-xs text-slate-400">
-    Auto-extracted from this memory's body. Missing refs are flagged in
-    red; deleted ones are struck through. The copy button gives a flat
-    plain-text list suitable for pasting into a chat or note.
+    Auto-extracted from this memory's body — inline ``[N]`` markers
+    cross-link back to this list.
+    Badges: <span class="text-emerald-600">✓</span> resolves ·
+    <span class="text-amber-600">?</span> stub awaiting fetch ·
+    <span class="text-slate-400">⊘</span> deleted ·
+    <span class="text-rose-600">✗</span> dead.
   </p>
 </section>
 {% endif %}

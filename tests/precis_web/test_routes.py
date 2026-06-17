@@ -463,6 +463,35 @@ def test_memory_refs_detail_missing_ref_flagged(client, runtime) -> None:
     assert "(not found)" in resp.text
 
 
+def test_memory_refs_detail_inline_footnote_markers(client, runtime) -> None:
+    """Each handle in the body gets an inline ``[N]`` marker that
+    cross-links to the references list (#190)."""
+    body_text = "Body says paper:smith2024 and memory:20."
+    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    resp = client.get("/refs/memory/20")
+    assert resp.status_code == 200
+    # ``[1]`` for paper, ``[2]`` for memory — preserving appearance order.
+    assert 'href="#ref-1"' in resp.text
+    assert 'href="#ref-2"' in resp.text
+    # References list entries carry id="ref-N" so the markers can jump.
+    assert 'id="ref-1"' in resp.text
+    assert 'id="ref-2"' in resp.text
+
+
+def test_memory_refs_detail_verification_badges(client, runtime) -> None:
+    """Resolved/stub/deleted/missing get distinct status badges (#191)."""
+    body_text = "Resolved: memory:20. Missing: paper:doesnotexist."
+    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    resp = client.get("/refs/memory/20")
+    assert resp.status_code == 200
+    # Resolved badge (memory:20 has body content via FakeStore).
+    assert "✓" in resp.text
+    # Missing badge (paper:doesnotexist).
+    assert "✗" in resp.text
+    # Legend at the bottom of the panel.
+    assert "stub awaiting fetch" in resp.text
+
+
 def test_non_memory_refs_detail_omits_references_panel(client, runtime) -> None:
     """References auto-extract only runs on memory views (the MVP scope
     — that's where dreams live). Other kinds render unchanged."""

@@ -282,6 +282,55 @@ _LINKIFY_KINDS = __import__(
 )._LINKIFY_KINDS
 
 
+def _inject_footnote_markers(
+    body: str,
+    handle_to_num: dict[tuple[str, str, str | None], int],
+) -> str:
+    """Insert ``[N]`` markers after each handle in body.
+
+    The markers cross-link to the references list below the body.
+    Already-linkified content is left alone via the same skip-zone
+    detection the inline linkifier uses, so ``[N]`` only lands in
+    prose — not inside ``<code>`` / ``<pre>`` / ``<a>`` blocks.
+    """
+    if not body or not handle_to_num:
+        return body
+    # Skip zones — same as the linkifier's, single pass split.
+    import re as _re
+
+    skip_re = _re.compile(
+        r"<code\b[^>]*>.*?</code>"
+        r"|<pre\b[^>]*>.*?</pre>"
+        r"|<a\b[^>]*>.*?</a>",
+        flags=_re.DOTALL | _re.IGNORECASE,
+    )
+
+    def _augment_prose(prose: str) -> str:
+        def _sub(m: _re.Match[str]) -> str:
+            kind = m.group("kind")
+            ref_id = m.group("id").lstrip("#")
+            chunk = m.group("chunk")
+            key = (kind, ref_id, chunk)
+            n = handle_to_num.get(key)
+            if n is None:
+                return m.group(0)
+            return (
+                f'{m.group(0)}<sup class="text-sky-700 ml-0.5">'
+                f'<a href="#ref-{n}" class="hover:underline">[{n}]</a></sup>'
+            )
+
+        return _REF_HANDLE_RE.sub(_sub, prose)
+
+    out_parts: list[str] = []
+    last = 0
+    for m in skip_re.finditer(body):
+        out_parts.append(_augment_prose(body[last : m.start()]))
+        out_parts.append(m.group(0))
+        last = m.end()
+    out_parts.append(_augment_prose(body[last:]))
+    return "".join(out_parts)
+
+
 def _extract_handles(body: str) -> list[tuple[str, str, str | None]]:
     """Walk ``body`` for every kind:ref handle. Returns ``(kind, id,
     chunk)`` triples in appearance order, deduplicated by (kind, id,
@@ -389,16 +438,27 @@ def _expand_handle(
                     break
         except Exception:
             pass
+    has_chunks = False
     if not preview:
         # Fall back to the first block (or the title-derived hint).
         try:
             blocks = store.list_blocks_for_ref(ref.id)
             if blocks:
+                has_chunks = True
                 preview = (blocks[0].text or "")[:400].rstrip()
                 if len(blocks[0].text or "") > 400:
                     preview += "…"
         except Exception:
             pass
+    else:
+        # We hit the chunk-addressed path above which means chunks exist.
+        has_chunks = True
+    # Status taxonomy for verification badges (#191):
+    #   resolved → ref exists and has chunks (the typical successful case)
+    #   stub     → ref exists, no chunks yet (paper awaiting fetcher)
+    #   missing  → ref id doesn't resolve
+    #   deleted  → ref exists but soft-deleted
+    status = "resolved" if has_chunks else "stub"
     # Citation metadata for BibTeX / Markdown export — only meaningful
     # for paper kind, but the dict shape is uniform so the template
     # doesn't have to branch.
@@ -434,7 +494,7 @@ def _expand_handle(
         "url": url,
         "title": title,
         "preview": preview,
-        "status": "resolved",
+        "status": status,
         "kind": kind,
         "slug": getattr(ref, "slug", None) or "",
         "citation": citation,
@@ -698,8 +758,17 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     references: list[dict[str, Any]] = []
     if kind == "memory" and not is_error and body:
         handles = _extract_handles(body)
-        for ref_kind, ref_ident, chunk in handles:
-            references.append(_expand_handle(store, ref_kind, ref_ident, chunk))
+        handle_to_num: dict[tuple[str, str, str | None], int] = {}
+        for n, (ref_kind, ref_ident, chunk) in enumerate(handles, 1):
+            handle_to_num[(ref_kind, ref_ident, chunk)] = n
+            row = _expand_handle(store, ref_kind, ref_ident, chunk)
+            row["number"] = n
+            references.append(row)
+        # Augment the body with inline footnote markers ``[N]`` that
+        # cross-link to the references list. The linkify_refs filter
+        # the template applies next sees these as anchors inside
+        # ``<sup><a>...</a></sup>`` skip zones and leaves them alone.
+        body = _inject_footnote_markers(body, handle_to_num)
 
     return templates.TemplateResponse(
         request,
