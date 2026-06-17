@@ -115,6 +115,13 @@ class WorkerHandler(ABC):
             # to a SQL array transparently.
             skip_clause = "AND c.chunk_kind <> ALL(%s)"
             params = (self.model_name, list(skip), limit)
+        # ``meta->>'no_index' IS DISTINCT FROM 'true'`` excludes
+        # ephemeral chunks (e.g. ``structure_draft`` annotation
+        # views written by precis-dft's view_worker) from indexer
+        # passes. NULL-safe: chunks without ``meta.no_index`` —
+        # the vast majority — still match. See PR 2 of the
+        # plugin-substrate work:
+        # ``docs/design/dft-phase-0-pr-2-substrate-hardening.md`` §2.3.
         sql = f"""
             SELECT c.chunk_id, c.text
               FROM chunks c
@@ -122,6 +129,7 @@ class WorkerHandler(ABC):
                 ON o.chunk_id = c.chunk_id
                AND o.{self.model_column} = %s
              WHERE o.chunk_id IS NULL
+               AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
                {skip_clause}
              ORDER BY c.chunk_id
              LIMIT %s

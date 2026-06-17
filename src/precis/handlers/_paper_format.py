@@ -23,6 +23,7 @@ import re
 from typing import Any
 
 from precis.store import Ref
+from precis.utils.authors import author_names as _shared_author_names
 
 # Strip a small whitelist of inline HTML / JATS tags that publishers
 # leak into title/journal metadata: ``<sub>``, ``<sup>``, ``<i>``,
@@ -62,25 +63,14 @@ _JATS_ABSTRACT_TITLE_RE = re.compile(
 
 
 def _author_names(raw: Any) -> list[str]:
-    """Normalise ``authors`` into a flat list of name strings.
+    """Flat list of citation-form (``Family, Given``) name strings.
 
-    Accepts list-of-dicts (``[{"name": "Smith, J."}, ...]``),
-    list-of-strings, semicolon-packed string, or None/garbage.
-    Pure — never raises.
+    Tolerates every stored ``refs.authors`` shape — ``{name}``,
+    ``{family, given}``, bare strings, semicolon-packed byline — via
+    the canonical :mod:`precis.utils.authors` reader. Pure; never
+    raises.
     """
-    if isinstance(raw, list):
-        out: list[str] = []
-        for item in raw:
-            if isinstance(item, dict):
-                name = str(item.get("name") or "").strip()
-            else:
-                name = str(item).strip()
-            if name:
-                out.append(name)
-        return out
-    if isinstance(raw, str) and raw.strip():
-        return [a.strip() for a in raw.split(";") if a.strip()]
-    return []
+    return _shared_author_names(raw, order="sortable")
 
 
 def _format_authors(raw: Any) -> str:

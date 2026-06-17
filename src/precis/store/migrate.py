@@ -1,55 +1,143 @@
 """Forward-only SQL migration runner (sync, psycopg 3).
 
-Reads `*.sql` files from a migrations directory, applies any whose
-version isn't already in the `_migrations` ledger, records the version
-+ checksum on success. Each migration runs in its own transaction.
+Reads ``*.sql`` files from one or more migration sources, applies any
+whose ``(plugin, version)`` pair isn't already in the ``_migrations``
+ledger, records the version + checksum on success. Each migration
+runs in its own transaction.
 
-Versioning: filename without `.sql` extension. Filenames must sort
-correctly (e.g. `0001_initial.sql`, `0002_add_xxx.sql`).
+Versioning: filename without ``.sql`` extension. Filenames must sort
+correctly (e.g. ``0001_initial.sql``, ``0002_add_xxx.sql``). The
+``plugin`` namespace disambiguates: ``precis`` and ``precis_dft``
+can both ship a ``0001_*.sql`` without collision.
 
-Refuses to run if a previously-applied migration's checksum no longer
-matches its file (someone edited a sealed migration).
+Refuses to run if a previously-applied migration's checksum no
+longer matches its file (someone edited a sealed migration).
+
+Plugin migrations are discovered via the ``precis.migrations``
+entry-point group. Each entry resolves to a directory containing
+the plugin's ``*.sql`` files. Failure isolation mirrors
+``precis.dispatch._load_plugins``: one broken plugin must not brick
+``precis migrate``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, NamedTuple
 
 import psycopg
-from psycopg.errors import UndefinedTable
+from psycopg.errors import UndefinedColumn, UndefinedTable
 
 log = logging.getLogger(__name__)
+
+#: Entry-point group third-party plugins use to advertise their
+#: migrations. Each entry resolves to a string ``"pkg.subpkg"`` —
+#: the plugin's migrations directory is the resolved package's
+#: filesystem path.
+MIGRATIONS_PLUGIN_GROUP = "precis.migrations"
+
+#: The plugin name under which the in-tree precis migrations are
+#: recorded. Old rows (predating the ``plugin`` column) are
+#: backfilled with this value by the column DEFAULT in
+#: ``0023_migrations_plugin.sql``.
+PRECIS_PLUGIN_NAME = "precis"
+
+
+class MigrationSource(NamedTuple):
+    """One plugin's contribution to the migration ledger.
+
+    ``plugin`` is the namespace recorded into ``_migrations.plugin``;
+    ``dir`` is the directory whose ``*.sql`` files belong to that
+    plugin. The in-tree source is
+    ``MigrationSource("precis", <package dir>/migrations)``.
+    """
+
+    plugin: str
+    dir: Path
 
 
 @dataclass(frozen=True, slots=True)
 class MigrationFile:
+    plugin: str
     version: str
     path: Path
     sql: str
     checksum: str
 
 
-def _load_migrations(migrations_dir: Path) -> list[MigrationFile]:
-    """Read all *.sql files from `migrations_dir`, sorted by filename."""
-    if not migrations_dir.is_dir():
-        raise FileNotFoundError(f"migrations directory not found: {migrations_dir}")
+def _entry_points(group: str) -> list[Any]:
+    """Indirection wrapper around ``importlib.metadata.entry_points``.
+
+    Mirrors the pattern in :mod:`precis.workers.job_types` and
+    :mod:`precis.dispatch` so tests can patch this single function
+    to inject fake plugin sources without setting up a real wheel
+    install.
+    """
+    from importlib.metadata import entry_points
+
+    return list(entry_points(group=group))
+
+
+def _load_migrations(source: MigrationSource) -> list[MigrationFile]:
+    """Read all ``*.sql`` files from one source, sorted by filename.
+
+    Each file is tagged with the source's plugin so the apply loop
+    knows which ``_migrations.plugin`` value to record.
+    """
+    if not source.dir.is_dir():
+        raise FileNotFoundError(
+            f"migrations directory not found: {source.dir} (plugin={source.plugin!r})"
+        )
 
     files: list[MigrationFile] = []
-    for path in sorted(migrations_dir.glob("*.sql")):
+    for path in sorted(source.dir.glob("*.sql")):
         sql = path.read_text(encoding="utf-8")
         checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
         files.append(
-            MigrationFile(version=path.stem, path=path, sql=sql, checksum=checksum)
+            MigrationFile(
+                plugin=source.plugin,
+                version=path.stem,
+                path=path,
+                sql=sql,
+                checksum=checksum,
+            )
         )
     return files
 
 
-def _applied_versions(conn: psycopg.Connection) -> dict[str, str]:
-    """Return {version: checksum} from `_migrations`. Empty dict if the
-    table doesn't exist yet (fresh database).
+def _has_plugin_column(conn: psycopg.Connection) -> bool:
+    """Return True once 0023_migrations_plugin has applied.
+
+    Used by the apply loop to switch INSERT shape mid-bootstrap
+    on a fresh database. Pre-0023 the column doesn't exist and
+    inserts must omit it; post-0023 the column is mandatory.
+    """
+    try:
+        conn.execute("SELECT plugin FROM public._migrations LIMIT 0").fetchall()
+    except (UndefinedColumn, UndefinedTable):
+        conn.rollback()
+        return False
+    return True
+
+
+def _applied_versions(
+    conn: psycopg.Connection,
+) -> dict[tuple[str, str], str]:
+    """Return ``{(plugin, version): checksum}`` from ``_migrations``.
+
+    Empty dict if the table doesn't exist (fresh database). Handles
+    three states gracefully:
+
+    1. No table at all — return ``{}``.
+    2. Table exists but ``plugin`` column doesn't (pre-0023 schema):
+       fall back to the old shape, tag every row with
+       ``PRECIS_PLUGIN_NAME``.
+    3. Both table and column exist (post-0023 — the common case):
+       read directly.
 
     Uses the schema-qualified ``public._migrations`` — a pg_dump
     migration body can set ``search_path = ''`` mid-apply, which
@@ -57,104 +145,292 @@ def _applied_versions(conn: psycopg.Connection) -> dict[str, str]:
     """
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT plugin, version, checksum FROM public._migrations")
+            rows = cur.fetchall()
+        return {(r[0], r[1]): r[2] for r in rows}
+    except UndefinedColumn:
+        conn.rollback()
+        # Pre-0023 schema: table exists but plugin column doesn't.
+        # Fall through to the legacy SELECT.
+    except UndefinedTable:
+        conn.rollback()
+        return {}
+
+    try:
+        with conn.cursor() as cur:
             cur.execute("SELECT version, checksum FROM public._migrations")
             rows = cur.fetchall()
     except UndefinedTable:
         conn.rollback()
         return {}
-    return {row[0]: row[1] for row in rows}
+    return {(PRECIS_PLUGIN_NAME, r[0]): r[1] for r in rows}
+
+
+# Backcompat: callers built the runner with a single directory.
+# Keep that path working so the CLI can land the plugin discovery
+# change without ripple.
+_LegacyDir = Path
+_Sources = list[MigrationSource]
 
 
 class Migrator:
     """Forward-only migration runner.
 
-    Usage::
+    Two construction shapes for backcompat:
 
-        migrator = Migrator(dsn, migrations_dir)
-        applied = migrator.apply_all()  # returns newly-applied versions
+    - ``Migrator(dsn, migrations_dir)`` — legacy single-source.
+      Equivalent to ``Migrator(dsn, [MigrationSource("precis", migrations_dir)])``.
+    - ``Migrator(dsn, sources=[MigrationSource(...)])`` — explicit
+      multi-source path used by ``cli/migrate.py`` once plugin
+      discovery lands.
+
+    Use :meth:`discover_sources` to build the source list including
+    plugin migrations advertised via the ``precis.migrations`` entry
+    point group.
     """
 
-    def __init__(self, dsn: str, migrations_dir: Path) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        sources_or_dir: _Sources | _LegacyDir,
+    ) -> None:
         self.dsn = dsn
-        self.migrations_dir = Path(migrations_dir)
+        if isinstance(sources_or_dir, Path):
+            self.sources: list[MigrationSource] = [
+                MigrationSource(PRECIS_PLUGIN_NAME, sources_or_dir)
+            ]
+        else:
+            self.sources = list(sources_or_dir)
 
-    def applied_versions(self) -> list[str]:
+    @classmethod
+    def discover_sources(cls, builtin_dir: Path) -> list[MigrationSource]:
+        """Compose the source list: built-in first, then plugins.
+
+        ``builtin_dir`` is the precis-core migrations dir (the
+        ``src/precis/migrations/`` shipped with this package).
+        Plugin sources come from the ``precis.migrations``
+        entry-point group; each entry resolves to a module name
+        whose package directory is the plugin's migration root.
+
+        Plugin discovery failures are logged, not raised. A broken
+        plugin must not block ``precis migrate``.
+        """
+        sources: list[MigrationSource] = [
+            MigrationSource(PRECIS_PLUGIN_NAME, builtin_dir)
+        ]
+        try:
+            eps = _entry_points(MIGRATIONS_PLUGIN_GROUP)
+        except Exception as exc:  # defensive
+            log.warning("precis.migrations discovery failed: %s", exc)
+            return sources
+
+        for ep in eps:
+            name = getattr(ep, "name", "<unknown>")
+            try:
+                resolved = ep.load()
+            except Exception as exc:
+                log.warning(
+                    "precis.migrations plugin %r failed to load (%s): %s",
+                    name,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            try:
+                dir_path = _resolve_to_dir(resolved)
+            except Exception as exc:
+                log.warning(
+                    "precis.migrations plugin %r could not resolve "
+                    "to a directory (%s): %s",
+                    name,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            if dir_path is None:
+                log.warning(
+                    "precis.migrations plugin %r resolved to a non-directory; skipping",
+                    name,
+                )
+                continue
+            # Use the EP name as the plugin namespace by default;
+            # this matches the convention "the plugin name in
+            # pyproject.toml's entry-point key is the migration
+            # namespace".
+            sources.append(MigrationSource(name, dir_path))
+        return sources
+
+    def applied_versions(self) -> list[tuple[str, str]]:
+        """Return sorted ``(plugin, version)`` pairs for applied
+        migrations. Stable order for diffing across runs."""
         with psycopg.connect(self.dsn) as conn:
             applied = _applied_versions(conn)
         return sorted(applied)
 
-    def pending(self) -> list[str]:
+    def pending(self) -> list[tuple[str, str]]:
+        """Return ``(plugin, version)`` pairs not yet applied."""
         with psycopg.connect(self.dsn) as conn:
             applied = _applied_versions(conn)
-        files = _load_migrations(self.migrations_dir)
-        return [f.version for f in files if f.version not in applied]
+        out: list[tuple[str, str]] = []
+        for source in self.sources:
+            for f in _load_migrations(source):
+                if (f.plugin, f.version) not in applied:
+                    out.append((f.plugin, f.version))
+        return out
 
-    def apply_all(self) -> list[str]:
-        """Apply every pending migration in version order. Returns the
-        list of versions newly applied during this call."""
-        files = _load_migrations(self.migrations_dir)
-        if not files:
+    def apply_all(self) -> list[tuple[str, str]]:
+        """Apply every pending migration. Returns the
+        ``(plugin, version)`` pairs newly applied during this call.
+
+        Within a single source, files apply in version-name order.
+        Across sources, the built-in ``precis`` source runs first
+        so its core schema is in place before any plugin touches
+        it; remaining sources run in the order returned by
+        :meth:`discover_sources` (which is the order plugins
+        appear in ``importlib.metadata.entry_points``).
+        """
+        all_files: list[MigrationFile] = []
+        for source in self.sources:
+            try:
+                all_files.extend(_load_migrations(source))
+            except FileNotFoundError as exc:
+                log.warning(
+                    "precis.migrations plugin %r dir missing: %s",
+                    source.plugin,
+                    exc,
+                )
+
+        if not all_files:
             return []
 
-        newly_applied: list[str] = []
-        # autocommit=True is load-bearing: under autocommit=False the very
-        # first SELECT (or _applied_versions' fallback rollback) puts us in
-        # an implicit transaction, and ``with conn.transaction()`` then
-        # downgrades to a SAVEPOINT. If the migration SQL aborts, the
-        # savepoint disappears and the context-manager exit raises
-        # ``InvalidSavepointSpecification`` — masking the real SQL error.
-        # With autocommit=True, ``conn.transaction()`` issues a real
-        # BEGIN/COMMIT and surfaces any inner exception directly.
+        newly_applied: list[tuple[str, str]] = []
+
+        # autocommit=True is load-bearing: under autocommit=False
+        # the very first SELECT (or _applied_versions' fallback
+        # rollback) puts us in an implicit transaction, and
+        # ``with conn.transaction()`` then downgrades to a
+        # SAVEPOINT. If the migration SQL aborts, the savepoint
+        # disappears and the context-manager exit raises
+        # ``InvalidSavepointSpecification`` — masking the real SQL
+        # error. With autocommit=True, ``conn.transaction()`` issues
+        # a real BEGIN/COMMIT and surfaces any inner exception
+        # directly.
         with psycopg.connect(self.dsn, autocommit=True) as conn:
             applied = _applied_versions(conn)
+            has_plugin_col = _has_plugin_column(conn)
 
-            # Integrity check on already-applied migrations
-            for f in files:
-                if f.version in applied and applied[f.version] != f.checksum:
+            # Integrity check on already-applied migrations.
+            for f in all_files:
+                key = (f.plugin, f.version)
+                if key in applied and applied[key] != f.checksum:
                     raise RuntimeError(
                         f"checksum mismatch for already-applied migration "
-                        f"{f.version!r}: file has {f.checksum[:12]}, "
-                        f"DB has {applied[f.version][:12]}. "
-                        f"Refusing to run - sealed migrations must not be edited."
+                        f"{f.plugin}/{f.version!r}: file has "
+                        f"{f.checksum[:12]}, DB has "
+                        f"{applied[key][:12]}. Refusing to run — sealed "
+                        "migrations must not be edited."
                     )
 
-            for f in files:
-                if f.version in applied:
+            for f in all_files:
+                key = (f.plugin, f.version)
+                if key in applied:
                     continue
-                log.info("applying migration %s", f.version)
+                log.info("applying migration %s/%s", f.plugin, f.version)
                 with conn.transaction():
                     with conn.cursor() as cur:
                         _execute_dump_sql(cur, f.sql)
-                        # _migrations may not exist yet on first migration;
-                        # the migration creates it as part of its body.
-                        # Fully qualified: pg_dump-style migrations
-                        # set ``search_path = ''`` at the top of the
-                        # body for DDL-safety (line ~45 of a 0001_initial
-                        # dump). After the migration runs, the same
-                        # search_path is still in effect on this
-                        # connection, so a bare ``_migrations`` reference
-                        # fails to resolve. Use the schema-qualified
-                        # name so the ledger row lands regardless of
-                        # what the migration file did to search_path.
-                        cur.execute(
-                            "INSERT INTO public._migrations (version, checksum) "
-                            "VALUES (%s, %s)",
-                            (f.version, f.checksum),
-                        )
+                        # Choose INSERT shape based on whether the
+                        # plugin column exists *as of this attempt*.
+                        # On a fresh DB the 0023 migration creates the
+                        # column mid-bootstrap; we re-check after each
+                        # migration so the 0024+ inserts pick up the
+                        # new shape automatically.
+                        if has_plugin_col:
+                            cur.execute(
+                                "INSERT INTO public._migrations "
+                                "(plugin, version, checksum) "
+                                "VALUES (%s, %s, %s)",
+                                (f.plugin, f.version, f.checksum),
+                            )
+                        else:
+                            if f.plugin != PRECIS_PLUGIN_NAME:
+                                # Sanity check: plugin migrations
+                                # cannot precede 0023. A misordered
+                                # source list would land here.
+                                raise RuntimeError(
+                                    f"plugin migration {f.plugin}/{f.version} "
+                                    "ordered before 0023_migrations_plugin "
+                                    "applied; cannot record without the "
+                                    "plugin column."
+                                )
+                            cur.execute(
+                                "INSERT INTO public._migrations "
+                                "(version, checksum) "
+                                "VALUES (%s, %s)",
+                                (f.version, f.checksum),
+                            )
                 # A pg_dump-style migration body (0001) runs
-                # ``set_config('search_path', '', false)`` which persists
-                # on this shared connection for the SESSION, not just the
-                # transaction. Subsequent hand-written migrations use bare
-                # table names (``chunks``, ``relations``, …) and would
-                # fail to resolve them ("relation chunks does not exist")
-                # on a fresh full apply. RESET restores the connection's
-                # startup default (``"$user", public``) between migrations
-                # so each forward migration starts from a sane search_path.
+                # ``set_config('search_path', '', false)`` which
+                # persists on this shared connection for the SESSION,
+                # not just the transaction. Subsequent hand-written
+                # migrations use bare table names (``chunks``,
+                # ``relations``, …) and would fail to resolve them
+                # ("relation chunks does not exist") on a fresh full
+                # apply. RESET restores the connection's startup
+                # default (``"$user", public``) between migrations so
+                # each forward migration starts from a sane
+                # search_path.
                 conn.execute("RESET search_path")
-                newly_applied.append(f.version)
-                log.info("  applied %s ok", f.version)
+                # 0023 itself adds the plugin column. After it
+                # applies, switch the INSERT shape so subsequent
+                # rows carry an explicit plugin value.
+                if not has_plugin_col:
+                    has_plugin_col = _has_plugin_column(conn)
+                newly_applied.append(key)
+                log.info("  applied %s/%s ok", f.plugin, f.version)
 
         return newly_applied
+
+
+def _resolve_to_dir(resolved: Any) -> Path | None:
+    """Resolve an entry-point's loaded object to a migrations dir.
+
+    Accepts:
+    - A ``str`` or ``Path`` — used as a filesystem path directly.
+    - A module — the directory containing the module's
+      ``__init__.py`` is the migrations root.
+    - A callable returning one of the above — useful for plugins
+      that compose a path at discovery time.
+
+    Returns ``None`` if the resolved value isn't a directory after
+    coercion. Callers log and skip.
+    """
+    if callable(resolved) and not hasattr(resolved, "__path__"):
+        resolved = resolved()
+
+    if isinstance(resolved, (str, Path)):
+        path = Path(resolved)
+        return path if path.is_dir() else None
+
+    # Module-like object: take its package directory.
+    package_path = getattr(resolved, "__path__", None)
+    if package_path is None:
+        # Maybe a regular module with __file__.
+        file_attr = getattr(resolved, "__file__", None)
+        if file_attr is None:
+            return None
+        candidate = Path(file_attr).parent
+        return candidate if candidate.is_dir() else None
+
+    # __path__ is iterable; take the first entry. Plugins are
+    # expected to be regular packages, not namespace packages with
+    # multiple roots.
+    paths: Iterable[str] = package_path
+    for entry in paths:
+        candidate = Path(entry)
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------

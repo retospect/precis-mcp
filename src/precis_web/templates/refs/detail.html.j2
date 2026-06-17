@@ -7,7 +7,11 @@
   <p class="text-sm text-slate-500">
     #{{ ref.id }}
     {% if ref.slug %}· <span class="font-mono">{{ ref.slug }}</span>{% endif %}
+    {% if ref.created %}· created {{ ref.created }}{% endif %}
     {% if ref.updated %}· updated {{ ref.updated }}{% endif %}
+    {% if ref.set_by %}· by <span class="font-mono">{{ ref.set_by }}</span>{% endif %}
+    {% if ref.prio is not none %}· prio {{ ref.prio }}{% endif %}
+    {% if ref.auto_refresh_days %}· decays over {{ ref.auto_refresh_days }}d{% if ref.refreshed %} (refreshed {{ ref.refreshed }}){% endif %}{% endif %}
   </p>
 </div>
 

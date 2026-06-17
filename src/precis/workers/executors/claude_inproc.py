@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -30,6 +30,9 @@ from psycopg.types.json import Jsonb
 from precis.store.types import BlockInsert
 from precis.workers.executors import EXECUTOR_PROVIDES
 from precis.workers.job_types import get_job_type, known_job_types
+
+if TYPE_CHECKING:
+    from precis.workers.executors._context import DispatchContext
 
 log = logging.getLogger(__name__)
 
@@ -292,6 +295,14 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
             conn.commit()
             return
 
+    # Plugin job_types declare their own ``dispatch`` callable.
+    # Built-ins (fix_gripe, plan_tick) leave ``spec.dispatch`` as
+    # ``None`` and fall through to the in-tree switch below.
+    if spec.dispatch is not None:
+        ctx = _build_dispatch_context(store, ref_id, title, meta)
+        spec.dispatch(ctx, spec)
+        return
+
     if spec.name == "fix_gripe":
         _run_fix_gripe(store, ref_id, spec)
     elif spec.name == "plan_tick":
@@ -303,6 +314,58 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
             f"no dispatcher for job_type {spec.name!r}",
             gripe_rollback=None,
         )
+
+
+def _build_dispatch_context(
+    store: Any, ref_id: int, title: str, meta: dict[str, Any]
+) -> DispatchContext:
+    """Construct a DispatchContext closing over executor helpers.
+
+    Each closure opens its own short-lived DB connection so the
+    plugin dispatcher doesn't have to thread a transaction handle
+    through its logic. The cost is one connection round-trip per
+    call, which matches what the in-tree built-in dispatchers
+    (``_run_fix_gripe`` / ``_run_plan_tick``) already pay.
+    """
+    from precis.workers.executors._context import DispatchContext
+
+    def _ctx_set_status(value: str) -> None:
+        with store.pool.connection() as conn:
+            _set_status(store, ref_id, value, conn=conn)
+            conn.commit()
+
+    def _ctx_append_chunk(kind: str, text: str) -> None:
+        with store.pool.connection() as conn:
+            _append_chunk(store, ref_id, kind, text, conn=conn)
+            conn.commit()
+
+    def _ctx_set_meta(**fields: Any) -> None:
+        with store.pool.connection() as conn:
+            _set_meta(conn, ref_id, **fields)
+            conn.commit()
+
+    def _ctx_record_failure(reason: str) -> None:
+        # ``gripe_rollback=None`` — plugin dispatchers don't have
+        # the fix_gripe gripe-link convention. Plugins that DO
+        # need a side-effect rollback can do it explicitly via
+        # set_status against the linked ref.
+        _record_failure(store, ref_id, reason, gripe_rollback=None)
+
+    def _ctx_is_cancel_requested() -> bool:
+        with store.pool.connection() as conn:
+            return _is_cancel_requested(conn, ref_id)
+
+    return DispatchContext(
+        store=store,
+        ref_id=ref_id,
+        title=title,
+        meta=meta,
+        set_status=_ctx_set_status,
+        append_chunk=_ctx_append_chunk,
+        set_meta=_ctx_set_meta,
+        record_failure=_ctx_record_failure,
+        is_cancel_requested=_ctx_is_cancel_requested,
+    )
 
 
 def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
@@ -360,7 +423,10 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
 
     with store.pool.connection() as conn:
         _append_chunk(
-            store, ref_id, _JOB_SUMMARY_KIND, outcome.stdout or "(no output)",
+            store,
+            ref_id,
+            _JOB_SUMMARY_KIND,
+            outcome.stdout or "(no output)",
             conn=conn,
         )
         # Structured per-tick audit chunk — slim, grepable summary of
@@ -382,7 +448,9 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
         _append_chunk(store, ref_id, "job_result", result_text, conn=conn)
         if outcome.stderr:
             _append_chunk(
-                store, ref_id, _JOB_EVENT_KIND,
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
                 f"stderr ({len(outcome.stderr)} chars):\n{outcome.stderr[:4000]}",
                 conn=conn,
             )
@@ -438,9 +506,7 @@ def _build_job_result_text(
                 ws_path = ws_block.get("path") or ""
         project_tag = ""
         if ws_path:
-            project_tag = (
-                "project:" + ws_path.rstrip("/").split("/")[-1]
-            )
+            project_tag = "project:" + ws_path.rstrip("/").split("/")[-1]
         # Counts under the parent during this tick window
         cit_count = 0
         finding_count = 0

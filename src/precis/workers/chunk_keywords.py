@@ -116,6 +116,13 @@ def claim_chunks_without_keywords(
     # boundary turn (just-out-of-recent) waits behind paper backlog
     # and renders the text fallback for hours. JOIN-ing refs adds one
     # planner hop but the ref_id index makes it nearly free.
+    # ``meta->>'no_index' IS DISTINCT FROM 'true'`` filters out
+    # ephemeral chunks (e.g. ``structure_draft`` annotation views
+    # written by precis-dft's view_worker). NULL-safe: the vast
+    # majority of chunks have no ``no_index`` key and still match.
+    # Documented in ``docs/decisions/`` alongside PR 2 of the
+    # plugin-substrate work; see the design doc at
+    # ``docs/design/dft-phase-0-pr-2-substrate-hardening.md`` §2.3.
     sql = """
         SELECT c.chunk_id, c.ref_id, c.text, ce.vector::text
           FROM chunks c
@@ -126,6 +133,7 @@ def claim_chunks_without_keywords(
            AND ce.status = 'ok'
          WHERE c.chunk_kind <> ALL(%s)
            AND length(c.text) >= %s
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
            AND (
                 c.keywords IS NULL
              OR (c.keywords_meta->>'version') IS DISTINCT FROM %s

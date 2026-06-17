@@ -28,6 +28,8 @@ spaced-repetition scheduling) override the relevant hook.
 
 from __future__ import annotations
 
+import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -41,6 +43,18 @@ from precis.store import Link, Ref, Tag
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
+
+log = logging.getLogger(__name__)
+
+# Filler first-line shapes the first-line-discipline nudge flags — a
+# leading "Notes on…" / "Re:" / "Memory about…" means the writer led
+# with the topic instead of the conclusion. See the precis-firstline-help
+# skill. Anchored at start-of-string; matched against the first body line.
+_FILLER_FIRST_LINE = re.compile(
+    r"^\s*(notes?\s+on\b|memory\s+about\b|re:|thoughts?\s+on\b"
+    r"|about\s+the\b|summary\s+of\b)",
+    re.IGNORECASE,
+)
 
 # Views every numeric-ref kind picks up for free. Subclasses with
 # additional views should override `get()` to layer their dispatch
@@ -111,6 +125,20 @@ class NumericRefHandler(Handler):
     #: ``memory`` for the dreaming capability (see
     #: docs/design/dreaming.md); widen to other note-like kinds later.
     emits_card: ClassVar[bool] = False
+
+    #: When True, put-create (and the subclass's ``edit``) resolves every
+    #: ``kind:ref`` handle in the body and materialises ``related-to``
+    #: links to those refs — so the note becomes a graph node reachable
+    #: from its targets, not just visually at read time. Scoped to
+    #: ``memory`` for now. Links carry ``meta={'auto': 'mention'}`` so
+    #: an edit can re-sync them without touching hand-curated links.
+    autolink_mentions: ClassVar[bool] = False
+
+    #: When True, create/edit acks reinforce first-line discipline: a
+    #: filler-looking first line ("Notes on…", "Re:") gets a one-line
+    #: nudge toward the precis-firstline-help skill. The convention lands
+    #: at the point of writing, no pre-fetch required. Scoped to memory.
+    firstline_discipline: ClassVar[bool] = False
 
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
@@ -712,7 +740,95 @@ class NumericRefHandler(Handler):
                 # Emit the embeddable card in the same tx as the ref
                 # insert so the embed worker can vectorize it lazily.
                 self.store.upsert_card_combined(ref.id, text, conn=conn)
-        return self._render_create_ack(ref.id)
+            if self.autolink_mentions:
+                self._sync_mention_links(ref.id, text, conn=conn)
+        return self._with_first_line_nudge(self._render_create_ack(ref.id), text)
+
+    def _first_line_nudge(self, text: str | None) -> str | None:
+        """A one-line nudge when the body's first line reads as filler.
+
+        Gated on ``firstline_discipline``. Returns ``None`` when the
+        flag is off, the text is empty, or the first line already leads
+        with substance. See the ``precis-firstline-help`` skill.
+        """
+        if not self.firstline_discipline or not text or not text.strip():
+            return None
+        first_line = text.strip().splitlines()[0]
+        if _FILLER_FIRST_LINE.match(first_line):
+            return (
+                "first line reads as a topic, not a conclusion - lead with "
+                "what you'd say if asked. "
+                "See get(kind='skill', id='precis-firstline-help')."
+            )
+        return None
+
+    def _with_first_line_nudge(self, ack: Response, text: str | None) -> Response:
+        """Append the first-line nudge to an ack Response, if one fires."""
+        nudge = self._first_line_nudge(text)
+        if nudge is None:
+            return ack
+        return Response(body=f"{ack.body}\n\nhint: {nudge}", cost=ack.cost)
+
+    def _sync_mention_links(
+        self,
+        ref_id: int,
+        text: str,
+        *,
+        conn: Any,
+        replace: bool = False,
+    ) -> int:
+        """Materialise ``related-to`` links to every live ref ``text`` names.
+
+        Resolves the same ``kind:ref`` handles the web References panel
+        surfaces and writes a real link per live target, so the note is
+        reachable from the *other* side of the graph. Best-effort: a
+        resolution failure must never roll back the note write, so the
+        whole pass is wrapped and only ever logs.
+
+        ``replace=True`` (the edit path) first drops the previous
+        auto-mention links (those carrying ``meta={'auto': 'mention'}``)
+        so a handle removed from the body loses its link; hand-added
+        ``related-to`` links are left untouched. Returns the number of
+        links added.
+        """
+        from precis.utils import mentions
+
+        try:
+            if replace:
+                for link in self.store.links_for(
+                    ref_id, direction="out", relation="related-to"
+                ):
+                    if (link.meta or {}).get("auto") == "mention":
+                        self.store.remove_link(
+                            src_ref_id=ref_id,
+                            dst_ref_id=link.dst_ref_id,
+                            dst_pos=link.dst_pos,
+                            relation="related-to",
+                            conn=conn,
+                        )
+            added = 0
+            for tgt in mentions.resolve_link_targets(
+                self.store, text, exclude_ref_id=ref_id
+            ):
+                self.store.add_link(
+                    src_ref_id=ref_id,
+                    dst_ref_id=tgt.dst_ref_id,
+                    dst_pos=tgt.dst_pos,
+                    relation="related-to",
+                    set_by="agent",
+                    meta={"auto": "mention"},
+                    conn=conn,
+                )
+                added += 1
+            return added
+        except Exception:
+            log.warning(
+                "%s: autolink mentions failed for ref %s",
+                self.kind,
+                ref_id,
+                exc_info=True,
+            )
+            return 0
 
     def _delete(self, id: str | int | None) -> Response:
         if id is None:

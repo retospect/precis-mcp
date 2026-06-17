@@ -24,10 +24,12 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
     migrator = Migrator(fresh_db, MIGRATIONS_DIR)
     applied = migrator.apply_all()
     # Initial migration must be first; everything that follows
-    # extends it. Loose assertion on later versions — they all
-    # follow the NNNN_<name> convention.
-    assert applied[0] == "0001_initial"
-    assert all(v[:4].isdigit() and v[4] == "_" for v in applied)
+    # extends it. ``applied`` is a list of ``(plugin, version)``
+    # tuples post-0023; every entry here lives under the built-in
+    # ``precis`` plugin.
+    assert applied[0] == ("precis", "0001_initial")
+    assert all(p == "precis" for p, _ in applied)
+    assert all(v[:4].isdigit() and v[4] == "_" for _, v in applied)
 
     rows = _fetch(
         fresh_db,
@@ -107,7 +109,7 @@ def test_apply_is_idempotent(fresh_db: str) -> None:
     migrator = Migrator(fresh_db, MIGRATIONS_DIR)
     first = migrator.apply_all()
     second = migrator.apply_all()
-    assert first[0] == "0001_initial"
+    assert first[0] == ("precis", "0001_initial")
     assert len(first) >= 1
     assert second == [], "second run must be a no-op"
 
@@ -116,13 +118,34 @@ def test_applied_versions(fresh_db: str) -> None:
     migrator = Migrator(fresh_db, MIGRATIONS_DIR)
     assert migrator.applied_versions() == []
     pending_before = migrator.pending()
-    assert pending_before[0] == "0001_initial"
+    assert pending_before[0] == ("precis", "0001_initial")
     assert len(pending_before) >= 1
 
     migrator.apply_all()
     applied = migrator.applied_versions()
-    assert applied == pending_before  # full set applied
+    # Sorted ``applied`` matches the source-order ``pending_before``
+    # when there's only one plugin (precis) and the filenames sort
+    # in the same order they apply.
+    assert applied == sorted(pending_before)
     assert migrator.pending() == []
+
+
+def test_migrations_plugin_column_populated(fresh_db: str) -> None:
+    """After 0023 applies every row in ``_migrations`` carries the
+    ``plugin`` column, defaulting to ``'precis'`` for built-ins.
+
+    Guards against a future refactor that forgets to populate the
+    column for the precis plugin itself.
+    """
+    Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
+    rows = _fetch(
+        fresh_db,
+        "SELECT plugin, version FROM _migrations ORDER BY plugin, version",
+    )
+    assert rows, "_migrations should be non-empty after apply"
+    assert all(r["plugin"] == "precis" for r in rows), (
+        "every built-in migration must record plugin='precis'"
+    )
 
 
 def test_checksum_drift_refuses(

@@ -12,6 +12,7 @@ See ``precis-job-help`` for the agent-facing surface and
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, ClassVar
 
 from precis.errors import BadInput
@@ -31,6 +32,22 @@ from precis.workers.executors import (
 from precis.workers.job_types import get_job_type, known_job_types
 
 _TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
+
+
+def _idem_lock_key(idem: str) -> int:
+    """Hash an idem string to a 64-bit signed integer for advisory lock.
+
+    ``pg_advisory_xact_lock`` takes a ``bigint``. We hash via BLAKE2b
+    truncated to 8 bytes and reinterpret as a signed int so the
+    value fits Postgres's ``bigint`` range. Stable across processes
+    so two workers racing the same idem key serialize correctly.
+    The hash is not security-sensitive: collisions just cause two
+    unrelated puts to share a lock briefly.
+    """
+    digest = hashlib.blake2b(idem.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
 _JOB_SUMMARY_KIND = "job_summary"
 _JOB_EVENT_KIND = "job_event"
 
@@ -181,17 +198,11 @@ class JobHandler(NumericRefHandler):
             if err is not None:
                 raise BadInput(err)
 
-        if resolved_idem is not None:
-            existing = self._lookup_idem(resolved_idem)
-            if existing is not None:
-                return Response(
-                    body=(
-                        f"existing job id={existing} for "
-                        f"idem_key={resolved_idem!r} is still active "
-                        "(returning that id instead of creating a "
-                        "duplicate)"
-                    )
-                )
+        # Idempotency check moves inside the write transaction below,
+        # serialized via ``pg_advisory_xact_lock``. The lookup here
+        # used to run in its own connection — two concurrent puts
+        # with the same idem key could both see "no row" and both
+        # insert. The locked re-check at write time fixes that race.
 
         # ── tree-position guard (Slice 5: jobs are children of todos) ──
         # Every new job must declare its parent todo. Orphan jobs are a
@@ -215,9 +226,7 @@ class JobHandler(NumericRefHandler):
                 ),
             )
         try:
-            parent_int = (
-                parent_id if isinstance(parent_id, int) else int(parent_id)
-            )
+            parent_int = parent_id if isinstance(parent_id, int) else int(parent_id)
         except (TypeError, ValueError) as exc:
             raise BadInput(
                 f"parent_id must be an integer, got {parent_id!r}",
@@ -244,6 +253,29 @@ class JobHandler(NumericRefHandler):
             parsed_tags.extend(Tag.parse_strict(t, kind=self.kind) for t in tags)
 
         with self.store.tx() as conn:
+            # Race-safe idempotency: serialize concurrent puts that
+            # share an idem key on a transaction-scoped Postgres
+            # advisory lock. The first put to acquire the lock sees
+            # "no row" from ``_lookup_idem`` and inserts; the second
+            # waits for the first's COMMIT to release the lock, then
+            # sees the just-inserted row and returns its id without
+            # creating a duplicate.
+            if resolved_idem is not None:
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (_idem_lock_key(resolved_idem),),
+                )
+                existing = self._lookup_idem(resolved_idem, conn=conn)
+                if existing is not None:
+                    return Response(
+                        body=(
+                            f"existing job id={existing} for "
+                            f"idem_key={resolved_idem!r} is still active "
+                            "(returning that id instead of creating a "
+                            "duplicate)"
+                        )
+                    )
+
             ref = self.store.insert_ref(
                 kind=self.kind,
                 slug=None,
@@ -354,16 +386,26 @@ class JobHandler(NumericRefHandler):
 
     # ── helpers ────────────────────────────────────────────────────
 
-    def _lookup_idem(self, idem: str) -> int | None:
+    def _lookup_idem(self, idem: str, *, conn: Any = None) -> int | None:
         """Return an active job id for ``idem_key=idem`` if one exists.
 
         "Active" = `STATUS:queued` or `STATUS:running`. Terminal
         jobs (succeeded / failed / cancelled) don't block a fresh
         attempt — the caller asked for a retry and the substrate
         delivers it.
+
+        When ``conn`` is supplied the lookup runs inside that
+        transaction. Used by :meth:`put` after taking the
+        ``pg_advisory_xact_lock`` keyed on the idem string so two
+        concurrent submits with the same key serialize and only
+        one of them creates a row. With ``conn=None`` the lookup
+        opens a short-lived pool connection — race-prone but kept
+        for callers that just want a "does this exist yet" check
+        outside any write path.
         """
-        with self.store.pool.connection() as conn:
-            rows = conn.execute(
+
+        def _query(c: Any) -> int | None:
+            rows = c.execute(
                 """
                 SELECT r.ref_id
                   FROM refs r
@@ -380,9 +422,12 @@ class JobHandler(NumericRefHandler):
                 """,
                 (idem, list(_TERMINAL_STATUSES)),
             ).fetchall()
-        if not rows:
-            return None
-        return int(rows[0][0])
+            return int(rows[0][0]) if rows else None
+
+        if conn is not None:
+            return _query(conn)
+        with self.store.pool.connection() as own_conn:
+            return _query(own_conn)
 
 
 # ── small free helpers ────────────────────────────────────────────

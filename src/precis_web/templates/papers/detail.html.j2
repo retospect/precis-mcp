@@ -9,9 +9,9 @@
     {% if paper.slug %}· <span class="font-mono">{{ paper.slug }}</span>{% endif %}
     {% if paper.year %}· {{ paper.year }}{% endif %}
   </p>
-  {% if authors %}
+  {% if authors_display %}
   <p class="text-sm text-slate-600 mt-1">
-    {{ authors | map(attribute='family') | select | join(', ') }}
+    {{ authors_display }}
   </p>
   {% endif %}
   {% if paper.links.doi_url or paper.links.arxiv_url %}
@@ -28,23 +28,22 @@
   {% endif %}
   {# Edit / delete affordances. Edit is an Alpine-toggled inline form
      so an operator who wants to repair a parse error (wrong DOI, missing
-     authors, off-by-one year) can fix it without leaving the page. The
-     delete button is a confirm-on-click POST — soft-deletes the ref so
-     the row is reversible at the DB level. #}
+     authors, off-by-one year) can fix it without leaving the page.
+     Delete is disabled for now: the `paper` kind doesn't yet support the
+     `delete` verb (exposing it also exposes paper-deletion on the agent
+     MCP surface — a deliberate policy call). Grayed out until that's
+     wired; the POST route stays in place behind it. #}
   <div class="mt-3 flex items-center gap-2 text-xs" x-data="{ editing: false }">
     <button type="button" @click="editing = !editing"
             class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
       <span x-show="!editing">✎ Edit metadata</span>
       <span x-show="editing" x-cloak>Cancel</span>
     </button>
-    <form method="post" action="/papers/{{ paper.id }}/delete"
-          onsubmit="return confirm('Delete this paper? Soft-delete (reversible at the DB level). The PDF on disk is NOT removed.');"
-          class="inline">
-      <button type="submit"
-              class="px-2 py-1 rounded border border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100">
-        🗑 Delete paper
-      </button>
-    </form>
+    <button type="button" disabled
+            title="Delete isn't wired up yet for papers."
+            class="px-2 py-1 rounded border border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed">
+      🗑 Delete paper
+    </button>
     <div x-show="editing" x-cloak class="basis-full mt-2">
       <form method="post" action="/papers/{{ paper.id }}/edit" class="space-y-2">
         <p class="text-slate-500">
@@ -76,14 +75,14 @@
         <label class="block">
           <span class="text-slate-500">Authors (one per line)</span>
           <textarea name="authors" rows="4" placeholder="Smith, Jane&#10;Jones, Bob"
-                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono">{% for a in authors -%}
-{{ a.family }}{% if a.given %}, {{ a.given }}{% endif %}
+                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono">{% for line in author_lines -%}
+{{ line }}
 {% endfor -%}</textarea>
         </label>
         <label class="block">
           <span class="text-slate-500">Abstract</span>
           <textarea name="abstract" rows="4"
-                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs">{{ paper.abstract or '' }}</textarea>
+                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs">{{ abstract or '' }}</textarea>
         </label>
         <button type="submit"
                 class="px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700">

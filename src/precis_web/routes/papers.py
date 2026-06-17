@@ -18,6 +18,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
+from precis.utils.authors import author_names
 from precis_web.deps import await_dispatch, get_store, get_web_config, templates
 
 router = APIRouter(prefix="/papers", tags=["papers"])
@@ -52,43 +53,42 @@ def _resolve_pdf(corpus_dirs: tuple[Path, ...], cite_key: str) -> Path | None:
 
 
 def _authors_str(ref: Any) -> str:
-    """Join an authors list (dicts with family/given) into a string.
+    """Authors joined for a single-line display (natural reading order).
 
-    Tolerant of the various author shapes in ``refs.authors`` — dicts
-    with ``family``/``given``, plain strings, or missing entirely.
+    Shape-tolerance lives in :mod:`precis.utils.authors` — this is just
+    the inline-join wrapper.
     """
-    authors = getattr(ref, "authors", None) or []
-    names: list[str] = []
-    for a in authors:
-        if isinstance(a, dict):
-            name = (a.get("family") or a.get("name") or "").strip()
-            given = (a.get("given") or "").strip()
-            if name and given:
-                name = f"{given} {name}"
-            elif not name:
-                name = given
-        else:
-            name = str(a).strip()
-        if name:
-            names.append(name)
-    return ", ".join(names)
+    return ", ".join(author_names(getattr(ref, "authors", None)))
+
+
+def _author_edit_lines(ref: Any) -> list[str]:
+    """Editor prefill: one author per line in ``Family, Given`` order,
+    which the edit handler round-trips back to the stored shape."""
+    return author_names(getattr(ref, "authors", None), order="sortable")
 
 
 def _abstract_str(ref: Any) -> str:
-    """Plain-text abstract for the hover card.
+    """Plain-text abstract preview for the hover card.
 
     The publisher abstract in ``refs.meta['abstract']`` is often
     JATS/HTML-wrapped; strip tags and collapse whitespace, then cap to
     a preview length so the tooltip stays bounded.
     """
+    text = _abstract_full(ref)
+    if len(text) > _ABSTRACT_PREVIEW:
+        text = text[:_ABSTRACT_PREVIEW].rstrip() + "…"
+    return text
+
+
+def _abstract_full(ref: Any) -> str:
+    """Full publisher abstract (tag-stripped, NOT truncated) for the
+    editable form. Distinct from :func:`_abstract_str` — feeding the
+    editor the preview would persist the truncation on save."""
     meta = getattr(ref, "meta", None) or {}
     raw = meta.get("abstract")
     if not raw:
         return ""
-    text = _WS_RE.sub(" ", _TAG_RE.sub(" ", str(raw))).strip()
-    if len(text) > _ABSTRACT_PREVIEW:
-        text = text[:_ABSTRACT_PREVIEW].rstrip() + "…"
-    return text
+    return _WS_RE.sub(" ", _TAG_RE.sub(" ", str(raw))).strip()
 
 
 def _links_from_ids(ids: dict[str, str]) -> dict[str, str]:
@@ -177,7 +177,9 @@ async def detail(request: Request, ref_id: int) -> HTMLResponse:
         {
             "active_tab": "papers",
             "paper": paper,
-            "authors": ref.authors or [],
+            "authors_display": _authors_str(ref),
+            "author_lines": _author_edit_lines(ref),
+            "abstract": _abstract_full(ref),
             "pdf_on_disk": found is not None,
             # Diagnostics for the "file expected but missing" case (a
             # held paper whose corpus roots / mount are misconfigured,
@@ -258,23 +260,14 @@ async def edit(
     if abstract.strip():
         payload["abstract"] = abstract.strip()
     if authors.strip():
-        # Split on newlines first, then commas — operator likely paste
-        # the list with one author per line or "Lastname, F.; Other, A.".
-        raw = [a.strip() for a in authors.replace(";", "\n").splitlines()]
-        cleaned = [a for a in raw if a]
-        # Shape into family/given when a comma's present; otherwise treat
-        # the whole entry as family.
-        shaped: list[dict[str, str]] = []
-        for a in cleaned:
-            if "," in a:
-                family, _, given = a.partition(",")
-                shaped.append(
-                    {"family": family.strip(), "given": given.strip()}
-                )
-            else:
-                shaped.append({"family": a, "given": ""})
-        if shaped:
-            payload["authors"] = shaped
+        # One author per line (or ';'-separated). Forward the cleaned
+        # lines as-is; the paper edit handler canonicalises them to the
+        # stored ``{"name": …}`` shape (see precis.utils.authors), so
+        # the web layer no longer hand-shapes family/given.
+        lines = [a.strip() for a in authors.replace(";", "\n").splitlines()]
+        cleaned = [a for a in lines if a]
+        if cleaned:
+            payload["authors"] = cleaned
 
     body, is_error = await await_dispatch(request, "edit", payload)
     if is_error:

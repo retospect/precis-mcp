@@ -28,6 +28,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from markupsafe import Markup, escape
 
 from precis.errors import NotFound
+from precis.utils import mentions
+from precis.utils.authors import author_names
 from precis_web.deps import await_dispatch, get_store, templates
 
 router = APIRouter(prefix="/refs", tags=["refs"])
@@ -112,6 +114,9 @@ def _title_preview(title: str) -> Markup:
 
 def _row(ref: Any) -> dict[str, Any]:
     updated = getattr(ref, "updated_at", None)
+    created = getattr(ref, "created_at", None)
+    refreshed = getattr(ref, "refreshed_at", None)
+    auto_refresh_days = getattr(ref, "auto_refresh_days", None)
     title = ref.title or "(untitled)"
     return {
         "id": ref.id,
@@ -119,6 +124,17 @@ def _row(ref: Any) -> dict[str, Any]:
         "title": title,
         "title_preview": _title_preview(title),
         "updated": updated.strftime("%Y-%m-%d %H:%M") if updated else "",
+        # Extra meta surfaced on the detail page's header strip. The
+        # list templates ignore the keys they don't use, so widening
+        # the row here is safe for index / consolidated callers too.
+        "created": created.strftime("%Y-%m-%d %H:%M") if created else "",
+        "set_by": getattr(ref, "set_by", None) or "",
+        "prio": getattr(ref, "prio", None),
+        # Relevance-decay window (null auto_refresh_days = permanent).
+        # Surfaced together so the operator can see "permanent" vs.
+        # "decays over N days since <refreshed>".
+        "auto_refresh_days": auto_refresh_days,
+        "refreshed": refreshed.strftime("%Y-%m-%d %H:%M") if refreshed else "",
     }
 
 
@@ -261,25 +277,12 @@ _PER_KIND_LIMIT = 20  # cap rows per kind so 19-kind search stays readable
 # handles). Resolve each in a single batched query and shape an
 # expansion for inline rendering below the body.
 
-#: Match prefixed ``kind:ref(~chunk)?`` exactly the same way the
-#: linkifier does. Imported lazily from the linkify module so the
-#: detection grammar stays single-sourced.
-_REF_HANDLE_RE = __import__(
-    "precis_web.linkify", fromlist=["_REF_PATTERN"]
-)._REF_PATTERN
-_BARE_PAPER_RE = __import__(
-    "precis_web.linkify", fromlist=["_BARE_PAPER_PATTERN"]
-)._BARE_PAPER_PATTERN
-_BARE_CONV_RE = __import__(
-    "precis_web.linkify", fromlist=["_BARE_CONV_PATTERN"]
-)._BARE_CONV_PATTERN
-
-#: Same kind allowlist as the linkifier — only resolve handles that
-#: would have rendered as anchors. Avoids surfacing prose tokens like
-#: ``user:asa`` as "broken reference: no such user".
-_LINKIFY_KINDS = __import__(
-    "precis_web.linkify", fromlist=["_LINKIFY_KINDS"]
-)._LINKIFY_KINDS
+#: Prefixed ``kind:ref(~chunk)?`` matcher — sourced from the shared
+#: grammar module (``precis.utils.mentions``) so detection stays
+#: single-sourced across the read-time panel, the linkifier, and the
+#: write-time autolinker. Used here only for footnote-marker injection;
+#: handle *extraction* delegates to ``mentions.extract_handles``.
+_REF_HANDLE_RE = mentions.REF_PATTERN
 
 
 def _inject_footnote_markers(
@@ -332,37 +335,13 @@ def _inject_footnote_markers(
 
 
 def _extract_handles(body: str) -> list[tuple[str, str, str | None]]:
-    """Walk ``body`` for every kind:ref handle. Returns ``(kind, id,
-    chunk)`` triples in appearance order, deduplicated by (kind, id,
-    chunk). Bare paper cite_keys map to ``paper``; bare discord handles
-    map to ``conv``."""
-    if not body:
-        return []
-    seen: set[tuple[str, str, str | None]] = set()
-    out: list[tuple[str, str, str | None]] = []
+    """Every kind:ref handle in ``body`` as ``(kind, id, chunk)`` triples.
 
-    def _push(kind: str, ref_id: str, chunk: str | None) -> None:
-        ref_id = ref_id.lstrip("#")
-        key = (kind, ref_id, chunk)
-        if key in seen:
-            return
-        seen.add(key)
-        out.append(key)
-
-    for m in _REF_HANDLE_RE.finditer(body):
-        kind = m.group("kind")
-        if kind not in _LINKIFY_KINDS:
-            continue
-        _push(kind, m.group("id"), m.group("chunk"))
-    for m in _BARE_CONV_RE.finditer(body):
-        whole = m.group(0)
-        slug, _, suffix = whole.partition("~")
-        _push("conv", slug, ("~" + suffix) if suffix else None)
-    for m in _BARE_PAPER_RE.finditer(body):
-        whole = m.group(0)
-        slug, _, suffix = whole.partition("~")
-        _push("paper", slug, ("~" + suffix) if suffix else None)
-    return out
+    Thin wrapper over the shared ``mentions.extract_handles`` — the
+    grammar + dedup live there so the read-time References panel and the
+    write-time autolinker can't drift apart.
+    """
+    return mentions.extract_handles(body)
 
 
 def _expand_handle(
@@ -379,32 +358,9 @@ def _expand_handle(
     """
     raw_handle = f"{kind}:{ref_id}" + (chunk or "")
     url = f"/r/{kind}/{ref_id}" + (f"?chunk={chunk[1:]}" if chunk else "")
-    # Numeric ids vs slugs: try int first, fall back to slug lookup
-    # via the ref_identifiers table (same path the preview route uses).
-    numeric_id: int | None = None
-    try:
-        numeric_id = int(ref_id)
-    except ValueError:
-        pass
-    ref = None
-    if numeric_id is not None:
-        ref = store.fetch_refs_by_ids([numeric_id], include_deleted=True).get(
-            numeric_id
-        )
-    else:
-        try:
-            with store.pool.connection() as conn:
-                row = conn.execute(
-                    "SELECT ref_id FROM ref_identifiers "
-                    "WHERE id_kind = 'cite_key' AND id_value = %s",
-                    (ref_id,),
-                ).fetchone()
-        except Exception:
-            row = None
-        if row is not None:
-            ref = store.fetch_refs_by_ids(
-                [int(row[0])], include_deleted=True
-            ).get(int(row[0]))
+    # Numeric-id-or-slug resolution is single-sourced in the shared
+    # mentions module (same two-step the write-time autolinker uses).
+    ref = mentions.resolve_handle_ref(store, ref_id, include_deleted=True)
     if ref is None:
         return {
             "handle": raw_handle,
@@ -465,25 +421,17 @@ def _expand_handle(
     citation: dict[str, Any] = {}
     if kind == "paper":
         slug = getattr(ref, "slug", None) or ""
-        authors = getattr(ref, "authors", None) or []
         year = getattr(ref, "year", None)
-        # Authors come in as ``[{"family":..., "given":...}, ...]``.
-        author_names = []
-        for a in authors:
-            if isinstance(a, dict):
-                fam = (a.get("family") or "").strip()
-                given = (a.get("given") or "").strip()
-                if fam and given:
-                    author_names.append(f"{fam}, {given}")
-                elif fam:
-                    author_names.append(fam)
+        # Citation-form names, tolerant of every stored author shape
+        # (``{name}`` from ingest, ``{family, given}`` from the editor).
+        author_list = author_names(getattr(ref, "authors", None), order="sortable")
         # Try to pull DOI off ref.meta if the handler stored it there
         # (papers ingested from Crossref do).
         meta = getattr(ref, "meta", None) or {}
         doi = meta.get("doi") if isinstance(meta, dict) else None
         citation = {
             "cite_key": slug,
-            "authors": author_names,
+            "authors": author_list,
             "year": year,
             "doi": doi,
             "url": (f"https://doi.org/{doi}" if doi else None),

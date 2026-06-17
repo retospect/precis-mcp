@@ -366,8 +366,8 @@ class TestScrapeWatchPageMeta:
         assert meta["watch_url"] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
     def test_empty_dict_on_network_failure(self, monkeypatch) -> None:
-        from precis.handlers import youtube as yt_mod
         import precis.utils.safe_fetch as _sf
+        from precis.handlers import youtube as yt_mod
 
         def _boom(client, url):
             raise RuntimeError("network down")
@@ -377,8 +377,8 @@ class TestScrapeWatchPageMeta:
         assert meta == {}
 
     def test_empty_dict_on_non_200(self, monkeypatch) -> None:
-        from precis.handlers import youtube as yt_mod
         import precis.utils.safe_fetch as _sf
+        from precis.handlers import youtube as yt_mod
 
         def _403(client, url):
             return self._stub_response("Forbidden", status=403)
@@ -388,8 +388,8 @@ class TestScrapeWatchPageMeta:
         assert meta == {}
 
     def test_missing_tags_dont_raise(self, monkeypatch) -> None:
-        from precis.handlers import youtube as yt_mod
         import precis.utils.safe_fetch as _sf
+        from precis.handlers import youtube as yt_mod
 
         def _bare(client, url):
             return self._stub_response("<html><body>no metadata</body></html>")

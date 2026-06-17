@@ -254,6 +254,66 @@ class IdentifiersMixin:
             cur.executemany(sql, rows)
             return cur.rowcount or 0
 
+    def set_ref_identifier(
+        self,
+        ref_id: int,
+        scheme: str,
+        value: str,
+        *,
+        source: str = "web-edit",
+        conn: Connection | None = None,
+    ) -> bool:
+        """Set (replace) this ref's identifier for ``scheme`` to ``value``.
+
+        Operator correction path for the web metadata editor. Unlike
+        :meth:`insert_ref_identifiers` (first-write-wins, ``ON CONFLICT
+        DO NOTHING``), this *replaces* the ref's own ``(ref_id,
+        scheme)`` rows so fixing a wrong DOI / arXiv id actually takes.
+        Scoped to this ref's rows — never touches another ref's
+        aliases.
+
+        Blank ``value`` is a no-op (blank field = keep existing).
+        Returns True when a row was written. Raises :class:`BadInput`
+        if ``value`` is already claimed by a *different* ref (the
+        cross-ref uniqueness conflict) rather than silently dropping
+        this ref's old alias.
+        """
+        from precis.errors import BadInput
+
+        s = (scheme or "").strip().lower()
+        v = _normalise_identifier(s, value)
+        if not s or not v:
+            return False
+
+        def _do(c: Connection) -> bool:
+            owner = c.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = %s AND id_value = %s",
+                (s, v),
+            ).fetchone()
+            if owner is not None:
+                if int(owner[0]) == ref_id:
+                    return False  # already ours — nothing to do
+                raise BadInput(
+                    f"{s}={v!r} already belongs to ref id={int(owner[0])}",
+                    next="resolve the duplicate before reassigning the identifier",
+                )
+            c.execute(
+                "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",
+                (ref_id, s),
+            )
+            c.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES (%s, %s, %s, %s)",
+                (s, v, ref_id, (source or "manual").strip().lower()),
+            )
+            return True
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def identifiers_for_refs(
         self,
         ref_ids: list[int],

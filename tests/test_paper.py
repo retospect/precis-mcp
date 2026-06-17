@@ -10,6 +10,7 @@ from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.paper import PaperHandler, _maybe_resolve_doi, _parse_paper_id
+from precis.runtime import PrecisRuntime
 from precis.store import BlockInsert, Store
 
 # ---------------------------------------------------------------------------
@@ -957,3 +958,96 @@ class TestNearestMatchSuggestions:
             pytest.fail("expected NotFound")
         assert "options:" in envelope
         assert "wang2020state" in envelope
+
+
+# ---------------------------------------------------------------------------
+# edit() — bibliographic metadata repair (Slice: "fix the editor")
+# ---------------------------------------------------------------------------
+
+
+class TestPaperEdit:
+    def test_edit_persists_columns_and_canonicalises_authors(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """edit() writes the year/authors columns (the only write path
+        for them) and canonicalises authors to the stored ``{name}``
+        shape regardless of the input shape."""
+        ref_id = _seed_paper(store, slug="smith2019foo", year=2019)
+        handler.edit(
+            id=ref_id,
+            year=2021,
+            authors=["Smith, Jane", "Aristotle"],
+            abstract="A repaired abstract.",
+        )
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.year == 2021
+        assert ref.authors == [{"name": "Smith, Jane"}, {"name": "Aristotle"}]
+        assert ref.meta["abstract"] == "A repaired abstract."
+
+    def test_edit_normalises_legacy_family_given_input(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A legacy ``{family, given}`` author payload (what the old web
+        editor produced) is converted to ``{name}`` on write."""
+        ref_id = _seed_paper(store, slug="doe2020bar")
+        handler.edit(id=ref_id, authors=[{"family": "Doe", "given": "Alice"}])
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.authors == [{"name": "Doe, Alice"}]
+
+    def test_edit_blank_fields_keep_existing(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Only passed fields change; omitted ones are left untouched."""
+        ref_id = _seed_paper(
+            store, slug="wang2020state", title="Original", year=2020
+        )
+        handler.edit(id=ref_id, title="New title only")
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.title == "New title only"
+        assert ref.year == 2020  # untouched
+
+    def test_edit_replaces_doi_alias(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A corrected DOI replaces this ref's alias (vs first-write-wins
+        insert), so ``get(id=<new doi>)`` resolves afterwards."""
+        ref_id = _seed_paper(store, slug="wang2020state", doi="10.1/old")
+        handler.edit(id=ref_id, doi="10.2/new")
+        ids = store.identifiers_for_refs([ref_id])[ref_id]
+        assert ids["doi"] == "10.2/new"
+
+    def test_edit_requires_a_field(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store, slug="wang2020state")
+        with pytest.raises(BadInput):
+            handler.edit(id=ref_id)
+
+    def test_edit_unknown_id_raises_notfound(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        with pytest.raises(NotFound):
+            handler.edit(id=9_999_999, year=2020)
+
+    def test_edit_through_runtime_dispatch_like_web(
+        self, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """End-to-end: the web posts a flat ``{kind, id, year, authors,
+        …}`` payload to ``edit`` via the in-process runtime. Verify it
+        reaches the handler and persists (the fake-runtime web test only
+        checks forwarding, not that the verb is actually accepted)."""
+        store = runtime_with_store.store
+        ref_id = _seed_paper(store, slug="wang2020state", year=2020)
+        body, is_error = runtime_with_store.dispatch_with_status(
+            "edit",
+            {
+                "kind": "paper",
+                "id": ref_id,
+                "year": 2022,
+                "authors": ["Smith, Jane", "Jones, Bob"],
+            },
+        )
+        assert not is_error, body
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.year == 2022
+        assert ref.authors == [{"name": "Smith, Jane"}, {"name": "Jones, Bob"}]

@@ -17,16 +17,28 @@ import pytest
 # The canonical verb list (per `docs/decisions/0001` and the v1 surface).
 EXPECTED_VERBS = ["get", "search", "put", "edit", "delete", "tag", "link"]
 
+# Auxiliary tools that aren't part of the seven-verb surface but
+# are surfaced as MCP tools for pagination / transport concerns.
+# ``more`` retrieves the next page of a chunked response (see
+# ``precis._pagination``). Listed separately so the canonical
+# seven-verb assertion in ``EXPECTED_VERBS`` keeps its meaning.
+_AUXILIARY_TOOLS = ["more"]
+_EXPECTED_REGISTRY_ENTRIES = EXPECTED_VERBS + _AUXILIARY_TOOLS
+
 
 def test_registry_exposes_seven_verbs() -> None:
-    """All seven verbs are registered in `precis.tools.TOOL_REGISTRY`."""
+    """All seven verbs are registered in `precis.tools.TOOL_REGISTRY`.
+
+    The registry can hold auxiliary tools (``more`` for pagination)
+    in addition to the seven verbs, but every canonical verb must
+    be present.
+    """
     from precis.tools import TOOL_REGISTRY, get_tool_names
 
     names = get_tool_names()
-    assert sorted(names) == sorted(EXPECTED_VERBS), (
-        f"registry should expose exactly {EXPECTED_VERBS}, got {names}"
-    )
-    assert sorted(TOOL_REGISTRY.keys()) == sorted(EXPECTED_VERBS)
+    missing = set(EXPECTED_VERBS) - set(names)
+    assert not missing, f"missing canonical verbs: {sorted(missing)}"
+    assert sorted(TOOL_REGISTRY.keys()) == sorted(_EXPECTED_REGISTRY_ENTRIES)
 
 
 @pytest.mark.parametrize("verb", EXPECTED_VERBS)

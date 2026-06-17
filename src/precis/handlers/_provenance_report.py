@@ -29,6 +29,7 @@ from precis.ingest.provenance import (
     Severity,
     TransitiveCiteFinding,
 )
+from precis.utils.authors import author_names
 
 View = Literal["default", "blockers", "json", "verify", "exists"]
 
@@ -53,7 +54,7 @@ def _format_authors(authors: list[dict[str, str]] | None) -> str:
     """Render an author list as ``Smith, J., Doe, A.`` or fall back to ``—``."""
     if not authors:
         return "—"
-    names = [a.get("name") or "" for a in authors if a.get("name")]
+    names = author_names(authors, order="sortable")
     if not names:
         return "—"
     if len(names) <= 3:

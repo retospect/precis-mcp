@@ -36,8 +36,17 @@ from precis.store.types import Tag
 from precis.utils.search_merge import SearchHit, merge_and_render
 
 if TYPE_CHECKING:
+    from precis._pagination import PaginationCache
     from precis.hints import HintBus
     from precis.store import Store
+
+
+def _new_pagination_cache() -> PaginationCache:
+    """Late import so the runtime module load doesn't pull in
+    threading / uuid eagerly."""
+    from precis._pagination import PaginationCache
+
+    return PaginationCache()
 
 log = logging.getLogger(__name__)
 
@@ -109,6 +118,14 @@ class PrecisRuntime:
     #: empty default unless they need to exercise the merge path.
     default_tags_resolved: tuple[str, ...] = field(default_factory=tuple)
 
+    #: Process-local cache for chunked responses. Built fresh per
+    #: runtime so test fixtures get a clean cache; production has
+    #: exactly one runtime per worker so cursors survive across
+    #: tool calls within the worker's lifetime.
+    pagination: PaginationCache = field(
+        default_factory=lambda: _new_pagination_cache()
+    )
+
     # ----- delegating properties ---------------------------------------
 
     @property
@@ -160,7 +177,12 @@ class PrecisRuntime:
                         options=list(_VERBS),
                     )
                 response = self._dispatch_inner(verb, dict(args))
-                return self._render(response), False
+                # Chunk over-large bodies so they don't blow the
+                # MCP stdio frame. The pagination cache stashes
+                # the tail under a cursor; the agent calls
+                # ``more(cursor=...)`` to retrieve it.
+                body, _cursor = self.pagination.split(self._render(response))
+                return body, False
             except PrecisError as e:
                 self._maybe_add_skill_hint(e, verb, args)
                 return self.render_error(e), True
@@ -185,6 +207,32 @@ class PrecisRuntime:
                     ),
                     True,
                 )
+
+    def fetch_more(self, cursor: str) -> tuple[str, bool]:
+        """Return the next page for a pagination cursor.
+
+        Mirrors :meth:`dispatch_with_status`'s ``(body, is_error)``
+        return shape so the ``more`` MCP tool's wrapper code is
+        identical to the seven-verb wrappers. Returns
+        ``(error_body, True)`` when the cursor is unknown or
+        expired so the protocol-level ``isError`` flag flips.
+
+        Recursive cursors: if the popped tail is itself oversized,
+        :class:`PaginationCache` re-splits and embeds the new
+        cursor in the returned body's footer.
+        """
+        tail = self.pagination.pop(cursor)
+        if tail is None:
+            err = BadInput(
+                f"unknown or expired pagination cursor {cursor!r}",
+                next=(
+                    "Cursors are single-use and expire after a few "
+                    "minutes. Re-issue the original call to get a "
+                    "fresh page."
+                ),
+            )
+            return self.render_error(err), True
+        return tail, False
 
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         """Orchestrate one verb call.

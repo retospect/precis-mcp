@@ -116,6 +116,15 @@ class MemoryHandler(NumericRefHandler):
     # the dreaming capability (docs/design/dreaming.md).
     emits_card: ClassVar[bool] = True
 
+    # On create/edit, resolve `kind:ref` handles in the body and write
+    # `related-to` links to them — so a memory is findable from the refs
+    # it cites, not just by its own text. See `_sync_mention_links`.
+    autolink_mentions: ClassVar[bool] = True
+
+    # Reinforce first-line discipline at write time (filler-first-line
+    # nudge + skill pointer in the create ack). See precis-firstline-help.
+    firstline_discipline: ClassVar[bool] = True
+
     # ── edit: in-place body rewrite ─────────────────────────────────
 
     def edit(  # type: ignore[override]
@@ -165,17 +174,34 @@ class MemoryHandler(NumericRefHandler):
                 ref.id, text, source="agent", conn=conn
             )
             self.store.upsert_card_combined(ref.id, text, conn=conn)
+            # Re-sync auto-mention links to the rewritten body: drop the
+            # old auto links, add the current ones. Hand-added links
+            # survive (replace only touches meta.auto == 'mention').
+            self._sync_mention_links(ref.id, text, conn=conn, replace=True)
+        nudge = self._first_line_nudge(text)
         # Render a confirmation with both old and new word counts so
         # the agent can audit "did the rewrite actually shrink it?"
         old_words = len((old_text or "").split())
         new_words = len(text.split())
-        return Response(
-            body=(
-                f"replaced body of {self._sense()} id={ref.id} "
-                f"({old_words} → {new_words} words). "
-                f"view='log' for the full diff."
-            )
+        body = (
+            f"replaced body of {self._sense()} id={ref.id} "
+            f"({old_words} → {new_words} words). "
+            f"view='log' for the full diff."
         )
+        if nudge:
+            body += f"\n\nhint: {nudge}"
+        return Response(body=body)
+
+    def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:
+        """Lead the create-ack trailer with the first-line convention,
+        then the generic read/tag/delete recipes."""
+        return [
+            (
+                "get(kind='skill', id='precis-firstline-help')",
+                "first-line conventions (lead with the conclusion)",
+            ),
+            *super()._create_ack_next_hints(ref_id),
+        ]
 
     # ── supersede: the one guarded destructive verb (dreaming) ──────
 

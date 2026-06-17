@@ -186,8 +186,11 @@ def test_paper_edit_dispatches_changed_fields_only(client, runtime) -> None:
     assert "authors" not in args
 
 
-def test_paper_edit_shapes_authors_from_newline_list(client, runtime) -> None:
-    """``Lastname, First\\nOther, A.`` → list-of-dicts with family/given."""
+def test_paper_edit_forwards_author_lines(client, runtime) -> None:
+    """Newline-/semicolon-separated authors are forwarded as cleaned
+    line strings; the paper edit handler canonicalises them to the
+    stored ``{"name": …}`` shape (so the web layer no longer shapes
+    family/given)."""
     resp = client.post(
         "/papers/10/edit",
         data={"authors": "Smith, Jane\nJones, Bob"},
@@ -195,14 +198,11 @@ def test_paper_edit_shapes_authors_from_newline_list(client, runtime) -> None:
     )
     assert resp.status_code == 303
     _, args = runtime.calls[-1]
-    assert args["authors"] == [
-        {"family": "Smith", "given": "Jane"},
-        {"family": "Jones", "given": "Bob"},
-    ]
+    assert args["authors"] == ["Smith, Jane", "Jones, Bob"]
 
 
 def test_paper_edit_authors_accepts_lastname_only_entries(client, runtime) -> None:
-    """A single name (no comma) lands as just ``family`` so the form
+    """A single name (no comma) is forwarded verbatim so the form
     doesn't reject the common case of single-author papers."""
     resp = client.post(
         "/papers/10/edit",
@@ -211,7 +211,7 @@ def test_paper_edit_authors_accepts_lastname_only_entries(client, runtime) -> No
     )
     assert resp.status_code == 303
     _, args = runtime.calls[-1]
-    assert args["authors"] == [{"family": "Aristotle", "given": ""}]
+    assert args["authors"] == ["Aristotle"]
 
 
 def test_paper_edit_year_is_coerced_to_int(client, runtime) -> None:
@@ -253,13 +253,17 @@ def test_paper_delete_dispatches_then_redirects_to_list(client, runtime) -> None
     assert args == {"kind": "paper", "id": 10}
 
 
-def test_paper_detail_has_edit_and_delete_buttons(client) -> None:
-    """Both affordances render on the detail page so the operator can
-    discover them without reading the source."""
+def test_paper_detail_has_edit_form_and_disabled_delete(client) -> None:
+    """Edit renders as a working form; Delete is rendered disabled
+    (grayed out) until the `delete` verb is wired for papers, so it
+    no longer submits to the unsupported route."""
     resp = client.get("/papers/10")
     assert resp.status_code == 200
     assert 'action="/papers/10/edit"' in resp.text
-    assert 'action="/papers/10/delete"' in resp.text
+    # Delete is present but disabled, and no longer POSTs anywhere.
+    assert "🗑 Delete paper" in resp.text
+    assert 'action="/papers/10/delete"' not in resp.text
+    assert "disabled" in resp.text
 
 
 def test_papers_index_hover_card_has_authors_and_abstract(client) -> None:

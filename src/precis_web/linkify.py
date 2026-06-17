@@ -41,78 +41,25 @@ from html import escape
 
 from markupsafe import Markup
 
-#: Match ``kind:ref`` patterns inside prose. The trailing assertion
-#: ``(?!\w)`` keeps the match from greedy-consuming a longer word
-#: (e.g. doesn't claim ``memory:6184foo`` — the ``foo`` would otherwise
-#: become an anchor with a busted id).
-#:
-#: The optional ``~suffix`` covers three address shapes used by the
-#: paper handler + a fourth we add for direct PDF page jumps:
-#:
-#: * ``~N``     — chunk at ``ord=N`` (existing paper addressing).
-#: * ``~N..M``  — chunk range (existing).
-#: * ``~pN``    — PDF page N (new — bypasses the chunk → page lookup;
-#:   useful when the agent already knows the page number).
-#:
-#: The ``id`` group accepts three shapes:
-#:
-#: * numeric:  ``#?[0-9]+`` (``memory:6184``)
-#: * bare slug: ``[A-Za-z][A-Za-z0-9_-]*`` (``paper:acheson26``)
-#: * path slug: ``[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)+`` — at least one
-#:   ``/`` (``conv:discord/1490327108830892182/1515091538529619979/…``);
-#:   conv refs store their slug as ``discord/<server>/<channel>/<thread>``
-#:   and the linkifier used to drop everything after the first slash.
-_REF_PATTERN = re.compile(
-    r"\b"
-    r"(?P<kind>[a-z][a-z0-9-]*)"
-    r":"
-    r"(?P<id>"
-    r"#?[0-9]+"
-    r"|"
-    r"[A-Za-z][A-Za-z0-9_-]*(?:/[A-Za-z0-9_-]+)+"
-    r"|"
-    r"[A-Za-z][A-Za-z0-9_-]*"
-    r")"
-    r"(?P<chunk>~(?:p[0-9]+|[0-9]+(?:\.\.[0-9]+)?))?"
-    r"(?!\w)"
+# Grammar moved to ``precis.utils.mentions`` so the write-time
+# autolinker shares it (single source). Re-exported here under the
+# historical private names every web call site already imports —
+# ``_REF_PATTERN`` / ``_BARE_CONV_PATTERN`` / ``_BARE_PAPER_PATTERN``
+# and the kind allowlists. See that module for the per-pattern notes.
+from precis.utils.mentions import (
+    BARE_CONV_PATTERN as _BARE_CONV_PATTERN,
 )
-
-#: Bare conv-handle shorthand the asa-bot Discord bridge emits in
-#: memories — ``discord/<server>/<channel>/<thread>(~<chunk>)?`` with
-#: no ``conv:`` prefix. We linkify these too, mapping them to the
-#: ``conv`` kind. The pattern requires all three numeric path segments
-#: to keep it from over-matching prose like ``discord/general``.
-_BARE_CONV_PATTERN = re.compile(
-    r"\bdiscord/[0-9]+/[0-9]+/[0-9]+(?:~(?:p[0-9]+|[0-9]+(?:\.\.[0-9]+)?))?"
-    r"(?!\w)"
+from precis.utils.mentions import (
+    BARE_PAPER_PATTERN as _BARE_PAPER_PATTERN,
 )
-
-#: Bare paper cite_key shorthand: ``<surname><2-digit year><optional
-#: letter>(~<chunk>)?`` — e.g. ``acheson26``, ``xu25f``, ``futrell25~12``.
-#: The pattern requires:
-#:
-#: * at least 2 lowercase letters (surname; ``q25`` alone is too risky)
-#: * exactly 2 digits (year — ``99`` or ``25``, not ``2025``)
-#: * an optional single lowercase letter (et-al disambiguator)
-#:
-#: To keep false positives in check (``covid19``, ``html5``, ``p100``
-#: would otherwise match), we require either a chunk-address suffix
-#: (``xu25f~12``) — which is unambiguously a paper chunk pointer —
-#: OR the slug matches an even tighter shape with ≥3 letters of
-#: surname. That filters out two-letter false positives like ``ai99``
-#: while still catching real cite_keys.
-_BARE_PAPER_PATTERN = re.compile(
-    r"(?<![\w-])"
-    r"(?:"
-    # With chunk suffix: any ≥2-letter cite_key, since the suffix
-    # disambiguates it as a paper chunk pointer.
-    r"[a-z]{2,}[0-9]{2}[a-z]?~(?:p[0-9]+|[0-9]+(?:\.\.[0-9]+)?)"
-    r"|"
-    # Without chunk suffix: ≥3 letters of surname required so we
-    # don't grab "ai99" / "ml22" / "p100" off prose.
-    r"[a-z]{3,}[0-9]{2}[a-z]?"
-    r")"
-    r"(?!\w)"
+from precis.utils.mentions import (
+    LINKIFY_KINDS as _LINKIFY_KINDS,
+)
+from precis.utils.mentions import (
+    LOW_SIGNAL_KINDS as _LOW_SIGNAL_KINDS,
+)
+from precis.utils.mentions import (
+    REF_PATTERN as _REF_PATTERN,
 )
 
 #: Spans of input the linkifier must leave alone. Each pattern matches
@@ -125,55 +72,6 @@ _SKIP_PATTERN = re.compile(
     r"|<a\b[^>]*>.*?</a>",
     flags=re.DOTALL | re.IGNORECASE,
 )
-
-#: Kinds we WILL linkify. The regex itself accepts any
-#: ``[a-z][a-z0-9-]*:something`` pattern, which over-fires on prose
-#: like ``user:asa`` / ``note:foo`` / ``tag:test:case`` — non-precis
-#: kinds that just happen to share the ``noun:value`` shape. Anchor
-#: emission is gated on this allowlist so those false positives fall
-#: through to plain text.
-#:
-#: Keep aligned with ``_REFS_BROWSABLE_KINDS`` in routes/refs.py
-#: (every kind that has a detail page) plus a few extras (``skill``
-#: and friends that route through ``/r/{kind}/{id}`` too).
-_LINKIFY_KINDS: frozenset[str] = frozenset(
-    {
-        "memory",
-        "conv",
-        "gripe",
-        "pres",
-        "oracle",
-        "paper",
-        "patent",
-        "todo",
-        "job",
-        "finding",
-        "citation",
-        "flashcard",
-        "perplexity-research",
-        "perplexity-reasoning",
-        "web",
-        "youtube",
-        "websearch",
-        "cron",
-        "message",
-        "math",
-        "calc",
-        "skill",
-        "provenance",
-        "random",
-    }
-)
-
-#: Vestigial — kept as an explicit blocklist within the allowlist for
-#: cases where a kind name is so noisy in prose that we'd want to
-#: drop even though it's a real kind. ``tag`` and ``link`` are the
-#: classic risks (``tag:open`` could be either a tag namespace or
-#: a reference to a tag-kind ref). Today both are filtered out by
-#: being absent from ``_LINKIFY_KINDS``; this set stays as a place
-#: to opt out something we *did* add and then regret.
-_LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
-
 
 def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
     """Build the per-match anchor + sibling popover slot.

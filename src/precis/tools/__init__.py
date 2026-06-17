@@ -16,6 +16,7 @@ from precis.tools.core import (
     edit,
     get,
     link,
+    more,
     put,
     search,
     tag,
@@ -80,6 +81,9 @@ _register_tool("edit", edit)
 _register_tool("delete", delete)
 _register_tool("tag", tag)
 _register_tool("link", link)
+# Pagination tool: agent calls this with a cursor handed back inside
+# a chunked verb response to retrieve the next page.
+_register_tool("more", more)
 
 
 def get_tool_names() -> list[str]:

@@ -29,6 +29,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.utils.authors import author_display
+
 if TYPE_CHECKING:
     from precis.store import Store
 
@@ -178,20 +180,12 @@ def _escape_bib(text: str) -> str:
 
 
 def _author_name(author: Any) -> str:
-    """Render an author entry from CrossRef-style metadata."""
-    if isinstance(author, str):
-        return author
-    if isinstance(author, dict):
-        given = (author.get("given") or "").strip()
-        family = (author.get("family") or "").strip()
-        if given and family:
-            return f"{family}, {given}"
-        if family:
-            return family
-        if given:
-            return given
-        return author.get("name") or "Anonymous"
-    return "Anonymous"
+    """Render one author entry in BibTeX ``Family, Given`` order.
+
+    Tolerant of every stored shape via the canonical
+    :func:`precis.utils.authors.author_display`; falls back to
+    ``"Anonymous"`` for an empty / unparseable entry."""
+    return author_display(author, order="sortable") or "Anonymous"
 
 
 __all__ = ["write_workspace_bib"]

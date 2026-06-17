@@ -689,6 +689,47 @@ def link(
     )
 
 
+def more(cursor: str) -> str:
+    """Fetch the next page of a chunked response.
+
+    Pagination kicks in when a verb's rendered body exceeds the MCP
+    stdio frame budget. The over-large response is split on Markdown
+    section boundaries; the head ends with ``Next: more(cursor='...')``.
+    Call this tool with the cursor verbatim to retrieve the tail.
+
+    Cursors are single-use and expire after a few minutes — if you
+    miss the window, re-issue the original call to start fresh.
+    """
+    runtime = _get_runtime()
+    started = _monotonic()
+    is_error = False
+    try:
+        body, is_error = runtime.fetch_more(cursor)
+        if is_error:
+            return CallToolResult(
+                content=[TextContent(type="text", text=body)],
+                isError=True,
+            )
+        return body
+    except Exception as e:
+        is_error = True
+        error_body = runtime.render_error(e)
+        return CallToolResult(
+            content=[TextContent(type="text", text=error_body)],
+            isError=True,
+        )
+    finally:
+        try:
+            _log_tool_call(
+                verb="more",
+                payload={"cursor": cursor},
+                duration_ms=(_monotonic() - started) * 1000.0,
+                error=is_error,
+            )
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # CLI per-arg help strings.
 #

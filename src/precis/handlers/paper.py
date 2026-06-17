@@ -1,9 +1,11 @@
 """PaperHandler — read scientific papers from the v2 store.
 
-Read-only via ``get`` / ``search``. Ingest happens out-of-band via
-:func:`precis.ingest.add.precis_add` (or the top-level ``precis
-add`` / ``precis watch`` CLI). ``put`` lands in a later phase when
-paper edits are scoped.
+Bodies are read-only via ``get`` / ``search``; ingest happens
+out-of-band via :func:`precis.ingest.add.precis_add` (or the
+top-level ``precis add`` / ``precis watch`` CLI), so ``put`` is not
+exposed. ``edit`` is supported but scoped to *bibliographic metadata*
+(authors / year / title / abstract / doi / arxiv) — it never touches
+block text.
 
 Slug parsing supports the canonical slug-with-chunk syntax used across
 v2:
@@ -52,6 +54,7 @@ from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.utils.authors import to_name_dicts
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -225,7 +228,7 @@ def _lookup_acquire_metadata(id_kind: str, id_value: str) -> dict[str, Any] | No
 
 
 class PaperHandler(Handler):
-    """Slug-addressed, read-only paper handler.
+    """Slug-addressed paper handler (read-only bodies; metadata-editable).
 
     Stored data: each paper is a ``refs`` row with kind='paper' and one
     block per chunk in ``blocks`` (text + optional embedding + density).
@@ -247,11 +250,13 @@ class PaperHandler(Handler):
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
-        # Phase-9 / seven-verb cutover: paper bodies are import-only
+        # Phase-9 / seven-verb cutover: paper *bodies* are import-only
         # (arrive via .acatome bundle ingest, never edited from the
-        # agent surface). Cross-linking and tag classification ride
-        # on the dedicated tag/link verbs; ``put`` is therefore not
-        # exposed on this kind.
+        # agent surface). ``put`` is therefore not exposed. ``edit`` is
+        # scoped to *bibliographic metadata* only (authors / year /
+        # title / abstract / doi / arxiv) — the repair affordance the
+        # web metadata editor drives; it never touches block bodies.
+        supports_edit=True,
         supports_tag=True,
         supports_link=True,
         is_numeric=False,
@@ -947,6 +952,106 @@ class PaperHandler(Handler):
             options=_suggest_paper_slugs(slug, store=self.store),
         )
         return slug, ref.id
+
+    def _resolve_paper_ref_id(self, id: str | int) -> int:
+        """Resolve an id to a live paper ``ref_id``.
+
+        Accepts a numeric ``ref_id`` (the web addresses papers by id),
+        a slug, or a DOI — slugs are never all-digits, so the branch is
+        unambiguous. Raises ``NotFound`` if missing / soft-deleted or
+        the ref isn't a paper.
+        """
+        if isinstance(id, int) or (isinstance(id, str) and id.strip().isdigit()):
+            ref_id = int(id)
+            ref = self.store.fetch_refs_by_ids(
+                [ref_id], include_deleted=False
+            ).get(ref_id)
+            if ref is None or ref.kind != "paper":
+                raise NotFound(
+                    f"paper id={ref_id} not found",
+                    next="search(kind='paper', q='...') to find existing",
+                )
+            return ref_id
+        _slug, ref_id = self._resolve_paper_slug(id)
+        return ref_id
+
+    def edit(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        title: str | None = None,
+        year: int | None = None,
+        authors: Any = None,
+        abstract: str | None = None,
+        doi: str | None = None,
+        arxiv: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Repair a paper's bibliographic metadata.
+
+        The operator / agent affordance for fixing parse errors — wrong
+        DOI, missing authors, off-by-one year. Paper *bodies* stay
+        import-only; this never touches block text. Only the fields
+        passed are changed; a ``None`` / blank field is left as-is
+        (the web form's "leave blank to keep" contract).
+
+        ``authors`` accepts any tolerated shape (name strings,
+        ``{family, given}`` or ``{name}`` dicts) and is canonicalised
+        to the stored ``[{"name": …}]`` shape via
+        :func:`precis.utils.authors.to_name_dicts`. ``abstract`` merges
+        into ``meta``; ``doi`` / ``arxiv`` replace this ref's alias via
+        :meth:`Store.set_ref_identifier`.
+        """
+        ref_id = self._resolve_paper_ref_id(id)
+        new_title = title.strip() if isinstance(title, str) and title.strip() else None
+        new_authors = to_name_dicts(authors) if authors else None
+        meta_patch: dict[str, Any] = {}
+        if isinstance(abstract, str) and abstract.strip():
+            meta_patch["abstract"] = abstract.strip()
+        has_doi = bool(doi and str(doi).strip())
+        has_arxiv = bool(arxiv and str(arxiv).strip())
+        if (
+            new_title is None
+            and year is None
+            and not new_authors
+            and not meta_patch
+            and not has_doi
+            and not has_arxiv
+        ):
+            raise BadInput(
+                "edit(kind='paper') needs at least one field to change",
+                next="edit(kind='paper', id=<slug|id>, authors=[...], year=2024)",
+            )
+        changed: list[str] = []
+        with self.store.tx() as conn:
+            self.store.update_paper_fields(
+                ref_id,
+                title=new_title,
+                year=year,
+                authors=new_authors,
+                meta_patch=meta_patch or None,
+                source="edit",
+                conn=conn,
+            )
+            for scheme, value in (("doi", doi), ("arxiv", arxiv)):
+                if value and str(value).strip() and self.store.set_ref_identifier(
+                    ref_id, scheme, str(value), source="edit", conn=conn
+                ):
+                    changed.append(scheme)
+        if new_title is not None:
+            changed.append("title")
+        if year is not None:
+            changed.append("year")
+        if new_authors:
+            changed.append(f"authors({len(new_authors)})")
+        if meta_patch:
+            changed.append("abstract")
+        return Response(
+            body=(
+                f"updated paper id={ref_id}: "
+                f"{', '.join(changed) if changed else 'no change'}."
+            )
+        )
 
     def tag(  # type: ignore[override]
         self,

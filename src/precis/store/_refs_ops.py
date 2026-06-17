@@ -639,6 +639,83 @@ class RefsMixin:
             )
         return _row_to_ref(row)
 
+    def update_paper_fields(
+        self,
+        ref_id: int,
+        *,
+        title: str | None = None,
+        year: int | None = None,
+        authors: list[dict[str, str]] | None = None,
+        meta_patch: dict[str, Any] | None = None,
+        source: str = "web-edit",
+        conn: Connection | None = None,
+    ) -> Ref:
+        """Patch a paper's first-class metadata columns + merge ``meta``.
+
+        COALESCE semantics: a ``None`` argument leaves that column
+        untouched; pass an explicit value to overwrite. ``meta_patch``
+        is a top-level merge (``meta || patch``) used for ``abstract``
+        and other meta-resident fields. ``authors`` is stored verbatim
+        as JSONB — canonicalise to the ``[{"name": …}]`` shape *before*
+        calling (see :func:`precis.utils.authors.to_name_dicts`) so the
+        column converges on one shape.
+
+        Unlike :meth:`update_ref` (title + meta only), this is the sole
+        write path for the ``year`` / ``authors`` columns, which were
+        otherwise set only at ingest. Logs a ``metadata_edited``
+        ref_event carrying the changed keys so the edit is auditable /
+        recoverable via ``view='log'``.
+        """
+        changed: list[str] = []
+        if title is not None:
+            changed.append("title")
+        if year is not None:
+            changed.append("year")
+        if authors is not None:
+            changed.append("authors")
+        if meta_patch:
+            changed.extend(f"meta.{k}" for k in meta_patch)
+        sql = f"""
+            UPDATE refs SET
+                title   = COALESCE(%s, title),
+                year    = COALESCE(%s, year),
+                authors = COALESCE(%s::jsonb, authors),
+                meta    = CASE WHEN %s::jsonb IS NULL THEN meta
+                               ELSE meta || %s::jsonb END,
+                updated_at = now()
+            WHERE ref_id = %s AND deleted_at IS NULL
+            RETURNING {_REFS_COLS}
+        """
+        params = (
+            title,
+            year,
+            Jsonb(authors) if authors is not None else None,
+            Jsonb(meta_patch) if meta_patch else None,
+            Jsonb(meta_patch) if meta_patch else None,
+            ref_id,
+        )
+
+        def _do(c: Connection) -> Any:
+            row = c.execute(sql, params).fetchone()
+            if row is None:
+                raise NotFound(
+                    f"ref id={ref_id} not found (or already deleted)",
+                    next=f"check id with: get(kind=..., id={ref_id})",
+                )
+            c.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload) "
+                "VALUES (%s, %s, %s, %s::jsonb)",
+                (ref_id, source, "metadata_edited", Jsonb({"changed": changed})),
+            )
+            return row
+
+        if conn is not None:
+            row = _do(conn)
+        else:
+            with self.pool.connection() as c:
+                row = _do(c)
+        return _row_to_ref(row)
+
     def set_retraction_status(
         self,
         ref_id: int,
