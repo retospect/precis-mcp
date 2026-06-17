@@ -49,7 +49,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -337,8 +337,17 @@ def call_claude_agent(
             returncode=0,
         )
 
-    cost_usd = _extract_cost_usd(res.stderr or "")
-    turns_used = _extract_turns_used(res.stderr or "")
+    # Claude Code 2.1.x emits the final cost + turn count in the
+    # trailing ``{"type":"result"}`` JSON event on stdout (stream-json
+    # format), not on stderr. Try stdout's last JSON line first; if
+    # nothing surfaces there (legacy text-format invocations, stub
+    # tests), fall back to the stderr regex extractors.
+    cost_usd = _cost_from_stdout_result(res.stdout or "")
+    if cost_usd is None:
+        cost_usd = _extract_cost_usd(res.stderr or "")
+    turns_used = _turns_from_stdout_result(res.stdout or "")
+    if turns_used is None:
+        turns_used = _extract_turns_used(res.stderr or "")
 
     result = AgentResult(
         final_text=res.stdout,
@@ -403,6 +412,58 @@ def _extract_turns_used(stderr: str) -> int | None:
     try:
         return int(m.group(1))
     except ValueError:
+        return None
+
+
+def _last_result_event(stdout: str) -> dict[str, Any] | None:
+    """Find the trailing ``{"type":"result"}`` event in stream-json stdout.
+
+    Each event lives on its own line. We walk from the end backwards to
+    find the most recent ``result`` event (claude can emit interim
+    ``result`` events; the final one carries the totals). Returns ``None``
+    when stdout has no JSON or no result event — falls back to the
+    stderr regex extractors.
+    """
+    import json as _json
+
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            ev = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            return ev
+    return None
+
+
+def _cost_from_stdout_result(stdout: str) -> float | None:
+    """Pull ``total_cost_usd`` from the trailing stream-json result event."""
+    ev = _last_result_event(stdout)
+    if ev is None:
+        return None
+    val = ev.get("total_cost_usd")
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _turns_from_stdout_result(stdout: str) -> int | None:
+    """Pull ``num_turns`` from the trailing stream-json result event."""
+    ev = _last_result_event(stdout)
+    if ev is None:
+        return None
+    val = ev.get("num_turns")
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
         return None
 
 

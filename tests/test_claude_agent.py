@@ -353,6 +353,66 @@ def test_helpers_handle_bytes_and_none() -> None:
     assert _extract_cost_usd("nothing relevant here") is None
 
 
+def test_cost_and_turns_from_stream_json_result_event() -> None:
+    """Claude Code 2.1.x emits totals in the trailing ``result`` event
+    on stdout (stream-json mode), not stderr."""
+    import json
+
+    from precis.utils.claude_agent import (
+        _cost_from_stdout_result,
+        _turns_from_stdout_result,
+    )
+
+    # A realistic two-event tail: an assistant message then the result.
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "assistant", "content": "hi"}),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "total_cost_usd": 0.258,
+                    "num_turns": 15,
+                    "result": "done",
+                }
+            ),
+        ]
+    )
+    assert _cost_from_stdout_result(stdout) == 0.258
+    assert _turns_from_stdout_result(stdout) == 15
+
+
+def test_cost_and_turns_none_when_no_result_event() -> None:
+    from precis.utils.claude_agent import (
+        _cost_from_stdout_result,
+        _turns_from_stdout_result,
+    )
+
+    assert _cost_from_stdout_result("") is None
+    assert _cost_from_stdout_result("not json at all") is None
+    assert _turns_from_stdout_result("") is None
+    assert _turns_from_stdout_result('{"type":"system"}') is None
+
+
+def test_cost_walks_to_latest_result_event() -> None:
+    """If the stream contains multiple ``result`` events (some interim),
+    we want the LAST one — the final totals."""
+    import json
+
+    from precis.utils.claude_agent import _cost_from_stdout_result
+
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "result", "total_cost_usd": 0.05, "num_turns": 1}),
+            json.dumps({"type": "assistant", "content": "more"}),
+            json.dumps({"type": "result", "total_cost_usd": 0.42, "num_turns": 12}),
+        ]
+    )
+    assert _cost_from_stdout_result(stdout) == 0.42
+
+
 # Skip the whole module on Windows, where ``shutil.which("bash")``
 # may find ``bash.exe`` (Git Bash) but ``#!/usr/bin/env bash``
 # shebangs can't be invoked directly via ``subprocess.run`` —

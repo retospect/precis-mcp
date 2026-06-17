@@ -76,6 +76,15 @@ QUICK_SERVICES: list[dict[str, str]] = [
             "e.g. dQw4w9WgXcQ) or the full URL."
         ),
     },
+    {
+        "value": "patent",
+        "label": "Patents (EPO)",
+        "kind": "patent",
+        "hint": (
+            "Search term, applicant name, or patent publication number "
+            "(US / EP / WO format)."
+        ),
+    },
 ]
 
 _QUICK_BY_VALUE: dict[str, dict[str, str]] = {s["value"]: s for s in QUICK_SERVICES}
