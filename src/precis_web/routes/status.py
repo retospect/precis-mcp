@@ -103,7 +103,7 @@ def _recent_dreams(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     """Most-recent dream-tagged memories.
 
     Dream-pass writes new memory refs carrying ``tier:dream`` (see
-    ``workers/dream.py``). The dream prompt also promotes high-quality
+    ``workers/dream_agent.py``). The dream prompt also promotes high-quality
     cross-kind connections to ``tier:synthetic-insight`` during the
     Step-7 self-review. Surface a flag for each so the operator's
     eye lands on the curated insights.

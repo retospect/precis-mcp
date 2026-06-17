@@ -105,7 +105,7 @@ def _read_plist_env(label: str) -> dict[str, str]:
 
     Returns an empty dict when the plist is missing or unreadable.
     macOS's plist tools tolerate XML comments that contain ``--``
-    (e.g. a comment mentioning ``--only dream``), but Python's expat
+    (e.g. a comment mentioning ``--only dream_agent``), but Python's expat
     parser rejects them as not-well-formed. Apple's ``plutil`` is the
     canonical way to round-trip a plist on macOS — fall back to
     shelling out and reading its JSON output when plistlib chokes.

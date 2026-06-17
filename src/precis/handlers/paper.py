@@ -337,10 +337,12 @@ class PaperHandler(Handler):
         verify: bool = True,
         **_kw: Any,
     ) -> Response:
-        """Queue a missing paper for fetch — the gated dream ``acquire`` tool.
+        """Queue a missing paper for fetch — the shared stub-mint impl.
 
-        A dream notices the corpus keeps citing a paper it doesn't hold
-        and mints a **stub** so the existing fetch pipeline takes over
+        The agent-facing spelling is ``put(kind='paper', …)`` (see
+        :meth:`put`); this method does the work. A dream (or anyone)
+        notices the corpus keeps citing a paper it doesn't hold and mints
+        a **stub** so the existing fetch pipeline takes over
         (docs/design/dreaming.md, §Acquire). It does the minimum and
         gets out of the way: it **never ingests inline** — no download,
         no Marker, in the dream turn.
@@ -359,8 +361,12 @@ class PaperHandler(Handler):
         reversible (soft-delete), so a runaway dream can at worst enqueue
         stubs — never blow a budget on downloads.
 
-        Gated behind ``PRECIS_DREAM_ACQUIRE`` at the agent-tool surface
-        (not enforced here, mirroring ``supersede``).
+        Reachable from the MCP surface via ``put(kind='paper', …)`` (the
+        agent-facing spelling — see :meth:`put`); this method is the
+        shared implementation. The legacy in-process dream loop's gated
+        ``acquire`` tool (``PRECIS_DREAM_ACQUIRE``) was retired when the
+        dreamers were consolidated onto the ``claude -p`` + MCP
+        ``dream_agent``.
 
         ``verify`` (default ``True``): when set, an unrecognised
         identifier (Semantic Scholar returns no metadata) is rejected

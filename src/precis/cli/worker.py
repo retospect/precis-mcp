@@ -129,7 +129,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "gp_fetch",
             "tag_embeddings",
             "job_claude_inproc",
-            "dream",
             "dream_agent",
             "auto_check",
             "schedule",
@@ -718,27 +717,6 @@ def run(args: argparse.Namespace) -> None:
                 return run_dream_pass(store)
 
             ref_passes.append(_dream_agent_pass)
-
-        # Dreaming pass — the in-process agentic janitor (ADR 0024).
-        # Explicit-only: never in the default cycle (expensive, scheduled
-        # via `precis worker --only dream --once`). Gated off unless
-        # PRECIS_DREAM_LLM is set, so even an accidental run is a no-op.
-        if args.only == "dream":
-            from precis.workers.dream import run_dream_pass
-            from precis.workers.runner import BatchResult as _BatchResult
-
-            dream_embedder = _resolve_embedder(args, store)
-
-            def _dream_pass(batch_size: int) -> _BatchResult:
-                r = run_dream_pass(store, embedder=dream_embedder)
-                return _BatchResult(
-                    handler="dream",
-                    claimed=r["claimed"],
-                    ok=r["ok"],
-                    failed=r["failed"],
-                )
-
-            ref_passes.append(_dream_pass)
 
         stop_flag = _install_signal_handlers()
         run_loop(

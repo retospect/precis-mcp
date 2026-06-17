@@ -1,9 +1,16 @@
 # ADR 0024 — Dream loop runs in-process against litellm, not the `claude` binary
 
-- **Status**: **accepted** (2026-06) — implemented in
-  `src/precis/workers/dream.py`. Tracks
-  `docs/design/dream-agent-loop.md`; supersedes step 2 of
-  `docs/design/dreaming.md` §"The dreaming agent".
+- **Status**: **superseded / reversed** (2026-06). The in-process
+  litellm loop (`src/precis/workers/dream.py`) was removed and the two
+  dreamers consolidated onto the **`claude -p` + precis-MCP**
+  `dream_agent` (`src/precis/workers/dream_agent.py`, invoked by the
+  `precis_dream` role via `dream-pass.sh --only dream_agent`). The
+  decision recorded below was reversed: the dream loop runs the
+  `claude` binary against the MCP server after all, not litellm
+  in-process. The loop's bespoke `acquire` tool moved to the MCP
+  surface as `put(kind='paper', …)` (the seven-verb surface gained no
+  new verb); its `supersede` tool has no MCP equivalent yet (follow-up
+  if dream-side memory consolidation is wanted). Kept for history.
 - **Deciders**: Reto + agent
 - **Relates to**: [ADR 0020 — embedder as service](./0020-embedder-as-service.md)
   (same stdlib-transport client pattern),
