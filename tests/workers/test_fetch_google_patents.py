@@ -391,23 +391,125 @@ def test_pass_no_candidates_returns_zero(
     assert out == {"claimed": 0, "ok": 0, "failed": 0}
 
 
+# Drift smoke test removed — the worker now imports the awaiting/
+# unavailable tag constants directly from precis.handlers._patent_ingest
+# rather than re-declaring them, so divergence is structurally impossible.
+
+
 # ---------------------------------------------------------------------------
-# Drift smoke test
+# Bug-fix regressions (post-review)
 # ---------------------------------------------------------------------------
 
 
-def test_awaiting_tag_constants_match_ingest_pipeline() -> None:
-    """The worker duplicates the awaiting / unavailable tag names to
-    avoid importing the ingest pipeline. Catch drift if either side
-    renames."""
-    from precis.handlers._patent_ingest import (
-        AWAITING_FULLTEXT_TAG,
-        FULLTEXT_UNAVAILABLE_TAG,
+def test_claim_dedupes_when_patent_carries_both_status_tags(store: Store) -> None:
+    """A patent carrying BOTH awaiting-fulltext AND fulltext-unavailable
+    used to surface as two candidate rows (one per matching tag value
+    via the IN-list JOIN), causing a double-fetch + duplicate block
+    insertion on the same ref. Each ref must appear at most once."""
+    ref_id = _seed_patent(
+        store, cite_key="cn999000111a", status_tag="awaiting-fulltext"
+    )
+    # Add the second status tag too — this is the dual-tag state.
+    store.add_tag(ref_id, Tag.open("fulltext-unavailable"), set_by="test")
+
+    candidates = _claim_patents_for_gp(store, limit=10)
+    matching = [c for c in candidates if c.cite_key == "cn999000111a"]
+    assert len(matching) == 1, (
+        "patent with both awaiting+unavailable tags should be claimed once"
     )
 
-    # The duplicates are private (_AWAITING_TAG / _UNAVAILABLE_TAG) so
-    # we re-import via the module attribute.
-    assert gp._AWAITING_TAG == AWAITING_FULLTEXT_TAG
-    assert gp._UNAVAILABLE_TAG == FULLTEXT_UNAVAILABLE_TAG
+
+def test_claim_skips_already_fetched_patent_via_meta_gate(store: Store) -> None:
+    """The durable dedup gate is `meta.gp_status IS NULL`, not the
+    gp-attempted tag — so even if the tag write transiently failed
+    after a successful fetch, the patent is still excluded on next
+    pass."""
+    ref_id = _seed_patent(
+        store, cite_key="us20240000007a1", status_tag="awaiting-fulltext"
+    )
+    # Simulate the "success ran update_ref but tag write failed" state.
+    store.update_ref(ref_id=ref_id, meta_patch={"gp_status": "fetched"})
+
+    assert _claim_patents_for_gp(store, limit=10) == []
+    # --force bypasses both gates.
+    forced = _claim_patents_for_gp(store, limit=10, force=True)
+    assert any(c.cite_key == "us20240000007a1" for c in forced)
+
+
+def test_pass_abstract_only_result_keeps_awaiting_tag(
+    store: Store, gp_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An abstract-only parse (no description, no claims) doesn't
+    change the searchable surface, so the awaiting/unavailable tags
+    must NOT be cleared — otherwise the dashboard would falsely
+    advertise 'fulltext available'."""
+    _seed_patent(
+        store, cite_key="us20240000008a1", status_tag="awaiting-fulltext"
+    )
+    abstract_only_html = (
+        '<section itemprop="abstract"><div class="abstract">'
+        "Just an abstract, nothing else."
+        "</div></section>"
+    )
+
+    def _fake_fetch(slug: str) -> tuple[str, str | None, int]:
+        return "ok", abstract_only_html, len(abstract_only_html)
+
+    monkeypatch.setattr(gp, "_fetch_one", _fake_fetch)
+
+    out = run_gp_fetch_pass(store, limit=5, now=_NOW)
+    assert out["ok"] == 1
+
+    ref = store.get_ref(kind="patent", id="us20240000008a1")
+    assert ref is not None
+    tag_values = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
+    assert "awaiting-fulltext" in tag_values  # NOT dropped
+    assert GP_FETCHED_TAG in tag_values  # but we did try
+
+
+def test_pass_unhandled_transient_routes_to_backoff(
+    store: Store, gp_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unhandled exception during _fetch_and_ingest (DB blip,
+    parser raise, network hiccup post-fetch) used to permanently
+    mark the patent parse-error. Now it must route through the same
+    backoff schedule as HTTP errors — gp_retry_at set, gp-attempted
+    NOT set on a transient retry."""
+    _seed_patent(
+        store, cite_key="us20240000009a1", status_tag="awaiting-fulltext"
+    )
+
+    def _exploding_fetch(slug: str) -> tuple[str, str | None, int]:
+        raise RuntimeError("simulated DB blip")
+
+    monkeypatch.setattr(gp, "_fetch_one", _exploding_fetch)
+
+    out = run_gp_fetch_pass(store, limit=5, now=_NOW)
+    assert out["failed"] == 1
+
+    ref = store.get_ref(kind="patent", id="us20240000009a1")
+    assert ref is not None
+    meta = ref.meta or {}
+    assert meta.get("gp_retry_count") == 1
+    assert "gp_retry_at" in meta
+    tag_values = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
+    assert GP_ATTEMPTED_TAG not in tag_values  # transient — NOT terminal
+
+
+def test_is_enabled_tolerates_whitespace_padding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A YAML quoting quirk or trailing newline shouldn't silently
+    disable the gate — strip before lower."""
+    from precis.workers.fetch_google_patents import _is_enabled
+
+    monkeypatch.setenv("PRECIS_GP_FETCH", "1 ")
+    assert _is_enabled() is True
+    monkeypatch.setenv("PRECIS_GP_FETCH", " 1")
+    assert _is_enabled() is True
+    monkeypatch.setenv("PRECIS_GP_FETCH", " TRUE \n")
+    assert _is_enabled() is True
+    monkeypatch.setenv("PRECIS_GP_FETCH", "0")
+    assert _is_enabled() is False
 
 

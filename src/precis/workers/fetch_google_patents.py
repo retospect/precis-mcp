@@ -46,6 +46,12 @@ from datetime import UTC, datetime
 from datetime import timedelta as _timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.handlers._patent_ingest import (
+    AWAITING_FULLTEXT_TAG as _AWAITING_TAG,
+)
+from precis.handlers._patent_ingest import (
+    FULLTEXT_UNAVAILABLE_TAG as _UNAVAILABLE_TAG,
+)
 from precis.store import Tag
 from precis.store.types import BlockInsert
 
@@ -72,19 +78,13 @@ GP_PARSE_ERROR_TAG: str = "gp-parse-error"
 GP_HTTP_GAVE_UP_TAG: str = "gp-http-gave-up"
 
 #: Exponential backoff schedule for HTTP errors against
-#: patents.google.com. Minutes per attempt; after the last entry,
-#: the patent is marked gp-attempted + gp-http-gave-up and drops out
-#: of the retry pool. Index 0 is the *first* retry delay (after the
-#: first http-error), so a never-seen patent starts with no
-#: ``gp_retry_count`` and is immediately eligible.
+#: patents.google.com AND for unhandled transients during the
+#: ingest tail (DB blip, unexpected parser raise). Minutes per
+#: attempt; after the last entry, the patent is marked
+#: gp-attempted + gp-http-gave-up and drops out of the retry pool.
+#: Index 0 is the *first* retry delay, so a never-seen patent
+#: starts with no ``gp_retry_count`` and is immediately eligible.
 _RETRY_DELAY_MINUTES: tuple[int, ...] = (5, 15, 60, 360, 1440)
-
-#: Awaiting / unavailable tag values — duplicated from
-#: :mod:`precis.handlers._patent_ingest` so this module can run without
-#: importing the ingest pipeline. Drift is caught by a smoke test that
-#: imports both modules and asserts equality.
-_AWAITING_TAG: str = "awaiting-fulltext"
-_UNAVAILABLE_TAG: str = "fulltext-unavailable"
 
 
 # ─── HTML parsing ──────────────────────────────────────────────────────────
@@ -286,6 +286,14 @@ def _claim_patents_for_gp(
     if limit <= 0:
         raise ValueError("limit must be positive")
 
+    # ``force=False`` is the steady-state cycle: skip patents the
+    # worker has already touched (either via the gp-attempted tag OR
+    # via a non-null meta.gp_status — the durable dedup gate that
+    # holds even if the tag write failed transiently). Also skip
+    # patents still inside their HTTP-error backoff window.
+    #
+    # ``force=True`` clears both the tag and meta gates so an
+    # operator-initiated --force backfill re-attempts known refs.
     gp_filter = "" if force else (
         "AND NOT EXISTS ("
         "  SELECT 1 FROM ref_tags rt2 "
@@ -294,31 +302,47 @@ def _claim_patents_for_gp(
         "    AND t2.namespace = 'OPEN' "
         "    AND t2.value = %s"
         ") "
-        # Skip patents in HTTP-error backoff — gp_retry_at is in the
-        # future. NULL means no prior failure, so the predicate stays
-        # tolerant.
+        "AND r.meta->>'gp_status' IS NULL "
         "AND (r.meta->>'gp_retry_at' IS NULL "
         "     OR (r.meta->>'gp_retry_at')::timestamptz <= now()) "
     )
+    # Bug-fix for the dual-tag case: a ref carrying BOTH
+    # awaiting-fulltext AND fulltext-unavailable used to surface as
+    # two candidate rows (one per matching tag value via the IN-list
+    # JOIN), causing a double-fetch + duplicate block insertion. The
+    # EXISTS gate collapses to one row per ref; the inner subquery
+    # picks a deterministic tag for the display label.
     sql = f"""
         SELECT r.ref_id,
                (SELECT id_value FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
-               t.value AS status_tag
+               (SELECT t.value FROM ref_tags rt
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE rt.ref_id = r.ref_id
+                   AND t.namespace = 'OPEN'
+                   AND t.value IN (%s, %s)
+                 ORDER BY t.value
+                 LIMIT 1) AS status_tag
         FROM   refs r
-        JOIN   ref_tags rt ON rt.ref_id = r.ref_id
-        JOIN   tags t       ON t.tag_id  = rt.tag_id
         WHERE  r.kind = 'patent'
           AND  r.deleted_at IS NULL
-          AND  t.namespace = 'OPEN'
-          AND  t.value IN (%s, %s)
+          AND  EXISTS (
+                  SELECT 1 FROM ref_tags rt
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = 'OPEN'
+                    AND t.value IN (%s, %s)
+               )
           {gp_filter}
         ORDER  BY (r.meta->>'publication_date') ASC NULLS FIRST,
                   r.ref_id ASC
         LIMIT  %s
         FOR UPDATE OF r SKIP LOCKED
     """
-    params: list[Any] = [_AWAITING_TAG, _UNAVAILABLE_TAG]
+    params: list[Any] = [
+        _AWAITING_TAG, _UNAVAILABLE_TAG,  # status_tag subquery
+        _AWAITING_TAG, _UNAVAILABLE_TAG,  # EXISTS gate
+    ]
     if not force:
         params.append(GP_ATTEMPTED_TAG)
     params.append(limit)
@@ -442,6 +466,80 @@ def _drop_obsolete_status_tags(store: Store, *, ref_id: int) -> None:
             )
 
 
+def _apply_transient_backoff(
+    store: Store,
+    *,
+    candidate: _PatentCandidate,
+    error: str,
+    now: datetime,
+    tag: str,
+) -> str:
+    """Bump ``gp_retry_count`` and schedule the next ``gp_retry_at``.
+
+    Returns the outcome status: ``'http-error'`` while the schedule
+    still has retries left, ``'http-gave-up'`` when the schedule is
+    exhausted (the patent is then marked gp-attempted + gp-http-gave-up
+    so it drops out of the retry pool).
+
+    ``tag`` identifies the transient source for telemetry only —
+    currently always ``'http-error'`` but the helper is reused by the
+    outer ``except Exception`` arm so unhandled transients (DB blip,
+    parser raise) get the same backoff treatment instead of being
+    permanently marked parse-error.
+    """
+    ref = store.get_ref(kind="patent", id=candidate.cite_key)
+    prior_count = 0
+    if ref is not None:
+        prior_count = int((ref.meta or {}).get("gp_retry_count", 0) or 0)
+    next_count = prior_count + 1
+
+    if next_count > len(_RETRY_DELAY_MINUTES):
+        _record_attempt(
+            store,
+            ref_id=candidate.ref_id,
+            status="http-error",
+            blocks_added=0,
+            now=now,
+            error=f"gave up after {prior_count} retries: {error}",
+        )
+        _ensure_tag(store, ref_id=candidate.ref_id, value=GP_HTTP_GAVE_UP_TAG)
+        # Clear retry bookkeeping on give-up so the row's meta doesn't
+        # advertise a ghost backoff timestamp forever. Mirrors
+        # patent_fulltext_sweep._mark_unavailable.
+        store.update_ref(
+            ref_id=candidate.ref_id,
+            meta_patch={"gp_retry_at": None, "gp_retry_count": None},
+        )
+        log.warning(
+            "fetch_google_patents[%s]: %s - gave up after %d retries: %s",
+            candidate.cite_key,
+            tag,
+            prior_count,
+            error,
+        )
+        return "http-gave-up"
+
+    delay = _RETRY_DELAY_MINUTES[next_count - 1]
+    next_at = now + _timedelta(minutes=delay)
+    store.update_ref(
+        ref_id=candidate.ref_id,
+        meta_patch={
+            "gp_retry_at": next_at.isoformat(),
+            "gp_retry_count": next_count,
+            "gp_last_error": error,
+        },
+    )
+    log.warning(
+        "fetch_google_patents[%s]: %s #%d: %s (retry in %dm)",
+        candidate.cite_key,
+        tag,
+        next_count,
+        error,
+        delay,
+    )
+    return "http-error"
+
+
 def _fetch_and_ingest(
     store: Store,
     candidate: _PatentCandidate,
@@ -476,55 +574,14 @@ def _fetch_and_ingest(
         return outcome
 
     if status == "http-error":
-        outcome.status = "http-error"
+        outcome.status = _apply_transient_backoff(
+            store,
+            candidate=candidate,
+            error=html_or_err or "unknown http error",
+            now=now,
+            tag="http-error",
+        )
         outcome.error = html_or_err
-        # Exponential backoff: bump gp_retry_count, stamp the next
-        # gp_retry_at. After exhausting the schedule we give up and
-        # mark gp-attempted + gp-http-gave-up so the patent drops out
-        # of the retry pool.
-        ref = store.get_ref(kind="patent", id=candidate.cite_key)
-        prior_count = 0
-        if ref is not None:
-            prior_count = int((ref.meta or {}).get("gp_retry_count", 0) or 0)
-        next_count = prior_count + 1
-
-        if next_count > len(_RETRY_DELAY_MINUTES):
-            # Out of retries — terminal.
-            _record_attempt(
-                store,
-                ref_id=candidate.ref_id,
-                status="http-error",
-                blocks_added=0,
-                now=now,
-                error=f"gave up after {prior_count} retries: {html_or_err}",
-            )
-            _ensure_tag(store, ref_id=candidate.ref_id, value=GP_HTTP_GAVE_UP_TAG)
-            log.warning(
-                "fetch_google_patents[%s]: http-error - gave up after %d retries: %s",
-                candidate.cite_key,
-                prior_count,
-                html_or_err,
-            )
-            outcome.status = "http-gave-up"
-            return outcome
-
-        delay = _RETRY_DELAY_MINUTES[next_count - 1]
-        next_at = now + _timedelta(minutes=delay)
-        store.update_ref(
-            ref_id=candidate.ref_id,
-            meta_patch={
-                "gp_retry_at": next_at.isoformat(),
-                "gp_retry_count": next_count,
-                "gp_last_error": html_or_err,
-            },
-        )
-        log.warning(
-            "fetch_google_patents[%s]: http-error #%d: %s (retry in %dm)",
-            candidate.cite_key,
-            next_count,
-            html_or_err,
-            delay,
-        )
         return outcome
 
     assert html_or_err is not None
@@ -610,10 +667,17 @@ def _fetch_and_ingest(
         meta_patch["gp_retry_count"] = None
     store.update_ref(ref_id=ref.id, meta_patch=meta_patch)
 
-    # Now flip tags: gp-attempted + gp-fetched on; awaiting/unavailable off.
+    # Now flip tags: gp-attempted + gp-fetched on; awaiting/unavailable
+    # off — but ONLY when we actually landed body chunks. An
+    # abstract-only parse (no description, no claims) doesn't change
+    # the searchable surface area, so dropping the awaiting/unavailable
+    # tags would falsely advertise "fulltext available" on the
+    # dashboard. Mirror patent_fulltext_sweep, which only clears the
+    # awaiting tag when BOTH endpoints came back.
     _ensure_tag(store, ref_id=ref.id, value=GP_ATTEMPTED_TAG)
     _ensure_tag(store, ref_id=ref.id, value=GP_FETCHED_TAG)
-    _drop_obsolete_status_tags(store, ref_id=ref.id)
+    if parsed.description_paragraphs or parsed.claim_texts:
+        _drop_obsolete_status_tags(store, ref_id=ref.id)
 
     outcome.status = "fetched"
     outcome.blocks_added = len(inserts)
@@ -666,18 +730,29 @@ def run_gp_fetch_pass(
         try:
             outcome = _fetch_and_ingest(store, c, now=now, dry_run=dry_run)
         except Exception as exc:
+            # Unhandled transients (DB blip, parser raise, network
+            # hiccup post-fetch) used to be permanently marked
+            # parse-error, locking the patent out of future passes.
+            # Route them through the same backoff schedule as HTTP
+            # errors instead — give-up only after the retry budget is
+            # exhausted.
             log.exception(
-                "fetch_google_patents[%s]: unhandled error", c.cite_key
+                "fetch_google_patents[%s]: unhandled transient", c.cite_key
             )
+            try:
+                _apply_transient_backoff(
+                    store,
+                    candidate=c,
+                    error=f"unhandled: {str(exc)[:200]}",
+                    now=now,
+                    tag="transient",
+                )
+            except Exception:
+                log.exception(
+                    "fetch_google_patents[%s]: backoff bookkeeping failed",
+                    c.cite_key,
+                )
             failed += 1
-            _record_attempt(
-                store,
-                ref_id=c.ref_id,
-                status="parse-error",
-                blocks_added=0,
-                now=now,
-                error=str(exc)[:200],
-            )
             continue
         if outcome.status in ("fetched", "not-found", "skipped"):
             ok += 1
@@ -688,8 +763,11 @@ def run_gp_fetch_pass(
 
 
 def _is_enabled() -> bool:
-    """Env gate. Default off."""
-    return os.environ.get("PRECIS_GP_FETCH", "0").lower() in ("1", "true", "yes")
+    """Env gate. Default off. Tolerant to whitespace padding so a YAML
+    quoting quirk or trailing newline doesn't silently disable the pass."""
+    return os.environ.get("PRECIS_GP_FETCH", "0").strip().lower() in (
+        "1", "true", "yes",
+    )
 
 
 __all__ = [
