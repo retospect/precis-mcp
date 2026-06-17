@@ -206,15 +206,49 @@ def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
     # reads like it's been double-spaced. ``max-h-72`` + ``overflow-y-auto``
     # keep very long previews inside a tidy 18rem-tall box rather than
     # growing the popover off-screen.
+    # The hover/leave handlers live on the outer span (not the anchor)
+    # so moving the mouse from the link onto the popover doesn't close
+    # it — Alpine sees a single bounding box that includes both.
+    #
+    # Three robustness affordances guard against the stuck-popover
+    # symptom we saw in Safari (mouseleave not always firing reliably
+    # when an absolutely-positioned popover overlaps the cursor's path,
+    # plus the debounce race where a delayed mouseenter overrode a
+    # subsequent mouseleave):
+    #
+    # 1. ``setTimeout`` + ``clearTimeout`` on enter/leave — mouseleave
+    #    cancels the pending hover so a quick fly-by never opens it.
+    # 2. ``@ref-popover-open.window`` — when ANY popover opens, every
+    #    other one listens for it and closes itself. Bounds the open
+    #    set to ≤1 cluster-wide regardless of mouseleave reliability.
+    # 3. ``@click.outside`` — clicking anywhere outside the span shuts
+    #    the popover. Belt-and-suspenders for the Safari case where
+    #    mouseleave never fires (touch input, scroll past, swipe).
+    open_expr = (
+        "clearTimeout(hoverTimer); "
+        "hoverTimer = setTimeout(() => { "
+        "hovered = true; "
+        "$dispatch('ref-popover-open', { source: $el }); "
+        "}, 200)"
+    )
+    close_expr = "clearTimeout(hoverTimer); hovered = false"
+    other_open_expr = (
+        "if ($event.detail.source !== $el) { "
+        "clearTimeout(hoverTimer); hovered = false; "
+        "}"
+    )
     return (
-        f'<span x-data="{{hovered: false}}" class="relative inline-block">'
+        f'<span x-data="{{hovered: false, hoverTimer: null}}" '
+        f'class="relative inline-block" '
+        f'@mouseenter="{open_expr}" '
+        f'@mouseleave="{close_expr}" '
+        f'@click.outside="{close_expr}" '
+        f'@ref-popover-open.window="{other_open_expr}">'
         f'<a class="text-sky-700 underline decoration-dotted hover:decoration-solid" '
         f'href="/r/{safe_kind}/{safe_id}{suffix_q}" '
         f'hx-get="/preview/{safe_kind}/{safe_id}" '
         f'hx-trigger="mouseenter delay:200ms once" '
-        f'hx-target="next .ref-popover" hx-swap="innerHTML" '
-        f'@mouseenter.debounce.200ms="hovered = true" '
-        f'@mouseleave="hovered = false">'
+        f'hx-target="next .ref-popover" hx-swap="innerHTML">'
         f"{display}</a>"
         f'<span class="ref-popover absolute z-50 top-full left-0 mt-1 w-80 '
         f'rounded-lg border border-slate-200 bg-white shadow-xl p-2 text-sm '

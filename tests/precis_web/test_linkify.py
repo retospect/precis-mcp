@@ -89,16 +89,51 @@ def test_word_boundary_prevents_runon_capture() -> None:
     assert 'href="/r/memory/' not in out
 
 
-def test_anchor_has_hover_delay_via_alpine_modifiers() -> None:
-    """The hover-200ms requirement rides in via Alpine ``debounce``."""
+def test_anchor_uses_settimeout_for_hover_delay() -> None:
+    """The hover delay rides through a setTimeout/clearTimeout pair on the
+    outer span — NOT Alpine's ``.debounce`` modifier. The debounce form
+    had a race where a delayed mouseenter would fire after mouseleave
+    already closed the popover, leaving an orphaned card on screen."""
     out = str(linkify_refs("paper:acheson26"))
-    assert "@mouseenter.debounce.200ms" in out
+    assert "@mouseenter.debounce" not in out  # the bug — must stay removed
+    # clearTimeout on both enter (idempotency) and leave (cancel pending).
+    assert "clearTimeout(hoverTimer)" in out
+    assert "setTimeout(() => {" in out
 
 
 def test_anchor_has_htmx_lazy_preview_attributes() -> None:
     """The preview fragment loads via htmx on first hover only."""
     out = str(linkify_refs("paper:acheson26"))
     assert 'hx-trigger="mouseenter delay:200ms once"' in out
+
+
+def test_only_one_popover_open_at_a_time() -> None:
+    """When one popover opens it dispatches ``ref-popover-open``; every
+    other popover listens via ``@ref-popover-open.window`` and closes
+    itself. Bounds the open set to ≤1 even if mouseleave misfires."""
+    out = str(linkify_refs("paper:acheson26"))
+    assert "$dispatch('ref-popover-open'" in out
+    assert "@ref-popover-open.window=" in out
+
+
+def test_popover_closes_on_click_outside() -> None:
+    """Belt-and-suspenders for Safari, where touch/scroll can leave a
+    popover open with no follow-up mouseleave."""
+    out = str(linkify_refs("paper:acheson26"))
+    assert "@click.outside=" in out
+
+
+def test_hover_listeners_on_outer_span_not_anchor() -> None:
+    """Listeners must live on the outer wrapper so moving the cursor
+    from the anchor onto the popover doesn't fire mouseleave on the
+    anchor and close the popover before the user can read it."""
+    out = str(linkify_refs("paper:acheson26"))
+    # The outer x-data span carries the handlers — find the open of
+    # the x-data span and verify @mouseenter is on it, not on <a>.
+    open_idx = out.index("<span x-data")
+    anchor_idx = out.index("<a class=")
+    enter_idx = out.index("@mouseenter")
+    assert open_idx < enter_idx < anchor_idx
 
 
 def test_empty_string_returns_empty() -> None:
