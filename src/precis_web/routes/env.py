@@ -47,6 +47,52 @@ router = APIRouter(prefix="/env", tags=["env"])
 _PLIST_DIR = Path("/Library/LaunchDaemons")
 
 
+#: Patterns for parsing a bash wrapper. Captures ``export X=Y``,
+#: ``X=Y`` (top-level assignment), with optional double-quotes around
+#: the value. We resolve ``"$other"`` references against earlier
+#: assignments so e.g. ``export PRECIS_DREAM_PROMPT_PATH="$prompt"``
+#: surfaces the literal ``/opt/asa/files/dream-prompt.md``.
+import re as _re
+
+_BASH_ASSIGN_RE = _re.compile(
+    r'^(?:export\s+)?([A-Z_][A-Z0-9_]*)=(?:"([^"]*)"|(\S+))',
+)
+
+
+def _parse_wrapper_env(path: str) -> dict[str, str]:
+    """Extract bash exports/assigns from a wrapper script.
+
+    Returns ``{}`` when the path is empty, missing, or unreadable.
+    Variable references inside ``"…"`` values (``$prompt`` etc.) are
+    resolved against assignments earlier in the file. This is a
+    deliberately tiny shell-emulator — enough for our wrappers that
+    only do ``X=literal`` and ``export Y=$X``, and we accept losing
+    fidelity on anything fancier.
+    """
+    if not path:
+        return {}
+    p = Path(path)
+    try:
+        raw = p.read_text()
+    except OSError:
+        return {}
+    locals_map: dict[str, str] = {}
+    for line in raw.splitlines():
+        m = _BASH_ASSIGN_RE.match(line.strip())
+        if m is None:
+            continue
+        name = m.group(1)
+        value = m.group(2) if m.group(2) is not None else m.group(3)
+        # Resolve ``$other`` against earlier assignments. Single-level
+        # only — we don't recurse.
+        def _resolve(match: _re.Match[str]) -> str:
+            return locals_map.get(match.group(1), match.group(0))
+
+        value = _re.sub(r"\$\{?([A-Z_][A-Z0-9_]*)\}?", _resolve, value)
+        locals_map[name] = value
+    return locals_map
+
+
 def _read_plist_env(label: str) -> dict[str, str]:
     """Project a LaunchDaemon's ``EnvironmentVariables`` to a flat dict.
 
@@ -80,6 +126,12 @@ class AgentSpec:
     the web process's env) and reports each as present/absent +
     a redacted preview. ``launchd_label`` names the plist:
     ``com.precis.dream`` → ``/Library/LaunchDaemons/com.precis.dream.plist``.
+
+    Some daemons (dream) wrap their precis-cli invocation in a bash
+    script that exports additional env vars at runtime. ``wrapper``
+    points at that script; we parse its ``export X=Y`` lines and
+    merge them on top of the plist env so the page reflects what
+    the agent *actually* sees, not just the launchd layer.
     """
 
     key: str
@@ -96,6 +148,7 @@ class AgentSpec:
     timeout_s: int
     env_keys: tuple[str, ...]
     gating: tuple[tuple[str, str], ...]  # (env_var, description)
+    wrapper: str = ""
 
 
 #: Hard-coded registry of introspectable agents. New agents land here
@@ -133,6 +186,9 @@ AGENTS: tuple[AgentSpec, ...] = (
             ("PRECIS_DREAM_AGENT", "must be '1' / 'true' to run"),
             ("PRECIS_DATABASE_URL", "runtime can't load without it"),
         ),
+        # The dream plist invokes ``bash dream-pass.sh`` which sets
+        # PRECIS_DREAM_* before exec'ing precis. Parse those exports.
+        wrapper="/opt/asa/bin/dream-pass.sh",
     ),
     AgentSpec(
         key="structural",
@@ -380,18 +436,30 @@ async def index(
     if spec is not None:
         plist_env = _read_plist_env(spec.launchd_label)
         plist_path = _PLIST_DIR / f"{spec.launchd_label}.plist"
-        system_prompt = _read_file(plist_env.get(spec.system_prompt_env))
-        directive_prompt = _read_file(plist_env.get(spec.directive_prompt_env))
-        mcp = _parse_mcp_config(plist_env.get(spec.mcp_config_env))
+        # Merge the wrapper script's exports on top of the plist env
+        # so the page reflects what the worker actually sees at
+        # runtime. Wrapper wins on conflicts (it's set after the
+        # plist's EnvironmentVariables apply).
+        wrapper_env = _parse_wrapper_env(spec.wrapper) if spec.wrapper else {}
+        effective_env: dict[str, str] = {**plist_env, **wrapper_env}
+        system_prompt = _read_file(effective_env.get(spec.system_prompt_env))
+        directive_prompt = _read_file(
+            effective_env.get(spec.directive_prompt_env)
+        )
+        mcp = _parse_mcp_config(effective_env.get(spec.mcp_config_env))
         detail = {
             "spec": spec,
-            "model": plist_env.get(spec.model_env) or spec.model_default,
+            "model": effective_env.get(spec.model_env) or spec.model_default,
             "system_prompt": system_prompt,
             "directive_prompt": directive_prompt,
             "mcp": mcp,
-            "env_rows": _env_snapshot(spec, plist_env),
+            "env_rows": _env_snapshot(spec, effective_env),
             "plist_path": str(plist_path),
             "plist_found": plist_path.exists(),
+            "wrapper_path": spec.wrapper or None,
+            "wrapper_found": (
+                Path(spec.wrapper).exists() if spec.wrapper else False
+            ),
         }
     return templates.TemplateResponse(
         request,
