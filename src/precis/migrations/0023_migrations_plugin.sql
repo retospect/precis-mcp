@@ -25,11 +25,14 @@ BEGIN;
 ALTER TABLE public._migrations
     ADD COLUMN plugin text NOT NULL DEFAULT 'precis';
 
--- A row was previously identified by its ``version`` alone. With
--- plugin migrations in scope, two plugins can legitimately ship a
--- ``0001_initial.sql``. Promote the identity to (plugin, version).
--- No primary key existed before this migration; adding one here is
--- the first explicit uniqueness constraint on the ledger.
+-- A row was previously identified by its ``version`` alone — the
+-- 0001 initial migration shipped a PK on ``(version)``. With plugin
+-- migrations in scope two plugins can legitimately ship a
+-- ``0001_initial.sql``, so promote the identity to (plugin, version).
+-- Drop the existing PK first (IF EXISTS keeps the migration idempotent
+-- against environments where someone has manually adjusted the table).
+ALTER TABLE public._migrations
+    DROP CONSTRAINT IF EXISTS _migrations_pkey;
 ALTER TABLE public._migrations
     ADD CONSTRAINT _migrations_pkey PRIMARY KEY (plugin, version);
 
