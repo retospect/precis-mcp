@@ -259,7 +259,9 @@ async def run(
     return templates.TemplateResponse(
         request,
         "console.html.j2",
-        _quick_context(verb=verb, args_text=args_text, result=result, is_error=is_error),
+        _quick_context(
+            verb=verb, args_text=args_text, result=result, is_error=is_error
+        ),
     )
 
 

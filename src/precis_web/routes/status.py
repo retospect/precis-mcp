@@ -252,9 +252,7 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, int]]:
     return rows
 
 
-def _recent_agent_activity(
-    store: Any, limit: int = 10
-) -> list[dict[str, Any]]:
+def _recent_agent_activity(store: Any, limit: int = 10) -> list[dict[str, Any]]:
     """Last N LLM-agent pass results — dream / reviewer / job runner.
 
     These passes each shell out to ``claude -p`` so they're the

@@ -687,9 +687,7 @@ def _handle_success(
             )
             status = "inserted_pres"
         else:
-            dest = _move_to_corpus(
-                pdf, cite_key=result.cite_key, corpus_dir=corpus_dir
-            )
+            dest = _move_to_corpus(pdf, cite_key=result.cite_key, corpus_dir=corpus_dir)
             status = "inserted"
         log.info(
             "precis watch: ingested %s as %s (ref_id=%d, kind=%s)",

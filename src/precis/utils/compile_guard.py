@@ -93,9 +93,7 @@ def check_workspace_compiles(
             project_tag,
         )
     except Exception:
-        log.exception(
-            "compile_guard: refs.bib regen failed for ref #%d", ref_id
-        )
+        log.exception("compile_guard: refs.bib regen failed for ref #%d", ref_id)
 
     timeout_s = int(os.environ.get("PRECIS_LATEXMK_TIMEOUT_S", "120"))
     cmd = [

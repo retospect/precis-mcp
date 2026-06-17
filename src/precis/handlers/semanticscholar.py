@@ -127,8 +127,7 @@ class SemanticScholarHandler(CacheBackedHandler):
             )
         if resp.status_code != 200:
             raise Upstream(
-                f"Semantic Scholar HTTP {resp.status_code}: "
-                f"{resp.text[:200]}"
+                f"Semantic Scholar HTTP {resp.status_code}: {resp.text[:200]}"
             )
 
         try:
@@ -171,9 +170,7 @@ def _format_paper(p: dict[str, Any]) -> str:
     title = (p.get("title") or "(untitled)").strip()
     year = p.get("year") or "?"
     authors = p.get("authors") or []
-    author_names = ", ".join(
-        a.get("name", "") for a in authors[:6] if a.get("name")
-    )
+    author_names = ", ".join(a.get("name", "") for a in authors[:6] if a.get("name"))
     if len(authors) > 6:
         author_names += f", et al. ({len(authors)} authors)"
     ext = p.get("externalIds") or {}

@@ -37,9 +37,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def write_workspace_bib(
-    store: Store, *, workspace_root: Path, project_tag: str
-) -> int:
+def write_workspace_bib(store: Store, *, workspace_root: Path, project_tag: str) -> int:
     """Write ``refs.bib`` for the workspace; return entry count.
 
     Idempotent. Always overwrites ``refs.bib`` so a deleted citation

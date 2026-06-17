@@ -450,8 +450,7 @@ class GripeHandler(NumericRefHandler):
         body += render_next_section(
             [
                 (
-                    f"put(kind={self.kind!r}, id={ref_id}, "
-                    "text='more details')",
+                    f"put(kind={self.kind!r}, id={ref_id}, text='more details')",
                     "append a comment",
                 ),
                 (

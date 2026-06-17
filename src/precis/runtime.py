@@ -48,6 +48,7 @@ def _new_pagination_cache() -> PaginationCache:
 
     return PaginationCache()
 
+
 log = logging.getLogger(__name__)
 
 
@@ -122,9 +123,7 @@ class PrecisRuntime:
     #: runtime so test fixtures get a clean cache; production has
     #: exactly one runtime per worker so cursors survive across
     #: tool calls within the worker's lifetime.
-    pagination: PaginationCache = field(
-        default_factory=lambda: _new_pagination_cache()
-    )
+    pagination: PaginationCache = field(default_factory=lambda: _new_pagination_cache())
 
     # ----- delegating properties ---------------------------------------
 
@@ -289,10 +288,7 @@ class PrecisRuntime:
         # ``view='keywords'`` alone works as "what topics span the
         # corpus"); a specific ``kind=`` narrows the fan-out the same
         # way the cross-kind path does.
-        if (
-            verb == "search"
-            and str(args.get("view") or "").strip() == "keywords"
-        ):
+        if verb == "search" and str(args.get("view") or "").strip() == "keywords":
             return self._dispatch_cross_kind(
                 kind if kind is not None else _CROSS_KIND_WILDCARD,
                 dict(args),

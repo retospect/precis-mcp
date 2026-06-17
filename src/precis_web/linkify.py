@@ -73,6 +73,7 @@ _SKIP_PATTERN = re.compile(
     flags=re.DOTALL | re.IGNORECASE,
 )
 
+
 def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
     """Build the per-match anchor + sibling popover slot.
 
@@ -149,7 +150,7 @@ def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
         f'hx-target="next .ref-popover" hx-swap="innerHTML">'
         f"{display}</a>"
         f'<span class="ref-popover absolute z-50 top-full left-0 mt-1 w-80 '
-        f'rounded-lg border border-slate-200 bg-white shadow-xl p-2 text-sm '
+        f"rounded-lg border border-slate-200 bg-white shadow-xl p-2 text-sm "
         f'whitespace-normal max-h-72 overflow-y-auto" '
         f'x-show="hovered" x-cloak></span>'
         f"</span>"
@@ -190,17 +191,11 @@ def linkify_refs(value: str) -> Markup:
 #: first so the regex engine commits to them before falling through
 #: to the broad bare paper pattern.
 _COMBINED_PATTERN = re.compile(
-    r"(?P<ref>"
-    + _REF_PATTERN.pattern
-    + r")"
+    r"(?P<ref>" + _REF_PATTERN.pattern + r")"
     r"|"
-    r"(?P<bare_conv>"
-    + _BARE_CONV_PATTERN.pattern
-    + r")"
+    r"(?P<bare_conv>" + _BARE_CONV_PATTERN.pattern + r")"
     r"|"
-    r"(?P<bare_paper>"
-    + _BARE_PAPER_PATTERN.pattern
-    + r")"
+    r"(?P<bare_paper>" + _BARE_PAPER_PATTERN.pattern + r")"
 )
 
 

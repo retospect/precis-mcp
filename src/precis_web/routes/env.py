@@ -59,7 +59,7 @@ import re as _re
 
 _BASH_IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _BASH_ASSIGN_RE = _re.compile(
-    r'^(?:export\s+)?(' + _BASH_IDENT + r')=(?:"([^"]*)"|(\S+))',
+    r"^(?:export\s+)?(" + _BASH_IDENT + r')=(?:"([^"]*)"|(\S+))',
 )
 
 
@@ -295,9 +295,7 @@ AGENTS: tuple[AgentSpec, ...] = (
             "PRECIS_FIX_REPO_DIR",
             "PRECIS_FIX_WORK_DIR",
         ),
-        gating=(
-            ("PRECIS_MCP_CONFIG", "MCP config the in-proc claude reads"),
-        ),
+        gating=(("PRECIS_MCP_CONFIG", "MCP config the in-proc claude reads"),),
     ),
 )
 
@@ -420,9 +418,7 @@ def _redact(value: str | None) -> str:
     return value
 
 
-def _env_snapshot(
-    spec: AgentSpec, plist_env: dict[str, str]
-) -> list[dict[str, Any]]:
+def _env_snapshot(spec: AgentSpec, plist_env: dict[str, str]) -> list[dict[str, Any]]:
     """One row per env var the agent consults, read from the plist."""
     sensitive = {"PASSWORD", "KEY", "SECRET", "TOKEN", "API_KEY", "URL", "DSN"}
     rows: list[dict[str, Any]] = []
@@ -468,9 +464,7 @@ async def index(
         wrapper_env = _parse_wrapper_env(spec.wrapper) if spec.wrapper else {}
         effective_env: dict[str, str] = {**plist_env, **wrapper_env}
         system_prompt = _read_file(effective_env.get(spec.system_prompt_env))
-        directive_prompt = _read_file(
-            effective_env.get(spec.directive_prompt_env)
-        )
+        directive_prompt = _read_file(effective_env.get(spec.directive_prompt_env))
         mcp = _parse_mcp_config(effective_env.get(spec.mcp_config_env))
         detail = {
             "spec": spec,
@@ -482,9 +476,7 @@ async def index(
             "plist_path": str(plist_path),
             "plist_found": plist_path.exists(),
             "wrapper_path": spec.wrapper or None,
-            "wrapper_found": (
-                Path(spec.wrapper).exists() if spec.wrapper else False
-            ),
+            "wrapper_found": (Path(spec.wrapper).exists() if spec.wrapper else False),
         }
     return templates.TemplateResponse(
         request,

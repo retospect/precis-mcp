@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING, Any
 from psycopg import Connection
 
 from precis.handlers._todo_views import _doable_exclusion_clause
-from precis.workers.executors import EXECUTOR_PROVIDES
 from precis.workers.executors.claude_inproc import (
     _append_chunk,
     _build_dispatch_context,

@@ -181,9 +181,7 @@ def call_claude_agent(
             the binary was missing.
     """
     binary = os.environ.get("PRECIS_CLAUDE_BIN", "claude")
-    model = model or os.environ.get(
-        "PRECIS_CLAUDE_AGENT_MODEL", _DEFAULT_MODEL
-    )
+    model = model or os.environ.get("PRECIS_CLAUDE_AGENT_MODEL", _DEFAULT_MODEL)
     if timeout_s is None:
         env_timeout = os.environ.get("PRECIS_CLAUDE_AGENT_TIMEOUT_S")
         timeout_s = float(env_timeout) if env_timeout else _DEFAULT_TIMEOUT_S

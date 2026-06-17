@@ -85,9 +85,7 @@ def run_dream_pass(store: Store) -> BatchResult:
     soul_path = _env_path("PRECIS_DREAM_SOUL_PATH")
     mcp_path = _env_path("PRECIS_MCP_CONFIG")
     if prompt_path is None:
-        log.error(
-            "dream_agent: PRECIS_DREAM_PROMPT_PATH unset / unreadable; skipping"
-        )
+        log.error("dream_agent: PRECIS_DREAM_PROMPT_PATH unset / unreadable; skipping")
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
     prompt = prompt_path.read_text()
     try:

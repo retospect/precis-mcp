@@ -294,17 +294,21 @@ def _claim_patents_for_gp(
     #
     # ``force=True`` clears both the tag and meta gates so an
     # operator-initiated --force backfill re-attempts known refs.
-    gp_filter = "" if force else (
-        "AND NOT EXISTS ("
-        "  SELECT 1 FROM ref_tags rt2 "
-        "  JOIN tags t2 ON t2.tag_id = rt2.tag_id "
-        "  WHERE rt2.ref_id = r.ref_id "
-        "    AND t2.namespace = 'OPEN' "
-        "    AND t2.value = %s"
-        ") "
-        "AND r.meta->>'gp_status' IS NULL "
-        "AND (r.meta->>'gp_retry_at' IS NULL "
-        "     OR (r.meta->>'gp_retry_at')::timestamptz <= now()) "
+    gp_filter = (
+        ""
+        if force
+        else (
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM ref_tags rt2 "
+            "  JOIN tags t2 ON t2.tag_id = rt2.tag_id "
+            "  WHERE rt2.ref_id = r.ref_id "
+            "    AND t2.namespace = 'OPEN' "
+            "    AND t2.value = %s"
+            ") "
+            "AND r.meta->>'gp_status' IS NULL "
+            "AND (r.meta->>'gp_retry_at' IS NULL "
+            "     OR (r.meta->>'gp_retry_at')::timestamptz <= now()) "
+        )
     )
     # Bug-fix for the dual-tag case: a ref carrying BOTH
     # awaiting-fulltext AND fulltext-unavailable used to surface as
@@ -340,8 +344,10 @@ def _claim_patents_for_gp(
         FOR UPDATE OF r SKIP LOCKED
     """
     params: list[Any] = [
-        _AWAITING_TAG, _UNAVAILABLE_TAG,  # status_tag subquery
-        _AWAITING_TAG, _UNAVAILABLE_TAG,  # EXISTS gate
+        _AWAITING_TAG,
+        _UNAVAILABLE_TAG,  # status_tag subquery
+        _AWAITING_TAG,
+        _UNAVAILABLE_TAG,  # EXISTS gate
     ]
     if not force:
         params.append(GP_ATTEMPTED_TAG)
@@ -570,7 +576,9 @@ def _fetch_and_ingest(
             blocks_added=0,
             now=now,
         )
-        log.info("fetch_google_patents[%s]: 404 on patents.google.com", candidate.cite_key)
+        log.info(
+            "fetch_google_patents[%s]: 404 on patents.google.com", candidate.cite_key
+        )
         return outcome
 
     if status == "http-error":
@@ -736,9 +744,7 @@ def run_gp_fetch_pass(
             # Route them through the same backoff schedule as HTTP
             # errors instead — give-up only after the retry budget is
             # exhausted.
-            log.exception(
-                "fetch_google_patents[%s]: unhandled transient", c.cite_key
-            )
+            log.exception("fetch_google_patents[%s]: unhandled transient", c.cite_key)
             try:
                 _apply_transient_backoff(
                     store,
@@ -766,7 +772,9 @@ def _is_enabled() -> bool:
     """Env gate. Default off. Tolerant to whitespace padding so a YAML
     quoting quirk or trailing newline doesn't silently disable the pass."""
     return os.environ.get("PRECIS_GP_FETCH", "0").strip().lower() in (
-        "1", "true", "yes",
+        "1",
+        "true",
+        "yes",
     )
 
 

@@ -51,6 +51,7 @@ _runtime = None
 def _monotonic() -> float:
     """Late-binding monotonic; lazy import so test stubs don't break boot."""
     import time as _t
+
     return _t.monotonic()
 
 

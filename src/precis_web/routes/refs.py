@@ -374,7 +374,9 @@ def _expand_handle(
         return {
             "handle": raw_handle,
             "url": url,
-            "title": (getattr(ref, "title", "") or "(untitled)").split("\n", 1)[0][:120],
+            "title": (getattr(ref, "title", "") or "(untitled)").split("\n", 1)[0][
+                :120
+            ],
             "preview": "(deleted)",
             "status": "deleted",
             "kind": kind,

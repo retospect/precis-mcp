@@ -305,7 +305,11 @@ def test_attention_view_lists_child_failed_parents(
     # Use the store's chunk-insert path so chunk_kind lands correctly.
     store.insert_blocks(
         job.id,
-        [BlockInsert(pos=0, text="claude -p exited 2", meta={"chunk_kind": "job_event"})],
+        [
+            BlockInsert(
+                pos=0, text="claude -p exited 2", meta={"chunk_kind": "job_event"}
+            )
+        ],
     )
     # The bubble tag references the synthetic job_id 143, not the
     # one we just inserted. Test focuses on the parent surface; the
@@ -318,9 +322,7 @@ def test_attention_view_lists_child_failed_parents(
     assert "job #143" in out.body
 
 
-def test_attention_view_unions_both_signals(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_attention_view_unions_both_signals(handler: TodoHandler, store: Store) -> None:
     from precis.store.types import Tag
     from tests.conftest import id_of
 
@@ -337,9 +339,7 @@ def test_attention_view_unions_both_signals(
     assert "Child-failed parents (1)" in out.body
 
 
-def test_doable_excludes_halted_leaves(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_doable_excludes_halted_leaves(handler: TodoHandler, store: Store) -> None:
     """Halt tag pulls a leaf out of the doable rotation.
 
     Owner adds ``halt`` → the worker / chatter never proposes the
@@ -357,9 +357,7 @@ def test_doable_excludes_halted_leaves(
     assert f"#{rid}" not in out.body
 
 
-def test_attention_view_lists_halted_leaves(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_attention_view_lists_halted_leaves(handler: TodoHandler, store: Store) -> None:
     """Halted leaves surface under the attention view.
 
     Since doable hides them, attention is where they have to land

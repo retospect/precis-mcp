@@ -77,9 +77,7 @@ class PlannerPrompts:
     user: str
 
 
-def build_planner_prompts(
-    store: Store, *, ref_id: int, model: str
-) -> PlannerPrompts:
+def build_planner_prompts(store: Store, *, ref_id: int, model: str) -> PlannerPrompts:
     """Build the cached + variable layers for a planner tick on ``ref_id``.
 
     ``model`` is the LLM the executor will hand the prompts to; it's
@@ -410,9 +408,7 @@ for novel territory.
 # ── variable layer ────────────────────────────────────────────────
 
 
-def _build_user_prompt(
-    store: Store, *, ref_id: int, model: str
-) -> str:
+def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     """Build the per-tick user message.
 
     Structure (deliverable-centric, slim):
@@ -572,9 +568,7 @@ def _render_children_status(store: Store, ref_id: int) -> str:
     return "\n".join(lines)
 
 
-def _render_ancestry_toon(
-    chain: list[dict[str, object]], *, leaf_id: int
-) -> str:
+def _render_ancestry_toon(chain: list[dict[str, object]], *, leaf_id: int) -> str:
     """Render the ancestor chain as a TOON list with (id, title, from).
 
     ``chain`` is ``[root, …, leaf]``; the leaf is your own ref. The

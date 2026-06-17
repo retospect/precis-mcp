@@ -57,9 +57,7 @@ _TERMINAL_FINDING_STATUSES: frozenset[str] = frozenset(
 )
 
 
-def evaluate(
-    store: Store, spec: dict[str, Any], *, ref_id: int
-) -> bool | None:
+def evaluate(store: Store, spec: dict[str, Any], *, ref_id: int) -> bool | None:
     """Check if all child findings have reached terminal state."""
     with store.pool.connection() as conn:
         rows = conn.execute(

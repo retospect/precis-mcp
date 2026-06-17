@@ -201,9 +201,9 @@ def _extract_proposal(stdout: str) -> str:
     # Common LLM noise: leading "Here's the corrected file:" line.
     lines = text.splitlines()
     # Drop a leading prose line if it looks meta.
-    while lines and lines[0].strip().lower().startswith((
-        "here", "here's", "below", "this is", "the corrected", "fixed:"
-    )):
+    while lines and lines[0].strip().lower().startswith(
+        ("here", "here's", "below", "this is", "the corrected", "fixed:")
+    ):
         lines.pop(0)
     return "\n".join(lines).strip()
 

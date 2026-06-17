@@ -597,8 +597,7 @@ class SkillHandler(Handler):
                     "warming and didn't contribute this turn"
                 )
                 tip = (
-                    "Retry in ~30s once the embedder warms, or fall back "
-                    "to the index:"
+                    "Retry in ~30s once the embedder warms, or fall back to the index:"
                 )
             return Response(
                 body=(

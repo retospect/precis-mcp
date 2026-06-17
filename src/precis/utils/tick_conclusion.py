@@ -45,9 +45,7 @@ _FIELD_RE: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
-_VALID_VERDICTS: frozenset[str] = frozenset(
-    {"done", "continue", "yield", "halt"}
-)
+_VALID_VERDICTS: frozenset[str] = frozenset({"done", "continue", "yield", "halt"})
 
 
 @dataclass(frozen=True)
@@ -111,9 +109,7 @@ def _parse_inner(inner: str) -> TickConclusion:
         if current == "summary" and line.strip():
             summary_lines.append(line.rstrip())
 
-    summary: str | None = (
-        "\n".join(summary_lines).rstrip() if summary_lines else None
-    )
+    summary: str | None = "\n".join(summary_lines).rstrip() if summary_lines else None
 
     files: list[str] = []
     if files_raw:

@@ -32,7 +32,9 @@ def stub_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
-def _write_stub(path: Path, *, stdout: str = "", stderr: str = "", exit_code: int = 0) -> None:
+def _write_stub(
+    path: Path, *, stdout: str = "", stderr: str = "", exit_code: int = 0
+) -> None:
     """Write a bash stub that echoes the given streams and exits."""
     body = textwrap.dedent(
         f"""\
@@ -136,9 +138,7 @@ def test_timeout_raises(stub_bin: Path) -> None:
 # ── flag plumbing ─────────────────────────────────────────────────
 
 
-def test_system_prompt_path_is_read(
-    stub_bin: Path, tmp_path: Path
-) -> None:
+def test_system_prompt_path_is_read(stub_bin: Path, tmp_path: Path) -> None:
     """Pass a Path; the wrapper reads it and forwards as text."""
     soul = tmp_path / "soul.md"
     soul.write_text("you are asa")
@@ -159,9 +159,7 @@ def test_system_prompt_path_is_read(
     assert "you are asa" in res.final_text
 
 
-def test_mcp_config_adds_flag_and_strict(
-    stub_bin: Path, tmp_path: Path
-) -> None:
+def test_mcp_config_adds_flag_and_strict(stub_bin: Path, tmp_path: Path) -> None:
     mcp = tmp_path / "mcp.json"
     mcp.write_text("{}")
     stub_bin.write_text(

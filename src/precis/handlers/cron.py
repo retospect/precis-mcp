@@ -86,9 +86,7 @@ _RECURRING_WEEKLY_AT_RE = re.compile(
     re.IGNORECASE,
 )
 
-_VALID_STATUSES = frozenset(
-    {"scheduled", "fired", "expired", "cancelled", "paused"}
-)
+_VALID_STATUSES = frozenset({"scheduled", "fired", "expired", "cancelled", "paused"})
 
 
 def parse_duration(s: str) -> timedelta:
@@ -121,7 +119,7 @@ def validate_recurring(s: str) -> None:
     if s_norm in (_RECURRING_HOURLY, _RECURRING_DAILY, _RECURRING_WEEKLY):
         return
     if s_norm.startswith("every "):
-        rest = s_norm[len("every "):]
+        rest = s_norm[len("every ") :]
         # 'every N unit' — reuse the duration grammar (rejects ``every monday``
         # etc; intentional v1 scope).
         try:
@@ -130,9 +128,7 @@ def validate_recurring(s: str) -> None:
         except BadInput as exc:
             raise BadInput(
                 f"unparseable recurring expression {s!r}",
-                next=(
-                    "try 'every 10 minutes', 'every 2 hours', 'every 1 day'"
-                ),
+                next=("try 'every 10 minutes', 'every 2 hours', 'every 1 day'"),
             ) from exc
     if _RECURRING_DAILY_AT_RE.match(s_norm):
         return
@@ -326,8 +322,7 @@ class CronHandler(NumericRefHandler):
             raise BadInput(
                 "put(kind='cron') requires target= (where to deliver)",
                 next=[
-                    "put(kind='cron', text='...', target="
-                    "'conv:discord/<g>/<c>/<t>')",
+                    "put(kind='cron', text='...', target='conv:discord/<g>/<c>/<t>')",
                     "get(kind='skill', id='precis-cron-help') for the full surface",
                 ],
             )
@@ -391,7 +386,9 @@ class CronHandler(NumericRefHandler):
 
         # Pre-validate tags + link to avoid half-created refs.
         parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in all_tag_strs]
-        link_target = parse_link_target(link, store=self.store) if link is not None else None
+        link_target = (
+            parse_link_target(link, store=self.store) if link is not None else None
+        )
         if rel is not None and link is None:
             raise BadInput(
                 "rel= requires link= on create",
@@ -455,9 +452,7 @@ class CronHandler(NumericRefHandler):
             # context; should not happen in practice on cron.
             body = f"scheduled cron id={ref_id}"
         else:
-            schedule_note = (
-                f"recurring: {recurring}" if recurring else "one-shot"
-            )
+            schedule_note = f"recurring: {recurring}" if recurring else "one-shot"
             body = (
                 f"scheduled cron id={ref_id} "
                 f"({schedule_note}; next fire at {next_fire_at.isoformat()})"

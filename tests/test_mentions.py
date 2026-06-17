@@ -62,9 +62,7 @@ class _FakeRef:
 class _FakeStore:
     """Minimal store double: numeric id lookup + cite_key → ref_id."""
 
-    def __init__(
-        self, refs: dict[int, _FakeRef], cite_keys: dict[str, int]
-    ) -> None:
+    def __init__(self, refs: dict[int, _FakeRef], cite_keys: dict[str, int]) -> None:
         self._refs = refs
         self._cite = cite_keys
         self.pool = self  # resolve_handle_ref does `store.pool.connection()`
@@ -113,9 +111,7 @@ def test_resolve_targets_numeric_slug_and_chunk() -> None:
         refs={6134: _FakeRef(6134), 7: _FakeRef(7)},
         cite_keys={"acheson26": 7},
     )
-    targets = mentions.resolve_link_targets(
-        store, "memory:6134 and paper:acheson26~3"
-    )
+    targets = mentions.resolve_link_targets(store, "memory:6134 and paper:acheson26~3")
     pairs = {(t.dst_ref_id, t.dst_pos) for t in targets}
     assert pairs == {(6134, None), (7, 3)}
 

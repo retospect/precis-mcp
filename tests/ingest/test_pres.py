@@ -413,9 +413,7 @@ class TestExtractPresEmpty:
         pdf = tmp_path / "empty.pdf"
         pdf.write_bytes(b"%PDF-1.4 empty\n")
 
-        with patch(
-            "precis.ingest.marker.extract_blocks_marker", return_value=[]
-        ):
+        with patch("precis.ingest.marker.extract_blocks_marker", return_value=[]):
             result = extract_pres(pdf)
 
         assert len(result.slides) == 1

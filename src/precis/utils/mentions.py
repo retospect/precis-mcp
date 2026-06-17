@@ -190,9 +190,9 @@ def resolve_handle_ref(store: Any, ident: str, *, include_deleted: bool = True) 
     except ValueError:
         numeric = None
     if numeric is not None:
-        return store.fetch_refs_by_ids(
-            [numeric], include_deleted=include_deleted
-        ).get(numeric)
+        return store.fetch_refs_by_ids([numeric], include_deleted=include_deleted).get(
+            numeric
+        )
     # Slug → cite_key row → ref_id.
     try:
         with store.pool.connection() as conn:

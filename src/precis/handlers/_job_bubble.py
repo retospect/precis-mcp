@@ -61,8 +61,7 @@ def bubble_job_failure(
         # something else here it's pre-existing data or a hand-edit;
         # log and bail rather than tagging an unrelated kind.
         log.warning(
-            "bubble: job #%d parent #%d has kind=%r (expected 'todo'); "
-            "skipping",
+            "bubble: job #%d parent #%d has kind=%r (expected 'todo'); skipping",
             job_id,
             parent_id,
             parent_kind,

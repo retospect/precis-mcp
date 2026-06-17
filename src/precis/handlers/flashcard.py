@@ -131,7 +131,10 @@ class FlashcardHandler(NumericRefHandler):
         body += render_next_section(
             [
                 ("get(kind='flashcard', id=N)", "read the card to quiz yourself"),
-                ("put(kind='flashcard', text='knowledge statement')", "create a new card"),
+                (
+                    "put(kind='flashcard', text='knowledge statement')",
+                    "create a new card",
+                ),
             ]
         )
         # SM-2 grader lands in a follow-up (see module docstring); the

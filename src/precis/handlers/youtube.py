@@ -243,9 +243,7 @@ class YouTubeHandler(CacheBackedHandler):
         if meta.get("channel_name"):
             channel_url = meta.get("channel_url")
             if channel_url:
-                header_lines.append(
-                    f"Channel: {meta['channel_name']} ({channel_url})"
-                )
+                header_lines.append(f"Channel: {meta['channel_name']} ({channel_url})")
             else:
                 header_lines.append(f"Channel: {meta['channel_name']}")
         if meta.get("duration_s"):

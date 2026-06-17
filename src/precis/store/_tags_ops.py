@@ -347,10 +347,7 @@ class TagsMixin:
                 "ORDER BY rt.created_at ASC, t.tag_id ASC",
                 (ref_id,),
             ).fetchall()
-        return [
-            (_row_to_tag(str(r[0]), str(r[1])), r[2])
-            for r in rows
-        ]
+        return [(_row_to_tag(str(r[0]), str(r[1])), r[2]) for r in rows]
 
     # ── discovery surface (kind='tag') ──────────────────────────────
     #

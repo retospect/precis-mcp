@@ -77,16 +77,10 @@ def test_pass_skips_under_high_load(
         called["hit"] = True
         from precis.utils.claude_agent import AgentResult
 
-        return AgentResult(
-            final_text="ran", cost_usd=0, duration_s=0, turns_used=None
-        )
+        return AgentResult(final_text="ran", cost_usd=0, duration_s=0, turns_used=None)
 
-    monkeypatch.setattr(
-        "precis.workers.review.call_claude_agent", _spy
-    )
-    with _patch(
-        "precis.utils.load_gate.current_load", return_value=10.0
-    ):
+    monkeypatch.setattr("precis.workers.review.call_claude_agent", _spy)
+    with _patch("precis.utils.load_gate.current_load", return_value=10.0):
         result = run_structural_pass(store)
     assert result.claimed == 0
     assert called["hit"] is False
@@ -123,9 +117,7 @@ def test_pass_skips_when_recent_digest_exists(
         called["hit"] = True
         return AgentResult(final_text="x", cost_usd=0, duration_s=0, turns_used=None)
 
-    monkeypatch.setattr(
-        "precis.workers.review.call_claude_agent", _spy
-    )
+    monkeypatch.setattr("precis.workers.review.call_claude_agent", _spy)
     result = run_structural_pass(store, min_interval_hours=MIN_INTERVAL_HOURS)
     assert result.claimed == 0
     assert called["hit"] is False
@@ -199,9 +191,7 @@ def test_pass_writes_digest_on_happy_path(
             turns_used=3,
         )
 
-    monkeypatch.setattr(
-        "precis.workers.review.call_claude_agent", _ok_call
-    )
+    monkeypatch.setattr("precis.workers.review.call_claude_agent", _ok_call)
     result = run_structural_pass(store)
     assert result.claimed == 1
     assert result.ok == 1
@@ -239,9 +229,7 @@ def test_pass_records_failure_on_llm_error(
             "boom", stdout="", stderr="model unavailable", returncode=2
         )
 
-    monkeypatch.setattr(
-        "precis.workers.review.call_claude_agent", _err
-    )
+    monkeypatch.setattr("precis.workers.review.call_claude_agent", _err)
     result = run_structural_pass(store)
     assert result.claimed == 1
     assert result.ok == 0
@@ -269,9 +257,7 @@ def test_pass_writes_empty_digest_with_placeholder_title(
     def _blank(*a, **kw) -> AgentResult:
         return AgentResult(final_text="   \n", cost_usd=0, duration_s=1, turns_used=1)
 
-    monkeypatch.setattr(
-        "precis.workers.review.call_claude_agent", _blank
-    )
+    monkeypatch.setattr("precis.workers.review.call_claude_agent", _blank)
     result = run_structural_pass(store)
     assert result.ok == 1
     with store.pool.connection() as conn:

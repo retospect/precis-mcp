@@ -79,12 +79,8 @@ class MemoryHandler(NumericRefHandler):
 
     def _render_sticky(self) -> Response:
         """Union of sticky:thread and sticky:global, recency-ordered."""
-        thread = self.store.list_refs(
-            kind=self.kind, tags=["sticky:thread"], limit=50
-        )
-        glob = self.store.list_refs(
-            kind=self.kind, tags=["sticky:global"], limit=50
-        )
+        thread = self.store.list_refs(kind=self.kind, tags=["sticky:thread"], limit=50)
+        glob = self.store.list_refs(kind=self.kind, tags=["sticky:global"], limit=50)
         # Dedup by ref.id (a memory can carry both tags).
         seen: set[int] = set()
         refs = []
@@ -156,9 +152,7 @@ class MemoryHandler(NumericRefHandler):
         if mode != "replace":
             raise BadInput(
                 f"edit(kind='memory') only supports mode='replace', got {mode!r}",
-                next=(
-                    "edit(kind='memory', id=N, mode='replace', text='new body')"
-                ),
+                next=("edit(kind='memory', id=N, mode='replace', text='new body')"),
             )
         if text is None or not text.strip():
             raise BadInput(

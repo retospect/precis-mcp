@@ -69,9 +69,7 @@ class TestPutValidation:
 class TestPutHappy:
     def test_creates_with_meta_populated(self, store) -> None:
         h = _make_handler(store)
-        store.insert_ref(
-            kind="paper", slug="collins06", title="Collins 2006 CO2 study"
-        )
+        store.insert_ref(kind="paper", slug="collins06", title="Collins 2006 CO2 study")
         resp = h.put(
             text="MOF X achieves 12% FE for CO2 reduction",
             source_handle="collins06~7",
@@ -119,9 +117,7 @@ class TestPutHappy:
 class TestRoundTrip:
     def test_get_renders_stored_record(self, store) -> None:
         h = _make_handler(store)
-        store.insert_ref(
-            kind="paper", slug="smith21", title="Smith 2021 MOF synthesis"
-        )
+        store.insert_ref(kind="paper", slug="smith21", title="Smith 2021 MOF synthesis")
         resp = h.put(
             text="MOF synthesis yields 85%",
             source_handle="smith21~5",

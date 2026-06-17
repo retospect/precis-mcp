@@ -45,9 +45,7 @@ class TestPassthrough:
         assert out == ""
         assert cursor is None
 
-    def test_at_cap_boundary_unchanged(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_at_cap_boundary_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A body sized exactly at the cap is not chunked."""
         monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "100")
         cache = PaginationCache()
@@ -70,15 +68,9 @@ class TestSectionSplit:
         body = (
             "# heading\n"
             "intro paragraph\n"
-            "## section one\n"
-            + ("a" * 260)
-            + "\n"
-            "## section two\n"
-            + ("b" * 260)
-            + "\n"
-            "## section three\n"
-            + ("c" * 260)
-            + "\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
         )
         head, cursor = cache.split(body)
         assert cursor is not None
@@ -97,15 +89,9 @@ class TestSectionSplit:
         body = (
             "# heading\n"
             "intro paragraph\n"
-            "## section one\n"
-            + ("a" * 260)
-            + "\n"
-            "## section two\n"
-            + ("b" * 260)
-            + "\n"
-            "## section three\n"
-            + ("c" * 260)
-            + "\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
         )
         _head, cursor = cache.split(body)
         assert cursor is not None
@@ -169,9 +155,7 @@ class TestTTL:
         # expiry check uses monkey-patching of monotonic.
         assert cache.pop(cursor) is not None
 
-    def test_explicit_expiry_drop(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_explicit_expiry_drop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Mock ``_now`` to fast-forward past TTL and verify the
         cached entry is dropped on prune."""
         monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "150")
@@ -216,9 +200,7 @@ class TestDefaults:
     def test_default_max_body_bytes(self) -> None:
         assert DEFAULT_MAX_BODY_BYTES == 24576
 
-    def test_garbage_env_falls_back(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_garbage_env_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A nonsense env var value falls back to the default."""
         monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "not-a-number")
         cache = PaginationCache()

@@ -1184,7 +1184,9 @@ def render_attention(store: Store) -> Response:
             for tag in f["child_failed_tags"]:
                 # Strip ``child-failed:`` prefix → the bare job id.
                 job_id = tag.removeprefix("child-failed:")
-                lines.append(f"      job #{job_id}: {f['reasons'].get(job_id, '(no event chunk yet)')}")
+                lines.append(
+                    f"      job #{job_id}: {f['reasons'].get(job_id, '(no event chunk yet)')}"
+                )
     if halted:
         lines.append("")
         lines.append(f"## Halted ({len(halted)})")
@@ -1242,9 +1244,7 @@ def _attention_asking_reto(store: Store) -> list[dict[str, Any]]:
              LIMIT 50
             """,
         ).fetchall()
-    return [
-        {"id": int(r[0]), "title": r[1], "created_at": r[2]} for r in rows
-    ]
+    return [{"id": int(r[0]), "title": r[1], "created_at": r[2]} for r in rows]
 
 
 def _attention_halted(store: Store) -> list[dict[str, Any]]:
@@ -1280,7 +1280,7 @@ def _attention_halted(store: Store) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for ref_id, title, created_at, halt_tags in rows:
         reasons: list[str] = []
-        for t in (halt_tags or []):
+        for t in halt_tags or []:
             t_str = str(t)
             if t_str.startswith("halt:"):
                 reasons.append(t_str.removeprefix("halt:"))
@@ -1346,9 +1346,7 @@ def _attention_child_failed(store: Store) -> list[dict[str, Any]]:
     return out
 
 
-def _latest_job_event_reasons(
-    store: Store, job_ids: list[int]
-) -> dict[str, str]:
+def _latest_job_event_reasons(store: Store, job_ids: list[int]) -> dict[str, str]:
     """Return ``{job_id_str: latest job_event text}`` for the given jobs.
 
     Truncated to ~120 chars per reason so the attention digest stays

@@ -79,10 +79,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--pass",
         dest="pass_name",  # 'pass' is a python keyword
         default=None,
-        help=(
-            "Filter to a specific pass ('dispatch', 'structural', "
-            "'schedule', ...)."
-        ),
+        help=("Filter to a specific pass ('dispatch', 'structural', 'schedule', ...)."),
     )
     p.add_argument(
         "--level",
@@ -174,9 +171,7 @@ def run(args: argparse.Namespace) -> None:
         rows = _query_logs(
             store,
             since_interval=since,
-            since_iso=args.since
-            if (since == "" and args.since)
-            else None,
+            since_iso=args.since if (since == "" and args.since) else None,
             host=args.host,
             process=args.process,
             pass_name=args.pass_name,
@@ -225,9 +220,7 @@ def _query_logs(
         # operator's mental model expects. WARNING is above INFO,
         # ERROR is above WARNING. SQL CASE turns each level string
         # into a comparable rank.
-        rank = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}.get(
-            level, 1
-        )
+        rank = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}.get(level, 1)
         where.append(
             "(CASE level WHEN 'DEBUG' THEN 0 WHEN 'INFO' THEN 1 "
             "WHEN 'WARNING' THEN 2 WHEN 'ERROR' THEN 3 ELSE 0 END) "
@@ -260,9 +253,7 @@ def _query_logs(
     ]
 
 
-def _render(
-    rows: list[dict[str, Any]], *, format: str, with_payload: bool
-) -> None:
+def _render(rows: list[dict[str, Any]], *, format: str, with_payload: bool) -> None:
     schema = ["ts", "host", "pass", "level", "logger", "message"]
     if with_payload:
         schema.append("payload")
@@ -291,9 +282,8 @@ def _render(
             "pass": row["pass"],
             "level": row["level"],
             "logger": row["logger"],
-            "message": row["message"][:160] + (
-                "…" if len(row["message"]) > 160 else ""
-            ),
+            "message": row["message"][:160]
+            + ("…" if len(row["message"]) > 160 else ""),
             **(
                 {"payload": json.dumps(row["payload"], default=str)[:200]}
                 if with_payload and row["payload"]

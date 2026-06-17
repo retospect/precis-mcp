@@ -998,17 +998,13 @@ class TestPaperEdit:
         self, store: Store, handler: PaperHandler
     ) -> None:
         """Only passed fields change; omitted ones are left untouched."""
-        ref_id = _seed_paper(
-            store, slug="wang2020state", title="Original", year=2020
-        )
+        ref_id = _seed_paper(store, slug="wang2020state", title="Original", year=2020)
         handler.edit(id=ref_id, title="New title only")
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert ref.title == "New title only"
         assert ref.year == 2020  # untouched
 
-    def test_edit_replaces_doi_alias(
-        self, store: Store, handler: PaperHandler
-    ) -> None:
+    def test_edit_replaces_doi_alias(self, store: Store, handler: PaperHandler) -> None:
         """A corrected DOI replaces this ref's alias (vs first-write-wins
         insert), so ``get(id=<new doi>)`` resolves afterwards."""
         ref_id = _seed_paper(store, slug="wang2020state", doi="10.1/old")
@@ -1016,9 +1012,7 @@ class TestPaperEdit:
         ids = store.identifiers_for_refs([ref_id])[ref_id]
         assert ids["doi"] == "10.2/new"
 
-    def test_edit_requires_a_field(
-        self, store: Store, handler: PaperHandler
-    ) -> None:
+    def test_edit_requires_a_field(self, store: Store, handler: PaperHandler) -> None:
         ref_id = _seed_paper(store, slug="wang2020state")
         with pytest.raises(BadInput):
             handler.edit(id=ref_id)

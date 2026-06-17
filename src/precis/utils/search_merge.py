@@ -322,11 +322,7 @@ def _derive_toon_summary(hit: SearchHit) -> tuple[str, int]:
     as last resort, remaining_words counts the trimmed tail.
     """
     if hit.summary is not None:
-        rw = (
-            hit.remaining_words
-            if hit.remaining_words is not None
-            else 0
-        )
+        rw = hit.remaining_words if hit.remaining_words is not None else 0
         return hit.summary, rw
 
     body = hit.title or ""
@@ -344,7 +340,7 @@ def _derive_toon_summary(hit: SearchHit) -> tuple[str, int]:
             cut = idx
     if cut > 0:
         summary = body[: cut + 1].rstrip()
-        tail = body[cut + 1:]
+        tail = body[cut + 1 :]
         return summary, len(tail.split())
     if len(body) > _TOON_SUMMARY_MAX_CHARS:
         summary = body[:_TOON_SUMMARY_MAX_CHARS].rstrip() + "…"

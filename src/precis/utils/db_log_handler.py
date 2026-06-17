@@ -166,7 +166,9 @@ class BufferedDBLogHandler(logging.Handler):
         )
         self._hard_cap = self._max_buffer * _BUFFER_HARD_CAP_MULTIPLIER
         self._host = host_name or _resolve_host_name()
-        self._process = process_name if process_name is not None else _resolve_process_name()
+        self._process = (
+            process_name if process_name is not None else _resolve_process_name()
+        )
         self._buffer: deque[tuple[Any, ...]] = deque()
         self._lock = threading.Lock()
         self._last_flush_at = time.monotonic()
@@ -234,9 +236,7 @@ class BufferedDBLogHandler(logging.Handler):
 
     # ── internals ──────────────────────────────────────────────────
 
-    def _record_to_row(
-        self, record: logging.LogRecord
-    ) -> tuple[Any, ...]:
+    def _record_to_row(self, record: logging.LogRecord) -> tuple[Any, ...]:
         """Turn a LogRecord into the tuple we'll pass to INSERT."""
         # ``record.exc_info`` is the (type, val, tb) tuple when
         # ``log.exception(...)`` was called. Render to the payload
@@ -250,9 +250,7 @@ class BufferedDBLogHandler(logging.Handler):
             exc_type, exc_val, exc_tb = record.exc_info
             payload["error_class"] = exc_type.__name__ if exc_type else "Unknown"
             payload["error_msg"] = (str(exc_val) or "")[:500]
-            tb_str = "".join(
-                traceback.format_exception(exc_type, exc_val, exc_tb)
-            )
+            tb_str = "".join(traceback.format_exception(exc_type, exc_val, exc_tb))
             payload["traceback"] = tb_str[:2000]
         try:
             message = self.format(record)
@@ -317,9 +315,7 @@ class BufferedDBLogHandler(logging.Handler):
             list(batch),
         )
 
-    def _demote_batch_to_file(
-        self, batch: Iterable[tuple[Any, ...]]
-    ) -> None:
+    def _demote_batch_to_file(self, batch: Iterable[tuple[Any, ...]]) -> None:
         """When the DB flush fails, re-log the batch via the stdlib
         chain at WARNING so the file handler captures them.
 

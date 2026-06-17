@@ -47,17 +47,17 @@ _UNICODE_ESCAPES: dict[str, str] = {
     # Common scientific unicode → LaTeX text-mode escapes. Math-mode
     # callers will produce different output but the LLM's plain-prose
     # use of these characters is what we're cleaning up.
-    "–": "--",     # en-dash
-    "—": "---",    # em-dash
-    "‘": "`",      # left single quote
-    "’": "'",      # right single quote
-    "“": "``",     # left double quote
-    "”": "''",     # right double quote
+    "–": "--",  # en-dash
+    "—": "---",  # em-dash
+    "‘": "`",  # left single quote
+    "’": "'",  # right single quote
+    "“": "``",  # left double quote
+    "”": "''",  # right double quote
     "×": r"$\times$",  # multiplication
     "°": r"$^\circ$",  # degree sign
-    "μ": r"$\mu$",     # micro
-    "±": r"$\pm$",     # plus-minus
-    " ": "~",          # non-breaking space → tilde
+    "μ": r"$\mu$",  # micro
+    "±": r"$\pm$",  # plus-minus
+    " ": "~",  # non-breaking space → tilde
 }
 
 
@@ -156,9 +156,7 @@ def apply_mechanical_fixes(text: str) -> MechanicalFixResult:
                     lines.insert(i + 1, usepackage_block)
                     break
             out = "\n".join(lines)
-            fixes.append(
-                f"added missing \\usepackage{{{','.join(sorted(missing))}}}"
-            )
+            fixes.append(f"added missing \\usepackage{{{','.join(sorted(missing))}}}")
 
     return MechanicalFixResult(text=out, fixes=tuple(fixes))
 

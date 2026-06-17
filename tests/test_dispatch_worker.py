@@ -45,9 +45,7 @@ def test_no_executor_no_dispatch(handler: TodoHandler, store: Store) -> None:
     assert result.ok == 0
 
 
-def test_skips_when_child_job_exists(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_skips_when_child_job_exists(handler: TodoHandler, store: Store) -> None:
     """Once a child job exists, no further dispatch (bubble-up rule)."""
     r = handler.put(
         text="dispatchable",
@@ -59,9 +57,7 @@ def test_skips_when_child_job_exists(
     )
     rid = id_of(r.body)
     # Pre-seed a child job so the dispatcher should skip.
-    store.insert_ref(
-        kind="job", slug=None, title="prior", meta={}, parent_id=rid
-    )
+    store.insert_ref(kind="job", slug=None, title="prior", meta={}, parent_id=rid)
     result = run_dispatch_pass(store)
     assert result.claimed == 0
     # Still only the pre-seeded one.
@@ -117,9 +113,7 @@ def test_skips_halted_parent(handler: TodoHandler, store: Store) -> None:
 # ── happy path ───────────────────────────────────────────────────
 
 
-def test_mints_child_job_under_parent(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_mints_child_job_under_parent(handler: TodoHandler, store: Store) -> None:
     r = handler.put(
         text="ready to dispatch",
         meta={
@@ -144,9 +138,7 @@ def test_mints_child_job_under_parent(
     assert "STATUS:queued" in tags
     # A dispatch event was appended on the parent.
     events = store.events_for(rid)
-    assert any(
-        e.event == "job-minted" and e.source == "dispatch" for e in events
-    )
+    assert any(e.event == "job-minted" and e.source == "dispatch" for e in events)
 
 
 def test_auto_injects_auto_check_when_missing(
@@ -164,9 +156,7 @@ def test_auto_injects_auto_check_when_missing(
     assert ref.meta.get("auto_check") == {"type": "child_job_succeeded"}
 
 
-def test_preserves_existing_auto_check(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_preserves_existing_auto_check(handler: TodoHandler, store: Store) -> None:
     """Caller-supplied auto_check survives dispatch unchanged."""
     custom = {"type": "time_past", "at": "2099-01-01T00:00:00+00:00"}
     r = handler.put(
@@ -275,7 +265,9 @@ def test_job_handler_tag_bubbles_status_failed(
     from precis.store.types import Tag
 
     store.add_tag(
-        job.id, Tag.closed("STATUS", "queued"), set_by="agent",
+        job.id,
+        Tag.closed("STATUS", "queued"),
+        set_by="agent",
         replace_prefix=True,
     )
     job_handler.tag(id=job.id, add=["STATUS:failed"])
@@ -294,14 +286,18 @@ def test_job_handler_tag_other_status_does_not_bubble(
     r = handler.put(text="parent")
     rid = id_of(r.body)
     job = store.insert_ref(
-        kind="job", slug=None, title="ok",
+        kind="job",
+        slug=None,
+        title="ok",
         meta={"job_type": "fix_gripe", "executor": "claude_inproc"},
         parent_id=rid,
     )
     from precis.store.types import Tag
 
     store.add_tag(
-        job.id, Tag.closed("STATUS", "running"), set_by="agent",
+        job.id,
+        Tag.closed("STATUS", "running"),
+        set_by="agent",
         replace_prefix=True,
     )
     job_handler.tag(id=job.id, add=["STATUS:succeeded"])

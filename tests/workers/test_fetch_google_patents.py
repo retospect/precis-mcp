@@ -164,7 +164,9 @@ def _seed_patent(
 
 def test_claim_picks_awaiting_and_unavailable(store: Store) -> None:
     a = _seed_patent(store, cite_key="us20240000001a1", status_tag="awaiting-fulltext")
-    b = _seed_patent(store, cite_key="cn202410000002a", status_tag="fulltext-unavailable")
+    b = _seed_patent(
+        store, cite_key="cn202410000002a", status_tag="fulltext-unavailable"
+    )
     # Decoy: not patent-stuck-state at all.
     _seed_patent(store, cite_key="ep1111111b1", status_tag=None)
 
@@ -212,7 +214,9 @@ def gp_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PRECIS_GP_FETCH", "1")
 
 
-def test_pass_skips_when_env_unset(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pass_skips_when_env_unset(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Without PRECIS_GP_FETCH, the pass exits immediately even with
     matching candidates."""
     monkeypatch.delenv("PRECIS_GP_FETCH", raising=False)
@@ -382,9 +386,7 @@ def test_pass_parse_error_marks_attempted(
     assert GP_ATTEMPTED_TAG in tag_values
 
 
-def test_pass_no_candidates_returns_zero(
-    store: Store, gp_enabled: None
-) -> None:
+def test_pass_no_candidates_returns_zero(store: Store, gp_enabled: None) -> None:
     """When nothing is due, the pass returns the no-op shape without
     touching the DB."""
     out = run_gp_fetch_pass(store, limit=5)
@@ -443,9 +445,7 @@ def test_pass_abstract_only_result_keeps_awaiting_tag(
     change the searchable surface, so the awaiting/unavailable tags
     must NOT be cleared — otherwise the dashboard would falsely
     advertise 'fulltext available'."""
-    _seed_patent(
-        store, cite_key="us20240000008a1", status_tag="awaiting-fulltext"
-    )
+    _seed_patent(store, cite_key="us20240000008a1", status_tag="awaiting-fulltext")
     abstract_only_html = (
         '<section itemprop="abstract"><div class="abstract">'
         "Just an abstract, nothing else."
@@ -475,9 +475,7 @@ def test_pass_unhandled_transient_routes_to_backoff(
     mark the patent parse-error. Now it must route through the same
     backoff schedule as HTTP errors — gp_retry_at set, gp-attempted
     NOT set on a transient retry."""
-    _seed_patent(
-        store, cite_key="us20240000009a1", status_tag="awaiting-fulltext"
-    )
+    _seed_patent(store, cite_key="us20240000009a1", status_tag="awaiting-fulltext")
 
     def _exploding_fetch(slug: str) -> tuple[str, str | None, int]:
         raise RuntimeError("simulated DB blip")
@@ -511,5 +509,3 @@ def test_is_enabled_tolerates_whitespace_padding(
     assert _is_enabled() is True
     monkeypatch.setenv("PRECIS_GP_FETCH", "0")
     assert _is_enabled() is False
-
-

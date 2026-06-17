@@ -801,7 +801,9 @@ def test_fetch_path_block_parses_body(think_with_embedder: ThinkHandler) -> None
     h.get(id="catalyst landscape question")
 
     # Find the cache row and count blocks.
-    refs = h.store.list_refs(kind="perplexity-reasoning", provider="perplexity", limit=10)
+    refs = h.store.list_refs(
+        kind="perplexity-reasoning", provider="perplexity", limit=10
+    )
     assert len(refs) == 1
     n_blocks = h.store.count_blocks(refs[0].id)
     # Three paragraphs + three headings + the Sources trailer ≥ 4 blocks.
@@ -821,7 +823,9 @@ def test_fetch_path_embeds_blocks(think_with_embedder: ThinkHandler) -> None:
     h = think_with_embedder
     h.get(id="another query")
 
-    refs = h.store.list_refs(kind="perplexity-reasoning", provider="perplexity", limit=10)
+    refs = h.store.list_refs(
+        kind="perplexity-reasoning", provider="perplexity", limit=10
+    )
     # ``with_embedding=True`` is required — the default loads only the
     # block bodies (cheap path for rendering) and leaves the vector
     # column NULL.

@@ -60,9 +60,7 @@ def test_tag_rejects_unknown_llm_model(handler: TodoHandler) -> None:
 # ── dispatch picks up LLM:*-tagged todos ──────────────────────────
 
 
-def test_dispatch_picks_up_llm_tagged_todo(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_dispatch_picks_up_llm_tagged_todo(handler: TodoHandler, store: Store) -> None:
     """An LLM:*-tagged leaf is dispatchable without meta.executor."""
     from precis.workers.dispatch import _candidate_parent_ids
 
@@ -107,9 +105,7 @@ def test_dispatch_re_picks_up_after_children_done(
     assert parent_id in _candidate_parent_ids(store, limit=10)
 
 
-def test_dispatch_skips_untagged_todos(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_dispatch_skips_untagged_todos(handler: TodoHandler, store: Store) -> None:
     """No LLM:*, no executor:*, no meta.executor → not dispatchable."""
     from precis.workers.dispatch import _candidate_parent_ids
 
@@ -119,9 +115,7 @@ def test_dispatch_skips_untagged_todos(
     assert rid not in ids
 
 
-def test_dispatch_skips_with_halt_reason(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_dispatch_skips_with_halt_reason(handler: TodoHandler, store: Store) -> None:
     """``halt:cost-cap`` blocks dispatch the same as bare halt."""
     from precis.workers.dispatch import _candidate_parent_ids
 
@@ -180,9 +174,7 @@ def test_ancestry_toon_handles_root_self() -> None:
 # ── guardrails ────────────────────────────────────────────────────
 
 
-def test_guardrails_allow_fresh_parent(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_guardrails_allow_fresh_parent(handler: TodoHandler, store: Store) -> None:
     """A brand-new LLM:*-tagged parent passes all three checks."""
     r = handler.put(text="fresh", tags=["LLM:sonnet"])
     rid = _id_of(r.body)

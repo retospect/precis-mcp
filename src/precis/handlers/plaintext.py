@@ -609,9 +609,7 @@ class PlaintextHandler(Handler):
             mech = apply_mechanical_fixes(body)
             body = mech.text
             if mech.fixes:
-                mechanical_note = (
-                    " — mechanical fixes: " + "; ".join(mech.fixes)
-                )
+                mechanical_note = " — mechanical fixes: " + "; ".join(mech.fixes)
             # Layer-2 LLM-fixer. Opt-in via PRECIS_LAYER2_FIXER=1 — adds
             # a ~$0.003 / 2-3s sonnet call when chktex flags errors that
             # Layer 1 didn't resolve. Returns a 'hint' verdict (file NOT
@@ -643,9 +641,7 @@ class PlaintextHandler(Handler):
         # lock is held through the disk write and the commit so two
         # concurrent puts in the same workspace serialize cleanly.
         # ``commit_sha`` is reported in the response.
-        workspace_relpath, commit_sha = self._commit_in_workspace(
-            path, body, slug=slug
-        )
+        workspace_relpath, commit_sha = self._commit_in_workspace(path, body, slug=slug)
         if commit_sha is None:
             # Workspace-less path (no PRECIS_WORKSPACE): write directly.
             _atomic_write(path, body)
@@ -680,9 +676,7 @@ class PlaintextHandler(Handler):
             return (None, None)
         # Compute workspace-relative path for the commit message.
         try:
-            workspace_relpath = str(
-                path.relative_to((self.root / ws_path).resolve())
-            )
+            workspace_relpath = str(path.relative_to((self.root / ws_path).resolve()))
         except ValueError:
             # Path landed outside the workspace; skip the commit path
             # and let the caller do a plain write.
@@ -700,9 +694,7 @@ class PlaintextHandler(Handler):
                 ws_root = (self.root / ws_path).resolve()
                 # Templated commit message; structured per-tick summary
                 # lives in the job_result chunk (T1.6 wires the link).
-                summary = (
-                    f"{workspace_relpath}: write via slug={slug!r}"
-                )
+                summary = f"{workspace_relpath}: write via slug={slug!r}"
                 commit_sha = commit_put(
                     ws_root,
                     summary=summary,
@@ -1675,14 +1667,10 @@ class PlaintextHandler(Handler):
         # to that; derive format from the kind itself.
         format = "tex" if self._KIND == "tex" else "md"
         entrypoint = "main.tex" if format == "tex" else "main.md"
-        workspace = Workspace(
-            path=ws_path, format=format, entrypoint=entrypoint
-        )
+        workspace = Workspace(path=ws_path, format=format, entrypoint=entrypoint)
         ensure_initialized(workspace, self.root)
         try:
-            workspace_relpath = resolve(
-                format=format, kind=self._KIND, name=name
-            )
+            workspace_relpath = resolve(format=format, kind=self._KIND, name=name)
         except ValueError as exc:
             raise BadInput(
                 f"workspace layout rejected name={name!r}: {exc}",
@@ -1693,8 +1681,7 @@ class PlaintextHandler(Handler):
             ) from exc
         if is_generated(workspace_relpath):
             raise BadInput(
-                f"{workspace_relpath!r} is workspace-generated, not writable "
-                "via put",
+                f"{workspace_relpath!r} is workspace-generated, not writable via put",
                 next=(
                     "refs.bib regenerates from kind='citation' refs; mint "
                     "citations instead of writing the bib directly"

@@ -283,7 +283,7 @@ class PatentHandler(Handler):
                             f"{cql!r}: {e.body_preview[:300]}",
                             next=(
                                 "bare phrases auto-promote to "
-                                "(ti=\"...\" OR ab=\"...\"); for explicit "
+                                '(ti="..." OR ab="..."); for explicit '
                                 "CQL use field=value with OPS field names "
                                 "(ti / ab / pa / pact / cpc / ipc / pd / "
                                 "famn). Reference: "

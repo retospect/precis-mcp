@@ -180,9 +180,7 @@ def test_ensure_watches_root_is_idempotent(store: Store) -> None:
     assert "level:recurring" in tags
 
 
-def test_watches_root_delete_is_refused(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_watches_root_delete_is_refused(handler: TodoHandler, store: Store) -> None:
     rid = ensure_watches_root(store)
     with pytest.raises(BadInput, match="builtin"):
         handler.delete(id=rid)
@@ -239,9 +237,7 @@ def test_put_with_bad_schedule_rejected_at_write_time(
 # ── PRIO column ────────────────────────────────────────────────────
 
 
-def test_put_with_prio_writes_column(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_put_with_prio_writes_column(handler: TodoHandler, store: Store) -> None:
     resp = handler.put(text="prio task", prio=1)
     rid = _id_of(resp.body)
     ref = store.get_ref(kind="todo", id=rid)
@@ -255,9 +251,7 @@ def test_put_rejects_out_of_range_prio(handler: TodoHandler) -> None:
         handler.put(text="bad", prio=0)
 
 
-def test_put_with_prio_tag_back_compat(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_put_with_prio_tag_back_compat(handler: TodoHandler, store: Store) -> None:
     resp = handler.put(text="urgent", tags=["PRIO:urgent"])
     rid = _id_of(resp.body)
     ref = store.get_ref(kind="todo", id=rid)
@@ -267,9 +261,7 @@ def test_put_with_prio_tag_back_compat(
     assert "PRIO:urgent" not in tags
 
 
-def test_tag_prio_kwarg_writes_column(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_tag_prio_kwarg_writes_column(handler: TodoHandler, store: Store) -> None:
     resp = handler.put(text="x")
     rid = _id_of(resp.body)
     handler.tag(id=rid, prio=3)
@@ -302,9 +294,7 @@ def _set_last_tick(store: Store, ref_id: int, when: datetime) -> None:
         conn.commit()
 
 
-def test_schedule_pass_spawns_one_child(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_schedule_pass_spawns_one_child(handler: TodoHandler, store: Store) -> None:
     # Daily at 00:00, no backfill, last tick 25h ago → mints today's.
     resp = handler.put(
         text="Daily",
@@ -347,8 +337,7 @@ def test_schedule_pass_is_idempotent_same_minute(
     run_schedule_pass(store, limit=50)
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT count(*) FROM refs WHERE parent_id = %s "
-            "AND deleted_at IS NULL",
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
             (rid,),
         ).fetchone()
     assert rows is not None
@@ -428,8 +417,7 @@ def test_schedule_pass_row_lock_serialises_concurrent_workers(
         # Confirm no child was minted while locked.
         with store.pool.connection() as c:
             n = c.execute(
-                "SELECT count(*) FROM refs WHERE parent_id = %s "
-                "AND deleted_at IS NULL",
+                "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
                 (rid,),
             ).fetchone()
         assert n is not None and int(n[0]) == 0
@@ -469,8 +457,7 @@ def test_schedule_pass_skips_paused_recurring(
     result = run_schedule_pass(store, limit=50)
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT count(*) FROM refs WHERE parent_id = %s "
-            "AND deleted_at IS NULL",
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
             (rid,),
         ).fetchone()
     assert rows is not None

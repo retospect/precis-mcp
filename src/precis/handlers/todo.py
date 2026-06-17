@@ -670,9 +670,7 @@ class TodoHandler(NumericRefHandler):
         # No STATUS:done from a worker without artifact evidence.
         # Prevents the cheating mode where the LLM marks itself done
         # without producing a file / citation / successful child job.
-        guards.check_status_done_artifact(
-            self.store, self._coerce_id(id), add
-        )
+        guards.check_status_done_artifact(self.store, self._coerce_id(id), add)
         # Layer-3 compile guard — runs latexmk at workspace-root
         # STATUS:done so the LLM can't declare victory on a broken
         # paper. No-op on intermediate leaves (live siblings) or
@@ -680,9 +678,7 @@ class TodoHandler(NumericRefHandler):
         # PATH (degrade gracefully on dev hosts).
         from precis.utils.compile_guard import check_workspace_compiles
 
-        check_workspace_compiles(
-            self.store, self._coerce_id(id), add
-        )
+        check_workspace_compiles(self.store, self._coerce_id(id), add)
         guards.check_executor_tag(add)
         ref_id = self._coerce_id(id)
         if prio is not None or clear_prio:

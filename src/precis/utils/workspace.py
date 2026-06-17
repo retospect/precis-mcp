@@ -82,8 +82,7 @@ class Workspace:
             )
         if self.path.startswith("/") or ".." in self.path.split("/"):
             raise ValueError(
-                f"workspace path must be relative + no traversal, got "
-                f"{self.path!r}"
+                f"workspace path must be relative + no traversal, got {self.path!r}"
             )
 
     @classmethod
@@ -222,9 +221,7 @@ def current_todo_from_env() -> int | None:
     try:
         parent_id = int(raw)
     except ValueError:
-        log.warning(
-            "PRECIS_CURRENT_TODO rejected (must be int): %r", raw
-        )
+        log.warning("PRECIS_CURRENT_TODO rejected (must be int): %r", raw)
         return None
     if parent_id <= 0:
         return None
@@ -307,14 +304,24 @@ def ensure_initialized(workspace: Workspace, precis_root: Path) -> Path:
     if not has_commits:
         try:
             subprocess.run(
-                ["git", "add", "-A"], cwd=root,
-                check=True, capture_output=True, text=True,
+                ["git", "add", "-A"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
             )
             subprocess.run(
-                ["git", "-c", "user.email=precis@localhost",
-                 "-c", "user.name=precis",
-                 "commit", "-q", "-m",
-                 f"workspace init (format={workspace.format})"],
+                [
+                    "git",
+                    "-c",
+                    "user.email=precis@localhost",
+                    "-c",
+                    "user.name=precis",
+                    "commit",
+                    "-q",
+                    "-m",
+                    f"workspace init (format={workspace.format})",
+                ],
                 cwd=root,
                 check=True,
                 capture_output=True,
@@ -352,9 +359,7 @@ def _copy_template_if_missing(format: str, name: str, dest: Path) -> None:
         template_root = resources.files("precis.data.workspace_templates")
         candidate = template_root / format / name  # type: ignore[union-attr]
         if not candidate.is_file():
-            log.debug(
-                "workspace template missing: %s/%s (skipping)", format, name
-            )
+            log.debug("workspace template missing: %s/%s (skipping)", format, name)
             return
         text = candidate.read_text()
         dest.write_text(text)
@@ -407,14 +412,23 @@ def commit_put(
             capture_output=True,
         )
         if diff.returncode == 0:
-            log.debug("workspace.commit_put: no changes to commit in %s", workspace_root)
+            log.debug(
+                "workspace.commit_put: no changes to commit in %s", workspace_root
+            )
             return None
         message = summary if not body else f"{summary}\n\n{body}"
         subprocess.run(
-            ["git",
-             "-c", "user.email=precis@localhost",
-             "-c", "user.name=precis",
-             "commit", "-q", "-m", message],
+            [
+                "git",
+                "-c",
+                "user.email=precis@localhost",
+                "-c",
+                "user.name=precis",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
             cwd=workspace_root,
             check=True,
             capture_output=True,

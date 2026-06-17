@@ -36,7 +36,10 @@ def test_pass_from_logger_matches_worker_prefix() -> None:
 def test_pass_from_logger_collapses_subpackages() -> None:
     """Nested modules under workers.X collapse to X."""
     assert _pass_from_logger("precis.workers.schedule.worker") == "schedule"
-    assert _pass_from_logger("precis.workers.auto_check_evaluators.time_past") == "auto_check_evaluators"
+    assert (
+        _pass_from_logger("precis.workers.auto_check_evaluators.time_past")
+        == "auto_check_evaluators"
+    )
 
 
 def test_pass_from_logger_returns_none_for_non_worker() -> None:
@@ -88,9 +91,7 @@ def fake_psycopg(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return fake_conn
 
 
-def _make_handler(
-    fake_psycopg: MagicMock, **kwargs
-) -> BufferedDBLogHandler:
+def _make_handler(fake_psycopg: MagicMock, **kwargs) -> BufferedDBLogHandler:
     """Build a handler with safe defaults for unit tests."""
     defaults = dict(
         max_buffer=3,
@@ -172,8 +173,7 @@ def test_db_failure_demotes_to_file(
             logger.info("demote-me-%d", i)
         # The demote path logs at WARNING via the stdlib chain.
         warning_msgs = [
-            r.message for r in caplog.records
-            if r.name == "precis.db_log_handler"
+            r.message for r in caplog.records if r.name == "precis.db_log_handler"
         ]
         assert any("DB flush failed" in m for m in warning_msgs)
     finally:

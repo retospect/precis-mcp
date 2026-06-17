@@ -170,12 +170,14 @@ def run_loop(
                 result.claimed,
                 result.ok,
                 result.failed,
-                extra={"payload": {
-                    "handler":  result.handler,
-                    "claimed":  result.claimed,
-                    "ok":       result.ok,
-                    "failed":   result.failed,
-                }},
+                extra={
+                    "payload": {
+                        "handler": result.handler,
+                        "claimed": result.claimed,
+                        "ok": result.ok,
+                        "failed": result.failed,
+                    }
+                },
             )
             if result.claimed > 0:
                 any_work = True
@@ -195,12 +197,14 @@ def run_loop(
                 result.claimed,
                 result.ok,
                 result.failed,
-                extra={"payload": {
-                    "handler":  result.handler,
-                    "claimed":  result.claimed,
-                    "ok":       result.ok,
-                    "failed":   result.failed,
-                }},
+                extra={
+                    "payload": {
+                        "handler": result.handler,
+                        "claimed": result.claimed,
+                        "ok": result.ok,
+                        "failed": result.failed,
+                    }
+                },
             )
             if result.claimed > 0:
                 any_work = True

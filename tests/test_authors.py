@@ -21,7 +21,9 @@ class TestAuthorDisplay:
     def test_name_shape_returned_as_is(self) -> None:
         # Semantic Scholar / Crossref ingest shape — can't be reordered.
         assert author_display({"name": "Jane Smith"}) == "Jane Smith"
-        assert author_display({"name": "Smith, Jane"}, order="sortable") == "Smith, Jane"
+        assert (
+            author_display({"name": "Smith, Jane"}, order="sortable") == "Smith, Jane"
+        )
 
     def test_family_only_and_given_only(self) -> None:
         assert author_display({"family": "Aristotle"}) == "Aristotle"

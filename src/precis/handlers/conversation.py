@@ -561,7 +561,7 @@ class ConversationHandler(Handler):
             kws = b.keywords or []
             if kws:
                 kw_str = ", ".join(kws[:8])
-                lines.append(f"~{b.pos} [{author}]: \"{kw_str}\"")
+                lines.append(f'~{b.pos} [{author}]: "{kw_str}"')
             else:
                 # Worker hasn't populated keywords yet — show a short
                 # text preview so the renderer doesn't silently elide
@@ -569,7 +569,7 @@ class ConversationHandler(Handler):
                 preview = b.text[:80].replace("\n", " ")
                 if len(b.text) > 80:
                     preview += "…"
-                lines.append(f"~{b.pos} [{author}]: \"{preview}\"  (keywords pending)")
+                lines.append(f'~{b.pos} [{author}]: "{preview}"  (keywords pending)')
         return Response(body="\n".join(lines))
 
     def _render_last_meta(self, slug: str, ref: Any) -> Response:
@@ -589,6 +589,7 @@ class ConversationHandler(Handler):
         last = all_blocks[-1]
         meta = last.meta or {}
         import json
+
         payload = {
             "pos": last.pos,
             "author": meta.get("author"),

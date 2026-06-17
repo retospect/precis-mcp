@@ -91,15 +91,13 @@ def validate_schedule(spec: Any) -> Schedule:
     if cron_str is not None:
         if not isinstance(cron_str, str):
             raise BadInput(
-                f"meta.schedule.cron must be a string, got "
-                f"{type(cron_str).__name__}",
+                f"meta.schedule.cron must be a string, got {type(cron_str).__name__}",
             )
         canonical = cron_str.strip()
     else:
         if not isinstance(every_str, str):
             raise BadInput(
-                f"meta.schedule.every must be a string, got "
-                f"{type(every_str).__name__}",
+                f"meta.schedule.every must be a string, got {type(every_str).__name__}",
             )
         canonical = every_to_cron(every_str.strip())
     # Round-trip parse so a bad cron raises here, not at the next tick.
@@ -125,11 +123,11 @@ def parse_schedule(spec: dict[str, Any]) -> Schedule:
 
 # Field bounds: (lo, hi). dow uses 0..6 with 0=Sun, matching cron(5).
 _FIELD_BOUNDS: tuple[tuple[int, int], ...] = (
-    (0, 59),    # minute
-    (0, 23),    # hour
-    (1, 31),    # day-of-month
-    (1, 12),    # month
-    (0, 6),     # day-of-week
+    (0, 59),  # minute
+    (0, 23),  # hour
+    (1, 31),  # day-of-month
+    (1, 12),  # month
+    (0, 6),  # day-of-week
 )
 _FIELD_NAMES: tuple[str, ...] = ("minute", "hour", "dom", "month", "dow")
 
@@ -147,8 +145,7 @@ def parse_cron(cron: str) -> tuple[frozenset[int], ...]:
     fields = cron.split()
     if len(fields) != 5:
         raise BadInput(
-            f"cron must have 5 fields ({_FIELD_NAMES!r}), got {len(fields)}: "
-            f"{cron!r}",
+            f"cron must have 5 fields ({_FIELD_NAMES!r}), got {len(fields)}: {cron!r}",
             next="example: '0 9 * * 1' (Monday 09:00)",
         )
     return tuple(
@@ -171,13 +168,9 @@ def _parse_field(field: str, lo: int, hi: int, name: str) -> frozenset[int]:
             try:
                 step = int(step_str)
             except ValueError as exc:
-                raise BadInput(
-                    f"bad step in cron {name} field: {chunk!r}"
-                ) from exc
+                raise BadInput(f"bad step in cron {name} field: {chunk!r}") from exc
             if step < 1:
-                raise BadInput(
-                    f"cron {name} step must be >= 1: {chunk!r}"
-                )
+                raise BadInput(f"cron {name} step must be >= 1: {chunk!r}")
         else:
             base = chunk
         if base == "*":
@@ -187,25 +180,16 @@ def _parse_field(field: str, lo: int, hi: int, name: str) -> frozenset[int]:
             try:
                 start, end = int(a), int(b)
             except ValueError as exc:
-                raise BadInput(
-                    f"bad range in cron {name} field: {chunk!r}"
-                ) from exc
+                raise BadInput(f"bad range in cron {name} field: {chunk!r}") from exc
             if start > end:
-                raise BadInput(
-                    f"cron {name} range out of order: {chunk!r}"
-                )
+                raise BadInput(f"cron {name} range out of order: {chunk!r}")
         else:
             try:
                 start = end = int(base)
             except ValueError as exc:
-                raise BadInput(
-                    f"bad value in cron {name} field: {chunk!r}"
-                ) from exc
+                raise BadInput(f"bad value in cron {name} field: {chunk!r}") from exc
         if start < lo or end > hi:
-            raise BadInput(
-                f"cron {name} value out of range "
-                f"({lo}..{hi}): {chunk!r}"
-            )
+            raise BadInput(f"cron {name} value out of range ({lo}..{hi}): {chunk!r}")
         out.update(range(start, end + 1, step))
     return frozenset(out)
 
@@ -213,14 +197,17 @@ def _parse_field(field: str, lo: int, hi: int, name: str) -> frozenset[int]:
 # ── Shorthand translator ──────────────────────────────────────────
 
 _DOW: dict[str, int] = {
-    "sun": 0, "mon": 1, "tue": 2, "wed": 3,
-    "thu": 4, "fri": 5, "sat": 6,
+    "sun": 0,
+    "mon": 1,
+    "tue": 2,
+    "wed": 3,
+    "thu": 4,
+    "fri": 5,
+    "sat": 6,
 }
 
 _EVERY_DURATION = re.compile(r"^(\d+)([mhd])$")
-_EVERY_DOW_HHMM = re.compile(
-    r"^(sun|mon|tue|wed|thu|fri|sat)\s+(\d{1,2}):(\d{2})$"
-)
+_EVERY_DOW_HHMM = re.compile(r"^(sun|mon|tue|wed|thu|fri|sat)\s+(\d{1,2}):(\d{2})$")
 
 
 def every_to_cron(every: str) -> str:
@@ -271,16 +258,11 @@ def every_to_cron(every: str) -> str:
         hour = int(m.group(2))
         minute = int(m.group(3))
         if hour > 23 or minute > 59:
-            raise BadInput(
-                f"every:dow HH:MM: HH<=23, MM<=59, got {every!r}"
-            )
+            raise BadInput(f"every:dow HH:MM: HH<=23, MM<=59, got {every!r}")
         return f"{minute} {hour} * * {dow}"
     raise BadInput(
         f"unrecognised every: shorthand {every!r}",
-        next=(
-            "shapes: 'Nm' / 'Nh' / '1d' / "
-            "'mon HH:MM' (sun|mon|...|sat)"
-        ),
+        next=("shapes: 'Nm' / 'Nh' / '1d' / 'mon HH:MM' (sun|mon|...|sat)"),
     )
 
 

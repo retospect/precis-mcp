@@ -136,10 +136,12 @@ def test_temp_from_macos_smc_parses_brew_binary_output(monkeypatch) -> None:
             "/opt/homebrew/bin/osx-cpu-temp",
             "/usr/local/bin/osx-cpu-temp",
         ):
+
             class _R:
                 returncode = 0
                 stdout = "47.5°C\n"
                 stderr = ""
+
             return _R()
         raise FileNotFoundError(cmd[0])
 

@@ -42,7 +42,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": ["opus", "sonnet", "haiku"],
             "description": "Which Claude tier to run. Synthesized from the "
-                           "parent's LLM:<value> tag at dispatch time.",
+            "parent's LLM:<value> tag at dispatch time.",
         },
         "timeout_s": {
             "type": "integer",
@@ -205,7 +205,9 @@ def run(
         )
         return PlanTickOutcome(
             exit_code=124,
-            stdout=(exc.stdout or "").decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
+            stdout=(exc.stdout or "").decode(errors="replace")
+            if isinstance(exc.stdout, bytes)
+            else (exc.stdout or ""),
             stderr=f"plan_tick: timeout after {timeout_s}s",
             duration_s=duration,
         )
@@ -245,8 +247,6 @@ def _model_alias(model: str) -> str:
     defaults = {
         "opus": os.environ.get("PRECIS_MODEL_OPUS", "claude-opus-4-7"),
         "sonnet": os.environ.get("PRECIS_MODEL_SONNET", "claude-sonnet-4-6"),
-        "haiku": os.environ.get(
-            "PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"
-        ),
+        "haiku": os.environ.get("PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"),
     }
     return defaults.get(model, model)

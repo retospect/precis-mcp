@@ -197,7 +197,9 @@ class MessageHandler(NumericRefHandler):
         if tags:
             all_tag_strs.extend(tags)
         parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in all_tag_strs]
-        link_target = parse_link_target(link, store=self.store) if link is not None else None
+        link_target = (
+            parse_link_target(link, store=self.store) if link is not None else None
+        )
         if rel is not None and link is None:
             raise BadInput(
                 "rel= requires link= on create",
@@ -249,6 +251,7 @@ class MessageHandler(NumericRefHandler):
             # sends on transaction commit, which is what we want — a
             # rolled-back insert won't ship a phantom notification.
             import json
+
             conn.execute(
                 "SELECT pg_notify('precis.messages', %s)",
                 (json.dumps({"ref_id": ref.id, "target": meta["target"]}),),

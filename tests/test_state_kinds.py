@@ -516,9 +516,7 @@ class TestConversation:
 
     # ── put (chat-bridge capture-on-write) ──────────────────────────
 
-    def test_put_creates_ref_and_first_turn(
-        self, conv: ConversationHandler
-    ) -> None:
+    def test_put_creates_ref_and_first_turn(self, conv: ConversationHandler) -> None:
         out = conv.put(
             id="discord/g/c/t",
             text="hi there",
@@ -539,9 +537,7 @@ class TestConversation:
         assert blocks[0].meta.get("author") == "alice"
         assert blocks[0].meta.get("msg_id") == "m1"
 
-    def test_put_appends_subsequent_turns(
-        self, conv: ConversationHandler
-    ) -> None:
+    def test_put_appends_subsequent_turns(self, conv: ConversationHandler) -> None:
         conv.put(id="t1", text="one", author="alice", msg_id="m1")
         conv.put(id="t1", text="two", author="bob", msg_id="m2")
         conv.put(id="t1", text="three", author="alice", msg_id="m3")
@@ -551,9 +547,7 @@ class TestConversation:
         assert [b.text for b in blocks] == ["one", "two", "three"]
         assert [b.pos for b in blocks] == [0, 1, 2]
 
-    def test_put_is_idempotent_on_msg_id(
-        self, conv: ConversationHandler
-    ) -> None:
+    def test_put_is_idempotent_on_msg_id(self, conv: ConversationHandler) -> None:
         conv.put(id="t1", text="one", author="alice", msg_id="m1")
         out = conv.put(id="t1", text="one (replay)", author="alice", msg_id="m1")
         assert "already captured" in out.body
@@ -564,9 +558,7 @@ class TestConversation:
         assert len(blocks) == 1
         assert blocks[0].text == "one"
 
-    def test_put_without_msg_id_just_appends(
-        self, conv: ConversationHandler
-    ) -> None:
+    def test_put_without_msg_id_just_appends(self, conv: ConversationHandler) -> None:
         conv.put(id="t1", text="one", author="alice")
         conv.put(id="t1", text="two", author="bob")
         ref = conv.store.get_ref(kind="conv", id="t1")
@@ -576,9 +568,7 @@ class TestConversation:
         # No msg_id idempotency key on either block.
         assert "msg_id" not in (blocks[0].meta or {})
 
-    def test_put_rejects_missing_id_or_text(
-        self, conv: ConversationHandler
-    ) -> None:
+    def test_put_rejects_missing_id_or_text(self, conv: ConversationHandler) -> None:
         with pytest.raises(BadInput, match="requires id"):
             conv.put(text="hi")
         with pytest.raises(BadInput, match="requires text"):
@@ -599,9 +589,7 @@ class TestPresentation:
     def pres(self, hub: Hub) -> PresentationHandler:
         return PresentationHandler(hub=hub)
 
-    def test_put_creates_deck_and_first_slide(
-        self, pres: PresentationHandler
-    ) -> None:
+    def test_put_creates_deck_and_first_slide(self, pres: PresentationHandler) -> None:
         out = pres.put(
             id="2026-06-talk-foo",
             text="Title slide",
@@ -622,9 +610,7 @@ class TestPresentation:
         assert blocks[0].text == "Title slide"
         assert blocks[0].chunk_kind == "pres_slide"
 
-    def test_put_appends_in_order_without_pos(
-        self, pres: PresentationHandler
-    ) -> None:
+    def test_put_appends_in_order_without_pos(self, pres: PresentationHandler) -> None:
         pres.put(id="d", text="slide 0")
         pres.put(id="d", text="slide 1")
         pres.put(id="d", text="slide 2")
@@ -634,9 +620,7 @@ class TestPresentation:
         assert [b.text for b in blocks] == ["slide 0", "slide 1", "slide 2"]
         assert [b.pos for b in blocks] == [0, 1, 2]
 
-    def test_put_overwrites_at_explicit_pos(
-        self, pres: PresentationHandler
-    ) -> None:
+    def test_put_overwrites_at_explicit_pos(self, pres: PresentationHandler) -> None:
         pres.put(id="d", text="original slide 0", pos=0)
         pres.put(id="d", text="original slide 1", pos=1)
         out = pres.put(id="d", text="fixed slide 0", pos=0)
@@ -665,9 +649,7 @@ class TestPresentation:
         blocks = pres.store.list_blocks_for_ref(ref.id)
         assert blocks[0].chunk_kind == "paragraph"
 
-    def test_get_overview_lists_block_count(
-        self, pres: PresentationHandler
-    ) -> None:
+    def test_get_overview_lists_block_count(self, pres: PresentationHandler) -> None:
         pres.put(
             id="d",
             text="s0",
@@ -706,9 +688,7 @@ class TestPresentation:
         with pytest.raises(NotFound, match="no block at"):
             pres.get(id="d~99")
 
-    def test_put_rejects_missing_id_or_text(
-        self, pres: PresentationHandler
-    ) -> None:
+    def test_put_rejects_missing_id_or_text(self, pres: PresentationHandler) -> None:
         with pytest.raises(BadInput, match="requires id"):
             pres.put(text="hi")
         with pytest.raises(BadInput, match="requires text"):

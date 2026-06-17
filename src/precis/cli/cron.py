@@ -73,8 +73,13 @@ _WEEKLY_AT_RE = re.compile(
 )
 
 _WEEKDAY_TO_INT = {
-    "mon": 0, "tue": 1, "wed": 2, "thu": 3,
-    "fri": 4, "sat": 5, "sun": 6,
+    "mon": 0,
+    "tue": 1,
+    "wed": 2,
+    "thu": 3,
+    "fri": 4,
+    "sat": 5,
+    "sun": 6,
 }
 
 
@@ -102,13 +107,17 @@ def compute_next(recurring: str, after: datetime) -> datetime:
         nxt = after.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return nxt
     if s == "daily":
-        nxt = after.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        nxt = after.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+            days=1
+        )
         return nxt
     if s == "weekly":
-        nxt = after.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=7)
+        nxt = after.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+            days=7
+        )
         return nxt
     if s.startswith("every "):
-        rest = s[len("every "):]
+        rest = s[len("every ") :]
         return after + _parse_duration(rest)
     m = _DAILY_AT_RE.match(s)
     if m:
@@ -200,11 +209,15 @@ def _tick(*, dry_run: bool) -> None:
                 (now,),
             )
             due = cur.fetchall()
-            log.info("cron tick: %d due entr%s", len(due), "y" if len(due) == 1 else "ies")
+            log.info(
+                "cron tick: %d due entr%s", len(due), "y" if len(due) == 1 else "ies"
+            )
 
             for ref_id, meta in due:
                 if not isinstance(meta, dict):
-                    log.warning("cron %d: meta is not a dict (%r); skipping", ref_id, type(meta))
+                    log.warning(
+                        "cron %d: meta is not a dict (%r); skipping", ref_id, type(meta)
+                    )
                     continue
                 try:
                     new_meta, action = _decide(meta, now)

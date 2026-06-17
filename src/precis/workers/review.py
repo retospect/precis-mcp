@@ -101,22 +101,16 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
             reviewer.name,
             reviewer.gate_env,
         )
-        return BatchResult(
-            handler=reviewer.name, claimed=0, ok=0, failed=0
-        )
+        return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
     if skip_if_high_load(f"review[{reviewer.name}]"):
-        return BatchResult(
-            handler=reviewer.name, claimed=0, ok=0, failed=0
-        )
+        return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
     if _recent_digest_exists(store, reviewer.tier_tag, reviewer.min_interval_hours):
         log.info(
             "review[%s]: digest written < %sh ago; skipping",
             reviewer.name,
             reviewer.min_interval_hours,
         )
-        return BatchResult(
-            handler=reviewer.name, claimed=0, ok=0, failed=0
-        )
+        return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
     prompt = _build_prompt(reviewer, store)
     try:
         result = call_claude_agent(
@@ -134,15 +128,9 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
             extra_args=("--verbose",),
         )
     except ClaudeAgentError as exc:
-        log.exception(
-            "review[%s]: claude agent failed: %s", reviewer.name, exc
-        )
-        return BatchResult(
-            handler=reviewer.name, claimed=1, ok=0, failed=1
-        )
-    digest_id = _write_digest(
-        store, reviewer, result.final_text, result.cost_usd
-    )
+        log.exception("review[%s]: claude agent failed: %s", reviewer.name, exc)
+        return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
+    digest_id = _write_digest(store, reviewer, result.final_text, result.cost_usd)
     log.info(
         "review[%s]: wrote digest memory id=%d cost=$%.4f duration=%.1fs",
         reviewer.name,
@@ -150,9 +138,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         result.cost_usd or 0.0,
         result.duration_s,
     )
-    return BatchResult(
-        handler=reviewer.name, claimed=1, ok=1, failed=0
-    )
+    return BatchResult(handler=reviewer.name, claimed=1, ok=1, failed=0)
 
 
 # ── gate / dedup / prompt / write ─────────────────────────────────
@@ -166,9 +152,7 @@ def _truthy(raw: str | None) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _recent_digest_exists(
-    store: Store, tier_tag: str, hours: float
-) -> bool:
+def _recent_digest_exists(store: Store, tier_tag: str, hours: float) -> bool:
     """True when a digest of the given tier was written within ``hours``."""
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -215,8 +199,7 @@ def _write_digest(
         f"{reviewer.meta_prefix}cost_usd": cost_usd,
     }
     title = (
-        body.strip()
-        or f"{reviewer.name.replace('_', ' ').title()} {today}: (empty)"
+        body.strip() or f"{reviewer.name.replace('_', ' ').title()} {today}: (empty)"
     )
     with store.tx() as conn:
         ref = store.insert_ref(

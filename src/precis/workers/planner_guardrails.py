@@ -52,8 +52,9 @@ def _env_int(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
-        log.warning("planner_guardrails: %s=%r is not an int; using %d",
-                    name, raw, default)
+        log.warning(
+            "planner_guardrails: %s=%r is not an int; using %d", name, raw, default
+        )
         return default
 
 
@@ -64,8 +65,9 @@ def _env_float(name: str, default: float) -> float:
     try:
         return float(raw)
     except ValueError:
-        log.warning("planner_guardrails: %s=%r is not a float; using %f",
-                    name, raw, default)
+        log.warning(
+            "planner_guardrails: %s=%r is not a float; using %f", name, raw, default
+        )
         return default
 
 

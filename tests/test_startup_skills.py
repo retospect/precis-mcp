@@ -163,10 +163,7 @@ def test_format_banner_pinned_only() -> None:
     out = startup_skills.format_banner(
         Resolution(pinned=("precis-search-help", "precis-paper-help"))
     )
-    assert (
-        out == "Pinned skills: precis-search-help, "
-        "precis-paper-help."
-    )
+    assert out == "Pinned skills: precis-search-help, precis-paper-help."
 
 
 def test_format_banner_surfaces_unknown_slugs() -> None:
@@ -251,10 +248,7 @@ def test_build_instructions_includes_pinned_skills_when_configured() -> None:
         startup_skills_value="precis-search-help,precis-overview"
     )
     out = server._build_instructions(runtime)
-    assert (
-        "Pinned skills: "
-        "precis-search-help, precis-overview." in out
-    )
+    assert "Pinned skills: precis-search-help, precis-overview." in out
 
 
 def test_build_instructions_surfaces_unknown_slugs_in_banner() -> None:

@@ -170,7 +170,7 @@ def discover_plugin_ref_passes(
 
 
 __all__ = [
-    "PluginPass",
     "REF_PASS_PLUGIN_GROUP",
+    "PluginPass",
     "discover_plugin_ref_passes",
 ]

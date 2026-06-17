@@ -50,17 +50,13 @@ def test_skip_returns_true_over_ceiling(
     # Ceiling so small that any nonzero load triggers.
     # Mock current_load to a known nonzero value to keep the test
     # deterministic regardless of the host's actual load.
-    with patch(
-        "precis.utils.load_gate.current_load", return_value=10.0
-    ):
+    with patch("precis.utils.load_gate.current_load", return_value=10.0):
         assert skip_if_high_load("test_pass") is True
 
 
 def test_skip_returns_false_when_loadavg_unavailable() -> None:
     """Platforms without getloadavg → skip is False (degrade safe)."""
-    with patch(
-        "precis.utils.load_gate.current_load", return_value=None
-    ):
+    with patch("precis.utils.load_gate.current_load", return_value=None):
         assert skip_if_high_load("test_pass") is False
 
 

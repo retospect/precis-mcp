@@ -157,9 +157,7 @@ class CacheBackedHandler(Handler):
     #: target the paper / patent ingest path uses.
     chunk_target_chars: ClassVar[int] = 800
 
-    def _split_body_blocks(
-        self, blocks: list[BlockInsert]
-    ) -> list[BlockInsert]:
+    def _split_body_blocks(self, blocks: list[BlockInsert]) -> list[BlockInsert]:
         """Split any oversized ``body_blocks`` into semantic chunks.
 
         Blocks ≤ ``chunk_target_chars`` pass through unchanged. Larger
@@ -196,10 +194,7 @@ class CacheBackedHandler(Handler):
             # Skip splitting when the handler pre-embedded this block:
             # the embedding is anchored to the full text, splitting
             # would orphan it.
-            if (
-                block.embedding is not None
-                or len(text) <= self.chunk_target_chars
-            ):
+            if block.embedding is not None or len(text) <= self.chunk_target_chars:
                 out.append(replace(block, pos=pos))
                 pos += 1
                 continue
@@ -366,9 +361,7 @@ class CacheBackedHandler(Handler):
 
         # True miss — fresh ref creation.
         result = self._fetch(key)
-        ttl_to_write = (
-            ttl_seconds_override if ttl_override_active else self.ttl_seconds
-        )
+        ttl_to_write = ttl_seconds_override if ttl_override_active else self.ttl_seconds
         ref, cache = self.store.put_cache_entry(
             kind=self.spec.kind,
             slug=self._slug_for(key),
@@ -410,9 +403,7 @@ class CacheBackedHandler(Handler):
         distinguishes "asked for forever" from "didn't ask").
         """
         result = self._fetch(key)
-        ttl_to_write = (
-            ttl_seconds_override if ttl_override_active else self.ttl_seconds
-        )
+        ttl_to_write = ttl_seconds_override if ttl_override_active else self.ttl_seconds
         new_ref, cache = self.store.update_cache_entry(
             ref_id=ref.id,
             title=result.title,

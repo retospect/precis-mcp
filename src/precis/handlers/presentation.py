@@ -213,10 +213,7 @@ class PresentationHandler(Handler):
         if text is None or not str(text).strip():
             raise BadInput(
                 "put(kind='pres') requires text= (the block body)",
-                next=(
-                    "put(kind='pres', id='<slug>', text='...', "
-                    "pos=N)"
-                ),
+                next=("put(kind='pres', id='<slug>', text='...', pos=N)"),
             )
         slug = str(id).strip()
         body = str(text)

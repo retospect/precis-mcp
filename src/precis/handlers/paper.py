@@ -1045,9 +1045,9 @@ class PaperHandler(Handler):
         """
         if isinstance(id, int) or (isinstance(id, str) and id.strip().isdigit()):
             ref_id = int(id)
-            ref = self.store.fetch_refs_by_ids(
-                [ref_id], include_deleted=False
-            ).get(ref_id)
+            ref = self.store.fetch_refs_by_ids([ref_id], include_deleted=False).get(
+                ref_id
+            )
             if ref is None or ref.kind != "paper":
                 raise NotFound(
                     f"paper id={ref_id} not found",
@@ -1116,8 +1116,12 @@ class PaperHandler(Handler):
                 conn=conn,
             )
             for scheme, value in (("doi", doi), ("arxiv", arxiv)):
-                if value and str(value).strip() and self.store.set_ref_identifier(
-                    ref_id, scheme, str(value), source="edit", conn=conn
+                if (
+                    value
+                    and str(value).strip()
+                    and self.store.set_ref_identifier(
+                        ref_id, scheme, str(value), source="edit", conn=conn
+                    )
                 ):
                     changed.append(scheme)
         if new_title is not None:

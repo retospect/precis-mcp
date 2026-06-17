@@ -95,7 +95,7 @@ def _extract_summary(body: str) -> tuple[str, int]:
             cut = idx
     if cut > 0:
         summary = body[: cut + 1].rstrip()
-        tail = body[cut + 1:]
+        tail = body[cut + 1 :]
     elif len(body) > _SUMMARY_MAX_CHARS:
         summary = body[:_SUMMARY_MAX_CHARS].rstrip() + "…"
         tail = body[_SUMMARY_MAX_CHARS:]
@@ -635,9 +635,7 @@ class NumericRefHandler(Handler):
                 next=[
                     n
                     for n in (
-                        target_err.next
-                        if isinstance(target_err.next, str)
-                        else None,
+                        target_err.next if isinstance(target_err.next, str) else None,
                         rel_err.next if isinstance(rel_err.next, str) else None,
                     )
                     if n

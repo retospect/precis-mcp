@@ -226,9 +226,7 @@ def test_done_event_carries_caller_source(
     # logging it cares about.
     from precis.store.types import Tag
 
-    job = handler.store.insert_ref(
-        kind="job", slug=None, title="dummy", parent_id=rid
-    )
+    job = handler.store.insert_ref(kind="job", slug=None, title="dummy", parent_id=rid)
     handler.store.add_tag(
         job.id,
         Tag.parse_strict("STATUS:succeeded"),

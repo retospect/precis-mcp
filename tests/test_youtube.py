@@ -323,11 +323,11 @@ class TestScrapeWatchPageMeta:
     def _stub_response(self, html: str, status: int = 200):
         import httpx
 
-        return httpx.Response(status, text=html, request=httpx.Request("GET", "https://www.youtube.com/"))
+        return httpx.Response(
+            status, text=html, request=httpx.Request("GET", "https://www.youtube.com/")
+        )
 
-    def test_parses_og_title_description_channel_duration(
-        self, monkeypatch
-    ) -> None:
+    def test_parses_og_title_description_channel_duration(self, monkeypatch) -> None:
         from precis.handlers import youtube as yt_mod
 
         html = """

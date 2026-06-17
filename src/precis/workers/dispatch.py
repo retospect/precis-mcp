@@ -91,9 +91,7 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
         # in-place (tag halt:tick-cap / halt:cost-cap so attention
         # view surfaces it); the third skips the whole dispatch
         # round. See workers/planner_guardrails.py.
-        verdict = planner_guardrails.check_parent(
-            store, parent_ref_id=parent_id
-        )
+        verdict = planner_guardrails.check_parent(store, parent_ref_id=parent_id)
         if not verdict.allow:
             if verdict.halt_tag is None:
                 # Global ceiling — stop dispatching anything until
@@ -109,9 +107,7 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
         try:
             claimed, minted = _claim_and_dispatch(store, parent_id)
         except Exception:
-            log.exception(
-                "dispatch: failed to process parent todo id=%d", parent_id
-            )
+            log.exception("dispatch: failed to process parent todo id=%d", parent_id)
             n_failed += 1
             continue
         n_claimed += claimed
@@ -122,9 +118,7 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
             planner_guardrails.bump_tick_count(store, parent_id)
         elif claimed:
             n_failed += 1
-    return BatchResult(
-        handler="dispatch", claimed=n_claimed, ok=n_ok, failed=n_failed
-    )
+    return BatchResult(handler="dispatch", claimed=n_claimed, ok=n_ok, failed=n_failed)
 
 
 # ── candidate enumeration (unlocked) ──────────────────────────────
@@ -204,7 +198,9 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id
                       AND t.namespace = 'OPEN'
-                      AND """ + _doable_exclusion_clause() + """
+                      AND """
+            + _doable_exclusion_clause()
+            + """
                )
              ORDER BY r.ref_id
              LIMIT %s
@@ -217,9 +213,7 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
 # ── per-parent locked mint ────────────────────────────────────────
 
 
-def _claim_and_dispatch(
-    store: Store, parent_id: int
-) -> tuple[int, bool]:
+def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
     """Lock one parent todo and mint its child job.
 
     Returns ``(claimed, minted)``:
@@ -298,7 +292,9 @@ def _claim_and_dispatch(
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id
                       AND t.namespace = 'OPEN'
-                      AND """ + _doable_exclusion_clause() + """
+                      AND """
+            + _doable_exclusion_clause()
+            + """
                )
              FOR UPDATE OF r SKIP LOCKED
             """,
@@ -348,8 +344,7 @@ def _claim_and_dispatch(
         # the pass.
         if not isinstance(executor, str) or not is_known_executor(executor):
             log.warning(
-                "dispatch: parent #%d has unknown meta.executor=%r; "
-                "skipping",
+                "dispatch: parent #%d has unknown meta.executor=%r; skipping",
                 ref_id,
                 executor,
             )
@@ -363,8 +358,7 @@ def _claim_and_dispatch(
         spec = get_job_type(job_type)
         if spec is None:
             log.warning(
-                "dispatch: parent #%d has unknown meta.job_type=%r; "
-                "skipping",
+                "dispatch: parent #%d has unknown meta.job_type=%r; skipping",
                 ref_id,
                 job_type,
             )
@@ -440,8 +434,7 @@ def _claim_and_dispatch(
             conn=conn,
         )
         log.info(
-            "dispatch: parent #%d → minted job #%d (job_type=%s, "
-            "executor=%s)",
+            "dispatch: parent #%d → minted job #%d (job_type=%s, executor=%s)",
             ref_id,
             child.id,
             job_type,

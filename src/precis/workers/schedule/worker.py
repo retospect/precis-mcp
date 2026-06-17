@@ -101,17 +101,13 @@ def run_schedule_pass(store: Store, *, limit: int = 50) -> BatchResult:
     n_skipped = 0
     for rec_id in candidate_ids:
         try:
-            claimed, spawned, skipped = _claim_and_process(
-                store, rec_id, now=now
-            )
+            claimed, spawned, skipped = _claim_and_process(store, rec_id, now=now)
         except Exception:
             # Bad schedule shape, missing index, etc. — log and
             # continue. The handler boundary validates at write time,
             # so a bad ``meta.schedule`` here is a pre-existing row
             # or a system-modified meta.
-            log.exception(
-                "schedule: failed to process recurring id=%d", rec_id
-            )
+            log.exception("schedule: failed to process recurring id=%d", rec_id)
             n_skipped += 1
             continue
         n_claimed += claimed

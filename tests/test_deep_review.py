@@ -76,9 +76,7 @@ def test_pass_skips_when_recent_digest_exists(
         called["hit"] = True
         return AgentResult(final_text="x", cost_usd=0, duration_s=0, turns_used=None)
 
-    monkeypatch.setattr(
-        "precis.workers.review.call_claude_agent", _spy
-    )
+    monkeypatch.setattr("precis.workers.review.call_claude_agent", _spy)
     result = run_deep_review_pass(store)
     assert result.claimed == 0
     assert called["hit"] is False
@@ -92,9 +90,7 @@ def test_strategic_dashboard_empty(store: Store) -> None:
     assert "no strategic todos" in snap
 
 
-def test_strategic_dashboard_renders_picks(
-    handler: TodoHandler, store: Store
-) -> None:
+def test_strategic_dashboard_renders_picks(handler: TodoHandler, store: Store) -> None:
     root = handler.put(text="Main", tags=["level:strategic"])
     root_id = id_of(root.body)
     a = handler.put(text="leaf", parent_id=root_id)
@@ -149,9 +145,7 @@ def test_pass_writes_digest_on_happy_path(
             turns_used=22,
         )
 
-    monkeypatch.setattr(
-        "precis.workers.review.call_claude_agent", _ok
-    )
+    monkeypatch.setattr("precis.workers.review.call_claude_agent", _ok)
     result = run_deep_review_pass(store)
     assert result.claimed == 1
     assert result.ok == 1
@@ -184,9 +178,7 @@ def test_pass_records_failure_on_llm_error(
     def _err(*a, **kw):
         raise ClaudeAgentError("timeout", stdout="", stderr="took too long")
 
-    monkeypatch.setattr(
-        "precis.workers.review.call_claude_agent", _err
-    )
+    monkeypatch.setattr("precis.workers.review.call_claude_agent", _err)
     result = run_deep_review_pass(store)
     assert result.claimed == 1
     assert result.failed == 1

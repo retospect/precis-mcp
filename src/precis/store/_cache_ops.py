@@ -123,7 +123,9 @@ class CacheMixin:
         if row is None:
             return None
         ref = _row_to_ref(row[:_REFS_COLS_LEN])
-        cache = _row_to_cache_entry(row[_REFS_COLS_LEN : _REFS_COLS_LEN + _CACHE_COLS_LEN])
+        cache = _row_to_cache_entry(
+            row[_REFS_COLS_LEN : _REFS_COLS_LEN + _CACHE_COLS_LEN]
+        )
         return (ref, cache)
 
     def get_cache_entry_by_slug(
@@ -163,7 +165,9 @@ class CacheMixin:
         if row is None:
             return None
         ref = _row_to_ref(row[:_REFS_COLS_LEN])
-        cache = _row_to_cache_entry(row[_REFS_COLS_LEN : _REFS_COLS_LEN + _CACHE_COLS_LEN])
+        cache = _row_to_cache_entry(
+            row[_REFS_COLS_LEN : _REFS_COLS_LEN + _CACHE_COLS_LEN]
+        )
         return (ref, cache)
 
     def update_cache_entry(
