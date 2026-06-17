@@ -88,9 +88,43 @@
 
 <p class="text-xs text-slate-400 mt-3">
   {{ rows | length }} row{{ '' if rows | length == 1 else 's' }}.
-  Manual ingest: drop the PDF into <code>~/work/new_papers/</code> on
-  a watch host; the watcher rsyncs into the corpus inbox and the
-  ingest worker upgrades the stub to a full paper.
 </p>
 {% endif %}
+
+{# Ingest drop-zones — where to put files for the watch daemon to
+   pick up. Watch_dir is read from com.precis.watch.plist on the
+   web host; when unreadable we surface a fallback hint instead. #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2">Manual ingest — drop-zones</h2>
+  {% if watch_dir %}
+  <p class="text-xs text-slate-500 mb-3">
+    Watch host: melchior. Daemon polls
+    <code class="text-slate-700">{{ watch_dir }}</code> for new files and
+    routes by sub-directory:
+  </p>
+  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for d in dropzones %}
+    <li class="px-4 py-3 text-xs">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="font-semibold text-slate-700">{{ d.label }}</span>
+        <code class="ml-auto text-slate-700 bg-slate-50 px-1.5 py-0.5 rounded select-all">{{ d.path }}</code>
+      </div>
+      <p class="text-slate-500">{{ d.description }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="text-xs text-slate-400 mt-2">
+    Files dropped in <code>{{ watch_dir }}/tagging/&lt;slug&gt;/</code>
+    get a <code>topic:&lt;slug&gt;</code> tag on the ingested ref.
+    Errors land in <code>{{ watch_dir }}/errors/&lt;timestamp&gt;/</code>
+    with a sibling note explaining why.
+  </p>
+  {% else %}
+  <p class="text-xs text-slate-500">
+    Watch-daemon plist not readable from the web host — running
+    outside the cluster, or the watch daemon isn't installed here.
+    Drop-zone paths would be shown if it were.
+  </p>
+  {% endif %}
+</section>
 {% endblock %}

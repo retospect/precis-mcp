@@ -1,5 +1,14 @@
 """Papers-needed tab — chunkless paper stubs awaiting fetch.
 
+Also surfaces the cluster's drop-zone paths so the operator knows
+where to put files for manual ingest. The ``precis watch`` daemon
+on melchior monitors a watch-dir; sub-directories under it select
+the ingest kind (``papers/`` → paper pipeline, ``books/`` → book,
+``presentations/`` → slides). We read the watch daemon's plist to
+find the live path so the operator gets the actual path, not a
+guess.
+
+
 A *stub* is a ``kind='paper'`` ref minted with a DOI / arXiv / S2
 identifier but no PDF yet (``pdf_sha256 IS NULL``). The ``fetch_oa``
 worker cascades Unpaywall → arXiv → Semantic Scholar trying to land
@@ -20,6 +29,8 @@ both views render the same data shape.
 
 from __future__ import annotations
 
+import plistlib
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -28,6 +39,64 @@ from fastapi.responses import HTMLResponse
 from precis_web.deps import get_store, templates
 
 router = APIRouter(prefix="/papers-needed", tags=["papers-needed"])
+
+_WATCH_PLIST = Path("/Library/LaunchDaemons/com.precis.watch.plist")
+
+
+def _watch_dir_from_plist() -> str | None:
+    """Lift the watch-dir argument out of ``precis watch``'s plist.
+
+    The plist's ``ProgramArguments`` is a list; the watch_dir is the
+    final positional argument (after all the flags). Returns ``None``
+    when the plist isn't readable (running outside the cluster, or
+    file permission issue) — the template then surfaces a fallback
+    hint rather than a broken display.
+    """
+    if not _WATCH_PLIST.exists():
+        return None
+    try:
+        with _WATCH_PLIST.open("rb") as fh:
+            payload = plistlib.load(fh)
+    except Exception:
+        # Plistlib chokes on XML comments containing ``--``; the same
+        # plutil fallback that /env uses would work here, but the
+        # precis-watch plist doesn't have that issue today. Keep simple.
+        return None
+    args = payload.get("ProgramArguments") or []
+    if not isinstance(args, list) or not args:
+        return None
+    # Walk backwards for the first positional (skips ``--debounce 3``
+    # and similar flag-value pairs).
+    for tok in reversed(args):
+        if isinstance(tok, str) and not tok.startswith("-") and "/" in tok:
+            return tok
+    return None
+
+
+#: Per-kind drop-zone routing. Mirrors ``_KIND_DIRS`` in
+#: ``src/precis/cli/watch.py`` — keep these in sync when adding a
+#: new kind to the watcher.
+_KIND_DROPZONES: tuple[tuple[str, str, str], ...] = (
+    (
+        "Papers (PDFs)",
+        "papers",
+        "PDFs of journal articles, preprints, theses. Marker-pdf "
+        "extracts text + structure, chunker splits, embedder + "
+        "chunk_keywords pick up the chunks.",
+    ),
+    (
+        "Books",
+        "books",
+        "Long-form PDFs (>50 pages). Chunked the same way as papers "
+        "but at the book corpus.",
+    ),
+    (
+        "Presentations (slides)",
+        "presentations",
+        "Slide-deck PDFs. Same pipeline as papers but tagged as "
+        "presentations so the slug pattern differs.",
+    ),
+)
 
 
 def _title_for_ref(refs: dict[int, Any], ref_id: int) -> str:
@@ -85,6 +154,17 @@ async def index(request: Request, awaiting: int | None = None) -> HTMLResponse:
                 "last_event": row["last_event"],
             }
         )
+    watch_dir = _watch_dir_from_plist()
+    dropzones: list[dict[str, str]] = []
+    if watch_dir:
+        for label, sub, description in _KIND_DROPZONES:
+            dropzones.append(
+                {
+                    "label": label,
+                    "path": str(Path(watch_dir) / sub),
+                    "description": description,
+                }
+            )
     return templates.TemplateResponse(
         request,
         "papers_needed/index.html.j2",
@@ -92,5 +172,7 @@ async def index(request: Request, awaiting: int | None = None) -> HTMLResponse:
             "active_tab": "papers-needed",
             "rows": display,
             "awaiting": awaiting_flag,
+            "watch_dir": watch_dir,
+            "dropzones": dropzones,
         },
     )
