@@ -584,14 +584,13 @@ def test_env_missing_plist_surfaces_red_banner(client, monkeypatch) -> None:
     """If the agent's plist is absent (e.g. running outside the cluster)
     the page renders without crashing and the operator sees a clear
     "NOT FOUND" marker rather than silent unsets."""
+    import tempfile
+    from pathlib import Path as _Path
+
     from precis_web.routes import env as env_mod
 
     monkeypatch.setattr(env_mod, "_read_plist_env", lambda label: {})
-    # Force ``plist_path.exists()`` to False by pointing at a temp dir
-    # with no plists in it.
-    import tempfile
-
-    monkeypatch.setattr(env_mod, "_PLIST_DIR", Path(tempfile.mkdtemp()))
+    monkeypatch.setattr(env_mod, "_PLIST_DIR", _Path(tempfile.mkdtemp()))
     resp = client.get("/env?agent=dream_agent")
     assert resp.status_code == 200
     assert "NOT FOUND" in resp.text

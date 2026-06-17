@@ -50,10 +50,12 @@ _PLIST_DIR = Path("/Library/LaunchDaemons")
 def _read_plist_env(label: str) -> dict[str, str]:
     """Project a LaunchDaemon's ``EnvironmentVariables`` to a flat dict.
 
-    Returns an empty dict when the plist is missing or unreadable (the
-    web service runs as ``deploy``; the plist is mode 0644 so reads
-    succeed without sudo). Caller treats missing == "agent runs with
-    no env override beyond launchd's defaults".
+    Returns an empty dict when the plist is missing or unreadable.
+    Some macOS plists are stored in the binary plist format which
+    ``plistlib.load`` handles transparently, but malformed XML
+    headers leak a bare ``xml.parsers.expat.ExpatError`` past the
+    typed exception list — catch a broad ``Exception`` here so the
+    /env route degrades to "empty env" instead of 500'ing.
     """
     path = _PLIST_DIR / f"{label}.plist"
     if not path.exists():
@@ -61,7 +63,7 @@ def _read_plist_env(label: str) -> dict[str, str]:
     try:
         with path.open("rb") as fh:
             payload = plistlib.load(fh)
-    except (OSError, plistlib.InvalidFileException):
+    except Exception:
         return {}
     env = payload.get("EnvironmentVariables") or {}
     if not isinstance(env, dict):
@@ -222,35 +224,88 @@ _BY_KEY: dict[str, AgentSpec] = {a.key: a for a in AGENTS}
 
 
 def _read_file(path: str | None, *, max_chars: int = 50_000) -> dict[str, Any]:
-    """Resolve a path and read its contents (capped)."""
+    """Resolve a path and read its contents (capped).
+
+    Distinguish "file is missing" from "file exists but the web user
+    can't read it" — the latter is common when the agent runs as a
+    different user (hermes) than the web (deploy) and the prompt
+    lives under that user's home.
+    """
     if not path:
-        return {"path": None, "exists": False, "text": None, "size": 0}
+        return {
+            "path": None,
+            "exists": False,
+            "unreadable": False,
+            "text": None,
+            "size": 0,
+        }
     p = Path(path)
-    if not p.exists():
-        return {"path": str(p), "exists": False, "text": None, "size": 0}
     try:
         raw = p.read_text(errors="replace")
+    except FileNotFoundError:
+        return {
+            "path": str(p),
+            "exists": False,
+            "unreadable": False,
+            "text": None,
+            "size": 0,
+        }
     except OSError as exc:
         return {
             "path": str(p),
             "exists": True,
-            "text": f"(read failed: {exc})",
+            "unreadable": True,
+            "text": f"(web user can't read: {exc})",
             "size": 0,
         }
     size = len(raw)
     if size > max_chars:
         raw = raw[:max_chars] + f"\n\n… (truncated; full size {size:,} chars)"
-    return {"path": str(p), "exists": True, "text": raw, "size": size}
+    return {
+        "path": str(p),
+        "exists": True,
+        "unreadable": False,
+        "text": raw,
+        "size": size,
+    }
 
 
 def _parse_mcp_config(path: str | None) -> dict[str, Any]:
-    """Parse the MCP config JSON and project (name, kind, transport)."""
-    if not path or not Path(path).exists():
-        return {"path": path, "exists": False, "servers": []}
+    """Parse the MCP config JSON and project (name, kind, transport).
+
+    The web service runs as ``deploy`` and can't always reach files
+    under another user's home (e.g. ``/Users/hermes/.claude/``). When
+    the path exists but isn't readable, surface "(unreadable by web —
+    file is at the path but the deploy user can't read it)" rather
+    than the misleading "not found".
+    """
+    if not path:
+        return {"path": path, "exists": False, "servers": [], "unreadable": False}
+    p = Path(path)
     try:
-        payload = json.loads(Path(path).read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        return {"path": path, "exists": True, "servers": [], "error": str(exc)}
+        raw = p.read_text()
+    except FileNotFoundError:
+        return {"path": path, "exists": False, "servers": [], "unreadable": False}
+    except OSError as exc:
+        # Permission denied / not-a-file / etc. — the file *exists*,
+        # we just can't get to it. Different signal than 'missing'.
+        return {
+            "path": path,
+            "exists": True,
+            "servers": [],
+            "unreadable": True,
+            "error": str(exc),
+        }
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return {
+            "path": path,
+            "exists": True,
+            "servers": [],
+            "unreadable": False,
+            "error": str(exc),
+        }
     servers_raw = payload.get("mcpServers") or payload.get("servers") or {}
     servers: list[dict[str, Any]] = []
     for name, cfg in (servers_raw or {}).items():

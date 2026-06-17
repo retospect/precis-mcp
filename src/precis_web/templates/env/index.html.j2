@@ -87,6 +87,15 @@
   <h2 class="text-sm font-semibold mb-2">MCP servers</h2>
   {% if not detail.mcp.exists %}
   <p class="text-xs text-rose-700">MCP config not found at <code>{{ detail.mcp.path or '(unset)' }}</code></p>
+  {% elif detail.mcp.unreadable %}
+  <p class="text-xs text-amber-700">
+    MCP config exists at <code>{{ detail.mcp.path }}</code>
+    but the web service (running as <code>deploy</code>) can't read it
+    — the agent daemon (running as a different user) *can* read it,
+    so this is a permissions gap on the inspection path only, not
+    a broken agent.
+    <span class="text-slate-500">({{ detail.mcp.error }})</span>
+  </p>
   {% elif detail.mcp.error %}
   <p class="text-xs text-rose-700">MCP config parse failed: {{ detail.mcp.error }}</p>
   {% elif not detail.mcp.servers %}
@@ -119,9 +128,14 @@
   <h2 class="text-sm font-semibold mb-2">System prompt
     <span class="text-xs text-slate-400 font-normal">(from <code>{{ s.system_prompt_env }}</code>)</span>
   </h2>
-  {% if detail.system_prompt.exists %}
+  {% if detail.system_prompt.exists and not detail.system_prompt.unreadable %}
   <p class="text-xs text-slate-400 mb-1">{{ detail.system_prompt.path }} · {{ detail.system_prompt.size }} chars</p>
   <pre class="rounded-lg border border-slate-200 bg-white p-3 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto max-h-96 overflow-y-auto">{{ detail.system_prompt.text }}</pre>
+  {% elif detail.system_prompt.unreadable %}
+  <p class="text-xs text-amber-700">
+    Exists at <code>{{ detail.system_prompt.path }}</code> but unreadable by the web user (<code>deploy</code>);
+    the agent daemon under its own user reads it fine.
+  </p>
   {% else %}
   <p class="text-xs text-rose-700">Not readable: <code>{{ detail.system_prompt.path or '(unset)' }}</code></p>
   {% endif %}
@@ -133,9 +147,14 @@
   <h2 class="text-sm font-semibold mb-2">Directive prompt
     <span class="text-xs text-slate-400 font-normal">(from <code>{{ s.directive_prompt_env }}</code>)</span>
   </h2>
-  {% if detail.directive_prompt.exists %}
+  {% if detail.directive_prompt.exists and not detail.directive_prompt.unreadable %}
   <p class="text-xs text-slate-400 mb-1">{{ detail.directive_prompt.path }} · {{ detail.directive_prompt.size }} chars</p>
   <pre class="rounded-lg border border-slate-200 bg-white p-3 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto max-h-96 overflow-y-auto">{{ detail.directive_prompt.text }}</pre>
+  {% elif detail.directive_prompt.unreadable %}
+  <p class="text-xs text-amber-700">
+    Exists at <code>{{ detail.directive_prompt.path }}</code> but unreadable by the web user (<code>deploy</code>);
+    the agent daemon under its own user reads it fine.
+  </p>
   {% else %}
   <p class="text-xs text-rose-700">Not readable: <code>{{ detail.directive_prompt.path or '(unset)' }}</code></p>
   {% endif %}
