@@ -54,6 +54,7 @@ HandlerKey = Literal[
     "chunk_keywords",
     "chase",
     "fetch",
+    "gp_fetch",
     "tag_embeddings",
     "job_claude_inproc",
 ]
@@ -125,6 +126,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "chunk_keywords",
             "chase",
             "fetch",
+            "gp_fetch",
             "tag_embeddings",
             "job_claude_inproc",
             "dream",
@@ -285,6 +287,7 @@ def run(args: argparse.Namespace) -> None:
                 "chunk_keywords",
                 "chase",
                 "fetch",
+                "gp_fetch",
                 "tag_embeddings",
                 "auto_check",
                 "schedule",
@@ -472,6 +475,31 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_fetch_pass)
+
+        # Google Patents fall-back fetcher — picks up patents OPS gave up
+        # on (or is still 404-ing) and tries patents.google.com once.
+        # Gated by PRECIS_GP_FETCH=1; the pass itself short-circuits when
+        # the env isn't set so it's safe to include in the system profile
+        # even on hosts that shouldn't run it. See ADR-pending /
+        # docs/decisions about external-fetch goodwill.
+        if _pass_enabled("gp_fetch"):
+            from precis.workers.fetch_google_patents import run_gp_fetch_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _gp_fetch_pass(batch_size: int) -> _BatchResult:
+                # Smaller cap than the default chunk batch — one HTTP
+                # roundtrip per patent against a third-party host. The
+                # worker idle-sleeps when nothing is due so a small cap
+                # is friendly without leaving work stranded.
+                r = run_gp_fetch_pass(store, limit=min(batch_size, 5))
+                return _BatchResult(
+                    handler="fetch_google_patents",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_gp_fetch_pass)
 
         # Auto-check pass — drains the todo-tree's auto-task queue
         # (Slice 1b of todo-tree-plan.md). Cheap and SQL-only by

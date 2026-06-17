@@ -179,6 +179,41 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     )
     sp.add_argument("--database-url", default=None)
 
+    # ── fetch-google-patents ────────────────────────────────────────────
+    gp = sub.add_parser(
+        "fetch-google-patents",
+        help=(
+            "Fall-back full-text fetcher via patents.google.com. Picks "
+            "patents tagged awaiting-fulltext or fulltext-unavailable "
+            "(no gp-attempted tag), fetches the patents.google.com "
+            "page, parses description + claims, and inserts blocks."
+        ),
+    )
+    gp.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=(
+            "Max patents this pass will attempt. Overflow resurfaces "
+            "on the next pass. Default: 10."
+        ),
+    )
+    gp.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Re-attempt patents already tagged gp-attempted (cleared "
+            "before the new fetch). Use when the parser has been "
+            "updated, not in the steady-state cycle."
+        ),
+    )
+    gp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be fetched; fetch nothing, mutate nothing.",
+    )
+    gp.add_argument("--database-url", default=None)
+
 
 # ---------------------------------------------------------------------------
 # watch-patents
@@ -466,10 +501,61 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
         store.close()
 
 
+# ---------------------------------------------------------------------------
+# fetch-google-patents
+# ---------------------------------------------------------------------------
+
+
+def run_gp_fetch_cli(args: argparse.Namespace) -> None:
+    """Implements ``precis jobs fetch-google-patents`` — backfill patent
+    full text via patents.google.com for patents OPS couldn't serve.
+
+    Unlike the OPS sweep this runner doesn't require any external
+    credentials — patents.google.com serves the HTML page without
+    auth. It still respects the ``PRECIS_GP_FETCH`` env gate so an
+    ad-hoc run on a host that's been excluded from the steady-state
+    pass is an explicit opt-in.
+    """
+    from precis.config import load_config
+    from precis.store import Store
+    from precis.workers.fetch_google_patents import (
+        DEFAULT_GP_LIMIT,
+        _is_enabled,
+        run_gp_fetch_pass,
+    )
+
+    if not _is_enabled():
+        print(
+            "fetch-google-patents: PRECIS_GP_FETCH=1 must be set to opt in",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    cfg = load_config()
+    dsn = resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        limit = args.limit if args.limit is not None else DEFAULT_GP_LIMIT
+        result = run_gp_fetch_pass(
+            store, limit=limit, force=args.force, dry_run=args.dry_run
+        )
+        if result["claimed"] == 0:
+            print("fetch-google-patents: no patents due for retry")
+            return
+        print(
+            f"fetch-google-patents: claimed={result['claimed']} "
+            f"ok={result['ok']} failed={result['failed']}"
+            + (" (dry-run)" if args.dry_run else "")
+        )
+    finally:
+        store.close()
+
+
 __all__ = [
     "_parse_interval",
     "add_parsers",
     "run_fulltext_sweep_cli",
+    "run_gp_fetch_cli",
     "run_list",
     "run_runner",
     "run_watch",
