@@ -227,16 +227,26 @@ def call_claude_agent(
     if system_prompt_text:
         args.extend(["--append-system-prompt", system_prompt_text])
     if disallowed_tools:
-        # ``--disallowed-tools=VALUE`` instead of two separate args.
-        # Claude Code 2.1.x parses ``--disallowed-tools`` with greedy
-        # nargs ("collect everything until the next flag"), so the
-        # space-separated form swallowed the prompt — every word in
-        # the dream prompt became a "deny rule" and the binary
+        # ``claude -p`` declares ``--disallowed-tools <tools...>`` as
+        # a Commander.js *variadic* — it greedily consumes every
+        # subsequent positional as another tool name, including the
+        # prompt itself. The ``=VALUE`` form binds the first value
+        # but doesn't stop the variadic from eating the rest, so
+        # ``--disallowed-tools=WebFetch,WebSearch <prompt>`` parsed
+        # the prompt's words as additional deny rules and the binary
         # exited 1 with "Permission deny rule 'DREAM' matches no
-        # known tool — check for typos." (2026-06-17 incident).
-        # The equals form binds the value to the flag at parse time,
-        # so subsequent extra_args + prompt are unambiguous.
-        args.append(f"--disallowed-tools={','.join(disallowed_tools)}")
+        # known tool" (2026-06-17 dream incident).
+        #
+        # Workaround: pass the deny list via ``--settings`` JSON. The
+        # ``permissions.deny`` channel is Claude Code's supported
+        # per-project / per-call route, and ``--settings`` takes a
+        # single JSON string value so there's no variadic to fight.
+        import json as _json
+
+        settings_payload = {
+            "permissions": {"deny": list(disallowed_tools)},
+        }
+        args.extend(["--settings", _json.dumps(settings_payload)])
     args.extend(extra_args)
     args.append(prompt)
 

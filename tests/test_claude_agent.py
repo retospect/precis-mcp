@@ -204,11 +204,13 @@ def test_disallowed_tools_joined(stub_bin: Path) -> None:
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     res = call_claude_agent("do", disallowed_tools=("WebFetch", "WebSearch"))
-    # ``=``-joined to bind the value at parse time. Claude Code 2.1.x
-    # has greedy nargs on this flag — the space form swallows the
-    # prompt and every word becomes a deny rule (see incident note in
-    # claude_agent.py).
-    assert "--disallowed-tools=WebFetch,WebSearch" in res.final_text
+    # Deny rules ride via ``--settings`` JSON, not the variadic
+    # ``--disallowed-tools`` flag — see the long comment in
+    # claude_agent.py for the Commander.js variadic story.
+    assert "--settings" in res.final_text
+    assert '"deny"' in res.final_text
+    assert "WebFetch" in res.final_text
+    assert "WebSearch" in res.final_text
 
 
 def test_model_override(stub_bin: Path) -> None:
