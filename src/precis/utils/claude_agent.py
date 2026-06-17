@@ -260,6 +260,24 @@ def call_claude_agent(
         "yes" if mcp_config else "no",
     )
 
+    # CLAUDE_CODE_OAUTH_TOKEN bootstrap. Interactive shells source
+    # ~/.zshrc / ~/.bash_profile which loads the long-lived token
+    # from ``~/.claude_oauth_token`` into the env. launchd-spawned
+    # daemons (dream, worker-agent) don't run any such hook, so
+    # ``claude -p`` falls back to the (expired) keychain credentials
+    # and silently exits "Not logged in" — appearing as a clean
+    # ``cost=$0 turns=None`` success in our logs (2026-06-17 dream
+    # incident). Load the file ourselves when the var is missing.
+    proc_env = dict(os.environ)
+    if "CLAUDE_CODE_OAUTH_TOKEN" not in proc_env:
+        token_path = Path.home() / ".claude_oauth_token"
+        try:
+            token = token_path.read_text().strip()
+        except OSError:
+            token = ""
+        if token:
+            proc_env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+
     started = time.monotonic()
     try:
         res = subprocess.run(
@@ -267,6 +285,7 @@ def call_claude_agent(
             capture_output=True,
             text=True,
             timeout=timeout_s,
+            env=proc_env,
         )
     except subprocess.TimeoutExpired as exc:
         raise ClaudeAgentError(
@@ -289,6 +308,23 @@ def call_claude_agent(
             stdout=res.stdout,
             stderr=res.stderr,
             returncode=res.returncode,
+        )
+
+    # "Not logged in" guard. ``claude -p`` exits 0 with the message
+    # "Not logged in · Please run /login" on stdout when the OAuth
+    # state is bad — and ``call_claude_agent`` used to treat that as
+    # a clean success, reporting ``cost=$0 turns=None`` with no
+    # downstream signal. Detect it explicitly and raise so the
+    # operator sees the failure where it actually happened.
+    stdout_text = (res.stdout or "").strip()
+    if "Not logged in" in stdout_text or "Please run /login" in stdout_text:
+        raise ClaudeAgentError(
+            "claude -p (agent) returned but is not logged in. "
+            "CLAUDE_CODE_OAUTH_TOKEN missing or stale — load it from "
+            "~/.claude_oauth_token or re-run 'claude /login'.",
+            stdout=res.stdout,
+            stderr=res.stderr,
+            returncode=0,
         )
 
     cost_usd = _extract_cost_usd(res.stderr or "")
