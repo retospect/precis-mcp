@@ -17,12 +17,20 @@ The page:
 
 Pure read-only — never invokes anything. The view is what *would*
 run if the agent fired right now.
+
+**Cross-daemon env**: the web process has its OWN environment; the
+dream / worker-agent daemons have theirs. To answer "what env will
+the dream see when it fires?" we read the target daemon's plist
+directly (``/Library/LaunchDaemons/com.precis.*.plist``) and project
+its ``EnvironmentVariables`` block. The web's process env is
+irrelevant to that question.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import plistlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,21 +42,48 @@ from precis_web.deps import templates
 
 router = APIRouter(prefix="/env", tags=["env"])
 
+#: Where macOS LaunchDaemon plists live. Read-only access is enough
+#: for the env inspector — we never write or load anything.
+_PLIST_DIR = Path("/Library/LaunchDaemons")
+
+
+def _read_plist_env(label: str) -> dict[str, str]:
+    """Project a LaunchDaemon's ``EnvironmentVariables`` to a flat dict.
+
+    Returns an empty dict when the plist is missing or unreadable (the
+    web service runs as ``deploy``; the plist is mode 0644 so reads
+    succeed without sudo). Caller treats missing == "agent runs with
+    no env override beyond launchd's defaults".
+    """
+    path = _PLIST_DIR / f"{label}.plist"
+    if not path.exists():
+        return {}
+    try:
+        with path.open("rb") as fh:
+            payload = plistlib.load(fh)
+    except (OSError, plistlib.InvalidFileException):
+        return {}
+    env = payload.get("EnvironmentVariables") or {}
+    if not isinstance(env, dict):
+        return {}
+    return {str(k): str(v) for k, v in env.items()}
+
 
 @dataclass(frozen=True, slots=True)
 class AgentSpec:
     """Static config snapshot for one agent.
 
     ``env_keys`` is the set of env vars the worker consults — the
-    page reads the *current process's* env and reports each as
-    present/absent + a redacted preview. ``file_paths`` carry the
-    role of "render this file's contents inline" (system prompt /
-    directive prompt) when present.
+    page reads the *target daemon's* plist EnvironmentVariables (NOT
+    the web process's env) and reports each as present/absent +
+    a redacted preview. ``launchd_label`` names the plist:
+    ``com.precis.dream`` → ``/Library/LaunchDaemons/com.precis.dream.plist``.
     """
 
     key: str
     label: str
     description: str
+    launchd_label: str
     model_default: str
     model_env: str
     system_prompt_env: str
@@ -74,6 +109,7 @@ AGENTS: tuple[AgentSpec, ...] = (
             "and writes new tier:dream memories. Runs as hermes on "
             "melchior with Claude OAuth (no API key needed)."
         ),
+        launchd_label="com.precis.dream",
         model_default="claude-sonnet-4-6",
         model_env="PRECIS_DREAM_AGENT_MODEL",
         system_prompt_env="PRECIS_DREAM_SOUL_PATH",
@@ -103,6 +139,7 @@ AGENTS: tuple[AgentSpec, ...] = (
             "6h-dedup pass. Walks the todo tree, flags drift / sibling "
             "contradictions / depth-fanout warnings. Opus."
         ),
+        launchd_label="com.precis.worker-agent",
         model_default="claude-opus-4-7",
         model_env="PRECIS_STRUCTURAL_MODEL",
         system_prompt_env="",
@@ -130,6 +167,7 @@ AGENTS: tuple[AgentSpec, ...] = (
             "Weekly-dedup pass. Allen-style archive / prune / "
             "rebalance / long-wait review. Opus."
         ),
+        launchd_label="com.precis.worker-agent",
         model_default="claude-opus-4-7",
         model_env="PRECIS_DEEP_REVIEW_MODEL",
         system_prompt_env="",
@@ -158,6 +196,7 @@ AGENTS: tuple[AgentSpec, ...] = (
             "(plan_tick / fix_gripe), shells out to claude -p with the "
             "model tier from the parent's LLM:* tag, records summary."
         ),
+        launchd_label="com.precis.worker-agent",
         model_default="(per parent LLM:* tag)",
         model_env="PRECIS_JOB_CLAUDE_MODEL",
         system_prompt_env="",
@@ -245,15 +284,15 @@ def _redact(value: str | None) -> str:
     return value
 
 
-def _env_snapshot(spec: AgentSpec) -> list[dict[str, Any]]:
-    """One row per env var the agent consults."""
+def _env_snapshot(
+    spec: AgentSpec, plist_env: dict[str, str]
+) -> list[dict[str, Any]]:
+    """One row per env var the agent consults, read from the plist."""
     sensitive = {"PASSWORD", "KEY", "SECRET", "TOKEN", "API_KEY", "URL", "DSN"}
     rows: list[dict[str, Any]] = []
     for key in spec.env_keys:
-        raw = os.environ.get(key)
+        raw = plist_env.get(key)
         present = raw is not None
-        # ``PRECIS_DATABASE_URL`` carries the DB password embedded, so
-        # we don't show it verbatim — present-or-absent is the signal.
         is_sensitive = any(tok in key.upper() for tok in sensitive)
         rows.append(
             {
@@ -278,23 +317,26 @@ async def index(
     """Render the env-inspector page; ``?agent=KEY`` selects the row.
 
     Without ``agent=``, just the dropdown + a short description per
-    row. With it, the full detail block for that agent.
+    row. With it, the full detail block for that agent — env read
+    from the agent's plist, not the web process's env.
     """
     spec = _BY_KEY.get(agent) if agent else None
     detail: dict[str, Any] | None = None
     if spec is not None:
-        system_prompt = _read_file(os.environ.get(spec.system_prompt_env))
-        directive_prompt = _read_file(
-            os.environ.get(spec.directive_prompt_env)
-        )
-        mcp = _parse_mcp_config(os.environ.get(spec.mcp_config_env))
+        plist_env = _read_plist_env(spec.launchd_label)
+        plist_path = _PLIST_DIR / f"{spec.launchd_label}.plist"
+        system_prompt = _read_file(plist_env.get(spec.system_prompt_env))
+        directive_prompt = _read_file(plist_env.get(spec.directive_prompt_env))
+        mcp = _parse_mcp_config(plist_env.get(spec.mcp_config_env))
         detail = {
             "spec": spec,
-            "model": os.environ.get(spec.model_env) or spec.model_default,
+            "model": plist_env.get(spec.model_env) or spec.model_default,
             "system_prompt": system_prompt,
             "directive_prompt": directive_prompt,
             "mcp": mcp,
-            "env_rows": _env_snapshot(spec),
+            "env_rows": _env_snapshot(spec, plist_env),
+            "plist_path": str(plist_path),
+            "plist_found": plist_path.exists(),
         }
     return templates.TemplateResponse(
         request,

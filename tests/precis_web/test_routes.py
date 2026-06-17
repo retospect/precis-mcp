@@ -540,31 +540,61 @@ def test_env_index_lists_all_agents(client) -> None:
 
 
 def test_env_select_dream_renders_detail(client, monkeypatch) -> None:
-    """``GET /env?agent=dream_agent`` resolves the system + directive
-    prompt env vars and shows the file contents inline."""
-    # Stub the env vars so the route can resolve to predictable paths
-    # (using the conftest's tmp_path-based corpus_dir is overkill —
-    # just point at /etc/hostname which exists on every host).
-    monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
-    monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", "/etc/hostname")
-    monkeypatch.setenv("PRECIS_DREAM_SOUL_PATH", "/etc/hostname")
-    monkeypatch.delenv("PRECIS_MCP_CONFIG", raising=False)
+    """``GET /env?agent=dream_agent`` reads the dream daemon's plist
+    env and renders the system + directive prompt inline. The web
+    process's own env is irrelevant here — we stub the plist read."""
+    from precis_web.routes import env as env_mod
+
+    monkeypatch.setattr(
+        env_mod,
+        "_read_plist_env",
+        lambda label: {
+            "PRECIS_DREAM_AGENT": "1",
+            "PRECIS_DREAM_PROMPT_PATH": "/etc/hostname",
+            "PRECIS_DREAM_SOUL_PATH": "/etc/hostname",
+        },
+    )
     resp = client.get("/env?agent=dream_agent")
     assert resp.status_code == 200
     # Model fallback to the default when the model env is unset.
     assert "claude-sonnet-4-6" in resp.text
     # Env-var snapshot shows the gating flag as present.
     assert "PRECIS_DREAM_AGENT" in resp.text
+    # Plist breadcrumb so the operator knows where the env came from.
+    assert "com.precis.dream.plist" in resp.text
 
 
 def test_env_missing_mcp_config_shows_warning(client, monkeypatch) -> None:
-    """When ``PRECIS_MCP_CONFIG`` points at a non-existent file the
-    template surfaces a "MCP config not found" warning rather than
-    crashing."""
-    monkeypatch.setenv("PRECIS_MCP_CONFIG", "/tmp/no-such-mcp-config.json")
+    """When the plist's ``PRECIS_MCP_CONFIG`` points at a non-existent
+    file the template surfaces a "MCP config not found" warning rather
+    than crashing."""
+    from precis_web.routes import env as env_mod
+
+    monkeypatch.setattr(
+        env_mod,
+        "_read_plist_env",
+        lambda label: {"PRECIS_MCP_CONFIG": "/tmp/no-such-mcp-config.json"},
+    )
     resp = client.get("/env?agent=dream_agent")
     assert resp.status_code == 200
     assert "MCP config not found" in resp.text
+
+
+def test_env_missing_plist_surfaces_red_banner(client, monkeypatch) -> None:
+    """If the agent's plist is absent (e.g. running outside the cluster)
+    the page renders without crashing and the operator sees a clear
+    "NOT FOUND" marker rather than silent unsets."""
+    from precis_web.routes import env as env_mod
+
+    monkeypatch.setattr(env_mod, "_read_plist_env", lambda label: {})
+    # Force ``plist_path.exists()`` to False by pointing at a temp dir
+    # with no plists in it.
+    import tempfile
+
+    monkeypatch.setattr(env_mod, "_PLIST_DIR", Path(tempfile.mkdtemp()))
+    resp = client.get("/env?agent=dream_agent")
+    assert resp.status_code == 200
+    assert "NOT FOUND" in resp.text
 
 
 def test_env_in_base_nav(client) -> None:

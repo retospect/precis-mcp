@@ -33,7 +33,13 @@
 {% set s = detail.spec %}
 <section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
   <h2 class="text-sm font-semibold text-slate-700">{{ s.label }}</h2>
-  <p class="text-xs text-slate-500 mt-1 mb-3">{{ s.description }}</p>
+  <p class="text-xs text-slate-500 mt-1">{{ s.description }}</p>
+  <p class="text-xs text-slate-400 mb-3">
+    Reading env from <code>{{ detail.plist_path }}</code>
+    {% if not detail.plist_found %}
+    <span class="text-rose-600 font-semibold">(NOT FOUND — every env-derived field below will read as unset)</span>
+    {% endif %}
+  </p>
   <dl class="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
     <dt class="text-slate-500">Model</dt>
     <dd class="font-mono text-slate-800">{{ detail.model }}</dd>
