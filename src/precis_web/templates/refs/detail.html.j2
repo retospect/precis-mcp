@@ -53,6 +53,60 @@
 <pre class="rounded-lg border border-slate-200 bg-white p-4 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto">{{ body | linkify_refs }}</pre>
 {% endif %}
 
+{# References panel — every ``kind:ref`` handle the linkifier found in
+   the body, expanded with title + preview. Helps third parties read a
+   dream memory's connections without chasing a dozen links. Includes
+   a "Copy all (plain text)" button via Alpine. #}
+{% if references %}
+<section class="mt-6" x-data="{ copied: false }">
+  <div class="flex items-baseline gap-2 mb-2">
+    <h2 class="text-sm font-semibold text-slate-700">
+      References <span class="text-slate-400 font-normal">({{ references|length }})</span>
+    </h2>
+    <button type="button"
+            @click="(() => {
+              const txt = Array.from(document.querySelectorAll('[data-ref-line]'))
+                .map(el => el.dataset.refLine).join('\n');
+              navigator.clipboard.writeText(txt);
+              copied = true; setTimeout(() => copied = false, 1500);
+            })()"
+            class="ml-auto text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
+      <span x-show="!copied">📋 Copy all (plain text)</span>
+      <span x-show="copied" x-cloak class="text-emerald-700">✓ copied</span>
+    </button>
+  </div>
+  <ol class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 list-decimal pl-8">
+    {% for r in references %}
+    {# data-ref-line is what the copy button pulls — plain-text cite
+       form: "handle — title (kind). preview…". #}
+    <li class="px-3 py-2 text-xs"
+        data-ref-line="{{ r.handle }} — {{ r.title }} ({{ r.kind }}){% if r.preview %}. {{ r.preview }}{% endif %}">
+      <div class="flex items-start gap-2">
+        <a href="{{ r.url }}" class="font-mono text-sky-700 hover:underline shrink-0">{{ r.handle }}</a>
+        <span class="text-slate-400 shrink-0">·</span>
+        {% if r.status == 'missing' %}
+        <span class="text-rose-700 italic">{{ r.title }}</span>
+        {% elif r.status == 'deleted' %}
+        <span class="text-slate-400 italic line-through">{{ r.title }}</span>
+        {% else %}
+        <span class="text-slate-700 break-words">{{ r.title }}</span>
+        {% endif %}
+        <span class="ml-auto text-slate-400 shrink-0">{{ r.kind }}</span>
+      </div>
+      {% if r.preview %}
+      <p class="mt-1 text-slate-600 break-words">{{ r.preview }}</p>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  <p class="mt-2 text-xs text-slate-400">
+    Auto-extracted from this memory's body. Missing refs are flagged in
+    red; deleted ones are struck through. The copy button gives a flat
+    plain-text list suitable for pasting into a chat or note.
+  </p>
+</section>
+{% endif %}
+
 {% if chunks %}
 <section class="mt-6">
   <h2 class="text-sm font-semibold mb-2 text-slate-700">

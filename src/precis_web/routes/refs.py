@@ -254,6 +254,162 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
 _PER_KIND_LIMIT = 20  # cap rows per kind so 19-kind search stays readable
 
 
+# ---- References extraction (MVP for #188) ---------------------------
+#
+# Scan a body for the same kind:ref shapes the linkifier picks up
+# (prefixed ``kind:slug``, bare paper cite_keys, bare discord conv
+# handles). Resolve each in a single batched query and shape an
+# expansion for inline rendering below the body.
+
+#: Match prefixed ``kind:ref(~chunk)?`` exactly the same way the
+#: linkifier does. Imported lazily from the linkify module so the
+#: detection grammar stays single-sourced.
+_REF_HANDLE_RE = __import__(
+    "precis_web.linkify", fromlist=["_REF_PATTERN"]
+)._REF_PATTERN
+_BARE_PAPER_RE = __import__(
+    "precis_web.linkify", fromlist=["_BARE_PAPER_PATTERN"]
+)._BARE_PAPER_PATTERN
+_BARE_CONV_RE = __import__(
+    "precis_web.linkify", fromlist=["_BARE_CONV_PATTERN"]
+)._BARE_CONV_PATTERN
+
+#: Same kind allowlist as the linkifier — only resolve handles that
+#: would have rendered as anchors. Avoids surfacing prose tokens like
+#: ``user:asa`` as "broken reference: no such user".
+_LINKIFY_KINDS = __import__(
+    "precis_web.linkify", fromlist=["_LINKIFY_KINDS"]
+)._LINKIFY_KINDS
+
+
+def _extract_handles(body: str) -> list[tuple[str, str, str | None]]:
+    """Walk ``body`` for every kind:ref handle. Returns ``(kind, id,
+    chunk)`` triples in appearance order, deduplicated by (kind, id,
+    chunk). Bare paper cite_keys map to ``paper``; bare discord handles
+    map to ``conv``."""
+    if not body:
+        return []
+    seen: set[tuple[str, str, str | None]] = set()
+    out: list[tuple[str, str, str | None]] = []
+
+    def _push(kind: str, ref_id: str, chunk: str | None) -> None:
+        ref_id = ref_id.lstrip("#")
+        key = (kind, ref_id, chunk)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(key)
+
+    for m in _REF_HANDLE_RE.finditer(body):
+        kind = m.group("kind")
+        if kind not in _LINKIFY_KINDS:
+            continue
+        _push(kind, m.group("id"), m.group("chunk"))
+    for m in _BARE_CONV_RE.finditer(body):
+        whole = m.group(0)
+        slug, _, suffix = whole.partition("~")
+        _push("conv", slug, ("~" + suffix) if suffix else None)
+    for m in _BARE_PAPER_RE.finditer(body):
+        whole = m.group(0)
+        slug, _, suffix = whole.partition("~")
+        _push("paper", slug, ("~" + suffix) if suffix else None)
+    return out
+
+
+def _expand_handle(
+    store: Any, kind: str, ref_id: str, chunk: str | None
+) -> dict[str, Any]:
+    """Resolve one ``(kind, id, chunk)`` triple to a display row.
+
+    Returns a row carrying:
+      ``handle`` — what to print as the cite handle
+      ``url`` — click-through URL (the resolver path)
+      ``title`` — best-effort title (paper cite, memory id, etc.)
+      ``preview`` — short body preview when available
+      ``status`` — ``"resolved"`` / ``"missing"`` / ``"deleted"``
+    """
+    raw_handle = f"{kind}:{ref_id}" + (chunk or "")
+    url = f"/r/{kind}/{ref_id}" + (f"?chunk={chunk[1:]}" if chunk else "")
+    # Numeric ids vs slugs: try int first, fall back to slug lookup
+    # via the ref_identifiers table (same path the preview route uses).
+    numeric_id: int | None = None
+    try:
+        numeric_id = int(ref_id)
+    except ValueError:
+        pass
+    ref = None
+    if numeric_id is not None:
+        ref = store.fetch_refs_by_ids([numeric_id], include_deleted=True).get(
+            numeric_id
+        )
+    else:
+        try:
+            with store.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT ref_id FROM ref_identifiers "
+                    "WHERE id_kind = 'cite_key' AND id_value = %s",
+                    (ref_id,),
+                ).fetchone()
+        except Exception:
+            row = None
+        if row is not None:
+            ref = store.fetch_refs_by_ids(
+                [int(row[0])], include_deleted=True
+            ).get(int(row[0]))
+    if ref is None:
+        return {
+            "handle": raw_handle,
+            "url": url,
+            "title": "(not found)",
+            "preview": "",
+            "status": "missing",
+            "kind": kind,
+        }
+    if getattr(ref, "deleted_at", None) is not None:
+        return {
+            "handle": raw_handle,
+            "url": url,
+            "title": (getattr(ref, "title", "") or "(untitled)").split("\n", 1)[0][:120],
+            "preview": "(deleted)",
+            "status": "deleted",
+            "kind": kind,
+        }
+    title = (getattr(ref, "title", "") or "(untitled)").split("\n", 1)[0][:160]
+    preview = ""
+    # For chunk-addressed handles, fetch the actual chunk text.
+    if chunk and chunk.startswith("~") and chunk[1:].isdigit():
+        ord_pos = int(chunk[1:])
+        try:
+            blocks = store.list_blocks_for_ref(ref.id)
+            for b in blocks:
+                if getattr(b, "pos", -1) == ord_pos:
+                    preview = (b.text or "")[:400].rstrip()
+                    if len(b.text or "") > 400:
+                        preview += "…"
+                    break
+        except Exception:
+            pass
+    if not preview:
+        # Fall back to the first block (or the title-derived hint).
+        try:
+            blocks = store.list_blocks_for_ref(ref.id)
+            if blocks:
+                preview = (blocks[0].text or "")[:400].rstrip()
+                if len(blocks[0].text or "") > 400:
+                    preview += "…"
+        except Exception:
+            pass
+    return {
+        "handle": raw_handle,
+        "url": url,
+        "title": title,
+        "preview": preview,
+        "status": "resolved",
+        "kind": kind,
+        "slug": getattr(ref, "slug", None) or "",
+    }
+
+
 @router.get("", response_class=HTMLResponse)
 async def consolidated(
     request: Request,
@@ -504,6 +660,16 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
         for t in raw_tags
     ]
 
+    # References panel (MVP — memory views only, where dreams live).
+    # Walk the body for ref handles, resolve each, build a list to
+    # render below the body. Cheap reads — at most ~20 handles per
+    # memory typical, batched into ``fetch_refs_by_ids``.
+    references: list[dict[str, Any]] = []
+    if kind == "memory" and not is_error and body:
+        handles = _extract_handles(body)
+        for ref_kind, ref_ident, chunk in handles:
+            references.append(_expand_handle(store, ref_kind, ref_ident, chunk))
+
     return templates.TemplateResponse(
         request,
         "refs/detail.html.j2",
@@ -517,6 +683,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             "chunks": chunks,
             "tags": tags,
             "body_disabled_notice": body_disabled_notice,
+            "references": references,
         },
     )
 

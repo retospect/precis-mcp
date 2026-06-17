@@ -429,6 +429,48 @@ def test_refs_detail_wrong_kind_404(client) -> None:
     assert resp.status_code == 400
 
 
+def test_memory_refs_detail_renders_references_panel(client, runtime) -> None:
+    """Memory detail body containing kind:ref handles → References
+    panel appears with one resolved row per cited handle."""
+    # Plant a body with two refs: a paper (slug) + a memory (numeric).
+    body_text = (
+        "I notice that paper:smith2024 connects with memory:20 — "
+        "see also patent:nope404 which won't resolve."
+    )
+    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    resp = client.get("/refs/memory/20")
+    assert resp.status_code == 200
+    assert "References" in resp.text
+    # Resolved refs render with their URL.
+    assert "/r/paper/smith2024" in resp.text
+    # The data-ref-line attribute carries the plain-text cite form for
+    # the Copy All button.
+    assert "data-ref-line=" in resp.text
+    # Copy button present.
+    assert "Copy all" in resp.text
+
+
+def test_memory_refs_detail_missing_ref_flagged(client, runtime) -> None:
+    """Handles that don't resolve render with the (not found) marker
+    and a rose-700 class so the eye lands on them."""
+    body_text = "Wrong: paper:doesnotexist."
+    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    resp = client.get("/refs/memory/20")
+    assert resp.status_code == 200
+    assert "(not found)" in resp.text
+
+
+def test_non_memory_refs_detail_omits_references_panel(client, runtime) -> None:
+    """References auto-extract only runs on memory views (the MVP scope
+    — that's where dreams live). Other kinds render unchanged."""
+    body_text = "paper:smith2024 cited inside this oracle"
+    runtime.dispatch_with_status = lambda verb, args: (body_text, False)
+    resp = client.get("/refs/oracle/30")
+    assert resp.status_code == 200
+    # Heading shouldn't appear on non-memory views.
+    assert "References" not in resp.text
+
+
 def test_refs_detail_kind_outside_legacy_nav_renders_200(client) -> None:
     """``web`` (and friends) are in ``_REFS_BROWSABLE_KINDS`` but were
     NOT in the legacy 6-kind nav set ``_REF_KIND_LABEL`` covers.
