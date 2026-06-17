@@ -127,6 +127,11 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
             mcp_config=_mcp_config_path(),
             max_turns=reviewer.max_turns,
             timeout_s=reviewer.timeout_s,
+            # Stream-json gets us cost/turns from the result event;
+            # call_claude_agent unwraps the digest text from the
+            # ``result`` field so the digest writer sees plain text.
+            output_format="stream-json",
+            extra_args=("--verbose",),
         )
     except ClaudeAgentError as exc:
         log.exception(

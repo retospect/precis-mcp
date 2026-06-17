@@ -342,15 +342,28 @@ def call_claude_agent(
     # format), not on stderr. Try stdout's last JSON line first; if
     # nothing surfaces there (legacy text-format invocations, stub
     # tests), fall back to the stderr regex extractors.
-    cost_usd = _cost_from_stdout_result(res.stdout or "")
-    if cost_usd is None:
+    last_result = _last_result_event(res.stdout or "")
+    cost_usd: float | None
+    turns_used: int | None
+    if last_result is not None:
+        # stream-json path: pull cost + turns from the event AND lift
+        # the assistant's final text out of the ``result`` field so
+        # callers don't have to grovel through the JSON stream.
+        raw_cost = last_result.get("total_cost_usd")
+        cost_usd = float(raw_cost) if isinstance(raw_cost, (int, float)) else None
+        raw_turns = last_result.get("num_turns")
+        turns_used = int(raw_turns) if isinstance(raw_turns, (int, float)) else None
+        result_text = last_result.get("result")
+        final_text = str(result_text) if isinstance(result_text, str) else res.stdout
+    else:
+        # text-format path or stub-tests: regex over stderr for cost
+        # (legacy Claude Code), final_text is the raw stdout.
         cost_usd = _extract_cost_usd(res.stderr or "")
-    turns_used = _turns_from_stdout_result(res.stdout or "")
-    if turns_used is None:
         turns_used = _extract_turns_used(res.stderr or "")
+        final_text = res.stdout
 
     result = AgentResult(
-        final_text=res.stdout,
+        final_text=final_text,
         cost_usd=cost_usd,
         duration_s=duration_s,
         turns_used=turns_used,

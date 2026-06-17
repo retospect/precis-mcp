@@ -101,6 +101,11 @@ def run_dream_pass(store: Store) -> BatchResult:
             # Dreams don't fan out to the open web — keep them on
             # corpus state. Same as the bash script's flag set.
             disallowed_tools=("WebFetch", "WebSearch"),
+            # Stream-json gets us cost/turns from the result event
+            # (call_claude_agent unwraps the assistant's text from
+            # the ``result`` field so final_text is unchanged).
+            output_format="stream-json",
+            extra_args=("--verbose",),
         )
     except ClaudeAgentError as exc:
         log.exception("dream_agent: claude agent failed: %s", exc)
