@@ -480,6 +480,15 @@ def put(
     in_: str | None = None,
     recurring: str | None = None,
     catch_up: bool | None = None,
+    # paper stub-mint (see precis-stubs-help / precis-paper-help): a
+    # paper put requests a paper into the "papers we need" backlog —
+    # put(kind='paper', doi='10…' | arxiv='2401.00001' | title='…').
+    # Paper bodies stay import-only; put only ever mints a stub.
+    doi: str | None = None,
+    arxiv: str | None = None,
+    identifier: str | None = None,
+    year: int | None = None,
+    reason: str | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -544,6 +553,11 @@ def put(
             "in_": in_,
             "recurring": recurring,
             "catch_up": catch_up,
+            "doi": doi,
+            "arxiv": arxiv,
+            "identifier": identifier,
+            "year": year,
+            "reason": reason,
         },
     )
 

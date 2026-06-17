@@ -113,6 +113,12 @@ def test_acquire_is_idempotent(handler: PaperHandler, store: Store) -> None:
     second = handler.acquire(identifier="doi:10.1/X")  # case-insensitive
     assert "already tracked" in second.body
     assert _ref_id(second.body) == first
+    # A collapse hit returns the existing paper, not just "already tracked":
+    # the slug handle + a get hint so the caller can read it directly.
+    second_ref = store.get_ref(kind="paper", id=first)
+    assert second_ref is not None
+    assert f"paper:{second_ref.slug}" in second.body
+    assert "get(kind='paper'" in second.body
 
 
 def test_acquire_title_only_mints_backlog_stub(
@@ -154,6 +160,9 @@ def test_acquire_does_not_retag_existing_paper(
     r = handler.acquire(identifier="doi:10.9/held")
     assert "already tracked" in r.body
     assert _ref_id(r.body) == existing.id
+    # the response returns the existing paper: its handle + a get hint
+    assert "paper:held2020" in r.body
+    assert "get(kind='paper'" in r.body
     # never slap DREAM:acquire onto an already-held paper
     assert "DREAM:acquire" not in _tags(store, existing.id)
 

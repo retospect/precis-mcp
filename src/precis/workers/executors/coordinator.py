@@ -205,9 +205,7 @@ def run_coordinator_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1
-            log.warning(
-                "coordinator: job %d raised: %s", ref_id, exc, exc_info=True
-            )
+            log.warning("coordinator: job %d raised: %s", ref_id, exc, exc_info=True)
             try:
                 with store.pool.connection() as conn:
                     _append_chunk(
@@ -220,9 +218,7 @@ def run_coordinator_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
                     _set_status(store, ref_id, _FAILED, conn=conn)
                     conn.commit()
             except Exception:  # pragma: no cover
-                log.warning(
-                    "coordinator: failed to record failure", exc_info=True
-                )
+                log.warning("coordinator: failed to record failure", exc_info=True)
     return {"claimed": len(rows), "ok": ok, "failed": failed}
 
 
@@ -242,9 +238,7 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
     """
     job_type_name = meta.get("job_type")
     if not job_type_name:
-        _record_failure(
-            store, ref_id, "missing meta.job_type", gripe_rollback=None
-        )
+        _record_failure(store, ref_id, "missing meta.job_type", gripe_rollback=None)
         return
     spec = get_job_type(str(job_type_name))
     if spec is None:

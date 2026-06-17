@@ -164,6 +164,22 @@ Closed-prefix axes for paper: `SRC:`, `CACHE:`. Open tags
 are rejected. Tag and link operate at the paper level — chunk
 selectors and view paths are rejected.
 
+## Request a paper the library doesn't have
+## Get a paper we don't hold yet
+
+`put` on a paper mints a **stub** (a request) — it never writes a body
+(bodies are import-only). The `fetch_oa` worker chases an OA PDF for
+any stub carrying an identifier:
+
+```python
+put(kind='paper', doi='10.1038/nature10352')           # best — resolvable id
+put(kind='paper', arxiv='2401.00001', title='…')       # or an arXiv id
+put(kind='paper', title='Some Paper With No DOI Yet')  # title-only backlog stub
+```
+
+Idempotent (already-held / already-wanted is a no-op). Full contract +
+backlog view in `precis-stubs-help`.
+
 ## See also
 
 ```python

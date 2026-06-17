@@ -2,7 +2,7 @@
 id: precis-stubs-help
 title: precis — papers we still need to get
 summary: paper acquisition backlog — stub list, fetch state, reason each is waiting
-applies-to: search(kind='paper', view='stubs')
+applies-to: search(kind='paper', view='stubs'), put (kind='paper')
 status: active
 ---
 
@@ -48,18 +48,27 @@ the finding or paper that cited it lives on the other end of a
 
 ## Add a paper to the backlog
 ## Queue a missing paper for fetch
+## Request a paper the library doesn't have
 
 ```python
-acquire(identifier='doi:10.1038/nature10352', reason='cited across cluster')
-acquire(identifier='arxiv:2401.00001', context_ref_id=<where it came up>)
-acquire(title='Some Paper With No DOI Yet')   # backlog-only stub
+put(kind='paper', doi='10.1038/nature10352')           # best — resolvable id
+put(kind='paper', arxiv='2401.00001', title='…')       # or an arXiv id
+put(kind='paper', identifier='s2:<id>')                # or a Semantic Scholar id
+put(kind='paper', title='Some Paper With No DOI Yet')  # title-only backlog stub
 ```
 
-Mints a stub (idempotent — a paper already held or already wanted is a
-no-op) and gets out of the way. The fetcher auto-grabs an OA PDF on a
-later pass when the stub carries an external id; a title-only stub
-waits until someone supplies an identifier. `acquire` never downloads
-or ingests inline.
+`put(kind='paper', …)` mints a **stub only** — it requests the paper
+into this backlog; it never writes a body (paper bodies are
+import-only, via `.acatome` ingest). Idempotent: a paper already held
+or already wanted is a no-op.
+
+A **DOI / arXiv / S2 id is strongly preferred** — the stub carries the
+id, the `fetch_oa` worker auto-grabs an OA PDF on a later pass, and a
+hallucinated identifier is rejected up front (pass `verify=False` to
+force a known-real preprint S2 hasn't indexed). A **title-only** stub
+just parks in the backlog until someone supplies an identifier — no
+auto-fetch. Optional: `year=` (disambiguates the cite key) and
+`reason=` (why it's wanted).
 
 ## See also
 

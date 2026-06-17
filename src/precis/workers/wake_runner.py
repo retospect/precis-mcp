@@ -317,8 +317,7 @@ def _next_chunk_pos(conn: Connection, ref_id: int) -> int:
     on claude_inproc helpers it doesn't otherwise use.
     """
     row = conn.execute(
-        "SELECT COALESCE(MAX(ord) + 1, 0) FROM chunks "
-        "WHERE ref_id = %s AND ord >= 0",
+        "SELECT COALESCE(MAX(ord) + 1, 0) FROM chunks WHERE ref_id = %s AND ord >= 0",
         (ref_id,),
     ).fetchone()
     return int(row[0]) if row and row[0] is not None else 0

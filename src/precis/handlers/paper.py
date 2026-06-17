@@ -250,12 +250,16 @@ class PaperHandler(Handler):
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
-        # Phase-9 / seven-verb cutover: paper *bodies* are import-only
-        # (arrive via .acatome bundle ingest, never edited from the
-        # agent surface). ``put`` is therefore not exposed. ``edit`` is
-        # scoped to *bibliographic metadata* only (authors / year /
-        # title / abstract / doi / arxiv) — the repair affordance the
-        # web metadata editor drives; it never touches block bodies.
+        # Paper *bodies* are import-only (arrive via .acatome bundle
+        # ingest, never authored from the agent surface). ``put`` is
+        # exposed for **stub minting only** — ``put(kind='paper',
+        # doi=… / arxiv=… / title=…)`` requests a paper into the
+        # "papers we need" backlog (the fetch_oa worker chases it); it
+        # never writes a body. ``edit`` is scoped to *bibliographic
+        # metadata* only (authors / year / title / abstract / doi /
+        # arxiv) — the repair affordance the web metadata editor drives;
+        # it never touches block bodies.
+        supports_put=True,
         supports_edit=True,
         supports_tag=True,
         supports_link=True,
@@ -272,11 +276,62 @@ class PaperHandler(Handler):
 
     # -- acquire: the gated dream stub-mint tool -----------------------------
 
+    def put(  # type: ignore[override]
+        self,
+        *,
+        identifier: str | None = None,
+        doi: str | None = None,
+        arxiv: str | None = None,
+        title: str | None = None,
+        year: int | None = None,
+        reason: str | None = None,
+        context_ref_id: int | str | None = None,
+        verify: bool = True,
+        **_kw: Any,
+    ) -> Response:
+        """Mint a paper **stub** — the agent-facing "I want this paper".
+
+        Paper *bodies* stay import-only (``.acatome`` ingest); ``put``
+        only ever requests a paper into the "papers we need" backlog,
+        where the ``fetch_oa`` worker chases an OA PDF. Shapes:
+
+            put(kind='paper', doi='10.1038/nature10352')
+            put(kind='paper', arxiv='2401.00001', title='…')
+            put(kind='paper', title='…')   # title-only backlog stub
+
+        This is a thin adapter over :meth:`acquire` — it folds the
+        ``doi=`` / ``arxiv=`` conveniences into the canonical
+        ``identifier=`` form and reuses the same S2-enrich →
+        ``upsert_stub_paper`` → tag/link path (idempotent: a hit on an
+        already-held or already-wanted paper is a no-op).
+        """
+        ident = identifier.strip() if identifier and identifier.strip() else None
+        if ident is None:
+            if doi and doi.strip():
+                ident = f"doi:{doi.strip()}"
+            elif arxiv and arxiv.strip():
+                ident = f"arxiv:{arxiv.strip()}"
+        if ident is None and not (title and title.strip()):
+            raise BadInput(
+                "put(kind='paper') mints a stub - pass doi=, arxiv=, "
+                "identifier= (doi:/arxiv:/s2:), or title=",
+                next="put(kind='paper', doi='10.1038/nature10352')",
+            )
+        return self.acquire(
+            identifier=ident,
+            title=title,
+            year=year,
+            reason=reason,
+            context_ref_id=context_ref_id,
+            verify=verify,
+        )
+
     def acquire(
         self,
         *,
         identifier: str | None = None,
         title: str | None = None,
+        year: int | None = None,
         reason: str | None = None,
         context_ref_id: int | str | None = None,
         verify: bool = True,
@@ -357,8 +412,9 @@ class PaperHandler(Handler):
                 )
 
         # Best-effort S2 enrichment → a meaningful stub. Failure is fine.
+        # ``year`` arrives as a caller hint (e.g. from put(kind='paper',
+        # year=…)); S2 overrides it when it has one, else the hint stands.
         stub_title = title.strip() if has_title else None
-        year: int | None = None
         identifiers: list[tuple[str, str]] = [id_pair] if id_pair else []
         unverified = False
         if id_pair is not None:
@@ -366,7 +422,7 @@ class PaperHandler(Handler):
             if meta:
                 stub_title = stub_title or (meta.get("title") or None)
                 raw_year = meta.get("year")
-                year = int(raw_year) if isinstance(raw_year, int) else None
+                year = int(raw_year) if isinstance(raw_year, int) else year
                 for kind_key, meta_key in (
                     ("doi", "doi"),
                     ("arxiv", "arxiv_id"),
@@ -451,7 +507,27 @@ class PaperHandler(Handler):
             parts.append("(" + ", ".join(f"{k}:{v}" for k, v in identifiers) + ")")
         if ctx_id is not None:
             parts.append(f"← linked from ref {ctx_id}")
-        return Response(body=" ".join(parts))
+        body = " ".join(parts)
+
+        # On a collapse hit (the identifier was already known), point the
+        # caller straight at the existing paper — so re-requesting a paper
+        # we already hold/want returns *the paper*, not just a bare
+        # "already tracked id=N". Held papers (with a PDF) say so; stubs
+        # report that the fetch is still pending.
+        if not created:
+            existing = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
+            if existing is not None:
+                slug = existing.slug or str(ref_id)
+                held = getattr(existing, "pdf_sha256", None) is not None
+                title = (existing.title or "").split("\n", 1)[0].strip()
+                where = "held" if held else "stub (awaiting fetch)"
+                line = f"\n→ {where}: paper:{slug}"
+                if title and title.lower() != "paper":
+                    line += f" — {title[:120]}"
+                line += f"\n  get(kind='paper', id='{slug}') to read it"
+                body += line
+
+        return Response(body=body)
 
     # -- get -----------------------------------------------------------------
 

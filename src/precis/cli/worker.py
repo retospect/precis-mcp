@@ -492,6 +492,43 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_wake_runner_pass)
 
+        # Plugin-registered ref passes: third-party packages can
+        # ship their own background workers via the
+        # ``precis.ref_passes`` entry-point group (precis-dft's
+        # ``view_worker`` is the first consumer). Failure isolation
+        # mirrors handler discovery — a broken plugin factory logs
+        # a warning and the worker carries on with whatever did
+        # register. The pass-name gate (``_pass_enabled``) still
+        # applies so ``--only`` and the profile pass set honour
+        # plugin passes the same way they honour built-ins.
+        from precis.workers._plugin_passes import (
+            discover_plugin_ref_passes,
+        )
+
+        for pass_name, plugin_callable, plugin_profiles in discover_plugin_ref_passes(
+            store, profile=args.profile, args=args
+        ):
+            if not _pass_enabled(pass_name):
+                continue
+            if args.only is None and args.profile not in plugin_profiles:
+                # Factory declared it doesn't belong on this profile.
+                # ``--only`` overrides — when set, the factory has
+                # already opted in regardless of profile.
+                log.info(
+                    "plugin ref pass %r declared profiles=%s but "
+                    "running profile=%s; skipping",
+                    pass_name,
+                    sorted(plugin_profiles),
+                    args.profile,
+                )
+                continue
+            ref_passes.append(plugin_callable)
+            log.info(
+                "plugin ref pass %r registered (profile=%s)",
+                pass_name,
+                args.profile,
+            )
+
         # Unpaywall OA fetcher — turns stub paper refs (DOI known,
         # pdf_sha256 IS NULL) into landed PDFs by checking Unpaywall
         # for an OA URL and downloading to the watch inbox. The
