@@ -75,6 +75,8 @@ class YouTubeHandler(CacheBackedHandler):
             "Use view='languages' to list available transcript languages."
         ),
         supports_get=True,
+        supports_search=True,
+        supports_search_hits=True,
         is_numeric=False,
         id_required=True,
         views=("languages",),

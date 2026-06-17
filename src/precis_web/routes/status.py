@@ -103,15 +103,22 @@ def _recent_dreams(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     """Most-recent dream-tagged memories.
 
     Dream-pass writes new memory refs carrying ``tier:dream`` (see
-    ``workers/dream.py``). Surface the latest few so the operator can
-    see at a glance whether dreams are still landing — the dream
-    handler doesn't currently emit ref_events itself, so it would
-    otherwise be invisible on the activity panel.
+    ``workers/dream.py``). The dream prompt also promotes high-quality
+    cross-kind connections to ``tier:synthetic-insight`` during the
+    Step-7 self-review. Surface a flag for each so the operator's
+    eye lands on the curated insights.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.ref_id, r.title, r.updated_at
+            SELECT r.ref_id, r.title, r.updated_at,
+                   EXISTS (
+                     SELECT 1 FROM ref_tags rt2
+                       JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                      WHERE rt2.ref_id = r.ref_id
+                        AND t2.namespace = 'tier'
+                        AND t2.value = 'synthetic-insight'
+                   ) AS is_insight
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
@@ -128,9 +135,32 @@ def _recent_dreams(store: Any, limit: int = 5) -> list[dict[str, Any]]:
             "ref_id": r[0],
             "title": (r[1] or "").split("\n", 1)[0][:80] or "—",
             "ago": _ago(r[2]),
+            "is_insight": bool(r[3]),
         }
         for r in rows
     ]
+
+
+def _synthetic_insights_count(store: Any) -> int:
+    """How many ``tier:synthetic-insight`` memories exist total.
+
+    Used as the badge on the "Recent dreams" panel link to the
+    full insights view at /tags/refs?namespace=tier&value=synthetic-insight.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT count(*)::int
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'memory'
+               AND r.deleted_at IS NULL
+               AND t.namespace = 'tier'
+               AND t.value = 'synthetic-insight'
+            """
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def _recent_todo_done(store: Any, limit: int = 5) -> list[dict[str, Any]]:
@@ -511,6 +541,7 @@ async def index(request: Request) -> HTMLResponse:
             "todo_status": _safe(lambda: _todo_status(store)) or [],
             "events": _safe(lambda: _recent_events(store)) or [],
             "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
+            "insight_count": _safe(lambda: _synthetic_insights_count(store)) or 0,
             "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
             "recent_passes": _safe(lambda: _recent_passes(store)) or [],
             "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],

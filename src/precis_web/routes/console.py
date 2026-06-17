@@ -1,5 +1,12 @@
 """Console tab — interactive precis-query over the seven verbs.
 
+Also hosts a "smart resolve" surface that takes any reasonable-looking
+identifier — paper cite_key, DOI, arXiv id, YouTube id, kind:slug,
+discord handle — and routes to the canonical view. The detection
+order matters: more specific patterns first so ``charlier07~374``
+goes to the paper chunk rather than getting interpreted as raw text.
+
+
 A thin web mirror of ``precis repl``: pick a verb, type
 ``key=value`` arguments (shlex-split, quote values with spaces), and
 the call runs through the same in-process runtime the MCP server and
@@ -22,8 +29,10 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
+import re
+
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.tools import TOOL_REGISTRY, get_tool_names
 from precis.tools.cli_adapter import _convert_value
@@ -70,6 +79,98 @@ QUICK_SERVICES: list[dict[str, str]] = [
 ]
 
 _QUICK_BY_VALUE: dict[str, dict[str, str]] = {s["value"]: s for s in QUICK_SERVICES}
+
+
+# ---- smart-resolve detection ----------------------------------------
+#
+# Patterns checked in order; first match wins. Each maps to a target
+# URL the operator gets redirected to. The detection is intentionally
+# pragmatic — we accept some false positives (covid19 → /r/paper/covid19
+# 404s cleanly) over a tight regex that would miss real cite_keys.
+
+_RESOLVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # ``kind:slug`` or ``kind:#id`` with optional ``~N`` chunk address —
+    # the explicit, unambiguous form.
+    (
+        re.compile(
+            r"^(?P<kind>[a-z][a-z0-9-]*):"
+            r"(?P<id>#?[0-9]+|[A-Za-z0-9][A-Za-z0-9_/-]*)"
+            r"(?:~(?P<chunk>p?[0-9]+(?:\.\.[0-9]+)?))?$"
+        ),
+        "kind_prefixed",
+    ),
+    # Bare discord conv handle.
+    (
+        re.compile(
+            r"^discord/[0-9]+/[0-9]+/[0-9]+(?:~(?P<chunk>p?[0-9]+(?:\.\.[0-9]+)?))?$"
+        ),
+        "bare_conv",
+    ),
+    # DOI: ``10.<registrant>/<suffix>``.
+    (re.compile(r"^10\.\d{3,9}/[^\s]+$"), "doi"),
+    # arXiv id (modern post-2007: ``NNNN.NNNNN`` with optional version).
+    (re.compile(r"^\d{4}\.\d{4,5}(?:v\d+)?$"), "arxiv"),
+    # YouTube video id — 11 chars [A-Za-z0-9_-].
+    (re.compile(r"^[A-Za-z0-9_-]{11}$"), "youtube"),
+    # Bare paper cite_key: ``<surname><2-digit-year><optional-letter>``
+    # with optional chunk suffix. Accept ≥2 letters here (more lenient
+    # than the inline linkifier) since the operator typed it explicitly.
+    (
+        re.compile(
+            r"^[a-z]{2,}[0-9]{2}[a-z]?(?:~(?P<chunk>p?[0-9]+(?:\.\.[0-9]+)?))?$"
+        ),
+        "paper_cite",
+    ),
+)
+
+
+def _smart_resolve(query: str) -> str | None:
+    """Return the redirect URL for ``query`` if it matches a known shape.
+
+    Returns ``None`` when nothing matches — caller falls back to a
+    cross-kind search.
+    """
+    q = query.strip()
+    if not q:
+        return None
+    for pat, shape in _RESOLVE_PATTERNS:
+        m = pat.match(q)
+        if m is None:
+            continue
+        if shape == "kind_prefixed":
+            kind = m.group("kind")
+            ref_id = m.group("id").lstrip("#")
+            chunk = m.group("chunk")
+            url = f"/r/{kind}/{ref_id}"
+            if chunk:
+                url += f"?chunk={chunk}"
+            return url
+        if shape == "bare_conv":
+            chunk = m.group("chunk")
+            slug = q.split("~", 1)[0]
+            url = f"/r/conv/{slug}"
+            if chunk:
+                url += f"?chunk={chunk}"
+            return url
+        if shape == "doi":
+            # No direct DOI resolver yet — search papers by DOI string.
+            from urllib.parse import quote_plus
+
+            return f"/refs?q={quote_plus(q)}&kinds=paper&all=1"
+        if shape == "arxiv":
+            from urllib.parse import quote_plus
+
+            return f"/refs?q={quote_plus(q)}&kinds=paper&all=1"
+        if shape == "youtube":
+            return f"/r/youtube/{q}"
+        if shape == "paper_cite":
+            chunk = m.group("chunk")
+            slug = q.split("~", 1)[0]
+            url = f"/r/paper/{slug}"
+            if chunk:
+                url += f"?chunk={chunk}"
+            return url
+    return None
 
 
 def _parse_args(verb: str, args_text: str) -> dict[str, Any]:
@@ -142,6 +243,37 @@ async def run(
         request,
         "console.html.j2",
         _quick_context(verb=verb, args_text=args_text, result=result, is_error=is_error),
+    )
+
+
+@router.post("/resolve", response_model=None)
+async def resolve(
+    request: Request,
+    handle: str = Form(""),
+) -> HTMLResponse | RedirectResponse:
+    """Smart-resolve a pasted handle.
+
+    Accepts: ``paper:slug``, ``kind:id``, bare cite_keys (``charlier07~374``),
+    DOIs (``10.1234/foo``), arXiv ids (``2501.01234``), YouTube ids
+    (``dQw4w9WgXcQ``), bare discord handles. Redirects to the canonical
+    view via the ``/r/{kind}/{id}`` resolver; falls back to a cross-kind
+    search when the handle shape isn't recognised so the operator
+    always lands somewhere useful.
+    """
+    target = _smart_resolve(handle)
+    if target is not None:
+        return RedirectResponse(url=target, status_code=303)
+    if handle.strip():
+        from urllib.parse import quote_plus
+
+        return RedirectResponse(
+            url=f"/refs?q={quote_plus(handle.strip())}&all=1",
+            status_code=303,
+        )
+    return templates.TemplateResponse(
+        request,
+        "console.html.j2",
+        _quick_context(),
     )
 
 

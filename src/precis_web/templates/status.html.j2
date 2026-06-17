@@ -193,8 +193,13 @@
     <h2 class="text-sm font-semibold mb-2">Todos by status</h2>
     <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
       {% for t in todo_status %}
-      <li class="px-4 py-2 flex justify-between text-sm">
-        <span>{{ t.status }}</span><span class="font-semibold">{{ t.count }}</span>
+      {# Click-through → /tags/refs filters refs by tag, scoped to
+         kind=todo and namespace=STATUS for the relevant status. Each
+         count is the population landing on the filtered list. #}
+      <li class="px-4 py-2 flex justify-between text-sm hover:bg-slate-50">
+        <a href="/tags/refs?kind=todo&namespace=STATUS&value={{ t.status }}"
+           class="flex-1 text-slate-700 hover:text-emerald-700">{{ t.status }}</a>
+        <span class="font-semibold">{{ t.count }}</span>
       </li>
       {% else %}
       <li class="px-4 py-2 text-sm text-slate-500">no todos</li>
@@ -231,11 +236,23 @@
    even when no status flips. #}
 <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
   <section>
-    <h2 class="text-sm font-semibold mb-2">Recent dreams</h2>
+    <div class="flex items-baseline justify-between mb-2">
+      <h2 class="text-sm font-semibold">Recent dreams</h2>
+      {# Synthetic-insight badge: dreams promoted by the agent's own
+         Step-7 self-review (cited refs verified + cross-kind +
+         specific mechanism named). Click for the full filtered list. #}
+      {% if insight_count > 0 %}
+      <a href="/tags/refs?namespace=tier&value=synthetic-insight"
+         class="text-xs text-emerald-700 hover:underline">
+        ✨ {{ insight_count }} synthetic insight{{ '' if insight_count == 1 else 's' }} →
+      </a>
+      {% endif %}
+    </div>
     <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
       {% for d in recent_dreams %}
       <li class="px-4 py-2 text-xs flex items-center gap-2">
         <span class="text-slate-400 w-16 shrink-0">{{ d.ago }}</span>
+        {% if d.is_insight %}<span class="text-emerald-600" title="agent-verified synthetic insight">✨</span>{% endif %}
         <a class="text-slate-700 hover:underline truncate"
            href="/refs/memory/{{ d.ref_id }}">{{ d.title }}</a>
       </li>

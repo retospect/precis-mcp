@@ -71,6 +71,8 @@ class MathHandler(CacheBackedHandler):
             "natural-language or mathematical expression as `id` or `q`."
         ),
         supports_get=True,
+        supports_search=True,
+        supports_search_hits=True,
         is_numeric=False,
         id_required=True,
         requires_env=("WOLFRAM_APP_ID",),
