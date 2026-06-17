@@ -35,6 +35,13 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
             "mcp_config",
         }
     ),
+    # ``coordinator`` is the yield/resume executor for long-running
+    # coordinator job_types (precis-dft's ``dft_campaign`` is the
+    # first consumer). It dispatches; it doesn't compute. The empty
+    # PROVIDES set is intentional — a job_type compatible with
+    # ``coordinator`` declares ``REQUIRES=frozenset()`` because the
+    # actual work happens in the child jobs the coordinator spawns.
+    "coordinator": frozenset(),
 }
 
 
