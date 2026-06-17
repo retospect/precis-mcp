@@ -29,7 +29,6 @@ irrelevant to that question.
 from __future__ import annotations
 
 import json
-import os
 import plistlib
 from dataclasses import dataclass
 from pathlib import Path

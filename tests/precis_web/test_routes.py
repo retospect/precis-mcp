@@ -157,6 +157,111 @@ def test_paper_detail_renders(client) -> None:
     assert "smith2024" in resp.text
 
 
+def test_paper_edit_dispatches_changed_fields_only(client, runtime) -> None:
+    """POST /papers/{id}/edit forwards only the non-empty fields to the
+    edit verb so an unset value doesn't overwrite the existing one."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={
+            "title": "New title",
+            "year": "2024",
+            "doi": "",  # blank → not sent
+            "arxiv": "",
+            "abstract": "",
+            "authors": "",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "edit"
+    assert args["kind"] == "paper"
+    assert args["id"] == 10
+    assert args["title"] == "New title"
+    assert args["year"] == 2024
+    # Blank fields not sent.
+    assert "doi" not in args
+    assert "arxiv" not in args
+    assert "abstract" not in args
+    assert "authors" not in args
+
+
+def test_paper_edit_shapes_authors_from_newline_list(client, runtime) -> None:
+    """``Lastname, First\\nOther, A.`` → list-of-dicts with family/given."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={"authors": "Smith, Jane\nJones, Bob"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _, args = runtime.calls[-1]
+    assert args["authors"] == [
+        {"family": "Smith", "given": "Jane"},
+        {"family": "Jones", "given": "Bob"},
+    ]
+
+
+def test_paper_edit_authors_accepts_lastname_only_entries(client, runtime) -> None:
+    """A single name (no comma) lands as just ``family`` so the form
+    doesn't reject the common case of single-author papers."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={"authors": "Aristotle"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _, args = runtime.calls[-1]
+    assert args["authors"] == [{"family": "Aristotle", "given": ""}]
+
+
+def test_paper_edit_year_is_coerced_to_int(client, runtime) -> None:
+    """The form sends ``year`` as a string; the route coerces to int
+    so the schema gets the right type."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={"year": "1999"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _, args = runtime.calls[-1]
+    assert args["year"] == 1999
+    assert isinstance(args["year"], int)
+
+
+def test_paper_edit_invalid_year_silently_dropped(client, runtime) -> None:
+    """A non-numeric year is dropped rather than failing the whole edit
+    — the title/abstract/etc. still land."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={"year": "soon", "title": "Hi"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _, args = runtime.calls[-1]
+    assert "year" not in args
+    assert args["title"] == "Hi"
+
+
+def test_paper_delete_dispatches_then_redirects_to_list(client, runtime) -> None:
+    """The delete button POSTs to /papers/{id}/delete which dispatches
+    the soft-delete verb and bounces to the list page."""
+    resp = client.post("/papers/10/delete", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers"
+    verb, args = runtime.calls[-1]
+    assert verb == "delete"
+    assert args == {"kind": "paper", "id": 10}
+
+
+def test_paper_detail_has_edit_and_delete_buttons(client) -> None:
+    """Both affordances render on the detail page so the operator can
+    discover them without reading the source."""
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert 'action="/papers/10/edit"' in resp.text
+    assert 'action="/papers/10/delete"' in resp.text
+
+
 def test_papers_index_hover_card_has_authors_and_abstract(client) -> None:
     resp = client.get("/papers")
     assert resp.status_code == 200

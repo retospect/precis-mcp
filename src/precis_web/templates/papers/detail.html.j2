@@ -26,6 +26,72 @@
     {% endif %}
   </p>
   {% endif %}
+  {# Edit / delete affordances. Edit is an Alpine-toggled inline form
+     so an operator who wants to repair a parse error (wrong DOI, missing
+     authors, off-by-one year) can fix it without leaving the page. The
+     delete button is a confirm-on-click POST — soft-deletes the ref so
+     the row is reversible at the DB level. #}
+  <div class="mt-3 flex items-center gap-2 text-xs" x-data="{ editing: false }">
+    <button type="button" @click="editing = !editing"
+            class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
+      <span x-show="!editing">✎ Edit metadata</span>
+      <span x-show="editing" x-cloak>Cancel</span>
+    </button>
+    <form method="post" action="/papers/{{ paper.id }}/delete"
+          onsubmit="return confirm('Delete this paper? Soft-delete (reversible at the DB level). The PDF on disk is NOT removed.');"
+          class="inline">
+      <button type="submit"
+              class="px-2 py-1 rounded border border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100">
+        🗑 Delete paper
+      </button>
+    </form>
+    <div x-show="editing" x-cloak class="basis-full mt-2">
+      <form method="post" action="/papers/{{ paper.id }}/edit" class="space-y-2">
+        <p class="text-slate-500">
+          Leave a field blank to keep its current value.
+          Authors: one per line, ``Lastname, First`` or ``Lastname`` alone.
+        </p>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="block">
+            <span class="text-slate-500">Title</span>
+            <input name="title" value="{{ paper.title }}"
+                   class="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
+          </label>
+          <label class="block">
+            <span class="text-slate-500">Year</span>
+            <input name="year" value="{{ paper.year or '' }}" inputmode="numeric"
+                   class="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
+          </label>
+          <label class="block">
+            <span class="text-slate-500">DOI</span>
+            <input name="doi" value="{{ paper.links.doi or '' }}" placeholder="10.xxxx/yyyy"
+                   class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono" />
+          </label>
+          <label class="block">
+            <span class="text-slate-500">arXiv id</span>
+            <input name="arxiv" value="{{ paper.links.arxiv or '' }}" placeholder="2501.01234"
+                   class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono" />
+          </label>
+        </div>
+        <label class="block">
+          <span class="text-slate-500">Authors (one per line)</span>
+          <textarea name="authors" rows="4" placeholder="Smith, Jane&#10;Jones, Bob"
+                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono">{% for a in authors -%}
+{{ a.family }}{% if a.given %}, {{ a.given }}{% endif %}
+{% endfor -%}</textarea>
+        </label>
+        <label class="block">
+          <span class="text-slate-500">Abstract</span>
+          <textarea name="abstract" rows="4"
+                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs">{{ paper.abstract or '' }}</textarea>
+        </label>
+        <button type="submit"
+                class="px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700">
+          Save changes
+        </button>
+      </form>
+    </div>
+  </div>
 </div>
 
 {% if pdf_on_disk %}

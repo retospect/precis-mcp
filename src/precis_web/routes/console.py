@@ -26,10 +26,9 @@ query.
 
 from __future__ import annotations
 
+import re
 import shlex
 from typing import Any
-
-import re
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse

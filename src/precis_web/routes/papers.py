@@ -14,11 +14,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
-from precis_web.deps import get_store, get_web_config, templates
+from precis_web.deps import await_dispatch, get_store, get_web_config, templates
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -216,3 +216,98 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{cite_key}.pdf"'},
     )
+
+
+# ---- Edit + delete ----------------------------------------------------
+#
+# Both routes flow through ``runtime.dispatch(edit / delete)`` so the
+# handler's validation, ref-events log, and tree guards stay
+# single-sourced (web + MCP behave the same).
+
+
+@router.post("/{ref_id}/edit", response_model=None)
+async def edit(
+    request: Request,
+    ref_id: int,
+    title: str = Form(""),
+    year: str = Form(""),
+    doi: str = Form(""),
+    arxiv: str = Form(""),
+    abstract: str = Form(""),
+    authors: str = Form(""),
+) -> RedirectResponse | HTMLResponse:
+    """Update editable paper metadata.
+
+    Empty fields are NOT sent (so an unset value doesn't overwrite the
+    existing one). Authors come in as a newline- or comma-separated
+    string and get split + re-shaped into the ``[{family, given}, ...]``
+    list shape the schema stores.
+    """
+    payload: dict[str, Any] = {"kind": "paper", "id": ref_id}
+    if title.strip():
+        payload["title"] = title.strip()
+    if year.strip():
+        try:
+            payload["year"] = int(year.strip())
+        except ValueError:
+            pass
+    if doi.strip():
+        payload["doi"] = doi.strip()
+    if arxiv.strip():
+        payload["arxiv"] = arxiv.strip()
+    if abstract.strip():
+        payload["abstract"] = abstract.strip()
+    if authors.strip():
+        # Split on newlines first, then commas — operator likely paste
+        # the list with one author per line or "Lastname, F.; Other, A.".
+        raw = [a.strip() for a in authors.replace(";", "\n").splitlines()]
+        cleaned = [a for a in raw if a]
+        # Shape into family/given when a comma's present; otherwise treat
+        # the whole entry as family.
+        shaped: list[dict[str, str]] = []
+        for a in cleaned:
+            if "," in a:
+                family, _, given = a.partition(",")
+                shaped.append(
+                    {"family": family.strip(), "given": given.strip()}
+                )
+            else:
+                shaped.append({"family": a, "given": ""})
+        if shaped:
+            payload["authors"] = shaped
+
+    body, is_error = await await_dispatch(request, "edit", payload)
+    if is_error:
+        # Render the error inline rather than redirect — operator needs
+        # to see why the edit didn't take.
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"active_tab": "papers", "body": body, "is_error": True},
+            status_code=400,
+        )
+    return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
+
+
+@router.post("/{ref_id}/delete", response_model=None)
+async def delete(
+    request: Request,
+    ref_id: int,
+) -> RedirectResponse | HTMLResponse:
+    """Soft-delete this paper (sets ``refs.deleted_at = now()``).
+
+    The `delete` verb is reversible at the DB level (toggle deleted_at
+    back to NULL), but the UX presents it as a one-way removal. The
+    redirect lands on the papers list, not the (now-404) detail page.
+    """
+    body, is_error = await await_dispatch(
+        request, "delete", {"kind": "paper", "id": ref_id}
+    )
+    if is_error:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"active_tab": "papers", "body": body, "is_error": True},
+            status_code=400,
+        )
+    return RedirectResponse(url="/papers", status_code=303)
