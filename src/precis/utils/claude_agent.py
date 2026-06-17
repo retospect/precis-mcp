@@ -227,7 +227,16 @@ def call_claude_agent(
     if system_prompt_text:
         args.extend(["--append-system-prompt", system_prompt_text])
     if disallowed_tools:
-        args.extend(["--disallowed-tools", ",".join(disallowed_tools)])
+        # ``--disallowed-tools=VALUE`` instead of two separate args.
+        # Claude Code 2.1.x parses ``--disallowed-tools`` with greedy
+        # nargs ("collect everything until the next flag"), so the
+        # space-separated form swallowed the prompt — every word in
+        # the dream prompt became a "deny rule" and the binary
+        # exited 1 with "Permission deny rule 'DREAM' matches no
+        # known tool — check for typos." (2026-06-17 incident).
+        # The equals form binds the value to the flag at parse time,
+        # so subsequent extra_args + prompt are unambiguous.
+        args.append(f"--disallowed-tools={','.join(disallowed_tools)}")
     args.extend(extra_args)
     args.append(prompt)
 

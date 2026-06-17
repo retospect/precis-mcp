@@ -204,8 +204,11 @@ def test_disallowed_tools_joined(stub_bin: Path) -> None:
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     res = call_claude_agent("do", disallowed_tools=("WebFetch", "WebSearch"))
-    assert "--disallowed-tools" in res.final_text
-    assert "WebFetch,WebSearch" in res.final_text
+    # ``=``-joined to bind the value at parse time. Claude Code 2.1.x
+    # has greedy nargs on this flag — the space form swallows the
+    # prompt and every word becomes a deny rule (see incident note in
+    # claude_agent.py).
+    assert "--disallowed-tools=WebFetch,WebSearch" in res.final_text
 
 
 def test_model_override(stub_bin: Path) -> None:
