@@ -84,6 +84,15 @@ QUICK_SERVICES: list[dict[str, str]] = [
             "(US / EP / WO format)."
         ),
     },
+    {
+        "value": "semanticscholar",
+        "label": "Semantic Scholar",
+        "kind": "semanticscholar",
+        "hint": (
+            "Paper search — natural-language query. Returns top 10 hits "
+            "with authors / year / DOI / abstract / citation count."
+        ),
+    },
 ]
 
 _QUICK_BY_VALUE: dict[str, dict[str, str]] = {s["value"]: s for s in QUICK_SERVICES}

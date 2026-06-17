@@ -758,6 +758,13 @@ def boot(
         _gated(ThinkHandler)
         _gated(ResearchHandler)
 
+        # Semantic Scholar — paper search via the S2 Graph API.
+        # API key is optional (just raises the rate limit), so this
+        # always registers when httpx is available.
+        from precis.handlers.semanticscholar import SemanticScholarHandler
+
+        _gated(SemanticScholarHandler)
+
         # Patent — EPO OPS. ``PatentHandler.spec.requires_env``
         # declares EPO_OPS_CLIENT_KEY / EPO_OPS_CLIENT_SECRET /
         # PRECIS_PATENT_RAW_ROOT, so the kind_gate skips the handler
