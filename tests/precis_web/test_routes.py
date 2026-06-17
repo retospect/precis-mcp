@@ -447,7 +447,10 @@ def test_memory_refs_detail_renders_references_panel(client, runtime) -> None:
     # the Copy All button.
     assert "data-ref-line=" in resp.text
     # Copy button present.
-    assert "Copy all" in resp.text
+    # Copy-as menu present (extends MVP with Markdown / BibTeX too, #189).
+    assert "Copy as" in resp.text
+    assert "Markdown" in resp.text
+    assert "BibTeX" in resp.text
 
 
 def test_memory_refs_detail_missing_ref_flagged(client, runtime) -> None:

@@ -399,6 +399,36 @@ def _expand_handle(
                     preview += "…"
         except Exception:
             pass
+    # Citation metadata for BibTeX / Markdown export — only meaningful
+    # for paper kind, but the dict shape is uniform so the template
+    # doesn't have to branch.
+    citation: dict[str, Any] = {}
+    if kind == "paper":
+        slug = getattr(ref, "slug", None) or ""
+        authors = getattr(ref, "authors", None) or []
+        year = getattr(ref, "year", None)
+        # Authors come in as ``[{"family":..., "given":...}, ...]``.
+        author_names = []
+        for a in authors:
+            if isinstance(a, dict):
+                fam = (a.get("family") or "").strip()
+                given = (a.get("given") or "").strip()
+                if fam and given:
+                    author_names.append(f"{fam}, {given}")
+                elif fam:
+                    author_names.append(fam)
+        # Try to pull DOI off ref.meta if the handler stored it there
+        # (papers ingested from Crossref do).
+        meta = getattr(ref, "meta", None) or {}
+        doi = meta.get("doi") if isinstance(meta, dict) else None
+        citation = {
+            "cite_key": slug,
+            "authors": author_names,
+            "year": year,
+            "doi": doi,
+            "url": (f"https://doi.org/{doi}" if doi else None),
+        }
+
     return {
         "handle": raw_handle,
         "url": url,
@@ -407,6 +437,7 @@ def _expand_handle(
         "status": "resolved",
         "kind": kind,
         "slug": getattr(ref, "slug", None) or "",
+        "citation": citation,
     }
 
 

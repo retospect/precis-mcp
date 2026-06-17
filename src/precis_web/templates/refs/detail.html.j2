@@ -58,23 +58,78 @@
    dream memory's connections without chasing a dozen links. Includes
    a "Copy all (plain text)" button via Alpine. #}
 {% if references %}
-<section class="mt-6" x-data="{ copied: false }">
+<section class="mt-6" x-data="{ copied: '', menuOpen: false }" @click.outside="menuOpen = false">
   <div class="flex items-baseline gap-2 mb-2">
     <h2 class="text-sm font-semibold text-slate-700">
       References <span class="text-slate-400 font-normal">({{ references|length }})</span>
     </h2>
-    <button type="button"
-            @click="(() => {
-              const txt = Array.from(document.querySelectorAll('[data-ref-line]'))
-                .map(el => el.dataset.refLine).join('\n');
-              navigator.clipboard.writeText(txt);
-              copied = true; setTimeout(() => copied = false, 1500);
-            })()"
-            class="ml-auto text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
-      <span x-show="!copied">📋 Copy all (plain text)</span>
-      <span x-show="copied" x-cloak class="text-emerald-700">✓ copied</span>
-    </button>
+    {# Three export modes — plain text, Markdown, BibTeX. The dropdown
+       state plus a tiny shared formatter live entirely in Alpine. #}
+    <div class="ml-auto relative">
+      <button type="button" @click="menuOpen = !menuOpen"
+              class="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
+        <span x-show="!copied">📋 Copy as… ▾</span>
+        <span x-show="copied" x-cloak class="text-emerald-700">✓ copied <span x-text="copied"></span></span>
+      </button>
+      <div x-show="menuOpen" x-cloak
+           class="absolute right-0 top-full mt-1 w-48 rounded-lg border border-slate-200 bg-white shadow-xl z-20 text-xs">
+        <button type="button" @click="copyAs('plain'); menuOpen = false"
+                class="block w-full text-left px-3 py-2 hover:bg-slate-50">Plain text</button>
+        <button type="button" @click="copyAs('markdown'); menuOpen = false"
+                class="block w-full text-left px-3 py-2 hover:bg-slate-50">Markdown</button>
+        <button type="button" @click="copyAs('bibtex'); menuOpen = false"
+                class="block w-full text-left px-3 py-2 hover:bg-slate-50">BibTeX
+          <span class="text-slate-400">(papers only)</span>
+        </button>
+      </div>
+    </div>
   </div>
+  {# Hidden JSON payload the Alpine formatter reads. Keeps the citation
+     fields available without sprinkling data-attrs across every row. #}
+  <script type="application/json" id="references-json">
+    {{ references | tojson }}
+  </script>
+  <script>
+    function copyAs(mode) {
+      const refs = JSON.parse(document.getElementById('references-json').textContent);
+      let txt = '';
+      if (mode === 'plain') {
+        txt = refs.map(r => {
+          const t = r.title || '';
+          const p = r.preview ? '. ' + r.preview : '';
+          return r.handle + ' — ' + t + ' (' + r.kind + ')' + p;
+        }).join('\n');
+      } else if (mode === 'markdown') {
+        txt = refs.map(r => {
+          const t = r.title || '';
+          const p = r.preview ? '\n  > ' + r.preview : '';
+          return '- [' + r.handle + '](' + r.url + ') — ' + t + ' (' + r.kind + ')' + p;
+        }).join('\n');
+      } else if (mode === 'bibtex') {
+        txt = refs.filter(r => r.kind === 'paper' && r.citation && r.citation.cite_key)
+          .map(r => {
+            const c = r.citation;
+            const parts = ['@article{' + c.cite_key + ','];
+            if (c.authors && c.authors.length)
+              parts.push('  author = {' + c.authors.join(' and ') + '},');
+            parts.push('  title = {' + (r.title || '').replace(/[{}]/g, '') + '},');
+            if (c.year) parts.push('  year = {' + c.year + '},');
+            if (c.doi) parts.push('  doi = {' + c.doi + '},');
+            if (c.url) parts.push('  url = {' + c.url + '},');
+            parts.push('}');
+            return parts.join('\n');
+          }).join('\n\n');
+        if (!txt) txt = '% No paper-kind references in this body.';
+      }
+      navigator.clipboard.writeText(txt);
+      // Update Alpine state via the closest scope.
+      const root = document.querySelector('section[x-data*="copied"]');
+      if (root && root._x_dataStack) {
+        root._x_dataStack[0].copied = mode;
+        setTimeout(() => { root._x_dataStack[0].copied = ''; }, 1500);
+      }
+    }
+  </script>
   <ol class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 list-decimal pl-8">
     {% for r in references %}
     {# data-ref-line is what the copy button pulls — plain-text cite
