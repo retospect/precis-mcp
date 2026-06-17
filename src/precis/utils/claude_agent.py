@@ -286,6 +286,16 @@ def call_claude_agent(
             text=True,
             timeout=timeout_s,
             env=proc_env,
+            # ``stdin=DEVNULL`` because Claude Code 2.1.x reads stdin
+            # in non-interactive ``-p`` mode and waits up to 3s for
+            # data before proceeding. When this helper is called from
+            # a CLI-spawned worker (precis worker --only dream_agent
+            # --once), the parent's stdin pipe behaviour can cause
+            # claude to read garbage / hang, ultimately producing the
+            # "Not logged in" silent-success or zero-MCP-call pattern
+            # observed 2026-06-17. Direct ``-p`` callers want no
+            # stdin; force it.
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         raise ClaudeAgentError(
