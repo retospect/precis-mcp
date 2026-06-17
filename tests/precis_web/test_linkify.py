@@ -209,3 +209,73 @@ def test_bare_discord_handle_requires_all_three_path_segments() -> None:
     out = str(linkify_refs("posted in discord/general"))
     assert "/r/conv/" not in out
     assert "<a" not in out
+
+
+# ---- Bare paper cite_keys -------------------------------------------
+
+
+def test_bare_paper_cite_key_with_chunk_address_linkifies() -> None:
+    """``xu25f~12`` is unambiguously a paper chunk pointer — the
+    chunk suffix disambiguates it from prose."""
+    out = str(linkify_refs("see xu25f~12 for the proof"))
+    assert "/r/paper/xu25f?chunk=12" in out
+
+
+def test_bare_paper_cite_key_three_letter_surname() -> None:
+    """Bare cite_keys without a chunk suffix need ≥3 letters of
+    surname to dodge false positives like ``ml22``."""
+    out = str(linkify_refs("acheson26 covers the topic"))
+    assert "/r/paper/acheson26" in out
+
+
+def test_bare_paper_cite_key_with_disambig_letter() -> None:
+    """``futrell25b`` (the et-al disambig suffix) is a real shape."""
+    out = str(linkify_refs("see futrell25b"))
+    assert "/r/paper/futrell25b" in out
+
+
+def test_bare_paper_two_letter_no_chunk_does_NOT_match() -> None:
+    """``ml22`` / ``ai99`` are false-positive risks — require ≥3 letters
+    of surname when there's no chunk suffix."""
+    out = str(linkify_refs("the ml22 conference and ai99 problem"))
+    assert "/r/paper/ml22" not in out
+    assert "/r/paper/ai99" not in out
+
+
+def test_bare_paper_two_letter_with_chunk_DOES_match() -> None:
+    """With a chunk suffix the pattern relaxes: ``xu25~3`` is plausibly
+    a paper chunk pointer even with a 2-letter surname."""
+    out = str(linkify_refs("xu25~3 has the data"))
+    assert "/r/paper/xu25?chunk=3" in out
+
+
+def test_prefixed_paper_doesnt_double_linkify_into_anchor() -> None:
+    """After ``paper:acheson26`` becomes an anchor, the bare-cite-key
+    pass must NOT re-match ``acheson26`` inside the anchor — that would
+    nest <a> tags and break the popover."""
+    out = str(linkify_refs("paper:acheson26 and acheson26"))
+    # Exactly two anchor opens — one for the prefixed match, one for
+    # the bare cite_key in the second half. Not three.
+    assert out.count("<a ") == 2
+
+
+def test_prose_word_not_linkified() -> None:
+    """Plain prose words without the cite_key shape don't get linkified."""
+    out = str(linkify_refs("the morning paper was good"))
+    assert "<a " not in out
+
+
+def test_html5_not_linkified_only_one_digit() -> None:
+    """``html5`` has only ONE digit — the pattern requires exactly 2."""
+    out = str(linkify_refs("html5 spec"))
+    assert "/r/paper/html5" not in out
+
+
+def test_covid19_IS_linkified_known_acceptable_false_positive() -> None:
+    """``covid19`` shaped exactly like a cite_key (5 letters + 2 digits).
+    We accept this as a known false positive — the resolver 404s cleanly
+    so the hover popover just shows 'no such paper'. The cost of a tight
+    enough regex to exclude it would also exclude real surnames like
+    ``covid``."""
+    out = str(linkify_refs("covid19 study"))
+    assert "/r/paper/covid19" in out

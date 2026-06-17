@@ -87,6 +87,34 @@ _BARE_CONV_PATTERN = re.compile(
     r"(?!\w)"
 )
 
+#: Bare paper cite_key shorthand: ``<surname><2-digit year><optional
+#: letter>(~<chunk>)?`` — e.g. ``acheson26``, ``xu25f``, ``futrell25~12``.
+#: The pattern requires:
+#:
+#: * at least 2 lowercase letters (surname; ``q25`` alone is too risky)
+#: * exactly 2 digits (year — ``99`` or ``25``, not ``2025``)
+#: * an optional single lowercase letter (et-al disambiguator)
+#:
+#: To keep false positives in check (``covid19``, ``html5``, ``p100``
+#: would otherwise match), we require either a chunk-address suffix
+#: (``xu25f~12``) — which is unambiguously a paper chunk pointer —
+#: OR the slug matches an even tighter shape with ≥3 letters of
+#: surname. That filters out two-letter false positives like ``ai99``
+#: while still catching real cite_keys.
+_BARE_PAPER_PATTERN = re.compile(
+    r"(?<![\w-])"
+    r"(?:"
+    # With chunk suffix: any ≥2-letter cite_key, since the suffix
+    # disambiguates it as a paper chunk pointer.
+    r"[a-z]{2,}[0-9]{2}[a-z]?~(?:p[0-9]+|[0-9]+(?:\.\.[0-9]+)?)"
+    r"|"
+    # Without chunk suffix: ≥3 letters of surname required so we
+    # don't grab "ai99" / "ml22" / "p100" off prose.
+    r"[a-z]{3,}[0-9]{2}[a-z]?"
+    r")"
+    r"(?!\w)"
+)
+
 #: Spans of input the linkifier must leave alone. Each pattern matches
 #: an opening tag through its closing tag; everything outside these is
 #: prose we can transform. We compile a single alternation so the
@@ -222,42 +250,64 @@ def linkify_refs(value: str) -> Markup:
     return Markup("".join(out_parts))
 
 
+#: Combined alternation so the three pattern shapes (prefixed
+#: ``kind:ref``, bare conv handle, bare paper cite_key) consume a
+#: given span ONCE — otherwise a sequential-substitution pass would
+#: re-match cite_keys inside the anchors produced by the first pass.
+#: Order in the alternation matters: longer/more specific shapes
+#: first so the regex engine commits to them before falling through
+#: to the broad bare paper pattern.
+_COMBINED_PATTERN = re.compile(
+    r"(?P<ref>"
+    + _REF_PATTERN.pattern
+    + r")"
+    r"|"
+    r"(?P<bare_conv>"
+    + _BARE_CONV_PATTERN.pattern
+    + r")"
+    r"|"
+    r"(?P<bare_paper>"
+    + _BARE_PAPER_PATTERN.pattern
+    + r")"
+)
+
+
 def _linkify_prose(prose: str) -> str:
-    """Replace every ``kind:ref`` (and bare conv handle) in plain prose
-    with an anchor."""
+    """Replace every ``kind:ref``, bare conv handle, and bare paper
+    cite_key in plain prose with an anchor — single pass so we never
+    double-match inside an anchor we just produced."""
     if not prose:
         return ""
 
-    def _sub(m: re.Match[str]) -> str:
-        kind = m.group("kind")
-        raw_id = m.group("id")
-        chunk = m.group("chunk")
-        # Allowlist gate: only emit anchors for kinds we actually know
-        # how to resolve. Reference shapes like ``user:asa`` /
-        # ``note:foo`` / ``email:reto@x.com`` are common in prose and
-        # would otherwise become broken anchors that 404 the resolver.
-        if kind not in _LINKIFY_KINDS or kind in _LOW_SIGNAL_KINDS:
-            return m.group(0)
-        return _render_anchor(kind, raw_id, chunk)
+    def _dispatch(m: re.Match[str]) -> str:
+        if m.group("ref") is not None:
+            kind = m.group("kind")
+            raw_id = m.group("id")
+            chunk = m.group("chunk")
+            # Allowlist gate: skip kinds that look like ``noun:value``
+            # in prose but aren't precis kinds (user:asa, tag:open).
+            if kind not in _LINKIFY_KINDS or kind in _LOW_SIGNAL_KINDS:
+                return m.group(0)
+            return _render_anchor(kind, raw_id, chunk)
+        if m.group("bare_conv") is not None:
+            whole = m.group("bare_conv")
+            slug = whole
+            chunk = None
+            if "~" in slug:
+                slug, _, suffix = slug.partition("~")
+                chunk = "~" + suffix
+            return _render_anchor("conv", slug, chunk)
+        if m.group("bare_paper") is not None:
+            whole = m.group("bare_paper")
+            slug = whole
+            chunk = None
+            if "~" in slug:
+                slug, _, suffix = slug.partition("~")
+                chunk = "~" + suffix
+            return _render_anchor("paper", slug, chunk)
+        return m.group(0)
 
-    # First pass: prefixed ``kind:ref`` matches.
-    out = _REF_PATTERN.sub(_sub, prose)
-
-    # Second pass: bare ``discord/<server>/<channel>/<thread>(~N)?``
-    # shorthand. The asa-bot emits these in memory bodies when it
-    # references conv chunks without prepending ``conv:``. We anchor
-    # them to ``/r/conv/<slug>?chunk=…`` so they behave like every
-    # other ref link.
-    def _conv_sub(m: re.Match[str]) -> str:
-        whole = m.group(0)
-        chunk: str | None = None
-        slug = whole
-        if "~" in slug:
-            slug, _, suffix = slug.partition("~")
-            chunk = "~" + suffix
-        return _render_anchor("conv", slug, chunk)
-
-    return _BARE_CONV_PATTERN.sub(_conv_sub, out)
+    return _COMBINED_PATTERN.sub(_dispatch, prose)
 
 
 __all__ = ["linkify_refs"]
