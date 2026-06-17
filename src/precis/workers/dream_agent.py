@@ -105,11 +105,29 @@ def run_dream_pass(store: Store) -> BatchResult:
     except ClaudeAgentError as exc:
         log.exception("dream_agent: claude agent failed: %s", exc)
         return BatchResult(handler="dream_agent", claimed=1, ok=0, failed=1)
+    # Diagnostic: dump the session's final_text and length to a temp
+    # file so we can see WHAT claude actually returned. When the
+    # session "succeeds" but writes no memories, the final_text is
+    # the only signal we have. (2026-06-17 dream incident.)
+    try:
+        from pathlib import Path
+        diag = Path("/tmp/precis-dream-last.txt")
+        diag.write_text(
+            f"final_text length: {len(result.final_text or '')}\n"
+            f"final_text:\n{result.final_text or '(empty)'}\n"
+            f"---\nstderr length: not captured (in result)\n"
+            f"cost: {result.cost_usd}\nturns: {result.turns_used}\n"
+            f"duration: {result.duration_s}\n"
+        )
+    except Exception:
+        log.exception("dream_agent: diagnostic dump failed")
+
     log.info(
-        "dream_agent: dispatch ok cost=$%.4f duration=%.1fs turns=%s",
+        "dream_agent: dispatch ok cost=$%.4f duration=%.1fs turns=%s final_text_len=%d",
         result.cost_usd or 0.0,
         result.duration_s,
         result.turns_used,
+        len(result.final_text or ""),
     )
     _ = store  # reserved for future event-log writes
     return BatchResult(handler="dream_agent", claimed=1, ok=1, failed=0)
