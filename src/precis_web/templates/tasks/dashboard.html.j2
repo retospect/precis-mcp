@@ -204,12 +204,61 @@
       </div>
     {% endif %}
 
+    {# T12.2 — Tasks-tree filter chips + collapse-all/expand-all. The
+       chips toggle classes on #tree which CSS uses to hide matching
+       rows. Per-row collapse is below — each row with children gets
+       a ▶/▼ toggle; clicking it walks subsequent rows by data-depth
+       and hides those deeper than the row's depth. State persists in
+       localStorage so a refresh keeps the user's view. #}
+    <div class="mb-2 flex items-center gap-1.5 text-xs flex-wrap" id="task-filter-bar">
+      <button type="button" data-filter-toggle="hide-done"
+              class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
+        <span data-when-on>👁 done hidden</span><span data-when-off>show / hide done</span>
+      </button>
+      <button type="button" data-filter-toggle="hide-wont-do"
+              class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
+        <span data-when-on>👁 won't-do hidden</span><span data-when-off>show / hide won't-do</span>
+      </button>
+      <button type="button" data-filter-toggle="only-recurring"
+              class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
+        <span data-when-on>🔁 recurring only</span><span data-when-off>recurring only</span>
+      </button>
+      <button type="button" data-filter-toggle="only-strategic"
+              class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
+        <span data-when-on>⭐ strategic only</span><span data-when-off>strategic only</span>
+      </button>
+      <button type="button" data-filter-toggle="only-jobs"
+              class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
+        <span data-when-on>⚙ jobs only</span><span data-when-off>jobs only</span>
+      </button>
+      <span class="mx-1 text-slate-300">|</span>
+      <button type="button" id="task-expand-all"
+              class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">▼ expand all</button>
+      <button type="button" id="task-collapse-all"
+              class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">▶ collapse all</button>
+      <span class="ml-auto text-slate-400" id="task-row-count"></span>
+    </div>
+    {# CSS rules driven by the filter classes on #tree. #}
+    <style>
+      #tree.hide-done li[data-status="done"] { display: none; }
+      #tree.hide-wont-do li[data-status="won't-do"] { display: none; }
+      #tree.only-recurring li:not([data-recurring="1"]) { display: none; }
+      #tree.only-strategic li:not([data-level="strategic"]) { display: none; }
+      #tree.only-jobs li:not([data-kind="job"]) { display: none; }
+      /* Collapsed-row marker — JS sets data-row-collapsed on rows
+         hidden because an ancestor is collapsed. */
+      #tree li[data-row-collapsed="1"] { display: none; }
+    </style>
     <ul id="tree" class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
       {% for r in rows %}
       <li class="px-3 py-2{% if r.kind == 'job' %} bg-slate-50/60{% endif %}"
           x-data="{actions:false}"
           data-id="{{ r.id }}"
           data-kind="{{ r.kind }}"
+          data-depth="{{ r.depth }}"
+          data-status="{{ r.status }}"
+          data-level="{{ r.level or '' }}"
+          data-recurring="{{ '1' if r.level == 'recurring' else '0' }}"
           {% if r.kind == 'todo' %}draggable="true"{% endif %}>
         <div class="flex items-center gap-2" style="padding-left: {{ r.depth * 1.25 }}rem">
           {% if r.kind == 'todo' %}<span class="cursor-grab text-slate-300 select-none" title="drag to reparent">⠿</span>{% endif %}
@@ -470,6 +519,156 @@
       moveTask(draggingId, '');  // empty parent = detach to root
     });
   }
+})();
+</script>
+
+<script>
+/* T12.2 — Tasks-tree filter chips + per-row collapse.
+   No backend, no Alpine; localStorage persists view state. */
+(function () {
+  const TREE = document.getElementById('tree');
+  if (!TREE) return;
+  const BAR = document.getElementById('task-filter-bar');
+  const ROW_COUNT_BADGE = document.getElementById('task-row-count');
+
+  // ---- filter chip toggle ------------------------------------------
+  const FILTER_STORAGE_KEY = 'precis.tasks.filters';
+  function loadFilters() {
+    try {
+      const raw = localStorage.getItem(FILTER_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (_) { return {}; }
+  }
+  function saveFilters(filters) {
+    try { localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(filters)); } catch (_) {}
+  }
+  function applyFilters() {
+    const filters = loadFilters();
+    Object.keys({
+      'hide-done': 1, 'hide-wont-do': 1, 'only-recurring': 1,
+      'only-strategic': 1, 'only-jobs': 1,
+    }).forEach(function (cls) {
+      TREE.classList.toggle(cls, !!filters[cls]);
+    });
+    // Reflect chip on/off state in the button labels.
+    BAR.querySelectorAll('[data-filter-toggle]').forEach(function (btn) {
+      const cls = btn.dataset.filterToggle;
+      const on = !!filters[cls];
+      btn.classList.toggle('bg-emerald-600', on);
+      btn.classList.toggle('text-white', on);
+      btn.classList.toggle('border-emerald-600', on);
+      const onSpan = btn.querySelector('[data-when-on]');
+      const offSpan = btn.querySelector('[data-when-off]');
+      if (onSpan && offSpan) {
+        onSpan.style.display = on ? '' : 'none';
+        offSpan.style.display = on ? 'none' : '';
+      }
+    });
+    updateRowCount();
+  }
+  BAR.addEventListener('click', function (e) {
+    const btn = e.target.closest('[data-filter-toggle]');
+    if (!btn) return;
+    const filters = loadFilters();
+    filters[btn.dataset.filterToggle] = !filters[btn.dataset.filterToggle];
+    saveFilters(filters);
+    applyFilters();
+  });
+
+  // ---- per-row collapse --------------------------------------------
+  const COLLAPSE_STORAGE_KEY = 'precis.tasks.collapsed';
+  function loadCollapsed() {
+    try {
+      const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY);
+      return raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch (_) { return new Set(); }
+  }
+  function saveCollapsed(s) {
+    try { localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify(Array.from(s))); } catch (_) {}
+  }
+
+  // Build the "has children?" lookup from the flat row list. A row has
+  // children if the next row's depth is greater than its own.
+  const rows = Array.from(TREE.querySelectorAll('li[data-id]'));
+  const hasChildren = new Map();
+  for (let i = 0; i < rows.length; i++) {
+    const d = parseInt(rows[i].dataset.depth || '0', 10);
+    const nd = i + 1 < rows.length ? parseInt(rows[i + 1].dataset.depth || '0', 10) : -1;
+    hasChildren.set(rows[i].dataset.id, nd > d);
+  }
+  // Inject toggle buttons on rows with children.
+  rows.forEach(function (row) {
+    if (!hasChildren.get(row.dataset.id)) return;
+    const firstFlex = row.querySelector('div.flex');
+    if (!firstFlex) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'text-xs w-5 text-slate-400 hover:text-slate-700 shrink-0';
+    btn.dataset.collapseToggle = row.dataset.id;
+    btn.textContent = '▼';
+    btn.title = 'collapse / expand subtree';
+    // Insert immediately after the indent padding (as the first child).
+    firstFlex.insertBefore(btn, firstFlex.firstChild);
+  });
+  function applyCollapsed() {
+    const collapsed = loadCollapsed();
+    let hideUntilDepth = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const d = parseInt(row.dataset.depth || '0', 10);
+      if (hideUntilDepth >= 0 && d > hideUntilDepth) {
+        row.dataset.rowCollapsed = '1';
+      } else {
+        delete row.dataset.rowCollapsed;
+        hideUntilDepth = -1;
+      }
+      // Update the toggle marker on this row if it has children.
+      const btn = row.querySelector('[data-collapse-toggle]');
+      if (btn) {
+        const isCollapsed = collapsed.has(row.dataset.id);
+        btn.textContent = isCollapsed ? '▶' : '▼';
+        if (isCollapsed && hideUntilDepth < 0) hideUntilDepth = d;
+      }
+    }
+    updateRowCount();
+  }
+  TREE.addEventListener('click', function (e) {
+    const btn = e.target.closest('[data-collapse-toggle]');
+    if (!btn) return;
+    e.preventDefault();
+    const id = btn.dataset.collapseToggle;
+    const collapsed = loadCollapsed();
+    if (collapsed.has(id)) collapsed.delete(id);
+    else collapsed.add(id);
+    saveCollapsed(collapsed);
+    applyCollapsed();
+  });
+  document.getElementById('task-collapse-all').addEventListener('click', function () {
+    const collapsed = new Set();
+    rows.forEach(function (row) {
+      if (hasChildren.get(row.dataset.id)) collapsed.add(row.dataset.id);
+    });
+    saveCollapsed(collapsed);
+    applyCollapsed();
+  });
+  document.getElementById('task-expand-all').addEventListener('click', function () {
+    saveCollapsed(new Set());
+    applyCollapsed();
+  });
+
+  // ---- visible row counter -----------------------------------------
+  function updateRowCount() {
+    if (!ROW_COUNT_BADGE) return;
+    const total = rows.length;
+    const visible = rows.filter(function (r) {
+      return getComputedStyle(r).display !== 'none';
+    }).length;
+    ROW_COUNT_BADGE.textContent =
+      visible === total ? total + ' rows' : visible + ' / ' + total + ' rows';
+  }
+
+  applyFilters();
+  applyCollapsed();
 })();
 </script>
 {% endblock %}
