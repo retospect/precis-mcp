@@ -31,6 +31,9 @@ from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
 )
 from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
@@ -312,11 +315,7 @@ class PresentationHandler(Handler):
         remove: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
-        if not add and not remove:
-            raise BadInput(
-                "tag(kind='pres', id=...) requires add= or remove=",
-                next="tag(kind='pres', id='<slug>', add=['subtype:slides'])",
-            )
+        require_tag_ops("pres", add, remove)
         slug, ref_id = self._resolve_pres_slug(id)
         n_added, n_removed = apply_tag_ops(
             self.store, "pres", ref_id, tags=add, untags=remove
@@ -341,16 +340,8 @@ class PresentationHandler(Handler):
         rel: str | None = None,
         **_kw: Any,
     ) -> Response:
-        if target is None:
-            raise BadInput(
-                "link(kind='pres', id=...) requires target=",
-                next="link(kind='pres', id='<slug>', target='paper:slug')",
-            )
-        if mode not in ("add", "remove"):
-            raise BadInput(
-                f"link mode must be 'add' or 'remove', got {mode!r}",
-                options=["add", "remove"],
-            )
+        target = require_link_target("pres", target)
+        validate_link_mode(mode)
         slug, ref_id = self._resolve_pres_slug(id)
         n_added, n_removed = apply_link_ops(
             self.store,

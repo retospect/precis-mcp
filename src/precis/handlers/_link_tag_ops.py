@@ -65,6 +65,47 @@ def validate_relation(rel: str | None) -> Relation:
     return cast(Relation, rel)
 
 
+def require_tag_ops(kind: str, add: list[str] | None, remove: list[str] | None) -> None:
+    """Reject a ``tag()`` call that supplies neither ``add=`` nor ``remove=``.
+
+    Shared by every handler's ``tag()`` so the guard (and its agent-
+    facing wording) lives in one place.
+    """
+    if not add and not remove:
+        raise BadInput(
+            f"tag(kind={kind!r}, id=...) requires add= or remove=",
+            next=f"tag(kind={kind!r}, id=<id>, add=['topic-...'])",
+        )
+
+
+def require_link_target(kind: str, target: str | None) -> str:
+    """Reject a ``link()`` call with no ``target=``; return the target.
+
+    Shared across handlers. Returns the (now non-``None``) target so
+    callers re-narrow the type by assigning the result.
+    """
+    if target is None:
+        raise BadInput(
+            f"link(kind={kind!r}, id=...) requires target=",
+            next=f"link(kind={kind!r}, id=<id>, target='paper:slug')",
+        )
+    return target
+
+
+def validate_link_mode(mode: str) -> str:
+    """Validate a ``link()`` ``mode=`` is ``add`` or ``remove``; return it.
+
+    Shared across handlers so the (identical) check and message don't
+    drift between kinds.
+    """
+    if mode not in ("add", "remove"):
+        raise BadInput(
+            f"link mode must be 'add' or 'remove', got {mode!r}",
+            options=["add", "remove"],
+        )
+    return mode
+
+
 def apply_link_ops(
     store: Store,
     src_ref_id: int,
@@ -244,5 +285,8 @@ __all__ = [
     "apply_link_ops",
     "apply_tag_ops",
     "format_link_tag_ack",
+    "require_link_target",
+    "require_tag_ops",
+    "validate_link_mode",
     "validate_relation",
 ]

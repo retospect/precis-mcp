@@ -41,6 +41,9 @@ from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
 )
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler
@@ -664,13 +667,7 @@ class CacheBackedHandler(Handler):
         later rediscovery via ``search`` with an open-tag filter
         or a direct ``/recent`` scan.
         """
-        if not add and not remove:
-            raise BadInput(
-                f"tag(kind={self.spec.kind!r}, id=...) requires add= or remove=",
-                next=(
-                    f"tag(kind={self.spec.kind!r}, id='<slug>', add=['CACHE:pinned'])"
-                ),
-            )
+        require_tag_ops(self.spec.kind, add, remove)
         slug, ref_id = self._resolve_cache_slug(id)
         n_added, n_removed = apply_tag_ops(
             self.store, self.spec.kind, ref_id, tags=add, untags=remove
@@ -703,18 +700,8 @@ class CacheBackedHandler(Handler):
         "supplementary reading for this paper". See
         ``precis-relations`` for the relation vocabulary.
         """
-        if target is None:
-            raise BadInput(
-                f"link(kind={self.spec.kind!r}, id=...) requires target=",
-                next=(
-                    f"link(kind={self.spec.kind!r}, id='<slug>', target='memory:123')"
-                ),
-            )
-        if mode not in ("add", "remove"):
-            raise BadInput(
-                f"link mode must be 'add' or 'remove', got {mode!r}",
-                options=["add", "remove"],
-            )
+        target = require_link_target(self.spec.kind, target)
+        validate_link_mode(mode)
         slug, ref_id = self._resolve_cache_slug(id)
         n_added, n_removed = apply_link_ops(
             self.store,

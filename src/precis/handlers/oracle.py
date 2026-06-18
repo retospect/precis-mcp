@@ -31,6 +31,9 @@ from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
 )
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
@@ -200,11 +203,7 @@ class OracleHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add/remove oracle tags. Open-tag only (no closed prefixes)."""
-        if not add and not remove:
-            raise BadInput(
-                "tag(kind='oracle', id=...) requires add= or remove=",
-                next="tag(kind='oracle', id='<slug>', add=['topic-eval'])",
-            )
+        require_tag_ops("oracle", add, remove)
         slug, ref_id = self._resolve_oracle_slug(id)
         n_added, n_removed = apply_tag_ops(
             self.store, "oracle", ref_id, tags=add, untags=remove
@@ -230,16 +229,8 @@ class OracleHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add or remove a link from this oracle to another ref."""
-        if target is None:
-            raise BadInput(
-                "link(kind='oracle', id=...) requires target=",
-                next="link(kind='oracle', id='<slug>', target='paper:slug')",
-            )
-        if mode not in ("add", "remove"):
-            raise BadInput(
-                f"link mode must be 'add' or 'remove', got {mode!r}",
-                options=["add", "remove"],
-            )
+        target = require_link_target("oracle", target)
+        validate_link_mode(mode)
         slug, ref_id = self._resolve_oracle_slug(id)
         n_added, n_removed = apply_link_ops(
             self.store,

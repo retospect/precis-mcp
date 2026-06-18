@@ -32,6 +32,9 @@ from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
 )
 from precis.handlers._paper_format import (
     _clean_inline_text,
@@ -1148,11 +1151,7 @@ class PaperHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add/remove paper tags. Allowed axes: ``SRC``, ``CACHE`` + open."""
-        if not add and not remove:
-            raise BadInput(
-                "tag(kind='paper', id=...) requires add= or remove=",
-                next="tag(kind='paper', id='<slug>', add=['CACHE:pinned'])",
-            )
+        require_tag_ops("paper", add, remove)
         slug, ref_id = self._resolve_paper_slug(id)
         n_added, n_removed = apply_tag_ops(
             self.store, "paper", ref_id, tags=add, untags=remove
@@ -1178,16 +1177,8 @@ class PaperHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add or remove a link from this paper to another ref."""
-        if target is None:
-            raise BadInput(
-                "link(kind='paper', id=...) requires target=",
-                next="link(kind='paper', id='<slug>', target='paper:other-slug', rel='cites')",
-            )
-        if mode not in ("add", "remove"):
-            raise BadInput(
-                f"link mode must be 'add' or 'remove', got {mode!r}",
-                options=["add", "remove"],
-            )
+        target = require_link_target("paper", target)
+        validate_link_mode(mode)
         slug, ref_id = self._resolve_paper_slug(id)
         n_added, n_removed = apply_link_ops(
             self.store,

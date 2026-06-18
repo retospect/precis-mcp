@@ -87,11 +87,12 @@ def build_tag_filter(
 
     Returns:
         ``(fragment, params)``. ``fragment`` is the empty string when
-        ``tags`` is None or empty, otherwise begins with a leading
-        ``" AND "`` so callers can splice it without conditional logic.
-        ``params`` is a list of bind parameters in the order they
-        appear in the fragment (namespace, value, namespace, value,
-        ..., N).
+        ``tags`` is None or empty, otherwise a standalone boolean
+        predicate (``<alias>.ref_id IN (...)``) with **no** leading
+        connector — callers append it to their ``clauses`` list and the
+        outer query joins with ``" AND "``. ``params`` is a list of bind
+        parameters in the order they appear in the fragment (namespace,
+        value, namespace, value, ..., N).
 
     Semantics:
         AND across all tags — a ref must carry **every** tag in
@@ -121,7 +122,7 @@ def build_tag_filter(
         # Chunk-level tags don't carry expires_at in v1 (migration 0010
         # added the column only on ref_tags) — no expiry filter needed.
         fragment = (
-            f" AND {ref_alias}.ref_id IN ("
+            f"{ref_alias}.ref_id IN ("
             f"  SELECT c.ref_id "
             f"  FROM chunks c "
             f"  JOIN chunk_tags ct ON ct.chunk_id = c.chunk_id "
@@ -139,7 +140,7 @@ def build_tag_filter(
         # rows stay in the table for audit; the runtime just doesn't see
         # them through this verb.
         fragment = (
-            f" AND {ref_alias}.ref_id IN ("
+            f"{ref_alias}.ref_id IN ("
             f"  SELECT rt.ref_id "
             f"  FROM ref_tags rt "
             f"  JOIN tags t ON t.tag_id = rt.tag_id "

@@ -39,6 +39,9 @@ from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
 )
 from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
 from precis.protocol import Handler, KindSpec
@@ -1199,11 +1202,7 @@ class PlaintextHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add/remove tags on a paragraph-block file."""
-        if not add and not remove:
-            raise BadInput(
-                f"tag(kind='{self._KIND}', id=...) requires add= or remove=",
-                next=f"tag(kind='{self._KIND}', id='<slug>', add=['draft'])",
-            )
+        require_tag_ops(self._KIND, add, remove)
         slug, ref_id = self._resolve_pt_ref(id)
         n_added, n_removed = apply_tag_ops(
             self.store, self._KIND, ref_id, tags=add, untags=remove
@@ -1229,16 +1228,8 @@ class PlaintextHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add or remove a link from a paragraph-block file to another ref."""
-        if target is None:
-            raise BadInput(
-                f"link(kind='{self._KIND}', id=...) requires target=",
-                next=(f"link(kind='{self._KIND}', id='<slug>', target='paper:slug')"),
-            )
-        if mode not in ("add", "remove"):
-            raise BadInput(
-                f"link mode must be 'add' or 'remove', got {mode!r}",
-                options=["add", "remove"],
-            )
+        target = require_link_target(self._KIND, target)
+        validate_link_mode(mode)
         slug, ref_id = self._resolve_pt_ref(id)
         n_added, n_removed = apply_link_ops(
             self.store,

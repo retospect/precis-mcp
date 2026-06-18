@@ -35,7 +35,12 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
-from precis.handlers._link_tag_ops import validate_relation
+from precis.handlers._link_tag_ops import (
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
+    validate_relation,
+)
 from precis.handlers._link_target import parse_link_target
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -549,14 +554,7 @@ class NumericRefHandler(Handler):
         rejected — the caller almost certainly meant something
         specific and a silent no-op would mask the typo.
         """
-        if not add and not remove:
-            raise BadInput(
-                f"tag(kind={self.kind!r}, id=...) requires add= or remove=",
-                next=(
-                    f"tag(kind={self.kind!r}, id=N, add=['STATUS:done']) or "
-                    f"tag(kind={self.kind!r}, id=N, remove=['draft'])"
-                ),
-            )
+        require_tag_ops(self.kind, add, remove)
         ref_id = self._coerce_id(id)
         existing = self._resolve_live_ref(ref_id)
         # Pre-validate every tag *before* touching the DB so a
@@ -597,18 +595,8 @@ class NumericRefHandler(Handler):
         (target, relation) pair; without ``rel=``, removes every
         link to the target at that selector.
         """
-        if target is None:
-            raise BadInput(
-                f"link(kind={self.kind!r}, id=...) requires target=",
-                next=(
-                    f"link(kind={self.kind!r}, id=N, target='paper:slug', rel='cites')"
-                ),
-            )
-        if mode not in ("add", "remove"):
-            raise BadInput(
-                f"link mode must be 'add' or 'remove', got {mode!r}",
-                options=["add", "remove"],
-            )
+        target = require_link_target(self.kind, target)
+        validate_link_mode(mode)
         ref_id = self._coerce_id(id)
         existing = self._resolve_live_ref(ref_id)
         # Collect both target-resolution and rel-vocabulary errors so a

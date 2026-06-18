@@ -1174,11 +1174,8 @@ class RefsMixin:
             clauses.append("r.updated_at > %s")
 
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
-        # ``build_tag_filter`` already prefixes with " AND "; strip it
-        # once and add each clause separately so ``" AND ".join`` still
-        # works.
         if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
+            clauses.append(tag_frag)
             params.extend(tag_params)
 
         order_sql = self._LIST_ORDER_BY.get(
@@ -1231,7 +1228,7 @@ class RefsMixin:
             clauses.append("r.kind = %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
+            clauses.append(tag_frag)
             params.extend(tag_params)
         sql = (
             "SELECT count(*) FROM refs r, "
@@ -1272,7 +1269,7 @@ class RefsMixin:
             clauses.append("r.kind = %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
+            clauses.append(tag_frag)
             params.extend(tag_params)
         params.append(limit)
         sql = (
@@ -1320,7 +1317,7 @@ class RefsMixin:
             clauses.append("r.provider = %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
+            clauses.append(tag_frag)
             params.extend(tag_params)
         sql = "SELECT count(*) FROM refs r WHERE " + " AND ".join(clauses)
         with self.pool.connection() as conn:

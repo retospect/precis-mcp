@@ -760,13 +760,10 @@ class TodoHandler(NumericRefHandler):
 
     def _reparent(self, *, id: str | int, target: str | None, mode: str) -> Response:
         """Apply a ``rel='parent'`` move/detach with full tree guards."""
+        from precis.handlers._link_tag_ops import validate_link_mode
         from precis.handlers._link_target import parse_link_target
 
-        if mode not in ("add", "remove"):
-            raise BadInput(
-                f"link mode must be 'add' or 'remove', got {mode!r}",
-                options=["add", "remove"],
-            )
+        validate_link_mode(mode)
         child_id = self._coerce_id(id)
         # Owner-only refs (strategic / tactical) can't be moved by a
         # worker source — same veto as delete. Fires before any target

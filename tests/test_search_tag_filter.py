@@ -47,7 +47,10 @@ class TestBuildTagFilter:
 
     def test_single_tag(self) -> None:
         frag, params = build_tag_filter(["STATUS:open"])
-        assert frag.startswith(" AND ")
+        # Standalone predicate — no leading connector; the caller joins
+        # it into its WHERE clause with " AND ".
+        assert not frag.startswith(" AND ")
+        assert frag.lstrip().startswith("r.ref_id IN")
         # v2 references refs.ref_id (the v1 ``refs.id`` column was
         # renamed in migrations/0001_initial.sql).
         assert "r.ref_id IN" in frag
@@ -326,9 +329,11 @@ class TestPosBoundary:
         frag, params = build_tag_filter(["scratch"], block_level=True)
         assert "chunk_tags" in frag
         # Smoke-execute the fragment to make sure the SQL is valid.
+        # ``frag`` is a standalone predicate; the caller joins it with
+        # the rest of the WHERE clause via " AND ".
         with store.pool.connection() as conn:
             row = conn.execute(
-                f"SELECT count(*) FROM refs r WHERE r.deleted_at IS NULL{frag}",
+                f"SELECT count(*) FROM refs r WHERE r.deleted_at IS NULL AND {frag}",
                 params,
             ).fetchone()
         assert row is not None

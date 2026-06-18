@@ -216,7 +216,7 @@ class BlocksMixin:
             clauses.append("c.ref_id = %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
+            clauses.append(tag_frag)
             params.extend(tag_params)
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
@@ -286,7 +286,7 @@ class BlocksMixin:
             clauses.append("c.ref_id = %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
+            clauses.append(tag_frag)
             params.extend(tag_params)
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
@@ -353,7 +353,7 @@ class BlocksMixin:
             clauses.append("c.ref_id = %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
+            clauses.append(tag_frag)
             where_params.extend(tag_params)
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
@@ -444,7 +444,7 @@ class BlocksMixin:
             clauses.append("c.ref_id = %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
-            clauses.append(tag_frag.removeprefix(" AND "))
+            clauses.append(tag_frag)
             params.extend(tag_params)
         if self._fence_speculative(tags, include_speculative):
             # Parameterless clause — safe under the double-splice of
