@@ -292,9 +292,7 @@ def test_child_job_succeeded_skips_planner_coroutine(
 
     r = handler.put(text="planner brief", tags=["LLM:opus"])
     rid = _id_of(r.body)
-    job = store.insert_ref(
-        kind="job", slug=None, title="tick", meta={}, parent_id=rid
-    )
+    job = store.insert_ref(kind="job", slug=None, title="tick", meta={}, parent_id=rid)
     store.add_tag(
         job.id,
         Tag.closed("STATUS", "succeeded"),
@@ -317,9 +315,7 @@ def test_child_job_succeeded_skips_with_live_child_todo(
 
     r = handler.put(text="parent")
     rid = _id_of(r.body)
-    job = store.insert_ref(
-        kind="job", slug=None, title="job", meta={}, parent_id=rid
-    )
+    job = store.insert_ref(kind="job", slug=None, title="job", meta={}, parent_id=rid)
     store.add_tag(
         job.id,
         Tag.closed("STATUS", "succeeded"),
@@ -327,9 +323,7 @@ def test_child_job_succeeded_skips_with_live_child_todo(
         replace_prefix=True,
     )
     # An open child todo still in flight (no STATUS tag → COALESCE 'open').
-    store.insert_ref(
-        kind="todo", slug=None, title="open child", meta={}, parent_id=rid
-    )
+    store.insert_ref(kind="todo", slug=None, title="open child", meta={}, parent_id=rid)
     assert (
         child_job_succeeded.evaluate(store, {"type": "child_job_succeeded"}, ref_id=rid)
         is None
@@ -346,9 +340,7 @@ def test_child_job_succeeded_resolves_when_child_todos_done(
 
     r = handler.put(text="parent")
     rid = _id_of(r.body)
-    job = store.insert_ref(
-        kind="job", slug=None, title="job", meta={}, parent_id=rid
-    )
+    job = store.insert_ref(kind="job", slug=None, title="job", meta={}, parent_id=rid)
     store.add_tag(
         job.id, Tag.closed("STATUS", "succeeded"), set_by="agent", replace_prefix=True
     )
