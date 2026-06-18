@@ -34,27 +34,36 @@ from typing import Any
 
 from psycopg import Connection
 
-from precis.workers.executors.claude_inproc import _set_status
+from precis.workers.executors._common import (
+    CANCEL_REQUESTED as _CANCEL_REQUESTED,
+)
+from precis.workers.executors._common import (
+    QUEUED as _QUEUED,
+)
+from precis.workers.executors._common import (
+    STATUS_NAMESPACE as _STATUS_NAMESPACE,
+)
+from precis.workers.executors._common import (
+    WAITING_ASK_USER as _WAITING_ASK_USER,
+)
+from precis.workers.executors._common import (
+    WAITING_CHILDREN as _WAITING_CHILDREN,
+)
+from precis.workers.executors._common import (
+    WAITING_MANUAL_KICK as _WAITING_MANUAL_KICK,
+)
+from precis.workers.executors._common import (
+    WAITING_TIME as _WAITING_TIME,
+)
+from precis.workers.executors._common import (
+    append_chunk as _append_chunk,
+)
+from precis.workers.executors._common import (
+    set_status as _set_status,
+)
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
-
-
-_STATUS_NAMESPACE = "STATUS"
-_QUEUED = "queued"
-_CANCEL_REQUESTED = "cancel_requested"
-
-# STATUS:waiting_* values written by the coordinator. Re-stated
-# here so this module doesn't import from the coordinator and
-# end up with a circular import (the coordinator imports from
-# claude_inproc; wake_runner imports from claude_inproc; both
-# stay clean).
-_WAITING_CHILDREN = "waiting_children"
-_WAITING_TIME = "waiting_time"
-_WAITING_ASK_USER = "waiting_ask_user"
-_WAITING_MANUAL_KICK = "waiting_manual_kick"
-
-_CHILD_TERMINAL = ("succeeded", "failed", "cancelled")
 
 
 # ── Wake-condition selectors ──────────────────────────────────────
@@ -289,38 +298,18 @@ def _requeue(store: Any, ref_id: int, reason: str) -> None:
     Holds the connection only for the status + chunk writes so
     contention with the coordinator pass is minimal.
     """
-    from precis.store.types import BlockInsert
-
     with store.pool.connection() as conn:
         _set_status(store, ref_id, _QUEUED, conn=conn)
         # Audit chunk so the lifecycle reads cleanly:
         # waiting_children → wake_runner: re-queued (children_done) → running → ...
-        store.insert_blocks(
+        _append_chunk(
+            store,
             ref_id,
-            [
-                BlockInsert(
-                    pos=_next_chunk_pos(conn, ref_id),
-                    text=f"wake_runner: re-queued ({reason})",
-                    meta={"chunk_kind": "job_event"},
-                )
-            ],
+            "job_event",
+            f"wake_runner: re-queued ({reason})",
             conn=conn,
         )
         conn.commit()
-
-
-def _next_chunk_pos(conn: Connection, ref_id: int) -> int:
-    """Compute the next ``ord`` for an append on ``ref_id``.
-
-    Same logic as :func:`claude_inproc._append_chunk`'s inline
-    counter; duplicated here so this module has zero dependencies
-    on claude_inproc helpers it doesn't otherwise use.
-    """
-    row = conn.execute(
-        "SELECT COALESCE(MAX(ord) + 1, 0) FROM chunks WHERE ref_id = %s AND ord >= 0",
-        (ref_id,),
-    ).fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
 
 
 # ── Pass entry point ──────────────────────────────────────────────

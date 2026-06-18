@@ -53,6 +53,7 @@ from precis.store._mappers import (
     _block_noise_clauses,
     _row_to_block,
     _row_to_ref,
+    _upsert_tag,
 )
 from precis.store._salience import dream_actor_active
 from precis.store._tag_filter import (
@@ -1225,25 +1226,6 @@ class BlocksMixin:
 
 
 # -- module-level helpers ---------------------------------------------------
-
-
-def _upsert_tag(conn: Connection, namespace: str, value: str) -> int:
-    """Upsert into ``tags(namespace, value)`` and return the tag_id.
-
-    Uses an INSERT ... ON CONFLICT DO UPDATE SET namespace=excluded.namespace
-    trick so the RETURNING clause fires on both the insert and the
-    no-op conflict path. (The DO NOTHING form returns nothing on
-    conflict, forcing a follow-up SELECT.)
-    """
-    row = conn.execute(
-        "INSERT INTO tags (namespace, value) VALUES (%s, %s) "
-        "ON CONFLICT (namespace, value) "
-        "DO UPDATE SET namespace = EXCLUDED.namespace "
-        "RETURNING tag_id",
-        (namespace, value),
-    ).fetchone()
-    assert row is not None
-    return int(row[0])
 
 
 # Aliased chunk projection used by the fetch helpers. Mirrors

@@ -41,9 +41,15 @@ import json
 import logging
 import os
 import re
-import subprocess
 from dataclasses import dataclass
 from typing import Any
+
+from precis.utils._claude_subprocess import (
+    ClaudeProcessError,
+    extract_cost_usd,
+    resolve_binary,
+    run_claude,
+)
 
 log = logging.getLogger(__name__)
 
@@ -67,25 +73,13 @@ _DEFAULT_TIMEOUT_S = 120
 _JSON_BLOCK_RE = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", re.DOTALL)
 
 
-class ClaudePError(RuntimeError):
+class ClaudePError(ClaudeProcessError):
     """Raised when ``claude -p`` fails or its output cannot be parsed.
 
-    Carries the stdout / stderr / returncode so callers can
-    surface diagnostics without re-running.
+    Carries the stdout / stderr / returncode (from
+    :class:`ClaudeProcessError`) so callers can surface diagnostics
+    without re-running.
     """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        stdout: str = "",
-        stderr: str = "",
-        returncode: int | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.stdout = stdout
-        self.stderr = stderr
-        self.returncode = returncode
 
 
 @dataclass(frozen=True)
@@ -134,7 +128,7 @@ def call_claude_p(
         ClaudePError: when the subprocess exits non-zero, times out,
             or returns no parseable JSON block.
     """
-    binary = os.environ.get("PRECIS_CLAUDE_BIN", "claude")
+    binary = resolve_binary()
     model = model or os.environ.get("PRECIS_CLAUDE_MODEL", _DEFAULT_MODEL)
     if max_usd is None:
         max_usd_env = os.environ.get("PRECIS_CLAUDE_MAX_USD")
@@ -160,36 +154,13 @@ def call_claude_p(
     ]
 
     log.debug("claude_p: invoking model=%s max_usd=%.4f", model, max_usd)
-    try:
-        res = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ClaudePError(
-            f"claude -p timed out after {timeout_s}s",
-            stdout=exc.stdout.decode()
-            if isinstance(exc.stdout, bytes)
-            else (exc.stdout or ""),
-            stderr=exc.stderr.decode()
-            if isinstance(exc.stderr, bytes)
-            else (exc.stderr or ""),
-        ) from exc
-    except FileNotFoundError as exc:
-        raise ClaudePError(
-            f"claude binary not found ({binary!r}); "
-            f"set PRECIS_CLAUDE_BIN or install Claude Code"
-        ) from exc
-
-    if res.returncode != 0:
-        raise ClaudePError(
-            f"claude -p exited {res.returncode}: {(res.stderr or '').strip()[:400]}",
-            stdout=res.stdout,
-            stderr=res.stderr,
-            returncode=res.returncode,
-        )
+    res = run_claude(
+        args,
+        binary=binary,
+        label="claude -p",
+        timeout_s=timeout_s,
+        error_cls=ClaudePError,
+    )
 
     data = _parse_last_json_block(res.stdout)
     if data is None:
@@ -199,7 +170,7 @@ def call_claude_p(
             stderr=res.stderr,
         )
 
-    cost = _extract_cost_usd(res.stderr or "")
+    cost = extract_cost_usd(res.stderr or "")
     return ClaudePResult(data=data, raw_stdout=res.stdout, cost_usd=cost)
 
 
@@ -226,22 +197,6 @@ def _parse_last_json_block(text: str) -> dict[str, Any] | None:
         if isinstance(parsed, dict):
             return parsed
     return None
-
-
-# Claude emits a one-liner like "Cost: $0.0123" on stderr; capture it
-# for budgeting telemetry. Best-effort — if claude's accounting
-# format changes, this just returns None.
-_COST_RE = re.compile(r"\bcost\b[^$]*\$\s*([0-9]+\.[0-9]+)", re.IGNORECASE)
-
-
-def _extract_cost_usd(stderr: str) -> float | None:
-    m = _COST_RE.search(stderr)
-    if m is None:
-        return None
-    try:
-        return float(m.group(1))
-    except ValueError:
-        return None
 
 
 __all__ = [

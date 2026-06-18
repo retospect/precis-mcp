@@ -25,10 +25,44 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
-from psycopg.types.json import Jsonb
 
-from precis.store.types import BlockInsert
 from precis.workers.executors import EXECUTOR_PROVIDES
+from precis.workers.executors._common import (
+    CANCELLED as _CANCELLED,
+)
+from precis.workers.executors._common import (
+    FAILED as _FAILED,
+)
+from precis.workers.executors._common import (
+    JOB_EVENT_KIND as _JOB_EVENT_KIND,
+)
+from precis.workers.executors._common import (
+    JOB_SUMMARY_KIND as _JOB_SUMMARY_KIND,
+)
+from precis.workers.executors._common import (
+    RUNNING as _RUNNING,
+)
+from precis.workers.executors._common import (
+    SUCCEEDED as _SUCCEEDED,
+)
+from precis.workers.executors._common import (
+    append_chunk as _append_chunk,
+)
+from precis.workers.executors._common import (
+    claim_executor_jobs,
+)
+from precis.workers.executors._common import (
+    is_cancel_requested as _is_cancel_requested,
+)
+from precis.workers.executors._common import (
+    record_failure as _record_failure,
+)
+from precis.workers.executors._common import (
+    set_meta as _set_meta,
+)
+from precis.workers.executors._common import (
+    set_status as _set_status,
+)
 from precis.workers.job_types import get_job_type, known_job_types
 
 if TYPE_CHECKING:
@@ -39,22 +73,7 @@ log = logging.getLogger(__name__)
 
 _EXECUTOR_NAME = "claude_inproc"
 
-# Status tag values.
-_STATUS_NAMESPACE = "STATUS"
-_QUEUED = "queued"
-_RUNNING = "running"
-_SUCCEEDED = "succeeded"
-_FAILED = "failed"
-_CANCEL_REQUESTED = "cancel_requested"
-_CANCELLED = "cancelled"
-
-# Terminal STATUS values — a row carrying any of these is not
-# claimable.
-_TERMINAL = (_SUCCEEDED, _FAILED, _CANCELLED)
-
-# Chunk kinds the executor writes.
-_JOB_EVENT_KIND = "job_event"
-_JOB_SUMMARY_KIND = "job_summary"
+# Chunk kind specific to this executor's gripe-comment timeline.
 _GRIPE_COMMENT_KIND = "gripe_comment"
 
 
@@ -64,51 +83,8 @@ _GRIPE_COMMENT_KIND = "gripe_comment"
 def _claim_jobs(
     conn: Connection, *, limit: int
 ) -> list[tuple[int, str, dict[str, Any]]]:
-    """Lock up to ``limit`` claimable claude_inproc jobs.
-
-    Claimable = ``kind='job'``, executor matches, ``STATUS:queued``,
-    not terminal, lease expired or absent.
-    """
-    if limit <= 0:
-        raise ValueError("limit must be positive")
-
-    rows = conn.execute(
-        """
-        SELECT r.ref_id, r.title, r.meta
-          FROM refs r
-         WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
-           AND r.meta->>'executor' = %s
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s
-                    AND t.value = %s
-               )
-           AND NOT EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s
-                    AND t.value = ANY(%s)
-               )
-           AND (
-                (r.meta->>'lease_until') IS NULL
-             OR (r.meta->>'lease_until')::timestamptz < now()
-           )
-         ORDER BY r.ref_id
-         LIMIT %s
-           FOR UPDATE OF r SKIP LOCKED
-        """,
-        (
-            _EXECUTOR_NAME,
-            _STATUS_NAMESPACE,
-            _QUEUED,
-            _STATUS_NAMESPACE,
-            list(_TERMINAL),
-            limit,
-        ),
-    ).fetchall()
-    return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
+    """Lock up to ``limit`` claimable claude_inproc jobs."""
+    return claim_executor_jobs(conn, executor=_EXECUTOR_NAME, limit=limit)
 
 
 def _linked_gripe_id(store: Any, job_ref_id: int) -> int | None:
@@ -123,82 +99,6 @@ def _linked_gripe_id(store: Any, job_ref_id: int) -> int | None:
         if target is not None and target.kind == "gripe":
             return int(target.id)
     return None
-
-
-# ── Status helpers ────────────────────────────────────────────────
-
-
-def _set_status(
-    store: Any, ref_id: int, value: str, *, conn: Connection | None = None
-) -> None:
-    """Replace the current ``STATUS:`` tag with ``value`` on ``ref_id``."""
-    from precis.store import Tag
-
-    tag = Tag.parse_strict(f"STATUS:{value}")
-    store.add_tag(
-        ref_id,
-        tag,
-        set_by="agent",
-        replace_prefix=True,
-        conn=conn,
-    )
-
-
-def _is_cancel_requested(conn: Connection, ref_id: int) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-         WHERE rt.ref_id = %s
-           AND t.namespace = %s
-           AND t.value = %s
-         LIMIT 1
-        """,
-        (ref_id, _STATUS_NAMESPACE, _CANCEL_REQUESTED),
-    ).fetchone()
-    return row is not None
-
-
-def _append_chunk(
-    store: Any,
-    ref_id: int,
-    chunk_kind: str,
-    text: str,
-    *,
-    conn: Connection | None = None,
-) -> None:
-    """Append a chunk at the next ``ord`` for the ref.
-
-    When ``conn`` is provided we count via that connection so back-to-
-    back appends inside the same tx see each other's INSERTs. The
-    previous implementation called ``store.list_blocks_for_ref`` which
-    opens its own pool connection — uncommitted INSERTs in ``conn``
-    were invisible, leading to two calls computing the same
-    ``next_pos`` and a unique-constraint violation on
-    ``(ref_id, ord)``.
-    """
-    if conn is not None:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(ord) + 1, 0) FROM chunks "
-            "WHERE ref_id = %s AND ord >= 0",
-            (ref_id,),
-        ).fetchone()
-        next_pos = int(row[0]) if row and row[0] is not None else 0
-    else:
-        blocks = store.list_blocks_for_ref(ref_id)
-        next_pos = len(blocks)
-    store.insert_blocks(
-        ref_id,
-        [BlockInsert(pos=next_pos, text=text, meta={"chunk_kind": chunk_kind})],
-        conn=conn,
-    )
-
-
-def _set_meta(conn: Connection, ref_id: int, **fields: Any) -> None:
-    """Merge ``fields`` into ``refs.meta``."""
-    conn.execute(
-        "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
-        (Jsonb(fields), ref_id),
-    )
 
 
 # ── Pass entry point ──────────────────────────────────────────────
@@ -671,26 +571,6 @@ def _run_fix_gripe(store: Any, ref_id: int, spec: Any) -> None:
             from precis.handlers._job_bubble import bubble_job_failure
 
             bubble_job_failure(store, ref_id, conn=conn)
-        conn.commit()
-
-
-def _record_failure(
-    store: Any,
-    ref_id: int,
-    reason: str,
-    *,
-    gripe_rollback: int | None,
-) -> None:
-    """Tag a job ``STATUS:failed`` with a reason event chunk."""
-    with store.pool.connection() as conn:
-        _append_chunk(store, ref_id, _JOB_EVENT_KIND, reason, conn=conn)
-        _set_status(store, ref_id, _FAILED, conn=conn)
-        if gripe_rollback is not None:
-            _set_status(store, gripe_rollback, "open", conn=conn)
-        # Slice-5 failure-bubble — see _finalise comment above.
-        from precis.handlers._job_bubble import bubble_job_failure
-
-        bubble_job_failure(store, ref_id, conn=conn)
         conn.commit()
 
 

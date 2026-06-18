@@ -167,3 +167,111 @@ entries:
     complexity reduction as a first-class deliverable, not a luxury.
   source: Manny Lehman, 1974
   lang: en
+
+- title: YAGNI (You Aren't Gonna Need It)
+  body: Don't build a feature until it is genuinely required, even when you are
+    confident it will be needed later.  Speculative generality is the most
+    expensive form of code — you pay to design, write, test, document, and
+    maintain something that may never run.  The future is a worse spec writer
+    than the present.
+  source: Extreme Programming, Ron Jeffries
+  lang: en
+
+- title: DRY (Don't Repeat Yourself)
+  body: Every piece of knowledge should have a single, unambiguous, authoritative
+    representation in the system.  Duplicated knowledge means duplicated bugs —
+    when the world changes, every copy must change in lockstep, and one
+    forgotten copy is enough to break the system silently.  Apply to logic
+    and configuration, not to coincidentally-similar lines of code.
+  source: Hunt & Thomas, "The Pragmatic Programmer"
+  lang: en
+
+- title: Rule of Three
+  body: Once is an incident; twice is a coincidence; the third time you write the
+    same pattern, extract it.  Premature abstraction is worse than duplication,
+    so the first two instances stay copied.  By the third, the shape is
+    visible and the extraction has evidence behind it.
+  source: Don Roberts, "Refactoring"
+  lang: en
+
+- title: Single Responsibility Principle
+  body: A module should have one and only one reason to change.  When two
+    responsibilities live in the same module, a change driven by one of them
+    risks breaking the other; the maintenance cost grows as the product of
+    the responsibilities, not the sum.  Split first, optimise interfaces
+    second.
+  source: Robert Martin, SOLID principles
+  lang: en
+
+- title: Sturgeon's Law
+  body: Ninety percent of everything is crud.  The ratio is roughly stable across
+    fields and decades; the practical implication is that the median of any
+    large sample is not where to look.  Spend the search budget on the long
+    tail of quality, not on dredging the middle.
+  source: Theodore Sturgeon, 1957
+  lang: en
+
+- title: Eagleson's Law
+  body: Any of your own code that you have not looked at for six or more months
+    might as well have been written by someone else.  Memory of intent decays
+    faster than the code; comments and tests that record the why are your gift
+    to the future you who already forgot.
+  source: Variously attributed
+  lang: en
+
+- title: Greenspun's Tenth Rule
+  body: Any sufficiently complicated C or Fortran program contains an ad hoc,
+    informally-specified, bug-ridden, slow implementation of half of Common
+    Lisp.  The pattern generalises — complex programs grow embedded
+    interpreters for their own configuration languages.  When you see one
+    forming, decide whether to formalise it or kill it before it becomes
+    the system's de-facto runtime.
+  source: Philip Greenspun, 1993
+  lang: en
+
+- title: Atwood's Law
+  body: Any application that can be written in JavaScript will eventually be
+    written in JavaScript.  Generalises beyond JS — substrates that win on
+    distribution gradually displace alternatives even when technically
+    inferior.  Distribution is a feature; underestimating it is the
+    classic engineer's mistake.
+  source: Jeff Atwood, 2007
+  lang: en
+
+- title: Tesler's Law of Conservation of Complexity
+  body: Every application has an inherent amount of complexity that cannot be
+    removed or hidden.  The only question is where it goes — into the
+    application, the user, the operator, or the next maintainer.  Reducing
+    complexity for one party transfers it to another; design choices select
+    the recipient.
+  source: Larry Tesler
+  lang: en
+
+- title: KISS (Keep It Simple, Stupid)
+  body: Most systems work best if they are kept simple rather than made
+    complicated; therefore simplicity should be a key design goal and
+    unnecessary complexity should be avoided.  The rule was coined for
+    Lockheed jets that had to be repairable in the field with basic tools;
+    the analogue for software is on-call at 3 a.m.  Design for the
+    operator who is tired and missing the documentation.
+  source: Kelly Johnson, Lockheed Skunk Works
+  lang: en
+
+- title: Reed's Law
+  body: The utility of large networks, particularly social ones, can scale
+    exponentially with the size of the network.  Beyond Metcalfe's pair-wise
+    n² connections lies 2^n group-forming utility.  Useful both for
+    sizing the upside of a growing platform and for forecasting the
+    cliff when network effects break (they fall as fast as they climb).
+  source: David P. Reed, 1999
+  lang: en
+
+- title: McIlroy's Rule
+  body: Make each program do one thing well.  To do a new job, build afresh
+    rather than complicate old programs by adding new features.  Compose
+    via clean interfaces (in Unix, text streams).  The discipline that
+    produced sort, grep, awk, and the rest still applies — the next
+    feature request is almost always a composition problem, not an
+    extension problem.
+  source: Doug McIlroy, Unix philosophy
+  lang: en

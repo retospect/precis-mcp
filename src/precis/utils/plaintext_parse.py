@@ -12,11 +12,10 @@ Used by :class:`precis.handlers.plaintext.PlaintextHandler`.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
 
-from precis.utils.slug import slug_from_text
+from precis.utils.block_slug import mint_block_slug
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,27 +89,12 @@ def parse_plaintext(content: str) -> list[PlaintextBlock]:
 def _mint_slug(text: str, taken: set[str]) -> str:
     """Return a stable, unique slug for a paragraph.
 
-    Derivation: first 5 words (non-whitespace) of the paragraph,
-    slugified, plus a 6-char sha1 content hash. Collisions inside
-    the same file are disambiguated with a numeric suffix — same
-    shape as markdown's paragraph slug minter so downstream code
-    and agent muscle memory carry over.
+    Thin adapter over :func:`precis.utils.block_slug.mint_block_slug`
+    (first 5 words + 6-char content hash) — same shape as markdown's
+    paragraph slug minter so downstream code and agent muscle memory
+    carry over.
     """
-    first_words = " ".join(text.split()[:5])
-    base = slug_from_text(first_words, max_len=24)
-    h = hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
-    base = f"{base}-{h}" if base else f"p-{h}"
-
-    if base not in taken:
-        taken.add(base)
-        return base
-
-    for n in range(2, 10000):  # pragma: no cover — exotic collision path
-        candidate = f"{base}-{n}"
-        if candidate not in taken:
-            taken.add(candidate)
-            return candidate
-    raise ValueError(f"unreachable: more than 10k collisions on {base!r}")
+    return mint_block_slug(text, taken)
 
 
 __all__ = ["PlaintextBlock", "parse_plaintext"]

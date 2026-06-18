@@ -23,3 +23,100 @@ entries:
     makes "stand" feel noble; sometimes "run" is the discipline.
   original: Is fearr rith maith ná drochsheasamh.
   lang: ga
+
+- title: Tús maith leath na hoibre
+  body: A good start is half the work.  The framing of the first hour shapes
+    every hour after it — clean inputs, the right tools laid out, no rush.
+    The proverb is not about haste; it is about prevention.  Half the bugs,
+    half the rework, half the late nights are decided before the first
+    commit.
+  original: Tús maith leath na hoibre.
+  lang: ga
+
+- title: Ar scáth a chéile a mhaireann na daoine
+  body: It is in each other's shadow that people live.  Independence is a
+    useful fiction at the margin; in the median, you eat what others grew,
+    use roads others built, debug code others wrote.  The proverb is not
+    sentimental — it is a reminder that the self-reliance story always
+    occludes a larger network of mutual dependence that does the heavy
+    lifting.
+  original: Ar scáth a chéile a mhaireann na daoine.
+  lang: ga
+
+- title: Ní neart go cur le chéile
+  body: There is no strength without unity.  Four people pulling separately
+    on the same rope cancel each other; pulling together, they move the
+    load.  The unity is not agreement on everything — it is coordination
+    of effort along one axis at one moment.  Coordination is the rare and
+    expensive part; opinions are cheap.
+  original: Ní neart go cur le chéile.
+  lang: ga
+
+- title: An té nach bhfuil láidir ní foláir dó bheith glic
+  body: He who is not strong must be cunning.  Read not as moral approval of
+    cunning but as a structural observation — when you cannot win on
+    resources, you must win on positioning.  The weaker party that
+    survives is the one that picks battles where the terrain helps,
+    moves faster than the opponent can react, and refuses to be drawn
+    into contests scored by the opponent's strengths.
+  original: An té nach bhfuil láidir ní foláir dó bheith glic.
+  lang: ga
+
+- title: Aithníonn ciaróg ciaróg eile
+  body: A beetle recognises another beetle.  Practitioners spot practitioners;
+    the same trade leaves the same marks.  Useful for vetting (the
+    experienced hand sees through the polished pitch) and for self-
+    awareness (your tells are visible to anyone who shares your craft).
+    A useful corollary — if no one in your field recognises you, the
+    pose is showing.
+  original: Aithníonn ciaróg ciaróg eile.
+  lang: ga
+
+- title: Mol an óige agus tiocfaidh sí
+  body: Praise the young and they will come / flourish.  Encouragement at the
+    formative stage is not flattery — it is identity input.  Skill grows
+    where attention falls.  The corollary, less often quoted, is that
+    withholding praise as a strict discipline tends to grow people who
+    cannot take their own work seriously.  Honest praise is fuel; absent
+    praise is a tax on becoming.
+  original: Mol an óige agus tiocfaidh sí.
+  lang: ga
+
+- title: Is fearr cara sa chúirt ná punt sa sparán
+  body: A friend in court is better than a pound in the purse.  An
+    institutional relationship — the right introduction, the right word
+    at the right desk — is worth more than direct cash because it
+    unlocks doors money does not open and stays useful across many
+    transactions.  Networks compound; cash gets spent.  Spend cash on
+    network when the trade is available.
+  original: Is fearr cara sa chúirt ná punt sa sparán.
+  lang: ga
+
+- title: Bíonn dhá insint ar gach scéal
+  body: There are two tellings of every story.  The proverb does not say
+    one is true and one is false — it says both exist and both will
+    circulate.  In disputes, the version you don't hear is the one
+    forming the other party's actions.  Cheap hedge against this —
+    actively seek the absent telling before deciding what happened.
+  original: Bíonn dhá insint ar gach scéal.
+  lang: ga
+
+- title: Is glas iad na cnoic i bhfad uainn
+  body: Far-off hills are green.  Distance flatters every alternative;
+    the job, company, relationship, or country you are not in always
+    looks better than the one you are.  Sometimes the grass really is
+    greener — but the proverb is older than satellite imagery, and
+    the bias it names is stable.  Discount the far-off green by a
+    constant before deciding to walk.
+  original: Is glas iad na cnoic i bhfad uainn.
+  lang: ga
+
+- title: Filleann an feall ar an bhfeallaire
+  body: The betrayal returns to the betrayer.  Not always quickly, not
+    always visibly, and not always through any single person — but the
+    reputation built one act at a time gets priced into every later
+    transaction.  The cheat saves once and pays forever in trust
+    discount.  Long iterated games and short single ones reward
+    different strategies; most lives are the former.
+  original: Filleann an feall ar an bhfeallaire.
+  lang: ga

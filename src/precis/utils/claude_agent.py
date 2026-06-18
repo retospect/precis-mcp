@@ -45,16 +45,27 @@ from __future__ import annotations
 import logging
 import os
 import re
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.utils._claude_subprocess import (
+    ClaudeProcessError,
+    extract_cost_usd,
+    resolve_binary,
+    run_claude,
+    to_str,
+)
+
 if TYPE_CHECKING:
     from precis.store import Store
 
 log = logging.getLogger(__name__)
+
+# Back-compat aliases: tests import these private names from this module.
+_to_str = to_str
+_extract_cost_usd = extract_cost_usd
 
 
 # Default model: Sonnet is the right default for the agentic shape —
@@ -75,31 +86,13 @@ _DEFAULT_MAX_USD = 2.00
 # with deeper analysis can bump this per call.
 _DEFAULT_TIMEOUT_S = 600
 
-# Claude emits a one-liner on stderr like "Cost: $0.0123" — same as
-# claude_p.py. Capture for budget telemetry. Best-effort; returns
-# None if claude's format drifts.
-_COST_RE = re.compile(r"\bcost\b[^$]*\$\s*([0-9]+\.[0-9]+)", re.IGNORECASE)
-
-
-class ClaudeAgentError(RuntimeError):
+class ClaudeAgentError(ClaudeProcessError):
     """Raised when ``claude -p`` fails (exit code, timeout, binary missing).
 
-    Carries the stdout / stderr / returncode so callers can surface
-    diagnostics in their digest memory / log without re-running.
+    Carries the stdout / stderr / returncode (from
+    :class:`ClaudeProcessError`) so callers can surface diagnostics in
+    their digest memory / log without re-running.
     """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        stdout: str = "",
-        stderr: str = "",
-        returncode: int | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.stdout = stdout
-        self.stderr = stderr
-        self.returncode = returncode
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +173,7 @@ def call_claude_agent(
         ClaudeAgentError: subprocess exited non-zero, timed out, or
             the binary was missing.
     """
-    binary = os.environ.get("PRECIS_CLAUDE_BIN", "claude")
+    binary = resolve_binary()
     model = model or os.environ.get("PRECIS_CLAUDE_AGENT_MODEL", _DEFAULT_MODEL)
     if timeout_s is None:
         env_timeout = os.environ.get("PRECIS_CLAUDE_AGENT_TIMEOUT_S")
@@ -277,46 +270,23 @@ def call_claude_agent(
             proc_env["CLAUDE_CODE_OAUTH_TOKEN"] = token
 
     started = time.monotonic()
-    try:
-        res = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            env=proc_env,
-            # ``stdin=DEVNULL`` because Claude Code 2.1.x reads stdin
-            # in non-interactive ``-p`` mode and waits up to 3s for
-            # data before proceeding. When this helper is called from
-            # a CLI-spawned worker (precis worker --only dream_agent
-            # --once), the parent's stdin pipe behaviour can cause
-            # claude to read garbage / hang, ultimately producing the
-            # "Not logged in" silent-success or zero-MCP-call pattern
-            # observed 2026-06-17. Direct ``-p`` callers want no
-            # stdin; force it.
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ClaudeAgentError(
-            f"claude -p (agent) timed out after {timeout_s}s",
-            stdout=_to_str(exc.stdout),
-            stderr=_to_str(exc.stderr),
-        ) from exc
-    except FileNotFoundError as exc:
-        raise ClaudeAgentError(
-            f"claude binary not found ({binary!r}); "
-            f"set PRECIS_CLAUDE_BIN or install Claude Code"
-        ) from exc
-
+    # ``stdin_devnull`` because Claude Code 2.1.x reads stdin in
+    # non-interactive ``-p`` mode and waits up to 3s for data before
+    # proceeding. When this helper is called from a CLI-spawned worker
+    # (precis worker --only dream_agent --once), the parent's stdin
+    # pipe behaviour can cause claude to read garbage / hang, ultimately
+    # producing the "Not logged in" silent-success or zero-MCP-call
+    # pattern observed 2026-06-17. Direct ``-p`` callers want no stdin.
+    res = run_claude(
+        args,
+        binary=binary,
+        label="claude -p (agent)",
+        timeout_s=timeout_s,
+        error_cls=ClaudeAgentError,
+        env=proc_env,
+        stdin_devnull=True,
+    )
     duration_s = time.monotonic() - started
-
-    if res.returncode != 0:
-        raise ClaudeAgentError(
-            f"claude -p (agent) exited {res.returncode}: "
-            f"{(res.stderr or '').strip()[:400]}",
-            stdout=res.stdout,
-            stderr=res.stderr,
-            returncode=res.returncode,
-        )
 
     # "Not logged in" guard. ``claude -p`` exits 0 with the message
     # "Not logged in · Please run /login" on stdout when the OAuth
@@ -392,24 +362,6 @@ def call_claude_agent(
 
 
 # ── helpers ────────────────────────────────────────────────────────
-
-
-def _to_str(raw: bytes | str | None) -> str:
-    if raw is None:
-        return ""
-    if isinstance(raw, bytes):
-        return raw.decode(errors="replace")
-    return raw
-
-
-def _extract_cost_usd(stderr: str) -> float | None:
-    m = _COST_RE.search(stderr)
-    if m is None:
-        return None
-    try:
-        return float(m.group(1))
-    except ValueError:
-        return None
 
 
 # claude emits "turns: N" on stderr in some output formats; best-effort.

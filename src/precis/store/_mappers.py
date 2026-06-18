@@ -15,12 +15,55 @@ by :mod:`precis.store.store` and never leaks through
 
 from __future__ import annotations
 
+from psycopg import Connection
+
 from precis.store.types import (
     Block,
     CacheEntry,
     Link,
     Ref,
 )
+
+
+def _upsert_tag(conn: Connection, namespace: str, value: str) -> int:
+    """Upsert ``tags(namespace, value)`` and return the ``tag_id``.
+
+    Uses the ``DO UPDATE SET namespace = EXCLUDED.namespace``
+    no-op trick so RETURNING fires on both the insert and the
+    conflict paths. A ``None`` row out of RETURNING here would
+    mean either a race condition that DELETEd the tag between our
+    INSERT and the implicit RETURNING (Postgres semantics
+    preclude this for the conflict path) or a schema invariant
+    violation; assertion raises loudly so the failure is fixable
+    rather than silently propagating a bogus tag_id downstream.
+    """
+    row = conn.execute(
+        "INSERT INTO tags (namespace, value) VALUES (%s, %s) "
+        "ON CONFLICT (namespace, value) "
+        "DO UPDATE SET namespace = EXCLUDED.namespace "
+        "RETURNING tag_id",
+        (namespace, value),
+    ).fetchone()
+    assert row is not None, (
+        f"tags upsert returned no row for ({namespace!r}, {value!r}) — "
+        "schema invariant violated"
+    )
+    return int(row[0])
+
+
+def _lookup_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int | None:
+    """Raw ``(ref_id, ord) → chunks.chunk_id`` lookup; ``None`` if absent.
+
+    Shared by the tag and link resolvers, which layer their own
+    missing-chunk error semantics on top (the tag path raises
+    ``ValueError``; the link path raises ``BadInput``). Keeping the
+    SELECT here means the projection lives in one place.
+    """
+    row = conn.execute(
+        "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = %s",
+        (ref_id, ord_),
+    ).fetchone()
+    return int(row[0]) if row is not None else None
 
 # ---------------------------------------------------------------------------
 # Tag prefix ownership — mirrored from `tag_prefixes.writable_by` for

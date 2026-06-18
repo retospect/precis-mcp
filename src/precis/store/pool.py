@@ -45,19 +45,23 @@ def _configure_connection(conn: Connection) -> None:
 DEFAULT_POOL_MIN_SIZE: int = 2
 DEFAULT_POOL_MAX_SIZE: int = 10
 
-#: Recycle idle connections after this many seconds. Bounds the
-#: blast radius of a NAT idle-timeout / Postgres-side restart on a
-#: long-running MCP server: a stale TCP connection is closed and
-#: replaced rather than sitting in the pool waiting to fail the
-#: next request. Default in psycopg_pool is 10 minutes; we keep
-#: that.
-DEFAULT_POOL_MAX_IDLE_SECONDS: float = 600.0
+#: Recycle idle connections after this many seconds. Kept strictly
+#: BELOW pgbouncer's ``server_idle_timeout`` (default 600s) so precis
+#: retires a pooled connection before pgbouncer tears down the server
+#: link underneath it. When the two clocks are equal there is a race
+#: window where pgbouncer has already recycled the backend but the
+#: pool still hands the client connection out, and the next query
+#: dies with ``OperationalError`` — the intermittent, recovers-on-
+#: retry failures we saw on the MCP write path. 300s leaves a 2x
+#: margin under pgbouncer.
+DEFAULT_POOL_MAX_IDLE_SECONDS: float = 300.0
 
 #: Force-recycle even active connections after this many seconds.
-#: 1 hour is generous and well under most cloud-load-balancer caps.
-#: Without this, a long-running worker can hold one connection for
-#: days; if Postgres restarts the next query crashes.
-DEFAULT_POOL_MAX_LIFETIME_SECONDS: float = 3600.0
+#: Kept under pgbouncer's ``server_lifetime`` (default 3600s) for the
+#: same race-avoidance reason as ``max_idle`` above. Without this a
+#: long-running worker can hold one connection for days; if Postgres
+#: (or pgbouncer) recycles it the next query crashes.
+DEFAULT_POOL_MAX_LIFETIME_SECONDS: float = 1800.0
 
 
 def create_pool(
@@ -92,6 +96,16 @@ def create_pool(
         max_idle=max_idle,
         max_lifetime=max_lifetime,
         configure=_configure_connection,
+        # Validate liveness on checkout. pgbouncer (transaction mode)
+        # recycles server connections on its own clock, so a pooled
+        # client connection can outlive the backend it routes to. Without
+        # a check, the pool hands out that dead connection and the request
+        # fails with OperationalError; ``check_connection`` runs a cheap
+        # ``SELECT 1`` and transparently discards+replaces a dead one
+        # instead. This is the primary fix for the intermittent MCP
+        # write failures; the sub-pgbouncer ``max_idle``/``max_lifetime``
+        # above narrow the race, ``check`` closes it.
+        check=ConnectionPool.check_connection,
         open=False,
         **kwargs,
     )

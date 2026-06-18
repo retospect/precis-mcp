@@ -24,20 +24,9 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import CallToolResult, TextContent
 
 from precis.runtime import PrecisRuntime, build_runtime
 from precis.tools import TOOL_REGISTRY
-
-# FastMCP refuses ``str | CallToolResult`` return annotations (it bans
-# CallToolResult inside unions; see ``func_metadata.py``). We still
-# return ``CallToolResult`` at runtime on errors — FastMCP's
-# ``FuncMetadata.convert_result`` passes ``CallToolResult`` instances
-# through verbatim so the protocol-level ``isError`` flag is preserved.
-# Each tool's annotation therefore stays ``str``; the actual return
-# type is ``str | CallToolResult`` but only ``str`` is advertised to
-# FastMCP.
-_ToolReturn = Any  # documents runtime: str on success, CallToolResult on error
 
 # mcp 1.27.0's ``FuncMetadata.convert_result`` validates
 # ``CallToolResult.structuredContent`` against the auto-generated output
@@ -334,40 +323,9 @@ mcp: FastMCP = FastMCP("precis-mcp", instructions=_INSTRUCTIONS)
 # ---------------------------------------------------------------------------
 
 
-def _dispatch(verb: str, payload: dict[str, Any]) -> _ToolReturn:
-    """Dispatch one verb call and shape the MCP-level result.
-
-    On success, returns the rendered string — FastMCP wraps it as the
-    sole text content of the tool result. On error, returns a
-    :class:`CallToolResult` with ``isError=True`` so the protocol
-    surface matches the body. The body itself stays the same
-    ``[error:Class] cause / options / next`` text the runtime always
-    rendered, so wrappers that already grok that shape keep working.
-    (MCP critic MAJOR — errors-as-strings without ``isError``.)
-    """
-    body, is_error = _rt().dispatch_with_status(verb, payload)
-    if not is_error:
-        return body
-    return CallToolResult(
-        content=[TextContent(type="text", text=body)],
-        isError=True,
-    )
-
-
-def _validation_error(body: str) -> _ToolReturn:
-    """Wrap a pre-dispatch validation error in a CallToolResult.
-
-    Used by the ``search`` and ``get`` tools when they reject malformed
-    arguments before reaching the runtime. Keeps the protocol surface
-    consistent with runtime-side errors.
-    """
-    return CallToolResult(
-        content=[TextContent(type="text", text=body)],
-        isError=True,
-    )
-
-
-# Tool functions are now imported from shared registry
+# Tool functions live in the shared registry (``precis.tools``); the
+# error-shaping wrappers (``_dispatch`` / ``_validation_error``) are
+# defined there too — this module only registers them with FastMCP.
 
 
 # ---------------------------------------------------------------------------

@@ -371,3 +371,129 @@ entries:
       prescription for the young and a patience prescription for those teaching
       them.  The error it guards against is mistaking articulate description of
       wisdom for the wisdom itself.
+
+  - title: Don't count your chickens before they hatch
+    lang: en
+    body: >-
+      Forecasted returns are not realised returns.  The eggs may not hatch;
+      the deal may not close; the round may not be announced.  Spending the
+      upside before the outcome is in puts you in a worse position than not
+      forecasting at all, because you have committed real resources against
+      an event that is still random.  Plan against the eggs; spend against
+      the chickens.
+
+  - title: When in Rome, do as the Romans do
+    lang: en
+    body: >-
+      Local conventions exist for reasons that aren't always legible to
+      visitors.  Adopting them by default — rather than re-deriving them
+      from first principles — saves the activation cost of being the odd
+      one out, and avoids the trap of bringing a foreign solution to a
+      problem the locals already solved differently.  Override the rule
+      only when you can articulate exactly which local convention is
+      wrong and why.
+
+  - title: Necessity is the mother of invention
+    lang: en
+    body: >-
+      Constraint is the most reliable source of creativity.  Abundance
+      gives you many ways to be ordinary; scarcity narrows the options
+      until the unusual one is the only one left.  The teaching applies
+      to budgets, deadlines, and headcount — when the obvious solution
+      is removed, the search starts looking in places that ample
+      conditions would never have reached.
+
+  - title: Many hands make light work
+    lang: en
+    body: >-
+      Parallelisable work scales with people; the catch is that not all
+      work parallelises.  The proverb is true exactly for problems where
+      the operations are independent and the coordination cost is low.
+      When neither condition holds, the additional hands slow the work
+      down (see Brooks's Law).  Apply with judgement about which kind of
+      work this is.
+
+  - title: The early bird catches the worm
+    lang: en
+    body: >-
+      First movers harvest the easy supply; latecomers pay search costs
+      and price premiums.  Generalises to anything where the resource is
+      finite and demand is increasing — bargains, opportunities,
+      attention.  The counter-proverb ("the second mouse gets the
+      cheese") is also true and applies in different regimes; the skill
+      is reading which regime you're in.
+
+  - title: Slow and steady wins the race
+    lang: en
+    body: >-
+      In endurance contests, the consistent performer beats the sprinter
+      who collapses.  Sustainability of pace, not peak speed, decides
+      who finishes.  Modern register: an evening's work every day for a
+      year beats a quarter of crunch followed by a quarter of recovery,
+      and the people who can keep the slow pace longest are the ones
+      with the patience not to envy the sprinters early on.
+
+  - title: Wer rastet, der rostet
+    lang: de
+    translation: Who rests, rusts.
+    body: >-
+      The German is sharper than the English equivalent ("use it or
+      lose it").  Faculties decline by disuse, not by use — the skill
+      atrophies, the muscle wastes, the relationship cools, the
+      curiosity flattens.  Maintenance is the price of capability over
+      time; the bill arrives whether or not you opened the invoice.
+
+  - title: L'appétit vient en mangeant
+    lang: fr
+    translation: Appetite comes with eating.
+    body: >-
+      Motivation is more often produced by action than required as a
+      precondition for it.  Waiting to feel like writing produces no
+      writing; writing produces the appetite to keep writing.  The
+      practical inversion: when stuck, do five minutes of the thing,
+      and let the appetite catch up.  Generalises across most kinds of
+      stalled work.
+
+  - title: Il faut casser le noyau pour avoir l'amande
+    lang: fr
+    translation: You must crack the shell to have the almond.
+    body: >-
+      The reward is not accessible without the unpleasant intermediate
+      step — the difficult conversation before the resolution, the
+      review before the publication, the diagnostic test before the
+      treatment.  Bypassing the shell means going hungry.  The
+      proverb is a recipe against magical thinking: the almond is not
+      delivered separately.
+
+  - title: Quien mucho abarca, poco aprieta
+    lang: es
+    translation: He who grasps much, holds little.
+    body: >-
+      Trying to do everything well leads to doing nothing well.
+      Span-of-attention is finite and divides; an item added to the
+      list takes effort away from every other item on it.  The
+      Spanish version is more concrete than the English "Jack of all
+      trades, master of none" — it names the mechanism (overreach)
+      rather than the outcome.
+
+  - title: Chi va piano, va sano e va lontano
+    lang: it
+    translation: Who goes slowly, goes safely and goes far.
+    body: >-
+      A more nuanced cousin of "slow and steady wins the race" — adds
+      the safety dimension.  Speed buys distance at the cost of
+      compounding risk; the prudent pace gets you further because
+      it avoids the catastrophes that send the fast traveller home.
+      Applies to careers, balance sheets, and any system where the
+      downside is unbounded.
+
+  - title: Wer A sagt, muss auch B sagen
+    lang: de
+    translation: Who says A must also say B.
+    body: >-
+      Commitments come with their consequences attached.  You don't
+      get to take the first step and then refuse the second when it
+      becomes inconvenient.  The proverb is a check against
+      half-commitment — the kind that captures the headline but
+      avoids the cost — and a reminder to read the whole sentence
+      before saying the first letter.

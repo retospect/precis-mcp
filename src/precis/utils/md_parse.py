@@ -23,12 +23,11 @@ chunk-addressing, not a full Pandoc-compatible AST.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from precis.utils.slug import slug_from_text
+from precis.utils.block_slug import mint_block_slug
 
 BlockKind = Literal["heading", "paragraph", "code", "list", "table"]
 
@@ -294,50 +293,15 @@ def _mint_slug(text: str, kind: BlockKind, taken: set[str]) -> str:
     """Return a stable, unique slug for a block.
 
     Headings use a slugified title. Other kinds use 5 leading words +
-    a 6-char content hash. Collisions inside the same file are
-    disambiguated with a numeric suffix.
+    a 6-char content hash, with markdown decoration stripped first.
+    Thin adapter over :func:`precis.utils.block_slug.mint_block_slug`.
     """
-    if kind == "heading":
-        # Strip leading hashes from heading text before slugifying.
-        title = text.lstrip("#").strip()
-        base = slug_from_text(title, max_len=40)
-    else:
-        # Strip markdown decoration that would bias the slug.
-        clean = _strip_md_decoration(text)
-        first_words = " ".join(clean.split()[:5])
-        base = slug_from_text(first_words, max_len=24)
-
-    # Always append a content hash for non-heading kinds. This makes
-    # block identity content-stable: two paragraphs with the same
-    # leading words get *different* slugs.
-    if kind != "heading":
-        h = hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
-        base = f"{base}-{h}" if base else f"p-{h}"
-
-    if not base:
-        # Defensive: pure-symbol heading fallback.
-        h = hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
-        base = f"h-{h}"
-
-    if base not in taken:
-        taken.add(base)
-        return base
-
-    # Collision (rare for non-heading; common for "Conclusion" etc.).
-    for n in range(2, 10000):
-        candidate = f"{base}-{n}"
-        if candidate not in taken:
-            taken.add(candidate)
-            return candidate
-    raise ValueError(f"unreachable: more than 10k collisions on {base!r}")
-
-
-_DECORATION_RE = re.compile(r"[*_`~\[\]()!#>]+")
-
-
-def _strip_md_decoration(text: str) -> str:
-    """Remove markdown decoration so the slug looks human-readable."""
-    return _DECORATION_RE.sub(" ", text)
+    return mint_block_slug(
+        text,
+        taken,
+        heading=(kind == "heading"),
+        strip_markdown=(kind != "heading"),
+    )
 
 
 # ── File-slug helpers ────────────────────────────────────────────────

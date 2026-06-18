@@ -46,6 +46,7 @@ from precis.utils.claude_agent import (
     ClaudeAgentError,
     call_claude_agent,
 )
+from precis.utils.env import env_flag
 from precis.utils.load_gate import skip_if_high_load
 from precis.workers.runner import BatchResult
 
@@ -123,11 +124,7 @@ def run_dream_pass(store: Store) -> BatchResult:
 
 
 def _gate_enabled() -> bool:
-    return _truthy(os.environ.get("PRECIS_DREAM_AGENT"))
-
-
-def _truthy(raw: str | None) -> bool:
-    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_flag("PRECIS_DREAM_AGENT")
 
 
 def _env_path(var: str) -> Path | None:

@@ -48,6 +48,7 @@ from precis.utils.claude_agent import (
     ClaudeAgentError,
     call_claude_agent,
 )
+from precis.utils.env import env_flag
 from precis.utils.load_gate import skip_if_high_load
 from precis.workers.runner import BatchResult
 
@@ -145,11 +146,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
 
 
 def _gate_enabled(env_var: str) -> bool:
-    return _truthy(os.environ.get(env_var))
-
-
-def _truthy(raw: str | None) -> bool:
-    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_flag(env_var)
 
 
 def _recent_digest_exists(store: Store, tier_tag: str, hours: float) -> bool:

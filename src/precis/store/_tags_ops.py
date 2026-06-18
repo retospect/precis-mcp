@@ -49,6 +49,7 @@ from typing import Any
 from psycopg import Connection
 from psycopg_pool import ConnectionPool
 
+from precis.store._mappers import _lookup_chunk_id, _upsert_tag
 from precis.store.types import ActorSlug, Tag
 
 
@@ -78,54 +79,25 @@ def _row_to_tag(namespace: str, value: str) -> Tag:
     return Tag.closed(namespace, value)
 
 
-def _upsert_tag(conn: Connection, namespace: str, value: str) -> int:
-    """Upsert ``tags(namespace, value)`` and return the ``tag_id``.
-
-    Uses the ``DO UPDATE SET namespace = EXCLUDED.namespace``
-    no-op trick so RETURNING fires on both the insert and the
-    conflict paths. A ``None`` row out of RETURNING here would
-    mean either a race condition that DELETEd the tag between our
-    INSERT and the implicit RETURNING (Postgres semantics
-    preclude this for the conflict path) or a schema invariant
-    violation; assertion raises loudly so the failure is fixable
-    rather than silently propagating a bogus tag_id downstream.
-    """
-    row = conn.execute(
-        "INSERT INTO tags (namespace, value) VALUES (%s, %s) "
-        "ON CONFLICT (namespace, value) "
-        "DO UPDATE SET namespace = EXCLUDED.namespace "
-        "RETURNING tag_id",
-        (namespace, value),
-    ).fetchone()
-    assert row is not None, (
-        f"tags upsert returned no row for ({namespace!r}, {value!r}) — "
-        "schema invariant violated"
-    )
-    return int(row[0])
-
-
 def _resolve_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int:
     """Look up ``chunks.chunk_id`` for the ``(ref_id, ord)`` pair.
 
-    Used by tag/link operations that take a v1-style ``pos`` (which
-    is the chunk's ord under v2) and need the v2 ``chunk_id`` FK
-    target for the join-table insert.
+    Used by tag operations that take a v1-style ``pos`` (which is
+    the chunk's ord under v2) and need the v2 ``chunk_id`` FK target
+    for the join-table insert.
 
     Raises ``ValueError`` when no matching chunk exists. Callers
     that want to silently no-op a tag op against a missing chunk
     should test for the chunk's existence first; this helper
     refuses to make up a chunk_id.
     """
-    row = conn.execute(
-        "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = %s",
-        (ref_id, ord_),
-    ).fetchone()
-    if row is None:
+    chunk_id = _lookup_chunk_id(conn, ref_id, ord_)
+    if chunk_id is None:
         raise ValueError(
             f"no chunk at (ref_id={ref_id}, ord={ord_}) — "
             "can't attach a tag to a chunk that doesn't exist"
         )
-    return int(row[0])
+    return chunk_id
 
 
 class TagsMixin:

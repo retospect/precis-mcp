@@ -39,7 +39,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
-from precis.store._mappers import _row_to_link
+from precis.store._mappers import _lookup_chunk_id, _row_to_link
 from precis.store.types import _INVERSE_RELATIONS, ActorSlug, Link, Relation
 
 
@@ -56,17 +56,14 @@ def _resolve_chunk_id_for_link(
     """
     if ord_ is None:
         return None
-    row = conn.execute(
-        "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = %s",
-        (ref_id, ord_),
-    ).fetchone()
-    if row is None:
+    chunk_id = _lookup_chunk_id(conn, ref_id, ord_)
+    if chunk_id is None:
         raise BadInput(
             f"no chunk at (ref_id={ref_id}, ord={ord_}) — "
             "can't link to a chunk that doesn't exist",
             next=f"check chunks: get(kind=..., id={ref_id})",
         )
-    return int(row[0])
+    return chunk_id
 
 
 # Standard SELECT projection for links: maps link_id back to id and

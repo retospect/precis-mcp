@@ -36,14 +36,50 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
-from precis.handlers._todo_views import _doable_exclusion_clause
-from precis.workers.executors.claude_inproc import (
-    _append_chunk,
-    _build_dispatch_context,
-    _is_cancel_requested,
-    _record_failure,
-    _set_status,
+from precis.workers.executors._common import (
+    CANCELLED as _CANCELLED,
 )
+from precis.workers.executors._common import (
+    FAILED as _FAILED,
+)
+from precis.workers.executors._common import (
+    JOB_EVENT_KIND as _JOB_EVENT_KIND,
+)
+from precis.workers.executors._common import (
+    RUNNING as _RUNNING,
+)
+from precis.workers.executors._common import (
+    WAITING_ASK_USER as _WAITING_ASK_USER,
+)
+from precis.workers.executors._common import (
+    WAITING_CHILDREN as _WAITING_CHILDREN,
+)
+from precis.workers.executors._common import (
+    WAITING_MANUAL_KICK as _WAITING_MANUAL_KICK,
+)
+from precis.workers.executors._common import (
+    WAITING_TIME as _WAITING_TIME,
+)
+from precis.workers.executors._common import (
+    append_chunk as _append_chunk,
+)
+from precis.workers.executors._common import (
+    claim_executor_jobs,
+)
+from precis.workers.executors._common import (
+    is_cancel_requested as _is_cancel_requested,
+)
+from precis.workers.executors._common import (
+    record_failure as _record_failure,
+)
+from precis.workers.executors._common import (
+    set_status as _set_status,
+)
+
+# ``_build_dispatch_context`` stays in ``claude_inproc`` so its helper
+# closures bind to that module's globals (which its tests patch); the
+# coordinator just reuses it.
+from precis.workers.executors.claude_inproc import _build_dispatch_context
 from precis.workers.job_types import get_job_type, known_job_types
 
 if TYPE_CHECKING:
@@ -54,25 +90,6 @@ log = logging.getLogger(__name__)
 
 _EXECUTOR_NAME = "coordinator"
 
-# Status tag values used by the coordinator path. These join the
-# closed STATUS:* namespace introduced by claude_inproc; they're
-# distinct values within the same namespace, not a new namespace.
-_STATUS_NAMESPACE = "STATUS"
-_QUEUED = "queued"
-_RUNNING = "running"
-_SUCCEEDED = "succeeded"
-_FAILED = "failed"
-_CANCELLED = "cancelled"
-_CANCEL_REQUESTED = "cancel_requested"
-
-#: STATUS:waiting_* values written by a Yield. Each maps to one
-#: ``WakeWhen.kind`` so the wake_runner's selectivity stays cheap
-#: (exact match on closed-status value, not a LIKE).
-_WAITING_CHILDREN = "waiting_children"
-_WAITING_TIME = "waiting_time"
-_WAITING_ASK_USER = "waiting_ask_user"
-_WAITING_MANUAL_KICK = "waiting_manual_kick"
-
 #: Map ``WakeWhen.kind`` (defined in ``_yield.py``) onto the
 #: closed STATUS:* value the executor sets when persisting a
 #: Yield. Centralised so the wake_runner reads the same table.
@@ -82,14 +99,6 @@ _STATUS_FOR_WAKE_KIND: dict[str, str] = {
     "tag_cleared": _WAITING_ASK_USER,
     "tag_added": _WAITING_MANUAL_KICK,
 }
-
-# Terminal STATUS values — a row carrying any of these is not
-# claimable. Waiting statuses are NOT terminal; they're paused.
-_TERMINAL = (_SUCCEEDED, _FAILED, _CANCELLED)
-
-# Chunk kinds the executor writes.
-_JOB_EVENT_KIND = "job_event"
-_JOB_SUMMARY_KIND = "job_summary"
 
 # Slice lease. Short on purpose: each active slice is meant to be
 # brief (read state, submit children, write checkpoint, yield).
@@ -106,63 +115,15 @@ def _claim_jobs(
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable coordinator jobs.
 
-    Claimable = ``kind='job'``, executor matches, ``STATUS:queued``,
-    not terminal, lease expired or absent, AND no exclusion tag
-    is set on the row (``ask-user:*`` / ``asking-reto:*`` /
-    ``halt:*`` / ``child-failed:*``). The exclusion check uses the
-    existing :func:`_doable_exclusion_clause` SQL so its vocabulary
-    stays in sync with the dispatcher.
+    Same shape as the claude_inproc claim but with ``exclude_paused``:
+    rows carrying an open-namespace pause tag (``ask-user:*`` /
+    ``asking-reto:*`` / ``halt:*`` / ``child-failed:*``) are skipped via
+    the shared exclusion clause so the vocabulary stays in sync with the
+    dispatcher's candidate query.
     """
-    if limit <= 0:
-        raise ValueError("limit must be positive")
-
-    rows = conn.execute(
-        f"""
-        SELECT r.ref_id, r.title, r.meta
-          FROM refs r
-         WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
-           AND r.meta->>'executor' = %s
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s
-                    AND t.value = %s
-               )
-           AND NOT EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s
-                    AND t.value = ANY(%s)
-               )
-           AND NOT EXISTS (
-                 -- Existing open-namespace exclusion vocabulary:
-                 -- ask-user:* / asking-reto:* / halt:* / etc.
-                 -- Shared with the dispatcher's candidate query so
-                 -- drift between them is impossible.
-                 SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = 'OPEN'
-                    AND {_doable_exclusion_clause()}
-               )
-           AND (
-                (r.meta->>'lease_until') IS NULL
-             OR (r.meta->>'lease_until')::timestamptz < now()
-           )
-         ORDER BY r.ref_id
-         LIMIT %s
-           FOR UPDATE OF r SKIP LOCKED
-        """,
-        (
-            _EXECUTOR_NAME,
-            _STATUS_NAMESPACE,
-            _QUEUED,
-            _STATUS_NAMESPACE,
-            list(_TERMINAL),
-            limit,
-        ),
-    ).fetchall()
-    return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
+    return claim_executor_jobs(
+        conn, executor=_EXECUTOR_NAME, limit=limit, exclude_paused=True
+    )
 
 
 # ── Pass entry point ──────────────────────────────────────────────
