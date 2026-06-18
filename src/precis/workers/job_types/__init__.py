@@ -55,16 +55,24 @@ class JobTypeSpec:
     #: REQUIRES checks".
     validate_submit: Callable[..., str | None] | None = None
     #: Optional per-job dispatcher. When set, the executor
-    #: (``claude_inproc._run_one``) calls ``dispatch(ctx, spec)``
-    #: instead of going through the built-in ``if/elif`` switch.
-    #: ``ctx`` is a :class:`precis.workers.executors._context.DispatchContext`
+    #: (``claude_inproc._run_one`` / ``coordinator._run_one``) calls
+    #: ``dispatch(ctx, spec)`` instead of going through the built-in
+    #: ``if/elif`` switch. ``ctx`` is a
+    #: :class:`precis.workers.executors._context.DispatchContext`
     #: carrying the store handle, ref_id, meta dict, and the
     #: closures over status / chunk / failure / meta helpers that
     #: the executor exposes — plugins use these instead of
     #: importing executor internals. Built-in job_types
     #: (fix_gripe, plan_tick) leave this ``None`` and the
     #: executor falls back to its in-tree dispatchers.
-    dispatch: Callable[..., None] | None = None
+    #:
+    #: Coordinator dispatchers MUST return a ``Done`` or ``Yield``
+    #: (``precis.workers.executors._yield``); the coordinator persists
+    #: that return (terminal status + summary, or checkpoint + wake
+    #: condition). A resumed slice reads its prior checkpoint from
+    #: ``ctx.meta['coordinator_state']``. Annotated loosely because the
+    #: in-tree built-ins return ``None``.
+    dispatch: Callable[..., Any] | None = None
 
 
 JOB_TYPE_PLUGIN_GROUP = "precis.job_types"

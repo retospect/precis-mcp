@@ -39,6 +39,18 @@ class TestParser:
         assert args.embedder == "bge-m3"
         assert args.summarizer_model == "rake-lemma"
 
+    def test_only_accepts_watch_poll(self, monkeypatch):
+        """``watch_poll`` must be a valid ``--only`` choice. It has a
+        registration block in worker.py but is deliberately NOT in the
+        default profile sets (it runs from a dedicated cron), so the only
+        way to invoke it is ``--only watch_poll`` — which argparse must
+        accept."""
+        monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--only", "watch_poll", "--once"])
+        assert args.only == "watch_poll"
+        assert args.once is True
+
     def test_worker_embedder_reads_env(self, monkeypatch):
         monkeypatch.setenv("PRECIS_EMBEDDER", "remote")
         parser = _build_parser()

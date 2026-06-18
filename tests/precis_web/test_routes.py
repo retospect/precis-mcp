@@ -83,7 +83,9 @@ def _paging_client(total: int):
 
     from .conftest import FakeRuntime, FakeStore
 
-    all_rows = [(("think"), rid, f"thought {rid}", False) for rid in range(total, 0, -1)]
+    all_rows = [
+        (("think"), rid, f"thought {rid}", False) for rid in range(total, 0, -1)
+    ]
 
     class _PagingConn:
         def execute(self, sql: str, params):
@@ -162,9 +164,7 @@ def test_refs_by_tag_past_end_shows_back_link() -> None:
 def test_refs_by_tag_page_size_is_clamped() -> None:
     client = _paging_client(total=250)
     # 9999 clamps to the 500 ceiling → everything fits on one page.
-    resp = client.get(
-        "/tags/refs?namespace=DREAM&value=speculative&page_size=9999"
-    )
+    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page_size=9999")
     assert resp.status_code == 200
     assert "250 refs tagged" in resp.text
     # Single page → no pager rendered.
@@ -174,9 +174,7 @@ def test_refs_by_tag_page_size_is_clamped() -> None:
 
 def test_refs_by_tag_custom_page_size_preserved_in_links() -> None:
     client = _paging_client(total=250)
-    resp = client.get(
-        "/tags/refs?namespace=DREAM&value=speculative&page_size=50"
-    )
+    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page_size=50")
     assert resp.status_code == 200
     assert "Page 1 of 5" in resp.text
     # Non-default page_size rides along in the next link.
@@ -1017,6 +1015,92 @@ def test_job_notes_splits_events_and_summary() -> None:
     assert "timed out" in out[6689]["summary"]
     assert out[6690]["events"] == ["runner: uncaught exception: ValueError()"]
     assert out[6690]["summary"] == ""
+
+
+def test_job_notes_includes_result() -> None:
+    """``_job_notes`` surfaces the structured job_result audit chunk."""
+    from contextlib import contextmanager
+
+    from precis_web.routes.tasks import _job_notes
+
+    rows = [
+        (6689, "job_result", "verdict (LLM): continue\nsubtasks minted: 5"),
+        (6689, "job_summary", "planner minted 5 children"),
+    ]
+
+    class _Cur:
+        def fetchall(self):
+            return rows
+
+    class _Conn:
+        def execute(self, *_a, **_k):
+            return _Cur()
+
+    class _Pool:
+        @contextmanager
+        def connection(self):
+            yield _Conn()
+
+    store = type("S", (), {"pool": _Pool()})()
+    out = _job_notes(store, [6689])
+    assert "verdict (LLM): continue" in out[6689]["result"]
+    assert "5 children" in out[6689]["summary"]
+
+
+def test_resolve_workspace_pdf(tmp_path) -> None:
+    """``_resolve_workspace_pdf`` returns the path only when it exists."""
+    from precis_web.routes.tasks import _resolve_workspace_pdf
+
+    meta = {
+        "workspace": {
+            "path": "projects/demo",
+            "format": "tex",
+            "entrypoint": "main.tex",
+        }
+    }
+    # No PRECIS_ROOT → nothing to resolve.
+    assert _resolve_workspace_pdf(None, meta) is None
+    # No workspace block → None.
+    assert _resolve_workspace_pdf(tmp_path, {}) is None
+    # Workspace but no compiled PDF on disk yet → None.
+    assert _resolve_workspace_pdf(tmp_path, meta) is None
+    # PDF present → its path.
+    ws = tmp_path / "projects" / "demo"
+    ws.mkdir(parents=True)
+    (ws / "main.pdf").write_bytes(b"%PDF-1.4 demo")
+    got = _resolve_workspace_pdf(tmp_path, meta)
+    assert got is not None
+    assert got.name == "main.pdf"
+
+
+def test_task_pdf_route_serves_and_rejects(runtime, tmp_path) -> None:
+    """GET /tasks/{id}/pdf streams a compiled workspace PDF, else errors."""
+    from fastapi.testclient import TestClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    # Todo #1 gets a workspace with a compiled PDF; #2 has none.
+    runtime.store.todos[0].meta = {
+        "workspace": {
+            "path": "projects/demo",
+            "format": "tex",
+            "entrypoint": "main.tex",
+        }
+    }
+    ws = tmp_path / "projects" / "demo"
+    ws.mkdir(parents=True)
+    (ws / "main.pdf").write_bytes(b"%PDF-1.4 demo")
+    app = create_app(runtime=runtime, web_config=WebConfig(precis_root=tmp_path))
+    client = TestClient(app)
+
+    served = client.get("/tasks/1/pdf")
+    assert served.status_code == 200
+    assert served.headers["content-type"] == "application/pdf"
+
+    # No workspace PDF → PrecisError (NotFound) → 400, like the papers route.
+    missing = client.get("/tasks/2/pdf")
+    assert missing.status_code == 400
 
 
 def test_history_attempt_detail_renders(client, monkeypatch) -> None:

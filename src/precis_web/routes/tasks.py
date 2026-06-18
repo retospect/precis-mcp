@@ -22,14 +22,18 @@ touches ``parent_id`` directly.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Query, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from precis_web.deps import await_dispatch, get_store, templates
+from precis.errors import NotFound
+from precis.utils.workspace import Workspace
+from precis_web.deps import await_dispatch, get_store, get_web_config, templates
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -123,6 +127,36 @@ def _attention_icons(tags: list[str]) -> list[dict[str, str]]:
                 }
             )
     return out
+
+
+def _resolve_workspace_pdf(
+    precis_root: Path | None, meta: dict[str, Any] | None
+) -> Path | None:
+    """Return the compiled ``main.pdf`` for a todo's workspace, or None.
+
+    The cascade compiles ``latexmk`` at a workspace-root ``STATUS:done``
+    (``utils/compile_guard``), producing ``<entrypoint-stem>.pdf`` in the
+    workspace dir under ``PRECIS_ROOT``. This resolves that path and
+    returns it only when the file actually exists — so the paper icon
+    renders exactly when there's something to view.
+
+    Distinct from the corpus-PDF path the papers viewer uses: generated
+    manuscripts live under ``PRECIS_ROOT``, not ``PRECIS_CORPUS_DIR``.
+    """
+    if precis_root is None:
+        return None
+    workspace = Workspace.from_meta(meta)
+    if workspace is None:
+        return None
+    ws_root = workspace.absolute_root(precis_root)
+    pdf_path = ws_root / (Path(workspace.entrypoint).stem + ".pdf")
+    # Guard against a malformed workspace escaping PRECIS_ROOT even after
+    # Workspace's own relative-path validation.
+    try:
+        pdf_path.relative_to(precis_root.resolve())
+    except ValueError:
+        return None
+    return pdf_path if pdf_path.is_file() else None
 
 
 def _tasks_url(
@@ -517,19 +551,25 @@ def _child_jobs(store: Any, todo_ids: list[int]) -> list[dict[str, Any]]:
 
 
 def _job_notes(store: Any, job_ids: list[int]) -> dict[int, dict[str, Any]]:
-    """Bulk-fetch the ``job_event`` / ``job_summary`` chunks per job.
+    """Bulk-fetch the ``job_result`` / ``job_event`` / ``job_summary`` chunks.
 
-    These are where a runner records *why* a job failed (the
-    ``job_event`` reason chunk written by ``_record_failure``) and the
-    captured stdout (``job_summary``). The tree itself only shows a
-    bare ``failed`` badge; surfacing these turns "#6689 failed" into a
-    legible account on hover + in the history panel.
+    Three signals per job:
 
-    Returns ``{job_id: {'events': [str, ...], 'summary': str}}``.
+    * ``job_result`` — the structured per-tick audit (the parsed
+      tick-conclusion verdict + the subtasks/citations/findings counts).
+      The most legible single chunk; surfaced first.
+    * ``job_event`` — why a job failed (``_record_failure`` reason).
+    * ``job_summary`` — the captured stdout.
+
+    The tree itself only shows a bare status badge; surfacing these
+    turns "#6689 failed" / "#6689 succeeded" into a legible account on
+    hover + in the history panel.
+
+    Returns ``{job_id: {'result': str, 'events': [str, ...], 'summary': str}}``.
     Degrades to empty dicts under the test fake (no chunks table).
     """
     out: dict[int, dict[str, Any]] = {
-        jid: {"events": [], "summary": ""} for jid in job_ids
+        jid: {"result": "", "events": [], "summary": ""} for jid in job_ids
     }
     if not job_ids:
         return out
@@ -539,23 +579,28 @@ def _job_notes(store: Any, job_ids: list[int]) -> dict[int, dict[str, Any]]:
                 "SELECT ref_id, meta->>'chunk_kind' AS kind, text "
                 "FROM chunks "
                 "WHERE ref_id = ANY(%s) "
-                "AND meta->>'chunk_kind' IN ('job_event', 'job_summary') "
+                "AND meta->>'chunk_kind' IN "
+                "  ('job_result', 'job_event', 'job_summary') "
                 "ORDER BY ref_id, ord",
                 (job_ids,),
             ).fetchall()
     except Exception:  # pragma: no cover - defensive (fake cursor)
         return out
     summaries: dict[int, list[str]] = {jid: [] for jid in job_ids}
+    results: dict[int, list[str]] = {jid: [] for jid in job_ids}
     for ref_id, kind, text in rows:
         rid = int(ref_id)
         if rid not in out:
             continue
-        if kind == "job_event":
+        if kind == "job_result":
+            results[rid].append(text)
+        elif kind == "job_event":
             out[rid]["events"].append(text)
         elif kind == "job_summary":
             summaries[rid].append(text)
-    for jid, parts in summaries.items():
-        out[jid]["summary"] = "\n".join(parts)
+    for jid in job_ids:
+        out[jid]["result"] = "\n".join(results[jid])
+        out[jid]["summary"] = "\n".join(summaries[jid])
     return out
 
 
@@ -572,7 +617,7 @@ def _lease_active(lease_until: str | None) -> bool:
     return ts > datetime.now(UTC)
 
 
-def _build_rows(store: Any) -> list[dict[str, Any]]:
+def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str, Any]]:
     """Flatten the todo tree (with child jobs) into DFS-ordered rows.
 
     Each row carries ``id, kind, title, status, level, depth, done,
@@ -580,7 +625,14 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
     row lock) and ``lease_until`` / ``lease_active`` (the durable
     marker a worker writes). Roots are ``parent_id IS NULL``; orphans
     (parent missing) surface as roots so nothing silently disappears.
+
+    ``precis_root`` (default: ``$PRECIS_ROOT``) is where workspace PDFs
+    live; when a todo's workspace has a compiled PDF on disk the row
+    gets a 📄 attention icon linking to ``/tasks/{id}/pdf``.
     """
+    if precis_root is None:
+        raw = os.environ.get("PRECIS_ROOT")
+        precis_root = Path(raw).expanduser() if raw else None
     todos = store.list_refs(kind="todo", limit=5000)
     by_id = {r.id: r for r in todos}
     todo_ids = [r.id for r in todos]
@@ -604,6 +656,7 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
             "title": r.title,
             "parent_id": r.parent_id if r.parent_id in by_id else None,
             "lease_until": None,
+            "meta": getattr(r, "meta", None),
         }
     for j in jobs:
         # A job whose parent todo vanished is dropped (no orphan jobs).
@@ -624,6 +677,19 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
         kids.sort(key=lambda n: n["id"])
 
     rows: list[dict[str, Any]] = []
+
+    # Memoise PDF resolution per workspace path: every todo in a project
+    # subtree inherits the same ``meta.workspace``, so resolving once per
+    # distinct path keeps this to one filesystem stat per project.
+    pdf_by_ws: dict[str, Path | None] = {}
+
+    def _todo_pdf_memo(meta: dict[str, Any] | None) -> Path | None:
+        ws = Workspace.from_meta(meta)
+        if ws is None:
+            return None
+        if ws.path not in pdf_by_ws:
+            pdf_by_ws[ws.path] = _resolve_workspace_pdf(precis_root, meta)
+        return pdf_by_ws[ws.path]
 
     def walk(node: dict[str, Any], depth: int) -> None:
         kids = children.get(node["id"], [])
@@ -648,11 +714,31 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
         note = ""
         if node["kind"] == "job":
             jn = job_notes.get(node["id"], {})
-            parts = list(jn.get("events", []))
+            # Order: structured result (verdict + counts) first, then
+            # any failure events, then the raw stdout summary.
+            parts = []
+            if jn.get("result"):
+                parts.append(jn["result"])
+            parts.extend(jn.get("events", []))
             if jn.get("summary"):
                 parts.append(jn["summary"])
             note = "\n".join(p for p in parts if p).strip()
         row_tags = freeform.get(node["id"], []) if node["kind"] == "todo" else []
+        attention_icons = _attention_icons(row_tags)
+        # Compiled-PDF affordance: when this todo's workspace has a PDF on
+        # disk, link to it. Memoised per workspace path so a project
+        # subtree of N todos costs one stat, not N.
+        if node["kind"] == "todo":
+            pdf = _todo_pdf_memo(node.get("meta"))
+            if pdf is not None:
+                attention_icons = [
+                    *attention_icons,
+                    {
+                        "icon": "📄",
+                        "title": "view compiled PDF",
+                        "href": f"/tasks/{node['id']}/pdf",
+                    },
+                ]
         rollup_total = rollup_done + rollup_waiting + rollup_active
         rows.append(
             {
@@ -674,7 +760,7 @@ def _build_rows(store: Any) -> list[dict[str, Any]]:
                 "lease_until": lease_until,
                 "lease_active": _lease_active(lease_until),
                 "tags": row_tags,
-                "attention_icons": _attention_icons(row_tags),
+                "attention_icons": attention_icons,
                 "note": note,
             }
         )
@@ -765,6 +851,37 @@ async def dashboard(
             "doable_body": doable_body,
             "status_choices": STATUS_CHOICES,
         },
+    )
+
+
+@router.get("/{ref_id}/pdf")
+async def task_pdf(request: Request, ref_id: int) -> FileResponse:
+    """Stream a todo's compiled workspace PDF inline (paper-viewer style).
+
+    Mirrors ``/papers/{id}/pdf`` but resolves under ``PRECIS_ROOT`` (the
+    cascade's workspace store) rather than the corpus dir, since a
+    generated manuscript isn't an ingested paper. 404s with the path it
+    looked at when no PDF exists yet (e.g. the cascade hasn't reached the
+    compile step).
+    """
+    store = get_store(request)
+    refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
+    ref = refs.get(ref_id)
+    if ref is None or ref.kind != "todo":
+        raise NotFound(f"todo id={ref_id} not found")
+    cfg = get_web_config(request)
+    path = _resolve_workspace_pdf(cfg.precis_root, getattr(ref, "meta", None))
+    if path is None:
+        raise NotFound(
+            f"no compiled PDF for todo id={ref_id}. Either it has no "
+            "workspace, PRECIS_ROOT is unset for the web process, or the "
+            "cascade hasn't compiled main.pdf yet (the PDF is produced at "
+            "the workspace-root STATUS:done compile step)."
+        )
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="todo-{ref_id}.pdf"'},
     )
 
 
@@ -1010,6 +1127,7 @@ async def history(request: Request, ref_id: int) -> HTMLResponse:
             "id": j["id"],
             "title": j["title"],
             "status": job_status.get(j["id"], {}).get("status", "open"),
+            "result": notes.get(j["id"], {}).get("result", ""),
             "events": notes.get(j["id"], {}).get("events", []),
             "summary": notes.get(j["id"], {}).get("summary", ""),
         }

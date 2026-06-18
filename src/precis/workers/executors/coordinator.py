@@ -46,7 +46,13 @@ from precis.workers.executors._common import (
     JOB_EVENT_KIND as _JOB_EVENT_KIND,
 )
 from precis.workers.executors._common import (
+    JOB_SUMMARY_KIND as _JOB_SUMMARY_KIND,
+)
+from precis.workers.executors._common import (
     RUNNING as _RUNNING,
+)
+from precis.workers.executors._common import (
+    SUCCEEDED as _SUCCEEDED,
 )
 from precis.workers.executors._common import (
     WAITING_ASK_USER as _WAITING_ASK_USER,
@@ -73,8 +79,12 @@ from precis.workers.executors._common import (
     record_failure as _record_failure,
 )
 from precis.workers.executors._common import (
+    set_meta as _set_meta,
+)
+from precis.workers.executors._common import (
     set_status as _set_status,
 )
+from precis.workers.executors._yield import Done, Yield
 
 # ``_build_dispatch_context`` stays in ``claude_inproc`` so its helper
 # closures bind to that module's globals (which its tests patch); the
@@ -240,7 +250,66 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
             return
 
     ctx = _build_dispatch_context(store, ref_id, title, meta)
-    spec.dispatch(ctx, spec)
+    # The dispatcher returns Done | Yield (see _yield.py). A resumed
+    # slice reads its checkpoint from ``ctx.meta['coordinator_state']``
+    # (persisted by the previous Yield below). Discarding this return —
+    # the bug this method guards against — left the job stuck at
+    # STATUS:running, never terminal, never re-queued.
+    result = spec.dispatch(ctx, spec)
+    _persist_dispatch_result(store, ref_id, result)
+
+
+def _persist_dispatch_result(store: Any, ref_id: int, result: Any) -> None:
+    """Advance a coordinator job from its dispatcher's return.
+
+    ``Done`` → write the ``job_summary`` chunk, merge final scalars into
+    ``refs.meta``, transition to ``succeeded`` / ``failed``. ``Yield`` →
+    checkpoint ``state`` into ``meta.coordinator_state``, record
+    ``meta.wake_when``, and set the ``STATUS:waiting_*`` value the
+    wake_runner watches (it re-queues to ``STATUS:queued`` when the wake
+    condition fires). Any other return is a contract violation — fail
+    loudly rather than leave the job pinned at ``STATUS:running``.
+    """
+    if isinstance(result, Done):
+        with store.pool.connection() as conn:
+            _append_chunk(store, ref_id, _JOB_SUMMARY_KIND, result.summary, conn=conn)
+            if result.summary_meta:
+                _set_meta(conn, ref_id, **result.summary_meta)
+            _set_status(
+                store, ref_id, _SUCCEEDED if result.success else _FAILED, conn=conn
+            )
+            conn.commit()
+        return
+
+    if isinstance(result, Yield):
+        wake = result.wake_when
+        status = _STATUS_FOR_WAKE_KIND.get(wake.kind)
+        if status is None:
+            _record_failure(
+                store,
+                ref_id,
+                f"Yield with unknown wake kind {wake.kind!r}; "
+                f"known: {sorted(_STATUS_FOR_WAKE_KIND)}",
+                gripe_rollback=None,
+            )
+            return
+        with store.pool.connection() as conn:
+            _set_meta(
+                conn,
+                ref_id,
+                coordinator_state=result.state,
+                wake_when={"kind": wake.kind, "payload": wake.payload},
+            )
+            _set_status(store, ref_id, status, conn=conn)
+            conn.commit()
+        return
+
+    _record_failure(
+        store,
+        ref_id,
+        f"dispatch returned {type(result).__name__}, expected Done|Yield",
+        gripe_rollback=None,
+    )
 
 
 __all__ = ["run_coordinator_pass"]

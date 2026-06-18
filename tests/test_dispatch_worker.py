@@ -194,6 +194,46 @@ def test_plan_tick_parent_gets_no_auto_check(
     assert "auto_check" not in ref.meta
 
 
+def test_plan_tick_parent_strips_stale_child_job_succeeded(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A planner parent carrying a stale child_job_succeeded auto_check
+    has it STRIPPED on dispatch.
+
+    Declining to inject (test above) isn't enough when a legacy /
+    hand-authored spec is already attached — that's exactly what
+    auto-closed an in-progress paper cascade on its first clean tick.
+    """
+    r = handler.put(
+        text="planner brief with stale footgun",
+        tags=["LLM:opus"],
+        meta={"auto_check": {"type": "child_job_succeeded"}},
+    )
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert "auto_check" not in ref.meta
+
+
+def test_plan_tick_parent_keeps_non_footgun_auto_check(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Only the footgun type is stripped — a deliberate non-job auto_check
+    on a planner survives."""
+    custom = {"type": "time_past", "at": "2099-01-01T00:00:00+00:00"}
+    r = handler.put(
+        text="planner with deliberate timer",
+        tags=["LLM:opus"],
+        meta={"auto_check": custom},
+    )
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("auto_check") == custom
+
+
 def test_succeeded_child_job_does_not_block_redispatch(
     handler: TodoHandler, store: Store
 ) -> None:

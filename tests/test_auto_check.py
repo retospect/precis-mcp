@@ -282,6 +282,80 @@ def test_child_job_succeeded_true_when_child_succeeded(
     )
 
 
+def test_child_job_succeeded_skips_planner_coroutine(
+    handler: TodoHandler, store: Store
+) -> None:
+    """An LLM:*-tagged parent (plan_tick coroutine) is never auto-closed
+    by a succeeded child job — it drives its own STATUS. Guard 1."""
+    from precis.store.types import Tag
+    from precis.workers.auto_check_evaluators import child_job_succeeded
+
+    r = handler.put(text="planner brief", tags=["LLM:opus"])
+    rid = _id_of(r.body)
+    job = store.insert_ref(kind="job", slug=None, title="tick", meta={}, parent_id=rid)
+    store.add_tag(
+        job.id,
+        Tag.closed("STATUS", "succeeded"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert (
+        child_job_succeeded.evaluate(store, {"type": "child_job_succeeded"}, ref_id=rid)
+        is None
+    )
+
+
+def test_child_job_succeeded_skips_with_live_child_todo(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A succeeded child job does not resolve the parent while a sibling
+    child todo is still open. Guard 2 (mirrors the STATUS:done guardrail)."""
+    from precis.store.types import Tag
+    from precis.workers.auto_check_evaluators import child_job_succeeded
+
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job = store.insert_ref(kind="job", slug=None, title="job", meta={}, parent_id=rid)
+    store.add_tag(
+        job.id,
+        Tag.closed("STATUS", "succeeded"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    # An open child todo still in flight (no STATUS tag → COALESCE 'open').
+    store.insert_ref(kind="todo", slug=None, title="open child", meta={}, parent_id=rid)
+    assert (
+        child_job_succeeded.evaluate(store, {"type": "child_job_succeeded"}, ref_id=rid)
+        is None
+    )
+
+
+def test_child_job_succeeded_resolves_when_child_todos_done(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Guard 2 only blocks on *live* child todos — a done child todo
+    alongside a succeeded job still resolves a deterministic parent."""
+    from precis.store.types import Tag
+    from precis.workers.auto_check_evaluators import child_job_succeeded
+
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job = store.insert_ref(kind="job", slug=None, title="job", meta={}, parent_id=rid)
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "succeeded"), set_by="agent", replace_prefix=True
+    )
+    child = store.insert_ref(
+        kind="todo", slug=None, title="finished child", meta={}, parent_id=rid
+    )
+    store.add_tag(
+        child.id, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
+    )
+    assert (
+        child_job_succeeded.evaluate(store, {"type": "child_job_succeeded"}, ref_id=rid)
+        is True
+    )
+
+
 def test_child_job_succeeded_ignores_other_kinds(
     handler: TodoHandler, store: Store
 ) -> None:

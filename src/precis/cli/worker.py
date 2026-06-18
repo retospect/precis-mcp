@@ -138,6 +138,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "dispatch",
             "sweeper",
             "quota_check",
+            "watch_poll",
         ),
         default=None,
         help="Restrict to one handler kind. Overrides --profile when "
