@@ -139,6 +139,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "sweeper",
             "quota_check",
             "watch_poll",
+            "llm_summarize",
         ),
         default=None,
         help="Restrict to one handler kind. Overrides --profile when "
@@ -491,6 +492,42 @@ def run(args: argparse.Namespace) -> None:
                 return wake_pass_for_runner(store, batch_size)
 
             ref_passes.append(_wake_runner_pass)
+
+        # llm_summarize — model-authored "very brief; some additional
+        # detail" chunk summaries into chunk_summaries
+        # (summarizer='llm-v1'), via the litellm `summarizer` alias.
+        # Default-OFF: runs only via `--only llm_summarize` or
+        # PRECIS_SUMMARIZE_LLM=1 — a 1M-chunk backfill is a deliberate,
+        # node-targeted batch, not something every system worker should
+        # pick up. See workers/llm_summarize.py.
+        from precis.workers.llm_summarize import (
+            SUMMARIZER_NAME,
+            LlmClient,
+            LlmConfig,
+            run_llm_summarize_pass,
+        )
+
+        _summarize_cfg = LlmConfig.from_env()
+        if _pass_enabled("llm_summarize") or _summarize_cfg.enabled:
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            _summarize_client = LlmClient(_summarize_cfg)
+
+            def _llm_summarize_pass(batch_size: int) -> _BatchResult:
+                r = run_llm_summarize_pass(
+                    store,
+                    client=_summarize_client,
+                    summarizer=SUMMARIZER_NAME,
+                    batch_size=min(batch_size, 16),
+                )
+                return _BatchResult(
+                    handler="llm_summarize",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_llm_summarize_pass)
 
         # Plugin-registered ref passes: third-party packages can
         # ship their own background workers via the
