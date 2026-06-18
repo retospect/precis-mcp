@@ -95,6 +95,13 @@ class TestCoordinatorDispatch:
             lambda name: spec if name == "plugin_coordinator_demo" else None,
         )
         monkeypatch.setattr(coordinator, "_is_cancel_requested", lambda *_: False)
+        # This test asserts routing only; persistence of the return has
+        # its own suite below (TestCoordinatorPersistsReturn). Stub it so
+        # the no-op dispatch's ``None`` return doesn't trip the
+        # contract-violation path against the bare fake store.
+        monkeypatch.setattr(
+            coordinator, "_persist_dispatch_result", lambda *a, **k: None
+        )
 
         store = _FakeStore()
         coordinator._run_one(
@@ -225,3 +232,124 @@ class TestYieldTypes:
         assert y.state["phase"] == "screen"
         assert y.wake_when.kind == "children_done"
         assert y.wake_when.payload["child_job_ids"] == [101, 102, 103]
+
+
+# ── Behavioural: the dispatcher's return is PERSISTED ─────────────
+#
+# The structural tests above only prove dispatch is called and the
+# dataclasses construct. They are exactly why the "return discarded"
+# bug shipped green: nothing exercised what _run_one does with the
+# return. These close that gap — Done terminates, Yield checkpoints +
+# parks at a waiting status, and a contract violation fails loudly
+# instead of hanging at STATUS:running.
+
+
+class TestCoordinatorPersistsReturn:
+    def _run_with(self, monkeypatch: pytest.MonkeyPatch, dispatch_fn: Any) -> dict:
+        spec = _spec_with_dispatch(dispatch_fn)
+        monkeypatch.setattr(
+            coordinator,
+            "get_job_type",
+            lambda name: spec if name == "plugin_coordinator_demo" else None,
+        )
+        monkeypatch.setattr(coordinator, "_is_cancel_requested", lambda *_: False)
+        calls: dict[str, list] = {
+            "status": [],
+            "chunks": [],
+            "meta": [],
+            "failures": [],
+        }
+        monkeypatch.setattr(
+            coordinator,
+            "_set_status",
+            lambda store, ref_id, status, conn=None: calls["status"].append(status),
+        )
+        monkeypatch.setattr(
+            coordinator,
+            "_append_chunk",
+            lambda store, ref_id, kind, text, conn=None: calls["chunks"].append(
+                (kind, text)
+            ),
+        )
+        monkeypatch.setattr(
+            coordinator,
+            "_set_meta",
+            lambda conn, ref_id, **fields: calls["meta"].append(fields),
+        )
+        monkeypatch.setattr(
+            coordinator,
+            "_record_failure",
+            lambda store, ref_id, reason, *, gripe_rollback: calls["failures"].append(
+                reason
+            ),
+        )
+        coordinator._run_one(
+            _FakeStore(),
+            ref_id=7,
+            title="t",
+            meta={"job_type": "plugin_coordinator_demo"},
+        )
+        return calls
+
+    def test_done_success_writes_summary_merges_meta_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._run_with(
+            monkeypatch,
+            lambda ctx, spec: Done(
+                summary="all good", success=True, summary_meta={"wall_seconds": 3}
+            ),
+        )
+        assert ("job_summary", "all good") in calls["chunks"]
+        assert {"wall_seconds": 3} in calls["meta"]
+        assert calls["status"] == [coordinator._SUCCEEDED]
+        assert calls["failures"] == []
+
+    def test_done_failure_sets_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = self._run_with(
+            monkeypatch, lambda ctx, spec: Done(summary="broke", success=False)
+        )
+        assert calls["status"] == [coordinator._FAILED]
+
+    def test_yield_checkpoints_and_parks_at_waiting_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._run_with(
+            monkeypatch,
+            lambda ctx, spec: Yield(
+                state={"phase": 2},
+                wake_when=WakeWhen(
+                    kind="children_done", payload={"child_job_ids": [11, 12]}
+                ),
+            ),
+        )
+        merged = {k: v for m in calls["meta"] for k, v in m.items()}
+        assert merged["coordinator_state"] == {"phase": 2}
+        assert merged["wake_when"] == {
+            "kind": "children_done",
+            "payload": {"child_job_ids": [11, 12]},
+        }
+        # parked at the status the wake_runner watches — NOT left running
+        assert calls["status"] == [coordinator._WAITING_CHILDREN]
+        assert calls["failures"] == []
+
+    def test_unknown_wake_kind_fails_loudly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._run_with(
+            monkeypatch,
+            lambda ctx, spec: Yield(
+                state={},
+                wake_when=WakeWhen(kind="not_a_real_kind", payload={}),  # type: ignore[arg-type]
+            ),
+        )
+        assert len(calls["failures"]) == 1
+        assert calls["status"] == []  # never parked at a bogus status
+
+    def test_non_done_yield_return_records_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._run_with(monkeypatch, lambda ctx, spec: "oops not a Done")
+        assert len(calls["failures"]) == 1
+        assert "expected Done|Yield" in calls["failures"][0]
+        assert calls["status"] == []  # not left at running

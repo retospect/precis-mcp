@@ -405,7 +405,24 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         # coroutine drives its own STATUS — see
         # ``_SELF_RESOLVING_JOB_TYPES``); injecting there would close the
         # parent on its first clean tick.
-        if not has_auto_check and job_type not in _SELF_RESOLVING_JOB_TYPES:
+        if job_type in _SELF_RESOLVING_JOB_TYPES:
+            # Belt-and-suspenders: declining to *inject* isn't enough —
+            # a stale / hand-authored / legacy ``child_job_succeeded``
+            # spec can already be attached (this is exactly what
+            # auto-closed an in-progress paper cascade on its first clean
+            # planning tick). Strip it so the auto_check worker can't fire
+            # it. Only the footgun type is removed; a deliberate
+            # ``time_past`` / ``ask-user`` spec on a planner is left alone.
+            conn.execute(
+                """
+                UPDATE refs
+                   SET meta = meta - 'auto_check'
+                 WHERE ref_id = %s
+                   AND meta->'auto_check'->>'type' = 'child_job_succeeded'
+                """,
+                (ref_id,),
+            )
+        elif not has_auto_check:
             conn.execute(
                 """
                 UPDATE refs

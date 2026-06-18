@@ -86,8 +86,9 @@ class Yield:
 
     ``state`` is the dispatcher's checkpoint — whatever shape the
     plugin wants. Persisted into ``meta.coordinator_state`` and
-    handed back on the next slice via the dispatcher's
-    ``state=`` kwarg.
+    handed back on the next slice via
+    ``ctx.meta['coordinator_state']`` (the executor passes the row's
+    ``meta`` into the DispatchContext at claim time).
 
     ``wake_when`` declares the condition the wake_runner watches
     for to re-queue the job.

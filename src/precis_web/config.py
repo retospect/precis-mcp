@@ -34,6 +34,12 @@ class WebConfig:
     #: resolving a PDF. Populated from the 2nd+ entries of a
     #: ``os.pathsep``-separated ``PRECIS_CORPUS_DIR``. Empty by default.
     extra_corpus_dirs: tuple[Path, ...] = ()
+    #: Workspace root (``PRECIS_ROOT``) where the cascade writes project
+    #: dirs and compiles ``main.pdf``. Distinct from ``corpus_dir`` (the
+    #: ingested-paper PDF store): generated manuscripts live under
+    #: ``<precis_root>/<workspace.path>/``. ``None`` when unset (the
+    #: compiled-PDF affordance simply doesn't render).
+    precis_root: Path | None = None
     source: str = DEFAULT_SOURCE
     auth_token: str | None = None
 
@@ -69,6 +75,8 @@ class WebConfig:
         ]
         corpus_dir = roots[0] if roots else _DEFAULT_CORPUS
         extra = tuple(roots[1:])
+        precis_root_raw = os.environ.get("PRECIS_ROOT")
+        precis_root = Path(precis_root_raw).expanduser() if precis_root_raw else None
         host = os.environ.get("PRECIS_WEB_HOST", "127.0.0.1")
         port_raw = os.environ.get("PRECIS_WEB_PORT", "9100")
         try:
@@ -80,6 +88,7 @@ class WebConfig:
             port=port,
             corpus_dir=corpus_dir,
             extra_corpus_dirs=extra,
+            precis_root=precis_root,
             source=os.environ.get("PRECIS_SOURCE", DEFAULT_SOURCE),
             auth_token=os.environ.get("PRECIS_WEB_AUTH_TOKEN") or None,
         )

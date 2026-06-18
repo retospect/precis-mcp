@@ -121,10 +121,21 @@ def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
             conn.commit()
             return {"claimed": 0, "ok": 0, "failed": 0}
         for ref_id, _title, _meta in rows:
+            # Lease must outlive the longest possible job. A plan_tick
+            # tick can request up to ``timeout_s=3600`` (60 min, per
+            # plan_tick.PARAMS_SCHEMA), and the executor does extra work
+            # (writing summary / result chunks) after the subprocess
+            # returns. A 30-min lease was SHORTER than a long tick, so
+            # the lease could expire mid-run and a second worker could
+            # re-claim and double-run the job. 90 min covers the max
+            # tick + post-processing with margin; the only cost is that
+            # a genuinely crashed worker's job stays `running` a bit
+            # longer before another worker rescues it (latency, not
+            # correctness — crashes are rare).
             conn.execute(
                 "UPDATE refs SET meta = meta || "
                 "jsonb_build_object("
-                "  'lease_until', (now() + interval '30 minutes')::text"
+                "  'lease_until', (now() + interval '90 minutes')::text"
                 ") "
                 "WHERE ref_id = %s",
                 (ref_id,),
