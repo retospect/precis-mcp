@@ -221,6 +221,19 @@ class CitationHandler(NumericRefHandler):
                 meta=record,
                 conn=conn,
             )
+            # The claim is novel, agent-authored prose, but refs.title
+            # holds only a 200-char truncation of it and refs.meta isn't
+            # indexed at all. Mirror the *full* claim into a card_combined
+            # chunk (ord=-1) so the embed + chunk_keywords workers index
+            # it — citations become semantically searchable, not just a
+            # lexical-prefix match on the truncated title. Citations are
+            # write-once, so the card never needs re-syncing.
+            #
+            # source_quote is deliberately NOT chunked: it's a verbatim
+            # copy of the span at source_handle (paper:<slug>~N), which is
+            # already an embedded chunk — re-embedding it would just
+            # duplicate that vector.
+            self.store.upsert_card_combined(ref.id, text.strip(), conn=conn)
             for tag in parsed_tags:
                 self.store.add_tag(
                     ref.id,

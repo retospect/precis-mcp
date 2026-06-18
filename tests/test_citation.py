@@ -193,3 +193,59 @@ class TestPaperMustExist:
             verifier_confidence=0.7,
         )
         assert "created citation id=" in resp.body
+
+
+# ── claim → embeddable card ──────────────────────────────────────────
+
+
+class TestClaimCard:
+    """The full claim is mirrored into a ``card_combined`` chunk (ord=-1)
+    so the embed + chunk_keywords workers index it. ``refs.title`` only
+    holds a 200-char truncation and ``refs.meta`` isn't indexed at all,
+    so without the card a long claim is unreachable by semantic search."""
+
+    def test_full_claim_emitted_as_card(self, store) -> None:
+        h = _make_handler(store)
+        store.insert_ref(kind="paper", slug="cardpaper", title="Card Paper")
+        # > 200 chars so we can prove the card carries the *full* claim,
+        # not the truncated title.
+        long_claim = ("Quantum-dot photocathodes sustain " + "record efficiency " * 15).strip()
+        assert len(long_claim) > 200
+        resp = h.put(
+            text=long_claim,
+            source_handle="cardpaper~2",
+            source_quote="the cells reached record efficiency",
+            verifier_confidence=0.9,
+        )
+        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+
+        with store.pool.connection() as conn:
+            card = conn.execute(
+                "SELECT chunk_kind, text FROM chunks WHERE ref_id = %s AND ord = -1",
+                (ref_id,),
+            ).fetchone()
+        assert card is not None, "expected a card_combined chunk at ord=-1"
+        assert card[0] == "card_combined"
+        # The card holds the full claim, not the truncated refs.title.
+        assert card[1] == long_claim
+
+    def test_quote_is_not_chunked(self, store) -> None:
+        """source_quote is a verbatim copy of the source_handle span, which
+        is already an embedded chunk — only the claim card is emitted, so
+        a citation has exactly one negative-ord chunk and no body chunk."""
+        h = _make_handler(store)
+        store.insert_ref(kind="paper", slug="quotepaper", title="Quote Paper")
+        resp = h.put(
+            text="A short claim",
+            source_handle="quotepaper~1",
+            source_quote="a verbatim quote that should not become its own chunk",
+            verifier_confidence=0.8,
+        )
+        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ord, chunk_kind FROM chunks WHERE ref_id = %s ORDER BY ord",
+                (ref_id,),
+            ).fetchall()
+        assert rows == [(-1, "card_combined")]

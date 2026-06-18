@@ -59,6 +59,15 @@ class FlashcardHandler(NumericRefHandler):
     kind: ClassVar[str] = "flashcard"
     sense: ClassVar[str] = "flashcard"
 
+    # The body *is* the knowledge statement, so put-create emits a
+    # `card_combined` chunk (ord=-1) holding it — exactly as memory does.
+    # Without this the statement lived only in refs.title: lexically
+    # searchable, but never embedded or keyword-extracted. Now the embed
+    # + chunk_keywords workers pick it up, so `search(like=...)` finds
+    # true semantic neighbours and review/dedup can cluster on keywords.
+    # Bodies are immutable (no edit verb), so the card never goes stale.
+    emits_card: ClassVar[bool] = True
+
     def _supported_list_views(self) -> tuple[str, ...]:
         # ``due`` plus every base view (``recent``).  Overrides the
         # base so the unknown-view hint enumerates the actual
