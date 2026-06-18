@@ -209,7 +209,9 @@ class TestClaimCard:
         store.insert_ref(kind="paper", slug="cardpaper", title="Card Paper")
         # > 200 chars so we can prove the card carries the *full* claim,
         # not the truncated title.
-        long_claim = ("Quantum-dot photocathodes sustain " + "record efficiency " * 15).strip()
+        long_claim = (
+            "Quantum-dot photocathodes sustain " + "record efficiency " * 15
+        ).strip()
         assert len(long_claim) > 200
         resp = h.put(
             text=long_claim,

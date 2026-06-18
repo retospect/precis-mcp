@@ -432,7 +432,7 @@ def _env_snapshot(spec: AgentSpec, plist_env: dict[str, str]) -> list[dict[str, 
                 "present": present,
                 "value": (
                     f"(set, {len(raw)} chars)"
-                    if is_sensitive and present
+                    if is_sensitive and raw is not None
                     else _redact(raw)
                 ),
             }

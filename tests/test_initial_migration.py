@@ -100,7 +100,7 @@ EXPECTED_SEED_COUNTS = {
 # ---------------------------------------------------------------------------
 
 
-def _apply_migration(dsn: str) -> list[str]:
+def _apply_migration(dsn: str) -> list[tuple[str, str]]:
     """Apply ONLY ``0001_initial.sql`` (not subsequent migrations).
 
     These tests assert structural invariants of the canonical sealed

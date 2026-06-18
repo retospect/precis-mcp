@@ -65,6 +65,7 @@ def _lookup_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int | None:
     ).fetchone()
     return int(row[0]) if row is not None else None
 
+
 # ---------------------------------------------------------------------------
 # Tag prefix ownership — mirrored from `tag_prefixes.writable_by` for
 # fast checks; the DB still enforces. Kept in sync with

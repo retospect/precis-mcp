@@ -153,6 +153,7 @@ class TestTTL:
         # (negative TTL falls through to the default), so this
         # case actually tests the env-fallback path. A direct
         # expiry check uses monkey-patching of monotonic.
+        assert cursor is not None
         assert cache.pop(cursor) is not None
 
     def test_explicit_expiry_drop(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -167,6 +168,7 @@ class TestTTL:
         # Fast-forward the cache's clock past the TTL.
         original_now = cache._now
         cache._now = lambda: original_now() + 10_000.0  # 10ks later
+        assert cursor is not None
         assert cache.pop(cursor) is None
 
 

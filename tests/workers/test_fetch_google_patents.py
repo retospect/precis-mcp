@@ -156,9 +156,9 @@ def _seed_patent(
         meta={"publication_date": pub_date},
     )
     if status_tag is not None:
-        store.add_tag(ref.id, Tag.open(status_tag), set_by="test")
+        store.add_tag(ref.id, Tag.open(status_tag), set_by="agent")
     if gp_attempted:
-        store.add_tag(ref.id, Tag.open(GP_ATTEMPTED_TAG), set_by="test")
+        store.add_tag(ref.id, Tag.open(GP_ATTEMPTED_TAG), set_by="agent")
     return ref.id
 
 
@@ -412,7 +412,7 @@ def test_claim_dedupes_when_patent_carries_both_status_tags(store: Store) -> Non
         store, cite_key="cn999000111a", status_tag="awaiting-fulltext"
     )
     # Add the second status tag too — this is the dual-tag state.
-    store.add_tag(ref_id, Tag.open("fulltext-unavailable"), set_by="test")
+    store.add_tag(ref_id, Tag.open("fulltext-unavailable"), set_by="agent")
 
     candidates = _claim_patents_for_gp(store, limit=10)
     matching = [c for c in candidates if c.cite_key == "cn999000111a"]

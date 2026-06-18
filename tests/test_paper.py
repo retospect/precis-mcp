@@ -1031,6 +1031,7 @@ class TestPaperEdit:
         reaches the handler and persists (the fake-runtime web test only
         checks forwarding, not that the verb is actually accepted)."""
         store = runtime_with_store.store
+        assert store is not None
         ref_id = _seed_paper(store, slug="wang2020state", year=2020)
         body, is_error = runtime_with_store.dispatch_with_status(
             "edit",

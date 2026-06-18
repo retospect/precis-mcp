@@ -8,6 +8,47 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-18 — coroutine auto-close + job lease)
+
+- **`child_job_succeeded` no longer auto-closes planner coroutines.**
+  An `LLM:*`-tagged todo runs the `plan_tick` coroutine: each tick is a
+  `kind='job'` that exits `STATUS:succeeded` on any clean run — including
+  ticks that only *minted children* (`verdict: continue`) or *yielded*
+  (`ask-user:`). A stale / hand-authored / legacy
+  `meta.auto_check={'type':'child_job_succeeded'}` on such a todo would
+  fire on the first successful tick and close the parent while its
+  children were still open (observed: a paper cascade closed mid-Phase-1
+  with open gather children). Two guards added in
+  `auto_check_evaluators/child_job_succeeded.py`: the evaluator returns
+  `None` (leave open) when the parent carries an `LLM:*` tag, or when it
+  still has a live (non-`done`/`won't-do`) child todo — the latter
+  mirrors the manual `STATUS:done` guardrail the auto-resolver was
+  bypassing. The dispatcher (`workers/dispatch.py`) additionally *strips*
+  a `child_job_succeeded` spec when minting a self-resolving (`plan_tick`)
+  job, so the footgun can't survive on a coroutine parent (declining to
+  inject — the prior behaviour — wasn't enough for an already-attached
+  spec).
+- **Job lease 30 min → 90 min** (`workers/executors/claude_inproc.py`).
+  A `plan_tick` may request up to `timeout_s=3600` (60 min), and the
+  executor writes summary/result chunks after the subprocess returns, so
+  a 30-min lease could expire mid-run and let a second worker re-claim
+  and double-run the job. 90 min covers the max tick plus post-processing
+  with margin.
+
+### Added (2026-06-18 — compiled-PDF + job audit in the Tasks UI)
+
+- **Per-todo compiled-PDF viewer.** `GET /tasks/{id}/pdf` streams a
+  todo's compiled workspace PDF inline (paper-viewer style), resolving
+  `<PRECIS_ROOT>/<workspace.path>/<entrypoint-stem>.pdf` — distinct from
+  the corpus-PDF path the papers viewer uses. A 📄 attention icon renders
+  on a task row whenever that PDF exists on disk. Adds `precis_root` to
+  `WebConfig` (from `PRECIS_ROOT`). See `precis_web/routes/tasks.py`
+  `_resolve_workspace_pdf`.
+- **`job_result` surfaced in the Tasks UI.** The structured per-tick
+  audit chunk (parsed verdict + subtasks/citations/findings counts) now
+  rides alongside `job_event` / `job_summary` in the job hover tooltip
+  and the per-todo history panel.
+
 ### Added (2026-06-16 — paper-writing cascade hardening)
 
 - **Stuck-job sweeper.** New worker pass `precis worker --only sweeper`

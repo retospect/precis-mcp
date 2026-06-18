@@ -86,6 +86,7 @@ _DEFAULT_MAX_USD = 2.00
 # with deeper analysis can bump this per call.
 _DEFAULT_TIMEOUT_S = 600
 
+
 class ClaudeAgentError(ClaudeProcessError):
     """Raised when ``claude -p`` fails (exit code, timeout, binary missing).
 

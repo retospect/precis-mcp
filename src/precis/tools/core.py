@@ -704,7 +704,7 @@ def link(
     )
 
 
-def more(cursor: str) -> str:
+def more(cursor: str) -> _ToolReturn:
     """Fetch the next page of a chunked response.
 
     Pagination kicks in when a verb's rendered body exceeds the MCP

@@ -29,7 +29,10 @@ class WebConfig:
 
     host: str = "127.0.0.1"
     port: int = 9100
-    corpus_dir: Path = _DEFAULT_CORPUS
+    #: Primary corpus root. ``None`` means "no corpus configured" — the
+    #: ``corpus_dirs`` property drops it, so PDF resolution simply finds
+    #: nothing rather than crashing.
+    corpus_dir: Path | None = _DEFAULT_CORPUS
     #: Additional corpus roots searched after ``corpus_dir`` when
     #: resolving a PDF. Populated from the 2nd+ entries of a
     #: ``os.pathsep``-separated ``PRECIS_CORPUS_DIR``. Empty by default.
@@ -54,7 +57,8 @@ class WebConfig:
         lets one web config find the file wherever it's mounted, so a
         per-host mount difference stops being a "PDF not found".
         """
-        return (self.corpus_dir, *self.extra_corpus_dirs)
+        roots = (self.corpus_dir, *self.extra_corpus_dirs)
+        return tuple(r for r in roots if r is not None)
 
     @classmethod
     def from_env(cls) -> WebConfig:

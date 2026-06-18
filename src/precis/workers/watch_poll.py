@@ -140,9 +140,7 @@ def _default_fetch_cited_by(api_key: str) -> CitedByFetcher:
     return _fetch
 
 
-def _seed_for_chunk(
-    store: Store, chunk_id: int
-) -> tuple[int, str, str | None] | None:
+def _seed_for_chunk(store: Store, chunk_id: int) -> tuple[int, str, str | None] | None:
     """Resolve a salient chunk to ``(paper_ref_id, label, s2_identifier)``.
 
     A paper's slug (``cite_key``) and its DOI/arXiv/S2 ids all live in

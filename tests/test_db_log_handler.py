@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -93,7 +94,7 @@ def fake_psycopg(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 def _make_handler(fake_psycopg: MagicMock, **kwargs) -> BufferedDBLogHandler:
     """Build a handler with safe defaults for unit tests."""
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         max_buffer=3,
         max_interval_seconds=1.0,
         host_name="testhost",

@@ -18,7 +18,7 @@ import inspect
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from precis.config import PrecisConfig
 from precis.dispatch import Hub
@@ -1364,7 +1364,9 @@ class PrecisRuntime:
         # id|kind|keywords TOON table — no preview text. Same fan-out
         # / dedup / RRF; only the projection differs.
         view = str(args.get("view") or "").strip()
-        output_shape = "keywords" if view == "keywords" else "toon"
+        output_shape: Literal["keywords", "toon"] = (
+            "keywords" if view == "keywords" else "toon"
+        )
         response = merge_and_render(
             streams,
             page_size=top_k,

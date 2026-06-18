@@ -149,9 +149,7 @@ async def refs_by_tag(
     # kind-only pivot reads refs directly. Both the count and the page
     # query share this FROM/WHERE so they can never drift apart.
     from_sql = (
-        "FROM refs r "
-        "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
-        "JOIN tags t USING(tag_id)"
+        "FROM refs r JOIN ref_tags rt ON rt.ref_id = r.ref_id JOIN tags t USING(tag_id)"
         if has_tag
         else "FROM refs r"
     )
