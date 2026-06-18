@@ -53,6 +53,7 @@ from typing import Any, ClassVar
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput, Unsupported
+from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.identity import make_finding_paper_id, make_pub_id
@@ -137,22 +138,11 @@ class FindingHandler(NumericRefHandler):
         Existing-id ``put`` is rejected (mutate via tag/link/delete
         per the seven-verb surface).
         """
-        # Argument validation — mirrors the citation handler so
-        # mistakes return sharp errors instead of half-created rows.
-        if id is not None:
-            raise BadInput(
-                f"put on existing finding id={id!r} is not supported",
-                next=(
-                    f"to mutate id={id}: tag(kind={self.kind!r}, id=N, ...) / "
-                    f"link(kind={self.kind!r}, id=N, ...) / "
-                    f"delete(kind={self.kind!r}, id=N)"
-                ),
-            )
-        if mode is not None or untags is not None or unlink is not None:
-            raise BadInput(
-                f"only id-less create is supported on kind={self.kind!r}",
-                next="put creates a new finding; use tag/link/delete on existing",
-            )
+        # Argument validation — shared with the base / citation handler
+        # so mistakes return sharp errors instead of half-created rows.
+        self._reject_mutating_put(
+            id=id, mode=mode, untags=untags, unlink=unlink, rel=rel, link=link
+        )
 
         body_text = body if body is not None else text
         if not title or not title.strip():
@@ -214,12 +204,10 @@ class FindingHandler(NumericRefHandler):
         )
         pub_id = make_pub_id(paper_id)
 
-        # Pre-validate tag strings and link kwarg before any DB
-        # write. Matches the contract on _create / the citation
-        # handler.
-        parsed_tags: list[Tag] = []
-        if tags:
-            parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in tags]
+        # Resolve the optional extra link target before the tx so an
+        # unknown target fails before we touch the row. User ``tags=``
+        # go through the shared ``apply_tag_ops`` inside the tx (a bad
+        # tag rolls the create back atomically).
         extra_target: LinkTarget | None = None
         extra_relation: str = rel or "cites"
         if link is not None:
@@ -288,14 +276,9 @@ class FindingHandler(NumericRefHandler):
                     replace_prefix=True,
                     conn=conn,
                 )
-                for tag in parsed_tags:
-                    self.store.add_tag(
-                        ref.id,
-                        tag,
-                        set_by="agent",
-                        replace_prefix=(tag.namespace == "closed"),
-                        conn=conn,
-                    )
+                apply_tag_ops(
+                    self.store, self.kind, ref.id, tags=tags, untags=None, conn=conn
+                )
                 # Initial derived-from link to the cited frontier.
                 # This is the chase worker's starting point.
                 self.store.add_link(

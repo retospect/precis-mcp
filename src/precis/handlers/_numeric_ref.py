@@ -422,42 +422,30 @@ class NumericRefHandler(Handler):
 
     # ── put: create-only on numeric-ref kinds ──────────────────────
 
-    def put(  # type: ignore[override]
+    def _reject_mutating_put(
         self,
         *,
-        id: str | int | None = None,
-        text: str | None = None,
-        mode: str | None = None,
-        tags: list[str] | None = None,
-        untags: list[str] | None = None,
-        link: str | None = None,
-        unlink: str | None = None,
-        rel: str | None = None,
-        auto_refresh_days: int | None = None,
-        **_kw: Any,
-    ) -> Response:
-        """Create a new numeric ref.
+        id: str | int | None,
+        mode: str | None,
+        untags: list[str] | None,
+        unlink: str | None,
+        rel: str | None,
+        link: str | None,
+        id_note: str | None = None,
+    ) -> None:
+        """Reject the mutate-an-existing-ref shapes on ``put``.
 
-        Per the seven-verb surface (D6), ``put`` is creation-only on
-        numeric-ref kinds. Mutating an existing ref splits across
-        dedicated verbs:
-
-        - text body: not exposed (numeric-ref bodies are immutable
-          once created — capture the new wording as a fresh ref or
-          use ``delete`` + ``put`` to replace).
-        - tags:  ``tag(kind, id, add=[...], remove=[...])``
-        - links: ``link(kind, id, target=..., mode='add'|'remove', rel=...)``
-        - delete: ``delete(kind, id)`` (soft-delete)
-
-        ``id=``, ``mode=``, ``untags=``, ``unlink=`` are all rejected
-        with a pointer at the right verb so an agent stuck on the
-        old shape gets a sharp recovery hint rather than a silent
-        no-op. ``tags=`` / ``link=`` / ``rel=`` are accepted on
-        creation as the D3 shortcut.
+        ``put`` is create-only on numeric-ref kinds; mutation splits
+        across ``tag`` / ``link`` / ``delete``. Shared by the base
+        ``put`` and by subclasses that override ``put`` with bespoke
+        create logic (citation, finding) so the guard wording stays in
+        one place. ``id_note`` appends a kind-specific parenthetical to
+        the existing-id rejection (e.g. citation's "write-once").
         """
         if id is not None:
+            note = f" ({id_note})" if id_note else ""
             raise BadInput(
-                f"put on existing {self._sense()} id={id!r} is not supported",
+                f"put on existing {self._sense()} id={id!r} is not supported{note}",
                 next=(
                     f"to mutate id={id}: tag(kind={self.kind!r}, id=N, add=[...]/remove=[...]) / "
                     f"link(kind={self.kind!r}, id=N, target=..., mode='add'|'remove') / "
@@ -493,6 +481,43 @@ class NumericRefHandler(Handler):
                     "link='paper:slug', rel='cites')"
                 ),
             )
+
+    def put(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        text: str | None = None,
+        mode: str | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+        link: str | None = None,
+        unlink: str | None = None,
+        rel: str | None = None,
+        auto_refresh_days: int | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Create a new numeric ref.
+
+        Per the seven-verb surface (D6), ``put`` is creation-only on
+        numeric-ref kinds. Mutating an existing ref splits across
+        dedicated verbs:
+
+        - text body: not exposed (numeric-ref bodies are immutable
+          once created — capture the new wording as a fresh ref or
+          use ``delete`` + ``put`` to replace).
+        - tags:  ``tag(kind, id, add=[...], remove=[...])``
+        - links: ``link(kind, id, target=..., mode='add'|'remove', rel=...)``
+        - delete: ``delete(kind, id)`` (soft-delete)
+
+        ``id=``, ``mode=``, ``untags=``, ``unlink=`` are all rejected
+        with a pointer at the right verb so an agent stuck on the
+        old shape gets a sharp recovery hint rather than a silent
+        no-op. ``tags=`` / ``link=`` / ``rel=`` are accepted on
+        creation as the D3 shortcut.
+        """
+        self._reject_mutating_put(
+            id=id, mode=mode, untags=untags, unlink=unlink, rel=rel, link=link
+        )
         # ``put(tags=...)`` and ``put(link=...)`` are the D3 shortcut
         # for the standalone ``tag``/``link`` verbs; if the kind
         # doesn't expose those verbs at all (e.g. gripe — write-only

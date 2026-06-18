@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from precis.store import Store, as_dream_actor
+from precis.store import Store, as_background_actor, as_dream_actor
 
 
 def _mk_chunk(store: Store, ref_id: int, ord_: int, text: str) -> int:
@@ -120,3 +120,70 @@ def test_select_dream_seed_respects_kind_filter(
     store.bump_salience([cp, cm])
     seed = store.select_dream_seed(kinds=kinds)
     assert seed == (cp if kinds == ("paper",) else cm)
+
+
+# ── actor-parameterized salience (watching reuses the dream field) ──
+
+
+def test_background_actor_suppresses_bump(store: Store) -> None:
+    """Any background actor (not just dream) must suppress self-heat."""
+    ref = store.insert_ref(kind="paper", slug="pw", title="W", meta={})
+    cid = _mk_chunk(store, ref.id, 0, "body")
+    _, _, acc0 = _salience(store, cid)
+    with as_background_actor("watch"):
+        assert store.bump_salience([cid]) == 0
+    _, _, acc1 = _salience(store, cid)
+    assert acc1 == acc0
+
+
+def test_select_salient_watch_argmax_and_limit(store: Store) -> None:
+    pa = store.insert_ref(kind="paper", slug="wa", title="A", meta={})
+    pb = store.insert_ref(kind="paper", slug="wb", title="B", meta={})
+    ca = _mk_chunk(store, pa.id, 0, "a")
+    cb = _mk_chunk(store, pb.id, 0, "b")
+    store.bump_salience([ca])  # ca hottest
+    assert store.select_salient("watch", kinds=("paper",), limit=1) == [ca]
+    # limit returns top-N most-due, ca first
+    top2 = store.select_salient("watch", kinds=("paper",), limit=2)
+    assert top2[0] == ca and set(top2) == {ca, cb}
+
+
+def test_dream_and_watch_rotate_independently(store: Store) -> None:
+    """The DRY+correctness property: the two actors share the heat field
+    (last_seen) but rotate on independent stamps. Dreaming a paper must
+    NOT cool it for the watcher, and vice versa. (Selection is argmax, so
+    we prove it via which of two chunks tops, not via emptiness.)"""
+    pa = store.insert_ref(kind="paper", slug="wi", title="I", meta={})
+    pb = store.insert_ref(kind="paper", slug="wj", title="J", meta={})
+    ca = _mk_chunk(store, pa.id, 0, "a")
+    cb = _mk_chunk(store, pb.id, 0, "b")
+    store.bump_salience([ca])  # ca hottest for BOTH actors
+    assert store.select_salient("dream", kinds=("paper",))[0] == ca
+    assert store.select_salient("watch", kinds=("paper",))[0] == ca
+    # Dreamer rotates ca out → cb tops for dream...
+    store.touch_attended("dream", [ca])
+    assert store.select_salient("dream", kinds=("paper",))[0] == cb
+    # ...but the watcher still sees ca as most-due (independent stamp).
+    assert store.select_salient("watch", kinds=("paper",))[0] == ca
+    # Watcher rotates ca out on its own clock → cb tops for watch too.
+    store.touch_attended("watch", [ca])
+    assert store.select_salient("watch", kinds=("paper",))[0] == cb
+
+
+def test_touch_attended_unknown_actor_raises(store: Store) -> None:
+    with pytest.raises(KeyError):
+        store.touch_attended("bogus", [1])
+    with pytest.raises(KeyError):
+        store.select_salient("bogus", kinds=("paper",))
+
+
+def test_touch_last_dreamt_still_works_via_wrapper(store: Store) -> None:
+    """Back-compat: the dream wrapper rotates the dream column only."""
+    pa = store.insert_ref(kind="paper", slug="wc", title="C", meta={})
+    pb = store.insert_ref(kind="paper", slug="wd", title="D", meta={})
+    ca = _mk_chunk(store, pa.id, 0, "a")
+    cb = _mk_chunk(store, pb.id, 0, "b")
+    store.bump_salience([ca])
+    store.touch_last_dreamt([ca])
+    assert store.select_dream_seed(kinds=("paper",)) == cb  # dream rotated to cb
+    assert store.select_salient("watch", kinds=("paper",))[0] == ca  # watch untouched

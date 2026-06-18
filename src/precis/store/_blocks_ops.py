@@ -55,7 +55,18 @@ from precis.store._mappers import (
     _row_to_ref,
     _upsert_tag,
 )
-from precis.store._salience import dream_actor_active
+from precis.store._salience import background_actor_active
+
+#: Whitelist mapping a background actor's name to its per-actor rotation
+#: column on ``chunks``. The column name is interpolated into selection /
+#: touch SQL (it can't be a bind param), so it MUST come from this dict
+#: and never from caller input — an unknown actor is a KeyError, not an
+#: injection vector. Add a row here (plus the column via a migration) to
+#: introduce a new attention actor.
+_ATTENTION_COLUMNS: dict[str, str] = {
+    "dream": "last_dreamt",
+    "watch": "last_watched",
+}
 from precis.store._tag_filter import (
     build_tag_filter,
     is_speculative_tag,
@@ -718,30 +729,36 @@ class BlocksMixin:
 
         Returns the number of chunk ids bumped (0 when suppressed).
         """
-        if not chunk_ids or dream_actor_active():
+        if not chunk_ids or background_actor_active():
             return 0
         with self.pool.connection() as conn:
             conn.execute("SELECT bump_salience(%s)", (list(chunk_ids),))
         return len(chunk_ids)
 
-    def touch_last_dreamt(
+    def touch_attended(
         self,
+        actor: str,
         chunk_ids: list[int],
         *,
         conn: Connection | None = None,
     ) -> int:
-        """Stamp ``last_dreamt = now()`` on chunks a dream run touched.
+        """Stamp ``last_<actor> = now()`` on chunks an attention loop touched.
 
-        Run-end rotation step: everything the dreamer surfaced (focus
-        region, sparks, drilled items) is stamped so its
-        ``last_seen - last_dreamt`` score drops and a *different* region
-        tops the next run (docs/design/dreaming.md, §Selection). The
-        act of looking *is* the anti-repeat mechanism. Metadata-only,
-        same as :meth:`bump_salience`. Returns the count stamped.
+        Run-end rotation step shared by every attention actor (dream,
+        watch, …): everything the loop surfaced is stamped so its
+        ``last_seen - last_<actor>`` score drops and a *different* region
+        tops the next run (docs/design/dreaming.md, §Selection;
+        docs/design/watching.md). The act of looking *is* the anti-repeat
+        mechanism. ``actor`` selects the rotation column via
+        :data:`_ATTENTION_COLUMNS` (unknown actor → KeyError).
+        Metadata-only, same as :meth:`bump_salience`. Returns the count
+        stamped.
         """
         if not chunk_ids:
             return 0
-        sql = "UPDATE chunks SET last_dreamt = now() WHERE chunk_id = ANY(%s)"
+        col = _ATTENTION_COLUMNS[actor]
+        # ``col`` is a whitelisted identifier, never caller input.
+        sql = f"UPDATE chunks SET {col} = now() WHERE chunk_id = ANY(%s)"
         ids = list(chunk_ids)
         if conn is not None:
             conn.execute(sql, (ids,))
@@ -749,6 +766,15 @@ class BlocksMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (ids,))
         return len(ids)
+
+    def touch_last_dreamt(
+        self,
+        chunk_ids: list[int],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Dreamer rotation stamp — :meth:`touch_attended` with ``"dream"``."""
+        return self.touch_attended("dream", chunk_ids, conn=conn)
 
     def card_chunk_ids(self, ref_ids: list[int]) -> list[int]:
         """Resolve the ``card_combined`` (``ord=-1``) chunk id per ref.
@@ -769,35 +795,53 @@ class BlocksMixin:
             ).fetchall()
         return [int(r[0]) for r in rows]
 
-    def select_dream_seed(
+    def select_salient(
         self,
+        actor: str,
         *,
         kinds: tuple[str, ...] = ("paper", "memory"),
-    ) -> int | None:
-        """Pick the most-due chunk: ``argmax(last_seen - last_dreamt)``.
+        limit: int = 1,
+    ) -> list[int]:
+        """Most-due salient chunks for ``actor``: ``argmax(last_seen - last_<actor>)``.
 
-        The seed of a dream (docs/design/dreaming.md, §Target
-        selection) — knob-free, no decay, no sampling. Restricted to
-        live refs of the target ``kinds`` (``paper`` + ``memory``;
-        ``oracle``/``skill`` never seed). Ties break on ``chunk_id`` so
-        selection is deterministic and in-process testable. Returns the
-        seed ``chunk_id``, or ``None`` when the corpus has no target
-        chunks.
+        The shared attention-selection primitive (docs/design/dreaming.md,
+        §Target selection; docs/design/watching.md) — knob-free, no decay,
+        no sampling. ``actor`` selects the per-actor rotation column via
+        :data:`_ATTENTION_COLUMNS` (unknown actor → KeyError). Restricted
+        to live refs of the target ``kinds``. Ties break on ``chunk_id`` so
+        selection is deterministic and in-process testable. Returns up to
+        ``limit`` chunk ids, most-due first (empty when the corpus has no
+        target chunks).
         """
+        col = _ATTENTION_COLUMNS[actor]
         with self.pool.connection() as conn:
-            row = conn.execute(
-                """
+            rows = conn.execute(
+                # ``col`` is a whitelisted identifier, never caller input.
+                f"""
                 SELECT c.chunk_id
                 FROM chunks c
                 JOIN refs r ON r.ref_id = c.ref_id
                 WHERE r.deleted_at IS NULL
                   AND r.kind = ANY(%s)
-                ORDER BY (c.last_seen - c.last_dreamt) DESC, c.chunk_id
-                LIMIT 1
+                ORDER BY (c.last_seen - c.{col}) DESC, c.chunk_id
+                LIMIT %s
                 """,
-                (list(kinds),),
-            ).fetchone()
-        return int(row[0]) if row is not None else None
+                (list(kinds), limit),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def select_dream_seed(
+        self,
+        *,
+        kinds: tuple[str, ...] = ("paper", "memory"),
+    ) -> int | None:
+        """Dream seed — single most-due chunk via :meth:`select_salient`.
+
+        Thin wrapper preserving the original signature/return shape for
+        the dream dispatch path and existing tests.
+        """
+        ids = self.select_salient("dream", kinds=kinds, limit=1)
+        return ids[0] if ids else None
 
     def dreamable_region(
         self,

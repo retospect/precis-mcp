@@ -556,6 +556,28 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_fetch_pass)
 
+        # Citation-forward watcher (docs/design/watching.md). Polls
+        # Semantic Scholar for papers that cite our most-due salient
+        # papers and mints metadata-only stubs; fetch_oa then OA-acquires
+        # them. Deliberately NOT in system_passes/agent_passes — it makes
+        # external S2 calls and must run on a cadence, not the hot loop.
+        # Run it from a dedicated low-frequency cron via
+        # ``precis worker --only watch_poll`` (mirrors the dream cron).
+        if _pass_enabled("watch_poll"):
+            from precis.workers.runner import BatchResult as _BatchResult
+            from precis.workers.watch_poll import run_watch_pass
+
+            def _watch_poll_pass(batch_size: int) -> _BatchResult:
+                r = run_watch_pass(store, limit=batch_size)
+                return _BatchResult(
+                    handler="watch_poll",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_watch_poll_pass)
+
         # Google Patents fall-back fetcher — picks up patents OPS gave up
         # on (or is still 404-ing) and tries patents.google.com once.
         # Gated by PRECIS_GP_FETCH=1; the pass itself short-circuits when

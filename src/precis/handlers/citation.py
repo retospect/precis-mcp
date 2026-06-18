@@ -48,10 +48,11 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from precis.errors import BadInput
+from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import Ref, Tag
+from precis.store.types import Ref
 
 
 class CitationHandler(NumericRefHandler):
@@ -116,17 +117,15 @@ class CitationHandler(NumericRefHandler):
         (re-verification creates a new citation referencing the
         same source).
         """
-        if id is not None:
-            raise BadInput(
-                f"put on existing citation id={id!r} is not supported "
-                "(citations are write-once; re-verification creates a new one)",
-                next=f"put(kind={self.kind!r}, text=..., source_handle=..., ...)",
-            )
-        if mode is not None or untags is not None or unlink is not None:
-            raise BadInput(
-                f"only id-less create is supported on kind={self.kind!r}",
-                next="put creates a new citation; use tag/link/delete on existing",
-            )
+        self._reject_mutating_put(
+            id=id,
+            mode=mode,
+            untags=untags,
+            unlink=unlink,
+            rel=rel,
+            link=link,
+            id_note="citations are write-once; re-verification creates a new one",
+        )
         if not text or not text.strip():
             raise BadInput(
                 "put(kind='citation') requires text=<claim summary>",
@@ -201,11 +200,10 @@ class CitationHandler(NumericRefHandler):
         }
 
         # Tag + link plumbing — same shape as other numeric-ref puts.
-        # Validation happens before any DB write so a bad tag or
-        # unknown link target fails before we touch the row.
-        parsed_tags: list[Tag] = []
-        if tags:
-            parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in tags]
+        # The link target resolves before the tx so an unknown target
+        # fails before we touch the row; user tags go through the shared
+        # ``apply_tag_ops`` inside the tx (a bad tag rolls the create
+        # back atomically).
         target = None
         relation_slug = rel or "cites"
         if link is not None:
@@ -234,14 +232,9 @@ class CitationHandler(NumericRefHandler):
             # already an embedded chunk — re-embedding it would just
             # duplicate that vector.
             self.store.upsert_card_combined(ref.id, text.strip(), conn=conn)
-            for tag in parsed_tags:
-                self.store.add_tag(
-                    ref.id,
-                    tag,
-                    set_by="agent",
-                    replace_prefix=(tag.namespace == "closed"),
-                    conn=conn,
-                )
+            apply_tag_ops(
+                self.store, self.kind, ref.id, tags=tags, untags=None, conn=conn
+            )
             if target is not None:
                 self.store.add_link(
                     src_ref_id=ref.id,

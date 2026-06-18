@@ -308,6 +308,17 @@ class PaperHandler(Handler):
         ``upsert_stub_paper`` → tag/link path (idempotent: a hit on an
         already-held or already-wanted paper is a no-op).
         """
+        # ``put`` mints stubs; it never writes a body. A caller passing
+        # ``text=`` is trying to rewrite a paper body — reject loudly
+        # rather than silently drop the text into ``_kw``. Bodies stay
+        # import-only (``.acatome`` ingest).
+        if _kw.get("text") is not None:
+            raise Unsupported(
+                "paper does not support put with text= — bodies are "
+                "import-only (.acatome ingest); put(kind='paper') only "
+                "mints stubs",
+                next="put(kind='paper', doi='10.1038/nature10352')",
+            )
         ident = identifier.strip() if identifier and identifier.strip() else None
         if ident is None:
             if doi and doi.strip():

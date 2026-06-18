@@ -105,19 +105,20 @@ class TestPaperPutAcceptedOps:
 
 
 class TestPaperPutRejected:
-    """Paper bodies are import-only after the seven-verb cutover. The
-    ``put`` verb is no longer wired on this kind; classification +
+    """Paper bodies are import-only. ``put`` mints *stubs* only
+    (doi=/arxiv=/identifier=/title=); it never writes a body, so a
+    ``put`` carrying ``text=`` is rejected. Classification +
     cross-citation move to the dedicated ``tag`` / ``link`` verbs.
 
-    These tests pin the new failure modes — both the wholesale
-    ``put`` rejection and the per-axis validation that survives on
-    the new verbs (e.g. ``STATUS:`` is still not on paper's allowed
-    closed-axis list).
+    These tests pin the failure modes — the body-write rejection and
+    the per-axis validation that survives on the new verbs (e.g.
+    ``STATUS:`` is still not on paper's allowed closed-axis list).
     """
 
     def test_put_unsupported(self, paper: PaperHandler, store: Store) -> None:
-        """``put`` is unwired on paper; bodies arrive via .acatome
-        bundle ingest, not the agent surface."""
+        """``put`` with ``text=`` is a body rewrite — unsupported;
+        bodies arrive via .acatome bundle ingest, not the agent
+        surface. (Stub minting via doi=/title= is a separate path.)"""
         _seed_paper(store, "paper-a")
         from precis.errors import Unsupported
 

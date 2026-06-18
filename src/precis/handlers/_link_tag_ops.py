@@ -24,7 +24,7 @@ these helpers.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import cast, get_args
+from typing import Any, cast, get_args
 
 from precis.errors import BadInput
 from precis.handlers._link_target import parse_link_target
@@ -164,6 +164,7 @@ def apply_tag_ops(
     untags: list[str] | None,
     ttl_days: int | None = None,
     expires_at: datetime | None = None,
+    conn: Any = None,
 ) -> tuple[int, int]:
     """Apply ``tags=`` / ``untags=`` against ``ref_id``.
 
@@ -194,6 +195,11 @@ def apply_tag_ops(
     tag with a fresh ``ttl_days`` refreshes the expiry (the
     underlying ``add_tag`` does ``ON CONFLICT DO UPDATE``). Pass
     neither to keep the prior semantics (no expiry).
+
+    ``conn`` lets a create-path (citation / finding ``put``) apply the
+    user's ``tags=`` inside its own transaction so the new ref and its
+    tags commit (or roll back) atomically. When ``None`` (the default)
+    the writes run in a fresh ``store.tx()`` as before.
     """
     if ttl_days is not None and expires_at is not None:
         raise BadInput(
@@ -218,9 +224,9 @@ def apply_tag_ops(
         [Tag.parse_strict(s, kind=kind) for s in untags] if untags else []
     )
 
-    n_added = 0
-    n_removed = 0
-    with store.tx() as conn:
+    def _write(c: Any) -> tuple[int, int]:
+        n_added = 0
+        n_removed = 0
         for tag in parsed_add:
             store.add_tag(
                 ref_id,
@@ -228,7 +234,7 @@ def apply_tag_ops(
                 set_by="agent",
                 replace_prefix=(tag.namespace == "closed"),
                 expires_at=resolved_expires,
-                conn=conn,
+                conn=c,
             )
             n_added += 1
         for tag in parsed_remove:
@@ -236,10 +242,16 @@ def apply_tag_ops(
             # ``untags=['STATUS:open']`` against a STATUS:done row
             # is a no-op. Counter ticks optimistically; see the
             # NumericRefHandler tests for the established contract.
-            store.remove_tag(ref_id, tag, conn=conn)
+            store.remove_tag(ref_id, tag, conn=c)
             n_removed += 1
+        return n_added, n_removed
 
-    return n_added, n_removed
+    # Reuse the caller's transaction when given one; otherwise open
+    # our own so the add/remove batch stays atomic.
+    if conn is not None:
+        return _write(conn)
+    with store.tx() as own_conn:
+        return _write(own_conn)
 
 
 def format_link_tag_ack(
