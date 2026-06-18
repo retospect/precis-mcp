@@ -62,6 +62,127 @@ def test_tags_index_accepts_query_filter(client) -> None:
     assert 'value="tier"' in resp.text
 
 
+# ── tags/refs pagination ───────────────────────────────────────────
+
+
+def _paging_client(total: int):
+    """A TestClient whose store pages a synthetic ``total``-row result.
+
+    The ``/tags/refs`` route fires two queries: a ``count(*)`` and a
+    ``... LIMIT %s OFFSET %s`` page fetch. This fake answers the count
+    from ``total`` and slices a descending-id row list by the trailing
+    (limit, offset) params, so the route's offset/limit arithmetic is
+    what's under test — not the DB.
+    """
+    from contextlib import contextmanager
+
+    from fastapi.testclient import TestClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    from .conftest import FakeRuntime, FakeStore
+
+    all_rows = [(("think"), rid, f"thought {rid}", False) for rid in range(total, 0, -1)]
+
+    class _PagingConn:
+        def execute(self, sql: str, params):
+            if "count(" in sql.lower():
+                return _Cur([(total,)])
+            limit, offset = int(params[-2]), int(params[-1])
+            return _Cur(all_rows[offset : offset + limit])
+
+    class _Cur:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _PagingPool:
+        @contextmanager
+        def connection(self):
+            yield _PagingConn()
+
+    store = FakeStore()
+    store.pool = _PagingPool()
+    rt = FakeRuntime(store)
+    rt.store = store
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=None))
+    return TestClient(app)
+
+
+def test_refs_by_tag_first_page_has_next_not_prev() -> None:
+    client = _paging_client(total=250)
+    resp = client.get("/tags/refs?namespace=DREAM&value=speculative")
+    assert resp.status_code == 200
+    assert "250 refs tagged" in resp.text
+    assert "Page 1 of 3" in resp.text
+    assert 'rel="next"' in resp.text
+    # First page: prev is the disabled span, not an anchor.
+    assert 'rel="prev"' not in resp.text
+    # Range readout.
+    assert "1–100 of 250" in resp.text
+
+
+def test_refs_by_tag_middle_page_has_both_arrows() -> None:
+    client = _paging_client(total=250)
+    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page=2")
+    assert resp.status_code == 200
+    assert "Page 2 of 3" in resp.text
+    assert 'rel="prev"' in resp.text
+    assert 'rel="next"' in resp.text
+    assert "101–200 of 250" in resp.text
+    # Filters are preserved in the pager links.
+    assert "namespace=DREAM" in resp.text
+    assert "value=speculative" in resp.text
+
+
+def test_refs_by_tag_last_page_has_no_next() -> None:
+    client = _paging_client(total=250)
+    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page=3")
+    assert resp.status_code == 200
+    assert "Page 3 of 3" in resp.text
+    assert 'rel="prev"' in resp.text
+    assert 'rel="next"' not in resp.text
+    assert "201–250 of 250" in resp.text
+
+
+def test_refs_by_tag_past_end_shows_back_link() -> None:
+    client = _paging_client(total=250)
+    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page=9")
+    assert resp.status_code == 200
+    assert "past the end" in resp.text
+    assert "back a page" in resp.text
+
+
+def test_refs_by_tag_page_size_is_clamped() -> None:
+    client = _paging_client(total=250)
+    # 9999 clamps to the 500 ceiling → everything fits on one page.
+    resp = client.get(
+        "/tags/refs?namespace=DREAM&value=speculative&page_size=9999"
+    )
+    assert resp.status_code == 200
+    assert "250 refs tagged" in resp.text
+    # Single page → no pager rendered.
+    assert "Page 1 of 1" not in resp.text
+    assert 'aria-label="Pagination"' not in resp.text
+
+
+def test_refs_by_tag_custom_page_size_preserved_in_links() -> None:
+    client = _paging_client(total=250)
+    resp = client.get(
+        "/tags/refs?namespace=DREAM&value=speculative&page_size=50"
+    )
+    assert resp.status_code == 200
+    assert "Page 1 of 5" in resp.text
+    # Non-default page_size rides along in the next link.
+    assert "page_size=50" in resp.text
+
+
 # ── tasks ──────────────────────────────────────────────────────────
 
 

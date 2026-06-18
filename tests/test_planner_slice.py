@@ -20,6 +20,8 @@ from precis.workers import planner_guardrails
 from precis.workers.planner_prompt import (
     _build_skill_index,
     _build_system_prompt,
+    _build_user_prompt,
+    _load_ref_body,
     _render_ancestry_toon,
 )
 
@@ -169,6 +171,60 @@ def test_ancestry_toon_handles_root_self() -> None:
     chain = [{"id": 7, "title": "Just me", "level": None}]
     out = _render_ancestry_toon(chain, leaf_id=7)
     assert "ancestry: [1]" in out
+
+
+# ── body loading (the brief lives in refs.title) ──────────────────
+
+
+def test_load_ref_body_reads_todo_title(handler: TodoHandler, store: Store) -> None:
+    """A todo's brief lives in refs.title — _load_ref_body must return it.
+
+    Regression for the brief-blindness bug: todos emit no body chunk, so
+    reading only ``chunks`` handed the planner an empty body.
+    """
+    brief = (
+        "NOx to Ammonia\n\n"
+        + "Build a tightly coupled DFT-operando-MS design loop. " * 40
+    )
+    r = handler.put(text=brief, tags=["LLM:opus"])
+    rid = _id_of(r.body)
+    body = _load_ref_body(store, rid)
+    assert "tightly coupled DFT-operando-MS design loop" in body
+
+
+def test_user_prompt_body_not_empty_for_todo(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The ## Body section of the planner prompt carries the real brief."""
+    r = handler.put(
+        text="NOx to Ammonia\n\nThe real brief is long and very specific.",
+        tags=["LLM:opus"],
+    )
+    rid = _id_of(r.body)
+    user = _build_user_prompt(store, ref_id=rid, model="opus")
+    assert "## Body" in user
+    body_section = user.split("## Body", 1)[1]
+    assert "The real brief is long and very specific." in body_section
+    assert "(empty)" not in body_section
+
+
+def test_load_ref_body_excludes_tag_overflow(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The planner's own overflowed ask-user question (a tag_overflow
+    chunk on the ref) must NOT be read back as part of the brief."""
+    r = handler.put(text="Genuine brief text here.", tags=["LLM:opus"])
+    rid = _id_of(r.body)
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                "VALUES (%s, 0, 'tag_overflow', %s, '{}'::jsonb)",
+                (rid, "ask-user: Body is empty — what shape should this take?"),
+            )
+    body = _load_ref_body(store, rid)
+    assert "Genuine brief text here." in body
+    assert "Body is empty" not in body
 
 
 # ── guardrails ────────────────────────────────────────────────────

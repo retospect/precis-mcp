@@ -10,12 +10,23 @@ what conventions have crept into the corpus (which ``DREAM:*`` and
 
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis_web.deps import get_store, templates
 
 router = APIRouter(prefix="/tags", tags=["tags"])
+
+#: Page size for the ``/tags/refs`` listing. High-cardinality tags
+#: (``DREAM:speculative`` and friends — the dream loop mints these by
+#: the hundreds) overran the old flat ``LIMIT 500`` and silently
+#: truncated; the listing now pages instead.
+_DEFAULT_PAGE_SIZE = 100
+#: Upper bound on a caller-supplied ``?page_size=`` so a hand-edited URL
+#: can't ask for an unbounded scan.
+_MAX_PAGE_SIZE = 500
 
 #: Namespaces the delete button never offers. Structural / closed-vocab
 #: tags (``STATUS``, ``LLM``, ``DREAM``, ``PRIO``, ``SRC``, ``CACHE``,
@@ -90,6 +101,8 @@ async def refs_by_tag(
     namespace: str | None = None,
     value: str | None = None,
     kind: str | None = None,
+    page: int = 1,
+    page_size: int = _DEFAULT_PAGE_SIZE,
 ) -> HTMLResponse:
     """List refs matching a tag, a kind, or both, grouped by kind.
 
@@ -102,6 +115,12 @@ async def refs_by_tag(
     * ``?namespace=NS&value=V&kind=K`` — intersection: refs of one
       kind that also carry the tag
 
+    Paginated: ``?page=N`` (1-based) over a fixed ``page_size`` window
+    ordered ``(kind, ref_id DESC)``. A single kind can therefore span
+    consecutive pages — the grouping is per-page, not global. A total
+    count drives the pager so the operator knows how many refs carry a
+    high-cardinality tag even though only one window renders at a time.
+
     Page groups by kind and links each ref to its native detail view
     (``/refs/{kind}/{ref_id}`` for browsable kinds, ``/papers/{ref_id}``
     for papers, ``/tasks?focus=N`` for todos).
@@ -113,6 +132,9 @@ async def refs_by_tag(
         )
     has_tag = namespace is not None and value is not None
     store = get_store(request)
+    page = max(1, page)
+    page_size = max(1, min(page_size, _MAX_PAGE_SIZE))
+
     where_parts: list[str] = []
     params: list[object] = []
     if has_tag:
@@ -122,26 +144,33 @@ async def refs_by_tag(
         where_parts.append("r.kind = %s")
         params.append(kind)
     where_parts.append("r.deleted_at IS NULL")  # default: hide soft-deleted
-    if has_tag:
-        sql = (
-            "SELECT r.kind, r.ref_id, r.title, r.deleted_at IS NOT NULL AS dropped "
-            "FROM refs r "
-            "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
-            "JOIN tags t USING(tag_id) "
-            f"WHERE {' AND '.join(where_parts)} "
-            "ORDER BY r.kind, r.ref_id "
-            "LIMIT 500"
-        )
-    else:
-        sql = (
-            "SELECT r.kind, r.ref_id, r.title, FALSE AS dropped "
-            "FROM refs r "
-            f"WHERE {' AND '.join(where_parts)} "
-            "ORDER BY r.kind, r.ref_id "
-            "LIMIT 500"
-        )
+    where_sql = " AND ".join(where_parts)
+    # Tag-carrying call shapes need the ref_tags/tags join; the
+    # kind-only pivot reads refs directly. Both the count and the page
+    # query share this FROM/WHERE so they can never drift apart.
+    from_sql = (
+        "FROM refs r "
+        "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+        "JOIN tags t USING(tag_id)"
+        if has_tag
+        else "FROM refs r"
+    )
+    select_cols = (
+        "SELECT r.kind, r.ref_id, r.title, r.deleted_at IS NOT NULL AS dropped"
+        if has_tag
+        else "SELECT r.kind, r.ref_id, r.title, FALSE AS dropped"
+    )
+    count_sql = f"SELECT count(*) {from_sql} WHERE {where_sql}"
+    page_sql = (
+        f"{select_cols} {from_sql} WHERE {where_sql} "
+        "ORDER BY r.kind, r.ref_id DESC "
+        "LIMIT %s OFFSET %s"
+    )
+    offset = (page - 1) * page_size
     with store.pool.connection() as conn:  # type: ignore[attr-defined]
-        rows = conn.execute(sql, tuple(params)).fetchall()
+        count_row = conn.execute(count_sql, tuple(params)).fetchone()
+        total = int(count_row[0]) if count_row and count_row[0] is not None else 0
+        rows = conn.execute(page_sql, (*params, page_size, offset)).fetchall()
     # Group by kind, preserving the SQL order.
     by_kind: dict[str, list[dict[str, object]]] = {}
     for r in rows:
@@ -164,6 +193,24 @@ async def refs_by_tag(
         label = f"{namespace}:{value}"
     else:
         label = f"kind={kind}"
+
+    shown = sum(len(v) for v in by_kind.values())
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    # Preserve every filter (and a non-default page_size) across the
+    # prev/next links; only the page number changes.
+    base_params: dict[str, object] = {}
+    if namespace is not None:
+        base_params["namespace"] = namespace
+    if value is not None:
+        base_params["value"] = value
+    if kind:
+        base_params["kind"] = kind
+    if page_size != _DEFAULT_PAGE_SIZE:
+        base_params["page_size"] = page_size
+
+    def _page_url(n: int) -> str:
+        return "/tags/refs?" + urlencode({**base_params, "page": n})
+
     return templates.TemplateResponse(
         request,
         "tags/refs.html.j2",
@@ -174,7 +221,15 @@ async def refs_by_tag(
             "kind_filter": kind or "",
             "label": label,
             "by_kind": by_kind,
-            "total": sum(len(v) for v in by_kind.values()),
+            "total": total,
+            "shown": shown,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "range_start": offset + 1 if shown else 0,
+            "range_end": offset + shown,
+            "prev_url": _page_url(page - 1) if page > 1 else None,
+            "next_url": _page_url(page + 1) if page < total_pages else None,
         },
     )
 

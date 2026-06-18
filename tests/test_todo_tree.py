@@ -114,6 +114,67 @@ def test_worker_cannot_create_strategic(
         handler.put(text="bad strategic", tags=["level:strategic"])
 
 
+# ── strategic auto-run reminder (soft hint) ───────────────────────
+
+
+def test_has_auto_run_signal_detects_each_form() -> None:
+    from precis.handlers import _todo_guards as g
+
+    assert g.has_auto_run_signal(["LLM:opus"], None)
+    assert g.has_auto_run_signal(["executor:fetch"], None)
+    assert g.has_auto_run_signal(None, {"executor": "claude_inproc"})
+    assert not g.has_auto_run_signal(["level:strategic"], {})
+    assert not g.has_auto_run_signal(None, None)
+
+
+def test_strategic_lacks_auto_run_predicate() -> None:
+    from precis.handlers import _todo_guards as g
+
+    # strategic with no signal → flagged
+    assert g.strategic_lacks_auto_run(["level:strategic"], None)
+    # strategic that already carries a signal → not flagged
+    assert not g.strategic_lacks_auto_run(["level:strategic", "LLM:opus"], None)
+    assert not g.strategic_lacks_auto_run(
+        ["level:strategic"], {"executor": "claude_inproc"}
+    )
+    # non-strategic → never flagged, signal or not
+    assert not g.strategic_lacks_auto_run(["level:subtask"], None)
+    assert not g.strategic_lacks_auto_run(None, None)
+
+
+def test_strategic_without_auto_run_emits_reminder(hub: Hub) -> None:
+    # The bare fixture builds a handler without going through
+    # Handler._register_with, which is what plants self.hub in
+    # production. Plant it here so emit_hint reaches the bus.
+    handler = TodoHandler(hub=hub)
+    handler.hub = hub
+    with hub.hints.request():
+        handler.put(text="A planner brief.", tags=["level:strategic"])
+        hints = hub.hints.collect()
+    topics = {h.topic for h in hints}
+    assert "todo.strategic.no_auto_run" in topics
+
+
+def test_strategic_with_llm_tag_emits_no_reminder(hub: Hub) -> None:
+    handler = TodoHandler(hub=hub)
+    handler.hub = hub
+    with hub.hints.request():
+        handler.put(text="A live planner.", tags=["level:strategic", "LLM:opus"])
+        hints = hub.hints.collect()
+    topics = {h.topic for h in hints}
+    assert "todo.strategic.no_auto_run" not in topics
+
+
+def test_non_strategic_todo_emits_no_reminder(hub: Hub) -> None:
+    handler = TodoHandler(hub=hub)
+    handler.hub = hub
+    with hub.hints.request():
+        handler.put(text="just a leaf")
+        hints = hub.hints.collect()
+    topics = {h.topic for h in hints}
+    assert "todo.strategic.no_auto_run" not in topics
+
+
 def test_worker_can_propose_tactical(
     handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:

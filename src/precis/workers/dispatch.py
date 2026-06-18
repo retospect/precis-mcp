@@ -69,6 +69,18 @@ log = logging.getLogger(__name__)
 _OPEN_PARENT_STATUSES: frozenset[str] = frozenset({"open", "doing"})
 
 
+# Job types whose parent manages its OWN terminal state and must NOT
+# get a ``child_job_succeeded`` auto_check injected. ``plan_tick`` is
+# the LLM planner coroutine: a tick exits ``STATUS:succeeded`` whenever
+# the claude -p subprocess runs cleanly — including when the planner
+# *yielded* (``ask-user:``) or *minted children* (``continue``).
+# Injecting ``child_job_succeeded`` would then auto-close the parent on
+# the first clean tick, before any work landed. The planner instead
+# closes itself with its own ``STATUS:done`` tag (guarded), or parks on
+# ``ask-user:`` / ``halt`` — so a coroutine parent needs no auto_check.
+_SELF_RESOLVING_JOB_TYPES: frozenset[str] = frozenset({"plan_tick"})
+
+
 def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
     """Drain up to ``limit`` dispatchable todos. Returns BatchResult.
 
@@ -137,10 +149,14 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
       shape; new code uses the tag forms).
     * STATUS in ``open|doing`` (paused / done / blocked skip).
     * No **live** child job — a child of ``kind='job'`` whose own
-      STATUS is anything other than ``done`` / ``won't-do`` /
-      ``failed``. Completed jobs from prior ticks are fine; only an
-      in-flight job blocks. (Failed jobs bubble ``child-failed:N``
-      to the parent which the exclusion registry handles.)
+      STATUS is anything other than ``done`` / ``succeeded`` /
+      ``won't-do`` / ``failed``. Completed jobs from prior ticks are
+      fine; only an in-flight (``queued`` / ``running``) job blocks.
+      ``succeeded`` is the executor's terminal value for a clean run
+      and MUST be in this set, else a ``plan_tick`` coroutine could
+      never re-tick after its first successful tick. (Failed jobs
+      bubble ``child-failed:N`` to the parent which the exclusion
+      registry handles.)
     * No **live** child todo — a child of ``kind='todo'`` whose own
       STATUS is open / doing (the planner spawned children and they
       are still working). This is the coroutine yield: a parent that
@@ -181,7 +197,7 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                             'open'
-                          ) NOT IN ('done', 'failed', 'won''t-do')
+                          ) NOT IN ('done', 'failed', 'succeeded', 'won''t-do')
                )
                AND NOT EXISTS (
                    SELECT 1 FROM refs c
@@ -271,7 +287,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                             'open'
-                          ) NOT IN ('done', 'failed', 'won''t-do')
+                          ) NOT IN ('done', 'failed', 'succeeded', 'won''t-do')
                )
                AND NOT EXISTS (
                    SELECT 1 FROM refs c
@@ -383,9 +399,13 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
             )
             return (1, False)
 
-        # Auto-inject ``auto_check`` if the writer didn't set one,
-        # so the parent resolves on the child's success.
-        if not has_auto_check:
+        # Auto-inject ``auto_check`` if the writer didn't set one, so a
+        # deterministic job's parent resolves on the child's success.
+        # Skip it for self-resolving job types (the ``plan_tick``
+        # coroutine drives its own STATUS — see
+        # ``_SELF_RESOLVING_JOB_TYPES``); injecting there would close the
+        # parent on its first clean tick.
+        if not has_auto_check and job_type not in _SELF_RESOLVING_JOB_TYPES:
             conn.execute(
                 """
                 UPDATE refs

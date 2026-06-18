@@ -144,6 +144,42 @@ def check_executor_tag(tags: list[str] | None) -> None:
     _check_namespaced_tag(tags, prefix="executor:", allowed=_EXECUTOR_TAG_VALUES)
 
 
+def has_auto_run_signal(
+    tags: list[str] | None,
+    meta: dict[str, object] | None,
+) -> bool:
+    """True when a todo carries something the dispatcher can act on.
+
+    The dispatch worker (``workers/dispatch.py``) only considers a todo
+    a candidate if it carries one of three auto-run signals: an
+    ``LLM:<model>`` tag, an ``executor:<runner>`` tag, or a legacy
+    ``meta.executor`` key. Without any of them the todo is inert — it
+    never spawns a ``plan_tick`` job and therefore never gets children.
+    Mirror the dispatcher's candidate predicate here so the create-time
+    reminder agrees exactly with what would (not) be dispatched.
+    """
+    for t in tags or []:
+        if t.startswith("LLM:") or t.startswith("executor:"):
+            return True
+    return bool(meta) and "executor" in meta  # type: ignore[operator]
+
+
+def strategic_lacks_auto_run(
+    tags: list[str] | None,
+    meta: dict[str, object] | None,
+) -> bool:
+    """True for a ``level:strategic`` todo with no auto-run signal.
+
+    The reminder condition for the soft create-time hint: a strategic
+    planner brief is just inert prose unless it carries an auto-run
+    signal, so flag the gap. Non-strategic todos and strategics that
+    already carry a signal return ``False`` (no nudge).
+    """
+    if not tags or LEVEL_STRATEGIC not in tags:
+        return False
+    return not has_auto_run_signal(tags, meta)
+
+
 def _caller_source() -> str:
     """Return the caller's source identity, lower-cased and stripped.
 
@@ -693,5 +729,7 @@ __all__ = [
     "check_reparent_depth",
     "check_schedule_in_meta",
     "check_status_done_artifact",
+    "has_auto_run_signal",
     "is_owner",
+    "strategic_lacks_auto_run",
 ]

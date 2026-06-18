@@ -174,6 +174,64 @@ def test_preserves_existing_auto_check(handler: TodoHandler, store: Store) -> No
     assert ref.meta.get("auto_check") == custom
 
 
+def test_plan_tick_parent_gets_no_auto_check(
+    handler: TodoHandler, store: Store
+) -> None:
+    """An LLM:*-tagged (plan_tick) parent must NOT get child_job_succeeded.
+
+    The planner coroutine drives its own STATUS; a clean tick exits
+    STATUS:succeeded even when it yielded or minted children. Injecting
+    child_job_succeeded would auto-close the parent on its first tick.
+    """
+    r = handler.put(text="planner brief", tags=["LLM:opus"])
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+    children = _child_jobs_under(store, rid)
+    assert len(children) == 1
+    assert children[0]["meta"]["job_type"] == "plan_tick"
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert "auto_check" not in ref.meta
+
+
+def test_succeeded_child_job_does_not_block_redispatch(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A terminal STATUS:succeeded job is a completed prior tick, not a
+    live one — the planner parent must remain re-dispatchable."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    parent = handler.put(text="planner", tags=["LLM:opus"])
+    pid = id_of(parent.body)
+    job = store.insert_ref(
+        kind="job", slug=None, title="prior tick", meta={}, parent_id=pid
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True
+    )
+    assert pid in _candidate_parent_ids(store, limit=10)
+
+
+def test_running_child_job_blocks_redispatch(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A non-terminal (running) job is in-flight and DOES block — guards
+    against the dispatcher double-minting while a tick is live."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    parent = handler.put(text="planner", tags=["LLM:opus"])
+    pid = id_of(parent.body)
+    job = store.insert_ref(
+        kind="job", slug=None, title="in flight", meta={}, parent_id=pid
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "running"), set_by="system", replace_prefix=True
+    )
+    assert pid not in _candidate_parent_ids(store, limit=10)
+
+
 # ── rejection paths ──────────────────────────────────────────────
 
 

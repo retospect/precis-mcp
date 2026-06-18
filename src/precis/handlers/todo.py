@@ -570,6 +570,29 @@ class TodoHandler(NumericRefHandler):
                 )
             if self.emits_card:
                 self.store.upsert_card_combined(ref.id, text, conn=conn)
+        # Soft reminder: a level:strategic todo with no auto-run signal
+        # (LLM:* / executor:* tag or meta.executor) will never be picked
+        # up by the dispatch worker, so it spawns no children and the
+        # planner brief in its body is inert. Non-breaking HintBus tip —
+        # the owner may legitimately intend to drive it by hand.
+        if guards.strategic_lacks_auto_run(all_tag_strs, self._pending_meta):
+            hub = getattr(self, "hub", None)
+            if hub is not None:
+                from precis.hints import Hint
+
+                hub.emit_hint(
+                    Hint(
+                        text=(
+                            f"strategic #{ref.id} has no auto-run tag "
+                            "(LLM:* / executor:*). The dispatcher won't "
+                            "pick it up and it'll spawn no children. Add "
+                            "LLM:opus (or sonnet/haiku) to run it "
+                            "autonomously, or ignore if you'll drive it "
+                            "by hand."
+                        ),
+                        topic="todo.strategic.no_auto_run",
+                    )
+                )
         return self._render_create_ack(ref.id)
 
     # ── edit: in-place text rewrite (polish the wording) ──────────

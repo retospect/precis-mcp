@@ -111,7 +111,7 @@ def _load_pinned_skill(store: Store) -> str:
     try:
         from precis.handlers.skill import SkillHandler
 
-        handler = SkillHandler(hub=None)
+        handler = SkillHandler(hub=None)  # type: ignore[arg-type]
         resp = handler.get(id=_PINNED_SKILL_ID)
         return resp.body
     except Exception:
@@ -597,26 +597,53 @@ def _render_ancestry_toon(chain: list[dict[str, object]], *, leaf_id: int) -> st
     return "\n".join(lines)
 
 
-def _load_ref_body(store: Store, ref_id: int) -> str:
-    """Concatenate all chunk text on ``ref_id`` (excluding job_event).
+#: Chunk kinds that are NOT part of a ref's brief. Forensic job logs,
+#: per-tick conclusions, the card-search mirror, and ``tag_overflow``
+#: spillover — the last is the planner's OWN long ``ask-user:`` /
+#: ``halt:`` value redirected onto the ref when it was too long to
+#: store as a tag (``TodoHandler`` ``_TAG_VALUE_REDIRECT_THRESHOLD``).
+#: Excluded so a re-tick never reads its own prior output back as the
+#: brief.
+_NON_BODY_CHUNK_KINDS: tuple[str, ...] = (
+    "job_event",
+    "job_result",
+    "job_summary",
+    "tag_overflow",
+    "card_combined",
+)
 
-    For a todo, the "body" is whatever text chunks were attached to
-    the ref via the standard ingest path. ``chunk_kind='job_event'``
-    rows are forensic logs from prior runs and don't belong in the
-    body.
+
+def _load_ref_body(store: Store, ref_id: int) -> str:
+    """Return the ref's brief: ``refs.title`` plus any genuine body chunks.
+
+    A todo stores its entire brief in ``refs.title``
+    (``insert_ref(title=text)``) and emits no ``card_combined`` chunk,
+    so for a todo the brief lives ONLY in the title. The previous
+    implementation read body text exclusively from ``chunks`` and so
+    handed the planner an empty ``## Body`` for every todo — it planned
+    off nothing but the 70-char title fragment in the ancestry block.
+    We now lead with the title (the canonical todo body) and append any
+    real ingested body chunks, skipping derived/forensic kinds
+    (``_NON_BODY_CHUNK_KINDS``).
     """
     with store.pool.connection() as conn:
-        rows = conn.execute(
+        title_row = conn.execute(
+            "SELECT title FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+        chunk_rows = conn.execute(
             """
             SELECT text
               FROM chunks
              WHERE ref_id = %s
-               AND COALESCE(meta->>'chunk_kind', '') != 'job_event'
+               AND chunk_kind != ALL(%s)
              ORDER BY ord
             """,
-            (ref_id,),
+            (ref_id, list(_NON_BODY_CHUNK_KINDS)),
         ).fetchall()
-    return "\n".join(str(r[0]) for r in rows if r[0])
+    title = str(title_row[0]).strip() if title_row and title_row[0] else ""
+    chunk_text = "\n".join(str(r[0]) for r in chunk_rows if r[0]).strip()
+    return "\n\n".join(p for p in (title, chunk_text) if p)
 
 
 def _load_child_summaries(store: Store, ref_id: int) -> str:

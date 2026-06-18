@@ -7,7 +7,7 @@
   <span class="text-slate-700">refs carrying <code>{{ label }}</code></span>
 </nav>
 
-<div class="flex items-center justify-between mb-3">
+<div class="flex items-center justify-between mb-1">
   <h1 class="text-lg font-semibold">
     {{ total }} ref{{ '' if total == 1 else 's' }} tagged
     <code class="text-sm bg-slate-100 px-1.5 py-0.5 rounded">{{ label }}</code>
@@ -15,9 +15,37 @@
   <a href="/tags" class="text-sm text-slate-500 hover:underline">← all tags</a>
 </div>
 
+{% macro pager() %}
+{% if total_pages > 1 %}
+<nav class="flex items-center justify-between gap-3 text-sm my-3" aria-label="Pagination">
+  {% if prev_url %}
+  <a href="{{ prev_url }}" rel="prev"
+     class="px-2.5 py-1 rounded border border-slate-200 hover:bg-slate-50">← Prev</a>
+  {% else %}
+  <span class="px-2.5 py-1 rounded border border-slate-100 text-slate-300">← Prev</span>
+  {% endif %}
+  <span class="text-slate-500">
+    Page {{ page }} of {{ total_pages }}
+    {% if shown %}<span class="text-slate-400">· {{ range_start }}–{{ range_end }} of {{ total }}</span>{% endif %}
+  </span>
+  {% if next_url %}
+  <a href="{{ next_url }}" rel="next"
+     class="px-2.5 py-1 rounded border border-slate-200 hover:bg-slate-50">Next →</a>
+  {% else %}
+  <span class="px-2.5 py-1 rounded border border-slate-100 text-slate-300">Next →</span>
+  {% endif %}
+</nav>
+{% endif %}
+{% endmacro %}
+
 {% if not by_kind %}
-<p class="text-sm text-slate-500">No refs carry this tag.</p>
+<p class="text-sm text-slate-500">
+  {% if page > 1 %}Page {{ page }} is past the end — {{ total }} ref{{ '' if total == 1 else 's' }} total.
+  {% if prev_url %}<a href="{{ prev_url }}" class="text-emerald-700 hover:underline">← back a page</a>{% endif %}
+  {% else %}No refs carry this tag.{% endif %}
+</p>
 {% else %}
+{{ pager() }}
 <div class="space-y-4">
   {% for kind, refs in by_kind.items() %}
   <section class="rounded-lg border border-slate-200 bg-white overflow-hidden">
@@ -44,5 +72,6 @@
   </section>
   {% endfor %}
 </div>
+{{ pager() }}
 {% endif %}
 {% endblock %}
