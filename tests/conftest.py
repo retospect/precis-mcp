@@ -185,23 +185,55 @@ def _force_mock_embedder_for_tests() -> None:
     os.environ.pop("PRECIS_EMBEDDER_URL", None)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _initialise_test_db() -> None:
-    """Drop all tables + re-apply migrations once per pytest session.
+# Fixed 64-bit key for the session-wide advisory lock that serialises
+# concurrent pytest sessions against the shared ``precis_test`` DB.
+# Arbitrary but stable; ``0x70726563`` spells ``prec`` in ASCII.
+_SESSION_DB_LOCK_KEY = 0x70726563
 
-    Autouse so any test that touches the DB gets a known-good
-    schema even without depending on ``store``. No-op when no
-    postgres is reachable (the per-test fixtures will skip
-    instead). Idempotent under re-runs.
+
+@pytest.fixture(scope="session", autouse=True)
+def _initialise_test_db() -> Iterator[None]:
+    """Serialise + rebuild the shared test DB once per pytest session.
+
+    The whole suite runs against a single shared *physical* database
+    (``precis_test``); the ``precis`` test role lacks ``CREATEDB`` so
+    we can't give each session its own. Two pytest sessions hitting
+    that DB at once — a CI re-trigger, sibling agents on the shared
+    cluster, or back-to-back dev containers — used to race: one
+    session's destructive ``_drop_all_public_objects`` + ``apply_all``
+    (or a ``fresh_db`` / per-test ``TRUNCATE … CASCADE``) would land
+    mid-flight of another and surface as a *wandering*
+    ``DeadlockDetected`` / ``UndefinedTable`` / ``DuplicateTable`` on
+    whichever test the interleaving happened to hit.
+
+    Fix: take a session-level Postgres advisory lock on a dedicated
+    connection and hold it for the entire session. The first session
+    in wins and rebuilds the schema; any concurrent session blocks
+    here until the holder's session ends, then rebuilds for itself —
+    serialising rather than isolating, since per-session databases
+    aren't available. Autouse so any DB-touching test inherits the
+    guard even without depending on ``store``.
 
     The drop is "everything in the public schema" — preserves the
     extensions (vector, btree_gist) which need superuser to
-    re-install and are stable across runs.
+    re-install and are stable across runs. No-op when no postgres is
+    reachable (the per-test fixtures skip instead).
     """
     if not _pg_available():
+        yield
         return
-    _drop_all_public_objects(PG_TEST_DSN)
-    Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
+    # Dedicated connection holds the advisory lock for the whole
+    # session; releasing it (unlock + close) lets the next waiting
+    # session proceed.
+    lock_conn = psycopg.connect(PG_TEST_DSN, autocommit=True)
+    lock_conn.execute("SELECT pg_advisory_lock(%s)", (_SESSION_DB_LOCK_KEY,))
+    try:
+        _drop_all_public_objects(PG_TEST_DSN)
+        Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
+        yield
+    finally:
+        lock_conn.execute("SELECT pg_advisory_unlock(%s)", (_SESSION_DB_LOCK_KEY,))
+        lock_conn.close()
 
 
 @pytest.fixture
