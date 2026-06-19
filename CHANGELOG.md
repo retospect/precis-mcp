@@ -8,6 +8,27 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-19 — duplicate reconciliation, Phases 1–2)
+
+- **Shared dedup primitive** `ingest/dedup.merge_duplicate` — folds a
+  duplicate paper ref into a survivor: migrates external identifiers +
+  graph edges, records a `supersedes` edge + `meta.superseded_by`,
+  soft-deletes the duplicate (reversible), audits both via `ref_events`.
+  Mirrors `ingest/add._reconcile_orphan_stub`. Survivor rule
+  (`pick_survivor`): DOI/arXiv → non-junk title → most authors → lowest
+  ref_id (never "lowest id alone" — the deleted `dedupe-papers` bug).
+- **Phase 1 — `fix-metadata` auto-dedups.** When a suspect's re-derived
+  DOI already belongs to a different live ref, it's merged into that
+  canonical (`action="deduped"`) instead of erroring `no_change` —
+  retiring the manual SQL used for the 30 dups found on 2026-06-19. New
+  `Store.identifier_owner` does the normalised owner lookup.
+- **Phase 2 — `precis reconcile-duplicates`.** A re-runnable sweep that
+  collapses live paper refs sharing a `pdf_sha256` (same file ingested
+  twice) to the best survivor. Dry-run by default; `--apply` commits.
+  Not yet auto-wired into nightly `maintenance` — run on demand until
+  trusted. See `docs/design/duplicate-paper-handling.md` (Phase 3,
+  fuzzy near-dup detection, remains planned).
+
 ### Added (2026-06-19 — needs-triage web UI)
 
 - **Triage queue + paste-title→S2 flow** for papers `fix-metadata` tagged

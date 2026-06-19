@@ -314,6 +314,44 @@ class IdentifiersMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def identifier_owner(
+        self,
+        scheme: str,
+        value: str,
+        *,
+        include_deleted: bool = False,
+        conn: Connection | None = None,
+    ) -> int | None:
+        """Return the ref_id that owns ``(scheme, value)``, or ``None``.
+
+        Normalises ``value`` exactly as :meth:`set_ref_identifier` does, so
+        a caller can detect the cross-ref conflict that ``set_ref_identifier``
+        would raise on — without raising. Skips soft-deleted refs unless
+        ``include_deleted``. Used by the dedup paths to find the canonical
+        ref a re-derived DOI already belongs to.
+        """
+        s = (scheme or "").strip().lower()
+        v = _normalise_identifier(s, value)
+        if not s or not v:
+            return None
+        sql = (
+            "SELECT ri.ref_id FROM ref_identifiers ri "
+            "JOIN refs r ON r.ref_id = ri.ref_id "
+            "WHERE ri.id_kind = %s AND ri.id_value = %s"
+        )
+        if not include_deleted:
+            sql += " AND r.deleted_at IS NULL"
+        sql += " LIMIT 1"
+
+        def _do(c: Connection) -> int | None:
+            row = c.execute(sql, (s, v)).fetchone()
+            return int(row[0]) if row else None
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def identifiers_for_refs(
         self,
         ref_ids: list[int],

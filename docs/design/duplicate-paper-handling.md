@@ -1,11 +1,18 @@
 # Duplicate paper handling — plan
 
-Status: **plan** (2026-06-19). Written after the `fix-metadata`
-remediation surfaced 30 duplicate paper refs (a junk-metadata copy of a
-paper whose canonical version already exists). This sketches how dups
-arise, what already guards against them, and a phased plan to handle the
-residual cases without the foot-guns of the (now-deleted) `dedupe-papers`
-command.
+Status: **Phases 1–2 implemented** (2026-06-19); Phase 3 still planned.
+Written after the `fix-metadata` remediation surfaced 30 duplicate paper
+refs (a junk-metadata copy of a paper whose canonical version already
+exists). This describes how dups arise, what guards against them, and the
+phased handling — without the foot-guns of the (now-deleted)
+`dedupe-papers` command.
+
+Implementation: the shared merge primitive + survivor rule live in
+`src/precis/ingest/dedup.py` (`merge_duplicate`, `pick_survivor`).
+Phase 1 is wired into `fix-metadata` (`ingest/remediate.remediate_one`);
+Phase 2 is `precis reconcile-duplicates` (`cli/reconcile.py` →
+`dedup.reconcile_by_pdf_sha256`). Owner lookup uses
+`Store.identifier_owner` (normalises identically to `set_ref_identifier`).
 
 ## How duplicates arise
 
@@ -67,7 +74,7 @@ resurrect it.
 
 ## Phased plan
 
-### Phase 1 — fold dup-resolution into `fix-metadata` (low effort, high value)
+### Phase 1 — fold dup-resolution into `fix-metadata` (DONE)
 On the DOI-conflict path (today `no_change`), when the suspect is junk
 (empty/garbage title) and the conflicting canonical is alive with good
 metadata, **soft-delete the suspect as a duplicate** instead of erroring:
@@ -76,7 +83,7 @@ audit event, soft-delete. This auto-handles the exact 30-dup class found
 on 2026-06-19 — no separate command, no manual SQL. Gated behind
 `--apply`; the dry-run reports `dup -> canonical` lines.
 
-### Phase 2 — periodic reconciliation sweep (the safety net)
+### Phase 2 — reconciliation sweep (DONE — `precis reconcile-duplicates`)
 A maintenance pass (candidate home: a `precis maintenance` phase or a new
 `reconcile-duplicates` job) that, over **live** paper refs, groups by
 shared `pdf_sha256` then `doi`/`arxiv` (v2-correct: read from

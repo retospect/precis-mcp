@@ -39,6 +39,7 @@ from typing import Any
 
 from precis.identity import make_cite_key
 from precis.ingest.cards import rewrite_cards
+from precis.ingest.dedup import merge_duplicate
 from precis.ingest.pdf_metadata import extract_metadata_from_sources
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store
@@ -69,7 +70,7 @@ class Outcome:
     """Result of remediating one suspect paper."""
 
     ref_id: int
-    action: str  # "fixed" | "triaged" | "no_pdf" | "no_change"
+    action: str  # "fixed" | "deduped" | "triaged" | "no_pdf" | "no_change"
     old_cite_key: str
     new_cite_key: str = ""
     new_title: str = ""
@@ -84,6 +85,8 @@ class Outcome:
                 else " (slug unchanged)"
             )
             return f"FIXED   #{self.ref_id}{rename}: {self.new_title[:70]!r}"
+        if self.action == "deduped":
+            return f"DEDUP   #{self.ref_id} ({self.old_cite_key}): {self.detail}"
         if self.action == "triaged":
             return f"TRIAGE  #{self.ref_id} ({self.old_cite_key}): {self.detail}"
         if self.action == "no_pdf":
@@ -227,6 +230,31 @@ def remediate_one(
 
     author_dicts = to_name_dicts(meta.authors) if meta.authors else []
     author_names = [a["name"] for a in author_dicts if a.get("name")]
+
+    # Phase 1 dedup: if the re-derived DOI already belongs to a *different*
+    # live ref, this suspect is a duplicate of that canonical — fold it in
+    # rather than "fixing" a redundant row (which would also fail on the
+    # DOI uniqueness conflict). See docs/design/duplicate-paper-handling.md.
+    if meta.doi:
+        with store.pool.connection() as conn:
+            owner = store.identifier_owner("doi", meta.doi, conn=conn)
+        if owner is not None and owner != suspect.ref_id:
+            if not dry_run:
+                with store.tx() as conn:
+                    merge_duplicate(
+                        store,
+                        survivor_ref_id=owner,
+                        duplicate_ref_id=suspect.ref_id,
+                        source=source,
+                        reason="fix-metadata-doi-conflict",
+                        conn=conn,
+                    )
+            return Outcome(
+                ref_id=suspect.ref_id,
+                action="deduped",
+                old_cite_key=suspect.cite_key,
+                detail=f"duplicate of #{owner} (shared DOI {meta.doi})",
+            )
 
     if dry_run:
         # Compute the would-be cite_key for the report without writing.
