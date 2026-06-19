@@ -65,6 +65,14 @@ class Workspace:
     format: str  # "tex" | "md"
     entrypoint: str  # e.g. "main.tex" or "main.md"
     style: str = ""  # citation style; informational
+    # Project-level standing guidance ("project thoughts"): voice,
+    # scope, constraints, what NOT to do. Set once on the project root;
+    # cascades to every descendant via the put-time inheritance, and the
+    # planner surfaces it as a ``## Project context`` block on every
+    # tick (``workers/planner_prompt._render_project_brief``). A
+    # first-class field rather than an ``extra`` key so it round-trips
+    # explicitly and shows up in the projects dashboard.
+    brief: str = ""
     # Forward-compatible storage for extra workspace metadata
     # (e.g., author, title, build_command overrides).
     extra: dict[str, Any] = field(default_factory=dict)
@@ -93,7 +101,7 @@ class Workspace:
         ws = meta.get("workspace")
         if not ws or not isinstance(ws, dict):
             return None
-        known = {"path", "format", "entrypoint", "style"}
+        known = {"path", "format", "entrypoint", "style", "brief"}
         extra = {k: v for k, v in ws.items() if k not in known}
         try:
             return cls(
@@ -101,6 +109,7 @@ class Workspace:
                 format=str(ws.get("format", "tex")),
                 entrypoint=str(ws.get("entrypoint", "main.tex")),
                 style=str(ws.get("style", "")),
+                brief=str(ws.get("brief", "")),
                 extra=extra,
             )
         except (KeyError, ValueError) as exc:
@@ -116,12 +125,44 @@ class Workspace:
         }
         if self.style:
             out["style"] = self.style
+        if self.brief:
+            out["brief"] = self.brief
         out.update(self.extra)
         return out
 
     def absolute_root(self, precis_root: Path) -> Path:
         """Resolve to an absolute filesystem path under PRECIS_ROOT."""
         return (precis_root / self.path).resolve()
+
+    @property
+    def project_tag(self) -> str | None:
+        """The ``project:<slug>`` cross-cutting tag for this workspace.
+
+        Derived from the basename of :attr:`path` —
+        ``projects/nanotrans_auto`` → ``project:nanotrans_auto``. The
+        same handle the env-driven :func:`current_project_tag_from_env`
+        produces, but resolved from the workspace itself so the owner
+        path (CLI ``put`` with ``meta.workspace`` set, no env) stamps
+        the identical tag a planner tick would.
+        """
+        return project_tag_for_path(self.path)
+
+
+def project_tag_for_path(path: str | None) -> str | None:
+    """Derive the ``project:<slug>`` tag from a workspace-relative path.
+
+    Pure: ``projects/nanotrans_auto`` → ``project:nanotrans_auto``.
+    Returns ``None`` for empty / slug-less input. Shared by
+    :func:`current_project_tag_from_env` (env path) and
+    :attr:`Workspace.project_tag` (meta path) so both surfaces agree on
+    the slug rule.
+    """
+    if not path:
+        return None
+    slug = path.rstrip("/").split("/")[-1]
+    if not slug:
+        return None
+    return f"project:{slug}"
 
 
 def current_from_env() -> str | None:
@@ -160,13 +201,7 @@ def current_project_tag_from_env() -> str | None:
     Derived from the basename of ``PRECIS_WORKSPACE``:
     ``projects/nanotrans_auto`` → ``project:nanotrans_auto``.
     """
-    ws_path = current_from_env()
-    if not ws_path:
-        return None
-    slug = ws_path.rstrip("/").split("/")[-1]
-    if not slug:
-        return None
-    return f"project:{slug}"
+    return project_tag_for_path(current_from_env())
 
 
 def current_model_from_env() -> str | None:
@@ -456,5 +491,7 @@ __all__ = [
     "Workspace",
     "commit_put",
     "current_from_env",
+    "current_project_tag_from_env",
     "ensure_initialized",
+    "project_tag_for_path",
 ]

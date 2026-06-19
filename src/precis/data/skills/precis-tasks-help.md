@@ -67,12 +67,49 @@ or a `blocked-by` link instead of splitting further.
 ```python
 search(kind='todo', view='roots')         # one row per strategic
 search(kind='todo', view='strategic')     # strategic + tactical layer
+search(kind='todo', view='projects')      # strategics that own a workspace
 ```
 
 `view='roots'` shows past-tense accounting only: how many leaves
 got marked done in the last 7 days per strategic, and which
 strategic is up next (lowest picks among active strategics). No
 forecasts, no ETAs.
+
+## Projects (a strategic root that owns a workspace)
+
+A *project* is not a separate kind — it's a strategic root carrying
+`meta.workspace`. The workspace gives the subtree a home directory
+(under `PRECIS_ROOT`), a file format, and a standing **brief** ("project
+thoughts": voice, scope, constraints). All three cascade to every
+descendant via the put-time inheritance, so you set them once at the
+root.
+
+```python
+put(kind='todo', text='Write the nanotrans review.',
+    tags=['level:strategic', 'LLM:opus'],
+    meta={'workspace': {
+        'path': 'projects/nanotrans_auto',   # relative to PRECIS_ROOT
+        'format': 'tex',                     # 'tex' | 'md'
+        'entrypoint': 'main.tex',
+        'brief': 'Terse, IEEE voice. Cite primary sources only. '
+                 'Do NOT speculate beyond the corpus.'}})
+```
+
+What you get for free:
+
+* Every ref minted under the project (todos, citations, findings,
+  files) is auto-tagged `project:<slug>` — so
+  `search(tags=['project:nanotrans_auto'])` returns the whole project
+  surface across kinds. The slug is the basename of the workspace path.
+  Stamped on the owner path too, not just inside a planner tick.
+* The `brief` rides into every descendant's planner context as a
+  `## Project context` block, so a deep leaf works to the project frame
+  without you repeating it in each child body.
+* `view='projects'` lists every project with its open-todo count, file
+  count, and the first line of its brief.
+
+Edit the brief later with `edit`/`put` on the root's `meta.workspace`;
+new descendants inherit the updated block.
 
 ## Drill into a subtree
 

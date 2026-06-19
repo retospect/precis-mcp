@@ -15,10 +15,12 @@ shape with four first-class extensions:
    guards in :mod:`precis.handlers._todo_guards` enforce who can
    write what.
 
-3. **Tree-aware views** — ``roots``, ``strategic``, ``tree``,
-   ``doable``, ``waiting``, ``blocked``, ``ask-user`` (alias:
-   ``asking-reto``). Renderers live in :mod:`precis.handlers._todo_views`;
-   this module routes.
+3. **Tree-aware views** — ``roots``, ``projects``, ``strategic``,
+   ``tree``, ``doable``, ``waiting``, ``blocked``, ``ask-user`` (alias:
+   ``asking-reto``). The accepted set is the :class:`TodoView` closed
+   vocabulary; the :data:`_TREE_SEARCH_VIEWS` dispatch table maps each
+   to a renderer in :mod:`precis.handlers._todo_views`. ``projects``
+   lists strategic roots that own a ``meta.workspace``.
 
 4. **PRIO column + recurring schedule** (Slice 4): ``prio`` is a
    small int (1..10) on ``refs`` driving the doable ORDER BY;
@@ -42,6 +44,8 @@ caching needed.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from enum import StrEnum
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, Unsupported
@@ -53,19 +57,76 @@ from precis.response import Response
 from precis.store import Ref, Tag
 from precis.utils.next_block import render_next_section
 
-#: View names that ``search(kind='todo', view=...)`` accepts. Each
-#: name routes to a renderer in :mod:`._todo_views`.
-_TREE_SEARCH_VIEWS: frozenset[str] = frozenset(
-    {
-        "roots",
-        "strategic",
-        "doable",
-        "waiting",
-        "blocked",
-        "ask-user",
-        "asking-reto",  # deprecated alias for ``ask-user``
-        "attention",
-    }
+
+class TodoView(StrEnum):
+    """Closed vocabulary for ``search(kind='todo', view=...)``.
+
+    Named constants rather than bare string literals: the members are
+    the canonical view names, importable from tests / CLI / skill-doc
+    generation instead of being retyped as magic strings. ``StrEnum``
+    members ARE strings, so a member compares equal to the wire value
+    that arrives over MCP and formats as the plain name in error
+    messages — no ``.value`` noise at the boundary.
+    """
+
+    ROOTS = "roots"
+    PROJECTS = "projects"
+    STRATEGIC = "strategic"
+    DOABLE = "doable"
+    WAITING = "waiting"
+    BLOCKED = "blocked"
+    ASK_USER = "ask-user"
+    ASKING_RETO = "asking-reto"  # deprecated alias for ASK_USER
+    ATTENTION = "attention"
+
+
+def _view_doable(
+    store: Any, args: dict[str, Any] | None, page_size: int
+) -> Response:
+    """``view='doable'`` — the one tree view that reads ``args`` / paging.
+
+    Pulled out of the dispatch table so the table stays a flat
+    ``name → renderer`` map; the arg-less views are one-line lambdas.
+    """
+    under = None
+    if args is not None and "under" in args:
+        under_raw = args["under"]
+        try:
+            under = int(under_raw)
+        except (TypeError, ValueError) as exc:
+            raise BadInput(
+                f"args.under must be an integer, got {under_raw!r}",
+                next="search(kind='todo', view='doable', args={'under': N})",
+            ) from exc
+    return views.render_doable(store, under=under, limit=page_size or 20)
+
+
+#: Dispatch table: view → renderer ``(store, args, page_size) -> Response``.
+#: Arg-less renderers ignore the trailing two params so the dispatch
+#: stays branch-free. The keys are :class:`TodoView` members; ``search``
+#: resolves the wire string to the enum and looks it up here. The
+#: totality assertion below makes a half-wired view an import-time error
+#: rather than a runtime "unknown view".
+_TREE_SEARCH_VIEWS: dict[
+    TodoView, Callable[[Any, dict[str, Any] | None, int], Response]
+] = {
+    TodoView.ROOTS: lambda store, args, ps: views.render_roots(store),
+    TodoView.PROJECTS: lambda store, args, ps: views.render_projects(store),
+    TodoView.STRATEGIC: lambda store, args, ps: views.render_strategic(store),
+    TodoView.DOABLE: _view_doable,
+    TodoView.WAITING: lambda store, args, ps: views.render_waiting(store),
+    TodoView.BLOCKED: lambda store, args, ps: views.render_blocked(store),
+    TodoView.ASK_USER: lambda store, args, ps: views.render_asking_reto(store),
+    TodoView.ASKING_RETO: lambda store, args, ps: views.render_asking_reto(store),
+    TodoView.ATTENTION: lambda store, args, ps: views.render_attention(store),
+}
+
+#: Single-source-of-truth guard: every view in the vocabulary must have
+#: a renderer. Drift (a member added to the enum but not wired here, or
+#: vice-versa) fails at import, not when a user first hits the view.
+assert set(_TREE_SEARCH_VIEWS) == set(TodoView), (
+    "TodoView members and _TREE_SEARCH_VIEWS keys diverged: "
+    f"{set(TodoView) ^ set(_TREE_SEARCH_VIEWS)}"
 )
 
 #: View names that ``get(kind='todo', id=N, view=...)`` accepts on
@@ -335,44 +396,17 @@ class TodoHandler(NumericRefHandler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        if view is not None and view in _TREE_SEARCH_VIEWS:
-            if view == "roots":
-                return views.render_roots(self.store)
-            if view == "strategic":
-                return views.render_strategic(self.store)
-            if view == "doable":
-                under = None
-                if args is not None and "under" in args:
-                    under_raw = args["under"]
-                    try:
-                        under = int(under_raw)
-                    except (TypeError, ValueError) as exc:
-                        raise BadInput(
-                            f"args.under must be an integer, got {under_raw!r}",
-                            next=(
-                                "search(kind='todo', view='doable', args={'under': N})"
-                            ),
-                        ) from exc
-                return views.render_doable(
-                    self.store, under=under, limit=page_size or 20
-                )
-            if view == "waiting":
-                return views.render_waiting(self.store)
-            if view == "blocked":
-                return views.render_blocked(self.store)
-            if view in ("ask-user", "asking-reto"):
-                return views.render_asking_reto(self.store)
-            if view == "attention":
-                return views.render_attention(self.store)
-        if view is not None and view not in _TREE_SEARCH_VIEWS:
-            raise Unsupported(
-                f"unknown view {view!r} for kind={self.kind!r} search",
-                options=sorted(_TREE_SEARCH_VIEWS),
-                next=(
-                    f"views available: {sorted(_TREE_SEARCH_VIEWS)}; "
-                    "see precis-tasks-help"
-                ),
-            )
+        if view is not None:
+            try:
+                view_enum = TodoView(view)
+            except ValueError:
+                available = sorted(str(v) for v in TodoView)
+                raise Unsupported(
+                    f"unknown view {view!r} for kind={self.kind!r} search",
+                    options=available,
+                    next=f"views available: {available}; see precis-tasks-help",
+                ) from None
+            return _TREE_SEARCH_VIEWS[view_enum](self.store, args, page_size)
         return super().search(q=q, tags=tags, page_size=page_size, **_kw)
 
     # ── put: parent_id + level guard at create ────────────────────
@@ -456,9 +490,23 @@ class TodoHandler(NumericRefHandler):
         # surfaces the full project surface (todos + citations +
         # findings + file refs) regardless of kind. The LLM doesn't
         # think about it; the env propagates it.
-        from precis.utils.workspace import current_project_tag_from_env
+        from precis.utils.workspace import (
+            current_project_tag_from_env,
+            project_tag_for_path,
+        )
 
         project_tag = current_project_tag_from_env()
+        # Owner-path fallback: the env var is only set inside a planner
+        # tick. When the operator mints a todo whose meta carries a
+        # workspace (set explicitly, or inherited from a project root
+        # above), derive the same ``project:<slug>`` tag from that
+        # workspace so manually-filed refs join the project surface too.
+        # Forward-only — this stamps the ref being created, not its
+        # existing subtree.
+        if not project_tag and isinstance(meta, dict):
+            ws = meta.get("workspace")
+            if isinstance(ws, dict):
+                project_tag = project_tag_for_path(ws.get("path"))
         if project_tag and (not tags or project_tag not in tags):
             tags = [*(tags or []), project_tag]
         # Default parent_id for a ``level:recurring`` root to the

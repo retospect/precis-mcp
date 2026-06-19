@@ -8,6 +8,36 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-19 — projects: workspace promoted to first-class)
+
+- **A *project* is a strategic root that owns a `meta.workspace`.** No
+  new ref kind — the existing workspace concept is surfaced three ways:
+  - **Owner-path `project:<slug>` tagging.** When a todo is created
+    carrying `meta.workspace` (set explicitly or inherited via the
+    cascade), the handler derives `project:<slug>` from the workspace
+    path and stamps it — previously this only happened inside a planner
+    tick via `PRECIS_WORKSPACE`. So manually-filed refs join the
+    cross-kind project surface (`search(tags=['project:<slug>'])`).
+    Forward-only: it stamps the ref being created, not its existing
+    subtree. Slug logic factored into
+    `utils/workspace.project_tag_for_path` / `Workspace.project_tag`.
+  - **Project brief.** New first-class `Workspace.brief` field
+    (`meta.workspace.brief`) — standing project guidance ("voice,
+    scope, what not to do"). Cascades to every descendant; the planner
+    surfaces it as a `## Project context` block in the per-tick
+    *variable* layer (`workers/planner_prompt._render_project_brief`),
+    so a deep leaf reads the project frame without the owner repeating
+    it per child.
+  - **`search(kind='todo', view='projects')`** — dashboard of
+    workspace-owning roots: slug, path, open-todo count across the
+    subtree, on-disk file count, brief first line. Descendants that
+    merely inherited the workspace are not listed as separate projects.
+- **Todo view dispatch refactor.** The `search` view `if`-chain is now
+  a `TodoView` `StrEnum` (closed vocabulary) + a `_TREE_SEARCH_VIEWS`
+  dispatch table, with an import-time totality assertion so a
+  half-wired view fails at load rather than as a runtime "unknown
+  view". Removes the frozenset/branch duplication that could drift.
+
 ### Added (2026-06-19 — ask-a-follow-up on a thought + Papers filters)
 
 - **"Ask a follow-up" on any thought (Refs detail pages).** Each

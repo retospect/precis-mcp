@@ -432,6 +432,7 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
 
     ancestry = _ancestor_chain(store, ref_id)
     ancestry_block = _render_ancestry_toon(ancestry, leaf_id=ref_id)
+    project_block = _render_project_brief(store, ref_id)
     body = _load_ref_body(store, ref_id)
     workspace_block = _render_workspace_status(store, ref_id)
     children_block = _render_children_status(store, ref_id)
@@ -439,10 +440,13 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
         f"You are working on todo #{ref_id}. Model: {model}.",
         "",
         ancestry_block,
-        "",
-        "## Body",
-        body or "(empty)",
     ]
+    if project_block:
+        parts.append("")
+        parts.append(project_block)
+    parts.append("")
+    parts.append("## Body")
+    parts.append(body or "(empty)")
     if workspace_block:
         parts.append("")
         parts.append(workspace_block)
@@ -450,6 +454,41 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
         parts.append("")
         parts.append(children_block)
     return "\n".join(parts)
+
+
+def _render_project_brief(store: Store, ref_id: int) -> str:
+    """Surface the project-level brief that rides with the workspace.
+
+    The project's durable guidance ("project thoughts" — voice, scope,
+    standing constraints, what *not* to do) lives at
+    ``meta.workspace.brief`` on the project root and cascades to every
+    descendant via the workspace-inheritance at ``put`` time
+    (``Workspace.to_meta`` carries it down). Surfacing it here means a
+    deep leaf reads the project frame on every tick without the owner
+    having to repeat it in each child's body.
+
+    Belongs in the *variable* (user) layer, not the cached system
+    prompt: the brief is per-project, so two projects' planners must
+    not share a cache prefix carrying one's brief.
+
+    No-op when there's no workspace, no brief, or the brief is blank.
+    """
+    from precis.utils.workspace import Workspace
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    if not row:
+        return ""
+    workspace = Workspace.from_meta(row[0])
+    if workspace is None:
+        return ""
+    brief = workspace.brief.strip()
+    if not brief:
+        return ""
+    slug = workspace.project_tag or "project"
+    return f"## Project context ({slug})\n\n{brief}"
 
 
 def _render_workspace_status(store: Store, ref_id: int) -> str:

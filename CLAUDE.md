@@ -7,6 +7,30 @@
 > discovery / search / chase paths. Update it the same commit you
 > change the things it describes.
 
+## What just landed (2026-06-19 — projects = workspace, first-class)
+
+A **project** is a strategic-root todo that owns a `meta.workspace`
+(no new kind). Three additions promote the existing workspace concept:
+
+* **Owner-path `project:<slug>` tagging** — `TodoHandler.put` now
+  derives `project:<slug>` from `meta.workspace.path` and stamps it
+  even when the `PRECIS_WORKSPACE` env is unset (i.e. operator/CLI
+  writes, not just planner ticks). Slug logic lives in
+  `utils/workspace.project_tag_for_path` / `Workspace.project_tag`.
+  Forward-only — stamps the ref being created, not its subtree.
+* **Project brief** — new first-class `Workspace.brief`
+  (`meta.workspace.brief`); cascades down the subtree and is injected
+  as a `## Project context` block in the planner prompt's *variable*
+  layer (`workers/planner_prompt._render_project_brief`). NOT in the
+  cached system layer (per-project ⇒ no shared cache prefix).
+* **`view='projects'`** — `_todo_views.render_projects`: dashboard of
+  workspace-owning roots. View dispatch in `handlers/todo.py` is now a
+  `TodoView` StrEnum + `_TREE_SEARCH_VIEWS` table with an import-time
+  totality assert (no more frozenset/if-chain drift).
+
+Skill: `precis-tasks-help` gained a "Projects" section + the
+`view='projects'` line. No migration (meta/tag/view changes only).
+
 ## What just landed (2026-06-14 — Slices 3/4/5 + worker consolidation)
 
 The todo tree is now a five-slice system unifying intent, scheduling,

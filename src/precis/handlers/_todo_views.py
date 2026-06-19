@@ -343,6 +343,154 @@ def render_roots(store: Store) -> Response:
     return Response(body=body)
 
 
+def render_projects(store: Store) -> Response:
+    """Dashboard of projects — todos that own a workspace.
+
+    A *project* is the existing ``meta.workspace`` concept surfaced as
+    a first-class list. There is no ``kind='project'``: a project is a
+    todo where a workspace *originates* — it carries
+    ``meta.workspace.path`` and its parent does not carry the same path
+    (so descendants that merely inherited the cascade aren't listed as
+    separate projects). One row per project with its slug, on-disk
+    path + format, the count of open todos across its subtree, the
+    file count on disk, and the first line of its ``extra.brief``.
+    """
+    import os
+
+    precis_root = os.environ.get("PRECIS_ROOT", "")
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title,
+                   r.meta->'workspace'->>'path'    AS path,
+                   r.meta->'workspace'->>'format'  AS format,
+                   r.meta->'workspace'->>'brief'   AS brief
+              FROM refs r
+             WHERE r.kind = 'todo'
+               AND r.deleted_at IS NULL
+               AND r.meta->'workspace'->>'path' IS NOT NULL
+               AND (
+                   r.parent_id IS NULL
+                   OR (SELECT p.meta->'workspace'->>'path' FROM refs p
+                         WHERE p.ref_id = r.parent_id)
+                      IS DISTINCT FROM r.meta->'workspace'->>'path'
+               )
+             ORDER BY r.ref_id
+            """,
+        ).fetchall()
+        projects: list[dict[str, Any]] = []
+        for ref_id, title, path, fmt, brief in rows:
+            ref_id = int(ref_id)
+            open_count = conn.execute(
+                """
+                WITH RECURSIVE sub(ref_id) AS (
+                    SELECT %s::bigint
+                    UNION ALL
+                    SELECT c.ref_id FROM refs c
+                      JOIN sub ON c.parent_id = sub.ref_id
+                     WHERE c.deleted_at IS NULL
+                )
+                SELECT count(*)
+                  FROM sub s
+                  JOIN refs r ON r.ref_id = s.ref_id AND r.kind = 'todo'
+                 WHERE NOT EXISTS (
+                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = s.ref_id
+                       AND t.namespace = 'STATUS'
+                       AND t.value IN ('done', 'won''t-do')
+                 )
+                """,
+                (ref_id,),
+            ).fetchone()[0]
+            projects.append(
+                {
+                    "id": ref_id,
+                    "title": title,
+                    "path": path,
+                    "format": fmt or "tex",
+                    "brief": brief,
+                    "open": int(open_count),
+                    "files": _count_workspace_files(precis_root, path),
+                }
+            )
+
+    if not projects:
+        body = "no projects yet"
+        body += render_next_section(
+            [
+                (
+                    "put(kind='todo', text='Project goal', "
+                    "tags=['level:strategic'], "
+                    "meta={'workspace': {'path': 'projects/<slug>', "
+                    "'format': 'tex', 'entrypoint': 'main.tex', "
+                    "'brief': '<standing guidance>'}})",
+                    "mint a project root (owner-only)",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    lines = [f"# {len(projects)} project{'' if len(projects) == 1 else 's'}", ""]
+    for p in projects:
+        slug = p["path"].rstrip("/").split("/")[-1]
+        first_line = (p["title"] or "").split("\n", 1)[0]
+        if len(first_line) > 48:
+            first_line = first_line[:48].rstrip() + "…"
+        files = "?" if p["files"] is None else str(p["files"])
+        lines.append(
+            f"#{p['id']:<4} {slug:<20} {first_line:<48}  "
+            f"open: {p['open']:>3}  files: {files:>3}  ({p['format']})"
+        )
+        lines.append(f"       {p['path']}")
+        if p["brief"]:
+            brief_line = p["brief"].split("\n", 1)[0]
+            if len(brief_line) > 72:
+                brief_line = brief_line[:72].rstrip() + "…"
+            lines.append(f"       ↳ {brief_line}")
+    body = "\n".join(lines)
+    body += render_next_section(
+        [
+            (
+                "get(kind='todo', id=N, view='tree')",
+                "drill into a project's todo tree",
+            ),
+            (
+                "search(tags=['project:<slug>'])",
+                "the full cross-kind project surface",
+            ),
+        ]
+    )
+    return Response(body=body)
+
+
+def _count_workspace_files(precis_root: str, path: str | None) -> int | None:
+    """Count non-dotfiles under a workspace dir, or None if unresolvable.
+
+    Best-effort: returns ``None`` (rendered as ``?``) when ``PRECIS_ROOT``
+    is unset or the workspace dir doesn't exist on this host yet (init
+    hasn't fired). Walks one level into the known layout subdirs rather
+    than a full recursive walk — enough for an at-a-glance count.
+    """
+    if not precis_root or not path:
+        return None
+    if path.startswith("/") or ".." in path.split("/"):
+        return None
+    from pathlib import Path
+
+    root = (Path(precis_root) / path).resolve()
+    if not root.is_dir():
+        return None
+    count = 0
+    for sub in ("", "tex", "sections", "pics", "data"):
+        sub_root = root / sub if sub else root
+        if not sub_root.is_dir():
+            continue
+        for entry in sub_root.iterdir():
+            if entry.is_file() and not entry.name.startswith("."):
+                count += 1
+    return count
+
+
 def _watches_panel_rows(store: Store) -> list[dict[str, Any]]:
     """Return one row per non-umbrella recurring with its last tick.
 
