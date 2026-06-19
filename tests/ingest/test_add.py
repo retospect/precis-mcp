@@ -29,6 +29,7 @@ from precis.ingest.add import (
     DoiInput,
     IngestResult,
     PdfInput,
+    _reconcile_orphan_stub,
     precis_add,
 )
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
@@ -276,3 +277,85 @@ class TestPrecisAddErrors:
         with store.pool.connection() as conn:
             count = conn.execute("SELECT count(*) FROM refs").fetchone()
         assert count is not None and count[0] == 0
+
+
+class TestReconcileOrphanStub:
+    """`_reconcile_orphan_stub` folds a content-duplicate fetch stub
+    (named after its cite_key by the OA fetcher) into the survivor ref
+    a dedup hit landed on, so the stub stops re-qualifying for fetch."""
+
+    def test_folds_orphan_stub_into_survivor(self, store):
+        # Survivor: already-ingested paper (its own cite_key, no DOI/arXiv).
+        survivor = store.insert_ref(
+            kind="paper", slug="lee24b", title="Atomic evolution of hydrogen"
+        )
+        # Orphan stub: same paper, minted by chase with an arXiv id under a
+        # DIFFERENT cite_key — the name the fetcher gives the downloaded PDF.
+        stub = store.insert_ref(
+            kind="paper", slug="atomic24", title="Atomic evolution (stub)"
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'arxiv', '2404.02416', 'manual')",
+                (stub.id,),
+            )
+            conn.commit()
+
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="atomic24",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+
+        with store.pool.connection() as conn:
+            arxiv_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='arxiv' AND id_value='2404.02416'"
+            ).fetchone()
+            stub_row = conn.execute(
+                "SELECT deleted_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
+                (stub.id,),
+            ).fetchone()
+            link = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id=%s AND dst_ref_id=%s "
+                "AND relation='supersedes'",
+                (survivor.id, stub.id),
+            ).fetchone()
+        # arXiv id moved onto the survivor → future probe_existing dedups it.
+        assert arxiv_owner is not None and arxiv_owner[0] == survivor.id
+        # stub soft-deleted with provenance back to the survivor.
+        assert stub_row is not None and stub_row[0] is not None
+        assert stub_row[1] == str(survivor.id)
+        # supersedes edge recorded for audit.
+        assert link is not None
+
+    def test_noop_when_no_matching_stub(self, store):
+        survivor = store.insert_ref(kind="paper", slug="solo24", title="No twin")
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="nonexistent99",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged is None
+
+    def test_does_not_fold_survivor_into_itself(self, store):
+        # Filename cite_key belongs to the survivor (normal in-place stub
+        # upgrade) — nothing to reconcile, no self-merge.
+        survivor = store.insert_ref(kind="paper", slug="self24", title="Self")
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="self24",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged is None

@@ -218,6 +218,50 @@ class TestClaimStubs:
             conn.commit()
         assert [s.ref_id for s in stubs] == [ref_id]
 
+    def test_backoff_widens_with_attempt_count(self, store: Store) -> None:
+        # After several attempts the retry window doubles per attempt
+        # (24h → 48h → 96h …). With 3 prior fetcher events the window
+        # is 96h, so a 25h-old last attempt — which WOULD reclaim a
+        # once-tried stub — is still suppressed. Stops daily re-polling
+        # of papers that have no OA copy anywhere.
+        ref_id = _seed_paper_stub(store, doi="10.1234/backoff")
+        with store.pool.connection() as conn:
+            for age in (200, 100, 25):  # 3 attempts; most recent 25h ago
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                    "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+                    "now() - make_interval(hours => %s))",
+                    (ref_id, age),
+                )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == []
+
+    def test_backoff_is_capped(self, store: Store) -> None:
+        # The doubling is capped (default 720h / 30d) so a chronically
+        # un-fetchable stub still gets one more try per ~month — never a
+        # permanent give-up (a paper can become OA later). With many
+        # attempts the window pins at the cap; a last attempt older than
+        # the cap re-qualifies the stub.
+        ref_id = _seed_paper_stub(store, doi="10.1234/capped")
+        with store.pool.connection() as conn:
+            # 8 attempts (uncapped window would be 24*2^7 = 3072h) but the
+            # cap holds it at 720h; last attempt 800h ago > cap → eligible.
+            for age in (3000, 2000, 1500, 1200, 1000, 900, 850, 800):
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                    "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+                    "now() - make_interval(hours => %s))",
+                    (ref_id, age),
+                )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [ref_id]
+
     def test_orders_newest_first(self, store: Store) -> None:
         first = _seed_paper_stub(store, cite_key="a2024", doi="10.1/a")
         second = _seed_paper_stub(store, cite_key="b2024", doi="10.1/b")
@@ -432,6 +476,32 @@ class TestTryS2:
 
 
 class TestRunCascade:
+    @pytest.fixture(autouse=True)
+    def _enable_oa_fetch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # run_oa_fetch_pass is env-gated (PRECIS_OA_FETCH) so the
+        # fetcher only runs on one cluster host. Enable it for the
+        # cascade tests; the off-by-default behaviour has its own test.
+        monkeypatch.setenv("PRECIS_OA_FETCH", "1")
+
+    def test_disabled_by_default_short_circuits(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Without PRECIS_OA_FETCH the pass must claim nothing — even
+        # with a fetchable stub present — so non-pinned hosts never
+        # race the inbox.
+        monkeypatch.delenv("PRECIS_OA_FETCH", raising=False)
+        _seed_paper_stub(store, doi="10.1234/off")
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: pytest.fail("fetcher must not run when gated off"),
+        )
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+
     def test_unpaywall_ok_stops_cascade(
         self,
         store: Store,

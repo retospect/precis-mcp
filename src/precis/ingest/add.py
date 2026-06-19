@@ -203,6 +203,17 @@ def precis_add(
             # ``tagging/`` dir should merge tags additively (rather than
             # silently no-op'ing because the sha is known).
             _apply_extra_tags(store, "paper", existing_ref_id, input.extra_tags)
+            # A byte-identical re-fetch hits here before Marker runs; still
+            # fold any orphan stub the fetch was for so it stops
+            # re-qualifying (the slow path does the same post-extraction).
+            with store.pool.connection() as conn:
+                _reconcile_orphan_stub(
+                    store,
+                    survivor_ref_id=existing_ref_id,
+                    file_stem=input.pdf_path.stem,
+                    conn=conn,
+                )
+                conn.commit()
             with store.pool.connection() as conn:
                 return _hit_result_from_db(existing_ref_id, conn=conn)
 
@@ -290,6 +301,16 @@ def _ingest_pdf(
             chunks_written = register_aliases_and_maybe_upgrade(
                 existing, paper, conn=conn
             )
+            # If this PDF de-duped against a DIFFERENT ref than the stub
+            # it was fetched for, fold that orphan stub into the survivor
+            # now so it stops re-qualifying for OA fetch forever (the
+            # zombie-stub spin-loop). No-op on a plain re-drop.
+            _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=existing,
+                file_stem=input.pdf_path.stem,
+                conn=conn,
+            )
             conn.commit()
             _apply_extra_tags(store, "paper", existing, input.extra_tags)
             return _hit_result_from_db(
@@ -320,6 +341,103 @@ def _ingest_pdf(
         chunks_written=result.chunks_written,
         identifiers=result.identifiers_written,
     )
+
+
+def _reconcile_orphan_stub(
+    store: Store,
+    *,
+    survivor_ref_id: int,
+    file_stem: str,
+    conn: Any,
+) -> int | None:
+    """Fold an orphan fetch stub into ``survivor_ref_id`` on a dup hit.
+
+    The OA fetcher names each downloaded PDF after the stub's
+    ``cite_key`` (``fetch_oa._stub_filename``). When that PDF
+    re-extracts to content already owned by a *different* ref, the
+    slow-path :func:`probe_existing` matches the survivor by
+    ``content_hash`` and the stub the fetch was *for* is never touched
+    — it keeps ``pdf_sha256 IS NULL`` and re-qualifies for fetching
+    forever (a zombie). The two refs can't be deduped by identifier:
+    the stub carries DOI/arXiv/S2 (from chase) while the survivor was
+    ingested from bytes and carries only content/pdf hashes.
+
+    The filename's ``cite_key`` is the one reliable link back to the
+    stub. When it resolves to a *separate* live stub, fold it into the
+    survivor — migrate external identifiers + graph edges, record
+    provenance, soft-delete — mirroring
+    :meth:`precis.handlers.memory.MemoryHandler.supersede`'s merge.
+
+    Returns the merged stub's ref_id, or ``None`` when there's nothing
+    to reconcile (the common case: a plain re-drop of an existing PDF,
+    or the survivor *is* the stub that just got upgraded in place).
+    """
+    stem = file_stem.strip().lower()
+    if not stem:
+        return None
+    row = conn.execute(
+        """
+        SELECT r.ref_id
+          FROM ref_identifiers ri
+          JOIN refs r ON r.ref_id = ri.ref_id
+         WHERE ri.id_kind = 'cite_key'
+           AND lower(ri.id_value) = %s
+           AND r.pdf_sha256 IS NULL
+           AND r.deleted_at IS NULL
+           AND r.ref_id <> %s
+         LIMIT 1
+        """,
+        (stem, survivor_ref_id),
+    ).fetchone()
+    if row is None:
+        return None
+    stub_id = int(row[0])
+
+    # Move external bibliographic identifiers onto the survivor so a
+    # future probe_existing() dedups by DOI/arXiv/S2 directly — the very
+    # gap that let this stub slip past. The PK is (id_kind, id_value),
+    # so a straight UPDATE can't conflict: the survivor by definition
+    # doesn't already own these exact values. Content-derived ids
+    # (cite_key/paper_id) stay on the retired row; probe_existing now
+    # filters soft-deleted refs so they can't resurrect it.
+    conn.execute(
+        """
+        UPDATE ref_identifiers SET ref_id = %s
+         WHERE ref_id = %s
+           AND id_kind IN ('doi', 'arxiv', 's2', 'pubmed', 'openalex')
+        """,
+        (survivor_ref_id, stub_id),
+    )
+
+    store.migrate_links(stub_id, survivor_ref_id, conn=conn)
+    store.add_link(
+        src_ref_id=survivor_ref_id,
+        dst_ref_id=stub_id,
+        relation="supersedes",
+        set_by="agent",
+        conn=conn,
+    )
+    store.stamp_ref_meta(
+        stub_id,
+        {"superseded_by": survivor_ref_id, "dedup": "content-duplicate-stub"},
+        conn=conn,
+    )
+    store.soft_delete_ref(stub_id, conn=conn)
+    store.append_event(
+        survivor_ref_id,
+        source="ingest:dedup",
+        event="stub_reconciled",
+        payload={"stub_ref_id": stub_id, "cite_key": stem},
+        conn=conn,
+    )
+    log.info(
+        "precis_add: reconciled orphan stub ref_id=%s into survivor "
+        "ref_id=%s (content-duplicate; cite_key=%s)",
+        stub_id,
+        survivor_ref_id,
+        stem,
+    )
+    return stub_id
 
 
 def _precis_add_pres(

@@ -8,6 +8,35 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-19 — OA fetcher: lost PDFs, dead Unpaywall, zombie stubs)
+
+- **OA fetcher dropped PDFs where no watcher looked.** The OA fetch
+  pass downloaded arXiv/Unpaywall/S2 PDFs successfully but, with
+  `PRECIS_WATCH_INBOX` unset, fell back to a host-local
+  `~/work/new_papers/_oa_fetched` that the `precis watch` daemon never
+  scanned — bytes landed, nothing ingested, and the stub re-qualified
+  every pass. The cluster now wires `PRECIS_WATCH_INBOX` to the shared
+  NAS inbox (single source of truth with the watch role). Docstring in
+  `workers/fetch_oa.run_oa_fetch_pass` now states the inbox MUST equal
+  the watcher's dir.
+- **OA fetch pass is now env-gated + single-host.** New `PRECIS_OA_FETCH`
+  gate (default off, mirrors `PRECIS_GP_FETCH`) so the fetcher runs on
+  one node — the watchers race the shared inbox, so one fetcher feeds
+  them all. Stops every cluster node re-claiming the same stubs.
+- **Exponential fetch backoff.** `claim_stubs_to_fetch` widened the flat
+  24h retry window to `base * 2^(attempts-1)` capped at 720h (30d), so a
+  stub with no OA copy anywhere settles to ~monthly retries instead of
+  daily forever. Never a permanent give-up (a paper can become OA later).
+- **Zombie-stub reconciliation at ingest dedup.** When a fetched PDF
+  content-dedups against a *different* ref than the stub it was fetched
+  for (the two share no identifier — stub has DOI/arXiv from chase, twin
+  has only content/pdf hashes), `precis_add` now folds the orphan stub
+  (matched by the fetcher's `cite_key` filename) into the survivor:
+  migrates external identifiers + graph edges, records a `supersedes`
+  edge + `meta.superseded_by`, soft-deletes the stub. `probe_existing`
+  now also filters soft-deleted refs so a retired duplicate can't
+  resurrect. See `ingest/add._reconcile_orphan_stub`.
+
 ### Added (2026-06-19 — `wikipedia` kind: on-demand article fetch)
 
 - **New `kind='wikipedia'`** — the on-demand alternative to bulk-

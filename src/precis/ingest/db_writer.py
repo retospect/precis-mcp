@@ -186,9 +186,17 @@ def probe_existing(
     # Build a parameterised IN-list. Each candidate becomes two
     # placeholders — one for id_kind, one for id_value.
     placeholders = ", ".join(["(%s, %s)"] * len(candidates))
+    # Join refs and exclude soft-deleted rows: a reconciled/merged
+    # stub keeps its identifiers (they migrate to the survivor, but
+    # content-derived ids like cite_key may stay behind on the retired
+    # row). Returning a soft-deleted ref here would resurrect a merged
+    # duplicate on the next ingest. ``ri.ref_id`` is the PK side, so the
+    # join is index-only on ``refs_pkey``.
     sql = (
-        "SELECT ref_id, id_kind FROM ref_identifiers "
-        f"WHERE (id_kind, id_value) IN ({placeholders}) "
+        "SELECT ri.ref_id, ri.id_kind FROM ref_identifiers ri "
+        "JOIN refs r ON r.ref_id = ri.ref_id "
+        f"WHERE (ri.id_kind, ri.id_value) IN ({placeholders}) "
+        "AND r.deleted_at IS NULL "
         "LIMIT 1"
     )
     flat_params: list[str] = []

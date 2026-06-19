@@ -94,7 +94,17 @@ _RETRY_MAX_ATTEMPTS = 4
 
 # Don't re-poke Unpaywall for the same stub within this window. The
 # fetcher's claim query honours it via a LEFT JOIN on ref_events.
+# This is the *base* window; the claim query widens it exponentially
+# per prior fetch attempt (see ``claim_stubs_to_fetch``) so a stub
+# with no OA copy anywhere backs off instead of re-polling daily
+# forever.
 _RETRY_WINDOW_HOURS = 24
+
+# Backoff cap. A stub that's been tried many times (closed-access, no
+# OA anywhere) settles to one retry per this window rather than giving
+# up entirely — a paper can become OA later, so we never permanently
+# stop, we just slow to monthly. 720h = 30 days.
+_RETRY_BACKOFF_MAX_HOURS = 720
 
 # DOI shape validation. Loose but rejects obviously-broken inputs
 # before paying for an HTTP roundtrip.
@@ -145,14 +155,15 @@ def claim_stubs_to_fetch(
     *,
     limit: int,
     retry_after_hours: int = _RETRY_WINDOW_HOURS,
+    backoff_max_hours: int = _RETRY_BACKOFF_MAX_HOURS,
 ) -> list[StubRef]:
     """Lock and return up to ``limit`` stubs needing an OA fetch attempt.
 
     A stub qualifies when ``refs.pdf_sha256 IS NULL`` AND at least one
     of {DOI, arXiv, S2 id} is registered. Excludes stubs tried by *any*
-    ``fetcher:%`` source within ``retry_after_hours`` — the retry window
-    applies cross-source by convention (if one source had nothing N
-    hours ago, the others probably won't either).
+    ``fetcher:%`` source within an **exponentially-widening** window —
+    the retry window applies cross-source by convention (if one source
+    had nothing N hours ago, the others probably won't either).
 
     Keying the window on the literal ``fetcher:unpaywall`` source used
     to defeat the whole guard in deployments where Unpaywall is
@@ -161,6 +172,16 @@ def claim_stubs_to_fetch(
     armed and every stub re-qualified on every pass — re-polling S2
     hundreds of times a day. Matching ``fetcher:%`` arms the window
     after whichever provider actually ran.
+
+    **Backoff.** A flat window still re-polls a no-OA-anywhere stub
+    once per ``retry_after_hours`` *forever*. Instead the effective
+    window doubles per prior attempt —
+    ``base * 2^(attempts-1)``, capped at ``backoff_max_hours`` — so a
+    closed-access paper settles to one retry per ~30 days rather than
+    daily. It never gives up entirely (a paper can become OA later),
+    it just slows down. Content-duplicate stubs are resolved out of
+    the backlog separately, at ingest dedup time (see
+    ``precis.ingest.add``), so they don't even reach the cap.
 
     Returns newest-stub-first (``ORDER BY ref_id DESC``) so the chase
     bottleneck shows up promptly when a chain creates many stubs.
@@ -182,16 +203,24 @@ def claim_stubs_to_fetch(
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key
           FROM refs r
           LEFT JOIN LATERAL (
-                SELECT 1 FROM ref_events e
+                SELECT count(*) AS attempts, max(e.ts) AS last_ts
+                  FROM ref_events e
                  WHERE e.ref_id = r.ref_id
                    AND e.source LIKE 'fetcher:%%'
-                   AND e.ts > now() - (%s || ' hours')::INTERVAL
-                 LIMIT 1
-          ) recent_event ON TRUE
+          ) fe ON TRUE
          WHERE r.kind = 'paper'
            AND r.pdf_sha256 IS NULL
            AND r.deleted_at IS NULL
-           AND recent_event IS NULL
+           AND (
+                 fe.last_ts IS NULL
+                 OR fe.last_ts < now() - (
+                      LEAST(
+                        %s::double precision
+                          * POWER(2, GREATEST(fe.attempts - 1, 0)),
+                        %s::double precision
+                      ) * INTERVAL '1 hour'
+                 )
+           )
            AND EXISTS (
                  SELECT 1 FROM ref_identifiers ri
                   WHERE ri.ref_id = r.ref_id
@@ -201,7 +230,7 @@ def claim_stubs_to_fetch(
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
-        (str(retry_after_hours), limit),
+        (float(retry_after_hours), float(backoff_max_hours), limit),
     ).fetchall()
     return [
         StubRef(
@@ -436,6 +465,20 @@ def _try_s2(
 # ── Runner ─────────────────────────────────────────────────────────
 
 
+def _oa_fetch_enabled() -> bool:
+    """Env gate for the OA fetcher. Default off.
+
+    Tolerant to whitespace / case so a YAML quoting quirk or trailing
+    newline doesn't silently disable the pass (same shape as
+    ``fetch_google_patents._is_enabled``).
+    """
+    return os.environ.get("PRECIS_OA_FETCH", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def run_oa_fetch_pass(
     store: Any,
     *,
@@ -464,8 +507,22 @@ def run_oa_fetch_pass(
     event) — arXiv and S2 still run.
 
     ``inbox_dir`` defaults to ``PRECIS_WATCH_INBOX`` or
-    ``~/work/new_papers/_oa_fetched``.
+    ``~/work/new_papers/_oa_fetched``. The default **must** match the
+    directory the ``precis watch`` daemon scans — otherwise the bytes
+    download fine (``fetch_ok``) but no watcher ever ingests them and
+    the stub stays claimable, re-fetching every pass forever. In the
+    cluster, ``PRECIS_WATCH_INBOX`` is wired to ``papers_inbox_path``
+    (the NAS inbox) so fetcher and watcher share one source of truth.
+
+    Gated by env: when ``PRECIS_OA_FETCH`` is unset or ``"0"`` the
+    pass exits immediately with claimed=0. The fetcher only needs to
+    run on **one** host (whichever can write the shared inbox) — the
+    watchers race the inbox, so a single fetcher feeds them all. This
+    mirrors ``gp_fetch``'s ``PRECIS_GP_FETCH`` single-host pin and
+    keeps every other node from re-claiming the same stubs.
     """
+    if not _oa_fetch_enabled():
+        return {"claimed": 0, "ok": 0, "failed": 0}
     email = email or os.environ.get("PRECIS_UNPAYWALL_EMAIL", "").strip()
     if inbox_dir is None:
         inbox_dir = os.environ.get("PRECIS_WATCH_INBOX") or str(
