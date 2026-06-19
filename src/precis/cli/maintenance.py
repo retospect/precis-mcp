@@ -33,8 +33,9 @@ What it does, in order:
    for as long as backups retain it.
 
 3. **VACUUM ANALYZE** — reclaim bloat and update planner stats on
-   the hot tables (``refs``, ``blocks``, ``cache_state``,
-   ``ref_tags_*``). Skipped if ``--no-vacuum`` is passed.
+   the hot tables (``refs``, ``chunks``, ``cache_state``,
+   ``ref_tags``, ``chunk_tags``, ``links``, ``ref_events``).
+   Skipped if ``--no-vacuum`` is passed.
 
 Each phase is independently togglable via flags so you can dry-run
 or do partial passes during incident response.
@@ -392,7 +393,7 @@ def _purge_soft_deleted(
 ) -> int:
     """Hard-delete refs whose ``deleted_at`` is older than ``older_than_days``.
 
-    Cascades to blocks, cache_state, and tag tables via the
+    Cascades to chunks, cache_state, and tag tables via the
     referential constraints. Returns the count of rows affected.
     Audit trail (request to recover) is gone after this fires —
     the soft-delete recovery window is the ``older_than_days``
@@ -435,12 +436,12 @@ def _purge_soft_deleted(
 
 _VACUUM_TABLES: tuple[str, ...] = (
     "refs",
-    "blocks",
+    "chunks",
     "cache_state",
-    "ref_tags_open",
-    "ref_tags_closed",
-    "ref_flags",
-    "ref_links",
+    "ref_tags",
+    "chunk_tags",
+    "links",
+    "ref_events",
 )
 
 

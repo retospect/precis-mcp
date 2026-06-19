@@ -165,7 +165,7 @@ def _query_stubs(store: Store) -> list[dict[str, Any]]:
         "LEFT JOIN LATERAL ( "
         "  SELECT source FROM ref_events "
         "  WHERE ref_id = r.ref_id AND source LIKE 'fetcher:%' "
-        "  ORDER BY created_at DESC LIMIT 1 "
+        "  ORDER BY ts DESC LIMIT 1 "
         ") last_event ON TRUE "
         "WHERE r.kind = 'paper' "
         "  AND r.pdf_sha256 IS NULL "

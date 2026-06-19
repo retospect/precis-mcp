@@ -86,7 +86,8 @@ def _load_workspace_citations(
                    ) AS source_handle_tag,
                    src.ref_id AS source_ref_id,
                    src.title AS source_title,
-                   src.slug AS source_slug,
+                   (SELECT id_value FROM ref_identifiers
+                     WHERE ref_id = src.ref_id AND id_kind = 'cite_key') AS source_slug,
                    src.meta AS source_meta,
                    src.authors AS source_authors,
                    src.year AS source_year
