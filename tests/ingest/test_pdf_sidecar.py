@@ -7,6 +7,7 @@ from precis.ingest.pdf_sidecar import (
     _extract_doi,
     _pii_to_doi,
     _trim_at_references,
+    candidate_title_from_text,
     extract_doi_from_filename,
     is_garbage_title,
     is_pii,
@@ -138,6 +139,18 @@ class TestGarbageTitle:
         assert is_garbage_title(r"\documentclass{revtex4-2}") is True
         assert is_garbage_title(r"\begin{document} Some text") is True
 
+    def test_authoring_tool_default_titles(self):
+        # Generator-baked default /Title values — describe the toolchain,
+        # never the paper. "No Job Name" is dvips/TeX's default (ref 36186).
+        assert is_garbage_title("No Job Name") is True
+        assert is_garbage_title("no job name") is True
+        assert is_garbage_title("Microsoft Word - paper_final.doc") is True
+        assert is_garbage_title("untitled") is True
+        assert is_garbage_title("Untitled document") is True
+        assert is_garbage_title("PowerPoint Presentation") is True
+        assert is_garbage_title("Presentation1") is True
+        assert is_garbage_title("Slide 1") is True
+
     def test_empty(self):
         assert is_garbage_title("") is True
         assert is_garbage_title("   ") is True
@@ -155,6 +168,54 @@ class TestGarbageTitle:
         ]
         for title in real:
             assert is_garbage_title(title) is False, f"false positive: {title!r}"
+
+
+class TestCandidateTitleFromText:
+    """Mining a candidate title from first-page body text."""
+
+    def test_simple_title_first_line(self):
+        text = (
+            "Ballistic carbon nanotube field-effect transistors\n"
+            "Ali Javey, Jing Guo\n\nAbstract: ...\n"
+        )
+        assert (
+            candidate_title_from_text(text)
+            == "Ballistic carbon nanotube field-effect transistors"
+        )
+
+    def test_skips_furniture_lines(self):
+        text = (
+            "Downloaded from https://example.org\n"
+            "doi:10.1234/x\n"
+            "12\n"
+            "The rise of two-dimensional materials\n"
+            "J. Smith\n"
+        )
+        assert (
+            candidate_title_from_text(text) == "The rise of two-dimensional materials"
+        )
+
+    def test_wrapped_title_returns_leading_line(self):
+        # A 2-line title is left truncated on purpose — the leading
+        # fragment is enough for S2's fuzzy search + verify gate.
+        text = (
+            "Flexible and transparent field-effect transistors\n"
+            "on hexagonal boron nitride heterostructures\n\n"
+            "Authors here\n"
+        )
+        assert (
+            candidate_title_from_text(text)
+            == "Flexible and transparent field-effect transistors"
+        )
+
+    def test_empty_or_unusable(self):
+        assert candidate_title_from_text("") == ""
+        assert candidate_title_from_text("   \n\n  ") == ""
+        assert candidate_title_from_text("12\nNo Job Name\n") == ""
+
+    def test_garbage_candidate_rejected(self):
+        # First usable line is itself a known-garbage default title.
+        assert candidate_title_from_text("No Job Name\nsome author\n") == ""
 
 
 class TestTrimAtReferences:

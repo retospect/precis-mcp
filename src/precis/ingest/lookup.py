@@ -10,12 +10,15 @@ from typing import Any
 
 from precis.ingest.crossref import lookup_crossref
 from precis.ingest.pdf_sidecar import (
+    candidate_title_from_text,
     extract_doi_from_filename,
     extract_pdf_meta,
+    is_garbage_author,
     is_garbage_title,
     is_pii,
 )
 from precis.ingest.semantic_scholar import get_paper_by_id, lookup_s2
+from precis.ingest.verify_metadata import verify_metadata
 
 log = logging.getLogger(__name__)
 
@@ -98,14 +101,37 @@ def lookup(pdf_path: str) -> dict[str, Any]:
                 result["doi"] = doi
             return result
 
-    # Fallback: embedded PDF metadata
+    # Text-rescue step: when the embedded title is missing/garbage and no
+    # DOI was found, mine a candidate title from the first-page body text
+    # and re-query S2 — accepting the hit ONLY if it verifies against the
+    # body. This is the step the embedded-title comment above promised:
+    # for scanned / dvips PDFs ("No Job Name"), the real title is still
+    # legible in the body even when the Info dict is junk. The verify gate
+    # is what makes a fuzzy body-title S2 search safe — a wrong candidate
+    # returns a plausible paper, but verify_metadata rejects it.
+    first_pages_text = pdf_meta.get("first_pages_text", "")
+    body_title = candidate_title_from_text(first_pages_text)
+    if body_title:
+        result = lookup_title(body_title, s2_key=s2_key)
+        if result and verify_metadata(result, first_pages_text)[0]:
+            result["pdf_hash"] = pdf_meta["pdf_hash"]
+            result["page_count"] = pdf_meta["page_count"]
+            result["first_pages_text"] = pdf_meta["first_pages_text"]
+            result["source"] = "s2_body_title"
+            if doi and not result.get("doi"):
+                result["doi"] = doi
+            return result
+
+    # Fallback: embedded PDF metadata. Garbage title / authors are dropped
+    # (not stored) — a blank title flags the paper for triage rather than
+    # poisoning the corpus with "No Job Name" or a tool-stamp author.
     info = pdf_meta.get("info", {})
     raw_title = info.get("title", "")
     return {
         "title": ""
         if (is_pii(raw_title) or is_garbage_title(raw_title))
         else raw_title,
-        "authors": _parse_author_string(info.get("author", "")),
+        "authors": _sanitize_authors(_parse_author_string(info.get("author", ""))),
         "year": _parse_year(info.get("creationDate", "")),
         "doi": doi,
         "journal": "",
@@ -189,6 +215,18 @@ def _parse_author_string(author: str | None) -> list[dict[str, str]]:
     else:
         parts = [author.strip()]
     return [{"name": p} for p in parts]
+
+
+def _sanitize_authors(authors: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Drop tool/account-stamp entries from a parsed author list.
+
+    Applied to embedded ``/Author`` strings only — CrossRef / S2 authors
+    are authoritative and never pass through here. Filters values like
+    ``"Microsoft Office User"`` or bare initials (``"DRP"``) that would
+    otherwise become a stored author and a cite_key surname. See
+    :func:`precis.ingest.pdf_sidecar.is_garbage_author`.
+    """
+    return [a for a in authors if not is_garbage_author(a.get("name", ""))]
 
 
 def _extract_arxiv_from_filename(pdf_path: str) -> str | None:

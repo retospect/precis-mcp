@@ -7,8 +7,10 @@ from unittest.mock import patch
 from precis.ingest.lookup import (
     _extract_arxiv_from_filename,
     _parse_author_string,
+    _sanitize_authors,
     lookup,
 )
+from precis.ingest.pdf_sidecar import is_garbage_author
 
 
 class TestExtractArxivFromFilename:
@@ -71,6 +73,48 @@ class TestParseAuthorString:
 
     def test_none_input(self):
         assert _parse_author_string(None) == []
+
+
+class TestGarbageAuthor:
+    """Detection of tool/account-stamp /Author values."""
+
+    def test_bare_initials(self):
+        assert is_garbage_author("DRP") is True
+        assert is_garbage_author("J.S.") is True
+        assert is_garbage_author("A.B.C.") is True
+        assert is_garbage_author("AB") is True
+
+    def test_tool_and_account_stamps(self):
+        assert is_garbage_author("Microsoft Office User") is True
+        assert is_garbage_author("Administrator") is True
+        assert is_garbage_author("Windows User") is True
+        assert is_garbage_author("Acrobat Distiller") is True
+        assert is_garbage_author("user") is True
+
+    def test_empty_or_nonalpha(self):
+        assert is_garbage_author("") is True
+        assert is_garbage_author("   ") is True
+        assert is_garbage_author("12345") is True
+
+    def test_real_authors_pass(self):
+        # Genuine author names — must NOT be flagged.
+        for name in (
+            "Smith, John",
+            "Daniel S. Levine",
+            "Aristotle",
+            "Bell",
+            "Alison Stenning",  # a real-looking name (wrong paper, but a name)
+            "Geim, A. K.",
+        ):
+            assert is_garbage_author(name) is False, f"false positive: {name!r}"
+
+    def test_sanitize_drops_only_garbage(self):
+        authors = [
+            {"name": "DRP"},
+            {"name": "Smith, John"},
+            {"name": "Microsoft Office User"},
+        ]
+        assert _sanitize_authors(authors) == [{"name": "Smith, John"}]
 
 
 class TestGarbageTitleGatesS2Fallback:
@@ -149,3 +193,73 @@ class TestGarbageTitleGatesS2Fallback:
         m.assert_called_once()
         assert result["doi"] == "10.1038/nmat1849"
         assert result["source"] == "s2"
+
+
+class TestBodyTitleRescue:
+    """The text-rescue step: when the embedded title is junk/empty and there
+    is no DOI, mine a candidate title from the first-page body text and
+    re-query S2 — accepting the hit only if it verifies against the body."""
+
+    _TITLE = "Ballistic carbon nanotube field-effect transistors"
+    _BODY = (
+        "Ballistic carbon nanotube field-effect transistors\n"
+        "Ali Javey, Jing Guo, Qian Wang, Mark Lundstrom, Hongjie Dai\n\n"
+        "Abstract: The performance of ballistic carbon nanotube "
+        "field-effect transistors is reported here in depth.\n"
+    )
+
+    def _meta(self, *, embedded_title: str) -> dict:
+        return {
+            "pdf_hash": "deadbeef",
+            "page_count": 4,
+            "first_pages_text": self._BODY,
+            "info": {"title": embedded_title},
+            "doi": None,
+        }
+
+    def test_rescue_succeeds_when_s2_hit_verifies(self):
+        s2_hit = {
+            "title": self._TITLE,
+            "authors": [{"name": "Javey, Ali"}],
+            "year": 2003,
+            "doi": "10.1038/nature01797",
+            "journal": "Nature",
+            "abstract": "",
+            "entry_type": "article",
+            "source": "s2",
+        }
+        # Embedded title is the dvips default → cascade falls to the
+        # body-text rescue, which mines the real title and queries S2.
+        meta = self._meta(embedded_title="No Job Name")
+        with (
+            patch("precis.ingest.lookup.extract_pdf_meta", return_value=meta),
+            patch("precis.ingest.lookup.lookup_title", return_value=s2_hit) as m,
+        ):
+            result = lookup("/fake/path.pdf")
+        m.assert_called_once()
+        assert m.call_args.args[0] == self._TITLE  # queried the body title
+        assert result["source"] == "s2_body_title"
+        assert result["doi"] == "10.1038/nature01797"
+
+    def test_rescue_rejected_when_s2_hit_does_not_verify(self):
+        # S2 returns a plausible-but-wrong paper not present in the body —
+        # verify_metadata rejects it and we fall to the embedded fallback
+        # (blank title, flagged for triage) rather than store the wrong one.
+        wrong = {
+            "title": "Graphene plasmonics for terahertz metamaterials",
+            "authors": [{"name": "Nobody, A."}],
+            "year": 2012,
+            "doi": "10.1000/wrong",
+            "journal": "X",
+            "abstract": "",
+            "entry_type": "article",
+            "source": "s2",
+        }
+        meta = self._meta(embedded_title="No Job Name")
+        with (
+            patch("precis.ingest.lookup.extract_pdf_meta", return_value=meta),
+            patch("precis.ingest.lookup.lookup_title", return_value=wrong),
+        ):
+            result = lookup("/fake/path.pdf")
+        assert result["source"] == "embedded"
+        assert result["title"] == ""  # junk embedded title cleared, no wrong store

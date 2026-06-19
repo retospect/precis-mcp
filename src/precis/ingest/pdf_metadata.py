@@ -47,8 +47,18 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from precis.ingest.lookup import lookup, lookup_doi
-from precis.ingest.pdf_sidecar import extract_doi_from_filename, extract_pdf_meta
+from precis.ingest.lookup import (
+    _parse_author_string,
+    _sanitize_authors,
+    lookup,
+    lookup_doi,
+)
+from precis.ingest.pdf_sidecar import (
+    extract_doi_from_filename,
+    extract_pdf_meta,
+    is_garbage_title,
+    is_pii,
+)
 
 log = logging.getLogger(__name__)
 
@@ -464,27 +474,23 @@ def extract_metadata_from_sources(
         except Exception as e:
             log.debug("Lookup cascade failed for %s: %s", pdf_path, e)
 
-    # 5. Fallback: embedded PDF metadata
+    # 5. Fallback: embedded PDF metadata. Garbage values (dvips
+    # "No Job Name" titles, tool/account-stamp authors like "DRP") are
+    # dropped here too — this is the last-ditch path that bypasses the
+    # ``lookup()`` cascade's own filtering, so it must apply the same
+    # gates or the junk it filters upstream leaks straight back in.
     if not metadata.title:
         info = pdf_meta.get("info", {})
-        metadata.title = info.get("title", "")
+        raw_title = info.get("title", "")
+        if raw_title and not is_pii(raw_title) and not is_garbage_title(raw_title):
+            metadata.title = raw_title
     if not metadata.authors:
         info = pdf_meta.get("info", {})
         author_str = info.get("author", "")
         if author_str:
-            # Split on semicolons or " and "
-            if ";" in author_str:
-                metadata.authors = [
-                    a.strip() for a in author_str.split(";") if a.strip()
-                ]
-            elif " and " in author_str.lower():
-                metadata.authors = [
-                    a.strip()
-                    for a in re.split(r"\s+and\s+", author_str, flags=re.I)
-                    if a.strip()
-                ]
-            else:
-                metadata.authors = [author_str.strip()]
+            metadata.authors = [
+                a["name"] for a in _sanitize_authors(_parse_author_string(author_str))
+            ]
 
     _strip_nul_bytes(metadata)
     return metadata

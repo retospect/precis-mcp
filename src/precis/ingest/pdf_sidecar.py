@@ -205,6 +205,22 @@ _GARBAGE_TITLE_RES = [
     re.compile(r"^\s*USING\s+STANDARD\b", re.IGNORECASE),
     # Raw LaTeX source leakage.
     re.compile(r"\\(?:documentclass|usepackage|begin\{|end\{)"),
+    # Authoring-tool default / placeholder titles. These are baked into the
+    # PDF /Title by the *generator*, not the author, so they describe the
+    # toolchain, never the paper:
+    #   * "No Job Name"        — dvips/TeX default when no \title is set
+    #     (the classic case that produced ref 36186's title).
+    #   * "Microsoft Word - <filename>" — Word's auto-title from the .doc
+    #     filename; the trailing name is a filename, not a title.
+    #   * "untitled" / "Untitled document" — editor placeholders.
+    #   * "PowerPoint Presentation", "Presentation1" — Office defaults.
+    #   * "Slide 1" — exported-slide default.
+    re.compile(r"^\s*no\s+job\s+name\s*$", re.IGNORECASE),
+    re.compile(r"^\s*microsoft\s+word\s*-\s", re.IGNORECASE),
+    re.compile(r"^\s*untitled\b", re.IGNORECASE),
+    re.compile(r"^\s*powerpoint\s+presentation\s*$", re.IGNORECASE),
+    re.compile(r"^\s*presentation\d*\s*$", re.IGNORECASE),
+    re.compile(r"^\s*slide\s+\d+\s*$", re.IGNORECASE),
 ]
 
 
@@ -221,6 +237,125 @@ def is_garbage_title(text: str) -> bool:
     if not text or not text.strip():
         return True
     return any(p.search(text) for p in _GARBAGE_TITLE_RES)
+
+
+# Embedded ``/Author`` values that name the *tool or OS account* that
+# produced the PDF, not the paper's author. Authoring software routinely
+# stamps the logged-in user ("Microsoft Office User", "Administrator") or
+# its own name into the Info dict. These must never become a stored author
+# (and, via the slug minter, must never become a cite_key surname).
+_GARBAGE_AUTHOR_EXACT: frozenset[str] = frozenset(
+    {
+        "user",
+        "users",
+        "windows user",
+        "microsoft office user",
+        "administrator",
+        "admin",
+        "owner",
+        "guest",
+        "default",
+        "unknown",
+        "author",
+        "authors",
+        "title",
+        "microsoft",
+        "microsoft word",
+        "adobe acrobat",
+        "acrobat",
+        "acrobat distiller",
+        "distiller",
+        "pdfcreator",
+        "ghostscript",
+        "latex",
+        "pdflatex",
+        "dvips",
+        "tex",
+    }
+)
+
+# Bare initials with no surname: "DRP", "J.S.", "AB", "A.B.C." — an /Author
+# value that's only initials carries no usable surname for the slug and is
+# almost always a document-owner stamp, not a citable author.
+_INITIALS_ONLY_RE = re.compile(r"^(?:[A-Z]\.?){1,4}$")
+
+
+def is_garbage_author(name: str) -> bool:
+    """Return True if *name* is a tool/account stamp, not a real author.
+
+    Mirrors :func:`is_garbage_title` for the ``/Author`` field. Used to
+    drop junk before a parsed embedded-author string becomes a stored
+    author (and, downstream, a cite_key surname). Conservative on the
+    initials check — only an all-uppercase / dotted token with no
+    surname is rejected, so genuine single-surname authors ("Aristotle",
+    "Bell") still pass.
+    """
+    if not name or not name.strip():
+        return True
+    stripped = name.strip()
+    if stripped.lower() in _GARBAGE_AUTHOR_EXACT:
+        return True
+    # No alphabetic characters at all (pure digits / punctuation).
+    if not any(c.isalpha() for c in stripped):
+        return True
+    # Bare initials with no surname ("DRP", "J.S.").
+    if _INITIALS_ONLY_RE.match(stripped.replace(" ", "")):
+        return True
+    return False
+
+
+# First-page lines that are page furniture, never the title: emails,
+# URLs/DOIs, arXiv banners, "Downloaded from …", copyright notices,
+# volume/issue/page rules, and bare page numbers.
+_TITLE_SKIP_LINE_RE = re.compile(
+    r"@"
+    r"|https?://"
+    r"|\bdoi\b"
+    r"|\barxiv\b"
+    r"|downloaded\s+from"
+    r"|copyright|©|\ball\s+rights\s+reserved\b"
+    r"|^\s*(?:vol|volume|no|issue|pp?)\b"
+    r"|^\s*\d+\s*$"
+    r"|^\s*fig(?:ure)?\b",
+    re.IGNORECASE,
+)
+
+
+def candidate_title_from_text(text: str, *, max_lines: int = 25) -> str:
+    """Best-effort paper title mined from first-page body text.
+
+    The title is typically the first substantial, prose-like line near
+    the top of page 1 — above the author list and abstract. This is a
+    *candidate only*: it's good enough to feed a fuzzy S2/CrossRef title
+    search, but callers needing correctness must confirm it (e.g. via
+    :func:`precis.ingest.verify_metadata.verify_metadata` against the
+    body, or by accepting only a lookup round-trip that verifies). Used
+    by the lookup cascade's text-rescue step for scanned / dvips PDFs
+    whose embedded ``/Title`` is empty or junk ("No Job Name").
+
+    Returns ``""`` when nothing plausible is found. Takes only the first
+    title-like line — a wrapped 2-line title is left truncated on purpose:
+    distinguishing a title's continuation line from the author list that
+    usually follows it is unreliable ("J. Smith" has no comma), and a
+    truncated leading fragment is still enough for S2's fuzzy title search,
+    which the verify gate then confirms.
+    """
+    if not text:
+        return ""
+    for raw in text.splitlines()[:max_lines]:
+        line = raw.strip()
+        if not line:
+            continue
+        if _TITLE_SKIP_LINE_RE.search(line):
+            continue
+        # Skip rules / banners that are mostly non-alphabetic.
+        if sum(c.isalpha() for c in line) < max(8, len(line) // 2):
+            continue
+        if len(line) >= 12 and not is_garbage_title(line):
+            return line
+        # First substantial line was too short / garbage — keep scanning a
+        # few more lines (handles a stray short header above the title).
+    return ""
 
 
 def _clean_doi(doi: str) -> str:

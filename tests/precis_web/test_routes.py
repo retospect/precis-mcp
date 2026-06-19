@@ -394,6 +394,35 @@ def test_paper_edit_invalid_year_silently_dropped(client, runtime) -> None:
     assert args["title"] == "Hi"
 
 
+def test_paper_edit_error_surfaces_handler_message(client, runtime) -> None:
+    """A handler-rejected edit renders the error page with the actual
+    message — not an empty ``()`` heading. Regression: the route was
+    passing ``body``/``is_error`` keys the error template never reads
+    (it wants ``title``/``detail``/``status``), so every field rendered
+    blank under ChainableUndefined."""
+    runtime.error_verbs.add("edit")
+    resp = client.post(
+        "/papers/10/edit",
+        data={"title": "New title"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "invalid edit: rejected by handler" in resp.text
+    assert "Edit error" in resp.text
+    # The empty-substitution symptom must not reappear.
+    assert "()" not in resp.text
+
+
+def test_paper_delete_error_surfaces_handler_message(client, runtime) -> None:
+    """Same regression as the edit path, for the delete route."""
+    runtime.error_verbs.add("delete")
+    resp = client.post("/papers/10/delete", follow_redirects=False)
+    assert resp.status_code == 400
+    assert "invalid delete: rejected by handler" in resp.text
+    assert "Delete error" in resp.text
+    assert "()" not in resp.text
+
+
 def test_paper_delete_dispatches_then_redirects_to_list(client, runtime) -> None:
     """The delete button POSTs to /papers/{id}/delete which dispatches
     the soft-delete verb and bounces to the list page."""

@@ -27,6 +27,7 @@ from precis.cli import (
     add,
     cron,
     dedupe,
+    fix_metadata,
     gripe,
     heartbeat,
     ingest,
@@ -83,6 +84,10 @@ def main() -> None:
 
     if args.cmd == "maintenance":
         maintenance.run(args)
+        return
+
+    if args.cmd == "fix-metadata":
+        fix_metadata.run(args)
         return
 
     if args.cmd == "gripes":
@@ -175,6 +180,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     migrate.add_parser(sub)
     maintenance.add_parser(sub)
+    fix_metadata.add_parser(sub)
     gripe.add_parser(sub)
     add.add_parser(sub)
     watch.add_parser(sub)

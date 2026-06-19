@@ -333,7 +333,7 @@ async def edit(
         return templates.TemplateResponse(
             request,
             "error.html.j2",
-            {"active_tab": "papers", "body": body, "is_error": True},
+            {"title": "Edit error", "detail": body, "status": 400},
             status_code=400,
         )
     return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
@@ -357,7 +357,7 @@ async def delete(
         return templates.TemplateResponse(
             request,
             "error.html.j2",
-            {"active_tab": "papers", "body": body, "is_error": True},
+            {"title": "Delete error", "detail": body, "status": 400},
             status_code=400,
         )
     return RedirectResponse(url="/papers", status_code=303)

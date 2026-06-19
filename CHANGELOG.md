@@ -8,6 +8,47 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-19 — junk-metadata ingest + the "()" edit error)
+
+- **Paper metadata-edit error page rendered as a blank `()`.** The
+  `/papers/{id}/edit` and `/delete` routes passed the error template the
+  wrong context keys (`body`/`is_error` instead of `title`/`detail`/
+  `status`), so under Jinja's `ChainableUndefined` every field rendered
+  empty — heading `()`, no detail. Now they pass the canonical keys; the
+  real handler message is shown. (`precis_web/routes/papers.py`.)
+- **Scanned / dvips PDFs ingested with junk metadata** (title
+  `"No Job Name"`, author initials like `"DRP"`, or empty title minting
+  an `anon…` slug). Root causes, all fixed:
+  - `is_garbage_title` now catches authoring-tool default titles
+    (`No Job Name`, `Microsoft Word - …`, `untitled`, `PowerPoint
+    Presentation`, `Slide N`).
+  - New `is_garbage_author` drops tool/account-stamp `/Author` values
+    (bare initials, `Microsoft Office User`, `Administrator`, …); wired
+    into the embedded-metadata fallback.
+  - Built the **text-rescue step** the lookup cascade only referenced in
+    comments: when the embedded title is junk and there's no DOI, mine a
+    candidate title from first-page body text and re-query S2 —
+    accepting the hit **only if `verify_metadata` confirms it** against
+    the body (`candidate_title_from_text` + the new step in `lookup()`).
+  - Plugged the leak in `extract_metadata_from_sources` that re-pulled
+    the raw embedded `/Title` + `/Author` *after* the cascade had
+    already filtered them.
+
+### Added (2026-06-19 — `precis fix-metadata` remediation)
+
+- **`precis fix-metadata`** re-derives metadata for local papers already
+  ingested with a junk/empty title or no authors (the symptom above).
+  Per paper it relocates the on-disk PDF, re-runs the (now-fixed)
+  metadata cascade, and either **fixes** it — rewriting
+  title/authors/year/`meta.abstract`, renaming the `cite_key` slug +
+  moving the PDF to the matching `<corpus>/<letter>/<cite_key>.pdf`
+  path, refreshing DOI aliases, and rewriting the
+  `card_title`/`card_authors`/`card_combined` chunks (dropping their
+  embeddings + keywords so the workers re-derive them) — or tags it
+  `needs-triage` for a future manual paste-title→S2 flow. Dry-run by
+  default; `--apply` commits; re-runnable and resumable.
+  (`ingest/remediate.py`, `cli/fix_metadata.py`.)
+
 ### Added (2026-06-19 — projects: workspace promoted to first-class)
 
 - **A *project* is a strategic root that owns a `meta.workspace`.** No
