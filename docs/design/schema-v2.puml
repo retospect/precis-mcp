@@ -1,16 +1,27 @@
 @startuml schema-v2
 
-' precis-mcp v2 schema — LOCKED design as of 2026-05-21.
+' precis-mcp v2 schema — core layout locked 2026-05-21.
 ' Render via:  scripts/render-uml schema-v2.puml   (-p for PNG)
 '
+' DRIFT NOTE (2026-06-19): this diagram predates several shipped
+' migrations and needs a redraw. Known gaps vs. live migrations
+' 0001..0025:
+'   - DROP the ref_segments / ref_segment_sentences tables — gone in
+'     0003_drop_legacy_segments.sql (F20). Discovery is now per-chunk
+'     KeyBERT on chunks.keywords TEXT[] + chunks.keywords_meta JSONB.
+'   - ADD refs.parent_id + refs.prio (todo tree, 0013/0014).
+'   - Reconcile the job kind as a child of todo (0005/0016 restore).
+' Until the redraw lands, trust the migrations + storage-v2.md prose
+' over the boxes here.
+'
 ' Companion docs:
-'   docs/design/storage-v2.md            — prose + worker pipeline + discovery layer
+'   docs/design/storage-v2.md            — prose + worker pipeline + discovery layer (F20-amended)
 '   docs/decisions/0005-greenfield-migrations.md
 '   docs/decisions/0006-tri-identifier-scheme.md  (slug section superseded by 0008)
 '   docs/decisions/0007-derived-queue-no-block-jobs.md
 '   docs/decisions/0008-drop-slug-identifier-normalisation.md
 '   docs/decisions/0017-derived-queue-family.md  (artifact_kinds, ref_artifacts)
-'   docs/decisions/0018-persistent-discovery-layer.md  (ref_segments, ref_segment_sentences)
+'   docs/decisions/0018-persistent-discovery-layer.md  (SUPERSEDED — ref_segments dropped; per-chunk KeyBERT now)
 '   docs/design/finding-chase.md  (kind=finding, ref_events, fetcher cascade)
 '
 hide circle

@@ -4,7 +4,9 @@
   **2026-06-05 amendment (F20):** the `ref_segments` /
   `ref_segment_sentences` discovery layer described in §"Discovery layer"
   below was superseded by per-chunk KeyBERT — tables dropped in
-  migration `0011_chunk_keywords.sql`. Discovery now reads
+  migration `0003_drop_legacy_segments.sql` (the `0011_chunk_keywords`
+  reference predates the greenfield migration renumber; the live
+  sequence is `0001..0025` under `src/precis/migrations/`). Discovery now reads
   `chunks.keywords TEXT[]` at request time
   (`src/precis/utils/toc_db.py`). See ADR 0018 status note and
   `CLAUDE.md`. The rest of this document remains current.

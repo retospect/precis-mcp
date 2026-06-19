@@ -33,7 +33,7 @@ from precis.utils import mentions
 from precis.utils.authors import author_names
 from precis.utils.claude_agent import ClaudeAgentError
 from precis_web import ask
-from precis_web.deps import await_dispatch, get_store, templates
+from precis_web.deps import await_dispatch, get_store, get_web_config, templates
 
 router = APIRouter(prefix="/refs", tags=["refs"])
 
@@ -883,6 +883,7 @@ async def _run_followup(
     slug = ask.followup_slug(source_kind, source_ref_id, chunk_pos)
     handle = ask.source_handle(source_kind, source_ref_id, chunk_pos)
     source_title = (source.title or "").split("\n", 1)[0][:120] or handle
+    asker = get_web_config(request).owner
 
     def _err(title: str, detail: str) -> Response:
         return templates.TemplateResponse(
@@ -901,7 +902,7 @@ async def _run_followup(
             "kind": "conv",
             "id": slug,
             "text": question,
-            "author": ask.ASKER,
+            "author": asker,
             "title": f"Follow-up · {source_title}",
             "ref_meta": {
                 "followup_source": handle,

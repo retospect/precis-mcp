@@ -1,0 +1,256 @@
+"""``precis schema-doc`` — generate a Mermaid ER diagram of the DB.
+
+Introspects ``information_schema`` for base-table columns + foreign
+keys and renders a Markdown file (default ``docs/design/schema.md``)
+carrying a Mermaid ``erDiagram``. A *generated* artifact — checked in
+so GitHub renders it inline, and regenerated rather than hand-edited
+so it cannot drift from the live schema (which the hand-drawn
+``schema-v2.puml`` did).
+
+Two row transports, one renderer:
+
+* ``--dsn`` (default ``PRECIS_DATABASE_URL``) — connect with psycopg
+  and run the query. Works inside the container / on a cluster node.
+* ``--from-tsv PATH|-`` — read pre-fetched tab-separated rows. The
+  ``scripts/gen-schema`` wrapper uses this: prod's pgbouncer password
+  lives in caspar's ``.pgpass``, so the introspection runs *on* caspar
+  via ssh and the rows are piped here.
+
+See ``docs/design/schema-doc-and-manual.md``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+#: One UNION-ALL stream, tab-separated, discriminated by a leading
+#: ``col`` / ``fk`` field. Base tables only (``v_*`` views excluded via
+#: ``table_type = 'BASE TABLE'``). Column order is restored in the
+#: renderer (a UNION can't ``ORDER BY`` the text ordinal numerically).
+INTROSPECT_SQL = """
+SELECT 'col' AS rec, c.table_name, c.ordinal_position::text, c.column_name,
+       c.data_type,
+       CASE WHEN pk.column_name IS NOT NULL THEN 'PK' ELSE '' END,
+       CASE WHEN fk.column_name IS NOT NULL THEN 'FK' ELSE '' END
+  FROM information_schema.columns c
+  JOIN information_schema.tables t
+    ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+   AND t.table_type = 'BASE TABLE'
+  LEFT JOIN (
+    SELECT kcu.table_name, kcu.column_name
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON kcu.constraint_name = tc.constraint_name
+       AND kcu.table_schema = tc.table_schema
+     WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
+  ) pk ON pk.table_name = c.table_name AND pk.column_name = c.column_name
+  LEFT JOIN (
+    SELECT kcu.table_name, kcu.column_name
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON kcu.constraint_name = tc.constraint_name
+       AND kcu.table_schema = tc.table_schema
+     WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'
+  ) fk ON fk.table_name = c.table_name AND fk.column_name = c.column_name
+ WHERE c.table_schema = 'public'
+UNION ALL
+SELECT 'fk', tc.table_name, '0', kcu.column_name, ccu.table_name, ccu.column_name, ''
+  FROM information_schema.table_constraints tc
+  JOIN information_schema.key_column_usage kcu
+    ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+  JOIN information_schema.constraint_column_usage ccu
+    ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+ WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'
+ ORDER BY 1 DESC, 2;
+"""
+
+
+def _safe_type(data_type: str) -> str:
+    """Collapse a pg type to a single Mermaid-safe token.
+
+    Mermaid ER attribute types must be one token — ``timestamp with
+    time zone`` would break the parse, so non-word characters become
+    underscores (``timestamp_with_time_zone``).
+    """
+    return "".join(ch if ch.isalnum() else "_" for ch in data_type) or "unknown"
+
+
+def parse_tsv(text: str) -> tuple[list[list[str]], list[list[str]]]:
+    """Split the introspection stream into (column rows, fk rows).
+
+    Each line is ``rec\\t...`` — ``col`` rows carry
+    ``[rec, table, ord, column, type, pk, fk]`` and ``fk`` rows carry
+    ``[rec, from_table, _, from_col, to_table, to_col, _]``. Short or
+    blank lines are skipped defensively.
+    """
+    cols: list[list[str]] = []
+    fks: list[list[str]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if fields[0] == "col" and len(fields) >= 7:
+            cols.append(fields)
+        elif fields[0] == "fk" and len(fields) >= 6:
+            fks.append(fields)
+    return cols, fks
+
+
+def render_mermaid(
+    cols: list[list[str]],
+    fks: list[list[str]],
+    *,
+    snapshot: str | None = None,
+) -> str:
+    """Render the full ``schema.md`` body from parsed rows.
+
+    Pure: no DB, no I/O. ``snapshot`` is a human label for the source
+    (e.g. ``precis_prod @ 2026-06-19``) stamped into the banner.
+    """
+    # Group columns by table, ordered by ordinal position.
+    by_table: dict[str, list[list[str]]] = {}
+    for row in cols:
+        by_table.setdefault(row[1], []).append(row)
+    for rows in by_table.values():
+        rows.sort(key=lambda r: int(r[2]))
+
+    tables = sorted(by_table)
+    lines: list[str] = []
+    lines.append("# Database schema (generated)")
+    lines.append("")
+    lines.append(
+        "> **DO NOT EDIT.** Generated by `precis schema-doc` from the "
+        "live database — regenerate with `scripts/gen-schema` rather "
+        "than hand-editing, so it can't drift. The hand-drawn "
+        "[`schema-v2.puml`](./schema-v2.puml) is the *conceptual* "
+        "sketch; this is the *actual*."
+    )
+    lines.append(">")
+    lines.append(
+        f"> Source: {snapshot or 'unknown'} · "
+        f"{len(tables)} base tables · {len(fks)} foreign keys."
+    )
+    lines.append("")
+    lines.append("```mermaid")
+    lines.append("erDiagram")
+    for table in tables:
+        lines.append(f"    {table} {{")
+        for row in by_table[table]:
+            _, _, _, col, dtype, pk, fk = row[:7]
+            key = "PK" if pk == "PK" else ("FK" if fk == "FK" else "")
+            attr = f"        {_safe_type(dtype)} {col}"
+            if key:
+                attr += f" {key}"
+            lines.append(attr)
+        lines.append("    }")
+    # One relationship edge per FK: parent ||--o{ child : "fk_col".
+    for fkrow in sorted(fks, key=lambda r: (r[4], r[1], r[3])):
+        _, from_table, _, from_col, to_table, to_col = fkrow[:6]
+        if from_table == to_table:
+            # Self-reference: Mermaid needs a distinct render; keep it
+            # simple with a non-identifying edge.
+            lines.append(f'    {to_table} ||--o{{ {from_table} : "{from_col} (self)"')
+        else:
+            lines.append(f'    {to_table} ||--o{{ {from_table} : "{from_col}"')
+    lines.append("```")
+    lines.append("")
+    # Compact listing so the doc is useful even without a Mermaid renderer.
+    lines.append("## Tables")
+    lines.append("")
+    lines.append("| Table | Columns | PK |")
+    lines.append("|-------|--------:|----|")
+    for table in tables:
+        rows = by_table[table]
+        pk_cols = ", ".join(r[3] for r in rows if r[5] == "PK") or "—"
+        lines.append(f"| `{table}` | {len(rows)} | {pk_cols} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _fetch_via_dsn(dsn: str) -> str:
+    """Run the introspection query over psycopg, return the TSV stream.
+
+    Shapes the rows back into the same ``rec\\t...`` lines the
+    ``--from-tsv`` path consumes, so both transports hit one parser.
+    """
+    import psycopg
+
+    out: list[str] = []
+    with psycopg.connect(dsn) as conn:
+        for row in conn.execute(INTROSPECT_SQL).fetchall():
+            out.append("\t".join("" if v is None else str(v) for v in row))
+    return "\n".join(out)
+
+
+def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """Register the ``schema-doc`` subparser on ``sub``."""
+    parser = sub.add_parser(
+        "schema-doc",
+        help="Generate a Mermaid ER diagram of the DB schema.",
+    )
+    parser.add_argument(
+        "--database-url",
+        default=None,
+        help="Override PRECIS_DATABASE_URL (the psycopg source).",
+    )
+    parser.add_argument(
+        "--from-tsv",
+        default=None,
+        metavar="PATH",
+        help="Read pre-fetched introspection rows (tab-separated) "
+        "instead of connecting. '-' reads stdin. Used by "
+        "scripts/gen-schema (prod auth lives on caspar).",
+    )
+    parser.add_argument(
+        "--snapshot",
+        default=None,
+        help="Human label for the source, stamped into the banner "
+        "(e.g. 'precis_prod @ 2026-06-19').",
+    )
+    parser.add_argument(
+        "-o",
+        "--out",
+        default="docs/design/schema.md",
+        help="Output path ('-' for stdout). Default docs/design/schema.md.",
+    )
+    return parser
+
+
+def run(args: argparse.Namespace) -> None:
+    """Execute ``precis schema-doc``."""
+    from_tsv = getattr(args, "from_tsv", None)
+    if from_tsv is not None:
+        if from_tsv == "-":
+            text = sys.stdin.read()
+        else:
+            text = Path(from_tsv).read_text(encoding="utf-8")
+    else:
+        from precis.cli._common import resolve_dsn
+
+        dsn = resolve_dsn(getattr(args, "database_url", None))
+        text = _fetch_via_dsn(dsn)
+
+    cols, fks = parse_tsv(text)
+    if not cols:
+        print("schema-doc: no columns found in source", file=sys.stderr)
+        sys.exit(1)
+    body = render_mermaid(cols, fks, snapshot=getattr(args, "snapshot", None))
+
+    out = getattr(args, "out", "docs/design/schema.md")
+    if out == "-":
+        sys.stdout.write(body + "\n")
+    else:
+        Path(out).write_text(body + "\n", encoding="utf-8")
+        n_tables = len({c[1] for c in cols})
+        print(f"schema-doc: wrote {out} ({n_tables} tables, {len(fks)} FKs)")
+
+
+__all__ = [
+    "INTROSPECT_SQL",
+    "add_parser",
+    "parse_tsv",
+    "render_mermaid",
+    "run",
+]

@@ -16,8 +16,8 @@ Differences from ``claude_inproc``:
 - ``meta.executor = 'coordinator'`` (not ``'claude_inproc'``).
 - Short lease (5 minutes per slice). Each yield/resume cycle
   brings the lease back; the cumulative lifetime is unbounded.
-- The claim SQL excludes ``ask-user:*`` / ``asking-reto:*`` /
-  ``halt:*`` open-namespace exclusion tags via the existing
+- The claim SQL excludes ``ask-user:*`` / ``halt:*``
+  open-namespace exclusion tags via the existing
   :func:`precis.handlers._todo_views._doable_exclusion_clause`
   helper. Pause-for-human use the same tagging convention
   Hermes / asa-bot already render in the attention view.
@@ -127,7 +127,7 @@ def _claim_jobs(
 
     Same shape as the claude_inproc claim but with ``exclude_paused``:
     rows carrying an open-namespace pause tag (``ask-user:*`` /
-    ``asking-reto:*`` / ``halt:*`` / ``child-failed:*``) are skipped via
+    ``halt:*`` / ``child-failed:*``) are skipped via
     the shared exclusion clause so the vocabulary stays in sync with the
     dispatcher's candidate query.
     """

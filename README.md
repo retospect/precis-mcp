@@ -48,9 +48,13 @@ One tool surface — **seven verbs** discriminated by a single `kind=`
 argument — over three categories of content:
 
 - **Ref kinds** (content addressed by slug or integer id): `paper`,
-  `skill`, `oracle`, `conv`, `markdown`, `plaintext`,
+  `skill`, `oracle`, `conv`, `markdown`, `plaintext`, `tex`,
   `python`, `todo`, `memory`, `gripe`, `flashcard`,
-  `citation` (verified claim → source quote).
+  `citation` (verified claim → source quote), `finding`
+  (reviewer-persona claim + chase chain), `job` (offline LLM run,
+  child of a `todo`), `provenance` (derivation audit trail),
+  `pres` (slide decks). This is a sample — `precis-overview` and
+  the synthesised `precis-help` skill enumerate the live set.
 - **Tool kinds** (stateless or cache-backed; pass `q=` or `id=`, get
   text back): `calc`, `math` (Wolfram), `youtube`, `web` (fetch +
   search + bookmark), `websearch` / `perplexity-reasoning` /
@@ -97,14 +101,16 @@ Extras (each enables its kinds; omit any you don't want):
 | `external`  | `math` (Wolfram), `youtube`, `web`, Perplexity trio | no |
 | `patent`    | `patent` kind (EPO Open Patent Services)          | no |
 | `web`       | `precis web` browser UI (FastAPI + Jinja + HTMX)  | no |
+| `tex`       | `tex` kind — `.tex` files under `PRECIS_ROOT` (lxml) | no |
 | `docx`      | (queued — not yet wired)                          | — |
-| `tex`       | (queued — not yet wired)                          | — |
 | `plot`      | (queued — not yet wired)                          | — |
 | `all`       | All of the above.                                 | yes |
 
 A bare `pip install precis-mcp` gives you the state kinds (`todo`,
 `memory`, `gripe`, `flashcard`, `conv`, `oracle`, `skill`,
 `random`) and the `markdown` / `plaintext` / `python` file kinds.
+(The `tex` file kind also rides on `PRECIS_ROOT`, but its `.tex`
+parsing pulls in the `[tex]` extra's `lxml`.)
 Optional deps surface as `InitError` at boot: the kind silently drops
 off the tool surface with a WARNING, the server stays up.
 
@@ -150,6 +156,7 @@ config:
 | Var                           | Purpose                                          |
 |-------------------------------|--------------------------------------------------|
 | `PRECIS_DATABASE_URL`         | Postgres DSN (required for all ref kinds).       |
+| `PRECIS_OWNER`                | Canonical username for the human running this instance — the author stamped on a web "ask a follow-up" and the `user:<owner>` addressee of an `ask-user` pause. Defaults to `owner`. |
 | `PRECIS_EMBEDDER`             | `"mock"` (dev/tests), `"bge-m3"` (in-process), or `"remote"` (HTTP client to `precis serve-embeddings`). |
 | `PRECIS_EMBEDDER_URL`         | Required for `remote`: ordered, comma-separated base URL(s), e.g. `http://127.0.0.1:8181`. First healthy endpoint wins; rest are fallback. |
 | `PRECIS_ROOT`                 | Single root dir for `markdown` / `plaintext` / `tex` kinds. The trio is hidden when unset; every read/write is normalised against this path (`Path.resolve()` + `relative_to`). |
@@ -175,16 +182,17 @@ config:
 - **Hybrid search.** Lexical `tsvector` + semantic `pgvector` (bge-m3)
   with Reciprocal Rank Fusion. Block-level; paper chunks, markdown
   paragraphs, Perplexity answers, web pages all searchable.
-- **Persistent discovery layer.** Papers get pre-computed per-segment
-  matryoshka-ordered keywords (distinctiveness-penalty scored against
-  sibling segments) and per-sentence bge-m3 embeddings. The TOC view
-  serves from `ref_segments` directly — no per-request DP/KeyBERT
-  recompute. Search hits carry indented `excerpt @ ~N: "..."`
-  sub-lines, picked by pgvector cosine rerank against the query
-  embedding, so result rows are actionable for triage without a
-  second fetch. The `citation` kind closes the loop: an agent's
-  writing-thread workflow can persist verified `claim → source quote`
-  records (see [`precis-citation-help`](src/precis/data/skills/precis-citation-help.md)).
+- **Per-chunk discovery layer (F20).** Every body chunk gets
+  KeyBERT keywords stored on `chunks.keywords TEXT[]` (GIN-indexed
+  canonical forms) + `chunks.keywords_meta JSONB` (versioned
+  short/long pairs with bge-m3 cosine scores), populated by the
+  `chunk_keywords` worker. The paper TOC view (`view='toc'`)
+  DP-clusters those keyword arrays at request time
+  (`src/precis/utils/toc_db.py`) — superseding the dropped
+  `ref_segments` / `ref_segment_sentences` precompute. The
+  `citation` kind closes the loop: an agent's writing-thread
+  workflow can persist verified `claim → source quote` records (see
+  [`precis-citation-help`](src/precis/data/skills/precis-citation-help.md)).
 - **Progressive disclosure.** Seven verbs and a `kind=` argument is
   the *whole* visible surface. Behind it sits a fan-out of ~25
   per-kind help skills, dozens of read views, an anchored edit
@@ -247,6 +255,10 @@ precis serve-embeddings            # Run the HTTP embedding service (the
                                    #   /healthz /readyz /model /embed /metrics).
 precis worker                      # Drive the derived-artifact queue.
 precis migrate                     # Run pending SQL migrations.
+precis schema-doc                  # Generate the Mermaid ER diagram of the
+                                   #   DB schema (docs/design/schema.md) from a
+                                   #   DSN or piped rows. scripts/gen-schema
+                                   #   wraps it to regen from prod over ssh.
 precis jobs ingest [root]          # Pre-warm .md / .txt / .tex under PRECIS_ROOT
                                    #   (mtime-gated; compose into launchers:
                                    #    `precis jobs ingest && precis serve`).
@@ -272,20 +284,24 @@ high-traffic ones:
   markdown exports.
 - **`find-citing-papers`** — sweep S2 for new papers citing the
   precis corpus, with bge-m3 cosine rerank and several noise-
-  reduction filters; reports land in
-  [`paper-ingest/`](../../../paper-ingest/README.md).
+  reduction filters; reports land in a `paper-ingest/` review dir.
 - **`enrich-paper-identifiers`** / **`retrofit-acatome-external-ids`**
   — backfill DOI / arXiv ids on legacy refs.
 
 ## Roadmap
 
-- `docx`, `tex`, `book`, `rmk` file handlers (Phase 6b/c).
+- `docx`, `book`, `rmk` file handlers (Phase 6b/c). (`tex` shipped.)
 - `web` bookmark mode + Wayback enrichment (gripe:3681 phase 2 + 4 — see [`OPEN-ITEMS.md`](OPEN-ITEMS.md)).
 - `voice` kind — STT/TTS bound to transcript refs (see [`docs/user-facing/voice-kind-spec.md`](docs/user-facing/voice-kind-spec.md)).
 - SDK extraction (`precis-core`) once the plugin API has settled.
 
 ## Documentation
 
+- [`AGENTS.md`](AGENTS.md) — **start here to contribute or change code.** The canonical guide: conventions, workflow, definition-of-done, ingest guarantees.
+- [`docs/README.md`](docs/README.md) — the documentation landing index (directory-by-directory map).
+- [`docs/architecture.md`](docs/architecture.md) — the system manual: a narrative overview tying the surface, kinds, storage, todo-tree, and workers together.
+- [`docs/design/schema.md`](docs/design/schema.md) — the **generated** DB schema diagram (Mermaid ER, produced from the live database — can't drift).
+- [`docs/decisions/README.md`](docs/decisions/README.md) — the ADR index (one record per decision; supersession graph). The individual ADRs live in [`docs/decisions/`](docs/decisions/).
 - [`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md) — write a third-party handler.
 - [`docs/user-facing/seven-verb-surface-migration.md`](docs/user-facing/seven-verb-surface-migration.md) — verb surface design rationale.
 - [`docs/user-facing/edit-protocol-spec.md`](docs/user-facing/edit-protocol-spec.md) — anchored edits across file kinds.

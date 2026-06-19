@@ -71,8 +71,8 @@ def claim_executor_jobs(
     ``STATUS:queued``, not terminal, lease expired or absent.
 
     When ``exclude_paused`` is True, also exclude rows carrying an
-    open-namespace pause tag (``ask-user:*`` / ``asking-reto:*`` /
-    ``halt:*`` / ``child-failed:*``) via the shared
+    open-namespace pause tag (``ask-user:*`` / ``halt:*`` /
+    ``child-failed:*``) via the shared
     :func:`_doable_exclusion_clause` so the vocabulary stays in sync
     with the dispatcher's candidate query.
     """

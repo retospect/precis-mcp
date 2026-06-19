@@ -1,7 +1,7 @@
 """Asks tab — todos waiting on the user for input.
 
-Surfaces open ``kind='todo'`` refs carrying an ``ask-user`` (or the
-legacy ``asking-reto``) open tag. The tag *value* carries the
+Surfaces open ``kind='todo'`` refs carrying an ``ask-user`` open tag.
+The tag *value* carries the
 question itself (``ask-user:<question>``), so this view renders the
 question inline beneath the todo's title — no extra lookup needed
 to see what's being asked.
@@ -14,8 +14,8 @@ operator decision but they're not "user input" in the literal sense.
 Each ask row carries an answer form. Submitting it (1) appends the
 operator's response to the todo body via ``edit(mode='replace')``
 so the answer is preserved for the planner, then (2) strips every
-``ask-user`` / ``asking-reto`` tag on the todo so the doable
-rotation can pick it up again.
+``ask-user`` tag on the todo so the doable rotation can pick it up
+again.
 """
 
 from __future__ import annotations
@@ -31,22 +31,22 @@ router = APIRouter(prefix="/asks", tags=["asks"])
 
 
 def _ask_value(tag_value: str) -> str:
-    """Strip the ``ask-user:`` / ``asking-reto:`` prefix from a tag.
+    """Strip the ``ask-user:`` prefix from a tag.
 
     Returns the bare question text, or ``""`` for the prefix-less
-    forms (``ask-user`` / ``asking-reto``) — those are "any human
-    will do" markers with no inline question.
+    ``ask-user`` form — an "any human will do" marker with no inline
+    question.
     """
-    for prefix in ("ask-user:", "asking-reto:"):
-        if tag_value.startswith(prefix):
-            return tag_value[len(prefix) :]
+    prefix = "ask-user:"
+    if tag_value.startswith(prefix):
+        return tag_value[len(prefix) :]
     return ""
 
 
 def _load_asks(
     store: Any, *, limit: int = 100, offset: int = 0
 ) -> list[dict[str, Any]]:
-    """Open todos carrying ask-user / asking-reto tags. One row per todo.
+    """Open todos carrying ask-user tags. One row per todo.
 
     Aggregates tag values so multiple asks on the same todo collapse
     into one row carrying every question and every raw tag (the latter
@@ -67,9 +67,7 @@ def _load_asks(
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND t.namespace = 'OPEN'
-               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%'
-                    OR t.value = 'asking-reto'
-                    OR t.value LIKE 'asking-reto:%%')
+               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2
                         JOIN tags t2 ON t2.tag_id = rt2.tag_id

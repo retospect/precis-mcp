@@ -33,6 +33,7 @@ _ENV_VAR_BINDINGS: tuple[tuple[str, str, str], ...] = (
     ("PRECIS_EMBEDDER", "embedder", "mock"),
     ("PRECIS_LOG_LEVEL", "log_level", "DEBUG"),
     ("PRECIS_DEFAULT_CORPUS", "default_corpus", "my-corpus"),
+    ("PRECIS_OWNER", "owner", "elmsfeuer"),
 )
 
 
@@ -76,10 +77,14 @@ def test_unset_env_var_leaves_field_at_default(
     features when unset)."""
     for var, _, _ in _ENV_VAR_BINDINGS:
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("PRECIS_OWNER", raising=False)
     cfg = PrecisConfig()
     assert cfg.database_url is None
     assert cfg.root is None
     assert cfg.python_roots is None
+    # Owner has a generic non-None default so a fresh install reads
+    # correctly without PRECIS_OWNER set (de-hardcoded from "reto").
+    assert cfg.owner == "owner"
 
 
 def test_double_prefixed_form_is_not_honoured(

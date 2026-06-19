@@ -214,6 +214,57 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   rename + PDF move when no author was recovered (the slug stays `anon…`
   either way), which also removes the `anon00` CiteKeyOverflow.
   (`ingest/remediate.py`, `cli/fix_metadata.py`.)
+### Added (2026-06-19 — generated schema diagram + system manual)
+
+- **`precis schema-doc`** — new CLI subcommand that introspects
+  `information_schema` (base tables, columns, PK/FK) and renders a
+  Mermaid ER diagram into a Markdown file (default
+  `docs/design/schema.md`). Two transports, one pure renderer:
+  `--database-url` (psycopg, for the container/cluster) or
+  `--from-tsv -` (pre-fetched rows). Because the diagram is *generated
+  from the live database* it can't drift the way the hand-drawn
+  `schema-v2.puml` did (which still showed the dropped `ref_segments`
+  tables and missed `parent_id` / `prio`).
+- **`scripts/gen-schema`** — wrapper that regenerates
+  `docs/design/schema.md` from prod: it runs the introspection on
+  caspar over ssh (where the pgbouncer password lives in `.pgpass`)
+  and pipes the rows into `precis schema-doc`.
+- **`docs/design/schema.md`** — the generated, current ER diagram
+  (33 base tables) checked in so GitHub renders it inline.
+- **`docs/architecture.md`** — a thin, link-heavy system manual
+  (Markdown, not PDF) tying the seven-verb surface, kinds, storage,
+  todo-tree, and workers together.
+- **`docs/README.md`** — a documentation landing index (front door to
+  the `docs/` tree). Both are linked from the top-level README.
+
+Plan: `docs/design/schema-doc-and-manual.md`.
+
+### Changed (2026-06-19 — user identity de-hardcoded + `asking-reto` removed)
+
+- **`PRECIS_OWNER` config + de-hardcoded "reto".** The human running
+  an instance was hard-coded as `"reto"` in the web "ask a follow-up"
+  path (`ASKER`), while the live tag data calls the same person
+  `user:elmsfeuer` and the web source convention calls them `owner`.
+  New `PrecisConfig.owner` / `WebConfig.owner` (env `PRECIS_OWNER`,
+  default `owner`) is now the single canonical handle: the follow-up
+  question turn is authored by `cfg.owner`, not the literal `"reto"`.
+  Reto's instance sets `PRECIS_OWNER=elmsfeuer`. See
+  `docs/design/user-identity-and-ask-routing.md`.
+- **Removed the deprecated `asking-reto` tag/view alias.** It had been
+  a back-compat alias for `ask-user` since the rename; prod carried no
+  `asking-reto` rows. `view='asking-reto'` is now an unknown view (use
+  `view='ask-user'`), and the dual-match SQL/strip logic across
+  `_todo_views`, `todo`, `nursery`, the coordinator/executor claim
+  comments, and the web Asks/Tasks routes drops the legacy form.
+  `render_asking_reto` → `render_ask_user`. **Breaking** for any
+  caller still passing `view='asking-reto'`.
+
+### Migrations
+
+- `0028_normalize_owner_identity_tag.sql` — repoints the one stray
+  bare `OPEN/reto` identity tag onto the canonical `OPEN/user:elmsfeuer`
+  (merge, not rename — the target may already exist). No-op on DBs
+  without the tag.
 
 ### Added (2026-06-19 — projects: workspace promoted to first-class)
 

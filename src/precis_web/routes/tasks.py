@@ -73,8 +73,6 @@ def _row_waits_on_tag(tags: list[str]) -> bool:
             return True
         if t == "ask-user" or t.startswith("ask-user:"):
             return True
-        if t == "asking-reto" or t.startswith("asking-reto:"):
-            return True
         if t.startswith("child-failed:"):
             return True
     return False
@@ -102,12 +100,7 @@ def _attention_icons(tags: list[str]) -> list[dict[str, str]]:
     has_paper = False
     paper_ref = ""
     for t in tags:
-        if (
-            t == "ask-user"
-            or t.startswith("ask-user:")
-            or t == "asking-reto"
-            or t.startswith("asking-reto:")
-        ) and not has_ask:
+        if (t == "ask-user" or t.startswith("ask-user:")) and not has_ask:
             has_ask = True
             out.append(
                 {

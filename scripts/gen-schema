@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Regenerate docs/design/schema.md from the live (prod) database.
+#
+# Prod's pgbouncer password lives in caspar's ~/.pgpass, and a tunnel
+# from a dev host hits "fe_sendauth: no password supplied". So the
+# introspection runs ON caspar via ssh (where auth works) and the rows
+# are piped into `precis schema-doc --from-tsv -`, which renders the
+# Mermaid ER diagram locally. The introspection SQL is sourced from the
+# command module so there's a single source of truth.
+#
+# Usage:
+#   scripts/gen-schema                      # → docs/design/schema.md
+#   scripts/gen-schema path/to/out.md       # → custom path
+#
+# Override the connection via env (defaults target precis_prod):
+#   PRECIS_SCHEMA_SSH_HOST  (default: caspar)
+#   PRECIS_SCHEMA_DB_HOST / _DB_PORT / _DB_USER / _DB_NAME
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+SSH_HOST="${PRECIS_SCHEMA_SSH_HOST:-caspar}"
+DB_HOST="${PRECIS_SCHEMA_DB_HOST:-100.126.127.107}"
+DB_PORT="${PRECIS_SCHEMA_DB_PORT:-6432}"
+DB_USER="${PRECIS_SCHEMA_DB_USER:-agent_rw}"
+DB_NAME="${PRECIS_SCHEMA_DB_NAME:-precis_prod}"
+OUT="${1:-docs/design/schema.md}"
+DATE="$(date +%Y-%m-%d)"
+
+# Single source of truth for the introspection query.
+SQL="$(uv run python -c 'from precis.cli.schema_doc import INTROSPECT_SQL; print(INTROSPECT_SQL)')"
+
+echo "gen-schema: introspecting ${DB_NAME} via ssh ${SSH_HOST} → ${OUT}"
+printf '%s\n' "$SQL" \
+  | ssh -o IdentityAgent=none "$SSH_HOST" \
+      "psql -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USER} -d ${DB_NAME} -tA -F\$'\t'" \
+  | uv run precis schema-doc --from-tsv - --snapshot "${DB_NAME} @ ${DATE}" -o "$OUT"

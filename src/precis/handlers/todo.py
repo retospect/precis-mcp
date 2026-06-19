@@ -16,8 +16,8 @@ shape with four first-class extensions:
    write what.
 
 3. **Tree-aware views** — ``roots``, ``projects``, ``strategic``,
-   ``tree``, ``doable``, ``waiting``, ``blocked``, ``ask-user`` (alias:
-   ``asking-reto``). The accepted set is the :class:`TodoView` closed
+   ``tree``, ``doable``, ``waiting``, ``blocked``, ``ask-user``.
+   The accepted set is the :class:`TodoView` closed
    vocabulary; the :data:`_TREE_SEARCH_VIEWS` dispatch table maps each
    to a renderer in :mod:`precis.handlers._todo_views`. ``projects``
    lists strategic roots that own a ``meta.workspace``.
@@ -76,7 +76,6 @@ class TodoView(StrEnum):
     WAITING = "waiting"
     BLOCKED = "blocked"
     ASK_USER = "ask-user"
-    ASKING_RETO = "asking-reto"  # deprecated alias for ASK_USER
     ATTENTION = "attention"
 
 
@@ -114,8 +113,7 @@ _TREE_SEARCH_VIEWS: dict[
     TodoView.DOABLE: _view_doable,
     TodoView.WAITING: lambda store, args, ps: views.render_waiting(store),
     TodoView.BLOCKED: lambda store, args, ps: views.render_blocked(store),
-    TodoView.ASK_USER: lambda store, args, ps: views.render_asking_reto(store),
-    TodoView.ASKING_RETO: lambda store, args, ps: views.render_asking_reto(store),
+    TodoView.ASK_USER: lambda store, args, ps: views.render_ask_user(store),
     TodoView.ATTENTION: lambda store, args, ps: views.render_attention(store),
 }
 

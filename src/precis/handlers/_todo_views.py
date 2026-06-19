@@ -37,8 +37,7 @@ if TYPE_CHECKING:
 #: Each entry is one of two shapes:
 #:
 #: * **bare value** (no trailing ``:``) — matched exactly against
-#:   ``tags.value``. Examples: ``halt``, ``ask-user`` (and the legacy
-#:   ``asking-reto`` alias).
+#:   ``tags.value``. Examples: ``halt``, ``ask-user``.
 #: * **prefix value** (ends in ``:``) — matched as a SQL LIKE prefix.
 #:   Examples: ``waiting-for:`` covers ``waiting-for:owner``,
 #:   ``waiting-for:paper:10.x/y1``, etc.
@@ -55,17 +54,15 @@ if TYPE_CHECKING:
 #: * ``ask-user`` / ``ask-user:<who-or-question>`` — yield to a human.
 #:   Bare = "any human will do"; ``ask-user:<handle>`` = specific person;
 #:   ``ask-user:<freeform>`` = the question itself, so the attention
-#:   view can render it inline. ``asking-reto`` / ``asking-reto:`` is
-#:   the legacy form kept here for back-compat with refs tagged before
-#:   the rename — production writes use ``ask-user`` going forward.
+#:   view can render it inline. (The pre-rename ``asking-reto`` alias
+#:   was removed 2026-06-19 — see
+#:   ``docs/design/user-identity-and-ask-routing.md``.)
 _DOABLE_EXCLUSION_TAGS: tuple[str, ...] = (
     "halt",
     "halt:",
     "waiting-for:",
     "ask-user",
     "ask-user:",
-    "asking-reto",
-    "asking-reto:",
     "child-failed:",
 )
 
@@ -841,13 +838,7 @@ def _render_node(
     tags = tags_by_ref.get(node["id"], [])
     claimed = next((t for t in tags if t.startswith("claimed-by:")), None)
     waiting = next((t for t in tags if t.startswith("waiting-for:")), None)
-    asking = any(
-        t == "asking-reto"
-        or t.startswith("asking-reto:")
-        or t == "ask-user"
-        or t.startswith("ask-user:")
-        for t in tags
-    )
+    asking = any(t == "ask-user" or t.startswith("ask-user:") for t in tags)
     # Slice-5: distinguish kind='job' rows so the operator sees
     # execution attempts as different from intent nodes. ⚙ is the
     # gear glyph the Watches panel already uses for scheduler-y
@@ -1138,8 +1129,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
                 WHERE EXISTS (
                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
-                     AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%'
-                          OR t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
+                     AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                 )
               ) AS asking
               FROM refs r
@@ -1156,7 +1146,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
     }
 
 
-# ── view: waiting / blocked / ask-user (legacy: asking-reto) ──────
+# ── view: waiting / blocked / ask-user ───────────────────────────
 
 
 def render_waiting(store: Store) -> Response:
@@ -1219,9 +1209,8 @@ def render_blocked(store: Store) -> Response:
     return Response(body="\n".join(lines))
 
 
-def render_asking_reto(store: Store) -> Response:
-    """Leaves carrying the ``ask-user`` / ``ask-user:*`` open tag
-    (also matches the legacy ``asking-reto`` / ``asking-reto:*`` form).
+def render_ask_user(store: Store) -> Response:
+    """Leaves carrying the ``ask-user`` / ``ask-user:*`` open tag.
 
     The render is intentionally compact — chatter renders this into
     the preamble as a "Pending asks" block (slice 2).
@@ -1235,8 +1224,7 @@ def render_asking_reto(store: Store) -> Response:
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND t.namespace = 'OPEN'
-               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%'
-                    OR t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
+               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
@@ -1277,8 +1265,7 @@ def render_attention(store: Store) -> Response:
     Signal sources (Slice 5+):
 
     * **ask-user** leaves — work parked on the owner's Discord reply
-      (Slice 1; ``view='ask-user'`` covers this in isolation; the
-      legacy ``view='asking-reto'`` alias still works).
+      (Slice 1; ``view='ask-user'`` covers this in isolation).
     * **child-failed parents** — todos carrying ``child-failed:<job_id>``
       open tags because a child ``kind='job'`` ref hit
       ``STATUS:failed``. The owner (asa-bot) decides next move:
@@ -1297,7 +1284,7 @@ def render_attention(store: Store) -> Response:
     ``_DOABLE_EXCLUSION_TAGS`` registry, so the two surfaces are
     disjoint by construction.
     """
-    asks = _attention_asking_reto(store)
+    asks = _attention_ask_user(store)
     child_failed = _attention_child_failed(store)
     halted = _attention_halted(store)
     total = len(asks) + len(child_failed) + len(halted)
@@ -1364,13 +1351,12 @@ def render_attention(store: Store) -> Response:
     return Response(body=body)
 
 
-def _attention_asking_reto(store: Store) -> list[dict[str, Any]]:
-    """Same shape as ``render_asking_reto`` data, but as dicts.
+def _attention_ask_user(store: Store) -> list[dict[str, Any]]:
+    """Same shape as ``render_ask_user`` data, but as dicts.
 
     Splitting the data side from the render side keeps
     ``render_attention`` from re-querying the same rows
-    ``render_asking_reto`` already knows how to fetch. Matches both
-    the new ``ask-user`` form and the legacy ``asking-reto`` form.
+    ``render_ask_user`` already knows how to fetch.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -1381,8 +1367,7 @@ def _attention_asking_reto(store: Store) -> list[dict[str, Any]]:
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND t.namespace = 'OPEN'
-               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%'
-                    OR t.value = 'asking-reto' OR t.value LIKE 'asking-reto:%%')
+               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
@@ -1552,7 +1537,7 @@ def render_ancestry_section(store: Store, ref_id: int) -> str:
 
 __all__ = [
     "render_ancestry_section",
-    "render_asking_reto",
+    "render_ask_user",
     "render_attention",
     "render_blocked",
     "render_doable",

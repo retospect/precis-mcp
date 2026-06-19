@@ -164,7 +164,7 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
       re-becomes a candidate so the planner can read the
       ``job_summary`` chunks and continue.
     * No exclusion tag (registry: halt / halt:* / ask-user* /
-      asking-reto* / waiting-for:* / child-failed:*).
+      waiting-for:* / child-failed:*).
     """
     with store.pool.connection() as conn:
         rows = conn.execute(

@@ -913,7 +913,7 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
             text="user said hi",
             chunk_kind="conv_message",
             meta={
-                "author": "reto",
+                "author": "elmsfeuer",
                 "ts": "2026-06-15T20:00:00Z",
                 "chunk_kind": "conv_message",
                 "msg_id": "discord:111",
@@ -950,7 +950,7 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
     # chunk_kind badge per turn.
     assert resp.text.count("conv_message") >= 2
     # Author + text still visible.
-    assert "reto" in resp.text and "asa" in resp.text
+    assert "elmsfeuer" in resp.text and "asa" in resp.text
     assert "user said hi" in resp.text and "assistant replied" in resp.text
     # Every extra-meta field surfaces (key + value).
     for needle in (
@@ -1774,8 +1774,8 @@ def test_attention_icons_for_ask_and_paper() -> None:
     assert len(icons) == 1 and icons[0]["icon"] == "📝"
     assert icons[0]["href"].startswith("/papers?q=")
 
-    # Both signals present → both icons; legacy asking-reto matches too.
-    icons = _attention_icons(["asking-reto:Q", "waiting-for:paper:abc"])
+    # Both signals present → both icons.
+    icons = _attention_icons(["ask-user:Q", "waiting-for:paper:abc"])
     assert {i["icon"] for i in icons} == {"🔔", "📝"}
 
     assert _attention_icons(["project:precis"]) == []
@@ -1785,7 +1785,7 @@ def test_attention_icons_deduplicate_same_class() -> None:
     """Multiple ask-user tags collapse to one 🔔 (not five)."""
     from precis_web.routes.tasks import _attention_icons
 
-    icons = _attention_icons(["ask-user:Q1", "ask-user:Q2", "asking-reto:Q3"])
+    icons = _attention_icons(["ask-user:Q1", "ask-user:Q2", "ask-user:Q3"])
     assert [i["icon"] for i in icons] == ["🔔"]
 
 
@@ -2313,9 +2313,10 @@ def test_ask_value_strips_prefix() -> None:
     from precis_web.routes.asks import _ask_value
 
     assert _ask_value("ask-user:hello") == "hello"
-    assert _ask_value("asking-reto:foo") == "foo"
     assert _ask_value("ask-user") == ""
     assert _ask_value("other") == ""
+    # The removed asking-reto alias is no longer stripped.
+    assert _ask_value("asking-reto:foo") == ""
 
 
 def test_answer_dispatches_edit_then_tag_remove(client, runtime) -> None:
@@ -2484,7 +2485,9 @@ def test_ask_followup_records_question_links_and_answer(
     assert first_put["kind"] == "conv"
     assert first_put["id"] == "followup/memory/20"
     assert first_put["text"] == "What does this imply?"
-    assert first_put["author"] == "reto"
+    # De-hardcoded: the asker is WebConfig.owner (PRECIS_OWNER), which
+    # defaults to "owner" — no longer the literal "reto".
+    assert first_put["author"] == "owner"
     assert first_put["ref_meta"]["followup_source"] == "memory:20"
 
     # The link points the conv back at the source as derived-from.

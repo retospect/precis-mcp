@@ -44,6 +44,13 @@ class WebConfig:
     #: compiled-PDF affordance simply doesn't render).
     precis_root: Path | None = None
     source: str = DEFAULT_SOURCE
+    #: Canonical username for the human running this instance — the
+    #: author stamped on a web "ask a follow-up" question and the
+    #: addressee (``user:<owner>``) of an ``ask-user`` pause. Mirrors
+    #: ``precis.config.PrecisConfig.owner``; both read ``PRECIS_OWNER``.
+    #: Defaults to ``"owner"`` (generalises the formerly hard-coded
+    #: ``"reto"``). See ``docs/design/user-identity-and-ask-routing.md``.
+    owner: str = "owner"
     auth_token: str | None = None
 
     @property
@@ -94,5 +101,6 @@ class WebConfig:
             extra_corpus_dirs=extra,
             precis_root=precis_root,
             source=os.environ.get("PRECIS_SOURCE", DEFAULT_SOURCE),
+            owner=os.environ.get("PRECIS_OWNER", "owner"),
             auth_token=os.environ.get("PRECIS_WEB_AUTH_TOKEN") or None,
         )

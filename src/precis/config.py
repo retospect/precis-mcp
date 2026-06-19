@@ -28,6 +28,25 @@ class PrecisConfig(BaseSettings):
     log_level: LogLevel = "INFO"
     database_url: str | None = None  # required from phase 2 onward
     default_corpus: str = "default"
+
+    owner: str = "owner"
+    """Canonical username for the human running this instance.
+
+    The single human identity the system addresses when it needs a
+    person — the asker behind a web "ask a follow-up", the default
+    addressee of an ``ask-user`` pause tag (stamped as
+    ``user:<owner>``), and any "this is the human" default. Generalises
+    the formerly hard-coded ``"reto"`` so the surface is multi-user
+    ready: routing filters by ``user:<owner>`` rather than an implicit
+    single user.
+
+    Defaults to ``"owner"`` so a fresh install reads correctly with no
+    config. Reto's instance sets ``PRECIS_OWNER=elmsfeuer`` to line up
+    with the existing ``user:elmsfeuer`` tags. See
+    ``docs/design/user-identity-and-ask-routing.md``.
+
+    Set via ``PRECIS_OWNER`` in the env.
+    """
     embedder: EmbedderName = "mock"
     """Which `Embedder` implementation to load.
 

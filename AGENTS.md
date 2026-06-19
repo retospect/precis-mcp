@@ -132,18 +132,22 @@ A successful `precis add <input>` MUST result in:
   (`chunk_summaries`) populated lazily via the derived queue worker
   (`precis worker`). `chunk_kind='references'` rows are skipped from
   both queues via the worker's `skip_chunk_kinds` filter.
-- Discovery-layer rows (`ref_segments` + `ref_segment_sentences`)
-  populated by the ref-level segment_toc worker
-  (`precis worker --only segments`) — once that drains, every
-  paper's TOC view serves from one SQL SELECT and search-result rows
-  carry per-segment query-aligned excerpts.
+- Discovery-layer keywords (`chunks.keywords TEXT[]` +
+  `chunks.keywords_meta JSONB`) populated per-chunk by the
+  `chunk_keywords` worker (`precis worker --only chunk_keywords`, or
+  the default round-robin). This is the F20 successor to the dropped
+  `ref_segments` / `ref_segment_sentences` tables (see ADR 0018
+  status note): the paper TOC view (`view='toc'`) now DP-clusters
+  these keyword arrays at request time
+  (`src/precis/utils/toc_db.py`) — no precomputed segment rows.
 
 Idempotency: re-running `precis add` against the same input MUST NOT
 duplicate rows. Conflicts are detected via `ref_identifiers` lookup; a
 hit short-circuits to `inserted=False` and updates only mutable fields.
-Re-running `build_segments` on an existing ref does
-`DELETE FROM ref_segments WHERE ref_id=N` then re-INSERTs — sentences
-cascade via FK, so the operation is atomic and idempotent.
+The `chunk_keywords` worker re-claims any chunk whose
+`keywords_meta->>'version'` differs from the current
+`KEYWORDS_VERSION`, so bumping that constant lazily re-derives the
+whole corpus without a manual backfill.
 
 ### Watcher routing (papers / books / presentations)
 

@@ -1,143 +1,115 @@
 # Discovery layer — policy
 
-When to read from `ref_segments` / `ref_segment_sentences`, when to
-recompute, what the worker can assume, and where the lazy-
-invalidation discipline applies. Companion to
-[ADR 0018](../decisions/0018-persistent-discovery-layer.md) and
-[`docs/design/storage-v2.md § Discovery layer`](../design/storage-v2.md).
+> **F20 rewrite (2026-06-05).** The persistent `ref_segments` /
+> `ref_segment_sentences` tables this doc used to govern were dropped
+> (migration `0003_drop_legacy_segments.sql`); the `segment_toc`
+> worker and its version-column invalidation are gone. Discovery is
+> now **per-chunk KeyBERT** stored directly on `chunks`. See
+> [ADR 0018](../decisions/0018-persistent-discovery-layer.md) (status
+> note) and `src/precis/workers/chunk_keywords.py`. The read/write
+> and boilerplate-skip policy below is the current discipline.
+
+When to read keywords, when to recompute, what the worker assumes,
+and where the lazy-invalidation discipline applies. Companion to
+[`docs/design/storage-v2.md`](../design/storage-v2.md) (§"Discovery
+layer", carrying its own F20 amendment banner).
+
+## What the layer is now
+
+- `chunks.keywords TEXT[]` — canonical lower-cased short/display
+  forms, GIN-indexed for lexical filter and for Jaccard-distance
+  clustering at query time.
+- `chunks.keywords_meta JSONB` — versioned envelope with
+  `{version, embedder, keywords:[{short, long, score}]}` (KeyBERT
+  cosine scores against the chunk's bge-m3 embedding, abbreviations
+  resolved via the paper's Schwartz-Hearst legend).
+
+There are no precomputed segment rows and no per-sentence embeddings.
 
 ## Read-side policy
 
-**Render from the store, always.** Paper TOC view, search-result
-excerpt sub-lines, and the `segment_containing_chunk` cluster-context
-hint all go through `precis.utils.toc_db.render_from_store` and the
-`SegmentsMixin` accessors. There is no fallback to on-demand
-`render_for_ref` for paper kind — when the worker has not populated
-rows yet, the renderer returns the "segments not yet computed"
-placeholder. Recomputing on-demand would defeat the cache-hit story
-and create drift between cold-render and worker-render outputs.
+**Render from the store, cluster at request time.** The paper TOC
+view (`view='toc'`) reads `chunks.keywords` directly and DP-clusters
+them per request via `precis.utils.toc_db.render_from_store`. Chunks
+below the worker's `_MIN_CHUNK_CHARS` carry empty keyword arrays and
+fold into neighbours through the empty-keyword Jaccard defence — no
+"segments not yet computed" placeholder.
 
 **Skill kind (and any future TOC-capable file kind) still uses the
-in-memory `precis.utils.toc.render` path** until those kinds are
-ingested as DB refs (storage-v2 step B12). Coexistence is by *kind*,
-not for the same ref — no drift risk.
+in-memory `precis.utils.toc.render` path** (per-request DP+KeyBERT,
+memoised per `(slug, scope)` since skill files are static for the
+life of the process). Coexistence is by *kind*, not for the same
+ref — no drift risk.
+
+Search-result rows no longer carry indented `excerpt @ ~N` sub-lines
+(removed with F20). Citation-grade source quotes come from
+`kind='citation'` refs, never from a discovery-layer excerpt — see
+[`precis-citation-help`](../../src/precis/data/skills/precis-citation-help.md).
 
 ## Write-side policy (worker invocation)
 
-Drive the worker via `precis worker --only segments`. Defaults are
-fine: `--batch-size 32`, `--idle-seconds 2`. The worker:
-
-- Claims at most `batch-size` refs that have body chunks
-  (`chunks.ord >= 0 AND chunk_kind <> 'references'`) but no
-  `ref_segments` rows yet.
-- For each: builds the per-handler adapter (`build_paper_adapter`
-  for paper kind), runs `build_segments`, commits per ref.
-- `--once` makes it process one batch and exit; without it the
-  loop sleeps `idle-seconds` between empty passes.
-
-Re-running on the same ref does `DELETE FROM ref_segments WHERE
-ref_id = ?` then re-INSERTs — sentences cascade via the FK. So
-backfills are safe to drive repeatedly. The natural production
-shape is to run the worker continuously alongside the chunk-level
-`embed` + `summarize` handlers.
+Drive the worker via `precis worker --only chunk_keywords`, or let it
+run as part of the default round-robin / `--profile=system` pass.
+The claim shape is
+`keywords IS NULL OR keywords_meta->>'version' != <KEYWORDS_VERSION>`,
+so the worker picks up fresh chunks and re-claims any chunk whose
+stored version is stale. It commits per chunk; backfills are safe to
+drive repeatedly. Production shape: run continuously alongside the
+chunk-level `embed` + `summarize` handlers (all three are on the
+system profile).
 
 ## Lazy invalidation discipline
 
-Every persisted row carries the versions that produced it:
+One constant governs the layer:
+`precis.workers.chunk_keywords.KEYWORDS_VERSION`, mirrored into
+`keywords_meta->>'version'` on every row.
 
-| Row | Version columns |
-|-----|-----------------|
-| `ref_segments` | `segmentation_version`, `extractor_version`, `embedder_name` |
-| `ref_segment_sentences` | `sentence_splitter_version` (parent row's columns apply transitively) |
-
-**Read-time rule.** If any version on a stored row differs from
-the current module constant
-(`precis.utils.segmentation.SEGMENTATION_VERSION`,
-`precis.workers.segment_toc.EXTRACTOR_VERSION`,
-`precis.utils.sentences.SENTENCE_SPLITTER_VERSION`), treat the row
-as cache-miss, recompute via the worker, overwrite.
-
-**Write-time rule.** The worker always writes the current values
-on every row. Never write a stale version.
-
-**Bump-when rule.** Bump a version constant when a change to that
-module's output would invalidate downstream rows:
-
-- `SEGMENTATION_VERSION` — boundary-picking logic (DP cost function,
-  K-bounds, boilerplate-filter heuristics).
-- `EXTRACTOR_VERSION` — keyword scoring (distinctiveness λ, MMR,
-  RAKE candidate cap, KeyBERT changes), sentence picking, forms[]
-  flattening.
-- `SENTENCE_SPLITTER_VERSION` — anything that shifts `char_offset`
-  values: pysbd upgrades, switching splitter library, custom
-  abbreviation list edits.
-
-A change to one constant does not require bumping the others —
-the invalidation is per-column.
+- **Read-time:** consumers trust whatever version is stored; the TOC
+  renderer does not gate on version.
+- **Write-time:** the worker always stamps the current
+  `KEYWORDS_VERSION`.
+- **Bump-when:** bump `KEYWORDS_VERSION` when a change to the
+  worker's output would invalidate stored keywords — RAKE candidate
+  generation, the abbreviation-resolution step, KeyBERT/scoring
+  changes, or the `keywords_meta` envelope shape. Bumping re-claims
+  every existing chunk on the next pass (lazy, corpus-wide backfill).
 
 ## Boilerplate skip policy
 
-`pipeline._retag_references` writes `chunk_kind='references'` on
-the citation-list rows at ingest. Workers extending
-`WorkerHandler.skip_chunk_kinds` exclude them from claim:
+`pipeline._retag_references` writes `chunk_kind='references'` on the
+citation-list rows at ingest. The `chunk_keywords` worker skips a
+configured non-content set (cards, tables, figures, equations,
+references) — those would pollute the keyword set. The chunk-level
+`embed` / `summarize` workers skip `references` the same way via
+`WorkerHandler.skip_chunk_kinds`:
 
 ```python
 class EmbedHandler(WorkerHandler):
     skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references",)
 ```
 
-`segment_toc` filters the same way at the claim SQL — references
-chunks are excluded from the ref-level "do you have body chunks?"
-check.
-
-**When to add a kind to `skip_chunk_kinds`:** any chunk whose text
-is *noise* relative to the artifact you produce. Bibliographies on
-embeddings → noise (low cosine to topic centroid, pollute search).
-Bibliographies on RAKE → noise (citation phrases are not useful
-keywords). Figures on segment-toc → not noise (caption text is
-meaningful), so don't filter them.
-
-## Excerpts are triage, not citations
-
-The `- excerpt @ ~N: "..."` sub-lines in TOC and search-result rows
-are *navigational* — they help an agent decide whether to drill in.
-They are **never citation-grade**. Discipline:
-
-- TOC view: top-1 sentence by stored `centroid_score`
-  (segment-prototypical).
-- Search view: top-1 sentence by pgvector cosine against the
-  query embedding (query-aligned).
-- Citation view (`view='bibliography'` aggregator, future): pulls
-  from `kind='citation'` refs whose `meta.source_handle` resolves
-  into this paper's chunk range. Each citation's `source_quote` is
-  the verbatim text the verifier confirmed; never trust an
-  excerpt sub-line as a citation source.
-
-See [`precis-citation-help`](../../src/precis/data/skills/precis-citation-help.md)
-for the write-side workflow.
+**When to skip a chunk_kind:** any chunk whose text is *noise*
+relative to the artifact you produce. Bibliographies on embeddings →
+noise (low cosine to topic centroid). Bibliographies on KeyBERT →
+noise (citation phrases are not useful keywords). Figure captions →
+meaningful, so don't skip them from keyword extraction.
 
 ## What the worker does NOT compute (today)
 
-The MVP simplifications, documented for future-you:
-
-- **`aliases[]` on keyword records always empty.** Lemma + cosine
-  collapse is a follow-up; today the GIN-indexed `forms` array
-  still hits any surface form via the per-paper abbreviation legend.
-- **`section_class` always NULL.** Per-paper-kind classifier
-  (intro/methods/results/discussion/conclusion) is a follow-up.
-  Column is nullable; query path is unaffected.
-- **No `status='failed'` poison-pill row.** The worker raises on
-  failure; the runner catches and logs. Per-ref failure markers
-  are a follow-up — today the next worker pass retries from
-  scratch.
-- **No HNSW on `ref_segment_sentences.embedding`.** Index is a
-  non-breaking add when corpus-wide sentence retrieval becomes a
-  real query (see ADR 0018 § alternatives D).
+- **`aliases[]` collapse.** Surface-form folding beyond the
+  per-paper abbreviation legend (lemma + cosine collapse) is a
+  follow-up.
+- **`section_class`.** A per-kind intro/methods/results classifier
+  is a follow-up; nothing in the query path depends on it.
+- **No per-chunk failure marker.** The worker raises on failure; the
+  runner catches and logs; the next pass retries from scratch.
 
 ## See also
 
-- ADR 0018 — design rationale
-- `docs/design/storage-v2.md § Discovery layer` — full schema
-- `precis-toc-help` — agent-facing TOC docs
+- ADR 0018 — original (superseded) discovery-layer rationale
+- `docs/design/storage-v2.md` §"Discovery layer" — F20-amended schema
+- `src/precis/workers/chunk_keywords.py` — the worker (module header
+  is the canonical algorithm reference)
+- `src/precis/utils/toc_db.py` — request-time TOC clustering
+- `precis-toc-help` / `precis-search-help` — agent-facing docs
 - `precis-citation-help` — verifier-workflow agent surface
-- `precis-search-help` — excerpt sub-line discipline

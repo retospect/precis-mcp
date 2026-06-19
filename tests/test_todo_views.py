@@ -1,5 +1,5 @@
 """Slice-1 todo-tree view tests: roots, strategic, tree, doable,
-waiting, blocked, ask-user / asking-reto.
+waiting, blocked, ask-user.
 
 Each view is exercised through ``TodoHandler.search`` / ``TodoHandler.get``
 so the test verifies both the renderer (``_todo_views``) and the
@@ -208,29 +208,39 @@ def test_blocked_lists_only_actively_blocked(handler: TodoHandler) -> None:
     assert "Blocked leaf." not in out2.body
 
 
-# ── view='asking-reto' ────────────────────────────────────────────
+# ── view='ask-user' ───────────────────────────────────────────────
 
 
-def test_asking_reto_lists_open_asks(handler: TodoHandler) -> None:
+def test_ask_user_lists_open_asks(handler: TodoHandler) -> None:
     root = handler.put(text="Strategic.", tags=["level:strategic"])
     root_id = _id_of(root.body)
     handler.put(
         text="Cite Tanaka or skip?",
         parent_id=root_id,
-        tags=["asking-reto"],
+        tags=["ask-user"],
     )
-    out = handler.search(view="asking-reto")
+    out = handler.search(view="ask-user")
     assert "Cite Tanaka or skip?" in out.body
 
 
-def test_asking_reto_skips_done(handler: TodoHandler) -> None:
+def test_ask_user_skips_done(handler: TodoHandler) -> None:
     root = handler.put(text="Strategic.", tags=["level:strategic"])
     root_id = _id_of(root.body)
-    ask = handler.put(text="Resolved ask.", parent_id=root_id, tags=["asking-reto"])
+    ask = handler.put(text="Resolved ask.", parent_id=root_id, tags=["ask-user"])
     ask_id = _id_of(ask.body)
     handler.tag(id=ask_id, add=["STATUS:done"])
-    out = handler.search(view="asking-reto")
+    out = handler.search(view="ask-user")
     assert "Resolved ask." not in out.body
+
+
+def test_asking_reto_alias_removed(handler: TodoHandler) -> None:
+    """The deprecated ``view='asking-reto'`` alias was removed
+    (2026-06-19) — it is now an unknown view, not a silent fall-through
+    to ask-user. See docs/design/user-identity-and-ask-routing.md."""
+    from precis.errors import Unsupported
+
+    with pytest.raises(Unsupported, match="unknown view"):
+        handler.search(view="asking-reto")
 
 
 # ── unknown view rejection ────────────────────────────────────────
@@ -272,7 +282,7 @@ def test_attention_view_empty_when_nothing_pending(
     assert "view='doable'" in out.body
 
 
-def test_attention_view_lists_asking_reto_leaves(
+def test_attention_view_lists_ask_user_leaves(
     handler: TodoHandler, store: Store
 ) -> None:
     from precis.store.types import Tag
@@ -280,7 +290,7 @@ def test_attention_view_lists_asking_reto_leaves(
 
     r = handler.put(text="Need the owner's call on Tanaka 2024")
     rid = id_of(r.body)
-    store.add_tag(rid, Tag.open("asking-reto"), set_by="agent")
+    store.add_tag(rid, Tag.open("ask-user"), set_by="agent")
     out = handler.search(view="attention")
     assert "Ask user (1)" in out.body
     assert f"#{rid}" in out.body
@@ -328,7 +338,7 @@ def test_attention_view_unions_both_signals(handler: TodoHandler, store: Store) 
 
     a = handler.put(text="Ask the owner")
     a_id = id_of(a.body)
-    store.add_tag(a_id, Tag.open("asking-reto"), set_by="agent")
+    store.add_tag(a_id, Tag.open("ask-user"), set_by="agent")
     b = handler.put(text="Failed child")
     b_id = id_of(b.body)
     store.add_tag(b_id, Tag.open("child-failed:99"), set_by="system")

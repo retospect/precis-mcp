@@ -38,6 +38,7 @@ from precis.cli import (
     reconcile,
     repl,
     resolve,
+    schema_doc,
     serve_embeddings,
     stats,
     stubs,
@@ -79,6 +80,10 @@ def main() -> None:
 
     if args.cmd == "migrate":
         migrate.run(args)
+        return
+
+    if args.cmd == "schema-doc":
+        schema_doc.run(args)
         return
 
     if args.cmd == "maintenance":
@@ -182,6 +187,7 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_embeddings.add_parser(sub)
 
     migrate.add_parser(sub)
+    schema_doc.add_parser(sub)
     maintenance.add_parser(sub)
     fix_metadata.add_parser(sub)
     reconcile.add_parser(sub)

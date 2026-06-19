@@ -28,6 +28,14 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Embedder as a service | [0020](./0020-embedder-as-service.md) | **accepted**; client+service+CLI landed (CUDA image + launchd pending) |
 | Image split (serve/worker/ingest) | [0021](./0021-image-split-serve-worker-ingest.md) | **accepted**; serve/worker/ingest/embedder targets + build-all landed |
 | Independent worker queues | [0022](./0022-independent-worker-queues.md) | **proposed**; extends 0016/0017 |
+| `view='dreamable'` (ANN ring, no clustering dep) | [0023](./0023-dreamable-no-clustering-dep.md) | **accepted** |
+| Dream loop runtime | [0024](./0024-dream-loop-litellm-inprocess.md) | **superseded / reversed** — in-process litellm abandoned; dream runs the `claude` binary (`utils/claude_agent.py`) |
+| In-place cluster reconcile (not a third greenfield) | [0025](./0025-in-place-reconcile-not-third-greenfield.md) | **accepted**; does not supersede 0019 |
+| precis-web as sibling package | [0026](./0026-precis-web-surface.md) | **accepted**; browser UI over the handler layer |
+| Reparent todos via `parent` link relation | [0027](./0027-reparent-via-parent-link.md) | **accepted**; supersedes the `parent_id` column path for reparenting |
+| Host heartbeat telemetry (Status tab) | [0028](./0028-host-heartbeat-telemetry.md) | **accepted**; extends 0026 |
+| Multi-root corpus for PDF serving | [0029](./0029-multi-root-corpus-pdf.md) | **accepted**; `PRECIS_CORPUS_DIR` accepts a list of roots |
+| `job` / `finding` / `cron` stay separate from `todo` | [0030](./0030-job-finding-cron-stay-separate.md) | **accepted**; rejects collapsing the four kinds |
 
 ## Supersession graph
 
@@ -40,6 +48,8 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 0017  ──┘                # discovery layer — superseded post-ADR
 0004  ──→  0009          # Dockerfile move (extends, not replaces)
 0012  ──→  0019          # premodels build context (extends)
+0024 (reversed)          # dream loop: in-process litellm → back to claude binary
+0026  ──→  0028          # precis-web surface → host-heartbeat Status tab (extends)
 ```
 
 ## Conventions
