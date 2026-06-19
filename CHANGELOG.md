@@ -8,6 +8,39 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-19 — papers triage: delete, untriage, duplicate resolver)
+
+- **Delete a paper from the web triage UI.** The detail page's Delete
+  button is now live (it had been a disabled placeholder) and the triage
+  queue grows a per-row 🗑 quick-delete — so a non-paper that slipped in
+  (e.g. a patent) can be removed. Delete is **web-only by policy**: the
+  route (`precis_web/routes/papers.py`) calls `Store.soft_delete_ref`
+  directly rather than dispatching, so `paper` keeps `supports_delete=
+  False` and paper deletion is *not* exposed on the agent MCP surface.
+  Soft delete (sets `deleted_at`); reversible at the DB level.
+- **Manual untriage.** A successful metadata edit already clears
+  `needs-triage`, but a paper that's actually fine (or fixed by hand)
+  stayed stuck in the queue. New `✓ Looks fine — remove needs-triage`
+  control on the detail triage panel + a per-row ✓ in the queue, both
+  via a new `POST /papers/{id}/untriage` (dispatches a tag-remove).
+- **Editable short handle (cite_key) with a suggestion.** The paper edit
+  form gains a `cite_key` field pre-filled with a free, system-format
+  suggestion (`surname` + 2-digit year, collision-suffixed) derived from
+  the fixed author + year — so a triaged paper minted as `anon06b` can
+  become `piela07`. New `Store.suggest_cite_key` does the DB-backed
+  collision probe. Saving a changed handle re-slugs the paper
+  (`set_ref_identifier(cite_key)`) **and moves the PDF** to its new
+  sharded path on disk (`<corpus>/p/piela07.pdf`); a handle-only change
+  skips the metadata dispatch, an illegal/taken handle surfaces inline.
+  Web-only (the rename touches the filesystem), same policy as delete.
+- **Duplicate-identifier resolver.** Saving a DOI/arXiv id that already
+  belongs to another paper used to dump a raw 400 (`… already belongs to
+  ref id=N`). The edit route now parses that conflict and renders
+  `papers/edit_conflict.html.j2`: it links to the owning paper's detail
+  **and PDF** (open in a new tab to compare) and offers a one-click
+  delete of the copy being edited. `return_to` lands the operator back
+  on the triage queue (constrained to `/papers*` — no open redirect).
+
 ### Added (2026-06-19 — `alert` kind + `/alerts` web tab)
 
 - **New first-class kind `alert`** (migration `0029_alert_kind.sql`) —

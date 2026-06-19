@@ -67,15 +67,26 @@
         Look up on Semantic Scholar
       </button>
     </form>
+    {# Manual dismissal: saving a metadata edit clears needs-triage
+       automatically, but a paper that's already fine (or fixed by hand)
+       can be taken out of the queue directly. #}
+    <form method="post" action="/papers/{{ paper.id }}/untriage"
+          class="mt-2 border-t border-amber-200 pt-2">
+      <input type="hidden" name="return_to" value="/papers/triage" />
+      <button type="submit"
+              class="px-2 py-1 rounded border border-amber-400 text-amber-800 hover:bg-amber-100">
+        ✓ Looks fine — remove needs-triage
+      </button>
+    </form>
   </div>
   {% endif %}
   {# Edit / delete affordances. Edit is an Alpine-toggled inline form
      so an operator who wants to repair a parse error (wrong DOI, missing
      authors, off-by-one year) can fix it without leaving the page.
-     Delete is disabled for now: the `paper` kind doesn't yet support the
-     `delete` verb (exposing it also exposes paper-deletion on the agent
-     MCP surface — a deliberate policy call). Grayed out until that's
-     wired; the POST route stays in place behind it. #}
+     Delete soft-deletes the paper; it's a web-only affordance (the POST
+     route calls the store directly, so `paper` stays without the `delete`
+     verb on the agent MCP surface — a deliberate policy call). It returns
+     to the triage queue when reached from triage, else the papers list. #}
   <div class="mt-3 flex items-center gap-2 text-xs"
        x-data="{ editing: {{ 'true' if prefill else 'false' }} }">
     <button type="button" @click="editing = !editing"
@@ -83,13 +94,18 @@
       <span x-show="!editing">✎ Edit metadata</span>
       <span x-show="editing" x-cloak>Cancel</span>
     </button>
-    <button type="button" disabled
-            title="Delete isn't wired up yet for papers."
-            class="px-2 py-1 rounded border border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed">
-      🗑 Delete paper
-    </button>
+    <form method="post" action="/papers/{{ paper.id }}/delete" class="inline"
+          onsubmit="return confirm('Delete paper #{{ paper.id }}? This soft-deletes it (removes it from listings).');">
+      <input type="hidden" name="return_to"
+             value="{{ '/papers/triage' if is_triage else '/papers' }}" />
+      <button type="submit"
+              class="px-2 py-1 rounded border border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100">
+        🗑 Delete paper
+      </button>
+    </form>
     <div x-show="editing" x-cloak class="basis-full mt-2">
-      <form method="post" action="/papers/{{ paper.id }}/edit" class="space-y-2">
+      <form method="post" action="/papers/{{ paper.id }}/edit" class="space-y-2"
+            x-data="{ slug: '{{ slug_default }}' }">
         <p class="text-slate-500">
           Leave a field blank to keep its current value.
           Authors: one per line, ``Lastname, First`` or ``Lastname`` alone.
@@ -116,6 +132,19 @@
                    class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono" />
           </label>
         </div>
+        <label class="block">
+          <span class="text-slate-500">Short handle (cite_key)</span>
+          <input name="cite_key" x-model="slug" placeholder="e.g. piela07"
+                 class="w-full rounded border border-slate-300 px-2 py-1 text-xs font-mono" />
+          <span class="text-slate-400">
+            The paper's citation handle; also names its PDF on disk (renaming moves the file).
+            {% if suggested_slug and suggested_slug != slug_default %}
+            Suggested:
+            <button type="button" @click="slug = '{{ suggested_slug }}'"
+                    class="font-mono text-sky-700 underline">{{ suggested_slug }}</button>
+            {% endif %}
+          </span>
+        </label>
         <label class="block">
           <span class="text-slate-500">Authors (one per line)</span>
           <textarea name="authors" rows="4" placeholder="Smith, Jane&#10;Jones, Bob"

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -308,6 +308,52 @@ class IdentifiersMixin:
                 (s, v, ref_id, (source or "manual").strip().lower()),
             )
             return True
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def suggest_cite_key(
+        self,
+        authors: Any,
+        year: int | None,
+        *,
+        exclude_ref_id: int | None = None,
+        conn: Connection | None = None,
+    ) -> str:
+        """Suggest a free ``cite_key`` for ``authors`` + ``year``.
+
+        Mirrors the ingest-time minting (:func:`precis.identity.make_cite_key`
+        + the prefix-collision probe in ``db_writer.resolve_cite_key``): the
+        bare ``surname<yy>`` form when free, else the next ``a``..``z`` suffix.
+        ``exclude_ref_id`` drops that ref's own current cite_key from the
+        taken set so re-suggesting for the paper being edited is stable
+        (it never collides with itself). Returns ``""`` only when authors
+        are unknown enough that the base would be the ``anon`` placeholder.
+        """
+        from precis.identity import make_cite_key
+
+        base = make_cite_key(authors, year)  # bare surname+yy prefix
+        if base.startswith("anon"):
+            return ""
+
+        def _do(c: Connection) -> str:
+            rows = c.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE id_kind = 'cite_key' AND id_value LIKE %s",
+                (base + "%",),
+            ).fetchall()
+            taken = {str(r[0]) for r in rows}
+            if exclude_ref_id is not None:
+                own = c.execute(
+                    "SELECT id_value FROM ref_identifiers "
+                    "WHERE id_kind = 'cite_key' AND ref_id = %s",
+                    (exclude_ref_id,),
+                ).fetchone()
+                if own is not None:
+                    taken.discard(str(own[0]))
+            return make_cite_key(authors, year, taken=taken)
 
         if conn is not None:
             return _do(conn)

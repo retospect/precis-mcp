@@ -10,6 +10,7 @@ ref's cite_key (``Ref.slug``) and the ``precis watch`` shard layout
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -18,7 +19,7 @@ from typing import Any
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.utils.authors import author_names
 from precis_web.deps import await_dispatch, get_store, get_web_config, templates
 
@@ -36,6 +37,60 @@ _PAGE_SIZE = 50
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+
+#: Matches the cross-ref identifier-uniqueness error raised by
+#: ``Store.set_ref_identifier`` (``_identifiers_ops.py``) so a failed
+#: metadata edit can render the duplicate resolver — links to the owner
+#: + a delete button — instead of a raw 400.
+_ID_CONFLICT_RE = re.compile(
+    r"(?P<field>\w+)=(?P<value>'[^']*'|\S+) already belongs to ref id=(?P<owner>\d+)"
+)
+
+
+def _parse_identifier_conflict(body: str) -> dict[str, Any] | None:
+    """Pull ``(field, value, owner_id)`` out of the duplicate-identifier 400.
+
+    Scoped to ``doi`` / ``arxiv`` — those are the "same paper held twice"
+    case the delete-resolver is for. A ``cite_key`` clash is a different
+    problem (pick another handle), handled inline by the rename path, so
+    it falls through to the generic error page here. Returns ``None`` for
+    any other error too.
+    """
+    m = _ID_CONFLICT_RE.search(body or "")
+    if m is None or m.group("field") not in ("doi", "arxiv"):
+        return None
+    return {
+        "field": m.group("field"),
+        "value": m.group("value").strip("'"),
+        "owner_id": int(m.group("owner")),
+    }
+
+
+_SLUG_RE = re.compile(r"[a-z0-9]+")
+
+
+def _suggest_slug(store: Any, ref: Any, prefill: dict[str, Any] | None) -> str:
+    """A free ``cite_key`` suggestion from the paper's author + year.
+
+    Uses the S2 ``prefill`` (author/year the operator is about to save)
+    when present, else the ref's stored values. Returns ``""`` when the
+    inputs are too thin to beat the ``anon`` placeholder, or on any error
+    (a suggestion must never 500 the detail page).
+    """
+    if prefill:
+        raw = str(prefill.get("authors") or "")
+        authors: Any = [ln.strip() for ln in raw.replace(";", "\n").splitlines() if ln.strip()]
+        yr = str(prefill.get("year") or "").strip()
+        year: int | None = int(yr) if yr.isdigit() else None
+    else:
+        authors = ref.authors or []
+        year = ref.year
+    if not authors:
+        return ""
+    try:
+        return store.suggest_cite_key(authors, year, exclude_ref_id=ref.id)
+    except Exception:
+        return ""
 
 
 def _pdf_candidates(corpus_dirs: tuple[Path, ...], cite_key: str) -> list[Path]:
@@ -269,6 +324,15 @@ def _render_detail(
     )
     has_triage = triage or store.has_tag(ref_id, "OPEN", _TRIAGE_TAG)
     stamps = store.ingest_timestamps(ref_id)
+    # Suggest a real cite_key from the (fixed) author + year. Pre-fill the
+    # field with it only when the current handle is the anon placeholder —
+    # otherwise default to the existing handle so a save is a no-op unless
+    # the operator opts in. The suggestion is always shown as a hint.
+    suggested_slug = _suggest_slug(store, ref, prefill)
+    if suggested_slug and (not cite_key or cite_key.startswith("anon")):
+        slug_default = suggested_slug
+    else:
+        slug_default = cite_key
     return templates.TemplateResponse(
         request,
         "papers/detail.html.j2",
@@ -293,6 +357,9 @@ def _render_detail(
             "is_triage": has_triage,
             "prefill": prefill,
             "triage_msg": triage_msg,
+            # Editable short handle (cite_key) + a free suggestion.
+            "slug_default": slug_default,
+            "suggested_slug": suggested_slug,
         },
     )
 
@@ -390,9 +457,53 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
 
 # ---- Edit + delete ----------------------------------------------------
 #
-# Both routes flow through ``runtime.dispatch(edit / delete)`` so the
-# handler's validation, ref-events log, and tree guards stay
-# single-sourced (web + MCP behave the same).
+# ``edit`` flows through ``runtime.dispatch(edit)`` so the handler's
+# validation, ref-events log, and tree guards stay single-sourced (web +
+# MCP behave the same). ``delete`` deliberately does NOT: it calls the
+# store directly so paper deletion stays a web-only affordance and is not
+# exposed on the agent MCP surface (``PaperHandler`` keeps
+# ``supports_delete=False``).
+
+
+def _render_edit_conflict(
+    request: Request, ref_id: int, conflict: dict[str, Any]
+) -> HTMLResponse:
+    """Render the duplicate-identifier resolver for a failed paper edit.
+
+    Loads the conflicting owner so the template can link to its detail +
+    PDF; degrades gracefully (``owner=None``) if it can't be fetched.
+    """
+    store = get_store(request)
+    owner_id = conflict["owner_id"]
+    owner_ref = store.fetch_refs_by_ids([owner_id], include_deleted=False).get(owner_id)
+    owner: dict[str, Any] | None = None
+    owner_pdf = False
+    if owner_ref is not None and owner_ref.kind == "paper":
+        owner = _paper_row(owner_ref)
+        owner["links"] = _links_from_ids(
+            store.identifiers_for_refs([owner_id]).get(owner_id, {})
+        )
+        cfg = get_web_config(request)
+        owner_pdf = _resolve_pdf(cfg.corpus_dirs, owner_ref.slug or "") is not None
+    return templates.TemplateResponse(
+        request,
+        "papers/edit_conflict.html.j2",
+        {
+            "active_tab": "papers",
+            "ref_id": ref_id,
+            "field": conflict["field"],
+            "value": conflict["value"],
+            "owner_id": owner_id,
+            "owner": owner,
+            "owner_pdf": owner_pdf,
+        },
+        status_code=409,
+    )
+
+
+def _safe_papers_redirect(return_to: str) -> str:
+    """Constrain a ``return_to`` to a local ``/papers`` path (no open redirect)."""
+    return return_to if return_to.startswith("/papers") else "/papers"
 
 
 @router.post("/{ref_id}/edit", response_model=None)
@@ -405,13 +516,16 @@ async def edit(
     arxiv: str = Form(""),
     abstract: str = Form(""),
     authors: str = Form(""),
+    cite_key: str = Form(""),
 ) -> RedirectResponse | HTMLResponse:
     """Update editable paper metadata.
 
     Empty fields are NOT sent (so an unset value doesn't overwrite the
     existing one). Authors come in as a newline- or comma-separated
     string and get split + re-shaped into the ``[{family, given}, ...]``
-    list shape the schema stores.
+    list shape the schema stores. ``cite_key`` is the short handle: when
+    it differs from the current slug the paper is re-slugged (and its PDF
+    moved on disk) — see :func:`_rename_slug`.
     """
     payload: dict[str, Any] = {"kind": "paper", "id": ref_id}
     if title.strip():
@@ -437,20 +551,62 @@ async def edit(
         if cleaned:
             payload["authors"] = cleaned
 
-    body, is_error = await await_dispatch(request, "edit", payload)
-    if is_error:
-        # Render the error inline rather than redirect — operator needs
-        # to see why the edit didn't take.
+    store = get_store(request)
+    current_slug = ""
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+    if ref is not None:
+        current_slug = ref.slug or ""
+    new_slug = cite_key.strip().lower()
+    slug_changed = bool(new_slug) and new_slug != current_slug
+    has_meta = len(payload) > 2  # anything beyond kind + id
+
+    if not has_meta and not slug_changed:
         return templates.TemplateResponse(
             request,
             "error.html.j2",
-            {"title": "Edit error", "detail": body, "status": 400},
+            {
+                "title": "Edit error",
+                "detail": "Nothing to change — edit a field or the handle first.",
+                "status": 400,
+            },
             status_code=400,
         )
+
+    if has_meta:
+        body, is_error = await await_dispatch(request, "edit", payload)
+        if is_error:
+            conflict = _parse_identifier_conflict(body)
+            if conflict is not None:
+                # Duplicate identifier: the DOI / arXiv id being assigned
+                # already belongs to another paper (the two are almost
+                # always the same paper held twice). Render the resolver —
+                # it links to the owner's detail + PDF (open in a new tab to
+                # inspect) and offers to delete this redundant copy.
+                return _render_edit_conflict(request, ref_id, conflict)
+            # Any other error: render inline rather than redirect — the
+            # operator needs to see why the edit didn't take.
+            return templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {"title": "Edit error", "detail": body, "status": 400},
+                status_code=400,
+            )
+
+    if slug_changed:
+        err = await asyncio.to_thread(
+            _rename_slug, request, ref_id, current_slug, new_slug
+        )
+        if err is not None:
+            return templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {"title": "Rename error", "detail": err, "status": 400},
+                status_code=400,
+            )
+
     # A successful edit that lands a real title resolves a triaged paper —
     # clear the needs-triage tag so it leaves the queue. Idempotent: the
     # tag verb's remove is a no-op when the tag isn't present.
-    store = get_store(request)
     if store.has_tag(ref_id, "OPEN", _TRIAGE_TAG):
         await await_dispatch(
             request,
@@ -460,25 +616,105 @@ async def edit(
     return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
 
 
+def _rename_slug(
+    request: Request, ref_id: int, old_slug: str, new_slug: str
+) -> str | None:
+    """Re-slug a paper: replace its ``cite_key`` and move the PDF on disk.
+
+    Web-only (a direct store + filesystem op, not dispatched). Returns an
+    error string for the caller to surface, or ``None`` on success.
+
+    The on-disk PDF is named ``<cite_key>.pdf`` under a sharded corpus
+    root, so the rename must move it too or the in-browser viewer 404s.
+    The old path is resolved *before* the DB change (so we still have the
+    handle to it), then the identifier is swapped (which raises on a
+    cross-ref clash), then the file is moved best-effort.
+    """
+    if not _SLUG_RE.fullmatch(new_slug):
+        return (
+            f"handle {new_slug!r} is invalid — use lowercase letters and "
+            "digits only (e.g. piela07)."
+        )
+    store = get_store(request)
+    cfg = get_web_config(request)
+    old_pdf = _resolve_pdf(cfg.corpus_dirs, old_slug) if old_slug else None
+    try:
+        store.set_ref_identifier(ref_id, "cite_key", new_slug, source="web-edit")
+    except BadInput as exc:
+        return str(exc)
+    if old_pdf is not None:
+        letter = new_slug[0].lower() if new_slug[0].isalnum() else "_"
+        new_pdf = old_pdf.parent.parent / letter / f"{new_slug}.pdf"
+        try:
+            new_pdf.parent.mkdir(parents=True, exist_ok=True)
+            if not new_pdf.exists():
+                old_pdf.rename(new_pdf)
+        except OSError:
+            # DB is updated; the file move is best-effort. The detail page's
+            # "file expected but missing" panel will self-diagnose if the
+            # move didn't land.
+            pass
+    return None
+
+
 @router.post("/{ref_id}/delete", response_model=None)
 async def delete(
     request: Request,
     ref_id: int,
+    return_to: str = Form("/papers"),
 ) -> RedirectResponse | HTMLResponse:
     """Soft-delete this paper (sets ``refs.deleted_at = now()``).
 
-    The `delete` verb is reversible at the DB level (toggle deleted_at
-    back to NULL), but the UX presents it as a one-way removal. The
-    redirect lands on the papers list, not the (now-404) detail page.
+    Web-only by policy: the call goes straight to the store rather than
+    through ``runtime.dispatch`` so paper deletion is NOT exposed on the
+    agent MCP surface. Soft delete is reversible at the DB level (toggle
+    ``deleted_at`` back to NULL); the UX presents it as a one-way removal.
+    ``return_to`` lands the operator back where they were (triage queue /
+    duplicate resolver), constrained to ``/papers*`` to avoid an open
+    redirect; it defaults to the papers list, not the (now-404) detail.
     """
-    body, is_error = await await_dispatch(
-        request, "delete", {"kind": "paper", "id": ref_id}
-    )
-    if is_error:
+    store = get_store(request)
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+    if ref is None or ref.kind != "paper":
         return templates.TemplateResponse(
             request,
             "error.html.j2",
-            {"title": "Delete error", "detail": body, "status": 400},
+            {
+                "title": "Delete error",
+                "detail": f"paper id={ref_id} not found",
+                "status": 404,
+            },
+            status_code=404,
+        )
+    try:
+        await asyncio.to_thread(store.soft_delete_ref, ref_id)
+    except NotFound as exc:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Delete error", "detail": str(exc), "status": 400},
             status_code=400,
         )
-    return RedirectResponse(url="/papers", status_code=303)
+    return RedirectResponse(url=_safe_papers_redirect(return_to), status_code=303)
+
+
+@router.post("/{ref_id}/untriage", response_model=None)
+async def untriage(
+    request: Request,
+    ref_id: int,
+    return_to: str = Form("/papers/triage"),
+) -> RedirectResponse:
+    """Manually clear the ``needs-triage`` tag (dismiss from the queue).
+
+    A successful metadata edit clears the tag automatically, but a paper
+    that's actually fine, one fixed by hand outside the S2 flow, or one
+    whose fix failed on a duplicate identifier stays tagged. This is the
+    explicit operator control. Idempotent: the tag remove is a no-op when
+    the tag isn't present.
+    """
+    await await_dispatch(
+        request,
+        "tag",
+        {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]},
+    )
+    return RedirectResponse(url=_safe_papers_redirect(return_to), status_code=303)

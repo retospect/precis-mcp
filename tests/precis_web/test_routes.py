@@ -518,25 +518,176 @@ def test_paper_edit_error_surfaces_handler_message(client, runtime) -> None:
     assert "()" not in resp.text
 
 
-def test_paper_delete_error_surfaces_handler_message(client, runtime) -> None:
-    """Same regression as the edit path, for the delete route."""
-    runtime.error_verbs.add("delete")
-    resp = client.post("/papers/10/delete", follow_redirects=False)
-    assert resp.status_code == 400
-    assert "invalid delete: rejected by handler" in resp.text
+def test_paper_delete_missing_paper_surfaces_error(client, runtime) -> None:
+    """Deleting an unknown paper renders the error page with a real
+    message (correct ``title``/``detail``/``status`` keys — not the
+    empty-substitution symptom)."""
+    resp = client.post("/papers/999/delete", follow_redirects=False)
+    assert resp.status_code == 404
     assert "Delete error" in resp.text
+    assert "paper id=999 not found" in resp.text
     assert "()" not in resp.text
 
 
-def test_paper_delete_dispatches_then_redirects_to_list(client, runtime) -> None:
-    """The delete button POSTs to /papers/{id}/delete which dispatches
-    the soft-delete verb and bounces to the list page."""
+def test_paper_delete_soft_deletes_and_redirects_to_list(client, runtime) -> None:
+    """The delete button POSTs to /papers/{id}/delete which soft-deletes
+    via a DIRECT store call (web-only; not dispatched to the agent MCP
+    surface) and bounces to the papers list by default."""
+    store = runtime.store
     resp = client.post("/papers/10/delete", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"] == "/papers"
+    assert 10 in store.deleted_ref_ids
+    # Deletion never went through dispatch.
+    assert not any(verb == "delete" for verb, _ in runtime.calls)
+
+
+def test_paper_delete_honours_return_to(client, runtime) -> None:
+    """``return_to`` lands the operator back where they were (triage
+    queue), but only for local ``/papers`` paths."""
+    resp = client.post(
+        "/papers/10/delete",
+        data={"return_to": "/papers/triage?page=2"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/triage?page=2"
+
+
+def test_paper_delete_rejects_offsite_return_to(client, runtime) -> None:
+    """An off-site ``return_to`` is ignored (no open redirect)."""
+    resp = client.post(
+        "/papers/10/delete",
+        data={"return_to": "https://evil.example/x"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers"
+
+
+def test_paper_untriage_clears_tag_and_redirects(client, runtime) -> None:
+    """The untriage button dispatches a tag-remove of ``needs-triage``
+    and returns to the triage queue."""
+    resp = client.post("/papers/10/untriage", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/triage"
     verb, args = runtime.calls[-1]
-    assert verb == "delete"
-    assert args == {"kind": "paper", "id": 10}
+    assert verb == "tag"
+    assert args == {"kind": "paper", "id": 10, "remove": ["needs-triage"]}
+
+
+def test_paper_edit_duplicate_identifier_renders_resolver(
+    client, runtime, tmp_path
+) -> None:
+    """A duplicate-DOI edit error renders the resolver: it links to the
+    owning paper (detail + PDF) and offers to delete this copy, rather
+    than dumping the raw 400."""
+    # Lay down the owner's PDF (shard layout <root>/<letter>/<key>.pdf) so
+    # the resolver renders the "open PDF in a new tab" link.
+    pdf = tmp_path / "j" / "jones2025.pdf"
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    def _dup(verb, args):
+        runtime.calls.append((verb, dict(args)))
+        if verb == "edit":
+            return (
+                "[error:BadInput] doi='10.1234/example.2024' already "
+                "belongs to ref id=11\n  next: resolve the duplicate",
+                True,
+            )
+        return (f"[{verb}] ok", False)
+
+    runtime.dispatch_with_status = _dup  # type: ignore[method-assign]
+    resp = client.post(
+        "/papers/10/edit",
+        data={"doi": "10.1234/example.2024"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 409
+    assert "Duplicate identifier" in resp.text
+    # Links to the owner's detail + PDF so it can be opened in a new tab.
+    assert "/papers/11" in resp.text
+    assert "/papers/11/pdf" in resp.text
+    # Offers to delete the copy being edited.
+    assert 'action="/papers/10/delete"' in resp.text
+
+
+def test_paper_detail_suggests_a_short_handle(client) -> None:
+    """The edit form carries a cite_key field and suggests a system-format
+    handle (surname + 2-digit year) derived from the paper's author+year."""
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert 'name="cite_key"' in resp.text
+    assert "Short handle" in resp.text
+    # Paper 10 is Smith / 2024 -> suggestion 'smith24' (its stored slug is
+    # the 4-digit 'smith2024', so the suggestion differs and is offered).
+    assert "smith24" in resp.text
+
+
+def test_paper_edit_renames_slug_and_moves_pdf(client, runtime, tmp_path) -> None:
+    """Submitting a new cite_key re-slugs the paper (set_ref_identifier)
+    and moves its PDF to the new sharded path on disk."""
+    store = runtime.store
+    old = tmp_path / "s" / "smith2024.pdf"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"%PDF-1.4\n")
+
+    resp = client.post(
+        "/papers/10/edit",
+        data={"cite_key": "piela07"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/10"
+    assert (10, "cite_key", "piela07") in store.identifier_writes
+    # PDF moved old -> new sharded path.
+    assert not old.exists()
+    assert (tmp_path / "p" / "piela07.pdf").is_file()
+
+
+def test_paper_edit_slug_only_skips_metadata_dispatch(client, runtime) -> None:
+    """A handle-only change doesn't dispatch an `edit` (which would reject
+    an empty field set) — it goes straight to the rename path."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={"cite_key": "piela07"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert not any(verb == "edit" for verb, _ in runtime.calls)
+
+
+def test_paper_edit_rejects_invalid_handle(client, runtime) -> None:
+    """A handle with illegal characters is rejected before any write."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={"cite_key": "Piela 2007!"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "Rename error" in resp.text
+    assert not runtime.store.identifier_writes
+
+
+def test_paper_edit_handle_collision_surfaces_error(client, runtime) -> None:
+    """A handle already owned by another paper surfaces the store's
+    BadInput inline rather than silently clobbering."""
+    runtime.store.taken_cite_keys.add("piela07")
+    resp = client.post(
+        "/papers/10/edit",
+        data={"cite_key": "piela07"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "already belongs to ref" in resp.text
+
+
+def test_paper_edit_nothing_to_change_is_rejected(client, runtime) -> None:
+    """An all-blank edit (no fields, no handle change) is a clear 400."""
+    resp = client.post("/papers/10/edit", data={}, follow_redirects=False)
+    assert resp.status_code == 400
+    assert "Nothing to change" in resp.text
 
 
 def test_triage_queue_renders(client) -> None:
@@ -609,17 +760,14 @@ def test_edit_no_triage_tag_skips_tag_dispatch(client, runtime) -> None:
     assert not [v for v, _ in runtime.calls if v == "tag"]
 
 
-def test_paper_detail_has_edit_form_and_disabled_delete(client) -> None:
-    """Edit renders as a working form; Delete is rendered disabled
-    (grayed out) until the `delete` verb is wired for papers, so it
-    no longer submits to the unsupported route."""
+def test_paper_detail_has_edit_and_delete_forms(client) -> None:
+    """Edit and Delete both render as working forms. Delete POSTs to the
+    web-only soft-delete route (a real button, no longer disabled)."""
     resp = client.get("/papers/10")
     assert resp.status_code == 200
     assert 'action="/papers/10/edit"' in resp.text
-    # Delete is present but disabled, and no longer POSTs anywhere.
     assert "🗑 Delete paper" in resp.text
-    assert 'action="/papers/10/delete"' not in resp.text
-    assert "disabled" in resp.text
+    assert 'action="/papers/10/delete"' in resp.text
 
 
 def test_papers_index_hover_card_has_authors_and_abstract(client) -> None:

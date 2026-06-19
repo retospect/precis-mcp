@@ -71,6 +71,14 @@ class FakeStore:
         #: ref_ids the fake reports as carrying OPEN:needs-triage (tests
         #: populate this to exercise the triage panel / tag-clear paths).
         self.triaged_ref_ids: set[int] = set()
+        #: ref_ids soft-deleted via the web delete route (the route calls
+        #: the store directly — paper delete is web-only, not dispatched).
+        self.deleted_ref_ids: set[int] = set()
+        #: (ref_id, scheme, value) tuples written via set_ref_identifier
+        #: (the slug-rename path), plus cite_keys to report as taken so the
+        #: collision branch can be exercised.
+        self.identifier_writes: list[tuple[int, str, str]] = []
+        self.taken_cite_keys: set[str] = set()
         self.todos = [
             make_ref(id=1, kind="todo", title="Build the thing", parent_id=None),
             make_ref(id=2, kind="todo", title="Draft the spec", parent_id=1),
@@ -239,6 +247,39 @@ class FakeStore:
             + self.webs
         }
         return {i: pool[i] for i in ids if i in pool}
+
+    def soft_delete_ref(self, ref_id, *, conn=None):
+        """Record the soft-delete; raise NotFound on a repeat (mirrors the
+        real store's ``deleted_at IS NULL`` guard) so the route's error
+        branch can be exercised."""
+        from precis.errors import NotFound
+
+        if ref_id in self.deleted_ref_ids:
+            raise NotFound(f"ref id={ref_id} not found (or already deleted)")
+        self.deleted_ref_ids.add(ref_id)
+
+    def set_ref_identifier(self, ref_id, scheme, value, *, source="web-edit", conn=None):
+        """Record the identifier write; raise BadInput on a taken cite_key
+        (mirrors the real store's cross-ref uniqueness guard) and reflect a
+        cite_key change onto the ref's slug."""
+        from precis.errors import BadInput
+
+        v = value.strip().lower()
+        if scheme == "cite_key" and v in self.taken_cite_keys:
+            raise BadInput(f"{scheme}={v!r} already belongs to ref id=999")
+        self.identifier_writes.append((ref_id, scheme, v))
+        if scheme == "cite_key":
+            for r in self.papers:
+                if r.id == ref_id:
+                    r.slug = v
+        return True
+
+    def suggest_cite_key(self, authors, year, *, exclude_ref_id=None, conn=None):
+        """Real suggestion logic with no DB-backed collision probe — enough
+        to render the suggestion hint in detail-page tests."""
+        from precis.identity import make_cite_key
+
+        return make_cite_key(authors, year)
 
     def abstract_previews(self, ref_ids, *, max_chars: int = 900):
         # Stand in for the leading-chunk backfill: only paper 11 has a

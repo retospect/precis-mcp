@@ -26,6 +26,22 @@
     {% else %}
       <span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500">stub</span>
     {% endif %}
+    {# Quick actions: clear the needs-triage flag (the paper's fine as-is),
+       or delete the paper outright (e.g. a patent / non-paper that slipped
+       in). Both return to this page so the operator keeps working the
+       queue. #}
+    <form method="post" action="/papers/{{ p.id }}/untriage" class="shrink-0"
+          onsubmit="return confirm('Remove needs-triage from #{{ p.id }}?');">
+      <input type="hidden" name="return_to" value="/papers/triage?page={{ page }}" />
+      <button type="submit" title="Clear the needs-triage flag — keep the paper"
+              class="text-xs px-2 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">✓ Clear flag</button>
+    </form>
+    <form method="post" action="/papers/{{ p.id }}/delete" class="shrink-0"
+          onsubmit="return confirm('Delete paper #{{ p.id }}? This soft-deletes it.');">
+      <input type="hidden" name="return_to" value="/papers/triage?page={{ page }}" />
+      <button type="submit" title="Delete the paper"
+              class="text-xs px-2 py-0.5 rounded border border-rose-300 text-rose-600 hover:bg-rose-50">🗑 Delete</button>
+    </form>
   </li>
   {% endfor %}
 </ul>
