@@ -151,6 +151,52 @@ class TestGarbageTitle:
         assert is_garbage_title("Presentation1") is True
         assert is_garbage_title("Slide 1") is True
 
+    def test_front_matter_section_titles(self):
+        # Body-title rescue / book-chapter DOIs landing on front matter.
+        for t in (
+            "Dedication",
+            "Acknowledgments",
+            "Acknowledgements",
+            "Index",
+            "Copyright",
+            "References",
+            "Abstract",
+            "Query",
+            "Editorial Board",
+            "Inside Front Cover",
+            "In this issue",
+            "Journal of Cellular Biochemistry: Issue Information",
+            "<scp>ISBT</scp> 2022 - Abstract Book",
+            "Congress Abstracts",
+            "Table of Contents",
+        ):
+            assert is_garbage_title(t) is True, f"missed front-matter: {t!r}"
+
+    def test_filename_and_path_titles(self):
+        for t in (
+            "wang.dvi",
+            "cgibbs.dvi",
+            "NAR.30_4.book(gkf189.fm)",
+            "C:/Users/Dimitris/Documents/MY TALKS/UCSB/FINAL",
+            "/home/journal/dvi/APA869-final.dvi",
+        ):
+            assert is_garbage_title(t) is True, f"missed filename/path: {t!r}"
+
+    def test_numeric_id_titles(self):
+        assert is_garbage_title("1499085535545073489-02682235") is True
+        assert is_garbage_title("1498405364646477509-07983874") is True
+
+    def test_front_matter_words_inside_real_title_pass(self):
+        # The anchored single-word patterns must not flag a real title that
+        # merely contains the word.
+        for t in (
+            "Abstract reasoning in large language models",
+            "A copyright framework for generative models",
+            "References architecture for distributed indexes",
+            "Index theory and the Atiyah-Singer theorem",
+        ):
+            assert is_garbage_title(t) is False, f"false positive: {t!r}"
+
     def test_empty(self):
         assert is_garbage_title("") is True
         assert is_garbage_title("   ") is True

@@ -290,15 +290,21 @@ def remediate_one(
 
     if dry_run:
         # Compute the would-be cite_key for the report without writing.
-        with store.pool.connection() as conn:
-            new_key = _new_cite_key(conn, author_dicts, meta.year)
+        # Only rename when an author was actually recovered — otherwise the
+        # cite_key surname stays "anon" and a rename is pointless (and the
+        # anon<yy> space overflows past 26 collisions).
+        if author_dicts:
+            with store.pool.connection() as conn:
+                new_key = _new_cite_key(conn, author_dicts, meta.year)
+        else:
+            new_key = suspect.cite_key
         return Outcome(
             ref_id=suspect.ref_id,
             action="fixed",
             old_cite_key=suspect.cite_key,
             new_cite_key=new_key,
             new_title=meta.title,
-            detail="dry-run",
+            detail="dry-run" if author_dicts else "dry-run (title-only, no author)",
         )
 
     return _apply_fix(
@@ -337,7 +343,12 @@ def _apply_fix(
     new_key = suspect.cite_key
     try:
         with store.tx() as conn:
-            new_key = _new_cite_key(conn, author_dicts, year)
+            # Rename only when an author was recovered (real surname);
+            # otherwise leave the anon<yy> cite_key as-is and just repair
+            # the title/authors/abstract in place. Avoids pointless
+            # anon->anon renames and the anon<yy> CiteKeyOverflow.
+            if author_dicts:
+                new_key = _new_cite_key(conn, author_dicts, year)
             store.update_paper_fields(
                 suspect.ref_id,
                 title=title,

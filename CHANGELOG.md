@@ -32,7 +32,9 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   opt-in. New `store/_tag_filter.wiki_fence` / `is_wiki_tag` / `WIKI_TAG`
   applied at the three search builders in `store/_blocks_ops.py`.
 - Migration `0026_wikipedia_kind.sql` — seeds the `kinds` + `providers`
-  registry rows (data-only; reuses shared `refs`/`chunks`/`cache_state`).### Fixed (2026-06-19 — junk-metadata ingest + the "()" edit error)
+  registry rows (data-only; reuses shared `refs`/`chunks`/`cache_state`).
+
+### Fixed (2026-06-19 — junk-metadata ingest + the "()" edit error)
 
 - **Paper metadata-edit error page rendered as a blank `()`.** The
   `/papers/{id}/edit` and `/delete` routes passed the error template the
@@ -70,8 +72,17 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   `card_title`/`card_authors`/`card_combined` chunks (dropping their
   embeddings + keywords so the workers re-derive them) — or tags it
   `needs-triage` for a future manual paste-title→S2 flow. Dry-run by
-  default; `--apply` commits; re-runnable and resumable.
+  default; `--apply` commits; re-runnable and resumable. A full prod
+  dry-run informed two refinements: `is_garbage_title` now also catches
+  front-matter section titles (`Dedication`, `Index`, `References`,
+  `Abstract`, `Editorial Board`, `Issue Information`, …), filename/path
+  titles (`.dvi`/`.fm`, `C:/…`, `/home/…`), and pure numeric IDs — so
+  book front-matter and filename junk route to `needs-triage` instead of
+  being "fixed" with a junk title; and the remediation skips the cite_key
+  rename + PDF move when no author was recovered (the slug stays `anon…`
+  either way), which also removes the `anon00` CiteKeyOverflow.
   (`ingest/remediate.py`, `cli/fix_metadata.py`.)
+
 ### Added (2026-06-19 — projects: workspace promoted to first-class)
 
 - **A *project* is a strategic root that owns a `meta.workspace`.** No

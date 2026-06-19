@@ -198,8 +198,21 @@ _GARBAGE_TITLE_RES = [
     # "78868 651..703"
     re.compile(r"\s\d+\.\.\d+\s*$"),
     # Ends with a document-source filename extension.
-    # Examples: "nmat1849 Geim Progress Article.indd"
-    re.compile(r"\.(?:indd|doc|docx|tex|pdf|qxp|qxd|ai|xml|eps)\s*$", re.IGNORECASE),
+    # Examples: "nmat1849 Geim Progress Article.indd", "wang.dvi",
+    # "cgibbs.dvi" (TeX/dvips intermediate filenames leaked as the title).
+    re.compile(
+        r"\.(?:indd|doc|docx|tex|pdf|qxp|qxd|ai|xml|eps|dvi|fm)\s*$", re.IGNORECASE
+    ),
+    # Filesystem path leaked as the title (Word/LaTeX stamping the source
+    # path). Examples: "C:/Users/Dimitris/.../MY TALKS/...",
+    # "/home/journal/dvi/APA869-final.dvi", "NAR.30_4.book(gkf189.fm)".
+    re.compile(r"^[A-Za-z]:[\\/]"),  # Windows drive path
+    re.compile(r"[\\/][^\s\\/]+[\\/][^\s\\/]+[\\/]"),  # ≥2 path separators, no spaces
+    re.compile(r"\.book\(", re.IGNORECASE),  # InDesign/Quark .book(...) source ref
+    # Pure numeric / tracking-ID strings (manuscript IDs, S2 corpus ids).
+    # Examples: "1499085535545073489-02682235". A real title always has
+    # letters; a year ("2024") is too short to match the 6+ digit floor.
+    re.compile(r"^\s*\d{6,}[\d\s-]*$"),
     # APS/AIP revtex template boilerplate that leaked into dc:title.
     # Example: "USING STANDARD PRB S"
     re.compile(r"^\s*USING\s+STANDARD\b", re.IGNORECASE),
@@ -221,6 +234,28 @@ _GARBAGE_TITLE_RES = [
     re.compile(r"^\s*powerpoint\s+presentation\s*$", re.IGNORECASE),
     re.compile(r"^\s*presentation\d*\s*$", re.IGNORECASE),
     re.compile(r"^\s*slide\s+\d+\s*$", re.IGNORECASE),
+    # Front-matter section headings mined as the "title" (the body-title
+    # rescue landing on a book/journal front page, or a book-chapter DOI
+    # whose CrossRef record IS the front-matter). Anchored whole-string so
+    # a real title merely *containing* one of these words is unaffected.
+    re.compile(
+        r"^\s*(?:"
+        r"dedication|acknowledge?ments?|index|copyright|references|contents"
+        r"|abstract|query|errata|masthead|colophon|frontispiece"
+        r"|title\s+page|author\s+index|subject\s+index|(?:front|back)\s+cover"
+        r")\s*$",
+        re.IGNORECASE,
+    ),
+    # High-signal front-matter phrases that never occur in a real paper
+    # title — matched anywhere (they show up with HTML/scp prefixes, issue
+    # numbers, etc.). Examples: "<scp>ISBT</scp> 2022 - Abstract Book",
+    # "Journal of Cellular Biochemistry: Issue Information".
+    re.compile(
+        r"\b(?:issue\s+information|abstract\s+book|editorial\s+board"
+        r"|inside\s+(?:front|back)\s+cover|in\s+this\s+issue"
+        r"|congress\s+abstracts|table\s+of\s+contents)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 
