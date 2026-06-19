@@ -1482,6 +1482,31 @@ def test_status_page_renders(client) -> None:
     assert "No spin loops or failed passes" in resp.text
 
 
+def test_status_backlog_shows_last_done(client, monkeypatch) -> None:
+    """Each pipeline-backlog row shows when the pass last did work.
+
+    A pass with a recent productive batch renders its relative age
+    ('Nm ago'); a pass that never ran renders the em-dash placeholder.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from precis_web.routes import status as status_mod
+
+    recent = datetime.now(UTC) - timedelta(minutes=3)
+    monkeypatch.setattr(
+        status_mod,
+        "_backlog_counts",
+        lambda store: {
+            "embed": {"pending": 10, "done": 90, "last_ts": recent},
+            "summarize": {"pending": 5, "done": 95},  # never ran → no last_ts
+        },
+    )
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert "3m ago" in resp.text  # embed's last productive batch
+    assert "last productive batch" in resp.text  # tooltip label
+
+
 def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
     """Heartbeat + usage + host panels render injected data."""
     from precis_web.routes import status as status_mod

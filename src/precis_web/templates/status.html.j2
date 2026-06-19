@@ -407,6 +407,10 @@
              style="width: {{ '%.1f'|format(pct) }}%"></div>
       </div>
       <span class="w-16 text-right text-slate-500 tabular-nums">{{ '%.1f'|format(pct) }}%</span>
+      <span class="w-24 text-right text-slate-400 shrink-0 tabular-nums"
+            title="last productive batch{% if row.last_ts %} — {{ row.last_ts | abs_ts }}{% endif %}">
+        {% if row.last_ts %}{{ row.last_ts | ago }}{% else %}—{% endif %}
+      </span>
       {% endif %}
     </div>
     {% else %}

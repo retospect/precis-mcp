@@ -173,7 +173,7 @@ def _recent_todo_done(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     ]
 
 
-def _backlog_counts(store: Any) -> dict[str, dict[str, int]]:
+def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
     """Per-pass backlog counts: how many chunks are still waiting?
 
     Each row maps to a worker pass and reports:
@@ -193,7 +193,7 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, int]]:
     Cheap reads: keywords is a single index probe; the embed/summary
     counts are correlated ``EXISTS`` probes against a chunk-id index.
     """
-    rows: dict[str, dict[str, int]] = {}
+    rows: dict[str, dict[str, Any]] = {}
 
     def _two_count(label: str, pending_where: str, done_where: str) -> None:
         try:
@@ -247,6 +247,33 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, int]]:
             "WHERE s.chunk_id = chunks.chunk_id AND s.status = 'ok')"
         ),
     )
+
+    # Stamp each pass with the timestamp of its last *productive* batch
+    # (``ok > 0``) from ``worker_logs`` so the panel can show "last
+    # done N ago" — useful for spotting a pass that's stalled even
+    # while pending sits flat. The chunks table carries no per-row
+    # "processed_at" (keywords write in place; embeddings/summaries
+    # live in their own tables) so the worker-pass log is the cheap,
+    # indexed source of "when did this pass last move". Failure here is
+    # non-fatal — counts already rendered; we just skip the timestamp.
+    try:
+        with store.pool.connection() as conn:
+            last = conn.execute(
+                """
+                SELECT pass, max(ts)
+                  FROM worker_logs
+                 WHERE pass = ANY(%s)
+                   AND COALESCE((payload->>'ok')::int, 0) > 0
+                 GROUP BY pass
+                """,
+                (list(rows.keys()),),
+            ).fetchall()
+        for pass_name, ts in last:
+            if pass_name in rows:
+                rows[pass_name]["last_ts"] = ts
+    except Exception:
+        log.exception("status: backlog last-done query failed")
+
     return rows
 
 
