@@ -64,6 +64,15 @@ STALE_CLAIM_HOURS = 3
 LONG_WAIT_DAYS = 7
 STUCK_DOABLE_HOURS = 24
 
+#: A single (ref_id, source) emitting more than this many ``ref_events``
+#: in 24h is almost certainly a worker spin loop — a derived-queue claim
+#: re-picking the same ref every pass because a no-op / terminal-but-
+#: retryable outcome never clears the claim predicate (the fetcher
+#: retry-window-on-disabled-provider bug and the chase chunk-less-stub
+#: loop were both ~150–1300/day per ref). A healthy ref sees a handful
+#: of events a day, so 200 is comfortably above the noise floor.
+SPIN_LOOP_EVENTS_24H = 200
+
 #: How long a nursery digest sticks around before the pass soft-deletes
 #: it. The dedup-by-fingerprint check (see :func:`_last_digest_matches`)
 #: keeps churn low — most cycles don't write a fresh digest — so without
@@ -184,6 +193,7 @@ def _detect_all(store: Store, *, limit: int) -> list[Finding]:
     out.extend(_detect_long_waits(store))
     out.extend(_detect_stuck_doable(store))
     out.extend(_detect_stalled_recurrings(store))
+    out.extend(_detect_spin_loops(store))
     return out[:limit]
 
 
@@ -504,6 +514,56 @@ def _detect_stalled_recurrings(store: Store) -> list[Finding]:
     ]
 
 
+# ── spin loops ────────────────────────────────────────────────────
+
+
+def _detect_spin_loops(store: Store) -> list[Finding]:
+    """Refs a background worker is hammering — >N events/24h, one source.
+
+    Catches the failure mode where a derived-queue worker re-claims the
+    same ref every pass because its no-op / retryable outcome never
+    clears the claim predicate. The detail names the source + event +
+    rate so triage starts at the worker, not the ref. ``category`` is
+    ``spin-loop`` and the dedup key is ``(ref_id, source)`` collapsed
+    onto the ref — a loop on the same ref from the same source is one
+    finding regardless of how the count drifts pass-to-pass.
+
+    Cheap: a single grouped scan of the last 24h of ``ref_events``,
+    which is GIN/btree-indexed on ``ts``. Capped at 50 like the others.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ref_id, source,
+                   (array_agg(event ORDER BY ts DESC))[1] AS last_event,
+                   count(*)::int AS n
+              FROM ref_events
+             WHERE ts > now() - interval '24 hours'
+             GROUP BY ref_id, source
+            HAVING count(*) > %s
+             ORDER BY count(*) DESC
+             LIMIT 50
+            """,
+            (SPIN_LOOP_EVENTS_24H,),
+        ).fetchall()
+    out: list[Finding] = []
+    for r in rows:
+        ref_id, source, last_event, n = int(r[0]), str(r[1]), r[2], int(r[3])
+        out.append(
+            Finding(
+                category="spin-loop",
+                ref_id=ref_id,
+                title=f"{source} on #{ref_id}",
+                detail=(
+                    f"{n} {source} events in 24h (last: {last_event or '?'}) "
+                    f"— a worker is re-claiming this ref every pass; check "
+                    f"the {source} claim predicate's backoff/retry window"
+                ),
+            )
+        )
+    return out
+
+
 # ── digest writer (with fingerprint dedup) ────────────────────────
 
 
@@ -592,6 +652,7 @@ def _render_digest_body(findings: list[Finding], *, today: str) -> str:
     for f in findings:
         by_cat.setdefault(f.category, []).append(f)
     cat_order = [
+        "spin-loop",
         "orphan",
         "stale-claim",
         "stalled-recurring",

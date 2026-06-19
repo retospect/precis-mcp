@@ -1240,6 +1240,9 @@ def test_status_page_renders(client) -> None:
     assert "Machines" in resp.text
     assert "Claude usage" in resp.text
     assert "precis heartbeat" in resp.text  # empty-state hint
+    # Background-health panel: empty under the fake store → green all-clear.
+    assert "Background health" in resp.text
+    assert "No spin loops or failed passes" in resp.text
 
 
 def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
@@ -1284,6 +1287,44 @@ def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
     assert "$1.23" in resp.text  # 24h cost
     assert "claude-sonnet-4-6" in resp.text
     assert "4 err/warn 24h" in resp.text
+
+
+def test_status_background_health_panel_renders_anomalies(client, monkeypatch) -> None:
+    """Spin-loop + failed-pass rows render in the Background health panel."""
+    from precis_web.routes import status as status_mod
+
+    monkeypatch.setattr(
+        status_mod,
+        "_background_anomalies",
+        lambda store: {
+            "spin_loops": [
+                {
+                    "ref_id": 34814,
+                    "source": "fetcher:s2",
+                    "last_event": "no_oa_version",
+                    "count": 2030,
+                }
+            ],
+            "failed_passes": [
+                {
+                    "host": "melchior",
+                    "pass": "deep_review",
+                    "failed": 3,
+                    "ago": "5m ago",
+                }
+            ],
+        },
+    )
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert "Spin loops" in resp.text
+    assert "#34814" in resp.text
+    assert "fetcher:s2" in resp.text
+    assert "2030" in resp.text
+    assert "Failed passes" in resp.text
+    assert "deep_review" in resp.text
+    # The green all-clear state must be gone when anomalies exist.
+    assert "No spin loops or failed passes" not in resp.text
 
 
 def test_status_ago_formatter() -> None:

@@ -70,6 +70,18 @@ _MULTI_CANDIDATE = "multi_candidate"
 
 _DERIVED_FROM = "derived-from"
 
+# Backoff for findings stuck on a chunk-less frontier stub. When
+# ``advance_finding`` returns ``"waiting"`` it leaves STATUS:tracing
+# unchanged, so without a backoff the claim re-picks the same finding
+# every pass (per minute, per cluster node) and floods ref_events with
+# identical ``waiting`` rows — observed at >1000/day on a handful of
+# refs. We skip a finding whose most-recent chase event is a
+# ``waiting`` newer than this window; a finding that last *advanced*
+# (or any non-waiting outcome) is never suppressed, so real progress
+# stays prompt. The frontier stub's PDF lands on the fetcher's own
+# schedule, so an hour of slack costs nothing.
+WAITING_BACKOFF_MINUTES = 60
+
 # Inline citation patterns. Numbered bracket form is the most common
 # and the cheapest to map (positional into S2's references list).
 _NUMBERED_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
@@ -135,7 +147,12 @@ class _Event:
 # ── Claim query ────────────────────────────────────────────────────
 
 
-def claim_tracing_findings(conn: Connection, *, limit: int) -> list[FindingRow]:
+def claim_tracing_findings(
+    conn: Connection,
+    *,
+    limit: int,
+    waiting_backoff_minutes: int = WAITING_BACKOFF_MINUTES,
+) -> list[FindingRow]:
     """Lock and return up to ``limit`` ``STATUS:tracing`` findings.
 
     ``FOR UPDATE OF r SKIP LOCKED`` lets concurrent chase workers
@@ -143,6 +160,13 @@ def claim_tracing_findings(conn: Connection, *, limit: int) -> list[FindingRow]:
     for the lifetime of the *outer* transaction; the caller is
     responsible for committing per-finding so the lock window stays
     short.
+
+    Findings whose most-recent chase event is a ``waiting`` newer than
+    ``waiting_backoff_minutes`` are skipped: their frontier stub still
+    has no chunks, so re-walking them every pass is a pure no-op that
+    only churns ref_events (see :data:`WAITING_BACKOFF_MINUTES`). Any
+    other most-recent outcome (or none yet) leaves the finding
+    eligible, so a chain that just advanced keeps moving promptly.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -151,6 +175,12 @@ def claim_tracing_findings(conn: Connection, *, limit: int) -> list[FindingRow]:
         """
         SELECT r.ref_id, r.title, r.meta
           FROM refs r
+          LEFT JOIN LATERAL (
+                SELECT e.event, e.ts FROM ref_events e
+                 WHERE e.ref_id = r.ref_id AND e.source = %s
+                 ORDER BY e.ts DESC
+                 LIMIT 1
+          ) last_chase ON TRUE
          WHERE r.kind = 'finding'
            AND r.deleted_at IS NULL
            AND EXISTS (
@@ -159,11 +189,28 @@ def claim_tracing_findings(conn: Connection, *, limit: int) -> list[FindingRow]:
                     AND t.namespace = %s
                     AND t.value = %s
                )
+           -- Skip only findings whose *most recent* chase outcome is a
+           -- still-fresh ``waiting``. COALESCE makes the predicate
+           -- NULL-safe: a finding with no chase events yet (the common
+           -- case) has last_chase.* = NULL, the inner expression is
+           -- NULL, and without the COALESCE ``NOT NULL`` would drop the
+           -- row from the claim entirely.
+           AND NOT COALESCE(
+                 last_chase.event = 'waiting'
+                 AND last_chase.ts > now() - (%s || ' minutes')::INTERVAL,
+                 FALSE
+               )
          ORDER BY r.ref_id
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
-        (_STATUS_NAMESPACE, _TRACING, limit),
+        (
+            _SOURCE,
+            _STATUS_NAMESPACE,
+            _TRACING,
+            str(waiting_backoff_minutes),
+            limit,
+        ),
     ).fetchall()
     return [
         FindingRow(ref_id=int(r[0]), title=str(r[1]), meta=dict(r[2] or {}))

@@ -73,13 +73,11 @@ _SOURCE_UNPAYWALL = "fetcher:unpaywall"
 _SOURCE_ARXIV = "fetcher:arxiv"
 _SOURCE_S2 = "fetcher:s2"
 
-# Convention: when this module says "source" without a qualifier
-# (e.g. the retry-window predicate), Unpaywall is the canonical
-# representative. The retry window applies across all providers in
-# practice — if one source said "no_oa_version" 6 hours ago, the
-# others probably did too. Keeping the predicate per-source would
-# triple the API budget without much coverage gain.
-_SOURCE = _SOURCE_UNPAYWALL
+# The retry-window predicate matches any ``fetcher:%`` source rather
+# than one canonical provider: the window must arm after whichever
+# provider actually ran. Keying it on a single provider that may be
+# disabled (e.g. Unpaywall without an email) silently defeats the
+# guard and turns the cascade into a per-pass spin loop.
 
 # Unpaywall public API root. Free; requires ``email=`` per their TOS.
 # https://unpaywall.org/products/api
@@ -151,10 +149,18 @@ def claim_stubs_to_fetch(
     """Lock and return up to ``limit`` stubs needing an OA fetch attempt.
 
     A stub qualifies when ``refs.pdf_sha256 IS NULL`` AND at least one
-    of {DOI, arXiv, S2 id} is registered. Excludes stubs tried by the
-    canonical ``fetcher:unpaywall`` source within ``retry_after_hours``
-    — the retry window applies cross-source by convention (if one
-    source had nothing N hours ago, the others probably won't either).
+    of {DOI, arXiv, S2 id} is registered. Excludes stubs tried by *any*
+    ``fetcher:%`` source within ``retry_after_hours`` — the retry window
+    applies cross-source by convention (if one source had nothing N
+    hours ago, the others probably won't either).
+
+    Keying the window on the literal ``fetcher:unpaywall`` source used
+    to defeat the whole guard in deployments where Unpaywall is
+    disabled (no ``PRECIS_UNPAYWALL_EMAIL``): the cascade then only ran
+    arXiv + S2, never wrote an ``unpaywall`` event, so the window never
+    armed and every stub re-qualified on every pass — re-polling S2
+    hundreds of times a day. Matching ``fetcher:%`` arms the window
+    after whichever provider actually ran.
 
     Returns newest-stub-first (``ORDER BY ref_id DESC``) so the chase
     bottleneck shows up promptly when a chain creates many stubs.
@@ -178,7 +184,7 @@ def claim_stubs_to_fetch(
           LEFT JOIN LATERAL (
                 SELECT 1 FROM ref_events e
                  WHERE e.ref_id = r.ref_id
-                   AND e.source = %s
+                   AND e.source LIKE 'fetcher:%%'
                    AND e.ts > now() - (%s || ' hours')::INTERVAL
                  LIMIT 1
           ) recent_event ON TRUE
@@ -195,7 +201,7 @@ def claim_stubs_to_fetch(
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
-        (_SOURCE, str(retry_after_hours), limit),
+        (str(retry_after_hours), limit),
     ).fetchall()
     return [
         StubRef(

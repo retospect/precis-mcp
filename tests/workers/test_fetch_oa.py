@@ -181,6 +181,43 @@ class TestClaimStubs:
         # current claim batch.
         assert [s.ref_id for s in stubs] == []
 
+    def test_skips_recently_attempted_any_fetcher_source(self, store: Store) -> None:
+        # Regression: the retry window used to key only on
+        # ``fetcher:unpaywall``. In prod Unpaywall is disabled (no
+        # email) so only arXiv + S2 run, never writing an unpaywall
+        # event — the window never armed and S2 got re-polled every
+        # pass. A recent ``fetcher:s2`` event must now suppress the
+        # stub just like an unpaywall one.
+        ref_id = _seed_paper_stub(store, doi="10.1234/s2only", s2_id="s2:abc")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload) "
+                "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb)",
+                (ref_id,),
+            )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == []
+
+    def test_reclaims_after_window_expires(self, store: Store) -> None:
+        # An attempt older than the 24h window leaves the stub eligible
+        # again — the guard is a backoff, not a permanent exclusion.
+        ref_id = _seed_paper_stub(store, doi="10.1234/old")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+                "now() - interval '25 hours')",
+                (ref_id,),
+            )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [ref_id]
+
     def test_orders_newest_first(self, store: Store) -> None:
         first = _seed_paper_stub(store, cite_key="a2024", doi="10.1/a")
         second = _seed_paper_stub(store, cite_key="b2024", doi="10.1/b")

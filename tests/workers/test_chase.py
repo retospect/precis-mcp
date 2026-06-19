@@ -38,7 +38,7 @@ from unittest.mock import patch
 from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
 from precis.store.types import BlockInsert
-from precis.workers.chase import run_finding_chase_pass
+from precis.workers.chase import claim_tracing_findings, run_finding_chase_pass
 
 # ── plumbing ────────────────────────────────────────────────────────
 
@@ -166,6 +166,62 @@ def test_stub_waiting_when_frontier_has_no_chunks(store) -> None:
 
     assert _status_tag(store, fid) == "tracing"
     assert len(_chain(store, fid)) == 1  # unchanged
+
+
+# ── waiting backoff: claim skips recently-waiting findings ──────────
+
+
+def _insert_chase_event(store, ref_id: int, event: str, *, minutes_ago: float) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+            "VALUES (%s, 'chase', %s, '{}'::jsonb, "
+            "now() - (%s || ' minutes')::interval)",
+            (ref_id, event, str(minutes_ago)),
+        )
+        conn.commit()
+
+
+def test_claim_skips_recently_waiting_finding(store) -> None:
+    """A finding whose latest chase event is a recent ``waiting`` is
+    excluded from the claim — this is what stops the per-pass spin
+    loop on a chunk-less frontier stub."""
+    _seed_paper(store, cite_key="stub_backoff", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_backoff")
+    _insert_chase_event(store, fid, "waiting", minutes_ago=5)
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    assert fid not in [f.ref_id for f in claimed]
+
+
+def test_claim_reclaims_after_backoff_window(store) -> None:
+    """Once the waiting event ages past the backoff window the finding
+    is eligible again — the backoff is a throttle, not a kill."""
+    _seed_paper(store, cite_key="stub_aged", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_aged")
+    _insert_chase_event(store, fid, "waiting", minutes_ago=90)
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    assert fid in [f.ref_id for f in claimed]
+
+
+def test_claim_not_suppressed_when_last_event_advanced(store) -> None:
+    """A recent ``waiting`` doesn't suppress a finding that has since
+    advanced — only the *most recent* outcome being ``waiting`` backs
+    it off, so real progress keeps moving."""
+    _seed_paper(store, cite_key="stub_moved", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_moved")
+    _insert_chase_event(store, fid, "waiting", minutes_ago=10)
+    _insert_chase_event(store, fid, "advanced", minutes_ago=1)
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    assert fid in [f.ref_id for f in claimed]
 
 
 # ── hop: inline cite + S2 reference → chain grows ──────────────────

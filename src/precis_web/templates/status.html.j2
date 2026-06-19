@@ -88,6 +88,63 @@
   {% endif %}
 </section>
 
+<!-- Background health — spin loops (a worker re-claiming the same ref
+     every pass) + failed worker passes, both over 24h. These are the
+     derived-queue failure modes that are otherwise invisible until
+     someone reads ref_events by hand. Green "all clear" when empty. -->
+{% set spin = bg_health.get('spin_loops', []) %}
+{% set fails = bg_health.get('failed_passes', []) %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Background health</h2>
+  {% if not spin and not fails %}
+  <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
+    <span class="inline-block w-2 h-2 rounded-full mr-1 align-middle bg-emerald-500"></span>
+    No spin loops or failed passes in the last 24h.
+  </div>
+  {% else %}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    {% if spin %}
+    <div class="rounded-lg border border-rose-200 bg-white overflow-hidden">
+      <div class="px-4 py-2 text-xs uppercase tracking-wide text-rose-600 bg-rose-50 font-medium">
+        Spin loops ({{ spin|length }}) — same ref re-claimed every pass
+      </div>
+      <table class="w-full text-sm">
+        <tbody class="divide-y divide-slate-100">
+          {% for s in spin %}
+          <tr class="hover:bg-slate-50">
+            <td class="px-4 py-2 font-mono text-slate-700">#{{ s.ref_id }}</td>
+            <td class="px-4 py-2 font-mono text-slate-600">{{ s.source }}</td>
+            <td class="px-4 py-2 text-slate-500">{{ s.last_event }}</td>
+            <td class="px-4 py-2 text-right font-semibold text-rose-700 tabular-nums">{{ s.count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% if fails %}
+    <div class="rounded-lg border border-amber-200 bg-white overflow-hidden">
+      <div class="px-4 py-2 text-xs uppercase tracking-wide text-amber-700 bg-amber-50 font-medium">
+        Failed passes ({{ fails|length }}) — 24h
+      </div>
+      <table class="w-full text-sm">
+        <tbody class="divide-y divide-slate-100">
+          {% for f in fails %}
+          <tr class="hover:bg-slate-50">
+            <td class="px-4 py-2 font-mono text-slate-700">{{ f.host }}</td>
+            <td class="px-4 py-2 font-mono text-slate-600">{{ f.pass }}</td>
+            <td class="px-4 py-2 text-right font-semibold text-amber-700 tabular-nums">{{ f.failed }}</td>
+            <td class="px-4 py-2 text-right text-slate-400">{{ f.ago }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
 <!-- Claude OAuth quota — snapshot of the Anthropic rate-limit headers
      written by the agent-worker `quota_check` pass. Mirrors Claude
      Code's own `/usage` panel. Updated every ~10 min while the agent

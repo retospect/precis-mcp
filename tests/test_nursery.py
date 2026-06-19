@@ -26,11 +26,13 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.nursery import (
     LONG_WAIT_DAYS,
+    SPIN_LOOP_EVENTS_24H,
     STALE_CLAIM_HOURS,
     STUCK_DOABLE_HOURS,
     Finding,
     _detect_long_waits,
     _detect_orphans,
+    _detect_spin_loops,
     _detect_stale_claims,
     _detect_stalled_recurrings,
     _detect_stuck_doable,
@@ -378,6 +380,60 @@ def test_stalled_recurring_detector_skips_done_child(
     findings = _detect_stalled_recurrings(store)
     ids = {f.ref_id for f in findings}
     assert rec_id not in ids
+
+
+# ── spin loops ─────────────────────────────────────────────────────
+
+
+def _seed_events(store: Store, ref_id: int, source: str, event: str, n: int) -> None:
+    """Insert ``n`` recent ref_events for one ref/source via one INSERT."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "SELECT %s, %s, %s, '{}'::jsonb FROM generate_series(1, %s)",
+            (ref_id, source, event, n),
+        )
+        conn.commit()
+
+
+def test_spin_loop_detector_flags_hammered_ref(store: Store) -> None:
+    """A ref with > SPIN_LOOP_EVENTS_24H events from one source in 24h
+    surfaces as a ``spin-loop`` finding naming the source + rate."""
+    ref = store.insert_ref(kind="paper", slug="loopy", title="Loopy", meta={})
+    _seed_events(store, ref.id, "fetcher:s2", "no_oa_version", SPIN_LOOP_EVENTS_24H + 5)
+
+    findings = _detect_spin_loops(store)
+    hits = [f for f in findings if f.ref_id == ref.id]
+    assert len(hits) == 1
+    assert hits[0].category == "spin-loop"
+    assert "fetcher:s2" in hits[0].detail
+    assert "no_oa_version" in hits[0].detail
+
+
+def test_spin_loop_detector_ignores_quiet_ref(store: Store) -> None:
+    """A handful of events is normal background activity, not a loop."""
+    ref = store.insert_ref(kind="paper", slug="calm", title="Calm", meta={})
+    _seed_events(store, ref.id, "fetcher:s2", "no_oa_version", 5)
+
+    findings = _detect_spin_loops(store)
+    assert ref.id not in {f.ref_id for f in findings}
+
+
+def test_spin_loop_detector_ignores_old_events(store: Store) -> None:
+    """Events outside the 24h window don't count — yesterday's storm
+    shouldn't keep flagging once the loop is fixed."""
+    ref = store.insert_ref(kind="paper", slug="stale", title="Stale", meta={})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+            "SELECT %s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+            "now() - interval '30 hours' FROM generate_series(1, %s)",
+            (ref.id, SPIN_LOOP_EVENTS_24H + 5),
+        )
+        conn.commit()
+
+    findings = _detect_spin_loops(store)
+    assert ref.id not in {f.ref_id for f in findings}
 
 
 # ── TTL purge ──────────────────────────────────────────────────────

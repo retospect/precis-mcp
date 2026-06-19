@@ -8,6 +8,38 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-19 — background-worker spin loops + UI surfacing)
+
+- **OA fetcher no longer re-polls the same stub every pass.** The
+  `claim_stubs_to_fetch` retry-window guard keyed exclusively on a
+  recent `fetcher:unpaywall` event. With Unpaywall disabled in prod
+  (no `PRECIS_UNPAYWALL_EMAIL`) the cascade only ran arXiv + S2 and
+  never wrote an `unpaywall` event, so the window never armed and
+  every stub re-qualified on every pass — observed at ~167 S2 polls
+  per stub per day (54k+ `no_oa_version` events / 24h over 327 refs).
+  The window now matches any `fetcher:%` source, so it arms after
+  whichever provider actually ran. (`workers/fetch_oa.py`)
+- **Finding-chase no longer spins on chunk-less frontier stubs.** A
+  `waiting` outcome (frontier stub has no chunks yet) left
+  `STATUS:tracing` unchanged, so `claim_tracing_findings` re-picked
+  the same finding every pass on every node — ~1,300 `waiting` events
+  per ref per day. The claim now skips a finding whose most-recent
+  chase event is a `waiting` newer than `WAITING_BACKOFF_MINUTES`
+  (60); any other latest outcome stays eligible, so real progress is
+  unthrottled. (`workers/chase.py`)
+
+### Added (2026-06-19 — background health surfacing)
+
+- **Nursery `spin-loop` detector.** New SQL-only check flags any
+  `(ref_id, source)` emitting more than `SPIN_LOOP_EVENTS_24H` (200)
+  `ref_events` in 24h, so a runaway worker reaches asa-bot's attention
+  view through the existing nursery digest instead of only being
+  visible by reading `ref_events` by hand. (`workers/nursery.py`)
+- **"Background health" panel on the Status page.** Surfaces active
+  spin loops + failed worker passes (24h); renders a green "all clear"
+  when both are empty. (`precis_web/routes/status.py`,
+  `templates/status.html.j2`)
+
 ### Fixed (2026-06-18 — coroutine auto-close + job lease)
 
 - **`child_job_succeeded` no longer auto-closes planner coroutines.**

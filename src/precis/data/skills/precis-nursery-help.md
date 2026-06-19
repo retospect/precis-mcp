@@ -1,7 +1,7 @@
 ---
 id: precis-nursery-help
 title: precis — nursery digest of todo-tree incoherence
-summary: hourly tree-incoherence digest — orphans, stale claims, long waits, stuck doable detection
+summary: hourly tree-incoherence digest — orphans, stale claims, long waits, stuck doable, spin-loop detection
 applies-to: precis worker --only nursery; tree-review:* tagged memories
 status: active
 ---
@@ -25,12 +25,20 @@ preamble.
 | `long-wait` | leaf carries `waiting-for:*` older than threshold | 7 d |
 | `stuck-doable` | open leaf, no claim, no wait, no blocker, >threshold old | 24 h |
 | `stalled-recurring` | recurring's most recent spawned child has been open >1 h | 1 h floor |
+| `spin-loop` | one `(ref_id, source)` emits >threshold `ref_events` in 24 h | 200 / 24 h |
 
 `orphan` enforces the strategic invariant (knob #6 in the plan).
 `stale-claim` catches workers that died mid-task — the claim's age
 is read from `ref_tags.created_at` on the open tag row.
 `stalled-recurring` surfaces the Slice-4 collision-skip pile-up: a
 spawned child stuck open will silently prevent further ticks.
+`spin-loop` is the only cross-kind detector — it scans `ref_events`
+rather than the todo tree, catching a background worker that
+re-claims the same ref every pass (a broken retry window, a no-op
+outcome that never clears the claim predicate). The detail names the
+source + last event + rate so triage starts at the worker. The same
+loops are also surfaced on the web Status page's "Background health"
+panel for pull-style monitoring.
 
 Recurring subtrees (children of `level:recurring` roots) are
 exempt from the strategic invariant — they're scheduled work, not

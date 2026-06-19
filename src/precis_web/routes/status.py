@@ -465,6 +465,84 @@ def _heartbeats(store: Any) -> list[dict[str, Any]]:
     return out
 
 
+#: A single (ref_id, source) above this many ref_events in 24h is a
+#: worker spin loop. Mirrors ``precis.workers.nursery.SPIN_LOOP_EVENTS_24H``
+#: — kept as a local literal so the web package doesn't import the
+#: worker package just for a threshold.
+_SPIN_LOOP_EVENTS_24H = 200
+
+
+def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
+    """Background-worker health: spin loops + failed passes (24h).
+
+    Two cheap reads that turn the invisible failure modes of the
+    derived-queue workers into something the operator can see without
+    SSHing into the DB:
+
+    * ``spin_loops`` — any ``(ref_id, source)`` emitting more than
+      :data:`_SPIN_LOOP_EVENTS_24H` ``ref_events`` in 24h. A worker
+      re-claiming the same ref every pass (a broken retry window, a
+      no-op outcome that never clears the claim) shows up here long
+      before it would surface anywhere else.
+    * ``failed_passes`` — ``worker_logs`` rows with ``failed > 0`` in
+      24h, grouped by ``(host, pass)``. Distinct from the existing
+      "recent agent activity" panel, which only shows *productive*
+      passes; this one is specifically the failures.
+
+    Both degrade to an empty list on any schema surprise (the outer
+    ``_safe`` wrapper) so the panel can't 500 the page.
+    """
+    spin_loops: list[dict[str, Any]] = []
+    failed_passes: list[dict[str, Any]] = []
+    with store.pool.connection() as conn:
+        spin_rows = conn.execute(
+            """
+            SELECT ref_id, source,
+                   (array_agg(event ORDER BY ts DESC))[1] AS last_event,
+                   count(*)::int AS n
+              FROM ref_events
+             WHERE ts > now() - interval '24 hours'
+             GROUP BY ref_id, source
+            HAVING count(*) > %s
+             ORDER BY count(*) DESC
+             LIMIT 20
+            """,
+            (_SPIN_LOOP_EVENTS_24H,),
+        ).fetchall()
+        spin_loops = [
+            {
+                "ref_id": r[0],
+                "source": r[1] or "?",
+                "last_event": r[2] or "?",
+                "count": int(r[3]),
+            }
+            for r in spin_rows
+        ]
+        fail_rows = conn.execute(
+            """
+            SELECT host, pass,
+                   sum(COALESCE((payload->>'failed')::int, 0))::int AS failed,
+                   max(ts) AS last_ts
+              FROM worker_logs
+             WHERE ts > now() - interval '24 hours'
+               AND COALESCE((payload->>'failed')::int, 0) > 0
+             GROUP BY host, pass
+             ORDER BY failed DESC
+             LIMIT 20
+            """,
+        ).fetchall()
+        failed_passes = [
+            {
+                "host": r[0] or "?",
+                "pass": r[1] or "?",
+                "failed": int(r[2]),
+                "ago": _ago(r[3]),
+            }
+            for r in fail_rows
+        ]
+    return {"spin_loops": spin_loops, "failed_passes": failed_passes}
+
+
 def _app_version() -> str:
     """Installed ``precis-mcp`` version, for stale-server detection."""
     from importlib.metadata import PackageNotFoundError, version
@@ -548,6 +626,8 @@ async def index(request: Request) -> HTMLResponse:
             "quota": _safe(lambda: _claude_quota(store)) or {},
             "hosts": _safe(lambda: _hosts(store)) or [],
             "heartbeats": _safe(lambda: _heartbeats(store)) or [],
+            "bg_health": _safe(lambda: _background_anomalies(store))
+            or {"spin_loops": [], "failed_passes": []},
             "corpus_dir": "  ".join(str(p) for p in cfg.corpus_dirs),
             "app_version": _app_version(),
         },
