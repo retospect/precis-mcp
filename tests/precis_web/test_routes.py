@@ -36,6 +36,28 @@ def test_papers_needed_renders_backlog(client) -> None:
     assert "never attempted" in resp.text
 
 
+def test_papers_needed_uol_and_scholar_links(client) -> None:
+    """Each DOI / arXiv row gets a UoL Primo + Google Scholar search link
+    alongside the publisher link, with the identifier percent-encoded."""
+    resp = client.get("/papers-needed")
+    assert resp.status_code == 200
+    # DOI row → UoL Primo (institution-scoped) + Scholar, slash encoded.
+    assert (
+        "uol.primo.exlibrisgroup.com/discovery/search?"
+        "vid=353UOL_INST:353UOL_VU1&search_scope=MyInst_and_CI"
+        "&lang=en&sortby=rank&tab=TAB1"
+        "&query=any,contains,10.1038%2Fnature01797" in resp.text
+    )
+    assert (
+        "scholar.google.com/scholar?hl=en&as_sdt=0%2C5"
+        "&q=10.1038%2Fnature01797&btnG=" in resp.text
+    )
+    # arXiv row → bare arXiv number searched (no 'arxiv:' prefix).
+    assert "q=cond-mat/0410550".replace("/", "%2F") in resp.text
+    assert ">UoL</a>" in resp.text
+    assert ">Scholar</a>" in resp.text
+
+
 def test_papers_needed_awaiting_filter(client) -> None:
     resp = client.get("/papers-needed?awaiting=1")
     assert resp.status_code == 200

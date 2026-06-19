@@ -64,6 +64,19 @@
           {% else %}
             <span class="text-slate-500">{{ row.identifier }}</span>
           {% endif %}
+          {% if row.uol_url or row.scholar_url %}
+            <span class="block text-slate-400">
+              {% if row.uol_url %}
+                <a href="{{ row.uol_url }}" target="_blank" rel="noopener"
+                   class="text-sky-700 hover:underline">UoL</a>
+              {% endif %}
+              {% if row.uol_url and row.scholar_url %}<span class="px-0.5">·</span>{% endif %}
+              {% if row.scholar_url %}
+                <a href="{{ row.scholar_url }}" target="_blank" rel="noopener"
+                   class="text-sky-700 hover:underline">Scholar</a>
+              {% endif %}
+            </span>
+          {% endif %}
         </td>
         <td class="px-3 py-2 text-xs text-slate-500">
           {% if row.last_attempt %}

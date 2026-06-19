@@ -32,6 +32,7 @@ from __future__ import annotations
 import plistlib
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -135,6 +136,52 @@ def _doi_url(identifier: str) -> str:
     return ""
 
 
+def _search_token(identifier: str) -> str:
+    """Bare term to feed a library / scholar search box.
+
+    ``stub_backlog`` identifiers are bare DOIs (``10.…``),
+    ``arxiv:NNNN``, or ``s2:<hash>``. DOIs and arXiv numbers search
+    cleanly; an opaque S2 hash does not, so we return ``""`` for it
+    (the UoL / Scholar links are then suppressed). The ``arxiv:``
+    prefix is stripped so the bare number is searched.
+    """
+    if not identifier:
+        return ""
+    if identifier.startswith("arxiv:"):
+        return identifier.removeprefix("arxiv:")
+    if identifier.startswith("10."):
+        return identifier
+    return ""
+
+
+def _uol_url(identifier: str) -> str:
+    """University of Limerick Primo discovery search for the identifier.
+
+    Mirrors the operator's hand-built Primo URL: the tenant/view
+    (``vid``), the institution-plus-central-index scope, and the
+    ``any,contains,<term>`` query are the load-bearing parts; the
+    term is percent-encoded (``/`` → ``%2F``).
+    """
+    token = _search_token(identifier)
+    if not token:
+        return ""
+    q = quote(token, safe="")
+    return (
+        "https://uol.primo.exlibrisgroup.com/discovery/search"
+        "?vid=353UOL_INST:353UOL_VU1&search_scope=MyInst_and_CI"
+        f"&lang=en&sortby=rank&tab=TAB1&query=any,contains,{q}"
+    )
+
+
+def _scholar_url(identifier: str) -> str:
+    """Google Scholar search for the identifier."""
+    token = _search_token(identifier)
+    if not token:
+        return ""
+    q = quote(token, safe="")
+    return f"https://scholar.google.com/scholar?hl=en&as_sdt=0%2C5&q={q}&btnG="
+
+
 #: Rows per page on the backlog list.
 _PAGE_SIZE = 100
 
@@ -171,6 +218,8 @@ async def index(
                 "cite_key": row["cite_key"],
                 "identifier": row["identifier"],
                 "identifier_url": _doi_url(row["identifier"]),
+                "uol_url": _uol_url(row["identifier"]),
+                "scholar_url": _scholar_url(row["identifier"]),
                 "state": row["state"],
                 "last_attempt": row["last_attempt"],
                 "last_event": row["last_event"],
