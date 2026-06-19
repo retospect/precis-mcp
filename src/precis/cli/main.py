@@ -8,7 +8,6 @@ parser registration and implementation live in a sibling module:
 - :mod:`precis.cli.maintenance` — ``precis maintenance run`` (nightly cron)
 - :mod:`precis.cli.gripe`     — ``precis gripes`` (human-only triage dump)
 - :mod:`precis.cli.ingest`    — ``precis jobs ingest{,-md,-oracles}``
-- :mod:`precis.cli.dedupe`    — ``precis jobs dedupe-papers``
 - :mod:`precis.cli.perplexity`— ``precis jobs import-perplexity``
 - :mod:`precis.cli.patent`    — ``precis jobs {watch,list,run}-patent-watches``
 
@@ -26,7 +25,6 @@ import sys
 from precis.cli import (
     add,
     cron,
-    dedupe,
     fix_metadata,
     gripe,
     heartbeat,
@@ -201,7 +199,6 @@ def _build_parser() -> argparse.ArgumentParser:
     jobs_sub = jobs.add_subparsers(dest="job", required=True)
 
     ingest.add_parsers(jobs_sub)
-    dedupe.add_parser(jobs_sub)
     perplexity.add_parser(jobs_sub)
     patent.add_parsers(jobs_sub)
     provenance.add_parsers(jobs_sub)
@@ -221,7 +218,6 @@ _JOB_DISPATCH: dict[str, tuple[object, str]] = {
     "ingest": (ingest, "run_ingest"),
     "ingest-md": (ingest, "run_md"),
     "ingest-oracles": (ingest, "run_oracles"),
-    "dedupe-papers": (dedupe, "run"),
     "import-perplexity": (perplexity, "run"),
     "watch-patents": (patent, "run_watch"),
     "list-patent-watches": (patent, "run_list"),

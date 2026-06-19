@@ -37,6 +37,18 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   now also filters soft-deleted refs so a retired duplicate can't
   resurrect. See `ingest/add._reconcile_orphan_stub`.
 
+### Removed (2026-06-19 — dead `dedupe-papers` command)
+
+- **`precis jobs dedupe-papers` deleted.** It was stale against the v2
+  schema (queried `refs.id`/`refs.slug`/`meta->>'doi'` — none of which
+  exist in v2; DOIs live in `ref_identifiers`, the PK is `ref_id`), so it
+  errored on run, and its "keep lowest `id`, hard-delete the rest" rule
+  would have deleted the canonical paper in favour of a junk duplicate.
+  Unreferenced by any cron/maintenance/playbook. Duplicate *detection*
+  now falls out of `fix-metadata` (a re-derived DOI that already belongs
+  to another ref surfaces the dup); a future enhancement can fold the
+  "keep canonical, soft-delete junk" action into it.
+
 ### Added (2026-06-19 — `wikipedia` kind: on-demand article fetch)
 
 - **New `kind='wikipedia'`** — the on-demand alternative to bulk-
