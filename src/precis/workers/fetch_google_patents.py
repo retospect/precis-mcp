@@ -270,7 +270,7 @@ class _PatentCandidate:
 
 
 def _claim_patents_for_gp(
-    store: Store, *, limit: int, force: bool = False
+    store: Store, *, limit: int, now: datetime, force: bool = False
 ) -> list[_PatentCandidate]:
     """Return up to ``limit`` patents needing a Google Patents try.
 
@@ -307,7 +307,7 @@ def _claim_patents_for_gp(
             ") "
             "AND r.meta->>'gp_status' IS NULL "
             "AND (r.meta->>'gp_retry_at' IS NULL "
-            "     OR (r.meta->>'gp_retry_at')::timestamptz <= now()) "
+            "     OR (r.meta->>'gp_retry_at')::timestamptz <= %s) "
         )
     )
     # Bug-fix for the dual-tag case: a ref carrying BOTH
@@ -351,6 +351,11 @@ def _claim_patents_for_gp(
     ]
     if not force:
         params.append(GP_ATTEMPTED_TAG)
+        # Backoff window evaluated against the worker's logical clock
+        # (the injected ``now``), not SQL ``now()`` — keeps the pass
+        # deterministic under a pinned ``now=`` and correct when the
+        # caller's clock is what schedules ``gp_retry_at``.
+        params.append(now)
     params.append(limit)
 
     with store.pool.connection() as conn:
@@ -728,7 +733,7 @@ def run_gp_fetch_pass(
     if now is None:
         now = datetime.now(UTC)
 
-    candidates = _claim_patents_for_gp(store, limit=limit, force=force)
+    candidates = _claim_patents_for_gp(store, limit=limit, now=now, force=force)
     if not candidates:
         return {"claimed": 0, "ok": 0, "failed": 0}
 

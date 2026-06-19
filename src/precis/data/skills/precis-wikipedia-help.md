@@ -81,7 +81,7 @@ search(kind='paper,wikipedia', q='...')                # multi-kind incl. wikipe
 pass `tags=['ORIGIN:wikipedia']`; use `kind='wikipedia'` alone to browse
 the wiki corpus.
 
-You cannot un-stamp the fence tag on this kind — `untags=['ORIGIN:wikipedia']`
+You cannot un-stamp the fence tag on this kind — `tag(remove=['ORIGIN:wikipedia'])`
 is ignored. It is provenance, not a user label.
 
 ## Search across fetched articles

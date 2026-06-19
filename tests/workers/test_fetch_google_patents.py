@@ -170,7 +170,7 @@ def test_claim_picks_awaiting_and_unavailable(store: Store) -> None:
     # Decoy: not patent-stuck-state at all.
     _seed_patent(store, cite_key="ep1111111b1", status_tag=None)
 
-    candidates = _claim_patents_for_gp(store, limit=10)
+    candidates = _claim_patents_for_gp(store, limit=10, now=_NOW)
     found = {c.cite_key for c in candidates}
     assert "us20240000001a1" in found
     assert "cn202410000002a" in found
@@ -193,10 +193,10 @@ def test_claim_excludes_gp_attempted_unless_force(store: Store) -> None:
     )
 
     # Default: skipped.
-    assert _claim_patents_for_gp(store, limit=10) == []
+    assert _claim_patents_for_gp(store, limit=10, now=_NOW) == []
 
     # force=True picks it up.
-    forced = _claim_patents_for_gp(store, limit=10, force=True)
+    forced = _claim_patents_for_gp(store, limit=10, now=_NOW, force=True)
     assert any(c.cite_key == "us20240000003a1" for c in forced)
 
 
@@ -414,7 +414,7 @@ def test_claim_dedupes_when_patent_carries_both_status_tags(store: Store) -> Non
     # Add the second status tag too — this is the dual-tag state.
     store.add_tag(ref_id, Tag.open("fulltext-unavailable"), set_by="agent")
 
-    candidates = _claim_patents_for_gp(store, limit=10)
+    candidates = _claim_patents_for_gp(store, limit=10, now=_NOW)
     matching = [c for c in candidates if c.cite_key == "cn999000111a"]
     assert len(matching) == 1, (
         "patent with both awaiting+unavailable tags should be claimed once"
@@ -432,9 +432,9 @@ def test_claim_skips_already_fetched_patent_via_meta_gate(store: Store) -> None:
     # Simulate the "success ran update_ref but tag write failed" state.
     store.update_ref(ref_id=ref_id, meta_patch={"gp_status": "fetched"})
 
-    assert _claim_patents_for_gp(store, limit=10) == []
+    assert _claim_patents_for_gp(store, limit=10, now=_NOW) == []
     # --force bypasses both gates.
-    forced = _claim_patents_for_gp(store, limit=10, force=True)
+    forced = _claim_patents_for_gp(store, limit=10, now=_NOW, force=True)
     assert any(c.cite_key == "us20240000007a1" for c in forced)
 
 

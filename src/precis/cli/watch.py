@@ -715,9 +715,7 @@ def _handle_success(
         #      channel for the backlog of stranded PDFs.
         target_root = corpus_pres_dir if is_pres else corpus_dir
         corpus_dest = (
-            _corpus_pdf_dest(result.cite_key, target_root)
-            if result.cite_key
-            else None
+            _corpus_pdf_dest(result.cite_key, target_root) if result.cite_key else None
         )
         if corpus_dest is not None and not corpus_dest.exists():
             if is_pres:

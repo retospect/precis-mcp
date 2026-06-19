@@ -111,7 +111,9 @@ def test_projects_view_empty_state(handler: TodoHandler) -> None:
 
 
 def test_projects_view_lists_project_root(handler: TodoHandler) -> None:
-    root = handler.put(text="Demo project goal.", tags=["level:strategic"], meta=_WS_META)
+    root = handler.put(
+        text="Demo project goal.", tags=["level:strategic"], meta=_WS_META
+    )
     rid = _id_of(root.body)
     out = handler.search(view="projects")
     assert f"#{rid}" in out.body
@@ -135,7 +137,9 @@ def test_projects_view_counts_open_subtree(handler: TodoHandler) -> None:
     assert "open:   3" in out.body or "open:" in out.body
 
 
-def test_projects_view_does_not_list_inherited_descendants(handler: TodoHandler) -> None:
+def test_projects_view_does_not_list_inherited_descendants(
+    handler: TodoHandler,
+) -> None:
     # A child inheriting the same workspace path must NOT appear as its
     # own project row — only the originating root.
     root = handler.put(text="Demo.", tags=["level:strategic"], meta=_WS_META)

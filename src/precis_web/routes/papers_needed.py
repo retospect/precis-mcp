@@ -202,9 +202,7 @@ async def index(
     total_pages = max(1, -(-total // _PAGE_SIZE))  # ceil-div
     page = min(max(1, page), total_pages)
     offset = (page - 1) * _PAGE_SIZE
-    rows = store.stub_backlog(
-        limit=_PAGE_SIZE, offset=offset, awaiting=awaiting_flag
-    )
+    rows = store.stub_backlog(limit=_PAGE_SIZE, offset=offset, awaiting=awaiting_flag)
     has_next = page < total_pages
     # Compact page window around the current page (…1 4 5 [6] 7 8 …last).
     lo = max(1, page - 3)

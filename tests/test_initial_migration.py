@@ -155,7 +155,8 @@ def test_migration_applies_cleanly(fresh_db: str) -> None:
     """Applying against an empty DB returns exactly the new migration's
     version. A second apply is a no-op (idempotency)."""
     applied = _apply_migration(fresh_db)
-    assert applied == ["0001_initial"]
+    # apply_all returns (plugin, version) pairs (multi-source migrations).
+    assert applied == [("precis", "0001_initial")]
 
     again = _apply_migration(fresh_db)
     assert again == [], "second apply should be a no-op"

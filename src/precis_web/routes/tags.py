@@ -230,8 +230,7 @@ async def refs_by_tag(
     lo = max(1, page - 3)
     hi = min(total_pages, page + 3)
     page_window = [
-        {"n": n, "url": _page_url(n), "current": n == page}
-        for n in range(lo, hi + 1)
+        {"n": n, "url": _page_url(n), "current": n == page} for n in range(lo, hi + 1)
     ]
 
     return templates.TemplateResponse(

@@ -202,9 +202,7 @@ class WikipediaHandler(CacheBackedHandler):
             },
         )
 
-    def _resolve_title(
-        self, client: Any, api: str, query: str
-    ) -> str | None:
+    def _resolve_title(self, client: Any, api: str, query: str) -> str | None:
         """Run CirrusSearch; return the top-hit article title or None."""
         from precis.utils.safe_fetch import safe_get
 

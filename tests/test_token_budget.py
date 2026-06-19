@@ -9,18 +9,18 @@ first message.
 Two budgets, both lifted from
 ``docs/design/mcp-cold-start-token-budget.md`` Phase 6 step 1:
 
-- ``tools/list`` JSON      < 12 KB (current measured baseline ~9 KB)
+- ``tools/list`` JSON      < 15 KB (measured baseline ~14.5 KB)
 - per-verb description     <  1 KB (description-only, schema excluded)
 - ``serverInfo.instructions`` < 2 KB on a clean runtime
 - ``serverInfo.instructions`` < 4 KB with every Phase-3-5 feature engaged
 
-The 12 KB ``tools/list`` ceiling reflects the post-Phase-1 measured
-baseline. The original design target (8 KB) predated the per-arg
-CLI help threading + ``edit``'s mode-coupling description suffixes
-constraint, both of which inflated the wire shape past the design
-estimate without adding agent-facing context cost on the cold-start
-banner side. The cap gives ~33% headroom; if the actual size ever
-hits 11 KB, investigate which schema or description grew.
+The ``tools/list`` ceiling has tracked real schema growth: 8 KB design
+target → 12 KB post-Phase-1 (per-arg CLI help threading + ``edit``'s
+mode-coupling description suffixes) → 14 KB on 2026-06-11 (kind-specific
+``put`` / ``edit`` kwargs) → 15 KB on 2026-06-19 (the ``more`` pagination
+verb). Each bump absorbed on-purpose schema bytes, not docstring drift;
+the per-verb description cap below is the guard that still bites on a
+careless docstring revert.
 
 Per-verb description caps (1 KB) target the docstring text — the
 input schema is excluded because schema bytes are unavoidable and
@@ -71,28 +71,35 @@ def _tools_list_wire_shape() -> list[dict[str, object]]:
 
 
 def test_tools_list_under_byte_budget() -> None:
-    """``tools/list`` JSON serialisation stays under 14 KB.
+    """``tools/list`` JSON serialisation stays under 15 KB.
 
     The seven-verb surface (get, search, put, edit, delete, tag,
-    link) plus FastMCP's input-schema overhead is the cost centre
-    here. The schema bytes are largely unavoidable (mode-specific
-    constraints on ``edit``, type/required information on every
-    verb, plus the kind-specific kwargs on ``put`` that strict-schema
-    clients need to accept findings/citations/jobs/etc.). The
-    regression-guard target is therefore the verb *description*
-    text — if this trips, the most likely culprit is a docstring
-    that grew back beyond its post-Phase-1 trim; fix the docstring
-    (push detail into a skill file) rather than bumping the cap.
+    link) plus the ``more`` pagination verb, plus FastMCP's
+    input-schema overhead, is the cost centre here. The schema bytes
+    are largely unavoidable (mode-specific constraints on ``edit``,
+    type/required information on every verb, plus the kind-specific
+    kwargs on ``put`` that strict-schema clients need to accept
+    findings/citations/jobs/etc.). The regression-guard target is
+    therefore the verb *description* text — if this trips, the most
+    likely culprit is a docstring that grew back beyond its
+    post-Phase-1 trim; fix the docstring (push detail into a skill
+    file) rather than bumping the cap.
 
     2026-06-11: cap raised from 12 KB → 14 KB to absorb the
     kind-specific kwargs added to ``put`` / ``edit`` (broad-pass
     usability findings #1 / #2). Schema-side growth is on-purpose;
     verb descriptions stayed tight.
+
+    2026-06-19: cap raised from 14 KB → 15 KB to absorb the ``more``
+    pagination verb (~650 B: its docstring + ``cursor`` schema). It's
+    the eighth tool — auxiliary to the seven-verb surface, registered
+    so oversized responses can page instead of truncate. On-purpose
+    growth, same as the 06-11 bump.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 14 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 14 KB). "
+    assert size < 15 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 15 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

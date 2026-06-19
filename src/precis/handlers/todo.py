@@ -80,9 +80,7 @@ class TodoView(StrEnum):
     ATTENTION = "attention"
 
 
-def _view_doable(
-    store: Any, args: dict[str, Any] | None, page_size: int
-) -> Response:
+def _view_doable(store: Any, args: dict[str, Any] | None, page_size: int) -> Response:
     """``view='doable'`` — the one tree view that reads ``args`` / paging.
 
     Pulled out of the dispatch table so the table stays a flat

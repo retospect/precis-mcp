@@ -307,8 +307,10 @@ class TestCrossKindErrorOptionsFiltered:
         ``think`` / ``research``) gained ``supports_search`` in the
         fetch-path-embedding consolidation — their fetched pages are
         block-parsed + embedded so search works over cached bodies.
-        Only the genuinely stateless single-shot tools (``calc``,
-        ``math``, ``youtube``) stay search-incapable.
+        ``math`` and ``youtube`` likewise gained search over their
+        cached Wolfram results / transcripts (commit caa2766). Only
+        the genuinely stateless single-shot tool ``calc`` (pure
+        arithmetic, nothing to cache or search) stays search-incapable.
 
         ``kind='all'`` itself is now a wildcard alias (MCP critic
         2026-05-02), so the test exercises the same option-filter
@@ -328,10 +330,9 @@ class TestCrossKindErrorOptionsFiltered:
         assert opt_line, "expected an options: line in the error reply"
         opts = {tok.strip() for tok in opt_line.split(":", 1)[1].split(",")}
         # Stateless single-shot tools must not appear in the cross-kind
-        # search options — they have nothing to search over.
+        # search options — they have nothing to search over. ``calc`` is
+        # the remaining example (``math`` / ``youtube`` now cache + search).
         assert "calc" not in opts
-        assert "math" not in opts
-        assert "youtube" not in opts
 
 
 # ── MINOR m3: paper-id underscore error names the rule ──────────
