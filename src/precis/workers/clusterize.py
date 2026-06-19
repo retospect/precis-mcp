@@ -72,6 +72,21 @@ def _interval_hours() -> float:
         return 20.0
 
 
+#: A scope already has a ``building`` run younger than this → another host
+#: is (probably) mid-rebuild, so this host skips it. Without this guard the
+#: time-gate keys only on the newest *green* run; until the first build
+#: completes there is none, so EVERY host every rotation starts a fresh
+#: whole-corpus SOM rebuild (a thundering herd — observed as 4 hosts each
+#: training over ~900k vectors within the same few seconds). The window
+#: must exceed a realistic full build; a stuck/crashed builder past it is
+#: taken over.
+_BUILD_STALE_HOURS = 2.0
+
+#: After a ``failed`` newest run, wait this long before retrying the scope
+#: — bounds the retry rate when a scope rebuild is genuinely broken.
+_FAILED_BACKOFF_HOURS = 0.5
+
+
 # --------------------------------------------------------------------------
 # SQL fragments
 # --------------------------------------------------------------------------
@@ -131,23 +146,81 @@ def run_clusterize_pass(store, *, batch_size: int = 50) -> dict[str, int]:
 
 
 def _due_scope(store) -> str | None:
-    """First scope whose newest green run predates the interval."""
+    """First scope whose newest green run predates the interval.
+
+    Returns ``None`` (whole pass becomes a no-op) when the ``cluster_*``
+    tables are absent. This pass ships with the worker code, but its
+    schema (migration ``0027_clusterize.sql``) is a separate deploy
+    step; a node running fresh code against a not-yet-migrated DB would
+    otherwise raise ``UndefinedTable`` out of the ref-pass on *every*
+    runner rotation, crash-spamming the logs (~3k ERROR/host/6h in a
+    real incident). Degrade to a no-op and self-enable once the
+    migration lands.
+    """
+    import psycopg
+
     horizon = _interval_hours()
-    with store.pool.connection() as conn:
-        for scope in SCOPES:
-            row = conn.execute(
-                """
-                SELECT EXTRACT(EPOCH FROM (now() - finished_at)) / 3600.0
-                  FROM cluster_runs
-                 WHERE scope = %s AND status = 'ok'
-                 ORDER BY finished_at DESC
-                 LIMIT 1
-                """,
-                (scope,),
-            ).fetchone()
-            if row is None or row[0] is None or float(row[0]) >= horizon:
-                return scope
+    try:
+        with store.pool.connection() as conn:
+            for scope in SCOPES:
+                # Inspect the *newest* run of any status — not just the
+                # newest green one — so an in-flight build by another
+                # host suppresses re-entry (no thundering herd).
+                row = conn.execute(
+                    """
+                    SELECT status,
+                           EXTRACT(EPOCH FROM (now()
+                               - COALESCE(finished_at, started_at))) / 3600.0
+                      FROM cluster_runs
+                     WHERE scope = %s
+                     ORDER BY run_id DESC
+                     LIMIT 1
+                    """,
+                    (scope,),
+                ).fetchone()
+                if _scope_is_due(row, horizon):
+                    return scope
+    except psycopg.errors.UndefinedTable:
+        _warn_missing_schema_once()
+        return None
     return None
+
+
+def _scope_is_due(row: tuple | None, horizon: float) -> bool:
+    """Decide whether a scope needs a rebuild from its newest run.
+
+    * no run yet → due (first build).
+    * newest ``ok`` → due once older than the rebuild interval.
+    * newest ``building`` → NOT due while fresh (another host owns it);
+      due again only if stale past ``_BUILD_STALE_HOURS`` (crashed
+      builder → take over).
+    * newest ``failed`` → due after ``_FAILED_BACKOFF_HOURS`` (bounded
+      retry, not every rotation).
+    """
+    if row is None:
+        return True
+    status, age_h = row[0], (float(row[1]) if row[1] is not None else 0.0)
+    if status == "ok":
+        return age_h >= horizon
+    if status == "building":
+        return age_h >= _BUILD_STALE_HOURS
+    # 'failed' or any unexpected terminal state.
+    return age_h >= _FAILED_BACKOFF_HOURS
+
+
+#: Module-level latch so the "schema absent" path warns once per process
+#: instead of on every rotation — the whole point is to *stop* the flood.
+_SCHEMA_WARNED = False
+
+
+def _warn_missing_schema_once() -> None:
+    global _SCHEMA_WARNED
+    if not _SCHEMA_WARNED:
+        log.warning(
+            "clusterize: cluster_* tables absent (migration 0027 not "
+            "applied); pass is a no-op until the schema lands"
+        )
+        _SCHEMA_WARNED = True
 
 
 def _load_prior_centroids(store, scope: str):
@@ -441,9 +514,14 @@ def _finish_run(
             "WHERE run_id=%s",
             (n_vectors, note, run_id),
         )
-        # Prune superseded runs for this scope (cascades to cells +
-        # assignments). Keep only the run we just finished.
+        # Prune *superseded* runs for this scope (cascades to cells +
+        # assignments) — only those OLDER than the one we just finished.
+        # Using ``run_id < %s`` (not ``<> %s``) is critical: a newer
+        # run_id is another host's still-in-flight build, and deleting it
+        # mid-COPY violated cluster_assignments' run_id FK (the observed
+        # ForeignKeyViolation). A newer build prunes us in turn when it
+        # finishes; the latest green run always wins.
         conn.execute(
-            "DELETE FROM cluster_runs WHERE scope=%s AND run_id <> %s",
+            "DELETE FROM cluster_runs WHERE scope=%s AND run_id < %s",
             (scope, run_id),
         )
