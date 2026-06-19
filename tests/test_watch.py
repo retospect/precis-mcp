@@ -473,6 +473,12 @@ class TestProcessPdf:
         pdf = watch_dir / "dup.pdf"
         pdf.write_bytes(b"%PDF dup")
 
+        # Genuine duplicate: the corpus already holds this paper's file,
+        # so a re-drop is redundant and belongs in errors/duplicates.
+        existing = corpus_dir / "j" / "jones23.pdf"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"%PDF original")
+
         fake_result = IngestResult(
             ref_id=7,
             inserted=False,
@@ -501,11 +507,55 @@ class TestProcessPdf:
         assert dest is not None
         assert dest.parent == duplicates_dir
         assert not pdf.exists()
-        # No corpus copy.
-        assert not (corpus_dir / "j" / "jones23.pdf").exists()
+        # The pre-existing corpus copy is untouched.
+        assert existing.read_bytes() == b"%PDF original"
         # Log line records ``existed`` not ``inserted``.
         log_text = (corpus_dir / "ingest.log").read_text()
         assert "\texisted\t" in log_text
+
+    def test_existed_but_missing_recovers_to_corpus(self, tmp_path: Path):
+        """A promoted stub (ref existed, ``inserted=False``) whose corpus
+        file is absent must be *recovered* into the corpus, not shunted
+        to errors/duplicates. Regression for the "held but the file
+        isn't where the server looked" web-viewer bug."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "science.1066115.pdf"
+        pdf.write_bytes(b"%PDF promoted-stub bytes")
+
+        fake_result = IngestResult(
+            ref_id=35140,
+            inserted=False,  # ref pre-existed as a stub
+            paper_id="cc11dd22",
+            pub_id="doi:10.1126/science.1066115",
+            cite_key="water01a",
+            pdf_sha256="c" * 64,
+            content_hash="d" * 64,
+            chunks_written=12,  # stub upgrade wrote chunks
+            identifiers={"doi": "10.1126/science.1066115", "cite_key": "water01a"},
+        )
+
+        with patch("precis.cli.watch.precis_add", return_value=fake_result):
+            dest = process_pdf(
+                pdf,
+                store=object(),  # type: ignore[arg-type]
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        assert dest is not None
+        # Recovered into the corpus under the held ref's cite_key.
+        assert dest == corpus_dir / "w" / "water01a.pdf"
+        assert dest.exists()
+        assert not pdf.exists()  # moved out of inbox
+        assert dest.parent != duplicates_dir
+        # Log line records ``recovered``.
+        log_text = (corpus_dir / "ingest.log").read_text()
+        assert "\trecovered\t" in log_text
 
     def test_failure_path_moves_to_errors_with_traceback(self, tmp_path: Path):
         watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)

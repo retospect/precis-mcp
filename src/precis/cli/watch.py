@@ -697,15 +697,56 @@ def _handle_success(
             result.kind,
         )
     else:
-        dest = _move_to(pdf, duplicates_dir)
-        status = "existed_pres" if is_pres else "existed"
-        log.info(
-            "precis watch: duplicate %s (existing ref_id=%d, cite_key=%s, kind=%s)",
-            pdf.name,
-            result.ref_id,
-            result.cite_key,
-            result.kind,
+        # ``inserted=False`` means the *ref* already existed. Two cases:
+        #
+        #  (a) the corpus already holds this paper's file → a genuine
+        #      duplicate re-drop; park it in errors/duplicates.
+        #  (b) the ref is held but the corpus has *no* file for it →
+        #      this PDF is the canonical copy that belongs in the
+        #      corpus. This happens when a metadata-only stub (created
+        #      by dream / chase) gets its first PDF: precis_add promotes
+        #      the stub (sets pdf_sha256, writes chunks) yet still
+        #      returns inserted=False because the ref pre-existed. Older
+        #      builds shunted that PDF to errors/duplicates, leaving the
+        #      web viewer showing "held but the file isn't where the
+        #      server looked" forever. Treat it as a recovery: move it
+        #      into the corpus. Re-dropping a previously-stranded file
+        #      flows through here too, so the inbox is a valid recovery
+        #      channel for the backlog of stranded PDFs.
+        target_root = corpus_pres_dir if is_pres else corpus_dir
+        corpus_dest = (
+            _corpus_pdf_dest(result.cite_key, target_root)
+            if result.cite_key
+            else None
         )
+        if corpus_dest is not None and not corpus_dest.exists():
+            if is_pres:
+                dest = _move_to_pres_corpus(
+                    pdf, slug=result.cite_key, corpus_pres_dir=corpus_pres_dir
+                )
+            else:
+                dest = _move_to_corpus(
+                    pdf, cite_key=result.cite_key, corpus_dir=corpus_dir
+                )
+            status = "recovered_pres" if is_pres else "recovered"
+            log.info(
+                "precis watch: recovered held-but-missing %s as %s "
+                "(ref_id=%d existed, corpus had no file, kind=%s)",
+                pdf.name,
+                result.cite_key,
+                result.ref_id,
+                result.kind,
+            )
+        else:
+            dest = _move_to(pdf, duplicates_dir)
+            status = "existed_pres" if is_pres else "existed"
+            log.info(
+                "precis watch: duplicate %s (existing ref_id=%d, cite_key=%s, kind=%s)",
+                pdf.name,
+                result.ref_id,
+                result.cite_key,
+                result.kind,
+            )
 
     _append_ingest_log(corpus_dir, user=user, result=result, pdf=pdf, status=status)
     return dest
@@ -962,6 +1003,20 @@ def _move_to_pres_corpus(pdf: Path, *, slug: str, corpus_pres_dir: Path) -> Path
     return dest
 
 
+def _corpus_pdf_dest(cite_key: str, corpus_dir: Path, *, suffix: str = ".pdf") -> Path:
+    """Compute the canonical on-disk path for ``cite_key`` under
+    ``corpus_dir``: ``<corpus_dir>/<letter>/<cite_key><suffix>``.
+
+    The letter shard is the lower-case first character of ``cite_key``,
+    or ``_`` if it isn't ASCII alphanumeric — the layout described in
+    ``docs/design/pip-merge.md``. Pure path math (no FS reads, no
+    move) so callers can probe existence before deciding where a PDF
+    should land. Used by both :func:`_move_to_corpus` and the
+    held-but-missing recovery branch in :func:`_handle_success`."""
+    letter = cite_key[0].lower() if cite_key and cite_key[0].isalnum() else "_"
+    return corpus_dir / letter / f"{cite_key}{suffix}"
+
+
 def _move_to_corpus(pdf: Path, *, cite_key: str, corpus_dir: Path) -> Path:
     """Move ``pdf`` to ``<corpus_dir>/<letter>/<cite_key>.pdf``. The
     letter shard is the lower-case first character of ``cite_key``,
@@ -972,10 +1027,9 @@ def _move_to_corpus(pdf: Path, *, cite_key: str, corpus_dir: Path) -> Path:
     shared inbox may have moved the same file between our existence
     check and our shutil.move call (rare but possible). Logs and
     returns the would-be destination in that case."""
-    letter = cite_key[0].lower() if cite_key and cite_key[0].isalnum() else "_"
-    bucket = corpus_dir / letter
+    dest = _corpus_pdf_dest(cite_key, corpus_dir, suffix=pdf.suffix.lower())
+    bucket = dest.parent
     bucket.mkdir(parents=True, exist_ok=True)
-    dest = bucket / f"{cite_key}{pdf.suffix.lower()}"
     if dest.exists() and dest.resolve() != pdf.resolve():
         ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
         dest = bucket / f"{cite_key}_{ts}{pdf.suffix.lower()}"

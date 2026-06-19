@@ -201,17 +201,20 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, int]]:
 
     Each row maps to a worker pass and reports:
 
-    * ``pending`` — chunks the pass still needs to process. For
-      keywords that's ``keywords IS NULL OR keywords_meta->>'version'
-      != current``, for summaries it's ``summary IS NULL``, for the
-      embedder it's ``embedding IS NULL``. The exact predicate per
-      pass is fragile to schema drift; if any of these queries fails
-      we surface the pass with ``pending = -1`` so the operator sees
-      the panel didn't lie and can dig in.
+    * ``pending`` — chunks the pass still needs to process. Keywords
+      live on ``chunks`` (``keywords IS NULL``); embeddings and
+      summaries live in their own tables (``chunk_embeddings`` /
+      ``chunk_summaries``, ADR 0007), so their predicates are
+      ``NOT EXISTS`` probes for a successful row rather than a column
+      test on ``chunks``. The exact predicate per pass is fragile to
+      schema drift; if any of these queries fails we surface the pass
+      with ``pending = -1`` so the operator sees the panel didn't lie
+      and can dig in.
     * ``done`` — chunks already done (lets the panel show progress
       as a fraction).
 
-    Cheap reads: each query is a single index probe; no joins.
+    Cheap reads: keywords is a single index probe; the embed/summary
+    counts are correlated ``EXISTS`` probes against a chunk-id index.
     """
     rows: dict[str, dict[str, int]] = {}
 
@@ -232,22 +235,40 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, int]]:
             log.exception("status: backlog query for %s failed", label)
             rows[label] = {"pending": -1, "done": 0}
 
+    # ``embed`` writes one row per chunk to the separate
+    # ``chunk_embeddings`` table (ADR 0007) — there is no
+    # ``embedding`` column on ``chunks``. A chunk counts as done once
+    # it has a successful row (``status='ok'``); pending is the
+    # complement.
     _two_count(
         "embed",
-        pending_where="embedding IS NULL",
-        done_where="embedding IS NOT NULL",
+        pending_where=(
+            "NOT EXISTS (SELECT 1 FROM chunk_embeddings e "
+            "WHERE e.chunk_id = chunks.chunk_id AND e.status = 'ok')"
+        ),
+        done_where=(
+            "EXISTS (SELECT 1 FROM chunk_embeddings e "
+            "WHERE e.chunk_id = chunks.chunk_id AND e.status = 'ok')"
+        ),
     )
     _two_count(
         "chunk_keywords",
         pending_where="keywords IS NULL",
         done_where="keywords IS NOT NULL",
     )
-    # ``summarize`` uses the ``summary`` TEXT column on chunks (a
-    # short rake-lemma extract); chunks not yet covered are NULL.
+    # ``summarize`` likewise writes to a separate ``chunk_summaries``
+    # table (keyed (chunk_id, summarizer)), not a ``summary`` column
+    # on ``chunks``. Done = has a successful summary row.
     _two_count(
         "summarize",
-        pending_where="summary IS NULL",
-        done_where="summary IS NOT NULL",
+        pending_where=(
+            "NOT EXISTS (SELECT 1 FROM chunk_summaries s "
+            "WHERE s.chunk_id = chunks.chunk_id AND s.status = 'ok')"
+        ),
+        done_where=(
+            "EXISTS (SELECT 1 FROM chunk_summaries s "
+            "WHERE s.chunk_id = chunks.chunk_id AND s.status = 'ok')"
+        ),
     )
     return rows
 
