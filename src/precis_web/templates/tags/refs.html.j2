@@ -15,25 +15,50 @@
   <a href="/tags" class="text-sm text-slate-500 hover:underline">← all tags</a>
 </div>
 
+{% macro numlink(url, label, current=false) %}
+  {% if current %}
+  <span class="rounded border border-slate-800 bg-slate-800 px-2.5 py-1 text-white">{{ label }}</span>
+  {% else %}
+  <a href="{{ url }}" class="rounded border border-slate-200 px-2.5 py-1 hover:bg-slate-50">{{ label }}</a>
+  {% endif %}
+{% endmacro %}
+
 {% macro pager() %}
 {% if total_pages > 1 %}
-<nav class="flex items-center justify-between gap-3 text-sm my-3" aria-label="Pagination">
-  {% if prev_url %}
-  <a href="{{ prev_url }}" rel="prev"
-     class="px-2.5 py-1 rounded border border-slate-200 hover:bg-slate-50">← Prev</a>
-  {% else %}
-  <span class="px-2.5 py-1 rounded border border-slate-100 text-slate-300">← Prev</span>
-  {% endif %}
+<nav class="flex flex-col gap-2 text-sm my-3" aria-label="Pagination">
   <span class="text-slate-500">
     Page {{ page }} of {{ total_pages }}
     {% if shown %}<span class="text-slate-400">· {{ range_start }}–{{ range_end }} of {{ total }}</span>{% endif %}
   </span>
-  {% if next_url %}
-  <a href="{{ next_url }}" rel="next"
-     class="px-2.5 py-1 rounded border border-slate-200 hover:bg-slate-50">Next →</a>
-  {% else %}
-  <span class="px-2.5 py-1 rounded border border-slate-100 text-slate-300">Next →</span>
-  {% endif %}
+  <div class="flex flex-wrap items-center gap-1.5">
+    {% if prev_url %}
+    <a href="{{ prev_url }}" rel="prev"
+       class="rounded border border-slate-200 px-2.5 py-1 hover:bg-slate-50">← Prev</a>
+    {% else %}
+    <span class="rounded border border-slate-100 px-2.5 py-1 text-slate-300">← Prev</span>
+    {% endif %}
+
+    {% if first_url %}
+      {{ numlink(first_url, 1) }}
+      {% if lead_gap %}<span class="px-1 text-slate-400">…</span>{% endif %}
+    {% endif %}
+
+    {% for p in page_window %}
+      {{ numlink(p.url, p.n, current=p.current) }}
+    {% endfor %}
+
+    {% if last_url %}
+      {% if trail_gap %}<span class="px-1 text-slate-400">…</span>{% endif %}
+      {{ numlink(last_url, total_pages) }}
+    {% endif %}
+
+    {% if next_url %}
+    <a href="{{ next_url }}" rel="next"
+       class="rounded border border-slate-200 px-2.5 py-1 hover:bg-slate-50">Next →</a>
+    {% else %}
+    <span class="rounded border border-slate-100 px-2.5 py-1 text-slate-300">Next →</span>
+    {% endif %}
+  </div>
 </nav>
 {% endif %}
 {% endmacro %}

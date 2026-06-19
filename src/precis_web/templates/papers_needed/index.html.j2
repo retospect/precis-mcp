@@ -103,19 +103,45 @@
   </table>
 </div>
 
-<div class="mt-3 flex items-center gap-3 text-xs">
-  {% set qs = 'awaiting=1&' if awaiting else '' %}
-  {% if page > 1 %}
-  <a href="/papers-needed?{{ qs }}page={{ page - 1 }}"
-     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">&larr; Prev</a>
+{% set qs = 'awaiting=1&' if awaiting else '' %}
+{% macro pagelink(p, label, current=false, disabled=false) %}
+  {% if disabled %}
+  <span class="rounded-md border border-slate-200 px-3 py-1 text-slate-300">{{ label }}</span>
+  {% elif current %}
+  <span class="rounded-md border border-slate-800 bg-slate-800 px-3 py-1 text-white">{{ label }}</span>
+  {% else %}
+  <a href="/papers-needed?{{ qs }}page={{ p }}"
+     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">{{ label }}</a>
   {% endif %}
-  <span class="text-slate-400">
-    Page {{ page }} · {{ rows | length }} row{{ '' if rows | length == 1 else 's' }}
-  </span>
-  {% if has_next %}
-  <a href="/papers-needed?{{ qs }}page={{ page + 1 }}"
-     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">Next &rarr;</a>
-  {% endif %}
+{% endmacro %}
+
+<div class="mt-3 flex flex-col gap-2 text-xs">
+  <div class="text-slate-500">
+    Showing <span class="font-medium text-slate-700">{{ offset + 1 }}–{{ offset + rows | length }}</span>
+    of <span class="font-medium text-slate-700">{{ total }}</span> stub{{ '' if total == 1 else 's' }}
+    · Page {{ page }} of {{ total_pages }}
+  </div>
+  <div class="flex flex-wrap items-center gap-1.5">
+    {{ pagelink(page - 1, '&larr; Prev', disabled=(page <= 1)) }}
+
+    {# leading first page + ellipsis when the window is detached from 1 #}
+    {% if page_window[0] > 1 %}
+      {{ pagelink(1, '1') }}
+      {% if page_window[0] > 2 %}<span class="px-1 text-slate-400">…</span>{% endif %}
+    {% endif %}
+
+    {% for p in page_window %}
+      {{ pagelink(p, p, current=(p == page)) }}
+    {% endfor %}
+
+    {# trailing ellipsis + last page when the window is detached from the end #}
+    {% if page_window[-1] < total_pages %}
+      {% if page_window[-1] < total_pages - 1 %}<span class="px-1 text-slate-400">…</span>{% endif %}
+      {{ pagelink(total_pages, total_pages) }}
+    {% endif %}
+
+    {{ pagelink(page + 1, 'Next &rarr;', disabled=(not has_next)) }}
+  </div>
 </div>
 {% endif %}
 

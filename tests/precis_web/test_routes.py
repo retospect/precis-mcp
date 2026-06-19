@@ -81,7 +81,76 @@ def test_papers_needed_pager_preserves_awaiting(client) -> None:
     """Pager links carry the awaiting filter across pages."""
     resp = client.get("/papers-needed?awaiting=1")
     assert resp.status_code == 200
-    assert "Page 1" in resp.text
+    assert "Page 1 of 1" in resp.text
+    # Total stub count is surfaced, not just a next/prev probe.
+    assert "Showing" in resp.text
+    assert "stubs" in resp.text
+
+
+def _stub_paging_client(total: int):
+    """A TestClient whose store reports ``total`` stubs and pages them.
+
+    Exercises the ``/papers-needed`` route's numbered pager: the route
+    calls ``stub_backlog_count`` (answered from ``total``) and
+    ``stub_backlog`` (sliced by limit/offset), so the page-window
+    arithmetic is what's under test.
+    """
+    from fastapi.testclient import TestClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    from .conftest import FakeRuntime, FakeStore
+
+    rows = [
+        {
+            "ref_id": rid,
+            "cite_key": f"key{rid}",
+            "identifier": f"10.1/{rid}",
+            "last_attempt": "",
+            "last_source": "",
+            "last_event": "",
+            "state": "never attempted",
+        }
+        for rid in range(total, 0, -1)
+    ]
+
+    class _Store(FakeStore):
+        def stub_backlog(self, *, limit=50, offset=0, awaiting=False):
+            return rows[offset : offset + limit]
+
+        def stub_backlog_count(self, *, awaiting=False):
+            return total
+
+        def fetch_refs_by_ids(self, ids, include_deleted=False):
+            return {}
+
+    rt = FakeRuntime(_Store())
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=None))
+    return TestClient(app)
+
+
+def test_papers_needed_numbered_pager_shows_total_and_last_page() -> None:
+    # 250 stubs at 100/page → 3 pages. First page shows the count, the
+    # numbered window, and a jump-to-last link.
+    client = _stub_paging_client(total=250)
+    resp = client.get("/papers-needed")
+    assert resp.status_code == 200
+    assert "Page 1 of 3" in resp.text
+    assert "1–100" in resp.text
+    # Numbered links to pages 2 and 3 (the last page) are present.
+    assert "page=2" in resp.text
+    assert "page=3" in resp.text
+
+
+def test_papers_needed_clamps_overshoot_to_last_page() -> None:
+    # ?page far past the end clamps to the last page rather than 500ing
+    # or rendering an empty body.
+    client = _stub_paging_client(total=250)
+    resp = client.get("/papers-needed?page=99")
+    assert resp.status_code == 200
+    assert "Page 3 of 3" in resp.text
+    assert "201–250" in resp.text
 
 
 # ── tags browser ───────────────────────────────────────────────────
@@ -170,6 +239,20 @@ def test_refs_by_tag_first_page_has_next_not_prev() -> None:
     assert 'rel="prev"' not in resp.text
     # Range readout.
     assert "1–100 of 250" in resp.text
+
+
+def test_refs_by_tag_has_numbered_window_with_last_jump() -> None:
+    # A many-page result renders numbered page links and a jump to the
+    # last page (…) — not just Prev/Next stepping.
+    client = _paging_client(total=2000)  # 20 pages at 100/page
+    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page=10")
+    assert resp.status_code == 200
+    assert "Page 10 of 20" in resp.text
+    # Window around page 10 plus first/last anchors.
+    assert "page=7" in resp.text and "page=13" in resp.text
+    assert "page=1" in resp.text and "page=20" in resp.text
+    # Current page is rendered as a non-link marker, not an anchor.
+    assert "page=10" not in resp.text
 
 
 def test_refs_by_tag_middle_page_has_both_arrows() -> None:

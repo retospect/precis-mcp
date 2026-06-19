@@ -224,6 +224,16 @@ async def refs_by_tag(
     def _page_url(n: int) -> str:
         return "/tags/refs?" + urlencode({**base_params, "page": n})
 
+    # Compact numbered window around the current page (…1 4 5 [6] 7 8 …last),
+    # so the operator can jump pages and see where the end is — not just
+    # step one page at a time.
+    lo = max(1, page - 3)
+    hi = min(total_pages, page + 3)
+    page_window = [
+        {"n": n, "url": _page_url(n), "current": n == page}
+        for n in range(lo, hi + 1)
+    ]
+
     return templates.TemplateResponse(
         request,
         "tags/refs.html.j2",
@@ -243,6 +253,11 @@ async def refs_by_tag(
             "range_end": offset + shown,
             "prev_url": _page_url(page - 1) if page > 1 else None,
             "next_url": _page_url(page + 1) if page < total_pages else None,
+            "page_window": page_window,
+            "first_url": _page_url(1) if lo > 1 else None,
+            "last_url": _page_url(total_pages) if hi < total_pages else None,
+            "lead_gap": lo > 2,
+            "trail_gap": hi < total_pages - 1,
         },
     )
 

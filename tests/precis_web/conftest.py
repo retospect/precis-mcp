@@ -298,6 +298,10 @@ class FakeStore:
         # would be excluded; both canned rows are awaiting here.
         return all_rows[offset : offset + limit]
 
+    def stub_backlog_count(self, *, awaiting: bool = False) -> int:
+        # Mirrors the two canned rows above (both awaiting under the fake).
+        return 2
+
     def locked_ref_ids(self, ref_ids):
         # No live Postgres locks under the fake; the Tasks tab's
         # processing probe degrades to "nothing locked".

@@ -198,13 +198,18 @@ async def index(
     """
     store = get_store(request)
     awaiting_flag = bool(awaiting)
-    page = max(1, page)
+    total = store.stub_backlog_count(awaiting=awaiting_flag)
+    total_pages = max(1, -(-total // _PAGE_SIZE))  # ceil-div
+    page = min(max(1, page), total_pages)
     offset = (page - 1) * _PAGE_SIZE
     rows = store.stub_backlog(
-        limit=_PAGE_SIZE + 1, offset=offset, awaiting=awaiting_flag
+        limit=_PAGE_SIZE, offset=offset, awaiting=awaiting_flag
     )
-    has_next = len(rows) > _PAGE_SIZE
-    rows = rows[:_PAGE_SIZE]
+    has_next = page < total_pages
+    # Compact page window around the current page (…1 4 5 [6] 7 8 …last).
+    lo = max(1, page - 3)
+    hi = min(total_pages, page + 3)
+    page_window = list(range(lo, hi + 1))
     refs = store.fetch_refs_by_ids(
         [row["ref_id"] for row in rows], include_deleted=False
     )
@@ -245,6 +250,11 @@ async def index(
             "awaiting": awaiting_flag,
             "page": page,
             "has_next": has_next,
+            "total": total,
+            "total_pages": total_pages,
+            "page_window": page_window,
+            "page_size": _PAGE_SIZE,
+            "offset": offset,
             "watch_dir": watch_dir,
             "dropzones": dropzones,
         },

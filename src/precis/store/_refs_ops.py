@@ -373,6 +373,46 @@ class RefsMixin:
             )
         return out
 
+    def stub_backlog_count(self, *, awaiting: bool = False) -> int:
+        """Total stub count under the same filter as :meth:`stub_backlog`.
+
+        Lets the pager show "page N of M" and a grand total instead of a
+        bare next/prev probe. Mirrors the ``stubs`` CTE and the
+        ``awaiting`` next-pass predicate exactly — keep the two WHERE
+        clauses in sync.
+        """
+        sql = """
+            WITH stubs AS (
+                SELECT r.ref_id
+                  FROM refs r
+                 WHERE r.kind = 'paper'
+                   AND r.pdf_sha256 IS NULL
+                   AND r.deleted_at IS NULL
+                   AND EXISTS (
+                         SELECT 1 FROM ref_identifiers ri
+                          WHERE ri.ref_id = r.ref_id
+                            AND ri.id_kind IN ('doi', 'arxiv', 's2')
+                   )
+            ),
+            latest_event AS (
+                SELECT DISTINCT ON (ref_id) ref_id, ts, event
+                  FROM ref_events
+                 WHERE source LIKE 'fetcher:%%'
+                 ORDER BY ref_id, ts DESC
+            )
+            SELECT count(*)
+              FROM stubs s
+              LEFT JOIN latest_event le ON le.ref_id = s.ref_id
+             WHERE
+                CASE WHEN %s::bool THEN
+                    (le.ref_id IS NULL
+                     OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
+                ELSE TRUE END
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (awaiting,)).fetchone()
+        return int(row[0]) if row else 0
+
     def ingest_timestamps(self, ref_id: int) -> dict[str, Any]:
         """When a ref was ingested, broken out by stage.
 
