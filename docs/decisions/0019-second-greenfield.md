@@ -114,6 +114,15 @@ again. Three signals would justify a third re-baseline:
 None of those apply today. The re-baseline today is a one-shot
 cleanup after sustained bug-fix activity, not a new pattern.
 
+> **Update (ADR 0031, 2026-06-19):** the per-release baseline
+> snapshot (`migrations/baseline/schema.sql`) is **not** a third
+> greenfield and does not spend this token. It is a *generated,
+> regenerable* cache of the chain compiled to one file; the numbered
+> migrations stay sealed in the tree as the upgrade path, and the
+> snapshot is rebuilt from them (and verified against them) on every
+> version bump. The discipline clause above still stands for *actual*
+> greenfields — deleting history and rewriting the ledger.
+
 ### Pre-flight backup
 
 Before the re-baseline, the cluster was dumped to

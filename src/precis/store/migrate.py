@@ -166,6 +166,19 @@ def _applied_versions(
     return {(PRECIS_PLUGIN_NAME, r[0]): r[1] for r in rows}
 
 
+def _is_fresh_db(conn: psycopg.Connection) -> bool:
+    """True when the ``public._migrations`` ledger table does not exist.
+
+    A truly-fresh database (no schema yet) is the only state where
+    loading a baseline snapshot is safe: a DB that already has the
+    ledger has a migration history to advance, not replace.
+    """
+    row = conn.execute(
+        "SELECT to_regclass('public._migrations') IS NOT NULL"
+    ).fetchone()
+    return not (row and row[0])
+
+
 # Backcompat: callers built the runner with a single directory.
 # Keep that path working so the CLI can land the plugin discovery
 # change without ripple.
@@ -193,6 +206,8 @@ class Migrator:
         self,
         dsn: str,
         sources_or_dir: _Sources | _LegacyDir,
+        *,
+        baseline: Path | None = None,
     ) -> None:
         self.dsn = dsn
         if isinstance(sources_or_dir, Path):
@@ -201,6 +216,15 @@ class Migrator:
             ]
         else:
             self.sources = list(sources_or_dir)
+        # Optional per-release baseline snapshot. When set and the
+        # target DB is truly fresh, :meth:`apply_all` loads this single
+        # file (which self-stamps the ``_migrations`` ledger) instead of
+        # replaying the whole numbered chain, then applies any migrations
+        # added since the snapshot as a normal tail. ``None`` (the
+        # default, and what the test fixtures use) keeps the historical
+        # full-replay behaviour, which is also the from-scratch reference
+        # the baseline is validated against.
+        self.baseline = baseline if (baseline and baseline.exists()) else None
 
     @classmethod
     def discover_sources(cls, builtin_dir: Path) -> list[MigrationSource]:
@@ -268,15 +292,44 @@ class Migrator:
         return sorted(applied)
 
     def pending(self) -> list[tuple[str, str]]:
-        """Return ``(plugin, version)`` pairs not yet applied."""
+        """Return ``(plugin, version)`` pairs not yet applied.
+
+        On a fresh DB with a baseline configured, the versions the
+        baseline would self-stamp are treated as already applied, so the
+        report reflects the post-snapshot tail :meth:`apply_all` will
+        actually run — not the whole chain.
+        """
         with psycopg.connect(self.dsn) as conn:
             applied = _applied_versions(conn)
+            if self.baseline is not None and _is_fresh_db(conn):
+                from precis.store.schema_dump import parse_baseline_ledger
+
+                baked = parse_baseline_ledger(self.baseline.read_text(encoding="utf-8"))
+                for version, checksum in baked:
+                    applied.setdefault((PRECIS_PLUGIN_NAME, version), checksum)
         out: list[tuple[str, str]] = []
         for source in self.sources:
             for f in _load_migrations(source):
                 if (f.plugin, f.version) not in applied:
                     out.append((f.plugin, f.version))
         return out
+
+    def _load_baseline(self, conn: psycopg.Connection) -> None:
+        """Load the baseline snapshot into a fresh DB in one transaction.
+
+        The snapshot is a ``pg_dump``-shaped file (schema + seed data +
+        a synthesised ``_migrations`` COPY block), so it goes through the
+        same ``_execute_dump_sql`` driver the numbered migrations use.
+        ``search_path`` is reset afterwards because the dump body sets it
+        to ``''`` for the session.
+        """
+        assert self.baseline is not None
+        sql = self.baseline.read_text(encoding="utf-8")
+        log.info("bootstrapping fresh DB from baseline %s", self.baseline)
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _execute_dump_sql(cur, sql)
+        conn.execute("RESET search_path")
 
     def apply_all(self) -> list[tuple[str, str]]:
         """Apply every pending migration. Returns the
@@ -316,6 +369,16 @@ class Migrator:
         # a real BEGIN/COMMIT and surfaces any inner exception
         # directly.
         with psycopg.connect(self.dsn, autocommit=True) as conn:
+            # Per-release baseline bootstrap: on a truly-fresh DB (no
+            # ``_migrations`` table yet) load the snapshot in one shot
+            # instead of replaying the chain. The snapshot ships a
+            # ``_migrations`` COPY block, so after this load the ledger
+            # is stamped to the baked-in head and the loop below applies
+            # only the post-snapshot tail. A non-fresh DB skips this
+            # entirely and migrates forward as always.
+            if self.baseline is not None and _is_fresh_db(conn):
+                self._load_baseline(conn)
+
             applied = _applied_versions(conn)
             has_plugin_col = _has_plugin_column(conn)
 

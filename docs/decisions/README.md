@@ -15,6 +15,7 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Shared tool registry | [0003](./0003-shared-tool-registry.md) | |
 | Dockerfile layout | [0004](./0004-multi-stage-dockerfile.md) → [0009](./0009-dockerfile-relocation-container-first.md) | 0009 relocated the file; 0004 still describes the stage layering |
 | Migration discipline (forward-only) | [0005](./0005-greenfield-migrations.md) | governs every `*.sql` edit |
+| Install path (baseline snapshot) | [0031](./0031-baseline-snapshot-dual-track.md) | fresh DBs load `migrations/baseline/schema.sql`; dual-track, not a greenfield (cf. [0019](./0019-second-greenfield.md)) |
 | Identifier scheme | [0008](./0008-drop-slug-identifier-normalisation.md) | extends 0006 (tri-id), which itself superseded 0002 §identifier |
 | Derived queue pattern | [0017](./0017-derived-queue-family.md) | extends 0007 (chunk-level → family registry) |
 | Database backend | [0010](./0010-postgres-pgvector-system-of-record.md) | |

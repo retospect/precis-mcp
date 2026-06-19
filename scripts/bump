@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# scripts/bump — bump the package version and regenerate the baseline
+# schema snapshot in one step.
+#
+# The baseline (src/precis/migrations/baseline/schema.sql) is a *release
+# artifact*: a fresh `precis migrate` loads it in one shot instead of
+# replaying the whole numbered migration chain (ADR 0031). Tying its
+# regeneration to the version bump keeps the committed snapshot matched
+# to the release it ships with — and a fresh install of a tagged version
+# applies the snapshot with zero tail.
+#
+# This also keeps pyproject.toml and src/precis/__init__.py in lockstep,
+# so `precis-status` never reports a stale __version__.
+#
+# Usage:
+#   scripts/bump 9.0.0
+#
+# Requires:
+#   * PRECIS_DATABASE_URL pointing at a Postgres server whose role can
+#     CREATEDB (a throwaway DB is built and dropped), and
+#   * pg_dump on PATH (or libpq installed at the Homebrew prefix, which
+#     this script adds automatically).
+#
+# Run on the host (the dev container bind-mounts the main checkout, not a
+# worktree). After it finishes, review the diff and commit + tag.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+VERSION="${1:-}"
+if [[ -z "$VERSION" ]]; then
+  echo "usage: scripts/bump <version>   e.g. scripts/bump 9.0.0" >&2
+  exit 2
+fi
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+  echo "ERR: '$VERSION' doesn't look like a semver version" >&2
+  exit 2
+fi
+
+# libpq is keg-only on macOS — make pg_dump discoverable.
+if ! command -v pg_dump >/dev/null 2>&1; then
+  for p in /opt/homebrew/opt/libpq/bin /usr/local/opt/libpq/bin; do
+    if [[ -x "$p/pg_dump" ]]; then export PATH="$p:$PATH"; fi
+  done
+fi
+
+echo "bump: setting version to $VERSION"
+uv run python - "$VERSION" <<'PY'
+import pathlib
+import re
+import sys
+
+version = sys.argv[1]
+
+pp = pathlib.Path("pyproject.toml")
+new, n = re.subn(
+    r'(?m)^version = "[^"]+"', f'version = "{version}"', pp.read_text(), count=1
+)
+assert n == 1, "could not find `version = \"...\"` in pyproject.toml"
+pp.write_text(new)
+
+ip = pathlib.Path("src/precis/__init__.py")
+inew, n = re.subn(
+    r'(?m)^__version__ = "[^"]+"',
+    f'__version__ = "{version}"',
+    ip.read_text(),
+    count=1,
+)
+assert n == 1, "could not find `__version__ = \"...\"` in src/precis/__init__.py"
+ip.write_text(inew)
+print(f"  pyproject.toml + src/precis/__init__.py -> {version}")
+PY
+
+echo "bump: regenerating baseline snapshot (precis db dump-schema)"
+uv run precis db dump-schema
+
+echo
+echo "bump: done. Review and commit:"
+echo "  git add pyproject.toml src/precis/__init__.py \\"
+echo "          src/precis/migrations/baseline/schema.sql"
+echo "  git commit -m 'Release v$VERSION'"
+echo "  git tag v$VERSION    # push the tag to trigger publish.yml"

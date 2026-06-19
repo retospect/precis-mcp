@@ -246,7 +246,13 @@ the README lists only a sample). Cross-refs: `precis-tasks-help`,
 - **Forward-only migrations.** Never edit a sealed `*.sql` file
   under `src/precis/migrations/`. If you find a bug in a sealed
   file, ship a new forward migration that corrects it. Rationale
-  lives in `docs/decisions/0005-greenfield-migrations.md`.
+  lives in `docs/decisions/0005-greenfield-migrations.md`. A fresh
+  DB does **not** replay the whole chain: it loads the generated
+  `migrations/baseline/schema.sql` snapshot (the chain compiled to
+  one file, self-stamping the ledger) and applies only the tail.
+  Regenerate the snapshot with `scripts/bump` / `precis db
+  dump-schema` — **never hand-edit it**; it is checked against the
+  files. This is a dual-track scheme, not a greenfield (ADR 0031).
 - **`uv` for everything.** Bare `pip` / `pytest` / `mypy` are
   not reproducible. Use `scripts/dev pytest …` inside the
   container, or `uv run …` on the host.

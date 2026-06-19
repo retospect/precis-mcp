@@ -25,6 +25,7 @@ import sys
 from precis.cli import (
     add,
     cron,
+    db,
     fix_metadata,
     gripe,
     heartbeat,
@@ -84,6 +85,10 @@ def main() -> None:
 
     if args.cmd == "schema-doc":
         schema_doc.run(args)
+        return
+
+    if args.cmd == "db":
+        db.run(args)
         return
 
     if args.cmd == "maintenance":
@@ -188,6 +193,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     migrate.add_parser(sub)
     schema_doc.add_parser(sub)
+    db.add_parser(sub)
     maintenance.add_parser(sub)
     fix_metadata.add_parser(sub)
     reconcile.add_parser(sub)

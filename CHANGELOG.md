@@ -8,6 +8,28 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-19 — per-release baseline snapshot, dual-track migrations)
+
+- **`migrations/baseline/schema.sql`** — a generated snapshot of the
+  schema (the numbered migration chain *compiled* to one file). A fresh
+  `precis migrate` loads it in one transaction and applies only any
+  migrations added since, instead of replaying the whole chain. Existing
+  databases are untouched and migrate forward as before. The numbered
+  migrations stay sealed in the tree — this is a dual-track scheme
+  (Rails `schema.rb`), **not** a third greenfield. See ADR 0031.
+- **`precis db dump-schema`** regenerates the snapshot (container op:
+  needs `pg_dump` + a CREATEDB role). `precis migrate --from-scratch`
+  ignores the baseline and replays the full chain.
+- **`scripts/bump <version>`** ties snapshot regeneration to the version
+  bump and keeps `pyproject.toml` + `src/precis/__init__.py` in lockstep
+  (fixes a pre-existing drift the `precis-status` skill surfaced:
+  package `8.17.0` vs `__version__` `8.1.0`).
+- **Guards**: always-on text tests (ledger synth↔parse closure, baseline
+  integrity), a DB-backed convergence test (`load baseline + tail` ==
+  full replay, schema + ledger), and a CI release gate
+  (`assert_baseline_at_head`) that fails a tagged build with a stale
+  baseline.
+
 ### Added (2026-06-19 — hierarchical SOM cluster maps + `/clusters` grid)
 
 - **`clusterize` worker pass + `precis_web` cluster grid.** A spatial,

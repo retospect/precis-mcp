@@ -31,6 +31,15 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         action="store_true",
         help="Show pending migrations without applying.",
     )
+    parser.add_argument(
+        "--from-scratch",
+        action="store_true",
+        help=(
+            "Ignore the baseline snapshot and replay every numbered "
+            "migration. Default: a fresh DB loads migrations/baseline/"
+            "schema.sql, then applies only the post-snapshot tail."
+        ),
+    )
     return parser
 
 
@@ -43,12 +52,20 @@ def run(args: argparse.Namespace) -> None:
     one broken plugin must not block ``precis migrate``.
     """
     from precis.store import Migrator
+    from precis.store.schema_dump import baseline_path
 
     dsn = resolve_dsn(getattr(args, "database_url", None))
     builtin_dir = Path(__file__).resolve().parent.parent / "migrations"
 
+    # A fresh DB bootstraps from the per-release baseline snapshot
+    # unless --from-scratch forces a full replay (used by the
+    # convergence test and by dump-schema itself).
+    baseline = (
+        None if getattr(args, "from_scratch", False) else baseline_path(builtin_dir)
+    )
+
     sources = Migrator.discover_sources(builtin_dir)
-    m = Migrator(dsn, sources)
+    m = Migrator(dsn, sources, baseline=baseline)
     pending = m.pending()
     if args.dry_run:
         if not pending:

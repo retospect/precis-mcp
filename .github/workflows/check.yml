@@ -57,6 +57,11 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      # Release gate: the committed baseline snapshot must bake in every
+      # migration, so a fresh install of this tagged version applies
+      # schema.sql with zero tail. Regenerate with `scripts/bump` (which
+      # runs `precis db dump-schema`) if this fails. See ADR 0031.
+      - run: uv run python -c "from precis.store.schema_dump import assert_baseline_at_head as a; a()"
       - run: uv build
       - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:

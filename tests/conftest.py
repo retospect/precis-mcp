@@ -49,7 +49,7 @@ use ``IF NOT EXISTS`` so they're no-ops once installed.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import psycopg
@@ -286,6 +286,18 @@ def fresh_db() -> Iterator[str]:
     # The next ``store`` fixture call would otherwise fail because
     # the tables it wants to TRUNCATE don't exist.
     Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
+
+
+@pytest.fixture
+def drop_public_objects() -> Callable[[str], None]:
+    """Return the drop-all-public-objects helper (preserves extensions).
+
+    For tests that build the schema more than one way in a single body —
+    e.g. the baseline-vs-replay convergence test, which drops between the
+    two builds. Exposed as a fixture so tests don't import conftest
+    internals directly.
+    """
+    return _drop_all_public_objects
 
 
 @pytest.fixture

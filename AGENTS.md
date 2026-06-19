@@ -26,7 +26,11 @@ Read this before substantive changes.
 - **Models**: BGE-M3 embedder via `sentence-transformers`, downloaded on first use.
 - **MCP server**: `FastMCP` (mcp[cli] ≥ 1.0).
 - **Migrations**: numbered `*.sql` files in `src/precis/migrations/`, applied
-  by `precis migrate` (see `src/precis/store/migrate.py`).
+  by `precis migrate` (see `src/precis/store/migrate.py`). A fresh DB
+  bootstraps from the generated `migrations/baseline/schema.sql` snapshot
+  (the chain compiled to one file) and applies only the tail; existing
+  DBs migrate forward as always. Regenerate the snapshot with
+  `scripts/bump` / `precis db dump-schema` — never hand-edit it. ADR 0031.
 - **CLI entry-point**: `precis = precis.cli:main` (subcommand-driven).
 
 ## Repository shape
