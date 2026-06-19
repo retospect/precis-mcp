@@ -224,6 +224,59 @@ def test_claim_not_suppressed_when_last_event_advanced(store) -> None:
     assert fid in [f.ref_id for f in claimed]
 
 
+def test_claim_backoff_window_widens_exponentially(store) -> None:
+    """Consecutive ``waiting`` outcomes widen the window: three waits in
+    a row mean the base 60-min window has grown to 60*2^2 = 240 min, so
+    a finding last-waiting 90 min ago — eligible under a flat window —
+    is still suppressed."""
+    _seed_paper(store, cite_key="stub_exp", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_exp")
+    _insert_chase_event(store, fid, "waiting", minutes_ago=300)
+    _insert_chase_event(store, fid, "waiting", minutes_ago=180)
+    _insert_chase_event(store, fid, "waiting", minutes_ago=90)
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    assert fid not in [f.ref_id for f in claimed]
+
+
+def test_claim_reclaims_after_widened_window(store) -> None:
+    """Past the widened window the finding is eligible again: three
+    waits give a 240-min window, and a most-recent wait 300 min ago is
+    aged out."""
+    _seed_paper(store, cite_key="stub_exp_aged", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_exp_aged")
+    _insert_chase_event(store, fid, "waiting", minutes_ago=600)
+    _insert_chase_event(store, fid, "waiting", minutes_ago=450)
+    _insert_chase_event(store, fid, "waiting", minutes_ago=300)
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    assert fid in [f.ref_id for f in claimed]
+
+
+def test_claim_backoff_count_resets_after_progress(store) -> None:
+    """A non-waiting outcome resets the run: a single fresh ``waiting``
+    after an ``advanced`` is back to the base 60-min window, not the
+    widened one — so the prior waits don't keep a moving chain
+    suppressed longer than base."""
+    _seed_paper(store, cite_key="stub_reset", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_reset")
+    # Old run of waits, then progress, then one fresh wait aged past base.
+    _insert_chase_event(store, fid, "waiting", minutes_ago=500)
+    _insert_chase_event(store, fid, "waiting", minutes_ago=400)
+    _insert_chase_event(store, fid, "advanced", minutes_ago=300)
+    _insert_chase_event(store, fid, "waiting", minutes_ago=90)
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    # waits-since-progress == 1 → base 60-min window → 90 min ago is eligible.
+    assert fid in [f.ref_id for f in claimed]
+
+
 # ── hop: inline cite + S2 reference → chain grows ──────────────────
 
 

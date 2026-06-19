@@ -1,20 +1,23 @@
 ---
 id: precis-nursery-help
-title: precis — nursery digest of todo-tree incoherence
-summary: hourly tree-incoherence digest — orphans, stale claims, long waits, stuck doable, spin-loop detection
-applies-to: precis worker --only nursery; tree-review:* tagged memories
+title: precis — nursery detector of todo-tree incoherence
+summary: per-minute tree-incoherence detectors — orphans, stale claims, long waits, stuck doable, spin loops — raised as alerts
+applies-to: precis worker --only nursery; kind='alert' (alert-source:nursery:*)
 status: active
 ---
 
-# precis-nursery-help — hourly tree-incoherence digest
+# precis-nursery-help — tree-incoherence detectors → alerts
 
 The nursery is the first of three review tiers in
 `docs/design/todo-tree-plan.md` (Slice 3). It walks the todo tree
-every hour, surfaces local incoherence via SQL-only detectors, and
-writes a digest as a `kind='memory'` ref tagged `tier:nursery`. No
-LLM call, no Discord push, no notification noise — the digest
-reaches asa via her existing `internal-thought` slot in the
-preamble.
+(and the worker fleet) every pass, surfaces local incoherence via
+SQL-only detectors, and raises a `kind='alert'` per condition (see
+`precis-alert-help`). No LLM call, no Discord push, no notification
+noise. It used to write a `kind='memory'` digest tagged `tier:nursery`
+— that conflated ops telemetry with reflective *thought*, polluted the
+memory namespace, and (because the spin-loop finding set churns every
+second) spun on itself writing thousands of near-dup memories a day.
+Alerts dedup per *condition* instead.
 
 ## Detector catalogue
 
@@ -45,56 +48,48 @@ exempt from the strategic invariant — they're scheduled work, not
 strategic work. The Watches umbrella itself doesn't appear in any
 detector.
 
-## Where the digest lands
+## Where the findings land
+
+Each finding becomes one `kind='alert'` (see `precis-alert-help`):
 
 ```
-kind='memory'
-title=<the markdown digest>
-tags=[tree-review:YYYY-MM-DD, tier:nursery, user:asa, internal-thought]
-meta.nursery_fingerprint=<sha256 of (category, ref_id) pairs>
-meta.nursery_finding_count=<int>
-meta.nursery_date='YYYY-MM-DD'
+kind='alert'
+title='[<category>] <headline>'
+alert_source='nursery:<category>'        # e.g. nursery:spin-loop
+fingerprint='<category>:<ref_id>'        # the dedup key
+tags=[alert-state:open, alert-source:nursery:<category>, severity:<sev>]
+meta.subject_ref_id=<the ref the alert is about>
+meta.seen_count=<how many passes have seen it still open>
 ```
 
-Read recent digests with:
+Severity: `spin-loop` / `stale-claim` / `stalled-recurring` → `warn`;
+`orphan` / `long-wait` / `stuck-doable` → `info`.
+
+Read the current open set with:
 
 ```
-search(kind='memory', tags=['tier:nursery'], page_size=5)
+get(kind='alert', id='/open')
+search(kind='alert', tags=['alert-source:nursery:spin-loop'])
 ```
 
-The newest digest's text reads as:
+…or browse the **Alerts** tab in `precis web` (`/alerts`).
 
-```
-Nursery digest 2026-06-14: 2 orphan, 1 stalled-recurring.
+## Dedup + auto-resolve
 
-## orphan (2)
+A condition is identified by `fingerprint = "<category>:<ref_id>"`.
 
-- #87 Build the platform
-    open todo with no strategic ancestor — root needs a `level:strategic`
-    tag or this leaf needs to be re-parented under one
-- #94 Random side-quest
-    open todo with no strategic ancestor — root needs a `level:strategic`
-    tag or this leaf needs to be re-parented under one
+* **Repeat sighting** of a still-open condition bumps that alert's
+  `meta.seen_count` and `updated_at` — no duplicate row. This is the
+  per-condition dedup that replaced the old per-digest fingerprint
+  (which a churning spin-loop set defeated).
+* **Cleared condition** — a finding that disappears from a detector's
+  output auto-resolves its alert on the next pass (open → resolved;
+  the row is kept for history, filtered out of `/open`).
+* **Recurrence** raises a fresh open alert; the prior resolved one
+  stays as history.
 
-## stalled-recurring (1)
-
-- #12 Hourly arxiv check
-    recurring #12 stalled: last spawn (child #143) has been open 5h —
-    collision-skip will keep new ticks from piling up; resolve or
-    auto-timeout
-```
-
-## Dedup discipline
-
-Each digest carries a fingerprint of its `(category, ref_id)` pairs
-on `meta.nursery_fingerprint`. The next pass computes the same
-fingerprint on its current findings — if it matches the most
-recent `tier:nursery` digest, no new memory is written. Empty
-findings never write a memory either.
-
-So a stable list of orphans + one resolved + one new orphan writes
-a fresh digest (fingerprint changed). A stable list with no churn
-writes nothing.
+Empty findings still run the resolve sweep, so a fixed problem leaves
+the open list promptly.
 
 ## Running it
 
@@ -109,13 +104,14 @@ In production, hourly via the `precis_nursery` Ansible role on
 melchior. See `cluster/roles/precis_nursery/README.md` for the
 multi-host story.
 
-## Pairing with chatter
+## Surfacing
 
-asa-bot's preamble surfaces recent `internal-thought` memories in
-its "## Inner life" block. The nursery digest lands there directly
-— asa sees the latest digest in every conversation and can pull
-its content into a reply when relevant. No new preamble slot
-needed.
+Open nursery alerts show on the **Alerts** web tab (`/alerts`,
+grouped by source, severity-sorted) and feed the structural / deep
+reviewers' context. The web Status page's "Background health" panel
+still computes spin loops + failed passes live (independent of the
+alert rows). An operator preamble can read the open set via
+`get(kind='alert', id='/open')`.
 
 ## What it's NOT
 
@@ -130,6 +126,7 @@ needed.
 
 ## Related skills
 
+* `precis-alert-help` — the `alert` kind (lifecycle, dedup, tab)
 * `precis-tasks-help` — the tree shape + level gradient
 * `precis-decomposition-help` — the GTD interrogation (Slice 2)
 * `precis-recurring-help` — `level:recurring` + the Watches umbrella

@@ -89,11 +89,18 @@ Three reviewers write memory digests, factored into
 `workers/review.py` (`Reviewer` dataclass + `run_review_pass`
 driver; adding one is a `Reviewer(...)` instance):
 
-* `nursery` — SQL-only, every minute on the system worker,
-  idempotent on fingerprint. Flags orphans, stale claims, long waits,
-  stuck doable, stalled recurrings, and **spin loops** (any
-  `(ref_id, source)` emitting > `SPIN_LOOP_EVENTS_24H` (200)
-  `ref_events` in 24h).
+* `nursery` — SQL-only, every minute on the system worker. Flags
+  orphans, stale claims, long waits, stuck doable, stalled recurrings,
+  and **spin loops** (any `(ref_id, source)` emitting >
+  `SPIN_LOOP_EVENTS_24H` (200) `ref_events` in 24h). Each finding is
+  raised as a `kind='alert'` (one per condition, `alert_source =
+  nursery:<category>`, deduped on `meta.fingerprint`; cleared
+  conditions auto-resolve) — **not** a `kind='memory'` digest any
+  more. See `## Other live affordances` → `alert`, and
+  `precis-nursery-help`. (Replacing the digest killed a self-spin: the
+  spin-loop finding set churns every second, so the old
+  `(category, ref_id)` digest fingerprint changed every pass and the
+  per-node per-minute writer emitted >2000 near-dup memories/day.)
 * `structural` — opus, 6h dedup, agent profile. Drift, sibling
   contradictions, depth/fanout warnings.
 * `deep_review` — opus, weekly dedup, agent profile. Allen-style
@@ -129,11 +136,17 @@ driver; adding one is a `Reviewer(...)` instance):
   than `PRECIS_STUCK_JOB_HOURS` (1.0h), tagging `swept:claim-orphaned`
   so the parent's failure-bubble unblocks the cascade. Recovers
   deploy-time claim orphans.
-* `fetch` / `chase` backoff — the OA fetcher's retry window arms on
-  any `fetcher:%` event (not just `unpaywall`, which is disabled in
-  prod); finding-chase skips a `waiting` finding newer than
-  `WAITING_BACKOFF_MINUTES` (60). Both fixes killed `ref_events`
-  spin-loop floods.
+* `fetch` / `chase` backoff — **both exponential**. The OA fetcher's
+  retry window arms on any `fetcher:%` event (not just `unpaywall`,
+  which is disabled in prod) and doubles per prior attempt
+  (`base * 2^(attempts-1)`, capped). Finding-chase skips a `waiting`
+  finding inside an equally-exponential window — `WAITING_BACKOFF_MINUTES`
+  (60) doubling per consecutive `waiting` up to `WAITING_BACKOFF_MAX_MINUTES`
+  (1440), the run resetting on any non-`waiting` outcome. Both fixes
+  kill `ref_events` spin-loop floods. NB the fix only helps once
+  *deployed* — prod ran pre-fix code well after the merge, so a
+  spin-loop digest spike usually means "redeploy", not "new bug"
+  (check the deployed sha under `~deploy/.cache/uv/git-v0/checkouts/`).
 
 **Unified `claude -p` agentic dispatch — `utils/claude_agent.py`.**
 Peer to `utils/claude_p.py` (one-shot JSON judge). Carries the
@@ -182,6 +195,16 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   `delete`); body + append-only comment timeline live as chunks
   (`gripe_body`, `gripe_comment`), so embed + `chunk_keywords` index
   them automatically.
+- **`alert`** (migration `0029`) — machine-detected ops / health
+  conditions (spin loops, orphaned todos, stalled recurrings). Raised
+  by background passes via `precis.alerts.raise_alert` (upsert on
+  `meta.fingerprint`; `resolve_stale_alerts` auto-closes cleared ones),
+  read via `AlertHandler` (`get(id='/open')`) + the `/alerts` web tab.
+  **Not embedded** — body in `title`/`meta`, no `card_combined` chunk,
+  so it never reaches semantic search. Deliberately separate from
+  `memory` (ops telemetry ≠ thought); the LLM reviewers stay on
+  `memory`. Skill: `precis-alert-help`. Producer is generic — sweeper /
+  quota / failed-pass detectors can adopt it next.
 - **`job` substrate** — `meta.job_type` + `meta.executor`,
   `STATUS:` tag, forensics as `chunk_kind='job_event'` (hidden) /
   `job_summary` (searchable) / `job_result` (structured per-tick
@@ -257,8 +280,24 @@ the README lists only a sample). Cross-refs: `precis-tasks-help`,
   not reproducible. Use `scripts/dev pytest …` inside the
   container, or `uv run …` on the host.
 - **Container-first ops.** `scripts/dev` → dev shell;
-  `scripts/db` → psql. Compose file lives outside the repo at
+  `scripts/db` → psql (LOCAL `precis` / `precis_test` only — the
+  dev pgvector container is published at `127.0.0.1:5432`,
+  `POSTGRES_USER=postgres`). Compose file lives outside the repo at
   `~/work/infrastructure/compose.yaml`.
+- **Peeking at prod.** To inspect the live `precis_prod` DB (read the
+  spin-loop / nursery state, count `ref_events`, etc.) hop through a
+  cluster node and psql the pgbouncer:
+  `ssh -o IdentityAgent=none melchior 'psql -h 100.126.127.107 -p 6432
+  -U agent_rw -d precis_prod -c "…"'` (caspar works too). `agent_rw`
+  has SELECT; the local `scripts/db` creds do **not** reach prod. The
+  `-o IdentityAgent=none` works around the flaky ssh-agent forwarding.
+- **Host pytest needs the DB URL + `paper` deps.** `scripts/dev`
+  mounts the MAIN repo, so to test *worktree* edits run host pytest
+  with `PRECIS_TEST_PG_URL=postgresql://postgres:<pw>@localhost:5432/precis_test`
+  (pw from the `postgres-postgres-1` container env). Worker tests that
+  import `precis.ingest.citations` need the S2 client —
+  `uv run --with semanticscholar pytest …` avoids pulling the whole
+  heavy `[paper]` extra (marker/torch).
 - **Skills are runtime docs.** Updating a skill file under
   `src/precis/data/skills/` is the agent-facing channel — the
   MCP server reads them at boot and serves them via

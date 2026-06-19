@@ -156,20 +156,21 @@ def test_build_prompt_includes_directive_sections(
     assert "Strategic + tactical layer" in prompt
     assert "What to look for" in prompt
     assert "Output format" in prompt
-    # Recent-nursery section gets the placeholder when none exists.
-    assert "(none in the last 24h)" in prompt
+    # Open-nursery-alerts section gets the placeholder when none exist.
+    assert "(no open nursery alerts)" in prompt
 
 
 def test_build_prompt_includes_recent_nursery(
     handler: TodoHandler, store: Store
 ) -> None:
-    # Synthesize a nursery digest via the standard worker path.
+    # An orphan todo → nursery raises a nursery:orphan alert, which the
+    # structural prompt surfaces as an open-alert line.
     handler.put(text="orphan one")  # → orphan in nursery detection
     from precis.workers.nursery import run_nursery_pass
 
     run_nursery_pass(store)
     prompt = _build_prompt(store)
-    assert "Nursery digest" in prompt or "orphan" in prompt
+    assert "nursery:orphan" in prompt
 
 
 # ── full pass with stubbed LLM ───────────────────────────────────

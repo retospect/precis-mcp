@@ -88,30 +88,27 @@ def _strategic_layer_snapshot(store: Store) -> str:
 
 
 def _recent_nursery_excerpt(store: Store) -> str:
-    """Body of the most recent ``tier:nursery`` memory if any, else placeholder.
+    """Compact list of currently-open ``nursery:*`` alerts, else a placeholder.
 
-    Capped at ~2KB so the prompt stays bounded; the model can drill
-    in via MCP if it needs more.
+    Nursery now raises a ``kind='alert'`` per condition (see
+    :mod:`precis.alerts`) instead of writing a digest memory, so the
+    reviewer reads the live open set rather than the latest digest. One
+    line per alert, capped at ~2KB so the prompt stays bounded; the
+    model can drill in via MCP if it needs more.
     """
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT r.title
-              FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory'
-               AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN'
-               AND t.value = 'tier:nursery'
-               AND r.created_at > now() - interval '24 hours'
-             ORDER BY r.created_at DESC
-             LIMIT 1
-            """,
-        ).fetchone()
-    if row is None:
-        return "(none in the last 24h)"
-    return (row[0] or "")[:2000]
+    from precis.alerts import list_open_alerts
+
+    nursery = [
+        a for a in list_open_alerts(store) if (a["source"] or "").startswith("nursery:")
+    ]
+    if not nursery:
+        return "(no open nursery alerts)"
+    lines = [
+        f"- [{a['severity']}] {a['source']}: {a['title']}"
+        + (f" (seen {a['seen_count']}×)" if a["seen_count"] > 1 else "")
+        for a in nursery
+    ]
+    return "\n".join(lines)[:2000]
 
 
 def _structural_context(store: Store) -> dict[str, str]:
@@ -125,7 +122,7 @@ _STRUCTURAL_TEMPLATE = """STRUCTURAL REVIEW — {today}
 
 You are reviewing the asa todo tree for *structural* problems that
 SQL can't detect. Below is a snapshot of the strategic + tactical
-layer and the most recent nursery digest. If you need to drill in,
+layer and the currently-open nursery alerts. If you need to drill in,
 use the `precis` MCP tool (`get(kind='todo', id=N, view='tree')` to
 read a subtree; `search(kind='todo', view='doable')` for next
 actions).
@@ -134,7 +131,7 @@ actions).
 
 {strategic_layer}
 
-## Recent nursery digest
+## Open nursery alerts
 
 {nursery_excerpt}
 

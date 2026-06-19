@@ -117,13 +117,15 @@ def test_build_prompt_has_all_directive_sections(store: Store) -> None:
 def test_build_prompt_includes_recent_reviews(
     handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Synthesize a nursery digest via run_nursery_pass.
+    # An orphan todo → nursery raises a nursery:orphan alert, which the
+    # deep-review prompt surfaces under "Open nursery alerts".
     handler.put(text="dangling orphan")
     from precis.workers.nursery import run_nursery_pass
 
     run_nursery_pass(store)
     prompt = _build_prompt(store)
-    assert "tier:nursery" in prompt
+    assert "Open nursery alerts" in prompt
+    assert "nursery:orphan" in prompt
 
 
 # ── full pass with stubbed LLM ───────────────────────────────────

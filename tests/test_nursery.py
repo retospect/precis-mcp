@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from precis.alerts import STATE_OPEN, STATE_RESOLVED, list_open_alerts
 from precis.dispatch import Hub
 from precis.handlers.todo import TodoHandler
 from precis.store import Store
@@ -29,16 +30,12 @@ from precis.workers.nursery import (
     SPIN_LOOP_EVENTS_24H,
     STALE_CLAIM_HOURS,
     STUCK_DOABLE_HOURS,
-    Finding,
     _detect_long_waits,
     _detect_orphans,
     _detect_spin_loops,
     _detect_stale_claims,
     _detect_stalled_recurrings,
     _detect_stuck_doable,
-    _fingerprint,
-    _last_digest_matches,
-    _render_digest_body,
     run_nursery_pass,
 )
 
@@ -78,65 +75,6 @@ def _backdate_tag(store: Store, ref_id: int, tag_value: str, hours: float) -> No
             (f"{hours} hours", ref_id, tag_value),
         )
         conn.commit()
-
-
-# ── fingerprint (pure) ─────────────────────────────────────────────
-
-
-def test_fingerprint_is_order_independent() -> None:
-    a = [
-        Finding("orphan", 1, "t", "d"),
-        Finding("stale-claim", 2, "t", "d"),
-    ]
-    b = [
-        Finding("stale-claim", 2, "t", "d"),
-        Finding("orphan", 1, "t", "d"),
-    ]
-    assert _fingerprint(a) == _fingerprint(b)
-
-
-def test_fingerprint_ignores_title_and_detail() -> None:
-    """Title/detail edits on the same (cat, ref_id) don't change the hash."""
-    a = [Finding("orphan", 1, "old title", "old detail")]
-    b = [Finding("orphan", 1, "new title", "new detail")]
-    assert _fingerprint(a) == _fingerprint(b)
-
-
-def test_fingerprint_changes_on_finding_set_change() -> None:
-    a = [Finding("orphan", 1, "t", "d")]
-    b = [Finding("orphan", 1, "t", "d"), Finding("orphan", 2, "t", "d")]
-    assert _fingerprint(a) != _fingerprint(b)
-
-
-def test_fingerprint_distinguishes_categories() -> None:
-    a = [Finding("orphan", 1, "t", "d")]
-    b = [Finding("stuck-doable", 1, "t", "d")]
-    assert _fingerprint(a) != _fingerprint(b)
-
-
-# ── digest body render (pure) ──────────────────────────────────────
-
-
-def test_render_digest_body_groups_by_category() -> None:
-    findings = [
-        Finding("orphan", 11, "Orphan one", "no strategic ancestor"),
-        Finding("orphan", 12, "Orphan two", "no strategic ancestor"),
-        Finding("stale-claim", 21, "Stale one", "claimed 5h ago"),
-    ]
-    body = _render_digest_body(findings, today="2026-06-14")
-    assert "Nursery digest 2026-06-14: 2 orphan, 1 stale-claim." in body
-    assert "## orphan (2)" in body
-    assert "## stale-claim (1)" in body
-    assert "- #11 Orphan one" in body
-    assert "- #21 Stale one" in body
-
-
-def test_render_digest_body_skips_missing_categories() -> None:
-    findings = [Finding("orphan", 1, "t", "d")]
-    body = _render_digest_body(findings, today="2026-06-14")
-    assert "## orphan (1)" in body
-    assert "## stale-claim" not in body
-    assert "## stuck-doable" not in body
 
 
 # ── orphans ────────────────────────────────────────────────────────
@@ -436,161 +374,133 @@ def test_spin_loop_detector_ignores_old_events(store: Store) -> None:
     assert ref.id not in {f.ref_id for f in findings}
 
 
-# ── TTL purge ──────────────────────────────────────────────────────
+# ── full pass → alerts ─────────────────────────────────────────────
 
 
-def test_expired_digests_get_soft_deleted_by_run_pass(
-    store: Store,
-) -> None:
-    """A nursery digest older than the TTL is soft-deleted on the next pass.
-
-    Backdate ``refs.created_at`` past the TTL window, ensure the row
-    is still marked deleted_at IS NULL pre-pass, run the pass, then
-    confirm the row carries ``deleted_at IS NOT NULL``.
-    """
-    # Mint a nursery digest by hand (skip the full detector path so the
-    # test stays narrow).
-    ref = store.insert_ref(
-        kind="memory",
-        slug=None,
-        title="stale nursery digest",
-        meta={"nursery_fingerprint": "dead", "nursery_finding_count": 0},
-    )
-    store.add_tag(ref.id, Tag.open("tier:nursery"), set_by="system")
-    # Backdate created_at well past the TTL (default 7 days).
-    with store.pool.connection() as conn:
-        conn.execute(
-            "UPDATE refs SET created_at = now() - interval '10 days' WHERE ref_id = %s",
-            (ref.id,),
-        )
-        conn.commit()
-
-    run_nursery_pass(store)
-
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s",
-            (ref.id,),
-        ).fetchone()
-    assert row is not None
-    assert row[0] is not None  # soft-deleted
+def _open_alert_count(store: Store) -> int:
+    return len(list_open_alerts(store))
 
 
-def test_recent_digests_are_not_purged(store: Store) -> None:
-    """A digest within the TTL window survives the pass."""
-    ref = store.insert_ref(
-        kind="memory",
-        slug=None,
-        title="fresh nursery digest",
-        meta={"nursery_fingerprint": "alive", "nursery_finding_count": 0},
-    )
-    store.add_tag(ref.id, Tag.open("tier:nursery"), set_by="system")
-    # Don't backdate — created_at is now().
-
-    run_nursery_pass(store)
-
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT deleted_at FROM refs WHERE ref_id = %s",
-            (ref.id,),
-        ).fetchone()
-    assert row is not None
-    assert row[0] is None  # still live
-
-
-# ── full pass + dedup ──────────────────────────────────────────────
-
-
-def test_full_pass_writes_digest_when_findings_appear(
+def test_full_pass_raises_alerts_when_findings_appear(
     handler: TodoHandler, store: Store
 ) -> None:
-    # Two orphans + one stale claim.
-    a = handler.put(text="Orphan A")
-    b = handler.put(text="Orphan B")
+    # Two orphans + one stale claim → 3 alerts across two sources.
+    handler.put(text="Orphan A")
+    handler.put(text="Orphan B")
     c = handler.put(text="Claimed")
-    aid = _id_of(a.body)
-    bid = _id_of(b.body)
     cid = _id_of(c.body)
     store.add_tag(cid, Tag.open("claimed-by:asa-worker"), set_by="agent")
     _backdate_tag(store, cid, "claimed-by:asa-worker", STALE_CLAIM_HOURS + 1)
 
     result = run_nursery_pass(store)
-    assert result.claimed >= 3
-    assert result.ok == 1  # digest written
+    assert result.claimed >= 3  # findings raised
+    assert result.failed == 0
 
-    # Confirm the memory landed with the right tags.
+    alerts = list_open_alerts(store)
+    sources = {a["source"] for a in alerts}
+    assert "nursery:orphan" in sources
+    assert "nursery:stale-claim" in sources
+    # No memory digest is written any more.
     with store.pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT r.ref_id, r.meta->>'nursery_finding_count'
-              FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory' AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN' AND t.value = 'tier:nursery'
-             ORDER BY r.created_at DESC LIMIT 1
-            """,
+        memory_digests = conn.execute(
+            "SELECT count(*) FROM refs r JOIN ref_tags rt USING(ref_id) "
+            "JOIN tags t USING(tag_id) WHERE r.kind='memory' "
+            "AND t.namespace='OPEN' AND t.value='tier:nursery'",
         ).fetchone()
-    assert row is not None
-    assert int(row[1]) >= 3
-    _ = aid, bid
+    assert memory_digests[0] == 0
 
 
 def test_full_pass_dedups_repeat_findings(handler: TodoHandler, store: Store) -> None:
-    r = handler.put(text="Orphan O")
-    rid = _id_of(r.body)
-    _ = rid
+    """A second pass over the same findings bumps seen_count, not a
+    duplicate alert."""
+    handler.put(text="Orphan O")
     run_nursery_pass(store)
-    # Second pass with the same findings → no new memory.
-    result2 = run_nursery_pass(store)
-    assert result2.ok == 0
-    assert result2.claimed >= 1
+    before = _open_alert_count(store)
+    run_nursery_pass(store)
+    after = _open_alert_count(store)
+    assert after == before  # no duplicate row
+    # seen_count incremented on the existing alert.
+    alert = next(a for a in list_open_alerts(store) if a["source"] == "nursery:orphan")
+    assert alert["seen_count"] >= 2
 
 
-def test_full_pass_writes_again_after_findings_change(
+def test_full_pass_auto_resolves_cleared_condition(
     handler: TodoHandler, store: Store
 ) -> None:
-    handler.put(text="First orphan")
+    """When a finding disappears, its alert flips open → resolved on the
+    next pass (the row is kept for history)."""
+    r = handler.put(text="Transient orphan")
+    rid = _id_of(r.body)
     run_nursery_pass(store)
-    # Add a new orphan; the fingerprint changes.
-    handler.put(text="Second orphan")
-    result2 = run_nursery_pass(store)
-    assert result2.ok == 1
+    assert _open_alert_count(store) >= 1
+
+    # Resolve the underlying orphan (mark the todo done), then re-run.
+    handler.tag(id=rid, add=["STATUS:done"])
+    result = run_nursery_pass(store)
+    assert result.ok >= 1  # at least one alert auto-resolved
+    assert _open_alert_count(store) == 0
+    # The resolved alert is retained, not deleted.
+    with store.pool.connection() as conn:
+        resolved = conn.execute(
+            "SELECT count(*) FROM refs r JOIN ref_tags rt USING(ref_id) "
+            "JOIN tags t USING(tag_id) WHERE r.kind='alert' "
+            "AND r.deleted_at IS NULL AND t.namespace='OPEN' AND t.value=%s",
+            (STATE_RESOLVED,),
+        ).fetchone()
+    assert resolved[0] >= 1
+
+
+def test_full_pass_reopen_is_idempotent(handler: TodoHandler, store: Store) -> None:
+    """A condition that clears then recurs raises a fresh open alert
+    (the prior one stays resolved) rather than stacking duplicates."""
+    r = handler.put(text="Flapping orphan")
+    rid = _id_of(r.body)
+    run_nursery_pass(store)
+    handler.tag(id=rid, add=["STATUS:done"])
+    run_nursery_pass(store)
+    assert _open_alert_count(store) == 0
+    # Reopen the todo → orphan condition returns.
+    handler.tag(id=rid, remove=["STATUS:done"])
+    run_nursery_pass(store)
+    open_now = [a for a in list_open_alerts(store) if a["source"] == "nursery:orphan"]
+    assert len(open_now) == 1
 
 
 def test_full_pass_empty_returns_clean(handler: TodoHandler, store: Store) -> None:
-    # No todos, no findings.
+    # No todos, no findings, no alerts.
     result = run_nursery_pass(store)
     assert result.claimed == 0
     assert result.ok == 0
+    assert _open_alert_count(store) == 0
 
 
-def test_last_digest_matches_returns_false_when_no_digest(store: Store) -> None:
-    assert _last_digest_matches(store, "abc123") is False
+def test_open_alerts_excludes_resolved(store: Store) -> None:
+    """``list_open_alerts`` filters on the open-state tag."""
+    from precis.alerts import raise_alert, resolve_stale_alerts
 
-
-def test_last_digest_matches_true_after_write(
-    handler: TodoHandler, store: Store
-) -> None:
-    handler.put(text="Orphan X")
-    run_nursery_pass(store)
-    # Fetch the fingerprint we just wrote.
+    raise_alert(
+        store,
+        source="test:probe",
+        fingerprint="probe:1",
+        title="probe alert",
+        severity="info",
+    )
+    assert any(a["source"] == "test:probe" for a in list_open_alerts(store))
+    # Clearing the condition resolves it → drops from the open list.
+    resolve_stale_alerts(store, source="test:probe", live_fingerprints=[])
+    assert not any(a["source"] == "test:probe" for a in list_open_alerts(store))
+    # Sanity: it carries the resolved tag now, not the open one.
     with store.pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT r.meta->>'nursery_fingerprint'
-              FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory'
-               AND t.namespace = 'OPEN' AND t.value = 'tier:nursery'
-             ORDER BY r.created_at DESC LIMIT 1
-            """,
-        ).fetchone()
-    assert row is not None
-    fingerprint = row[0]
-    assert _last_digest_matches(store, fingerprint) is True
-    assert _last_digest_matches(store, "different") is False
+        tags = conn.execute(
+            "SELECT t.value FROM refs r JOIN ref_tags rt USING(ref_id) "
+            "JOIN tags t USING(tag_id) WHERE r.kind='alert' "
+            "AND r.meta->>'fingerprint'='probe:1' AND t.namespace='OPEN' "
+            "AND t.value IN (%s, %s)",
+            (STATE_OPEN, STATE_RESOLVED),
+        ).fetchall()
+    vals = {row[0] for row in tags}
+    assert STATE_RESOLVED in vals
+    assert STATE_OPEN not in vals
 
 
 def test_helpers_hours_since_works() -> None:

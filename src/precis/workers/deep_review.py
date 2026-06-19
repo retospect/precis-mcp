@@ -88,29 +88,45 @@ def _strategic_dashboard(store: Store) -> str:
 
 
 def _recent_review_summary(store: Store) -> str:
-    """One line per recent nursery/structural digest in the last 7d."""
+    """Open nursery alerts (live) + recent structural digests (7d).
+
+    Nursery moved from a digest memory to per-condition ``kind='alert'``
+    rows (see :mod:`precis.alerts`), so its half is the current open set
+    rather than a dated digest; structural still writes ``tier:structural``
+    memories.
+    """
+    from precis.alerts import list_open_alerts
+
+    lines: list[str] = []
+    nursery = [
+        a for a in list_open_alerts(store) if (a["source"] or "").startswith("nursery:")
+    ]
+    if nursery:
+        lines.append(f"Open nursery alerts ({len(nursery)}):")
+        lines += [f"- [{a['severity']}] {a['source']}: {a['title']}" for a in nursery]
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT t.value AS tier, r.created_at, r.title
+            SELECT r.created_at, r.title
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'memory'
                AND r.deleted_at IS NULL
                AND t.namespace = 'OPEN'
-               AND t.value IN ('tier:nursery', 'tier:structural')
+               AND t.value = 'tier:structural'
                AND r.created_at > now() - interval '7 days'
              ORDER BY r.created_at DESC
              LIMIT 30
             """,
         ).fetchall()
-    if not rows:
-        return "(no nursery / structural digests in the last 7 days)"
-    lines: list[str] = []
-    for tier, ts, title in rows:
-        head = (title or "").splitlines()[0][:120]
-        lines.append(f"- [{tier}] {ts.date().isoformat()}: {head}")
+    if rows:
+        lines.append("Recent structural digests:")
+        for ts, title in rows:
+            head = (title or "").splitlines()[0][:120]
+            lines.append(f"- {ts.date().isoformat()}: {head}")
+    if not lines:
+        return "(no open nursery alerts or structural digests in the last 7 days)"
     return "\n".join(lines)
 
 

@@ -695,11 +695,12 @@ def run(args: argparse.Namespace) -> None:
 
         # Nursery pass — Slice 3 of todo-tree-plan.md. SQL-only
         # pattern matcher that surfaces local incoherence (orphans,
-        # stale claims, long waits, stuck doable, stalled recurrings)
-        # as a tier:nursery digest memory. Idempotent on findings —
-        # passes whose finding fingerprint matches the most recent
-        # digest don't write again, so the default rotation can
-        # include this without spamming memory.
+        # stale claims, long waits, stuck doable, stalled recurrings,
+        # spin loops) as ``kind='alert'`` rows (one per condition,
+        # deduped on fingerprint; cleared conditions auto-resolve).
+        # Idempotent per pass — a still-present condition just bumps
+        # its alert's seen_count, so the default rotation can include
+        # this without spamming the table.
         if _pass_enabled("nursery"):
             from precis.workers.nursery import run_nursery_pass
             from precis.workers.runner import BatchResult as _BatchResult

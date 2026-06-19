@@ -1466,6 +1466,26 @@ def test_console_quick_youtube_hint_rendered(client) -> None:
     assert "dQw4w9WgXcQ" in resp.text  # example video id in the hint
 
 
+# ── alerts ─────────────────────────────────────────────────────────
+
+
+def test_alerts_page_renders_all_clear(client) -> None:
+    """Under the fake store (empty pool) the open view is all-clear."""
+    resp = client.get("/alerts")
+    assert resp.status_code == 200
+    assert "Alerts" in resp.text
+    assert "All clear" in resp.text
+    assert "0 open" in resp.text
+
+
+def test_alerts_resolved_view_renders(client) -> None:
+    resp = client.get("/alerts?state=resolved")
+    assert resp.status_code == 200
+    # The resolved/open toggle is present and the resolved view is selected.
+    assert "/alerts?state=resolved" in resp.text
+    assert "No resolved alerts" in resp.text
+
+
 # ── status ─────────────────────────────────────────────────────────
 
 

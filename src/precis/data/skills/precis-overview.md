@@ -47,6 +47,7 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `todo` | `122` (int) | A task in the hierarchical tree (Slice 1–5). Branches read as outcomes; leaves as next actions. See `precis-tasks-help`. | store |
 | `memory` | `47` (int) | Agent note / scratchpad | store |
 | `gripe` | `9` (int) | Annoyance / niggle | store |
+| `alert` | `38260` (int) | Machine-detected ops / health condition (spin loop, orphan, stalled recurring). Raised by background passes, deduped + auto-resolved; surfaced by the `/alerts` web tab, **not** semantic search. See `precis-alert-help`. | store |
 | `flashcard` | `204` (int) | Flashcard (SM-2 spaced rep) | store |
 | `citation` | `18` (int) | Verified claim → source quote | store |
 | `finding` | `73` (int) | Chain-of-evidence head over a citation chase | store |

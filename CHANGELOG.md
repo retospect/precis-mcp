@@ -8,6 +8,66 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-19 — `alert` kind + `/alerts` web tab)
+
+- **New first-class kind `alert`** (migration `0029_alert_kind.sql`) —
+  a home for machine-detected operational / health conditions (worker
+  spin loops, orphaned todos, stalled recurrings, stale claims) that is
+  **not** the memory kind. Previously the nursery pass wrote these as
+  `kind='memory'` rows tagged `internal-thought`, conflating ops
+  telemetry with reflective *thought*: it polluted the memory namespace
+  (thousands of admin rows) and — because a live spin loop's finding set
+  churns every second — the per-minute writer spun on *itself*, emitting
+  >2,000 near-duplicate digests a day. Alerts are numeric, **not
+  embedded** (body in `title` + `meta`, no `card_combined` chunk, so
+  they never reach semantic search), deduped on `meta.fingerprint`, with
+  an `alert-state:` open→resolved lifecycle and `alert-source:` /
+  `severity:` tags. (`src/precis/alerts.py` producer, `handlers/alert.py`
+  read side, `precis-alert-help` skill.)
+- **Producer surface `precis.alerts`** — `raise_alert()` upserts on
+  `(source, fingerprint)` (a repeat sighting bumps `seen_count`, never
+  duplicates); `resolve_stale_alerts()` auto-resolves a condition that
+  has cleared; `list_open_alerts()` is the shared read. Generic, so
+  future producers (failed passes, sweeper, quota) can adopt it without
+  schema changes.
+- **Nursery now raises alerts** instead of writing a digest memory. Each
+  detector (spin-loop / orphan / stale-claim / long-wait / stuck-doable
+  / stalled-recurring) raises one `alert` per finding under
+  `nursery:<category>` and auto-resolves cleared ones each pass. The
+  TTL-purge / fingerprint-digest / write-throttle machinery is deleted.
+  The `structural` / `deep_review` reviewers and the Status "Background
+  Health" panel read the live open set instead of the old digest.
+  (`workers/nursery.py`, `workers/structural.py`, `workers/deep_review.py`.)
+- **`/alerts` web tab** — open alerts grouped by source, severity-sorted,
+  with subject links + recurrence counts; `?state=resolved` shows recent
+  history. (`precis_web/routes/alerts.py`, `templates/alerts/list.html.j2`,
+  nav entry in `base.html.j2`.)
+
+### Fixed (2026-06-19 — exponential chase backoff + nursery self-spin)
+
+- **Finding-chase waiting backoff is now exponential.** The flat
+  `WAITING_BACKOFF_MINUTES` (60) window re-poked a never-arriving
+  frontier stub once an hour *forever* (24 no-op `waiting` events /
+  ref / day). `claim_tracing_findings` now widens the skip window per
+  consecutive `waiting` outcome — `base * 2^(waits-1)` capped at
+  `WAITING_BACKOFF_MAX_MINUTES` (1440) — so a stuck finding settles to
+  ~one poll/day while a chain that makes any progress resets to the
+  base window. Mirrors the OA fetcher's exponential retry guard.
+  (`workers/chase.py`)
+- **Nursery digest writer no longer spins on itself.** When a real
+  spin loop is active, its `spin-loop` finding set is the top-50 of a
+  *rolling* 24h `ref_events` scan ordered by a count that drifts every
+  second, so the `(category, ref_id)` fingerprint changed nearly every
+  pass and defeated the dedup — the per-node, per-minute nursery
+  emitted >2,000 near-duplicate `tier:nursery` memories in a day
+  (several per second). Fixed structurally by moving nursery off the
+  memory digest onto the new `alert` kind (deduped per *condition*,
+  auto-resolving) — see the "Added — `alert` kind" entry above.
+  (`workers/nursery.py`)
+- **Note:** the chase/fetcher loops are code fixes; prod must be
+  *redeployed* to benefit — the spin-loop spike that surfaced this was
+  prod running a pre-backoff-fix checkout long after the merge.
+
 ### Added (2026-06-19 — per-release baseline snapshot, dual-track migrations)
 
 - **`migrations/baseline/schema.sql`** — a generated snapshot of the

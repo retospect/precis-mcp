@@ -76,11 +76,27 @@ _DERIVED_FROM = "derived-from"
 # every pass (per minute, per cluster node) and floods ref_events with
 # identical ``waiting`` rows — observed at >1000/day on a handful of
 # refs. We skip a finding whose most-recent chase event is a
-# ``waiting`` newer than this window; a finding that last *advanced*
-# (or any non-waiting outcome) is never suppressed, so real progress
-# stays prompt. The frontier stub's PDF lands on the fetcher's own
-# schedule, so an hour of slack costs nothing.
+# ``waiting`` newer than the effective window; a finding that last
+# *advanced* (or any non-waiting outcome) is never suppressed, so real
+# progress stays prompt.
+#
+# The window is *exponential*, mirroring the OA fetcher
+# (``fetch_oa.claim_stubs_to_fetch``): the effective wait doubles per
+# consecutive ``waiting`` outcome — ``base * 2^(waits-1)`` capped at
+# :data:`WAITING_BACKOFF_MAX_MINUTES`. A flat window re-polls a
+# never-arriving stub once an hour *forever* (24/day/ref); the
+# frontier stub's own PDF fetch backs off to monthly, so chase
+# re-poking it hourly is pure waste. With the exponential window a
+# finding that keeps waiting settles to ~one poll/day instead. The run
+# resets to ``base`` the moment the finding makes any progress.
 WAITING_BACKOFF_MINUTES = 60
+
+# Cap on the exponential waiting window. 1440 min = 24h: after ~5
+# consecutive waits (60→120→240→480→960→capped) a stuck finding polls
+# at most once a day, which still picks up a late-arriving stub PDF
+# within a day while killing the per-minute flood. Never gives up
+# entirely — a one-a-day re-poke is cheap insurance.
+WAITING_BACKOFF_MAX_MINUTES = 1440
 
 # Inline citation patterns. Numbered bracket form is the most common
 # and the cheapest to map (positional into S2's references list).
@@ -152,6 +168,7 @@ def claim_tracing_findings(
     *,
     limit: int,
     waiting_backoff_minutes: int = WAITING_BACKOFF_MINUTES,
+    waiting_backoff_max_minutes: int = WAITING_BACKOFF_MAX_MINUTES,
 ) -> list[FindingRow]:
     """Lock and return up to ``limit`` ``STATUS:tracing`` findings.
 
@@ -162,11 +179,17 @@ def claim_tracing_findings(
     short.
 
     Findings whose most-recent chase event is a ``waiting`` newer than
-    ``waiting_backoff_minutes`` are skipped: their frontier stub still
-    has no chunks, so re-walking them every pass is a pure no-op that
-    only churns ref_events (see :data:`WAITING_BACKOFF_MINUTES`). Any
-    other most-recent outcome (or none yet) leaves the finding
-    eligible, so a chain that just advanced keeps moving promptly.
+    the *effective* backoff window are skipped: their frontier stub
+    still has no chunks, so re-walking them every pass is a pure no-op
+    that only churns ref_events. The window is **exponential** — it
+    doubles per consecutive ``waiting`` outcome,
+    ``waiting_backoff_minutes * 2^(waits-1)`` capped at
+    ``waiting_backoff_max_minutes`` (see :data:`WAITING_BACKOFF_MINUTES`
+    / :data:`WAITING_BACKOFF_MAX_MINUTES`). The ``waits`` count is the
+    run of ``waiting`` events since the finding's last non-waiting
+    outcome, so any progress resets the backoff to ``base``. Any other
+    most-recent outcome (or none yet) leaves the finding eligible, so a
+    chain that just advanced keeps moving promptly.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -177,40 +200,64 @@ def claim_tracing_findings(
           FROM refs r
           LEFT JOIN LATERAL (
                 SELECT e.event, e.ts FROM ref_events e
-                 WHERE e.ref_id = r.ref_id AND e.source = %s
+                 WHERE e.ref_id = r.ref_id AND e.source = %(source)s
                  ORDER BY e.ts DESC
                  LIMIT 1
           ) last_chase ON TRUE
+          LEFT JOIN LATERAL (
+                -- Run of consecutive ``waiting`` events since the last
+                -- non-waiting chase outcome — the backoff "attempt"
+                -- count. Resets to 0 the moment the finding advances
+                -- (or hits any terminal/other outcome), so a chain that
+                -- starts moving again is not penalised by old waits.
+                SELECT count(*)::int AS waits FROM ref_events e
+                 WHERE e.ref_id = r.ref_id AND e.source = %(source)s
+                   AND e.event = 'waiting'
+                   AND e.ts > COALESCE(
+                         (SELECT max(e2.ts) FROM ref_events e2
+                           WHERE e2.ref_id = r.ref_id
+                             AND e2.source = %(source)s
+                             AND e2.event <> 'waiting'),
+                         '-infinity'::timestamptz
+                       )
+          ) wait_run ON TRUE
          WHERE r.kind = 'finding'
            AND r.deleted_at IS NULL
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s
-                    AND t.value = %s
+                    AND t.namespace = %(status_ns)s
+                    AND t.value = %(tracing)s
                )
            -- Skip only findings whose *most recent* chase outcome is a
-           -- still-fresh ``waiting``. COALESCE makes the predicate
-           -- NULL-safe: a finding with no chase events yet (the common
-           -- case) has last_chase.* = NULL, the inner expression is
-           -- NULL, and without the COALESCE ``NOT NULL`` would drop the
-           -- row from the claim entirely.
+           -- ``waiting`` still inside the exponential window. COALESCE
+           -- makes the predicate NULL-safe: a finding with no chase
+           -- events yet (the common case) has last_chase.* = NULL, the
+           -- inner expression is NULL, and without the COALESCE
+           -- ``NOT NULL`` would drop the row from the claim entirely.
            AND NOT COALESCE(
                  last_chase.event = 'waiting'
-                 AND last_chase.ts > now() - (%s || ' minutes')::INTERVAL,
+                 AND last_chase.ts > now() - (
+                       LEAST(
+                         %(base)s::double precision
+                           * POWER(2, GREATEST(wait_run.waits - 1, 0)),
+                         %(cap)s::double precision
+                       ) * INTERVAL '1 minute'
+                     ),
                  FALSE
                )
          ORDER BY r.ref_id
-         LIMIT %s
+         LIMIT %(limit)s
            FOR UPDATE OF r SKIP LOCKED
         """,
-        (
-            _SOURCE,
-            _STATUS_NAMESPACE,
-            _TRACING,
-            str(waiting_backoff_minutes),
-            limit,
-        ),
+        {
+            "source": _SOURCE,
+            "status_ns": _STATUS_NAMESPACE,
+            "tracing": _TRACING,
+            "base": float(waiting_backoff_minutes),
+            "cap": float(waiting_backoff_max_minutes),
+            "limit": limit,
+        },
     ).fetchall()
     return [
         FindingRow(ref_id=int(r[0]), title=str(r[1]), meta=dict(r[2] or {}))

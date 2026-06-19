@@ -1,11 +1,11 @@
 """Nursery worker — Slice 3 of ``docs/design/todo-tree-plan.md``.
 
-Pattern-matches the todo tree for local incoherence and writes a
-markdown digest as a ``kind='memory'`` ref tagged ``tier:nursery``.
-The detectors are SQL-only — no LLM call, no opus / sonnet budget;
-Settled decision #5 in the plan ("Nursery model = sonnet") was
-written assuming an LLM tier, but the actual detection rules are
-deterministic pattern matches that don't need reasoning.
+Pattern-matches the todo tree (and the worker fleet) for local
+incoherence and raises a ``kind='alert'`` per condition through
+:mod:`precis.alerts`. The detectors are SQL-only — no LLM call, no
+opus / sonnet budget; Settled decision #5 in the plan ("Nursery model
+= sonnet") was written assuming an LLM tier, but the actual detection
+rules are deterministic pattern matches that don't need reasoning.
 
 Detector catalogue (each is one SQL query, returns a list of
 finding rows):
@@ -28,31 +28,31 @@ finding rows):
   period. The Slice-4 collision-skip leaves the prior tick on the
   queue; without nursery surfacing, the operator can't see why
   ticks have stopped piling up.
+* **spin loops** — any ``(ref_id, source)`` emitting more than
+  ``SPIN_LOOP_EVENTS_24H`` ``ref_events`` in 24h (a derived-queue
+  worker re-claiming the same ref every pass).
 
-The pass is idempotent on findings — a fingerprint of the
-(category, ref_id) pairs is stored on the digest memory's
-``meta.nursery_fingerprint``, and the next pass skips writing when
-the current findings match the most recent digest. Empty findings
-never write a memory.
-
-Findings live in the memory kind tagged
-``tree-review:YYYY-MM-DD`` + ``tier:nursery`` + ``user:asa`` +
-``internal-thought``. asa-bot's preamble already surfaces recent
-``internal-thought`` memories, so a nursery digest reaches the
-chatter without a dedicated push.
+Each finding becomes an ``alert`` under ``alert_source =
+nursery:<category>``, deduped on ``fingerprint = "<category>:<ref_id>"``
+(see :mod:`precis.alerts`). A repeat sighting bumps the alert's
+``seen_count``; a finding that disappears auto-resolves its alert on
+the next pass (``resolve_stale_alerts`` per source). This replaced the
+old per-minute ``kind='memory'`` digest, which conflated ops telemetry
+with reflective thought and — because the spin-loop finding set churns
+every second — spun on itself writing thousands of near-dup memories a
+day. Alerts dedup per *condition* instead, and are surfaced by the
+``/alerts`` web tab, not semantic search.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
+from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.store import Store
-from precis.store.types import Tag
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -73,26 +73,19 @@ STUCK_DOABLE_HOURS = 24
 #: of events a day, so 200 is comfortably above the noise floor.
 SPIN_LOOP_EVENTS_24H = 200
 
-#: How long a nursery digest sticks around before the pass soft-deletes
-#: it. The dedup-by-fingerprint check (see :func:`_last_digest_matches`)
-#: keeps churn low — most cycles don't write a fresh digest — so without
-#: a TTL the table accumulates one row per real state change and never
-#: cleans itself up. Override with ``PRECIS_NURSERY_DIGEST_TTL_DAYS``.
-DIGEST_TTL_DAYS = 7
-
-
-def _digest_ttl_days() -> int:
-    """Read the digest TTL from env, default 7. Floor 1 day."""
-    import os
-
-    raw = os.environ.get("PRECIS_NURSERY_DIGEST_TTL_DAYS")
-    if raw is None:
-        return DIGEST_TTL_DAYS
-    try:
-        val = int(raw)
-    except ValueError:
-        return DIGEST_TTL_DAYS
-    return max(1, val)
+#: Per-category alert severity (drives sort + colour on the /alerts
+#: tab). Spin loops and stuck claims/recurrings burn resources or block
+#: progress → ``warn``; orphans / long-waits / stuck-doable are hygiene
+#: nudges → ``info``. None are ``critical`` — nursery flags drift, not
+#: outages.
+_SEVERITY: dict[str, str] = {
+    "spin-loop": "warn",
+    "orphan": "info",
+    "stale-claim": "warn",
+    "long-wait": "info",
+    "stuck-doable": "info",
+    "stalled-recurring": "warn",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,99 +95,65 @@ class Finding:
     category: str
     ref_id: int
     title: str
-    detail: str  # one-line human summary for the digest
+    detail: str  # one-line human summary for the alert
+
+
+#: Detectors in catalogue order, each paired with its category. The
+#: category is both the alert sub-source (``nursery:<category>``) and
+#: the dedup-fingerprint prefix. Each detector self-limits to 50 hits.
+_DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
+    ("spin-loop", lambda s: _detect_spin_loops(s)),
+    ("orphan", lambda s: _detect_orphans(s)),
+    ("stale-claim", lambda s: _detect_stale_claims(s)),
+    ("long-wait", lambda s: _detect_long_waits(s)),
+    ("stuck-doable", lambda s: _detect_stuck_doable(s)),
+    ("stalled-recurring", lambda s: _detect_stalled_recurrings(s)),
+)
 
 
 def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
-    """Detect, dedup, optionally write the digest. Returns BatchResult.
+    """Detect; raise/refresh an alert per finding; auto-resolve cleared.
 
     Counters in the returned ``BatchResult``:
 
-    * ``claimed`` = number of distinct findings this pass surfaced
-    * ``ok`` = 1 if a fresh digest was written, 0 if dedup'd or empty
+    * ``claimed`` = number of findings surfaced this pass (raised or
+      refreshed alerts)
+    * ``ok`` = number of alerts auto-resolved this pass (conditions
+      that cleared)
     * ``failed`` = 0 (no failure mode in the SQL detectors)
 
-    Side-effect: soft-deletes any ``tier:nursery`` digest memory older
-    than :data:`DIGEST_TTL_DAYS` before doing detection. The age check
-    runs once per pass on the same SQL connection the detectors use; on
-    a tree with no findings, the pass still wakes up to expire stale
-    digests.
+    Per detector: raise an ``alert`` for every current finding (deduped
+    on ``"<category>:<ref_id>"`` so a repeat just bumps ``seen_count``),
+    then resolve any open alert of that source whose fingerprint is no
+    longer present. Empty findings still run the resolve sweep, so a
+    fixed problem disappears from the open list on the next pass.
     """
-    purged = _purge_expired_digests(store)
-    if purged:
-        log.info("nursery: soft-deleted %d expired digest memor(y/ies)", purged)
-    findings = _detect_all(store, limit=limit)
-    fingerprint = _fingerprint(findings)
-    if not findings:
-        return BatchResult(handler="nursery", claimed=0, ok=0, failed=0)
-    if _last_digest_matches(store, fingerprint):
-        log.info(
-            "nursery: %d findings unchanged since last digest; skipping write",
-            len(findings),
+    raised = 0
+    resolved = 0
+    for category, detect in _DETECTORS:
+        source = f"nursery:{category}"
+        severity = _SEVERITY.get(category, "warn")
+        findings = detect(store)
+        live: list[str] = []
+        for f in findings:
+            fp = f"{f.category}:{f.ref_id}"
+            live.append(fp)
+            raise_alert(
+                store,
+                source=source,
+                fingerprint=fp,
+                title=f"[{f.category}] {f.title}",
+                detail=f.detail,
+                severity=severity,
+                subject_ref_id=f.ref_id,
+            )
+        raised += len(findings)
+        resolved += resolve_stale_alerts(
+            store, source=source, live_fingerprints=live
         )
-        return BatchResult(handler="nursery", claimed=len(findings), ok=0, failed=0)
-    digest_id = _write_digest(store, findings, fingerprint=fingerprint)
-    log.info(
-        "nursery: wrote digest memory id=%d with %d findings",
-        digest_id,
-        len(findings),
-    )
-    return BatchResult(handler="nursery", claimed=len(findings), ok=1, failed=0)
-
-
-# ── digest TTL purge ──────────────────────────────────────────────
-
-
-def _purge_expired_digests(store: Store) -> int:
-    """Soft-delete ``tier:nursery`` digests older than the TTL.
-
-    Idempotent: a row already soft-deleted (``deleted_at IS NOT NULL``)
-    is skipped by the ``WHERE`` clause. Returns the number of rows
-    transitioned this pass — typically zero on a healthy cluster
-    where digests don't pile up faster than the TTL.
-    """
-    ttl_days = _digest_ttl_days()
-    with store.pool.connection() as conn:
-        with conn.transaction():
-            rows = conn.execute(
-                """
-                UPDATE refs SET deleted_at = now()
-                 WHERE kind = 'memory'
-                   AND deleted_at IS NULL
-                   AND created_at < now() - %s::interval
-                   AND EXISTS (
-                     SELECT 1 FROM ref_tags rt JOIN tags t USING(tag_id)
-                      WHERE rt.ref_id = refs.ref_id
-                        AND t.namespace = 'OPEN' AND t.value = 'tier:nursery'
-                   )
-                 RETURNING ref_id
-                """,
-                (f"{ttl_days} days",),
-            ).fetchall()
-    return len(rows)
-
-
-# ── detector dispatch ─────────────────────────────────────────────
-
-
-def _detect_all(store: Store, *, limit: int) -> list[Finding]:
-    """Run every detector, concatenate, cap at ``limit`` findings.
-
-    The cap keeps the digest readable when the tree is in deep
-    trouble — the operator gets the first N hits per pass and the
-    rest surface on subsequent passes once the head of the list is
-    triaged. Order is stable: detectors run in catalogue order, each
-    yields its findings sorted by ref id, so the digest reads
-    predictably and the fingerprint is deterministic.
-    """
-    out: list[Finding] = []
-    out.extend(_detect_orphans(store))
-    out.extend(_detect_stale_claims(store))
-    out.extend(_detect_long_waits(store))
-    out.extend(_detect_stuck_doable(store))
-    out.extend(_detect_stalled_recurrings(store))
-    out.extend(_detect_spin_loops(store))
-    return out[:limit]
+    if raised or resolved:
+        log.info("nursery: %d alerts raised/refreshed, %d resolved", raised, resolved)
+    return BatchResult(handler="nursery", claimed=raised, ok=resolved, failed=0)
 
 
 # ── orphans ────────────────────────────────────────────────────────
@@ -562,118 +521,6 @@ def _detect_spin_loops(store: Store) -> list[Finding]:
     return out
 
 
-# ── digest writer (with fingerprint dedup) ────────────────────────
-
-
-def _fingerprint(findings: list[Finding]) -> str:
-    """Stable hash of ``(category, ref_id)`` pairs.
-
-    Used as the dedup key on ``meta.nursery_fingerprint``. Title and
-    detail don't enter the hash — the operator-relevant identity of a
-    finding is "this todo, this category", so a title edit on the
-    same finding doesn't trigger a fresh digest.
-    """
-    keys = sorted((f.category, f.ref_id) for f in findings)
-    raw = json.dumps(keys, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()[:16]
-
-
-def _last_digest_matches(store: Store, fingerprint: str) -> bool:
-    """True when the most recent nursery digest has the same fingerprint."""
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT r.meta->>'nursery_fingerprint'
-              FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'memory'
-               AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN'
-               AND t.value = 'tier:nursery'
-             ORDER BY r.created_at DESC
-             LIMIT 1
-            """,
-        ).fetchone()
-    if row is None:
-        return False
-    return row[0] == fingerprint
-
-
-def _write_digest(
-    store: Store,
-    findings: list[Finding],
-    *,
-    fingerprint: str,
-) -> int:
-    """Insert the digest as a ``kind='memory'`` ref, return its id.
-
-    Tags applied: ``tree-review:YYYY-MM-DD``, ``tier:nursery``,
-    ``user:asa``, ``internal-thought``. asa-bot's preamble already
-    surfaces recent ``internal-thought`` rows so the digest reaches
-    chatter without a dedicated channel.
-    """
-    today = datetime.now(UTC).date().isoformat()
-    body = _render_digest_body(findings, today=today)
-    meta = {
-        "nursery_fingerprint": fingerprint,
-        "nursery_finding_count": len(findings),
-        "nursery_date": today,
-    }
-    with store.tx() as conn:
-        ref = store.insert_ref(
-            kind="memory",
-            slug=None,
-            title=body,
-            meta=meta,
-            conn=conn,
-        )
-        for tag in (
-            Tag.open(f"tree-review:{today}"),
-            Tag.open("tier:nursery"),
-            Tag.open("user:asa"),
-            Tag.open("internal-thought"),
-        ):
-            store.add_tag(ref.id, tag, set_by="system", conn=conn)
-    return int(ref.id)
-
-
-def _render_digest_body(findings: list[Finding], *, today: str) -> str:
-    """Markdown digest grouped by category.
-
-    Each category gets a header + a bullet per finding. Empty
-    categories are skipped so the operator sees only what surfaced.
-    The first line is the conventional one-line summary asa's
-    renderer uses for tag-bucket displays.
-    """
-    by_cat: dict[str, list[Finding]] = {}
-    for f in findings:
-        by_cat.setdefault(f.category, []).append(f)
-    cat_order = [
-        "spin-loop",
-        "orphan",
-        "stale-claim",
-        "stalled-recurring",
-        "long-wait",
-        "stuck-doable",
-    ]
-    summary_bits = [f"{len(by_cat[c])} {c}" for c in cat_order if c in by_cat]
-    lines: list[str] = [
-        f"Nursery digest {today}: {', '.join(summary_bits)}.",
-        "",
-    ]
-    for cat in cat_order:
-        if cat not in by_cat:
-            continue
-        lines.append(f"## {cat} ({len(by_cat[cat])})")
-        lines.append("")
-        for f in by_cat[cat]:
-            lines.append(f"- #{f.ref_id} {f.title}")
-            lines.append(f"    {f.detail}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
-
-
 # ── small helpers ─────────────────────────────────────────────────
 
 
@@ -701,14 +548,9 @@ def _days_since(ts: datetime | None) -> float:
 
 __all__ = [
     "LONG_WAIT_DAYS",
+    "SPIN_LOOP_EVENTS_24H",
     "STALE_CLAIM_HOURS",
     "STUCK_DOABLE_HOURS",
     "Finding",
     "run_nursery_pass",
 ]
-
-
-# Silence unused-import false positive (Any is imported for SQL
-# row typing in older Python versions; keep the import in case the
-# future psycopg row types narrow it).
-_ = Any
