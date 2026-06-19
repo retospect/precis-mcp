@@ -70,8 +70,14 @@ def _resolve_ref_id(store: Any, kind: str, raw_id: str) -> int | None:
     """Map a ``kind:id`` pair to the numeric ``refs.ref_id``.
 
     Numeric kinds accept the id directly; slug kinds route through the
-    ``ref_identifiers`` lookup (slug stored as ``id_kind='cite_key'``).
-    Returns ``None`` when the ref isn't found.
+    ``ref_identifiers`` lookup (slug stored as ``id_kind='cite_key'``),
+    then fall back to a bare numeric ``refs.ref_id``. The fallback is
+    what makes the ``/clusters`` word/grid links work: those pass the
+    numeric ``cluster_assignments.ref_id`` to ``/r/paper/<id>`` rather
+    than a cite_key slug (routes/clusters.py), so without it every such
+    click 404s with ``no such paper:<id>``. The numeric branch is
+    verified against ``refs.kind`` so it never redirects to a paper
+    that doesn't exist. Returns ``None`` when the ref isn't found.
     """
     raw_id = raw_id.lstrip("#")
     if kind in _NUMERIC_KINDS:
@@ -79,16 +85,24 @@ def _resolve_ref_id(store: Any, kind: str, raw_id: str) -> int | None:
             return int(raw_id)
         except ValueError:
             return None
-    # Slug kind.
+    # Slug kind: cite_key slug first, then a verified numeric ref_id.
     with store.pool.connection() as conn:  # type: ignore[attr-defined]
         row = conn.execute(
             "SELECT ref_id FROM ref_identifiers "
             "WHERE id_kind = 'cite_key' AND id_value = %s",
             (raw_id,),
         ).fetchone()
-    if row is None:
-        return None
-    return int(row[0])
+        if row is not None:
+            return int(row[0])
+        if raw_id.isdigit():
+            hit = conn.execute(
+                "SELECT ref_id FROM refs "
+                "WHERE ref_id = %s AND kind = %s AND deleted_at IS NULL",
+                (int(raw_id), kind),
+            ).fetchone()
+            if hit is not None:
+                return int(hit[0])
+    return None
 
 
 def _chunk_to_page(store: Any, ref_id: int, ord_pos: int) -> int | None:
