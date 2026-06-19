@@ -1,0 +1,83 @@
+{% extends "base.html.j2" %}
+{% block title %}Clusters{% endblock %}
+{% block content %}
+
+<div class="flex items-center gap-3 mb-4">
+  <h1 class="text-lg font-semibold">Clusters</h1>
+  {# Scope toggle — the two maps are independent (papers vs memories). #}
+  <div class="inline-flex rounded-md border border-slate-300 overflow-hidden text-sm">
+    {% for s in scopes %}
+    <a href="/clusters?scope={{ s }}"
+       class="px-3 py-1 {% if s == scope %}bg-emerald-600 text-white{% else %}bg-white text-slate-600 hover:bg-slate-50{% endif %}">
+      {{ s }}s
+    </a>
+    {% endfor %}
+  </div>
+</div>
+
+{# Breadcrumb — root + each drilled level, labelled by its top term. #}
+<nav class="text-sm text-slate-500 mb-4 flex flex-wrap items-center gap-1">
+  <a href="/clusters?scope={{ scope }}" class="text-sky-700 hover:underline">all</a>
+  {% for c in breadcrumb %}
+  <span>/</span>
+  <a href="/clusters?scope={{ scope }}&path={{ c.path }}" class="text-sky-700 hover:underline">{{ c.label }}</a>
+  {% endfor %}
+</nav>
+
+{% if run_id is none %}
+  <p class="text-sm text-slate-500">
+    No cluster map for <span class="font-mono">{{ scope }}</span> yet — the
+    <span class="font-mono">clusterize</span> worker builds one daily.
+  </p>
+
+{% elif members is not none %}
+  {# Leaf tile — show the papers it holds. #}
+  <p class="text-sm text-slate-500 mb-3">{{ members|length }} item(s) in this cluster.</p>
+  <ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+    {% for m in members %}
+    <li class="px-4 py-2 flex items-center gap-3 text-sm">
+      <span class="text-xs text-slate-400 w-10 shrink-0">{{ m.n }}×</span>
+      <a href="/r/{{ scope }}/{{ m.ref_id }}" class="text-sky-700 hover:underline flex-1">{{ m.title }}</a>
+    </li>
+    {% endfor %}
+  </ul>
+
+{% else %}
+  <div class="flex flex-col lg:flex-row gap-4">
+    {# Word-cloud grid. #}
+    <div class="flex-1 grid gap-3"
+         style="grid-template-columns: repeat({{ n_cols }}, minmax(0, 1fr));">
+      {% for t in tiles %}
+      <div class="rounded-lg border border-slate-200 bg-white p-3 flex flex-col min-h-[8rem]">
+        {% if t.cloud %}
+        <div class="flex-1 flex flex-wrap gap-x-2 gap-y-1 items-baseline leading-tight">
+          {% for word in t.cloud %}
+          <span class="cursor-pointer text-slate-700 hover:text-emerald-600"
+                style="font-size: {{ word.size }}rem;"
+                hx-get="/clusters/word?scope={{ scope }}&path={{ t.path }}&w={{ word.w|urlencode }}"
+                hx-target="#cluster-detail" hx-swap="innerHTML">{{ word.w }}</span>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="flex-1 flex items-center justify-center text-xs text-slate-300">empty</div>
+        {% endif %}
+        <div class="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
+          <span>{{ t.n_chunks }} chunks · {{ t.n_refs }} refs</span>
+          {% if t.n_chunks %}
+          <a href="/clusters?scope={{ scope }}&path={{ t.path }}"
+             class="text-sky-600 hover:underline">{% if t.is_leaf %}open{% else %}drill ↳{% endif %}</a>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {# Detail panel — words load their relevant papers here. #}
+    <aside id="cluster-detail"
+           class="lg:w-72 shrink-0 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-400">
+      Click a word to see the papers behind it.
+    </aside>
+  </div>
+{% endif %}
+
+{% endblock %}

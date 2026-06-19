@@ -59,6 +59,11 @@ dependencies = [
     "mcp[cli]>=1.0",
     "psycopg[binary,pool]>=3.2",
     "pgvector>=0.3.0",
+    # Numerics for the hierarchical-SOM cluster maps (clusterize worker
+    # + precis-web /clusters grid). Already present transitively via the
+    # embed/paper stacks; promoted to a direct dep so the always-on
+    # system worker can import it without the heavy optional extras.
+    "numpy>=1.24",
     "pydantic-settings>=2.0",
     "platformdirs>=4.0",
     "pyyaml>=6.0",

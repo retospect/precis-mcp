@@ -304,6 +304,11 @@ def run(args: argparse.Namespace) -> None:
                 # plugin job_types whose ``run`` decides what to do.
                 "job_coordinator",
                 "wake_runner",
+                # Hierarchical SOM cluster maps for the precis-web grid.
+                # Self-gating: rebuilds one scope a day, idle otherwise
+                # (PRECIS_CLUSTER_INTERVAL_HOURS), so it costs ~nothing
+                # to host on every node.
+                "clusterize",
             }
         )
         # dream_agent stays out of the profile — it has its own
@@ -396,6 +401,23 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_chase_pass)
+
+        # Hierarchical SOM cluster maps (precis-web /clusters grid).
+        # Time-gated full rebuild per scope; see workers/clusterize.py.
+        if _pass_enabled("clusterize"):
+            from precis.workers.clusterize import run_clusterize_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _clusterize_pass(batch_size: int) -> _BatchResult:
+                r = run_clusterize_pass(store, batch_size=batch_size)
+                return _BatchResult(
+                    handler="clusterize",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_clusterize_pass)
 
         # Tag-embeddings pass — populates ``tag_embeddings`` so the
         # kind='tag' handler can serve semantic discovery

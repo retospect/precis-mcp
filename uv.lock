@@ -2287,6 +2287,7 @@ source = { editable = "." }
 dependencies = [
     { name = "ftfy" },
     { name = "mcp", extra = ["cli"] },
+    { name = "numpy" },
     { name = "pgvector" },
     { name = "platformdirs" },
     { name = "prompt-toolkit" },
@@ -2386,6 +2387,7 @@ requires-dist = [
     { name = "marker-pdf", marker = "sys_platform != 'win32' and extra == 'paper'", specifier = ">=1.0" },
     { name = "matplotlib", marker = "extra == 'plot'", specifier = ">=3.7" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.0" },
+    { name = "numpy", specifier = ">=1.24" },
     { name = "pgvector", specifier = ">=0.3.0" },
     { name = "platformdirs", specifier = ">=4.0" },
     { name = "precis-mcp", extras = ["embed", "paper", "docx", "tex", "calc", "plot", "external", "patent", "web"], marker = "extra == 'all'" },

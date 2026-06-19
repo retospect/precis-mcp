@@ -29,6 +29,48 @@ squash-merge`, feature branches parented on `main`). git-town must be
 installed on the host (`brew install git-town`). NB the merge target is
 `main`, not `master` — the repo has no `master`.
 
+## What just landed (2026-06-19 — cluster maps + `/clusters` grid)
+
+A spatial browse surface over the corpus. Chunk embeddings are
+clustered into a **hierarchical SOM** (grid where adjacent tiles are
+similar) and each tile gets a distinctive-keyword word cloud.
+
+* **Engine** — `utils/cluster_map.py`, numpy-only and pure (DB-free,
+  so unit-tested directly). Batch SOM (`train_som`, vectorised — the
+  online minisom loop does not survive ~1M vectors), adaptive-depth
+  `build_hierarchy` (sparse branches stop subdividing), `descend_to_leaf`
+  for batched full-corpus assignment after sample-training, and
+  **sibling-scoped c-TF-IDF** (`ctfidf_words`) + a curated stoplist so
+  a tile's words are distinctive vs. its siblings, not the corpus.
+* **Address stability** — `build_hierarchy(prior=…)` **warm-starts**
+  each grid from the previous run's centroids, so tile *i* keeps both
+  its identity and its grid position as the corpus drifts (a tile's
+  address `4.7.1` stays put). We warm-start rather than train-cold-and-
+  Hungarian-relabel on purpose: relabeling preserves identity but
+  scrambles the adjacent-tiles-are-similar topology the SOM exists for.
+  `stability_report` (Hungarian via the dep-free `linear_sum_assignment`)
+  measures whether identity actually held; the worker logs it into the
+  run's `note` (`self_cos`, `identity`) so the prod cadence is watchable.
+* **Worker** — `workers/clusterize.py`, on the **system** profile
+  (registered in `cli/worker.py`). Time-gated daily full rebuild per
+  scope (`PRECIS_CLUSTER_INTERVAL_HOURS`, default 20h), one scope per
+  call: sample-train → stream-descend the full set → COPY assignments →
+  SQL keyword histograms → c-TF-IDF → prune old runs. Self-gating, so
+  hosting it on every node costs ~nothing. No-op if numpy is missing.
+* **Storage** — migration `0027_clusterize.sql`: `cluster_runs` /
+  `cluster_cells` (centroid `vector(1024)` + `words` jsonb + grid pos) /
+  `cluster_assignments` (per-chunk leaf path; ancestor membership =
+  `leaf_path` prefix scan).
+* **Web** — `precis_web/routes/clusters.py` + `templates/clusters/*`:
+  `GET /clusters` (grid → drill-in → leaf papers, `scope` toggle),
+  `GET /clusters/word` (htmx fragment of papers behind a clicked word).
+  New "Clusters" nav tab.
+
+Two independent maps: `scope='paper'` (deep tree) and `scope='memory'`
+(single shallow grid — deliberately asymmetric; a deep tree over a few
+thousand memory chunks would be mostly empty tiles). numpy is now a
+direct dependency.
+
 ## What just landed (2026-06-19 — projects = workspace, first-class)
 
 A **project** is a strategic-root todo that owns a `meta.workspace`

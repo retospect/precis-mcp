@@ -8,6 +8,45 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-19 — hierarchical SOM cluster maps + `/clusters` grid)
+
+- **`clusterize` worker pass + `precis_web` cluster grid.** A spatial,
+  browseable view of the whole corpus: chunk embeddings are clustered
+  into a hierarchical Self-Organizing-Map (a *grid* whose adjacent
+  tiles are similar — unlike k-means, where tile position is
+  meaningless), each tile labelled by a distinctive-keyword word cloud.
+  Two independent maps (`scope='paper'` ≈1.1M chunks, `scope='memory'`)
+  toggle in the UI; clicking a word lists the papers behind it.
+  - Engine (`utils/cluster_map.py`, numpy-only, pure): batch SOM
+    (vectorised — minisom's online loop does not survive ~1M vectors),
+    adaptive-depth hierarchy (stops subdividing sparse branches),
+    top-down `descend_to_leaf` for full-corpus assignment after
+    sample-training, and **sibling-scoped c-TF-IDF** word clouds so a
+    tile's terms are distinctive vs. its *siblings*, not the whole
+    corpus (a curated stoplist drops academic boilerplate first).
+  - **Address stability across daily rebuilds** — `build_hierarchy`
+    **warm-starts** each grid from the previous run's centroids
+    (`prior=…`), so a tile keeps its identity *and* grid position as the
+    corpus drifts (the address `4.7.1` stays put). Deliberately *not*
+    train-cold-and-Hungarian-relabel: relabeling would preserve identity
+    but scramble the adjacent-tiles-are-similar topology the SOM exists
+    to provide. `stability_report` (dep-free Hungarian
+    `linear_sum_assignment`) measures whether identity held and the
+    worker records it in the run `note` (`self_cos` / `identity`).
+  - Worker (`workers/clusterize.py`, system profile): time-gated daily
+    full rebuild per scope (`PRECIS_CLUSTER_INTERVAL_HOURS`, default
+    20h) — trains on a bounded modulo-strided sample, streams the full
+    candidate set through batched descent, COPYs assignments, computes
+    word clouds in SQL, and prunes superseded runs. No-ops cleanly if
+    numpy is absent.
+  - Storage: migration `0027_clusterize.sql` — `cluster_runs` /
+    `cluster_cells` (centroid + word cloud + grid position) /
+    `cluster_assignments` (per-chunk leaf; ancestor membership is a
+    `leaf_path` prefix scan).
+  - Routes: `GET /clusters` (grid / drill-in / leaf papers),
+    `GET /clusters/word` (htmx fragment). New "Clusters" nav tab.
+  - numpy promoted to a direct dependency (was transitive).
+
 ### Added (2026-06-19 — duplicate reconciliation, Phases 1–2)
 
 - **Shared dedup primitive** `ingest/dedup.merge_duplicate` — folds a

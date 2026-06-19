@@ -1,0 +1,20 @@
+{# Detail-panel fragment: papers under a tile that carry a hovered/clicked
+   keyword. Swapped into #cluster-detail by htmx. #}
+<div class="space-y-2">
+  <p class="text-xs font-medium text-slate-700">
+    <span class="font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">{{ word }}</span>
+    {{ papers|length }} paper(s)
+  </p>
+  {% if not papers %}
+  <p class="text-xs text-slate-400 italic">No matches in this cluster.</p>
+  {% else %}
+  <ul class="space-y-1">
+    {% for p in papers %}
+    <li class="text-sm">
+      <a href="/r/{{ scope }}/{{ p.ref_id }}" class="text-sky-700 hover:underline">{{ p.title }}</a>
+      <span class="text-xs text-slate-400">· {{ p.n }}×</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>

@@ -63,6 +63,7 @@ def create_app(
     # package import surface stays light and circular-import-free.
     from precis_web.routes import (
         asks,
+        clusters,
         console,
         env,
         papers,
@@ -80,6 +81,7 @@ def create_app(
     app.include_router(papers_needed.router)
     app.include_router(refs.router)
     app.include_router(tags.router)
+    app.include_router(clusters.router)
     app.include_router(preview.router)
     app.include_router(console.router)
     app.include_router(status.router)
