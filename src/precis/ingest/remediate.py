@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.identity import make_cite_key
+from precis.ingest.cards import rewrite_cards
 from precis.ingest.pdf_metadata import extract_metadata_from_sources
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store
@@ -46,13 +47,9 @@ from precis.utils.authors import to_name_dicts
 
 log = logging.getLogger(__name__)
 
-#: Open tag applied to papers automation could not recover. The future
-#: web triage flow (paste title -> S2) reads this set.
+#: Open tag applied to papers automation could not recover. The web
+#: triage flow (paste title -> S2) reads this set.
 TRIAGE_TAG = Tag.open("needs-triage")
-
-#: Card chunk kinds whose text is derived from the bibliographic
-#: metadata, so they must be rewritten when the metadata is repaired.
-_CARD_KINDS = ("card_title", "card_authors", "card_abstract", "card_combined")
 
 
 def _corpus_pdf_dest(cite_key: str, corpus_dir: Path, *, suffix: str = ".pdf") -> Path:
@@ -164,22 +161,6 @@ def classify(title: str) -> str:
     return "triage" if _title_is_junk(title) else "fix"
 
 
-def _combined_card_text(
-    title: str, author_names: list[str], abstract: str, keywords: list[str]
-) -> str:
-    """Mirror :func:`precis.ingest.pipeline._build_cards`'s card_combined."""
-    parts: list[str] = []
-    if title:
-        parts.append(title)
-    if author_names:
-        parts.append("; ".join(author_names))
-    if abstract:
-        parts.append(abstract)
-    if keywords:
-        parts.append("; ".join(keywords))
-    return "\n\n".join(parts).strip() or "[no metadata]"
-
-
 def _new_cite_key(
     conn: Any, author_dicts: list[dict[str, str]], year: int | None
 ) -> str:
@@ -194,47 +175,6 @@ def _new_cite_key(
         (prefix + "%",),
     ).fetchall()
     return make_cite_key(author_dicts, year, taken={r[0] for r in rows})
-
-
-def _rewrite_cards(
-    conn: Any,
-    ref_id: int,
-    *,
-    title: str,
-    author_names: list[str],
-    abstract: str,
-    keywords: list[str],
-) -> int:
-    """Rewrite the derived card chunks + drop their embeddings/keywords.
-
-    Updates only the card rows that already exist (cards are derived
-    search helpers — the ``refs`` columns are the source of truth). Drops
-    the matching ``chunk_embeddings`` rows and nulls ``keywords`` so the
-    embed / chunk_keywords workers re-claim them. Returns the number of
-    chunk rows touched.
-    """
-    text_by_kind = {
-        "card_title": title,
-        "card_authors": "; ".join(author_names) if author_names else "",
-        "card_abstract": abstract,
-        "card_combined": _combined_card_text(title, author_names, abstract, keywords),
-    }
-    touched: list[int] = []
-    for kind in _CARD_KINDS:
-        text = text_by_kind[kind]
-        if not text:
-            continue
-        rows = conn.execute(
-            "UPDATE chunks SET text = %s, keywords = NULL, keywords_meta = NULL "
-            "WHERE ref_id = %s AND chunk_kind = %s RETURNING chunk_id",
-            (text, ref_id, kind),
-        ).fetchall()
-        touched.extend(int(r[0]) for r in rows)
-    if touched:
-        conn.execute(
-            "DELETE FROM chunk_embeddings WHERE chunk_id = ANY(%s)", (touched,)
-        )
-    return len(touched)
 
 
 def _locate_pdf(corpus_dirs: tuple[Path, ...], cite_key: str) -> Path | None:
@@ -370,7 +310,7 @@ def _apply_fix(
                 store.set_ref_identifier(
                     suspect.ref_id, "cite_key", new_key, source=source, conn=conn
                 )
-            _rewrite_cards(
+            rewrite_cards(
                 conn,
                 suspect.ref_id,
                 title=title,

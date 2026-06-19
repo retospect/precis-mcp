@@ -1,0 +1,45 @@
+{% extends "base.html.j2" %}
+{% block title %}Triage queue{% endblock %}
+{% block content %}
+<a href="/papers" class="text-sm text-slate-500 underline">&larr; papers</a>
+<h1 class="text-lg font-semibold mt-2 mb-1">Triage queue</h1>
+<p class="text-sm text-slate-500 mb-4">
+  Papers tagged <span class="font-mono">needs-triage</span> — metadata
+  couldn't be recovered automatically. Open one, paste its real title to
+  look it up on Semantic Scholar, then save to apply (clears the tag).
+</p>
+
+{% if not papers %}
+  <p class="text-sm text-slate-500">Nothing in the triage queue. 🎉</p>
+{% else %}
+<ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+  {% for p in papers %}
+  <li class="px-4 py-3 flex items-center gap-3">
+    <span class="text-xs text-slate-400 w-12 shrink-0">#{{ p.id }}</span>
+    <a href="/papers/{{ p.id }}?triage=1" class="text-sm font-medium text-sky-700 hover:underline flex-1">
+      {% if p.title %}{{ p.title }}{% else %}<span class="italic text-slate-400">(no title)</span>{% endif %}
+      {% if p.year %}<span class="text-slate-400">({{ p.year }})</span>{% endif %}
+    </a>
+    {% if p.slug %}<span class="text-xs font-mono text-slate-400">{{ p.slug }}</span>{% endif %}
+    {% if p.has_pdf %}
+      <span class="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">PDF</span>
+    {% else %}
+      <span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500">stub</span>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+
+<div class="mt-4 flex items-center gap-3 text-sm">
+  {% if page > 1 %}
+  <a href="/papers/triage?page={{ page - 1 }}"
+     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">&larr; Prev</a>
+  {% endif %}
+  <span class="text-slate-400">Page {{ page }}</span>
+  {% if has_next %}
+  <a href="/papers/triage?page={{ page + 1 }}"
+     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">Next &rarr;</a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -68,6 +68,9 @@ class _FakePool:
 class FakeStore:
     def __init__(self) -> None:
         self.pool = _FakePool()
+        #: ref_ids the fake reports as carrying OPEN:needs-triage (tests
+        #: populate this to exercise the triage panel / tag-clear paths).
+        self.triaged_ref_ids: set[int] = set()
         self.todos = [
             make_ref(id=1, kind="todo", title="Build the thing", parent_id=None),
             make_ref(id=2, kind="todo", title="Draft the spec", parent_id=1),
@@ -257,6 +260,13 @@ class FakeStore:
         ``no tags yet`` empty state. Routes that exercise add/remove
         path through the fake runtime call recorder, not this method."""
         return []
+
+    def has_tag(self, ref_id, namespace, value):
+        """Minimal presence probe — only models OPEN:needs-triage via the
+        ``triaged_ref_ids`` set that tests populate."""
+        if namespace == "OPEN" and value == "needs-triage":
+            return ref_id in self.triaged_ref_ids
+        return False
 
     def ingest_timestamps(self, ref_id: int):
         # Canned ingest timeline for the paper detail page. tz-aware

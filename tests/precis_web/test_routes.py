@@ -539,6 +539,76 @@ def test_paper_delete_dispatches_then_redirects_to_list(client, runtime) -> None
     assert args == {"kind": "paper", "id": 10}
 
 
+def test_triage_queue_renders(client) -> None:
+    """GET /papers/triage lists papers and highlights the Triage tab."""
+    resp = client.get("/papers/triage")
+    assert resp.status_code == 200
+    assert "Triage queue" in resp.text
+
+
+def test_paper_detail_shows_triage_panel_when_tagged(client, runtime) -> None:
+    """A needs-triage paper's detail page opens the triage (paste-title) panel."""
+    runtime.store.triaged_ref_ids.add(10)
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "Needs triage" in resp.text
+    assert "/papers/10/triage-lookup" in resp.text
+
+
+def test_triage_lookup_prefills_from_s2(client) -> None:
+    """Pasting a title runs an S2 lookup and pre-fills the edit form."""
+    from unittest.mock import patch
+
+    hit = {
+        "title": "Ballistic carbon nanotube field-effect transistors",
+        "authors": [{"name": "Javey, Ali"}],
+        "year": 2003,
+        "doi": "10.1038/nature01797",
+        "abstract": "We report ballistic transport.",
+    }
+    with patch("precis.ingest.lookup.lookup_title", return_value=hit):
+        resp = client.post(
+            "/papers/10/triage-lookup", data={"title": "ballistic carbon nanotube"}
+        )
+    assert resp.status_code == 200
+    assert "Found on Semantic Scholar" in resp.text
+    # The edit form is pre-filled with the looked-up title + DOI.
+    assert "Ballistic carbon nanotube field-effect transistors" in resp.text
+    assert "10.1038/nature01797" in resp.text
+
+
+def test_triage_lookup_miss_shows_message(client) -> None:
+    from unittest.mock import patch
+
+    with patch("precis.ingest.lookup.lookup_title", return_value=None):
+        resp = client.post("/papers/10/triage-lookup", data={"title": "nonsense xyz"})
+    assert resp.status_code == 200
+    assert "No Semantic Scholar match" in resp.text
+
+
+def test_edit_clears_needs_triage_tag(client, runtime) -> None:
+    """Saving an edit on a triaged paper dispatches a tag-remove for
+    needs-triage so it leaves the queue."""
+    runtime.store.triaged_ref_ids.add(10)
+    resp = client.post(
+        "/papers/10/edit", data={"title": "A real title"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    tag_calls = [
+        args for verb, args in runtime.calls if verb == "tag" and "remove" in args
+    ]
+    assert tag_calls and tag_calls[-1]["remove"] == ["needs-triage"]
+
+
+def test_edit_no_triage_tag_skips_tag_dispatch(client, runtime) -> None:
+    """A normal (non-triaged) edit doesn't dispatch a tag removal."""
+    resp = client.post(
+        "/papers/10/edit", data={"title": "A real title"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert not [v for v, _ in runtime.calls if v == "tag"]
+
+
 def test_paper_detail_has_edit_form_and_disabled_delete(client) -> None:
     """Edit renders as a working form; Delete is rendered disabled
     (grayed out) until the `delete` verb is wired for papers, so it

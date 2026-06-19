@@ -53,6 +53,7 @@ from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
     resolve_live_slug_ref,
 )
+from precis.ingest.cards import rewrite_cards
 from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -1120,7 +1121,7 @@ class PaperHandler(Handler):
             )
         changed: list[str] = []
         with self.store.tx() as conn:
-            self.store.update_paper_fields(
+            updated = self.store.update_paper_fields(
                 ref_id,
                 title=new_title,
                 year=year,
@@ -1138,6 +1139,28 @@ class PaperHandler(Handler):
                     )
                 ):
                     changed.append(scheme)
+            # Rewrite the derived search cards so an edit actually changes
+            # what title/author/abstract search matches against — otherwise
+            # the card_* chunks keep the stale (pre-edit) text. Uses the
+            # *merged* post-update values (COALESCE means an unchanged field
+            # still returns its current value), so e.g. a title-only edit
+            # still rebuilds card_combined from the live authors + abstract.
+            if new_title is not None or new_authors or meta_patch:
+                meta = updated.meta or {}
+                abstract_val = meta.get("abstract", "")
+                kw = meta.get("keywords", [])
+                rewrite_cards(
+                    conn,
+                    ref_id,
+                    title=updated.title or "",
+                    author_names=[
+                        a.get("name", "")
+                        for a in (updated.authors or [])
+                        if a.get("name")
+                    ],
+                    abstract=abstract_val if isinstance(abstract_val, str) else "",
+                    keywords=list(kw) if isinstance(kw, list) else [],
+                )
         if new_title is not None:
             changed.append("title")
         if year is not None:

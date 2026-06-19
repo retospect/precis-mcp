@@ -10,6 +10,7 @@ ref's cite_key (``Ref.slug``) and the ``precis watch`` shard layout
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,10 @@ from precis.utils.authors import author_names
 from precis_web.deps import await_dispatch, get_store, get_web_config, templates
 
 router = APIRouter(prefix="/papers", tags=["papers"])
+
+#: Open tag marking a paper whose metadata automation couldn't recover —
+#: the triage queue works this set (set by ``precis fix-metadata``).
+_TRIAGE_TAG = "needs-triage"
 
 #: Cap on the abstract length shown in the hover card (chars).
 _ABSTRACT_PREVIEW = 900
@@ -207,25 +212,62 @@ async def index(
     )
 
 
-@router.get("/{ref_id}", response_class=HTMLResponse)
-async def detail(request: Request, ref_id: int) -> HTMLResponse:
-    """Paper detail: metadata + embedded PDF viewer."""
+@router.get("/triage", response_class=HTMLResponse)
+async def triage_queue(request: Request, page: int = 1) -> HTMLResponse:
+    """Queue of papers tagged ``needs-triage`` (metadata automation gave up).
+
+    Registered before ``/{ref_id}`` so the literal ``triage`` segment
+    isn't swallowed by the int path param. Each row links to the paper
+    detail with ``?triage=1`` so the detail page opens the triage panel.
+    """
     store = get_store(request)
-    refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
-    ref = refs.get(ref_id)
-    if ref is None or ref.kind != "paper":
-        raise NotFound(f"paper id={ref_id} not found")
+    page = max(1, page)
+    offset = (page - 1) * _PAGE_SIZE
+    refs = store.list_refs(
+        kind="paper",
+        tags=[_TRIAGE_TAG],
+        limit=_PAGE_SIZE + 1,
+        offset=offset,
+    )
+    has_next = len(refs) > _PAGE_SIZE
+    refs = refs[:_PAGE_SIZE]
+    rows = [_paper_row(r) for r in refs]
+    ids_map = store.identifiers_for_refs([row["id"] for row in rows])
+    for row in rows:
+        row["links"] = _links_from_ids(ids_map.get(row["id"], {}))
+    return templates.TemplateResponse(
+        request,
+        "papers/triage.html.j2",
+        {
+            "active_tab": "triage",
+            "papers": rows,
+            "page": page,
+            "has_next": has_next,
+        },
+    )
+
+
+def _render_detail(
+    request: Request,
+    ref: Any,
+    *,
+    triage: bool = False,
+    prefill: dict[str, Any] | None = None,
+    triage_msg: str = "",
+) -> HTMLResponse:
+    """Render the paper detail page. Shared by ``detail`` and the triage
+    lookup so an S2 result can re-render the page with the edit form
+    pre-filled (``prefill``) without duplicating the context build."""
+    store = get_store(request)
     cfg = get_web_config(request)
+    ref_id = ref.id
     cite_key = ref.slug or ""
     found = _resolve_pdf(cfg.corpus_dirs, cite_key)
     paper = _paper_row(ref)
     paper["links"] = _links_from_ids(
         store.identifiers_for_refs([ref_id]).get(ref_id, {})
     )
-    # Ingestion timeline: when the ref was minted, when its PDF landed,
-    # and when the first body chunk was written. Surfaced raw (datetime
-    # | None); the template renders each as relative + absolute-on-hover
-    # via the shared ``ago`` / ``abs_ts`` filters.
+    has_triage = triage or store.has_tag(ref_id, "OPEN", _TRIAGE_TAG)
     stamps = store.ingest_timestamps(ref_id)
     return templates.TemplateResponse(
         request,
@@ -247,7 +289,76 @@ async def detail(request: Request, ref_id: int) -> HTMLResponse:
                 str(p) for p in _pdf_candidates(cfg.corpus_dirs, cite_key)
             ],
             "corpus_dirs": [str(p) for p in cfg.corpus_dirs],
+            # Triage panel state (paste-title -> S2 lookup -> pre-filled edit).
+            "is_triage": has_triage,
+            "prefill": prefill,
+            "triage_msg": triage_msg,
         },
+    )
+
+
+@router.get("/{ref_id}", response_class=HTMLResponse)
+async def detail(request: Request, ref_id: int, triage: int = 0) -> HTMLResponse:
+    """Paper detail: metadata + embedded PDF viewer."""
+    store = get_store(request)
+    refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
+    ref = refs.get(ref_id)
+    if ref is None or ref.kind != "paper":
+        raise NotFound(f"paper id={ref_id} not found")
+    return _render_detail(request, ref, triage=bool(triage))
+
+
+@router.post("/{ref_id}/triage-lookup", response_model=None)
+async def triage_lookup(
+    request: Request, ref_id: int, title: str = Form("")
+) -> HTMLResponse:
+    """Look the operator-supplied title up on Semantic Scholar and re-render
+    the detail page with the edit form pre-filled from the best match.
+
+    Read-only: it never writes. The operator reviews the candidate and
+    commits via the normal Save (the ``edit`` POST), which also clears the
+    ``needs-triage`` tag. A miss just re-opens the panel with a message.
+    """
+    store = get_store(request)
+    refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
+    ref = refs.get(ref_id)
+    if ref is None or ref.kind != "paper":
+        raise NotFound(f"paper id={ref_id} not found")
+
+    query = title.strip()
+    if not query:
+        return _render_detail(
+            request, ref, triage=True, triage_msg="Enter a title to look up."
+        )
+
+    from precis.ingest.lookup import lookup_title
+
+    result = lookup_title(query, s2_key=os.environ.get("SEMANTIC_SCHOLAR_API_KEY", ""))
+    if not result or not result.get("title"):
+        return _render_detail(
+            request,
+            ref,
+            triage=True,
+            triage_msg=f"No Semantic Scholar match for {query!r}. "
+            "Edit the fields by hand below.",
+        )
+
+    names = author_names(result.get("authors") or [])
+    prefill = {
+        "title": result.get("title", ""),
+        "year": result.get("year") or "",
+        "doi": result.get("doi") or "",
+        "arxiv": result.get("arxiv_id") or "",
+        "abstract": result.get("abstract") or "",
+        "authors": "\n".join(names),
+    }
+    return _render_detail(
+        request,
+        ref,
+        triage=True,
+        prefill=prefill,
+        triage_msg=f"Found on Semantic Scholar: {result['title']!r} — "
+        "review and Save to apply (clears needs-triage).",
     )
 
 
@@ -335,6 +446,16 @@ async def edit(
             "error.html.j2",
             {"title": "Edit error", "detail": body, "status": 400},
             status_code=400,
+        )
+    # A successful edit that lands a real title resolves a triaged paper —
+    # clear the needs-triage tag so it leaves the queue. Idempotent: the
+    # tag verb's remove is a no-op when the tag isn't present.
+    store = get_store(request)
+    if store.has_tag(ref_id, "OPEN", _TRIAGE_TAG):
+        await await_dispatch(
+            request,
+            "tag",
+            {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]},
         )
     return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
 

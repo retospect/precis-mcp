@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from precis.ingest.cards import combined_card_text as _combined_card_text
 from precis.ingest.remediate import (
     Outcome,
-    _combined_card_text,
     _corpus_pdf_dest,
     _title_is_junk,
     classify,

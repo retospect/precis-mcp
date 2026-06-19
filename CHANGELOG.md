@@ -8,6 +8,37 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-19 — needs-triage web UI)
+
+- **Triage queue + paste-title→S2 flow** for papers `fix-metadata` tagged
+  `needs-triage` (metadata it couldn't recover). New **Triage** nav tab →
+  `/papers/triage` lists the queue; a paper's detail page opens a triage
+  panel where the operator pastes the real title, the server looks it up
+  on Semantic Scholar (`/papers/{id}/triage-lookup`), and re-renders the
+  edit form pre-filled from the best match. Saving applies it via the
+  existing `edit` verb and **clears the `needs-triage` tag**. The web path
+  is DB-only (no NAS-corpus write); the cite_key rename + PDF move stay in
+  the `fix-metadata` CLI. (`precis_web/routes/papers.py`,
+  `templates/papers/triage.html.j2`, `detail.html.j2`.)
+
+### Fixed (2026-06-19 — paper edit now rewrites search cards)
+
+- **Editing a paper's title/authors/abstract now rewrites its `card_*`
+  chunks.** Previously an edit (web or agent `edit` verb) updated the
+  `refs` columns but left the derived `card_title`/`card_authors`/
+  `card_combined` chunks — what title/author search actually matches —
+  showing the stale pre-edit text. `PaperHandler.edit` now rewrites them
+  and drops their embeddings/keywords for re-derivation, via the shared
+  `ingest/cards.rewrite_cards` (factored out of `ingest/remediate`).
+
+### Planned (2026-06-19 — duplicate handling)
+
+- `docs/design/duplicate-paper-handling.md` — phased plan to fold
+  keep-canonical/soft-delete-junk dedup into `fix-metadata` (Phase 1) +
+  a periodic reconciliation sweep (Phase 2), with a correct survivor rule
+  (DOI → non-junk title → most authors → lowest id), replacing the
+  deleted `dedupe-papers`.
+
 ### Fixed (2026-06-19 — OA fetcher: lost PDFs, dead Unpaywall, zombie stubs)
 
 - **OA fetcher dropped PDFs where no watcher looked.** The OA fetch
