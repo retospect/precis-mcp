@@ -765,6 +765,13 @@ def boot(
 
         _gated(SemanticScholarHandler)
 
+        # Wikipedia — on-demand article fetch via the MediaWiki API.
+        # No API key; httpx is the only requirement (declared in the
+        # handler), so this always registers when httpx is available.
+        from precis.handlers.wikipedia import WikipediaHandler
+
+        _gated(WikipediaHandler)
+
         # Patent — EPO OPS. ``PatentHandler.spec.requires_env``
         # declares EPO_OPS_CLIENT_KEY / EPO_OPS_CLIENT_SECRET /
         # PRECIS_PATENT_RAW_ROOT, so the kind_gate skips the handler

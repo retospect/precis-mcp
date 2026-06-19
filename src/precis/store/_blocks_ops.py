@@ -70,7 +70,9 @@ _ATTENTION_COLUMNS: dict[str, str] = {
 from precis.store._tag_filter import (
     build_tag_filter,
     is_speculative_tag,
+    is_wiki_tag,
     speculative_fence,
+    wiki_fence,
 )
 from precis.store.types import Block, BlockInsert, Density, Ref
 from precis.utils.angle import angle_anchors
@@ -259,6 +261,23 @@ class BlocksMixin:
             return False
         return True
 
+    @staticmethod
+    def _fence_wiki(tags: list[str] | None, kind: str | None) -> bool:
+        """Whether to apply the ``ORIGIN:wikipedia`` fence to a search.
+
+        Fence by default so on-demand Wikipedia fetches stay out of
+        default and cross-kind (``kind='*'``) results. Lift it for an
+        explicit ``kind='wikipedia'`` scope (you're searching the wiki
+        corpus on purpose) or when the caller lists the
+        ``ORIGIN:wikipedia`` control tag in ``tags=`` — the opt-in
+        mirrors ``DREAM:speculative``.
+        """
+        if kind == "wikipedia":
+            return False
+        if tags and any(is_wiki_tag(t) for t in tags):
+            return False
+        return True
+
     def search_blocks_lexical(
         self,
         *,
@@ -301,6 +320,8 @@ class BlocksMixin:
             params.extend(tag_params)
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
+        if self._fence_wiki(tags, kind):
+            clauses.append(wiki_fence("r"))
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -368,6 +389,8 @@ class BlocksMixin:
             where_params.extend(tag_params)
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
+        if self._fence_wiki(tags, kind):
+            clauses.append(wiki_fence("r"))
 
         distance_clause = ""
         distance_params: list[Any] = []
@@ -461,6 +484,9 @@ class BlocksMixin:
             # Parameterless clause — safe under the double-splice of
             # ``where_extra`` into both the lex and sem CTEs below.
             clauses.append(speculative_fence("r"))
+        if self._fence_wiki(tags, kind):
+            # Likewise parameterless — safe under the double-splice.
+            clauses.append(wiki_fence("r"))
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")

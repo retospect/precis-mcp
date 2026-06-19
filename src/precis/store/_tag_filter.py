@@ -202,9 +202,57 @@ def speculative_fence(ref_alias: str = "r") -> str:
     )
 
 
+#: Canonical control tag for on-demand Wikipedia content. Stamped on
+#: every ``wikipedia`` ref at fetch time. The ``ORIGIN`` axis is a closed
+#: vocabulary; ``wikipedia`` is its first value (room for ``gutenberg``,
+#: …). Fenced from default search so tertiary encyclopedic prose never
+#: dilutes the curated paper library — the whole point of fetching
+#: Wikipedia on demand instead of bulk-embedding a dump.
+WIKI_TAG = "ORIGIN:wikipedia"
+_WIKI_NS = "ORIGIN"
+_WIKI_VALUE = "wikipedia"
+
+
+def is_wiki_tag(tag: str) -> bool:
+    """True iff ``tag`` is the ``ORIGIN:wikipedia`` control tag.
+
+    Used to detect an *explicit* opt-in: a caller listing this tag in
+    ``tags=`` is asking to include Wikipedia content, so the fence lifts
+    for that query (mirrors :func:`is_speculative_tag`).
+    """
+    return tag.strip() == WIKI_TAG
+
+
+def wiki_fence(ref_alias: str = "r") -> str:
+    """SQL clause excluding refs tagged ``ORIGIN:wikipedia``.
+
+    Parameterless ``NOT EXISTS (...)`` predicate (no leading ``AND``,
+    fixed namespace/value constants) — safe under the fused-search CTE's
+    double-splice, exactly like :func:`speculative_fence`. Splice into a
+    ``clauses`` list that gets ``AND``-joined.
+
+    Default + cross-kind search fences Wikipedia content so on-demand
+    encyclopedic fetches never compete with the curated corpus for top-k
+    slots; the fence is a no-op for every kind that never carries the
+    tag. Callers lift it for an explicit ``kind='wikipedia'`` scope or an
+    ``ORIGIN:wikipedia`` opt-in (see ``_blocks_ops._fence_wiki``).
+    """
+    return (
+        "NOT EXISTS ("
+        "SELECT 1 FROM ref_tags rt "
+        "JOIN tags t ON t.tag_id = rt.tag_id "
+        f"WHERE rt.ref_id = {ref_alias}.ref_id "
+        f"AND t.namespace = '{_WIKI_NS}' "
+        f"AND t.value = '{_WIKI_VALUE}')"
+    )
+
+
 __all__ = [
     "SPECULATIVE_TAG",
+    "WIKI_TAG",
     "build_tag_filter",
     "is_speculative_tag",
+    "is_wiki_tag",
     "speculative_fence",
+    "wiki_fence",
 ]

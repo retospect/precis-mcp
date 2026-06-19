@@ -551,6 +551,17 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # namespace for code-path runners — see
     # :data:`precis.handlers._todo_guards._EXECUTOR_TAG_VALUES`.
     "LLM": frozenset({"opus", "sonnet", "haiku"}),
+    # Provenance axis for on-demand, externally-sourced corpora that
+    # should be *namespaced out of default search* rather than mixed
+    # into the curated library. ``ORIGIN:wikipedia`` is stamped on
+    # every ``wikipedia`` ref at fetch time (see WikipediaHandler) and
+    # fenced from default + cross-kind (``kind='*'``) search the same
+    # way ``DREAM:speculative`` is — the fence lifts on an explicit
+    # ``tags=['ORIGIN:wikipedia']`` filter or a ``kind='wikipedia'``
+    # scope (see ``store/_tag_filter.wiki_fence``). Closed vocab so a
+    # typo fails loud and so new on-demand sources (gutenberg, …) are
+    # added here deliberately, not sprayed as free tags.
+    "ORIGIN": frozenset({"wikipedia"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as

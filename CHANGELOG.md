@@ -8,7 +8,31 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
-### Fixed (2026-06-19 — junk-metadata ingest + the "()" edit error)
+### Added (2026-06-19 — `wikipedia` kind: on-demand article fetch)
+
+- **New `kind='wikipedia'`** — the on-demand alternative to bulk-
+  embedding a Wikipedia dump (which would be ~30M chunks / ~200 GB
+  resident HNSW and a permanent precision tax on every search).
+  `get(kind='wikipedia', id='<query>')` runs the MediaWiki search API
+  (CirrusSearch) to resolve the best article, fetches its plain-text
+  extract (`prop=extracts&explaintext` — no wikitext parsing), and
+  caches it 7 days. Cache-backed like `web`/`semanticscholar`; the body
+  is block-split + embedded so `search(kind='wikipedia', q=...)` lands
+  hits inside fetched articles. Free, no API key. Outbound fetch goes
+  through `safe_fetch` with a Wikimedia-compliant descriptive
+  User-Agent (`PRECIS_WIKIPEDIA_UA` / `PRECIS_WIKIPEDIA_LANG` env).
+  Handler: `handlers/wikipedia.py`. Skill: `precis-wikipedia-help`.
+- **`ORIGIN` provenance axis + `wikipedia` search fence.** Every
+  `wikipedia` ref is auto-stamped with the closed-vocab tag
+  `ORIGIN:wikipedia`, and that tag is **fenced out of default and
+  cross-kind (`kind='*'`) search** — the same rail as
+  `DREAM:speculative`. Tertiary encyclopedic prose never competes with
+  the curated paper corpus for top-k slots. The fence lifts on an
+  explicit `kind='wikipedia'` scope or a `tags=['ORIGIN:wikipedia']`
+  opt-in. New `store/_tag_filter.wiki_fence` / `is_wiki_tag` / `WIKI_TAG`
+  applied at the three search builders in `store/_blocks_ops.py`.
+- Migration `0026_wikipedia_kind.sql` — seeds the `kinds` + `providers`
+  registry rows (data-only; reuses shared `refs`/`chunks`/`cache_state`).### Fixed (2026-06-19 — junk-metadata ingest + the "()" edit error)
 
 - **Paper metadata-edit error page rendered as a blank `()`.** The
   `/papers/{id}/edit` and `/delete` routes passed the error template the
@@ -48,7 +72,6 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   `needs-triage` for a future manual paste-title→S2 flow. Dry-run by
   default; `--apply` commits; re-runnable and resumable.
   (`ingest/remediate.py`, `cli/fix_metadata.py`.)
-
 ### Added (2026-06-19 — projects: workspace promoted to first-class)
 
 - **A *project* is a strategic root that owns a `meta.workspace`.** No

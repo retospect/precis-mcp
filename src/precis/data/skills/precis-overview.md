@@ -71,6 +71,7 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 | `math` | Wolfram Alpha: facts, world data | `population of Ireland` | paid |
 | `youtube` | Transcript fetch | `dQw4w9WgXcQ` | free |
 | `web` | Fetch + extract a URL | `https://example.com/page` | free |
+| `wikipedia` | Resolve + fetch one Wikipedia article (on-demand; fenced from default search via `ORIGIN:wikipedia`) | `CRISPR gene editing` | free |
 | `websearch` | Perplexity Sonar: fast factual | `latest perovskite results` | paid |
 | `think` | Perplexity Sonar Reasoning Pro | `compare DAC and BECCS` | paid |
 | `research` | Perplexity Sonar Deep Research | `mechanism of NOxRR` | paid |
@@ -130,6 +131,7 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-job-help` | The job substrate. New jobs require `parent_id` pointing at a todo |
 | `precis-fix-gripe-help` | First concrete job_type, end-to-end recipe |
 | `precis-nursery-help` | Hourly SQL-only review tier (`tier:nursery` memories) |
+| `precis-wikipedia-help` | On-demand Wikipedia lookup + the `ORIGIN:wikipedia` search fence |
 
 PRIO sort key + 1/N rotation across active strategics + dedup-aware
 nursery / structural / deep reviewers are the operational discipline
