@@ -81,6 +81,30 @@ _OPEN_PARENT_STATUSES: frozenset[str] = frozenset({"open", "doing"})
 _SELF_RESOLVING_JOB_TYPES: frozenset[str] = frozenset({"plan_tick"})
 
 
+def _halt_bad_dispatch(
+    store: Store, conn: Any, ref_id: int, detail: str
+) -> tuple[int, bool]:
+    """Self-halt a mis-configured parent so it stops re-warning forever.
+
+    A parent whose ``executor`` / ``job_type`` is invalid can never mint
+    a child, so it stays a dispatch candidate and re-warns on *every*
+    sweep. Left unhalted, a handful of such todos flood ``worker_logs``
+    indefinitely — a real incident was six todos carrying a bogus
+    ``meta.executor='plan_tick'`` (``plan_tick`` is a job_type, never an
+    executor) warning ~40k times/day/host.
+
+    Tagging ``halt:bad-dispatch`` (an exclusion-registry tag, see
+    ``handlers/_todo_views._DOABLE_EXCLUSION_TAGS``) drops the parent
+    from candidate enumeration: warn once, surface in the halt /
+    attention view, and resume by removing the tag once the meta is
+    fixed. The tag is written on the dispatch tx's own ``conn`` while it
+    holds ``FOR UPDATE OF r`` on the parent — atomic with the claim.
+    """
+    store.add_tag(ref_id, Tag.open("halt:bad-dispatch"), set_by="system", conn=conn)
+    log.warning("dispatch: parent #%d %s; halted (halt:bad-dispatch)", ref_id, detail)
+    return (1, False)
+
+
 def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
     """Drain up to ``limit`` dispatchable todos. Returns BatchResult.
 
@@ -358,46 +382,37 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         # incompatible combinations. Logs + skips on failure so the
         # operator sees the broken parent in logs without crashing
         # the pass.
+        # Validation failures self-halt the parent (see
+        # ``_halt_bad_dispatch``) rather than warn-and-skip: an
+        # un-dispatchable parent that merely skips stays a candidate and
+        # re-warns on every sweep, forever.
         if not isinstance(executor, str) or not is_known_executor(executor):
-            log.warning(
-                "dispatch: parent #%d has unknown meta.executor=%r; skipping",
-                ref_id,
-                executor,
+            return _halt_bad_dispatch(
+                store, conn, ref_id, f"has unknown meta.executor={executor!r}"
             )
-            return (1, False)
         if not isinstance(job_type, str):
-            log.warning(
-                "dispatch: parent #%d has missing meta.job_type; skipping",
-                ref_id,
-            )
-            return (1, False)
+            return _halt_bad_dispatch(store, conn, ref_id, "has missing meta.job_type")
         spec = get_job_type(job_type)
         if spec is None:
-            log.warning(
-                "dispatch: parent #%d has unknown meta.job_type=%r; skipping",
-                ref_id,
-                job_type,
+            return _halt_bad_dispatch(
+                store, conn, ref_id, f"has unknown meta.job_type={job_type!r}"
             )
-            return (1, False)
         if executor not in spec.compatible_executors:
-            log.warning(
-                "dispatch: parent #%d job_type=%r incompatible with "
-                "executor=%r; skipping",
+            return _halt_bad_dispatch(
+                store,
+                conn,
                 ref_id,
-                job_type,
-                executor,
+                f"job_type={job_type!r} incompatible with executor={executor!r}",
             )
-            return (1, False)
         missing_caps = spec.requires - EXECUTOR_PROVIDES[executor]
         if missing_caps:
-            log.warning(
-                "dispatch: parent #%d executor=%r missing caps for %r: %s",
+            return _halt_bad_dispatch(
+                store,
+                conn,
                 ref_id,
-                executor,
-                job_type,
-                sorted(missing_caps),
+                f"executor={executor!r} missing caps for {job_type!r}: "
+                f"{sorted(missing_caps)}",
             )
-            return (1, False)
 
         # Auto-inject ``auto_check`` if the writer didn't set one, so a
         # deterministic job's parent resolves on the child's success.

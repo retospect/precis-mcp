@@ -288,6 +288,42 @@ def test_skips_unknown_executor(handler: TodoHandler, store: Store) -> None:
     assert _child_jobs_under(store, rid) == []
 
 
+def _open_tag_values(store: Store, ref_id: int) -> set[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s AND t.namespace = 'OPEN'",
+            (ref_id,),
+        ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
+def test_unknown_executor_halts_parent_and_stops_re_dispatch(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A mis-configured parent self-halts so it stops flooding logs.
+
+    Regression guard: a bogus executor used to warn-and-skip on *every*
+    sweep (the parent stayed a candidate forever). Now the first sweep
+    tags ``halt:bad-dispatch`` and the second sweep no longer claims it.
+    """
+    r = handler.put(
+        text="bad executor",
+        meta={"executor": "plan_tick", "job_type": "plan_tick"},
+    )
+    rid = id_of(r.body)
+
+    first = run_dispatch_pass(store)
+    assert first.claimed == 1
+    assert first.failed == 1
+    assert "halt:bad-dispatch" in _open_tag_values(store, rid)
+
+    # The halt tag drops it from candidacy: no re-claim, no re-warn.
+    second = run_dispatch_pass(store)
+    assert second.claimed == 0
+    assert _child_jobs_under(store, rid) == []
+
+
 def test_skips_unknown_job_type(handler: TodoHandler, store: Store) -> None:
     r = handler.put(
         text="bad job_type",
