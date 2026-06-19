@@ -28,6 +28,7 @@ scripts/exercise-mcp/out/
 # devin/windsurf
 **/.devin
 **/.windsurf
+.claude
 
 # Personal ops notes — anything matching *.local.md / *.local/.
 # Convention for ops crib sheets, scratch SQL, host-specific quirks.
