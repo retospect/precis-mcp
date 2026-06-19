@@ -43,7 +43,9 @@ def _ask_value(tag_value: str) -> str:
     return ""
 
 
-def _load_asks(store: Any) -> list[dict[str, Any]]:
+def _load_asks(
+    store: Any, *, limit: int = 100, offset: int = 0
+) -> list[dict[str, Any]]:
     """Open todos carrying ask-user / asking-reto tags. One row per todo.
 
     Aggregates tag values so multiple asks on the same todo collapse
@@ -51,6 +53,9 @@ def _load_asks(store: Any) -> list[dict[str, Any]]:
     feeds the unlock form's hidden ``remove`` inputs). Closed todos
     (``done`` / ``won't-do``) are excluded — same filter the
     ``search(view='ask-user')`` SQL uses.
+
+    Paginated via ``limit`` / ``offset`` (newest-first); the caller
+    passes ``limit+1`` to probe for a next page.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -74,8 +79,9 @@ def _load_asks(store: Any) -> list[dict[str, Any]]:
                    ) NOT IN ('done', 'won''t-do')
              GROUP BY r.ref_id, r.title, r.created_at
              ORDER BY r.created_at DESC
-             LIMIT 100
+             LIMIT %s OFFSET %s
             """,
+            (limit, offset),
         ).fetchall()
     out: list[dict[str, Any]] = []
     for ref_id, title, created_at, ask_tags in rows:
@@ -93,16 +99,29 @@ def _load_asks(store: Any) -> list[dict[str, Any]]:
     return out
 
 
+#: Rows per page on the asks queue.
+_PAGE_SIZE = 50
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
-    """List todos that need a user response."""
+async def index(request: Request, page: int = 1) -> HTMLResponse:
+    """List todos that need a user response. Paged via ``?page=N``."""
     store = get_store(request)
-    asks = _load_asks(store)
+    page = max(1, page)
+    offset = (page - 1) * _PAGE_SIZE
+    asks = _load_asks(store, limit=_PAGE_SIZE + 1, offset=offset)
+    has_next = len(asks) > _PAGE_SIZE
+    asks = asks[:_PAGE_SIZE]
     return templates.TemplateResponse(
         request,
         "asks/index.html.j2",
-        {"active_tab": "asks", "asks": asks},
+        {
+            "active_tab": "asks",
+            "asks": asks,
+            "page": page,
+            "has_next": has_next,
+        },
     )
 
 

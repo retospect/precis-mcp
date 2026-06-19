@@ -293,6 +293,7 @@ class RefsMixin:
         self,
         *,
         limit: int = 50,
+        offset: int = 0,
         awaiting: bool = False,
     ) -> list[dict[str, Any]]:
         """The "papers we still need to get" backlog, newest-stub-first.
@@ -353,11 +354,11 @@ class RefsMixin:
                      OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
                 ELSE TRUE END
              ORDER BY s.sort_key DESC
-             LIMIT %s
+             LIMIT %s OFFSET %s
         """
         out: list[dict[str, Any]] = []
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, (awaiting, limit)).fetchall()
+            rows = conn.execute(sql, (awaiting, limit, offset)).fetchall()
         for row in rows:
             out.append(
                 {
@@ -371,6 +372,38 @@ class RefsMixin:
                 }
             )
         return out
+
+    def ingest_timestamps(self, ref_id: int) -> dict[str, Any]:
+        """When a ref was ingested, broken out by stage.
+
+        Returns three tz-aware datetimes (any may be ``None``):
+
+        * ``ref`` — ``refs.created_at`` (when the stub / ref was minted).
+        * ``pdf`` — ``pdfs.ingested_at`` for the held file, joined via
+          ``refs.pdf_sha256``. ``None`` for a stub with no PDF yet.
+        * ``first_chunk`` — ``MIN(chunks.created_at)`` over body chunks
+          (``ord >= 0``); when the chunker/embedder first wrote text.
+          ``None`` before the paper has been chunked.
+
+        One round-trip — the two stage times are correlated subqueries
+        off the ref row so a missing PDF / un-chunked paper degrades to
+        ``None`` rather than a second lookup.
+        """
+        sql = """
+            SELECT
+                r.created_at,
+                (SELECT p.ingested_at FROM pdfs p
+                   WHERE p.pdf_sha256 = r.pdf_sha256) AS pdf_ingested_at,
+                (SELECT MIN(c.created_at) FROM chunks c
+                   WHERE c.ref_id = r.ref_id AND c.ord >= 0) AS first_chunk_at
+              FROM refs r
+             WHERE r.ref_id = %s
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (ref_id,)).fetchone()
+        if row is None:
+            return {"ref": None, "pdf": None, "first_chunk": None}
+        return {"ref": row[0], "pdf": row[1], "first_chunk": row[2]}
 
     def get_ref(
         self,

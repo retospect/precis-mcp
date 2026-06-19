@@ -135,13 +135,29 @@ def _doi_url(identifier: str) -> str:
     return ""
 
 
+#: Rows per page on the backlog list.
+_PAGE_SIZE = 100
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, awaiting: int | None = None) -> HTMLResponse:
-    """Backlog list. ``?awaiting=1`` narrows to fetcher's next-pass queue."""
+async def index(
+    request: Request, awaiting: int | None = None, page: int = 1
+) -> HTMLResponse:
+    """Backlog list. ``?awaiting=1`` narrows to fetcher's next-pass queue.
+
+    Paged via ``?page=N`` (offset-based, one-extra-row probe for "has
+    next"); the ``awaiting`` filter is preserved across pager links.
+    """
     store = get_store(request)
     awaiting_flag = bool(awaiting)
-    rows = store.stub_backlog(limit=200, awaiting=awaiting_flag)
+    page = max(1, page)
+    offset = (page - 1) * _PAGE_SIZE
+    rows = store.stub_backlog(
+        limit=_PAGE_SIZE + 1, offset=offset, awaiting=awaiting_flag
+    )
+    has_next = len(rows) > _PAGE_SIZE
+    rows = rows[:_PAGE_SIZE]
     refs = store.fetch_refs_by_ids(
         [row["ref_id"] for row in rows], include_deleted=False
     )
@@ -178,6 +194,8 @@ async def index(request: Request, awaiting: int | None = None) -> HTMLResponse:
             "active_tab": "papers-needed",
             "rows": display,
             "awaiting": awaiting_flag,
+            "page": page,
+            "has_next": has_next,
             "watch_dir": watch_dir,
             "dropzones": dropzones,
         },

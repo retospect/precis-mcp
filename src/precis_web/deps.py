@@ -47,8 +47,14 @@ def _make_jinja_env() -> jinja2.Environment:
     # Applied via ``{{ value | linkify_refs }}`` on prose surfaces
     # (dashboard rows, ref detail pages, asks list, console output).
     from precis_web.linkify import linkify_refs
+    from precis_web.timefmt import abs_ts, ago
 
     env.filters["linkify_refs"] = linkify_refs
+    # Relative ('5h ago') + absolute (hover tooltip) timestamp rendering,
+    # single-sourced in ``precis_web.timefmt`` so every list view formats
+    # time the same way. Both tolerate a datetime *or* an ISO string.
+    env.filters["ago"] = ago
+    env.filters["abs_ts"] = abs_ts
     return env
 
 

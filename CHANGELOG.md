@@ -38,6 +38,29 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   half-wired view fails at load rather than as a runtime "unknown
   view". Removes the frozenset/branch duplication that could drift.
 
+### Added (2026-06-19 — paperview ingest timeline, relative time, pagination)
+
+- **Ingest timeline on the paper detail page.** `/papers/{id}` now
+  shows when the paper was ingested, broken out by stage: `ref`
+  (`refs.created_at`), `PDF` (`pdfs.ingested_at`, joined via
+  `pdf_sha256`), and `first chunk` (`MIN(chunks.created_at)`). Each
+  renders as relative time (`5h ago`) with the absolute UTC timestamp
+  on hover; stages that haven't happened yet (stub with no PDF /
+  un-chunked) read `—`. New `store.ingest_timestamps(ref_id)`
+  (one round-trip, correlated subqueries).
+- **Relative timestamps on the Papers-needed backlog.** The
+  `last attempt` column renders `…ago` (absolute on hover) instead of
+  a raw ISO string. Backed by a new shared `precis_web.timefmt`
+  module (`ago` / `abs_ts`, tolerant of datetime *or* ISO string),
+  registered as Jinja filters; `routes/status.py`'s `_ago` is
+  refactored onto it so relative-time formatting is single-sourced.
+- **Pagination on the remaining list views.** `/papers`,
+  `/papers-needed`, `/asks`, and the `/tags` leaderboard gain
+  offset-based `?page=N` pagination (one-extra-row "has next" probe,
+  filter-preserving prev/next links) — matching the already-paged
+  `/refs/{kind}` and `/tags/refs`. `store.stub_backlog` gains an
+  `offset` kwarg.
+
 ### Added (2026-06-19 — ask-a-follow-up on a thought + Papers filters)
 
 - **"Ask a follow-up" on any thought (Refs detail pages).** Each

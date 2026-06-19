@@ -258,7 +258,20 @@ class FakeStore:
         path through the fake runtime call recorder, not this method."""
         return []
 
-    def stub_backlog(self, *, limit: int = 50, awaiting: bool = False):
+    def ingest_timestamps(self, ref_id: int):
+        # Canned ingest timeline for the paper detail page. tz-aware
+        # datetimes (any may be None for a stub / un-chunked paper).
+        from datetime import UTC, datetime
+
+        if ref_id == 10:
+            return {
+                "ref": datetime(2026, 6, 14, 9, 0, tzinfo=UTC),
+                "pdf": datetime(2026, 6, 14, 9, 5, tzinfo=UTC),
+                "first_chunk": datetime(2026, 6, 14, 9, 7, tzinfo=UTC),
+            }
+        return {"ref": None, "pdf": None, "first_chunk": None}
+
+    def stub_backlog(self, *, limit: int = 50, offset: int = 0, awaiting: bool = False):
         # Two canned stubs: one never-attempted (always shown),
         # one attempted >24h ago with a failure (shown in both views).
         all_rows = [
@@ -283,7 +296,7 @@ class FakeStore:
         ]
         # ``awaiting`` filtering — in the real query, recent fetch_ok
         # would be excluded; both canned rows are awaiting here.
-        return all_rows[:limit]
+        return all_rows[offset : offset + limit]
 
     def locked_ref_ids(self, ref_ids):
         # No live Postgres locks under the fake; the Tasks tab's

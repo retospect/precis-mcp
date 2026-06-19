@@ -26,6 +26,9 @@ router = APIRouter(prefix="/papers", tags=["papers"])
 #: Cap on the abstract length shown in the hover card (chars).
 _ABSTRACT_PREVIEW = 900
 
+#: Rows per page on the recent-papers list (matches the Refs tab).
+_PAGE_SIZE = 50
+
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
@@ -131,34 +134,44 @@ async def index(
     q: str | None = None,
     has_pdf: int = 0,
     has_chunks: int = 0,
+    page: int = 1,
 ) -> HTMLResponse:
     """Search box + result list (recent papers when ``q`` is empty).
 
     ``has_pdf`` / ``has_chunks`` are 0/1 toggles. On the recent-list
     path they push down into ``store.list_refs`` (SQL-side, so the
-    50-row cap counts only matching papers). On the lexical-search
+    page cap counts only matching papers). On the lexical-search
     path they post-filter the ranked hits (the lexical query can't
     take the extra predicates), so a query + toggle may show fewer
-    than 50 even when more match — acceptable for a triage filter.
+    than a full page even when more match — acceptable for a triage
+    filter. The recent-list path pages via ``?page=N`` (offset-based,
+    one-extra-row probe for "has next"); the ranked-search path shows
+    the top window only (relevance ordering doesn't page cleanly).
     """
     store = get_store(request)
     want_pdf = bool(has_pdf)
     want_chunks = bool(has_chunks)
+    page = max(1, page)
+    offset = (page - 1) * _PAGE_SIZE
     if q and q.strip():
-        hits = store.search_refs_lexical(q=q, kind="paper", limit=50)
+        hits = store.search_refs_lexical(q=q, kind="paper", limit=_PAGE_SIZE)
         refs = [ref for ref, _score in hits]
         if want_pdf:
             refs = [r for r in refs if r.pdf_sha256]
         if want_chunks:
             survivors = store.ref_ids_with_chunks([r.id for r in refs])
             refs = [r for r in refs if r.id in survivors]
+        has_next = False
     else:
         refs = store.list_refs(
             kind="paper",
             has_pdf=True if want_pdf else None,
             has_chunks=True if want_chunks else None,
-            limit=50,
+            limit=_PAGE_SIZE + 1,  # one extra row probes "has next page"
+            offset=offset,
         )
+        has_next = len(refs) > _PAGE_SIZE
+        refs = refs[:_PAGE_SIZE]
     rows = [_paper_row(r) for r in refs]
     # Chunk-presence badge for every row, one batched query. (When
     # ``want_chunks`` is set every row is True by construction, but the
@@ -187,6 +200,9 @@ async def index(
             "has_pdf": want_pdf,
             "has_chunks": want_chunks,
             "papers": rows,
+            "page": page,
+            "has_next": has_next,
+            "paged": not (q and q.strip()),
         },
     )
 
@@ -206,6 +222,11 @@ async def detail(request: Request, ref_id: int) -> HTMLResponse:
     paper["links"] = _links_from_ids(
         store.identifiers_for_refs([ref_id]).get(ref_id, {})
     )
+    # Ingestion timeline: when the ref was minted, when its PDF landed,
+    # and when the first body chunk was written. Surfaced raw (datetime
+    # | None); the template renders each as relative + absolute-on-hover
+    # via the shared ``ago`` / ``abs_ts`` filters.
+    stamps = store.ingest_timestamps(ref_id)
     return templates.TemplateResponse(
         request,
         "papers/detail.html.j2",
@@ -215,6 +236,7 @@ async def detail(request: Request, ref_id: int) -> HTMLResponse:
             "authors_display": _authors_str(ref),
             "author_lines": _author_edit_lines(ref),
             "abstract": _abstract_full(ref),
+            "ingested": stamps,
             "pdf_on_disk": found is not None,
             # Diagnostics for the "file expected but missing" case (a
             # held paper whose corpus roots / mount are misconfigured,

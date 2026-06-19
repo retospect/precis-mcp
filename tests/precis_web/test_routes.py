@@ -42,6 +42,26 @@ def test_papers_needed_awaiting_filter(client) -> None:
     assert "Ballistic carbon nanotube" in resp.text
 
 
+def test_papers_needed_relative_time_not_raw_iso(client) -> None:
+    """The last-attempt column renders a relative '…ago' string with the
+    absolute timestamp tucked into a hover title — not the raw ISO."""
+    resp = client.get("/papers-needed")
+    assert resp.status_code == 200
+    # Relative form is shown…
+    assert "ago" in resp.text
+    # …and the absolute timestamp lives in the hover tooltip, not as
+    # bare body text (the canned stub's last_attempt is 2026-06-13).
+    assert 'title="2026-06-13 10:00 UTC"' in resp.text
+    assert ">2026-06-13T10:00:00+00:00<" not in resp.text
+
+
+def test_papers_needed_pager_preserves_awaiting(client) -> None:
+    """Pager links carry the awaiting filter across pages."""
+    resp = client.get("/papers-needed?awaiting=1")
+    assert resp.status_code == 200
+    assert "Page 1" in resp.text
+
+
 # ── tags browser ───────────────────────────────────────────────────
 
 
@@ -274,6 +294,19 @@ def test_paper_detail_renders(client) -> None:
     resp = client.get("/papers/10")
     assert resp.status_code == 200
     assert "smith2024" in resp.text
+
+
+def test_paper_detail_shows_ingest_timestamps(client) -> None:
+    """The detail page surfaces the three-stage ingest timeline (ref /
+    PDF / first chunk) as relative time with the absolute UTC on hover."""
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "first chunk" in resp.text
+    # Absolute timestamps from the canned ingest_timestamps land in
+    # hover titles (the relative '…ago' text varies with wall clock).
+    assert 'title="2026-06-14 09:00 UTC"' in resp.text  # ref minted
+    assert 'title="2026-06-14 09:05 UTC"' in resp.text  # pdf landed
+    assert 'title="2026-06-14 09:07 UTC"' in resp.text  # first chunk
 
 
 def test_paper_edit_dispatches_changed_fields_only(client, runtime) -> None:
@@ -2026,7 +2059,7 @@ def test_asks_page_renders_data(client, monkeypatch) -> None:
     monkeypatch.setattr(
         asks_mod,
         "_load_asks",
-        lambda store: [
+        lambda store, **kw: [
             {
                 "id": 14634,
                 "title": "Write the technical section",

@@ -10,13 +10,14 @@ in one query degrades to an empty panel instead of a 500.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from precis_web.deps import get_store, get_web_config, templates
+from precis_web.timefmt import age_seconds as _age_seconds
+from precis_web.timefmt import ago as _ago
 
 router = APIRouter(prefix="/status", tags=["status"])
 
@@ -35,30 +36,6 @@ def _safe(fn) -> Any:  # type: ignore[no-untyped-def]
     except Exception:
         log.exception("precis web status: section query failed")
         return None
-
-
-def _age_seconds(ts: Any) -> float | None:
-    """Seconds since ``ts`` (a tz-aware datetime), or ``None``."""
-    if not isinstance(ts, datetime):
-        return None
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=UTC)
-    return (datetime.now(UTC) - ts).total_seconds()
-
-
-def _ago(ts: Any) -> str:
-    """Compact relative-time string ('3m ago', '2h ago')."""
-    secs = _age_seconds(ts)
-    if secs is None:
-        return ""
-    secs = max(0.0, secs)
-    if secs < 90:
-        return f"{int(secs)}s ago"
-    if secs < 5400:
-        return f"{int(secs / 60)}m ago"
-    if secs < 172800:
-        return f"{int(secs / 3600)}h ago"
-    return f"{int(secs / 86400)}d ago"
 
 
 def _kind_counts(store: Any) -> list[dict[str, Any]]:

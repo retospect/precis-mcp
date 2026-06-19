@@ -7,6 +7,28 @@
 > discovery / search / chase paths. Update it the same commit you
 > change the things it describes.
 
+## Session workflow (worktree → ship)
+
+Best practice for a unit of work:
+
+1. **Start in a worktree.** Launch with `claude -w <name>` (alias of
+   `--worktree`). Claude Code creates an isolated worktree at
+   `.claude/worktrees/<name>/` on a new `worktree-<name>` branch, so
+   the work is isolated from `main` and from sibling sessions.
+2. **Do the work** in that worktree — implement, test, iterate.
+3. **End with `/endsession`.** The `/endsession` command
+   (`.claude/commands/endsession.md`) wraps up: commits any WIP,
+   `git town sync` (rebase onto the latest `main`), runs the
+   container integration gate (`ruff` + `mypy` + `pytest`), and — only
+   if green — `git town ship` (squash-merges the branch back to `main`
+   and removes it). It **aborts and reports** on any gate failure; fix
+   and re-run. Landing on `main` is the end goal of a feature branch.
+
+This relies on the repo's git-town config (`ship-strategy =
+squash-merge`, feature branches parented on `main`). git-town must be
+installed on the host (`brew install git-town`). NB the merge target is
+`main`, not `master` — the repo has no `master`.
+
 ## What just landed (2026-06-19 — projects = workspace, first-class)
 
 A **project** is a strategic-root todo that owns a `meta.workspace`

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "8.14.0"
+version = "8.15.0"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -236,6 +236,11 @@ include = [
 [tool.ruff]
 target-version = "py311"
 line-length = 88
+# Don't descend into Claude Code worktrees — sibling sessions live under
+# .claude/worktrees/<name>/ (nested copies of the repo) and would
+# otherwise be scanned twice and trip the format/lint gate on unrelated
+# in-flight work.
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

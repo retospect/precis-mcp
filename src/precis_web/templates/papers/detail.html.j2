@@ -14,6 +14,24 @@
     {{ authors_display }}
   </p>
   {% endif %}
+  {# Ingestion timeline — when the ref was minted, when its PDF landed,
+     and when the first body chunk was written. Each shows relative time
+     with the absolute UTC timestamp on hover. Stages that haven't
+     happened yet (stub with no PDF / un-chunked) read "—". #}
+  <p class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+    <span>
+      <span class="text-slate-400">ref</span>
+      <span title="{{ ingested.ref | abs_ts }}">{{ ingested.ref | ago or '—' }}</span>
+    </span>
+    <span>
+      <span class="text-slate-400">PDF</span>
+      <span title="{{ ingested.pdf | abs_ts }}">{{ ingested.pdf | ago or '—' }}</span>
+    </span>
+    <span>
+      <span class="text-slate-400">first chunk</span>
+      <span title="{{ ingested.first_chunk | abs_ts }}">{{ ingested.first_chunk | ago or '—' }}</span>
+    </span>
+  </p>
   {% if paper.links.doi_url or paper.links.arxiv_url %}
   <p class="mt-2 flex flex-wrap gap-3 text-sm">
     {% if paper.links.doi_url %}

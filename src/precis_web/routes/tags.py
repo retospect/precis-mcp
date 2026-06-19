@@ -49,9 +49,13 @@ _PROTECTED_NAMESPACES: frozenset[str] = frozenset(
 )
 
 
-def _list_tags(store: object, q: str, limit: int) -> list[dict[str, object]]:
-    """Top-N tags by usage. ``q=`` is a case-insensitive substring filter on
-    ``namespace:value``.
+def _list_tags(
+    store: object, q: str, limit: int, offset: int = 0
+) -> list[dict[str, object]]:
+    """Tags by usage (most-used first). ``q=`` is a case-insensitive
+    substring filter on ``namespace:value``. Paginated via
+    ``limit`` / ``offset`` — the caller passes ``limit+1`` to probe
+    for a next page.
     """
     sql = """
         SELECT t.namespace, t.value, count(rt.ref_id) AS n
@@ -60,11 +64,11 @@ def _list_tags(store: object, q: str, limit: int) -> list[dict[str, object]]:
             OR (t.namespace || ':' || t.value) ILIKE %s
          GROUP BY t.namespace, t.value
          ORDER BY n DESC, t.namespace, t.value
-         LIMIT %s
+         LIMIT %s OFFSET %s
     """
     pattern = f"%{q.strip()}%"
     with store.pool.connection() as conn:  # type: ignore[attr-defined]
-        rows = conn.execute(sql, (q.strip(), pattern, limit)).fetchall()
+        rows = conn.execute(sql, (q.strip(), pattern, limit, offset)).fetchall()
     return [
         {
             "namespace": str(r[0]),
@@ -77,13 +81,22 @@ def _list_tags(store: object, q: str, limit: int) -> list[dict[str, object]]:
     ]
 
 
+#: Tags per page on the leaderboard.
+_INDEX_PAGE_SIZE = 200
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, q: str | None = None) -> HTMLResponse:
-    """Render the tag table. ``?q=`` narrows by substring; default top 200."""
+async def index(request: Request, q: str | None = None, page: int = 1) -> HTMLResponse:
+    """Render the tag table (most-used first). ``?q=`` narrows by
+    substring; ``?page=N`` walks past the first window."""
     store = get_store(request)
     query = (q or "").strip()
-    rows = _list_tags(store, query, limit=200)
+    page = max(1, page)
+    offset = (page - 1) * _INDEX_PAGE_SIZE
+    rows = _list_tags(store, query, limit=_INDEX_PAGE_SIZE + 1, offset=offset)
+    has_next = len(rows) > _INDEX_PAGE_SIZE
+    rows = rows[:_INDEX_PAGE_SIZE]
     return templates.TemplateResponse(
         request,
         "tags/index.html.j2",
@@ -91,6 +104,8 @@ async def index(request: Request, q: str | None = None) -> HTMLResponse:
             "active_tab": "tags",
             "q": query,
             "rows": rows,
+            "page": page,
+            "has_next": has_next,
         },
     )
 
