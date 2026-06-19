@@ -514,14 +514,21 @@ def _finish_run(
             "WHERE run_id=%s",
             (n_vectors, note, run_id),
         )
-        # Prune *superseded* runs for this scope (cascades to cells +
-        # assignments) — only those OLDER than the one we just finished.
-        # Using ``run_id < %s`` (not ``<> %s``) is critical: a newer
-        # run_id is another host's still-in-flight build, and deleting it
-        # mid-COPY violated cluster_assignments' run_id FK (the observed
-        # ForeignKeyViolation). A newer build prunes us in turn when it
-        # finishes; the latest green run always wins.
+        # Prune *superseded green* runs for this scope (cascades to
+        # cells + assignments). The ``status='ok'`` guard is the load-
+        # bearing one: clusterize runs on every cluster node, so several
+        # hosts rebuild the same scope concurrently. A still-'building'
+        # run — at ANY run_id, lower or higher — is a peer's in-flight
+        # build; deleting it mid-COPY violates cluster_assignments'
+        # run_id FK (the observed ForeignKeyViolation). The earlier
+        # ``run_id < %s`` guard was insufficient: a *lower* id can be an
+        # earlier-started-but-slower build (exactly the paper scope,
+        # ~50k vectors), which a faster higher-id run would still reap.
+        # Only ever delete runs that have themselves finished green; the
+        # newest green wins (the current-map query orders by finished_at
+        # DESC), and any older green is reaped by the next finish.
         conn.execute(
-            "DELETE FROM cluster_runs WHERE scope=%s AND run_id < %s",
+            "DELETE FROM cluster_runs "
+            "WHERE scope=%s AND run_id < %s AND status='ok'",
             (scope, run_id),
         )

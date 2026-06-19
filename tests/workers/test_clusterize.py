@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from precis.store import Store
-from precis.workers.clusterize import run_clusterize_pass
+from precis.workers.clusterize import _finish_run, run_clusterize_pass
 
 pytestmark = pytest.mark.usefixtures("store")
 
@@ -161,3 +161,45 @@ def test_time_gate_blocks_immediate_rebuild(seeded: Store) -> None:
     # so its rebuild finishes instantly green — after that nothing is due.
     run_clusterize_pass(store)  # memory → ok (0 vectors)
     assert run_clusterize_pass(store)["claimed"] == 0
+
+
+def _insert_run(store: Store, scope: str, status: str) -> int:
+    with store.pool.connection() as conn:
+        run_id = conn.execute(
+            "INSERT INTO cluster_runs (scope, status) VALUES (%s, %s) "
+            "RETURNING run_id",
+            (scope, status),
+        ).fetchone()[0]
+        conn.commit()
+    return int(run_id)
+
+
+def _run_exists(store: Store, run_id: int) -> bool:
+    with store.pool.connection() as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM cluster_runs WHERE run_id = %s", (run_id,)
+            ).fetchone()
+            is not None
+        )
+
+
+def test_finish_run_spares_concurrent_building_runs(store: Store) -> None:
+    """_finish_run must not reap a peer's in-flight 'building' run.
+
+    clusterize runs on every node, so several hosts rebuild a scope at
+    once. A still-'building' run — even one with a *lower* run_id (an
+    earlier-started but slower build, e.g. the ~50k-vector paper SOM) —
+    must survive a faster peer finishing, or that peer's prune deletes
+    the row mid-COPY and the build dies with a cluster_assignments FK
+    violation. Only already-green runs may be pruned.
+    """
+    old_green = _insert_run(store, "paper", "ok")  # superseded green
+    slow_peer = _insert_run(store, "paper", "building")  # in-flight, lower id
+    winner = _insert_run(store, "paper", "building")  # finishes first
+
+    _finish_run(store, winner, "paper", n_vectors=123)
+
+    assert _run_exists(store, winner)  # the run we just finished
+    assert _run_exists(store, slow_peer)  # the bug: must NOT be reaped
+    assert not _run_exists(store, old_green)  # superseded green still pruned
