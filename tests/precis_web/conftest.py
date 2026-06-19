@@ -173,6 +173,38 @@ class FakeStore:
     def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
         return list(self._conv_blocks.get(ref_id, []))
 
+    def ref_ids_with_chunks(self, ref_ids) -> set[int]:
+        # Fake corpus has no body chunks — the "has chunks" badge/filter
+        # degrades to "none ingested". Routes handle the empty set.
+        return set()
+
+    def count_blocks(self, ref_id: int) -> int:
+        return len(self._conv_blocks.get(ref_id, []))
+
+    def links_for(self, ref_id, *, direction="both", relation=None):
+        # No follow-up discussions in the fake — detail pages render the
+        # empty Discussion state.
+        return []
+
+    def get_ref(self, *, kind: str, id):
+        for r in (
+            self.todos
+            + self.papers
+            + self.memories
+            + self.oracles
+            + self.convs
+            + self.webs
+        ):
+            if r.kind == kind and (r.slug == id or r.id == id):
+                return r
+        # The follow-up route ``put``s a conv via the (faked) runtime
+        # dispatch, then resolves the slug → ref here. The fake dispatch
+        # doesn't actually create the row, so synthesise the conv for
+        # ``followup/`` slugs with a deterministic id.
+        if kind == "conv" and isinstance(id, str) and id.startswith("followup/"):
+            return make_ref(id=900000, kind="conv", slug=id, title="Follow-up")
+        return None
+
     def list_refs(
         self,
         *,

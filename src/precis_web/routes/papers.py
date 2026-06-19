@@ -116,6 +116,8 @@ def _paper_row(ref: Any) -> dict[str, Any]:
         "title": ref.title,
         "year": ref.year,
         "has_pdf": bool(ref.pdf_sha256),
+        # Filled in by the index route from a batched existence query.
+        "has_chunks": False,
         "authors": _authors_str(ref),
         "abstract": _abstract_str(ref),
         "links": {"doi": "", "doi_url": "", "arxiv": "", "arxiv_url": ""},
@@ -124,15 +126,46 @@ def _paper_row(ref: Any) -> dict[str, Any]:
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, q: str | None = None) -> HTMLResponse:
-    """Search box + result list (recent papers when ``q`` is empty)."""
+async def index(
+    request: Request,
+    q: str | None = None,
+    has_pdf: int = 0,
+    has_chunks: int = 0,
+) -> HTMLResponse:
+    """Search box + result list (recent papers when ``q`` is empty).
+
+    ``has_pdf`` / ``has_chunks`` are 0/1 toggles. On the recent-list
+    path they push down into ``store.list_refs`` (SQL-side, so the
+    50-row cap counts only matching papers). On the lexical-search
+    path they post-filter the ranked hits (the lexical query can't
+    take the extra predicates), so a query + toggle may show fewer
+    than 50 even when more match — acceptable for a triage filter.
+    """
     store = get_store(request)
+    want_pdf = bool(has_pdf)
+    want_chunks = bool(has_chunks)
     if q and q.strip():
         hits = store.search_refs_lexical(q=q, kind="paper", limit=50)
         refs = [ref for ref, _score in hits]
+        if want_pdf:
+            refs = [r for r in refs if r.pdf_sha256]
+        if want_chunks:
+            survivors = store.ref_ids_with_chunks([r.id for r in refs])
+            refs = [r for r in refs if r.id in survivors]
     else:
-        refs = store.list_refs(kind="paper", limit=50)
+        refs = store.list_refs(
+            kind="paper",
+            has_pdf=True if want_pdf else None,
+            has_chunks=True if want_chunks else None,
+            limit=50,
+        )
     rows = [_paper_row(r) for r in refs]
+    # Chunk-presence badge for every row, one batched query. (When
+    # ``want_chunks`` is set every row is True by construction, but the
+    # round-trip is cheap and keeps the badge correct otherwise.)
+    chunked = store.ref_ids_with_chunks([row["id"] for row in rows])
+    for row in rows:
+        row["has_chunks"] = row["id"] in chunked
     # Most papers have no publisher abstract in meta; backfill the
     # hover-card text from the leading body chunks in one batched query.
     missing = [row for row in rows if not row["abstract"]]
@@ -151,6 +184,8 @@ async def index(request: Request, q: str | None = None) -> HTMLResponse:
         {
             "active_tab": "papers",
             "q": q or "",
+            "has_pdf": want_pdf,
+            "has_chunks": want_chunks,
             "papers": rows,
         },
     )

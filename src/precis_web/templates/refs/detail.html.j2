@@ -57,6 +57,41 @@
 <pre class="rounded-lg border border-slate-200 bg-white p-4 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto">{{ body | linkify_refs }}</pre>
 {% endif %}
 
+{# Ask a follow-up — type a question, the server thinks about this
+   thought (reusing the dreaming dispatch) and stores the answer as a
+   conv thread linked back here. Existing discussions list above the box
+   so the thread is reachable from the thought it grew out of. #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">Discussion</h2>
+  {% if discussions %}
+  <ul class="mb-3 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for d in discussions %}
+    <li class="px-3 py-2 text-sm flex items-center gap-2">
+      <span class="text-slate-400">💬</span>
+      <a href="{{ d.url }}" class="text-sky-700 hover:underline flex-1">{{ d.title }}</a>
+      {% if d.chunk is not none %}
+      <span class="text-xs font-mono text-slate-400">on ~{{ d.chunk }}</span>
+      {% endif %}
+      <span class="text-xs text-slate-400">{{ d.turns }} turn{{ '' if d.turns == 1 else 's' }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/ask" class="space-y-2">
+    <textarea name="question" rows="2" required
+              placeholder="Ask a follow-up about this thought…"
+              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+    <div class="flex items-center gap-2">
+      <button class="rounded-md bg-sky-600 text-white text-sm px-4 py-2 hover:bg-sky-700">
+        Ask &amp; think
+      </button>
+      <span class="text-xs text-slate-400">
+        runs an agentic pass (can take ~30–60s); the answer lands in a linked thread
+      </span>
+    </div>
+  </form>
+</section>
+
 {# References panel — every ``kind:ref`` handle the linkifier found in
    the body, expanded with title + preview. Helps third parties read a
    dream memory's connections without chasing a dozen links. Includes
@@ -196,6 +231,14 @@
         {% if c.slug %}<span class="text-xs font-mono text-slate-400">{{ c.slug }}</span>{% endif %}
       </div>
       <pre class="px-4 py-3 text-sm whitespace-pre-wrap break-words text-slate-800 overflow-x-auto">{{ c.text }}</pre>
+      {# Ask scoped to this chunk — the answer thread links back to ~pos. #}
+      <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/ask"
+            class="flex items-center gap-2 px-4 py-2 border-t border-slate-100">
+        <input type="hidden" name="chunk" value="{{ c.pos }}" />
+        <input name="question" placeholder="Ask about ~{{ c.pos }}…"
+               class="flex-1 text-xs px-2 py-1 rounded border border-slate-300" />
+        <button class="text-xs px-2 py-1 rounded bg-sky-600 text-white hover:bg-sky-700">ask</button>
+      </form>
     </li>
     {% endfor %}
   </ul>

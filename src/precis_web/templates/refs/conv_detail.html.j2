@@ -10,6 +10,12 @@
     {% if ref.updated %}· updated {{ ref.updated }}{% endif %}
     · {{ turns | length }} turn{{ '' if turns | length == 1 else 's' }}
   </p>
+  {% if followup_source %}
+  <p class="text-sm text-slate-500 mt-1">
+    follow-up on
+    <a href="{{ followup_source_url }}" class="font-mono text-sky-700 hover:underline">{{ followup_source }}</a>
+  </p>
+  {% endif %}
 </div>
 
 {% if not turns %}
@@ -49,5 +55,22 @@
   </li>
   {% endfor %}
 </ol>
+{% endif %}
+
+{# Continue the discussion — only for follow-up threads (those carry a
+   source handle in ref.meta). Routes the next question back through the
+   same source so the answer appends to this thread. #}
+{% if followup_source %}
+<form method="post" action="/refs/conv/{{ ref.id }}/continue" class="mt-4 space-y-2">
+  <textarea name="question" rows="2" required
+            placeholder="Continue this discussion…"
+            class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+  <div class="flex items-center gap-2">
+    <button class="rounded-md bg-sky-600 text-white text-sm px-4 py-2 hover:bg-sky-700">
+      Ask &amp; think
+    </button>
+    <span class="text-xs text-slate-400">runs an agentic pass (~30–60s)</span>
+  </div>
+</form>
 {% endif %}
 {% endblock %}

@@ -1148,6 +1148,8 @@ class RefsMixin:
         provider: str | None = None,
         updated_after: datetime | None = None,
         tags: list[str] | None = None,
+        has_pdf: bool | None = None,
+        has_chunks: bool | None = None,
         order_by: str = "updated_desc",
         limit: int = 50,
         offset: int = 0,
@@ -1158,6 +1160,12 @@ class RefsMixin:
         (default ``updated_desc``); an unknown key falls back to
         ``updated_desc`` rather than erroring, so a stale client
         bookmark can't 500 the list.
+
+        ``has_pdf`` / ``has_chunks`` are tri-state presence filters
+        (``None`` = don't filter). ``has_pdf`` keys off
+        ``refs.pdf_sha256``; ``has_chunks`` off the existence of any
+        body chunk (``ord >= 0``). Both back the Papers tab's "only
+        ingested / only with PDF" toggles.
         """
         # Aliased as ``r`` so the tag-filter helper can reference
         # ``r.ref_id`` uniformly across all store query shapes.
@@ -1172,6 +1180,18 @@ class RefsMixin:
         if updated_after is not None:
             params.append(updated_after)
             clauses.append("r.updated_at > %s")
+        if has_pdf is not None:
+            clauses.append(
+                "r.pdf_sha256 IS NOT NULL" if has_pdf else "r.pdf_sha256 IS NULL"
+            )
+        if has_chunks is not None:
+            # Correlated EXISTS on the body-chunk index — cheap, and it
+            # keeps the filter on the SQL side so pagination stays honest.
+            exists = (
+                "EXISTS (SELECT 1 FROM chunks c "
+                "WHERE c.ref_id = r.ref_id AND c.ord >= 0)"
+            )
+            clauses.append(exists if has_chunks else f"NOT {exists}")
 
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:

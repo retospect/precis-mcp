@@ -2152,3 +2152,134 @@ def test_title_preview_handles_empty() -> None:
 
     assert str(_title_preview("")) == "(untitled)"
     assert str(_title_preview("\n\n")) == "(untitled)"
+
+
+# ---- Papers presence filters (has_pdf / has_chunks) -----------------
+
+
+def test_papers_filter_params_render_toggles(client) -> None:
+    """The filter checkboxes reflect the query params (checked state)."""
+    resp = client.get("/papers", params={"has_pdf": "1", "has_chunks": "1"})
+    assert resp.status_code == 200
+    # Both toggles present and checked.
+    assert 'name="has_pdf"' in resp.text
+    assert 'name="has_chunks"' in resp.text
+    assert resp.text.count("checked") >= 2
+
+
+def test_papers_filter_has_pdf_pushes_to_list_refs(client, runtime) -> None:
+    """has_pdf=1 (no query) forwards has_pdf=True to store.list_refs."""
+    seen: dict[str, object] = {}
+    original = runtime.store.list_refs
+
+    def _spy(**kw):
+        seen.update(kw)
+        return original(**kw)
+
+    runtime.store.list_refs = _spy  # type: ignore[method-assign]
+    resp = client.get("/papers", params={"has_pdf": "1"})
+    assert resp.status_code == 200
+    assert seen.get("has_pdf") is True
+    # has_chunks toggle off → None, not False (don't-filter).
+    assert seen.get("has_chunks") is None
+
+
+# ---- Ask a follow-up about a thought --------------------------------
+
+
+def _stub_answer(monkeypatch, text: str = "Here is the answer."):
+    """Replace the agentic dispatch with a canned AgentResult."""
+    from precis.utils.claude_agent import AgentResult
+    from precis_web import ask
+
+    def _fake(prompt, *, store, conv_ref_id):
+        _fake.prompt = prompt  # type: ignore[attr-defined]
+        return AgentResult(final_text=text, cost_usd=0.01, duration_s=1.0, turns_used=1)
+
+    monkeypatch.setattr(ask, "generate_answer", _fake)
+    return _fake
+
+
+def test_ask_followup_records_question_links_and_answer(
+    client, runtime, monkeypatch
+) -> None:
+    """POST /refs/{kind}/{id}/ask: put(question) → link → answer, redirect."""
+    fake = _stub_answer(monkeypatch, "The dream suggests X.")
+    resp = client.post(
+        "/refs/memory/20/ask",
+        data={"question": "What does this imply?"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/refs/conv/")
+
+    verbs = [v for v, _ in runtime.calls]
+    assert verbs.count("put") == 2  # question turn + answer turn
+    assert "link" in verbs
+
+    # First put captures the human question on a followup/ slug.
+    first_put = next(a for v, a in runtime.calls if v == "put")
+    assert first_put["kind"] == "conv"
+    assert first_put["id"] == "followup/memory/20"
+    assert first_put["text"] == "What does this imply?"
+    assert first_put["author"] == "reto"
+    assert first_put["ref_meta"]["followup_source"] == "memory:20"
+
+    # The link points the conv back at the source as derived-from.
+    link_args = next(a for v, a in runtime.calls if v == "link")
+    assert link_args["target"] == "memory:20"
+    assert link_args["rel"] == "derived-from"
+
+    # The answer turn carries the model's text.
+    answer_put = [a for v, a in runtime.calls if v == "put"][-1]
+    assert answer_put["text"] == "The dream suggests X."
+    assert answer_put["author"] == "asa"
+    # The source thought made it into the prompt.
+    assert "A decision" in fake.prompt  # type: ignore[attr-defined]
+
+
+def test_ask_followup_chunk_scoped_target(client, runtime, monkeypatch) -> None:
+    """A chunk=N field scopes the slug + link handle to that chunk."""
+    _stub_answer(monkeypatch)
+    resp = client.post(
+        "/refs/memory/20/ask",
+        data={"question": "Explain ~3", "chunk": "3"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    first_put = next(a for v, a in runtime.calls if v == "put")
+    assert first_put["id"] == "followup/memory/20/c3"
+    link_args = next(a for v, a in runtime.calls if v == "link")
+    assert link_args["target"] == "memory:20~3"
+
+
+def test_ask_followup_blank_question_is_noop(client, runtime, monkeypatch) -> None:
+    """An empty question redirects back without dispatching anything."""
+    _stub_answer(monkeypatch)
+    resp = client.post(
+        "/refs/memory/20/ask", data={"question": "   "}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert not runtime.calls
+
+
+def test_ask_followup_thinking_failure_records_error_turn(
+    client, runtime, monkeypatch
+) -> None:
+    """When the agent raises, the failure is appended as a turn, not lost."""
+    from precis.utils.claude_agent import ClaudeAgentError
+    from precis_web import ask
+
+    def _boom(prompt, *, store, conv_ref_id):
+        raise ClaudeAgentError("nope", stdout="", stderr="", returncode=1)
+
+    monkeypatch.setattr(ask, "generate_answer", _boom)
+    resp = client.post(
+        "/refs/memory/20/ask",
+        data={"question": "anything"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    answer_put = [a for v, a in runtime.calls if v == "put"][-1]
+    assert "thinking failed" in answer_put["text"]
+    assert answer_put["author"] == "system"

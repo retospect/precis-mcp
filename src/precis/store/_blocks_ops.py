@@ -1081,6 +1081,24 @@ class BlocksMixin:
         with self.pool.connection() as conn:
             return _fetch_blocks(conn, where, params, with_embedding=with_embedding)
 
+    def ref_ids_with_chunks(self, ref_ids: list[int]) -> set[int]:
+        """Subset of ``ref_ids`` that have at least one body chunk (ord>=0).
+
+        One batched query for the Papers list's "has chunks" badge /
+        filter on the lexical-search path (where the SQL-side
+        ``list_refs(has_chunks=...)`` filter isn't available). Missing
+        ids simply don't appear in the returned set.
+        """
+        if not ref_ids:
+            return set()
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ref_id FROM chunks "
+                "WHERE ref_id = ANY(%s) AND ord >= 0",
+                (list(ref_ids),),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
     def count_blocks(self, ref_id: int) -> int:
         """Total body chunks on a ref (ord>=0). Tiny indexed count."""
         with self.pool.connection() as conn:

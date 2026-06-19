@@ -8,6 +8,30 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-19 — ask-a-follow-up on a thought + Papers filters)
+
+- **"Ask a follow-up" on any thought (Refs detail pages).** Each
+  Refs detail page (memory / dream / any browsable kind) now carries
+  a textbox + button: type a question and the server reasons about
+  that thought, storing the answer. The Q&A is captured as a `conv`
+  thread (one per source, slug `followup/<kind>/<id>`; chunk-scoped
+  `…/c<pos>` when asked on a chunk) and linked back to the source via
+  the `link` verb (`derived-from`), so the discussion is reachable
+  from the thought it grew out of and accumulates follow-ups.
+  Discussions are listed on the source page; conv pages spawned this
+  way render a "continue this discussion" box. The thinking reuses
+  the dreaming dispatch — `call_claude_agent` with the same
+  `PRECIS_DREAM_SOUL_PATH` system prompt + `PRECIS_MCP_CONFIG` tools
+  when present — run off the event loop. All DB writes go through the
+  `put` / `link` verbs (single-sourced with MCP). New module
+  `src/precis_web/ask.py`; routes `POST /refs/{kind}/{id}/ask` and
+  `POST /refs/conv/{id}/continue`.
+- **Papers list presence filters.** `/papers` gains `has_pdf` /
+  `has_chunks` 0/1 toggles (plus a "chunks" badge per row). The
+  recent-list path pushes them into `store.list_refs` (new tri-state
+  `has_pdf` / `has_chunks` kwargs); the lexical-search path
+  post-filters via the new `store.ref_ids_with_chunks` batch helper.
+
 ### Fixed (2026-06-19 — background-worker spin loops + UI surfacing)
 
 - **OA fetcher no longer re-polls the same stub every pass.** The

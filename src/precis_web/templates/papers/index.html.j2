@@ -2,11 +2,23 @@
 {% block title %}Papers{% endblock %}
 {% block content %}
 <h1 class="text-lg font-semibold mb-3">Papers</h1>
-<form method="get" action="/papers" class="mb-4 flex items-center gap-2">
+<form method="get" action="/papers" class="mb-4 flex flex-wrap items-center gap-2">
   <input name="q" value="{{ q }}" placeholder="Search the corpus…"
          class="w-80 rounded-md border border-slate-300 px-3 py-2 text-sm" />
   <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2">Search</button>
-  {% if q %}<a href="/papers" class="text-sm text-slate-500 underline">clear</a>{% endif %}
+  {# Presence filters — submit the same form so they compose with the
+     query. ``value="1"`` + ``checked`` mirrors the route's 0/1 ints. #}
+  <label class="inline-flex items-center gap-1.5 text-sm text-slate-600 ml-2">
+    <input type="checkbox" name="has_pdf" value="1" {% if has_pdf %}checked{% endif %}
+           onchange="this.form.submit()" class="rounded border-slate-300" />
+    has PDF
+  </label>
+  <label class="inline-flex items-center gap-1.5 text-sm text-slate-600">
+    <input type="checkbox" name="has_chunks" value="1" {% if has_chunks %}checked{% endif %}
+           onchange="this.form.submit()" class="rounded border-slate-300" />
+    ingested (has chunks)
+  </label>
+  {% if q or has_pdf or has_chunks %}<a href="/papers" class="text-sm text-slate-500 underline">clear</a>{% endif %}
 </form>
 
 {% if not papers %}
@@ -19,6 +31,9 @@
     <a href="/papers/{{ p.id }}" class="text-sm font-medium text-sky-700 hover:underline flex-1">
       {{ p.title }}{% if p.year %} <span class="text-slate-400">({{ p.year }})</span>{% endif %}
     </a>
+    {% if p.has_chunks %}
+      <span class="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-700" title="ingested — has body chunks">chunks</span>
+    {% endif %}
     {% if p.has_pdf %}
       <span class="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">PDF</span>
     {% else %}

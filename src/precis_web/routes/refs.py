@@ -20,6 +20,7 @@ canonical address (slug when present, else id) for the ``get`` call.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -30,6 +31,8 @@ from markupsafe import Markup, escape
 from precis.errors import NotFound
 from precis.utils import mentions
 from precis.utils.authors import author_names
+from precis.utils.claude_agent import ClaudeAgentError
+from precis_web import ask
 from precis_web.deps import await_dispatch, get_store, templates
 
 router = APIRouter(prefix="/refs", tags=["refs"])
@@ -221,6 +224,41 @@ def _conv_turns(store: Any, ref_id: int) -> list[dict[str, Any]]:
             }
         )
     return turns
+
+
+def _followup_discussions(store: Any, ref_id: int) -> list[dict[str, Any]]:
+    """Conv threads spawned from this ref via the "ask a follow-up" box.
+
+    Each follow-up conv is linked ``conv --derived-from--> source``
+    (chunk-scoped via ``dst_pos`` when the question was asked on a
+    chunk). We surface them on the source's detail page so the
+    discussion is reachable from the thought it grew out of.
+    """
+    try:
+        links = store.links_for(ref_id, direction="in", relation="derived-from")
+    except Exception:
+        return []
+    src_ids = [lnk.src_ref_id for lnk in links]
+    if not src_ids:
+        return []
+    refs = store.fetch_refs_by_ids(src_ids, include_deleted=False)
+    rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for lnk in links:
+        conv = refs.get(lnk.src_ref_id)
+        if conv is None or conv.kind != "conv" or conv.id in seen:
+            continue
+        seen.add(conv.id)
+        rows.append(
+            {
+                "id": conv.id,
+                "title": (conv.title or "(untitled)").split("\n", 1)[0][:120],
+                "url": f"/refs/conv/{conv.id}",
+                "turns": store.count_blocks(conv.id),
+                "chunk": lnk.dst_pos,
+            }
+        )
+    return rows
 
 
 #: The kinds the Refs tab pre-checks by default — note-like, browsable,
@@ -626,6 +664,11 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     # overview card — a person clicking a thread wants the turns, not
     # the `Next:` call affordances meant for the LLM.
     if kind == "conv":
+        # Follow-up threads stamp the source handle in ref.meta so the
+        # transcript can offer a "continue this discussion" box that
+        # routes the next question back to the same source.
+        conv_meta = ref.meta or {}
+        followup_source = conv_meta.get("followup_source")
         return templates.TemplateResponse(
             request,
             "refs/conv_detail.html.j2",
@@ -635,6 +678,15 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
                 "kind_label": _REF_KIND_LABEL.get(kind, kind.replace("-", " ").title()),
                 "ref": _row(ref),
                 "turns": _conv_turns(store, ref.id),
+                "followup_source": followup_source,
+                "followup_source_url": (
+                    _source_detail_url(
+                        str(conv_meta.get("followup_kind") or ""),
+                        conv_meta.get("followup_ref_id"),
+                    )
+                    if followup_source
+                    else None
+                ),
             },
         )
 
@@ -734,6 +786,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             "tags": tags,
             "body_disabled_notice": body_disabled_notice,
             "references": references,
+            "discussions": _followup_discussions(store, ref.id),
         },
     )
 
@@ -781,3 +834,216 @@ async def edit_tags(
             status_code=400,
         )
     return RedirectResponse(url=redirect_url, status_code=303)
+
+
+# ---- Ask a follow-up question about a thought -----------------------
+#
+# A textbox + button on each detail page. The question is captured as
+# a turn in a ``conv`` thread (one per source[, chunk]); an agentic
+# ``claude -p`` pass (the dreaming dispatch — SOUL prompt + MCP precis
+# tools) answers, and the answer is appended as the next turn. The conv
+# is linked ``derived-from`` the source so the discussion is reachable
+# from the thought. All DB writes go through the put / link verbs.
+
+
+def _source_detail_url(kind: str, ref_id: Any) -> str:
+    """Best detail URL for a source ref (papers have their own viewer)."""
+    if ref_id is None:
+        return "/refs"
+    if kind == "paper":
+        return f"/papers/{ref_id}"
+    return f"/refs/{kind}/{ref_id}"
+
+
+async def _run_followup(
+    request: Request,
+    *,
+    source_kind: str,
+    source_ref_id: int,
+    chunk_pos: int | None,
+    question: str,
+) -> Response:
+    """Capture a question, think about it, append the answer to a conv.
+
+    Shared by the source-page ``/ask`` route and the conv-page
+    ``/continue`` route — both resolve to the same conv slug, so a
+    discussion accumulates turns in one thread.
+    """
+    question = (question or "").strip()
+    store = get_store(request)
+    refs = store.fetch_refs_by_ids([source_ref_id], include_deleted=False)
+    source = refs.get(source_ref_id)
+    if source is None or source.kind != source_kind:
+        raise NotFound(f"{source_kind} id={source_ref_id} not found")
+
+    back_url = _source_detail_url(source_kind, source_ref_id)
+    if not question:
+        return RedirectResponse(url=back_url, status_code=303)
+
+    slug = ask.followup_slug(source_kind, source_ref_id, chunk_pos)
+    handle = ask.source_handle(source_kind, source_ref_id, chunk_pos)
+    source_title = (source.title or "").split("\n", 1)[0][:120] or handle
+
+    def _err(title: str, detail: str) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": title, "detail": detail, "status": 400},
+            status_code=400,
+        )
+
+    # 1. Append the human question (mints the thread on first ask,
+    #    stamping the source handle in ref_meta for the continue box).
+    _, is_error = await await_dispatch(
+        request,
+        "put",
+        {
+            "kind": "conv",
+            "id": slug,
+            "text": question,
+            "author": ask.ASKER,
+            "title": f"Follow-up · {source_title}",
+            "ref_meta": {
+                "followup_source": handle,
+                "followup_kind": source_kind,
+                "followup_ref_id": source_ref_id,
+                "followup_chunk": chunk_pos,
+            },
+        },
+    )
+    if is_error:
+        return _err("Follow-up error", "could not record the question")
+
+    conv = store.get_ref(kind="conv", id=slug)
+    if conv is None:
+        return _err("Follow-up error", "conv thread missing after put")
+    conv_url = f"/refs/conv/{conv.id}"
+
+    # 2. Link the discussion back to its source (idempotent — re-running
+    #    is a no-op via the links unique tuple). Chunk-scoped via ~N.
+    await await_dispatch(
+        request,
+        "link",
+        {"kind": "conv", "id": slug, "target": handle, "rel": "derived-from"},
+    )
+
+    # 3. Build the prompt: source body + chunk-in-focus + the discussion
+    #    so far (every turn except the question we just appended).
+    addr: str | int = source.slug if source.slug else source.id
+    src_body, src_err = await await_dispatch(
+        request, "get", {"kind": source_kind, "id": addr}
+    )
+    if src_err:
+        src_body = source.title or ""
+    focus_text: str | None = None
+    if chunk_pos is not None:
+        for b in store.list_blocks_for_ref(
+            source_ref_id, pos_range=(chunk_pos, chunk_pos)
+        ):
+            focus_text = b.text or ""
+            break
+    all_turns = store.list_blocks_for_ref(conv.id)
+    prior = [
+        ((b.meta or {}).get("author") or "?", b.text or "") for b in all_turns[:-1]
+    ]
+    prompt = ask.build_prompt(
+        source_kind=source_kind,
+        source_handle_str=handle,
+        source_title=source_title,
+        source_body=src_body,
+        focus_text=focus_text,
+        prior_turns=prior,
+        question=question,
+    )
+
+    # 4. Think. The subprocess can take tens of seconds — run it off the
+    #    event loop so concurrent tabs / healthz stay responsive.
+    answer_author = ask.ANSWERER
+    answer_meta: dict[str, Any] = {}
+    try:
+        result = await asyncio.to_thread(
+            ask.generate_answer, prompt, store=store, conv_ref_id=conv.id
+        )
+        answer = (result.final_text or "").strip() or "(the model returned no text)"
+        answer_meta = {
+            k: v
+            for k, v in {
+                "model": getattr(result, "model", None),
+                "cost_usd": result.cost_usd,
+                "duration_s": round(result.duration_s, 1),
+                "turns": result.turns_used,
+            }.items()
+            if v is not None
+        }
+    except ClaudeAgentError as exc:
+        answer = f"⚠️ thinking failed: {exc}"
+        answer_author = "system"
+
+    # 5. Append the answer as the next turn, then land on the transcript.
+    await await_dispatch(
+        request,
+        "put",
+        {
+            "kind": "conv",
+            "id": slug,
+            "text": answer,
+            "author": answer_author,
+            "meta": answer_meta,
+        },
+    )
+    return RedirectResponse(url=conv_url, status_code=303)
+
+
+@router.post("/{kind}/{ref_id}/ask")
+async def ask_followup(
+    request: Request,
+    kind: str,
+    ref_id: int,
+    question: str = Form(""),
+    chunk: str = Form(""),
+) -> Response:
+    """Ask a follow-up about a ref (or a specific chunk via ``chunk=N``)."""
+    _require_kind(kind)
+    chunk_pos: int | None = None
+    if chunk.strip():
+        try:
+            chunk_pos = int(chunk.strip())
+        except ValueError:
+            chunk_pos = None
+    return await _run_followup(
+        request,
+        source_kind=kind,
+        source_ref_id=ref_id,
+        chunk_pos=chunk_pos,
+        question=question,
+    )
+
+
+@router.post("/conv/{conv_ref_id}/continue")
+async def continue_followup(
+    request: Request,
+    conv_ref_id: int,
+    question: str = Form(""),
+) -> Response:
+    """Continue a follow-up thread — resolve its source from ref.meta."""
+    store = get_store(request)
+    refs = store.fetch_refs_by_ids([conv_ref_id], include_deleted=False)
+    conv = refs.get(conv_ref_id)
+    if conv is None or conv.kind != "conv":
+        raise NotFound(f"conv id={conv_ref_id} not found")
+    meta = conv.meta or {}
+    source_kind = meta.get("followup_kind")
+    source_ref_id = meta.get("followup_ref_id")
+    if not source_kind or source_ref_id is None:
+        raise NotFound(
+            f"conv id={conv_ref_id} is not a follow-up thread (no source in meta)"
+        )
+    chunk_raw = meta.get("followup_chunk")
+    chunk_pos = int(chunk_raw) if isinstance(chunk_raw, int) else None
+    return await _run_followup(
+        request,
+        source_kind=str(source_kind),
+        source_ref_id=int(source_ref_id),
+        chunk_pos=chunk_pos,
+        question=question,
+    )
