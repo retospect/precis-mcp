@@ -604,8 +604,16 @@ class CacheBackedHandler(Handler):
                 title = title[:77] + "..."
             lines.append(f"- `{ref.slug}` - {title}  _({day})_")
         lines.append("")
+        # Only claim "of at most N" when the page was actually capped
+        # (count == limit, so more may exist). At less than the cap the
+        # pool is exhausted, so "of at most N" implies a truncation that
+        # didn't happen — show the plain count instead.
+        if len(refs) >= limit:
+            count_phrase = f"showing {len(refs)} of at most {limit}"
+        else:
+            count_phrase = f"showing {len(refs)} of {len(refs)}"
         lines.append(
-            f"_showing {len(refs)} of at most {limit}. "
+            f"_{count_phrase}. "
             f"Next: get(kind={self.spec.kind!r}, id='<slug>') to read one._"
         )
         return Response(body="\n".join(lines))

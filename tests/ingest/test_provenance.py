@@ -840,3 +840,24 @@ class TestInputIndex:
         ]
         out = render_batch(results, view="default")
         assert "**#" not in out
+
+
+def test_fetch_crossref_message_connection_error_raises_upstream() -> None:
+    """A transport failure (no HTTP ``response``) surfaces as a clean,
+    retryable ``Upstream`` instead of leaking the raw "Connection
+    aborted" exception to the agent (gripe #39244). A real 404 still
+    maps to ``None`` (DOI simply not found)."""
+    import habanero
+
+    from precis.errors import Upstream
+    from precis.ingest.provenance import _fetch_crossref_message
+
+    class _BoomCrossref:
+        def __init__(self, *a, **k) -> None: ...
+
+        def works(self, *a, **k):
+            raise ConnectionError("('Connection aborted.', RemoteDisconnected(...))")
+
+    with patch.object(habanero, "Crossref", _BoomCrossref):
+        with pytest.raises(Upstream):
+            _fetch_crossref_message("10.1038/nature05095", mailto=None)

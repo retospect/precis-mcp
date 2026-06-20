@@ -70,7 +70,7 @@ not "all of them" — use `search` for content-driven discovery.
 ## What's the `/<filter>` shape in id=?
 
 ```python
-get(kind='todo', id='/open')        # open + doing + blocked + paused
+get(kind='todo', id='/open')        # open + doing + blocked
 get(kind='todo', id='/doing')       # by literal STATUS
 get(kind='todo', id='/done')
 get(kind='flashcard', id='/due')    # SM-2: due now or within 3 days
@@ -90,12 +90,11 @@ errors with the supported set as `options`).
 ## What if there are more refs than fit on one page?
 
 ```python
-get(kind='paper', page=2)
-get(kind='paper', page=3, page_size=20)   # default 10, max 100
+search(kind='paper', q='perovskite', offset=20)   # next page of hits
 ```
 
-`page=1` is the default. `exclude=[…]` is for hand-skipping known
-slugs, not paging.
+`get(kind='paper')` does not paginate — only `search` does, via
+`offset=N`. `exclude=[…]` is for hand-skipping known slugs, not paging.
 
 ## Address a chunk or sub-range inside a ref
 ## Read just block 38, or blocks 38..42

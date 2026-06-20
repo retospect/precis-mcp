@@ -70,8 +70,11 @@ search(kind='oracle', q='impermanence')                       # all traditions
 search(kind='oracle', q='timely change', scope='iching')      # within one
 ```
 
-Hybrid lexical + semantic. Results are oracle handles; order is the
-relevance signal.
+Title-lexical only — oracle entries carry no embeddings, so semantic
+search does not apply and a query may return nothing. For a reliable
+pick, address an entry directly with
+`get(kind='oracle', id='<tradition>~N')`. Results are oracle handles;
+order is the relevance signal.
 
 ## Cite an oracle entry in writing
 ## Quote a passage with provenance

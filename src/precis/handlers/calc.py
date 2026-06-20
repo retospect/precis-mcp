@@ -21,7 +21,7 @@ class CalcHandler(Handler):
         title="Calculator",
         description=(
             "Local symbolic and numeric computation via sympy. "
-            "Pass an expression as `id`; the result is the value."
+            "Pass an expression as `id` (or `q`); the result is the value."
         ),
         supports_get=True,
         is_numeric=False,

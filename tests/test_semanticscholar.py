@@ -110,3 +110,13 @@ def test_recover_key_from_cache_meta(handler) -> None:
     ref = SimpleNamespace()
     cache = SimpleNamespace(meta={"query": "graphene heterojunctions"})
     assert handler._recover_key(ref, cache) == "graphene heterojunctions"
+
+
+def test_provider_is_registered_slug() -> None:
+    """The handler must stamp a provider that exists in the providers
+    table. Semantic Scholar is registered under the slug ``s2`` — the
+    literal ``semanticscholar`` is NOT a row, so stamping it FK-violated
+    on every cache write (gripe #39242)."""
+    from precis.handlers.semanticscholar import SemanticScholarHandler
+
+    assert SemanticScholarHandler.provider == "s2"
