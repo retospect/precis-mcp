@@ -2,21 +2,36 @@
 
 Closes the chase ↔ stub loop. The finding-chase worker creates
 stub paper refs (identifiers known, ``pdf_sha256 IS NULL``); this
-worker walks the stub backlog and asks **three OA sources in
+worker walks the stub backlog and asks **ten OA sources in
 cascade** whether an open-access copy exists:
 
-1. **Unpaywall** — aggregator of 30+ OA sources, by DOI. Free;
+1. **Publisher pattern** — deterministic DOI→PDF URL for publishers
+   with a known endpoint (Springer/BMC, PLOS, …). Free; no API.
+2. **Elsevier** — Article Retrieval API by DOI. Key-gated
+   (``PRECIS_ELSEVIER_API_KEY``); the only route for ScienceDirect.
+3. **Wiley** — TDM API by DOI. Token-gated
+   (``PRECIS_WILEY_TDM_TOKEN``); direct version-of-record PDF.
+4. **Unpaywall** — aggregator of 30+ OA sources, by DOI. Free;
    TOS requires an email parameter.
-2. **arXiv** — direct PDF download by arXiv ID. Free; no key.
-3. **Semantic Scholar** — ``openAccessPdf`` field on the paper
-   object, by DOI / arXiv / S2 id. Free; no key for low volume.
+5. **Crossref** — publisher TDM full-text PDF links, by DOI. Free;
+   needs the polite ``mailto`` (= the Unpaywall email).
+6. **OpenAlex** — OA ``pdf_url`` locations, by DOI. Free; ``mailto``
+   optional. Different coverage to Unpaywall.
+7. **Europe PMC** — biomedical OA full-text PDF, DOI→PMCID. Free.
+8. **CORE** — green-OA repository copies, by DOI. Key-gated
+   (``PRECIS_CORE_API_KEY``); the net for paywalled-publisher papers.
+9. **arXiv** — direct PDF download by arXiv ID. Free; no key.
+10. **Semantic Scholar** — ``openAccessPdf`` field, by DOI / arXiv /
+    S2 id. Free; no key for low volume.
 
-When the first source yields a PDF the cascade stops; later
+The deterministic + key-gated legs run *first* because they sidestep
+the aggregators' common landing-page-as-OA miss on fresh DOIs;
+identifier-/credential-less legs are silent no-ops (return ``None``,
+no event). When a source yields a PDF the cascade stops; later
 sources only run when earlier ones returned ``no_oa_version`` or
 ``fetch_failed``. Each attempt writes its own ``ref_events`` row
-(``source='fetcher:unpaywall'`` / ``'fetcher:arxiv'`` /
-``'fetcher:s2'``) so the audit trail shows what was tried and
-what worked.
+(``source='fetcher:<leg>'``) so the audit trail shows what was tried
+and what worked.
 
 When a PDF lands, it goes into the watch inbox →
 ``precis watch`` triggers ``precis_add`` → C7's
@@ -53,6 +68,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -69,9 +85,24 @@ from tenacity import (
 log = logging.getLogger(__name__)
 
 
+_SOURCE_PUBLISHER = "fetcher:publisher"
+_SOURCE_ELSEVIER = "fetcher:elsevier"
+_SOURCE_WILEY = "fetcher:wiley"
 _SOURCE_UNPAYWALL = "fetcher:unpaywall"
+_SOURCE_CROSSREF = "fetcher:crossref"
+_SOURCE_OPENALEX = "fetcher:openalex"
+_SOURCE_EUROPEPMC = "fetcher:europepmc"
+_SOURCE_CORE = "fetcher:core"
 _SOURCE_ARXIV = "fetcher:arxiv"
 _SOURCE_S2 = "fetcher:s2"
+
+# Browser-ish UA for hosts that Cloudflare-gate non-browser agents
+# (CORE's API + many institutional repositories answer the default
+# httpx / precis UA with an "error 1010" interstitial).
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
 # The retry-window predicate matches any ``fetcher:%`` source rather
 # than one canonical provider: the window must arm after whichever
@@ -244,7 +275,309 @@ def claim_stubs_to_fetch(
     ]
 
 
+# ── Deterministic publisher PDF patterns ───────────────────────────
+#
+# Some OA publishers serve the full-text PDF at a URL derivable from
+# the DOI alone — exactly like arXiv's ``/pdf/<id>.pdf``. The two
+# aggregators miss these constantly on fresh DOIs: Unpaywall returns
+# the HTML *landing page* as the "OA location" (our ``%PDF-`` guard
+# rejects it → ``fetch_failed``) and S2 reports ``no_oa_version`` for
+# days after publication. For publishers with a deterministic
+# DOI→PDF endpoint we hit it directly and skip the aggregators.
+#
+# Each entry maps a DOI registrant prefix to a builder returning
+# candidate PDF URLs (most-likely first). A prefix miss returns ``[]``
+# and the cascade falls through to Unpaywall/arXiv/S2. Even a *hit* is
+# only believed if the downloaded bytes start with ``%PDF-`` (the
+# downloader's magic-byte guard), so a wrong guess for a paywalled
+# article degrades to ``fetch_failed`` → fall-through — never a poison
+# ingest. Keep the registry to patterns that are deterministic AND
+# verified; a guessy entry only burns a fetch attempt and accelerates
+# the stub's backoff.
+
+# PLOS journal-code → site slug. The DOI infix
+# (``10.1371/journal.<code>.<n>``) selects the journal subdomain path.
+# Only the long-established journals are listed; an unrecognised code
+# falls through (the newer PLOS titles can be added once their slug is
+# verified — a wrong slug 404s to HTML and wastes an attempt).
+_PLOS_JOURNAL_SLUGS = {
+    "pone": "plosone",
+    "pbio": "plosbiology",
+    "pmed": "plosmedicine",
+    "pgen": "plosgenetics",
+    "pcbi": "ploscompbiol",
+    "ppat": "plospathogens",
+    "pntd": "plosntds",
+}
+_PLOS_CODE_RE = re.compile(r"^10\.1371/journal\.([a-z]+)\.")
+
+
+def _springer_pdf_urls(doi: str) -> list[str]:
+    """Springer full-text PDF endpoint.
+
+    Covers BMC / SpringerOpen (``10.1186``, fully OA) and hybrid
+    Springer (``10.1007``); for a paywalled Springer article the URL
+    serves an HTML interstitial that the magic-byte guard rejects, so
+    the hybrid prefix is safe to include — it lands the OA ones and
+    falls through on the rest.
+    """
+    return [f"https://link.springer.com/content/pdf/{doi}.pdf"]
+
+
+def _plos_pdf_urls(doi: str) -> list[str]:
+    """PLOS printable PDF. Journal slug derived from the DOI infix;
+    an unrecognised journal code falls through (empty list)."""
+    m = _PLOS_CODE_RE.match(doi)
+    if not m:
+        return []
+    slug = _PLOS_JOURNAL_SLUGS.get(m.group(1))
+    if not slug:
+        return []
+    return [f"https://journals.plos.org/{slug}/article/file?id={doi}&type=printable"]
+
+
+#: DOI registrant prefix → candidate-URL builder.
+_PUBLISHER_PDF_PATTERNS: dict[str, Callable[[str], list[str]]] = {
+    "10.1186": _springer_pdf_urls,  # BMC / SpringerOpen (OA)
+    "10.1007": _springer_pdf_urls,  # Springer (hybrid; guard gates non-OA)
+    "10.1371": _plos_pdf_urls,  # PLOS (OA)
+}
+
+
+def _publisher_pdf_urls(doi: str) -> list[str]:
+    """Candidate deterministic PDF URLs for ``doi`` (possibly empty).
+
+    Matches on the registrant prefix plus a ``/`` boundary so
+    ``10.1186`` doesn't spuriously match ``10.11860/…``.
+    """
+    for prefix, builder in _PUBLISHER_PDF_PATTERNS.items():
+        if doi.startswith(prefix + "/"):
+            return builder(doi)
+    return []
+
+
+# ── Elsevier full-text API ─────────────────────────────────────────
+#
+# ScienceDirect (Elsevier) is the hard case the deterministic patterns
+# can't touch: there's no keyless DOI→PDF URL (the PDF endpoint 403s
+# bots and the PII isn't in the DOI), and Unpaywall/OpenAlex routinely
+# return only the doi.org *landing page* for hybrid-OA Elsevier
+# articles. The Article Retrieval API takes the DOI directly and, with
+# an ``X-ELS-APIKey`` header + ``Accept: application/pdf``, streams the
+# full-text PDF for entitled/OA content. Key-gated (free key from
+# https://dev.elsevier.com); the leg is a silent no-op when unset.
+
+#: DOI registrant prefixes routed to the Elsevier API. ``10.1016`` is
+#: the dominant ScienceDirect prefix (Cell Press, The Lancet, and the
+#: bulk of Elsevier journals all live under it); add legacy imprint
+#: prefixes here as they surface.
+_ELSEVIER_DOI_PREFIXES = frozenset({"10.1016"})
+
+_ELSEVIER_ARTICLE_BASE = "https://api.elsevier.com/content/article/doi"
+
+
+def _elsevier_api_key() -> str:
+    """Elsevier API key from the env, or '' when unconfigured."""
+    return os.environ.get("PRECIS_ELSEVIER_API_KEY", "").strip()
+
+
+def _is_elsevier_doi(doi: str) -> bool:
+    """True when ``doi``'s registrant prefix is routed to Elsevier."""
+    return any(doi.startswith(p + "/") for p in _ELSEVIER_DOI_PREFIXES)
+
+
+# ── Wiley TDM API ──────────────────────────────────────────────────
+#
+# Wiley's Text & Data Mining service streams the full-text PDF by DOI
+# for any article the token's institution is entitled to (incl. all
+# gold-OA). Token-gated (``PRECIS_WILEY_TDM_TOKEN``); the leg is a
+# silent no-op when unset. Like Elsevier it sidesteps the aggregators'
+# landing-page miss — a direct, authoritative version-of-record PDF.
+
+#: DOI registrant prefixes routed to Wiley. ``10.1002`` (Wiley core)
+#: and ``10.1111`` (the legacy Blackwell imprint) cover the bulk.
+_WILEY_DOI_PREFIXES = frozenset({"10.1002", "10.1111"})
+
+_WILEY_TDM_BASE = "https://api.wiley.com/onlinelibrary/tdm/v1/articles"
+
+
+def _wiley_tdm_token() -> str:
+    """Wiley TDM client token from the env, or '' when unconfigured."""
+    return os.environ.get("PRECIS_WILEY_TDM_TOKEN", "").strip()
+
+
+def _is_wiley_doi(doi: str) -> bool:
+    """True when ``doi``'s registrant prefix is routed to Wiley."""
+    return any(doi.startswith(p + "/") for p in _WILEY_DOI_PREFIXES)
+
+
+# ── CORE green-OA aggregator ───────────────────────────────────────
+#
+# CORE harvests full-text PDFs from ~10k institutional/subject
+# repositories — the green-OA copy of a paper whose publisher is
+# paywalled. Key-gated (``PRECIS_CORE_API_KEY``). The search API
+# returns per-work ``downloadUrl``s (repository bitstreams); we try
+# the ones whose DOI matches. Repositories vary in bot-friendliness,
+# so the ``%PDF-`` guard + multi-candidate fall-through earns its keep
+# here. Positioned late — a net for what the publisher/OA legs miss.
+
+_CORE_SEARCH_BASE = "https://api.core.ac.uk/v3/search/works/"
+
+
+def _core_api_key() -> str:
+    """CORE API key from the env, or '' when unconfigured."""
+    return os.environ.get("PRECIS_CORE_API_KEY", "").strip()
+
+
 # ── Per-stub logic ─────────────────────────────────────────────────
+
+
+def _try_publisher(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+) -> FetchOutcome | None:
+    """Try a deterministic publisher PDF URL for one stub.
+
+    Returns ``None`` — a silent fall-through, no event, same contract
+    as ``_try_arxiv`` for a missing arXiv id — when the stub has no
+    DOI, the DOI is malformed, or its registrant prefix isn't in
+    :data:`_PUBLISHER_PDF_PATTERNS`. When a pattern matches, downloads
+    the first candidate whose bytes pass the ``%PDF-`` guard and
+    records ``fetch_ok``; if every candidate fails the guard, records
+    ``fetch_failed`` and the cascade falls through to the aggregators.
+    """
+    if not stub.doi or not _DOI_RE.match(stub.doi):
+        return None
+    urls = _publisher_pdf_urls(stub.doi)
+    if not urls:
+        return None
+
+    t0 = time.perf_counter()
+    filename = _stub_filename(stub) + ".pdf"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    errors: list[str] = []
+    for url in urls:
+        try:
+            size_bytes = _download_pdf(url, target)
+        except Exception as exc:
+            errors.append(f"{url}: {str(exc)[:120]}")
+            continue
+        return FetchOutcome(
+            event="fetch_ok",
+            payload={
+                "doi": stub.doi,
+                "url": url,
+                "size_bytes": size_bytes,
+                "host_type": "publisher_pattern",
+                "filename": filename,
+            },
+            duration_ms=_ms(t0),
+        )
+    return FetchOutcome(
+        event="fetch_failed",
+        payload={"doi": stub.doi, "urls": urls, "error": "; ".join(errors)[:200]},
+        duration_ms=_ms(t0),
+    )
+
+
+def _try_elsevier(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+    api_key: str,
+) -> FetchOutcome | None:
+    """Try the Elsevier Article Retrieval API for one stub.
+
+    Returns ``None`` (silent fall-through, no event) when there's no
+    API key, no DOI, the DOI is malformed, or its prefix isn't an
+    Elsevier one. Otherwise hits ``content/article/doi/<doi>`` with the
+    API key and ``Accept: application/pdf``; the ``%PDF-`` guard gates
+    the result, so a non-entitled / non-OA article (which the API
+    answers with an XML error body, not a PDF) degrades to
+    ``fetch_failed`` and the cascade continues.
+    """
+    if not api_key or not stub.doi:
+        return None
+    if not _DOI_RE.match(stub.doi) or not _is_elsevier_doi(stub.doi):
+        return None
+
+    t0 = time.perf_counter()
+    url = f"{_ELSEVIER_ARTICLE_BASE}/{stub.doi}"
+    filename = _stub_filename(stub) + ".pdf"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        size_bytes = _download_pdf(
+            url,
+            target,
+            extra_headers={"X-ELS-APIKey": api_key, "Accept": "application/pdf"},
+        )
+    except Exception as exc:
+        return FetchOutcome(
+            event="fetch_failed",
+            payload={"doi": stub.doi, "url": url, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    return FetchOutcome(
+        event="fetch_ok",
+        payload={
+            "doi": stub.doi,
+            "url": url,
+            "size_bytes": size_bytes,
+            "host_type": "elsevier_api",
+            "filename": filename,
+        },
+        duration_ms=_ms(t0),
+    )
+
+
+def _try_wiley(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+    token: str,
+) -> FetchOutcome | None:
+    """Try the Wiley TDM API for one stub.
+
+    Returns ``None`` (silent fall-through) without a token, DOI, or a
+    Wiley DOI prefix. Otherwise streams ``tdm/v1/articles/<doi>`` with
+    the client token; the ``%PDF-`` guard gates the result, so a
+    non-entitled DOI (Wiley answers with an HTML / error body) degrades
+    to ``fetch_failed`` and the cascade continues.
+    """
+    if not token or not stub.doi:
+        return None
+    if not _DOI_RE.match(stub.doi) or not _is_wiley_doi(stub.doi):
+        return None
+
+    t0 = time.perf_counter()
+    url = f"{_WILEY_TDM_BASE}/{stub.doi}"
+    filename = _stub_filename(stub) + ".pdf"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        size_bytes = _download_pdf(
+            url, target, extra_headers={"Wiley-TDM-Client-Token": token}
+        )
+    except Exception as exc:
+        return FetchOutcome(
+            event="fetch_failed",
+            payload={"doi": stub.doi, "url": url, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    return FetchOutcome(
+        event="fetch_ok",
+        payload={
+            "doi": stub.doi,
+            "url": url,
+            "size_bytes": size_bytes,
+            "host_type": "wiley_tdm",
+            "filename": filename,
+        },
+        duration_ms=_ms(t0),
+    )
 
 
 def _try_unpaywall(
@@ -462,6 +795,199 @@ def _try_s2(
     )
 
 
+def _try_crossref(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+    email: str,
+) -> FetchOutcome | None:
+    """Try Crossref's TDM full-text links for one stub.
+
+    Crossref metadata carries a ``link[]`` array; entries tagged
+    ``intended-application: text-mining`` hold the publisher's own
+    full-text URL + content-type. We try the ones whose content-type
+    is a PDF — for fully-OA publishers that's a direct, fetchable PDF
+    across many imprints we haven't special-cased. Needs the polite
+    ``mailto`` (Crossref connection-resets the anonymous pool), so the
+    leg is a silent no-op when no email is configured.
+    """
+    if not email or not stub.doi or not _DOI_RE.match(stub.doi):
+        return None
+    t0 = time.perf_counter()
+    try:
+        pdf_urls = _query_crossref_pdf_links(stub.doi, email=email)
+    except Exception as exc:
+        return FetchOutcome(
+            event="api_error",
+            payload={"doi": stub.doi, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    if not pdf_urls:
+        return FetchOutcome(
+            event="no_oa_version",
+            payload={"doi": stub.doi},
+            duration_ms=_ms(t0),
+        )
+    return _download_first(
+        stub, pdf_urls, inbox_dir=inbox_dir, host_type="crossref_tdm", t0=t0
+    )
+
+
+def _try_openalex(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+    email: str,
+) -> FetchOutcome | None:
+    """Try OpenAlex's PDF locations for one stub.
+
+    OpenAlex indexes OA locations like Unpaywall but often surfaces a
+    different (working) ``pdf_url`` — a green-OA repository copy where
+    Unpaywall returned only the publisher landing page. Keyless;
+    ``mailto`` is polite but optional.
+    """
+    if not stub.doi or not _DOI_RE.match(stub.doi):
+        return None
+    t0 = time.perf_counter()
+    try:
+        pdf_urls = _query_openalex_pdf_urls(stub.doi, email=email)
+    except Exception as exc:
+        return FetchOutcome(
+            event="api_error",
+            payload={"doi": stub.doi, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    if not pdf_urls:
+        return FetchOutcome(
+            event="no_oa_version",
+            payload={"doi": stub.doi},
+            duration_ms=_ms(t0),
+        )
+    return _download_first(
+        stub, pdf_urls, inbox_dir=inbox_dir, host_type="openalex", t0=t0
+    )
+
+
+def _try_europepmc(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+) -> FetchOutcome | None:
+    """Try Europe PMC's OA full-text PDF for one stub.
+
+    Resolves the DOI to a PMCID via the search API, and — when the
+    record is in the OA subset — downloads the rendered PDF. High-yield
+    for biomedical papers that S2/Unpaywall miss. Keyless.
+    """
+    if not stub.doi or not _DOI_RE.match(stub.doi):
+        return None
+    t0 = time.perf_counter()
+    try:
+        pmcid = _query_europepmc_oa_pmcid(stub.doi)
+    except Exception as exc:
+        return FetchOutcome(
+            event="api_error",
+            payload={"doi": stub.doi, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    if not pmcid:
+        return FetchOutcome(
+            event="no_oa_version",
+            payload={"doi": stub.doi},
+            duration_ms=_ms(t0),
+        )
+    url = f"https://europepmc.org/articles/{pmcid}?pdf=render"
+    return _download_first(
+        stub, [url], inbox_dir=inbox_dir, host_type="europepmc", t0=t0
+    )
+
+
+def _try_core(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+    api_key: str,
+) -> FetchOutcome | None:
+    """Try CORE's green-OA repository copies for one stub.
+
+    Returns ``None`` (silent fall-through) without a key or DOI.
+    Searches CORE for the DOI and downloads the first repository
+    ``downloadUrl`` that passes the ``%PDF-`` guard — repositories
+    bot-block unevenly, so a browser UA is sent and candidates are
+    tried in turn.
+    """
+    if not api_key or not stub.doi or not _DOI_RE.match(stub.doi):
+        return None
+    t0 = time.perf_counter()
+    try:
+        pdf_urls = _query_core_pdf_urls(stub.doi, api_key=api_key)
+    except Exception as exc:
+        return FetchOutcome(
+            event="api_error",
+            payload={"doi": stub.doi, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    if not pdf_urls:
+        return FetchOutcome(
+            event="no_oa_version",
+            payload={"doi": stub.doi},
+            duration_ms=_ms(t0),
+        )
+    return _download_first(
+        stub,
+        pdf_urls,
+        inbox_dir=inbox_dir,
+        host_type="core",
+        t0=t0,
+        extra_headers={"User-Agent": _BROWSER_UA},
+    )
+
+
+def _download_first(
+    stub: StubRef,
+    urls: list[str],
+    *,
+    inbox_dir: Path,
+    host_type: str,
+    t0: float,
+    extra_headers: dict[str, str] | None = None,
+) -> FetchOutcome:
+    """Download the first URL whose bytes pass the ``%PDF-`` guard.
+
+    Shared tail for the legs that resolve a list of candidate PDF URLs
+    (publisher patterns aside, which inline this). Returns ``fetch_ok``
+    on the first good PDF, else ``fetch_failed`` with the per-URL
+    errors so the cascade falls through. ``extra_headers`` (e.g. a
+    browser UA for repository hosts) is forwarded to every candidate.
+    """
+    filename = _stub_filename(stub) + ".pdf"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    errors: list[str] = []
+    for url in urls:
+        try:
+            size_bytes = _download_pdf(url, target, extra_headers=extra_headers)
+        except Exception as exc:
+            errors.append(f"{url}: {str(exc)[:120]}")
+            continue
+        return FetchOutcome(
+            event="fetch_ok",
+            payload={
+                "doi": stub.doi,
+                "url": url,
+                "size_bytes": size_bytes,
+                "host_type": host_type,
+                "filename": filename,
+            },
+            duration_ms=_ms(t0),
+        )
+    return FetchOutcome(
+        event="fetch_failed",
+        payload={"doi": stub.doi, "urls": urls, "error": "; ".join(errors)[:200]},
+        duration_ms=_ms(t0),
+    )
+
+
 # ── Runner ─────────────────────────────────────────────────────────
 
 
@@ -485,14 +1011,24 @@ def run_oa_fetch_pass(
     limit: int = 8,
     inbox_dir: Path | str | None = None,
     email: str | None = None,
+    api_key: str | None = None,
+    wiley_token: str | None = None,
+    core_key: str | None = None,
 ) -> dict[str, int]:
     """Process up to ``limit`` stubs through the OA fetcher cascade.
 
-    Per stub: tries Unpaywall → arXiv → S2 in order. The cascade
-    stops at the first ``fetch_ok``; intermediate ``no_oa_version``
-    / ``fetch_failed`` outcomes still produce an audit event and
-    fall through to the next source. ``invalid_identifier`` /
-    ``identifier_missing`` outcomes also fall through.
+    Per stub: tries publisher → Elsevier → Wiley → Unpaywall →
+    Crossref → OpenAlex → Europe PMC → CORE → arXiv → S2 in order.
+    The cascade stops at the first ``fetch_ok``; intermediate
+    ``no_oa_version`` / ``fetch_failed`` outcomes still produce an
+    audit event and fall through to the next source.
+    ``invalid_identifier`` / ``identifier_missing`` outcomes also
+    fall through.
+
+    ``api_key`` / ``wiley_token`` / ``core_key`` default to
+    ``PRECIS_ELSEVIER_API_KEY`` / ``PRECIS_WILEY_TDM_TOKEN`` /
+    ``PRECIS_CORE_API_KEY``; each leg is skipped without its
+    credential.
 
     Each stub is tried independently; an unhandled exception in
     one provider logs ``api_error`` for that source and moves on
@@ -524,6 +1060,9 @@ def run_oa_fetch_pass(
     if not _oa_fetch_enabled():
         return {"claimed": 0, "ok": 0, "failed": 0}
     email = email or os.environ.get("PRECIS_UNPAYWALL_EMAIL", "").strip()
+    api_key = api_key if api_key is not None else _elsevier_api_key()
+    wiley_token = wiley_token if wiley_token is not None else _wiley_tdm_token()
+    core_key = core_key if core_key is not None else _core_api_key()
     if inbox_dir is None:
         inbox_dir = os.environ.get("PRECIS_WATCH_INBOX") or str(
             Path.home() / "work" / "new_papers" / "_oa_fetched"
@@ -540,7 +1079,7 @@ def run_oa_fetch_pass(
     failed = 0
     for stub in stubs:
         try:
-            _run_cascade(store, stub, inbox_path, email)
+            _run_cascade(store, stub, inbox_path, email, api_key, wiley_token, core_key)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             log.warning(
@@ -553,20 +1092,82 @@ def run_oa_fetch_pass(
     return {"claimed": len(stubs), "ok": ok, "failed": failed}
 
 
-def _run_cascade(store: Any, stub: StubRef, inbox_dir: Path, email: str) -> None:
+def _run_cascade(
+    store: Any,
+    stub: StubRef,
+    inbox_dir: Path,
+    email: str,
+    api_key: str,
+    wiley_token: str,
+    core_key: str,
+) -> None:
     """Walk providers in order; stop at first fetch_ok.
 
     Records every attempted provider's outcome via append_event.
-    Email-less Unpaywall is silently skipped (the email gate is
-    enforced at the provider, not the cascade level, so arXiv +
-    S2 still run).
+    Legs whose credential / identifier is absent are skipped at the
+    cascade level (Elsevier/Wiley/CORE without their key, Crossref/
+    Unpaywall without an email) or return ``None`` internally (no
+    matching identifier), so the remaining legs still run.
+
+    Order favours the *version of record*, cheapest-and-most-reliable
+    first, with the green-OA net + preprint as late fallbacks:
+
+    1. ``publisher`` — deterministic DOI→PDF, keyless (Springer/PLOS).
+    2. ``elsevier``  — Elsevier API by DOI, key-gated (ScienceDirect).
+    3. ``wiley``     — Wiley TDM API by DOI, token-gated.
+    4. ``unpaywall`` — OA aggregator by DOI.
+    5. ``crossref``  — publisher TDM PDF links by DOI.
+    6. ``openalex``  — OA aggregator (different PDF coverage to UPW).
+    7. ``europepmc`` — biomedical OA full-text PDF.
+    8. ``core``      — green-OA repository copies, key-gated.
+    9. ``arxiv``     — deterministic preprint PDF; after the published
+       sources so a version of record is preferred over the preprint.
+    10. ``s2``       — Semantic Scholar openAccessPdf, last resort.
     """
-    providers: list[tuple[str, Any]] = []
+    providers: list[tuple[str, Any]] = [
+        (_SOURCE_PUBLISHER, lambda: _try_publisher(stub, inbox_dir=inbox_dir)),
+    ]
+    if api_key:
+        providers.append(
+            (
+                _SOURCE_ELSEVIER,
+                lambda: _try_elsevier(stub, inbox_dir=inbox_dir, api_key=api_key),
+            )
+        )
+    if wiley_token:
+        providers.append(
+            (
+                _SOURCE_WILEY,
+                lambda: _try_wiley(stub, inbox_dir=inbox_dir, token=wiley_token),
+            )
+        )
     if email:
         providers.append(
             (
                 _SOURCE_UNPAYWALL,
                 lambda: _try_unpaywall(stub, inbox_dir=inbox_dir, email=email),
+            )
+        )
+        providers.append(
+            (
+                _SOURCE_CROSSREF,
+                lambda: _try_crossref(stub, inbox_dir=inbox_dir, email=email),
+            )
+        )
+    providers.append(
+        (
+            _SOURCE_OPENALEX,
+            lambda: _try_openalex(stub, inbox_dir=inbox_dir, email=email),
+        )
+    )
+    providers.append(
+        (_SOURCE_EUROPEPMC, lambda: _try_europepmc(stub, inbox_dir=inbox_dir))
+    )
+    if core_key:
+        providers.append(
+            (
+                _SOURCE_CORE,
+                lambda: _try_core(stub, inbox_dir=inbox_dir, api_key=core_key),
             )
         )
     providers.append((_SOURCE_ARXIV, lambda: _try_arxiv(stub, inbox_dir=inbox_dir)))
@@ -623,7 +1224,104 @@ def _query_unpaywall(doi: str, *, email: str) -> dict[str, Any]:
         return resp.json()
 
 
-def _download_pdf(url: str, target: Path) -> int:
+def _query_crossref_pdf_links(doi: str, *, email: str) -> list[str]:
+    """Return Crossref ``link[]`` URLs whose content-type is a PDF.
+
+    ``mailto`` routes us to Crossref's polite pool (the anonymous pool
+    connection-resets under load). Non-PDF TDM links (xml/plain, e.g.
+    Elsevier's api.elsevier.com mining endpoints) are filtered out —
+    those are handled by the dedicated Elsevier leg, not here.
+    """
+    url = f"https://api.crossref.org/works/{doi}"
+    with httpx.Client(
+        timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
+    ) as client:
+        resp = client.get(url, params={"mailto": email})
+        resp.raise_for_status()
+        data = resp.json()
+    links = (data.get("message") or {}).get("link") or []
+    out: list[str] = []
+    for link in links:
+        ct = (link.get("content-type") or "").lower()
+        href = link.get("URL")
+        if href and "pdf" in ct and href not in out:
+            out.append(href)
+    return out
+
+
+def _query_openalex_pdf_urls(doi: str, *, email: str) -> list[str]:
+    """Return OpenAlex direct-PDF URLs for ``doi`` (best location first).
+
+    Only ``pdf_url`` fields are collected (the landing-page ``oa_url``
+    is skipped — the ``%PDF-`` guard would reject it anyway and it just
+    burns a download attempt).
+    """
+    url = f"https://api.openalex.org/works/doi:{doi}"
+    params = {"mailto": email} if email else {}
+    with httpx.Client(
+        timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
+    ) as client:
+        resp = client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    out: list[str] = []
+    best = data.get("best_oa_location") or {}
+    if best.get("pdf_url"):
+        out.append(best["pdf_url"])
+    for loc in data.get("locations") or []:
+        href = loc.get("pdf_url")
+        if href and href not in out:
+            out.append(href)
+    return out
+
+
+def _query_europepmc_oa_pmcid(doi: str) -> str | None:
+    """Resolve a DOI to its Europe PMC PMCID iff in the OA subset.
+
+    Returns the ``PMC…`` id for the first open-access hit, else
+    ``None`` (no OA full text to fetch).
+    """
+    url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+    params = {"query": f'DOI:"{doi}"', "format": "json", "resultType": "core"}
+    with httpx.Client(
+        timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header()}
+    ) as client:
+        resp = client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    results = (data.get("resultList") or {}).get("result") or []
+    for rec in results:
+        if rec.get("isOpenAccess") == "Y" and rec.get("pmcid"):
+            return str(rec["pmcid"])
+    return None
+
+
+def _query_core_pdf_urls(doi: str, *, api_key: str) -> list[str]:
+    """Return CORE repository ``downloadUrl``s for an exact DOI match.
+
+    Only results whose own ``doi`` equals the query DOI are kept (CORE
+    fuzzy-matches, so a bare topical hit must not be mistaken for the
+    paper). A browser UA dodges CORE's Cloudflare UA gate.
+    """
+    params: dict[str, str | int] = {"q": f'doi:"{doi}"', "limit": 5}
+    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _BROWSER_UA}
+    with httpx.Client(timeout=_API_TIMEOUT_S, headers=headers) as client:
+        resp = client.get(_CORE_SEARCH_BASE, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    want = doi.lower()
+    out: list[str] = []
+    for rec in data.get("results") or []:
+        rec_doi = (rec.get("doi") or "").lower()
+        href = rec.get("downloadUrl")
+        if rec_doi == want and href and href not in out:
+            out.append(href)
+    return out
+
+
+def _download_pdf(
+    url: str, target: Path, *, extra_headers: dict[str, str] | None = None
+) -> int:
     """Stream a PDF to ``target`` and return the byte count.
 
     Streams so a 50 MB PDF doesn't sit in memory. Atomic-ish:
@@ -634,12 +1332,24 @@ def _download_pdf(url: str, target: Path) -> int:
     Validates the first 5 bytes are ``%PDF-`` before keeping the
     file — some publishers return HTML interstitial pages with 200
     OK; saving those would poison the watcher (Marker would barf).
+
+    ``extra_headers`` merges over the default UA/Accept headers — used
+    by the Elsevier leg to send ``X-ELS-APIKey``. NB these headers are
+    set on the client, so they ride along every redirect hop that
+    :func:`safe_stream` follows; only pass *credential* headers for a
+    trusted fixed-host endpoint (the SSRF guard still caps redirects to
+    public hosts, but it can't tell a publisher CDN from an arbitrary
+    third party). Elsevier's article API serves the PDF inline (no
+    cross-host redirect in practice), so the key stays first-party.
     """
     from precis.utils.safe_fetch import safe_stream
 
     tmp = target.with_suffix(target.suffix + ".part")
     size = 0
     head = b""
+    headers = dict(_DOWNLOAD_HEADERS)
+    if extra_headers:
+        headers.update(extra_headers)
     # follow_redirects=False — safe_stream walks the chain itself,
     # revalidating each Location. Original code set this True with
     # only is_http_url() shape validation on ``url``, so a publisher
@@ -649,7 +1359,7 @@ def _download_pdf(url: str, target: Path) -> int:
     with httpx.Client(
         timeout=_DOWNLOAD_TIMEOUT_S,
         follow_redirects=False,
-        headers=_DOWNLOAD_HEADERS,
+        headers=headers,
     ) as client:
         with safe_stream(client, "GET", url) as resp:
             resp.raise_for_status()

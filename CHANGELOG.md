@@ -8,6 +8,98 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-20 — OA fetcher: publisher APIs + aggregator legs)
+
+- **Six new legs in the `fetch_oa` cascade.** It grows from
+  publisher → Unpaywall → arXiv → S2 to a ten-source chain ordered to
+  prefer the *version of record*, with green-OA + preprint as late
+  fallbacks: **publisher → elsevier → wiley → unpaywall → crossref →
+  openalex → europepmc → core → arxiv → s2**. Two are publisher
+  full-text APIs (key/token-gated), three are keyless DOI aggregators,
+  one is a key-gated green-OA repository net.
+  - **`fetcher:wiley`** (`_try_wiley`, token-gated on
+    `PRECIS_WILEY_TDM_TOKEN`) — Wiley TDM API
+    (`tdm/v1/articles/<doi>` + `Wiley-TDM-Client-Token`) streams the
+    full-text PDF for entitled + gold-OA Wiley/Blackwell DOIs
+    (`10.1002`/`10.1111`). Verified end-to-end (4.36 MB PDF).
+  - **`fetcher:core`** (`_try_core`, key-gated on `PRECIS_CORE_API_KEY`)
+    — CORE search by DOI → repository `downloadUrl`s (green-OA copies
+    of paywalled-publisher papers), tried in turn behind the `%PDF-`
+    guard with a browser UA (CORE's API + many repositories
+    Cloudflare-gate non-browser agents). Best-effort: lands the
+    bot-friendly repositories, falls through on the rest.
+  - Module-level `_BROWSER_UA`; `_download_first` / `_download_pdf`
+    gained `extra_headers` forwarding (Wiley token, CORE UA).
+    Tests: `TestTryWiley` / `TestTryCore`.
+  - Cluster wiring: `PRECIS_WILEY_TDM_TOKEN` / `PRECIS_CORE_API_KEY`
+    added to `precis_shared_env` (`vault_wiley_tdm_token` /
+    `vault_core_api_key`).
+
+  The first four of the six (below) shipped together:
+  - **`fetcher:elsevier`** (`_try_elsevier`, key-gated on
+    `PRECIS_ELSEVIER_API_KEY`) — the only auto-route for ScienceDirect.
+    Elsevier has no keyless DOI→PDF (the PDF endpoint 403s bots; the
+    PII isn't in the DOI), and Unpaywall/OpenAlex return only the
+    doi.org landing page for hybrid-OA Elsevier articles. The Article
+    Retrieval API (`content/article/doi/<doi>` + `X-ELS-APIKey` +
+    `Accept: application/pdf`) streams the full text directly —
+    verified end-to-end on `10.1016/j.amf.2025.200253` (11.4 MB PDF,
+    no insttoken needed for OA content). Gated to the `10.1016`
+    registrant prefix; silent no-op when the key is unset.
+  - **`fetcher:crossref`** (`_try_crossref`) — tries Crossref
+    `message.link[]` entries whose `content-type` is a PDF (publisher
+    TDM links). Needs the polite `mailto` (= `PRECIS_UNPAYWALL_EMAIL`);
+    the anonymous pool connection-resets.
+  - **`fetcher:openalex`** (`_try_openalex`) — OpenAlex `pdf_url`
+    locations; different coverage to Unpaywall, often a working
+    green-OA repository copy where UPW returned a landing page.
+  - **`fetcher:europepmc`** (`_try_europepmc`) — resolves DOI→PMCID via
+    the Europe PMC search API and renders the OA-subset PDF
+    (`europepmc.org/articles/<pmcid>?pdf=render`); high-yield for the
+    biomedical corpus.
+  - `_download_pdf` gained an `extra_headers` param (Elsevier key);
+    headers ride redirect hops, so it's documented for trusted
+    fixed-host endpoints only (the SSRF guard still caps redirects to
+    public hosts). New shared `_download_first` tail for the
+    list-of-candidate-URL legs. All legs reuse the `%PDF-` magic-byte
+    guard + `safe_stream` SSRF revalidation; a non-PDF (paywall HTML,
+    XML API error) degrades to `fetch_failed` and the cascade
+    continues. Tests: `TestTryElsevier` / `TestTryCrossref` /
+    `TestTryOpenalex` / `TestTryEuropepmc` + cascade-ordering cases.
+  - Cluster wiring (separate `cluster` repo): `PRECIS_ELSEVIER_API_KEY`
+    added to `precis_shared_env` (`vault_elsevier_api_key`).
+  - **Backoff note:** every DOI now potentially logs up to ~6
+    `fetcher:%` no-OA events per pass (was 2). Since the claim-query
+    backoff counts events, a no-OA-anywhere stub reaches the 30-day
+    cap after ~2 passes instead of ~3 — front-loaded effort, then
+    monthly retries (unchanged philosophy).
+
+### Added (2026-06-20 — OA fetcher: deterministic publisher PDF patterns)
+
+- **New first leg in the `fetch_oa` cascade: `fetcher:publisher`.**
+  Some OA publishers serve the full-text PDF at a URL derivable from
+  the DOI alone (exactly like arXiv's `/pdf/<id>.pdf`). Unpaywall
+  routinely misses these on fresh DOIs — it returns the HTML *landing
+  page* as the "OA location", which our `%PDF-` magic-byte guard
+  rejects (`fetch_failed`) — and S2 reports `no_oa_version` for days
+  after publication. `_try_publisher` maps a DOI registrant prefix to a
+  deterministic PDF endpoint and runs *before* the aggregators.
+  Seeded with **Springer/BMC** (`10.1186` BMC/SpringerOpen + `10.1007`
+  hybrid Springer → `link.springer.com/content/pdf/<doi>.pdf`) and
+  **PLOS** (`10.1371` → `journals.plos.org/<journal>/article/file?id=<doi>&type=printable`,
+  journal slug derived from the DOI infix). A non-registry prefix
+  returns `None` (silent skip, no event — same contract as `_try_arxiv`
+  for a missing arXiv id), so the long tail is unaffected; a wrong guess
+  for a paywalled article fails the `%PDF-` guard and falls through to
+  Unpaywall/arXiv/S2 rather than poisoning the ingest. Motivating case:
+  `10.1186/s13027-026-00740-z` (BMC, fully OA) sat in the papers-needed
+  backlog because Unpaywall pointed at the doi.org HTML page and S2 had
+  no OA version — the Springer PDF is a deterministic URL away. Tests:
+  `TestPublisherUrls` / `TestTryPublisher` + cascade-ordering cases in
+  `tests/workers/test_fetch_oa.py`. The registry is the extension point
+  for further deterministic OA publishers (Frontiers, eLife, PeerJ,
+  bioRxiv/medRxiv) once each URL pattern is verified.
+
 ### Fixed (2026-06-20 — web untriage / paper tag+link by numeric id)
 
 - **"Clear flag" / "Looks fine — remove needs-triage" now actually
