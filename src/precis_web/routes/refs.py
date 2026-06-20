@@ -33,7 +33,13 @@ from precis.utils import mentions
 from precis.utils.authors import author_names
 from precis.utils.claude_agent import ClaudeAgentError
 from precis_web import ask
-from precis_web.deps import await_dispatch, get_store, get_web_config, templates
+from precis_web.deps import (
+    await_dispatch,
+    get_store,
+    get_web_config,
+    redirect_or_error,
+    templates,
+)
 
 router = APIRouter(prefix="/refs", tags=["refs"])
 
@@ -825,15 +831,9 @@ async def edit_tags(
         args["add"] = add_list
     if remove_list:
         args["remove"] = remove_list
-    body, is_error = await await_dispatch(request, "tag", args)
-    if is_error:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {"title": "Tag error", "detail": body, "status": 400},
-            status_code=400,
-        )
-    return RedirectResponse(url=redirect_url, status_code=303)
+    return await redirect_or_error(
+        request, "tag", args, redirect=redirect_url, error_title="Tag error"
+    )
 
 
 # ---- Ask a follow-up question about a thought -----------------------

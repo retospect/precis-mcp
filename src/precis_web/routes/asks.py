@@ -25,7 +25,7 @@ from typing import Any
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from precis_web.deps import await_dispatch, get_store, templates
+from precis_web.deps import await_dispatch, get_store, redirect_or_error, templates
 
 router = APIRouter(prefix="/asks", tags=["asks"])
 
@@ -162,17 +162,11 @@ async def answer(
         )
 
     if remove:
-        body2, is_error2 = await await_dispatch(
+        return await redirect_or_error(
             request,
             "tag",
             {"kind": "todo", "id": ref_id, "remove": list(remove)},
+            redirect="/asks",
         )
-        if is_error2:
-            return templates.TemplateResponse(
-                request,
-                "error.html.j2",
-                {"title": "Request error", "detail": body2, "status": 400},
-                status_code=400,
-            )
 
     return RedirectResponse(url="/asks", status_code=303)

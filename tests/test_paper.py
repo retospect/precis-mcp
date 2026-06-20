@@ -12,6 +12,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.paper import PaperHandler, _maybe_resolve_doi, _parse_paper_id
 from precis.runtime import PrecisRuntime
 from precis.store import BlockInsert, Store
+from precis.store.types import Tag
 
 # ---------------------------------------------------------------------------
 # Slug parsing — pure logic, no DB
@@ -958,6 +959,48 @@ class TestNearestMatchSuggestions:
             pytest.fail("expected NotFound")
         assert "options:" in envelope
         assert "wang2020state" in envelope
+
+
+class TestNumericIdTagLink:
+    """The web addresses papers by numeric ``ref_id`` (the triage queue's
+    "Clear flag" → ``tag(remove=['needs-triage'])`` and the detail page's
+    link ops). ``_resolve_paper_slug`` previously stringified the id and
+    looked it up as a *cite_key* — a guaranteed miss that raised
+    ``NotFound``; the web ``untriage`` route swallows the dispatch error
+    and still redirects, so the flag silently never cleared. Pin that a
+    numeric id resolves to the live ref for both tag and link.
+    """
+
+    def test_tag_remove_by_numeric_id_clears_tag(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store, slug="wang2020state")
+        store.add_tag(ref_id, Tag.open("needs-triage"), set_by="system")
+        assert store.has_tag(ref_id, "OPEN", "needs-triage")
+
+        resp = handler.tag(id=ref_id, remove=["needs-triage"])
+
+        assert "-1 tag" in resp.body
+        assert not store.has_tag(ref_id, "OPEN", "needs-triage")
+
+    def test_tag_add_by_numeric_id(self, store: Store, handler: PaperHandler) -> None:
+        ref_id = _seed_paper(store, slug="wang2020state")
+        handler.tag(id=ref_id, add=["topic:foo"])
+        assert store.has_tag(ref_id, "OPEN", "topic:foo")
+
+    def test_numeric_id_as_digit_string(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A digit *string* (FastAPI may stringify path params) resolves
+        the same way an int does — slugs are never all-digits."""
+        ref_id = _seed_paper(store, slug="wang2020state")
+        store.add_tag(ref_id, Tag.open("needs-triage"), set_by="system")
+        handler.tag(id=str(ref_id), remove=["needs-triage"])
+        assert not store.has_tag(ref_id, "OPEN", "needs-triage")
+
+    def test_unknown_numeric_id_raises_notfound(self, handler: PaperHandler) -> None:
+        with pytest.raises(NotFound):
+            handler.tag(id=999_999, remove=["needs-triage"])
 
 
 # ---------------------------------------------------------------------------

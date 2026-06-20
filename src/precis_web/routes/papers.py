@@ -17,11 +17,22 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+)
 
 from precis.errors import BadInput, NotFound
 from precis.utils.authors import author_names
-from precis_web.deps import await_dispatch, get_store, get_web_config, templates
+from precis_web.deps import (
+    await_dispatch,
+    get_store,
+    get_web_config,
+    redirect_or_error,
+    templates,
+)
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -710,7 +721,7 @@ async def untriage(
     request: Request,
     ref_id: int,
     return_to: str = Form("/papers/triage"),
-) -> RedirectResponse:
+) -> Response:
     """Manually clear the ``needs-triage`` tag (dismiss from the queue).
 
     A successful metadata edit clears the tag automatically, but a paper
@@ -718,10 +729,18 @@ async def untriage(
     whose fix failed on a duplicate identifier stays tagged. This is the
     explicit operator control. Idempotent: the tag remove is a no-op when
     the tag isn't present.
+
+    A thin named preset over the generic ``tag`` verb (the same dispatch
+    the ``/refs/{kind}/{ref_id}/tags`` endpoint uses) routed through the
+    shared :func:`redirect_or_error` so a failed dispatch renders the
+    handler's message instead of silently redirecting — the original bug
+    here was a swallowed ``NotFound`` that made the button look like it
+    worked while the tag survived.
     """
-    await await_dispatch(
+    return await redirect_or_error(
         request,
         "tag",
         {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]},
+        redirect=_safe_papers_redirect(return_to),
+        error_title="Untriage error",
     )
-    return RedirectResponse(url=_safe_papers_redirect(return_to), status_code=303)

@@ -14,6 +14,7 @@ from typing import Any
 
 import jinja2
 from fastapi import Request
+from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from precis_web.config import WebConfig
@@ -127,3 +128,40 @@ async def await_dispatch(
     """
     runtime = get_runtime(request)
     return await asyncio.to_thread(runtime.dispatch_with_status, verb, args)
+
+
+async def redirect_or_error(
+    request: Request,
+    verb: str,
+    args: dict[str, Any],
+    *,
+    redirect: str,
+    error_title: str = "Request error",
+) -> Response:
+    """Dispatch one verb; redirect on success, render the error on failure.
+
+    The canonical mutation-route wrapper. Write routes used to discard
+    the handler result and redirect unconditionally, so a rejected
+    mutation (an invalid tag, a guard veto, an id the handler can't
+    resolve) failed silently — the operator hit submit and the page
+    reloaded unchanged with no explanation. The ``/papers/{id}/untriage``
+    "Clear flag" button was exactly this: it swallowed a ``NotFound`` and
+    redirected, so the button looked like it worked while the tag stayed.
+
+    Surfacing the handler's own message (its ``next=`` recovery hint
+    included) makes these self-diagnosing. Every mutation route should go
+    through here rather than ignoring ``await_dispatch``'s ``is_error``.
+
+    Async because the inner dispatch may issue a blocking network call
+    (Perplexity, EPO OPS, claude -p) that would otherwise freeze the
+    uvicorn event loop.
+    """
+    body, is_error = await await_dispatch(request, verb, args)
+    if is_error:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": error_title, "detail": body, "status": 400},
+            status_code=400,
+        )
+    return RedirectResponse(url=redirect, status_code=303)

@@ -1032,11 +1032,31 @@ class PaperHandler(Handler):
     def _resolve_paper_slug(self, id: str | int) -> tuple[str, int]:
         """Coerce an agent-facing id to a (slug, ref_id) pair.
 
+        Accepts a numeric ``ref_id`` (the web addresses papers by id,
+        e.g. the triage queue's "Clear flag" → ``tag`` and the detail
+        page's link ops), a slug, or a DOI. Slugs are never all-digits,
+        so the numeric branch is unambiguous — and it must come first,
+        because :func:`resolve_live_slug_ref` stringifies its id and
+        would otherwise look ``"5822"`` up as a *cite_key* (a guaranteed
+        miss that raised ``NotFound`` and silently no-op'd the web tag
+        ops). Mirrors :meth:`_resolve_paper_ref_id`'s numeric path.
+
         Rejects chunk selectors and path views — link/tag ops live
         at the ref level only. Raises ``BadInput`` (selector
         present) or ``NotFound`` (slug unknown) so the caller can
         let those propagate.
         """
+        if isinstance(id, int) or (isinstance(id, str) and id.strip().isdigit()):
+            ref_id = int(id)
+            ref = self.store.fetch_refs_by_ids([ref_id], include_deleted=False).get(
+                ref_id
+            )
+            if ref is None or ref.kind != "paper":
+                raise NotFound(
+                    f"paper id={ref_id} not found",
+                    next="search(kind='paper', q='...') to find existing",
+                )
+            return ref.slug or str(ref_id), ref_id
         raw_id = _maybe_resolve_doi(self.store, str(id))
         slug, chunk_spec, path_view = _parse_paper_id(raw_id)
         reject_chunk_or_path_view(
@@ -1060,19 +1080,10 @@ class PaperHandler(Handler):
         Accepts a numeric ``ref_id`` (the web addresses papers by id),
         a slug, or a DOI — slugs are never all-digits, so the branch is
         unambiguous. Raises ``NotFound`` if missing / soft-deleted or
-        the ref isn't a paper.
+        the ref isn't a paper. Thin wrapper over
+        :meth:`_resolve_paper_slug` (which owns the numeric/slug/DOI
+        resolution) for callers that only need the id.
         """
-        if isinstance(id, int) or (isinstance(id, str) and id.strip().isdigit()):
-            ref_id = int(id)
-            ref = self.store.fetch_refs_by_ids([ref_id], include_deleted=False).get(
-                ref_id
-            )
-            if ref is None or ref.kind != "paper":
-                raise NotFound(
-                    f"paper id={ref_id} not found",
-                    next="search(kind='paper', q='...') to find existing",
-                )
-            return ref_id
         _slug, ref_id = self._resolve_paper_slug(id)
         return ref_id
 

@@ -576,6 +576,17 @@ def test_paper_untriage_clears_tag_and_redirects(client, runtime) -> None:
     assert args == {"kind": "paper", "id": 10, "remove": ["needs-triage"]}
 
 
+def test_paper_untriage_surfaces_dispatch_error(client, runtime) -> None:
+    """A failed tag-remove renders the handler error instead of silently
+    redirecting. Regression for the original bug: the route swallowed a
+    ``NotFound`` and 303'd, so the button looked like it worked while the
+    flag survived. Now it goes through ``redirect_or_error``."""
+    runtime.error_verbs.add("tag")
+    resp = client.post("/papers/10/untriage", follow_redirects=False)
+    assert resp.status_code == 400
+    assert "invalid tag" in resp.text
+
+
 def test_paper_edit_duplicate_identifier_renders_resolver(
     client, runtime, tmp_path
 ) -> None:

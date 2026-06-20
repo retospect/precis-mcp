@@ -33,7 +33,13 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
 from precis.utils.workspace import Workspace
-from precis_web.deps import await_dispatch, get_store, get_web_config, templates
+from precis_web.deps import (
+    await_dispatch,
+    get_store,
+    get_web_config,
+    redirect_or_error,
+    templates,
+)
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -414,37 +420,6 @@ def _filter_rows(
         if (r["kind"] == "todo" and r["id"] in keep)
         or (r["kind"] == "job" and r["parent_id"] in keep)
     ]
-
-
-async def _redirect_or_error(
-    request: Request,
-    verb: str,
-    args: dict[str, Any],
-    *,
-    redirect: str = "/tasks",
-) -> Response:
-    """Dispatch one verb; redirect on success, render the error on failure.
-
-    The write routes used to discard the handler result and redirect
-    unconditionally, so a rejected mutation (an invalid tag, a guard
-    veto) failed silently — the operator typed something, hit submit,
-    and the page reloaded unchanged with no explanation. Surfacing the
-    handler's own message (its ``next=`` recovery hint included) makes
-    these self-diagnosing.
-
-    Async because the inner ``dispatch`` may issue a blocking network
-    call (Perplexity, EPO OPS, claude -p) that would otherwise freeze
-    the entire uvicorn event loop.
-    """
-    body, is_error = await await_dispatch(request, verb, args)
-    if is_error:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {"title": "Request error", "detail": body, "status": 400},
-            status_code=400,
-        )
-    return RedirectResponse(url=redirect, status_code=303)
 
 
 def _split_tags(raw: str) -> list[str]:
@@ -934,7 +909,7 @@ async def create_root(
 ) -> Response:
     """Create a top-level (strategic) root."""
     tags = [f"level:{level}"] if level else None
-    return await _redirect_or_error(
+    return await redirect_or_error(
         request,
         "put",
         {"kind": "todo", "text": text, "tags": tags},
@@ -957,7 +932,7 @@ async def create_child(
 ) -> Response:
     """Create a child under ``parent_id``."""
     tags = [f"level:{level}"] if level else None
-    return await _redirect_or_error(
+    return await redirect_or_error(
         request,
         "put",
         {"kind": "todo", "text": text, "parent_id": parent_id, "tags": tags},
@@ -978,7 +953,7 @@ async def set_status(
     show_jobs: str = Form(default="active"),
 ) -> Response:
     """Set a todo's STATUS via the tag verb (closed-prefix replace)."""
-    return await _redirect_or_error(
+    return await redirect_or_error(
         request,
         "tag",
         {"kind": "todo", "id": ref_id, "add": [f"STATUS:{status}"]},
@@ -1010,7 +985,7 @@ async def move_task(
     )
     npid = new_parent_id.strip()
     if npid:
-        return await _redirect_or_error(
+        return await redirect_or_error(
             request,
             "link",
             {
@@ -1022,7 +997,7 @@ async def move_task(
             },
             redirect=redirect,
         )
-    return await _redirect_or_error(
+    return await redirect_or_error(
         request,
         "link",
         {"kind": "todo", "id": ref_id, "rel": "parent", "mode": "remove"},
@@ -1052,7 +1027,7 @@ async def edit_text(
     )
     if not text.strip():
         return RedirectResponse(url=redirect, status_code=303)
-    return await _redirect_or_error(
+    return await redirect_or_error(
         request,
         "edit",
         {"kind": "todo", "id": ref_id, "mode": "replace", "text": text.strip()},
@@ -1092,7 +1067,7 @@ async def edit_tags(
     )
     if not add_list and not remove_list:
         return RedirectResponse(url=redirect, status_code=303)
-    return await _redirect_or_error(request, "tag", args, redirect=redirect)
+    return await redirect_or_error(request, "tag", args, redirect=redirect)
 
 
 @router.get("/{ref_id}/history", response_class=HTMLResponse)

@@ -8,6 +8,37 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-20 — web untriage / paper tag+link by numeric id)
+
+- **"Clear flag" / "Looks fine — remove needs-triage" now actually
+  clears the flag.** The web addresses papers by numeric `ref_id`, but
+  `PaperHandler._resolve_paper_slug` (used by `tag` and `link`)
+  stringified the id and looked it up as a *cite_key* — a guaranteed
+  miss that raised `NotFound`. The `POST /papers/{id}/untriage` route
+  discards the dispatch error and redirects regardless, so the button
+  appeared to work while the `needs-triage` tag survived. `_resolve_
+  paper_slug` now takes the same numeric branch `_resolve_paper_ref_id`
+  already had (slugs are never all-digits, so it's unambiguous), and the
+  latter is now a thin wrapper over it. This also fixes any paper
+  `link`/`tag` op addressed by numeric id from the web. The web route's
+  existing test mocked the runtime, so it never exercised the real
+  resolver — added handler-level coverage in `tests/test_paper.py`
+  (`TestNumericIdTagLink`).
+- **No web mutation route can silently swallow a dispatch error.** The
+  `redirect-on-success / render-the-error-on-failure` wrapper that
+  `routes/tasks.py` already had (`_redirect_or_error`) is promoted to
+  `precis_web.deps.redirect_or_error` and is now the single mutation
+  surface: `tasks`, the generic `refs` tag route, the `asks` answer
+  unlock, and the papers `untriage` button all route through it. The
+  untriage route is now a thin named *preset* over the generic `tag`
+  verb — the same dispatch `/refs/{kind}/{ref_id}/tags` uses — rather
+  than a parallel code path. A failed dispatch (bad tag, guard veto,
+  unresolvable id) now renders the handler's own message + `next=` hint
+  as a 400 instead of a 303 that pretends success. Regression test:
+  `test_paper_untriage_surfaces_dispatch_error`. (Paper *delete* stays a
+  direct `Store.soft_delete_ref` call by policy — not on the MCP
+  surface — and already surfaced its own `NotFound`.)
+
 ### Added (2026-06-20 — skill search: body-only embedding twins)
 
 - **Heading-stripped twin vectors for skill search.** The skill
