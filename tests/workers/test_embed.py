@@ -7,10 +7,22 @@ INSERT shapes line up with ``chunk_embeddings``.
 
 from __future__ import annotations
 
+import pytest
+
 from precis.embedder import MockEmbedder
 from precis.workers.base import ChunkRow
 from precis.workers.embed import EmbedHandler
 from tests.workers._helpers import make_mock_bge_m3, seed_chunks
+
+
+class _DownEmbedder(MockEmbedder):
+    """A MockEmbedder whose ``model`` round-trip fails — stands in for a
+    remote embedder that is unreachable at worker boot."""
+
+    @property
+    def model(self) -> str:
+        raise RuntimeError("all embedder endpoints failed (['http://127.0.0.1:8181'])")
+
 
 # ---------------------------------------------------------------------------
 # Pure unit tests — no DB
@@ -29,6 +41,40 @@ class TestEmbedHandlerPure:
         h = EmbedHandler(MockEmbedder(model="custom-emb"))
         assert h.model_name == "custom-emb"
         assert h.name == "embed:custom-emb"
+
+    def test_construction_does_not_touch_embedder(self):
+        # Regression: a *down* remote embedder must not crash worker
+        # boot. Constructing the handler must not read ``embedder.model``
+        # (a network round-trip) — the dependency is deferred to first
+        # use of model_name/name. Before this fix, __init__ read
+        # embedder.model and a refused connection crash-looped the whole
+        # worker (taking summarize/chase/fetch down with it).
+        h = EmbedHandler(_DownEmbedder())  # must NOT raise
+
+        # The dependency surfaces only when the label / FK is read...
+        with pytest.raises(RuntimeError, match="endpoints failed"):
+            _ = h.model_name
+        with pytest.raises(RuntimeError, match="endpoints failed"):
+            _ = h.name
+
+    def test_model_name_resolved_once_and_cached(self):
+        # model_name resolves lazily on first access, then caches — the
+        # embedder is consulted at most once.
+        class _CountingEmbedder(MockEmbedder):
+            calls = 0
+
+            @property
+            def model(self) -> str:
+                type(self).calls += 1
+                return "bge-m3"
+
+        emb = _CountingEmbedder()
+        h = EmbedHandler(emb)
+        assert _CountingEmbedder.calls == 0  # not touched at construction
+        assert h.model_name == "bge-m3"
+        assert h.name == "embed:bge-m3"
+        assert h.model_name == "bge-m3"
+        assert _CountingEmbedder.calls == 1  # resolved once, then cached
 
     def test_process_returns_vector(self):
         emb = make_mock_bge_m3()

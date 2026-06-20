@@ -357,11 +357,11 @@ def run(args: argparse.Namespace) -> None:
             from precis.workers.runner import BatchResult
 
             embed_handler = next(
-                (
-                    h
-                    for h in handlers
-                    if isinstance(h, EmbedHandler) and h.name.startswith("embed:")
-                ),
+                # ``isinstance`` alone suffices — every EmbedHandler's
+                # name is ``embed:…``. Don't read ``h.name`` here: it
+                # lazily round-trips to the embedder, and this runs at
+                # worker boot when the embedder may not be up yet.
+                (h for h in handlers if isinstance(h, EmbedHandler)),
                 None,
             )
             kw_embedder = (
@@ -433,11 +433,9 @@ def run(args: argparse.Namespace) -> None:
             )
 
             embed_handler_te = next(
-                (
-                    h
-                    for h in handlers
-                    if isinstance(h, _EmbedHandler) and h.name.startswith("embed:")
-                ),
+                # ``isinstance`` alone suffices; avoid ``h.name`` here —
+                # it lazily round-trips to the embedder at worker boot.
+                (h for h in handlers if isinstance(h, _EmbedHandler)),
                 None,
             )
             te_embedder = (

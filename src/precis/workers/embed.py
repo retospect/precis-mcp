@@ -39,18 +39,55 @@ class EmbedHandler(WorkerHandler):
 
     def __init__(self, embedder: Embedder) -> None:
         self._embedder = embedder
-        # Two distinct attrs deliberately: ``model_name`` is the FK
-        # value (matches a row in the ``embedders`` table); ``name``
-        # is a human-friendly handler label used in logs and status
-        # output. They share a string today but diverge if we ever
-        # ship two flavours of the same model.
-        self.model_name = embedder.model
-        self.name = f"embed:{embedder.model}"
+        # ``model_name`` / ``name`` are resolved lazily (see the
+        # properties below), NOT here. Both read ``embedder.model``,
+        # which for the remote backend is a ``GET /model`` round-trip.
+        # Doing it in ``__init__`` meant a *down* embedder at worker
+        # boot raised ``RuntimeError`` out of ``_build_handlers`` and
+        # crash-looped the entire worker — taking summarize / chase /
+        # fetch / dispatch down with the one pass that actually needs
+        # the embedder. Deferring keeps construction network-free; only
+        # the embed pass bears the dependency, the runner skips just
+        # that pass (and retries it next cycle) while the embedder is
+        # unreachable, and it recovers with no worker restart once the
+        # embedder is back. ``embedder.model`` caches after the first
+        # success, so this is a one-time round-trip.
+        self._model_name: str | None = None
+        self._name_override: str | None = None
 
     @property
     def embedder(self) -> Embedder:
         """The wrapped embedder (exposed for tests + observability)."""
         return self._embedder
+
+    @property
+    def model_name(self) -> str:
+        """FK value for the ``embedder`` column — the wrapped embedder's
+        model id, fetched from ``/model`` (and cached) on first use."""
+        if self._model_name is None:
+            self._model_name = self._embedder.model
+        return self._model_name
+
+    @model_name.setter
+    def model_name(self, value: str) -> None:
+        # Writeable to satisfy the base ``model_name: str`` contract
+        # (and let tests pin it); normally resolved from the embedder.
+        self._model_name = value
+
+    @property
+    def name(self) -> str:
+        """Human-friendly handler label (``embed:<model>``), derived
+        from :attr:`model_name` (and thus equally lazy) unless an
+        explicit label was set."""
+        if self._name_override is not None:
+            return self._name_override
+        return f"embed:{self.model_name}"
+
+    @name.setter
+    def name(self, value: str) -> None:
+        # Writeable to satisfy the base ``name: str`` contract; the
+        # label is normally derived from model_name, not set.
+        self._name_override = value
 
     # ------------------------------------------------------------------
     # process — pure compute (delegate to embedder)
