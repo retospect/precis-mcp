@@ -79,7 +79,9 @@ def _suggest_slug(store: Any, ref: Any, prefill: dict[str, Any] | None) -> str:
     """
     if prefill:
         raw = str(prefill.get("authors") or "")
-        authors: Any = [ln.strip() for ln in raw.replace(";", "\n").splitlines() if ln.strip()]
+        authors: Any = [
+            ln.strip() for ln in raw.replace(";", "\n").splitlines() if ln.strip()
+        ]
         yr = str(prefill.get("year") or "").strip()
         year: int | None = int(yr) if yr.isdigit() else None
     else:
@@ -286,6 +288,8 @@ async def triage_queue(request: Request, page: int = 1) -> HTMLResponse:
     )
     has_next = len(refs) > _PAGE_SIZE
     refs = refs[:_PAGE_SIZE]
+    total = store.count_refs(kind="paper", tags=[_TRIAGE_TAG])
+    total_pages = max(1, -(-total // _PAGE_SIZE))  # ceil-div
     rows = [_paper_row(r) for r in refs]
     ids_map = store.identifiers_for_refs([row["id"] for row in rows])
     for row in rows:
@@ -298,6 +302,9 @@ async def triage_queue(request: Request, page: int = 1) -> HTMLResponse:
             "papers": rows,
             "page": page,
             "has_next": has_next,
+            "total": total,
+            "total_pages": total_pages,
+            "offset": offset,
         },
     )
 

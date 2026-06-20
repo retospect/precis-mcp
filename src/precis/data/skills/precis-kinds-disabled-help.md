@@ -39,7 +39,7 @@ the missing var(s) to the operator.
 |---|---|
 | `patent` | `EPO_OPS_CLIENT_KEY`, `EPO_OPS_CLIENT_SECRET`, `PRECIS_PATENT_RAW_ROOT` |
 | `math` | `WOLFRAM_APP_ID` |
-| `websearch`, `think`, `research` | `PERPLEXITY_API_KEY` |
+| `websearch`, `perplexity-reasoning`, `perplexity-research` | `PERPLEXITY_API_KEY` |
 | `markdown`, `plaintext`, `tex` | `PRECIS_ROOT` |
 | `python` | `PRECIS_PYTHON_ROOTS` |
 

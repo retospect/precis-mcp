@@ -122,7 +122,17 @@ class FileCorpusIndex:
         if not self.is_available():
             return []
 
-        self._build()
+        # Build (chunk + embed + cache) on first call. Any failure here
+        # — unwritable cache dir, embedder blowing up mid-corpus, a
+        # cache deserialisation error — must leave semantic search
+        # unavailable (return []) so the caller's lexical fallback still
+        # answers, rather than escaping as a 500 (gripe #38690: skill
+        # search returned internal server error for ordinary queries).
+        try:
+            self._build()
+        except Exception as exc:
+            log.warning("skill_index: build failed: %s", exc, exc_info=True)
+            return []
         entries = self._entries or {}
         if not entries:
             return []

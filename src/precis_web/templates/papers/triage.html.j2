@@ -46,16 +46,26 @@
   {% endfor %}
 </ul>
 
-<div class="mt-4 flex items-center gap-3 text-sm">
-  {% if page > 1 %}
-  <a href="/papers/triage?page={{ page - 1 }}"
-     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">&larr; Prev</a>
-  {% endif %}
-  <span class="text-slate-400">Page {{ page }}</span>
-  {% if has_next %}
-  <a href="/papers/triage?page={{ page + 1 }}"
-     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">Next &rarr;</a>
-  {% endif %}
+<div class="mt-4 flex flex-col gap-2">
+  <div class="text-xs text-slate-500">
+    {% if total == 0 %}
+    No papers in the triage queue.
+    {% else %}
+    Showing <span class="font-medium text-slate-700">{{ offset + 1 }}–{{ offset + papers | length }}</span>
+    of <span class="font-medium text-slate-700">{{ total }}</span> paper{{ '' if total == 1 else 's' }}
+    · Page {{ page }} of {{ total_pages }}
+    {% endif %}
+  </div>
+  <div class="flex items-center gap-3 text-sm">
+    {% if page > 1 %}
+    <a href="/papers/triage?page={{ page - 1 }}"
+       class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">&larr; Prev</a>
+    {% endif %}
+    {% if has_next %}
+    <a href="/papers/triage?page={{ page + 1 }}"
+       class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">Next &rarr;</a>
+    {% endif %}
+  </div>
 </div>
 {% endif %}
 {% endblock %}

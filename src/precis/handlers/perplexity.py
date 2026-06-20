@@ -187,7 +187,13 @@ class _PerplexityBase(CacheBackedHandler):
                 next="retry later",
             )
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception as exc:  # non-JSON 2xx body → clean error, not 500
+            raise Upstream(
+                f"Perplexity returned non-JSON (HTTP {resp.status_code}): {exc}",
+                next="retry later",
+            ) from exc
         body, citations = _format_perplexity_body(data)
         title = _title_for_query(query)
 

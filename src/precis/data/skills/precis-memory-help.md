@@ -200,7 +200,7 @@ get(kind='skill', id='precis-overview')       # verbs and kinds
 get(kind='skill', id='precis-tags')           # open-tag axes, bare flags
 get(kind='skill', id='precis-relations')      # rel= vocabulary
 get(kind='skill', id='precis-link-help')      # link verb mechanics
-get(kind='skill', id='precis-cache')          # research/think/web TTLs
+get(kind='skill', id='precis-cache')          # perplexity-research/perplexity-reasoning/web TTLs
 get(kind='skill', id='precis-search-help')    # hybrid search mechanics
 get(kind='skill', id='precis-put-help')       # put-verb arg shapes
 ```

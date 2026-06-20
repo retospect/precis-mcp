@@ -1201,7 +1201,18 @@ class PrecisRuntime:
                     "angle search by q= needs an embedder; "
                     "seed with like='kind:id' instead"
                 )
-            return embedder.embed_one(q), None, q
+            # Angle search is purely semantic — there's no lexical leg
+            # to fall back to — so a failing embedder must surface as a
+            # clean Upstream rather than a bare 500.
+            try:
+                return embedder.embed_one(q), None, q
+            except Upstream:
+                raise
+            except Exception as exc:
+                raise Upstream(
+                    "angle search could not embed q=",
+                    next="retry shortly (embedder may be warming)",
+                ) from exc
 
         raise BadInput(
             "angle search requires q= or like=",

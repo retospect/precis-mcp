@@ -94,9 +94,21 @@ WAITING_BACKOFF_MINUTES = 60
 # Cap on the exponential waiting window. 1440 min = 24h: after ~5
 # consecutive waits (60→120→240→480→960→capped) a stuck finding polls
 # at most once a day, which still picks up a late-arriving stub PDF
-# within a day while killing the per-minute flood. Never gives up
-# entirely — a one-a-day re-poke is cheap insurance.
+# within a day while killing the per-minute flood.
 WAITING_BACKOFF_MAX_MINUTES = 1440
+
+# Terminal give-up. A one-a-day re-poke is cheap insurance for a stub
+# whose PDF is merely late — but some frontier stubs *never* get a PDF
+# (no OA version, withdrawn, paywalled forever), and re-poking those
+# once a day in perpetuity is pure noise that keeps the finding in the
+# tracing pool and the ``(ref_id, 'chase')`` pair ticking forever. Once
+# a finding has been *continuously* waiting (no intervening progress)
+# for this many days we abandon it: flip STATUS:tracing → dead_chain so
+# it leaves the claim pool entirely. The threshold is measured in
+# wall-clock age of the consecutive-waiting run, NOT a waits count, so
+# a pre-fix spin-loop burst (hundreds of `waiting` rows in an hour)
+# can't trip it early — only genuine multi-week starvation does.
+WAITING_ABANDON_AFTER_DAYS = 14.0
 
 # Inline citation patterns. Numbered bracket form is the most common
 # and the cheapest to map (positional into S2's references list).
@@ -301,9 +313,20 @@ def advance_finding(
         ev.reason = "target_deleted"
         return "dead", ev
 
-    # Stub paper with no chunks yet → waiting (no-op pass).
+    # Stub paper with no chunks yet → waiting (no-op pass), unless the
+    # finding has been starving on this frontier long enough that we
+    # give up (see :data:`WAITING_ABANDON_AFTER_DAYS`). Abandoning flips
+    # STATUS:tracing → dead_chain so the finding leaves the tracing pool
+    # instead of re-polling ~once a day forever.
     target_chunks = _fetch_chunks(conn, frontier_ref_id)
     if not target_chunks:
+        waits, run_age_days = _waiting_run_stats(conn, finding.ref_id)
+        if run_age_days >= WAITING_ABANDON_AFTER_DAYS:
+            _set_status(conn, finding.ref_id, _DEAD_CHAIN, reason="abandoned_waiting")
+            ev.reason = "abandoned_waiting"
+            ev.frontier["waited_days"] = round(run_age_days, 1)
+            ev.frontier["waits"] = waits
+            return "dead", ev
         return "waiting", ev
 
     # Locate the relevant chunk in the target paper.
@@ -570,6 +593,44 @@ def _fetch_chunks(conn: Connection, ref_id: int) -> list[tuple[int, int, str]]:
         (ref_id,),
     ).fetchall()
     return [(int(r[0]), int(r[1]), str(r[2])) for r in rows]
+
+
+def _waiting_run_stats(conn: Connection, ref_id: int) -> tuple[int, float]:
+    """Stats for the *current* consecutive-``waiting`` run of a finding.
+
+    Returns ``(waits, age_days)`` where ``waits`` is the number of
+    ``waiting`` chase events since the last non-waiting outcome (the
+    same run the claim's exponential backoff counts) and ``age_days``
+    is the wall-clock age, in days, of the *oldest* ``waiting`` event in
+    that run. A finding with no prior ``waiting`` events returns
+    ``(0, 0.0)``. Age — not count — is what gates the terminal give-up
+    so a short, dense spin-loop burst can't trip it (see
+    :data:`WAITING_ABANDON_AFTER_DAYS`).
+    """
+    row = conn.execute(
+        """
+        WITH boundary AS (
+            SELECT COALESCE(
+                (SELECT max(ts) FROM ref_events
+                  WHERE ref_id = %(rid)s AND source = %(src)s
+                    AND event <> 'waiting'),
+                '-infinity'::timestamptz
+            ) AS since
+        )
+        SELECT count(*)::int AS waits,
+               COALESCE(
+                   EXTRACT(EPOCH FROM (now() - min(e.ts))) / 86400.0,
+                   0.0
+               ) AS age_days
+          FROM ref_events e, boundary b
+         WHERE e.ref_id = %(rid)s AND e.source = %(src)s
+           AND e.event = 'waiting' AND e.ts > b.since
+        """,
+        {"rid": ref_id, "src": _SOURCE},
+    ).fetchone()
+    if row is None:
+        return 0, 0.0
+    return int(row[0] or 0), float(row[1] or 0.0)
 
 
 def _claim_body(conn: Connection, ref_id: int) -> str:

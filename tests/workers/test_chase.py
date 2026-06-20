@@ -38,7 +38,11 @@ from unittest.mock import patch
 from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
 from precis.store.types import BlockInsert
-from precis.workers.chase import claim_tracing_findings, run_finding_chase_pass
+from precis.workers.chase import (
+    _waiting_run_stats,
+    claim_tracing_findings,
+    run_finding_chase_pass,
+)
 
 # ── plumbing ────────────────────────────────────────────────────────
 
@@ -275,6 +279,56 @@ def test_claim_backoff_count_resets_after_progress(store) -> None:
         conn.commit()
     # waits-since-progress == 1 → base 60-min window → 90 min ago is eligible.
     assert fid in [f.ref_id for f in claimed]
+
+
+# ── terminal give-up: starve past WAITING_ABANDON_AFTER_DAYS ────────
+
+
+def test_waiting_abandoned_after_long_starvation(store) -> None:
+    """A finding that has been *continuously* waiting on a chunk-less
+    frontier for longer than ``WAITING_ABANDON_AFTER_DAYS`` is given up:
+    the pass flips STATUS:tracing → dead_chain so it leaves the pool
+    instead of re-polling ~once a day forever."""
+    _seed_paper(store, cite_key="stub_starved", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_starved")
+    # Consecutive waiting run that began > 14 days ago; the most recent
+    # wait is old enough (> 24h cap) to be claimable again.
+    _insert_chase_event(store, fid, "waiting", minutes_ago=15 * 1440)
+    _insert_chase_event(store, fid, "waiting", minutes_ago=2 * 1440)
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "dead_chain"
+
+
+def test_waiting_not_abandoned_before_threshold(store) -> None:
+    """A finding only a few days into waiting is still re-polled, not
+    abandoned — the give-up is for genuine multi-week starvation only."""
+    _seed_paper(store, cite_key="stub_young", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_young")
+    # 3-day-old run, most recent wait past the cap so it's claimable.
+    _insert_chase_event(store, fid, "waiting", minutes_ago=3 * 1440)
+    _insert_chase_event(store, fid, "waiting", minutes_ago=int(1.5 * 1440))
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "tracing"
+
+
+def test_waiting_run_stats_age_not_count(store) -> None:
+    """A dense burst of waits in a short window (the pre-fix spin-loop
+    shape) has a high count but low age — age is what gates give-up, so
+    such a burst is *not* abandoned."""
+    _seed_paper(store, cite_key="stub_burst", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_burst")
+    # 200 waits all within the last ~3 hours: count is huge, age tiny.
+    for i in range(200):
+        _insert_chase_event(store, fid, "waiting", minutes_ago=180 - i * 0.5)
+
+    with store.pool.connection() as conn:
+        waits, age_days = _waiting_run_stats(conn, fid)
+    assert waits == 200
+    assert age_days < 1.0
 
 
 # ── hop: inline cite + S2 reference → chain grows ──────────────────

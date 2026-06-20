@@ -43,6 +43,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
 from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
+from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
@@ -377,8 +378,8 @@ class PatentHandler(Handler):
         """
         if not (q and q.strip()):
             return []
-        if query_vec is None and self.embedder is not None:
-            query_vec = self.embedder.embed_one(q)
+        if query_vec is None:
+            query_vec = embed_query(self.embedder, q)
         return self.store.search_blocks_fused(
             q=q,
             query_vec=query_vec,

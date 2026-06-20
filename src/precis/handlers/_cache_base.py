@@ -51,6 +51,7 @@ from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import BlockInsert, Tag
 from precis.utils.block_ingest import to_block_inserts
+from precis.utils.embed_query import embed_query
 from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
@@ -744,9 +745,7 @@ class CacheBackedHandler(Handler):
                 next=f"search(kind={self.spec.kind!r}, q='your query')",
             )
 
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
-            query_vec = self.embedder.embed_one(q)
+        query_vec = embed_query(self.embedder, q)
 
         hits = self.store.search_blocks_fused(
             q=q,
@@ -817,8 +816,8 @@ class CacheBackedHandler(Handler):
         """
         if not (q and q.strip()):
             return []
-        if query_vec is None and self.embedder is not None:
-            query_vec = self.embedder.embed_one(q)
+        if query_vec is None:
+            query_vec = embed_query(self.embedder, q)
         triples = self.store.search_blocks_fused(
             q=q,
             query_vec=query_vec,

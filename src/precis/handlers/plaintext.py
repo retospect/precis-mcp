@@ -58,6 +58,7 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
+from precis.utils.embed_query import embed_query
 from precis.utils.file_id import (
     canonicalize_path_id,
     format_write_result,
@@ -393,9 +394,7 @@ class PlaintextHandler(Handler):
                 )
             scope_ref_id = scope_ref.id
 
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
-            query_vec = self.embedder.embed_one(q)
+        query_vec = embed_query(self.embedder, q)
 
         hits = self.store.search_blocks_fused(
             q=q,
@@ -464,8 +463,8 @@ class PlaintextHandler(Handler):
             return []
         # query_vec= may be pre-supplied by the runtime cross-kind
         # dispatcher (computed once for all kinds).
-        if query_vec is None and self.embedder is not None:
-            query_vec = self.embedder.embed_one(q)
+        if query_vec is None:
+            query_vec = embed_query(self.embedder, q)
         triples = self.store.search_blocks_fused(
             q=q,
             query_vec=query_vec,

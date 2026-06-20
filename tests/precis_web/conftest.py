@@ -226,6 +226,19 @@ class FakeStore:
     ):
         return list(self._for_kind(kind))[offset : offset + limit]
 
+    def count_refs(
+        self,
+        *,
+        kind: str | None = None,
+        provider: str | None = None,
+        tags: list[str] | None = None,
+        **kw: Any,
+    ) -> int:
+        # Mirrors list_refs: this fake ignores tag filtering, so the
+        # count matches the unfiltered per-kind pool the triage route
+        # paginates over.
+        return len(self._for_kind(kind))
+
     def search_refs_lexical(
         self,
         *,
@@ -258,7 +271,9 @@ class FakeStore:
             raise NotFound(f"ref id={ref_id} not found (or already deleted)")
         self.deleted_ref_ids.add(ref_id)
 
-    def set_ref_identifier(self, ref_id, scheme, value, *, source="web-edit", conn=None):
+    def set_ref_identifier(
+        self, ref_id, scheme, value, *, source="web-edit", conn=None
+    ):
         """Record the identifier write; raise BadInput on a taken cite_key
         (mirrors the real store's cross-ref uniqueness guard) and reflect a
         cite_key change onto the ref's slug."""

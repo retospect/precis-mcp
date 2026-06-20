@@ -74,8 +74,8 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 | `web` | Fetch + extract a URL | `https://example.com/page` | free |
 | `wikipedia` | Resolve + fetch one Wikipedia article (on-demand; fenced from default search via `ORIGIN:wikipedia`) | `CRISPR gene editing` | free |
 | `websearch` | Perplexity Sonar: fast factual | `latest perovskite results` | paid |
-| `think` | Perplexity Sonar Reasoning Pro | `compare DAC and BECCS` | paid |
-| `research` | Perplexity Sonar Deep Research | `mechanism of NOxRR` | paid |
+| `perplexity-reasoning` | Perplexity Sonar Reasoning Pro | `compare DAC and BECCS` | paid |
+| `perplexity-research` | Perplexity Sonar Deep Research | `mechanism of NOxRR` | paid |
 
 Paid tools cache automatically. Pro subscribers can import a free
 web-UI answer at $0 via `put(mode='import')` — see

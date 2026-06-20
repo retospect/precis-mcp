@@ -59,6 +59,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils.authors import to_name_dicts
+from precis.utils.embed_query import embed_query
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -718,9 +719,12 @@ class PaperHandler(Handler):
                     excluded_slugs_in, kind="paper"
                 )
 
-        query_vec: list[float] | None = None
-        if self.embedder is not None:
-            query_vec = self.embedder.embed_one(q)
+        # Compute the query embedding for the semantic leg. A missing OR
+        # failing embedder degrades to lexical-only (query_vec=None)
+        # rather than 500 the whole search — the lexical leg still
+        # answers (gripe #38684: search q='*' returned a 500). See
+        # :func:`embed_query`.
+        query_vec = embed_query(self.embedder, q)
 
         # ``max_distance`` enforces a semantic relevance floor so a
         # nonsense query (``'xyzzy frobnicate quux'``) returns an
@@ -1008,8 +1012,8 @@ class PaperHandler(Handler):
         # query_vec= may be pre-supplied by the runtime cross-kind
         # dispatcher (computed once for all kinds), avoiding an
         # extra embed_one(q) per fanned-out kind.
-        if query_vec is None and self.embedder is not None:
-            query_vec = self.embedder.embed_one(q)
+        if query_vec is None:
+            query_vec = embed_query(self.embedder, q)
         triples = self.store.search_blocks_fused(
             q=q,
             query_vec=query_vec,

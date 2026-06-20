@@ -14,7 +14,7 @@ status: active
   `paper`, `patent`, `memory`, `markdown`, …
 - **Compute** — pass `q=` (or `id=` for some kinds) and the handler
   computes a fresh result. Used by `calc`, `math`, `web`, `youtube`,
-  `research`, `think`, `websearch`.
+  `perplexity-research`, `perplexity-reasoning`, `websearch`.
 
 ```python
 get(kind='paper', id='wang2020state')                    # read

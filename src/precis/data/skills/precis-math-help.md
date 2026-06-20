@@ -77,5 +77,5 @@ link and a paste-ready citation.
 ```python
 get(kind='skill', id='precis-overview')        # verbs and kinds
 get(kind='skill', id='precis-cache')           # TTLs, pinning, force-refresh
-get(kind='skill', id='precis-perplexity-help') # websearch / think / research
+get(kind='skill', id='precis-perplexity-help') # websearch / perplexity-reasoning / perplexity-research
 ```
