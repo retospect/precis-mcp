@@ -9,6 +9,9 @@ severity semantics and the handler's list views directly.
 
 from __future__ import annotations
 
+import psycopg
+import pytest
+
 from precis.alerts import (
     STATE_OPEN,
     STATE_RESOLVED,
@@ -78,6 +81,36 @@ def test_raise_alert_distinct_fingerprints_are_distinct_rows(store: Store) -> No
     a1 = raise_alert(store, source="s", fingerprint="fp:1", title="a")
     a2 = raise_alert(store, source="s", fingerprint="fp:2", title="b")
     assert a1 != a2
+
+
+def test_open_alert_unique_index_blocks_duplicate(store: Store) -> None:
+    """The partial unique index (migration 0030) is the DB backstop for
+    the cross-node raise_alert race: a *second* open row for the same
+    (source, fingerprint) is rejected. raise_alert's own advisory lock
+    keeps real callers off this path; here we INSERT directly, exactly as
+    a raced second nursery instance that skipped the lock would."""
+    raise_alert(store, source="s", fingerprint="fp:dup", title="first")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with store.tx() as conn:
+            store.insert_ref(
+                kind="alert",
+                slug=None,
+                title="raced duplicate",
+                meta={"alert_source": "s", "fingerprint": "fp:dup"},
+                conn=conn,
+            )
+
+
+def test_resolved_then_reraise_does_not_conflict(store: Store) -> None:
+    """A resolved alert (meta.resolved_at set) is outside the partial
+    index predicate, so when the condition recurs the fresh open row
+    doesn't collide with the historical resolved one."""
+    raise_alert(store, source="s", fingerprint="fp:re", title="a")
+    resolve_stale_alerts(store, source="s", live_fingerprints=[])  # resolve it
+    aid = raise_alert(store, source="s", fingerprint="fp:re", title="b")
+    open_s = [a for a in list_open_alerts(store) if a["source"] == "s"]
+    assert len(open_s) == 1
+    assert open_s[0]["ref_id"] == aid
 
 
 def test_raise_alert_severity_change_keeps_single_tag(store: Store) -> None:

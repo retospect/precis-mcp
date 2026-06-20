@@ -78,6 +78,21 @@ def raise_alert(
     """
     severity = _norm_severity(severity)
     with store.tx() as conn:
+        # Serialize concurrent raises of the SAME (source, fingerprint)
+        # across the cluster's many nursery instances. The SELECT-then-
+        # INSERT dedup below is not atomic on its own, so without this two
+        # nodes could both miss the existing open alert and both INSERT —
+        # which the partial unique index uq_alert_open_source_fingerprint
+        # (migration 0030) would then reject with a violation. The
+        # transaction-scoped advisory lock makes the check-then-insert
+        # atomic per fingerprint; it releases at COMMIT/ROLLBACK. The
+        # two-arg (classid, objid) form hashes source and fingerprint
+        # separately, so "a"+"bc" can't alias "ab"+"c" and there's no NUL
+        # separator (PostgreSQL text rejects 0x00).
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (source, fingerprint),
+        )
         existing = conn.execute(
             """
             SELECT r.ref_id, r.meta
