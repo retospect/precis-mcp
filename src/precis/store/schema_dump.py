@@ -174,7 +174,8 @@ def _run_pg_dump(pg_dump_bin: str, scratch_dsn: str, extra: list[str]) -> str:
 def _clean_dump(text: str) -> str:
     """Strip psql-only artefacts pg_dump emits that we don't want baked.
 
-    ``\\restrict`` / ``\\unrestrict`` are PG18 dump markers (the runner
+    ``\\restrict`` / ``\\unrestrict`` are psql-only dump markers pg_dump
+    emits from PG 17 on — with a fresh random token per run (the runner
     tolerates them, but they add noise) and a bare ``CREATE SCHEMA
     public`` is rewritten to ``IF NOT EXISTS`` so fresh databases that
     already have the default schema don't error.

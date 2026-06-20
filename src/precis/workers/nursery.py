@@ -148,9 +148,7 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
                 subject_ref_id=f.ref_id,
             )
         raised += len(findings)
-        resolved += resolve_stale_alerts(
-            store, source=source, live_fingerprints=live
-        )
+        resolved += resolve_stale_alerts(store, source=source, live_fingerprints=live)
     if raised or resolved:
         log.info("nursery: %d alerts raised/refreshed, %d resolved", raised, resolved)
     return BatchResult(handler="nursery", claimed=raised, ok=resolved, failed=0)

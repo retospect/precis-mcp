@@ -76,9 +76,7 @@ class AlertHandler(NumericRefHandler):
 
     def _render_open(self) -> Response:
         """Currently-open alerts, recency-ordered."""
-        refs = self.store.list_refs(
-            kind=self.kind, tags=[STATE_OPEN], limit=200
-        )
+        refs = self.store.list_refs(kind=self.kind, tags=[STATE_OPEN], limit=200)
         refs = sorted(refs, key=lambda r: r.updated_at, reverse=True)
         if not refs:
             return Response(body="no open alerts — all clear.")

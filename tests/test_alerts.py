@@ -100,9 +100,7 @@ def test_resolve_stale_only_resolves_absent_fingerprints(store: Store) -> None:
     raise_alert(store, source="s", fingerprint="drop", title="drop")
     n = resolve_stale_alerts(store, source="s", live_fingerprints=["keep"])
     assert n == 1
-    open_fps = {
-        a["title"] for a in list_open_alerts(store) if a["source"] == "s"
-    }
+    open_fps = {a["title"] for a in list_open_alerts(store) if a["source"] == "s"}
     assert open_fps == {"keep"}
 
 
@@ -146,7 +144,9 @@ def test_list_open_alerts_orders_critical_first(store: Store) -> None:
 
 def test_handler_open_view_lists_open_alerts(hub: Hub, store: Store) -> None:
     handler = AlertHandler(hub=hub)
-    raise_alert(store, source="s", fingerprint="fp:1", title="open alert", severity="warn")
+    raise_alert(
+        store, source="s", fingerprint="fp:1", title="open alert", severity="warn"
+    )
     resp = handler.get(id="/open")
     assert "open alert" in resp.body
     assert "1 open alert" in resp.body

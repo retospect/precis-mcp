@@ -262,7 +262,8 @@ FROM system-base AS dev-system
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 
-# Dev system tools.
+# Dev system tools. (Debian bookworm's postgresql-client is major 15 —
+# kept here for the client lib ecosystem: psql, libreadline, etc.)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -273,6 +274,19 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         graphviz \
         plantuml \
         default-jre-headless
+
+# Overlay pg_dump 17 to match the pgvector server (17.x). pg_dump aborts
+# with "server version mismatch" when its major < the server's, which
+# broke the schema-baseline / migration tests (test_schema_convergence,
+# test_migrate_*). Debian only packages client 15 and this build network
+# can't reach apt.postgresql.org for the PGDG client — so we lift pg_dump
+# and its libpq straight out of the *same* image the server runs, pulled
+# from Docker Hub (which the build can reach). The multi-arch reference
+# resolves to the build platform, so the binaries match the build arch.
+# Bump the tag in lockstep with the server image.
+COPY --from=pgvector/pgvector:pg17 /usr/lib/postgresql/17/bin/pg_dump /usr/local/bin/pg_dump
+COPY --from=pgvector/pgvector:pg17 /usr/lib/*-linux-gnu/libpq.so.5* /usr/local/lib/
+RUN ldconfig
 
 # Node + Claude Code CLI. Pins match ~/work/docker/coding-base/Dockerfile
 # so the agent binary is identical between coding-base-derived projects

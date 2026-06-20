@@ -89,6 +89,7 @@ def _group_by_source(alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for a in alerts:
         groups.setdefault(a["source"], []).append(a)
+
     # Order groups by their worst (lowest-rank) severity, then name.
     def _key(item: tuple[str, list[dict[str, Any]]]) -> tuple[int, str]:
         source, rows = item

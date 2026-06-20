@@ -166,8 +166,7 @@ def test_time_gate_blocks_immediate_rebuild(seeded: Store) -> None:
 def _insert_run(store: Store, scope: str, status: str) -> int:
     with store.pool.connection() as conn:
         run_id = conn.execute(
-            "INSERT INTO cluster_runs (scope, status) VALUES (%s, %s) "
-            "RETURNING run_id",
+            "INSERT INTO cluster_runs (scope, status) VALUES (%s, %s) RETURNING run_id",
             (scope, status),
         ).fetchone()[0]
         conn.commit()

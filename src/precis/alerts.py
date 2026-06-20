@@ -239,9 +239,7 @@ def list_open_alerts(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
     ]
 
 
-def _set_severity_tag(
-    store: Store, ref_id: int, severity: str, *, conn: Any
-) -> None:
+def _set_severity_tag(store: Store, ref_id: int, severity: str, *, conn: Any) -> None:
     """Keep exactly one ``severity:`` open tag on an alert."""
     for sev in SEVERITIES:
         if sev != severity:

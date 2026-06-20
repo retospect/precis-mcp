@@ -528,7 +528,6 @@ def _finish_run(
         # newest green wins (the current-map query orders by finished_at
         # DESC), and any older green is reaped by the next finish.
         conn.execute(
-            "DELETE FROM cluster_runs "
-            "WHERE scope=%s AND run_id < %s AND status='ok'",
+            "DELETE FROM cluster_runs WHERE scope=%s AND run_id < %s AND status='ok'",
             (scope, run_id),
         )

@@ -46,8 +46,21 @@ def test_migrate_dry_run_against_fresh_db(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # --from-scratch ignores the baseline snapshot and replays the full
+    # numbered chain, so 0001_initial shows up as pending. Without it a
+    # fresh DB bootstraps from migrations/baseline/schema.sql and only the
+    # post-snapshot tail is pending (ADR 0031).
     monkeypatch.setattr(
-        sys, "argv", ["precis", "migrate", "--database-url", fresh_db, "--dry-run"]
+        sys,
+        "argv",
+        [
+            "precis",
+            "migrate",
+            "--database-url",
+            fresh_db,
+            "--dry-run",
+            "--from-scratch",
+        ],
     )
     cli.main()
     out = capsys.readouterr().out
@@ -60,14 +73,24 @@ def test_migrate_applies_pending(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "argv", ["precis", "migrate", "--database-url", fresh_db])
+    # --from-scratch: replay the whole numbered chain (not the baseline
+    # snapshot + tail), so 0001_initial is among the applied set (ADR 0031).
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["precis", "migrate", "--database-url", fresh_db, "--from-scratch"],
+    )
     cli.main()
     out = capsys.readouterr().out
     assert "applied" in out
     assert "0001_initial" in out
 
     # Second run is a no-op.
-    monkeypatch.setattr(sys, "argv", ["precis", "migrate", "--database-url", fresh_db])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["precis", "migrate", "--database-url", fresh_db, "--from-scratch"],
+    )
     cli.main()
     out = capsys.readouterr().out
     assert "nothing to apply" in out

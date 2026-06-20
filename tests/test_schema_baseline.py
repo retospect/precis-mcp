@@ -117,11 +117,17 @@ def _dump_schema(pg_dump_bin: str, dsn: str) -> str:
         check=True,
     ).stdout
     # Drop comments / blank lines / SET preamble so the comparison is on
-    # schema substance, not pg_dump's header chatter.
+    # schema substance, not pg_dump's header chatter. ``\restrict`` /
+    # ``\unrestrict`` are psql-only markers pg_dump >= 17 emits with a
+    # *fresh random token every run* — left in, the two dumps could never
+    # be equal. (The production baseline cleaner strips them too; see
+    # precis.store.schema_dump._clean_dump.)
     keep = []
     for line in out.splitlines():
         s = line.strip()
         if not s or s.startswith("--"):
+            continue
+        if s.startswith("\\restrict ") or s.startswith("\\unrestrict "):
             continue
         keep.append(s)
     return "\n".join(keep)
