@@ -122,6 +122,21 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   `tests/workers/test_fetch_oa.py`. The registry is the extension point
   for further deterministic OA publishers (Frontiers, eLife, PeerJ,
   bioRxiv/medRxiv) once each URL pattern is verified.
+### Added (2026-06-20 — precis.skills plugin entry-point group)
+
+- **Third-party packages can contribute LLM-facing skill docs.** New
+  `precis.skills` entry-point group, mirroring `precis.handlers`.
+  `_load_skills_map` (the single chokepoint feeding both
+  `get(kind='skill')` via `_load_skill` and `search(kind='skill')` via
+  `_get_index`/`FileCorpusIndex`) now also walks skill `*.md` roots
+  resolved from the group, in addition to the built-in
+  `precis.data.skills` package. Built-ins load first and win slug
+  collisions; a broken plugin root is logged and skipped (same failure
+  isolation as `dispatch._load_plugins`). `_walk_skill_root` factored out
+  (duck-typed on `iterdir`/`is_dir`/`name`/`read_text` so a `Path` or an
+  importlib `Traversable` both work). Lets the `precis-chain` plugin ship
+  its `service`/`chain` skills. See ADR 0032; tests in
+  `tests/test_skill_plugin_group.py`.
 
 ### Fixed (2026-06-20 — web untriage / paper tag+link by numeric id)
 

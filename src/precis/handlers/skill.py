@@ -1596,13 +1596,66 @@ def _load_skills_map_cache_clear() -> None:
     _SKILLS_MAP_CACHE = None
 
 
+#: Entry-point group third-party packages use to contribute skill
+#: roots, mirroring ``precis.handlers`` (``dispatch._load_plugins``).
+#: Each entry-point value is a package path holding ``*.md`` skill
+#: files, e.g. ``precis_chain = "precis_chain.data.skills"``. Built-in
+#: skills load first and win any slug collision.
+SKILL_PLUGIN_GROUP = "precis.skills"
+
+
+def _walk_skill_root(node: Any, out: dict[str, str]) -> None:
+    """Add every ``*.md`` skill under ``node`` to ``out`` (first writer
+    wins, so built-ins beat plugins on a slug clash)."""
+    for entry in node.iterdir():
+        name = entry.name
+        if name.startswith("__"):
+            continue  # skip __pycache__, __init__.py, etc.
+        if entry.is_dir():
+            _walk_skill_root(entry, out)
+            continue
+        if not name.endswith(".md"):
+            continue
+        stem = name[:-3]
+        if not _SLUG_RE.match(stem) or stem in out:
+            continue
+        try:
+            out[stem] = entry.read_text(encoding="utf-8")
+        except (OSError, FileNotFoundError) as exc:
+            log.warning("could not read skill %s: %s", stem, exc)
+
+
+def _plugin_skill_roots() -> list[Any]:
+    """Resolve skill roots contributed via the ``precis.skills``
+    entry-point group. Failures are logged, never raised — one broken
+    plugin must not brick the skill surface (mirrors ``_load_plugins``)."""
+    roots: list[Any] = []
+    try:
+        from importlib.metadata import entry_points
+
+        eps = entry_points(group=SKILL_PLUGIN_GROUP)
+    except Exception as exc:  # defensive — importlib surface is stable
+        log.warning("precis.skills discovery failed: %s", exc)
+        return roots
+    for ep in eps:
+        try:
+            roots.append(resources.files(ep.value))
+        except Exception as exc:
+            log.warning(
+                "precis.skills plugin %r (%s) failed: %s", ep.name, ep.value, exc
+            )
+    return roots
+
+
 def _load_skills_map() -> dict[str, str]:
     """Return ``{slug → raw markdown body}`` for every shipped skill.
 
     Walks ``src/precis/data/skills/`` recursively so subdirectory
     organisation (``personas/``, ``refs/``, …) is invisible to callers
     — every ``*.md`` whose stem matches :data:`_SLUG_RE` is reachable
-    via :func:`_load_skill` regardless of its directory.
+    via :func:`_load_skill` regardless of its directory. Then walks any
+    skill roots contributed by third-party packages via the
+    ``precis.skills`` entry-point group (built-ins win slug collisions).
 
     Cached on first call. Process-wide; restart the server to pick
     up new files on disk in production. Tests that mutate the corpus
@@ -1617,28 +1670,12 @@ def _load_skills_map() -> dict[str, str]:
         root = resources.files("precis.data.skills")
     except (ModuleNotFoundError, FileNotFoundError):
         log.warning("precis.data.skills package missing")
-        _SKILLS_MAP_CACHE = out
-        return out
+    else:
+        _walk_skill_root(root, out)
 
-    def walk(node: Any) -> None:
-        for entry in node.iterdir():  # type: ignore[union-attr]
-            name = entry.name
-            if name.startswith("__"):
-                continue  # skip __pycache__, __init__.py, etc.
-            if entry.is_dir():
-                walk(entry)
-                continue
-            if not name.endswith(".md"):
-                continue
-            stem = name[:-3]
-            if not _SLUG_RE.match(stem):
-                continue
-            try:
-                out[stem] = entry.read_text(encoding="utf-8")
-            except (OSError, FileNotFoundError) as exc:
-                log.warning("could not read skill %s: %s", stem, exc)
+    for proot in _plugin_skill_roots():
+        _walk_skill_root(proot, out)
 
-    walk(root)
     _SKILLS_MAP_CACHE = out
     return out
 
