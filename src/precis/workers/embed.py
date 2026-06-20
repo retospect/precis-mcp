@@ -153,15 +153,17 @@ class EmbedHandler(WorkerHandler):
         conn.execute(
             """
             INSERT INTO chunk_embeddings
-                (chunk_id, embedder, vector, status)
-            VALUES (%s, %s, %s, 'ok')
+                (chunk_id, embedder, vector, status, content_sha)
+            VALUES (%s, %s, %s, 'ok',
+                    (SELECT content_sha FROM chunks WHERE chunk_id = %s))
             ON CONFLICT (chunk_id, embedder) DO UPDATE
                SET vector = EXCLUDED.vector,
                    status = 'ok',
                    last_error = NULL,
+                   content_sha = EXCLUDED.content_sha,
                    attempts = chunk_embeddings.attempts + 1
             """,
-            (chunk_id, self.model_name, payload),
+            (chunk_id, self.model_name, payload, chunk_id),
         )
 
 

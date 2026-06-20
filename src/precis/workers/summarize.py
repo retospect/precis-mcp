@@ -108,15 +108,17 @@ class RakeLemmaHandler(WorkerHandler):
         conn.execute(
             """
             INSERT INTO chunk_summaries
-                (chunk_id, summarizer, text, status)
-            VALUES (%s, %s, %s, 'ok')
+                (chunk_id, summarizer, text, status, content_sha)
+            VALUES (%s, %s, %s, 'ok',
+                    (SELECT content_sha FROM chunks WHERE chunk_id = %s))
             ON CONFLICT (chunk_id, summarizer) DO UPDATE
                SET text = EXCLUDED.text,
                    status = 'ok',
                    last_error = NULL,
+                   content_sha = EXCLUDED.content_sha,
                    attempts = chunk_summaries.attempts + 1
             """,
-            (chunk_id, self.model_name, payload),
+            (chunk_id, self.model_name, payload, chunk_id),
         )
 
 

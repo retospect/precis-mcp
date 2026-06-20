@@ -623,6 +623,7 @@ def boot(
         from precis.handlers.citation import CitationHandler
         from precis.handlers.conversation import ConversationHandler
         from precis.handlers.cron import CronHandler
+        from precis.handlers.draft import DraftHandler
         from precis.handlers.finding import FindingHandler
         from precis.handlers.flashcard import FlashcardHandler
         from precis.handlers.gripe import GripeHandler
@@ -652,6 +653,7 @@ def boot(
         _gated(CronHandler)
         _gated(MessageHandler)
         _gated(PresentationHandler)
+        _gated(DraftHandler)
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the
         # DB-recorded version on every boot so a wheel upgrade or

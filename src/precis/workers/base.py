@@ -122,13 +122,22 @@ class WorkerHandler(ABC):
         # the vast majority — still match. See PR 2 of the
         # plugin-substrate work:
         # ``docs/design/dft-phase-0-pr-2-substrate-hardening.md`` §2.3.
+        # Claim a chunk when (a) it has no derived row yet, or (b) its
+        # derived row was built against a stale ``content_sha`` — the
+        # latter re-derives edited `draft` chunks (ADR 0033). Papers
+        # leave ``content_sha`` NULL, so ``NULL IS DISTINCT FROM NULL``
+        # never fires and they are unaffected. ``failed`` rows are NOT
+        # re-claimed on a sha change (a poison chunk would loop) — they
+        # stay declared until a manual DELETE, per ADR 0007.
         sql = f"""
             SELECT c.chunk_id, c.text
               FROM chunks c
               LEFT JOIN {self.output_table} o
                 ON o.chunk_id = c.chunk_id
                AND o.{self.model_column} = %s
-             WHERE o.chunk_id IS NULL
+             WHERE (o.chunk_id IS NULL
+                    OR (o.status IS DISTINCT FROM 'failed'
+                        AND o.content_sha IS DISTINCT FROM c.content_sha))
                AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
                {skip_clause}
              ORDER BY c.chunk_id

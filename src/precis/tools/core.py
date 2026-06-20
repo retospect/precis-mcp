@@ -472,6 +472,10 @@ def put(
     ref_meta: dict[str, Any] | None = None,
     subtype: str | None = None,
     chunk_kind: str | None = None,
+    # draft (see precis-draft-help): create a draft (with project=) or add
+    # a chunk (chunk_kind=, text=) placed by at={first|last|into|before|after}.
+    at: dict[str, Any] | None = None,
+    project: str | int | None = None,
     # conversation (see precis-conv-help):
     author: str | None = None,
     msg_id: str | None = None,
@@ -547,6 +551,8 @@ def put(
             "ref_meta": ref_meta,
             "subtype": subtype,
             "chunk_kind": chunk_kind,
+            "at": at,
+            "project": project,
             "author": author,
             "msg_id": msg_id,
             "target": target,
@@ -582,6 +588,9 @@ def edit(
     # established / multi_candidate finding. Declared at the verb level
     # so strict-schema MCP clients don't strip it (see precis-finding-help).
     pick_candidate: str | int | None = None,
+    # draft (see precis-draft-help): reorder/reparent a chunk by intent,
+    # move={before|after|into:'¶handle'} / {first|last:true}. No text.
+    move: dict[str, Any] | None = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -619,6 +628,7 @@ def edit(
         "allow_rename": allow_rename,
         "dry_run": dry_run,
         "pick_candidate": pick_candidate,
+        "move": move,
     }
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)
@@ -628,6 +638,9 @@ def delete(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
     id: str | int | None = None,
+    # draft (see precis-draft-help): retiring a heading with children needs
+    # mode='cascade' (delete contents) or 'promote' (lift them to the parent).
+    mode: str | None = None,
 ) -> str:
     """Delete a ref or addressed region.
 
@@ -646,7 +659,7 @@ def delete(
     Full reference: get(kind='skill', id='precis-delete-help'), or
     search(kind='skill', q='removing a ref') for a topical lookup.
     """
-    return _dispatch("delete", {"kind": kind, "id": id})
+    return _dispatch("delete", {"kind": kind, "id": id, "mode": mode})
 
 
 def tag(

@@ -57,6 +57,13 @@ Relation = Literal[
     # soft-deletes the originals. Distinct from `retracts`.
     "supersedes",
     "superseded-by",
+    # Draft kind — migration 0032 (ADR 0033). `draft-of` binds a draft
+    # ref 1:1 to its project todo; `snapshot-of` binds a freeze to its
+    # draft. Keep in sync with the `relations` seed in 0032.
+    "draft-of",
+    "has-draft",
+    "snapshot-of",
+    "has-snapshot",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -100,6 +107,10 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "raises-concern-about": "concern-raised-by",
     "supersedes": "superseded-by",
     "superseded-by": "supersedes",
+    "draft-of": "has-draft",
+    "has-draft": "draft-of",
+    "snapshot-of": "has-snapshot",
+    "has-snapshot": "snapshot-of",
 }
 
 
