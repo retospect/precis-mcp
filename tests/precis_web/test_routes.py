@@ -849,7 +849,10 @@ def test_webconfig_parses_multiple_corpus_roots(monkeypatch) -> None:
     # (``\opt\shared\corpus``) matches the POSIX-form input.
     assert Path(str(cfg.corpus_dir)) == Path("/opt/shared/corpus")
     assert [Path(str(p)) for p in cfg.extra_corpus_dirs] == [Path("/opt/nas/c")]
-    assert [str(p) for p in cfg.corpus_dirs] == ["/opt/shared/corpus", "/opt/nas/c"]
+    assert [Path(str(p)) for p in cfg.corpus_dirs] == [
+        Path("/opt/shared/corpus"),
+        Path("/opt/nas/c"),
+    ]
 
 
 def test_pdf_resolves_from_second_corpus_root(runtime, tmp_path) -> None:
