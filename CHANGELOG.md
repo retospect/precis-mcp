@@ -8,6 +8,29 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-20 — worker survives a down embedder at boot)
+
+- **The system worker no longer crash-loops when the embedder is
+  unreachable at startup.** `EmbedHandler.__init__` eagerly read
+  `embedder.model` (a `GET /model` round-trip on the remote backend);
+  if the embedder was down — e.g. mid-restart during a redeploy — that
+  raised `RuntimeError` out of `_build_handlers` and launchd
+  crash-looped the *entire* worker, taking `summarize` / `chase` /
+  `fetch` / `dispatch` down with the one pass that actually needs the
+  embedder. `model_name` / `name` are now resolved lazily (and cached)
+  on first use, so construction is network-free: the worker boots and
+  runs every other pass; only the embed pass bears the dependency, the
+  runner skips just that pass while the embedder is unreachable, and it
+  recovers on the next cycle once the embedder is back — no restart
+  needed. The two `_build_handlers` call-sites that filtered handlers
+  by `h.name.startswith("embed:")` now use the `isinstance` check alone
+  (equivalent, and it avoids re-triggering the boot-time round-trip).
+  Regression tests: `test_construction_does_not_touch_embedder`,
+  `test_model_name_resolved_once_and_cached`. (Complements the
+  `redeploy-precis.yml` ordering fix in the cluster repo, which gates
+  the daemon bounce on embedder `/healthz`; this makes the crash-loop
+  impossible regardless of deploy timing.)
+
 ### Added (2026-06-20 — OA fetcher: publisher APIs + aggregator legs)
 
 - **Six new legs in the `fetch_oa` cascade.** It grows from
