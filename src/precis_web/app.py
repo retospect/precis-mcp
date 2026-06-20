@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from precis_web.config import WebConfig
 from precis_web.errors import register_error_handlers
@@ -58,6 +60,13 @@ def create_app(
         app.state.runtime = runtime
 
     register_error_handlers(app)
+
+    # Self-hosted front-end assets. tailwind.js is the cdn.tailwindcss.com
+    # play-CDN bundle vendored verbatim under static/ and served here, so
+    # there is no external CDN dependency at runtime.
+    static_dir = Path(__file__).parent / "static"
+    static_dir.mkdir(exist_ok=True)
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     # Routers — one per tab. Imported here (not at module top) so the
     # package import surface stays light and circular-import-free.

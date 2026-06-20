@@ -241,9 +241,7 @@ def test_cache_round_trip_preserves_body_only(tmp_path: Path) -> None:
             chunker_version=CHUNKER_VERSION,
             chunks=[
                 CachedChunk(heading="H", text="## H\nbody", embedding=[0.1]),
-                CachedChunk(
-                    heading="H", text="body", embedding=[0.2], body_only=True
-                ),
+                CachedChunk(heading="H", text="body", embedding=[0.2], body_only=True),
             ],
         )
     )
