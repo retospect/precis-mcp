@@ -8,6 +8,35 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-20 — web: autoescape was OFF; Tasks buttons went dead on planner-prompt titles)
+
+- **Jinja autoescape was disabled for the entire web UI.** The
+  templates are named `*.html.j2`, but `select_autoescape()` only
+  enables on `.html`/`.htm`/`.xml` — so every `{{ value }}` rendered
+  **raw HTML**. A planner (`LLM:*`) todo whose title contained literal
+  placeholder syntax (`q='<title or DOI>'`, `text='<claim>'`) opened a
+  real `<title>` element on the Tasks page, flipping the HTML tokenizer
+  to RAWTEXT and swallowing the rest of the document — every inline
+  `<script>` after it (the filter-chip + collapse/expand handlers)
+  stopped executing. Symptom: those buttons did nothing, with **no JS
+  error** (the markup was silently consumed as text); `+Strategic` kept
+  working because Alpine loads as a deferred external script. It was
+  also a broad stored-XSS hole. Fix: `_make_jinja_env` now passes
+  `enabled_extensions=("html","htm","xml","j2")` so escaping is ON.
+- **`linkify_refs` no longer trusts its input as HTML.** It returns
+  `Markup` (bypassing autoescape), so it must escape its own prose — it
+  used to pass non-match text through verbatim and skip-zone `<code>` /
+  `<pre>` / `<a>` blocks unescaped, the same injection surface. Now all
+  text is HTML-escaped; only the generated anchors are live markup.
+- **Footnote markers compose inside the escaping pass.** The memory
+  detail page used to splice raw `<sup><a href="#ref-N">` HTML into the
+  body before linkify (now neutralised by escaping). The numbering map
+  is threaded through `linkify_refs(value, footnotes)` instead;
+  `_inject_footnote_markers` (and its stale skip-zone regex) is gone.
+- Regression coverage: `test_untrusted_html_is_escaped_not_rendered`,
+  `test_script_injection_is_escaped`, plus the rewritten foreign-markup
+  tests in `test_linkify.py`.
+
 ### Fixed (2026-06-20 — worker survives a down embedder at boot)
 
 - **The system worker no longer crash-loops when the embedder is

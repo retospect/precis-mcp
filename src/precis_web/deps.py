@@ -41,7 +41,22 @@ def _make_jinja_env() -> jinja2.Environment:
     """
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(str(_TEMPLATES_DIR)),
-        autoescape=jinja2.select_autoescape(),
+        # Our templates are named ``*.html.j2`` — they end in ``.j2``,
+        # which the stock ``select_autoescape()`` does NOT recognise
+        # (it only enables on ``.html``/``.htm``/``.xml``). That left
+        # autoescape OFF for the entire web UI: every ``{{ value }}``
+        # rendered raw HTML, so a planner-prompt title containing a
+        # literal ``<title or DOI>`` placeholder opened a real
+        # ``<title>`` element, flipped the tokenizer to RAWTEXT, and
+        # swallowed the rest of the page — silently killing the inline
+        # ``<script>`` blocks (the Tasks filter / collapse buttons went
+        # dead with no JS error). It was also a broad stored-XSS hole.
+        # Recognise ``.j2`` so escaping is ON; the only intentional HTML
+        # comes from Markup-returning filters (``linkify_refs``,
+        # ``tojson``), which bypass autoescape correctly.
+        autoescape=jinja2.select_autoescape(
+            enabled_extensions=("html", "htm", "xml", "j2"),
+        ),
         undefined=jinja2.ChainableUndefined,
     )
     # Inline ``kind:ref`` → hover-preview anchor + click-through.

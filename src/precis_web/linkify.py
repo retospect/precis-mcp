@@ -9,9 +9,16 @@ patterns and replaces each match with an anchor that:
   ref's canonical view (paper viewer, tasks dashboard with focus,
   generic refs detail page).
 
-Skip zones — the filter does not touch text inside ``<code>``,
-``<pre>``, or already-anchored ``<a>`` segments. Those carry verbatim
-content (code samples, URL strings) where linkifying would mis-fire.
+Input is treated as **plain text** and HTML-escaped: every caller
+passes a raw store field (a todo title, a memory/conv body, console
+output) that may legitimately contain ``<``, ``>``, or ``&`` — e.g. a
+planner prompt with placeholder syntax like ``q='<title or DOI>'`` or
+``text='<claim>'``. The only HTML this filter emits is the anchor
+markup it generates for each match; surrounding prose is escaped so a
+literal ``<title>`` in a title can never open a real ``<title>``
+element (which flips the tokenizer to RAWTEXT and swallows the rest of
+the page, silently killing every inline ``<script>`` after it) or
+inject script (stored XSS). See ``test_untrusted_html_is_escaped``.
 
 Pattern: ``<kind>:<ref>`` where
 
@@ -60,17 +67,6 @@ from precis.utils.mentions import (
 )
 from precis.utils.mentions import (
     REF_PATTERN as _REF_PATTERN,
-)
-
-#: Spans of input the linkifier must leave alone. Each pattern matches
-#: an opening tag through its closing tag; everything outside these is
-#: prose we can transform. We compile a single alternation so the
-#: tokenizer is one linear scan.
-_SKIP_PATTERN = re.compile(
-    r"<code\b[^>]*>.*?</code>"
-    r"|<pre\b[^>]*>.*?</pre>"
-    r"|<a\b[^>]*>.*?</a>",
-    flags=re.DOTALL | re.IGNORECASE,
 )
 
 
@@ -157,30 +153,43 @@ def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
     )
 
 
-def linkify_refs(value: str) -> Markup:
+def linkify_refs(
+    value: str,
+    footnotes: dict[tuple[str, str, str | None], int] | None = None,
+) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
 
-    Input may already contain HTML — anchors / `<code>` / `<pre>`
-    blocks are detected and passed through verbatim. Outside those
-    skip zones, plain-text ``kind:ref`` mentions become anchors.
+    ``value`` is treated as **plain text**: all of it is HTML-escaped
+    except for the anchor markup this filter generates per match. This
+    is the safe contract for every call site — they all pass raw store
+    fields (titles, bodies, console output), never trusted HTML — and
+    it closes the page-corruption / stored-XSS hole that a verbatim
+    passthrough opened (a literal ``<title>`` / ``<script>`` in a title
+    would otherwise render as a live element).
+
+    ``footnotes`` — optional ``{(kind, id, chunk): N}`` map (the
+    References-panel numbering on memory detail pages). When a prefixed
+    ``kind:ref`` mention's key is present, a ``[N]`` superscript anchor
+    (linking to ``#ref-N``) is appended after its hover anchor. This is
+    composed *inside* the escaping pass so the marker HTML is the only
+    live markup — the body never has raw ``<a>`` spliced into it (which
+    the old pre-injection path did, and which the escaping rewrite would
+    otherwise neutralise).
 
     Returns a :class:`markupsafe.Markup` instance so Jinja's autoescape
     treats the result as already-safe HTML.
     """
     if not value:
         return Markup("")
-    text = str(value)
-    out_parts: list[str] = []
-    last = 0
-    for m in _SKIP_PATTERN.finditer(text):
-        # Process the prose stretch since the previous skip-zone.
-        prose = text[last : m.start()]
-        out_parts.append(_linkify_prose(prose))
-        # Pass the skip zone through unchanged.
-        out_parts.append(m.group(0))
-        last = m.end()
-    out_parts.append(_linkify_prose(text[last:]))
-    return Markup("".join(out_parts))
+    return Markup(_linkify_prose(str(value), footnotes))
+
+
+def _footnote_marker(n: int) -> str:
+    """``[N]`` superscript anchor jumping to the References-panel entry."""
+    return (
+        f'<sup class="text-sky-700 ml-0.5">'
+        f'<a href="#ref-{n}" class="hover:underline">[{n}]</a></sup>'
+    )
 
 
 #: Combined alternation so the three pattern shapes (prefixed
@@ -199,10 +208,18 @@ _COMBINED_PATTERN = re.compile(
 )
 
 
-def _linkify_prose(prose: str) -> str:
+def _linkify_prose(
+    prose: str,
+    footnotes: dict[tuple[str, str, str | None], int] | None = None,
+) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
-    double-match inside an anchor we just produced."""
+    double-match inside an anchor we just produced.
+
+    Text *between* matches (and any match that falls through to plain
+    text) is HTML-escaped; only ``_render_anchor`` emits live markup.
+    Walking the matches by hand (rather than ``re.sub``) lets us escape
+    the inter-match gaps — ``re.sub`` would copy them through verbatim."""
     if not prose:
         return ""
 
@@ -214,8 +231,15 @@ def _linkify_prose(prose: str) -> str:
             # Allowlist gate: skip kinds that look like ``noun:value``
             # in prose but aren't precis kinds (user:asa, tag:open).
             if kind not in _LINKIFY_KINDS or kind in _LOW_SIGNAL_KINDS:
-                return m.group(0)
-            return _render_anchor(kind, raw_id, chunk)
+                return escape(m.group(0))
+            anchor = _render_anchor(kind, raw_id, chunk)
+            if footnotes:
+                # Footnote numbering keys on the bare id (no leading ``#``)
+                # — same shape ``mentions.extract_handles`` produced.
+                n = footnotes.get((kind, raw_id.lstrip("#"), chunk))
+                if n is not None:
+                    anchor += _footnote_marker(n)
+            return anchor
         if m.group("bare_conv") is not None:
             whole = m.group("bare_conv")
             slug = whole
@@ -232,9 +256,16 @@ def _linkify_prose(prose: str) -> str:
                 slug, _, suffix = slug.partition("~")
                 chunk = "~" + suffix
             return _render_anchor("paper", slug, chunk)
-        return m.group(0)
+        return escape(m.group(0))
 
-    return _COMBINED_PATTERN.sub(_dispatch, prose)
+    out: list[str] = []
+    last = 0
+    for m in _COMBINED_PATTERN.finditer(prose):
+        out.append(escape(prose[last : m.start()]))
+        out.append(_dispatch(m))
+        last = m.end()
+    out.append(escape(prose[last:]))
+    return "".join(out)
 
 
 __all__ = ["linkify_refs"]

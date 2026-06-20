@@ -321,62 +321,6 @@ _PER_KIND_LIMIT = 20  # cap rows per kind so 19-kind search stays readable
 # handles). Resolve each in a single batched query and shape an
 # expansion for inline rendering below the body.
 
-#: Prefixed ``kind:ref(~chunk)?`` matcher — sourced from the shared
-#: grammar module (``precis.utils.mentions``) so detection stays
-#: single-sourced across the read-time panel, the linkifier, and the
-#: write-time autolinker. Used here only for footnote-marker injection;
-#: handle *extraction* delegates to ``mentions.extract_handles``.
-_REF_HANDLE_RE = mentions.REF_PATTERN
-
-
-def _inject_footnote_markers(
-    body: str,
-    handle_to_num: dict[tuple[str, str, str | None], int],
-) -> str:
-    """Insert ``[N]`` markers after each handle in body.
-
-    The markers cross-link to the references list below the body.
-    Already-linkified content is left alone via the same skip-zone
-    detection the inline linkifier uses, so ``[N]`` only lands in
-    prose — not inside ``<code>`` / ``<pre>`` / ``<a>`` blocks.
-    """
-    if not body or not handle_to_num:
-        return body
-    # Skip zones — same as the linkifier's, single pass split.
-    import re as _re
-
-    skip_re = _re.compile(
-        r"<code\b[^>]*>.*?</code>"
-        r"|<pre\b[^>]*>.*?</pre>"
-        r"|<a\b[^>]*>.*?</a>",
-        flags=_re.DOTALL | _re.IGNORECASE,
-    )
-
-    def _augment_prose(prose: str) -> str:
-        def _sub(m: _re.Match[str]) -> str:
-            kind = m.group("kind")
-            ref_id = m.group("id").lstrip("#")
-            chunk = m.group("chunk")
-            key = (kind, ref_id, chunk)
-            n = handle_to_num.get(key)
-            if n is None:
-                return m.group(0)
-            return (
-                f'{m.group(0)}<sup class="text-sky-700 ml-0.5">'
-                f'<a href="#ref-{n}" class="hover:underline">[{n}]</a></sup>'
-            )
-
-        return _REF_HANDLE_RE.sub(_sub, prose)
-
-    out_parts: list[str] = []
-    last = 0
-    for m in skip_re.finditer(body):
-        out_parts.append(_augment_prose(body[last : m.start()]))
-        out_parts.append(m.group(0))
-        last = m.end()
-    out_parts.append(_augment_prose(body[last:]))
-    return "".join(out_parts)
-
 
 def _extract_handles(body: str) -> list[tuple[str, str, str | None]]:
     """Every kind:ref handle in ``body`` as ``(kind, id, chunk)`` triples.
@@ -764,6 +708,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     # render below the body. Cheap reads — at most ~20 handles per
     # memory typical, batched into ``fetch_refs_by_ids``.
     references: list[dict[str, Any]] = []
+    footnotes: dict[tuple[str, str, str | None], int] | None = None
     if kind == "memory" and not is_error and body:
         handles = _extract_handles(body)
         handle_to_num: dict[tuple[str, str, str | None], int] = {}
@@ -772,11 +717,12 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             row = _expand_handle(store, ref_kind, ref_ident, chunk)
             row["number"] = n
             references.append(row)
-        # Augment the body with inline footnote markers ``[N]`` that
-        # cross-link to the references list. The linkify_refs filter
-        # the template applies next sees these as anchors inside
-        # ``<sup><a>...</a></sup>`` skip zones and leaves them alone.
-        body = _inject_footnote_markers(body, handle_to_num)
+        # Hand the numbering to ``linkify_refs`` (via the template) so the
+        # inline ``[N]`` footnote markers are emitted *inside* its escaping
+        # pass — appended right after each handle's hover anchor. The body
+        # stays plain text; we no longer splice raw ``<a>`` HTML into it
+        # (which autoescape would now neutralise into visible markup).
+        footnotes = handle_to_num
 
     return templates.TemplateResponse(
         request,
@@ -787,6 +733,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
             "kind_label": _REF_KIND_LABEL.get(kind, kind.replace("-", " ").title()),
             "ref": _row(ref),
             "body": body,
+            "footnotes": footnotes,
             "is_error": is_error,
             "chunks": chunks,
             "tags": tags,

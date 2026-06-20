@@ -56,30 +56,45 @@ def test_multiple_refs_in_one_string() -> None:
     assert 'href="/r/memory/42"' in out
 
 
-def test_ref_inside_code_block_left_alone() -> None:
-    raw = "Use <code>paper:acheson26</code> in your put call."
-    out = str(linkify_refs(raw))
-    # The <code> block is preserved verbatim.
-    assert "<code>paper:acheson26</code>" in out
-    # No anchor for the bracketed mention.
-    assert 'href="/r/paper/acheson26"' not in out
+def test_untrusted_html_is_escaped_not_rendered() -> None:
+    """Regression — a raw ``<title or DOI>`` placeholder in a planner
+    prompt used to render as a live ``<title>`` element, flipping the
+    HTML tokenizer to RAWTEXT and swallowing the rest of the page
+    (every inline ``<script>`` after it stopped firing — the Tasks
+    filter/collapse buttons went dead with no JS error). Input is plain
+    text now: angle brackets are escaped, never opened as a tag."""
+    out = str(linkify_refs("search q='<title or DOI>' then mint put(kind='finding')"))
+    assert "<title" not in out  # no live element
+    assert "&lt;title or DOI&gt;" in out
 
 
-def test_ref_inside_pre_block_left_alone() -> None:
-    raw = "<pre>get(kind='paper', id='acheson26')</pre>"
-    out = str(linkify_refs(raw))
-    assert "<pre>" in out
-    # Filter shouldn't touch the inside (pre is verbatim).
-    assert out.count('href="/r/paper/') == 0
+def test_script_injection_is_escaped() -> None:
+    """Stored-XSS guard: a todo/memory body containing a ``<script>`` is
+    escaped to inert text, not executed."""
+    out = str(linkify_refs("<script>alert(1)</script>"))
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
 
 
-def test_existing_anchor_not_double_wrapped() -> None:
+def test_literal_html_tags_in_text_are_escaped_but_ref_still_links() -> None:
+    """A literal ``<code>`` in plain text is escaped (it is not a real
+    code block — every caller passes text, not HTML), and a real
+    ``kind:ref`` mention beside it still linkifies."""
+    out = str(linkify_refs("Use <code>X</code> with paper:acheson26"))
+    assert "<code>" not in out
+    assert "&lt;code&gt;" in out
+    assert 'href="/r/paper/acheson26"' in out
+
+
+def test_foreign_anchor_markup_is_escaped() -> None:
+    """An ``<a href=...>`` typed into a body is inert text, not a live
+    link — only the anchors this filter generates are trusted."""
     raw = 'click <a href="elsewhere">paper:foo</a> here'
     out = str(linkify_refs(raw))
-    # The original <a> is preserved as-is.
-    assert '<a href="elsewhere">paper:foo</a>' in out
-    # The original anchor block is one continuous skip-zone; no nested anchor.
-    assert out.count('href="/r/paper/') == 0
+    assert '<a href="elsewhere">' not in out
+    assert "&lt;a href=" in out
+    # Our own generated anchor for the ref is still emitted.
+    assert 'href="/r/paper/foo"' in out
 
 
 def test_word_boundary_prevents_runon_capture() -> None:

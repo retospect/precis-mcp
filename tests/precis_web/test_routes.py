@@ -42,15 +42,17 @@ def test_papers_needed_uol_and_scholar_links(client) -> None:
     resp = client.get("/papers-needed")
     assert resp.status_code == 200
     # DOI row → UoL Primo (institution-scoped) + Scholar, slash encoded.
+    # ``&`` query separators render as ``&amp;`` — Jinja autoescape in the
+    # href attribute (correct HTML; browsers decode it back to ``&``).
     assert (
         "uol.primo.exlibrisgroup.com/discovery/search?"
-        "vid=353UOL_INST:353UOL_VU1&search_scope=MyInst_and_CI"
-        "&lang=en&sortby=rank&tab=TAB1"
-        "&query=any,contains,10.1038%2Fnature01797" in resp.text
+        "vid=353UOL_INST:353UOL_VU1&amp;search_scope=MyInst_and_CI"
+        "&amp;lang=en&amp;sortby=rank&amp;tab=TAB1"
+        "&amp;query=any,contains,10.1038%2Fnature01797" in resp.text
     )
     assert (
-        "scholar.google.com/scholar?hl=en&as_sdt=0%2C5"
-        "&q=10.1038%2Fnature01797&btnG=" in resp.text
+        "scholar.google.com/scholar?hl=en&amp;as_sdt=0%2C5"
+        "&amp;q=10.1038%2Fnature01797&amp;btnG=" in resp.text
     )
     # arXiv row → bare arXiv number searched (no 'arxiv:' prefix).
     assert "q=cond-mat/0410550".replace("/", "%2F") in resp.text
@@ -1577,8 +1579,10 @@ def test_console_quick_online_get(client, runtime) -> None:
     verb, args = runtime.calls[-1]
     assert verb == "get"
     assert args == {"kind": "math", "id": "population of Ireland"}
-    # Breadcrumb so the operator can verify what ran.
-    assert "get(kind='math'" in resp.text
+    # Breadcrumb so the operator can verify what ran. The ``'`` quotes
+    # render as ``&#39;`` (Jinja autoescape of text content; displays as
+    # ``'`` in the browser).
+    assert "get(kind=&#39;math&#39;" in resp.text
 
 
 def test_console_quick_cache_search(client, runtime) -> None:
