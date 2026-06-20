@@ -1518,7 +1518,7 @@ _OPTIONAL_DEP_PROBES: tuple[tuple[str, str, str, str], ...] = (
     (
         "httpx",
         "httpx",
-        "web / perplexity (websearch / think / research)",
+        "web / perplexity (websearch / perplexity-reasoning / perplexity-research)",
         "pip install 'precis-mcp[external]'",
     ),
     (

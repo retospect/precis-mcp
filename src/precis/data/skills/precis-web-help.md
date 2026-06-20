@@ -27,6 +27,11 @@ ads) is stripped. Links preserved as `[text](url)`; images dropped.
 Footer carries source URL and fetch date for attribution. First call
 fetches and caches; subsequent calls hit the cache.
 
+Extraction needs the optional `trafilatura` dependency on the server.
+If it's absent the call fails with `Upstream error: trafilatura not
+installed` — the feature is unavailable on this deployment; contact
+the admin to install it.
+
 If extraction yields nothing the body is a stub
 (`(no readable content extracted from URL — page may require JS,
 login, or have non-article shape)`); the cache row is still written.

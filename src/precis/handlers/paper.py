@@ -1858,7 +1858,13 @@ class PaperHandler(Handler):
                 )
             )
         suffix = "" if total <= limit else f" of {total}"
-        lines = [f"# {len(refs)} paper{'s' if len(refs) != 1 else ''}{suffix}"]
+        # Surface total corpus depth so the agent doesn't have to
+        # estimate chunk volume from per-paper counts (#38683).
+        total_chunks = self.store.count_chunks_for_kind("paper")
+        lines = [
+            f"# {len(refs)} paper{'s' if len(refs) != 1 else ''}{suffix}"
+            f"  ({total_chunks} chunks)"
+        ]
         for r in refs:
             year = (r.meta or {}).get("year") or ""
             # Run titles through the JATS/entity cleanup before
@@ -2089,7 +2095,8 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
             f"paper with DOI {doi!r} not ingested",
             next=(
                 f"put(kind='finding', title='<short claim>', body='<...>', "
-                f"cited_in='doi:{doi}', scope={{...}})  "
+                f"cited_in='doi:{doi}', "
+                "scope={'electrode': 'Cu', 'ambient': 'N2'})  "
                 "to register the DOI as a chase target; the fetcher "
                 "(Unpaywall/arXiv/S2) will try to pull the PDF next "
                 "pass. Alternatively: search(kind='paper', q='<title>') "

@@ -70,7 +70,12 @@ class SemanticScholarHandler(CacheBackedHandler):
         id_required=True,
     )
 
-    provider: ClassVar[str] = "semanticscholar"
+    # Must match a row in the `providers` table. The Semantic Scholar
+    # provider is registered under the slug `s2` (0001_initial seed) —
+    # stamping the literal `semanticscholar` here violated the
+    # refs.provider FK on every cache write, so the kind raised a
+    # ForeignKeyViolation after a successful API fetch (gripe #39242).
+    provider: ClassVar[str] = "s2"
     ttl_seconds: ClassVar[int | None] = 30 * 24 * 60 * 60  # 30 days
     attribution: ClassVar[str] = _ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"

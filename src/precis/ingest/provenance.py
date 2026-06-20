@@ -39,6 +39,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
 
+from precis.errors import Upstream
 from precis.ingest._text_norm import best_jaccard, surname_matches
 from precis.store import Store, Tag
 
@@ -616,6 +617,15 @@ def _fetch_crossref_message(doi: str, mailto: str | None) -> dict[str, Any] | No
         )
         if status_code == 404:
             return None
+        # No HTTP response means a transport/connection failure (DNS,
+        # timeout, "Connection aborted") — Crossref is unreachable, not
+        # that the DOI is bad. Surface a clean, retryable error instead
+        # of leaking the raw exception to the agent (gripe #39244).
+        if response is None:
+            raise Upstream(
+                f"Crossref unreachable: {exc}",
+                next="retry later — Crossref may be down or rate-limiting",
+            ) from exc
         raise
     if not result or "message" not in result:
         return None

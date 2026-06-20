@@ -119,6 +119,20 @@ class TestResolveDoi:
         with pytest.raises(NotFound, match="DOI .* not ingested"):
             _maybe_resolve_doi(store, "10.9999/nope")
 
+    def test_unknown_doi_hint_has_no_empty_scope_placeholder(
+        self, store: Store
+    ) -> None:
+        """The chase-target hint must not carry an unfilled ``scope={}``
+        placeholder — it should show a concrete example dict (#39253)."""
+        _seed_paper(store, doi="10.1/x")
+        with pytest.raises(NotFound) as exc_info:
+            _maybe_resolve_doi(store, "10.9999/nope")
+        hint = exc_info.value.next
+        assert hint is not None
+        hint_text = hint if isinstance(hint, str) else " ".join(hint)
+        assert "scope={}" not in hint_text
+        assert "scope={'electrode': 'Cu'" in hint_text
+
     def test_get_by_doi_end_to_end(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
         resp = handler.get(id="10.1111/jnc.13915")
@@ -228,6 +242,9 @@ class TestOverview:
         _seed_paper(store, slug="bbb", title="Paper B")
         resp = handler.get()
         assert "2 papers" in resp.body
+        # Total corpus depth in the header (#38683): two papers, four
+        # body chunks each from ``_seed_paper`` → 8 chunks.
+        assert "(8 chunks)" in resp.body
         assert "aaa" in resp.body
         assert "bbb" in resp.body
 

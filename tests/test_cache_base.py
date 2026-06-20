@@ -141,6 +141,18 @@ def test_blank_query_serves_recent_listing(
     assert "recent math refs" in resp.body.lower()
 
 
+def test_recent_footer_does_not_overcount_under_cap(
+    handler: _FakeCacheKindAsMath,
+) -> None:
+    """When the pool is smaller than the page cap the footer must read
+    "showing N of N" — not "of at most <cap>", which would imply a
+    truncation that did not happen (#39252)."""
+    handler.get(q="speed of light")
+    resp = handler.get()
+    assert "showing 1 of 1" in resp.body
+    assert "of at most" not in resp.body
+
+
 def test_query_via_id_path_view_raises(
     handler: _FakeCacheKindAsMath,
 ) -> None:

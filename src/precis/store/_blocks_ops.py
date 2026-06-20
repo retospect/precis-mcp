@@ -1135,6 +1135,23 @@ class BlocksMixin:
         assert row is not None
         return int(row[0])
 
+    def count_chunks_for_kind(self, kind: str) -> int:
+        """Total body chunks (ord>=0) across all live refs of ``kind``.
+
+        One COUNT join so list views (e.g. the paper stats header) can
+        report total corpus depth alongside the ref count without an
+        agent having to estimate from per-paper counts.
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM chunks c "
+                "JOIN refs r ON r.ref_id = c.ref_id "
+                "WHERE r.kind = %s AND r.deleted_at IS NULL AND c.ord >= 0",
+                (kind,),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
     def abstract_previews(
         self, ref_ids: list[int], *, max_chars: int = 900
     ) -> dict[int, str]:

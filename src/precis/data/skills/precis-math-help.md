@@ -27,6 +27,11 @@ get(kind='math', q='eigenvalues of [[2,1],[1,3]]')
 `id=` and `q=` are equivalent. Queries are canonicalised (lowercase
 + whitespace collapse) so casing variants share one cache row.
 
+`get(kind='math', q=…)` computes a fresh answer via Wolfram (then
+caches). `search(kind='math', q=…)` does **not** call Wolfram — it
+only searches prior cached results by semantic similarity, so a query
+never asked before returns nothing. Use `get` to compute.
+
 ## When to use math vs calc
 
 | Use `math` for | Use `calc` for |
