@@ -34,9 +34,19 @@ from precis.utils.safe_fetch import SsrfBlocked
 from precis.workers import fetch_oa
 from precis.workers.fetch_oa import (
     StubRef,
+    _is_elsevier_doi,
+    _is_wiley_doi,
+    _publisher_pdf_urls,
     _try_arxiv,
+    _try_core,
+    _try_crossref,
+    _try_elsevier,
+    _try_europepmc,
+    _try_openalex,
+    _try_publisher,
     _try_s2,
     _try_unpaywall,
+    _try_wiley,
     claim_stubs_to_fetch,
     run_oa_fetch_pass,
 )
@@ -471,6 +481,376 @@ class TestTryS2:
 
 
 # ---------------------------------------------------------------------------
+# _try_publisher — deterministic publisher PDF patterns
+# ---------------------------------------------------------------------------
+
+
+class TestPublisherUrls:
+    def test_springer_bmc_prefix(self) -> None:
+        assert _publisher_pdf_urls("10.1186/s13027-026-00740-z") == [
+            "https://link.springer.com/content/pdf/10.1186/s13027-026-00740-z.pdf"
+        ]
+
+    def test_springer_hybrid_prefix(self) -> None:
+        assert _publisher_pdf_urls("10.1007/s00018-024-05123-4") == [
+            "https://link.springer.com/content/pdf/10.1007/s00018-024-05123-4.pdf"
+        ]
+
+    def test_plos_journal_slug_from_infix(self) -> None:
+        assert _publisher_pdf_urls("10.1371/journal.pone.0173664") == [
+            "https://journals.plos.org/plosone/article/file"
+            "?id=10.1371/journal.pone.0173664&type=printable"
+        ]
+        # A different PLOS journal code picks a different slug.
+        assert _publisher_pdf_urls("10.1371/journal.pcbi.1011000") == [
+            "https://journals.plos.org/ploscompbiol/article/file"
+            "?id=10.1371/journal.pcbi.1011000&type=printable"
+        ]
+
+    def test_plos_unknown_journal_code_falls_through(self) -> None:
+        # A journal code we haven't verified a slug for → no candidate,
+        # cascade falls through to the aggregators rather than 404ing.
+        assert _publisher_pdf_urls("10.1371/journal.pxyz.0000001") == []
+
+    def test_unknown_prefix_empty(self) -> None:
+        assert _publisher_pdf_urls("10.1234/whatever") == []
+
+    def test_prefix_boundary_not_a_substring_match(self) -> None:
+        # ``10.11860`` must NOT match the ``10.1186`` Springer prefix.
+        assert _publisher_pdf_urls("10.11860/abc") == []
+
+
+class TestTryPublisher:
+    def test_none_without_doi(self, tmp_path: Path) -> None:
+        assert _try_publisher(_stub(doi=None), inbox_dir=tmp_path) is None
+
+    def test_none_for_malformed_doi(self, tmp_path: Path) -> None:
+        assert _try_publisher(_stub(doi="not-a-doi"), inbox_dir=tmp_path) is None
+
+    def test_none_for_unregistered_prefix(self, tmp_path: Path) -> None:
+        # 10.1234 isn't in the registry → silent fall-through, no event.
+        assert _try_publisher(_stub(doi="10.1234/x"), inbox_dir=tmp_path) is None
+
+    def test_fetch_ok_uses_springer_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen_urls: list[str] = []
+
+        def _capture(url: str, target: Path) -> int:
+            seen_urls.append(url)
+            return _write_synthetic_pdf(target, size=4096)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        out = _try_publisher(
+            _stub(doi="10.1186/s13027-026-00740-z"), inbox_dir=tmp_path
+        )
+        assert out is not None
+        assert out.event == "fetch_ok"
+        assert out.payload["host_type"] == "publisher_pattern"
+        assert out.payload["size_bytes"] == 4096
+        assert seen_urls == [
+            "https://link.springer.com/content/pdf/10.1186/s13027-026-00740-z.pdf"
+        ]
+
+    def test_fetch_failed_when_candidate_not_a_pdf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Magic-byte guard rejects an HTML interstitial → fetch_failed,
+        # which lets the cascade fall through to the aggregators.
+        def _reject(url: str, target: Path) -> int:
+            raise ValueError("response is not a PDF (got 5000 bytes, head=b'<!DOCTY')")
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _reject)
+        out = _try_publisher(
+            _stub(doi="10.1186/s13027-026-00740-z"), inbox_dir=tmp_path
+        )
+        assert out is not None
+        assert out.event == "fetch_failed"
+        assert "is not a PDF" in out.payload["error"]
+
+
+# ---------------------------------------------------------------------------
+# _try_elsevier — key-gated Article API leg
+# ---------------------------------------------------------------------------
+
+
+class TestTryElsevier:
+    def test_none_without_key(self, tmp_path: Path) -> None:
+        assert (
+            _try_elsevier(
+                _stub(doi="10.1016/j.x.2025.1"), inbox_dir=tmp_path, api_key=""
+            )
+            is None
+        )
+
+    def test_none_for_non_elsevier_prefix(self, tmp_path: Path) -> None:
+        assert (
+            _try_elsevier(_stub(doi="10.1186/x"), inbox_dir=tmp_path, api_key="K")
+            is None
+        )
+
+    def test_none_for_malformed_doi(self, tmp_path: Path) -> None:
+        assert (
+            _try_elsevier(_stub(doi="not-a-doi"), inbox_dir=tmp_path, api_key="K")
+            is None
+        )
+
+    def test_is_elsevier_doi_boundary(self) -> None:
+        assert _is_elsevier_doi("10.1016/j.amf.2025.200253")
+        assert not _is_elsevier_doi("10.10160/x")  # prefix boundary
+        assert not _is_elsevier_doi("10.1186/x")
+
+    def test_fetch_ok_sends_api_key_header(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            seen["url"] = url
+            seen["headers"] = extra_headers
+            return _write_synthetic_pdf(target, size=4096)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        out = _try_elsevier(
+            _stub(doi="10.1016/j.amf.2025.200253"), inbox_dir=tmp_path, api_key="SECRET"
+        )
+        assert out is not None
+        assert out.event == "fetch_ok"
+        assert out.payload["host_type"] == "elsevier_api"
+        assert seen["url"] == (
+            "https://api.elsevier.com/content/article/doi/10.1016/j.amf.2025.200253"
+        )
+        # The key + PDF Accept ride the request as headers.
+        assert seen["headers"]["X-ELS-APIKey"] == "SECRET"
+        assert seen["headers"]["Accept"] == "application/pdf"
+
+    def test_fetch_failed_on_non_pdf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Non-entitled article → API returns an XML error body, guard
+        # rejects it → fetch_failed, cascade continues.
+        def _reject(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            raise ValueError("response is not a PDF (got 900 bytes, head=b'<?xml')")
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _reject)
+        out = _try_elsevier(
+            _stub(doi="10.1016/j.x.2025.1"), inbox_dir=tmp_path, api_key="K"
+        )
+        assert out is not None
+        assert out.event == "fetch_failed"
+
+
+# ---------------------------------------------------------------------------
+# _try_wiley — token-gated TDM leg
+# ---------------------------------------------------------------------------
+
+
+class TestTryWiley:
+    def test_none_without_token(self, tmp_path: Path) -> None:
+        assert (
+            _try_wiley(_stub(doi="10.1002/advs.1"), inbox_dir=tmp_path, token="")
+            is None
+        )
+
+    def test_none_for_non_wiley_prefix(self, tmp_path: Path) -> None:
+        assert _try_wiley(_stub(doi="10.1016/x"), inbox_dir=tmp_path, token="T") is None
+
+    def test_is_wiley_doi(self) -> None:
+        assert _is_wiley_doi("10.1002/advs.202100707")
+        assert _is_wiley_doi("10.1111/jpi.12345")
+        assert not _is_wiley_doi("10.1016/j.x.1")
+
+    def test_fetch_ok_sends_token_header(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            seen["url"] = url
+            seen["headers"] = extra_headers
+            return _write_synthetic_pdf(target, size=2048)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        out = _try_wiley(
+            _stub(doi="10.1002/advs.201801586"), inbox_dir=tmp_path, token="TKN"
+        )
+        assert out is not None
+        assert out.event == "fetch_ok"
+        assert out.payload["host_type"] == "wiley_tdm"
+        assert seen["url"] == (
+            "https://api.wiley.com/onlinelibrary/tdm/v1/articles/10.1002/advs.201801586"
+        )
+        assert seen["headers"]["Wiley-TDM-Client-Token"] == "TKN"
+
+
+# ---------------------------------------------------------------------------
+# _try_core — green-OA repository leg
+# ---------------------------------------------------------------------------
+
+
+class TestTryCore:
+    def test_none_without_key(self, tmp_path: Path) -> None:
+        assert _try_core(_stub(doi="10.1234/x"), inbox_dir=tmp_path, api_key="") is None
+
+    def test_none_without_doi(self, tmp_path: Path) -> None:
+        assert _try_core(_stub(doi=None), inbox_dir=tmp_path, api_key="K") is None
+
+    def test_no_oa_when_no_repo_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            fetch_oa, "_query_core_pdf_urls", lambda doi, *, api_key: []
+        )
+        out = _try_core(_stub(doi="10.1234/x"), inbox_dir=tmp_path, api_key="K")
+        assert out is not None
+        assert out.event == "no_oa_version"
+
+    def test_fetch_ok_sends_browser_ua(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            seen["headers"] = extra_headers
+            return _write_synthetic_pdf(target, size=256)
+
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_core_pdf_urls",
+            lambda doi, *, api_key: ["https://repo.example/bitstream/x.pdf"],
+        )
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        out = _try_core(_stub(doi="10.1234/x"), inbox_dir=tmp_path, api_key="K")
+        assert out is not None
+        assert out.event == "fetch_ok"
+        assert out.payload["host_type"] == "core"
+        # CORE downloads carry a browser UA to clear repo Cloudflare gates.
+        assert "Mozilla" in seen["headers"]["User-Agent"]
+
+    def test_api_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(doi: str, *, api_key: str) -> list[str]:
+            raise RuntimeError("core down")
+
+        monkeypatch.setattr(fetch_oa, "_query_core_pdf_urls", _boom)
+        out = _try_core(_stub(doi="10.1234/x"), inbox_dir=tmp_path, api_key="K")
+        assert out is not None
+        assert out.event == "api_error"
+
+
+# ---------------------------------------------------------------------------
+# _try_crossref / _try_openalex / _try_europepmc — Tier-1 keyless legs
+# ---------------------------------------------------------------------------
+
+
+class TestTryCrossref:
+    def test_none_without_email(self, tmp_path: Path) -> None:
+        assert (
+            _try_crossref(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="") is None
+        )
+
+    def test_none_without_doi(self, tmp_path: Path) -> None:
+        assert _try_crossref(_stub(doi=None), inbox_dir=tmp_path, email="a@b") is None
+
+    def test_no_oa_when_no_pdf_links(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            fetch_oa, "_query_crossref_pdf_links", lambda doi, *, email: []
+        )
+        out = _try_crossref(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
+        assert out is not None
+        assert out.event == "no_oa_version"
+
+    def test_fetch_ok(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_crossref_pdf_links",
+            lambda doi, *, email: ["https://pub.example/tdm.pdf"],
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=256),
+        )
+        out = _try_crossref(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
+        assert out is not None
+        assert out.event == "fetch_ok"
+        assert out.payload["host_type"] == "crossref_tdm"
+
+    def test_api_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(doi: str, *, email: str) -> list[str]:
+            raise RuntimeError("crossref down")
+
+        monkeypatch.setattr(fetch_oa, "_query_crossref_pdf_links", _boom)
+        out = _try_crossref(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
+        assert out is not None
+        assert out.event == "api_error"
+
+
+class TestTryOpenalex:
+    def test_none_without_doi(self, tmp_path: Path) -> None:
+        assert _try_openalex(_stub(doi=None), inbox_dir=tmp_path, email="") is None
+
+    def test_no_oa_when_no_pdf_urls(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_pdf_urls", lambda doi, *, email: []
+        )
+        out = _try_openalex(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="")
+        assert out is not None
+        assert out.event == "no_oa_version"
+
+    def test_fetch_ok(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_openalex_pdf_urls",
+            lambda doi, *, email: ["https://repo.example/green.pdf"],
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=256),
+        )
+        out = _try_openalex(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
+        assert out is not None
+        assert out.event == "fetch_ok"
+        assert out.payload["host_type"] == "openalex"
+
+
+class TestTryEuropepmc:
+    def test_none_without_doi(self, tmp_path: Path) -> None:
+        assert _try_europepmc(_stub(doi=None), inbox_dir=tmp_path) is None
+
+    def test_no_oa_when_not_in_pmc(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fetch_oa, "_query_europepmc_oa_pmcid", lambda doi: None)
+        out = _try_europepmc(_stub(doi="10.1234/x"), inbox_dir=tmp_path)
+        assert out is not None
+        assert out.event == "no_oa_version"
+
+    def test_fetch_ok_renders_pmc_pdf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen_urls: list[str] = []
+
+        def _capture(url: str, target: Path, **kw: Any) -> int:
+            seen_urls.append(url)
+            return _write_synthetic_pdf(target, size=256)
+
+        monkeypatch.setattr(
+            fetch_oa, "_query_europepmc_oa_pmcid", lambda doi: "PMC7513516"
+        )
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        out = _try_europepmc(_stub(doi="10.1234/x"), inbox_dir=tmp_path)
+        assert out is not None
+        assert out.event == "fetch_ok"
+        assert out.payload["host_type"] == "europepmc"
+        assert seen_urls == ["https://europepmc.org/articles/PMC7513516?pdf=render"]
+
+
+# ---------------------------------------------------------------------------
 # run_oa_fetch_pass — cascade orchestration
 # ---------------------------------------------------------------------------
 
@@ -482,6 +862,32 @@ class TestRunCascade:
         # fetcher only runs on one cluster host. Enable it for the
         # cascade tests; the off-by-default behaviour has its own test.
         monkeypatch.setenv("PRECIS_OA_FETCH", "1")
+        # No key-gated leg fires by default (the dev host's env may
+        # carry real credentials); leg-specific tests pass them
+        # explicitly.
+        monkeypatch.delenv("PRECIS_ELSEVIER_API_KEY", raising=False)
+        monkeypatch.delenv("PRECIS_WILEY_TDM_TOKEN", raising=False)
+        monkeypatch.delenv("PRECIS_CORE_API_KEY", raising=False)
+        # Default every external query to "found nothing" so the cascade
+        # is hermetic — no test accidentally hits Crossref/OpenAlex/
+        # Europe PMC/CORE/Unpaywall/S2 over the network. Individual tests
+        # override the leg they exercise.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: {"best_oa_location": None},
+        )
+        monkeypatch.setattr(
+            fetch_oa, "_query_crossref_pdf_links", lambda doi, *, email: []
+        )
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_pdf_urls", lambda doi, *, email: []
+        )
+        monkeypatch.setattr(fetch_oa, "_query_europepmc_oa_pmcid", lambda doi: None)
+        monkeypatch.setattr(
+            fetch_oa, "_query_core_pdf_urls", lambda doi, *, api_key: []
+        )
+        monkeypatch.setattr(fetch_oa, "_query_s2_openaccess", lambda paper_id: None)
 
     def test_disabled_by_default_short_circuits(
         self,
@@ -501,6 +907,75 @@ class TestRunCascade:
         )
         result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 0, "ok": 0, "failed": 0}
+
+    def test_publisher_pattern_runs_first_and_stops_cascade(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A BMC DOI must land via the deterministic Springer URL on the
+        # publisher leg — before Unpaywall/S2 are ever consulted.
+        ref_id = _seed_paper_stub(store, doi="10.1186/s13027-026-00740-z")
+        seen_urls: list[str] = []
+
+        def _capture(url: str, target: Path) -> int:
+            seen_urls.append(url)
+            return _write_synthetic_pdf(target, size=256)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: pytest.fail("Unpaywall must not run"),
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_s2_openaccess",
+            lambda paper_id: pytest.fail("S2 must not run"),
+        )
+
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        assert seen_urls == [
+            "https://link.springer.com/content/pdf/10.1186/s13027-026-00740-z.pdf"
+        ]
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT source, event FROM ref_events WHERE ref_id = %s ORDER BY ts",
+                (ref_id,),
+            ).fetchall()
+        assert rows == [("fetcher:publisher", "fetch_ok")]
+
+    def test_publisher_miss_falls_through_to_unpaywall(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Unregistered DOI prefix → publisher leg is a silent no-op
+        # (no event), and Unpaywall handles it as before.
+        ref_id = _seed_paper_stub(store, doi="10.1234/plain")
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: {
+                "best_oa_location": {"url_for_pdf": "https://x/y.pdf"}
+            },
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: _write_synthetic_pdf(target, size=128),
+        )
+        run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT source, event FROM ref_events WHERE ref_id = %s ORDER BY ts",
+                (ref_id,),
+            ).fetchall()
+        # No fetcher:publisher row — the leg skipped silently.
+        assert rows == [("fetcher:unpaywall", "fetch_ok")]
 
     def test_unpaywall_ok_stops_cascade(
         self,
@@ -565,12 +1040,10 @@ class TestRunCascade:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         ref_id = _seed_paper_stub(store, doi="10.1234/f", arxiv="2401.88888")
-        # Unpaywall: no_oa_version. arXiv: fetch_ok.
-        monkeypatch.setattr(
-            fetch_oa,
-            "_query_unpaywall",
-            lambda doi, *, email: {"best_oa_location": None},
-        )
+        # Every DOI aggregator (defaulted to no_oa by the autouse
+        # fixture) is recorded in cascade order; arXiv then lands the
+        # preprint. The publisher/elsevier legs return None (no DOI
+        # match / no key) so they leave no row.
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
@@ -584,12 +1057,54 @@ class TestRunCascade:
                 "SELECT source, event FROM ref_events WHERE ref_id = %s ORDER BY ts",
                 (ref_id,),
             ).fetchall()
-        # Both attempts recorded; no S2 entry because cascade stopped
-        # at arXiv's fetch_ok.
+        # Aggregators recorded in order; arXiv fetch_ok stops the cascade
+        # before S2.
         assert rows == [
             ("fetcher:unpaywall", "no_oa_version"),
+            ("fetcher:crossref", "no_oa_version"),
+            ("fetcher:openalex", "no_oa_version"),
+            ("fetcher:europepmc", "no_oa_version"),
             ("fetcher:arxiv", "fetch_ok"),
         ]
+
+    def test_elsevier_leg_lands_sciencedirect_doi(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # An Elsevier DOI with a key set lands via the Elsevier API
+        # leg — before Unpaywall (which only has the doi.org landing
+        # page) is consulted.
+        ref_id = _seed_paper_stub(store, doi="10.1016/j.amf.2025.200253")
+        seen: dict[str, Any] = {}
+
+        def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            seen["url"] = url
+            seen["headers"] = extra_headers
+            return _write_synthetic_pdf(target, size=4096)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: pytest.fail("Unpaywall must not run"),
+        )
+
+        result = run_oa_fetch_pass(
+            store, limit=10, inbox_dir=tmp_path, email="a@b", api_key="SECRET"
+        )
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        assert seen["url"] == (
+            "https://api.elsevier.com/content/article/doi/10.1016/j.amf.2025.200253"
+        )
+        assert seen["headers"]["X-ELS-APIKey"] == "SECRET"
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT source, event FROM ref_events WHERE ref_id = %s ORDER BY ts",
+                (ref_id,),
+            ).fetchall()
+        assert rows == [("fetcher:elsevier", "fetch_ok")]
 
     def test_empty_queue_zero_counts(self, store: Store, tmp_path: Path) -> None:
         result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
