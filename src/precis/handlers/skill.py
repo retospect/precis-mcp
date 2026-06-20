@@ -566,7 +566,12 @@ class SkillHandler(Handler):
         # ``more`` column can reflect "this skill has N additional
         # matching sections" — same signal as the paper-mode
         # ``more`` design in backlog-search-unique-per-paper.md.
-        sem_hits_per_slug: Counter[str] = Counter(h.slug for h in semantic_hits)
+        # Exclude body-only twins (v3): they re-embed a section that
+        # already has a structural chunk, so counting them would
+        # inflate "additional matching sections."
+        sem_hits_per_slug: Counter[str] = Counter(
+            h.slug for h in semantic_hits if not h.body_only
+        )
 
         merged: dict[str, _SkillSearchRow] = {}
         for hit in semantic_hits:
@@ -930,9 +935,14 @@ class SkillHandler(Handler):
             try:
                 index._build()
                 entry = index._entries.get(slug) if index._entries else None
-                if entry is not None and len(entry.chunks) == len(chunks):
-                    embeddings = tuple(tuple(c.embedding) for c in entry.chunks)
-                    embedder_name = entry.embedder_model
+                if entry is not None:
+                    # The index embeds body-only twins (v3) after the
+                    # structural chunks; drop them so what's left aligns
+                    # 1:1 with the structural-only ``chunk_by_h2`` above.
+                    structural = [c for c in entry.chunks if not c.body_only]
+                    if len(structural) == len(chunks):
+                        embeddings = tuple(tuple(c.embedding) for c in structural)
+                        embedder_name = entry.embedder_model
             except Exception:  # pragma: no cover — defensive
                 embeddings = None
 

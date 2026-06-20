@@ -56,11 +56,17 @@ class CachedChunk:
     The cache stores the chunk text alongside the vector so the
     in-memory index can rebuild itself from disk without re-reading
     the source file when nothing is stale.
+
+    ``body_only`` mirrors :class:`~precis.skill_index.chunker.Chunk` —
+    a v3 heading-stripped twin. Persisted so the TOC adapter can
+    filter twins back out and align the structural chunks 1:1 with a
+    fresh structural-only chunking.
     """
 
     heading: str
     text: str
     embedding: list[float]
+    body_only: bool = False
 
 
 @dataclass
@@ -156,6 +162,7 @@ class EmbeddingCache:
                     heading=str(c["heading"]),
                     text=str(c["text"]),
                     embedding=[float(x) for x in c["embedding"]],
+                    body_only=bool(c.get("body_only", False)),
                 )
                 for c in chunks_raw
             ]

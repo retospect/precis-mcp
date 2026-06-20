@@ -24,6 +24,19 @@ Strategy:
   authors write multiple H2s that describe the same operation from
   different user angles; each angle embeds under its own heading.
 - Empty groups (alias group at EOF with no body) are dropped.
+- **Body-only twins (v3, opt-in):** with ``with_body_aliases=True``
+  every section emits one extra ``body_only=True`` chunk carrying the
+  section body *without* the heading line. The per-heading chunks fuse
+  heading + body into one vector, which is great when the heading
+  labels the body well and noise when it doesn't (``## Gotchas`` over
+  a body about SSRF redirects). A heading-stripped vector de-noises
+  that case. For an alias group the body is shared, so this is **one**
+  extra chunk regardless of how many aliases. Body-only chunks are an
+  *embedding-surface* concern only: they are NOT structural, so the
+  ``slug~N`` chunk addresser and the TOC adapter both pass the default
+  ``with_body_aliases=False`` and never see them. They are always
+  appended *after* the structural chunks, keeping the structural
+  prefix stable for callers that align by position.
 
 Chunker version is bumped when the chunking strategy changes —
 that invalidates the on-disk cache so old embeddings don't get
@@ -41,7 +54,8 @@ from dataclasses import dataclass
 #:
 #: - 1 → original H2 chunker, drops heading-only sections.
 #: - 2 → adds alias-group support (consecutive H2s share body).
-CHUNKER_VERSION = 2
+#: - 3 → adds opt-in body-only twin chunks (with_body_aliases).
+CHUNKER_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -55,10 +69,18 @@ class Chunk:
     signal. In an alias group, multiple chunks share identical
     body text; they differ only by which alias heading prefixes
     that body.
+
+    ``body_only`` marks a v3 body-only twin: ``text`` is the section
+    body with the heading line stripped, emitted only when
+    ``with_body_aliases=True``. These are an embedding-surface
+    affordance, not a structural section — ``heading`` is still set
+    (to the group's first alias) purely so a search hit on the twin
+    has a sensible display anchor.
     """
 
     heading: str
     text: str
+    body_only: bool = False
 
 
 _FRONT_MATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
@@ -71,7 +93,7 @@ def _strip_front_matter(md: str) -> str:
     return md[m.end() :] if m else md
 
 
-def chunk_by_h2(text: str) -> list[Chunk]:
+def chunk_by_h2(text: str, *, with_body_aliases: bool = False) -> list[Chunk]:
     """Split ``text`` into H2-section chunks with alias-group support.
 
     Returns an empty list when the input is empty or whitespace-only.
@@ -82,6 +104,14 @@ def chunk_by_h2(text: str) -> list[Chunk]:
     only whitespace between them, every heading in the group emits
     a chunk that shares the body following the group. If the group
     has no body following (alias group at EOF), it is dropped.
+
+    When ``with_body_aliases`` is True, each section also emits one
+    extra ``body_only=True`` chunk holding the section body with its
+    heading line(s) stripped (one per *group*, since an alias group
+    shares its body). These twins are appended after all structural
+    chunks so callers that align by position can take the structural
+    prefix. The default (False) returns only the structural chunks —
+    used by the ``slug~N`` addresser and the TOC adapter.
     """
     body = _strip_front_matter(text).strip()
     if not body:
@@ -92,6 +122,9 @@ def chunk_by_h2(text: str) -> list[Chunk]:
         return [Chunk(heading="", text=body)]
 
     out: list[Chunk] = []
+    # Body-only twins accumulate here and are appended after every
+    # structural chunk, keeping the structural prefix stable.
+    twins: list[Chunk] = []
 
     # Head chunk: everything before the first H2.
     head = body[: matches[0].start()].strip()
@@ -128,10 +161,21 @@ def chunk_by_h2(text: str) -> list[Chunk]:
                 heading_text = m.group(1).strip()
                 chunk_text = f"## {heading_text}\n{shared_body}"
                 out.append(Chunk(heading=heading_text, text=chunk_text))
+            if with_body_aliases:
+                # One heading-stripped twin per group; the first
+                # alias supplies the display anchor.
+                twins.append(
+                    Chunk(
+                        heading=group[0].group(1).strip(),
+                        text=shared_body,
+                        body_only=True,
+                    )
+                )
         # else: alias group at EOF with no body — drop.
 
         i += 1
 
+    out.extend(twins)
     return out
 
 

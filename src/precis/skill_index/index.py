@@ -20,6 +20,7 @@ required) so the same path works for tests.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import math
@@ -34,6 +35,13 @@ from precis.skill_index.cache import (
     default_cache_dir,
 )
 from precis.skill_index.chunker import CHUNKER_VERSION, Chunk, chunk_by_h2
+
+#: The index embeds body-only twins (v3) in addition to the
+#: structural per-heading chunks — extra embedding surface costs a
+#: few vectors per skill (corpus is ~150 chunks) and buys a
+#: heading-noise-free match. Structural-only callers (the ``slug~N``
+#: addresser, the TOC adapter) keep the default ``chunk_by_h2``.
+_index_chunker = functools.partial(chunk_by_h2, with_body_aliases=True)
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +60,10 @@ class SearchHit:
     heading: str
     score: float
     snippet: str
+    #: True for a v3 body-only twin (heading-stripped embedding of a
+    #: section already represented by a structural chunk). Callers
+    #: counting "distinct sections matched" should skip these.
+    body_only: bool = False
 
 
 class FileCorpusIndex:
@@ -81,7 +93,7 @@ class FileCorpusIndex:
         embedder: object | None,
         cache_namespace: str = "corpus",
         cache_dir: Path | None = None,
-        chunker: Callable[[str], list[Chunk]] = chunk_by_h2,
+        chunker: Callable[[str], list[Chunk]] = _index_chunker,
     ) -> None:
         self._files = files
         self._embedder = embedder
@@ -154,6 +166,7 @@ class FileCorpusIndex:
                         heading=chunk.heading,
                         score=score,
                         snippet=_snippet(chunk.text),
+                        body_only=chunk.body_only,
                     )
                 )
 
@@ -237,7 +250,12 @@ class FileCorpusIndex:
             return None
 
         cached_chunks = [
-            CachedChunk(heading=c.heading, text=c.text, embedding=list(v))
+            CachedChunk(
+                heading=c.heading,
+                text=c.text,
+                embedding=list(v),
+                body_only=c.body_only,
+            )
             for c, v in zip(chunks, vectors, strict=False)
         ]
         entry = CacheEntry(

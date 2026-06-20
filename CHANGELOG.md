@@ -8,6 +8,24 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-20 — skill search: body-only embedding twins)
+
+- **Heading-stripped twin vectors for skill search.** The skill
+  embedding chunker (`skill_index/chunker.py`, `CHUNKER_VERSION` 2→3)
+  gains an opt-in `with_body_aliases=True` mode that, for each section,
+  emits one extra `body_only=True` chunk carrying the section body
+  *without* its heading line. The structural per-heading chunks fuse
+  heading + body into one vector — great when the heading labels the
+  body, noise when it doesn't (`## Gotchas` over a body about SSRF
+  redirects); the twin de-noises that case. For an alias group the body
+  is shared, so it's one twin regardless of alias count. Twins are an
+  **embedding-surface** concern only: the `FileCorpusIndex` chunks with
+  them on, but the `slug~N` chunk addresser and the TOC adapter keep the
+  structural-only default and never see them (the TOC adapter filters
+  `body_only` out before its 1:1 embedding alignment). The search
+  `more` column also excludes twins so it still counts distinct matching
+  sections. Cache invalidates lazily on the `CHUNKER_VERSION` bump.
+
 ### Added (2026-06-19 — papers triage: delete, untriage, duplicate resolver)
 
 - **Delete a paper from the web triage UI.** The detail page's Delete

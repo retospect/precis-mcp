@@ -142,6 +142,62 @@ def test_chunker_mixes_standalone_and_alias_group() -> None:
     assert "last body." in chunks[3].text
 
 
+def test_chunker_default_emits_no_body_only_twins() -> None:
+    # The structural default (used by ``slug~N`` and the TOC adapter)
+    # never produces body-only twins.
+    text = "## A\n## B\n\nshared body.\n## C\nc body.\n"
+    chunks = chunk_by_h2(text)
+    assert all(not c.body_only for c in chunks)
+
+
+def test_chunker_with_body_aliases_appends_one_twin_per_group() -> None:
+    text = (
+        "## Standalone first\nfirst body.\n"
+        "## Alias A\n"
+        "## Alias B\n"
+        "shared body.\n"
+        "## Standalone last\nlast body.\n"
+    )
+    chunks = chunk_by_h2(text, with_body_aliases=True)
+    structural = [c for c in chunks if not c.body_only]
+    twins = [c for c in chunks if c.body_only]
+
+    # Structural chunks are identical to the default chunking and
+    # come first; twins are appended after.
+    assert [c.heading for c in structural] == [
+        "Standalone first",
+        "Alias A",
+        "Alias B",
+        "Standalone last",
+    ]
+    assert chunks[: len(structural)] == structural
+
+    # One twin per group (the two aliases share a single twin), so
+    # three groups → three twins.
+    assert [c.heading for c in twins] == [
+        "Standalone first",
+        "Alias A",
+        "Standalone last",
+    ]
+    # Twin text is heading-stripped — the section body alone.
+    assert twins[0].text == "first body."
+    assert twins[1].text == "shared body."
+    assert twins[2].text == "last body."
+    for c in twins:
+        assert not c.text.startswith("#")
+
+
+def test_chunker_body_only_twin_for_single_section() -> None:
+    text = "## Gotchas\n\nrevalidate every SSRF redirect.\n"
+    chunks = chunk_by_h2(text, with_body_aliases=True)
+    fused = [c for c in chunks if not c.body_only]
+    twins = [c for c in chunks if c.body_only]
+    assert len(fused) == 1 and len(twins) == 1
+    assert fused[0].text == "## Gotchas\nrevalidate every SSRF redirect."
+    assert twins[0].text == "revalidate every SSRF redirect."
+    assert twins[0].heading == "Gotchas"
+
+
 # ── cache ────────────────────────────────────────────────────────────
 
 
@@ -166,6 +222,65 @@ def test_cache_round_trip(tmp_path: Path) -> None:
     assert out is not None
     assert out.slug == "hello"
     assert out.chunks[0].embedding == [0.1, 0.2, 0.3]
+
+
+def test_cache_round_trip_preserves_body_only(tmp_path: Path) -> None:
+    from precis.skill_index.cache import CachedChunk, CacheEntry
+
+    cache = EmbeddingCache(
+        cache_dir=tmp_path,
+        namespace="test",
+        embedder_model="mock",
+        chunker_version=CHUNKER_VERSION,
+    )
+    cache.save(
+        CacheEntry(
+            slug="hello",
+            file_sha256="abc",
+            embedder_model="mock",
+            chunker_version=CHUNKER_VERSION,
+            chunks=[
+                CachedChunk(heading="H", text="## H\nbody", embedding=[0.1]),
+                CachedChunk(
+                    heading="H", text="body", embedding=[0.2], body_only=True
+                ),
+            ],
+        )
+    )
+    out = cache.load("hello", "abc")
+    assert out is not None
+    assert [c.body_only for c in out.chunks] == [False, True]
+
+
+def test_cache_loads_legacy_file_without_body_only_key(tmp_path: Path) -> None:
+    # Files written before v3 have no ``body_only`` key; they must
+    # still load (defaulting to False) rather than failing the shape
+    # check. (The chunker_version bump invalidates them on read for
+    # the embedding path, but the loader itself must be tolerant.)
+    cache = EmbeddingCache(
+        cache_dir=tmp_path,
+        namespace="test",
+        embedder_model="mock",
+        chunker_version=7,
+    )
+    path = cache.path_for("legacy")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "slug": "legacy",
+                "file_sha256": "s",
+                "embedder_model": "mock",
+                "chunker_version": 7,
+                "chunks": [{"heading": "H", "text": "t", "embedding": [0.5]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = cache.load("legacy", "s")
+    assert out is not None
+    assert out.chunks[0].body_only is False
 
 
 def test_cache_miss_on_sha_mismatch(tmp_path: Path) -> None:
@@ -329,6 +444,27 @@ def test_index_caches_to_disk(files: dict[str, str], tmp_path: Path) -> None:
     )
     hits2 = idx2.search("apples")
     assert hits2  # cache hit served us, no _BoomEmbedder.embed() call
+
+
+def test_index_embeds_body_only_twins(tmp_path: Path) -> None:
+    # The index's default chunker emits body-only twins, so a skill
+    # with a fused section also caches a heading-stripped twin. The
+    # structural-only ``chunk_by_h2`` count is the lower bound.
+    files = {"beta": "# Beta\n\n## Section\n\nSecond content.\n"}
+    idx = FileCorpusIndex(
+        files=files,
+        embedder=MockEmbedder(dim=32),
+        cache_dir=tmp_path,
+        cache_namespace="test",
+    )
+    idx.search("anything")  # forces build
+    entry = (idx._entries or {})["beta"]
+    structural = [c for c in entry.chunks if not c.body_only]
+    twins = [c for c in entry.chunks if c.body_only]
+    # head chunk + one section = 2 structural; one section body = 1 twin.
+    assert len(structural) == len(chunk_by_h2(files["beta"]))
+    assert len(twins) == 1
+    assert twins[0].text == "Second content."
 
 
 def test_index_invalidates_on_file_change(
