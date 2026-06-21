@@ -178,6 +178,41 @@ discoverable from the cited paper/thought's side; remove a reference and
 its link drops on the next edit. Intra-draft `¶` cross-refs are
 document-internal (TOC / `\ref`), not graph edges.
 
+## Writing well — structure + common mistakes
+
+A research write-up is *flowing prose*, not a slide deck. When you write
+or revise a block:
+
+**Structure**
+
+- **One paragraph, one idea — topic sentence first.** Lead with the
+  claim; the rest of the paragraph develops it. Don't bury the point or
+  fuse two ideas into one paragraph.
+- **Claim → evidence → citation, in that order.** Each claim earns its
+  evidence, then its `[§…]` cite. Don't stack unsupported assertions.
+- **Given → new flow.** Open a sentence with familiar information, end
+  with the new. Open each section with a sentence that says what it
+  covers (signpost).
+
+**Diction**
+
+- **Consistent terminology** — one term per concept. No elegant
+  variation on key terms (a synonym reads as a *different* thing).
+- **Quantify** — a number + unit beats "significant / several / many".
+- **Concise, active** — cut "it is important to note that", "in order
+  to" → "to", "due to the fact that" → "because"; prefer active voice.
+- **Tense** — past for what was done/found, present for established
+  facts.
+
+**Avoid (LLM tells)**
+
+- Slide-deck/listy prose and over-bolding instead of paragraphs.
+- Filler openings ("In recent years, X has attracted significant
+  attention…").
+- Mismatched calibration — over-hedging in one place, over-claiming
+  ("proves", "clearly", "novel", "first") in another.
+- Restating the brief, or repeating a point across blocks.
+
 ## Steer the draft — brief + change requests (don't hand-edit prose)
 
 You usually don't rewrite prose directly; you **steer**:
