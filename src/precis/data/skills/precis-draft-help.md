@@ -125,7 +125,17 @@ resolves per target:
 | `[[memory:<id>]]` | **authoring** link (any thought) | nothing (provenance only) |
 
 Cite the **exact** paper chunk that holds the detail (`[§miller89~4]`),
-not the whole paper. **Thoughts** (memory / think / finding) are
+not the whole paper. **One syntax per citation** — `[§slug~n]` and
+`paper:slug~n` are the *same* reference (`§` is sugar); write one, not
+both, or the reader shows a redundant chip.
+
+**Glossary / abbreviations.** Define an abbreviation the normal
+scientific way — `polyethyleneimine (PEI)` on first use — and the reader
+auto-collects it into the draft's **Glossary** panel (Schwartz-Hearst
+detection, no markup needed). For a curated definition, add a
+`chunk_kind='term'` chunk (`meta={short, long, surface_forms}`) and
+reference it with `[PEI](¶<term-handle>)`; explicit terms win over
+auto-detected ones. **Thoughts** (memory / think / finding) are
 referenceable but **not citeable** — they get a `[[…]]` link only,
 never a bibliography entry. Math is `$…$` / `$$…$$` (LaTeX, rendered by
 KaTeX on the web).

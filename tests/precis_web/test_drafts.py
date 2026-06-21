@@ -250,3 +250,22 @@ def test_tasks_gist_summarises_long_bodies_only() -> None:
     )
     g = _gist(long_body)
     assert g and " · " in g  # joined keyword phrases
+
+
+def test_glossary_auto_detects_abbreviations() -> None:
+    """Schwartz-Hearst auto-detection (DRY via utils.abbreviations) feeds
+    the draft glossary from prose Long Form (ABBR) definitions."""
+    from precis_web.routes.drafts import _glossary
+
+    store = FakeStore()  # term-chunk query returns empty under the fake
+    chunks = [
+        SimpleNamespace(
+            chunk_kind="paragraph",
+            text="We graft polyethyleneimine (PEI) onto the framework.",
+        )
+    ]
+    g = _glossary(store, 500, chunks)
+    by_short = {e["short"]: e for e in g}
+    assert "PEI" in by_short
+    assert "polyethyleneimine" in by_short["PEI"]["long"].lower()
+    assert by_short["PEI"]["handle"] is None  # auto-detected, not a term chunk
