@@ -1,0 +1,4 @@
+{# Bare single-row render for the live-refresh fragment endpoint
+   (GET /drafts/{ident}/row/{handle}). #}
+{% from "drafts/_row.html.j2" import draft_row %}
+{{ draft_row(r, ref) }}

@@ -24,22 +24,32 @@ from .conftest import FakeRuntime, FakeStore, make_ref
 _DRAFT = make_ref(id=500, kind="draft", slug="nt", title="Nano draft")
 
 
-def _chunk(handle, kind, text, depth, ref_id=500):
+def _chunk(handle, kind, text, depth, chunk_id, parent_chunk_id=None, ref_id=500):
     return SimpleNamespace(
-        handle=handle, chunk_kind=kind, text=text, depth=depth, ref_id=ref_id
+        handle=handle,
+        chunk_kind=kind,
+        text=text,
+        depth=depth,
+        chunk_id=chunk_id,
+        parent_chunk_id=parent_chunk_id,
+        ref_id=ref_id,
     )
 
 
 class DraftFakeStore(FakeStore):
     def __init__(self) -> None:
         super().__init__()
+        # BBBBBB is parented under the AAAAAA heading → ancestors=[AAAAAA],
+        # so collapsing AAAAAA hides it (collapse mechanics).
         self._chunks = [
-            _chunk("AAAAAA", "heading", "Nano draft", 0),
+            _chunk("AAAAAA", "heading", "Nano draft", 0, chunk_id=1),
             _chunk(
                 "BBBBBB",
                 "paragraph",
                 "Intro; see [the title](¶AAAAAA) and paper:smith2024.",
-                0,
+                1,
+                chunk_id=2,
+                parent_chunk_id=1,
             ),
         ]
         # draft-of → project todo 1; related-to → memory 20
@@ -114,17 +124,42 @@ def test_index_lists_drafts(draft_client: TestClient) -> None:
     assert "Nano draft" in r.text and "/drafts/nt" in r.text
 
 
-def test_reader_renders_chunks_toc_and_linkified_refs(draft_client: TestClient) -> None:
+def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
-    # chunks present, anchored by handle
+    # one row per block, anchored by handle
     assert 'id="c-AAAAAA"' in r.text and 'id="c-BBBBBB"' in r.text
-    # raw source linkified: paper ref → resolver anchor; ¶ ref → chunk route
+    # raw source linkified in the content column: paper ref → resolver,
+    # ¶ ref → chunk route
     assert "/r/paper/smith2024" in r.text
     assert 'href="/c/AAAAAA"' in r.text
-    # TOC + links panel
-    assert "Contents" in r.text and "#c-AAAAAA" in r.text
-    assert "/r/memory/20" in r.text  # related-to backlink in the links panel
+    # collapse mechanics: heading carries data-heading; BBBBBB carries its
+    # ancestor heading so it hides when AAAAAA collapses
+    assert 'data-heading="AAAAAA"' in r.text
+    assert "collapse all" in r.text
+    assert '["AAAAAA"]' in r.text  # BBBBBB's ancestors json
+    # per-block change box posts to the anchored-todo route
+    assert 'action="/drafts/nt/request"' in r.text
+
+
+def test_singular_alias_redirects(draft_client: TestClient) -> None:
+    r = draft_client.get("/draft/nt", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts/nt"
+
+
+def test_row_fragment_renders_single_block(draft_client: TestClient) -> None:
+    r = draft_client.get("/drafts/nt/row/BBBBBB")
+    assert r.status_code == 200
+    assert 'id="c-BBBBBB"' in r.text and 'action="/drafts/nt/request"' in r.text
+    # only the one row — the other block's id is absent
+    assert 'id="c-AAAAAA"' not in r.text
+
+
+def test_version_endpoint_returns_token(draft_client: TestClient) -> None:
+    r = draft_client.get("/drafts/nt/version")
+    assert r.status_code == 200
+    assert "version" in r.json()
 
 
 def test_chunk_handle_redirects_into_reader(draft_client: TestClient) -> None:

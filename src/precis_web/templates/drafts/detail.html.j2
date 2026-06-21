@@ -1,90 +1,74 @@
 {% extends "base.html.j2" %}
+{% from "drafts/_row.html.j2" import draft_row %}
 {% block title %}{{ ref.title }}{% endblock %}
 {% block content %}
-<div class="mb-4 flex items-center justify-between">
-  <div>
-    <h1 class="text-xl font-semibold">{{ ref.title }}</h1>
-    {% if ref.slug %}<span class="font-mono text-xs text-slate-400">draft:{{ ref.slug }}</span>{% endif %}
+<style>[x-cloak]{display:none!important}</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+
+<div x-data="draftDoc('{{ ref.ident }}')" x-init="init()">
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <div>
+      <h1 class="text-xl font-semibold">{{ ref.title }}</h1>
+      {% if ref.slug %}<span class="font-mono text-xs text-slate-400">draft:{{ ref.slug }}</span>{% endif %}
+    </div>
+    <div class="flex items-center gap-3 text-xs">
+      <button @click="collapseAll()" class="text-slate-500 underline hover:text-slate-800">collapse all</button>
+      <button @click="expandAll()" class="text-slate-500 underline hover:text-slate-800">expand all</button>
+      <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
+    </div>
   </div>
-  <a href="/drafts" class="text-sm text-slate-500 underline">all drafts</a>
+
+  {# Column legend #}
+  <div class="hidden lg:grid lg:grid-cols-[1fr_20%_22%] gap-3 border-b border-slate-200 pb-1 mb-1
+              text-[10px] uppercase tracking-wide text-slate-400">
+    <div>Document</div><div>Links &amp; in-flight</div><div>Request a change</div>
+  </div>
+
+  <div id="doc">
+    {% for r in rows %}{{ draft_row(r, ref) }}{% endfor %}
+  </div>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-[16rem_minmax(0,1fr)] gap-6">
-  {# ── TOC (left) ─────────────────────────────────────────────── #}
-  <aside class="lg:sticky lg:top-4 self-start">
-    <div class="rounded-lg border border-slate-200 bg-white p-3">
-      <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Contents</h2>
-      {% if not toc %}
-      <p class="text-xs text-slate-400">no headings yet</p>
-      {% else %}
-      <ul class="space-y-1 text-sm">
-        {% for e in toc %}
-        <li style="padding-left: {{ e.depth * 0.75 }}rem">
-          <a href="#c-{{ e.handle }}" class="text-slate-700 hover:text-sky-700">{{ e.title }}</a>
-          {% if e.gist %}<span class="block text-xs text-slate-400 truncate">{{ e.gist }}</span>{% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-    </div>
-
-    {# Links / backlinks panel #}
-    {% if links.out or links.in %}
-    <div class="mt-4 rounded-lg border border-slate-200 bg-white p-3">
-      <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Links</h2>
-      {% for grp, label in [('out', 'references'), ('in', 'referenced by')] %}
-      {% if links[grp] %}
-      <p class="text-[10px] uppercase tracking-wide text-slate-400 mt-2">{{ label }}</p>
-      <ul class="space-y-0.5 text-xs">
-        {% for l in links[grp] %}
-        <li>
-          <a href="/r/{{ l.kind }}/{{ l.ref_id }}" class="text-sky-700 hover:underline">
-            {{ l.kind }}:{{ l.ref_id }}</a>
-          <span class="text-slate-500">{{ l.title }}</span>
-        </li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-      {% endfor %}
-    </div>
-    {% endif %}
-  </aside>
-
-  {# ── Reader (right) ─────────────────────────────────────────── #}
-  <article class="space-y-4">
-    {% for c in chunks %}
-    <section id="c-{{ c.handle }}" x-data="{ req: false }"
-             class="group scroll-mt-4 rounded-lg border border-transparent hover:border-slate-200 p-2 -m-2">
-      <div class="flex items-start gap-2">
-        <a href="#c-{{ c.handle }}"
-           class="mt-1 font-mono text-[10px] text-slate-300 group-hover:text-slate-400 shrink-0"
-           title="{{ c.chunk_kind }}">¶{{ c.handle }}</a>
-        <div class="min-w-0 flex-1"
-             style="margin-left: {{ c.depth * 1.0 }}rem">
-          {% if c.chunk_kind == 'heading' %}
-          <h3 class="font-semibold text-slate-900
-                     {% if c.depth == 0 %}text-lg{% elif c.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ c.text | linkify_refs }}</h3>
-          {% elif c.chunk_kind in ('aside', 'box') %}
-          <div class="rounded-md border-l-4 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ c.text | linkify_refs }}</div>
-          {% elif c.chunk_kind in ('listing', 'code') %}
-          <pre class="rounded-md bg-slate-900 text-slate-100 text-xs p-3 overflow-x-auto whitespace-pre-wrap">{{ c.text | linkify_refs }}</pre>
-          {% else %}
-          <p class="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ c.text | linkify_refs }}</p>
-          {% endif %}
-          <button @click="req = !req"
-                  class="mt-1 text-[10px] text-slate-300 group-hover:text-slate-500 hover:text-sky-600"
-                  x-text="req ? 'cancel' : 'request change'"></button>
-          <form x-show="req" x-cloak method="post"
-                action="/drafts/{{ ref.ident }}/request" class="mt-1 flex gap-2">
-            <input type="hidden" name="handle" value="{{ c.handle }}" />
-            <input name="text" required placeholder="what should change here?"
-                   class="flex-1 rounded-md border border-slate-300 px-2 py-1 text-xs" />
-            <button class="rounded-md bg-sky-600 text-white text-xs px-2 py-1">file</button>
-          </form>
-        </div>
-      </div>
-    </section>
-    {% endfor %}
-  </article>
-</div>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.getElementById('doc'),{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false})"></script>
+<script>
+// Per-draft collapse state machine. ``collapsed`` is the set of collapsed
+// heading handles (persisted in localStorage); a row is visible unless one
+// of its ancestor headings is collapsed.
+function draftDoc(ident) {
+  const key = 'draft-collapsed:' + ident;
+  return {
+    collapsed: JSON.parse(localStorage.getItem(key) || '[]'),
+    save() { localStorage.setItem(key, JSON.stringify(this.collapsed)); },
+    toggle(h) {
+      const i = this.collapsed.indexOf(h);
+      if (i >= 0) this.collapsed.splice(i, 1); else this.collapsed.push(h);
+      this.save();
+    },
+    isC(h) { return this.collapsed.includes(h); },
+    vis(anc) { return !anc.some((x) => this.collapsed.includes(x)); },
+    collapseAll() {
+      this.collapsed = Array.from(document.querySelectorAll('[data-heading]'))
+        .map((e) => e.dataset.heading);
+      this.save();
+    },
+    expandAll() { this.collapsed = []; this.save(); },
+    init() {
+      // A #c-<handle> deep link must land visible: expand its ancestors.
+      this.$nextTick(() => {
+        const id = location.hash.slice(1);
+        if (!id) return;
+        const el = document.getElementById(id);
+        if (el && el.dataset.anc) {
+          const anc = JSON.parse(el.dataset.anc);
+          this.collapsed = this.collapsed.filter((x) => !anc.includes(x));
+          this.save();
+        }
+        if (el) el.scrollIntoView();
+      });
+    },
+  };
+}
+</script>
 {% endblock %}

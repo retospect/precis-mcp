@@ -8,6 +8,26 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-21 — drafts reader is now a per-block 3-column grid)
+
+- The draft reader (`GET /drafts/{ident}`) is reworked from TOC-left into
+  a **per-block row grid**: one row per chunk, three columns — **content**
+  (raw source via `linkify_refs` + **KaTeX** for `$…$`, hierarchy-indented,
+  headings collapse their subtree), **meta** (terse: the refs the block
+  makes as chips + in-flight change-request todos anchored at it, with
+  `STATUS:`), and a per-block **change box** ("around here…" → an anchored
+  todo). Headings carry a ▸/▾ caret; collapse state persists in
+  `localStorage`; a `#c-<handle>` deep link auto-expands its ancestors.
+- Live-refresh hooks (poll/websocket is a fast-follow, not wired yet):
+  rows render through a `draft_row` macro reused by a new
+  `GET /drafts/{ident}/row/{handle}` fragment endpoint, and
+  `GET /drafts/{ident}/version` returns a monotone token
+  (`max(chunk_events.event_id)`). `GET /draft/{ident}` 303-aliases the
+  plural reader.
+- Ref chips reuse the shared superset grammar (`draft_markup` +
+  `mentions`). Chip hover-previews are deferred (the `_anchor_html`
+  popover machinery drops in later).
+
 ### Added (2026-06-21 — search gains an explicit lexical / semantic `mode=`)
 
 - **`search(mode=…)`** lets the LLM pick the ranking instead of always

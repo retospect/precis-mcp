@@ -1,0 +1,60 @@
+{# One document block as a 3-column grid row (ADR 0033 web Tier-A).
+   content | meta (refs + in-flight) | change box. Collapse is driven by
+   the parent `draftDoc` Alpine component via `vis(ancestors)`; heading
+   rows carry data-heading so collapse-all can find them. #}
+{% macro draft_row(r, ref) %}
+<div id="c-{{ r.handle }}"
+     {% if r.is_heading %}data-heading="{{ r.handle }}"{% endif %}
+     data-anc='{{ r.ancestors | tojson }}'
+     x-show="vis({{ r.ancestors | tojson }})" x-cloak
+     class="grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group">
+  {# ── Col A: content ─────────────────────────────────────────── #}
+  <div style="padding-left: {{ r.depth }}rem">
+    {% if r.is_heading %}
+    <div class="flex items-start gap-1.5">
+      <button @click="toggle('{{ r.handle }}')"
+              class="mt-0.5 font-mono text-xs text-slate-400 hover:text-slate-700 select-none"
+              x-text="isC('{{ r.handle }}') ? '▸' : '▾'"></button>
+      <h3 class="font-semibold text-slate-900
+                 {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs }}</h3>
+    </div>
+    {% elif r.chunk_kind in ('aside', 'box') %}
+    <div class="rounded-md border-l-4 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs }}</div>
+    {% elif r.chunk_kind in ('listing', 'code') %}
+    <pre class="rounded-md bg-slate-900 text-slate-100 text-xs p-3 overflow-x-auto whitespace-pre-wrap">{{ r.text | linkify_refs }}</pre>
+    {% else %}
+    <p class="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs }}</p>
+    {% endif %}
+    <a href="#c-{{ r.handle }}"
+       class="font-mono text-[10px] text-slate-300 opacity-0 group-hover:opacity-100">¶{{ r.handle }}</a>
+  </div>
+
+  {# ── Col B: meta — refs + in-flight ─────────────────────────── #}
+  <div class="text-xs space-y-1">
+    {% if r.refs %}
+    <div class="flex flex-wrap gap-1">
+      {% for c in r.refs %}
+      <a href="{{ c.href }}"{% if c.href.startswith('http') %} target="_blank" rel="noopener nofollow"{% endif %}
+         class="inline-block max-w-[11rem] truncate rounded bg-slate-100 px-1.5 py-0.5 text-sky-700 hover:bg-slate-200">{{ c.label }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% for t in r.inflight %}
+    <a href="/r/todo/{{ t.ref_id }}"
+       class="block rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 hover:bg-amber-100">
+      <span class="font-mono text-[10px] uppercase text-amber-700">{{ t.status }}</span>
+      <span class="text-slate-700">{{ t.title }}</span>
+    </a>
+    {% endfor %}
+  </div>
+
+  {# ── Col C: change box — "around here…" ─────────────────────── #}
+  <form method="post" action="/drafts/{{ ref.ident }}/request" class="flex items-start gap-1">
+    <input type="hidden" name="handle" value="{{ r.handle }}" />
+    <input name="text" required placeholder="around here…"
+           class="min-w-0 flex-1 rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none" />
+    <button class="shrink-0 rounded bg-sky-600 px-2 py-1 text-xs text-white hover:bg-sky-700"
+            title="file a change request anchored here">⤳</button>
+  </form>
+</div>
+{% endmacro %}

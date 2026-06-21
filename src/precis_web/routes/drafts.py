@@ -1,24 +1,32 @@
 """Drafts tab — a read-first viewer/editor for the ``draft`` kind (ADR 0033).
 
-Tier-A surface (the document is *steered*, not hand-typed):
+Tier-A surface (the document is *steered*, not hand-typed). The reader is
+a **per-block row grid**: one row per chunk in DFS reading order, each row
+three columns —
+
+  ┌ content (raw source via linkify_refs + KaTeX, hierarchy-indented,
+  │          headings collapse their subtree)
+  ├ meta    (terse: the refs this block makes + in-flight change-requests)
+  └ change  (a per-block "around here…" box → an anchored todo)
+
+Routes:
 
 * ``GET /drafts`` — list drafts.
-* ``GET /drafts/{ident}`` — the reader: TOC-left + chunks in DFS reading
-  order, each rendered as **raw source** through ``linkify_refs`` (so
-  ``¶`` / ``§`` / ``[[…]]`` / ``kind:ref`` references become hover-preview
-  + click-navigate anchors), anchored ``#c-<handle>``. A links/backlinks
-  panel and a per-chunk change-request box complete the steering loop.
-* ``POST /drafts/{ident}/request`` — file a change request: a ``todo``
-  anchored at a chunk handle, parented on the draft's project (so it
-  flows into the todo tree → dispatch → jobs).
-* ``GET /c/{handle}`` — resolve an opaque chunk handle → redirect into
-  the reader at ``#c-<handle>`` (the target of every ``¶`` anchor).
-* ``GET /preview/chunk/{handle}`` — the hover-popover fragment for a
-  ``¶`` chunk anchor (peer of ``/preview/{kind}/{id}``).
+* ``GET /drafts/{ident}`` — the reader (slug or numeric id).
+* ``GET /draft/{ident}`` — singular convenience alias → 303 to the reader.
+* ``POST /drafts/{ident}/request`` — file a change request (anchored todo
+  parented on the draft's project; flows into the todo tree → dispatch).
+* ``GET /c/{handle}`` — resolve a ``¶`` handle → redirect into the reader
+  at ``#c-<handle>`` (the click target of every ``¶`` anchor).
+* ``GET /preview/chunk/{handle}`` — hover-popover fragment for a ``¶``.
+* ``GET /drafts/{ident}/row/{handle}`` — one rendered row (the fragment
+  the future live-refresh poll/websocket swaps in place).
+* ``GET /drafts/{ident}/version`` — a monotone version token (max
+  ``chunk_events.event_id``) the future poll compares against.
 
 Rendering is **raw source** (Tier A); the resolution pass that computes
-§-numbers / resolves cross-refs / KaTeX math is the export engine (Tier
-B), shared across HTML/LaTeX/Word targets.
+§-numbers / resolves cross-refs is the export engine (Tier B), shared
+across HTML/LaTeX/Word targets. KaTeX renders ``$…$`` client-side.
 """
 
 from __future__ import annotations
@@ -27,8 +35,14 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 
+from precis.utils import draft_markup, mentions
 from precis_web.deps import get_store, redirect_or_error, templates
 
 router = APIRouter(tags=["drafts"])
@@ -52,28 +66,127 @@ def _project_id(store: Any, ref_id: int) -> int | None:
     return None
 
 
-def _link_rows(store: Any, ref_id: int) -> dict[str, list[dict[str, Any]]]:
-    """Outgoing (this draft → X) and incoming (X → this draft) edges for
-    the links panel, with the other endpoint's kind/title resolved."""
-    out: list[dict[str, Any]] = []
-    inc: list[dict[str, Any]] = []
-    links = store.links_for(ref_id, direction="both")
-    other_ids = {
-        (link.dst_ref_id if link.src_ref_id == ref_id else link.src_ref_id)
-        for link in links
+def _ancestor_headings(chunk_objs: list[Any]) -> dict[str, list[str]]:
+    """Each chunk's ancestor *heading* handles (root→nearest), walking
+    ``parent_chunk_id``. Drives client-side collapse: a row hides when any
+    of its ancestor headings is collapsed; a heading owns exactly the
+    chunks that carry it in this list."""
+    by_id = {c.chunk_id: c for c in chunk_objs}
+    out: dict[str, list[str]] = {}
+    for c in chunk_objs:
+        anc: list[str] = []
+        pid = c.parent_chunk_id
+        while pid is not None and pid in by_id:
+            p = by_id[pid]
+            if p.chunk_kind == "heading":
+                anc.append(p.handle)
+            pid = p.parent_chunk_id
+        out[c.handle] = list(reversed(anc))
+    return out
+
+
+def _ref_chips(text: str) -> list[dict[str, str]]:
+    """The references a block makes, as terse ``{label, href}`` chips —
+    the superset grammar (bracket/sigil forms ∪ bare ``kind:ref``),
+    deduped by href. Reuses the shared parser/grammar (DRY)."""
+    chips: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(label: str, href: str) -> None:
+        if href in seen:
+            return
+        seen.add(href)
+        chips.append({"label": label, "href": href})
+
+    for ref in draft_markup.parse_references(text):
+        if ref.cls == draft_markup.XREF:
+            add(ref.surface or ref.target, f"/c/{ref.target.lstrip('¶')}")
+        elif ref.cls == draft_markup.CITE:
+            m = mentions.DRAFT_CITE_PATTERN.fullmatch(ref.target)
+            if m:
+                chunk = m.group("chunk")
+                href = f"/r/paper/{m.group('slug')}"
+                if chunk:
+                    href += f"?chunk={chunk[1:]}"
+                add(ref.surface or ref.target, href)
+        elif ref.cls == draft_markup.WEB:
+            add(ref.surface or ref.target, ref.target)
+        else:  # AUTHORING — a bracketed [[kind:id]]
+            m = mentions.REF_PATTERN.fullmatch(ref.target)
+            if m and m.group("kind") in mentions.LINKIFY_KINDS:
+                add(
+                    ref.surface or ref.target,
+                    f"/r/{m.group('kind')}/{m.group('id').lstrip('#')}",
+                )
+    for kind, ident, chunk in mentions.extract_handles(text):
+        add(f"{kind}:{ident}{chunk or ''}", f"/r/{kind}/{ident.lstrip('#')}")
+    return chips
+
+
+def _inflight_by_handle(
+    store: Any, handles: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Open change-request todos anchored at each chunk (``meta.anchor =
+    '¶<handle>'``), grouped by handle, with their ``STATUS:`` value.
+    Done / won't-do are filtered out — "in flight" means still open."""
+    if not handles:
+        return {}
+    anchors = [f"¶{h}" for h in handles]
+    sql = (
+        "SELECT r.ref_id, r.title, r.meta->>'anchor' AS anchor, "
+        "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) AS status "
+        "FROM refs r "
+        "WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
+        "  AND r.meta->>'anchor' = ANY(%s)"
+    )
+    out: dict[str, list[dict[str, Any]]] = {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (anchors,)).fetchall()
+    for ref_id, title, anchor, status in rows:
+        if status in ("done", "won't-do"):
+            continue
+        handle = (anchor or "").lstrip("¶")
+        out.setdefault(handle, []).append(
+            {
+                "ref_id": ref_id,
+                "title": (title or "").split("\n", 1)[0][:60],
+                "status": status or "open",
+            }
+        )
+    return out
+
+
+def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
+    """Per-block row context for the whole draft (content + ancestors +
+    ref chips + in-flight todos)."""
+    chunk_objs = store.reading_order(ref.id)
+    anc = _ancestor_headings(chunk_objs)
+    inflight = _inflight_by_handle(store, [c.handle for c in chunk_objs])
+    rows: list[dict[str, Any]] = []
+    for c in chunk_objs:
+        rows.append(
+            {
+                "handle": c.handle,
+                "chunk_kind": c.chunk_kind,
+                "text": c.text,
+                "depth": c.depth,
+                "is_heading": c.chunk_kind == "heading",
+                "ancestors": anc.get(c.handle, []),
+                "refs": _ref_chips(c.text),
+                "inflight": inflight.get(c.handle, []),
+            }
+        )
+    return rows
+
+
+def _ref_view(ref: Any) -> dict[str, Any]:
+    return {
+        "ident": ref.slug or ref.id,
+        "slug": ref.slug,
+        "title": ref.title,
+        "id": ref.id,
     }
-    refs = store.fetch_refs_by_ids(list(other_ids)) if other_ids else {}
-    for link in links:
-        outgoing = link.src_ref_id == ref_id
-        other = refs.get(link.dst_ref_id if outgoing else link.src_ref_id)
-        row = {
-            "relation": link.relation,
-            "kind": getattr(other, "kind", "?"),
-            "ref_id": getattr(other, "id", None),
-            "title": (getattr(other, "title", "") or "").split("\n", 1)[0][:80],
-        }
-        (out if outgoing else inc).append(row)
-    return {"out": out, "in": inc}
 
 
 @router.get("/drafts", response_class=HTMLResponse)
@@ -95,6 +208,12 @@ async def index(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/draft/{ident}")
+async def reader_alias(ident: str) -> RedirectResponse:
+    """Singular ``/draft/<id>`` → the canonical plural reader."""
+    return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
+
+
 @router.get("/drafts/{ident}", response_class=HTMLResponse)
 async def reader(request: Request, ident: str) -> Response:
     store = get_store(request)
@@ -111,41 +230,50 @@ async def reader(request: Request, ident: str) -> Response:
             },
             status_code=404,
         )
-    chunks = [
-        {
-            "handle": c.handle,
-            "chunk_kind": c.chunk_kind,
-            "text": c.text,
-            "depth": c.depth,
-        }
-        for c in store.reading_order(ref.id)
-    ]
-    toc = [
-        {
-            "handle": e.handle,
-            "depth": e.depth,
-            "title": e.title,
-            "gist": e.gist or (", ".join(e.keywords[:6]) if e.keywords else ""),
-        }
-        for e in store.draft_toc(ref.id)
-    ]
     return templates.TemplateResponse(
         request,
         "drafts/detail.html.j2",
         {
             "active_tab": "drafts",
-            "ref": {
-                "ident": ref.slug or ref.id,
-                "slug": ref.slug,
-                "title": ref.title,
-                "id": ref.id,
-            },
-            "chunks": chunks,
-            "toc": toc,
-            "project_id": _project_id(store, ref.id),
-            "links": _link_rows(store, ref.id),
+            "ref": _ref_view(ref),
+            "rows": _rows_for(store, ref),
         },
     )
+
+
+@router.get("/drafts/{ident}/row/{handle}", response_class=HTMLResponse)
+async def reader_row(request: Request, ident: str, handle: str) -> HTMLResponse:
+    """One rendered row — the fragment a future live-refresh poll swaps in
+    place (the page is composed from this same macro, so no rewrite)."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return HTMLResponse("", status_code=404)
+    row = next((r for r in _rows_for(store, ref) if r["handle"] == handle), None)
+    if row is None:
+        return HTMLResponse("", status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "drafts/_row_fragment.html.j2",
+        {"r": row, "ref": _ref_view(ref)},
+    )
+
+
+@router.get("/drafts/{ident}/version")
+async def version(request: Request, ident: str) -> JSONResponse:
+    """Monotone version token = max ``chunk_events.event_id`` over the
+    draft's chunks. The future poll refetches changed rows when it bumps."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"version": 0})
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(ce.event_id), 0) FROM chunk_events ce "
+            "JOIN chunks c ON c.chunk_id = ce.chunk_id WHERE c.ref_id = %s",
+            (ref.id,),
+        ).fetchone()
+    return JSONResponse({"version": int(row[0]) if row else 0})
 
 
 @router.post("/drafts/{ident}/request")
