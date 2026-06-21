@@ -208,6 +208,7 @@ class PatentHandler(Handler):
         scope: str | None = None,
         page_size: int = 10,
         source: str = "both",
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Tag normalisation. Per-kind axis enforcement: closed tags
@@ -246,6 +247,7 @@ class PatentHandler(Handler):
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
                 page_size=page_size,
+                mode=mode,
             )
 
         # Remote leg: only when q= or a CQL-liftable tag is present
@@ -367,22 +369,27 @@ class PatentHandler(Handler):
         tags: list[str] | None,
         page_size: int,
         query_vec: list[float] | None = None,
+        mode: str | None = None,
     ) -> list[tuple[Any, Ref, float]]:
-        """Run the hybrid lex+semantic search over patent blocks.
+        """Run the mode-dispatched lex/semantic search over patent blocks.
 
         Returns an empty list when q= is empty AND no scope/tags are
         set — there's nothing to rank against.
 
         ``query_vec=`` may be pre-supplied by the runtime cross-kind
         dispatcher to avoid an embed_one(q) per kind in the fan-out.
+        ``mode='lexical'`` forces the keyword leg (no embed).
         """
         if not (q and q.strip()):
             return []
-        if query_vec is None:
+        if (mode or "").strip().lower() == "lexical":
+            query_vec = None
+        elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        return self.store.search_blocks_fused(
+        return self.store.search_blocks(
             q=q,
             query_vec=query_vec,
+            mode=mode,
             kind="patent",
             scope_ref_id=scope_ref_id,
             tags=tags,
@@ -619,6 +626,7 @@ class PatentHandler(Handler):
         tags: list[str] | None = None,
         page_size: int = 10,
         query_vec: list[float] | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Local-only block-level search returned as ``SearchHit``s.
@@ -640,6 +648,7 @@ class PatentHandler(Handler):
             tags=normalized_tags,
             page_size=page_size,
             query_vec=query_vec,
+            mode=mode,
         )
         return block_hits_to_search_hits(triples, kind="patent")
 

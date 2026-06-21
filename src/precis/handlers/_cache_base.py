@@ -51,7 +51,7 @@ from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import BlockInsert, Tag
 from precis.utils.block_ingest import to_block_inserts
-from precis.utils.embed_query import embed_query
+from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
@@ -737,15 +737,17 @@ class CacheBackedHandler(Handler):
         *,
         q: str | None = None,
         page_size: int = 10,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Block-level fused search across cached entries of this kind.
+        """Block-level mode-dispatched search across cached entries.
 
-        Hybrid lexical + semantic (when an embedder is wired) using
-        :meth:`Store.search_blocks_fused`. Subclasses whose
-        ``_fetch`` stores only a single un-embedded block (no call
-        to :meth:`_blocks_from_report`) will land lexical hits
-        only — still useful for URL / title grep.
+        Default hybrid lexical + semantic (when an embedder is wired)
+        via :meth:`Store.search_blocks`; ``mode='lexical'`` /
+        ``'semantic'`` force a single leg. Subclasses whose ``_fetch``
+        stores only a single un-embedded block (no call to
+        :meth:`_blocks_from_report`) will land lexical hits only —
+        still useful for URL / title grep.
         """
         if q is None or not q.strip():
             raise BadInput(
@@ -753,11 +755,12 @@ class CacheBackedHandler(Handler):
                 next=f"search(kind={self.spec.kind!r}, q='your query')",
             )
 
-        query_vec = embed_query(self.embedder, q)
+        query_vec = query_vec_for(self.embedder, q, mode)
 
-        hits = self.store.search_blocks_fused(
+        hits = self.store.search_blocks(
             q=q,
             query_vec=query_vec,
+            mode=mode,
             kind=self.spec.kind,
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
@@ -810,6 +813,7 @@ class CacheBackedHandler(Handler):
         q: str,
         page_size: int = 10,
         query_vec: list[float] | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search as :class:`SearchHit` rows.
@@ -824,11 +828,14 @@ class CacheBackedHandler(Handler):
         """
         if not (q and q.strip()):
             return []
-        if query_vec is None:
+        if (mode or "").strip().lower() == "lexical":
+            query_vec = None
+        elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        triples = self.store.search_blocks_fused(
+        triples = self.store.search_blocks(
             q=q,
             query_vec=query_vec,
+            mode=mode,
             kind=self.spec.kind,
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,

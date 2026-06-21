@@ -58,7 +58,7 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
-from precis.utils.embed_query import embed_query
+from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.file_id import (
     canonicalize_path_id,
     format_write_result,
@@ -376,6 +376,7 @@ class PlaintextHandler(Handler):
         q: str | None = None,
         scope: str | None = None,
         page_size: int = 10,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         if q is None or not q.strip():
@@ -394,11 +395,12 @@ class PlaintextHandler(Handler):
                 )
             scope_ref_id = scope_ref.id
 
-        query_vec = embed_query(self.embedder, q)
+        query_vec = query_vec_for(self.embedder, q, mode)
 
-        hits = self.store.search_blocks_fused(
+        hits = self.store.search_blocks(
             q=q,
             query_vec=query_vec,
+            mode=mode,
             kind=self._KIND,
             scope_ref_id=scope_ref_id,
             limit=page_size,
@@ -457,17 +459,21 @@ class PlaintextHandler(Handler):
         q: str,
         page_size: int = 10,
         query_vec: list[float] | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         if not (q and q.strip()):
             return []
         # query_vec= may be pre-supplied by the runtime cross-kind
         # dispatcher (computed once for all kinds).
-        if query_vec is None:
+        if (mode or "").strip().lower() == "lexical":
+            query_vec = None
+        elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        triples = self.store.search_blocks_fused(
+        triples = self.store.search_blocks(
             q=q,
             query_vec=query_vec,
+            mode=mode,
             kind=self._KIND,
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,

@@ -350,7 +350,9 @@ class BlocksMixin:
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        offset: int = 0,
         max_distance: float | None = None,
+        exclude_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
     ) -> list[tuple[Block, Ref, float]]:
         """Cosine-distance semantic search via ``chunk_embeddings``.
@@ -391,6 +393,9 @@ class BlocksMixin:
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
             clauses.append(wiki_fence("r"))
+        if exclude_ref_ids:
+            where_params.append(list(exclude_ref_ids))
+            clauses.append("c.ref_id <> ALL(%s)")
 
         distance_clause = ""
         distance_params: list[Any] = []
@@ -405,6 +410,7 @@ class BlocksMixin:
             *distance_params,
             query_vec,
             limit,
+            offset,
         ]
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
@@ -416,7 +422,7 @@ class BlocksMixin:
             "JOIN chunk_embeddings ce "
             "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
             f"WHERE {' AND '.join(clauses)}{distance_clause} "
-            "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s"
+            "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s OFFSET %s"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -579,6 +585,78 @@ class BlocksMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, full_params).fetchall()
         return [_unpack_search_row(r) for r in rows]
+
+    def search_blocks(
+        self,
+        *,
+        q: str,
+        query_vec: list[float] | None = None,
+        mode: str | None = None,
+        kind: str | None = None,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        k: int = 60,
+        max_distance: float | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_speculative: bool = False,
+    ) -> list[tuple[Block, Ref, float]]:
+        """Mode-dispatched block search — one entry point over the three
+        ranking strategies, so callers pick a mode instead of choosing a
+        function (ADR 0033-adjacent; the LLM-facing ``search(mode=…)``).
+
+        * ``mode='lexical'`` — Postgres FTS only (``search_blocks_lexical``);
+          deterministic keyword / exact-phrase / identifier matching, and
+          the honest tool when the embedder is down.
+        * ``mode='semantic'`` — embedding cosine only
+          (``search_blocks_semantic``); degrades to lexical if no
+          ``query_vec`` (embedder unavailable).
+        * ``mode='hybrid'`` / ``None`` (default) — reciprocal-rank fusion
+          (``search_blocks_fused``), which itself falls back to lexical
+          when ``query_vec`` is None. Identical to the prior default.
+
+        Result tuples are ``(Block, Ref, score)`` in every mode (score is
+        an RRF score, a cosine distance, or a lexical rank — all "more
+        relevant first" within a mode, never comparable across modes).
+        """
+        m = (mode or "hybrid").strip().lower()
+        if m == "semantic" and query_vec is not None:
+            return self.search_blocks_semantic(
+                query_vec=query_vec,
+                kind=kind,
+                scope_ref_id=scope_ref_id,
+                tags=tags,
+                limit=limit,
+                offset=offset,
+                max_distance=max_distance,
+                exclude_ref_ids=exclude_ref_ids,
+                include_speculative=include_speculative,
+            )
+        if m == "lexical" or query_vec is None:
+            return self.search_blocks_lexical(
+                q=q,
+                kind=kind,
+                scope_ref_id=scope_ref_id,
+                tags=tags,
+                limit=limit,
+                offset=offset,
+                exclude_ref_ids=exclude_ref_ids,
+                include_speculative=include_speculative,
+            )
+        return self.search_blocks_fused(
+            q=q,
+            query_vec=query_vec,
+            kind=kind,
+            scope_ref_id=scope_ref_id,
+            tags=tags,
+            limit=limit,
+            offset=offset,
+            k=k,
+            max_distance=max_distance,
+            exclude_ref_ids=exclude_ref_ids,
+            include_speculative=include_speculative,
+        )
 
     # -- CRUD (Phase 2 — v2 chunks table) ----------------------------------
 

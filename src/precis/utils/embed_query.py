@@ -41,3 +41,19 @@ def embed_query(embedder: Any | None, q: str) -> list[float] | None:
             exc_info=True,
         )
         return None
+
+
+def query_vec_for(
+    embedder: Any | None, q: str, mode: str | None = None
+) -> list[float] | None:
+    """Query vector for a search, honouring an explicit ``mode=``.
+
+    ``mode='lexical'`` skips the embed entirely (returns ``None``) so the
+    store dispatcher runs a pure-lexical pass — the deterministic
+    keyword / exact-phrase / identifier path, and embedder-independent.
+    Every other mode (``'hybrid'`` default, ``'semantic'``) embeds via
+    :func:`embed_query` (which still degrades to ``None`` on failure).
+    """
+    if mode is not None and mode.strip().lower() == "lexical":
+        return None
+    return embed_query(embedder, q)

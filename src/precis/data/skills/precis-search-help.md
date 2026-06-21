@@ -25,11 +25,36 @@ search(kind='paper', q='X', tags=['topic:noxrr'])   # tag-filter
 search(kind='paper', q='X', scope='wang2020state')  # search inside one ref
 search(kind='paper', q='X', exclude=['wang2020state', 'kim2024electro'])
 search(kind='patent', q='X', source='remote')       # patent-only knob
+search(kind='paper', q='1.523 eV', mode='lexical')  # exact string, no embedding
 ```
+
+## Ranking mode — hybrid (default), lexical, or semantic
+
+By default `search` is **hybrid**: it fuses a lexical pass (Postgres
+full-text) with a semantic pass (embeddings) by reciprocal-rank fusion.
+That's the right default for "find me things about X". But you can pin
+the ranking with `mode=`:
+
+| `mode` | What it does | Reach for it when |
+|---|---|---|
+| `'hybrid'` *(default)* | RRF of lexical + semantic. | General recall — concepts *and* keywords. |
+| `'lexical'` | Postgres FTS only; no embedding. | You know the **exact string** — an identifier, acronym, surname, code token, a numeric like `1.523 eV`, or an exact phrase. Embeddings blur these; lexical is precise and deterministic. Also the honest tool when the embedder is down (hybrid silently degrades to this anyway). |
+| `'semantic'` | Embedding cosine only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does, and keyword noise is hurting precision. Degrades to lexical if the embedder is unavailable. |
+
+```python
+search(kind='paper', q='MoS2 monolayer', mode='lexical')   # exact term recall
+search(q='ways to stop catalyst poisoning', mode='semantic') # paraphrase recall
+```
+
+`mode=` works on a single kind **and** across the cross-kind fan-out.
+Scores are never comparable *across* modes (RRF score vs. cosine
+distance vs. lexical rank) — within a result list, more-relevant is
+always first.
 
 | Arg | Type | Meaning |
 |---|---|---|
 | `q` | str | Free-text query. |
+| `mode` | str | Ranking strategy: `'hybrid'` (default) / `'lexical'` / `'semantic'`. See below. |
 | `kind` | str | One kind, comma-list, or `'*'` / `'all'` / `'any'` / `''` for fan-out. |
 | `page` | int | Page number (default 1). |
 | `page_size` | int | **Page size** (default 10, max 100). Not a match-quality cutoff despite the name. |

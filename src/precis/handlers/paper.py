@@ -59,7 +59,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils.authors import to_name_dicts
-from precis.utils.embed_query import embed_query
+from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -661,6 +661,7 @@ class PaperHandler(Handler):
         page_size: int = 10,
         page: int = 1,
         exclude: list[str] | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         if q is None or not q.strip():
@@ -724,7 +725,7 @@ class PaperHandler(Handler):
         # rather than 500 the whole search — the lexical leg still
         # answers (gripe #38684: search q='*' returned a 500). See
         # :func:`embed_query`.
-        query_vec = embed_query(self.embedder, q)
+        query_vec = query_vec_for(self.embedder, q, mode)
 
         # ``max_distance`` enforces a semantic relevance floor so a
         # nonsense query (``'xyzzy frobnicate quux'``) returns an
@@ -736,9 +737,10 @@ class PaperHandler(Handler):
         # caller passing ``page=0`` doesn't blow the query up.
         search_offset = max(0, (int(page) - 1) * int(page_size))
 
-        hits = self.store.search_blocks_fused(
+        hits = self.store.search_blocks(
             q=q,
             query_vec=query_vec,
+            mode=mode,
             kind="paper",
             scope_ref_id=scope_ref_id,
             tags=normalized_tags,
@@ -981,6 +983,7 @@ class PaperHandler(Handler):
         page_size: int = 10,
         exclude: list[str] | None = None,
         query_vec: list[float] | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search returned as ``SearchHit``s.
@@ -1012,11 +1015,14 @@ class PaperHandler(Handler):
         # query_vec= may be pre-supplied by the runtime cross-kind
         # dispatcher (computed once for all kinds), avoiding an
         # extra embed_one(q) per fanned-out kind.
-        if query_vec is None:
+        if (mode or "").strip().lower() == "lexical":
+            query_vec = None
+        elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        triples = self.store.search_blocks_fused(
+        triples = self.store.search_blocks(
             q=q,
             query_vec=query_vec,
+            mode=mode,
             kind="paper",
             tags=normalized_tags,
             limit=page_size,

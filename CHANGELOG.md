@@ -8,6 +8,29 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-21 — search gains an explicit lexical / semantic `mode=`)
+
+- **`search(mode=…)`** lets the LLM pick the ranking instead of always
+  getting hybrid fusion: `'hybrid'` (default, unchanged — RRF of lexical
+  + semantic), **`'lexical'`** (Postgres FTS only — deterministic
+  keyword / exact-phrase / identifier / numeric matching, and the honest
+  tool when the embedder is down), `'semantic'` (embedding cosine only).
+  Previously lexical-only happened only as an involuntary degrade when
+  the embedder failed; there was no way to *request* it.
+- One store entry point: `Store.search_blocks(mode=…)` dispatches over
+  the existing `search_blocks_lexical` / `_semantic` / `_fused`.
+  `search_blocks_semantic` gained `offset` + `exclude_ref_ids` for
+  pagination parity. A `query_vec_for(embedder, q, mode)` helper skips
+  the embed entirely for `mode='lexical'`.
+- Threaded through every block-search handler (paper, plaintext, patent,
+  the cache-base for memory/web/etc.) and the cross-kind fan-out
+  (`mode='lexical'` skips the shared embed). `mode='semantic'` with no
+  vector degrades to lexical, matching the embed-guard philosophy.
+- Validated at the verb boundary (unknown mode → `BadInput`).
+  `precis-search-help` documents the matrix + when to reach for lexical.
+- Coverage: `test_search_blocks_mode.py` (5 cases — lexical-without-embedder,
+  semantic, degrade, hybrid-parity, lexical-ignores-vector).
+
 ### Added (2026-06-21 — draft references: DRY superset highlight+extract, and a Tier-A web viewer/editor)
 
 - **Draft inline references reuse the existing reference machinery

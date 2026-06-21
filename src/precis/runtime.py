@@ -1249,6 +1249,8 @@ class PrecisRuntime:
         top_k = int(args.get("top_k") or 10)
         tags = args.get("tags")
         exclude = args.get("exclude")
+        mode = args.get("mode")
+        mode_lexical = isinstance(mode, str) and mode.strip().lower() == "lexical"
 
         kinds = self._resolve_cross_kind_request(kind)
         if not kinds:
@@ -1288,8 +1290,12 @@ class PrecisRuntime:
         # fall through the same TypeError-degradation chain as
         # ``exclude=`` / ``tags=``.
         base_kwargs: dict[str, Any] = {"q": q, "top_k": top_k}
+        if mode is not None:
+            base_kwargs["mode"] = mode
         semantic_degraded = False
-        embedder = getattr(self.hub, "embedder", None)
+        # ``mode='lexical'`` skips the embed entirely — the deterministic
+        # keyword fan-out (and the right move when the embedder is down).
+        embedder = None if mode_lexical else getattr(self.hub, "embedder", None)
         if embedder is not None:
             try:
                 base_kwargs["query_vec"] = embedder.embed_one(q)

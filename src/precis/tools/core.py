@@ -339,6 +339,7 @@ def search(
     n: int | None = None,
     like: str | None = None,
     view: str | None = None,
+    mode: str | None = None,
     # finding-specific filter: short-circuits a STATUS:<value> tag
     # filter. Defaults to 'established' on the finding handler; pass
     # 'tracing' / 'multi_candidate' / 'dead_chain' to inspect a
@@ -354,6 +355,13 @@ def search(
     thread `exclude=` lists manually. `exclude=` is still useful for
     hand-skipping specific slugs. `source=` is patent-only
     (`'both'`/`'local'`/`'remote'`); ignored elsewhere.
+
+    **`mode=`** picks the ranking: `'hybrid'` (default — reciprocal-rank
+    fusion of lexical + semantic), `'lexical'` (Postgres FTS only —
+    deterministic keyword / exact-phrase / identifier matching, and the
+    honest tool when you know the exact string or the embedder is down),
+    or `'semantic'` (embedding cosine only). Works per-kind and across
+    the cross-kind fan-out.
 
     **Angle spray**: `angle=` (cosine in `[-1,1]`) +/- `like='kind:id'`
     returns `n` diverse items at that cosine from the seed (a cone
@@ -399,6 +407,24 @@ def search(
     if not isinstance(page, int) or page < 1:
         page = 1
 
+    # Validate the ranking mode at the boundary so an unknown value
+    # surfaces as the canonical BadInput envelope, not a silent
+    # default-to-hybrid that hides a typo.
+    if mode is not None and mode.strip().lower() not in (
+        "hybrid",
+        "lexical",
+        "semantic",
+    ):
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    f"unknown search mode {mode!r}",
+                    next="mode='hybrid' (default) | 'lexical' | 'semantic'",
+                )
+            )
+        )
+
     payload: dict[str, Any] = {
         "kind": kind,
         "q": q,
@@ -428,6 +454,8 @@ def search(
         payload["view"] = view
     if status is not None:
         payload["status"] = status
+    if mode is not None:
+        payload["mode"] = mode
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)
@@ -781,6 +809,8 @@ _GET_HELP: dict[str, str] = {
 
 _SEARCH_HELP: dict[str, str] = {
     "q": "Free-text query (lexical + semantic, hybrid-fused).",
+    "mode": "Ranking: 'hybrid' (default) | 'lexical' (exact keyword/"
+    "phrase/identifier, embedder-independent) | 'semantic'.",
     "kind": "Restrict to a kind (or comma-list, '*', omit for fan-out).",
     "scope": "Restrict to one ref's blocks (slug or numeric id).",
     "page_size": "Max results per page. Positive int ≤ 100 (default 10).",
