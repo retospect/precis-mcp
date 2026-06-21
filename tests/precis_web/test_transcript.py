@@ -38,3 +38,25 @@ def test_transcript_route_missing_is_graceful(client) -> None:
     r = client.get("/tasks/999999/transcript")
     assert r.status_code == 200
     assert "No transcript" in r.text
+
+
+def test_tool_result_decodes_unicode_and_newlines() -> None:
+    """A tool_result with list-of-text-blocks content renders decoded
+    glyphs (¶, ₂) and real newlines — not \\u00b6 / literal \\n."""
+    import json
+
+    raw = (
+        '{"type":"user","message":{"content":['
+        + json.dumps(
+            {
+                "type": "tool_result",
+                "content": [{"type": "text", "text": "¶vBFGDc CO₂\nnext line"}],
+            }
+        )
+        + "]}}"
+    )
+    turns = _parse_transcript(raw)
+    assert len(turns) == 1 and turns[0]["role"] == "tool_result"
+    text = turns[0]["text"]
+    assert "¶vBFGDc" in text and "CO₂" in text  # decoded glyphs
+    assert "\n" in text and "\\u00b6" not in text  # real newline, no escape

@@ -1157,6 +1157,31 @@ async def delete_task(
 # readable turn-by-turn log for debugging "it ran and did nothing".
 
 
+def _tool_result_text(content: Any) -> str:
+    """Flatten a ``tool_result``'s content to readable text.
+
+    Tool results arrive as a list of ``{type:'text', text:…}`` blocks.
+    The old code ``json.dumps``'d the whole structure, which (a) escaped
+    every non-ASCII glyph (``¶`` → ``\\u00b6``, ``CO₂`` → ``CO\\u2082``)
+    via the default ``ensure_ascii`` and (b) turned the real newlines
+    inside the text into literal ``\\n`` two-char sequences. Pulling the
+    block text out instead keeps glyphs as glyphs and newlines real, so
+    the template's ``whitespace-pre-wrap`` renders them as line breaks."""
+    import json as _json
+
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for b in content:
+            if isinstance(b, dict) and "text" in b:
+                parts.append(str(b["text"]))
+            else:
+                parts.append(_json.dumps(b, ensure_ascii=False))
+        return "\n".join(parts)
+    return str(content)
+
+
 def _parse_transcript(raw: str) -> list[dict[str, Any]]:
     """Parse a stream-json transcript into readable turns (tolerant —
     skips lines it can't parse). Each turn: role + text (+ tool calls)."""
@@ -1185,7 +1210,9 @@ def _parse_transcript(raw: str) -> list[dict[str, Any]]:
                     tools.append(
                         {
                             "name": str(b.get("name", "?")),
-                            "input": _json.dumps(b.get("input", {}))[:500],
+                            "input": _json.dumps(
+                                b.get("input", {}), ensure_ascii=False
+                            )[:500],
                         }
                     )
             turns.append(
@@ -1195,9 +1222,8 @@ def _parse_transcript(raw: str) -> list[dict[str, Any]]:
             content = (ev.get("message") or {}).get("content") or []
             for b in content:
                 if isinstance(b, dict) and b.get("type") == "tool_result":
-                    c = b.get("content")
-                    s = c if isinstance(c, str) else _json.dumps(c)
-                    turns.append({"role": "tool_result", "text": s[:800], "tools": []})
+                    s = _tool_result_text(b.get("content"))
+                    turns.append({"role": "tool_result", "text": s[:4000], "tools": []})
         elif kind == "result":
             turns.append(
                 {"role": "result", "text": str(ev.get("result", "")), "tools": []}
