@@ -221,10 +221,15 @@ def claim_chunks_without_summary(
 ) -> list[_Claimed]:
     """Return up to ``limit`` chunks missing the ``summarizer`` summary.
 
-    Ordered ``ref_id, ord`` so a document's chunks arrive contiguously —
-    the prompt's shared doc-header prefix then hits the llama.cpp prefix
-    cache turn after turn. ``FOR UPDATE OF c SKIP LOCKED`` lets workers
-    on multiple nodes fan out over the corpus without double-processing.
+    ``conv`` + ``draft`` refs jump the queue: draft refs have the highest
+    ref_ids (most recent), so a plain ``ref_id, ord`` order buries the
+    actively-edited write-up behind the entire ~1M-chunk paper backlog and
+    it never gets summarised (the draft reader's view-slider then only
+    shows the text fallback). The priority bucket sorts them first;
+    ``ref_id, ord`` *within* a bucket still delivers a document's chunks
+    contiguously so the prompt's shared doc-header prefix hits the
+    llama.cpp prefix cache turn after turn. ``FOR UPDATE OF c SKIP
+    LOCKED`` lets workers on multiple nodes fan out without double-work.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -241,7 +246,8 @@ def claim_chunks_without_summary(
            AND c.chunk_kind <> ALL(%s)
            AND length(c.text) >= %s
            AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
-         ORDER BY c.ref_id, c.ord
+         ORDER BY (CASE WHEN r.kind IN ('conv', 'draft') THEN 0 ELSE 1 END),
+                  c.ref_id, c.ord
          LIMIT %s
            FOR UPDATE OF c SKIP LOCKED
     """

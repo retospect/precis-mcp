@@ -111,11 +111,13 @@ def claim_chunks_without_keywords(
     if limit <= 0:
         raise ValueError("limit must be positive")
     skip_list = list(_SKIP_KINDS)
-    # Conv blocks jump the queue. asa_bot's mid-range digest tier
-    # renders ``chunks.keywords`` for each turn; without priority the
-    # boundary turn (just-out-of-recent) waits behind paper backlog
-    # and renders the text fallback for hours. JOIN-ing refs adds one
-    # planner hop but the ref_id index makes it nearly free.
+    # Conv + draft blocks jump the queue. asa_bot's mid-range digest
+    # tier renders ``chunks.keywords`` for each turn, and the draft
+    # reader's view-slider (keywords / summary) needs them promptly on
+    # the actively-edited write-up; without priority both wait behind
+    # the ~1M-chunk paper backlog and render the text fallback for hours.
+    # JOIN-ing refs adds one planner hop but the ref_id index makes it
+    # nearly free.
     # ``meta->>'no_index' IS DISTINCT FROM 'true'`` filters out
     # ephemeral chunks (e.g. ``structure_draft`` annotation views
     # written by precis-dft's view_worker). NULL-safe: the vast
@@ -147,7 +149,7 @@ def claim_chunks_without_keywords(
            -- uses ce.vector, so wait for embed to refresh after an edit
            -- (else keywords from new text rank against a stale vector).
            AND ce.content_sha IS NOT DISTINCT FROM c.content_sha
-         ORDER BY (CASE WHEN r.kind = 'conv' THEN 0 ELSE 1 END),
+         ORDER BY (CASE WHEN r.kind IN ('conv', 'draft') THEN 0 ELSE 1 END),
                   c.chunk_id
          LIMIT %s
            FOR UPDATE OF c SKIP LOCKED

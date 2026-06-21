@@ -76,3 +76,42 @@ def test_keywords_rederive_gated_on_embed_then_reclaims(store: Store) -> None:
     # 4) embed catches up → keywords re-claim for re-derivation
     _set_embed_sha_to_current(store, p.chunk_id)
     assert p.chunk_id in _claimed(store)
+
+
+def _insert_embedding(store: Store, chunk_id: int, sha: str | None) -> None:
+    dim = store.embedding_dim()
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, content_sha) "
+            "VALUES (%s, 'bge-m3', %s, 'ok', %s)",
+            (chunk_id, [0.0] * dim, sha),
+        )
+        conn.commit()
+
+
+def test_draft_chunks_jump_queue_ahead_of_papers(store: Store) -> None:
+    """A freshly-written draft chunk is claimed for keywords BEFORE an
+    older un-keyworded paper chunk — drafts are the actively-edited
+    surface and shouldn't wait behind the paper backlog (view-slider)."""
+    from precis.store.types import BlockInsert
+
+    # an older paper chunk lacking keywords (lower ref_id), embedded.
+    paper = store.insert_ref(kind="paper", slug="qjump1", title="Paper")
+    pblk = store.insert_blocks(paper.id, [BlockInsert(pos=0, text=_LONG)])[0]
+    _insert_embedding(store, pblk.id, None)  # papers leave content_sha NULL
+
+    # a newer draft chunk (higher ref_id), embedded at its current sha.
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    ref, title = store.create_draft(name="njump", title="T", project_ref_id=proj)
+    d = store.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text=_LONG2, at={"after": title.handle}
+    )[0]
+    with store.pool.connection() as conn:
+        sha = conn.execute(
+            "SELECT content_sha FROM chunks WHERE chunk_id = %s", (d.chunk_id,)
+        ).fetchone()[0]
+    _insert_embedding(store, d.chunk_id, sha)
+
+    ids = _claimed(store)
+    assert d.chunk_id in ids and pblk.id in ids
+    assert ids.index(d.chunk_id) < ids.index(pblk.id)  # draft jumps ahead
