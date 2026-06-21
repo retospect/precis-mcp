@@ -319,3 +319,42 @@ def test_generated_child_defaults_to_llm_opus_root_does_not(
     ids = _candidate_parent_ids(store, limit=50)
     assert child in ids  # parented → auto LLM:opus → runs
     assert root not in ids  # root → no default → not auto-run
+
+
+def test_user_prompt_surfaces_anchor_chunk(hub: Hub, store: Store) -> None:
+    """A change-request todo with meta.anchor='¶<handle>' must put the
+    anchored chunk's text in the agent's prompt — so it acts on that
+    chunk instead of yielding ask-user 'which paragraph?' (the
+    see-chunk-0 loop)."""
+    from precis.handlers.draft import DraftHandler
+
+    draft = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id="d1", title="T", project=proj)
+    dref = store.get_ref(kind="draft", id="d1")
+    title_h = store.reading_order(dref.id)[0].handle
+    draft.put(
+        id="d1",
+        chunk_kind="paragraph",
+        text="The quick brown fox paragraph to remove.",
+        at={"after": f"¶{title_h}"},
+    )
+    para_h = next(
+        c.handle for c in store.reading_order(dref.id) if c.text.startswith("The quick")
+    )
+    todo = store.insert_ref(kind="todo", slug=None, title="remove this paragraph")
+    store.stamp_ref_meta(todo.id, {"anchor": f"¶{para_h}"})
+
+    prompt = _build_user_prompt(store, ref_id=todo.id, model="opus")
+    assert f"¶{para_h}" in prompt
+    assert "The quick brown fox paragraph to remove." in prompt
+    assert "Act on THIS chunk" in prompt
+
+
+def test_user_prompt_anchor_missing_chunk(hub: Hub, store: Store) -> None:
+    """An anchor pointing at a nonexistent chunk tells the agent to ask a
+    grounded question, not guess."""
+    todo = store.insert_ref(kind="todo", slug=None, title="fix it")
+    store.stamp_ref_meta(todo.id, {"anchor": "¶ZZZZZZ"})
+    prompt = _build_user_prompt(store, ref_id=todo.id, model="opus")
+    assert "¶ZZZZZZ" in prompt and "no longer exists" in prompt

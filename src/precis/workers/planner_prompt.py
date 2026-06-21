@@ -434,6 +434,7 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     ancestry_block = _render_ancestry_toon(ancestry, leaf_id=ref_id)
     project_block = _render_project_brief(store, ref_id)
     body = _load_ref_body(store, ref_id)
+    anchor_block = _render_anchor_context(store, ref_id)
     workspace_block = _render_workspace_status(store, ref_id)
     children_block = _render_children_status(store, ref_id)
     parts: list[str] = [
@@ -447,6 +448,9 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     parts.append("")
     parts.append("## Body")
     parts.append(body or "(empty)")
+    if anchor_block:
+        parts.append("")
+        parts.append(anchor_block)
     if workspace_block:
         parts.append("")
         parts.append(workspace_block)
@@ -489,6 +493,54 @@ def _render_project_brief(store: Store, ref_id: int) -> str:
         return ""
     slug = workspace.project_tag or "project"
     return f"## Project context ({slug})\n\n{brief}"
+
+
+def _render_anchor_context(store: Store, ref_id: int) -> str:
+    """Surface the draft chunk a change request is anchored to.
+
+    The web "around here…" box and the per-heading "review ▾" menu file a
+    todo carrying ``meta.anchor='¶<handle>'`` — *where* the request is
+    about. Without surfacing it, the agent only sees the body ("remove
+    this paragraph") with no pointer to which chunk, so it (correctly,
+    per the ambiguity guidance) yields ``ask-user:`` — the "see chunk 0"
+    loop. This block tells the agent exactly which chunk, shows its
+    current text, and says to act on it directly.
+
+    No-op when the todo has no ``meta.anchor``. When the anchor points at
+    a chunk that no longer exists, say so (so the agent asks a *grounded*
+    question by ``¶handle`` rather than guessing)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'anchor' FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    handle = ((row[0] if row else None) or "").lstrip("¶").strip()
+    if not handle:
+        return ""
+    chunk = store.get_draft_chunk(handle)
+    if chunk is None:
+        return (
+            f"## Anchor — requested at ¶{handle}\n\n"
+            f"This request is anchored to draft chunk ¶{handle}, but that "
+            "chunk no longer exists (retired or never created). Don't guess "
+            "at another chunk — yield `ask-user:` with a question that names "
+            f"¶{handle} and asks what to target instead."
+        )
+    draft = store.get_ref(kind="draft", id=int(chunk.ref_id))
+    dident = draft.slug if draft and draft.slug else chunk.ref_id
+    text = (chunk.text or "").strip()
+    if len(text) > 1500:
+        text = text[:1500].rstrip() + "…"
+    quoted = "\n".join("> " + ln for ln in text.splitlines()) or "> (empty)"
+    return (
+        f"## Anchor — requested at ¶{handle}\n\n"
+        f"This change request is anchored to chunk **¶{handle}** of "
+        f"`draft:{dident}` (a {chunk.chunk_kind}). Act on THIS chunk "
+        "directly — edit / delete / cite it by its handle; don't ask which "
+        "one it is. Its current text:\n\n"
+        f"{quoted}\n\n"
+        "If you still must ask the user something, reference chunks by "
+        '`¶handle` (never "chunk 0").'
+    )
 
 
 def _render_workspace_status(store: Store, ref_id: int) -> str:
