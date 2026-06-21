@@ -235,3 +235,18 @@ def test_delete_change_request_dispatches_todo_delete(
     assert r.status_code == 303
     verb, args = draft_runtime.calls[-1]
     assert verb == "delete" and args["kind"] == "todo" and args["id"] == 777
+
+
+def test_tasks_gist_summarises_long_bodies_only() -> None:
+    """A multi-line / long todo body gets a 3-keyword RAKE gist; a short
+    single-line one is shown verbatim (no gist)."""
+    from precis_web.routes.tasks import _gist
+
+    assert _gist("tighten this") == ""  # short single line → no gist
+    long_body = (
+        "Amine functionalization via post-synthetic impregnation graft "
+        "polyethyleneimine onto a mixed-ligand framework by wet impregnation.\n"
+        "The resulting material shows high carbon dioxide uptake capacity."
+    )
+    g = _gist(long_body)
+    assert g and " · " in g  # joined keyword phrases

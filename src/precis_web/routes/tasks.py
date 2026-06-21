@@ -32,6 +32,7 @@ from fastapi import APIRouter, Form, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
+from precis.utils.rake import keyword_summary
 from precis.utils.workspace import Workspace
 from precis_web.deps import (
     await_dispatch,
@@ -63,6 +64,16 @@ _ACTIVE_STATUSES = {"open", "doing"}
 #: Free tags (``waiting-for:*``, ``ask-user``, ``halt``, …) also push a
 #: child into the waiting bucket — see :func:`_classify_row`.
 _WAITING_STATUSES = {"blocked", "paused"}
+
+
+def _gist(title: str | None) -> str:
+    """A 3-keyword RAKE summary for a prompt-like (multi-line / long)
+    todo body — the compact row label instead of dumping the whole
+    planner prompt in the row. Short single-line todos read as their own
+    summary, so they get no gist (the first line is shown verbatim)."""
+    if not title or ("\n" not in title and len(title) <= 80):
+        return ""
+    return keyword_summary(title, top_k=3, separator=" · ")
 
 
 def _row_waits_on_tag(tags: list[str]) -> bool:
@@ -714,6 +725,7 @@ def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str
                 "kind": node["kind"],
                 "parent_id": node["parent_id"],
                 "title": node["title"],
+                "gist": _gist(node["title"]),
                 "status": tags[node["id"]]["status"],
                 "level": tags[node["id"]]["level"],
                 "depth": depth,
