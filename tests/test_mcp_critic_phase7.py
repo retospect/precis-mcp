@@ -439,3 +439,93 @@ def runtime(store: Store) -> PrecisRuntime:
         config=PrecisConfig(),
         hub=boot(store=store, embedder=embedder),
     )
+
+
+# ── missing-kind hint points at the most-recent kind ────────────
+
+
+class TestMissingKindRecentHint:
+    """A non-search verb called without kind= bounces back a runnable
+    retry naming the kind the agent was just working on, instead of a
+    bare 30-item menu — kills the empty-call retry loop."""
+
+    def test_delete_without_kind_suggests_recent(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        runtime.dispatch("put", {"kind": "memory", "text": "a recent thought"})
+        out = runtime.dispatch("delete", {})
+        assert "[error:BadInput]" in out
+        assert "missing kind" in out
+        # The most-recently-touched kind is surfaced as a runnable retry.
+        assert "kind='memory'" in out
+        assert "delete(kind='memory'" in out
+
+    def test_missing_kind_generic_when_store_empty(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        out = runtime.dispatch("delete", {})
+        assert "missing kind" in out
+        # No refs yet → no recent-kind line, but the generic hint stands.
+        assert "pass kind=" in out
+
+
+# ── sigil-prefixed ids self-identify their kind ─────────────────
+
+
+class TestSigilKindInference:
+    """``get(id='¶handle')`` resolves without ``kind=`` — the sigil is
+    the kind tag (the draft skill documents exactly this form)."""
+
+    def _draft_chunk_handle(self, runtime: PrecisRuntime) -> str:
+        import re
+
+        proj = runtime.dispatch("put", {"kind": "todo", "text": "sigil project"})
+        pid = int(re.search(r"id=(\d+)", proj).group(1))  # type: ignore[union-attr]
+        runtime.dispatch(
+            "put",
+            {"kind": "draft", "id": "sig01", "project": pid, "title": "Sigil"},
+        )
+        add = runtime.dispatch(
+            "put",
+            {
+                "kind": "draft",
+                "id": "sig01",
+                "chunk_kind": "paragraph",
+                "text": "the quick brown fox",
+                "at": {"last": True},
+            },
+        )
+        return re.search(r"¶(\w+)", add).group(1)  # type: ignore[union-attr]
+
+    def test_paragraph_sigil_reads_chunk_without_kind(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        handle = self._draft_chunk_handle(runtime)
+        out = runtime.dispatch("get", {"id": f"¶{handle}"})  # no kind=
+        assert "missing kind" not in out
+        assert "the quick brown fox" in out
+
+    def test_unknown_paragraph_sigil_routes_to_draft_not_missing_kind(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        # Even an unknown handle must reach the draft handler (a draft
+        # not-found), never bounce on "missing kind=".
+        out = runtime.dispatch("get", {"id": "¶ZZZZZZ"})
+        assert "missing kind" not in out
+        assert "draft chunk" in out
+
+    def test_sigil_conflicts_with_explicit_kind(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        out = runtime.dispatch("get", {"id": "¶ZZZZZZ", "kind": "paper"})
+        assert "conflicts" in out
+
+    def test_section_sigil_routes_to_paper_when_available(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        import pytest
+
+        if "paper" not in runtime.hub.kinds:
+            pytest.skip("paper kind not booted (no [paper] extra on host)")
+        out = runtime.dispatch("get", {"id": "§nope2020~0"})
+        assert "missing kind" not in out

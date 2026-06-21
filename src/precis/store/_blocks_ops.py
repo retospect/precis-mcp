@@ -84,6 +84,78 @@ from precis.utils.angle import angle_anchors
 _DEFAULT_CHUNK_KIND = "paragraph"
 
 
+def _coerce_year(value: int | str) -> int:
+    """Validate a publish-date-filter bound: an int in 1500..2100.
+
+    Raises :class:`BadInput` (not ValueError) so a bad ``after=`` /
+    ``before=`` surfaces as a clean agent-facing error. The handler
+    validates first; this is the store-side guard that also makes
+    literal interpolation in :func:`_year_range_clauses` provably safe.
+    """
+    try:
+        iv = int(value)
+    except (TypeError, ValueError):
+        raise BadInput(
+            f"year must be an integer, got {value!r}",
+            next="search(kind='paper', q='…', after=2019, before=2023)",
+        ) from None
+    if not (1500 <= iv <= 2100):
+        raise BadInput(
+            f"year {iv} out of plausible range (1500..2100)",
+            next="search(kind='paper', q='…', after=2019, before=2023)",
+        )
+    return iv
+
+
+def _year_range_clauses(year_from: int | None, year_to: int | None) -> list[str]:
+    """Parameterless ``r.year`` range predicates for the paper
+    publish-date filter (``search(kind='paper', after=…, before=…)``).
+
+    Bounds are interpolated as **integer literals**, not bind params, so
+    the clause is safe to splice into *both* CTEs of the fused query —
+    the discipline ``speculative_fence`` / ``wiki_fence`` already rely on
+    (a parameterised clause would need its params duplicated per CTE).
+    Each value is hard-coerced to an int in range first (see
+    :func:`_coerce_year`), so literal interpolation carries no injection
+    surface. Papers with ``year IS NULL`` fall out (NULL comparisons are
+    false); the handler surfaces that omission count separately.
+    """
+    out: list[str] = []
+    if year_from is not None:
+        out.append(f"r.year >= {_coerce_year(year_from)}")
+    if year_to is not None:
+        out.append(f"r.year <= {_coerce_year(year_to)}")
+    return out
+
+
+def _chunk_scope_clauses(
+    chunk_kinds: list[str] | None, chunk_ids: list[int] | None
+) -> list[str]:
+    """Parameterless chunk-level scoping clauses (draft headers-only /
+    subtree search). Like :func:`_year_range_clauses` the predicates are
+    literal, not bind params, so they splice safely into both CTEs of the
+    fused query. ``chunk_kinds`` values are validated against a strict
+    ``[a-z_]+`` shape and ``chunk_ids`` are int-coerced, so literal
+    interpolation has no injection surface.
+    """
+    import re
+
+    out: list[str] = []
+    if chunk_kinds:
+        for k in chunk_kinds:
+            if not re.fullmatch(r"[a-z_]+", k):
+                raise BadInput(f"bad chunk_kind {k!r}")
+        joined = ",".join(f"'{k}'" for k in chunk_kinds)
+        out.append(f"c.chunk_kind IN ({joined})")
+    if chunk_ids is not None:
+        if not chunk_ids:
+            out.append("FALSE")  # empty whitelist → match nothing
+        else:
+            joined_ids = ",".join(str(int(i)) for i in chunk_ids)
+            out.append(f"c.chunk_id IN ({joined_ids})")
+    return out
+
+
 def _strip_abstract_label(text: str) -> str:
     """Drop a leading ``Abstract`` / ``ABSTRACT`` heading word."""
     import re
@@ -245,6 +317,51 @@ class BlocksMixin:
         assert row is not None
         return int(row[0])
 
+    def count_paper_yearless_matches(
+        self,
+        *,
+        q: str,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+    ) -> int:
+        """Count distinct **papers** that match the lexical query but
+        carry no ``year`` — the "omitted from a publish-date filter"
+        heads-up. Lexical-only (a hard tsquery match) on purpose: it
+        answers "papers your keywords hit that a year filter silently
+        drops", so the agent doesn't read an empty year-range result as
+        "nothing exists" when the real cause is missing metadata.
+        """
+        clauses = [
+            "r.deleted_at IS NULL",
+            "r.kind = 'paper'",
+            "r.year IS NULL",
+            "c.ord >= 0",
+            "c.tsv @@ qq.qq",
+            *_block_noise_clauses(text_alias="c.text"),
+        ]
+        params: list[Any] = [q]
+        if scope_ref_id is not None:
+            params.append(scope_ref_id)
+            clauses.append("c.ref_id = %s")
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag)
+            params.extend(tag_params)
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("c.ref_id <> ALL(%s)")
+        sql = (
+            "SELECT count(DISTINCT r.ref_id) FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id, "
+            "websearch_to_tsquery('english', %s) qq(qq) "
+            f"WHERE {' AND '.join(clauses)}"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return int(row[0])
+
     @staticmethod
     def _fence_speculative(tags: list[str] | None, include_speculative: bool) -> bool:
         """Whether to apply the ``DREAM:speculative`` fence to a search.
@@ -289,6 +406,10 @@ class BlocksMixin:
         offset: int = 0,
         exclude_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        chunk_kinds: list[str] | None = None,
+        chunk_ids: list[int] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
 
@@ -322,6 +443,8 @@ class BlocksMixin:
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
             clauses.append(wiki_fence("r"))
+        clauses.extend(_year_range_clauses(year_from, year_to))
+        clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -354,6 +477,10 @@ class BlocksMixin:
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        chunk_kinds: list[str] | None = None,
+        chunk_ids: list[int] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Cosine-distance semantic search via ``chunk_embeddings``.
 
@@ -393,6 +520,8 @@ class BlocksMixin:
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
             clauses.append(wiki_fence("r"))
+        clauses.extend(_year_range_clauses(year_from, year_to))
+        clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
         if exclude_ref_ids:
             where_params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -442,6 +571,10 @@ class BlocksMixin:
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        chunk_kinds: list[str] | None = None,
+        chunk_ids: list[int] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Hybrid search via reciprocal rank fusion over lex + sem.
 
@@ -465,6 +598,10 @@ class BlocksMixin:
                 offset=offset,
                 exclude_ref_ids=exclude_ref_ids,
                 include_speculative=include_speculative,
+                year_from=year_from,
+                year_to=year_to,
+                chunk_kinds=chunk_kinds,
+                chunk_ids=chunk_ids,
             )
 
         with self.pool.connection() as conn:
@@ -493,6 +630,11 @@ class BlocksMixin:
         if self._fence_wiki(tags, kind):
             # Likewise parameterless — safe under the double-splice.
             clauses.append(wiki_fence("r"))
+        # Year + chunk-scope predicates are int/validated-literal
+        # (parameterless) for the same double-splice safety — see
+        # ``_year_range_clauses`` / ``_chunk_scope_clauses``.
+        clauses.extend(_year_range_clauses(year_from, year_to))
+        clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -601,10 +743,17 @@ class BlocksMixin:
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        chunk_kinds: list[str] | None = None,
+        chunk_ids: list[int] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Mode-dispatched block search — one entry point over the three
         ranking strategies, so callers pick a mode instead of choosing a
         function (ADR 0033-adjacent; the LLM-facing ``search(mode=…)``).
+
+        ``year_from`` / ``year_to`` are inclusive ``refs.year`` bounds for
+        the paper publish-date filter; they thread into all three legs.
 
         * ``mode='lexical'`` — Postgres FTS only (``search_blocks_lexical``);
           deterministic keyword / exact-phrase / identifier matching, and
@@ -632,6 +781,10 @@ class BlocksMixin:
                 max_distance=max_distance,
                 exclude_ref_ids=exclude_ref_ids,
                 include_speculative=include_speculative,
+                year_from=year_from,
+                year_to=year_to,
+                chunk_kinds=chunk_kinds,
+                chunk_ids=chunk_ids,
             )
         if m == "lexical" or query_vec is None:
             return self.search_blocks_lexical(
@@ -643,6 +796,10 @@ class BlocksMixin:
                 offset=offset,
                 exclude_ref_ids=exclude_ref_ids,
                 include_speculative=include_speculative,
+                year_from=year_from,
+                year_to=year_to,
+                chunk_kinds=chunk_kinds,
+                chunk_ids=chunk_ids,
             )
         return self.search_blocks_fused(
             q=q,
@@ -656,6 +813,10 @@ class BlocksMixin:
             max_distance=max_distance,
             exclude_ref_ids=exclude_ref_ids,
             include_speculative=include_speculative,
+            year_from=year_from,
+            year_to=year_to,
+            chunk_kinds=chunk_kinds,
+            chunk_ids=chunk_ids,
         )
 
     # -- CRUD (Phase 2 — v2 chunks table) ----------------------------------

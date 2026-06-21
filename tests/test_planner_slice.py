@@ -390,3 +390,32 @@ def test_anchor_block_lists_linked_connections(hub: Hub, store: Store) -> None:
     prompt = _build_user_prompt(store, ref_id=todo.id, model="opus")
     assert "Linked to this chunk" in prompt
     assert f"memory:{mem.id}" in prompt and "Supporting evidence" in prompt
+
+
+# ── draft identity surfaced in the planner prompt ──────────────────
+
+
+def test_draft_identity_in_user_prompt(handler: TodoHandler, store: Store) -> None:
+    """A todo whose project owns a draft (via the draft-of link on the
+    project root) surfaces 'You are editing draft …' — even from a child,
+    resolved by walking parents up to the linked root."""
+    from precis.handlers.draft import DraftHandler
+
+    proj = handler.put(text="Write the CO2 paper.", tags=["level:strategic"])
+    pid = _id_of(proj.body)
+    DraftHandler(hub=Hub(store=store)).put(
+        id="co2draft", title="CO2 in MOFs", project=pid
+    )
+    child = handler.put(text="tighten the intro", parent_id=pid)
+    cid = _id_of(child.body)
+
+    prompt = _build_user_prompt(store, ref_id=cid, model="opus")
+    assert "## Draft" in prompt
+    assert "CO2 in MOFs" in prompt
+    assert "id=co2draft" in prompt
+
+
+def test_no_draft_identity_without_draft(handler: TodoHandler, store: Store) -> None:
+    t = handler.put(text="a plain todo with no draft")
+    prompt = _build_user_prompt(store, ref_id=_id_of(t.body), model="opus")
+    assert "## Draft" not in prompt

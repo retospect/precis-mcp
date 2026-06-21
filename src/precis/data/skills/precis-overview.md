@@ -107,6 +107,12 @@ Useful for warm-up, inspiration, sanity-checking a fresh corpus.
 Currently TOC-capable: `paper`, `skill`. Other kinds pick up the
 grammar as their handlers wire `chunks_for_toc`.
 
+Three views work on **every** id-addressable ref kind: `view='links'`
+(the link graph), `view='log'` (the `ref_events` trail), and
+`view='raw'` (the verbatim record — every column **plus the full `meta`
+JSON**). Reach for `raw` to debug behaviour the default render hides —
+e.g. a todo's `meta.executor` / `meta.schedule` / `meta.auto_check`.
+
 ## How do I find the right skill?
 
 ```python

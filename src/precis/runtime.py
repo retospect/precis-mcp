@@ -76,6 +76,17 @@ _EXTRAS_KEY = "__extras__"
 #: neighbour looks worth chasing.
 _ANGLE_PREVIEW_CHARS = 200
 
+#: Address sigils that self-identify a kind, so ``get(id='¶handle')``
+#: works without ``kind=`` (the draft skill documents exactly that).
+#: Value is ``(kind, keep_sigil)``: ``¶`` stays in ``id=`` because the
+#: draft handler matches on a leading ``¶``; ``§`` is stripped to the
+#: bare ``slug~n`` the paper handler resolves. Distinct from the
+#: ``kind:slug`` colon prefix (also self-identifying) handled alongside.
+_SIGIL_KIND: dict[str, tuple[str, bool]] = {
+    "¶": ("draft", True),
+    "§": ("paper", False),
+}
+
 
 #: Kind → skill alias map for the auto-discovery hint.
 #: Used by :meth:`PrecisRuntime._maybe_add_skill_hint` when
@@ -339,7 +350,11 @@ class PrecisRuntime:
             return str(kind), False, None
 
         if verb != "search":
-            raise BadInput("missing kind=", options=sorted(self.hub.kinds))
+            raise BadInput(
+                "missing kind=",
+                options=sorted(self.hub.kinds),
+                next=self._missing_kind_hints(verb),
+            )
 
         # ``search()`` without ``kind=`` defaults to cross-kind
         # fan-out across every search-hits-capable kind. Earlier
@@ -381,6 +396,35 @@ class PrecisRuntime:
                 "kind='*' / kind='all' / kind='paper,memory' for cross-kind merge"
             ),
         )
+
+    def _missing_kind_hints(self, verb: str) -> list[str]:
+        """Recovery hints for a non-``search`` verb called without ``kind=``.
+
+        Leads with the most-recently-touched kind — the agent almost
+        always means to keep operating on whatever it was just working
+        on, so ``edit({})`` / ``delete({})`` should bounce back a
+        runnable ``edit(kind='draft', id=…)`` rather than a 30-item
+        menu. This kills the empty-call retry loop a small model gets
+        stuck in: a bare "missing kind=" with every kind listed gives it
+        nothing to pick, so it re-fires the same empty call. Falls back
+        to the generic "pick one" when the corpus is empty or the
+        recency lookup fails. The per-verb help-skill pointer is still
+        appended by :meth:`_maybe_add_skill_hint` after this.
+        """
+        recent: str | None = None
+        if self.store is not None:
+            try:
+                recent = self.store.most_recent_kind()
+            except Exception:  # pragma: no cover — store outage etc.
+                log.exception("most_recent_kind lookup failed")
+        hints: list[str] = []
+        if recent is not None:
+            hints.append(
+                f"you were last working on kind={recent!r} — retry e.g. "
+                f"{verb}(kind={recent!r}, id=…)"
+            )
+        hints.append("pass kind=<one of the listed options>")
+        return hints
 
     def _resolve_handler(self, kind: str, verb: str) -> Handler:
         """Look up the handler for ``kind`` and verify it supports ``verb``.
@@ -1606,17 +1650,49 @@ class PrecisRuntime:
             if self.hub.handler_for(k).spec.supports(verb)  # type: ignore[arg-type]
         ]
 
-    def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
-        """D1: extract ``kind:`` prefix from ``id=`` into ``args['kind']``.
+    def _infer_sigil_kind(self, args: dict[str, Any], ident: str) -> None:
+        """Pin ``kind`` from a leading address sigil (``¶`` → draft,
+        ``§`` → paper). ``¶`` is kept in ``id`` (the draft handler matches
+        on it); ``§`` is stripped to the bare ``slug~n`` paper resolves.
 
-        Recognises the canonical handle grammar already used by
-        ``link=`` / ``unlink=`` — ``kind:identifier[~selector]`` — when
-        passed via the ``id=`` argument. Examples:
+        Leaves ``id`` alone when the implied kind isn't in this build
+        (fail downstream with a real "no such kind", not a silent
+        mis-route). Raises on an explicit ``kind=`` that contradicts the
+        sigil, mirroring the colon-prefix conflict check.
+        """
+        kind, keep_sigil = _SIGIL_KIND[ident[:1]]
+        live_kinds = set(self.hub.kinds) if self.hub is not None else set()
+        if kind not in live_kinds:
+            return
+        existing_kind = args.get("kind")
+        if existing_kind is not None and existing_kind != kind:
+            raise BadInput(
+                f"id={ident!r} sigil implies kind={kind!r}, "
+                f"conflicts with kind={existing_kind!r}",
+                next=f"drop kind= — id={ident!r} already names the kind",
+            )
+        args["kind"] = kind
+        if not keep_sigil:
+            args["id"] = ident[1:]
+
+    def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
+        """D1: extract a self-identifying kind from ``id=`` into ``args['kind']``.
+
+        Two grammars, both letting an agent address a ref without
+        spelling ``kind=``:
+
+        * ``kind:identifier[~selector]`` colon prefix (the canonical
+          handle grammar ``link=`` / ``unlink=`` already use)::
 
             id='paper:chung19~4'   → kind='paper', id='chung19~4'
             id='memory:158'        → kind='memory', id=158 (coerced by handler)
             id='todo:42'           → kind='todo', id=42
             id='chung19~4'         → unchanged (no colon, no extraction)
+
+        * a leading **address sigil** — the sigil *is* the kind tag::
+
+            id='¶YP377G'           → kind='draft', id='¶YP377G' (sigil kept)
+            id='§chung19~4'        → kind='paper', id='chung19~4' (sigil stripped)
 
         Only fires when:
           - ``id`` is a string containing exactly one ``:`` before any
@@ -1633,6 +1709,12 @@ class PrecisRuntime:
         """
         ident = args.get("id")
         if not isinstance(ident, str):
+            return
+        # Address sigil (``¶`` draft chunk, ``§`` paper citation) is
+        # self-identifying — route it before the colon logic. The draft
+        # skill documents ``get(id='¶handle')`` with no ``kind=``.
+        if ident[:1] in _SIGIL_KIND:
+            self._infer_sigil_kind(args, ident)
             return
         # Leading slash → path view (/recent etc.). Don't extract.
         if ident.startswith("/"):

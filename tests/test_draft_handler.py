@@ -163,7 +163,39 @@ def test_chunk_read_surfaces_sha(draft: DraftHandler, hub: Hub) -> None:
     draft.put(id="nt", title="T", project=proj)
     title_h = _order(hub, "nt")[0].handle
     out = draft.get(id=f"¶{title_h}").body
-    assert f"sha:{content_sha('T')}" in out
+    # Read shows a 12-char sha prefix, not the full 64-hex digest.
+    assert f"sha:{content_sha('T')[:12]}" in out
+    assert content_sha("T") not in out  # full digest is not shown
+
+
+def test_edit_accepts_short_sha_prefix(draft: DraftHandler, hub: Hub) -> None:
+    """The 12-char prefix shown on read is a valid base_sha; a full
+    64-char digest still works too (prefix match)."""
+    from precis.store._draft_ops import content_sha
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    para = draft.put(id="nt", chunk_kind="paragraph", text="original", at={"last": True})
+    para_h = para.body.split("¶")[1].split()[0]
+
+    short = content_sha("original")[:12]
+    draft.edit(id=f"¶{para_h}", text="v2", base_sha=short)  # prefix → succeeds
+    assert hub.store.get_draft_chunk(para_h).text == "v2"
+
+    full = content_sha("v2")  # full digest is also a valid prefix
+    draft.edit(id=f"¶{para_h}", text="v3", base_sha=full)
+    assert hub.store.get_draft_chunk(para_h).text == "v3"
+
+
+def test_edit_rejects_too_short_sha(draft: DraftHandler, hub: Hub) -> None:
+    from precis.errors import BadInput
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    para = draft.put(id="nt", chunk_kind="paragraph", text="original", at={"last": True})
+    para_h = para.body.split("¶")[1].split()[0]
+    with pytest.raises(BadInput, match="too short"):
+        draft.edit(id=f"¶{para_h}", text="v2", base_sha="abc")
 
 
 def test_abbrev_loop_hint_define_and_silence(draft: DraftHandler, hub: Hub) -> None:

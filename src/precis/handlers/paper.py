@@ -101,6 +101,33 @@ _SUGGEST_CUTOFF = 0.6
 _SUGGEST_CORPUS_CAP = 5000
 
 
+def _coerce_search_year(value: int | str | None, param: str) -> int | None:
+    """Validate an ``after=`` / ``before=`` publish-year bound.
+
+    Returns ``None`` when unset, else an int in 1500..2100. A
+    non-integer or out-of-range value raises :class:`BadInput` at the
+    agent boundary (the store-side guard in ``_blocks_ops`` re-checks).
+    Year-grained because the corpus stores ``refs.year``, not full
+    dates; a ``'2019-03'`` string keeps only the leading year via int().
+    """
+    if value is None:
+        return None
+    raw = str(value).strip().split("-", 1)[0]  # tolerate 'YYYY-MM' → 'YYYY'
+    try:
+        iv = int(raw)
+    except ValueError:
+        raise BadInput(
+            f"{param}= must be a 4-digit year, got {value!r}",
+            next="search(kind='paper', q='…', after=2019, before=2023)",
+        ) from None
+    if not (1500 <= iv <= 2100):
+        raise BadInput(
+            f"{param}={iv} out of plausible range (1500..2100)",
+            next="search(kind='paper', q='…', after=2019, before=2023)",
+        )
+    return iv
+
+
 def _normalise_exclude_slug(raw: str, *, store: Any) -> str | None:
     """Coerce one ``exclude=`` entry to a bare paper slug.
 
@@ -662,12 +689,26 @@ class PaperHandler(Handler):
         page: int = 1,
         exclude: list[str] | None = None,
         mode: str | None = None,
+        after: int | str | None = None,
+        before: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",
                 next="search(kind='paper', q='your query')",
+            )
+
+        # Publish-date filter: ``after`` / ``before`` are inclusive
+        # publication-year bounds (the corpus stores year, not full
+        # dates). Validate at the agent boundary so a bad bound is a
+        # clean error rather than zero silent hits.
+        year_from = _coerce_search_year(after, "after")
+        year_to = _coerce_search_year(before, "before")
+        if year_from is not None and year_to is not None and year_from > year_to:
+            raise BadInput(
+                f"after={year_from} is later than before={year_to}",
+                next="search(kind='paper', q='…', after=2019, before=2023)",
             )
 
         # Validate the filter at the agent boundary. Same canonical-form
@@ -748,7 +789,33 @@ class PaperHandler(Handler):
             offset=search_offset,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids or None,
+            year_from=year_from,
+            year_to=year_to,
         )
+
+        # When a publish-date filter is active, count papers that match
+        # the query but have NO year — they're silently dropped by the
+        # range predicate. Surfacing the count keeps an empty/short
+        # year-range result from reading as "nothing exists" when the
+        # real cause is missing metadata (the corpus has many such rows).
+        year_notice = ""
+        if year_from is not None or year_to is not None:
+            omitted = self.store.count_paper_yearless_matches(
+                q=q,
+                scope_ref_id=scope_ref_id,
+                tags=normalized_tags,
+                exclude_ref_ids=exclude_ref_ids or None,
+            )
+            if omitted:
+                lo = str(year_from) if year_from is not None else "…"
+                hi = str(year_to) if year_to is not None else "…"
+                year_notice = (
+                    f"\n\n⚠ {omitted} matching paper(s) omitted — no publication "
+                    f"year on record, so the {lo}..{hi} filter can't place them. "
+                    "Fix metadata via /papers/triage, or drop after=/before= to "
+                    "include them."
+                )
+
         if not hits:
             # Use the canonical Next: block shape rather than an
             # inline ``next: ...`` prose line. The critic rules
@@ -806,7 +873,7 @@ class PaperHandler(Handler):
                         ),
                     ]
                 )
-            return Response(body=body)
+            return Response(body=body + year_notice)
 
         # Salience: heat the chunks this page surfaced (block-level).
         # One set-based bump; no-op for dream-actor reads.
@@ -886,7 +953,7 @@ class PaperHandler(Handler):
             table_rows,
             schema=["handle", "chunk_keywords"],
         )
-        body = head + "\n\n" + rendered_table
+        body = head + year_notice + "\n\n" + rendered_table
 
         # Pagination affordance — when the lexical total exceeds what
         # we returned, surface the narrow-with-scope path explicitly.

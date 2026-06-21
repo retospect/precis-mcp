@@ -253,6 +253,41 @@ def test_unknown_view_rejected_with_options(handler: TodoHandler) -> None:
         handler.search(view="frobnicate")
 
 
+# ── view='raw' (universal debug view) ─────────────────────────────
+
+
+def test_raw_view_dumps_meta_and_columns(handler: TodoHandler) -> None:
+    r = handler.put(
+        text="Recurring watch.",
+        tags=["level:recurring"],
+        meta={"executor": "claude_inproc", "schedule": {"every": "1h"}},
+    )
+    rid = _id_of(r.body)
+    out = handler.get(id=rid, view="raw")
+    # Behavioural meta keys — invisible in the default render — appear here.
+    assert "executor" in out.body
+    assert "claude_inproc" in out.body
+    # The schedule (canonicalised to cron at write time) is visible too.
+    assert "schedule" in out.body
+    assert "cron" in out.body
+    # Scalar columns + title are present.
+    assert f"id: {rid}" in out.body
+    assert "kind: todo" in out.body
+    assert "Recurring watch." in out.body
+
+
+def test_raw_view_in_unknown_view_options(handler: TodoHandler) -> None:
+    """The 'unknown view' error now advertises 'raw' (it is a base view),
+    so an agent that guessed a bad view name has a working recovery path."""
+    from precis.errors import Unsupported
+
+    r = handler.put(text="A todo.")
+    rid = _id_of(r.body)
+    with pytest.raises(Unsupported) as exc:
+        handler.get(id=rid, view="frobnicate")
+    assert "raw" in (exc.value.options or [])
+
+
 def test_doable_excludes_child_failed_parents(
     handler: TodoHandler, store: Store
 ) -> None:

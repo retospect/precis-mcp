@@ -445,6 +445,10 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     if project_block:
         parts.append("")
         parts.append(project_block)
+    draft_block = _render_draft_identity(store, ref_id)
+    if draft_block:
+        parts.append("")
+        parts.append(draft_block)
     parts.append("")
     parts.append("## Body")
     parts.append(body or "(empty)")
@@ -493,6 +497,53 @@ def _render_project_brief(store: Store, ref_id: int) -> str:
         return ""
     slug = workspace.project_tag or "project"
     return f"## Project context ({slug})\n\n{brief}"
+
+
+def _render_draft_identity(store: Store, ref_id: int) -> str:
+    """Tell the agent *which draft it is editing*, when this todo's
+    project owns one (a ``draft-of`` link from the draft to any node in
+    this todo's ancestry — the link sits on the project root, so we walk
+    parents up from the current ref).
+
+    Without this an editor agent has no told-to-it answer for "what draft
+    am I in?", and reaches for awkward workarounds — e.g. searching the
+    corpus for one of its own chunk handles. Naming the draft + its id up
+    front removes that whole class of confusion and points at the read /
+    search calls. No-op when no draft is bound to this subtree.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            WITH RECURSIVE anc AS (
+                SELECT ref_id, parent_id FROM refs WHERE ref_id = %s
+                UNION ALL
+                SELECT r.ref_id, r.parent_id
+                  FROM refs r JOIN anc a ON r.ref_id = a.parent_id
+            )
+            SELECT l.src_ref_id, dr.title,
+                   (SELECT id_value FROM ref_identifiers ri
+                     WHERE ri.ref_id = l.src_ref_id AND ri.id_kind = 'cite_key'
+                     LIMIT 1) AS slug
+              FROM links l JOIN refs dr ON dr.ref_id = l.src_ref_id
+             WHERE l.relation = 'draft-of'
+               AND l.dst_ref_id IN (SELECT ref_id FROM anc)
+               AND dr.deleted_at IS NULL
+             LIMIT 1
+            """,
+            (ref_id,),
+        ).fetchone()
+    if not row:
+        return ""
+    _src, title, slug = row
+    ident = slug or _src
+    return (
+        f"## Draft\n\n"
+        f"You are editing draft **{title}** (`id={ident}`). Read it with "
+        f"`get(kind='draft', id='{ident}')` (outline) and `get(id='¶<handle>')` "
+        f"(one chunk); search within it via "
+        f"`search(kind='draft', q='…', scope='{ident}')`. Address chunks by "
+        f"their `¶handle`; cross-reference by embedding `[¶<handle>]` in prose."
+    )
 
 
 def _render_anchor_context(store: Store, ref_id: int) -> str:

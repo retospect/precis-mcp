@@ -155,6 +155,29 @@ class DraftMixin:
 
     # -- lookups -------------------------------------------------------------
 
+    def draft_subtree_chunk_ids(self, handle: str) -> list[int]:
+        """Chunk ids of the subtree rooted at ``handle`` — the chunk
+        itself plus all live descendants. Empty when the handle is
+        unknown. Used to scope draft search to one section."""
+        chunk = self.get_draft_chunk(handle)
+        if chunk is None:
+            return []
+        with self.pool.connection() as conn:
+            return [chunk.chunk_id, *self._descendant_ids(conn, chunk.chunk_id)]
+
+    def draft_handles_for(self, chunk_ids: list[int]) -> dict[int, str]:
+        """Map ``chunk_id → ¶-less handle`` for a set of draft chunks —
+        search hits carry ``chunk_id`` (``Block.id``) but not the draft
+        handle (which lives in ``chunks.handle``, not ``meta->>'slug'``)."""
+        if not chunk_ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, handle FROM chunks WHERE chunk_id = ANY(%s)",
+                (list(chunk_ids),),
+            ).fetchall()
+        return {int(r[0]): str(r[1]) for r in rows}
+
     def get_draft_chunk(self, handle: str) -> DraftChunk | None:
         """A single live-or-retired draft chunk by its handle."""
         with self.pool.connection() as conn:
@@ -564,10 +587,21 @@ class DraftMixin:
                 raise ValueError(f"chunk {handle!r} is retired")
             if base_sha is not None:
                 current = content_sha(row[5])
-                if current != base_sha:
+                # Prefix match: the read path now shows a 12-char sha
+                # prefix, but a full 64-char digest (older callers) is
+                # still a valid prefix. Normalise case; reject a token too
+                # short to be a meaningful guard.
+                nb = base_sha.strip().lower()
+                if len(nb) < 8:
+                    raise BadInput(
+                        f"base_sha {base_sha!r} too short — need ≥8 hex chars "
+                        "(the sha prefix shown on read)",
+                        next=f"get(kind='draft', id='¶{_bare(handle)}') for the sha",
+                    )
+                if not current.startswith(nb):
                     raise BadInput(
                         f"¶{_bare(handle)} changed since you read it "
-                        f"(you read {base_sha[:8]}…, now {current[:8]}…) — "
+                        f"(you read {nb[:8]}…, now {current[:8]}…) — "
                         "re-read and retry so you don't clobber the newer edit",
                         next=(
                             f"get(kind='draft', id='¶{_bare(handle)}') for the "

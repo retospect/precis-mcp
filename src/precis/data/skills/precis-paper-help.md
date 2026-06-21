@@ -81,6 +81,24 @@ search(kind='paper', q='photocatalytic NOx reduction', page=3, page_size=20)
 `page=1` is the default. Bump `page=` to walk results; `page_size=` sets
 the page size (default 10, max 100).
 
+## Filter papers by publication year
+## Find recent papers / papers from a date range
+## Only papers published after / before a year
+
+```python
+search(kind='paper', q='solid-state batteries', after=2019)              # 2019→present
+search(kind='paper', q='solid-state batteries', before=2015)             # up to 2015
+search(kind='paper', q='solid-state batteries', after=2019, before=2023) # 2019–2023
+```
+
+`after=` / `before=` are **inclusive publication-year bounds** (the
+corpus stores year, not full dates — `after=2019` means 2019 and later,
+`before=2023` means 2023 and earlier). Paper kind only. Papers with **no
+year on record are excluded** from a year-filtered search; when that
+happens the response appends a `⚠ N matching paper(s) omitted` line so a
+sparse result isn't mistaken for "nothing exists" — fix missing years via
+`/papers/triage`, or drop `after=`/`before=` to include them.
+
 ## Read a paper or one of its sections
 ## Open a paper's TOC to see what's in it
 ## I have a slug — what's in this paper?

@@ -65,7 +65,7 @@ _FILLER_FIRST_LINE = re.compile(
 # additional views should override `get()` to layer their dispatch
 # on top, or — when we land per-kind view registries — extend
 # this tuple via a class-level hook.
-_BASE_VIEWS: tuple[str, ...] = ("links", "log")
+_BASE_VIEWS: tuple[str, ...] = ("links", "log", "raw")
 
 # Summary budget for the TOON list view's first-line cell. Memories
 # written before the SOUL's first-line discipline landed are often a
@@ -256,6 +256,10 @@ class NumericRefHandler(Handler):
                 # ``_event_log_source()`` to customise.
                 return render_event_log(
                     self.store, ref.id, source=self._event_log_source()
+                )
+            if view == "raw":
+                return Response(
+                    body=self._render_raw(ref, self.store.tags_for(ref.id))
                 )
         tags = self.store.tags_for(ref.id)
         body = self._render_one(ref, tags)
@@ -993,6 +997,50 @@ class NumericRefHandler(Handler):
         "cited-by": "cites",
         "retracted-by": "retracts",
     }
+
+    def _render_raw(self, ref: Ref, tags: list[Tag]) -> str:
+        """``view='raw'`` — the verbatim record: scalar columns + the full
+        ``meta`` JSON + tags + links. The pretty ``_render_one`` is a
+        curated summary; ``raw`` is the debug view that hides nothing.
+
+        The motivating gap: a todo's *behaviour* lives in ``meta``
+        (``executor`` → dispatch, ``schedule`` → recurring cadence,
+        ``auto_check`` → the wait condition, ``workspace`` →
+        path/format/brief, ``anchor`` → the draft chunk a change-request
+        targets) and none of it surfaces in the default render or in
+        ``links`` / ``log``. Two todos can render byte-identical yet behave
+        completely differently; ``raw`` is the read path to tell them
+        apart. Universal across numeric-ref kinds — meta is invisible on
+        every kind, not just ``todo``.
+        """
+        import json
+
+        out = [f"# raw {ref.kind} {ref.public_id}", ""]
+        # Scalar columns — only the ones that are set, to keep it terse.
+        scalars: list[tuple[str, Any]] = [
+            ("id", ref.id),
+            ("kind", ref.kind),
+            ("slug", ref.slug),
+            ("parent_id", ref.parent_id),
+            ("prio", ref.prio),
+            ("provider", ref.provider),
+            ("set_by", ref.set_by),
+            ("year", ref.year),
+            ("created_at", ref.created_at),
+            ("updated_at", ref.updated_at),
+            ("deleted_at", ref.deleted_at),
+            ("auto_refresh_days", ref.auto_refresh_days),
+            ("refreshed_at", ref.refreshed_at),
+        ]
+        out += [f"{k}: {v}" for k, v in scalars if v is not None]
+        out += ["", "title:", ref.title]
+        if tags:
+            out += ["", "tags: " + " ".join(str(t) for t in tags)]
+        out += ["", "meta:"]
+        out.append(json.dumps(ref.meta or {}, indent=2, sort_keys=True, default=str))
+        body = "\n".join(out)
+        body += self._render_links_section(ref)
+        return body
 
     def _render_links_section(self, ref: Ref) -> str:
         """F8: render the Links: TOON sub-section for a single-ref get.

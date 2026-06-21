@@ -145,6 +145,34 @@ search(kind='todo', q='reviewer', tags=['STATUS:open', 'PRIO:high'])
 `tags=` filters with AND semantics. Combine with `q=` to rank
 inside the filtered set.
 
+## Inspect a todo's full record (debug `meta`)
+## Why isn't this todo dispatching / firing / unblocking?
+## See the executor / schedule / auto_check / workspace
+
+```python
+get(kind='todo', id=40266, view='raw')
+```
+
+The default `get(kind='todo', id=N)` shows the curated summary —
+`parent`, `prio`, `title`, `tags`. A todo's **behaviour**, though, is
+driven by `meta`, which that view hides. `view='raw'` dumps the
+verbatim record: every set column **plus the full `meta` JSON** plus
+tags and links. Reach for it when a todo isn't behaving and the default
+render looks fine — two todos can render identically yet behave
+completely differently. The meta keys that matter:
+
+| meta key | drives | symptom when wrong |
+|---|---|---|
+| `executor` | `dispatch` minting a `kind='job'` | todo never dispatches |
+| `schedule` | the `level:recurring` umbrella's cadence (cron / `every:`) | watch never fires |
+| `auto_check` | the wait-for condition on a leaf | leaf stuck "waiting" |
+| `workspace` | project `path` / `format` / `brief` | wrong output dir / no brief |
+| `anchor` | the draft `¶handle` a change-request targets | edit lands on the wrong chunk |
+
+`raw` is **universal** — it works on every numeric-ref kind (`memory`,
+`gripe`, `job`, `finding`, …), not just `todo`, so `meta` is always
+inspectable.
+
 ## Delete a todo
 ## Remove a todo I no longer want
 

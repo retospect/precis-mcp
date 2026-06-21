@@ -2,7 +2,7 @@
 id: precis-draft-help
 title: precis — the editable document kind
 summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with ¶/§/[[ ]] references
-applies-to: get/search/put/edit/delete/tag/link (kind='draft')
+applies-to: get/search/put/edit/delete (kind='draft')
 status: active
 ---
 
@@ -14,9 +14,45 @@ LaTeX/PDF/Word. Unlike a `paper` (frozen), a draft's chunks are mutable
 in structure (reorder/reparent) and in text. **One draft per project**;
 a snapshot/backup is a *freeze* (see below).
 
-Everything goes through the normal seven verbs — **no new verbs**:
-`put` (create / add a chunk), `edit` (change text **or** move), `get`
-(outline / verbatim), `delete` (soft-retire), plus `link`/`tag`/`search`.
+Everything goes through five verbs — **no new verbs**: `put` (create /
+add a chunk), `edit` (change text **or** move), `get` (outline /
+verbatim), `delete` (soft-retire), `search` (lexical / semantic over
+prose). A draft is **not** taggable or linkable as a whole (`tag`/`link`
+on `kind='draft'` raise `Unsupported`) — cross-references are markdown
+refs embedded in prose, and the per-chunk autolinker materialises a
+`related-to` backlink for each (see *References in prose*).
+
+## Search a draft (lexical / semantic)
+
+```python
+search(kind='draft', q='direct air capture')                  # across ALL drafts
+search(kind='draft', q='direct air capture', scope='test01')  # one draft
+search(kind='draft', q='amine sites', scope='¶jUcyv8')        # subtree under a heading
+search(kind='draft', q='capture', mode='lexical')             # verbatim / keyword
+search(kind='draft', q='capture', mode='semantic')            # by meaning (default: hybrid)
+search(kind='draft', q='methods', headings_only=True)         # jump to a section heading
+```
+
+`mode=` is the same axis as everywhere else: `lexical` (exact / keyword),
+`semantic` (meaning), default `hybrid` (both, fused). `scope=` narrows to
+one draft (slug) or one section (a `¶handle` → that chunk's subtree); omit
+it to search every draft. `search(id='¶handle', q='…')` is accepted too —
+the `¶` already names the kind and the chunk is the scope. Each hit shows
+its `draft:<slug>` and `¶handle`; read one with `get(id='¶<handle>')`.
+
+## Find a project's draft
+
+A draft carries **no `project:` tag** — that tag lives on the project
+*todo*, and the draft is bound to it 1:1 by a `draft-of` link. So:
+
+```python
+get(kind='draft')                         # list ALL drafts (no project filter yet)
+get(kind='todo', id='<project>', view='links')   # → follow the draft-of link to the slug
+```
+
+To go project → draft, resolve the project todo and follow its
+`draft-of` link. (The planner prompt also tells an editor agent which
+draft it is in, so this is rarely needed mid-edit.)
 
 ## Addressing — opaque handles, never numbers
 
@@ -35,16 +71,16 @@ project's `meta.workspace.brief`; the draft carries `path`/`format`.
 
 ```python
 # 1 — create the draft (returns the draft + its title heading ¶t0)
-put(kind='draft', name='nanotrans', project='<project-todo-id>',
+put(kind='draft', id='nanotrans', project='<project-todo-id>',
     title='Nanoscale Transistors',
     meta={'workspace': {'path': 'projects/nanotrans', 'format': 'tex'}})
 
 # 2 — add a section heading after the title
-put(kind='draft', ref='nanotrans', chunk_kind='heading',
+put(kind='draft', id='nanotrans', chunk_kind='heading',
     text='Introduction', at={'after': '¶t0'})       # → returns ¶k7m2aQ
 
 # 3 — a paragraph under it
-put(kind='draft', ref='nanotrans', chunk_kind='paragraph',
+put(kind='draft', id='nanotrans', chunk_kind='paragraph',
     text='Nanoscale transistors …', at={'into': '¶k7m2aQ', 'last': True})
 ```
 
@@ -58,7 +94,7 @@ boundaries (blank lines; lists/code/tables stay whole) and returns one
 handle per chunk:
 
 ```python
-put(kind='draft', ref='nanotrans', chunk_kind='paragraph',
+put(kind='draft', id='nanotrans', chunk_kind='paragraph',
     text='First para.\n\nSecond para.', at={'after': '¶k7m2aQ'})
 # → returns [¶aa1, ¶aa2]
 ```

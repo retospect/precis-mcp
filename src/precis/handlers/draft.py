@@ -33,6 +33,7 @@ from precis.handlers._slug_ref_shared import (
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._draft_ops import content_sha
+from precis.utils.embed_query import query_vec_for
 
 log = logging.getLogger(__name__)
 
@@ -47,12 +48,14 @@ class DraftHandler(Handler):
             "Editable, chunk-native document (ADR 0033). put creates a "
             "draft (project=, born with a title heading) or adds a chunk "
             "(chunk_kind=, text=, at={first|last|into|before|after}); get "
-            "lists / outlines / reads a chunk window ¶handle-B+A; edit "
-            "changes text or moves (move=); delete soft-retires "
-            "(mode=cascade|promote). Chunks addressed by ¶handle. See "
-            "precis-draft-help."
+            "lists / outlines / reads a chunk window ¶handle-B+A; search "
+            "(q=, mode=lexical|semantic|hybrid, scope=slug|¶handle, "
+            "headings_only=) over prose; edit changes text or moves "
+            "(move=); delete soft-retires (mode=cascade|promote). Chunks "
+            "addressed by ¶handle. See precis-draft-help."
         ),
         supports_get=True,
+        supports_search=True,
         supports_put=True,
         supports_edit=True,
         supports_delete=True,
@@ -66,6 +69,7 @@ class DraftHandler(Handler):
         if hub.store is None:
             raise InitError("draft: store required")
         self.store = hub.store
+        self.embedder = hub.embedder
 
     # ── get ──────────────────────────────────────────────────────────
 
@@ -88,6 +92,96 @@ class DraftHandler(Handler):
                 next="view='toc' for the heading skeleton, or omit for the outline",
             )
         return self._render_outline(s, ref)
+
+    # ── search: lexical / semantic over draft chunks ─────────────────
+
+    def search(  # type: ignore[override]
+        self,
+        *,
+        q: str | None = None,
+        scope: str | int | None = None,
+        id: str | int | None = None,
+        mode: str | None = None,
+        headings_only: bool = False,
+        page_size: int = 10,
+        page: int = 1,
+        **_kw: Any,
+    ) -> Response:
+        """Search draft prose. ``mode='lexical'`` is verbatim/keyword,
+        ``mode='semantic'`` is by meaning, default ``hybrid`` fuses both.
+        Scope: a ``¶handle`` searches the subtree under that chunk, a
+        draft slug searches that whole draft, nothing searches every
+        draft. ``headings_only=True`` restricts hits to section headings
+        (a semantic TOC jump)."""
+        if q is None or not str(q).strip():
+            raise BadInput(
+                "search(kind='draft') requires q=",
+                next="search(kind='draft', q='topic', mode='semantic')",
+            )
+        q = str(q)
+        # ``id='¶…'`` is accepted as a scope alias — the sigil already
+        # pinned kind='draft', and an agent naturally points search at the
+        # chunk it is reading.
+        raw_scope = next(
+            (str(c).strip() for c in (scope, id) if c is not None and str(c).strip()),
+            None,
+        )
+        scope_ref_id: int | None = None
+        chunk_ids: list[int] | None = None
+        where = "all drafts"
+        if raw_scope:
+            if raw_scope.startswith("¶"):
+                chunk_ids = self.store.draft_subtree_chunk_ids(raw_scope)
+                if not chunk_ids:
+                    raise NotFound(f"draft chunk {raw_scope} not found")
+                root = self.store.get_draft_chunk(raw_scope)
+                scope_ref_id = int(root.ref_id) if root else None
+                where = f"subtree {raw_scope}"
+            else:
+                ref = resolve_live_slug_ref(self.store, kind="draft", id=raw_scope)
+                scope_ref_id = ref.id
+                where = f"draft {raw_scope!r}"
+        chunk_kinds = ["heading"] if headings_only else None
+        query_vec = query_vec_for(self.embedder, q, mode)
+        offset = max(0, (int(page) - 1) * int(page_size))
+        hits = self.store.search_blocks(
+            q=q,
+            query_vec=query_vec,
+            mode=mode,
+            kind="draft",
+            scope_ref_id=scope_ref_id,
+            chunk_ids=chunk_ids,
+            chunk_kinds=chunk_kinds,
+            limit=page_size,
+            offset=offset,
+        )
+        return self._render_search(
+            hits, q=q, where=where, headings_only=headings_only
+        )
+
+    def _render_search(
+        self, hits: list[Any], *, q: str, where: str, headings_only: bool
+    ) -> Response:
+        noun = "heading" if headings_only else "chunk"
+        if not hits:
+            return Response(
+                body=(
+                    f"no draft {noun}s match {q!r} in {where}\n\n"
+                    "Next: widen with mode='semantic', drop scope=, or "
+                    "drop headings_only to search body text too."
+                )
+            )
+        handles = self.store.draft_handles_for([b.id for b, _r, _s in hits])
+        lines = [f"# {len(hits)} draft {noun} hit(s) for {q!r} — {where}\n"]
+        for block, ref, _score in hits:
+            handle = handles.get(block.id, "?")
+            draft = ref.slug or ref.id
+            first = (block.text or "").strip().splitlines()[0] if block.text else ""
+            if len(first) > 90:
+                first = first[:89] + "…"
+            lines.append(f"draft:{draft}  ¶{handle}  [{block.chunk_kind}] {first}")
+        lines.append("\nNext: get(id='¶<handle>') to read any hit in full.")
+        return Response(body="\n".join(lines))
 
     # ── put: create a draft, or add a chunk ──────────────────────────
 
@@ -351,11 +445,14 @@ class DraftHandler(Handler):
             window = [chunk]
         else:
             window = order[max(0, idx - before) : idx + after + 1]
-        # ``sha:`` is the chunk's content_sha — pass it back as
-        # ``edit(base_sha=…)`` for an optimistic edit that won't clobber a
-        # change that landed since this read.
+        # ``sha:`` is a short prefix of the chunk's content_sha — pass it
+        # back as ``edit(base_sha=…)`` for an optimistic edit that won't
+        # clobber a change that landed since this read. 12 hex chars (48
+        # bits) is ample to detect a change to one chunk; the full digest
+        # is needlessly long on every line. ``edit`` matches by prefix, so
+        # a full 64-char sha still works.
         blocks = [
-            f"¶{c.handle}  [{c.chunk_kind}]  sha:{content_sha(c.text)}\n{c.text}"
+            f"¶{c.handle}  [{c.chunk_kind}]  sha:{content_sha(c.text)[:12]}\n{c.text}"
             for c in window
         ]
         return Response(body="\n\n".join(blocks))
