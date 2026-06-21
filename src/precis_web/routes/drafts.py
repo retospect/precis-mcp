@@ -228,6 +228,9 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
     anc = _ancestor_headings(chunk_objs)
     requests = _requests_by_handle(store, [c.handle for c in chunk_objs])
     views = _block_views(store, ref.id)
+    # Recall highlight: every occurrence of a defined abbreviation gets a
+    # hover-definition in the reader (one dict for the whole draft).
+    abbrevs = store.defined_abbrevs(ref.id)
     rows: list[dict[str, Any]] = []
     for c in chunk_objs:
         v = views.get(c.handle, {})
@@ -240,6 +243,7 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
                 "depth": c.depth,
                 "is_heading": c.chunk_kind == "heading",
                 "ancestors": anc.get(c.handle, []),
+                "abbrevs": abbrevs,
                 "refs": _ref_chips(c.text),
                 "requests": requests.get(c.handle, []),
                 # view slider: summary falls back to keywords → first line;

@@ -339,12 +339,57 @@ def _render_authoring(addr: str) -> str:
     return escape(f"[[{addr}]]")
 
 
+#: Splits rendered HTML into tag (``<…>``) vs text runs so the abbrev
+#: highlighter only ever rewrites the text between tags — never inside an
+#: attribute, href, or tag name.
+_TAG_SPLIT = re.compile(r"(<[^>]+>)")
+
+#: ``<abbr>`` styling for a recalled abbreviation: a dotted underline +
+#: help cursor, the native ``title`` carrying the definition (zero-JS
+#: hover tooltip — the browser does the work).
+_ABBR_CLS = "cursor-help underline decoration-dotted decoration-slate-400"
+
+
+def _highlight_abbrevs(html: str, abbrevs: dict[str, str]) -> str:
+    """Wrap each occurrence of a known abbreviation ``short`` (in the
+    *text* runs of already-rendered HTML) in an ``<abbr title='long'>`` so
+    hovering it shows the definition.
+
+    Operates on the final HTML: splits off ``<…>`` tag runs and only
+    rewrites the plain-text runs between them, so an abbreviation that
+    happens to look like part of an attribute / handle is never touched.
+    Longest shorts first so ``RNA-seq`` wins over ``RNA``. The matched
+    text is already HTML-escaped; the definition is attribute-escaped here.
+    """
+    if not abbrevs:
+        return html
+    shorts = sorted((s for s in abbrevs if s), key=len, reverse=True)
+    if not shorts:
+        return html
+    pat = re.compile(
+        r"(?<![\w-])(" + "|".join(re.escape(s) for s in shorts) + r")(?![\w-])"
+    )
+
+    def _wrap(m: re.Match[str]) -> str:
+        short = m.group(1)
+        return (
+            f'<abbr class="{_ABBR_CLS}" title="{escape(abbrevs[short])}">{short}</abbr>'
+        )
+
+    parts = _TAG_SPLIT.split(html)
+    for i, part in enumerate(parts):
+        if not part.startswith("<"):
+            parts[i] = pat.sub(_wrap, part)
+    return "".join(parts)
+
+
 def linkify_refs(
     value: str,
     footnotes: dict[tuple[str, str, str | None], int] | None = None,
     *,
     markdown: bool = False,
     compact: bool = False,
+    abbrevs: dict[str, str] | None = None,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
 
@@ -370,9 +415,10 @@ def linkify_refs(
     """
     if not value:
         return Markup("")
-    return Markup(
-        _linkify_prose(str(value), footnotes, markdown=markdown, compact=compact)
-    )
+    html = _linkify_prose(str(value), footnotes, markdown=markdown, compact=compact)
+    if abbrevs:
+        html = _highlight_abbrevs(html, abbrevs)
+    return Markup(html)
 
 
 def _footnote_marker(n: int) -> str:

@@ -198,3 +198,33 @@ def test_abbrev_loop_hint_define_and_silence(draft: DraftHandler, hub: Hub) -> N
     # re-edit the paragraph → both now resolved, no abbrev hint
     r2 = draft.edit(id=f"¶{para_h}", text="We graft KSJW onto the MOF again.")
     assert "undefined abbreviation" not in r2.body
+
+
+def test_defined_abbrevs_collects_terms_and_inline(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """defined_abbrevs returns {short: long} from term chunks AND inline
+    `Long Form (ABBR)` first-uses; an explicit term wins on a clash."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.store.get_ref(kind="draft", id="nt")
+    title_h = _order(hub, "nt")[0].handle
+
+    # inline definition in prose → picked up by Schwartz-Hearst
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="We use polyethyleneimine (PEI) as the amine.",
+        at={"after": "¶" + title_h},
+    )
+    # an explicit term chunk for a different abbrev
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="metal-organic framework",
+        meta={"short": "MOF"},
+    )
+
+    abb = hub.store.defined_abbrevs(ref.id)
+    assert abb["PEI"] == "polyethyleneimine"
+    assert abb["MOF"] == "metal-organic framework"

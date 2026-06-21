@@ -46,7 +46,7 @@ class DraftFakeStore(FakeStore):
             _chunk(
                 "BBBBBB",
                 "paragraph",
-                "Intro; see [the title](¶AAAAAA) and paper:smith2024.",
+                "Intro; see [the title](¶AAAAAA) and paper:smith2024. Uses PEI.",
                 1,
                 chunk_id=2,
                 parent_chunk_id=1,
@@ -86,6 +86,9 @@ class DraftFakeStore(FakeStore):
             (SimpleNamespace(id=1), _DRAFT, 0.10),
             (SimpleNamespace(id=2), _DRAFT, 0.42),
         ]
+
+    def defined_abbrevs(self, ref_id):
+        return {"PEI": "polyethyleneimine"}
 
     def draft_toc(self, ref_id, *, root_handle=None):
         return [
@@ -331,3 +334,12 @@ def test_find_semantic_ranked(tmp_path) -> None:
     assert body["mode"] == "semantic"
     # search_blocks_semantic ranked chunk 1 (AAAAAA) before chunk 2 (BBBBBB)
     assert body["handles"] == ["AAAAAA", "BBBBBB"]
+
+
+def test_reader_highlights_defined_abbrev(draft_client: TestClient) -> None:
+    """Recall: a defined abbreviation (PEI) is wrapped in an <abbr> with
+    its definition as the hover title, in the rendered body."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "<abbr" in r.text and 'title="polyethyleneimine"' in r.text
+    assert ">PEI</abbr>" in r.text

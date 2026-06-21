@@ -466,3 +466,38 @@ def test_render_markdown_escapes_unknown_html() -> None:
 def test_ref_anchor_opens_new_tab() -> None:
     out = str(linkify_refs("paper:kong24~2"))
     assert 'target="_blank"' in out and 'rel="noopener"' in out
+
+
+def test_abbrev_highlight_wraps_known_tokens() -> None:
+    """A defined abbreviation is wrapped in <abbr title='long'>; the
+    longest short wins; word boundaries are respected."""
+    out = str(
+        linkify_refs(
+            "PEI loaded; PEINE is different; mention PEI again.",
+            abbrevs={"PEI": "polyethyleneimine"},
+        )
+    )
+    assert out.count("<abbr") == 2  # two standalone PEI, not the PEINE substring
+    assert 'title="polyethyleneimine"' in out and ">PEI</abbr>" in out
+    assert "PEINE" in out  # untouched (PEI is not a whole token there)
+
+
+def test_abbrev_highlight_skips_tags_and_attrs() -> None:
+    """The pass only rewrites text runs — never inside an anchor's href /
+    attributes (so an abbrev that collides with a slug is safe)."""
+    out = str(
+        linkify_refs(
+            "see paper:PEI~2 then PEI",
+            compact=True,
+            abbrevs={"PEI": "polyethyleneimine"},
+        )
+    )
+    # the slug PEI inside the citation href is NOT wrapped …
+    assert "/r/paper/PEI" in out
+    # … but the bare PEI in prose IS.
+    assert ">PEI</abbr>" in out
+
+
+def test_abbrev_highlight_noop_without_dict() -> None:
+    out = str(linkify_refs("PEI everywhere", abbrevs=None))
+    assert "<abbr" not in out

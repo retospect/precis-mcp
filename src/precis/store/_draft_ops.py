@@ -737,6 +737,34 @@ class _AbbrevMixin:
             known |= set(_sh_find(prow[0]).keys())
         return sorted(cand - known)
 
+    def defined_abbrevs(self, ref_id: int) -> dict[str, str]:
+        """``{short: long}`` for every abbreviation **defined** in this
+        draft — explicit ``term`` chunks (``meta.short`` → chunk text) plus
+        inline ``Long Form (ABBR)`` first-uses found anywhere in the prose
+        (Schwartz-Hearst). Explicit terms win on a clash. Drives the
+        reader's recall highlight: every occurrence of a known ``short``
+        gets a hover-definition. Empty when nothing is defined yet."""
+        from precis.utils.abbreviations import find as _sh_find
+
+        out: dict[str, str] = {}
+        with self.pool.connection() as conn:
+            prow = conn.execute(
+                "SELECT string_agg(text, ' ') FROM chunks WHERE ref_id = %s "
+                "AND ord >= 0 AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            # Inline pairs first; explicit term chunks overwrite them.
+            if prow and prow[0]:
+                out.update(_sh_find(prow[0]))
+            for short, long in conn.execute(
+                "SELECT meta->>'short', text FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'term' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall():
+                if short and (long or "").strip():
+                    out[str(short)] = str(long).strip()
+        return out
+
     def add_abbrev_ignore(self, ref_id: int, tokens: list[str]) -> None:
         """Add ``tokens`` to ``refs.meta.abbrev_ignore`` (deduped) — the
         LLM's "not an abbreviation" silence valve."""

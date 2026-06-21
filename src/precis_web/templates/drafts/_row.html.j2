@@ -18,7 +18,7 @@
               class="mt-0.5 font-mono text-xs text-slate-400 hover:text-slate-700 select-none"
               x-text="isC('{{ r.handle }}') ? '▸' : '▾'"></button>
       <h3 class="font-semibold text-slate-900
-                 {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs(markdown=True, compact=True) }}</h3>
+                 {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</h3>
       {# Run a standard reviewer on this heading's subtree (the doc root
          heading → whole doc). Files an anchored review-todo → plan_tick. #}
       <div class="relative ml-auto shrink-0" x-data="{ rev: false }" @click.outside="rev = false">
@@ -41,11 +41,11 @@
        keywords. Headings (above) always show their title. #}
     <div x-show="view === 'body'">
       {% if r.chunk_kind in ('aside', 'box') %}
-      <div class="rounded-md border-l-4 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True) }}</div>
+      <div class="rounded-md border-l-4 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</div>
       {% elif r.chunk_kind in ('listing', 'code') %}
       <pre class="rounded-md bg-slate-900 text-slate-100 text-xs p-3 overflow-x-auto whitespace-pre-wrap">{{ r.text }}</pre>
       {% else %}
-      <p class="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True) }}</p>
+      <p class="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</p>
       {% endif %}
     </div>
     <p x-show="view === 'summary'" x-cloak class="text-sm italic text-slate-600 break-words">{{ r.summary }}</p>
