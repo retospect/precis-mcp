@@ -77,20 +77,34 @@
        Tasks view focused on the request (its ⚙ job + captured LLM
        transcript), in a new tab. #}
     {% for t in r.requests %}
-    <div class="flex items-start gap-1 rounded border px-1.5 py-0.5
-                {% if t.done %}border-slate-200 bg-slate-50 text-slate-400{% else %}border-amber-200 bg-amber-50{% endif %}">
+    {% set stuck = t.asking or t.failed %}
+    <div class="rounded border px-1.5 py-0.5
+                {% if stuck %}border-rose-300 bg-rose-50{% elif t.done %}border-slate-200 bg-slate-50 text-slate-400{% else %}border-amber-200 bg-amber-50{% endif %}">
+      <div class="flex items-start gap-1">
+        <a href="/r/todo/{{ t.ref_id }}" target="_blank" rel="noopener"
+           class="min-w-0 flex-1 hover:underline" title="open the LLM run for this request">
+          <span class="font-mono text-[10px] uppercase {% if t.done %}text-slate-400{% elif stuck %}text-rose-700{% else %}text-amber-700{% endif %}">{{ t.status }}</span>
+          <span class="{% if not t.done %}text-slate-700{% endif %}{% if t.status == "won't-do" %} line-through{% endif %}">{{ t.title }}</span>
+        </a>
+        {# X to cancel a request that hasn't started yet (no job minted). #}
+        {% if not t.started and not t.done %}
+        <form method="post" action="/drafts/{{ ref.ident }}/todo/{{ t.ref_id }}/delete"
+              onsubmit="return confirm('Delete this change request?')">
+          <button class="text-amber-600 hover:text-rose-600 leading-none"
+                  title="delete this not-yet-started request">×</button>
+        </form>
+        {% endif %}
+      </div>
+      {# Attention: waiting on you (ask-user) or a failed child job — the
+         "it's stuck" signal that was missing on the draft page. #}
+      {% if t.asking %}
       <a href="/r/todo/{{ t.ref_id }}" target="_blank" rel="noopener"
-         class="min-w-0 flex-1 hover:underline" title="open the LLM run for this request">
-        <span class="font-mono text-[10px] uppercase {% if t.done %}text-slate-400{% else %}text-amber-700{% endif %}">{{ t.status }}</span>
-        <span class="{% if not t.done %}text-slate-700{% endif %}{% if t.status == "won't-do" %} line-through{% endif %}">{{ t.title }}</span>
+         class="block text-rose-700 hover:underline" title="open the LLM run to see why it asked">
+        🔔 asks: {{ t.asking }}
       </a>
-      {# X to cancel a request that hasn't started yet (no job minted). #}
-      {% if not t.started and not t.done %}
-      <form method="post" action="/drafts/{{ ref.ident }}/todo/{{ t.ref_id }}/delete"
-            onsubmit="return confirm('Delete this change request?')">
-        <button class="text-amber-600 hover:text-rose-600 leading-none"
-                title="delete this not-yet-started request">×</button>
-      </form>
+      {% elif t.failed %}
+      <a href="/r/todo/{{ t.ref_id }}" target="_blank" rel="noopener"
+         class="block text-rose-700 hover:underline">⚠ failed — open to debug</a>
       {% endif %}
     </div>
     {% endfor %}

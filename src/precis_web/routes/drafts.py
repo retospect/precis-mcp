@@ -158,7 +158,13 @@ def _requests_by_handle(
         "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
         "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) AS status, "
         "  EXISTS (SELECT 1 FROM refs j WHERE j.parent_id = r.ref_id "
-        "          AND j.kind = 'job') AS started "
+        "          AND j.kind = 'job') AS started, "
+        "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
+        "      AND t.value LIKE 'ask-user:%' LIMIT 1) AS asking, "
+        "  EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
+        "      AND t.value LIKE 'child-failed:%') AS failed "
         "FROM refs r "
         "WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
         "  AND r.meta->>'anchor' = ANY(%s)"
@@ -166,9 +172,13 @@ def _requests_by_handle(
     out: dict[str, list[dict[str, Any]]] = {}
     with store.pool.connection() as conn:
         rows = conn.execute(sql, (anchors,)).fetchall()
-    for ref_id, title, anchor, status, started in rows:
+    for ref_id, title, anchor, status, started, asking, failed in rows:
         status = status or "open"
         handle = (anchor or "").lstrip("¶")
+        # ``OPEN:ask-user:<slug>`` → a human-ish question ("see-chunk-0" →
+        # "see chunk 0"). The slug is terse — the full reasoning is in the
+        # job transcript the chip links to.
+        ask = (asking or "").split("ask-user:", 1)[-1].replace("-", " ").strip()
         out.setdefault(handle, []).append(
             {
                 "ref_id": ref_id,
@@ -178,6 +188,9 @@ def _requests_by_handle(
                 # "started" = a plan_tick (or other) job minted; the
                 # X-to-cancel only shows before that.
                 "started": bool(started),
+                # attention: waiting on the user, or a failed child job.
+                "asking": ask,
+                "failed": bool(failed),
             }
         )
     for reqs in out.values():

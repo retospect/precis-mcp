@@ -228,6 +228,14 @@ A change-request `todo` anchored to a handle flows through the normal
 todo tree → dispatch → jobs; the executor decides whether to do it in
 one job or fan out per section.
 
+**If you (the executor) can't complete a request, ask clearly.** When
+you yield an `ask-user:`, write a real question a human can act on, and
+**reference chunks by their `¶handle`** — never a numeric "chunk 0"
+(drafts have no numeric chunk addresses; the reader can't find it). Bad:
+`ask-user:see-chunk-0`. Good: `ask-user: '"remove this para" is anchored
+at ¶MwJjhD (the intro); did you mean ¶MwJjhD or the sibling ¶k7m2aQ?'`.
+The ask surfaces on the draft block as a 🔔, linking to your run.
+
 ## Freeze / snapshot (release + backup)
 
 A *freeze* copies the draft's current chunks into an immutable
