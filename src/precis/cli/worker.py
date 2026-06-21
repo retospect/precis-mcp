@@ -139,6 +139,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "sweeper",
             "quota_check",
             "watch_poll",
+            "news_poll",
+            "briefing",
             "llm_summarize",
         ),
         default=None,
@@ -661,6 +663,45 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_watch_poll_pass)
+
+        # News ingestion (news kind). Walks the news_sources feed
+        # registry, fetches + mints new articles as `news` refs. Like
+        # watch_poll it makes external calls on a cadence, so it's
+        # cron-driven via ``precis worker --only news_poll``, not in the
+        # hot system/agent loop.
+        if _pass_enabled("news_poll"):
+            from precis.workers.news_poll import run_news_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _news_poll_pass(batch_size: int) -> _BatchResult:
+                r = run_news_pass(store)
+                return _BatchResult(
+                    handler="news_poll",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_news_poll_pass)
+
+        # Morning briefing — summarizes recent `news` refs into a dated
+        # digest ref. LLM-backed (summarizer alias), so cron-driven via
+        # ``precis worker --only briefing`` (e.g. a daily launchd tick),
+        # never the hot loop.
+        if _pass_enabled("briefing"):
+            from precis.workers.briefing import run_briefing
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _briefing_pass(batch_size: int) -> _BatchResult:
+                r = run_briefing(store)
+                return _BatchResult(
+                    handler="briefing",
+                    claimed=r["articles"],
+                    ok=1 if r["ref_id"] is not None else 0,
+                    failed=0,
+                )
+
+            ref_passes.append(_briefing_pass)
 
         # Google Patents fall-back fetcher — picks up patents OPS gave up
         # on (or is still 404-ing) and tries patents.google.com once.

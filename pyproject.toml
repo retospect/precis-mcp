@@ -154,6 +154,7 @@ external = [
     "youtube-transcript-api>=1.0",
     "httpx>=0.27",
     "trafilatura>=1.6",  # web page → markdown extractor
+    "feedparser>=6.0",   # RSS/Atom parsing for the news kind / news_poll
 ]
 # Patent kind — EPO Open Patent Services. Free fair-use, OAuth2.
 patent = [

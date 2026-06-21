@@ -776,6 +776,14 @@ def boot(
 
         _gated(WikipediaHandler)
 
+        # News — RSS/Atom article fetch. Like web/wikipedia, httpx +
+        # trafilatura are the only requirements (declared on the
+        # handler); always registers when those are available. The
+        # news_poll worker feeds it from the news_sources registry.
+        from precis.handlers.news import NewsHandler
+
+        _gated(NewsHandler)
+
         # Patent — EPO OPS. ``PatentHandler.spec.requires_env``
         # declares EPO_OPS_CLIENT_KEY / EPO_OPS_CLIENT_SECRET /
         # PRECIS_PATENT_RAW_ROOT, so the kind_gate skips the handler
