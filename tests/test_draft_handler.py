@@ -124,3 +124,43 @@ def test_toc_view_headings_only_numbered_and_subtree(
     sub = draft.get(id="¶" + intro, view="toc").body
     assert "Background" in sub
     assert "Methods" not in sub and "prose body here" not in sub
+
+
+def test_edit_base_sha_blocks_stale_overwrite(draft: DraftHandler, hub: Hub) -> None:
+    """Optimistic concurrency: an edit carrying a base_sha that no longer
+    matches the chunk's content_sha is rejected (ADR 0033 — don't clobber
+    a change that landed since the caller last read)."""
+    from precis.errors import BadInput
+    from precis.store._draft_ops import content_sha
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt", chunk_kind="paragraph", text="original", at={"after": "¶" + title_h}
+    )
+    para_h = _order(hub, "nt")[1].handle
+
+    stale = content_sha("original")
+    # correct base_sha → succeeds, chunk now says v2
+    draft.edit(id=f"¶{para_h}", text="v2", base_sha=stale)
+    assert hub.store.get_draft_chunk(para_h).text == "v2"
+
+    # the same (now stale) base_sha → rejected, text unchanged
+    with pytest.raises(BadInput, match="changed since you read it"):
+        draft.edit(id=f"¶{para_h}", text="v3", base_sha=stale)
+    assert hub.store.get_draft_chunk(para_h).text == "v2"
+
+    # no base_sha → force overwrite still works
+    draft.edit(id=f"¶{para_h}", text="v4")
+    assert hub.store.get_draft_chunk(para_h).text == "v4"
+
+
+def test_chunk_read_surfaces_sha(draft: DraftHandler, hub: Hub) -> None:
+    from precis.store._draft_ops import content_sha
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    out = draft.get(id=f"¶{title_h}").body
+    assert f"sha:{content_sha('T')}" in out

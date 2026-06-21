@@ -32,6 +32,7 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.store._draft_ops import content_sha
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +155,7 @@ class DraftHandler(Handler):
         id: str | int | None = None,
         text: str | None = None,
         move: dict[str, Any] | None = None,
+        base_sha: str | None = None,
         **_kw: Any,
     ) -> Response:
         handle = self._require_chunk_id(id, verb="edit")
@@ -161,7 +163,7 @@ class DraftHandler(Handler):
             c = self.store.move_chunk(handle, move)
             return Response(body=f"moved ¶{c.handle}")
         if text is not None:
-            c = self.store.edit_text(handle, str(text))
+            c = self.store.edit_text(handle, str(text), base_sha=base_sha)
             if c is not None:
                 self._sync_draft_links(c.ref_id)
             return Response(body=f"edited ¶{c.handle}")
@@ -293,7 +295,13 @@ class DraftHandler(Handler):
             window = [chunk]
         else:
             window = order[max(0, idx - before) : idx + after + 1]
-        blocks = [f"¶{c.handle}  [{c.chunk_kind}]\n{c.text}" for c in window]
+        # ``sha:`` is the chunk's content_sha — pass it back as
+        # ``edit(base_sha=…)`` for an optimistic edit that won't clobber a
+        # change that landed since this read.
+        blocks = [
+            f"¶{c.handle}  [{c.chunk_kind}]  sha:{content_sha(c.text)}\n{c.text}"
+            for c in window
+        ]
         return Response(body="\n\n".join(blocks))
 
     def _render_toc(

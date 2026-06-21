@@ -619,6 +619,10 @@ def edit(
     # draft (see precis-draft-help): reorder/reparent a chunk by intent,
     # move={before|after|into:'¶handle'} / {first|last:true}. No text.
     move: dict[str, Any] | None = None,
+    # draft optimistic edit: the content_sha the caller saw when it read
+    # the chunk (shown as ``sha:…`` in get(id='¶handle')). The edit fails
+    # if the chunk changed since, so concurrent editors don't clobber.
+    base_sha: str | None = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -657,6 +661,7 @@ def edit(
         "dry_run": dry_run,
         "pick_candidate": pick_candidate,
         "move": move,
+        "base_sha": base_sha,
     }
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)

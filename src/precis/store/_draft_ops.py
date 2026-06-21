@@ -19,6 +19,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
+from precis.errors import BadInput
 from precis.utils.fractional import key_between, n_keys_between
 from precis.utils.handles import new_handle
 
@@ -462,11 +463,18 @@ class DraftMixin:
         handle: str,
         text: str,
         *,
+        base_sha: str | None = None,
         source: dict[str, Any] | None = None,
     ) -> DraftChunk | None:
         """In-place text edit: bump `content_sha`, log an `edited` event with
         `prev_text`. The handle (and references to it) survive; derived data
-        re-derives on the sha mismatch."""
+        re-derives on the sha mismatch.
+
+        Optimistic concurrency: pass ``base_sha`` (the ``content_sha`` the
+        caller saw when it read the chunk) to fail the edit if the chunk
+        changed underneath it — so two agents editing the same chunk don't
+        silently clobber each other. Omit it for a force-overwrite.
+        """
         sha = content_sha(text)
         with self.tx() as conn:
             row = self._row(conn, handle)
@@ -474,6 +482,18 @@ class DraftMixin:
                 raise ValueError(f"unknown chunk handle {handle!r}")
             if row[6] is not None:
                 raise ValueError(f"chunk {handle!r} is retired")
+            if base_sha is not None:
+                current = content_sha(row[5])
+                if current != base_sha:
+                    raise BadInput(
+                        f"¶{_bare(handle)} changed since you read it "
+                        f"(you read {base_sha[:8]}…, now {current[:8]}…) — "
+                        "re-read and retry so you don't clobber the newer edit",
+                        next=(
+                            f"get(kind='draft', id='¶{_bare(handle)}') for the "
+                            "current text + sha, then edit with the new base_sha="
+                        ),
+                    )
             conn.execute(
                 "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
                 (text, sha, row[0]),
