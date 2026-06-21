@@ -505,20 +505,20 @@ class TodoHandler(NumericRefHandler):
                 project_tag = project_tag_for_path(ws.get("path"))
         if project_tag and (not tags or project_tag not in tags):
             tags = [*(tags or []), project_tag]
-        # Default project/workspace todos to ``LLM:opus`` on create, so a
-        # generated todo actually runs: an untagged todo with no executor
-        # is inert — ``dispatch`` only mints a ``plan_tick`` under an
-        # ``LLM:*`` todo, so a project's children would sit ``open`` forever
-        # (#40159 sat ~40h). Scoped to workspace-bound todos so a throwaway
-        # standalone todo doesn't each spawn an opus tick. Skip when the
-        # caller already chose a tier / executor, or it's a recurring
-        # umbrella (the spawner runs instances, not the umbrella).
+        # Default a *generated* (parented) todo to ``LLM:opus`` so it
+        # actually runs: an untagged todo with no executor is inert —
+        # ``dispatch`` only mints a ``plan_tick`` under an ``LLM:*`` todo,
+        # so a planner-minted / change-request child would sit ``open``
+        # forever (#40159 sat ~40h). Scoped to children (``parent_int`` set
+        # — minted under a project, a planner tick, or a change request) so
+        # a deliberately-created **root** still gets the "no auto-run"
+        # reminder instead of silently auto-running. Skip when the caller
+        # already chose a tier / executor, or it's a recurring umbrella.
         if (
             id is None
-            and isinstance(meta, dict)
-            and meta.get("workspace")
+            and parent_int is not None
             and not (tags and any(t.startswith("LLM:") for t in tags))
-            and not meta.get("executor")
+            and not (isinstance(meta, dict) and meta.get("executor"))
             and not (tags and guards.LEVEL_RECURRING in tags)
         ):
             tags = [*(tags or []), "LLM:opus"]

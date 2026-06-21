@@ -305,3 +305,17 @@ def test_guardrails_skip_on_daily_ceiling(
     assert verdict.allow is False
     # No per-parent halt: the global ceiling is round-scoped.
     assert verdict.halt_tag is None
+
+
+def test_generated_child_defaults_to_llm_opus_root_does_not(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A parented (generated) todo auto-gets LLM:opus → dispatchable; a
+    deliberately-created root does not (keeps the no-auto-run reminder)."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    root = _id_of(handler.put(text="deliberate root").body)
+    child = _id_of(handler.put(text="generated child", parent_id=root).body)
+    ids = _candidate_parent_ids(store, limit=50)
+    assert child in ids  # parented → auto LLM:opus → runs
+    assert root not in ids  # root → no default → not auto-run
