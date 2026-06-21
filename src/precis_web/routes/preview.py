@@ -246,8 +246,16 @@ async def resolve(
             detail=f"no such {kind}:{ref_id}",
         )
 
-    # Paper + page/chunk address → jump to the PDF viewer at a page.
+    # Paper + chunk address. A chunk ord (``N`` / ``N..M``) lands on the
+    # detail page with that chunk surfaced as a highlighted "cited passage"
+    # card (the reader wants to see *what was cited*, with a PDF-page link
+    # for context). A bare page jump (``pN``) still goes straight to the
+    # embedded PDF at that page.
     if kind == "paper" and chunk:
+        if _CHUNK_RE.match(chunk):
+            return RedirectResponse(
+                url=f"/papers/{numeric_id}?chunk={chunk}", status_code=303
+            )
         page = _page_from_chunk_suffix(store, numeric_id, chunk)
         if page is not None:
             return RedirectResponse(

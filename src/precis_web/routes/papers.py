@@ -327,6 +327,7 @@ def _render_detail(
     triage: bool = False,
     prefill: dict[str, Any] | None = None,
     triage_msg: str = "",
+    cited: dict[str, Any] | None = None,
 ) -> HTMLResponse:
     """Render the paper detail page. Shared by ``detail`` and the triage
     lookup so an S2 result can re-render the page with the edit form
@@ -378,19 +379,48 @@ def _render_detail(
             # Editable short handle (cite_key) + a free suggestion.
             "slug_default": slug_default,
             "suggested_slug": suggested_slug,
+            # Cited passage (from a ``?chunk=N`` citation click) — rendered
+            # as a highlighted card so the reader lands on "the relevant
+            # thing", with a PDF-page link for the full context.
+            "cited": cited,
         },
     )
 
 
+def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] | None:
+    """Resolve a ``?chunk=N`` (or ``N..M``) citation to the cited chunk's
+    verbatim text + PDF page, for the highlighted "cited passage" card.
+    ``pN`` page-jumps and missing chunks return ``None``."""
+    if not chunk:
+        return None
+    m = re.match(r"^(\d+)(?:\.\.\d+)?$", chunk)
+    if m is None:  # e.g. ``p23`` — a page jump, no chunk text
+        return None
+    ord_ = int(m.group(1))
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text, page_first FROM chunks WHERE ref_id = %s AND ord = %s",
+            (ref_id, ord_),
+        ).fetchone()
+    if row is None or not row[0]:
+        return None
+    return {"ord": ord_, "text": row[0], "page": row[1]}
+
+
 @router.get("/{ref_id}", response_class=HTMLResponse)
-async def detail(request: Request, ref_id: int, triage: int = 0) -> HTMLResponse:
-    """Paper detail: metadata + embedded PDF viewer."""
+async def detail(
+    request: Request, ref_id: int, triage: int = 0, chunk: str | None = None
+) -> HTMLResponse:
+    """Paper detail: metadata + embedded PDF viewer. ``?chunk=N`` (a
+    citation click) surfaces that chunk's text as a highlighted card."""
     store = get_store(request)
     refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
     ref = refs.get(ref_id)
     if ref is None or ref.kind != "paper":
         raise NotFound(f"paper id={ref_id} not found")
-    return _render_detail(request, ref, triage=bool(triage))
+    return _render_detail(
+        request, ref, triage=bool(triage), cited=_cited_chunk(store, ref_id, chunk)
+    )
 
 
 @router.post("/{ref_id}/triage-lookup", response_model=None)
