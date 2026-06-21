@@ -57,7 +57,8 @@
      semantic (cosine-ranked over this draft's embeddings). ‹ › cycle the
      matches starting from whatever is currently in view; a hit in a
      collapsed section auto-expands its ancestors. #}
-  <div class="mb-2 flex flex-wrap items-center gap-2 text-xs">
+  <div class="sticky top-0 z-30 -mx-2 mb-2 flex flex-wrap items-center gap-2
+              border-b border-slate-200 bg-white px-2 py-2 text-xs shadow-sm">
     <input x-model="findQuery" @input.debounce.300ms="runFind()"
            @keydown.enter.prevent="findHits.length ? findNext() : runFind()"
            @keydown.escape="clearFind()"
@@ -149,6 +150,17 @@ function draftDoc(ident) {
       document.querySelectorAll('#doc .find-hit, #doc .find-current')
         .forEach((e) => e.classList.remove('find-hit', 'find-current'));
     },
+    _markHits() {
+      // Verbatim = band EVERY match (Ctrl-F style). Semantic returns a
+      // long cosine-ranked list, so banding all of it would light up most
+      // of the doc — there we only ring the current result and step
+      // through best-first with ‹ ›.
+      if (this.findMode !== 'verbatim') return;
+      this.findHits.forEach((h) => {
+        const e = document.getElementById('c-' + h);
+        if (e) e.classList.add('find-hit');
+      });
+    },
     clearFind() { this.findQuery = ''; this.findHits = []; this.findIdx = -1; this._clearMarks(); },
     async runFind() {
       this._clearMarks();
@@ -161,10 +173,7 @@ function draftDoc(ident) {
       } catch (e) { return; }
       this.findHits = data.handles || [];
       this.findMode = data.mode || this.findMode;  // reflect a semantic→verbatim degrade
-      this.findHits.forEach((h) => {
-        const el = document.getElementById('c-' + h);
-        if (el) el.classList.add('find-hit');
-      });
+      this._markHits();
       if (!this.findHits.length) { this.findIdx = -1; return; }
       this.gotoHit(this._startIdx());
     },
@@ -190,10 +199,7 @@ function draftDoc(ident) {
         if (next.length !== this.collapsed.length) { this.collapsed = next; this.save(); }
       }
       this._clearMarks();
-      this.findHits.forEach((h) => {
-        const e = document.getElementById('c-' + h);
-        if (e) e.classList.add('find-hit');
-      });
+      this._markHits();
       el.classList.add('find-current');
       this.$nextTick(() => el.scrollIntoView({block: 'center', behavior: 'smooth'}));
     },
