@@ -336,13 +336,17 @@ On each **external** access: `last_seen = now()`, `accesses += 1`.
 
 Not every kind should be dreamt *on*, but more kinds can *fertilize*:
 
-- **Dream targets (the `argmax` pool):** **`paper` + `memory`** only.
-  These are durable, agent-writable knowledge where synthesis / link /
-  supersede have something to do. (Dream-authored memories are
-  themselves `memory`, so they re-enter the pool; runaway volume is
-  bounded by pruning low-value dreams (see Recursion).)
+- **Dream targets (the `argmax` pool):** **`paper` + `memory` +
+  `draft`**. These are durable, agent-writable knowledge where synthesis
+  / link / supersede have something to do. `draft` is the project
+  write-up we are *actively* building — the live prose we think about
+  most, exactly where a wandering re-read pays off (spot a gap, a
+  contradiction with a cited paper, a paragraph that drifted). Retired
+  (soft-deleted) draft chunks are excluded from the pool. (Dream-authored
+  memories are themselves `memory`, so they re-enter the pool; runaway
+  volume is bounded by pruning low-value dreams (see Recursion).)
 - **Inspiration sparks (the `angle` spray):** **`paper` + `memory` +
-  `oracle`**. `oracle` is read-only curated wisdom (Stoic principles,
+  `draft` + `oracle`**. `oracle` is read-only curated wisdom (Stoic principles,
   engineering rules of thumb) -- useless as a *target* (no `put`, not
   ours to consolidate) but **excellent fertilizer** at an angle from a
   research cluster. Precondition: the kind must be in the embedding/ANN

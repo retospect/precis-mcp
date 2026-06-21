@@ -949,8 +949,11 @@ class PrecisRuntime:
         return out
 
     # Default dream-target kinds for the angle spray when the caller
-    # doesn't pin one (docs/design/dreaming.md, §Scope: paper+memory).
-    _ANGLE_DEFAULT_KINDS: tuple[str, ...] = ("paper", "memory")
+    # doesn't pin one (docs/design/dreaming.md, §Scope). ``draft`` is
+    # in here so the dreamer wanders the project write-up we're actively
+    # building — the live prose we think about most, not just the frozen
+    # corpus (paper) and crystallised thoughts (memory).
+    _ANGLE_DEFAULT_KINDS: tuple[str, ...] = ("paper", "memory", "draft")
 
     # Focus-region size when the caller doesn't pin ``n=`` — wide
     # enough to read a theme, small enough to stay in one prompt.

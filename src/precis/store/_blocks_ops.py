@@ -926,6 +926,7 @@ class BlocksMixin:
                 FROM chunks c
                 JOIN refs r ON r.ref_id = c.ref_id
                 WHERE r.deleted_at IS NULL
+                  AND c.retired_at IS NULL
                   AND r.kind = ANY(%s)
                 ORDER BY (c.last_seen - c.{col}) DESC, c.chunk_id
                 LIMIT %s
@@ -989,6 +990,7 @@ class BlocksMixin:
             "JOIN chunk_embeddings ce "
             "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
             "WHERE r.deleted_at IS NULL "
+            "  AND c.retired_at IS NULL "
             "  AND ce.vector IS NOT NULL AND ce.status = 'ok' "
             "  AND r.kind = ANY(%s) "
             "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s"
@@ -1114,6 +1116,7 @@ class BlocksMixin:
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
         clauses = [
             "r.deleted_at IS NULL",
+            "c.retired_at IS NULL",
             "ce.vector IS NOT NULL",
             "ce.status = 'ok'",
             "r.kind = ANY(%s)",
