@@ -21,7 +21,9 @@ on one host, but the lock keeps us honest.
 from __future__ import annotations
 
 import logging
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -104,6 +106,46 @@ def _linked_gripe_id(store: Any, job_ref_id: int) -> int | None:
 # ── Pass entry point ──────────────────────────────────────────────
 
 
+def _inproc_concurrency() -> int:
+    """How many claimed jobs to run **in parallel** within one pass.
+
+    Each tick is a blocking ``claude -p`` subprocess (releases the GIL),
+    so a small thread pool gives real parallelism and drains the queue
+    faster. Default 1 (sequential — the historical behaviour); raise via
+    ``PRECIS_INPROC_CONCURRENCY`` on a beefy worker. Clamped to [1, 16].
+    Spend scales with concurrency: each tick is still bounded by the
+    per-tick cost cap in ``call_claude_agent`` / the daily ceiling, so
+    this knob trades parallelism for burn-rate, not for cost safety."""
+    try:
+        n = int(os.environ.get("PRECIS_INPROC_CONCURRENCY", "1"))
+    except ValueError:
+        return 1
+    return max(1, min(16, n))
+
+
+def _run_job_safe(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> bool:
+    """Run one claimed job; record + swallow any failure. Returns ok."""
+    try:
+        _run_one(store, ref_id, title, meta)
+        return True
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("claude_inproc: job %d raised: %s", ref_id, exc, exc_info=True)
+        try:
+            with store.pool.connection() as conn:
+                _append_chunk(
+                    store,
+                    ref_id,
+                    _JOB_EVENT_KIND,
+                    f"runner: uncaught exception: {exc!r}",
+                    conn=conn,
+                )
+                _set_status(store, ref_id, _FAILED, conn=conn)
+                conn.commit()
+        except Exception:  # pragma: no cover
+            log.warning("claude_inproc: failed to record failure", exc_info=True)
+        return False
+
+
 def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
     """Process up to ``limit`` claude_inproc jobs.
 
@@ -111,12 +153,18 @@ def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
     Smaller default ``limit`` than chunk-level workers because each
     job runs a multi-minute LLM subprocess; we want the loop to
     yield often.
+
+    With ``PRECIS_INPROC_CONCURRENCY>1`` the claimed batch runs in a
+    thread pool (each tick is a blocking subprocess) so several ticks
+    drain at once; the claim count widens to cover the pool.
     """
+    concurrency = _inproc_concurrency()
+    claim_n = max(limit, concurrency)
     # Stage 1: claim under a short tx. Lease must be written
     # before we release the FOR UPDATE lock so concurrent runners
     # don't double-claim.
     with store.pool.connection() as conn:
-        rows = _claim_jobs(conn, limit=limit)
+        rows = _claim_jobs(conn, limit=claim_n)
         if not rows:
             conn.commit()
             return {"claimed": 0, "ok": 0, "failed": 0}
@@ -143,29 +191,22 @@ def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
             _set_status(store, ref_id, _RUNNING, conn=conn)
         conn.commit()
 
-    ok = 0
-    failed = 0
-    for ref_id, title, meta in rows:
-        try:
-            _run_one(store, ref_id, title, meta)
-            ok += 1
-        except Exception as exc:  # pragma: no cover — defensive
-            failed += 1
-            log.warning("claude_inproc: job %d raised: %s", ref_id, exc, exc_info=True)
-            try:
-                with store.pool.connection() as conn:
-                    _append_chunk(
-                        store,
-                        ref_id,
-                        _JOB_EVENT_KIND,
-                        f"runner: uncaught exception: {exc!r}",
-                        conn=conn,
-                    )
-                    _set_status(store, ref_id, _FAILED, conn=conn)
-                    conn.commit()
-            except Exception:  # pragma: no cover
-                log.warning("claude_inproc: failed to record failure", exc_info=True)
-    return {"claimed": len(rows), "ok": ok, "failed": failed}
+    # Stage 2: run the claimed jobs. Sequential by default; a thread pool
+    # when concurrency>1 (each _run_one blocks on a subprocess that
+    # releases the GIL, so threads parallelise the wall-clock).
+    pool_size = min(concurrency, len(rows))
+    if pool_size <= 1:
+        results = [_run_job_safe(store, rid, title, meta) for rid, title, meta in rows]
+    else:
+        with ThreadPoolExecutor(max_workers=pool_size) as ex:
+            results = list(
+                ex.map(
+                    lambda r: _run_job_safe(store, r[0], r[1], r[2]),
+                    rows,
+                )
+            )
+    ok = sum(1 for r in results if r)
+    return {"claimed": len(rows), "ok": ok, "failed": len(results) - ok}
 
 
 # ── Per-job dispatch ──────────────────────────────────────────────
