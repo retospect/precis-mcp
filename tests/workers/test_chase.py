@@ -281,6 +281,36 @@ def test_claim_backoff_count_resets_after_progress(store) -> None:
     assert fid in [f.ref_id for f in claimed]
 
 
+def test_claim_survives_huge_waiting_run(store) -> None:
+    """A finding stuck in ``waiting`` for thousands of cycles must not
+    crash the claim. ``2^(waits-1)`` overflows double precision once
+    ``waits`` passes ~1024, and Postgres raises ``value out of range``,
+    which previously killed the whole chase pass every loop on every
+    node (and blocked the give-up path that would have abandoned the
+    finding). The exponent is clamped so POWER can never overflow."""
+    _seed_paper(store, cite_key="stub_overflow", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_overflow")
+    # 2000 consecutive waiting events — exponent 1999 overflows double
+    # without the clamp. Most recent is recent, so it stays suppressed;
+    # the point of the test is that the query returns instead of raising.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+            "SELECT %s, 'chase', 'waiting', '{}'::jsonb, "
+            "now() - (g || ' minutes')::interval "
+            "FROM generate_series(1, 2000) AS g",
+            (fid,),
+        )
+        conn.commit()
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    # No NumericValueOutOfRange raised; window is pinned at cap so the
+    # most-recent (1-min-ago) wait keeps the finding suppressed.
+    assert fid not in [f.ref_id for f in claimed]
+
+
 # ── terminal give-up: starve past WAITING_ABANDON_AFTER_DAYS ────────
 
 

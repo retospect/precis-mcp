@@ -252,7 +252,16 @@ def claim_tracing_findings(
                  AND last_chase.ts > now() - (
                        LEAST(
                          %(base)s::double precision
-                           * POWER(2, GREATEST(wait_run.waits - 1, 0)),
+                           -- Clamp the exponent before POWER: a finding
+                           -- stuck in ``waiting`` for >~1024 cycles makes
+                           -- ``2^(waits-1)`` overflow double precision and
+                           -- Postgres raises ``value out of range``,
+                           -- crashing the whole chase pass every loop. The
+                           -- window is already pinned at ``cap`` once
+                           -- ``base * 2^n >= cap`` (n≈5 for the defaults),
+                           -- so clamping the exponent at 60 is
+                           -- behaviour-preserving and overflow-proof.
+                           * POWER(2, LEAST(GREATEST(wait_run.waits - 1, 0), 60)),
                          %(cap)s::double precision
                        ) * INTERVAL '1 minute'
                      ),
