@@ -241,6 +241,27 @@ you yield an `ask-user:`, write a real question a human can act on, and
 at ¶MwJjhD (the intro); did you mean ¶MwJjhD or the sibling ¶k7m2aQ?'`.
 The ask surfaces on the draft block as a 🔔, linking to your run.
 
+## Export (LaTeX) — `precis draft export`
+
+A draft renders to a **compilable LaTeX project** with one command:
+
+```
+precis draft export <slug> [--out DIR]   # → main.tex + refs.bib + preamble.tex
+latexmk -pdf main.tex                     # biber + makeglossaries run for you
+```
+
+The export is a one-way resolution pass; the output is **disposable**
+(re-export from the draft, never hand-edit the `.tex`). Everything
+resolves automatically: each block gets a `\label{chunk:<handle>}` and a
+`[¶h]` cross-ref becomes `\cref{chunk:h}`; `[§slug~n]` / `paper:slug~n`
+citations become `\cite{slug}` with a `refs.bib` generated from the cited
+papers (DOI/arXiv included when known); every defined abbreviation
+becomes a `\newacronym` and each occurrence a `\gls{…}` (first use full,
+later uses short), with the page-number "where it occurs" list in the
+glossary. Authoring `[[…]]` links and bare thought mentions render to
+nothing (provenance only). This is why **citing the exact chunk** and
+**defining your abbreviations** pays off — the exporter does the rest.
+
 ## Freeze / snapshot (release + backup)
 
 A *freeze* copies the draft's current chunks into an immutable

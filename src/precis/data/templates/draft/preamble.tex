@@ -1,0 +1,48 @@
+% precis draft export — standard preamble (ADR 0033 Tier-B).
+%
+% Checked into the repo and copied verbatim into every exported draft.
+% The export engine assembles the rest of the document (title, acronym
+% definitions, body, glossary, bibliography) around this block, so keep
+% it package-setup only — no document content here.
+%
+% Compile with latexmk so biber (bibliography) and makeglossaries
+% (glossary) both run:  latexmk -pdf main.tex
+\documentclass[11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{csquotes}
+
+% Bibliography — biblatex + biber. The export engine writes refs.bib
+% from the cited paper refs (DOI included when known).
+\usepackage[backend=biber,style=numeric-comp,sorting=none]{biblatex}
+
+% Hyperlinks + clever cross-references (intra-draft ¶ refs become
+% \cref{chunk:<handle>} pointing at \label{chunk:<handle>}).
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+% Glossary / acronyms. `acronym` makes the acronym list; the long-short
+% style means first use expands to the full term and every later use is
+% the abbreviation. The page-number "where it occurs" list is on by
+% default (we do NOT pass nonumberlist), per the export design.
+\usepackage[acronym,toc]{glossaries-extra}
+\setabbreviationstyle[acronym]{long-short}
+
+% Code/listing blocks (chunk_kind = listing/code).
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
+        columns=fullflexible,keepspaces=true}
+
+% Aside / box chunks render inside this lightweight framed environment.
+\newenvironment{precisaside}{%
+  \par\medskip\noindent\begin{quote}\itshape%
+}{%
+  \end{quote}\medskip%
+}

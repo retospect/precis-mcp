@@ -602,3 +602,11 @@ def test_gripes_dump_without_dsn_exits(
 def _store_dsn_from(store) -> str:
     """Pull the DSN out of a Store fixture's psycopg pool."""
     return store.pool.conninfo
+
+
+def test_draft_export_parses() -> None:
+    """`precis draft export <slug>` registers and parses (with --out)."""
+    parser = cli._build_parser()
+    args = parser.parse_args(["draft", "export", "nt", "--out", "/tmp/x"])
+    assert args.cmd == "draft" and args.draft_cmd == "export"
+    assert args.slug == "nt" and args.out == "/tmp/x"

@@ -8,6 +8,58 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-21 — draft LaTeX export, Tier-B increment 1)
+
+- **`precis draft export <slug>`** renders a draft into a compilable
+  LaTeX project (`main.tex` + `refs.bib` + a copy of the checked-in
+  `preamble.tex`). The output is **disposable** (re-export, never
+  hand-edit), which lets the resolution pass stamp machine labels on
+  everything: each block gets `\label{chunk:<handle>}` and a `[¶h]`
+  cross-ref becomes `\cref{chunk:h}`; `[§slug~n]` / bare `paper:slug~n`
+  citations become `\cite{slug}` with a `refs.bib` generated from the
+  cited paper refs (DOI/arXiv from `ref_identifiers` when known); every
+  defined abbreviation becomes a `\newacronym` and each surface
+  occurrence a `\gls{key}` (first-use-full / later-short, with the
+  page-number "where it occurs" glossary list). Inline rendering reuses
+  the single-sourced `mentions` grammar atoms (so it can't drift from the
+  reader/parser) and handles `**bold**` / `` `code` `` / `<sub>`/`<sup>`
+  / `$…$` math (verbatim) / LaTeX-special escaping. Authoring `[[…]]`
+  links and bare thought mentions render to nothing (provenance only).
+  Engine: `src/precis/export/latex.py`; preamble:
+  `src/precis/data/templates/draft/preamble.tex`. Compile + LLM-repair
+  loop and the Word/pandoc (docx + EndNote RIS) path are later
+  increments.
+
+### Changed (2026-06-21 — draft find bar, dreaming, abbrev recall)
+
+- **In-draft find bar** on the reader: a verbatim (case-insensitive
+  substring, document order) / semantic (cosine-ranked over the draft's
+  chunk embeddings) toggle via `GET /drafts/{ident}/find`, with `‹ ›`
+  cycling from the chunk currently in view, wrap-around, and auto-expand
+  of a collapsed section when a hit lands inside it. Semantic degrades to
+  verbatim when no embedder is wired.
+- **Dreaming now targets `draft` chunks** — `draft` is added to the
+  runtime's dream-target kinds (the salience `argmax` pool **and** the
+  `angle` inspiration spray), so the dreamer wanders the live project
+  write-up, not just the frozen corpus + crystallised memories. The
+  selection queries (`select_salient`, `dreamable_region`,
+  `_nearest_chunk`) gained a `c.retired_at IS NULL` guard so soft-deleted
+  draft chunks don't surface (a no-op for paper/memory).
+- **Abbreviation recall** in the reader: every occurrence of a defined
+  abbreviation renders as a native `<abbr title="long form">` (hover
+  definition, zero JS). Definitions come from `store.defined_abbrevs()`
+  — explicit `term` chunks plus inline `Long Form (ABBR)` first-uses,
+  explicit winning on a clash. `linkify_refs` gained an `abbrevs=` arg
+  whose highlight pass runs over the rendered HTML's text runs only.
+
+### Fixed (2026-06-21)
+
+- The `/drafts/{ident}` reader 500'd on real Postgres: `_requests_by_handle`
+  had literal `%` in a parameterised `LIKE` (`'ask-user:%'` /
+  `'child-failed:%'`), which psycopg reads as a placeholder. Doubled to
+  `%%`; added a real-Postgres regression test (the fake-store web tests
+  don't parse SQL, so they couldn't catch it).
+
 ### Changed (2026-06-21 — drafts reader is now a per-block 3-column grid)
 
 - The draft reader (`GET /drafts/{ident}`) is reworked from TOC-left into

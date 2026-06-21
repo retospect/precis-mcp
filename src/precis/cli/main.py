@@ -26,6 +26,7 @@ from precis.cli import (
     add,
     cron,
     db,
+    draft,
     fix_metadata,
     gripe,
     heartbeat,
@@ -139,6 +140,10 @@ def main() -> None:
         resolve.run(args)
         return
 
+    if args.cmd == "draft":
+        draft.run(args)
+        return
+
     if args.cmd == "verify":
         verify.run(args)
         return
@@ -206,6 +211,7 @@ def _build_parser() -> argparse.ArgumentParser:
     stubs.add_parser(sub)
     stats.add_parser(sub)
     resolve.add_parser(sub)
+    draft.add_parser(sub)
     verify.add_parser(sub)
     tools.add_parser(sub)
     repl.add_parser(sub)
