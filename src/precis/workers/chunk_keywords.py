@@ -137,8 +137,16 @@ def claim_chunks_without_keywords(
            AND (
                 c.keywords IS NULL
              OR (c.keywords_meta->>'version') IS DISTINCT FROM %s
+             -- re-derive when the chunk's text changed since the keywords
+             -- were built (edited `draft` chunks, ADR 0033). Papers leave
+             -- content_sha NULL → NULL-vs-NULL never fires.
+             OR (c.keywords_meta->>'content_sha') IS DISTINCT FROM c.content_sha
            )
            AND ce.vector IS NOT NULL
+           -- only once the embedding is current for this text — KeyBERT
+           -- uses ce.vector, so wait for embed to refresh after an edit
+           -- (else keywords from new text rank against a stale vector).
+           AND ce.content_sha IS NOT DISTINCT FROM c.content_sha
          ORDER BY (CASE WHEN r.kind = 'conv' THEN 0 ELSE 1 END),
                   c.chunk_id
          LIMIT %s
@@ -316,11 +324,15 @@ def write_chunk_keywords(
         "embedder": embedder_name,
         "keywords": keywords,
     }
+    # Stamp the chunk's current content_sha into the envelope (column ref,
+    # so it's the locked row's value — race-free) for the re-derive claim.
     conn.execute(
         """
         UPDATE chunks
            SET keywords = %s,
-               keywords_meta = %s
+               keywords_meta = jsonb_set(
+                   %s::jsonb, '{content_sha}', to_jsonb(content_sha), true
+               )
          WHERE chunk_id = %s
         """,
         (canonical, Jsonb(meta), chunk_id),

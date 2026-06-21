@@ -1,0 +1,26 @@
+{% extends "base.html.j2" %}
+{% block title %}Drafts{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-lg font-semibold">Drafts</h1>
+  <span class="text-sm text-slate-500">{{ drafts | length }} draft(s)</span>
+</div>
+
+{% if not drafts %}
+<p class="text-sm text-slate-500">
+  No drafts yet. A draft is created by an agent:
+  <code class="text-xs">put(kind='draft', id='…', project=&lt;todo&gt;)</code>.
+</p>
+{% else %}
+<ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  {% for d in drafts %}
+  <li class="px-4 py-3 hover:bg-slate-50">
+    <a href="/drafts/{{ d.ident }}" class="flex items-center justify-between">
+      <span class="text-sm font-medium text-slate-800">{{ d.title }}</span>
+      {% if d.slug %}<span class="font-mono text-xs text-slate-400">{{ d.slug }}</span>{% endif %}
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

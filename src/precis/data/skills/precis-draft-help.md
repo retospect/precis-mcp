@@ -130,6 +130,14 @@ referenceable but **not citeable** — they get a `[[…]]` link only,
 never a bibliography entry. Math is `$…$` / `$$…$$` (LaTeX, rendered by
 KaTeX on the web).
 
+Bare `kind:ref` mentions (`paper:miller89~4`, `memory:6184`) are
+recognised too — the bracket forms are the *superset* over the same
+grammar notes use. **Every** reference you write auto-materialises a
+`related-to` backlink (the same shared autolinker), so the draft is
+discoverable from the cited paper/thought's side; remove a reference and
+its link drops on the next edit. Intra-draft `¶` cross-refs are
+document-internal (TOC / `\ref`), not graph edges.
+
 ## Steer the draft — brief + change requests (don't hand-edit prose)
 
 You usually don't rewrite prose directly; you **steer**:

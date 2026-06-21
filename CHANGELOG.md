@@ -8,6 +8,41 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-21 — draft references: DRY superset highlight+extract, and a Tier-A web viewer/editor)
+
+- **Draft inline references reuse the existing reference machinery
+  rather than a parallel stack (ADR 0033 §8).** The bracket/sigil
+  regex atoms now live in `utils/mentions.py` (the grammar SSOT —
+  `AUTHORING_PATTERN` / `DISPLAY_LINK_PATTERN` / `BARE_BRACKET_REF_PATTERN`
+  / `DRAFT_CITE_PATTERN`); `utils/draft_markup.py` parses against them
+  and resolves via the shared resolvers (`resolve_handle_ref` /
+  `chunk_to_pos`), adding `resolve_draft_handle` (`¶`→chunk) and
+  `resolve_draft_link_targets`. The recognised set is the **superset**:
+  bracket forms ∪ bare `kind:ref` mentions. `draft` joins
+  `LINKIFY_KINDS`.
+- **`linkify` highlights the superset in one pass.** Display links show
+  their text, `¶handle`→`/c/<handle>`, `§paper~n`→paper anchor, `[[…]]`
+  surfaces the inner handle, external URLs open a new tab; unrecognised
+  `[x](y)` stays literal. The hover-preview popover markup is factored
+  into `_anchor_html`, so `¶` chunk anchors get the **same** hover
+  preview + click-navigate as every `kind:ref`.
+- **`DraftHandler` auto-links on write.** `_sync_draft_links` mirrors
+  the note autolinker: add/edit/retire recomputes the draft's whole
+  reference set and replaces the `auto='mention'` `related-to` edges
+  (intra-draft `¶` refs excluded — document-internal, not edges).
+- **Drafts web tab (Tier A, ADR 0033 Phase 6).** `precis_web/routes/drafts.py`
+  + templates: `GET /drafts` (list), `GET /drafts/{ident}` (TOC-left
+  reader rendering **raw source** through `linkify_refs`, anchored
+  `#c-<handle>`, with a links/backlinks panel and a per-chunk
+  change-request box), `POST /drafts/{ident}/request` (a `todo` anchored
+  at the chunk, parented on the draft's project), `GET /c/{handle}`
+  (resolve a `¶` handle → redirect into the reader), `GET /preview/chunk/{handle}`
+  (the `¶` hover-popover fragment). Resolved rendering (computed
+  §-numbers, KaTeX, cross-ref/citation resolution) is the export engine
+  (Tier B), shared across HTML/LaTeX/Word targets.
+- Coverage: 10 linkify superset cases, 4 draft autolink cases, 7 draft
+  route tests.
+
 ### Fixed (2026-06-20 — web: autoescape was OFF; Tasks buttons went dead on planner-prompt titles)
 
 - **Jinja autoescape was disabled for the entire web UI.** The

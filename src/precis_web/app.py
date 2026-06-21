@@ -75,6 +75,7 @@ def create_app(
         asks,
         clusters,
         console,
+        drafts,
         env,
         papers,
         papers_needed,
@@ -89,6 +90,7 @@ def create_app(
     app.include_router(asks.router)
     app.include_router(papers.router)
     app.include_router(papers_needed.router)
+    app.include_router(drafts.router)
     app.include_router(refs.router)
     app.include_router(tags.router)
     app.include_router(clusters.router)

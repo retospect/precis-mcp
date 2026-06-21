@@ -14,7 +14,7 @@
       <div class="mx-auto max-w-6xl px-4">
         <nav class="flex flex-wrap items-center gap-1 py-2">
           <span class="font-semibold tracking-tight text-emerald-400 mr-4">precis</span>
-          {% set tabs = [('tasks','Tasks','/tasks'), ('asks','Asks','/asks'), ('papers','Papers','/papers'), ('papers-needed','Papers Needed','/papers-needed'), ('triage','Triage','/papers/triage'), ('clusters','Clusters','/clusters'), ('tags','Tags','/tags')] %}
+          {% set tabs = [('tasks','Tasks','/tasks'), ('asks','Asks','/asks'), ('papers','Papers','/papers'), ('papers-needed','Papers Needed','/papers-needed'), ('triage','Triage','/papers/triage'), ('drafts','Drafts','/drafts'), ('clusters','Clusters','/clusters'), ('tags','Tags','/tags')] %}
           {% for key, label, href in tabs %}
           <a href="{{ href }}"
              class="px-3 py-2 rounded-md text-sm font-medium transition

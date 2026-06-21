@@ -92,6 +92,7 @@ LINKIFY_KINDS: frozenset[str] = frozenset(
         "job",
         "finding",
         "citation",
+        "draft",
         "flashcard",
         "perplexity-research",
         "perplexity-reasoning",
@@ -113,6 +114,46 @@ LINKIFY_KINDS: frozenset[str] = frozenset(
 #: absent from ``LINKIFY_KINDS`` too; this stays as the explicit
 #: opt-out lever.
 LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
+
+
+# ---------------------------------------------------------------------------
+# Draft inline-reference grammar (ADR 0033 §8) — the bracket / sigil forms
+# layered on top of the bare ``kind:ref`` mentions above. They live here,
+# the grammar SSOT, so both consumers share one definition: the parser
+# (``precis.utils.draft_markup``) and the highlighter
+# (``precis_web.linkify``). The *superset* a draft chunk may carry is
+# these bracket forms ∪ the bare ``kind:ref`` mentions.
+#
+#   [[<kind:id>]]      authoring link (provenance; renders to nothing)
+#   [text](<target>)   display link — target is ¶handle / §paper~n /
+#                      kind:id / URL; the reader sees ``text``
+#   [¶<handle>]        bare cross-ref to a chunk in this draft
+#   [§<paper>~<n>]     bare citation to an external corpus chunk
+# ---------------------------------------------------------------------------
+
+#: ``[[address]]`` — authoring link, provenance only.
+AUTHORING_PATTERN = re.compile(r"\[\[(?P<auth>[^\[\]]+)\]\]")
+#: ``[display](target)`` — markdown display link.
+DISPLAY_LINK_PATTERN = re.compile(r"\[(?P<disp>[^\[\]]*)\]\((?P<tgt>[^()]+)\)")
+#: ``[¶h]`` / ``[§p~n]`` — bare bracketed sigil ref (no display text).
+BARE_BRACKET_REF_PATTERN = re.compile(r"\[(?P<bare>[¶§][^\[\]]+)\]")
+
+#: ``§<slug>~<n>`` citation sugar — equivalent to ``paper:<slug>~<n>``.
+DRAFT_CITE_PATTERN = re.compile(
+    r"§(?P<slug>[A-Za-z][A-Za-z0-9_-]*)"
+    r"(?P<chunk>~(?:p[0-9]+|[0-9]+(?:\.\.[0-9]+)?))?"
+)
+
+#: The three bracket shapes as one alternation (authoring first so it
+#: wins over the display form on ``[[…]]``). ``draft_markup`` parses
+#: against this; ``linkify`` folds it into its combined highlight pass.
+DRAFT_MARKUP_PATTERN = re.compile(
+    AUTHORING_PATTERN.pattern
+    + "|"
+    + DISPLAY_LINK_PATTERN.pattern
+    + "|"
+    + BARE_BRACKET_REF_PATTERN.pattern
+)
 
 
 # ---------------------------------------------------------------------------

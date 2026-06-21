@@ -54,10 +54,22 @@ from markupsafe import Markup
 # ``_REF_PATTERN`` / ``_BARE_CONV_PATTERN`` / ``_BARE_PAPER_PATTERN``
 # and the kind allowlists. See that module for the per-pattern notes.
 from precis.utils.mentions import (
+    AUTHORING_PATTERN as _AUTHORING_PATTERN,
+)
+from precis.utils.mentions import (
+    BARE_BRACKET_REF_PATTERN as _BARE_BRACKET_REF_PATTERN,
+)
+from precis.utils.mentions import (
     BARE_CONV_PATTERN as _BARE_CONV_PATTERN,
 )
 from precis.utils.mentions import (
     BARE_PAPER_PATTERN as _BARE_PAPER_PATTERN,
+)
+from precis.utils.mentions import (
+    DISPLAY_LINK_PATTERN as _DISPLAY_LINK_PATTERN,
+)
+from precis.utils.mentions import (
+    DRAFT_CITE_PATTERN as _DRAFT_CITE_PATTERN,
 )
 from precis.utils.mentions import (
     LINKIFY_KINDS as _LINKIFY_KINDS,
@@ -70,12 +82,18 @@ from precis.utils.mentions import (
 )
 
 
-def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
+def _render_anchor(
+    kind: str, raw_id: str, chunk: str | None, *, label: str | None = None
+) -> str:
     """Build the per-match anchor + sibling popover slot.
 
     The anchor's ``href`` points at ``/r/{kind}/{id}`` (the resolver
     redirector) so right-click → "Open in new tab" still works without
     needing JS. htmx + Alpine drive the hover preview.
+
+    ``label`` overrides the visible text — used by the draft display-link
+    form ``[text](kind:id)`` so the reader sees ``text``, not the raw
+    handle. The href / preview target are unchanged.
     """
     safe_kind = escape(kind)
     # Strip a leading ``#`` from numeric refs so the URL path stays
@@ -83,9 +101,12 @@ def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
     # ``/r/memory/6184``.
     cleaned_id = raw_id.lstrip("#")
     safe_id = escape(cleaned_id)
-    display = f"{safe_kind}:{escape(raw_id)}"
-    if chunk:
-        display += escape(chunk)
+    if label is not None:
+        display = escape(label)
+    else:
+        display = f"{safe_kind}:{escape(raw_id)}"
+        if chunk:
+            display += escape(chunk)
     # The ``~suffix`` rides into the resolver as a query param so the
     # redirector can decide what to do per-kind (paper → PDF#page=N;
     # other kinds → ignore the suffix and land on the ref overview).
@@ -94,6 +115,26 @@ def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
         # ``chunk`` here is the regex group including the leading ``~``;
         # the resolver expects it without.
         suffix_q = f"?chunk={escape(chunk[1:])}"
+    href = f"/r/{safe_kind}/{safe_id}{suffix_q}"
+    return _anchor_html(
+        href=href, preview_url=f"/preview/{safe_kind}/{safe_id}", label=display
+    )
+
+
+# Anchor CSS for the lighter external-link anchor (no hover popover).
+_LINK_CLASS = "text-sky-700 underline decoration-dotted hover:decoration-solid"
+
+
+def _anchor_html(*, href: str, preview_url: str, label: str) -> str:
+    """The shared hover-preview anchor. An ``<a href>`` (so right-click /
+    open-in-new-tab work without JS) wrapped in an Alpine/htmx span that
+    lazily fetches a popover card from ``preview_url`` on hover. ``href``,
+    ``preview_url`` and ``label`` must already be HTML-safe.
+
+    Single source for every reference surface — ``kind:ref`` mentions AND
+    ``¶`` draft-chunk cross-refs — so hover-preview + click-navigate are
+    identical across kinds.
+    """
     # ``whitespace-normal`` on the popover container resets the
     # ``white-space: pre-wrap`` it inherits from the parent ``<pre>``
     # on ref-detail pages — otherwise every newline in the popover
@@ -140,17 +181,84 @@ def _render_anchor(kind: str, raw_id: str, chunk: str | None) -> str:
         f'@click.outside="{close_expr}" '
         f'@ref-popover-open.window="{other_open_expr}">'
         f'<a class="text-sky-700 underline decoration-dotted hover:decoration-solid" '
-        f'href="/r/{safe_kind}/{safe_id}{suffix_q}" '
-        f'hx-get="/preview/{safe_kind}/{safe_id}" '
+        f'href="{href}" '
+        f'hx-get="{preview_url}" '
         f'hx-trigger="mouseenter delay:200ms once" '
         f'hx-target="next .ref-popover" hx-swap="innerHTML">'
-        f"{display}</a>"
+        f"{label}</a>"
         f'<span class="ref-popover absolute z-50 top-full left-0 mt-1 w-80 '
         f"rounded-lg border border-slate-200 bg-white shadow-xl p-2 text-sm "
         f'whitespace-normal max-h-72 overflow-y-auto" '
         f'x-show="hovered" x-cloak></span>'
         f"</span>"
     )
+
+
+def _render_chunk_anchor(handle: str, label: str) -> str:
+    """A ``¶<handle>`` draft-chunk cross-ref. Same hover-preview +
+    click-navigate as a ``kind:ref`` anchor: hover fetches a chunk card
+    from ``/preview/chunk/<handle>``; click navigates via ``/c/<handle>``
+    (which redirects into the draft reader, anchored at that chunk)."""
+    safe_h = escape(handle)
+    return _anchor_html(
+        href=f"/c/{safe_h}",
+        preview_url=f"/preview/chunk/{safe_h}",
+        label=escape(label),
+    )
+
+
+def _render_ext_anchor(url: str, label: str) -> str:
+    """An external ``[text](https://…)`` link. ``url`` is escaped (quotes
+    included) into the href so it can't break out of the attribute."""
+    return (
+        f'<a class="{_LINK_CLASS}" href="{escape(url)}" '
+        f'rel="noopener nofollow" target="_blank">{escape(label)}</a>'
+    )
+
+
+def _render_display_link(disp: str, tgt: str, raw: str) -> str:
+    """``[disp](target)`` — render an anchor showing ``disp`` when the
+    target is a recognised reference; otherwise leave the literal text
+    (so prose like ``[see](note)`` survives untouched)."""
+    label = disp or tgt
+    if tgt.startswith("¶"):
+        return _render_chunk_anchor(tgt[1:], label)
+    if tgt.startswith("§"):
+        m = _DRAFT_CITE_PATTERN.fullmatch(tgt)
+        if m is not None:
+            return _render_anchor(
+                "paper", m.group("slug"), m.group("chunk"), label=label
+            )
+    if tgt.startswith(("http://", "https://")):
+        return _render_ext_anchor(tgt, label)
+    m = _REF_PATTERN.fullmatch(tgt)
+    if m is not None and m.group("kind") in _LINKIFY_KINDS:
+        if m.group("kind") not in _LOW_SIGNAL_KINDS:
+            return _render_anchor(
+                m.group("kind"), m.group("id"), m.group("chunk"), label=label
+            )
+    return escape(raw)  # not a reference target — keep the literal
+
+
+def _render_bare_bracket(bare: str) -> str:
+    """``[¶h]`` / ``[§p~n]`` — a sigil ref with no display text."""
+    if bare.startswith("¶"):
+        return _render_chunk_anchor(bare[1:], bare)
+    m = _DRAFT_CITE_PATTERN.fullmatch(bare)
+    if m is not None:
+        return _render_anchor("paper", m.group("slug"), m.group("chunk"), label=bare)
+    return escape(f"[{bare}]")
+
+
+def _render_authoring(addr: str) -> str:
+    """``[[kind:id]]`` — an authoring link. Renders to nothing in the
+    exported document, but here (the web editor) we surface the inner
+    handle as an anchor for discoverability when it is a known kind."""
+    m = _REF_PATTERN.fullmatch(addr)
+    if m is not None and m.group("kind") in _LINKIFY_KINDS:
+        if m.group("kind") not in _LOW_SIGNAL_KINDS:
+            return _render_anchor(m.group("kind"), m.group("id"), m.group("chunk"))
+    return escape(f"[[{addr}]]")
 
 
 def linkify_refs(
@@ -199,7 +307,18 @@ def _footnote_marker(n: int) -> str:
 #: Order in the alternation matters: longer/more specific shapes
 #: first so the regex engine commits to them before falling through
 #: to the broad bare paper pattern.
+#: The draft bracket forms come FIRST so ``[text](memory:1)`` is consumed
+#: whole (display link) rather than the inner ``memory:1`` matching the
+#: bare ``kind:ref`` shape. Authoring (``[[…]]``) precedes the display
+#: form so it wins on doubled brackets. The bracket groups carry unique
+#: names (auth / disp+tgt / bare) so dispatch stays a group-name check.
 _COMBINED_PATTERN = re.compile(
+    _AUTHORING_PATTERN.pattern
+    + r"|"
+    + _DISPLAY_LINK_PATTERN.pattern
+    + r"|"
+    + _BARE_BRACKET_REF_PATTERN.pattern
+    + r"|"
     r"(?P<ref>" + _REF_PATTERN.pattern + r")"
     r"|"
     r"(?P<bare_conv>" + _BARE_CONV_PATTERN.pattern + r")"
@@ -224,6 +343,14 @@ def _linkify_prose(
         return ""
 
     def _dispatch(m: re.Match[str]) -> str:
+        # Draft bracket forms (ADR 0033 §8) — checked first; their groups
+        # are consumed before the bare ``kind:ref`` alternatives.
+        if m.group("auth") is not None:
+            return _render_authoring(m.group("auth"))
+        if m.group("disp") is not None:
+            return _render_display_link(m.group("disp"), m.group("tgt"), m.group(0))
+        if m.group("bare") is not None:
+            return _render_bare_bracket(m.group("bare"))
         if m.group("ref") is not None:
             kind = m.group("kind")
             raw_id = m.group("id")

@@ -19,6 +19,7 @@ its slug (the universal ``id=``). See ``precis-draft-help``.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, ClassVar
 
@@ -31,6 +32,8 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+
+log = logging.getLogger(__name__)
 
 _CHUNK_ADDR = re.compile(r"^¶(?P<h>[A-Za-z0-9]+)(?:-(?P<b>\d+))?(?:\+(?P<a>\d+))?$")
 
@@ -119,6 +122,7 @@ class DraftHandler(Handler):
                 text=str(text),
                 at=at,
             )
+            self._sync_draft_links(ref.id)
             handles = " ".join(f"¶{c.handle}" for c in chunks)
             return Response(body=f"added {len(chunks)} chunk(s) to {slug}: {handles}")
 
@@ -158,6 +162,8 @@ class DraftHandler(Handler):
             return Response(body=f"moved ¶{c.handle}")
         if text is not None:
             c = self.store.edit_text(handle, str(text))
+            if c is not None:
+                self._sync_draft_links(c.ref_id)
             return Response(body=f"edited ¶{c.handle}")
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite) or move= (reorder/reparent)",
@@ -174,7 +180,10 @@ class DraftHandler(Handler):
         **_kw: Any,
     ) -> Response:
         handle = self._require_chunk_id(id, verb="delete")
+        chunk = self.store.get_draft_chunk(str(handle).lstrip("¶"))
         self.store.retire_chunk(handle, mode=mode)
+        if chunk is not None:
+            self._sync_draft_links(chunk.ref_id)
         return Response(body=f"retired ¶{handle}")
 
     # ── helpers ──────────────────────────────────────────────────────
@@ -186,6 +195,51 @@ class DraftHandler(Handler):
                 next=f"{verb}(kind='draft', id='¶5BL5xQ', …)",
             )
         return str(id)
+
+    def _sync_draft_links(self, ref_id: int) -> None:
+        """Materialise ``related-to`` links from this draft to every ref
+        its chunks reference — the superset grammar (``kind:ref`` mentions,
+        ``¶`` cross-refs, ``§`` citations). Recomputed over the *whole*
+        draft on each write (chunk edits add/remove references), replacing
+        the prior ``auto='mention'`` set so a removed reference loses its
+        link. Best-effort: a resolution failure never fails the write —
+        mirrors the note autolinker (`_numeric_ref._sync_mention_links`).
+        """
+        from precis.utils import draft_markup
+
+        try:
+            chunks = self.store.reading_order(ref_id)
+            text = "\n\n".join(c.text for c in chunks)
+            targets = draft_markup.resolve_draft_link_targets(
+                self.store, text, exclude_ref_id=ref_id
+            )
+            wanted = {(t.dst_ref_id, t.dst_pos) for t in targets}
+            for link in self.store.links_for(
+                ref_id, direction="out", relation="related-to"
+            ):
+                if (link.meta or {}).get("auto") == "mention" and (
+                    link.dst_ref_id,
+                    link.dst_pos,
+                ) not in wanted:
+                    self.store.remove_link(
+                        src_ref_id=ref_id,
+                        dst_ref_id=link.dst_ref_id,
+                        dst_pos=link.dst_pos,
+                        relation="related-to",
+                    )
+            for t in targets:
+                self.store.add_link(
+                    src_ref_id=ref_id,
+                    dst_ref_id=t.dst_ref_id,
+                    dst_pos=t.dst_pos,
+                    relation="related-to",
+                    set_by="agent",
+                    meta={"auto": "mention"},
+                )
+        except Exception:
+            log.warning(
+                "draft: autolink mentions failed for ref %s", ref_id, exc_info=True
+            )
 
     def _resolve_project(self, project: str | int) -> int:
         raw = str(project).strip()

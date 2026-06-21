@@ -467,6 +467,30 @@ display text via `[text]([[address]])` or render nothing when bare.
 Every reference also materialises a `link` edge (§ Reference graph), so all
 references — serializing or author-only — are queryable backlinks.
 
+**Reuse, not a parallel grammar (DRY).** The repo already had one home
+for inline-reference machinery: `utils/mentions.py` (the `kind:ref`
+grammar + write-time `link` materialisation) and `precis_web/linkify.py`
+(read-time hover-anchor highlighting), shared by memories/conv/etc.
+Drafts ride the same rails rather than growing a second stack:
+
+- The bracket/sigil **regex atoms live in `mentions.py`** (the grammar
+  SSOT) — `AUTHORING_PATTERN` / `DISPLAY_LINK_PATTERN` /
+  `BARE_BRACKET_REF_PATTERN` / `DRAFT_CITE_PATTERN`. `utils/draft_markup.py`
+  parses against them (`parse_references`, `strip_markers`) and resolves
+  them (`resolve_draft_link_targets`, reusing `mentions.resolve_handle_ref`
+  / `chunk_to_pos`); `linkify.py` folds them into its one combined
+  highlight pass.
+- The recognised set is the **superset**: the bracket forms **∪** bare
+  `kind:ref` mentions. A draft chunk may carry either; both highlight and
+  both materialise links. `draft` is in `LINKIFY_KINDS`.
+- `DraftHandler._sync_draft_links` mirrors the note autolinker: on every
+  chunk add / edit / retire it recomputes the whole draft's reference set
+  and replaces the `meta.auto='mention'` `related-to` edges (so a removed
+  reference loses its link). Intra-draft `¶` refs are excluded from the
+  graph — they are a within-document concern surfaced by the renderer/TOC,
+  not a cross-ref edge. Best-effort: a resolution failure never fails the
+  write.
+
 **Indexing implication to record:** the embed/search input is the
 marker-stripped source above — a pure function of the chunk's own
 `text` — so `content_sha = hash(text)` (§4) fully determines it, with

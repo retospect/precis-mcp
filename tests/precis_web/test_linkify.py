@@ -329,3 +329,65 @@ def test_covid19_IS_linkified_known_acceptable_false_positive() -> None:
     ``covid``."""
     out = str(linkify_refs("covid19 study"))
     assert "/r/paper/covid19" in out
+
+
+# --- Draft superset grammar (ADR 0033 §8) -----------------------------------
+# The same filter highlights the bracket / sigil forms a draft chunk may
+# carry, in addition to the bare ``kind:ref`` mentions above.
+
+
+def test_display_link_to_kind_ref_shows_text_not_handle() -> None:
+    out = str(linkify_refs("see [the intro](memory:6184) please"))
+    assert ">the intro<" in out  # display text is the anchor label
+    assert "/r/memory/6184" in out  # …pointing at the resolver
+    assert "memory:6184" not in out  # raw handle is hidden behind the text
+
+
+def test_display_link_to_paper_chunk_carries_address() -> None:
+    out = str(linkify_refs("as [Miller](paper:miller89~4) showed"))
+    assert ">Miller<" in out and "/r/paper/miller89" in out
+    assert "chunk=4" in out
+
+
+def test_display_link_section_sigil_points_at_chunk_route() -> None:
+    out = str(linkify_refs("recall [the setup](¶5BL5xQ) above"))
+    assert ">the setup<" in out and 'href="/c/5BL5xQ"' in out
+
+
+def test_citation_sigil_resolves_to_paper() -> None:
+    out = str(linkify_refs("per [Miller](§miller89~4)"))
+    assert "/r/paper/miller89" in out and "chunk=4" in out and ">Miller<" in out
+
+
+def test_bare_bracket_xref_renders_handle_anchor() -> None:
+    out = str(linkify_refs("see [¶5BL5xQ]"))
+    assert 'href="/c/5BL5xQ"' in out and ">¶5BL5xQ<" in out
+
+
+def test_bare_bracket_citation_renders_paper_anchor() -> None:
+    out = str(linkify_refs("see [§miller89~4]"))
+    assert "/r/paper/miller89" in out and ">§miller89~4<" in out
+
+
+def test_authoring_link_surfaces_inner_handle() -> None:
+    out = str(linkify_refs("background [[memory:7]] informs this"))
+    # the [[ ]] wrapper is dropped; the inner handle becomes an anchor
+    assert "/r/memory/7" in out and "[[" not in out
+
+
+def test_external_display_link_opens_new_tab() -> None:
+    out = str(linkify_refs("visit [DDG](https://duckduckgo.com)"))
+    assert ">DDG<" in out and 'href="https://duckduckgo.com"' in out
+    assert "nofollow" in out
+
+
+def test_unrecognised_display_target_stays_literal() -> None:
+    # ``[see](note)`` is prose, not a reference — left untouched (escaped)
+    out = str(linkify_refs("a [see](note) here"))
+    assert "[see](note)" in out and "<a" not in out
+
+
+def test_display_link_target_is_escaped_no_attribute_breakout() -> None:
+    out = str(linkify_refs('[x](https://e.com" onclick="alert(1))'))
+    # the double-quote in the URL must be escaped, never closing the attr
+    assert 'onclick="alert(1)"' not in out
