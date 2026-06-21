@@ -53,8 +53,8 @@
         <span class="font-mono text-[10px] uppercase text-amber-700">{{ t.status }}</span>
         <span class="text-slate-700">{{ t.title }}</span>
       </a>
-      {# X to cancel a request that hasn't started yet (still open). #}
-      {% if t.status == 'open' %}
+      {# X to cancel a request that hasn't started yet (no job minted). #}
+      {% if not t.started %}
       <form method="post" action="/drafts/{{ ref.ident }}/todo/{{ t.ref_id }}/delete"
             onsubmit="return confirm('Delete this change request?')">
         <button class="text-amber-600 hover:text-rose-600 leading-none"

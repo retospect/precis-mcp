@@ -416,16 +416,16 @@ def test_markdown_escapes_before_wrapping() -> None:
     assert "<strong>" in out and "<script>" not in out and "&lt;script&gt;" in out
 
 
-def test_compact_citation_is_one_char_superscript() -> None:
+def test_compact_citation_is_one_char_marker() -> None:
     out = str(linkify_refs("see [§kong24~2] here", compact=True))
-    assert "<sup" in out and ">§<" in out
+    assert ">§</a>" in out  # full-size 1-char marker (easy hover), not <sup>
     assert "/r/paper/kong24?chunk=2" in out
     assert "§kong24~2" not in out  # verbose handle hidden
 
 
-def test_compact_xref_is_one_char_superscript() -> None:
+def test_compact_xref_is_one_char_marker() -> None:
     out = str(linkify_refs("recall [¶aB3xQ9]", compact=True))
-    assert "<sup" in out and ">¶<" in out and 'href="/c/aB3xQ9"' in out
+    assert ">¶</a>" in out and 'href="/c/aB3xQ9"' in out
 
 
 def test_non_compact_citation_stays_verbose() -> None:

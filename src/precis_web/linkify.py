@@ -260,10 +260,12 @@ def _render_bare_bracket(bare: str, *, compact: bool = False) -> str:
     if bare.startswith("¶"):
         handle = bare[1:]
         if compact:
+            # Full-size 1-char ¶ — keeps the sentence flowing but stays an
+            # easy hover/click target (a superscript was too small to grab).
             return _anchor_html(
                 href=f"/c/{escape(handle)}",
                 preview_url=f"/preview/chunk/{escape(handle)}",
-                label='<sup class="text-sky-700">¶</sup>',
+                label="¶",
             )
         return _render_chunk_anchor(handle, bare)
     m = _DRAFT_CITE_PATTERN.fullmatch(bare)
@@ -281,7 +283,7 @@ def _render_compact_cite(slug: str, chunk: str | None) -> str:
     return _anchor_html(
         href=f"/r/paper/{safe_slug}{suffix}",
         preview_url=f"/preview/paper/{safe_slug}{suffix}",
-        label='<sup class="text-sky-700">§</sup>',
+        label="§",  # full-size 1-char marker (easy to hover), flow intact
     )
 
 

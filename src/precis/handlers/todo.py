@@ -505,6 +505,23 @@ class TodoHandler(NumericRefHandler):
                 project_tag = project_tag_for_path(ws.get("path"))
         if project_tag and (not tags or project_tag not in tags):
             tags = [*(tags or []), project_tag]
+        # Default project/workspace todos to ``LLM:opus`` on create, so a
+        # generated todo actually runs: an untagged todo with no executor
+        # is inert — ``dispatch`` only mints a ``plan_tick`` under an
+        # ``LLM:*`` todo, so a project's children would sit ``open`` forever
+        # (#40159 sat ~40h). Scoped to workspace-bound todos so a throwaway
+        # standalone todo doesn't each spawn an opus tick. Skip when the
+        # caller already chose a tier / executor, or it's a recurring
+        # umbrella (the spawner runs instances, not the umbrella).
+        if (
+            id is None
+            and isinstance(meta, dict)
+            and meta.get("workspace")
+            and not (tags and any(t.startswith("LLM:") for t in tags))
+            and not meta.get("executor")
+            and not (tags and guards.LEVEL_RECURRING in tags)
+        ):
+            tags = [*(tags or []), "LLM:opus"]
         # Default parent_id for a ``level:recurring`` root to the
         # seeded Watches umbrella — every recurring lives under it by
         # default, so the operator gets a tidy two-panel ``view='roots'``

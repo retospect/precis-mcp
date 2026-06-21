@@ -147,7 +147,9 @@ def _inflight_by_handle(
     sql = (
         "SELECT r.ref_id, r.title, r.meta->>'anchor' AS anchor, "
         "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
-        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) AS status "
+        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) AS status, "
+        "  EXISTS (SELECT 1 FROM refs j WHERE j.parent_id = r.ref_id "
+        "          AND j.kind = 'job') AS started "
         "FROM refs r "
         "WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
         "  AND r.meta->>'anchor' = ANY(%s)"
@@ -155,7 +157,7 @@ def _inflight_by_handle(
     out: dict[str, list[dict[str, Any]]] = {}
     with store.pool.connection() as conn:
         rows = conn.execute(sql, (anchors,)).fetchall()
-    for ref_id, title, anchor, status in rows:
+    for ref_id, title, anchor, status, started in rows:
         if status in ("done", "won't-do"):
             continue
         handle = (anchor or "").lstrip("¶")
@@ -164,6 +166,9 @@ def _inflight_by_handle(
                 "ref_id": ref_id,
                 "title": (title or "").split("\n", 1)[0][:60],
                 "status": status or "open",
+                # "started" = a plan_tick (or other) job has been minted;
+                # the X-to-cancel only shows before that.
+                "started": bool(started),
             }
         )
     return out
@@ -380,8 +385,13 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
             "preview/popover.html.j2",
             {"kind": "chunk", "label": f"¶{handle}", "missing": True},
         )
-    flat = " ".join((chunk.text or "").split())
-    title = flat[:100] + ("…" if len(flat) > 100 else "")
+    # Show the chunk's verbatim text (≤ ~20 lines) as the quote — the
+    # "what does ¶handle actually say?" a hover should answer.
+    text = chunk.text or ""
+    lines = text.splitlines()
+    quote = "\n".join(lines[:20]) + ("\n…" if len(lines) > 20 else "")
+    if len(quote) > 1600:
+        quote = quote[:1600].rstrip() + "…"
     return templates.TemplateResponse(
         request,
         "preview/popover.html.j2",
@@ -389,7 +399,9 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
             "kind": chunk.chunk_kind,
             "label": f"¶{handle}",
             "ref_id": handle,
-            "title": title or "(empty)",
+            "title": f"¶{handle}",
+            "quote": quote.strip() or "(empty)",
+            "chunk_label": "",
             "body_preview": "",
             "deleted": False,
             "missing": False,
