@@ -50,6 +50,13 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="Export format. Only 'tex' so far (docx via pandoc is a later increment).",
     )
     ex.add_argument(
+        "--pdf",
+        action="store_true",
+        help="Also compile the project to PDF with latexmk (biber + "
+        "makeglossaries run automatically). No-op with a warning if "
+        "latexmk isn't installed.",
+    )
+    ex.add_argument(
         "--database-url",
         default=None,
         help="Override PRECIS_DATABASE_URL.",
@@ -83,10 +90,35 @@ def _run_export(args: argparse.Namespace) -> None:
     print(
         f"draft export: wrote {result.main_tex}, {result.bib} "
         f"({len(result.cited_slugs)} citation(s), "
-        f"{len(result.acronyms)} acronym(s)). "
-        f"Compile: latexmk -pdf -cd {result.main_tex}",
+        f"{len(result.acronyms)} acronym(s)).",
         file=sys.stderr,
     )
+
+    if not args.pdf:
+        print(
+            f"draft export: compile with  latexmk -pdf -cd {result.main_tex}",
+            file=sys.stderr,
+        )
+        return
+
+    from precis.export.compile import compile_pdf
+
+    res = compile_pdf(result.main_tex.parent)
+    if res.skipped:
+        print(
+            "draft export: --pdf requested but latexmk isn't installed; "
+            "wrote the .tex project only.",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+    if not res.ok:
+        print(
+            f"draft export: latexmk FAILED (exit {res.returncode}). "
+            f"Last log lines:\n{res.log_tail}",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+    print(f"draft export: compiled {res.pdf}", file=sys.stderr)
 
 
 __all__ = ["add_parser", "run"]

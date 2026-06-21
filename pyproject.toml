@@ -91,6 +91,11 @@ dependencies = [
     # FITS, PDF) and markdownify headline-DoS aren't reachable from
     # precis-mcp directly — paper ingestion sandboxes Marker behind
     # the ``[paper]`` extra. Tracked in dependabot.
+    # LaTeX export determinism: unicode→LaTeX-command translation so
+    # arbitrary scientific prose (≈, →, α, ™, …) never throws a
+    # "missing character" on pdflatex. Pure-Python, tiny; also backs the
+    # planned LaTeX→draft ingest parser.
+    "pylatexenc>=2.10",
 ]
 
 [project.urls]
