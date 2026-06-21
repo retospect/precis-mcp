@@ -214,14 +214,40 @@ def _glossary(store: Any, ref_id: int, chunk_objs: list[Any]) -> list[dict[str, 
     return sorted(entries.values(), key=lambda e: e["short"].lower())
 
 
+def _block_views(store: Any, ref_id: int) -> dict[str, dict[str, str]]:
+    """Per-block keyword + llm-summary text for the view slider (body /
+    summary / keywords). Populated by the chunk_keywords + llm_summarize
+    workers; empty for a chunk they haven't reached yet (→ first-line
+    fallback in the row)."""
+    out: dict[str, dict[str, str]] = {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT c.handle, c.keywords, "
+            "  (SELECT s.text FROM chunk_summaries s WHERE s.chunk_id = c.chunk_id "
+            "    AND s.summarizer = 'llm-v1' LIMIT 1) AS summary "
+            "FROM chunks c WHERE c.ref_id = %s AND c.retired_at IS NULL "
+            "  AND c.pos IS NOT NULL AND c.ord >= 0",
+            (ref_id,),
+        ).fetchall()
+    for handle, kws, summary in rows:
+        out[handle] = {
+            "keywords": ", ".join((kws or [])[:12]),
+            "summary": (summary or "").strip(),
+        }
+    return out
+
+
 def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
     """Per-block row context for the whole draft (content + ancestors +
-    ref chips + in-flight todos)."""
+    ref chips + requests + summary/keywords for the view slider)."""
     chunk_objs = store.reading_order(ref.id)
     anc = _ancestor_headings(chunk_objs)
     requests = _requests_by_handle(store, [c.handle for c in chunk_objs])
+    views = _block_views(store, ref.id)
     rows: list[dict[str, Any]] = []
     for c in chunk_objs:
+        v = views.get(c.handle, {})
+        first_line = ((c.text or "").splitlines() or [""])[0][:140]
         rows.append(
             {
                 "handle": c.handle,
@@ -232,6 +258,10 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
                 "ancestors": anc.get(c.handle, []),
                 "refs": _ref_chips(c.text),
                 "requests": requests.get(c.handle, []),
+                # view slider: summary falls back to keywords → first line;
+                # keywords falls back to first line.
+                "summary": v.get("summary") or v.get("keywords") or first_line,
+                "keywords": v.get("keywords") or first_line,
             }
         )
     return rows

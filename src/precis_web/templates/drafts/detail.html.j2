@@ -11,6 +11,16 @@
       {% if ref.slug %}<span class="font-mono text-xs text-slate-400">draft:{{ ref.slug }}</span>{% endif %}
     </div>
     <div class="flex items-center gap-3 text-xs">
+      {# View slider: show each block's full body, its summary, or its
+         keywords (3-stop). Persisted per draft. #}
+      <div class="flex items-center rounded border border-slate-200 p-0.5">
+        <template x-for="opt in ['body', 'summary', 'keywords']" :key="opt">
+          <button @click="setView(opt)"
+                  class="px-1.5 py-0.5 rounded capitalize"
+                  :class="view === opt ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-800'"
+                  x-text="opt"></button>
+        </template>
+      </div>
       {# live-refresh indicator + the "you were typing, here's a manual refresh" pill #}
       <button x-show="stale" x-cloak @click="forceRefresh()"
               class="rounded bg-amber-100 border border-amber-300 px-2 py-0.5 text-amber-800 hover:bg-amber-200">
@@ -92,6 +102,8 @@ function draftDoc(ident) {
     version: 0,
     live: true,
     stale: false,
+    view: localStorage.getItem('draft-view:' + ident) || 'body',
+    setView(v) { this.view = v; localStorage.setItem('draft-view:' + ident, v); },
     collapsed: JSON.parse(localStorage.getItem(key) || '[]'),
     save() { localStorage.setItem(key, JSON.stringify(this.collapsed)); },
     toggle(h) {

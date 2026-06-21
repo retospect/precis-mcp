@@ -269,3 +269,11 @@ def test_glossary_auto_detects_abbreviations() -> None:
     assert "PEI" in by_short
     assert "polyethyleneimine" in by_short["PEI"]["long"].lower()
     assert by_short["PEI"]["handle"] is None  # auto-detected, not a term chunk
+
+
+def test_reader_has_view_slider(draft_client: TestClient) -> None:
+    """The body/summary/keywords 3-stop slider + per-block view spans."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "setView(" in r.text  # the radio control
+    assert "view === 'summary'" in r.text and "view === 'keywords'" in r.text
