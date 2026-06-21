@@ -42,19 +42,26 @@
   {# ── Col B: meta — refs + in-flight ─────────────────────────── #}
   <div class="text-xs space-y-1">
     {% if r.refs %}
+    {# Each chip carries the cited quote on hover (popover_chip). #}
     <div class="flex flex-wrap gap-1">
-      {% for c in r.refs %}
-      <a href="{{ c.href }}"{% if c.href.startswith('http') %} target="_blank" rel="noopener nofollow"{% endif %}
-         class="inline-block max-w-[11rem] truncate rounded bg-slate-100 px-1.5 py-0.5 text-sky-700 hover:bg-slate-200">{{ c.label }}</a>
-      {% endfor %}
+      {% for c in r.refs %}{{ c }}{% endfor %}
     </div>
     {% endif %}
     {% for t in r.inflight %}
-    <a href="/r/todo/{{ t.ref_id }}"
-       class="block rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 hover:bg-amber-100">
-      <span class="font-mono text-[10px] uppercase text-amber-700">{{ t.status }}</span>
-      <span class="text-slate-700">{{ t.title }}</span>
-    </a>
+    <div class="flex items-start gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5">
+      <a href="/r/todo/{{ t.ref_id }}" class="min-w-0 flex-1 hover:underline">
+        <span class="font-mono text-[10px] uppercase text-amber-700">{{ t.status }}</span>
+        <span class="text-slate-700">{{ t.title }}</span>
+      </a>
+      {# X to cancel a request that hasn't started yet (still open). #}
+      {% if t.status == 'open' %}
+      <form method="post" action="/drafts/{{ ref.ident }}/todo/{{ t.ref_id }}/delete"
+            onsubmit="return confirm('Delete this change request?')">
+        <button class="text-amber-600 hover:text-rose-600 leading-none"
+                title="delete this not-yet-started request">×</button>
+      </form>
+      {% endif %}
+    </div>
     {% endfor %}
   </div>
 

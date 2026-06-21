@@ -44,6 +44,7 @@ from fastapi.responses import (
 
 from precis.utils import draft_markup, mentions
 from precis_web.deps import get_store, redirect_or_error, templates
+from precis_web.linkify import popover_chip
 
 router = APIRouter(tags=["drafts"])
 
@@ -85,41 +86,52 @@ def _ancestor_headings(chunk_objs: list[Any]) -> dict[str, list[str]]:
     return out
 
 
-def _ref_chips(text: str) -> list[dict[str, str]]:
-    """The references a block makes, as terse ``{label, href}`` chips —
-    the superset grammar (bracket/sigil forms ∪ bare ``kind:ref``),
-    deduped by href. Reuses the shared parser/grammar (DRY)."""
-    chips: list[dict[str, str]] = []
+def _ref_chips(text: str) -> list[Any]:
+    """The references a block makes, as terse hover-preview chips — the
+    superset grammar (bracket/sigil forms ∪ bare ``kind:ref``), deduped
+    by their navigate target so ``§kong24~2`` and ``paper:kong24~2`` (the
+    same chunk) collapse to one chip. Each chip carries the cited quote
+    on hover (``popover_chip``). Reuses the shared parser/grammar (DRY)."""
     seen: set[str] = set()
+    chips: list[Any] = []
 
-    def add(label: str, href: str) -> None:
+    def add(label: str, href: str, preview: str | None) -> None:
         if href in seen:
             return
         seen.add(href)
-        chips.append({"label": label, "href": href})
+        chips.append(popover_chip(label, href, preview))
+
+    def paper(slug: str, chunk: str | None, label: str) -> None:
+        # chunk here is the regex group incl. leading ``~`` (or None).
+        suffix = f"?chunk={chunk[1:]}" if chunk else ""
+        add(label, f"/r/paper/{slug}{suffix}", f"/preview/paper/{slug}{suffix}")
 
     for ref in draft_markup.parse_references(text):
         if ref.cls == draft_markup.XREF:
-            add(ref.surface or ref.target, f"/c/{ref.target.lstrip('¶')}")
+            h = ref.target.lstrip("¶")
+            add(ref.surface or ref.target, f"/c/{h}", f"/preview/chunk/{h}")
         elif ref.cls == draft_markup.CITE:
             m = mentions.DRAFT_CITE_PATTERN.fullmatch(ref.target)
             if m:
-                chunk = m.group("chunk")
-                href = f"/r/paper/{m.group('slug')}"
-                if chunk:
-                    href += f"?chunk={chunk[1:]}"
-                add(ref.surface or ref.target, href)
+                paper(m.group("slug"), m.group("chunk"), ref.surface or ref.target)
         elif ref.cls == draft_markup.WEB:
-            add(ref.surface or ref.target, ref.target)
+            add(ref.surface or ref.target, ref.target, None)
         else:  # AUTHORING — a bracketed [[kind:id]]
             m = mentions.REF_PATTERN.fullmatch(ref.target)
             if m and m.group("kind") in mentions.LINKIFY_KINDS:
-                add(
-                    ref.surface or ref.target,
-                    f"/r/{m.group('kind')}/{m.group('id').lstrip('#')}",
-                )
+                k, i = m.group("kind"), m.group("id").lstrip("#")
+                add(ref.surface or ref.target, f"/r/{k}/{i}", f"/preview/{k}/{i}")
     for kind, ident, chunk in mentions.extract_handles(text):
-        add(f"{kind}:{ident}{chunk or ''}", f"/r/{kind}/{ident.lstrip('#')}")
+        i = ident.lstrip("#")
+        if kind == "paper":  # collapse with the § form (same target)
+            paper(i, chunk, f"{kind}:{ident}{chunk or ''}")
+            continue
+        suffix = f"?chunk={chunk[1:]}" if chunk else ""
+        add(
+            f"{kind}:{ident}{chunk or ''}",
+            f"/r/{kind}/{i}{suffix}",
+            f"/preview/{kind}/{i}{suffix}",
+        )
     return chips
 
 
@@ -316,6 +328,20 @@ async def request_change(
         args["parent_id"] = project
     return await redirect_or_error(
         request, "put", args, redirect=back, error_title="Change request error"
+    )
+
+
+@router.post("/drafts/{ident}/todo/{todo_id}/delete")
+async def delete_change_request(request: Request, ident: str, todo_id: int) -> Response:
+    """Cancel a change-request todo anchored in this draft (the X on a
+    not-yet-started in-flight chip). Soft-deletes via the todo handler."""
+    back = f"/drafts/{ident}"
+    return await redirect_or_error(
+        request,
+        "delete",
+        {"kind": "todo", "id": todo_id},
+        redirect=back,
+        error_title="Delete change request error",
     )
 
 

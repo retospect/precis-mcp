@@ -129,7 +129,13 @@ def _render_anchor(
 _LINK_CLASS = "text-sky-700 underline decoration-dotted hover:decoration-solid"
 
 
-def _anchor_html(*, href: str, preview_url: str, label: str) -> str:
+#: Default anchor styling for inline refs (chips override via anchor_cls).
+_ANCHOR_CLS = "text-sky-700 underline decoration-dotted hover:decoration-solid"
+
+
+def _anchor_html(
+    *, href: str, preview_url: str, label: str, anchor_cls: str = _ANCHOR_CLS
+) -> str:
     """The shared hover-preview anchor. An ``<a href>`` (so right-click /
     open-in-new-tab work without JS) wrapped in an Alpine/htmx span that
     lazily fetches a popover card from ``preview_url`` on hover. ``href``,
@@ -184,15 +190,15 @@ def _anchor_html(*, href: str, preview_url: str, label: str) -> str:
         f'@mouseleave="{close_expr}" '
         f'@click.outside="{close_expr}" '
         f'@ref-popover-open.window="{other_open_expr}">'
-        f'<a class="text-sky-700 underline decoration-dotted hover:decoration-solid" '
+        f'<a class="{anchor_cls}" '
         f'href="{href}" '
         f'hx-get="{preview_url}" '
         f'hx-trigger="mouseenter delay:200ms once" '
         f'hx-target="next .ref-popover" hx-swap="innerHTML">'
         f"{label}</a>"
-        f'<span class="ref-popover absolute z-50 top-full left-0 mt-1 w-80 '
+        f'<span class="ref-popover absolute z-50 top-full left-0 mt-1 w-96 '
         f"rounded-lg border border-slate-200 bg-white shadow-xl p-2 text-sm "
-        f'whitespace-normal max-h-72 overflow-y-auto" '
+        f'whitespace-normal max-h-96 overflow-y-auto" '
         f'x-show="hovered" x-cloak></span>'
         f"</span>"
     )
@@ -477,4 +483,31 @@ def _linkify_prose(
     return "".join(out)
 
 
-__all__ = ["linkify_refs"]
+_CHIP_CLS = (
+    "inline-block max-w-[12rem] truncate rounded bg-slate-100 px-1.5 py-0.5 "
+    "text-sky-700 hover:bg-slate-200 align-middle"
+)
+
+
+def popover_chip(label: str, href: str, preview_url: str | None) -> Markup:
+    """A sidebar reference chip — chip-styled, carrying the same lazy
+    hover-preview popover as an inline ref when ``preview_url`` is given
+    (so the cited quote shows on hover). External links (no preview) get
+    a plain new-tab chip. ``label`` / ``href`` are escaped here."""
+    safe_label = escape(label)
+    if preview_url is None:
+        return Markup(
+            f'<a class="{_CHIP_CLS}" href="{escape(href)}" '
+            f'target="_blank" rel="noopener nofollow">{safe_label}</a>'
+        )
+    return Markup(
+        _anchor_html(
+            href=escape(href),
+            preview_url=escape(preview_url),
+            label=safe_label,
+            anchor_cls=_CHIP_CLS,
+        )
+    )
+
+
+__all__ = ["linkify_refs", "popover_chip"]

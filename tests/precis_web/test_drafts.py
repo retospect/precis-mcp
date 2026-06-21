@@ -207,3 +207,31 @@ def test_change_request_dispatches_anchored_todo(
     assert verb == "put" and args["kind"] == "todo"
     assert args["parent_id"] == 1  # the draft-of project
     assert args["meta"]["anchor"] == "¶BBBBBB"
+
+
+def test_ref_chips_dedup_sigil_and_kindref() -> None:
+    """§kong24~2 and paper:kong24~2 are the same target → one chip."""
+    from precis_web.routes.drafts import _ref_chips
+
+    chips = _ref_chips("see [§kong24~2] and also paper:kong24~2 again")
+    assert len(chips) == 1
+    html = str(chips[0])
+    assert "/r/paper/kong24?chunk=2" in html
+    # chip carries the lazy quote-preview popover
+    assert "/preview/paper/kong24?chunk=2" in html
+
+
+def test_ref_chips_distinct_chunks_stay_separate() -> None:
+    from precis_web.routes.drafts import _ref_chips
+
+    chips = _ref_chips("[§kong24~2] [§kong24~21] [§kong24~22]")
+    assert len(chips) == 3
+
+
+def test_delete_change_request_dispatches_todo_delete(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    r = draft_client.post("/drafts/nt/todo/777/delete", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "delete" and args["kind"] == "todo" and args["id"] == 777

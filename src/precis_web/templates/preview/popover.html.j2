@@ -15,7 +15,12 @@
   <p class="text-xs text-slate-500 italic">no such {{ label }}</p>
   {% else %}
   <p class="text-sm font-medium text-slate-800">{{ title }}</p>
-  {% if body_preview %}
+  {% if quote %}
+  {# The cited chunk's verbatim quote (≤ ~20 lines) — the "what does it
+     actually say?" answer for a citation hover. #}
+  {% if chunk_label %}<p class="text-[10px] font-mono text-slate-400">{{ chunk_label }}</p>{% endif %}
+  <pre class="text-xs text-slate-700 whitespace-pre-wrap break-words font-sans">{{ quote }}</pre>
+  {% elif body_preview %}
   <p class="text-xs text-slate-600 break-words">{{ body_preview }}</p>
   {% endif %}
   <p class="text-xs text-sky-700">click to open →</p>

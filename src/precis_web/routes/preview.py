@@ -117,14 +117,39 @@ def _chunk_to_page(store: Any, ref_id: int, ord_pos: int) -> int | None:
     return int(row[0])
 
 
+#: Quote caps for the chunk-addressed preview (``?chunk=N``): show the
+#: *cited* chunk's text, up to this many lines / chars, so a citation
+#: hover answers "what does it actually say?" without dumping a page.
+_QUOTE_MAX_LINES = 20
+_QUOTE_MAX_CHARS = 1600
+
+
+def _clip_quote(text: str) -> str:
+    """The cited chunk's text, capped to ~20 lines / ~1600 chars."""
+    lines = text.splitlines()
+    if len(lines) > _QUOTE_MAX_LINES:
+        text = "\n".join(lines[:_QUOTE_MAX_LINES]) + "\n…"
+    if len(text) > _QUOTE_MAX_CHARS:
+        text = text[:_QUOTE_MAX_CHARS].rstrip() + "…"
+    return text.strip()
+
+
 @router.get("/preview/{kind}/{ref_id}", response_class=HTMLResponse)
-async def preview(request: Request, kind: str, ref_id: str) -> HTMLResponse:
+async def preview(
+    request: Request, kind: str, ref_id: str, chunk: str | None = None
+) -> HTMLResponse:
     """Render the small popover fragment for a ``kind:ref`` mention.
 
     Cheap path: resolve the ref, fetch ``title`` and a short body
     excerpt. 404 / unknown-kind paths render a stub rather than
     bouncing — the popover that already opened should say *something*
     on hover. Errors aren't agent-actionable here.
+
+    ``?chunk=N`` (the citation case) previews the **cited chunk's**
+    verbatim text (up to ~20 lines) instead of the ref's leading
+    chunk — so a ``§paper~4`` / ``paper:slug~4`` hover shows what
+    chunk 4 actually says. ``N..M`` previews from ``N``; ``pN`` (a PDF
+    page jump) carries no chunk text, so it falls back to the lead.
     """
     store = get_store(request)
     numeric_id = _resolve_ref_id(store, kind, ref_id)
@@ -132,39 +157,51 @@ async def preview(request: Request, kind: str, ref_id: str) -> HTMLResponse:
         return templates.TemplateResponse(
             request,
             "preview/popover.html.j2",
-            {
-                "kind": kind,
-                "label": f"{kind}:{ref_id}",
-                "missing": True,
-            },
+            {"kind": kind, "label": f"{kind}:{ref_id}", "missing": True},
         )
+    # A chunk ord to quote, when the suffix names one (N or N..M).
+    ord_for_quote: int | None = None
+    if chunk:
+        m = _CHUNK_RE.match(chunk)
+        if m is not None:
+            ord_for_quote = int(m.group("from"))
     with store.pool.connection() as conn:  # type: ignore[attr-defined]
         row = conn.execute(
             "SELECT title, deleted_at IS NOT NULL FROM refs WHERE ref_id = %s",
             (numeric_id,),
         ).fetchone()
-        body_row = conn.execute(
-            "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 "
-            "ORDER BY ord LIMIT 1",
-            (numeric_id,),
-        ).fetchone()
+        if ord_for_quote is not None:
+            body_row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s",
+                (numeric_id, ord_for_quote),
+            ).fetchone()
+        else:
+            body_row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 "
+                "ORDER BY ord LIMIT 1",
+                (numeric_id,),
+            ).fetchone()
     if row is None:
         return templates.TemplateResponse(
             request,
             "preview/popover.html.j2",
-            {
-                "kind": kind,
-                "label": f"{kind}:{ref_id}",
-                "missing": True,
-            },
+            {"kind": kind, "label": f"{kind}:{ref_id}", "missing": True},
         )
     title = (row[0] or "").split("\n", 1)[0]
     if len(title) > 100:
         title = title[:100].rstrip() + "…"
+    # When a specific chunk is cited, show its verbatim quote (multi-line,
+    # capped); otherwise the flattened lead-chunk teaser as before.
+    quote = ""
     body_preview = ""
+    chunk_label = ""
     if body_row and body_row[0]:
-        flat = " ".join(body_row[0].split())
-        body_preview = flat[:200] + ("…" if len(flat) > 200 else "")
+        if ord_for_quote is not None:
+            quote = _clip_quote(body_row[0])
+            chunk_label = f"~{chunk}"
+        else:
+            flat = " ".join(body_row[0].split())
+            body_preview = flat[:200] + ("…" if len(flat) > 200 else "")
     return templates.TemplateResponse(
         request,
         "preview/popover.html.j2",
@@ -174,6 +211,8 @@ async def preview(request: Request, kind: str, ref_id: str) -> HTMLResponse:
             "ref_id": numeric_id,
             "title": title or "(untitled)",
             "body_preview": body_preview,
+            "quote": quote,
+            "chunk_label": chunk_label,
             "deleted": bool(row[1]),
             "missing": False,
         },

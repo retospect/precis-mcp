@@ -216,7 +216,7 @@ def test_popover_caps_height_for_long_content() -> None:
     """Long titles / body previews must stay inside a scrollable box
     rather than growing the popover off-screen."""
     out = str(linkify_refs("paper:acheson26"))
-    assert "max-h-72" in out
+    assert "max-h-96" in out  # widened for cite quotes (≤ ~20 lines)
     assert "overflow-y-auto" in out
 
 
