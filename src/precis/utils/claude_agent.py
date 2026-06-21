@@ -379,6 +379,23 @@ def _extract_turns_used(stderr: str) -> int | None:
         return None
 
 
+def stream_final_text(stdout: str) -> str:
+    """The assistant's final text from a ``stream-json`` stdout (the
+    trailing ``result`` event's ``result`` field).
+
+    Falls back to the **raw stdout** when there's no result event — i.e.
+    text-format output or a stub test that prints canned text — so a
+    caller that switched its invocation to ``stream-json`` stays correct
+    on legacy / stub output (the conclusion parser still sees plain text).
+    """
+    ev = _last_result_event(stdout or "")
+    if ev is not None:
+        r = ev.get("result")
+        if isinstance(r, str):
+            return r
+    return stdout or ""
+
+
 def _last_result_event(stdout: str) -> dict[str, Any] | None:
     """Find the trailing ``{"type":"result"}`` event in stream-json stdout.
 

@@ -172,6 +172,13 @@ def run(
         "30",
         "--permission-mode",
         "acceptEdits",
+        # Emit the full message stream (every turn + tool call/result) so
+        # the executor can store a debuggable transcript. The final text is
+        # lifted from the trailing ``result`` event; ``--verbose`` is
+        # required alongside ``stream-json`` in ``-p`` mode.
+        "--output-format",
+        "stream-json",
+        "--verbose",
     ]
     if mcp_config:
         cmd.extend(["--mcp-config", mcp_config, "--strict-mcp-config"])

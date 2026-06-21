@@ -369,18 +369,36 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             bubble_job_failure(store, ref_id)
         return
 
+    from precis.utils.claude_agent import stream_final_text
     from precis.utils.tick_conclusion import parse as parse_tick_conclusion
 
-    conclusion = parse_tick_conclusion(outcome.stdout or "")
+    # ``outcome.stdout`` is now the full stream-json message stream (every
+    # turn + tool call/result). The final assistant text is lifted from the
+    # trailing result event (falls back to raw stdout on text/stub output),
+    # and the WHOLE stream is stored as ``meta.transcript`` for debugging
+    # (capped; GC'd by age — see workers/sweeper). The conclusion parser
+    # and job_summary continue to see the final text, as before.
+    raw_stream = outcome.stdout or ""
+    final_text = stream_final_text(raw_stream)
+    conclusion = parse_tick_conclusion(final_text)
 
     with store.pool.connection() as conn:
         _append_chunk(
             store,
             ref_id,
             _JOB_SUMMARY_KIND,
-            outcome.stdout or "(no output)",
+            final_text or "(no output)",
             conn=conn,
         )
+        # Full LLM transcript for the Tasks-view debugger. Capped at 1 MiB
+        # so a runaway tick can't bloat refs.meta; stored on the job ref
+        # (not a chunk → never embedded, no migration).
+        _TRANSCRIPT_CAP = 1_000_000
+        transcript = raw_stream[:_TRANSCRIPT_CAP]
+        if len(raw_stream) > _TRANSCRIPT_CAP:
+            transcript += "\n…(truncated)"
+        if transcript:
+            _set_meta(conn, ref_id, transcript=transcript)
         # Structured per-tick audit chunk — slim, grepable summary of
         # what the LLM did. Replaces dumping raw stdout into the
         # parent's re-tick prompt. Builds from the worker_logs query

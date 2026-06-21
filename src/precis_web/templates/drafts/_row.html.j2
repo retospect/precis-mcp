@@ -86,6 +86,11 @@
           <span class="font-mono text-[10px] uppercase {% if t.done %}text-slate-400{% elif stuck %}text-rose-700{% else %}text-amber-700{% endif %}">{{ t.status }}</span>
           <span class="{% if not t.done %}text-slate-700{% endif %}{% if t.status == "won't-do" %} line-through{% endif %}">{{ t.title }}</span>
         </a>
+        {# 📜 the full LLM transcript, once a job has run (debugging). #}
+        {% if t.started %}
+        <a href="/tasks/{{ t.ref_id }}/transcript" target="_blank" rel="noopener"
+           class="shrink-0 leading-none" title="LLM transcript (what it asked / did)">📜</a>
+        {% endif %}
         {# X to cancel a request that hasn't started yet (no job minted). #}
         {% if not t.started and not t.done %}
         <form method="post" action="/drafts/{{ ref.ident }}/todo/{{ t.ref_id }}/delete"

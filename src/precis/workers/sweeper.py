@@ -80,8 +80,41 @@ class _Orphan:
     running_since: datetime
 
 
+def _transcript_retention_days() -> int:
+    """Days to keep a job's full LLM ``meta.transcript`` before GC.
+
+    Transcripts (the full stream-json of a plan_tick) are large; we keep
+    a debugging window then drop them. ``PRECIS_TRANSCRIPT_RETENTION_DAYS``
+    (default 30); the chunk-level job_summary/job_result stay regardless."""
+    raw = os.environ.get("PRECIS_TRANSCRIPT_RETENTION_DAYS")
+    if not raw:
+        return 30
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 30
+
+
+def _gc_transcripts(store: Store) -> int:
+    """Strip ``meta.transcript`` from job refs older than the retention
+    window. Cheap single UPDATE; returns the number reaped."""
+    days = _transcript_retention_days()
+    with store.pool.connection() as conn:
+        cur = conn.execute(
+            "UPDATE refs SET meta = meta - 'transcript' "
+            "WHERE kind = 'job' AND meta ? 'transcript' "
+            "  AND created_at < now() - %s::interval",
+            (f"{days} days",),
+        )
+        conn.commit()
+        return cur.rowcount or 0
+
+
 def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     """Detect orphans, lock-and-transition each, return BatchResult.
+
+    Also GCs stale LLM transcripts (``meta.transcript`` older than the
+    retention window) — a cheap piggy-back on the per-minute sweep.
 
     Counters:
 
@@ -90,6 +123,9 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     * ``failed`` = orphans skipped due to a lost race (another worker
       held the row, or its status changed between enumeration and lock)
     """
+    reaped = _gc_transcripts(store)
+    if reaped:
+        log.info("sweeper: GC'd %d stale job transcript(s)", reaped)
     threshold_hours = _stuck_job_hours()
     candidates = _enumerate_orphans(store, threshold_hours, limit=limit)
     if not candidates:

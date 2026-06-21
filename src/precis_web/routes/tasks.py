@@ -1148,3 +1148,99 @@ async def delete_task(
         ),
         status_code=303,
     )
+
+
+# ── LLM transcript viewer ───────────────────────────────────────────────
+#
+# The full stream-json of a plan_tick is stored on the job ref's
+# ``meta.transcript`` (capped, GC'd by the sweeper). This renders it as a
+# readable turn-by-turn log for debugging "it ran and did nothing".
+
+
+def _parse_transcript(raw: str) -> list[dict[str, Any]]:
+    """Parse a stream-json transcript into readable turns (tolerant —
+    skips lines it can't parse). Each turn: role + text (+ tool calls)."""
+    import json as _json
+
+    turns: list[dict[str, Any]] = []
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        kind = ev.get("type")
+        if kind == "assistant":
+            content = (ev.get("message") or {}).get("content") or []
+            texts: list[str] = []
+            tools: list[dict[str, str]] = []
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text":
+                    texts.append(str(b.get("text", "")))
+                elif b.get("type") == "tool_use":
+                    tools.append(
+                        {
+                            "name": str(b.get("name", "?")),
+                            "input": _json.dumps(b.get("input", {}))[:500],
+                        }
+                    )
+            turns.append(
+                {"role": "assistant", "text": "\n".join(texts).strip(), "tools": tools}
+            )
+        elif kind == "user":
+            content = (ev.get("message") or {}).get("content") or []
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    c = b.get("content")
+                    s = c if isinstance(c, str) else _json.dumps(c)
+                    turns.append({"role": "tool_result", "text": s[:800], "tools": []})
+        elif kind == "result":
+            turns.append(
+                {"role": "result", "text": str(ev.get("result", "")), "tools": []}
+            )
+    return turns
+
+
+def _transcript_for(store: Any, ref_id: int) -> tuple[int, str] | None:
+    """The (job_ref_id, raw transcript) for a ref. Accepts a job id
+    directly, or a todo id (→ its most recent child job with a
+    transcript). ``None`` when nothing's stored."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'transcript' FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+        if row and row[0]:
+            return ref_id, row[0]
+        job = conn.execute(
+            "SELECT ref_id, meta->>'transcript' FROM refs "
+            "WHERE parent_id = %s AND kind = 'job' AND meta ? 'transcript' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (ref_id,),
+        ).fetchone()
+    if job and job[1]:
+        return int(job[0]), job[1]
+    return None
+
+
+@router.get("/{ref_id}/transcript", response_class=HTMLResponse)
+async def transcript(request: Request, ref_id: int) -> HTMLResponse:
+    """Readable LLM transcript for a job (or a todo's latest job) — the
+    full turn-by-turn chatter for debugging."""
+    store = get_store(request)
+    found = _transcript_for(store, ref_id)
+    turns = _parse_transcript(found[1]) if found else []
+    return templates.TemplateResponse(
+        request,
+        "tasks/transcript.html.j2",
+        {
+            "active_tab": "tasks",
+            "ref_id": ref_id,
+            "job_id": found[0] if found else None,
+            "turns": turns,
+            "missing": found is None,
+        },
+    )

@@ -427,3 +427,17 @@ pytestmark = pytest.mark.skipif(
 # Silence unused-import warning on the os import — kept for future
 # env-related tests.
 _ = os
+
+
+def test_stream_final_text_lifts_result_then_falls_back() -> None:
+    from precis.utils.claude_agent import stream_final_text
+
+    stream = (
+        '{"type":"system","subtype":"init"}\n'
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n'
+        '{"type":"result","result":"final answer","total_cost_usd":0.01,"num_turns":3}'
+    )
+    assert stream_final_text(stream) == "final answer"
+    # text-format / stub output (no result event) → raw stdout
+    assert stream_final_text("plain stub output") == "plain stub output"
+    assert stream_final_text("") == ""

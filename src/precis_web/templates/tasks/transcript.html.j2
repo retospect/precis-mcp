@@ -1,0 +1,42 @@
+{% extends "base.html.j2" %}
+{% block title %}LLM transcript{% endblock %}
+{% block content %}
+<div class="mb-3 flex items-center justify-between">
+  <h1 class="text-lg font-semibold">LLM transcript</h1>
+  <a href="/tasks?focus={{ ref_id }}" class="text-sm text-slate-500 underline">← task</a>
+</div>
+
+{% if missing %}
+<p class="text-sm text-slate-500">
+  No transcript stored for #{{ ref_id }}. Transcripts are captured for
+  <code>plan_tick</code> runs and kept ~30 days; older ones are GC'd, and
+  runs from before transcript-logging shipped have none.
+</p>
+{% else %}
+<p class="mb-3 text-xs text-slate-400">job #{{ job_id }} · {{ turns | length }} turn(s)</p>
+<div class="space-y-2">
+  {% for t in turns %}
+  <div class="rounded-lg border p-2 text-sm
+              {% if t.role == 'assistant' %}border-sky-200 bg-sky-50
+              {% elif t.role == 'tool_result' %}border-slate-200 bg-slate-50
+              {% else %}border-emerald-200 bg-emerald-50{% endif %}">
+    <div class="mb-1 font-mono text-[10px] uppercase tracking-wide
+                {% if t.role == 'assistant' %}text-sky-700
+                {% elif t.role == 'tool_result' %}text-slate-500
+                {% else %}text-emerald-700{% endif %}">
+      {{ 'assistant' if t.role == 'assistant' else ('tool result' if t.role == 'tool_result' else 'final result') }}
+    </div>
+    {% if t.text %}
+    <p class="whitespace-pre-wrap break-words text-slate-800">{{ t.text }}</p>
+    {% endif %}
+    {% for tool in t.tools %}
+    <div class="mt-1 rounded bg-white/70 px-2 py-1 font-mono text-xs text-slate-600">
+      <span class="text-violet-700">⚙ {{ tool.name }}</span>
+      <span class="break-all text-slate-500">{{ tool.input }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
