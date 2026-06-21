@@ -407,6 +407,61 @@ async def request_change(
     )
 
 
+#: Reviewer briefs for the per-heading "review ▾" dropdown. Each files an
+#: anchored review-todo (→ plan_tick), scoped to the heading's subtree.
+#: ``all`` files one todo that tells the planner to fan out sequentially.
+_REVIEW_BRIEFS: dict[str, str] = {
+    "structural": (
+        "Structural review of the draft section under ¶{h}. Check it against "
+        "the project brief: drift, contradictions with sibling sections, gaps, "
+        "depth/fanout problems, weak or missing topic sentences. File concrete "
+        "change requests (anchored at the offending chunks) for what to fix."
+    ),
+    "deep_review": (
+        "Deep review of the draft section under ¶{h}. Scrutinise the rigor of "
+        "every claim and citation — does each cited passage actually and "
+        "strongly support its claim? Prune redundancy, rebalance, and flag "
+        "anything overstated. File concrete change requests."
+    ),
+    "all": (
+        "Review the draft section under ¶{h} thoroughly. Do this as SEQUENTIAL "
+        "subtasks: (1) a structural review (drift, contradictions, gaps, topic-"
+        "sentence structure), then (2) a deep review (claim/citation rigor, "
+        "redundancy, overstatement). File concrete change requests from each."
+    ),
+}
+
+
+@router.post("/drafts/{ident}/review")
+async def review_block(
+    request: Request,
+    ident: str,
+    handle: str = Form(...),
+    reviewer: str = Form(...),
+) -> Response:
+    """Run a standard reviewer on a heading's subtree — files an anchored
+    review-todo (parented on the draft's project) that runs as a plan_tick,
+    showing up as an in-flight request on the block. ``reviewer`` is
+    ``structural`` | ``deep_review`` | ``all``."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    back = f"/drafts/{ident}#c-{handle}"
+    brief = _REVIEW_BRIEFS.get(reviewer)
+    if ref is None or brief is None:
+        return RedirectResponse(url=back, status_code=303)
+    args: dict[str, Any] = {
+        "kind": "todo",
+        "text": brief.format(h=handle),
+        "meta": {"anchor": f"¶{handle}", "review": reviewer},
+    }
+    project = _project_id(store, ref.id)
+    if project is not None:
+        args["parent_id"] = project
+    return await redirect_or_error(
+        request, "put", args, redirect=back, error_title="Review error"
+    )
+
+
 @router.post("/drafts/{ident}/todo/{todo_id}/delete")
 async def delete_change_request(request: Request, ident: str, todo_id: int) -> Response:
     """Cancel a change-request todo anchored in this draft (the X on a

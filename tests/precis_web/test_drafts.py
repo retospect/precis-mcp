@@ -277,3 +277,24 @@ def test_reader_has_view_slider(draft_client: TestClient) -> None:
     assert r.status_code == 200
     assert "setView(" in r.text  # the radio control
     assert "view === 'summary'" in r.text and "view === 'keywords'" in r.text
+
+
+def test_review_dropdown_and_dispatch(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """Heading rows offer a review ▾ menu; selecting one files an anchored
+    review-todo (parented on the project) via the put verb."""
+    page = draft_client.get("/drafts/nt")
+    assert "review ▾" in page.text and "/drafts/nt/review" in page.text
+    r = draft_client.post(
+        "/drafts/nt/review",
+        data={"handle": "AAAAAA", "reviewer": "structural"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["kind"] == "todo"
+    assert args["parent_id"] == 1 and args["meta"]["anchor"] == "¶AAAAAA"
+    assert (
+        args["meta"]["review"] == "structural" and "Structural review" in args["text"]
+    )

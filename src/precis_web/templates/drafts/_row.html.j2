@@ -19,6 +19,22 @@
               x-text="isC('{{ r.handle }}') ? '▸' : '▾'"></button>
       <h3 class="font-semibold text-slate-900
                  {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs(markdown=True, compact=True) }}</h3>
+      {# Run a standard reviewer on this heading's subtree (the doc root
+         heading → whole doc). Files an anchored review-todo → plan_tick. #}
+      <div class="relative ml-auto shrink-0" x-data="{ rev: false }" @click.outside="rev = false">
+        <button @click="rev = !rev"
+                class="text-[10px] text-slate-300 group-hover:text-slate-500 hover:text-sky-600">review ▾</button>
+        <div x-show="rev" x-cloak
+             class="absolute right-0 z-30 mt-1 w-40 rounded border border-slate-200 bg-white shadow-lg text-xs">
+          {% for rv, label in [('structural', 'Structural'), ('deep_review', 'Deep review'), ('all', 'All (sequential)')] %}
+          <form method="post" action="/drafts/{{ ref.ident }}/review">
+            <input type="hidden" name="handle" value="{{ r.handle }}" />
+            <input type="hidden" name="reviewer" value="{{ rv }}" />
+            <button class="block w-full px-2 py-1 text-left hover:bg-slate-100">{{ label }}</button>
+          </form>
+          {% endfor %}
+        </div>
+      </div>
     </div>
     {% else %}
     {# View slider: full body (default) vs the block's summary vs its
