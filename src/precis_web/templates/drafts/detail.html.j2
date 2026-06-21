@@ -1,5 +1,4 @@
 {% extends "base.html.j2" %}
-{% from "drafts/_row.html.j2" import draft_row %}
 {% block title %}{{ ref.title }}{% endblock %}
 {% block content %}
 <style>[x-cloak]{display:none!important}</style>
@@ -12,6 +11,18 @@
       {% if ref.slug %}<span class="font-mono text-xs text-slate-400">draft:{{ ref.slug }}</span>{% endif %}
     </div>
     <div class="flex items-center gap-3 text-xs">
+      {# live-refresh indicator + the "you were typing, here's a manual refresh" pill #}
+      <button x-show="stale" x-cloak @click="forceRefresh()"
+              class="rounded bg-amber-100 border border-amber-300 px-2 py-0.5 text-amber-800 hover:bg-amber-200">
+        document changed — refresh
+      </button>
+      <button @click="live = !live"
+              class="flex items-center gap-1"
+              :title="live ? 'live updates on — click to pause' : 'live updates paused'">
+        <span class="inline-block h-2 w-2 rounded-full"
+              :class="live ? 'bg-emerald-500' : 'bg-slate-300'"></span>
+        <span class="text-slate-500" x-text="live ? 'live' : 'paused'"></span>
+      </button>
       <button @click="collapseAll()" class="text-slate-500 underline hover:text-slate-800">collapse all</button>
       <button @click="expandAll()" class="text-slate-500 underline hover:text-slate-800">expand all</button>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
@@ -25,20 +36,33 @@
   </div>
 
   <div id="doc">
-    {% for r in rows %}{{ draft_row(r, ref) }}{% endfor %}
+    {% include "drafts/_rows.html.j2" %}
   </div>
 </div>
 
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
-  onload="renderMathInElement(document.getElementById('doc'),{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],throwOnError:false})"></script>
+  onload="window.__renderDocMath && window.__renderDocMath()"></script>
 <script>
-// Per-draft collapse state machine. ``collapsed`` is the set of collapsed
-// heading handles (persisted in localStorage); a row is visible unless one
-// of its ancestor headings is collapsed.
+function __renderDocMath() {
+  if (!window.renderMathInElement) return;
+  renderMathInElement(document.getElementById('doc'), {
+    delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],
+    throwOnError: false,
+  });
+}
+
+// Per-draft viewer: heading collapse (localStorage) + a poll that keeps
+// the page live as the agent edits — full-row-set swap when the version
+// token bumps, deferred to a manual pill while a change box is focused so
+// the agent's typing is never clobbered.
 function draftDoc(ident) {
   const key = 'draft-collapsed:' + ident;
   return {
+    ident,
+    version: 0,
+    live: true,
+    stale: false,
     collapsed: JSON.parse(localStorage.getItem(key) || '[]'),
     save() { localStorage.setItem(key, JSON.stringify(this.collapsed)); },
     toggle(h) {
@@ -55,18 +79,56 @@ function draftDoc(ident) {
     },
     expandAll() { this.collapsed = []; this.save(); },
     init() {
-      // A #c-<handle> deep link must land visible: expand its ancestors.
       this.$nextTick(() => {
+        // A #c-<handle> deep link must land visible: expand its ancestors.
         const id = location.hash.slice(1);
-        if (!id) return;
-        const el = document.getElementById(id);
-        if (el && el.dataset.anc) {
-          const anc = JSON.parse(el.dataset.anc);
-          this.collapsed = this.collapsed.filter((x) => !anc.includes(x));
-          this.save();
+        if (id) {
+          const el = document.getElementById(id);
+          if (el && el.dataset.anc) {
+            const anc = JSON.parse(el.dataset.anc);
+            this.collapsed = this.collapsed.filter((x) => !anc.includes(x));
+            this.save();
+          }
+          if (el) el.scrollIntoView();
         }
-        if (el) el.scrollIntoView();
       });
+      this.startPoll();
+    },
+    async fetchVersion() {
+      const r = await fetch(`/drafts/${this.ident}/version`, {cache: 'no-store'});
+      return (await r.json()).version;
+    },
+    async startPoll() {
+      try { this.version = await this.fetchVersion(); } catch (e) { /* offline */ }
+      setInterval(() => this.tick(), 4000);
+    },
+    _typing() {
+      const a = document.activeElement;
+      return a && document.getElementById('doc').contains(a)
+        && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA');
+    },
+    async tick() {
+      if (!this.live) return;
+      let v;
+      try { v = await this.fetchVersion(); } catch (e) { return; }
+      if (v === this.version) return;
+      if (this._typing()) { this.stale = true; return; }  // defer; don't clobber
+      await this.swapAll(v);
+    },
+    async forceRefresh() {
+      let v;
+      try { v = await this.fetchVersion(); } catch (e) { return; }
+      await this.swapAll(v);
+    },
+    async swapAll(v) {
+      try {
+        const html = await (await fetch(`/drafts/${this.ident}/rows`,
+                                        {cache: 'no-store'})).text();
+        document.getElementById('doc').innerHTML = html;  // Alpine binds new rows
+        __renderDocMath();
+        this.version = v;
+        this.stale = false;
+      } catch (e) { /* leave the page as-is on a failed fetch */ }
     },
   };
 }

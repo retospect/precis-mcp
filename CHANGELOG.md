@@ -18,15 +18,23 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
   `STATUS:`), and a per-block **change box** ("around here…" → an anchored
   todo). Headings carry a ▸/▾ caret; collapse state persists in
   `localStorage`; a `#c-<handle>` deep link auto-expands its ancestors.
-- Live-refresh hooks (poll/websocket is a fast-follow, not wired yet):
-  rows render through a `draft_row` macro reused by a new
-  `GET /drafts/{ident}/row/{handle}` fragment endpoint, and
-  `GET /drafts/{ident}/version` returns a monotone token
-  (`max(chunk_events.event_id)`). `GET /draft/{ident}` 303-aliases the
-  plural reader.
+- **Live refresh** — the reader polls `GET /drafts/{ident}/version`
+  (`max(chunk_events.event_id)`) every 4s and, when it bumps, swaps the
+  row set from `GET /drafts/{ident}/rows` in place (collapse state
+  preserved via `localStorage`, KaTeX re-rendered). It **defers to a
+  manual "document changed — refresh" pill while a change box is
+  focused**, so an agent edit landing mid-type never clobbers what
+  you're writing; a ● live/paused toggle turns polling off. Rows render
+  through a `draft_row` macro reused by the full page, the rows fragment,
+  and a per-row `GET /drafts/{ident}/row/{handle}` endpoint.
+  `GET /draft/{ident}` 303-aliases the plural reader.
 - Ref chips reuse the shared superset grammar (`draft_markup` +
   `mentions`). Chip hover-previews are deferred (the `_anchor_html`
   popover machinery drops in later).
+- Test hygiene: the two paper-triage→S2 route tests now
+  `pytest.importorskip("habanero")` so they skip cleanly on the lean host
+  venv (the `[paper]` extra is container/CI-only) instead of erroring,
+  without losing the coverage where the dependency is present.
 
 ### Added (2026-06-21 — search gains an explicit lexical / semantic `mode=`)
 

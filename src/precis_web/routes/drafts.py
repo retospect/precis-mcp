@@ -259,6 +259,21 @@ async def reader_row(request: Request, ident: str, handle: str) -> HTMLResponse:
     )
 
 
+@router.get("/drafts/{ident}/rows", response_class=HTMLResponse)
+async def reader_rows(request: Request, ident: str) -> HTMLResponse:
+    """Just the rows (no page chrome) — what the live-refresh poll swaps
+    into ``#doc`` when the version token bumps and nobody's mid-edit."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return HTMLResponse("", status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "drafts/_rows.html.j2",
+        {"rows": _rows_for(store, ref), "ref": _ref_view(ref)},
+    )
+
+
 @router.get("/drafts/{ident}/version")
 async def version(request: Request, ident: str) -> JSONResponse:
     """Monotone version token = max ``chunk_events.event_id`` over the

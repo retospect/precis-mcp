@@ -162,6 +162,14 @@ def test_version_endpoint_returns_token(draft_client: TestClient) -> None:
     assert "version" in r.json()
 
 
+def test_rows_fragment_has_all_blocks_no_chrome(draft_client: TestClient) -> None:
+    # The live-refresh poll swaps this into #doc — rows only, no <h1>/nav.
+    r = draft_client.get("/drafts/nt/rows")
+    assert r.status_code == 200
+    assert 'id="c-AAAAAA"' in r.text and 'id="c-BBBBBB"' in r.text
+    assert "<h1" not in r.text and "draftDoc(" not in r.text
+
+
 def test_chunk_handle_redirects_into_reader(draft_client: TestClient) -> None:
     r = draft_client.get("/c/BBBBBB", follow_redirects=False)
     assert r.status_code == 303

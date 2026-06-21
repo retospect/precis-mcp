@@ -1,0 +1,4 @@
+{# The document's rows (no page chrome). Used by the full reader (via
+   include) and the live-refresh poll (GET /drafts/{ident}/rows). #}
+{% from "drafts/_row.html.j2" import draft_row %}
+{% for r in rows %}{{ draft_row(r, ref) }}{% endfor %}

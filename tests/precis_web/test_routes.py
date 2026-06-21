@@ -721,6 +721,10 @@ def test_paper_detail_shows_triage_panel_when_tagged(client, runtime) -> None:
 
 def test_triage_lookup_prefills_from_s2(client) -> None:
     """Pasting a title runs an S2 lookup and pre-fills the edit form."""
+    # patch() imports precis.ingest.lookup → precis.ingest.crossref →
+    # habanero, which ships only in the [paper] extra (absent on the lean
+    # host venv; present in the container gate / CI). Skip cleanly there.
+    pytest.importorskip("habanero")
     from unittest.mock import patch
 
     hit = {
@@ -742,6 +746,7 @@ def test_triage_lookup_prefills_from_s2(client) -> None:
 
 
 def test_triage_lookup_miss_shows_message(client) -> None:
+    pytest.importorskip("habanero")  # [paper] extra — see prefills test above
     from unittest.mock import patch
 
     with patch("precis.ingest.lookup.lookup_title", return_value=None):
