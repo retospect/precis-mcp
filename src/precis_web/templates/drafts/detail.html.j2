@@ -64,13 +64,22 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
   onload="window.__renderDocMath && window.__renderDocMath()"></script>
 <script>
-function __renderDocMath() {
-  if (!window.renderMathInElement) return;
-  renderMathInElement(document.getElementById('doc'), {
+function __renderMath(el) {
+  if (!window.renderMathInElement || !el) return;
+  renderMathInElement(el, {
     delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],
     throwOnError: false,
   });
 }
+function __renderDocMath() { __renderMath(document.getElementById('doc')); }
+
+// Hover popovers load lazily via htmx AFTER the initial KaTeX pass, so
+// render math in each popover fragment as it swaps in (the cited quote
+// has $…$ too). The swap target is the .ref-popover span.
+document.body.addEventListener('htmx:afterSwap', function (e) {
+  const t = (e.detail && e.detail.target) || e.target;
+  if (t && t.classList && t.classList.contains('ref-popover')) __renderMath(t);
+});
 
 // Per-draft viewer: heading collapse (localStorage) + a poll that keeps
 // the page live as the agent edits — full-row-set swap when the version

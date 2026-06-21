@@ -191,7 +191,7 @@ def _anchor_html(
         f'@click.outside="{close_expr}" '
         f'@ref-popover-open.window="{other_open_expr}">'
         f'<a class="{anchor_cls}" '
-        f'href="{href}" '
+        f'href="{href}" target="_blank" rel="noopener" '
         f'hx-get="{preview_url}" '
         f'hx-trigger="mouseenter delay:200ms once" '
         f'hx-target="next .ref-popover" hx-swap="innerHTML">'
@@ -287,20 +287,28 @@ def _render_compact_cite(slug: str, chunk: str | None) -> str:
     )
 
 
-# Inline-markdown: render **bold** and `code` only. ``_``/``*`` italic is
-# deliberately NOT rendered — it collides with LaTeX subscripts ($x_1$)
-# and is more trouble than it's worth in scientific prose.
+# Inline-markdown: render **bold**, `code`, and <sub>/<sup> only. ``_``/``*``
+# italic is deliberately NOT rendered — it collides with LaTeX subscripts
+# ($x_1$) and is more trouble than it's worth in scientific prose. (Math
+# itself is left as $…$ for client-side KaTeX.)
 _MD_CODE = re.compile(r"`([^`]+)`")
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+# Authors mix HTML sub/sup into prose (``NH<sub>2</sub>``, ``g<sup>-1</sup>``).
+# After escaping they're ``&lt;sub&gt;…&lt;/sub&gt;``; re-promote that exact
+# allowlisted pair back to real tags (content stays escaped → safe).
+_MD_SUB = re.compile(r"&lt;sub&gt;(.+?)&lt;/sub&gt;")
+_MD_SUP = re.compile(r"&lt;sup&gt;(.+?)&lt;/sup&gt;")
 
 
 def _md_inline(escaped: str) -> str:
-    """Render the bold/code markdown subset over ALREADY-ESCAPED text.
+    """Render the bold / code / sub / sup markdown subset over
+    ALREADY-ESCAPED text.
 
     Code spans are stashed first (so ``**`` inside backticks isn't bolded)
     and restored last. Operating on escaped text keeps it injection-safe —
-    we only ever add ``<strong>`` / ``<code>`` wrappers, never reinterpret
-    the content as HTML.
+    we only ever add a fixed allowlist of wrappers (``<strong>`` /
+    ``<code>`` / ``<sub>`` / ``<sup>``), never reinterpret arbitrary
+    content as HTML.
     """
     stash: list[str] = []
 
@@ -310,6 +318,8 @@ def _md_inline(escaped: str) -> str:
 
     s = _MD_CODE.sub(_hide, escaped)
     s = _MD_BOLD.sub(r"<strong>\1</strong>", s)
+    s = _MD_SUB.sub(r"<sub>\1</sub>", s)
+    s = _MD_SUP.sub(r"<sup>\1</sup>", s)
 
     def _restore(m: re.Match[str]) -> str:
         body = stash[int(m.group(1))]
@@ -512,4 +522,13 @@ def popover_chip(label: str, href: str, preview_url: str | None) -> Markup:
     )
 
 
-__all__ = ["linkify_refs", "popover_chip"]
+def render_markdown(value: str) -> Markup:
+    """Render the bold / code / sub / sup markdown subset on plain text —
+    no ref-linking (so it's safe to use inside a hover popover without
+    spawning nested ref anchors). Math ($…$) is left for client KaTeX."""
+    if not value:
+        return Markup("")
+    return Markup(_md_inline(escape(str(value))))
+
+
+__all__ = ["linkify_refs", "popover_chip", "render_markdown"]

@@ -436,3 +436,33 @@ def test_non_compact_citation_stays_verbose() -> None:
 def test_chunk_address_carried_into_preview_hover() -> None:
     out = str(linkify_refs("paper:kong24~2"))
     assert "/preview/paper/kong24?chunk=2" in out
+
+
+# --- sub/sup + render_markdown + new-tab -------------------------------------
+
+
+def test_markdown_renders_sub_and_sup() -> None:
+    out = str(linkify_refs("NH<sub>2</sub> at 3.1 mmol g<sup>-1</sup>", markdown=True))
+    assert "<sub>2</sub>" in out and "<sup>-1</sup>" in out
+
+
+def test_render_markdown_filter_no_ref_anchors() -> None:
+    from precis_web.linkify import render_markdown
+
+    out = str(render_markdown("see **CO2** `code` x<sub>2</sub> and paper:kong24~2"))
+    assert "<strong>CO2</strong>" in out and "<sub>2</sub>" in out and "<code" in out
+    # render_markdown does NOT linkify refs (no nested anchors in popovers)
+    assert "/r/paper/kong24" not in out and "<a " not in out
+
+
+def test_render_markdown_escapes_unknown_html() -> None:
+    from precis_web.linkify import render_markdown
+
+    out = str(render_markdown("<script>alert(1)</script> <sub>ok</sub>"))
+    assert "<script>" not in out and "&lt;script&gt;" in out
+    assert "<sub>ok</sub>" in out  # allowlisted tag still promoted
+
+
+def test_ref_anchor_opens_new_tab() -> None:
+    out = str(linkify_refs("paper:kong24~2"))
+    assert 'target="_blank"' in out and 'rel="noopener"' in out

@@ -136,12 +136,20 @@ def _ref_chips(text: str) -> list[Any]:
     return chips
 
 
-def _inflight_by_handle(
+#: Request lifecycle ordering for the per-block list: active first, then
+#: done/abandoned (which now *persist* so you can click in and debug the
+#: LLM run, rather than vanishing on completion).
+_REQUEST_ORDER = {"open": 0, "scheduled": 1, "doing": 2, "paused": 3}
+
+
+def _requests_by_handle(
     store: Any, handles: list[str]
 ) -> dict[str, list[dict[str, Any]]]:
-    """Open change-request todos anchored at each chunk (``meta.anchor =
-    '¶<handle>'``), grouped by handle, with their ``STATUS:`` value.
-    Done / won't-do are filtered out — "in flight" means still open."""
+    """ALL change-request todos anchored at each chunk (``meta.anchor =
+    '¶<handle>'``), grouped by handle — including **done / won't-do**, so a
+    finished request hangs around to click into (its ``plan_tick`` job's
+    captured LLM transcript is the debugging surface). Active requests
+    sort first; ``started`` (a job minted) gates the X-cancel."""
     if not handles:
         return {}
     anchors = [f"¶{h}" for h in handles]
@@ -159,19 +167,21 @@ def _inflight_by_handle(
     with store.pool.connection() as conn:
         rows = conn.execute(sql, (anchors,)).fetchall()
     for ref_id, title, anchor, status, started in rows:
-        if status in ("done", "won't-do"):
-            continue
+        status = status or "open"
         handle = (anchor or "").lstrip("¶")
         out.setdefault(handle, []).append(
             {
                 "ref_id": ref_id,
                 "title": (title or "").split("\n", 1)[0][:60],
-                "status": status or "open",
-                # "started" = a plan_tick (or other) job has been minted;
-                # the X-to-cancel only shows before that.
+                "status": status,
+                "done": status in ("done", "won't-do"),
+                # "started" = a plan_tick (or other) job minted; the
+                # X-to-cancel only shows before that.
                 "started": bool(started),
             }
         )
+    for reqs in out.values():
+        reqs.sort(key=lambda r: _REQUEST_ORDER.get(r["status"], 9))
     return out
 
 
@@ -209,7 +219,7 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
     ref chips + in-flight todos)."""
     chunk_objs = store.reading_order(ref.id)
     anc = _ancestor_headings(chunk_objs)
-    inflight = _inflight_by_handle(store, [c.handle for c in chunk_objs])
+    requests = _requests_by_handle(store, [c.handle for c in chunk_objs])
     rows: list[dict[str, Any]] = []
     for c in chunk_objs:
         rows.append(
@@ -221,7 +231,7 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
                 "is_heading": c.chunk_kind == "heading",
                 "ancestors": anc.get(c.handle, []),
                 "refs": _ref_chips(c.text),
-                "inflight": inflight.get(c.handle, []),
+                "requests": requests.get(c.handle, []),
             }
         )
     return rows

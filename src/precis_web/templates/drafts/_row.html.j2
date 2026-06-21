@@ -47,14 +47,21 @@
       {% for c in r.refs %}{{ c }}{% endfor %}
     </div>
     {% endif %}
-    {% for t in r.inflight %}
-    <div class="flex items-start gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5">
-      <a href="/r/todo/{{ t.ref_id }}" class="min-w-0 flex-1 hover:underline">
-        <span class="font-mono text-[10px] uppercase text-amber-700">{{ t.status }}</span>
-        <span class="text-slate-700">{{ t.title }}</span>
+    {# Change requests for this block — they PERSIST through their
+       lifecycle (open→working→done) so you can click in and read the
+       LLM run. Done/won't-do are de-emphasised but kept. Click → the
+       Tasks view focused on the request (its ⚙ job + captured LLM
+       transcript), in a new tab. #}
+    {% for t in r.requests %}
+    <div class="flex items-start gap-1 rounded border px-1.5 py-0.5
+                {% if t.done %}border-slate-200 bg-slate-50 text-slate-400{% else %}border-amber-200 bg-amber-50{% endif %}">
+      <a href="/r/todo/{{ t.ref_id }}" target="_blank" rel="noopener"
+         class="min-w-0 flex-1 hover:underline" title="open the LLM run for this request">
+        <span class="font-mono text-[10px] uppercase {% if t.done %}text-slate-400{% else %}text-amber-700{% endif %}">{{ t.status }}</span>
+        <span class="{% if not t.done %}text-slate-700{% endif %}{% if t.status == "won't-do" %} line-through{% endif %}">{{ t.title }}</span>
       </a>
       {# X to cancel a request that hasn't started yet (no job minted). #}
-      {% if not t.started %}
+      {% if not t.started and not t.done %}
       <form method="post" action="/drafts/{{ ref.ident }}/todo/{{ t.ref_id }}/delete"
             onsubmit="return confirm('Delete this change request?')">
         <button class="text-amber-600 hover:text-rose-600 leading-none"

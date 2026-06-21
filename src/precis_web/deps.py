@@ -62,10 +62,13 @@ def _make_jinja_env() -> jinja2.Environment:
     # Inline ``kind:ref`` → hover-preview anchor + click-through.
     # Applied via ``{{ value | linkify_refs }}`` on prose surfaces
     # (dashboard rows, ref detail pages, asks list, console output).
-    from precis_web.linkify import linkify_refs
+    from precis_web.linkify import linkify_refs, render_markdown
     from precis_web.timefmt import abs_ts, ago
 
     env.filters["linkify_refs"] = linkify_refs
+    # Bold/code/sub/sup markdown subset WITHOUT ref-linking — for popover
+    # quotes (no nested ref anchors). Math ($…$) is left for client KaTeX.
+    env.filters["render_markdown"] = render_markdown
     # Relative ('5h ago') + absolute (hover tooltip) timestamp rendering,
     # single-sourced in ``precis_web.timefmt`` so every list view formats
     # time the same way. Both tolerate a datetime *or* an ISO string.

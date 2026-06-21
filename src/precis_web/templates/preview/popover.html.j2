@@ -19,7 +19,9 @@
   {# The cited chunk's verbatim quote (≤ ~20 lines) — the "what does it
      actually say?" answer for a citation hover. #}
   {% if chunk_label %}<p class="text-[10px] font-mono text-slate-400">{{ chunk_label }}</p>{% endif %}
-  <pre class="text-xs text-slate-700 whitespace-pre-wrap break-words font-sans">{{ quote }}</pre>
+  {# render_markdown: bold/code/sub/sup (no ref-linking). Math ($…$) is
+     rendered client-side by KaTeX after the htmx swap (see detail page). #}
+  <pre class="text-xs text-slate-700 whitespace-pre-wrap break-words font-sans">{{ quote | render_markdown }}</pre>
   {% elif body_preview %}
   <p class="text-xs text-slate-600 break-words">{{ body_preview }}</p>
   {% endif %}
