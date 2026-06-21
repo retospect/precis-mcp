@@ -39,26 +39,6 @@
     </div>
   </div>
 
-  {# Glossary — explicit term chunks + Schwartz-Hearst auto-detected
-     abbreviations (Long Form (ABBR)) from the prose. Collapsed by default. #}
-  {% if glossary %}
-  <details class="mb-3 rounded-lg border border-slate-200 bg-white">
-    <summary class="cursor-pointer px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
-      Glossary ({{ glossary | length }})
-    </summary>
-    <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 px-3 pb-3 text-xs">
-      {% for g in glossary %}
-      <div class="flex gap-2">
-        <dt class="font-mono font-medium text-slate-700 shrink-0">
-          {% if g.handle %}<a class="text-sky-700 hover:underline" href="#c-{{ g.handle }}">{{ g.short }}</a>{% else %}{{ g.short }}{% endif %}
-        </dt>
-        <dd class="text-slate-500 truncate" title="{{ g.long }}">{{ g.long }}</dd>
-      </div>
-      {% endfor %}
-    </dl>
-  </details>
-  {% endif %}
-
   {# Column legend #}
   <div class="hidden lg:grid lg:grid-cols-[1fr_20%_22%] gap-3 border-b border-slate-200 pb-1 mb-1
               text-[10px] uppercase tracking-wide text-slate-400">

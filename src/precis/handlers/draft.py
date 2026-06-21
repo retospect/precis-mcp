@@ -117,15 +117,28 @@ class DraftHandler(Handler):
                     "adding a draft chunk requires text=",
                     next="put(kind='draft', id='nanotrans', chunk_kind='paragraph', text='…', at={'after': '¶<handle>'})",
                 )
+            kind = chunk_kind or "paragraph"
+            # A glossary ``term`` files under an auto-created "Glossary"
+            # heading (the doc's glossary subtree) unless the caller placed
+            # it explicitly.
+            if kind == "term" and at is None:
+                at = {"into": "¶" + self.store.ensure_glossary_heading(ref.id)}
             chunks = self.store.add_chunks(
                 ref_id=ref.id,
-                chunk_kind=chunk_kind or "paragraph",
+                chunk_kind=kind,
                 text=str(text),
                 at=at,
+                meta=meta,
             )
             self._sync_draft_links(ref.id)
             handles = " ".join(f"¶{c.handle}" for c in chunks)
-            return Response(body=f"added {len(chunks)} chunk(s) to {slug}: {handles}")
+            body = f"added {len(chunks)} chunk(s) to {slug}: {handles}"
+            # Hint the LLM about any undefined abbreviations it just wrote
+            # (skip when the write *is* a term definition).
+            if kind != "term":
+                undefined = self.store.undefined_abbrevs(ref.id, str(text))
+                body += self._abbrev_hint(slug, undefined)
+            return Response(body=body)
 
         # else: create the draft
         if project is None:
@@ -156,19 +169,34 @@ class DraftHandler(Handler):
         text: str | None = None,
         move: dict[str, Any] | None = None,
         base_sha: str | None = None,
+        not_abbrev: list[str] | str | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``not_abbrev`` is a draft-level op (silence the undefined-abbrev
+        # hint) — id may be the slug or any ¶handle in the draft.
+        if not_abbrev:
+            tokens = [not_abbrev] if isinstance(not_abbrev, str) else list(not_abbrev)
+            ref = self._resolve_draft_any(id)
+            self.store.add_abbrev_ignore(ref.id, tokens)
+            return Response(body=f"marked not-an-abbrev: {', '.join(tokens)}")
         handle = self._require_chunk_id(id, verb="edit")
         if move is not None:
             c = self.store.move_chunk(handle, move)
             return Response(body=f"moved ¶{c.handle}")
         if text is not None:
             c = self.store.edit_text(handle, str(text), base_sha=base_sha)
+            body = f"edited ¶{c.handle}" if c else "edited"
             if c is not None:
                 self._sync_draft_links(c.ref_id)
-            return Response(body=f"edited ¶{c.handle}")
+                ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
+                slug = ref.slug if ref and ref.slug else str(c.ref_id)
+                body += self._abbrev_hint(
+                    slug, self.store.undefined_abbrevs(c.ref_id, str(text))
+                )
+            return Response(body=body)
         raise BadInput(
-            "edit(kind='draft') requires text= (rewrite) or move= (reorder/reparent)",
+            "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
+            "or not_abbrev= (silence the abbrev hint)",
             next="edit(kind='draft', id='¶<handle>', text='…')",
         )
 
@@ -189,6 +217,34 @@ class DraftHandler(Handler):
         return Response(body=f"retired ¶{handle}")
 
     # ── helpers ──────────────────────────────────────────────────────
+
+    def _abbrev_hint(self, slug: str, undefined: list[str]) -> str:
+        """A hint (appended to the write/edit Response) listing undefined
+        abbreviations with copy-ready calls to define or silence them."""
+        if not undefined:
+            return ""
+        toks = ", ".join(undefined)
+        first = undefined[0]
+        return (
+            f"\n\n⚠ undefined abbreviation(s): {toks}. For each, either DEFINE it — "
+            f"put(kind='draft', id={slug!r}, chunk_kind='term', text='<expansion>', "
+            f"meta={{'short': {first!r}}}) — or, if it isn't an abbreviation, SILENCE "
+            f"it: edit(kind='draft', id={slug!r}, not_abbrev=[{first!r}])."
+        )
+
+    def _resolve_draft_any(self, id: str | int | None) -> Any:
+        """Resolve a draft ref from either its slug or a ¶handle (a chunk
+        in it). Used by the draft-level ``not_abbrev`` op."""
+        s = str(id or "").strip()
+        if s.startswith("¶"):
+            chunk = self.store.get_draft_chunk(s.lstrip("¶"))
+            if chunk is None:
+                raise NotFound(f"draft chunk {s} not found")
+            ref = self.store.get_ref(kind="draft", id=int(chunk.ref_id))
+            if ref is None:
+                raise NotFound(f"draft for chunk {s} not found")
+            return ref
+        return resolve_live_slug_ref(self.store, kind="draft", id=s)
 
     def _require_chunk_id(self, id: str | int | None, *, verb: str) -> str:
         if id is None or not str(id).startswith("¶"):

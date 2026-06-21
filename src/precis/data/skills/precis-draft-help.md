@@ -147,16 +147,21 @@ study → tentative; replicated findings / a review / a meta-analysis →
 strong. The reader's cite popover shows the cited chunk verbatim, so a
 mismatch between claim and passage is visible — make them agree.
 
-**Abbreviations — always use them, define once.** Spell an abbreviation
-out **on first use** the standard way — `polyethyleneimine (PEI)` — then
-use the short form **everywhere after**. Don't re-expand it; don't mix
-the long and short forms. The reader auto-collects defined abbreviations
-into the per-document **Glossary** panel (Schwartz-Hearst detection, no
-markup needed). If you use an abbreviation that is **not defined
-anywhere in the document**, define it on its first occurrence — an
-undefined abbreviation is flagged ("define your abbrev"). For a curated
-definition, add a `chunk_kind='term'` chunk (`meta={short, long,
-surface_forms}`) and reference it with `[PEI](¶<term-handle>)`; explicit
+**Abbreviations — use them freely; we'll ask you to define what we don't
+recognise.** Write with abbreviations naturally. After any `put`/`edit`,
+the response **hints any undefined acronyms in what you just wrote**,
+with copy-ready calls. For each, either:
+
+- **define it** — `put(kind='draft', id='<slug>', chunk_kind='term',
+  text='Kil Solvent Joule Warbler', meta={'short': 'KSJW'})` (filed
+  under an auto-created **Glossary** heading); or
+- **mark it not-an-abbreviation** (a chemical formula, a model name, …)
+  — `edit(kind='draft', id='<slug>', not_abbrev=['CO2'])` — to silence
+  the hint.
+
+An inline `Full Form (ABBR)` first-use also counts as a definition. Once
+defined or silenced, a token stops being hinted. Reference a term with
+`[PEI](¶<term-handle>)`; explicit
 terms win over auto-detected ones. **Thoughts** (memory / think / finding) are
 referenceable but **not citeable** — they get a `[[…]]` link only,
 never a bibliography entry. Math is `$…$` / `$$…$$` (LaTeX, rendered by

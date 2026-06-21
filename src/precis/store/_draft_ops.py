@@ -88,10 +88,12 @@ class DraftMixin:
         parent_chunk_id: int | None,
         pos: str,
         source: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> DraftChunk:
         """Insert one draft chunk: mint a unique handle (savepoint-retry),
-        assign an insertion-serial `ord`, set pos/parent/content_sha, and
-        log a `created` event."""
+        assign an insertion-serial `ord`, set pos/parent/content_sha/meta,
+        and log a `created` event. ``meta`` carries e.g. a ``term``'s
+        ``{short, long, surface_forms}``."""
         sha = content_sha(text)
         last_exc: Exception | None = None
         for _ in range(_HANDLE_RETRIES):
@@ -102,11 +104,11 @@ class DraftMixin:
                         """
                         INSERT INTO chunks
                             (ref_id, set_by, ord, chunk_kind, text,
-                             handle, pos, parent_chunk_id, content_sha)
+                             handle, pos, parent_chunk_id, content_sha, meta)
                         VALUES (%s, 'agent',
                             (SELECT COALESCE(MAX(ord), -1) + 1
                                FROM chunks WHERE ref_id = %s),
-                            %s, %s, %s, %s, %s, %s)
+                            %s, %s, %s, %s, %s, %s, %s)
                         RETURNING chunk_id
                         """,
                         (
@@ -118,6 +120,7 @@ class DraftMixin:
                             pos,
                             parent_chunk_id,
                             sha,
+                            Jsonb(meta or {}),
                         ),
                     ).fetchone()
                 break
@@ -391,9 +394,11 @@ class DraftMixin:
         chunk_kind: str,
         text: str,
         at: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> list[DraftChunk]:
         """Add one or more chunks (a multi-paragraph `text` splits at blank
-        lines). Returns the created chunks in order."""
+        lines). Returns the created chunks in order. ``meta`` (e.g. a
+        ``term``'s ``{short, long}``) is stamped on each created chunk."""
         blocks = _split_blocks(text)
         with self.tx() as conn:
             parent, lo, hi = self._resolve_at(conn, ref_id, at)
@@ -407,6 +412,7 @@ class DraftMixin:
                     parent_chunk_id=parent,
                     pos=key,
                     source={"reason": "add"},
+                    meta=meta,
                 )
                 for block, key in zip(blocks, keys, strict=True)
             ]
@@ -668,6 +674,87 @@ class DraftMixin:
         if move.get("first"):
             return None, None, (roots[0].pos if roots else None)
         return None, (roots[-1].pos if roots else None), None
+
+
+class _AbbrevMixin:
+    """Abbreviation detection + ignore-list ops (mixed into Store with
+    DraftMixin). Split out only to keep the abbrev concern legible."""
+
+    pool: Any
+    tx: Any
+    add_chunks: Any  # provided by DraftMixin
+
+    def ensure_glossary_heading(self, ref_id: int) -> str:
+        """Handle of the draft's "Glossary" heading, creating it (at the
+        end) if absent. Glossary ``term`` chunks file under it."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT handle FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'heading' AND retired_at IS NULL "
+                "AND pos IS NOT NULL AND lower(text) = 'glossary' LIMIT 1",
+                (ref_id,),
+            ).fetchone()
+        if row:
+            return str(row[0])
+        created = self.add_chunks(
+            ref_id=ref_id, chunk_kind="heading", text="Glossary", at={"last": True}
+        )
+        return str(created[0].handle)
+
+    def undefined_abbrevs(self, ref_id: int, text: str) -> list[str]:
+        """Acronym-shaped tokens in ``text`` that aren't yet defined for
+        this draft — i.e. not a ``term`` chunk's ``short``, not an inline
+        ``Long Form (ABBR)`` definition anywhere in the prose, and not on
+        the ``meta.abbrev_ignore`` list. The set the write-hint complains
+        about; opus then defines or marks not-an-abbrev."""
+        from precis.utils.abbreviations import find as _sh_find
+        from precis.utils.abbreviations import find_acronyms as _find_acronyms
+
+        cand = _find_acronyms(text)
+        if not cand:
+            return []
+        known: set[str] = set()
+        with self.pool.connection() as conn:
+            for (short,) in conn.execute(
+                "SELECT meta->>'short' FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'term' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall():
+                if short:
+                    known.add(short)
+            mrow = conn.execute(
+                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            if mrow and mrow[0]:
+                known |= {str(t) for t in mrow[0]}
+            prow = conn.execute(
+                "SELECT string_agg(text, ' ') FROM chunks WHERE ref_id = %s "
+                "AND ord >= 0 AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+        if prow and prow[0]:
+            known |= set(_sh_find(prow[0]).keys())
+        return sorted(cand - known)
+
+    def add_abbrev_ignore(self, ref_id: int, tokens: list[str]) -> None:
+        """Add ``tokens`` to ``refs.meta.abbrev_ignore`` (deduped) — the
+        LLM's "not an abbreviation" silence valve."""
+        clean = [str(t).strip() for t in (tokens or []) if str(t).strip()]
+        if not clean:
+            return
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            existing = list(row[0]) if row and row[0] else []
+            merged = sorted({*existing, *clean})
+            conn.execute(
+                "UPDATE refs SET meta = jsonb_set(meta, '{abbrev_ignore}', "
+                "%s::jsonb, true) WHERE ref_id = %s",
+                (Jsonb(merged), ref_id),
+            )
 
 
 def _bare(handle: str) -> str:

@@ -164,3 +164,37 @@ def test_chunk_read_surfaces_sha(draft: DraftHandler, hub: Hub) -> None:
     title_h = _order(hub, "nt")[0].handle
     out = draft.get(id=f"¶{title_h}").body
     assert f"sha:{content_sha('T')}" in out
+
+
+def test_abbrev_loop_hint_define_and_silence(draft: DraftHandler, hub: Hub) -> None:
+    """Writing an undefined acronym hints the LLM; defining a term
+    (meta.short) and marking not_abbrev both clear it (ADR 0033)."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="We graft KSJW onto the MOF at 1 bar.",
+        at={"after": "¶" + title_h},
+    )
+    assert "undefined abbreviation" in r.body and "KSJW" in r.body and "MOF" in r.body
+    para_h = next(c.handle for c in _order(hub, "nt") if c.text.startswith("We graft"))
+
+    # define KSJW (filed under an auto-created Glossary heading)
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="Kil Solvent Joule Warbler",
+        meta={"short": "KSJW"},
+    )
+    assert "Glossary" in [
+        c.text for c in _order(hub, "nt") if c.chunk_kind == "heading"
+    ]
+    # silence MOF
+    draft.edit(id="nt", not_abbrev=["MOF"])
+
+    # re-edit the paragraph → both now resolved, no abbrev hint
+    r2 = draft.edit(id=f"¶{para_h}", text="We graft KSJW onto the MOF again.")
+    assert "undefined abbreviation" not in r2.body

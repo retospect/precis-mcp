@@ -43,7 +43,6 @@ from fastapi.responses import (
 )
 
 from precis.utils import draft_markup, mentions
-from precis.utils.abbreviations import find as find_abbreviations
 from precis_web.deps import get_store, redirect_or_error, templates
 from precis_web.linkify import popover_chip
 
@@ -198,35 +197,6 @@ def _requests_by_handle(
     return out
 
 
-def _glossary(store: Any, ref_id: int, chunk_objs: list[Any]) -> list[dict[str, Any]]:
-    """The draft's glossary: explicit ``chunk_kind='term'`` definitions
-    (``meta.short``/``long``) merged with abbreviations auto-detected in
-    the prose via Schwartz-Hearst (``utils.abbreviations.find`` — the same
-    detector the keyword pass uses, DRY). Explicit terms win on a collision.
-    Sorted by short form; ``handle`` set for explicit terms (links to the
-    defining chunk), ``None`` for auto-detected ones."""
-    entries: dict[str, dict[str, Any]] = {}
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT handle, meta FROM chunks WHERE ref_id = %s "
-            "AND chunk_kind = 'term' AND retired_at IS NULL AND pos IS NOT NULL",
-            (ref_id,),
-        ).fetchall()
-    for handle, meta in rows:
-        meta = meta or {}
-        short = (meta.get("short") or "").strip()
-        if short:
-            entries[short] = {
-                "short": short,
-                "long": (meta.get("long") or "").strip(),
-                "handle": handle,
-            }
-    prose = "\n".join(c.text for c in chunk_objs if c.chunk_kind != "term" and c.text)
-    for short, long in find_abbreviations(prose).items():
-        entries.setdefault(short, {"short": short, "long": long, "handle": None})
-    return sorted(entries.values(), key=lambda e: e["short"].lower())
-
-
 def _block_views(store: Any, ref_id: int) -> dict[str, dict[str, str]]:
     """Per-block keyword + llm-summary text for the view slider (body /
     summary / keywords). Populated by the chunk_keywords + llm_summarize
@@ -337,7 +307,6 @@ async def reader(request: Request, ident: str) -> Response:
             "active_tab": "drafts",
             "ref": _ref_view(ref),
             "rows": _rows_for(store, ref),
-            "glossary": _glossary(store, ref.id, store.reading_order(ref.id)),
         },
     )
 

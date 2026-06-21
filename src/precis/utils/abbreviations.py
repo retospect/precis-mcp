@@ -173,4 +173,17 @@ def _matches(long_form: str, short: str) -> bool:
     return s_idx < 0
 
 
-__all__ = ["find", "substitute"]
+# Acronym-shaped tokens: an upper-case letter then 1–7 more caps/digits
+# (≥2 chars total). Deliberately dumb — opus decides what's a real
+# abbreviation; the only cost of a false positive (a chemical formula
+# like ``CO2``) is a one-time prompt the LLM dismisses with not_abbrev.
+_ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,7}\b")
+
+
+def find_acronyms(text: str) -> set[str]:
+    """Every acronym-shaped token in ``text`` (e.g. ``KSJW``, ``PEI``,
+    ``CO2``). Used to flag undefined abbreviations on a draft write."""
+    return set(_ACRONYM_RE.findall(text or ""))
+
+
+__all__ = ["find", "find_acronyms", "substitute"]
