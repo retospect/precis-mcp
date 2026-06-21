@@ -228,3 +228,24 @@ def test_defined_abbrevs_collects_terms_and_inline(
     abb = hub.store.defined_abbrevs(ref.id)
     assert abb["PEI"] == "polyethyleneimine"
     assert abb["MOF"] == "metal-organic framework"
+
+
+def test_requests_by_handle_runs_against_real_pg(draft: DraftHandler, hub: Hub) -> None:
+    """The reader's in-flight panel query (`_requests_by_handle`) must run
+    against real Postgres — its `LIKE 'ask-user:%%'` / `'child-failed:%%'`
+    literals need doubled `%` or psycopg rejects the placeholder. The
+    fake-store web tests can't catch this (no real SQL parse)."""
+    from precis.store.types import Tag
+    from precis_web.routes.drafts import _requests_by_handle
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    para_h = _order(hub, "nt")[0].handle
+    # an anchored change-request todo, tagged asking-the-user
+    todo = hub.store.insert_ref(kind="todo", slug=None, title="tighten")
+    hub.store.stamp_ref_meta(todo.id, {"anchor": f"¶{para_h}"})
+    hub.store.add_tag(todo.id, Tag.open("ask-user:which-para"))
+
+    out = _requests_by_handle(hub.store, [para_h])  # must not raise
+    reqs = out.get(para_h, [])
+    assert any(r["asking"] == "which para" for r in reqs)
