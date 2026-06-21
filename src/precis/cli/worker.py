@@ -304,6 +304,12 @@ def run(args: argparse.Namespace) -> None:
                 # plugin job_types whose ``run`` decides what to do.
                 "job_coordinator",
                 "wake_runner",
+                # ssh_node drains jobs that run on a remote node
+                # (precis-dft's gpaw_relax → ssh spark docker run).
+                # Ships on every node like the coordinator; the claim
+                # lock (FOR UPDATE SKIP LOCKED) keeps a single worker
+                # per job. See workers/executors/ssh_node.py.
+                "job_ssh_node",
                 # Hierarchical SOM cluster maps for the precis-web grid.
                 # Self-gating: rebuilds one scope a day, idle otherwise
                 # (PRECIS_CLUSTER_INTERVAL_HOURS), so it costs ~nothing
@@ -499,6 +505,26 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_job_coordinator_pass)
+
+        # job_ssh_node — drains the `kind='job'` queue for jobs whose
+        # meta.executor=='ssh_node'. Each runs a plugin dispatch that
+        # shells out to a remote node (precis-dft's gpaw_relax → ssh
+        # spark docker run) and blocks until it finishes, so the cap is
+        # small. See workers/executors/ssh_node.py.
+        if _pass_enabled("job_ssh_node"):
+            from precis.workers.executors.ssh_node import run_ssh_node_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _job_ssh_node_pass(batch_size: int) -> _BatchResult:
+                r = run_ssh_node_pass(store, limit=min(batch_size, 2))
+                return _BatchResult(
+                    handler="job_ssh_node",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_job_ssh_node_pass)
 
         # wake_runner — re-queues paused coordinator jobs whose wake
         # condition has fired (children done, time reached, ask-user

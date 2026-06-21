@@ -42,6 +42,11 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     # ``coordinator`` declares ``REQUIRES=frozenset()`` because the
     # actual work happens in the child jobs the coordinator spawns.
     "coordinator": frozenset(),
+    # ``ssh_node`` runs a job's plugin ``dispatch`` on a remote node
+    # (precis-dft's ``gpaw_relax`` shells out to ``ssh spark docker
+    # run …``). Phase 1: static capability set = the spark node.
+    # Host-aware PROVIDES is a later refinement (precis-dispatch doc).
+    "ssh_node": frozenset({"has_gpaw"}),
 }
 
 
