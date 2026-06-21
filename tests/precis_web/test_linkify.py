@@ -391,3 +391,48 @@ def test_display_link_target_is_escaped_no_attribute_breakout() -> None:
     out = str(linkify_refs('[x](https://e.com" onclick="alert(1))'))
     # the double-quote in the URL must be escaped, never closing the attr
     assert 'onclick="alert(1)"' not in out
+
+
+# --- Reader rendering: markdown subset + compact sigils (ADR 0033) -----------
+
+
+def test_markdown_bold_rendered_when_enabled() -> None:
+    out = str(linkify_refs("yield **2.63 mmol** today", markdown=True))
+    assert "<strong>2.63 mmol</strong>" in out
+
+
+def test_markdown_inline_code_rendered() -> None:
+    out = str(linkify_refs("call `embed_one(q)` now", markdown=True))
+    assert "<code" in out and "embed_one(q)" in out
+
+
+def test_markdown_off_by_default_keeps_raw() -> None:
+    out = str(linkify_refs("a **b** c"))
+    assert "<strong>" not in out and "**b**" in out
+
+
+def test_markdown_escapes_before_wrapping() -> None:
+    out = str(linkify_refs("**<script>**", markdown=True))
+    assert "<strong>" in out and "<script>" not in out and "&lt;script&gt;" in out
+
+
+def test_compact_citation_is_one_char_superscript() -> None:
+    out = str(linkify_refs("see [§kong24~2] here", compact=True))
+    assert "<sup" in out and ">§<" in out
+    assert "/r/paper/kong24?chunk=2" in out
+    assert "§kong24~2" not in out  # verbose handle hidden
+
+
+def test_compact_xref_is_one_char_superscript() -> None:
+    out = str(linkify_refs("recall [¶aB3xQ9]", compact=True))
+    assert "<sup" in out and ">¶<" in out and 'href="/c/aB3xQ9"' in out
+
+
+def test_non_compact_citation_stays_verbose() -> None:
+    out = str(linkify_refs("see [§kong24~2]"))
+    assert "§kong24~2" in out
+
+
+def test_chunk_address_carried_into_preview_hover() -> None:
+    out = str(linkify_refs("paper:kong24~2"))
+    assert "/preview/paper/kong24?chunk=2" in out

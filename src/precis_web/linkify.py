@@ -116,8 +116,12 @@ def _render_anchor(
         # the resolver expects it without.
         suffix_q = f"?chunk={escape(chunk[1:])}"
     href = f"/r/{safe_kind}/{safe_id}{suffix_q}"
+    # Carry the chunk into the preview too, so a ``paper:slug~N`` hover
+    # shows chunk N's quote (not the paper's first chunk).
     return _anchor_html(
-        href=href, preview_url=f"/preview/{safe_kind}/{safe_id}", label=display
+        href=href,
+        preview_url=f"/preview/{safe_kind}/{safe_id}{suffix_q}",
+        label=display,
     )
 
 
@@ -240,14 +244,70 @@ def _render_display_link(disp: str, tgt: str, raw: str) -> str:
     return escape(raw)  # not a reference target — keep the literal
 
 
-def _render_bare_bracket(bare: str) -> str:
-    """``[¶h]`` / ``[§p~n]`` — a sigil ref with no display text."""
+def _render_bare_bracket(bare: str, *, compact: bool = False) -> str:
+    """``[¶h]`` / ``[§p~n]`` — a sigil ref with no display text.
+
+    In ``compact`` mode (the draft reader) the verbose handle is replaced
+    by a 1-char superscript sigil so it doesn't break the reading flow;
+    the hover popover + sidebar carry the meaning.
+    """
     if bare.startswith("¶"):
-        return _render_chunk_anchor(bare[1:], bare)
+        handle = bare[1:]
+        if compact:
+            return _anchor_html(
+                href=f"/c/{escape(handle)}",
+                preview_url=f"/preview/chunk/{escape(handle)}",
+                label='<sup class="text-sky-700">¶</sup>',
+            )
+        return _render_chunk_anchor(handle, bare)
     m = _DRAFT_CITE_PATTERN.fullmatch(bare)
     if m is not None:
+        if compact:
+            return _render_compact_cite(m.group("slug"), m.group("chunk"))
         return _render_anchor("paper", m.group("slug"), m.group("chunk"), label=bare)
     return escape(f"[{bare}]")
+
+
+def _render_compact_cite(slug: str, chunk: str | None) -> str:
+    """A citation as a 1-char ``§`` superscript (compact draft reader)."""
+    safe_slug = escape(slug)
+    suffix = f"?chunk={escape(chunk[1:])}" if chunk else ""
+    return _anchor_html(
+        href=f"/r/paper/{safe_slug}{suffix}",
+        preview_url=f"/preview/paper/{safe_slug}{suffix}",
+        label='<sup class="text-sky-700">§</sup>',
+    )
+
+
+# Inline-markdown: render **bold** and `code` only. ``_``/``*`` italic is
+# deliberately NOT rendered — it collides with LaTeX subscripts ($x_1$)
+# and is more trouble than it's worth in scientific prose.
+_MD_CODE = re.compile(r"`([^`]+)`")
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _md_inline(escaped: str) -> str:
+    """Render the bold/code markdown subset over ALREADY-ESCAPED text.
+
+    Code spans are stashed first (so ``**`` inside backticks isn't bolded)
+    and restored last. Operating on escaped text keeps it injection-safe —
+    we only ever add ``<strong>`` / ``<code>`` wrappers, never reinterpret
+    the content as HTML.
+    """
+    stash: list[str] = []
+
+    def _hide(m: re.Match[str]) -> str:
+        stash.append(m.group(1))
+        return f"\x00{len(stash) - 1}\x00"
+
+    s = _MD_CODE.sub(_hide, escaped)
+    s = _MD_BOLD.sub(r"<strong>\1</strong>", s)
+
+    def _restore(m: re.Match[str]) -> str:
+        body = stash[int(m.group(1))]
+        return f'<code class="rounded bg-slate-100 px-1 text-[0.9em]">{body}</code>'
+
+    return re.sub(r"\x00(\d+)\x00", _restore, s)
 
 
 def _render_authoring(addr: str) -> str:
@@ -264,6 +324,9 @@ def _render_authoring(addr: str) -> str:
 def linkify_refs(
     value: str,
     footnotes: dict[tuple[str, str, str | None], int] | None = None,
+    *,
+    markdown: bool = False,
+    compact: bool = False,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
 
@@ -289,7 +352,9 @@ def linkify_refs(
     """
     if not value:
         return Markup("")
-    return Markup(_linkify_prose(str(value), footnotes))
+    return Markup(
+        _linkify_prose(str(value), footnotes, markdown=markdown, compact=compact)
+    )
 
 
 def _footnote_marker(n: int) -> str:
@@ -330,6 +395,9 @@ _COMBINED_PATTERN = re.compile(
 def _linkify_prose(
     prose: str,
     footnotes: dict[tuple[str, str, str | None], int] | None = None,
+    *,
+    markdown: bool = False,
+    compact: bool = False,
 ) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
@@ -338,9 +406,17 @@ def _linkify_prose(
     Text *between* matches (and any match that falls through to plain
     text) is HTML-escaped; only ``_render_anchor`` emits live markup.
     Walking the matches by hand (rather than ``re.sub``) lets us escape
-    the inter-match gaps — ``re.sub`` would copy them through verbatim."""
+    the inter-match gaps — ``re.sub`` would copy them through verbatim.
+
+    ``markdown`` renders the bold/code subset over the escaped gaps (the
+    draft reader). ``compact`` collapses bare ``§``/``¶`` refs to a 1-char
+    superscript sigil so they don't break reading flow."""
     if not prose:
         return ""
+
+    def _gap(text: str) -> str:
+        e = escape(text)
+        return _md_inline(e) if markdown else e
 
     def _dispatch(m: re.Match[str]) -> str:
         # Draft bracket forms (ADR 0033 §8) — checked first; their groups
@@ -350,7 +426,7 @@ def _linkify_prose(
         if m.group("disp") is not None:
             return _render_display_link(m.group("disp"), m.group("tgt"), m.group(0))
         if m.group("bare") is not None:
-            return _render_bare_bracket(m.group("bare"))
+            return _render_bare_bracket(m.group("bare"), compact=compact)
         if m.group("ref") is not None:
             kind = m.group("kind")
             raw_id = m.group("id")
@@ -359,6 +435,10 @@ def _linkify_prose(
             # in prose but aren't precis kinds (user:asa, tag:open).
             if kind not in _LINKIFY_KINDS or kind in _LOW_SIGNAL_KINDS:
                 return escape(m.group(0))
+            # Compact draft reader: a bare ``paper:slug~n`` citation also
+            # collapses to a ``§`` superscript so it doesn't break flow.
+            if compact and kind == "paper":
+                return _render_compact_cite(raw_id, chunk)
             anchor = _render_anchor(kind, raw_id, chunk)
             if footnotes:
                 # Footnote numbering keys on the bare id (no leading ``#``)
@@ -382,16 +462,18 @@ def _linkify_prose(
             if "~" in slug:
                 slug, _, suffix = slug.partition("~")
                 chunk = "~" + suffix
+            if compact:
+                return _render_compact_cite(slug, chunk)
             return _render_anchor("paper", slug, chunk)
         return escape(m.group(0))
 
     out: list[str] = []
     last = 0
     for m in _COMBINED_PATTERN.finditer(prose):
-        out.append(escape(prose[last : m.start()]))
+        out.append(_gap(prose[last : m.start()]))
         out.append(_dispatch(m))
         last = m.end()
-    out.append(escape(prose[last:]))
+    out.append(_gap(prose[last:]))
     return "".join(out)
 
 

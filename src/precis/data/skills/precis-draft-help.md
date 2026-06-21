@@ -130,6 +130,14 @@ referenceable but **not citeable** — they get a `[[…]]` link only,
 never a bibliography entry. Math is `$…$` / `$$…$$` (LaTeX, rendered by
 KaTeX on the web).
 
+**Formatting.** Prose is markdown: `**bold**` renders bold and
+`` `code` `` renders inline code. Reach for emphasis **sparingly** — a
+research write-up reads as prose, not a slide deck; bold the occasional
+key quantity or term, not whole sentences. Math is `$…$` / `$$…$$`
+(KaTeX). Inline citations/cross-refs render as a compact `§`/`¶` marker
+in the reader, so don't worry about handles cluttering the sentence —
+write `[§miller89~4]` and it shows as a small superscript.
+
 Bare `kind:ref` mentions (`paper:miller89~4`, `memory:6184`) are
 recognised too — the bracket forms are the *superset* over the same
 grammar notes use. **Every** reference you write auto-materialises a

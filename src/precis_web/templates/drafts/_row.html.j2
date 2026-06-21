@@ -8,25 +8,35 @@
      data-anc='{{ r.ancestors | tojson }}'
      x-show="vis({{ r.ancestors | tojson }})" x-cloak
      class="grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group">
-  {# ── Col A: content ─────────────────────────────────────────── #}
-  <div style="padding-left: {{ r.depth }}rem">
+  {# ── Col A: content ─────────────────────────────────────────── #
+     `raw` (click-to-pin) shows the chunk's verbatim source — the
+     markdown + ¶/§ markers behind the rendered view, for debugging. #}
+  <div style="padding-left: {{ r.depth }}rem" x-data="{ raw: false }">
     {% if r.is_heading %}
     <div class="flex items-start gap-1.5">
       <button @click="toggle('{{ r.handle }}')"
               class="mt-0.5 font-mono text-xs text-slate-400 hover:text-slate-700 select-none"
               x-text="isC('{{ r.handle }}') ? '▸' : '▾'"></button>
       <h3 class="font-semibold text-slate-900
-                 {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs }}</h3>
+                 {% if r.depth == 0 %}text-lg{% elif r.depth == 1 %}text-base{% else %}text-sm{% endif %}">{{ r.text | linkify_refs(markdown=True, compact=True) }}</h3>
     </div>
     {% elif r.chunk_kind in ('aside', 'box') %}
-    <div class="rounded-md border-l-4 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs }}</div>
+    <div class="rounded-md border-l-4 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True) }}</div>
     {% elif r.chunk_kind in ('listing', 'code') %}
-    <pre class="rounded-md bg-slate-900 text-slate-100 text-xs p-3 overflow-x-auto whitespace-pre-wrap">{{ r.text | linkify_refs }}</pre>
+    <pre class="rounded-md bg-slate-900 text-slate-100 text-xs p-3 overflow-x-auto whitespace-pre-wrap">{{ r.text }}</pre>
     {% else %}
-    <p class="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs }}</p>
+    <p class="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True) }}</p>
     {% endif %}
-    <a href="#c-{{ r.handle }}"
-       class="font-mono text-[10px] text-slate-300 opacity-0 group-hover:opacity-100">¶{{ r.handle }}</a>
+    <div class="flex items-center gap-2">
+      <a href="#c-{{ r.handle }}"
+         class="font-mono text-[10px] text-slate-300 opacity-0 group-hover:opacity-100">¶{{ r.handle }}</a>
+      <button @click="raw = !raw"
+              class="text-[10px] text-slate-300 opacity-0 group-hover:opacity-100 hover:text-slate-600"
+              x-text="raw ? 'hide raw' : 'raw'"></button>
+    </div>
+    {# raw source "cookie" — toggled (click-to-pin) under the block #}
+    <pre x-show="raw" x-cloak
+         class="mt-1 rounded border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 whitespace-pre-wrap break-words">{{ r.text }}</pre>
   </div>
 
   {# ── Col B: meta — refs + in-flight ─────────────────────────── #}
