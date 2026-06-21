@@ -469,16 +469,18 @@ def test_ref_anchor_opens_new_tab() -> None:
 
 
 def test_abbrev_highlight_wraps_known_tokens() -> None:
-    """A defined abbreviation is wrapped in <abbr title='long'>; the
-    longest short wins; word boundaries are respected."""
+    """A defined abbreviation is wrapped in an instant-tooltip <abbr.pa>
+    (definition in .pa-pop, NOT the laggy native title); the longest short
+    wins; word boundaries are respected."""
     out = str(
         linkify_refs(
             "PEI loaded; PEINE is different; mention PEI again.",
             abbrevs={"PEI": "polyethyleneimine"},
         )
     )
-    assert out.count("<abbr") == 2  # two standalone PEI, not the PEINE substring
-    assert 'title="polyethyleneimine"' in out and ">PEI</abbr>" in out
+    assert out.count('<abbr class="pa"') == 2  # two standalone PEI, not PEINE
+    assert '<span class="pa-pop">polyethyleneimine</span>' in out
+    assert "title=" not in out  # no native tooltip (that was the lag)
     assert "PEINE" in out  # untouched (PEI is not a whole token there)
 
 
@@ -495,7 +497,7 @@ def test_abbrev_highlight_skips_tags_and_attrs() -> None:
     # the slug PEI inside the citation href is NOT wrapped …
     assert "/r/paper/PEI" in out
     # … but the bare PEI in prose IS.
-    assert ">PEI</abbr>" in out
+    assert '<abbr class="pa"' in out
 
 
 def test_abbrev_highlight_noop_without_dict() -> None:

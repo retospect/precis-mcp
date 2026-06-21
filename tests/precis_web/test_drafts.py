@@ -353,12 +353,14 @@ def test_find_semantic_ranked(tmp_path) -> None:
 
 
 def test_reader_highlights_defined_abbrev(draft_client: TestClient) -> None:
-    """Recall: a defined abbreviation (PEI) is wrapped in an <abbr> with
-    its definition as the hover title, in the rendered body."""
+    """Recall: a defined abbreviation (PEI) is wrapped in an instant-tooltip
+    <abbr.pa> whose .pa-pop carries the definition (no laggy native title);
+    the .pa tooltip CSS is present on the page."""
     r = draft_client.get("/drafts/nt")
     assert r.status_code == 200
-    assert "<abbr" in r.text and 'title="polyethyleneimine"' in r.text
-    assert ">PEI</abbr>" in r.text
+    assert '<abbr class="pa"' in r.text
+    assert '<span class="pa-pop">polyethyleneimine</span>' in r.text
+    assert ".pa>.pa-pop" in r.text  # the instant-tooltip CSS shipped
 
 
 def test_reader_shows_connections_and_edits(draft_client: TestClient) -> None:

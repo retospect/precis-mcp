@@ -344,22 +344,24 @@ def _render_authoring(addr: str) -> str:
 #: attribute, href, or tag name.
 _TAG_SPLIT = re.compile(r"(<[^>]+>)")
 
-#: ``<abbr>`` styling for a recalled abbreviation: a dotted underline +
-#: help cursor, the native ``title`` carrying the definition (zero-JS
-#: hover tooltip — the browser does the work).
-_ABBR_CLS = "cursor-help underline decoration-dotted decoration-slate-400"
-
-
 def _highlight_abbrevs(html: str, abbrevs: dict[str, str]) -> str:
     """Wrap each occurrence of a known abbreviation ``short`` (in the
-    *text* runs of already-rendered HTML) in an ``<abbr title='long'>`` so
-    hovering it shows the definition.
+    *text* runs of already-rendered HTML) in an ``<abbr>`` carrying an
+    **instant** custom tooltip — the definition rides in a nested
+    ``.pa-pop`` span shown on hover/focus via CSS (``.pa`` styling lives
+    in the draft reader's ``<style>``). We deliberately avoid the native
+    ``title=`` tooltip: its ~1s browser-controlled show-delay is the "lag"
+    — the definition is already inline, so there's nothing to precompute,
+    only a faster way to reveal it.
 
     Operates on the final HTML: splits off ``<…>`` tag runs and only
     rewrites the plain-text runs between them, so an abbreviation that
     happens to look like part of an attribute / handle is never touched.
     Longest shorts first so ``RNA-seq`` wins over ``RNA``. The matched
-    text is already HTML-escaped; the definition is attribute-escaped here.
+    text is already HTML-escaped; the definition is escaped here.
+
+    The matcher is compiled **once** for the whole HTML (not per call
+    site), so a long draft doesn't recompile the alternation per chunk.
     """
     if not abbrevs:
         return html
@@ -373,7 +375,8 @@ def _highlight_abbrevs(html: str, abbrevs: dict[str, str]) -> str:
     def _wrap(m: re.Match[str]) -> str:
         short = m.group(1)
         return (
-            f'<abbr class="{_ABBR_CLS}" title="{escape(abbrevs[short])}">{short}</abbr>'
+            f'<abbr class="pa" tabindex="0">{short}'
+            f'<span class="pa-pop">{escape(abbrevs[short])}</span></abbr>'
         )
 
     parts = _TAG_SPLIT.split(html)

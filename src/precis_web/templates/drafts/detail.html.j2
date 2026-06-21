@@ -6,6 +6,15 @@
   /* in-draft find: every match gets a soft band, the active one a ring */
   .find-hit{background-color:#fef9c3}
   .find-current{box-shadow:0 0 0 2px #f59e0b;border-radius:.25rem}
+  /* abbreviation recall: an INSTANT custom tooltip (no native <abbr>
+     title delay). Definition rides in .pa-pop, shown on hover/focus. */
+  .pa{position:relative;text-decoration:underline dotted;
+      text-decoration-color:#94a3b8;cursor:help}
+  .pa>.pa-pop{display:none;position:absolute;bottom:100%;left:0;z-index:50;
+      margin-bottom:3px;width:max-content;max-width:18rem;white-space:normal;
+      border-radius:4px;background:#1e293b;color:#fff;
+      padding:2px 6px;font-size:11px;font-weight:400;line-height:1.3}
+  .pa:hover>.pa-pop,.pa:focus>.pa-pop,.pa:focus-within>.pa-pop{display:block}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
 
