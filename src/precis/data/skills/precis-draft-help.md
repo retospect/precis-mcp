@@ -129,13 +129,35 @@ not the whole paper. **One syntax per citation** — `[§slug~n]` and
 `paper:slug~n` are the *same* reference (`§` is sugar); write one, not
 both, or the reader shows a redundant chip.
 
-**Glossary / abbreviations.** Define an abbreviation the normal
-scientific way — `polyethyleneimine (PEI)` on first use — and the reader
-auto-collects it into the draft's **Glossary** panel (Schwartz-Hearst
-detection, no markup needed). For a curated definition, add a
-`chunk_kind='term'` chunk (`meta={short, long, surface_forms}`) and
-reference it with `[PEI](¶<term-handle>)`; explicit terms win over
-auto-detected ones. **Thoughts** (memory / think / finding) are
+**Citation rigor (be strict).** A citation must **directly and
+substantively support the specific claim** — you must be able to quote
+the sentence(s) in the cited chunk that establish it (capture them as
+the `source_quote` / `\citequote`). If you can't find a passage that
+supports the claim, the cite is **too weak** — either:
+
+- **soften the claim** to match the evidence ("suggests", "is
+  consistent with", "reports") rather than asserting it, or
+- **find a better source** (prefer the primary source for an empirical
+  claim).
+
+Never cite topically-related-but-non-supporting work, and **never cite
+a source for a stronger claim than it actually makes** (citation
+inflation). Match assertion strength to evidence strength: a single
+study → tentative; replicated findings / a review / a meta-analysis →
+strong. The reader's cite popover shows the cited chunk verbatim, so a
+mismatch between claim and passage is visible — make them agree.
+
+**Abbreviations — always use them, define once.** Spell an abbreviation
+out **on first use** the standard way — `polyethyleneimine (PEI)` — then
+use the short form **everywhere after**. Don't re-expand it; don't mix
+the long and short forms. The reader auto-collects defined abbreviations
+into the per-document **Glossary** panel (Schwartz-Hearst detection, no
+markup needed). If you use an abbreviation that is **not defined
+anywhere in the document**, define it on its first occurrence — an
+undefined abbreviation is flagged ("define your abbrev"). For a curated
+definition, add a `chunk_kind='term'` chunk (`meta={short, long,
+surface_forms}`) and reference it with `[PEI](¶<term-handle>)`; explicit
+terms win over auto-detected ones. **Thoughts** (memory / think / finding) are
 referenceable but **not citeable** — they get a `[[…]]` link only,
 never a bibliography entry. Math is `$…$` / `$$…$$` (LaTeX, rendered by
 KaTeX on the web).
