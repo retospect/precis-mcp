@@ -79,6 +79,14 @@ class DraftFakeStore(FakeStore):
     def reading_order(self, ref_id):
         return list(self._chunks)
 
+    def search_blocks_semantic(self, *, query_vec, scope_ref_id, limit, max_distance):
+        # Rank the heading ahead of the intro para (best-first), keyed by
+        # chunk_id so the route's chunk_id→handle map resolves them.
+        return [
+            (SimpleNamespace(id=1), _DRAFT, 0.10),
+            (SimpleNamespace(id=2), _DRAFT, 0.42),
+        ]
+
     def draft_toc(self, ref_id, *, root_handle=None):
         return [
             SimpleNamespace(
@@ -279,3 +287,47 @@ def test_review_dropdown_and_dispatch(
     assert (
         args["meta"]["review"] == "structural" and "Structural review" in args["text"]
     )
+
+
+def test_find_verbatim_doc_order(draft_client: TestClient) -> None:
+    """Verbatim find = case-insensitive substring in document order."""
+    r = draft_client.get("/drafts/nt/find", params={"q": "intro", "mode": "verbatim"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "verbatim"
+    assert body["handles"] == ["BBBBBB"]  # only the intro para matches
+    # a miss returns no handles
+    assert (
+        draft_client.get("/drafts/nt/find", params={"q": "zzzzz"}).json()["handles"]
+        == []
+    )
+
+
+def test_find_semantic_degrades_without_embedder(draft_client: TestClient) -> None:
+    """No embedder wired (the fake runtime has no hub) → semantic falls
+    back to a verbatim find rather than 500ing."""
+    r = draft_client.get("/drafts/nt/find", params={"q": "intro", "mode": "semantic"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "verbatim" and body["handles"] == ["BBBBBB"]
+
+
+def test_find_semantic_ranked(tmp_path) -> None:
+    """With an embedder, semantic find returns the draft's chunks
+    cosine-ranked (best-first), mapped chunk_id→handle."""
+
+    class _Emb:
+        def embed_one(self, q):
+            return [0.1, 0.2, 0.3]
+
+    rt = FakeRuntime(DraftFakeStore())
+    rt.hub = SimpleNamespace(embedder=_Emb())
+    client = TestClient(
+        create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+    )
+    r = client.get("/drafts/nt/find", params={"q": "nano", "mode": "semantic"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "semantic"
+    # search_blocks_semantic ranked chunk 1 (AAAAAA) before chunk 2 (BBBBBB)
+    assert body["handles"] == ["AAAAAA", "BBBBBB"]

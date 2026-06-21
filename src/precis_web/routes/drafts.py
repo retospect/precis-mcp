@@ -43,7 +43,8 @@ from fastapi.responses import (
 )
 
 from precis.utils import draft_markup, mentions
-from precis_web.deps import get_store, redirect_or_error, templates
+from precis.utils.embed_query import embed_query
+from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
 from precis_web.linkify import popover_chip
 
 router = APIRouter(tags=["drafts"])
@@ -359,6 +360,55 @@ async def version(request: Request, ident: str) -> JSONResponse:
             (ref.id,),
         ).fetchone()
     return JSONResponse({"version": int(row[0]) if row else 0})
+
+
+@router.get("/drafts/{ident}/find")
+async def find(
+    request: Request, ident: str, q: str = "", mode: str = "verbatim"
+) -> JSONResponse:
+    """In-draft find — the user's reader-side search bar.
+
+    Returns the matching chunk handles, in the order the find bar
+    cycles them with ‹ ›:
+
+    * ``mode='verbatim'`` — case-insensitive substring over each live
+      block's source text, in **document order** (a plain Ctrl-F over
+      the prose, the deterministic path that needs no embedder).
+    * ``mode='semantic'`` — cosine ranked (best-first) over the draft's
+      chunk embeddings, scoped to this draft. Degrades to verbatim when
+      the embedder is unavailable or the query won't embed.
+
+    The client highlights/scrolls to each handle and cycles next/prev
+    starting from whichever chunk is currently in view.
+    """
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    q = q.strip()
+    if ref is None or not q:
+        return JSONResponse({"handles": [], "mode": mode})
+
+    chunks = store.reading_order(ref.id)
+    m = (mode or "verbatim").strip().lower()
+
+    if m == "semantic":
+        hub = getattr(get_runtime(request), "hub", None)
+        embedder = getattr(hub, "embedder", None)
+        vec = embed_query(embedder, q)
+        if vec is not None:
+            by_id = {c.chunk_id: c.handle for c in chunks}
+            hits = store.search_blocks_semantic(
+                query_vec=vec,
+                scope_ref_id=ref.id,
+                limit=200,
+                max_distance=None,
+            )
+            handles = [by_id[b.id] for b, _ref, _d in hits if b.id in by_id]
+            return JSONResponse({"handles": handles, "mode": "semantic"})
+        m = "verbatim"  # no vector → degrade to a literal find
+
+    needle = q.lower()
+    handles = [c.handle for c in chunks if needle in (c.text or "").lower()]
+    return JSONResponse({"handles": handles, "mode": "verbatim"})
 
 
 @router.post("/drafts/{ident}/request")

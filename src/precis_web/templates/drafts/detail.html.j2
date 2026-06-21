@@ -1,7 +1,12 @@
 {% extends "base.html.j2" %}
 {% block title %}{{ ref.title }}{% endblock %}
 {% block content %}
-<style>[x-cloak]{display:none!important}</style>
+<style>
+  [x-cloak]{display:none!important}
+  /* in-draft find: every match gets a soft band, the active one a ring */
+  .find-hit{background-color:#fef9c3}
+  .find-current{box-shadow:0 0 0 2px #f59e0b;border-radius:.25rem}
+</style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
 
 <div x-data="draftDoc('{{ ref.ident }}')" x-init="init()">
@@ -37,6 +42,31 @@
       <button @click="expandAll()" class="text-slate-500 underline hover:text-slate-800">expand all</button>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
     </div>
+  </div>
+
+  {# In-draft find bar — verbatim (Ctrl-F over the prose, doc order) vs
+     semantic (cosine-ranked over this draft's embeddings). ‹ › cycle the
+     matches starting from whatever is currently in view; a hit in a
+     collapsed section auto-expands its ancestors. #}
+  <div class="mb-2 flex flex-wrap items-center gap-2 text-xs">
+    <input x-model="findQuery" @input.debounce.300ms="runFind()"
+           @keydown.enter.prevent="findHits.length ? findNext() : runFind()"
+           @keydown.escape="clearFind()"
+           placeholder="find in document…"
+           class="w-64 rounded border border-slate-200 px-2 py-1 focus:border-sky-400 focus:outline-none" />
+    <div class="flex items-center rounded border border-slate-200 p-0.5">
+      <template x-for="opt in ['verbatim', 'semantic']" :key="opt">
+        <button @click="setFindMode(opt)" class="px-1.5 py-0.5 rounded capitalize"
+                :class="findMode === opt ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-800'"
+                x-text="opt"></button>
+      </template>
+    </div>
+    <button @click="findPrev()" :disabled="!findHits.length"
+            class="rounded border border-slate-200 px-1.5 py-0.5 disabled:opacity-30" title="previous match">‹</button>
+    <button @click="findNext()" :disabled="!findHits.length"
+            class="rounded border border-slate-200 px-1.5 py-0.5 disabled:opacity-30" title="next match">›</button>
+    <span class="text-slate-400" x-show="findQuery" x-cloak
+          x-text="findHits.length ? (findIdx + 1) + '/' + findHits.length : 'no matches'"></span>
   </div>
 
   {# Column legend #}
@@ -84,6 +114,11 @@ function draftDoc(ident) {
     stale: false,
     view: localStorage.getItem('draft-view:' + ident) || 'body',
     setView(v) { this.view = v; localStorage.setItem('draft-view:' + ident, v); },
+    // in-draft find
+    findQuery: '',
+    findMode: 'verbatim',
+    findHits: [],
+    findIdx: -1,
     collapsed: JSON.parse(localStorage.getItem(key) || '[]'),
     save() { localStorage.setItem(key, JSON.stringify(this.collapsed)); },
     toggle(h) {
@@ -99,6 +134,62 @@ function draftDoc(ident) {
       this.save();
     },
     expandAll() { this.collapsed = []; this.save(); },
+    // ── in-draft find ────────────────────────────────────────────
+    setFindMode(m) { this.findMode = m; if (this.findQuery.trim()) this.runFind(); },
+    _clearMarks() {
+      document.querySelectorAll('#doc .find-hit, #doc .find-current')
+        .forEach((e) => e.classList.remove('find-hit', 'find-current'));
+    },
+    clearFind() { this.findQuery = ''; this.findHits = []; this.findIdx = -1; this._clearMarks(); },
+    async runFind() {
+      this._clearMarks();
+      const q = this.findQuery.trim();
+      if (!q) { this.findHits = []; this.findIdx = -1; return; }
+      let data;
+      try {
+        const url = `/drafts/${this.ident}/find?q=${encodeURIComponent(q)}&mode=${this.findMode}`;
+        data = await (await fetch(url, {cache: 'no-store'})).json();
+      } catch (e) { return; }
+      this.findHits = data.handles || [];
+      this.findMode = data.mode || this.findMode;  // reflect a semantic→verbatim degrade
+      this.findHits.forEach((h) => {
+        const el = document.getElementById('c-' + h);
+        if (el) el.classList.add('find-hit');
+      });
+      if (!this.findHits.length) { this.findIdx = -1; return; }
+      this.gotoHit(this._startIdx());
+    },
+    _startIdx() {
+      // Start at the first match at/below the current viewport top
+      // ("currently visible"); wrap to the first hit if none are below.
+      for (let i = 0; i < this.findHits.length; i++) {
+        const el = document.getElementById('c-' + this.findHits[i]);
+        if (el && el.getBoundingClientRect().top >= 0) return i;
+      }
+      return 0;
+    },
+    gotoHit(i) {
+      const n = this.findHits.length;
+      if (!n) return;
+      this.findIdx = ((i % n) + n) % n;
+      const el = document.getElementById('c-' + this.findHits[this.findIdx]);
+      if (!el) return;
+      // a hit inside a collapsed section: expand its ancestors first.
+      if (el.dataset.anc) {
+        const anc = JSON.parse(el.dataset.anc);
+        const next = this.collapsed.filter((x) => !anc.includes(x));
+        if (next.length !== this.collapsed.length) { this.collapsed = next; this.save(); }
+      }
+      this._clearMarks();
+      this.findHits.forEach((h) => {
+        const e = document.getElementById('c-' + h);
+        if (e) e.classList.add('find-hit');
+      });
+      el.classList.add('find-current');
+      this.$nextTick(() => el.scrollIntoView({block: 'center', behavior: 'smooth'}));
+    },
+    findNext() { this.gotoHit(this.findIdx + 1); },
+    findPrev() { this.gotoHit(this.findIdx - 1); },
     init() {
       this.$nextTick(() => {
         // A #c-<handle> deep link must land visible: expand its ancestors.
@@ -149,6 +240,7 @@ function draftDoc(ident) {
         __renderDocMath();
         this.version = v;
         this.stale = false;
+        if (this.findQuery.trim()) this.runFind();  // the swap wiped the marks
       } catch (e) { /* leave the page as-is on a failed fetch */ }
     },
   };
