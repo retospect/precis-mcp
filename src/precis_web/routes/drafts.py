@@ -221,18 +221,51 @@ def _block_views(store: Any, ref_id: int) -> dict[str, dict[str, str]]:
     return out
 
 
+def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
+    """Render chunk-connection rows (linked refs + dreams) as terse
+    hover-preview chips: ``kind:ident — title``, click → the ref."""
+    chips: list[Any] = []
+    for c in conns:
+        kind, ident = c["kind"], c["ident"]
+        label = f"{kind}:{ident}"
+        if c.get("title"):
+            label += f" — {c['title']}"
+        chips.append(
+            popover_chip(label, f"/r/{kind}/{ident}", f"/preview/{kind}/{ident}")
+        )
+    return chips
+
+
 def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
     """Per-block row context for the whole draft (content + ancestors +
-    ref chips + requests + summary/keywords for the view slider)."""
+    ref chips + requests + summary/keywords + graph connections + edit
+    churn for the view slider / Connections surface)."""
     chunk_objs = store.reading_order(ref.id)
+    handles = [c.handle for c in chunk_objs]
     anc = _ancestor_headings(chunk_objs)
-    requests = _requests_by_handle(store, [c.handle for c in chunk_objs])
+    requests = _requests_by_handle(store, handles)
     views = _block_views(store, ref.id)
     # Recall highlight: every occurrence of a defined abbreviation gets a
     # hover-definition in the reader (one dict for the whole draft).
     abbrevs = store.defined_abbrevs(ref.id)
+    # Connections surface: graph links (incl. dream-memories) + edit churn.
+    conns = store.chunk_connections(ref.id, handles)
+    edits = store.chunk_edit_stats(ref.id, handles)
     rows: list[dict[str, Any]] = []
-    for c in chunk_objs:
+    for i, c in enumerate(chunk_objs):
+        # Neighbour folding: prev/next paragraph connections, deduped
+        # against this block's own (so "nearby" only shows what's *extra*).
+        own = {(x["kind"], x["ident"]) for x in conns.get(c.handle, [])}
+        nearby: list[dict[str, Any]] = []
+        nseen = set(own)
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(chunk_objs):
+                for x in conns.get(chunk_objs[j].handle, []):
+                    k = (x["kind"], x["ident"])
+                    if k not in nseen:
+                        nseen.add(k)
+                        nearby.append(x)
+        est = edits.get(c.handle, {})
         v = views.get(c.handle, {})
         first_line = ((c.text or "").splitlines() or [""])[0][:140]
         rows.append(
@@ -250,6 +283,11 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
                 # keywords falls back to first line.
                 "summary": v.get("summary") or v.get("keywords") or first_line,
                 "keywords": v.get("keywords") or first_line,
+                # Connections surface: graph links + folded neighbours + churn.
+                "connections": _connection_chips(conns.get(c.handle, [])),
+                "nearby": _connection_chips(nearby),
+                "edits": est.get("edits", 0),
+                "edited_at": est.get("last_at"),
             }
         )
     return rows

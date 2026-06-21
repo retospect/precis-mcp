@@ -18,7 +18,6 @@ from precis.handlers._cache_base import CacheBackedHandler
 from precis.handlers.news import article_blocks, canonical_url
 from precis.workers import briefing, news_poll
 
-
 # ── canonical_url ──────────────────────────────────────────────────────
 
 

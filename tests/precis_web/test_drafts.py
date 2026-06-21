@@ -90,6 +90,22 @@ class DraftFakeStore(FakeStore):
     def defined_abbrevs(self, ref_id):
         return {"PEI": "polyethyleneimine"}
 
+    def chunk_connections(self, ref_id, handles):
+        return {
+            "BBBBBB": [
+                {
+                    "relation": "derived-from",
+                    "direction": "out",
+                    "kind": "memory",
+                    "ident": "20",
+                    "title": "A decision",
+                }
+            ]
+        }
+
+    def chunk_edit_stats(self, ref_id, handles):
+        return {"BBBBBB": {"edits": 2, "last_at": None}}
+
     def draft_toc(self, ref_id, *, root_handle=None):
         return [
             SimpleNamespace(
@@ -343,3 +359,13 @@ def test_reader_highlights_defined_abbrev(draft_client: TestClient) -> None:
     assert r.status_code == 200
     assert "<abbr" in r.text and 'title="polyethyleneimine"' in r.text
     assert ">PEI</abbr>" in r.text
+
+
+def test_reader_shows_connections_and_edits(draft_client: TestClient) -> None:
+    """The Connections surface: graph links (memory:20) render as chips
+    with a count, and the edit-churn chip shows 'changed 2×'."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "1 connection" in r.text
+    assert "/r/memory/20" in r.text and "A decision" in r.text
+    assert "changed 2×" in r.text

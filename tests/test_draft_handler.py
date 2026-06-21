@@ -249,3 +249,34 @@ def test_requests_by_handle_runs_against_real_pg(draft: DraftHandler, hub: Hub) 
     out = _requests_by_handle(hub.store, [para_h])  # must not raise
     reqs = out.get(para_h, [])
     assert any(r["asking"] == "which para" for r in reqs)
+
+
+def test_chunk_connections_and_edit_stats(draft: DraftHandler, hub: Hub) -> None:
+    """chunk_connections returns refs linked to a chunk (the dream/
+    provenance surface); chunk_edit_stats counts edits."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt", chunk_kind="paragraph", text="A claim.", at={"after": f"¶{title_h}"}
+    )
+    para = next(c for c in _order(hub, "nt") if c.text == "A claim.")
+    dref = hub.store.get_ref(kind="draft", id="nt")
+    mem = hub.store.insert_ref(kind="memory", slug=None, title="A dreamt idea")
+    with hub.store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, src_chunk_id, dst_ref_id, relation, set_by) "
+            "VALUES (%s, %s, %s, 'derived-from', 'agent')",
+            (dref.id, para.chunk_id, mem.id),
+        )
+
+    conns = hub.store.chunk_connections(dref.id, [para.handle])
+    assert conns[para.handle][0]["kind"] == "memory"
+    assert conns[para.handle][0]["title"] == "A dreamt idea"
+    assert conns[para.handle][0]["relation"] == "derived-from"
+    assert conns[para.handle][0]["direction"] == "out"
+
+    # edit the chunk → an 'edited' event is logged
+    draft.edit(id=f"¶{para.handle}", text="A revised claim.")
+    stats = hub.store.chunk_edit_stats(dref.id, [para.handle])
+    assert stats[para.handle]["edits"] >= 1

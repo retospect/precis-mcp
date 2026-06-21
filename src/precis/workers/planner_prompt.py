@@ -531,16 +531,28 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
     if len(text) > 1500:
         text = text[:1500].rstrip() + "…"
     quoted = "\n".join("> " + ln for ln in text.splitlines()) or "> (empty)"
-    return (
-        f"## Anchor — requested at ¶{handle}\n\n"
+    parts = [
+        f"## Anchor — requested at ¶{handle}\n",
         f"This change request is anchored to chunk **¶{handle}** of "
         f"`draft:{dident}` (a {chunk.chunk_kind}). Act on THIS chunk "
         "directly — edit / delete / cite it by its handle; don't ask which "
-        "one it is. Its current text:\n\n"
-        f"{quoted}\n\n"
-        "If you still must ask the user something, reference chunks by "
+        "one it is. Its current text:\n",
+        quoted,
+    ]
+    # What's already linked to this chunk — provenance, related thoughts,
+    # and dream-memories — so the agent works *with* the existing context
+    # (cite the linked source, build on the dream) instead of blind.
+    conns = store.chunk_connections(int(chunk.ref_id), [handle]).get(handle, [])
+    if conns:
+        parts.append("\nLinked to this chunk (use as context / sources):")
+        for c in conns[:12]:
+            desc = f" — {c['title']}" if c.get("title") else ""
+            parts.append(f"- {c['kind']}:{c['ident']} ({c['relation']}){desc}")
+    parts.append(
+        "\nIf you still must ask the user something, reference chunks by "
         '`¶handle` (never "chunk 0").'
     )
+    return "\n".join(parts)
 
 
 def _render_workspace_status(store: Store, ref_id: int) -> str:

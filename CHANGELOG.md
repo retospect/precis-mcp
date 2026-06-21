@@ -8,6 +8,31 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-21 — per-block Connections surface + agent anchor context)
+
+- The draft reader's meta column gains a **Connections** surface: every
+  ref linked *to or from* a chunk (`store.chunk_connections`) — `derived-from`
+  provenance, `related-to` edges, and **dream-memories that reference the
+  paragraph** — as terse `kind:id — title` hover-preview chips, collapsed
+  behind a count. **Neighbour folding** rolls the prev/next paragraphs'
+  connections in under a muted "nearby" sub-line. An **edit-churn** chip
+  ("changed N× · ago", from `chunk_events`) shows how much a block has
+  moved. This is the surface where dream output lands on the draft.
+- The planner's **anchor block** (change-request prompt) now also lists
+  what's linked to the anchored chunk (`chunk_connections`) so a
+  change-request agent works *with* the provenance / dream context
+  instead of blind.
+
+### Changed (2026-06-21 — dreaming targets drafts, planner sees the anchor)
+
+- **Planner prompt surfaces `meta.anchor`** — a web "around here…" /
+  "review ▾" todo carries `meta.anchor='¶<handle>'`, but the per-tick
+  prompt never showed it, so the agent saw only "remove this paragraph"
+  and yielded `ask-user:` (the "see chunk 0" loop). An `## Anchor` block
+  now names the chunk, shows its current text + linked connections, and
+  says to act on it directly; a gone anchor tells the agent to ask a
+  grounded question by `¶handle`.
+
 ### Added (2026-06-21 — draft LaTeX export, Tier-B increment 1)
 
 - **`precis draft export <slug>`** renders a draft into a compilable

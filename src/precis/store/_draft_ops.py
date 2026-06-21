@@ -252,6 +252,80 @@ class DraftMixin:
             for r in rows
         ]
 
+    def chunk_connections(
+        self, ref_id: int, handles: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Per-chunk graph connections — every ref linked *to or from* a
+        chunk (the other end of any ``links`` row whose src/dst chunk is
+        this one), grouped by handle. This is where ``derived-from``
+        provenance and dream-memories that reference a paragraph surface
+        in the reader. Each entry: ``{relation, direction, kind, ident,
+        title}`` (``ident`` = slug or numeric id; ``title`` is the terse
+        descriptor). Deduped per (handle, other-ref, relation)."""
+        if not handles:
+            return {}
+        sql = """
+            SELECT c.handle, l.relation,
+                   CASE WHEN l.src_chunk_id = c.chunk_id THEN 'out' ELSE 'in' END AS dir,
+                   o.ref_id, o.kind,
+                   (SELECT ri.id_value FROM ref_identifiers ri
+                     WHERE ri.ref_id = o.ref_id AND ri.id_kind = 'cite_key'
+                     LIMIT 1) AS slug,
+                   o.title
+              FROM chunks c
+              JOIN links l
+                ON l.src_chunk_id = c.chunk_id OR l.dst_chunk_id = c.chunk_id
+              JOIN refs o
+                ON o.ref_id = CASE WHEN l.src_chunk_id = c.chunk_id
+                                   THEN l.dst_ref_id ELSE l.src_ref_id END
+             WHERE c.ref_id = %s AND c.handle = ANY(%s)
+               AND c.retired_at IS NULL AND o.deleted_at IS NULL
+             ORDER BY c.handle, l.created_at
+        """
+        out: dict[str, list[dict[str, Any]]] = {}
+        seen: set[tuple[str, int, str]] = set()
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (ref_id, handles)).fetchall()
+        for handle, relation, direction, oid, kind, slug, title in rows:
+            key = (handle, int(oid), relation)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.setdefault(handle, []).append(
+                {
+                    "relation": relation,
+                    "direction": direction,
+                    "kind": kind,
+                    "ident": slug or str(oid),
+                    "title": (title or "").split("\n", 1)[0][:80],
+                }
+            )
+        return out
+
+    def chunk_edit_stats(
+        self, ref_id: int, handles: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Per-chunk edit churn from ``chunk_events`` — ``{handle:
+        {edits, last_at}}`` where ``edits`` counts ``edited`` events (the
+        "changed Nx" chip) and ``last_at`` is the most recent event time.
+        A chunk with only its ``created`` event has ``edits=0``."""
+        if not handles:
+            return {}
+        sql = """
+            SELECT c.handle,
+                   count(*) FILTER (WHERE ce.event_kind = 'edited') AS edits,
+                   max(ce.ts) AS last_at
+              FROM chunks c
+              JOIN chunk_events ce ON ce.chunk_id = c.chunk_id
+             WHERE c.ref_id = %s AND c.handle = ANY(%s)
+             GROUP BY c.handle
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (ref_id, handles)).fetchall()
+        return {
+            h: {"edits": int(edits), "last_at": last_at} for h, edits, last_at in rows
+        }
+
     def draft_toc(
         self, ref_id: int, *, root_handle: str | None = None
     ) -> list[TocEntry]:

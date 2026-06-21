@@ -63,12 +63,40 @@
          class="mt-1 rounded border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 whitespace-pre-wrap break-words">{{ r.text }}</pre>
   </div>
 
-  {# ── Col B: meta — refs + in-flight ─────────────────────────── #}
+  {# ── Col B: meta — refs + connections + in-flight ───────────── #}
   <div class="text-xs space-y-1">
     {% if r.refs %}
     {# Each chip carries the cited quote on hover (popover_chip). #}
     <div class="flex flex-wrap gap-1">
       {% for c in r.refs %}{{ c }}{% endfor %}
+    </div>
+    {% endif %}
+    {# Connections: graph links to/from this chunk — derived-from
+       provenance, related-to, and dream-memories that reference it.
+       Collapsed behind a count; neighbours (prev/next para) fold in
+       under a muted sub-line. The dream-output-on-the-draft surface. #}
+    {% if r.connections or r.nearby %}
+    <div x-data="{ open: false }" class="text-[11px]">
+      <button @click="open = !open" class="text-slate-400 hover:text-slate-700">
+        <span x-text="open ? '▾' : '▸'"></span>
+        {{ r.connections | length }} connection{{ '' if r.connections|length == 1 else 's' }}{% if r.nearby %} (+{{ r.nearby | length }} nearby){% endif %}
+      </button>
+      <div x-show="open" x-cloak class="mt-1 space-y-1">
+        {% if r.connections %}
+        <div class="flex flex-wrap gap-1">{% for c in r.connections %}{{ c }}{% endfor %}</div>
+        {% endif %}
+        {% if r.nearby %}
+        <div class="text-slate-400">nearby:
+          <span class="flex flex-wrap gap-1">{% for c in r.nearby %}{{ c }}{% endfor %}</span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {# Edit churn: how many times this block changed (chunk_events). #}
+    {% if r.edits %}
+    <div class="text-[10px] text-slate-400" title="edits since creation">
+      changed {{ r.edits }}×{% if r.edited_at %} · {{ r.edited_at | ago }}{% endif %}
     </div>
     {% endif %}
     {# Change requests for this block — they PERSIST through their

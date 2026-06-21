@@ -358,3 +358,35 @@ def test_user_prompt_anchor_missing_chunk(hub: Hub, store: Store) -> None:
     store.stamp_ref_meta(todo.id, {"anchor": "¶ZZZZZZ"})
     prompt = _build_user_prompt(store, ref_id=todo.id, model="opus")
     assert "¶ZZZZZZ" in prompt and "no longer exists" in prompt
+
+
+def test_anchor_block_lists_linked_connections(hub: Hub, store: Store) -> None:
+    """The anchor block feeds the agent what's linked to the chunk
+    (provenance / dream-memories), so it works with the context."""
+    from precis.handlers.draft import DraftHandler
+
+    draft = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id="d2", title="T", project=proj)
+    dref = store.get_ref(kind="draft", id="d2")
+    title_h = store.reading_order(dref.id)[0].handle
+    draft.put(
+        id="d2",
+        chunk_kind="paragraph",
+        text="A claim to support.",
+        at={"after": f"¶{title_h}"},
+    )
+    para = next(c for c in store.reading_order(dref.id) if c.text.startswith("A claim"))
+    mem = store.insert_ref(kind="memory", slug=None, title="Supporting evidence")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, src_chunk_id, dst_ref_id, relation, set_by) "
+            "VALUES (%s, %s, %s, 'derived-from', 'agent')",
+            (dref.id, para.chunk_id, mem.id),
+        )
+    todo = store.insert_ref(kind="todo", slug=None, title="support this claim")
+    store.stamp_ref_meta(todo.id, {"anchor": f"¶{para.handle}"})
+
+    prompt = _build_user_prompt(store, ref_id=todo.id, model="opus")
+    assert "Linked to this chunk" in prompt
+    assert f"memory:{mem.id}" in prompt and "Supporting evidence" in prompt
