@@ -11,7 +11,7 @@
   {# ── Col A: content ─────────────────────────────────────────── #
      `raw` (click-to-pin) shows the chunk's verbatim source — the
      markdown + ¶/§ markers behind the rendered view, for debugging. #}
-  <div style="padding-left: {{ r.depth }}rem" x-data="{ raw: false }">
+  <div data-content style="padding-left: {{ r.depth }}rem" x-data="{ raw: false }">
     {% if r.is_heading %}
     <div class="flex items-start gap-1.5">
       <button @click="toggle('{{ r.handle }}')"

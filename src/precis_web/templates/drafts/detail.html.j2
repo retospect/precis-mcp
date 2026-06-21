@@ -6,6 +6,7 @@
   /* in-draft find: every match gets a soft band, the active one a ring */
   .find-hit{background-color:#fef9c3}
   .find-current{box-shadow:0 0 0 2px #f59e0b;border-radius:.25rem}
+  mark.find-word{background:#fde047;color:inherit;border-radius:2px;padding:0 1px}
   /* abbreviation recall: an INSTANT custom tooltip (no native <abbr>
      title delay). Definition rides in .pa-pop, shown on hover/focus. */
   .pa{position:relative;text-decoration:underline dotted;
@@ -149,16 +150,56 @@ function draftDoc(ident) {
     _clearMarks() {
       document.querySelectorAll('#doc .find-hit, #doc .find-current')
         .forEach((e) => e.classList.remove('find-hit', 'find-current'));
+      this._clearWordMarks();
+    },
+    _clearWordMarks() {
+      document.querySelectorAll('#doc mark.find-word').forEach((m) => {
+        m.replaceWith(document.createTextNode(m.textContent));
+      });
+    },
+    _markWord(handle) {
+      // Wrap each verbatim match of the query in <mark> inside the block's
+      // content column — so the actual word is highlighted, not just the
+      // block banded. Walks text nodes (skips tooltips / existing marks).
+      const row = document.getElementById('c-' + handle);
+      const el = row && row.querySelector('[data-content]');
+      const q = this.findQuery.trim().toLowerCase();
+      if (!el || !q) return;
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) =>
+          n.nodeValue && n.nodeValue.toLowerCase().includes(q)
+          && !n.parentElement.closest('.pa-pop, mark.find-word, script, style')
+            ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+      });
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      nodes.forEach((node) => {
+        const text = node.nodeValue, low = text.toLowerCase();
+        const frag = document.createDocumentFragment();
+        let i = 0, p;
+        while ((p = low.indexOf(q, i)) !== -1) {
+          if (p > i) frag.append(document.createTextNode(text.slice(i, p)));
+          const mk = document.createElement('mark');
+          mk.className = 'find-word';
+          mk.textContent = text.slice(p, p + q.length);
+          frag.append(mk);
+          i = p + q.length;
+        }
+        if (i < text.length) frag.append(document.createTextNode(text.slice(i)));
+        node.replaceWith(frag);
+      });
     },
     _markHits() {
-      // Verbatim = band EVERY match (Ctrl-F style). Semantic returns a
-      // long cosine-ranked list, so banding all of it would light up most
-      // of the doc — there we only ring the current result and step
+      // Verbatim = band EVERY match (Ctrl-F style) AND highlight the
+      // matched word inside each block. Semantic returns a long
+      // cosine-ranked list, so banding all of it would light up most of
+      // the doc — there we only ring the current result and step
       // through best-first with ‹ ›.
       if (this.findMode !== 'verbatim') return;
       this.findHits.forEach((h) => {
         const e = document.getElementById('c-' + h);
         if (e) e.classList.add('find-hit');
+        this._markWord(h);
       });
     },
     clearFind() { this.findQuery = ''; this.findHits = []; this.findIdx = -1; this._clearMarks(); },
