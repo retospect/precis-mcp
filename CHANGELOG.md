@@ -8,6 +8,23 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-22 — draft PDF export survives scientific Unicode)
+
+- **PDF export no longer hard-fails on Unicode like `MoS₂`.** Eyeballing
+  the new draft `download PDF` surfaced a real bug: literal Unicode
+  subscripts/superscripts in prose (`MoS₂`, `CO₂`, `10⁻³`) crashed the
+  build — `! LaTeX Error: Unicode character ₂ (U+2082) not set up for
+  use with LaTeX` — because pylatexenc keeps them verbatim and pdflatex's
+  `inputenc` rejects them. Two-part fix (`export/latex.py`,
+  `export/compile.py`, draft `preamble.tex` + `latexmkrc`):
+  - **Transliterate** runs of Unicode sub/superscript chars to
+    `\textsubscript{…}` / `\textsuperscript{…}` before pylatexenc, so
+    they render correctly (one box per run: `x₁₀` → `\textsubscript{10}`).
+  - **Switch the export engine to lualatex** (UTF-8 native; dropped
+    `inputenc`), so any *other* unmapped Unicode degrades to a recoverable
+    missing-glyph warning instead of a fatal error. The `.docx` path was
+    already Unicode-safe.
+
 ### Added (2026-06-22 — dreamer over-weights drafts + draft PDF download)
 
 - **The dreamer over-weights drafts.** `select_dream_seed` now gives

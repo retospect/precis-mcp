@@ -1,9 +1,10 @@
 # precis draft export — latexmk config (copied into every export).
 #
-# Makes a single `latexmk -pdf main.tex` deterministically run every
-# pass the document needs: pdflatex (reruns for refs/labels), biber for
-# the bibliography, and makeglossaries for the glossary/acronym list.
-$pdf_mode = 1;       # pdflatex
+# Makes a single `latexmk main.tex` deterministically run every pass the
+# document needs: lualatex (reruns for refs/labels), biber for the
+# bibliography, and makeglossaries for the glossary/acronym list.
+$pdf_mode = 4;       # lualatex — UTF-8 native; unmapped Unicode is a
+                     # missing-glyph warning, not a fatal inputenc error.
 $bibtex_use = 2;     # always run the bib tool (biber, per biblatex)
 
 # Glossaries / glossaries-extra: teach latexmk to run makeglossaries so

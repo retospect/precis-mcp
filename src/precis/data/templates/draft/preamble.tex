@@ -6,10 +6,12 @@
 % it package-setup only — no document content here.
 %
 % Compile with latexmk so biber (bibliography) and makeglossaries
-% (glossary) both run:  latexmk -pdf main.tex
+% (glossary) both run:  latexmk main.tex  (lualatex, per latexmkrc).
 \documentclass[11pt]{article}
 
-\usepackage[utf8]{inputenc}
+% Engine is lualatex (UTF-8 native) — no inputenc. fontenc T1 + lmodern
+% still give the Latin Modern look; unmapped Unicode degrades to a
+% missing-glyph warning rather than a fatal error.
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
 \usepackage[margin=1in]{geometry}

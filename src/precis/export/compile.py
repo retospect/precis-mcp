@@ -99,7 +99,12 @@ def compile_pdf(
         timeout_s = int(os.environ.get("PRECIS_LATEXMK_TIMEOUT_S", "120"))
     cmd = [
         _latexmk_bin(),
-        "-pdf",
+        # lualatex (not pdflatex): UTF-8 native, so arbitrary scientific
+        # Unicode the encoder couldn't map degrades to a recoverable
+        # missing-glyph warning instead of a fatal inputenc error. The
+        # draft latexmkrc also sets $pdf_mode=4; this flag makes the
+        # engine explicit regardless of the rc.
+        "-lualatex",
         "-interaction=nonstopmode",
         "-halt-on-error",
         entrypoint,

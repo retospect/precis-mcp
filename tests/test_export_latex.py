@@ -82,6 +82,23 @@ def test_unicode_translated_to_latex() -> None:
     assert r"\approx" in out and r"\alpha" in out
 
 
+def test_unicode_subscripts_transliterated() -> None:
+    # literal Unicode subscripts (MoS₂, CO₂) — pylatexenc keeps these
+    # verbatim and pdflatex hard-errors on them; we transliterate to
+    # \textsubscript so they render and the build never fails on them.
+    out, _ = _inline("thin films of MoS₂ and CO₂ capture")
+    assert "₂" not in out
+    assert r"MoS\textsubscript{2}" in out and r"CO\textsubscript{2}" in out
+
+
+def test_unicode_superscripts_and_runs_grouped() -> None:
+    # superscript run 10⁻³ → one \textsuperscript{-3}; subscript run ₁₀
+    # → one \textsubscript{10} (one box, not two).
+    out, _ = _inline("rate 10⁻³ and index x₁₀")
+    assert r"\textsuperscript{-3}" in out
+    assert r"\textsubscript{10}" in out
+
+
 def test_acronym_keymap_dedups_collisions() -> None:
     km = latex._acronym_keymap({"PEI": "polyethyleneimine", "P.E.I.": "place"})
     # both sanitise to "pei"; the map keeps them distinct

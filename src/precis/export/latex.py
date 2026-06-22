@@ -155,14 +155,54 @@ def _acronym_keymap(abbrevs: dict[str, str]) -> dict[str, str]:
     return out
 
 
+#: Unicode subscript / superscript digits + signs → the literal chars
+#: they stand for. pylatexenc has no mapping for these (it would ``keep``
+#: them verbatim, and a literal ``₂`` is a hard ``inputenc`` error under
+#: pdflatex — the MoS₂ / CO₂ class), so we transliterate runs of them to
+#: ``\textsubscript{…}`` / ``\textsuperscript{…}`` *before* pylatexenc.
+_SUBSCRIPT: dict[int, str] = {0x2080 + i: str(i) for i in range(10)}
+_SUBSCRIPT.update({0x208A: "+", 0x208B: "-", 0x208C: "=", 0x208D: "(", 0x208E: ")"})
+_SUPERSCRIPT: dict[int, str] = {0x2070: "0", 0x00B9: "1", 0x00B2: "2", 0x00B3: "3"}
+_SUPERSCRIPT.update({0x2074 + i: str(i + 4) for i in range(6)})  # ⁴..⁹
+_SUPERSCRIPT.update(
+    {0x207A: "+", 0x207B: "-", 0x207C: "=", 0x207D: "(", 0x207E: ")", 0x207F: "n"}
+)
+_SUB_RUN = re.compile("[" + "".join(map(chr, _SUBSCRIPT)) + "]+")
+_SUP_RUN = re.compile("[" + "".join(map(chr, _SUPERSCRIPT)) + "]+")
+
+
+def _normalize_subsup(s: str) -> str:
+    """Collapse runs of Unicode sub/superscript characters into a single
+    ``\\textsubscript{…}`` / ``\\textsuperscript{…}`` (so ``MoS₂`` →
+    ``MoS\\textsubscript{2}`` and ``10⁻³`` → ``10\\textsuperscript{-3}``).
+    Runs into one command so ``₁₀`` is one subscript, not two boxes.
+    Runs on already-LaTeX-escaped text — the braces it introduces are
+    real LaTeX grouping, deliberately not re-escaped."""
+    s = _SUB_RUN.sub(
+        lambda m: r"\textsubscript{"
+        + "".join(_SUBSCRIPT[ord(c)] for c in m.group(0))
+        + "}",
+        s,
+    )
+    return _SUP_RUN.sub(
+        lambda m: r"\textsuperscript{"
+        + "".join(_SUPERSCRIPT[ord(c)] for c in m.group(0))
+        + "}",
+        s,
+    )
+
+
 def _encode_unicode(escaped: str) -> str:
     """Translate non-ASCII characters to LaTeX commands (``≈`` →
     ``\\approx``, ``α`` → ``\\alpha``), leaving ASCII — including the
     backslash escapes we just emitted — untouched (``non_ascii_only``).
-    The single biggest determinism lever: pdflatex never hits a "missing
-    character" on arbitrary scientific prose. Unknown glyphs are kept
-    verbatim (rare; the compile-repair loop is the backstop)."""
-    return _U2L.unicode_to_latex(escaped)
+    Sub/superscript digits are transliterated first (pylatexenc has no
+    mapping and would pass them through verbatim). The single biggest
+    determinism lever: the engine never hits a "missing character" on
+    arbitrary scientific prose. Unknown glyphs are kept verbatim — under
+    lualatex (the export engine) that's a recoverable missing-glyph
+    warning, not a fatal error (the compile-repair loop is the backstop)."""
+    return _U2L.unicode_to_latex(_normalize_subsup(escaped))
 
 
 def _glsify(escaped: str, keymap: dict[str, str]) -> str:
