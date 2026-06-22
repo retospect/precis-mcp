@@ -87,6 +87,10 @@ class DraftFakeStore(FakeStore):
             (SimpleNamespace(id=2), _DRAFT, 0.42),
         ]
 
+    def block_views(self, ref_id):
+        # BBBBBB has a summary; the heading has neither (→ first-line).
+        return {"BBBBBB": {"summary": "Intro gist.", "keywords": "pei, nano"}}
+
     def defined_abbrevs(self, ref_id):
         return {"PEI": "polyethyleneimine"}
 
@@ -264,6 +268,85 @@ def test_delete_change_request_dispatches_todo_delete(
     assert verb == "delete" and args["kind"] == "todo" and args["id"] == 777
 
 
+def test_draft_pdf_503_without_latexmk(draft_client: TestClient, monkeypatch) -> None:
+    """No TeX toolchain on the host → a friendly 503, not a 500."""
+    monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-no-such-binary-xyz")
+    r = draft_client.get("/drafts/nt/pdf", follow_redirects=False)
+    assert r.status_code == 503
+    assert "latexmk is not installed" in r.text
+
+
+def test_draft_pdf_serves_cached(
+    draft_client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """A previously-compiled PDF for the current version is served from
+    the cache without recompiling."""
+    from precis_web.routes import drafts as drafts_mod
+
+    monkeypatch.setattr(drafts_mod, "_pdf_cache_dir", lambda ref_id, version: tmp_path)
+    (tmp_path / "main.pdf").write_bytes(b"%PDF-1.4 fake\n%%EOF\n")
+    r = draft_client.get("/drafts/nt/pdf", follow_redirects=False)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+
+
+def _render_row(requests: list[SimpleNamespace]) -> str:
+    """Render the ``draft_row`` macro with a synthetic block carrying the
+    given change-request chips (the raw-SQL request loader is bypassed in
+    the fake store, so drive the template directly)."""
+    from precis_web.deps import templates
+
+    r = SimpleNamespace(
+        handle="BBBBBB",
+        is_heading=False,
+        ancestors=[],
+        depth=1,
+        chunk_kind="paragraph",
+        text="Some prose.",
+        summary="",
+        keywords="",
+        refs=[],
+        connections=[],
+        nearby=[],
+        edits=0,
+        edited_at=None,
+        abbrevs={},
+        requests=requests,
+    )
+    ref = SimpleNamespace(ident="nt")
+    tmpl = templates.env.get_template("drafts/_row.html.j2")
+    return tmpl.module.draft_row(r, ref)
+
+
+def _req(ref_id: int, *, started: bool, done: bool, failed: bool, status: str):
+    return SimpleNamespace(
+        ref_id=ref_id,
+        status=status,
+        title=f"req {ref_id}",
+        started=started,
+        done=done,
+        failed=failed,
+        asking="",
+    )
+
+
+def test_change_request_close_x_on_terminal_and_unstarted_only() -> None:
+    """The close-X (delete form) shows on not-yet-started, done, and
+    failed requests, but NOT on a request that's actively running."""
+    rows = _render_row(
+        [
+            _req(1, started=False, done=False, failed=False, status="open"),
+            _req(2, started=True, done=False, failed=False, status="doing"),
+            _req(3, started=True, done=True, failed=False, status="done"),
+            _req(4, started=True, done=False, failed=True, status="failed"),
+        ]
+    )
+    assert "/drafts/nt/todo/1/delete" in rows  # unstarted → cancel
+    assert "/drafts/nt/todo/3/delete" in rows  # done → close
+    assert "/drafts/nt/todo/4/delete" in rows  # failed → close
+    assert "/drafts/nt/todo/2/delete" not in rows  # running → no X
+
+
 def test_tasks_gist_summarises_long_bodies_only() -> None:
     """A multi-line / long todo body gets a 3-keyword RAKE gist; a short
     single-line one is shown verbatim (no gist)."""
@@ -277,6 +360,15 @@ def test_tasks_gist_summarises_long_bodies_only() -> None:
     )
     g = _gist(long_body)
     assert g and " · " in g  # joined keyword phrases
+
+
+def test_live_swap_reprocesses_htmx(draft_client: TestClient) -> None:
+    """After the poll swaps in fresh rows, htmx must re-wire the injected
+    hover-preview chips — else citation/¶ mouseovers open an empty slot
+    (they work on first load, break after a doc update)."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "htmx.process(doc)" in r.text
 
 
 def test_reader_has_view_slider(draft_client: TestClient) -> None:

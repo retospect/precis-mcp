@@ -11,6 +11,29 @@ def test_calc_through_dispatch(runtime: PrecisRuntime) -> None:
     assert "14" in out
 
 
+def test_pilcrow_id_routes_to_draft(runtime_with_store: PrecisRuntime) -> None:
+    """A bare ``¶handle`` id infers kind='draft' (the terse chunk form
+    the skill teaches), so ``get(id='¶…')`` no longer bounces as
+    'missing kind=' — the #1 turn-burner in prod plan_ticks."""
+    args: dict = {"id": "¶xPJ5NF"}
+    runtime_with_store._maybe_split_prefixed_id(args)
+    assert args["kind"] == "draft"
+    assert args["id"] == "¶xPJ5NF"  # ¶ retained — DraftHandler needs it
+
+
+def test_pilcrow_id_conflicting_kind_errors(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    from precis.errors import BadInput
+
+    try:
+        runtime_with_store._maybe_split_prefixed_id({"id": "¶xPJ5NF", "kind": "paper"})
+    except BadInput as e:
+        assert "sigil implies kind" in str(e)
+    else:
+        raise AssertionError("expected BadInput on kind conflict")
+
+
 def test_unknown_verb(runtime: PrecisRuntime) -> None:
     out = runtime.dispatch("frobnicate", {})
     assert "[error:BadInput]" in out

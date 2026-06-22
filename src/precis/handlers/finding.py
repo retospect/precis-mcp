@@ -145,31 +145,31 @@ class FindingHandler(NumericRefHandler):
         )
 
         body_text = body if body is not None else text
+        # Report EVERY missing required field at once, not one per call.
+        # The one-at-a-time raise made an under-specified put bounce
+        # repeatedly (title, then body, then cited_in) — a turn-eating
+        # retry loop seen across prod plan_ticks (transcript review
+        # 2026-06-22). A single error lets the agent fix it in one go.
+        missing: list[str] = []
         if not title or not title.strip():
-            raise BadInput(
-                "put(kind='finding') requires title=<short claim title>",
-                next=(
-                    "put(kind='finding', title='gate-bias 2.4 kV / 30 s on Si/SiO2', "
-                    "body='Device prep: 2.4 kV applied for 30 s on Si/SiO2 MOSCAPs '"
-                    "'with Cu top contact, N2 ambient.', "
-                    "scope={'electrode':'Cu','ambient':'N2'}, "
-                    "cited_in='miller23a~42')"
-                ),
-            )
+            missing.append("title=<short claim title>")
         if not body_text or not body_text.strip():
-            raise BadInput(
-                "put(kind='finding') requires body=<claim text + setup as prose>",
-                next=(
-                    "body folds the claim and the setup envelope into one chunk "
-                    "(no separate context= argument under Path B)"
-                ),
-            )
+            missing.append("body=<claim text + setup as prose>")
         if not cited_in or not str(cited_in).strip():
+            missing.append("cited_in=<frontier handle, e.g. miller23a~42>")
+        if missing:
             raise BadInput(
-                "put(kind='finding') requires cited_in=<frontier handle>",
+                "put(kind='finding') requires " + ", ".join(missing),
                 next=(
-                    "cited_in='miller23a' (ref-level) or 'miller23a~42' "
-                    "(chunk-level) or 'paper:miller23a' (explicit kind)"
+                    "put(kind='finding', "
+                    "title='gate-bias 2.4 kV / 30 s on Si/SiO2', "
+                    "body='Device prep: 2.4 kV applied for 30 s on Si/SiO2 "
+                    "MOSCAPs with Cu top contact, N2 ambient.', "
+                    "scope={'electrode':'Cu','ambient':'N2'}, "
+                    "cited_in='miller23a~42')  "
+                    "— cited_in is the frontier paper chunk the claim "
+                    "starts from (ref-level 'miller23a', chunk-level "
+                    "'miller23a~42', or 'paper:miller23a')"
                 ),
             )
         if scope is not None and not isinstance(scope, dict):
@@ -177,6 +177,7 @@ class FindingHandler(NumericRefHandler):
                 f"scope must be a dict, got {type(scope).__name__}",
                 next="scope={'electrode': 'Cu', 'ambient': 'N2', ...}",
             )
+        assert body_text is not None  # narrowed by the `missing` guard above
 
         # Resolve the cited target. parse_link_target handles
         # kind:identifier and kind:identifier~N forms; bare handles

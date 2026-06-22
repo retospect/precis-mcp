@@ -31,13 +31,17 @@ from precis_web.deps import get_store, templates
 router = APIRouter(tags=["preview"])
 
 
+# Kinds addressed purely by numeric ref_id. NB ``finding`` is *not*
+# here: it carries a public ``pub_id`` (6-char base32) handle, so it
+# goes through the slug path — which tries the cite_key/pub_id lookup
+# first and falls back to a kind-verified numeric ref_id, so both
+# ``finding:<pub_id>`` and ``finding:<ref_id>`` resolve.
 _NUMERIC_KINDS: frozenset[str] = frozenset(
     {
         "memory",
         "todo",
         "job",
         "gripe",
-        "finding",
         "citation",
         "flashcard",
         "cron",
@@ -70,14 +74,18 @@ def _resolve_ref_id(store: Any, kind: str, raw_id: str) -> int | None:
     """Map a ``kind:id`` pair to the numeric ``refs.ref_id``.
 
     Numeric kinds accept the id directly; slug kinds route through the
-    ``ref_identifiers`` lookup (slug stored as ``id_kind='cite_key'``),
-    then fall back to a bare numeric ``refs.ref_id``. The fallback is
-    what makes the ``/clusters`` word/grid links work: those pass the
-    numeric ``cluster_assignments.ref_id`` to ``/r/paper/<id>`` rather
-    than a cite_key slug (routes/clusters.py), so without it every such
-    click 404s with ``no such paper:<id>``. The numeric branch is
-    verified against ``refs.kind`` so it never redirects to a paper
-    that doesn't exist. Returns ``None`` when the ref isn't found.
+    ``ref_identifiers`` lookup, then fall back to a bare numeric
+    ``refs.ref_id``. The slug lookup matches both ``id_kind='cite_key'``
+    (paper cite keys) and ``id_kind='pub_id'`` (the 6-char base32 handle
+    a ``finding`` is addressed by) — without the latter a
+    ``finding:<pub_id>`` mention 404s with ``no such finding:<pub_id>``.
+    The fallback is what makes the ``/clusters`` word/grid links work:
+    those pass the numeric ``cluster_assignments.ref_id`` to
+    ``/r/paper/<id>`` rather than a cite_key slug (routes/clusters.py),
+    so without it every such click 404s with ``no such paper:<id>``. The
+    numeric branch is verified against ``refs.kind`` so it never
+    redirects to a paper that doesn't exist. Returns ``None`` when the
+    ref isn't found.
     """
     raw_id = raw_id.lstrip("#")
     if kind in _NUMERIC_KINDS:
@@ -85,11 +93,13 @@ def _resolve_ref_id(store: Any, kind: str, raw_id: str) -> int | None:
             return int(raw_id)
         except ValueError:
             return None
-    # Slug kind: cite_key slug first, then a verified numeric ref_id.
+    # Slug kind: cite_key / pub_id slug first, then a verified numeric
+    # ref_id. cite_key wins on the (rare) chance a value collides.
     with store.pool.connection() as conn:  # type: ignore[attr-defined]
         row = conn.execute(
             "SELECT ref_id FROM ref_identifiers "
-            "WHERE id_kind = 'cite_key' AND id_value = %s",
+            "WHERE id_kind IN ('cite_key', 'pub_id') AND id_value = %s "
+            "ORDER BY (id_kind = 'cite_key') DESC LIMIT 1",
             (raw_id,),
         ).fetchone()
         if row is not None:

@@ -221,9 +221,12 @@ def resolve_handle_ref(store: Any, ident: str, *, include_deleted: bool = True) 
     """Resolve a handle's ``ident`` to a ``Ref`` (or ``None``).
 
     Numeric idents fetch by id; slugs go through ``ref_identifiers``
-    (``id_kind='cite_key'``) — the same two-step the web preview route
-    uses. Kind is intentionally not re-checked: ``memory:6134`` resolves
-    ref 6134 whatever its kind, matching the read-time behaviour.
+    matching ``id_kind IN ('cite_key', 'pub_id')`` — the latter is how a
+    ``finding`` is addressed (its 6-char base32 ``pub_id``), so a
+    ``finding:<pub_id>`` mention resolves. The same two-step the web
+    preview route uses. Kind is intentionally not re-checked:
+    ``memory:6134`` resolves ref 6134 whatever its kind, matching the
+    read-time behaviour.
     """
     ident = ident.lstrip("#")
     try:
@@ -234,12 +237,13 @@ def resolve_handle_ref(store: Any, ident: str, *, include_deleted: bool = True) 
         return store.fetch_refs_by_ids([numeric], include_deleted=include_deleted).get(
             numeric
         )
-    # Slug → cite_key row → ref_id.
+    # Slug → cite_key / pub_id row → ref_id (cite_key wins on collision).
     try:
         with store.pool.connection() as conn:
             row = conn.execute(
                 "SELECT ref_id FROM ref_identifiers "
-                "WHERE id_kind = 'cite_key' AND id_value = %s",
+                "WHERE id_kind IN ('cite_key', 'pub_id') AND id_value = %s "
+                "ORDER BY (id_kind = 'cite_key') DESC LIMIT 1",
                 (ident,),
             ).fetchone()
     except Exception:

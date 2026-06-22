@@ -64,6 +64,68 @@ def test_add_read_edit_move_delete(draft: DraftHandler, hub: Hub) -> None:
     assert intro_h not in [c.handle for c in _order(hub, "nt")]
 
 
+def test_outline_prefers_summary_then_keywords_then_text(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The default outline render glosses each block with its llm-v1
+    summary, falling back to keywords, then the truncated first line."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    # three paragraphs: one summarised, one keyworded, one bare
+    for body in ("Para with summary.", "Para with keywords.", "Bare paragraph text."):
+        draft.put(
+            id="nt", chunk_kind="paragraph", text=body, at={"after": "¶" + title_h}
+        )
+    order = _order(hub, "nt")  # T, then the 3 paras (newest-after-title first)
+    by_text = {c.text: c for c in order}
+    summ = by_text["Para with summary."]
+    kw = by_text["Para with keywords."]
+    with hub.store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_summaries (chunk_id, summarizer, text) "
+            "VALUES (%s, 'llm-v1', %s)",
+            (summ.chunk_id, "A crisp one-line gist."),
+        )
+        conn.execute(
+            "UPDATE chunks SET keywords = %s WHERE chunk_id = %s",
+            (["alpha", "beta", "gamma"], kw.chunk_id),
+        )
+        conn.commit()
+
+    out = draft.get(id="nt").body
+    assert "A crisp one-line gist." in out  # summary wins
+    assert "alpha, beta, gamma" in out  # keywords fallback
+    assert "Bare paragraph text." in out  # raw-text fallback
+
+
+def test_numeric_paper_ref_hints_cite_key_form(draft: DraftHandler, hub: Hub) -> None:
+    """Writing a paper citation as `paper:<numeric>` (or `paper:slug`)
+    nudges toward the canonical `[§<cite_key>~n]`; a correct `[§…]` does
+    not trigger the hint."""
+    proj = _proj(hub)
+    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"The rate rises sharply, as paper:{paper.id}~3 reports.",
+        at={"after": "¶" + th},
+    )
+    assert f"paper:{paper.id}~3" in r.body
+    assert "[§liu24~3]" in r.body  # suggests the cite_key sigil form
+
+    r2 = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="A second mechanism is plausible [§liu24~5].",
+        at={"after": "¶" + th},
+    )
+    assert "cite papers as" not in r2.body  # the canonical form is fine
+
+
 def test_edit_and_delete_require_chunk_handle(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)

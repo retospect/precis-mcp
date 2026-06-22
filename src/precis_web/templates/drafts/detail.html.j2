@@ -16,6 +16,15 @@
       border-radius:4px;background:#1e293b;color:#fff;
       padding:2px 6px;font-size:11px;font-weight:400;line-height:1.3}
   .pa:hover>.pa-pop,.pa:focus>.pa-pop,.pa:focus-within>.pa-pop{display:block}
+  /* Compact view: the content column drives each row's height. The
+     meta column (links + in-flight) is taken out of flow so it stops
+     inflating the row track, then capped to the cell and scrolled. */
+  .draft-compact .draft-meta{position:relative;min-height:0}
+  .draft-compact .draft-meta>.draft-meta-inner{position:absolute;inset:0;
+      overflow-y:auto;padding-right:2px}
+  .draft-compact .draft-meta>.draft-meta-inner::-webkit-scrollbar{width:6px}
+  .draft-compact .draft-meta>.draft-meta-inner::-webkit-scrollbar-thumb{
+      background:#cbd5e1;border-radius:3px}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
 
@@ -48,8 +57,22 @@
               :class="live ? 'bg-emerald-500' : 'bg-slate-300'"></span>
         <span class="text-slate-500" x-text="live ? 'live' : 'paused'"></span>
       </button>
+      {# Compact: let each block's text drive its row height; the
+         links/in-flight column is capped to it and scrolls internally. #}
+      <button @click="toggleCompact()"
+              class="flex items-center gap-1"
+              :title="compact ? 'compact rows on — text drives height, links scroll' : 'compact rows off — tallest column drives height'">
+        <span class="inline-block h-2 w-2 rounded-full"
+              :class="compact ? 'bg-sky-500' : 'bg-slate-300'"></span>
+        <span class="text-slate-500">compact</span>
+      </button>
       <button @click="collapseAll()" class="text-slate-500 underline hover:text-slate-800">collapse all</button>
       <button @click="expandAll()" class="text-slate-500 underline hover:text-slate-800">expand all</button>
+      {# Compile-on-demand PDF (cached per draft version). Opens in a new
+         tab; degrades to a friendly message if the host has no latexmk. #}
+      <a href="/drafts/{{ ref.ident }}/pdf" target="_blank" rel="noopener"
+         class="text-slate-500 underline hover:text-slate-800"
+         title="compile this draft to PDF (latexmk) and open it">PDF</a>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
     </div>
   </div>
@@ -86,7 +109,7 @@
     <div>Document</div><div>Links &amp; in-flight</div><div>Request a change</div>
   </div>
 
-  <div id="doc">
+  <div id="doc" :class="compact ? 'draft-compact' : ''">
     {% include "drafts/_rows.html.j2" %}
   </div>
 </div>
@@ -125,6 +148,13 @@ function draftDoc(ident) {
     stale: false,
     view: localStorage.getItem('draft-view:' + ident) || 'body',
     setView(v) { this.view = v; localStorage.setItem('draft-view:' + ident, v); },
+    // compact rows: text drives row height, meta column scrolls internally.
+    // On by default; the stored '0' is the only thing that turns it off.
+    compact: localStorage.getItem('draft-compact:' + ident) !== '0',
+    toggleCompact() {
+      this.compact = !this.compact;
+      localStorage.setItem('draft-compact:' + ident, this.compact ? '1' : '0');
+    },
     // in-draft find
     findQuery: '',
     findMode: 'verbatim',
@@ -292,7 +322,14 @@ function draftDoc(ident) {
       try {
         const html = await (await fetch(`/drafts/${this.ident}/rows`,
                                         {cache: 'no-store'})).text();
-        document.getElementById('doc').innerHTML = html;  // Alpine binds new rows
+        const doc = document.getElementById('doc');
+        doc.innerHTML = html;  // Alpine binds new rows via its MutationObserver
+        // htmx does NOT auto-wire hx-get/hx-trigger on nodes injected by a
+        // raw innerHTML assignment (only on its own swaps / initial load).
+        // Without this, every citation/¶ hover-preview chip in the swapped
+        // rows has a dead trigger → the popover opens as an empty slot.
+        // This is the "mouseovers stop working after the doc updates" bug.
+        if (window.htmx) window.htmx.process(doc);
         __renderDocMath();
         this.version = v;
         this.stale = false;

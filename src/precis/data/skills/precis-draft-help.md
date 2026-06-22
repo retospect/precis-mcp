@@ -99,6 +99,22 @@ put(kind='draft', id='nanotrans', chunk_kind='paragraph',
 # → returns [¶aa1, ¶aa2]
 ```
 
+**Every block carries prose — write the sentences, not just the
+scaffold.** A paragraph that is only a citation, a formula, a list of
+references, or a bare claim with no explaining text is incomplete: state
+the point in running prose, *then* support it. If a block is genuinely
+just a figure / equation / table, give it the matching `chunk_kind` and a
+one-line caption — don't leave a "paragraph" that is structure without
+saying anything. (Why it happens: it's easy to drop the evidence and
+move on; the prose that ties it to the argument is the actual writing.)
+
+**Style: prose, lightly marked.** Write in plain declarative prose.
+**Do not bold for emphasis** — heavy `**bold**` reads as shouting and
+clutters the page. Reach for *italics* only **occasionally**, for a
+genuinely emphasised word or a term on first mention; most paragraphs
+need no emphasis at all. Let sentence structure carry the weight, not
+markup. (Headings already stand out — you don't need bold on top.)
+
 ## Read the document
 
 ```python
@@ -161,9 +177,22 @@ resolves per target:
 | `[[memory:<id>]]` | **authoring** link (any thought) | nothing (provenance only) |
 
 Cite the **exact** paper chunk that holds the detail (`[§miller89~4]`),
-not the whole paper. **One syntax per citation** — `[§slug~n]` and
-`paper:slug~n` are the *same* reference (`§` is sugar); write one, not
-both, or the reader shows a redundant chip.
+not the whole paper.
+
+**Always cite by `[§<cite_key>~<n>]` — the cite_key, never a numeric
+ref id.** `[§singlemolecule13~2]` is right; `paper:liu24~3` and
+`paper:1837~3` are **wrong** in a draft. Three forms technically
+resolve — `[§liu24~3]` (the canonical sigil), `paper:liu24~3` (the bare
+`kind:ref` mention, sugar), and `paper:<numeric-ref-id>~3` — but only the
+`§cite_key` form is portable: it exports to a real `\cite{liu24}` and
+reads as a citation, whereas a numeric ref id is opaque, unstable across
+re-ingest, and produces no bibliography entry. If a tool result hands you
+a paper as a number or a `paper:` mention, **translate it to its
+`cite_key`** before you write it (the cite_key is the bare slug in
+`get(kind='paper', id=…)` / search output; `[§<cite_key>~<chunk>]`).
+Write **one** form per citation — never both `[§slug~n]` and
+`paper:slug~n` for the same reference, or the reader shows a redundant
+chip.
 
 **Citation rigor (be strict).** A citation must **directly and
 substantively support the specific claim** — you must be able to quote
@@ -283,8 +312,14 @@ A draft renders to a **compilable LaTeX project** with one command:
 
 ```
 precis draft export <slug> [--out DIR]   # → main.tex + refs.bib + preamble.tex
+precis draft export <slug> --pdf          # …and run latexmk to produce main.pdf
 latexmk -pdf main.tex                     # biber + makeglossaries run for you
 ```
+
+In the web reader, the **PDF** link (header) compiles on demand and
+serves the result, cached by the draft's version token — so it only
+recompiles after an edit. Hosts without a TeX toolchain get a friendly
+"latexmk not installed" message instead of a build.
 
 The export is a one-way resolution pass; the output is **disposable**
 (re-export from the draft, never hand-edit the `.tex`). Everything

@@ -359,6 +359,22 @@ def test_delete_dispatches_delete(client, runtime) -> None:
     assert args == {"kind": "todo", "id": 2}
 
 
+def test_ask_terminate_closes_and_clears_tags(client, runtime) -> None:
+    """The X on an ask flips the todo to won't-do and strips ask-user
+    tags in one tag call — it leaves the queue without an answer."""
+    resp = client.post(
+        "/asks/2/terminate",
+        data={"remove": ["ask-user:which one?", "ask-user"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "tag"
+    assert args["id"] == 2
+    assert args["add"] == ["STATUS:won't-do"]
+    assert args["remove"] == ["ask-user:which one?", "ask-user"]
+
+
 def test_move_dispatches_parent_link(client, runtime) -> None:
     resp = client.post(
         "/tasks/2/move", data={"new_parent_id": "1"}, follow_redirects=False
@@ -1568,6 +1584,21 @@ def test_console_run_dispatches(client, runtime) -> None:
     assert args["kind"] == "paper"
     assert args["q"] == "foo"
     assert "[search] ok" in resp.text
+
+
+def test_console_run_tolerates_comma_separated_args(client, runtime) -> None:
+    """Python-call-style ``kind=draft, id=test01`` parses the same as the
+    space-separated form — the trailing comma is stripped, not dispatched
+    as part of the kind (which bounced as 'unknown kind: draft,')."""
+    resp = client.post(
+        "/console/run",
+        data={"verb": "get", "args_text": "kind=draft, id=test01"},
+    )
+    assert resp.status_code == 200
+    verb, args = runtime.calls[-1]
+    assert verb == "get"
+    assert args["kind"] == "draft"  # no trailing comma
+    assert args["id"] == "test01"
 
 
 def test_console_run_bad_arg_no_dispatch(client, runtime) -> None:

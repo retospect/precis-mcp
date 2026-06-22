@@ -170,3 +170,29 @@ async def answer(
         )
 
     return RedirectResponse(url="/asks", status_code=303)
+
+
+@router.post("/{ref_id}/terminate")
+async def terminate(
+    request: Request,
+    ref_id: int,
+    remove: list[str] = Form(default=[]),
+) -> Response:
+    """Dismiss an ask without answering — close the todo for good.
+
+    The X on a row. One ``tag`` call flips the todo to
+    ``STATUS:won't-do`` *and* strips every ``ask-user`` tag, so it
+    leaves the asks queue and never re-enters the doable rotation.
+    The ``remove`` list mirrors the answer form's hidden inputs.
+    """
+    return await redirect_or_error(
+        request,
+        "tag",
+        {
+            "kind": "todo",
+            "id": ref_id,
+            "add": ["STATUS:won't-do"],
+            "remove": list(remove),
+        },
+        redirect="/asks",
+    )

@@ -27,9 +27,38 @@ def _make_paper(store: Store, title: str, cite_key: str | None = None) -> int:
     return int(ref_id)
 
 
+def _make_finding(store: Store, title: str, pub_id: str) -> int:
+    with store.pool.connection() as conn:
+        ref_id = conn.execute(
+            "INSERT INTO refs (kind, title) VALUES ('finding', %s) RETURNING ref_id",
+            (title,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value) "
+            "VALUES (%s, 'pub_id', %s)",
+            (ref_id, pub_id),
+        )
+        conn.commit()
+    return int(ref_id)
+
+
 def test_resolves_paper_by_cite_key_slug(store: Store) -> None:
     ref_id = _make_paper(store, "Attention", cite_key="vaswani2017")
     assert _resolve_ref_id(store, "paper", "vaswani2017") == ref_id
+
+
+def test_resolves_finding_by_pub_id(store: Store) -> None:
+    # A finding is addressed by its 6-char base32 pub_id, not a cite_key —
+    # the lookup must match id_kind='pub_id' or `finding:<pub_id>` 404s.
+    ref_id = _make_finding(store, "Evidence for X", pub_id="ppxrf3")
+    assert _resolve_ref_id(store, "finding", "ppxrf3") == ref_id
+
+
+def test_resolves_finding_by_numeric_ref_id(store: Store) -> None:
+    # A bare numeric finding ref still resolves via the kind-verified
+    # numeric fallback (finding is no longer a pure-numeric kind).
+    ref_id = _make_finding(store, "Evidence for Y", pub_id="aa2233")
+    assert _resolve_ref_id(store, "finding", str(ref_id)) == ref_id
 
 
 def test_resolves_paper_by_numeric_ref_id(store: Store) -> None:

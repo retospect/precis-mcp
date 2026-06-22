@@ -8,6 +8,84 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-21 — asks dismiss + draft compact rows)
+
+- **Asks tab: dismiss with an ×.** Each ask row gains an X that closes
+  the underlying todo (`STATUS:won't-do`) and strips its `ask-user`
+  tags in one `tag` call — it leaves the queue without an answer and
+  never re-enters the doable rotation. Sits beside the existing
+  *Answer & unlock* form. (`routes/asks.py` `terminate`.)
+- **Draft reader: on-demand PDF.** A **PDF** link in the reader header
+  (`GET /drafts/{ident}/pdf`) exports the draft's LaTeX project and runs
+  `latexmk`, **cached by the draft's version token** — the first hit for
+  a version compiles, later hits serve the cached file; any edit bumps
+  the version and triggers a fresh build. Degrades cleanly: a host
+  without `latexmk` returns a friendly 503 (pointing at `precis draft
+  export … --pdf`), and a LaTeX error returns the compile log tail
+  rather than a 500.
+- **Draft `get` outline reads as meaning.** `get(kind='draft', id=…)`
+  now glosses each block with its `llm-v1` summary, falling back to the
+  KeyBERT keywords, then the truncated first line (the prior behaviour)
+  for blocks the workers haven't reached. Shared `store.block_views`
+  backs both this and the web reader's view slider. The header
+  pluralises correctly (`1 chunk` / `N chunks`) instead of `chunk(s)`.
+- **Agent friction fixes from a prod transcript review (2026-06-22).**
+  Reviewing plan_tick transcripts since the prior evening, every one of
+  the 5 failures hit `max_turns (30)` — and the turns were burned on
+  repeated tool errors, dominated by two patterns:
+  - **`missing kind=` on `¶handle` ids** (26× in one tick → death). The
+    skill teaches `get(id='¶xPJ5NF')` with no kind; the `¶→draft` /
+    `§→paper` sigil routing that fixes it had **already** landed
+    (`_infer_sigil_kind`), so deploying current `main` resolves this —
+    the review confirmed it as the top failure cause.
+  - **`put(kind='finding')` round-trips.** Required-field validation
+    raised one field at a time (title → body → cited_in), so an
+    under-specified call bounced repeatedly. It now reports **all**
+    missing required fields in one error with a complete example.
+- **`finding:<pub_id>` resolves in the web reader.** A `finding:ppxrf3`
+  mention 404'd with "no such finding:ppxrf3": `finding` was a
+  pure-numeric kind, so the resolver did `int('ppxrf3')` and bailed, and
+  the slug lookup only matched `id_kind='cite_key'` anyway. `finding`
+  now goes through the slug path, and both `_resolve_ref_id` (web) and
+  `resolve_handle_ref` (write-time autolinker) match
+  `id_kind IN ('cite_key', 'pub_id')` — so a finding resolves by its
+  6-char base32 pub_id *or* its numeric ref id.
+- **Draft hover-previews survive a live update.** Citation / `¶` hover
+  popovers worked on first load but opened as an empty slot after the
+  document refreshed: the draft reader's poll swapped fresh rows via raw
+  `innerHTML`, which htmx doesn't auto-wire, so the injected chips had
+  dead `hx-get` triggers. The swap now calls `htmx.process()` on the new
+  rows.
+- **Draft authoring guidance + write-time citation hint.** The
+  `precis-draft-help` skill now prescribes `[§<cite_key>~<n>]` as *the*
+  citation form (never a numeric ref id / bare `paper:` mention — those
+  don't export to `\cite`), tells the writer to keep prose in every
+  block (not bare structure/citations), and to avoid bold (sparing
+  italics only). Backed by a tool-surface nudge: a draft `put`/`edit`
+  whose text cites a paper as `paper:<id>` now appends a hint with the
+  exact `[§<cite_key>~n]` replacement.
+- **Console: tolerate comma-separated args.** `get kind=draft, id=test01`
+  (Python-call style) now parses identically to the space-separated
+  form. `shlex` kept the comma glued to the value, so `kind=draft,` was
+  dispatched as the literal kind `'draft,'` and bounced with the
+  self-contradictory *"unknown kind: draft,"* (which then listed `draft`
+  among the options). `_parse_args` now strips surrounding commas off
+  each token; a comma inside a quoted value is untouched.
+- **Draft reader: close finished/failed change requests with ×.** The
+  change-request chips in a block's meta column now carry a close-× on
+  *done / won't-do* and *failed* requests as well as not-yet-started
+  ones — only an actively-running request (a job minted, not yet
+  terminal) has no × (can't delete it mid-run). Soft-deletes via the
+  existing `/drafts/{ident}/todo/{id}/delete` route.
+- **Draft reader: compact rows.** A `compact` toggle in the view
+  controls. By default a block's row height is the *tallest* of its
+  three columns, so a short paragraph with many connections/requests
+  gets stretched by the meta column. Compact mode takes the meta
+  column out of flow (`.draft-meta-inner` pinned + `overflow-y:auto`)
+  so the **text drives each row's height** and the links/in-flight
+  column scrolls internally. Works with the summary/keywords views
+  too. **On by default**; persisted per draft in localStorage.
+
 ### Added (2026-06-21 — per-block Connections surface + agent anchor context)
 
 - The draft reader's meta column gains a **Connections** surface: every

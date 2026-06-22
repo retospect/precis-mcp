@@ -193,6 +193,14 @@ def _smart_resolve(query: str) -> str | None:
 def _parse_args(verb: str, args_text: str) -> dict[str, Any]:
     """Turn ``key=value`` tokens into a typed payload for ``verb``.
 
+    Tokens are space-separated (``kind=draft id=test01``), but operators
+    routinely paste the Python-call style (``kind=draft, id=test01``) —
+    ``shlex`` keeps the comma glued to the value, so ``kind=draft,`` was
+    dispatched as the literal kind ``'draft,'`` and bounced as an
+    "unknown kind". Strip surrounding commas off each token (and drop a
+    lone ``,``) so both styles parse the same; a comma *inside* a quoted
+    value survives untouched.
+
     Raises ``ValueError`` on a malformed token or an unknown arg —
     surfaced to the user as an inline message rather than a 500.
     """
@@ -201,6 +209,9 @@ def _parse_args(verb: str, args_text: str) -> dict[str, Any]:
     params = TOOL_REGISTRY[verb]["parameters"]
     payload: dict[str, Any] = {}
     for tok in shlex.split(args_text or ""):
+        tok = tok.strip(",")
+        if not tok:
+            continue
         if "=" not in tok:
             raise ValueError(f"expected key=value, got {tok!r}")
         key, _, raw = tok.partition("=")

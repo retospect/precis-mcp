@@ -32,10 +32,12 @@ across HTML/LaTeX/Word targets. KaTeX renders ``$…$`` client-side.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
@@ -149,7 +151,9 @@ def _requests_by_handle(
     '¶<handle>'``), grouped by handle — including **done / won't-do**, so a
     finished request hangs around to click into (its ``plan_tick`` job's
     captured LLM transcript is the debugging surface). Active requests
-    sort first; ``started`` (a job minted) gates the X-cancel."""
+    sort first. ``started`` (a job minted) + ``done`` + ``failed`` drive
+    the close-X: it shows on not-yet-started, done, or failed requests,
+    and is suppressed only while a request is actively running."""
     if not handles:
         return {}
     anchors = [f"¶{h}" for h in handles]
@@ -200,25 +204,11 @@ def _requests_by_handle(
 
 def _block_views(store: Any, ref_id: int) -> dict[str, dict[str, str]]:
     """Per-block keyword + llm-summary text for the view slider (body /
-    summary / keywords). Populated by the chunk_keywords + llm_summarize
-    workers; empty for a chunk they haven't reached yet (→ first-line
-    fallback in the row)."""
-    out: dict[str, dict[str, str]] = {}
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT c.handle, c.keywords, "
-            "  (SELECT s.text FROM chunk_summaries s WHERE s.chunk_id = c.chunk_id "
-            "    AND s.summarizer = 'llm-v1' LIMIT 1) AS summary "
-            "FROM chunks c WHERE c.ref_id = %s AND c.retired_at IS NULL "
-            "  AND c.pos IS NOT NULL AND c.ord >= 0",
-            (ref_id,),
-        ).fetchall()
-    for handle, kws, summary in rows:
-        out[handle] = {
-            "keywords": ", ".join((kws or [])[:12]),
-            "summary": (summary or "").strip(),
-        }
-    return out
+    summary / keywords). Thin wrapper over ``store.block_views`` (shared
+    with the handler's outline render); empty for a chunk the
+    chunk_keywords / llm_summarize workers haven't reached yet (→
+    first-line fallback in the row)."""
+    return store.block_views(ref_id)
 
 
 def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
@@ -387,21 +377,108 @@ async def reader_rows(request: Request, ident: str) -> HTMLResponse:
     )
 
 
-@router.get("/drafts/{ident}/version")
-async def version(request: Request, ident: str) -> JSONResponse:
+def _draft_version(store: Any, ref_id: int) -> int:
     """Monotone version token = max ``chunk_events.event_id`` over the
-    draft's chunks. The future poll refetches changed rows when it bumps."""
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    if ref is None:
-        return JSONResponse({"version": 0})
+    draft's chunks. Bumps on every chunk create/edit/move/retire, so it
+    doubles as the cache key for a compiled PDF."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT COALESCE(MAX(ce.event_id), 0) FROM chunk_events ce "
             "JOIN chunks c ON c.chunk_id = ce.chunk_id WHERE c.ref_id = %s",
-            (ref.id,),
+            (ref_id,),
         ).fetchone()
-    return JSONResponse({"version": int(row[0]) if row else 0})
+    return int(row[0]) if row else 0
+
+
+@router.get("/drafts/{ident}/version")
+async def version(request: Request, ident: str) -> JSONResponse:
+    """Monotone version token = max ``chunk_events.event_id`` over the
+    draft's chunks. The poll refetches changed rows when it bumps."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"version": 0})
+    return JSONResponse({"version": _draft_version(store, ref.id)})
+
+
+def _pdf_cache_dir(ref_id: int, version: int) -> Path:
+    """Per-(draft, version) build dir for the compiled PDF. Lives under
+    the system temp so it survives within a deploy and is cheap to
+    discard; a new version compiles into a fresh dir, so a stale PDF is
+    never served."""
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / "precis-draft-pdf" / str(ref_id) / str(version)
+
+
+@router.get("/drafts/{ident}/pdf")
+async def pdf(request: Request, ident: str) -> Response:
+    """Compile the draft to PDF on demand and serve it, cached by the
+    draft's version token. First request for a version exports the LaTeX
+    project + runs ``latexmk``; later requests serve the cached file.
+
+    Degrades cleanly: with no ``latexmk`` on the host (``--pdf`` is a
+    no-op in such builds) it returns a friendly 503 rather than a 500;
+    on a LaTeX error it returns the compile log tail so the failure is
+    debuggable (and feeds the future LLM-repair loop)."""
+    from precis.export.compile import compile_pdf, have_latexmk
+    from precis.export.latex import export_draft
+
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "active_tab": "drafts",
+                "title": "Draft not found",
+                "status": 404,
+                "detail": f"no draft {ident!r}",
+            },
+            status_code=404,
+        )
+    version_token = _draft_version(store, ref.id)
+    cache_dir = _pdf_cache_dir(ref.id, version_token)
+    pdf_path = cache_dir / "main.pdf"
+    filename = f"{ref.slug or ref.id}.pdf"
+
+    if not pdf_path.exists():
+        if not have_latexmk():
+            return templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {
+                    "active_tab": "drafts",
+                    "title": "PDF unavailable",
+                    "status": 503,
+                    "detail": (
+                        "latexmk is not installed on this host, so the draft "
+                        "can't be compiled to PDF here. Run `precis draft export "
+                        f"{ref.slug or ref.id} --pdf` on a host with a TeX "
+                        "toolchain, or install mactex/TeX Live on the web host."
+                    ),
+                },
+                status_code=503,
+            )
+        export_draft(store, ref, target_dir=cache_dir)
+        result = compile_pdf(cache_dir)
+        if not result.ok:
+            return templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {
+                    "active_tab": "drafts",
+                    "title": "PDF compile failed",
+                    "status": 500,
+                    "detail": (
+                        "latexmk could not build this draft. Last lines of "
+                        f"the log:\n\n{result.log_tail}"
+                    ),
+                },
+                status_code=500,
+            )
+    return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
 
 
 @router.get("/drafts/{ident}/find")
@@ -538,8 +615,10 @@ async def review_block(
 
 @router.post("/drafts/{ident}/todo/{todo_id}/delete")
 async def delete_change_request(request: Request, ident: str, todo_id: int) -> Response:
-    """Cancel a change-request todo anchored in this draft (the X on a
-    not-yet-started in-flight chip). Soft-deletes via the todo handler."""
+    """Close a change-request todo anchored in this draft (the X on a
+    chip). Cancels a not-yet-started request or clears a finished one
+    (done / won't-do / failed); a running request has no X. Soft-deletes
+    via the todo handler."""
     back = f"/drafts/{ident}"
     return await redirect_or_error(
         request,

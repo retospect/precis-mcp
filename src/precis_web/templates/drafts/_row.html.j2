@@ -63,8 +63,12 @@
          class="mt-1 rounded border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 whitespace-pre-wrap break-words">{{ r.text }}</pre>
   </div>
 
-  {# ── Col B: meta — refs + connections + in-flight ───────────── #}
-  <div class="text-xs space-y-1">
+  {# ── Col B: meta — refs + connections + in-flight ───────────── #
+     In compact mode the parent #doc carries `draft-compact`, which
+     pins `.draft-meta-inner` to the cell and scrolls it — so this
+     column stops inflating the row and the text drives the height. #}
+  <div class="draft-meta text-xs">
+    <div class="draft-meta-inner space-y-1">
     {% if r.refs %}
     {# Each chip carries the cited quote on hover (popover_chip). #}
     <div class="flex flex-wrap gap-1">
@@ -119,12 +123,15 @@
         <a href="/tasks/{{ t.ref_id }}/transcript" target="_blank" rel="noopener"
            class="shrink-0 leading-none" title="LLM transcript (what it asked / did)">📜</a>
         {% endif %}
-        {# X to cancel a request that hasn't started yet (no job minted). #}
-        {% if not t.started and not t.done %}
+        {# X to close a request: cancel one not yet started, OR clear a
+           finished one (done / won't-do / failed). A running request — a
+           job minted but not yet terminal — gets no X so you can't delete
+           it mid-run. #}
+        {% if t.done or t.failed or not t.started %}
         <form method="post" action="/drafts/{{ ref.ident }}/todo/{{ t.ref_id }}/delete"
-              onsubmit="return confirm('Delete this change request?')">
-          <button class="text-amber-600 hover:text-rose-600 leading-none"
-                  title="delete this not-yet-started request">×</button>
+              onsubmit="return confirm('Remove this change request?')">
+          <button class="{% if t.done %}text-slate-400{% elif t.failed %}text-rose-400{% else %}text-amber-600{% endif %} hover:text-rose-600 leading-none"
+                  title="{% if t.done or t.failed %}close — remove this finished request{% else %}cancel this not-yet-started request{% endif %}">×</button>
         </form>
         {% endif %}
       </div>
@@ -141,6 +148,7 @@
       {% endif %}
     </div>
     {% endfor %}
+    </div>{# /.draft-meta-inner #}
   </div>
 
   {# ── Col C: change box — "around here…" ─────────────────────── #}

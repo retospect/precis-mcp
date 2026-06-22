@@ -349,6 +349,36 @@ class DraftMixin:
             h: {"edits": int(edits), "last_at": last_at} for h, edits, last_at in rows
         }
 
+    def block_views(self, ref_id: int) -> dict[str, dict[str, str]]:
+        """Per-block ``{handle: {summary, keywords}}`` for a draft.
+
+        ``summary`` is the ``llm-v1`` two-part summary (``chunk_summaries``);
+        ``keywords`` the comma-joined KeyBERT terms (``chunks.keywords``,
+        first 12). Either is ``''`` for a chunk the ``llm_summarize`` /
+        ``chunk_keywords`` workers haven't reached yet — callers fall back
+        (summary → keywords → truncated text). Shared by the web reader's
+        view slider and the handler's outline render."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.handle, c.keywords,
+                       (SELECT s.text FROM chunk_summaries s
+                          WHERE s.chunk_id = c.chunk_id
+                            AND s.summarizer = 'llm-v1' LIMIT 1) AS summary
+                  FROM chunks c
+                 WHERE c.ref_id = %s AND c.retired_at IS NULL
+                   AND c.pos IS NOT NULL AND c.ord >= 0
+                """,
+                (ref_id,),
+            ).fetchall()
+        return {
+            handle: {
+                "keywords": ", ".join((kws or [])[:12]),
+                "summary": (summary or "").strip(),
+            }
+            for handle, kws, summary in rows
+        }
+
     def draft_toc(
         self, ref_id: int, *, root_handle: str | None = None
     ) -> list[TocEntry]:

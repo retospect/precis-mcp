@@ -226,12 +226,14 @@ class DraftHandler(Handler):
             )
             self._sync_draft_links(ref.id)
             handles = " ".join(f"¶{c.handle}" for c in chunks)
-            body = f"added {len(chunks)} chunk(s) to {slug}: {handles}"
+            n = len(chunks)
+            body = f"added {n} chunk{'' if n == 1 else 's'} to {slug}: {handles}"
             # Hint the LLM about any undefined abbreviations it just wrote
             # (skip when the write *is* a term definition).
             if kind != "term":
                 undefined = self.store.undefined_abbrevs(ref.id, str(text))
                 body += self._abbrev_hint(slug, undefined)
+                body += self._citation_form_hint(str(text))
             return Response(body=body)
 
         # else: create the draft
@@ -287,6 +289,7 @@ class DraftHandler(Handler):
                 body += self._abbrev_hint(
                     slug, self.store.undefined_abbrevs(c.ref_id, str(text))
                 )
+                body += self._citation_form_hint(str(text))
             return Response(body=body)
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
@@ -324,6 +327,34 @@ class DraftHandler(Handler):
             f"put(kind='draft', id={slug!r}, chunk_kind='term', text='<expansion>', "
             f"meta={{'short': {first!r}}}) — or, if it isn't an abbreviation, SILENCE "
             f"it: edit(kind='draft', id={slug!r}, not_abbrev=[{first!r}])."
+        )
+
+    def _citation_form_hint(self, text: str) -> str:
+        """Nudge toward the canonical ``[§<cite_key>~<n>]`` citation when
+        the text cites a paper by the bare ``paper:<id>`` mention —
+        especially a numeric ref id, which resolves but is opaque,
+        unstable across re-ingest, and exports to no ``\\cite``. Only the
+        prefixed ``paper:`` form fires; the ``§`` bracket and bare
+        cite_key forms (the acceptable ones) are left alone."""
+        from precis.utils import mentions
+
+        suggestions: dict[str, str] = {}
+        for m in mentions.REF_PATTERN.finditer(text):
+            if m.group("kind") != "paper":
+                continue
+            ident = m.group("id").lstrip("#")
+            suffix = m.group("chunk") or ""
+            ref = mentions.resolve_handle_ref(self.store, ident)
+            cite_key = getattr(ref, "slug", None) if ref is not None else None
+            if not cite_key:
+                continue
+            suggestions[f"paper:{ident}{suffix}"] = f"[§{cite_key}{suffix}]"
+        if not suggestions:
+            return ""
+        pairs = "; ".join(f"{o} → {s}" for o, s in list(suggestions.items())[:5])
+        return (
+            "\n\n⚠ cite papers as [§<cite_key>~<chunk>], not the bare paper: "
+            f"mention (a numeric ref id exports to no \\cite): {pairs}."
         )
 
     def _resolve_draft_any(self, id: str | int | None) -> Any:
@@ -418,12 +449,23 @@ class DraftHandler(Handler):
 
     def _render_outline(self, slug: str, ref: Any) -> Response:
         chunks = self.store.reading_order(ref.id)
-        lines = [f"# {ref.title}  ({slug}) — {len(chunks)} chunk(s)\n"]
+        # Per-block gloss preference: the llm-v1 summary, else the keyword
+        # set, else the truncated first line. Lets the outline read as
+        # *meaning* once the summarize/keyword workers have run, degrading
+        # to the raw-text peek for blocks they haven't reached yet.
+        views = self.store.block_views(ref.id)
+        n = len(chunks)
+        lines = [f"# {ref.title}  ({slug}) — {n} chunk{'' if n == 1 else 's'}\n"]
         for c in chunks:
-            first = c.text.splitlines()[0] if c.text else ""
-            if len(first) > 80:
-                first = first[:79] + "…"
-            lines.append(f"{'  ' * c.depth}¶{c.handle}  [{c.chunk_kind}] {first}")
+            v = views.get(c.handle, {})
+            gloss = v.get("summary") or v.get("keywords") or ""
+            if not gloss:
+                gloss = c.text.splitlines()[0] if c.text else ""
+            # collapse to a single line; cap so the outline stays scannable
+            gloss = " ".join(gloss.split())
+            if len(gloss) > 200:
+                gloss = gloss[:199] + "…"
+            lines.append(f"{'  ' * c.depth}¶{c.handle}  [{c.chunk_kind}] {gloss}")
         return Response(body="\n".join(lines))
 
     def _render_chunk(self, addr: str) -> Response:

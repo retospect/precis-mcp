@@ -78,6 +78,16 @@ class TestPutValidation:
             h.put(title="t", body="b", cited_in=None)
         assert "cited_in" in str(exc.value)
 
+    def test_reports_all_missing_required_at_once(self, store) -> None:
+        """An under-specified put names every missing field in one error
+        — not one-per-call, which made the agent round-trip (and burn
+        plan_tick turns) fixing them serially."""
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as exc:
+            h.put()  # nothing supplied
+        msg = str(exc.value)
+        assert "title" in msg and "body" in msg and "cited_in" in msg
+
     def test_scope_must_be_dict(self, store) -> None:
         _seed_paper(store)
         h = _make_handler(store)
