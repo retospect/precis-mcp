@@ -6,7 +6,7 @@
 <div id="c-{{ r.handle }}"
      {% if r.is_heading %}data-heading="{{ r.handle }}"{% endif %}
      data-anc='{{ r.ancestors | tojson }}'
-     x-show="vis({{ r.ancestors | tojson }})" x-cloak
+     x-show='vis({{ r.ancestors | tojson }})' x-cloak
      class="grid grid-cols-1 lg:grid-cols-[1fr_20%_22%] gap-3 py-1.5 border-b border-slate-100 scroll-mt-4 group">
   {# ── Col A: content ─────────────────────────────────────────── #
      `raw` (click-to-pin) shows the chunk's verbatim source — the

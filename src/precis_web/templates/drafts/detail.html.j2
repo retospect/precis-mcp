@@ -35,16 +35,6 @@
       {% if ref.slug %}<span class="font-mono text-xs text-slate-400">draft:{{ ref.slug }}</span>{% endif %}
     </div>
     <div class="flex items-center gap-3 text-xs">
-      {# View slider: show each block's full body, its summary, or its
-         keywords (3-stop). Persisted per draft. #}
-      <div class="flex items-center rounded border border-slate-200 p-0.5">
-        <template x-for="opt in ['body', 'summary', 'keywords']" :key="opt">
-          <button @click="setView(opt)"
-                  class="px-1.5 py-0.5 rounded capitalize"
-                  :class="view === opt ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-800'"
-                  x-text="opt"></button>
-        </template>
-      </div>
       {# live-refresh indicator + the "you were typing, here's a manual refresh" pill #}
       <button x-show="stale" x-cloak @click="forceRefresh()"
               class="rounded bg-amber-100 border border-amber-300 px-2 py-0.5 text-amber-800 hover:bg-amber-200">
@@ -66,8 +56,6 @@
               :class="compact ? 'bg-sky-500' : 'bg-slate-300'"></span>
         <span class="text-slate-500">compact</span>
       </button>
-      <button @click="collapseAll()" class="text-slate-500 underline hover:text-slate-800">collapse all</button>
-      <button @click="expandAll()" class="text-slate-500 underline hover:text-slate-800">expand all</button>
       {# Export. .docx downloads synchronously (toolchain-free, OMML math
          + Word endnotes). "download PDF" compiles on the web host and
          serves it, cached by the draft's version token — so it's always
@@ -135,6 +123,20 @@
             class="rounded border border-slate-200 px-1.5 py-0.5 disabled:opacity-30" title="next match">›</button>
     <span class="text-slate-400" x-show="findQuery" x-cloak
           x-text="findHits.length ? (findIdx + 1) + '/' + findHits.length : 'no matches'"></span>
+    {# View slider (body / summary / keywords — 3-stop, persisted per draft)
+       + collapse controls live here so they float with the find bar. #}
+    <div class="ml-auto flex items-center gap-2">
+      <div class="flex items-center rounded border border-slate-200 p-0.5">
+        <template x-for="opt in ['body', 'summary', 'keywords']" :key="opt">
+          <button @click="setView(opt)"
+                  class="px-1.5 py-0.5 rounded capitalize"
+                  :class="view === opt ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-800'"
+                  x-text="opt"></button>
+        </template>
+      </div>
+      <button @click="collapseAll()" class="text-slate-500 underline hover:text-slate-800">collapse all</button>
+      <button @click="expandAll()" class="text-slate-500 underline hover:text-slate-800">expand all</button>
+    </div>
   </div>
 
   {# Column legend #}

@@ -8,6 +8,25 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Fixed (2026-06-22 — draft reader collapse was a silent no-op + floating toolbar)
+
+- **Heading collapse triangles / collapse-all / expand-all now actually
+  collapse.** Each row's visibility binding was
+  `x-show="vis({{ r.ancestors | tojson }})"` — but `tojson` emits a
+  double-quoted JSON array (`["sec1"]`), so wrapping it in a *double*-quoted
+  HTML attribute terminated the attribute mid-array. Alpine got a malformed
+  expression and never evaluated `vis()` on any row with ancestors (i.e.
+  everything nested under a heading): the `▸`/`▾` triangle flipped and
+  `collapsed` updated, but no descendant ever hid. Root rows (empty `[]`)
+  happened to render valid HTML, masking it. Fixed by single-quoting the
+  binding (`x-show='vis(...)'`) to match the already-correct `data-anc`
+  attribute; `tojson` escapes inner single quotes, so it's safe. Regression
+  test asserts the well-formed form and the broken one's absence.
+- **Draft toolbar floats with the find bar.** The body/summary/keywords
+  view slider and the collapse-all / expand-all controls moved out of the
+  non-sticky page header into the `sticky top-0` find bar, so they stay
+  reachable while scrolling a long draft.
+
 ### Added (2026-06-22 — request-a-missing-paper workflow + S2 citation-graph nav)
 
 - **Draft authoring now teaches "request a paper we don't have".** The

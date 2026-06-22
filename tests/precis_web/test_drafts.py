@@ -186,6 +186,12 @@ def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     assert 'data-heading="AAAAAA"' in r.text
     assert "collapse all" in r.text
     assert '["AAAAAA"]' in r.text  # BBBBBB's ancestors json
+    # The collapse binding MUST be single-quoted: tojson emits double quotes,
+    # so wrapping x-show in double quotes terminates the attribute mid-array
+    # and Alpine never evaluates vis() — collapse silently no-ops on every
+    # nested row. Guard the well-formed form and the broken one's absence.
+    assert 'x-show=\'vis(["AAAAAA"])\'' in r.text
+    assert 'x-show="vis(["AAAAAA"])"' not in r.text
     # per-block change box posts to the anchored-todo route
     assert 'action="/drafts/nt/request"' in r.text
 
