@@ -258,9 +258,7 @@ class NumericRefHandler(Handler):
                     self.store, ref.id, source=self._event_log_source()
                 )
             if view == "raw":
-                return Response(
-                    body=self._render_raw(ref, self.store.tags_for(ref.id))
-                )
+                return Response(body=self._render_raw(ref, self.store.tags_for(ref.id)))
         tags = self.store.tags_for(ref.id)
         body = self._render_one(ref, tags)
         # F8: surface the link graph for this ref so the agent's

@@ -344,6 +344,7 @@ def _render_authoring(addr: str) -> str:
 #: attribute, href, or tag name.
 _TAG_SPLIT = re.compile(r"(<[^>]+>)")
 
+
 def _highlight_abbrevs(html: str, abbrevs: dict[str, str]) -> str:
     """Wrap each occurrence of a known abbreviation ``short`` (in the
     *text* runs of already-rendered HTML) in an ``<abbr>`` carrying an

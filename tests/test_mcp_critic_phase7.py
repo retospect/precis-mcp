@@ -449,9 +449,7 @@ class TestMissingKindRecentHint:
     retry naming the kind the agent was just working on, instead of a
     bare 30-item menu — kills the empty-call retry loop."""
 
-    def test_delete_without_kind_suggests_recent(
-        self, runtime: PrecisRuntime
-    ) -> None:
+    def test_delete_without_kind_suggests_recent(self, runtime: PrecisRuntime) -> None:
         runtime.dispatch("put", {"kind": "memory", "text": "a recent thought"})
         out = runtime.dispatch("delete", {})
         assert "[error:BadInput]" in out
@@ -514,9 +512,7 @@ class TestSigilKindInference:
         assert "missing kind" not in out
         assert "draft chunk" in out
 
-    def test_sigil_conflicts_with_explicit_kind(
-        self, runtime: PrecisRuntime
-    ) -> None:
+    def test_sigil_conflicts_with_explicit_kind(self, runtime: PrecisRuntime) -> None:
         out = runtime.dispatch("get", {"id": "¶ZZZZZZ", "kind": "paper"})
         assert "conflicts" in out
 
@@ -541,8 +537,11 @@ class TestSlugKindInference:
     def _seed_paper(self, store: Store, slug: str) -> None:
         ref = store.insert_ref(kind="paper", slug=slug, title="P", provider="manual")
         store.insert_blocks(
-            ref.id, [BlockInsert(pos=i, text=f"block {i} text", slug=f"b{i}")
-                     for i in range(4)]
+            ref.id,
+            [
+                BlockInsert(pos=i, text=f"block {i} text", slug=f"b{i}")
+                for i in range(4)
+            ],
         )
 
     def test_paper_chunk_addr_infers_paper(self, runtime: PrecisRuntime) -> None:

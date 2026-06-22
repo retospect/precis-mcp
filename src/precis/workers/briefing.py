@@ -97,7 +97,9 @@ def run_briefing(
         log.info("briefing: no news in the last %dh — nothing to brief", lookback_hours)
         return {"articles": 0, "brief_chars": 0, "ref_id": None}
 
-    llm = client or LlmClient(replace(LlmConfig.from_env(), max_tokens=_BRIEF_MAX_TOKENS))
+    llm = client or LlmClient(
+        replace(LlmConfig.from_env(), max_tokens=_BRIEF_MAX_TOKENS)
+    )
     context = _format_context(refs)
     result = llm.complete(
         [

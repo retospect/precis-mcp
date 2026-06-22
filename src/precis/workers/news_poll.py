@@ -60,7 +60,8 @@ def _entry_pub_date(entry: Any) -> datetime | None:
         parsed = getattr(entry, attr, None)
         if parsed:
             try:
-                return datetime(*parsed[:6], tzinfo=UTC)
+                y, mo, d, h, mi, s = parsed[:6]
+                return datetime(y, mo, d, h, mi, s, tzinfo=UTC)
             except (TypeError, ValueError):
                 pass
     for attr in ("published", "updated"):

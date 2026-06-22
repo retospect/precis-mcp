@@ -192,9 +192,7 @@ def test_touch_last_dreamt_still_works_via_wrapper(store: Store) -> None:
 # ── draft over-weighting in the dream seed ─────────────────────────
 
 
-def _set_salience_secs(
-    store: Store, chunk_id: int, *, dreamt_secs_ago: float
-) -> None:
+def _set_salience_secs(store: Store, chunk_id: int, *, dreamt_secs_ago: float) -> None:
     """Pin last_seen=now and last_dreamt=now-Δ so the due-ness score
     (last_seen - last_dreamt) is exactly Δ seconds — deterministic."""
     with store.pool.connection() as conn:

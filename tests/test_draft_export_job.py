@@ -24,7 +24,11 @@ def test_draft_export_registered() -> None:
 
 def _make_project_and_draft(hub: Hub) -> tuple[int, str]:
     pid = int(
-        TodoHandler(hub=hub).put(text="proj").body.split("id=")[1].split()[0].rstrip(",.()")
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
     )
     DraftHandler(hub=hub).put(id="d1", title="T", project=pid)
     return pid, "d1"
@@ -84,6 +88,7 @@ def test_dispatch_exports_and_skips_pdf_without_latexmk(hub: Hub) -> None:
     )
     spec = get_job_type("draft_export")
     ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert not ctx.failures, ctx.failures
     # exported the project, then reported the skip in the summary
@@ -97,31 +102,46 @@ def test_dispatch_exports_and_skips_pdf_without_latexmk(hub: Hub) -> None:
 def test_dispatch_fails_on_unknown_draft(hub: Hub) -> None:
     spec = get_job_type("draft_export")
     ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": "nope"}})
+    assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("no draft" in f for f in ctx.failures)
 
 
-def test_dispatch_targets_project_workspace(hub: Hub, monkeypatch: Any, tmp_path: Any) -> None:
+def test_dispatch_targets_project_workspace(
+    hub: Hub, monkeypatch: Any, tmp_path: Any
+) -> None:
     """With PRECIS_ROOT set and the project owning a workspace, the export
     lands in the workspace dir (where the task-page PDF viewer looks),
     not a temp dir."""
     monkeypatch.setenv("PRECIS_ROOT", str(tmp_path))
     pid = int(
-        TodoHandler(hub=hub).put(
+        TodoHandler(hub=hub)
+        .put(
             text="proj",
-            meta={"workspace": {"path": "projects/p1", "format": "tex",
-                                "entrypoint": "main.tex"}},
-        ).body.split("id=")[1].split()[0].rstrip(",.()")
+            meta={
+                "workspace": {
+                    "path": "projects/p1",
+                    "format": "tex",
+                    "entrypoint": "main.tex",
+                }
+            },
+        )
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
     )
     DraftHandler(hub=hub).put(id="p1", title="T", project=pid)
-    DraftHandler(hub=hub).put(id="p1", chunk_kind="paragraph", text="prose.",
-                              at={"last": True})
-    jout = JobHandler(hub=hub).put(job_type="draft_export", parent_id=pid,
-                                   params={"draft": "p1"})
+    DraftHandler(hub=hub).put(
+        id="p1", chunk_kind="paragraph", text="prose.", at={"last": True}
+    )
+    jout = JobHandler(hub=hub).put(
+        job_type="draft_export", parent_id=pid, params={"draft": "p1"}
+    )
     jid = int(jout.body.split("id=")[1].split()[0].rstrip(",.()"))
 
     spec = get_job_type("draft_export")
     ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": "p1"}}, ref_id=jid)
+    assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert not ctx.failures, ctx.failures
     # main.tex written into the project workspace under PRECIS_ROOT

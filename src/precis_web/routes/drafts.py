@@ -389,7 +389,9 @@ async def new_draft(
             "error.html.j2",
             {
                 "title": "New draft error",
-                "detail": body if is_error else f"could not resolve project id:\n{body}",
+                "detail": body
+                if is_error
+                else f"could not resolve project id:\n{body}",
                 "status": 400,
             },
             status_code=400,
@@ -411,9 +413,7 @@ async def new_draft(
     )
 
 
-_DOCX_MEDIA = (
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-)
+_DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 @router.get("/drafts/{ident}/export.docx")

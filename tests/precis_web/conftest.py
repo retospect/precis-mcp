@@ -392,6 +392,10 @@ class FakeStore:
 class FakeRuntime:
     def __init__(self, store: FakeStore) -> None:
         self.store = store
+        #: Some draft routes reach ``runtime.hub.embedder`` for query
+        #: embedding; tests assign it ad hoc. Declared here so that
+        #: assignment type-checks (else mypy flags "no attribute hub").
+        self.hub: Any = None
         self.calls: list[tuple[str, dict[str, Any]]] = []
         #: Verbs the fake should report as failures (is_error=True), so
         #: the error-surfacing routes can be exercised without a real

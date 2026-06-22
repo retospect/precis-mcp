@@ -24,7 +24,11 @@ def _seed(store: Store, *, slug: str, year: int | None, embed: bool = True) -> i
     e = MockEmbedder(dim=1024)
     store.insert_blocks(
         ref.id,
-        [BlockInsert(pos=0, text=_TEXT, embedding=(e.embed_one(_TEXT) if embed else None))],
+        [
+            BlockInsert(
+                pos=0, text=_TEXT, embedding=(e.embed_one(_TEXT) if embed else None)
+            )
+        ],
     )
     return ref.id
 
@@ -65,8 +69,12 @@ def test_semantic_mode_applies_year_filter(store: Store) -> None:
     _seed(store, slug="p2022", year=2022, embed=True)
     qv = MockEmbedder(dim=1024).embed_one(_TEXT)
     hits = store.search_blocks(
-        q=_TEXT, query_vec=qv, mode="semantic", kind="paper",
-        max_distance=None, year_from=2020,
+        q=_TEXT,
+        query_vec=qv,
+        mode="semantic",
+        kind="paper",
+        max_distance=None,
+        year_from=2020,
     )
     assert _slugs(hits) == {"p2022"}
 
@@ -75,9 +83,7 @@ def test_hybrid_mode_applies_year_filter(store: Store) -> None:
     _seed(store, slug="p2018", year=2018, embed=True)
     _seed(store, slug="p2022", year=2022, embed=True)
     qv = MockEmbedder(dim=1024).embed_one(_TEXT)
-    hits = store.search_blocks(
-        q=_TEXT, query_vec=qv, kind="paper", year_from=2020
-    )
+    hits = store.search_blocks(q=_TEXT, query_vec=qv, kind="paper", year_from=2020)
     assert _slugs(hits) == {"p2022"}
 
 

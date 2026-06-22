@@ -126,7 +126,9 @@ def export_docx(store: Any, ref: Any, *, target_path: Path) -> DocxResult:
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(target_path))
-    return DocxResult(path=target_path, cited_slugs=list(ctx.cited), warnings=ctx.warnings)
+    return DocxResult(
+        path=target_path, cited_slugs=list(ctx.cited), warnings=ctx.warnings
+    )
 
 
 # ── inline rendering ──────────────────────────────────────────────
@@ -280,7 +282,9 @@ _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 _CT_ENDNOTES = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"
 )
-_RT_ENDNOTES = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes"
+_RT_ENDNOTES = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes"
+)
 
 
 def _cite(slug: str, ctx: _Ctx, paragraph: Any) -> None:

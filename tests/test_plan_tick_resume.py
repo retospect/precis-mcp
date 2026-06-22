@@ -109,9 +109,7 @@ def _mk_job(store: Store, parent_id: int) -> int:
 
 def _run(store: Store, job_id: int, stream: str, exit_code: int) -> None:
     spec = _FakeSpec(
-        PlanTickOutcome(
-            exit_code=exit_code, stdout=stream, stderr="", duration_s=3.0
-        )
+        PlanTickOutcome(exit_code=exit_code, stdout=stream, stderr="", duration_s=3.0)
     )
     ci._run_plan_tick(store, job_id, spec)
 

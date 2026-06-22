@@ -91,6 +91,8 @@ def _draft_dream_boost_seconds() -> float:
         if days < 0:
             days = _DREAM_DRAFT_BOOST_DAYS_DEFAULT
     return days * 86_400.0
+
+
 from precis.store._tag_filter import (
     build_tag_filter,
     is_speculative_tag,

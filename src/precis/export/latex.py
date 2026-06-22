@@ -179,15 +179,17 @@ def _normalize_subsup(s: str) -> str:
     Runs on already-LaTeX-escaped text — the braces it introduces are
     real LaTeX grouping, deliberately not re-escaped."""
     s = _SUB_RUN.sub(
-        lambda m: r"\textsubscript{"
-        + "".join(_SUBSCRIPT[ord(c)] for c in m.group(0))
-        + "}",
+        lambda m: (
+            r"\textsubscript{" + "".join(_SUBSCRIPT[ord(c)] for c in m.group(0)) + "}"
+        ),
         s,
     )
     return _SUP_RUN.sub(
-        lambda m: r"\textsuperscript{"
-        + "".join(_SUPERSCRIPT[ord(c)] for c in m.group(0))
-        + "}",
+        lambda m: (
+            r"\textsuperscript{"
+            + "".join(_SUPERSCRIPT[ord(c)] for c in m.group(0))
+            + "}"
+        ),
         s,
     )
 

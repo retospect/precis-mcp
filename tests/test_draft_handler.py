@@ -237,7 +237,9 @@ def test_edit_accepts_short_sha_prefix(draft: DraftHandler, hub: Hub) -> None:
 
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    para = draft.put(id="nt", chunk_kind="paragraph", text="original", at={"last": True})
+    para = draft.put(
+        id="nt", chunk_kind="paragraph", text="original", at={"last": True}
+    )
     para_h = para.body.split("¶")[1].split()[0]
 
     short = content_sha("original")[:12]
@@ -254,7 +256,9 @@ def test_edit_rejects_too_short_sha(draft: DraftHandler, hub: Hub) -> None:
 
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    para = draft.put(id="nt", chunk_kind="paragraph", text="original", at={"last": True})
+    para = draft.put(
+        id="nt", chunk_kind="paragraph", text="original", at={"last": True}
+    )
     para_h = para.body.split("¶")[1].split()[0]
     with pytest.raises(BadInput, match="too short"):
         draft.edit(id=f"¶{para_h}", text="v2", base_sha="abc")
@@ -384,8 +388,12 @@ def test_edit_does_not_renag_preexisting_abbrev(draft: DraftHandler, hub: Hub) -
     not re-nag about it — only abbreviations the edit introduces."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    p = draft.put(id="nt", chunk_kind="paragraph",
-                  text="MOF systems are promising.", at={"last": True})
+    p = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="MOF systems are promising.",
+        at={"last": True},
+    )
     h = p.body.split("¶")[1].split()[0]
     # First write nags about MOF (newly introduced).
     assert "MOF" in p.body
@@ -397,8 +405,12 @@ def test_edit_does_not_renag_preexisting_abbrev(draft: DraftHandler, hub: Hub) -
 def test_edit_nags_only_new_abbrev(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    p = draft.put(id="nt", chunk_kind="paragraph",
-                  text="MOF systems are promising.", at={"last": True})
+    p = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="MOF systems are promising.",
+        at={"last": True},
+    )
     h = p.body.split("¶")[1].split()[0]
     # Introduce a NEW acronym (DAC) on edit → it should be nagged, MOF should not.
     out = draft.edit(id=f"¶{h}", text="MOF systems help DAC efforts.").body
@@ -409,7 +421,8 @@ def test_promote_hint_on_inline_definition(draft: DraftHandler, hub: Hub) -> Non
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     out = draft.put(
-        id="nt", chunk_kind="paragraph",
+        id="nt",
+        chunk_kind="paragraph",
         text="We use multivariate templated modulation (MTVM) here.",
         at={"last": True},
     ).body
@@ -421,10 +434,15 @@ def test_promote_hint_on_inline_definition(draft: DraftHandler, hub: Hub) -> Non
 def test_no_promote_hint_when_already_a_term(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    draft.put(id="nt", chunk_kind="term", text="multivariate templated modulation",
-              meta={"short": "MTVM"})
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="multivariate templated modulation",
+        meta={"short": "MTVM"},
+    )
     out = draft.put(
-        id="nt", chunk_kind="paragraph",
+        id="nt",
+        chunk_kind="paragraph",
         text="We use multivariate templated modulation (MTVM) here.",
         at={"last": True},
     ).body
@@ -442,7 +460,9 @@ def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
     store = hub.store
     rt = PrecisRuntime(
         config=PrecisConfig(),
-        hub=boot(store=store, embedder=make_embedder("mock", dim=store.embedding_dim())),
+        hub=boot(
+            store=store, embedder=make_embedder("mock", dim=store.embedding_dim())
+        ),
     )
     out = rt.dispatch("link", {"kind": "draft", "id": "¶ABC", "target": "¶DEF"})
     assert "does not support link" in out

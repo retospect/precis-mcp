@@ -66,8 +66,7 @@ _S2_LIMIT = 10
 #: so ``_format_paper`` renders both — we only trim ``referenceCount``
 #: (not useful one hop out).
 _NAV_FIELDS = (
-    "title,authors.name,year,abstract,externalIds,venue,"
-    "citationCount,openAccessPdf"
+    "title,authors.name,year,abstract,externalIds,venue,citationCount,openAccessPdf"
 )
 
 #: Page size for a citation-graph walk. Reference lists run to
@@ -149,8 +148,7 @@ class SemanticScholarHandler(CacheBackedHandler):
                 ident = low[len(prefix) :].strip()
                 if not ident:
                     raise BadInput(
-                        f"semanticscholar {prefix} needs a paper id "
-                        "(DOI / arXiv / S2)",
+                        f"semanticscholar {prefix} needs a paper id (DOI / arXiv / S2)",
                         next=(
                             f"get(kind='semanticscholar', "
                             f"id='{prefix}10.1038/nature12373')"
@@ -324,12 +322,16 @@ class SemanticScholarHandler(CacheBackedHandler):
                 meta={"key": key, "nav": mode, "paper": ident, "result_count": 0},
             )
 
-        blocks = [BlockInsert(pos=i, text=_format_paper(p)) for i, p in enumerate(papers)]
+        blocks = [
+            BlockInsert(pos=i, text=_format_paper(p)) for i, p in enumerate(papers)
+        ]
         # Title says which way the hop runs + how many we kept, so a
         # capped page reads as "first N", not "the complete list".
-        suffix = f" ({len(papers)} shown, capped at {_NAV_LIMIT})" if (
-            len(papers) >= _NAV_LIMIT
-        ) else f" ({len(papers)})"
+        suffix = (
+            f" ({len(papers)} shown, capped at {_NAV_LIMIT})"
+            if (len(papers) >= _NAV_LIMIT)
+            else f" ({len(papers)})"
+        )
         return FetchResult(
             title=f"S2 papers {verb} {ident}{suffix}",
             body_blocks=blocks,

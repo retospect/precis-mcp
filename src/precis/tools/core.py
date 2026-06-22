@@ -349,29 +349,17 @@ def search(
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
-    `page_size` must be a positive int ≤ 100. Omit `kind` (or pass
-    `'*'`) for cross-kind fan-out. `page=N` (default 1) returns the
-    Nth page of `page_size` results — server-side OFFSET, no need to
-    thread `exclude=` lists manually. `exclude=` is still useful for
-    hand-skipping specific slugs. `source=` is patent-only
-    (`'both'`/`'local'`/`'remote'`); ignored elsewhere.
+    `page_size` ≤ 100; `page=N` paginates (server-side OFFSET). Omit
+    `kind` (or pass `'*'`) for cross-kind fan-out; `exclude=` skips
+    slugs; `source=` is patent-only.
 
-    **`mode=`** picks the ranking: `'hybrid'` (default — reciprocal-rank
-    fusion of lexical + semantic), `'lexical'` (Postgres FTS only —
-    deterministic keyword / exact-phrase / identifier matching, and the
-    honest tool when you know the exact string or the embedder is down),
-    or `'semantic'` (embedding cosine only). Works per-kind and across
-    the cross-kind fan-out.
+    `mode=`: `'hybrid'` (default — RRF of lexical+semantic),
+    `'lexical'` (FTS only — exact string / identifier, or when the
+    embedder is down), `'semantic'` (cosine). `angle=` + `like='kind:id'`
+    sprays `n` diverse items at that cosine; `view='dreamable'` /
+    `view='stubs'` are special browses.
 
-    **Angle spray**: `angle=` (cosine in `[-1,1]`) +/- `like='kind:id'`
-    returns `n` diverse items at that cosine from the seed (a cone
-    sample, not a ranked list). **`view='dreamable'`**: the most-due
-    salient seed + its neighbourhood. **`view='stubs'`**: the
-    paper-acquisition backlog (an id but no PDF). See the skill help.
-
-    Full reference: get(kind='skill', id='precis-search-help'). For
-    per-kind nuances (patent prior-art, finding chase, etc.) search
-    the skill index with a natural-language goal.
+    Full reference: get(kind='skill', id='precis-search-help').
     """
     # Validate page_size at the boundary. Errors round-trip via
     # ``_validation_error`` so the MCP ``isError`` flag survives.

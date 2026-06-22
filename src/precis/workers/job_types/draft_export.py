@@ -68,7 +68,9 @@ def _resolve_out_dir(ctx: Any, slug: str) -> tuple[Path, bool]:
             project = (
                 ctx.store.get_ref(kind="todo", id=parent_id) if parent_id else None
             )
-            ws = Workspace.from_meta(getattr(project, "meta", None)) if project else None
+            ws = (
+                Workspace.from_meta(getattr(project, "meta", None)) if project else None
+            )
             if ws is not None:
                 return ws.absolute_root(Path(precis_root)), True
         except Exception:  # pragma: no cover — fall back to temp
@@ -97,9 +99,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     out_dir, in_workspace = _resolve_out_dir(ctx, slug)
     where = (
-        "project workspace (shows on the task page)"
-        if in_workspace
-        else "export dir"
+        "project workspace (shows on the task page)" if in_workspace else "export dir"
     )
     ctx.append_chunk("job_event", f"exporting draft {slug!r} → {out_dir} [{where}]")
     try:

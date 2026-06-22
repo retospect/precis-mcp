@@ -328,13 +328,20 @@ def write_chunk_keywords(
     }
     # Stamp the chunk's current content_sha into the envelope (column ref,
     # so it's the locked row's value — race-free) for the re-derive claim.
+    # NB: use ``|| jsonb_build_object(...)`` rather than ``jsonb_set(...,
+    # to_jsonb(content_sha), ...)``. When ``content_sha`` is SQL NULL (a
+    # chunk that never had its hash stamped), ``to_jsonb(NULL)`` is SQL
+    # NULL and ``jsonb_set`` then returns NULL — nulling the *entire*
+    # envelope (version included), which makes the claim query
+    # (``keywords_meta->>'version' IS DISTINCT FROM …``) re-claim the row
+    # forever (a spin-loop). ``jsonb_build_object`` maps a NULL value to a
+    # JSON ``null`` and the ``||`` merge preserves the rest of the envelope.
     conn.execute(
         """
         UPDATE chunks
            SET keywords = %s,
-               keywords_meta = jsonb_set(
-                   %s::jsonb, '{content_sha}', to_jsonb(content_sha), true
-               )
+               keywords_meta =
+                   %s::jsonb || jsonb_build_object('content_sha', content_sha)
          WHERE chunk_id = %s
         """,
         (canonical, Jsonb(meta), chunk_id),

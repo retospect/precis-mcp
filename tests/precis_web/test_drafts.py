@@ -315,7 +315,7 @@ def _render_row(requests: list[SimpleNamespace]) -> str:
     )
     ref = SimpleNamespace(ident="nt")
     tmpl = templates.env.get_template("drafts/_row.html.j2")
-    return tmpl.module.draft_row(r, ref)
+    return tmpl.module.draft_row(r, ref)  # type: ignore[attr-defined]  # Jinja macro, runtime-defined
 
 
 def _req(ref_id: int, *, started: bool, done: bool, failed: bool, status: str):
