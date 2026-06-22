@@ -315,6 +315,40 @@ invisible and self-perpetuating:
   `%%`; added a real-Postgres regression test (the fake-store web tests
   don't parse SQL, so they couldn't catch it).
 
+### Added (2026-06-21 — draft figures: images in the DB + provenance, ADR 0034)
+
+- **Figures land in a draft as a `figure` chunk carrying binary image
+  bytes** (ADR 0034, the image/graph phase ADR 0033 §9 deferred). The
+  caption stays the chunk's `text` (the embedded, searchable face); the
+  bytes live 1:1 in a new **`chunk_blobs`** side table
+  (`bytes BYTEA, mime, sha256, size_bytes, width, height`, migration
+  `0035_chunk_blobs.sql`) — *not* `chunks.text` (which is NOT NULL and
+  feeds a generated `tsvector`; base64 there would poison FTS/embeddings)
+  and *not* the filesystem. Postgres TOASTs the bytes out-of-line, so a
+  normal `SELECT text, meta FROM chunks` never drags them.
+- **`put(kind='draft', chunk_kind='figure', text=<caption>, image=<base64>,
+  origin=…, mime=?, permission=?)`** is the ingest verb. `origin` ∈
+  `{original, own_graph, third_party}` classes the figure for the (later)
+  clearance gate and is stored in `meta.figure`; a `third_party` figure
+  **requires** a `permission` paper-trail (publisher, permission_id,
+  status, dates, source_paper) — kept as `meta.figure.permission`. `mime`
+  is sniffed from magic bytes when omitted; dimensions are a best-effort
+  Pillow probe. New store ops `Store.add_figure` / `Store.get_chunk_blob`;
+  both writes share one transaction so a figure never lands without bytes.
+- **Web**: a per-block **"＋ figure"** control uploads an image
+  (`POST /drafts/{ident}/figure`, multipart) — inserted after the anchored
+  block, routed through the `put` verb so the same figure validation
+  applies; a `third_party` image reveals an inline **permission paper-trail
+  form** (publisher / permission # / status / dates / source cite-key /
+  credit). `GET /drafts/blob/{handle}` serves the raw image; the reader
+  renders a `figure` block as an `<img>` plus an **origin chip** and a ✓/✗
+  **clearance badge** (third-party needs a granted permission). Draft chunk
+  reads (`reading_order` / `get_draft_chunk`) now carry `meta`.
+- Deferred to later phases (per ADR 0034): graph regeneration recipe
+  (`figure_code`/`figure_data` chunks), the review/export clearance lint,
+  agent `safe_fetch`-URL ingest + grant-letter correspondence blobs, and
+  `pics/`/`data/` export materialisation.
+
 ### Changed (2026-06-21 — drafts reader is now a per-block 3-column grid)
 
 - The draft reader (`GET /drafts/{ident}`) is reworked from TOC-left into

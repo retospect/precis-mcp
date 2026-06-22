@@ -13,7 +13,8 @@ land alongside as the handler grows.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import io
+from dataclasses import dataclass, field
 from typing import Any
 
 import psycopg
@@ -42,6 +43,7 @@ class DraftChunk:
     pos: str
     parent_chunk_id: int | None
     depth: int
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,14 +102,15 @@ class DraftMixin:
         text: str,
         parent_chunk_id: int | None,
         pos: str,
-        source: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
+        source: dict[str, Any] | None = None,
     ) -> DraftChunk:
         """Insert one draft chunk: mint a unique handle (savepoint-retry),
         assign an insertion-serial `ord`, set pos/parent/content_sha/meta,
         and log a `created` event. ``meta`` carries e.g. a ``term``'s
-        ``{short, long, surface_forms}``."""
+        ``{short, long, surface_forms}`` or a ``figure``'s provenance."""
         sha = content_sha(text)
+        meta = dict(meta or {})
         last_exc: Exception | None = None
         for _ in range(_HANDLE_RETRIES):
             handle = new_handle()
@@ -133,7 +136,7 @@ class DraftMixin:
                             pos,
                             parent_chunk_id,
                             sha,
-                            Jsonb(meta or {}),
+                            Jsonb(meta),
                         ),
                     ).fetchone()
                 break
@@ -164,6 +167,7 @@ class DraftMixin:
             pos=pos,
             parent_chunk_id=parent_chunk_id,
             depth=0,
+            meta=meta,
         )
 
     # -- lookups -------------------------------------------------------------
@@ -220,7 +224,7 @@ class DraftMixin:
         with self.pool.connection() as conn:
             row = conn.execute(
                 """SELECT chunk_id, handle, chunk_kind, text, pos,
-                          parent_chunk_id, ref_id
+                          parent_chunk_id, ref_id, meta
                      FROM chunks WHERE handle = %s""",
                 (_bare(handle),),
             ).fetchone()
@@ -235,6 +239,7 @@ class DraftMixin:
             pos=row[4],
             parent_chunk_id=row[5],
             depth=0,
+            meta=dict(row[7] or {}),
         )
 
     def _children(
@@ -280,20 +285,20 @@ class DraftMixin:
                 -- sibling — i.e. DFS reading order.
                 WITH RECURSIVE walk AS (
                     SELECT chunk_id, handle, chunk_kind, text, pos,
-                           parent_chunk_id, pos AS sort_path, 0 AS depth
+                           parent_chunk_id, meta, pos AS sort_path, 0 AS depth
                       FROM chunks
                      WHERE ref_id = %s AND parent_chunk_id IS NULL
                        AND retired_at IS NULL AND pos IS NOT NULL
                     UNION ALL
                     SELECT c.chunk_id, c.handle, c.chunk_kind, c.text, c.pos,
-                           c.parent_chunk_id, w.sort_path || '/' || c.pos,
-                           w.depth + 1
+                           c.parent_chunk_id, c.meta,
+                           w.sort_path || '/' || c.pos, w.depth + 1
                       FROM chunks c JOIN walk w ON c.parent_chunk_id = w.chunk_id
                      WHERE c.ref_id = %s AND c.retired_at IS NULL
                        AND c.pos IS NOT NULL
                 )
                 SELECT chunk_id, handle, chunk_kind, text, pos,
-                       parent_chunk_id, depth
+                       parent_chunk_id, depth, meta
                   FROM walk ORDER BY sort_path COLLATE "C" ASC
                 """,
                 (ref_id, ref_id),
@@ -308,6 +313,7 @@ class DraftMixin:
                 pos=r[4],
                 parent_chunk_id=r[5],
                 depth=r[6],
+                meta=dict(r[7] or {}),
             )
             for r in rows
         ]
@@ -665,6 +671,63 @@ class DraftMixin:
                 )
                 for block, key in zip(blocks, keys, strict=True)
             ]
+
+    def add_figure(
+        self,
+        *,
+        ref_id: int,
+        caption: str,
+        origin: str,
+        image: bytes,
+        mime: str,
+        at: dict[str, Any] | None = None,
+        figure_meta: dict[str, Any] | None = None,
+    ) -> DraftChunk:
+        """Add a single ``figure`` chunk (ADR 0034): the caption is the
+        face (``text`` — embedded, searchable), the image bytes go to
+        ``chunk_blobs``, and ``meta.figure`` carries ``origin`` plus any
+        provenance (e.g. the third-party ``permission`` paper-trail).
+
+        Unlike :meth:`add_chunks` the caption is **not** split at blank
+        lines — a figure is one chunk. Both writes share one transaction,
+        so a figure never lands without its bytes."""
+        sha = hashlib.sha256(image).hexdigest()
+        width, height = _image_dims(image)
+        fig = {"origin": origin, **(figure_meta or {})}
+        with self.tx() as conn:
+            parent, lo, hi = self._resolve_at(conn, ref_id, at)
+            chunk = self._insert_draft_chunk(
+                conn,
+                ref_id=ref_id,
+                chunk_kind="figure",
+                text=caption,
+                parent_chunk_id=parent,
+                pos=key_between(lo, hi),
+                meta={"figure": fig},
+                source={"reason": "add-figure", "origin": origin},
+            )
+            conn.execute(
+                """INSERT INTO chunk_blobs
+                       (chunk_id, bytes, mime, sha256, size_bytes, width, height)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (chunk.chunk_id, image, mime, sha, len(image), width, height),
+            )
+        return chunk
+
+    def get_chunk_blob(self, handle: str) -> tuple[bytes, str] | None:
+        """Raw ``(bytes, mime)`` for a chunk's blob (a figure image), or
+        ``None`` if the chunk has none. The only path that de-TOASTs the
+        bytes — used by the web blob route and (later) export."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """SELECT b.bytes, b.mime FROM chunk_blobs b
+                     JOIN chunks c ON c.chunk_id = b.chunk_id
+                    WHERE c.handle = %s""",
+                (_bare(handle),),
+            ).fetchone()
+        if row is None:
+            return None
+        return bytes(row[0]), row[1]
 
     # -- mutations -----------------------------------------------------------
 
@@ -1048,3 +1111,17 @@ class _AbbrevMixin:
 def _bare(handle: str) -> str:
     """Strip a leading ``¶`` sigil from a chunk handle if present."""
     return handle[1:] if handle.startswith("¶") else handle
+
+
+def _image_dims(data: bytes) -> tuple[int | None, int | None]:
+    """Best-effort ``(width, height)`` via Pillow; ``(None, None)`` when
+    Pillow is absent or the bytes don't parse. Pillow is a transitive dep
+    (marker) but optional on a host without the ``[paper]`` extra, so this
+    never hard-fails — dimensions are a nicety, not a contract."""
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as im:
+            return int(im.width), int(im.height)
+    except Exception:
+        return None, None

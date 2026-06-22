@@ -24,7 +24,9 @@ from .conftest import FakeRuntime, FakeStore, make_ref
 _DRAFT = make_ref(id=500, kind="draft", slug="nt", title="Nano draft")
 
 
-def _chunk(handle, kind, text, depth, chunk_id, parent_chunk_id=None, ref_id=500):
+def _chunk(
+    handle, kind, text, depth, chunk_id, parent_chunk_id=None, ref_id=500, meta=None
+):
     return SimpleNamespace(
         handle=handle,
         chunk_kind=kind,
@@ -33,6 +35,7 @@ def _chunk(handle, kind, text, depth, chunk_id, parent_chunk_id=None, ref_id=500
         chunk_id=chunk_id,
         parent_chunk_id=parent_chunk_id,
         ref_id=ref_id,
+        meta=meta,
     )
 
 
@@ -50,6 +53,15 @@ class DraftFakeStore(FakeStore):
                 1,
                 chunk_id=2,
                 parent_chunk_id=1,
+            ),
+            # a figure (ADR 0034) — origin chip + <img> from /drafts/blob
+            _chunk(
+                "FIGFIG",
+                "figure",
+                "Fig 1. A diagram.",
+                0,
+                chunk_id=3,
+                meta={"figure": {"origin": "original"}},
             ),
         ]
         # draft-of → project todo 1; related-to → memory 20
@@ -123,6 +135,11 @@ class DraftFakeStore(FakeStore):
                 return c
         return None
 
+    def get_chunk_blob(self, handle):
+        if handle == "FIGFIG":
+            return (b"\x89PNG\r\n\x1a\n", "image/png")
+        return None
+
     def links_for(self, ref_id, *, direction="both", relation=None):
         out = [ln for ln in self._links if relation is None or ln.relation == relation]
         if direction == "out":
@@ -171,6 +188,85 @@ def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
     assert '["AAAAAA"]' in r.text  # BBBBBB's ancestors json
     # per-block change box posts to the anchored-todo route
     assert 'action="/drafts/nt/request"' in r.text
+
+
+def test_figure_renders_img_and_origin_chip(draft_client: TestClient) -> None:
+    # ADR 0034 — a figure block renders an <img> pointed at the blob route,
+    # an origin chip, and a clearance badge (original ⇒ cleared).
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert 'src="/drafts/blob/FIGFIG"' in r.text
+    assert "original" in r.text and "cleared" in r.text
+
+
+def test_blob_route_serves_bytes_with_mime(draft_client: TestClient) -> None:
+    r = draft_client.get("/drafts/blob/FIGFIG")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content.startswith(b"\x89PNG")
+
+
+def test_blob_route_404_when_no_blob(draft_client: TestClient) -> None:
+    r = draft_client.get("/drafts/blob/AAAAAA")  # a heading — no blob
+    assert r.status_code == 404
+
+
+def test_reader_has_add_figure_control(draft_client: TestClient) -> None:
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert 'action="/drafts/nt/figure"' in r.text
+    assert 'enctype="multipart/form-data"' in r.text
+    assert 'name="origin"' in r.text  # the origin selector
+
+
+def test_figure_upload_dispatches_put(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    import base64 as _b64
+
+    png = b"\x89PNG\r\n\x1a\n"
+    r = draft_client.post(
+        "/drafts/nt/figure",
+        data={"handle": "BBBBBB", "caption": "Fig 1.", "origin": "original"},
+        files={"file": ("x.png", png, "image/png")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts/nt#c-BBBBBB"
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["kind"] == "draft"
+    assert args["chunk_kind"] == "figure" and args["origin"] == "original"
+    assert args["image"] == _b64.b64encode(png).decode()
+    assert args["at"] == {"after": "¶BBBBBB"}
+    assert args["mime"] == "image/png"
+    assert "permission" not in args
+
+
+def test_figure_upload_third_party_assembles_permission(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    r = draft_client.post(
+        "/drafts/nt/figure",
+        data={
+            "handle": "BBBBBB",
+            "caption": "Fig 2 (after Smith).",
+            "origin": "third_party",
+            "publisher": "Springer Nature",
+            "permission_id": "SNCSC-2026-0451",
+            "status": "granted",
+            "source_paper": "smith19",
+        },
+        files={"file": ("x.png", b"\x89PNG\r\n", "image/png")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    _verb, args = draft_runtime.calls[-1]
+    perm = args["permission"]
+    assert perm["publisher"] == "Springer Nature"
+    assert perm["permission_id"] == "SNCSC-2026-0451"
+    assert perm["status"] == "granted" and perm["source_paper"] == "smith19"
+    # blank optional fields are dropped, not sent as empty strings
+    assert "expires_at" not in perm and "scope" not in perm
 
 
 def test_singular_alias_redirects(draft_client: TestClient) -> None:

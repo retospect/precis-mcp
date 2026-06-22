@@ -19,6 +19,8 @@ its slug (the universal ``id=``). See ``precis-draft-help``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
 from typing import Any, ClassVar
@@ -38,6 +40,29 @@ from precis.utils.embed_query import query_vec_for
 log = logging.getLogger(__name__)
 
 _CHUNK_ADDR = re.compile(r"^¶(?P<h>[A-Za-z0-9]+)(?:-(?P<b>\d+))?(?:\+(?P<a>\d+))?$")
+
+#: A figure's origin class (ADR 0034) — drives the clearance gate. ``original``
+#: is ours; ``own_graph`` is generated from data (ships a data supplement);
+#: ``third_party`` is reused under a publisher permission (carries the paper-trail).
+_FIGURE_ORIGINS = ("original", "own_graph", "third_party")
+
+#: magic-byte → mime sniff for a pasted image when ``mime=`` is omitted.
+_MAGIC_MIME: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _sniff_mime(raw: bytes) -> str:
+    """Best-effort image mime from magic bytes; WEBP needs the RIFF check."""
+    for sig, mime in _MAGIC_MIME:
+        if raw.startswith(sig):
+            return mime
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
 
 
 class DraftHandler(Handler):
@@ -193,6 +218,10 @@ class DraftHandler(Handler):
         chunk_kind: str | None = None,
         at: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
+        image: str | None = None,
+        mime: str | None = None,
+        origin: str | None = None,
+        permission: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -201,6 +230,19 @@ class DraftHandler(Handler):
                 next="put(kind='draft', id='nanotrans', title='…', project=<todo-id>)",
             )
         slug = str(id).strip()
+
+        if chunk_kind == "figure" and image is not None:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            return self._add_figure(
+                slug=slug,
+                ref_id=ref.id,
+                caption=text,
+                image=image,
+                mime=mime,
+                origin=origin,
+                permission=permission,
+                at=at,
+            )
 
         if chunk_kind is not None or at is not None:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
@@ -253,6 +295,67 @@ class DraftHandler(Handler):
                 f"created draft '{slug}' (title heading ¶{title_chunk.handle}); "
                 f"linked draft-of project {project_ref_id}"
             )
+        )
+
+    def _add_figure(
+        self,
+        *,
+        slug: str,
+        ref_id: int,
+        caption: str | None,
+        image: str,
+        mime: str | None,
+        origin: str | None,
+        permission: dict[str, Any] | None,
+        at: dict[str, Any] | None,
+    ) -> Response:
+        """Add a figure chunk with binary payload (ADR 0034). ``text`` is
+        the caption; ``image`` is base64 bytes; ``origin`` classes the
+        figure for the clearance gate; a ``third_party`` figure must carry
+        a ``permission`` paper-trail."""
+        if caption is None or not str(caption).strip():
+            raise BadInput(
+                "a figure requires text= (the caption)",
+                next="put(kind='draft', id='…', chunk_kind='figure', text='Fig 1. …', image=<b64>, origin='original')",
+            )
+        org = (origin or "").strip()
+        if org not in _FIGURE_ORIGINS:
+            raise BadInput(
+                f"figure origin= must be one of {list(_FIGURE_ORIGINS)}",
+                next="origin='original' (ours) | 'own_graph' (from data) | 'third_party' (publisher permission)",
+            )
+        try:
+            raw = base64.b64decode(str(image), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise BadInput(
+                "image= must be base64-encoded image bytes",
+                next="pass the raw image base64-encoded (no data: URI prefix)",
+            ) from exc
+        if not raw:
+            raise BadInput("image= decoded to empty bytes")
+        fig_meta: dict[str, Any] = {}
+        if org == "third_party":
+            if not permission:
+                raise BadInput(
+                    "a third_party figure requires permission= (the publisher paper-trail)",
+                    next=(
+                        "permission={'publisher':'…','permission_id':'…',"
+                        "'status':'granted','source_paper':'<cite-key>', …}"
+                    ),
+                )
+            fig_meta["permission"] = permission
+        chunk = self.store.add_figure(
+            ref_id=ref_id,
+            caption=str(caption),
+            origin=org,
+            image=raw,
+            mime=(mime or _sniff_mime(raw)),
+            at=at,
+            figure_meta=fig_meta,
+        )
+        self._sync_draft_links(ref_id)
+        return Response(
+            body=f"added figure ¶{chunk.handle} [{org}] to {slug} ({len(raw)} bytes)"
         )
 
     # ── edit: text or move ───────────────────────────────────────────

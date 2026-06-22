@@ -115,6 +115,53 @@ genuinely emphasised word or a term on first mention; most paragraphs
 need no emphasis at all. Let sentence structure carry the weight, not
 markup. (Headings already stand out — you don't need bold on top.)
 
+## Figures & images (ADR 0034)
+
+A **figure** is a chunk whose caption is the face (`text`) and whose
+image bytes live in the database (a `chunk_blobs` row, 1:1 with the
+chunk — never in `text`). Add one with `chunk_kind='figure'`, the
+caption as `text`, the image **base64** in `image=`, and an `origin=`:
+
+```python
+# our own diagram / schematic
+put(kind='draft', id='nanotrans', chunk_kind='figure',
+    text='Fig 1. Device cross-section.', image='<base64>',
+    origin='original', at={'after': '¶k7m2aQ'})
+
+# a plot we generated from data (ships a data supplement — see graphs)
+put(kind='draft', id='nanotrans', chunk_kind='figure',
+    text='Fig 2. I–V curves.', image='<base64>', origin='own_graph')
+
+# reused from another paper — REQUIRES the publisher paper-trail
+put(kind='draft', id='nanotrans', chunk_kind='figure',
+    text='Fig 3 (after Smith 2019).', image='<base64>',
+    origin='third_party',
+    permission={'publisher': 'Springer Nature',
+                'permission_id': 'SNCSC-2026-0451',
+                'status': 'granted',            # requested|granted|denied
+                'requested_at': '2026-06-10', 'granted_at': '2026-06-18',
+                'scope': 'this manuscript, print + electronic',
+                'required_credit': 'Reprinted by permission …',
+                'source_paper': 'smith19'})     # cite-key of the source
+```
+
+`origin` ∈ `{original, own_graph, third_party}` records where the figure
+came from and drives a **clearance gate** (a figure must be ours,
+data-backed, or validly licensed before it ships). A `third_party`
+figure **must** carry a `permission` paper-trail — that is the whole
+point: track *with whose permission*, *which permission number*, *when
+requested/granted*. `mime=` is sniffed from the bytes when omitted.
+Permission lives in `meta.figure.permission`; the reader shows an origin
+chip + a ✓/✗ clearance badge, and serves the image at
+`/drafts/blob/<handle>`. In the **web reader** a per-block **"＋ figure"**
+control uploads an image file directly (multipart) — for a `third_party`
+image it reveals the permission form inline — so a human can drop in a
+figure without base64.
+
+> Graph regeneration (the plot's data + code as `figure_code` /
+> `figure_data` chunks linked `derived-from`) and the export step that
+> writes images out to `pics/` are later phases (ADR 0034).
+
 ## Read the document
 
 ```python

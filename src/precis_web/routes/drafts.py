@@ -32,13 +32,14 @@ across HTML/LaTeX/Word targets. KaTeX renders ``$…$`` client-side.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -267,6 +268,8 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
         est = edits.get(c.handle, {})
         v = views.get(c.handle, {})
         first_line = ((c.text or "").splitlines() or [""])[0][:140]
+        is_figure = c.chunk_kind == "figure"
+        fig = (getattr(c, "meta", None) or {}).get("figure", {}) if is_figure else {}
         rows.append(
             {
                 "handle": c.handle,
@@ -274,6 +277,11 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
                 "text": c.text,
                 "depth": c.depth,
                 "is_heading": c.chunk_kind == "heading",
+                "is_figure": is_figure,
+                # figure provenance for the origin chip + clearance badge
+                "figure_origin": fig.get("origin") if is_figure else None,
+                "figure_cleared": _figure_cleared(fig) if is_figure else None,
+                "blob_url": f"/drafts/blob/{c.handle}" if is_figure else None,
                 "ancestors": anc.get(c.handle, []),
                 "abbrevs": abbrevs,
                 "refs": _ref_chips(c.text),
@@ -290,6 +298,18 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _figure_cleared(fig: dict[str, Any]) -> bool:
+    """Lightweight clearance read for the reader badge (ADR 0034 §4). The
+    authoritative gate (data-supplement presence, expiry) lands with the
+    review/export lint; here we only flag the obvious: a third-party figure
+    needs a granted permission."""
+    origin = fig.get("origin")
+    if origin == "third_party":
+        perm = fig.get("permission") or {}
+        return perm.get("status") == "granted"
+    return True  # original / own_graph optimistic until the full gate lands
 
 
 def _ref_view(ref: Any) -> dict[str, Any]:
@@ -690,6 +710,23 @@ async def find(
     return JSONResponse({"handles": handles, "mode": "verbatim"})
 
 
+@router.get("/drafts/blob/{handle}")
+async def chunk_blob(request: Request, handle: str) -> Response:
+    """Raw bytes for a figure chunk's image (ADR 0034) — the ``<img>``
+    ``src`` the reader points at. 404 when the chunk carries no blob. The
+    handle is globally unique, so no draft ident is needed."""
+    store = get_store(request)
+    blob = store.get_chunk_blob(handle)
+    if blob is None:
+        return Response(status_code=404)
+    data, mime = blob
+    return Response(
+        content=data,
+        media_type=mime,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
 @router.post("/drafts/{ident}/request")
 async def request_change(
     request: Request,
@@ -770,6 +807,67 @@ async def review_block(
         args["parent_id"] = project
     return await redirect_or_error(
         request, "put", args, redirect=back, error_title="Review error"
+    )
+
+
+@router.post("/drafts/{ident}/figure")
+async def add_figure(
+    request: Request,
+    ident: str,
+    handle: str = Form(...),
+    caption: str = Form(...),
+    origin: str = Form(...),
+    file: UploadFile = File(...),
+    publisher: str = Form(""),
+    permission_id: str = Form(""),
+    status: str = Form(""),
+    requested_at: str = Form(""),
+    granted_at: str = Form(""),
+    expires_at: str = Form(""),
+    scope: str = Form(""),
+    required_credit: str = Form(""),
+    source_paper: str = Form(""),
+) -> Response:
+    """Upload an image as a figure chunk inserted after ``handle`` (ADR
+    0034). Bytes are base64'd and routed through the ``put`` verb so the
+    DraftHandler's figure validation (caption / origin / third-party needs
+    permission) is single-sourced with the MCP surface. A ``third_party``
+    figure's permission paper-trail comes from the inline form fields."""
+    back = f"/drafts/{ident}#c-{handle}"
+    data = await file.read()
+    if not data:
+        return RedirectResponse(url=back, status_code=303)
+    args: dict[str, Any] = {
+        "kind": "draft",
+        "id": ident,
+        "chunk_kind": "figure",
+        "text": caption,
+        "image": base64.b64encode(data).decode(),
+        "origin": origin,
+        "at": {"after": f"¶{handle}"},
+    }
+    if file.content_type:
+        args["mime"] = file.content_type
+    if origin == "third_party":
+        perm = {
+            k: v.strip()
+            for k, v in {
+                "publisher": publisher,
+                "permission_id": permission_id,
+                "status": status,
+                "requested_at": requested_at,
+                "granted_at": granted_at,
+                "expires_at": expires_at,
+                "scope": scope,
+                "required_credit": required_credit,
+                "source_paper": source_paper,
+            }.items()
+            if v.strip()
+        }
+        if perm:
+            args["permission"] = perm
+    return await redirect_or_error(
+        request, "put", args, redirect=back, error_title="Add figure error"
     )
 
 

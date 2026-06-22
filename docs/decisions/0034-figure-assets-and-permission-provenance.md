@@ -229,12 +229,18 @@ into the caption or a generated Permissions appendix. Built after the storage
 
 ## Phasing
 
-1. **`chunk_blobs` + figure chunk kind** — migration (table + `figure`
-   chunk_kind), blob attach/swap on draft `put`/`edit`, caption face,
-   `meta.figure.origin`, draft web render with origin chip + blob serving route.
-2. **Permission meta + capture** — `meta.figure.permission` schema, `cites`
-   link to source paper, web multipart upload endpoint, agent base64 /
-   `safe_fetch` path, correspondence blobs.
+1. **`chunk_blobs` + figure chunk kind** — ✅ landed 2026-06-21. Migration
+   `0033_chunk_blobs.sql`; `Store.add_figure`/`get_chunk_blob`; `put(kind=
+   'draft', chunk_kind='figure', text=caption, image=<b64>, origin=, mime=?,
+   permission=?)`; `meta.figure` with origin + permission; draft web render
+   (origin chip + clearance badge) and `GET /drafts/blob/{handle}`. The
+   permission paper-trail (Phase 2's meta schema) landed here too, since it
+   rides on the same figure put.
+2. **Capture surfaces** — ✅ web upload landed 2026-06-22: per-block
+   "＋ figure" control → `POST /drafts/{ident}/figure` (multipart) → `put`,
+   with an inline permission form for `third_party`. Agent base64 also done.
+   **Still to do**: agent `safe_fetch`-URL ingest, grant-letter
+   correspondence blobs.
 3. **Graph recipe** — `figure_code` + `figure_data` chunk_kinds, `derived-from`
    link sync, Figures panel showing the recipe.
 4. **Clearance gate** — lint in review + (stub) export, Figures-panel clearance
