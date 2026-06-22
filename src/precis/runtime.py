@@ -87,6 +87,25 @@ _SIGIL_KIND: dict[str, tuple[str, bool]] = {
     "§": ("paper", False),
 }
 
+#: Per-(kind, verb) recovery hints for "kind does not support verb" — a
+#: generic "try get(kind=…)" is a dead-end when the right move is a
+#: *different shape entirely*. Drafts are the case that bites: an agent
+#: reaches for the universal ``link``/``tag`` verbs, but a draft's
+#: cross-references live in prose (the autolinker backlinks them), and it
+#: has no whole-ref tag axis. Teach the real move inline.
+_VERB_REDIRECTS: dict[tuple[str, str], str] = {
+    ("draft", "link"): (
+        "drafts link via prose, not the link verb: edit the source chunk "
+        "to embed a markdown ref — edit(kind='draft', id='¶<src>', "
+        "text='…existing… [¶<target>]') — and the autolinker materialises "
+        "the related-to backlink for you."
+    ),
+    ("draft", "tag"): (
+        "drafts have no whole-ref tag axis; tag the owning project todo "
+        "instead, or use a glossary term / inline markup inside the prose."
+    ),
+}
+
 
 #: Kind → skill alias map for the auto-discovery hint.
 #: Used by :meth:`PrecisRuntime._maybe_add_skill_hint` when
@@ -533,7 +552,11 @@ class PrecisRuntime:
             # ``q=`` or ``id=``). Either way the LLM lands one
             # call closer to the answer.
             recovery = "get" if "get" in verbs else (verbs[0] if verbs else None)
-            if recovery is None:
+            # A kind-specific redirect (e.g. how to "link" a draft) beats
+            # the generic "try get(kind=…)" — it's the actual recovery the
+            # agent needs, so lead with it.
+            redirect = _VERB_REDIRECTS.get((kind, verb))
+            if recovery is None and redirect is None:
                 # Defensive: shouldn't happen — a kind with no
                 # supported verbs would be useless. Drop the next:
                 # trailer rather than render a meaningless one.
@@ -541,10 +564,15 @@ class PrecisRuntime:
                     f"{kind} does not support {verb}",
                     options=verbs,
                 )
+            next_hints: list[str] = []
+            if redirect is not None:
+                next_hints.append(redirect)
+            if recovery is not None:
+                next_hints.append(f"try {recovery}(kind={kind!r})")
             raise Unsupported(
                 f"{kind} does not support {verb}",
                 options=verbs,
-                next=f"try {recovery}(kind={kind!r})",
+                next=next_hints[0] if len(next_hints) == 1 else next_hints,
             )
         return handler
 
@@ -1675,6 +1703,28 @@ class PrecisRuntime:
         if not keep_sigil:
             args["id"] = ident[1:]
 
+    def _infer_slug_kind(self, args: dict[str, Any], ident: str) -> None:
+        """Pin ``kind`` from a bare slug address (no ``kind:`` prefix, no
+        sigil) when the slug uniquely identifies one live ref — e.g.
+        ``wu22c~312`` → ``kind='paper'``. The ``~selector`` / ``/view``
+        suffix stays on ``id`` for the handler to parse. No-op when the
+        store is absent, ``kind=`` was already given, or the base slug is
+        ambiguous / unknown (so a non-slug id falls through to the normal
+        missing-kind error unchanged)."""
+        if args.get("kind") is not None or self.store is None:
+            return
+        base = re.split(r"[~/?]", ident, maxsplit=1)[0].strip()
+        if not base:
+            return
+        try:
+            kind = self.store.kind_for_slug(base)
+        except Exception:  # pragma: no cover — store outage etc.
+            log.exception("kind_for_slug lookup failed")
+            return
+        live_kinds = set(self.hub.kinds) if self.hub is not None else set()
+        if kind is not None and kind in live_kinds:
+            args["kind"] = kind
+
     def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
         """D1: extract a self-identifying kind from ``id=`` into ``args['kind']``.
 
@@ -1720,6 +1770,11 @@ class PrecisRuntime:
         if ident.startswith("/"):
             return
         if ":" not in ident:
+            # No ``kind:`` prefix and no sigil — try resolving a bare
+            # slug (optionally with a ``~selector`` / ``/view``) to its
+            # owning kind, so ``get(id='wu22c~312')`` self-identifies as
+            # the paper that owns ``wu22c``.
+            self._infer_slug_kind(args, ident)
             return
         # Only honour a colon that comes before any selector / view
         # path separator. ``markdown:notes/a.md`` is fine; ``foo/bar:x``

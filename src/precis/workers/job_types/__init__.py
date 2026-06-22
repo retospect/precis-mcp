@@ -110,6 +110,14 @@ def _load_plan_tick() -> JobTypeSpec:
     )
 
 
+def _load_draft_export() -> JobTypeSpec:
+    # Deterministic draft → LaTeX → PDF export (runs via its plugin
+    # ``dispatch`` under claude_inproc; no claude subprocess).
+    from precis.workers.job_types import draft_export
+
+    return draft_export.SPEC
+
+
 #: Name → spec. Populated lazily on first access so the import
 #: graph stays cheap for the MCP server.
 _REGISTRY: dict[str, JobTypeSpec] = {}
@@ -237,6 +245,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "plan_tick":
         _REGISTRY["plan_tick"] = _load_plan_tick()
         return _REGISTRY["plan_tick"]
+    if name == "draft_export":
+        _REGISTRY["draft_export"] = _load_draft_export()
+        return _REGISTRY["draft_export"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -249,7 +260,7 @@ def get_job_type(name: str) -> JobTypeSpec | None:
 
 def known_job_types() -> list[str]:
     """List of registered job_type names (for error messages)."""
-    builtins = ["fix_gripe", "plan_tick"]
+    builtins = ["fix_gripe", "plan_tick", "draft_export"]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for
     # callers that have only ever seen the in-tree set.

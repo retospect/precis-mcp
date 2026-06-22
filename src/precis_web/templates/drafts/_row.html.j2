@@ -45,7 +45,7 @@
       {% elif r.chunk_kind in ('listing', 'code') %}
       <pre class="rounded-md bg-slate-900 text-slate-100 text-xs p-3 overflow-x-auto whitespace-pre-wrap">{{ r.text }}</pre>
       {% else %}
-      <p class="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</p>
+      <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</p>
       {% endif %}
     </div>
     <p x-show="view === 'summary'" x-cloak class="text-sm italic text-slate-600 break-words">{{ r.summary }}</p>

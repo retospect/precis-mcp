@@ -228,11 +228,11 @@ class DraftHandler(Handler):
             handles = " ".join(f"¶{c.handle}" for c in chunks)
             n = len(chunks)
             body = f"added {n} chunk{'' if n == 1 else 's'} to {slug}: {handles}"
-            # Hint the LLM about any undefined abbreviations it just wrote
-            # (skip when the write *is* a term definition).
+            # Hint the LLM about abbreviations it just wrote (skip when the
+            # write *is* a term definition). All of a new chunk's text is
+            # "newly introduced", so there's no prior text to diff against.
             if kind != "term":
-                undefined = self.store.undefined_abbrevs(ref.id, str(text))
-                body += self._abbrev_hint(slug, undefined)
+                body += self._write_abbrev_hints(slug, ref.id, str(text), "")
                 body += self._citation_form_hint(str(text))
             return Response(body=body)
 
@@ -280,14 +280,19 @@ class DraftHandler(Handler):
             c = self.store.move_chunk(handle, move)
             return Response(body=f"moved ¶{c.handle}")
         if text is not None:
+            # Capture the prior text *before* the rewrite so the abbrev
+            # hints fire only on what this edit introduced (not on
+            # acronyms already living in the chunk — the MOF re-nag).
+            prior = self.store.get_draft_chunk(str(handle).lstrip("¶"))
+            old_text = prior.text if prior else ""
             c = self.store.edit_text(handle, str(text), base_sha=base_sha)
             body = f"edited ¶{c.handle}" if c else "edited"
             if c is not None:
                 self._sync_draft_links(c.ref_id)
                 ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
-                body += self._abbrev_hint(
-                    slug, self.store.undefined_abbrevs(c.ref_id, str(text))
+                body += self._write_abbrev_hints(
+                    slug, c.ref_id, str(text), old_text
                 )
                 body += self._citation_form_hint(str(text))
             return Response(body=body)
@@ -314,6 +319,54 @@ class DraftHandler(Handler):
         return Response(body=f"retired ¶{handle}")
 
     # ── helpers ──────────────────────────────────────────────────────
+
+    def _write_abbrev_hints(
+        self, slug: str, ref_id: int, new_text: str, old_text: str
+    ) -> str:
+        """Abbreviation feedback for one write, scoped to what it
+        *introduced* (so editing a chunk doesn't re-nag about acronyms it
+        already contained). Two disjoint hints:
+
+        * **undefined** — acronym-shaped tokens with no definition anywhere
+          in the draft (and new in this write): define or silence them.
+        * **promote** — an inline ``Long Form (ABBR)`` first-use that works
+          but lives only in this chunk's prose and isn't yet a glossary
+          ``term``: offer to formalise it (durable across edits). The two
+          never overlap — an inline-defined token isn't "undefined".
+        """
+        from precis.utils.abbreviations import find as _find
+        from precis.utils.abbreviations import find_acronyms as _acr
+
+        old_acr = _acr(old_text)
+        undefined = [
+            a
+            for a in self.store.undefined_abbrevs(ref_id, new_text)
+            if a not in old_acr
+        ]
+        old_pairs = _find(old_text)
+        terms = self.store.draft_term_shorts(ref_id)
+        promote = {
+            short: long
+            for short, long in _find(new_text).items()
+            if short not in old_pairs and short not in terms
+        }
+        return self._abbrev_hint(slug, undefined) + self._promote_hint(slug, promote)
+
+    def _promote_hint(self, slug: str, promote: dict[str, str]) -> str:
+        """Offer to promote inline ``Long Form (ABBR)`` definitions to
+        glossary ``term`` chunks — a hint, never a refusal (an inline
+        first-use is correct, conventional writing; it's just fragile,
+        since it lives in one chunk's prose)."""
+        if not promote:
+            return ""
+        toks = ", ".join(promote)
+        short, long = next(iter(promote.items()))
+        return (
+            f"\n\nℹ inline definition(s): {toks}. They work, but live only in "
+            f"this chunk's prose — promote to the glossary so they survive edits: "
+            f"put(kind='draft', id={slug!r}, chunk_kind='term', text={long!r}, "
+            f"meta={{'short': {short!r}}})."
+        )
 
     def _abbrev_hint(self, slug: str, undefined: list[str]) -> str:
         """A hint (appended to the write/edit Response) listing undefined

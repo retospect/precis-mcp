@@ -31,7 +31,10 @@ across HTML/LaTeX/Word targets. KaTeX renders ``$…$`` client-side.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +49,13 @@ from fastapi.responses import (
 
 from precis.utils import draft_markup, mentions
 from precis.utils.embed_query import embed_query
-from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
+from precis_web.deps import (
+    await_dispatch,
+    get_runtime,
+    get_store,
+    redirect_or_error,
+    templates,
+)
 from precis_web.linkify import popover_chip
 
 router = APIRouter(tags=["drafts"])
@@ -308,6 +317,135 @@ async def index(request: Request) -> HTMLResponse:
         request,
         "drafts/index.html.j2",
         {"active_tab": "drafts", "drafts": drafts},
+    )
+
+
+def _slugify(title: str) -> str:
+    """A short kebab slug from a title (the draft's address)."""
+    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return s[:40] or "draft"
+
+
+def _parse_id(body: str) -> int | None:
+    m = re.search(r"id=(\d+)", body or "")
+    return int(m.group(1)) if m else None
+
+
+@router.post("/drafts/new")
+async def new_draft(
+    request: Request,
+    title: str = Form(...),
+    slug: str = Form(""),
+    summary: str = Form(""),
+) -> Response:
+    """Create a draft from the /drafts page. A draft is 1:1 with a
+    project, so this mints the owning strategic ``todo`` (carrying the
+    workspace + optional brief), then the draft under it, and lands on the
+    new draft's reader. ``slug`` is derived from the title when blank."""
+    title = title.strip()
+    if not title:
+        return RedirectResponse(url="/drafts", status_code=303)
+    slug = _slugify(slug.strip() or title)
+    workspace: dict[str, Any] = {"path": f"projects/{slug}", "format": "tex"}
+    if summary.strip():
+        workspace["brief"] = summary.strip()
+
+    # 1) project root that owns the workspace.
+    body, is_error = await await_dispatch(
+        request,
+        "put",
+        {
+            "kind": "todo",
+            "text": title,
+            "tags": ["level:strategic"],
+            "meta": {"workspace": workspace},
+        },
+    )
+    project_id = None if is_error else _parse_id(body)
+    if is_error or project_id is None:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": "New draft error",
+                "detail": body if is_error else f"could not resolve project id:\n{body}",
+                "status": 400,
+            },
+            status_code=400,
+        )
+
+    # 2) the draft, bound 1:1 to that project.
+    return await redirect_or_error(
+        request,
+        "put",
+        {
+            "kind": "draft",
+            "id": slug,
+            "title": title,
+            "project": project_id,
+            "meta": {"workspace": workspace},
+        },
+        redirect=f"/drafts/{slug}",
+        error_title="New draft error",
+    )
+
+
+_DOCX_MEDIA = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
+
+@router.get("/drafts/{ident}/export.docx")
+async def export_docx_route(request: Request, ident: str) -> Response:
+    """Synchronous .docx export — renders the draft and streams it back as
+    a download. Toolchain-free (python-docx), so this "just works"; the
+    rendering runs off the event loop."""
+    from precis.export.docx import export_docx
+
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return RedirectResponse(url="/drafts", status_code=303)
+    name = str(ref.slug or ref.id)
+    out = Path(tempfile.mkdtemp(prefix="precis-docx-")) / f"{name}.docx"
+    await asyncio.to_thread(export_docx, store, ref, target_path=out)
+    return FileResponse(out, filename=f"{name}.docx", media_type=_DOCX_MEDIA)
+
+
+@router.post("/drafts/{ident}/export.pdf")
+async def export_pdf_route(request: Request, ident: str) -> Response:
+    """Start a ``draft_export`` job (LaTeX → PDF). The job runs on a
+    worker; its progress logs + result land under the draft's project on
+    the task page. Redirects back to the reader."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return RedirectResponse(url="/drafts", status_code=303)
+    project = _project_id(store, ref.id)
+    if project is None:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": "PDF export error",
+                "detail": "this draft has no project todo to parent the job under",
+                "status": 400,
+            },
+            status_code=400,
+        )
+    slug = str(ref.slug or ref.id)
+    return await redirect_or_error(
+        request,
+        "put",
+        {
+            "kind": "job",
+            "job_type": "draft_export",
+            "parent_id": project,
+            "params": {"draft": slug},
+            "idem_key": f"draft_export:{slug}",
+        },
+        redirect=f"/drafts/{ident}",
+        error_title="PDF export error",
     )
 
 

@@ -165,6 +165,30 @@ class DraftMixin:
         with self.pool.connection() as conn:
             return [chunk.chunk_id, *self._descendant_ids(conn, chunk.chunk_id)]
 
+    def draft_term_shorts(self, ref_id: int) -> set[str]:
+        """The ``short`` of every live glossary ``term`` chunk in the
+        draft — used to tell an inline-only abbreviation from one already
+        promoted to the glossary."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT meta->>'short' FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'term' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall()
+        return {r[0] for r in rows if r[0]}
+
+    def draft_terms(self, ref_id: int) -> dict[str, tuple[str, str]]:
+        """``handle → (short, long)`` for live glossary ``term`` chunks —
+        the ``short`` lives in ``meta`` (not exposed on ``DraftChunk``),
+        so exporters fetch it here to render "SHORT — long"."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT handle, meta->>'short', text FROM chunks "
+                "WHERE ref_id = %s AND chunk_kind = 'term' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall()
+        return {str(r[0]): (str(r[1] or ""), str(r[2] or "")) for r in rows}
+
     def draft_handles_for(self, chunk_ids: list[int]) -> dict[int, str]:
         """Map ``chunk_id → ¶-less handle`` for a set of draft chunks —
         search hits carry ``chunk_id`` (``Block.id``) but not the draft

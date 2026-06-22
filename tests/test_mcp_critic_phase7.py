@@ -529,3 +529,33 @@ class TestSigilKindInference:
             pytest.skip("paper kind not booted (no [paper] extra on host)")
         out = runtime.dispatch("get", {"id": "§nope2020~0"})
         assert "missing kind" not in out
+
+
+# ── bare slug self-identifies its kind (get(id='wu22c~312')) ────
+
+
+class TestSlugKindInference:
+    """A bare slug address (no kind:, no sigil) resolves to its owning
+    kind when unambiguous — so paper chunks read with just an id."""
+
+    def _seed_paper(self, store: Store, slug: str) -> None:
+        ref = store.insert_ref(kind="paper", slug=slug, title="P", provider="manual")
+        store.insert_blocks(
+            ref.id, [BlockInsert(pos=i, text=f"block {i} text", slug=f"b{i}")
+                     for i in range(4)]
+        )
+
+    def test_paper_chunk_addr_infers_paper(self, runtime: PrecisRuntime) -> None:
+        self._seed_paper(runtime.hub.store, "wu22c")
+        out = runtime.dispatch("get", {"id": "wu22c~2"})  # no kind=
+        assert "missing kind" not in out
+        assert "block 2" in out  # routed to the paper, selector parsed
+
+    def test_bare_slug_infers_paper(self, runtime: PrecisRuntime) -> None:
+        self._seed_paper(runtime.hub.store, "wu22c")
+        out = runtime.dispatch("get", {"id": "wu22c"})  # whole paper, no kind=
+        assert "missing kind" not in out
+
+    def test_unknown_slug_still_missing_kind(self, runtime: PrecisRuntime) -> None:
+        out = runtime.dispatch("get", {"id": "nosuchslug~3"})
+        assert "missing kind" in out  # no ref owns it → unchanged behaviour

@@ -333,6 +333,31 @@ glossary. Authoring `[[…]]` links and bare thought mentions render to
 nothing (provenance only). This is why **citing the exact chunk** and
 **defining your abbreviations** pays off — the exporter does the rest.
 
+## Export — PDF (job) and Word/.docx
+
+A draft renders to a real document. Two paths:
+
+- **PDF** — `export_draft` → LaTeX → `latexmk`. This is **deterministic
+  but slow**, so it runs as a **job**. Start one and watch its logs on the
+  project's task page:
+
+  ```python
+  put(kind='job', job_type='draft_export', parent_id=<project-todo-id>,
+      params={'draft': '<slug>'})
+  ```
+
+  The job streams `job_event` progress and lands the PDF path in its
+  `job_summary` / `meta.pdf`. (Web: the **export PDF** button on the draft
+  reader does exactly this.)
+- **Word/.docx** — toolchain-free (python-docx), so it's **synchronous** —
+  the web reader's **export .docx** link downloads it immediately. Citations
+  resolve through the same paper lookup the PDF uses (identical references),
+  with render-time acronym first-use expansion + an auto acronyms list.
+
+Both are **disposable** — re-export from the draft; never hand-edit the
+output. Citations must resolve (`[§slug~n]` → a paper in the corpus) or the
+export marks a stub + warns.
+
 ## Freeze / snapshot (release + backup)
 
 A *freeze* copies the draft's current chunks into an immutable

@@ -146,7 +146,7 @@ paper = [
     # both ``paper`` and ``embed``, are the ones that go torch-free.
 ]
 # DOCX file handler.
-docx = ["python-docx>=1.1", "lxml>=5.0"]
+docx = ["python-docx>=1.1", "lxml>=5.0", "latex2mathml>=3.77"]
 # LaTeX file handler.
 tex = ["lxml>=5.0"]
 # Local calculator (sympy).

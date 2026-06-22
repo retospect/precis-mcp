@@ -274,6 +274,10 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
 
 
 def _cite(slug: str, ctx: _Ctx) -> str:
+    # Cite the PAPER, not the chunk: ``a~3`` / ``a~9`` → one \cite{a} and
+    # one bib entry (biblatex collapses repeated cites; build_bib resolves
+    # the bare slug).
+    slug = slug.split("~", 1)[0]
     if slug not in ctx.cited:
         ctx.cited.append(slug)
     return f"\\cite{{{slug}}}"

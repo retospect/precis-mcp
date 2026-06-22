@@ -374,3 +374,76 @@ def test_chunk_connections_and_edit_stats(draft: DraftHandler, hub: Hub) -> None
     draft.edit(id=f"¶{para.handle}", text="A revised claim.")
     stats = hub.store.chunk_edit_stats(dref.id, [para.handle])
     assert stats[para.handle]["edits"] >= 1
+
+
+# ── queued UX fixes: abbrev scoping, promote hint, link redirect ──
+
+
+def test_edit_does_not_renag_preexisting_abbrev(draft: DraftHandler, hub: Hub) -> None:
+    """Editing a chunk that already contained an undefined acronym must
+    not re-nag about it — only abbreviations the edit introduces."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    p = draft.put(id="nt", chunk_kind="paragraph",
+                  text="MOF systems are promising.", at={"last": True})
+    h = p.body.split("¶")[1].split()[0]
+    # First write nags about MOF (newly introduced).
+    assert "MOF" in p.body
+    # Editing the same chunk (MOF still present, not newly introduced) → no MOF nag.
+    out = draft.edit(id=f"¶{h}", text="MOF systems are very promising.").body
+    assert "undefined abbreviation" not in out
+
+
+def test_edit_nags_only_new_abbrev(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    p = draft.put(id="nt", chunk_kind="paragraph",
+                  text="MOF systems are promising.", at={"last": True})
+    h = p.body.split("¶")[1].split()[0]
+    # Introduce a NEW acronym (DAC) on edit → it should be nagged, MOF should not.
+    out = draft.edit(id=f"¶{h}", text="MOF systems help DAC efforts.").body
+    assert "DAC" in out and "undefined abbreviation" in out
+
+
+def test_promote_hint_on_inline_definition(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    out = draft.put(
+        id="nt", chunk_kind="paragraph",
+        text="We use multivariate templated modulation (MTVM) here.",
+        at={"last": True},
+    ).body
+    # Inline def detected → promote hint, not an 'undefined' nag.
+    assert "inline definition" in out
+    assert "chunk_kind='term'" in out and "MTVM" in out
+
+
+def test_no_promote_hint_when_already_a_term(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    draft.put(id="nt", chunk_kind="term", text="multivariate templated modulation",
+              meta={"short": "MTVM"})
+    out = draft.put(
+        id="nt", chunk_kind="paragraph",
+        text="We use multivariate templated modulation (MTVM) here.",
+        at={"last": True},
+    ).body
+    assert "inline definition" not in out  # already promoted → no nag
+
+
+def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
+    """The 'draft does not support link' error teaches the markdown-ref
+    model instead of a generic 'try get'."""
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import make_embedder
+    from precis.runtime import PrecisRuntime
+
+    store = hub.store
+    rt = PrecisRuntime(
+        config=PrecisConfig(),
+        hub=boot(store=store, embedder=make_embedder("mock", dim=store.embedding_dim())),
+    )
+    out = rt.dispatch("link", {"kind": "draft", "id": "¶ABC", "target": "¶DEF"})
+    assert "does not support link" in out
+    assert "embed a markdown ref" in out or "[¶<target>]" in out

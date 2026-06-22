@@ -68,11 +68,14 @@
       </button>
       <button @click="collapseAll()" class="text-slate-500 underline hover:text-slate-800">collapse all</button>
       <button @click="expandAll()" class="text-slate-500 underline hover:text-slate-800">expand all</button>
-      {# Compile-on-demand PDF (cached per draft version). Opens in a new
-         tab; degrades to a friendly message if the host has no latexmk. #}
-      <a href="/drafts/{{ ref.ident }}/pdf" target="_blank" rel="noopener"
-         class="text-slate-500 underline hover:text-slate-800"
-         title="compile this draft to PDF (latexmk) and open it">PDF</a>
+      {# Export: .docx downloads synchronously (toolchain-free); PDF starts
+         a job (compiles can be slow) whose logs/result land on the
+         project task page. #}
+      <a href="/drafts/{{ ref.ident }}/export.docx"
+         class="text-slate-500 underline hover:text-slate-800">export .docx</a>
+      <form method="post" action="/drafts/{{ ref.ident }}/export.pdf" class="inline">
+        <button type="submit" class="text-slate-500 underline hover:text-slate-800">export PDF</button>
+      </form>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
     </div>
   </div>

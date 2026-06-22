@@ -1250,6 +1250,15 @@ wheels = [
 ]
 
 [[package]]
+name = "latex2mathml"
+version = "3.81.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/62/35bb816c5c19d4d0cde5bdfb82ebb996306243d5f94e03f201658c629960/latex2mathml-3.81.0.tar.gz", hash = "sha256:4b959cdc3cac8686bc0e3e5aece8127dfb1b81ca1241bed8e00ef31b82bb4022", size = 77584, upload-time = "2026-04-15T00:55:27.977Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/b1/c488b530994c4f68e46efa99a4d6ca6741aaf158e35779fe6c4d8a9a427d/latex2mathml-3.81.0-py3-none-any.whl", hash = "sha256:d317710393fe20579aea39cfe8928fa2ad9b8780896e585326c75e89c1d1d1a4", size = 79185, upload-time = "2026-04-15T00:55:29.301Z" },
+]
+
+[[package]]
 name = "librt"
 version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2317,6 +2326,7 @@ all = [
     { name = "habanero" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "latex2mathml" },
     { name = "lxml" },
     { name = "marker-pdf", marker = "sys_platform != 'win32'" },
     { name = "matplotlib" },
@@ -2340,6 +2350,7 @@ calc = [
     { name = "sympy" },
 ]
 docx = [
+    { name = "latex2mathml" },
     { name = "lxml" },
     { name = "python-docx" },
 ]
@@ -2397,6 +2408,7 @@ requires-dist = [
     { name = "habanero", marker = "extra == 'paper'", specifier = ">=2.0" },
     { name = "httpx", marker = "extra == 'external'", specifier = ">=0.27" },
     { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1" },
+    { name = "latex2mathml", marker = "extra == 'docx'", specifier = ">=3.77" },
     { name = "lxml", marker = "extra == 'docx'", specifier = ">=5.0" },
     { name = "lxml", marker = "extra == 'patent'", specifier = ">=5.0" },
     { name = "lxml", marker = "extra == 'tex'", specifier = ">=5.0" },

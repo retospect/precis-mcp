@@ -1162,6 +1162,24 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (Jsonb(updates), ref_id))
 
+    def kind_for_slug(self, slug: str) -> str | None:
+        """The kind of the **unique** live ref whose ``cite_key`` is
+        ``slug`` — or ``None`` when no ref matches, or more than one kind
+        does. Used by the dispatcher to self-identify a slug-addressed id
+        (``get(id='wu22c~312')`` → the paper that owns ``wu22c``) without a
+        ``kind=``. Returning ``None`` on ambiguity means an ambiguous slug
+        is never silently mis-routed — the caller falls back to the normal
+        missing-kind error. One indexed lookup on ``ref_identifiers``."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT r.kind FROM ref_identifiers ri "
+                "JOIN refs r ON r.ref_id = ri.ref_id "
+                "WHERE ri.id_kind = 'cite_key' AND ri.id_value = %s "
+                "AND r.deleted_at IS NULL LIMIT 2",
+                (slug,),
+            ).fetchall()
+        return str(rows[0][0]) if len(rows) == 1 else None
+
     def most_recent_kind(self, *, kinds: list[str] | None = None) -> str | None:
         """Return the kind of the most recently updated live ref.
 
