@@ -198,6 +198,26 @@ put(kind='paper', title='Some Paper With No DOI Yet')  # title-only backlog stub
 Idempotent (already-held / already-wanted is a no-op). Full contract +
 backlog view in `precis-stubs-help`.
 
+## Find the paper to request — walk a citation graph
+## What does this paper cite? Who cites it?
+
+To find the *right* primary source to stub, navigate a known paper's
+citation graph via Semantic Scholar. Each row carries the neighbour's
+DOI — feed it straight into a `put(kind='paper', doi=…)` request:
+
+```python
+get(kind='semanticscholar', id='refs:10.1038/nature10352')   # papers it cites (its bibliography)
+get(kind='semanticscholar', id='cites:10.1038/nature10352')  # papers citing it (forward citations)
+get(kind='semanticscholar', id='<title or topic>')           # or search by topic → ranked hits + DOIs
+```
+
+`<paper-id>` is any S2-resolvable handle — a bare DOI, an arXiv id
+(`2401.00001`), a raw S2 hash, or a prefixed `DOI:` / `ArXiv:` /
+`CorpusId:` / `PMID:` form. This is the high-precision way to fill a
+citation gap: the held review's reference list almost always contains
+the primary source you're missing. (Cached 30 days; capped at 50 rows
+per hop.)
+
 ## See also
 
 ```python

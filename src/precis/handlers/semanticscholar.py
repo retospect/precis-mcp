@@ -1,9 +1,24 @@
-"""Semantic Scholar — cache-backed paper search.
+"""Semantic Scholar — cache-backed paper search + citation-graph nav.
 
-The ``semanticscholar`` kind wraps Semantic Scholar's Graph API. A
-``get(kind='semanticscholar', id='<query>')`` issues a paper search
-and returns the top 10 hits as a structured markdown listing. The
-``id`` is the natural-language query — same shape as perplexity-*.
+The ``semanticscholar`` kind wraps Semantic Scholar's Graph API. The
+``id`` selects between three modes:
+
+* ``get(kind='semanticscholar', id='<query>')`` — a paper *search*:
+  the top-10 ranked hits for a natural-language query, as a structured
+  markdown listing (same shape as perplexity-*).
+* ``get(kind='semanticscholar', id='refs:<paper-id>')`` — the papers
+  *this* paper cites (its reference list / bibliography).
+* ``get(kind='semanticscholar', id='cites:<paper-id>')`` — the papers
+  that cite this one (its forward citations).
+
+The ``refs:`` / ``cites:`` modes are how you **navigate a known
+paper's citation graph** to discover a primary source the corpus
+doesn't hold yet: every returned row carries the cited/citing paper's
+DOI / arXiv id, which feeds straight into a
+``put(kind='paper', doi=…)`` acquisition stub. ``<paper-id>`` is any
+S2-resolvable handle — a bare DOI (``10.x/y``), an arXiv id
+(``2401.00001``), a raw S2 paper hash, or an explicitly-prefixed
+``DOI:`` / ``ARXIV:`` / ``CorpusId:`` / ``PMID:`` form.
 
 Optional ``SEMANTIC_SCHOLAR_API_KEY`` env var raises the rate limit
 from the public tier (~1 req/s) to the partner tier; the handler
@@ -11,13 +26,15 @@ works without one but is slower. We surface the missing-key state
 as a one-time hint rather than an init failure.
 
 Cache TTL: 30 days. S2 indexes new papers continuously but the
-top-10 for a given query is stable on that timescale.
+top-10 for a query — and a paper's reference list — are stable on
+that timescale.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, Upstream
@@ -29,7 +46,8 @@ from precis.utils.slug import slug_from_text
 
 log = logging.getLogger(__name__)
 
-_S2_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+_S2_PAPER_BASE = "https://api.semanticscholar.org/graph/v1/paper"
+_S2_URL = f"{_S2_PAPER_BASE}/search"
 
 #: Fields we request from the API. Trimmed to what we render — full
 #: paper records carry citations/references which would inflate the
@@ -42,6 +60,29 @@ _S2_FIELDS = (
 #: How many top hits to retain. Keeps the body bounded and the
 #: chunker-emitted chunks meaningful per-paper.
 _S2_LIMIT = 10
+
+#: Per-paper fields for the citation-graph (references / citations)
+#: endpoints. The nested paper record shares the search field shape,
+#: so ``_format_paper`` renders both — we only trim ``referenceCount``
+#: (not useful one hop out).
+_NAV_FIELDS = (
+    "title,authors.name,year,abstract,externalIds,venue,"
+    "citationCount,openAccessPdf"
+)
+
+#: Page size for a citation-graph walk. Reference lists run to
+#: hundreds; cap the cached body so it stays a bounded, scannable
+#: page (the agent is hunting for one missing source, not archiving
+#: the whole bibliography). Truncation is surfaced in the meta.
+_NAV_LIMIT = 50
+
+#: ``id=`` prefixes that switch ``get`` from search to a graph walk.
+#: ``refs`` → papers this one cites; ``cites`` → papers citing it.
+_NAV_PREFIXES = ("refs", "cites")
+
+#: Bare-arXiv-id shape (new-style ``2401.00001`` with optional ``vN``).
+#: Used to auto-prefix a path id when the caller passes a naked id.
+_ARXIV_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 
 _ATTRIBUTION = (
     "Source: Semantic Scholar (https://www.semanticscholar.org). "
@@ -58,10 +99,13 @@ class SemanticScholarHandler(CacheBackedHandler):
         title="Semantic Scholar paper search",
         description=(
             "Search Semantic Scholar's paper graph by natural-language "
-            "query. Returns the top 10 ranked papers with title, "
-            "authors, year, DOI / arXiv id, venue, abstract, and "
-            "citation count. The body is one chunk per paper after "
-            "the base-class auto-chunker splits it."
+            "query (top-10 hits with title, authors, year, DOI / arXiv "
+            "id, venue, abstract, citation count), OR walk a known "
+            "paper's citation graph: id='refs:<paper-id>' lists the "
+            "papers it cites, id='cites:<paper-id>' the papers citing "
+            "it — each row carrying the DOI to feed a "
+            "put(kind='paper', doi=…) acquisition stub. One chunk per "
+            "paper after the base-class auto-chunker splits it."
         ),
         supports_get=True,
         supports_search=True,
@@ -95,27 +139,97 @@ class SemanticScholarHandler(CacheBackedHandler):
                 next="get(kind='semanticscholar', id='your search terms')",
             )
         # Lower-case + collapse whitespace so the same query in
-        # different casings shares one cache row.
-        return " ".join(q.lower().split())
+        # different casings shares one cache row. Identifiers under a
+        # nav prefix lower-case safely too (DOIs are case-insensitive,
+        # arXiv ids numeric, S2 hashes lower-hex).
+        low = " ".join(q.lower().split())
+        for mode in _NAV_PREFIXES:
+            prefix = f"{mode}:"
+            if low.startswith(prefix):
+                ident = low[len(prefix) :].strip()
+                if not ident:
+                    raise BadInput(
+                        f"semanticscholar {prefix} needs a paper id "
+                        "(DOI / arXiv / S2)",
+                        next=(
+                            f"get(kind='semanticscholar', "
+                            f"id='{prefix}10.1038/nature12373')"
+                        ),
+                    )
+                return f"{prefix}{ident}"
+        return low
+
+    @staticmethod
+    def _parse_nav_key(key: str) -> tuple[str, str] | None:
+        """Split a canonical key into ``(mode, ident)`` or ``None``.
+
+        ``None`` is the plain-search path; ``('refs', '10.x/y')`` /
+        ``('cites', '10.x/y')`` are the two graph-walk paths.
+        """
+        for mode in _NAV_PREFIXES:
+            prefix = f"{mode}:"
+            if key.startswith(prefix):
+                return mode, key[len(prefix) :]
+        return None
+
+    @staticmethod
+    def _s2_path_id(ident: str) -> str:
+        """Map an agent-supplied paper id to an S2 graph path segment.
+
+        S2's ``/paper/{id}`` accepts a bare hash or a prefixed handle
+        (``DOI:`` / ``ARXIV:`` / ``CorpusId:`` / ``PMID:`` / …). We let
+        an already-prefixed id through (normalising the two common
+        casings) and auto-prefix a naked DOI or arXiv id; anything else
+        is assumed to be a raw S2 paper hash.
+        """
+        r = ident.strip()
+        low = r.lower()
+        if low.startswith("doi:"):
+            return "DOI:" + r[4:]
+        if low.startswith("arxiv:"):
+            return "ARXIV:" + r[6:]
+        if low.startswith("s2:"):
+            return r[3:]  # bare S2 paper hash, no prefix in the path
+        if low.startswith(("corpusid:", "pmid:", "pmcid:", "mag:", "acl:", "url:")):
+            return r  # S2 accepts these verbatim
+        if r.startswith("10."):
+            return "DOI:" + r
+        if _ARXIV_RE.match(r):
+            return "ARXIV:" + r
+        return r  # assume a raw S2 paper hash
 
     def _slug_for(self, key: str) -> str:
         return slug_from_text(key, max_len=60) or "semanticscholar-query"
 
     def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
-        return (cache.meta or {}).get("query")
+        meta = cache.meta or {}
+        # New rows stamp the canonical key directly; fall back to the
+        # legacy ``query`` field for search rows written before that.
+        return meta.get("key") or meta.get("query")
 
     # ── fetch + render ────────────────────────────────────────────────
 
     def _fetch(self, key: str) -> FetchResult:
+        nav = self._parse_nav_key(key)
+        if nav is not None:
+            return self._fetch_graph(key, *nav)
+        return self._fetch_search(key)
+
+    @staticmethod
+    def _s2_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Issue one S2 Graph GET and return parsed JSON (or raise).
+
+        Shared by the search and citation-graph paths so the
+        rate-limit / auth / transport handling lives in one place.
+        """
         httpx = require_optional("httpx", extra="external")
         api_key = (os.environ.get("SEMANTIC_SCHOLAR_API_KEY") or "").strip()
         headers: dict[str, str] = {"User-Agent": "precis-mcp/1.0"}
         if api_key:
             headers["x-api-key"] = api_key
-        params = {"query": key, "fields": _S2_FIELDS, "limit": _S2_LIMIT}
         try:
             with httpx.Client(timeout=30.0, headers=headers) as client:
-                resp = client.get(_S2_URL, params=params)
+                resp = client.get(url, params=params)
         except httpx.HTTPError as exc:
             raise Upstream(f"Semantic Scholar transport error: {exc}") from exc
 
@@ -130,15 +244,24 @@ class SemanticScholarHandler(CacheBackedHandler):
                 "Semantic Scholar rejected the API key (HTTP 401). "
                 "Check SEMANTIC_SCHOLAR_API_KEY.",
             )
+        if resp.status_code == 404:
+            raise Upstream(
+                "Semantic Scholar has no record for that paper id (HTTP 404). "
+                "Check the DOI / arXiv / S2 id you passed after refs:/cites:.",
+            )
         if resp.status_code != 200:
             raise Upstream(
                 f"Semantic Scholar HTTP {resp.status_code}: {resp.text[:200]}"
             )
 
         try:
-            data = resp.json()
+            return resp.json()
         except Exception as exc:
             raise Upstream(f"Semantic Scholar returned non-JSON: {exc}") from exc
+
+    def _fetch_search(self, key: str) -> FetchResult:
+        params = {"query": key, "fields": _S2_FIELDS, "limit": _S2_LIMIT}
+        data = self._s2_get_json(_S2_URL, params)
 
         papers = data.get("data") or []
         if not papers:
@@ -147,7 +270,7 @@ class SemanticScholarHandler(CacheBackedHandler):
                 title=f"Semantic Scholar: {key}",
                 body_blocks=[BlockInsert(pos=0, text=text)],
                 cost_usd=None,
-                meta={"query": key, "result_count": 0},
+                meta={"key": key, "query": key, "result_count": 0},
             )
 
         # One block per paper — the base-class auto-chunker would split
@@ -163,9 +286,60 @@ class SemanticScholarHandler(CacheBackedHandler):
             body_blocks=blocks,
             cost_usd=None,
             meta={
+                "key": key,
                 "query": key,
                 "result_count": len(papers),
                 "total_available": data.get("total"),
+            },
+        )
+
+    def _fetch_graph(self, key: str, mode: str, ident: str) -> FetchResult:
+        """Walk one hop of a paper's citation graph.
+
+        ``mode='refs'`` → ``/paper/{id}/references`` (papers this one
+        cites); ``mode='cites'`` → ``/paper/{id}/citations`` (papers
+        citing it). The endpoint returns the *neighbour* paper nested
+        under ``citedPaper`` / ``citingPaper``; we lift it out and
+        render each with the shared per-paper formatter.
+        """
+        endpoint = "references" if mode == "refs" else "citations"
+        nested = "citedPaper" if mode == "refs" else "citingPaper"
+        verb = "cited by" if mode == "refs" else "citing"
+        path_id = self._s2_path_id(ident)
+        url = f"{_S2_PAPER_BASE}/{path_id}/{endpoint}"
+        data = self._s2_get_json(url, {"fields": _NAV_FIELDS, "limit": _NAV_LIMIT})
+
+        rows = data.get("data") or []
+        papers = [
+            row[nested]
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get(nested), dict)
+        ]
+        if not papers:
+            text = f"No {endpoint} found for {ident} on Semantic Scholar."
+            return FetchResult(
+                title=f"S2 {endpoint}: {ident}",
+                body_blocks=[BlockInsert(pos=0, text=text)],
+                cost_usd=None,
+                meta={"key": key, "nav": mode, "paper": ident, "result_count": 0},
+            )
+
+        blocks = [BlockInsert(pos=i, text=_format_paper(p)) for i, p in enumerate(papers)]
+        # Title says which way the hop runs + how many we kept, so a
+        # capped page reads as "first N", not "the complete list".
+        suffix = f" ({len(papers)} shown, capped at {_NAV_LIMIT})" if (
+            len(papers) >= _NAV_LIMIT
+        ) else f" ({len(papers)})"
+        return FetchResult(
+            title=f"S2 papers {verb} {ident}{suffix}",
+            body_blocks=blocks,
+            cost_usd=None,
+            meta={
+                "key": key,
+                "nav": mode,
+                "paper": ident,
+                "result_count": len(papers),
+                "capped": len(papers) >= _NAV_LIMIT,
             },
         )
 

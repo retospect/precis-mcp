@@ -70,10 +70,22 @@ just parks in the backlog until someone supplies an identifier — no
 auto-fetch. Optional: `year=` (disambiguates the cite key) and
 `reason=` (why it's wanted).
 
+## Don't know the identifier? Find it first
+
+A stub is only auto-fetched when it carries a resolvable id, so find
+the DOI before you request. Walk a held paper's citation graph or
+search by topic on Semantic Scholar — each hit carries a DOI to stub:
+
+```python
+get(kind='semanticscholar', id='refs:<held-doi>')    # papers it cites
+get(kind='semanticscholar', id='cites:<held-doi>')   # papers citing it
+get(kind='semanticscholar', id='<title or topic>')   # search → ranked hits + DOIs
+```
+
 ## See also
 
 ```python
-get(kind='skill', id='precis-paper-help')      # read, cite, search held papers
+get(kind='skill', id='precis-paper-help')      # read, cite, search held papers (+ S2 nav)
 get(kind='skill', id='precis-finding-help')    # chasing un-ingested DOIs
 get(kind='skill', id='precis-search-help')     # search args incl. view=
 ```

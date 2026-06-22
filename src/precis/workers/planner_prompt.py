@@ -251,9 +251,45 @@ The `put` returns one of two verdicts:
   hint, decide if it preserves your intent, resubmit if it does.
 
 **Paper not in corpus**: if you want to cite a paper that isn't in
-the corpus yet, mint `put(kind='finding', text='<claim>', ...)` to
-flag the gap, AND write `[citation pending]` in your prose. NEVER
-write `\\cite{TODO}` or a guessed bib key — it breaks the compile.
+the corpus yet, **request it** — don't just flag a gap and move on.
+Discovery tools find the source; the corpus is the only thing you
+cite. Work cheapest-first:
+
+1. **Re-check the corpus** — `search(kind='paper', q=…)`; we may
+   already hold it under another slug.
+2. **Find the real DOI.** Mine a held paper's citation graph, or
+   search by topic — both hand you a resolvable id, no guessing:
+
+       get(kind='semanticscholar', id='refs:<held-doi>')   # papers it cites
+       get(kind='semanticscholar', id='cites:<held-doi>')  # papers citing it
+       get(kind='semanticscholar', id='<title or topic>')  # search → DOIs
+       get(kind='perplexity-research', q='<question>')      # fallback pointer-finder
+
+   Perplexity/websearch only *name* the work — convert the answer to
+   a DOI and ingest it; never cite an aggregator as the source.
+3. **Got a resolvable id → stub it + park the citing work:**
+
+       put(kind='paper', doi='10.x/y')        # stub → fetch_oa + ingest + embed
+       wait = put(kind='todo',
+                  text='[auto] wait for 10.x/y ingested+indexed',
+                  meta={'auto_check': {'type': 'paper_ingested',
+                                       'doi': '10.x/y',
+                                       'timeout_at': '<ISO-8601>'}})
+       link(kind='todo', id=<your citing todo>, target=f'todo:{wait.id}',
+            rel='blocked-by')
+
+   The `paper_ingested` leaf auto-resolves once the paper lands +
+   embeds; your re-tick then writes a real `\\cite{<slug>}`.
+4. **Only a fuzzy claim, no id?** → `put(kind='finding',
+   text='<claim>', ...)` so `finding_chase` resolves it via
+   Unpaywall / arXiv / S2 / EPO, then cite on a re-tick.
+
+Either way, write `[citation pending]` in your prose as the
+placeholder — but ALWAYS with a stub or finding actually chasing it
+behind the scenes (a placeholder nobody is fetching never becomes a
+citation, and a lingering "References needed" note is PROHIBITED —
+it trips nursery flags). NEVER write `\\cite{TODO}` or a guessed bib
+key — it breaks the compile.
 
 **Literature hunt**: if you identify primary sources that you need
 but the corpus doesn't have, **DO NOT** write them as a memory

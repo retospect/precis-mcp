@@ -222,6 +222,83 @@ study → tentative; replicated findings / a review / a meta-analysis →
 strong. The reader's cite popover shows the cited chunk verbatim, so a
 mismatch between claim and passage is visible — make them agree.
 
+## Cite a paper we don't have yet — request it, don't fake it
+
+The right source for a claim is often **not in the corpus yet**. That is
+not a dead end, and it is **not** a reason to silently soften the claim:
+soften only when the *evidence* is genuinely weaker, never because the
+library merely lacks the paper. Every move below exists to **end with a
+real, ingested paper chunk you can quote** — discovery tools find the
+source, the corpus is the only thing you cite. Work cheapest /
+highest-precision first:
+
+1. **Re-check the corpus.** A semantic + lexical `search(kind='paper',
+   q=…)` — we may already hold it under another slug/cite_key. Cheapest
+   possible win.
+2. **Mine the bibliographies of papers we already hold.** The primary
+   source is almost always in the reference list of a review or
+   related-work paper that *is* in the corpus. Walk it with Semantic
+   Scholar — this hands you a real DOI, no guessing:
+
+   ```python
+   get(kind='semanticscholar', id='refs:<held-paper-doi>')   # papers it cites
+   get(kind='semanticscholar', id='cites:<held-paper-doi>')  # papers citing it
+   ```
+3. **Find the canonical source by topic — as a pointer-finder, never the
+   citation.** When no held paper points the way:
+
+   ```python
+   get(kind='semanticscholar', id='<title or topic>')   # structured hits → DOIs
+   get(kind='perplexity-research', q='<question>')       # fills the gap, names the work
+   ```
+
+   Use S2 search first (it returns a structured DOI you can act on);
+   Perplexity/websearch are the fallback. **Convert the answer into a
+   resolvable id, then ingest it** — never cite Perplexity or a web page
+   as the source of a scientific claim.
+4. **Request it + park the citing work behind the ingest.** Once you have
+   a resolvable id:
+
+   ```python
+   # a — request the paper (stub-only put; idempotent, DOI/arXiv preferred)
+   put(kind='paper', doi='10.1038/nature10352')   # → fetch_oa grabs an OA PDF, watcher ingests, embedder indexes
+   # (or arxiv='2401.00001' / identifier='s2:<id>'; title-only parks with no auto-fetch)
+
+   # b — park a leaf that waits until that paper is ingested + embedded
+   wait = put(kind='todo',
+              text='[auto] wait for 10.1038/nature10352 ingested+indexed',
+              meta={'auto_check': {'type': 'paper_ingested',
+                                   'doi': '10.1038/nature10352',
+                                   'timeout_at': '<ISO-8601, e.g. +7d>'}})
+
+   # c — block the citing change-request on the wait so it leaves the
+   #     doable rotation until the paper lands
+   link(kind='todo', id='<your citing todo>', target=f'todo:{wait.id}',
+        rel='blocked-by')
+   ```
+
+   The wait is a plain **todo leaf** (not a job): the `auto_check` worker
+   polls it ~every minute and flips it to `STATUS:done` once the paper is
+   ingested + embedded, re-entering your citing todo. `timeout_at`
+   surfaces a stalled fetch for triage instead of waiting forever.
+5. **No resolvable id, only a fuzzy claim?** Mint
+   `put(kind='finding', text='<claim>', …)` and let `finding_chase`
+   resolve it (Unpaywall / arXiv / S2 / EPO), then cite on a re-tick.
+   This is the fallback — prefer a stub when you have an id, since it's
+   deterministic.
+6. **Only now consider softening.** If steps 2–3 turn up no source that
+   actually supports the claim, *then* soften to match the evidence (or
+   drop it).
+
+In the meantime **do not** invent a `\cite{}` key, write `paper:slug`
+for a paper that isn't held, or leave a bare `[citation pending]` with
+nothing chasing it — a placeholder nobody is fetching never becomes a
+citation. The stub/finding *is* the acquisition; the `[citation
+pending]` (if you mark the spot) then has something behind it. See
+`precis-stubs-help` (the acquisition backlog), `precis-auto-tasks-help`
+(the wait-on-ingest pattern in full), and `precis-paper-help` (S2 nav +
+held-paper citing).
+
 **Abbreviations — use them freely; we'll ask you to define what we don't
 recognise.** Write with abbreviations naturally. After any `put`/`edit`,
 the response **hints any undefined acronyms in what you just wrote**,
@@ -387,6 +464,12 @@ ADR 0033.)
 
 ## See also
 
-`precis-draft-prose`, `precis-draft-structure`, `precis-draft-citation`,
-`precis-draft-glossary`, `precis-draft-math`, `precis-draft-export`.
+```python
+get(kind='skill', id='precis-citation-help')   # citation kind + verifier workflow
+get(kind='skill', id='precis-paper-help')       # read, cite, search held papers
+get(kind='skill', id='precis-stubs-help')       # request a paper we don't have (acquisition backlog)
+get(kind='skill', id='precis-finding-help')     # flag a claim / chase an un-ingested DOI
+get(kind='skill', id='precis-auto-tasks-help')  # wait-on-ingest (paper_ingested) leaf pattern
+```
+
 Design: ADR 0033.

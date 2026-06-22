@@ -8,6 +8,36 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-22 — request-a-missing-paper workflow + S2 citation-graph nav)
+
+- **Draft authoring now teaches "request a paper we don't have".** The
+  capability existed end-to-end (a `put(kind='paper', doi=…)` stub →
+  `fetch_oa` → ingest → embed, with a `paper_ingested` auto_check leaf
+  to park citing work behind the ingest) but no surface a draft-working
+  agent actually reads pointed at it — so production draft todos never
+  used it. `precis-draft-help` gains a **"Cite a paper we don't have
+  yet"** section laying out the cheapest-first flow (re-check corpus →
+  mine a held paper's citation graph / search by topic → stub + park a
+  `paper_ingested` wait → finding fallback → soften only when the
+  *evidence* is weaker), and its dead "See also" links (to
+  never-shipped `precis-draft-*` sub-skills) are replaced with real
+  ones. The planner prompt's terse "Paper not in corpus → write a
+  finding + `[citation pending]`" block is rewritten into the same
+  acquisition loop, so the planner and the draft editor tell one story.
+- **Semantic Scholar citation-graph navigation.** The `semanticscholar`
+  kind gains two `id=` modes beyond topic search:
+  `get(kind='semanticscholar', id='refs:<paper-id>')` lists the papers a
+  known paper cites (its bibliography) and `id='cites:<paper-id>'` the
+  papers citing it — each row carrying the neighbour's DOI to feed a
+  `put(kind='paper', doi=…)` stub. `<paper-id>` accepts a bare DOI /
+  arXiv id / S2 hash or an explicit `DOI:` / `ArXiv:` / `CorpusId:` /
+  `PMID:` prefix (auto-mapped to the S2 path form). Backs the
+  high-precision "find the missing primary source" step: it returns a
+  resolvable id, not prose. Hits the S2 `/paper/{id}/references` and
+  `/citations` endpoints (cached 30 days, capped 50 rows/hop); the HTTP
+  rate-limit / auth handling is now shared across search and graph
+  paths. Documented in `precis-paper-help` and `precis-stubs-help`.
+
 ### Changed (2026-06-22 — plan_tick resume also covers wall-clock timeout)
 
 - **A `plan_tick` wall-clock timeout now resumes, like `max_turns`.**
