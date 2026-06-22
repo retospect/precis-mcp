@@ -202,6 +202,8 @@ def _claim_and_process(
                    r.title,
                    r.meta->'schedule' AS schedule,
                    r.meta->>'executor' AS executor,
+                   r.meta->>'job_type' AS job_type,
+                   r.meta->'params' AS params,
                    (SELECT max(e.ts) FROM ref_events e
                      WHERE e.ref_id = r.ref_id
                        AND e.source = 'schedule'
@@ -232,7 +234,9 @@ def _claim_and_process(
             "title": row[1],
             "schedule": dict(row[2] or {}),
             "executor": row[3],
-            "last_tick": row[4],
+            "job_type": row[4],
+            "params": row[5],
+            "last_tick": row[6],
         }
         spawned, skipped = _spawn_due_ticks(store, rec, now=now, conn=conn)
         return (1, spawned, skipped)
@@ -338,6 +342,9 @@ def _mint_child_conn(
     * ``parent_id = rec.id``
     * ``meta.spawned_for_tick = stamp``
     * ``meta.executor = rec.executor`` (if present on the recurring)
+    * ``meta.job_type`` / ``meta.params`` = rec's (if present) — lets a
+      recurring drive a deterministic in-process job_type, not just an
+      agentic claude task
     * ``prio = 2`` (the cron-spawn default, see plan)
     * ``STATUS:open`` open tag (handled by ``add_tag``)
     * ``level:subtask`` open tag
@@ -352,6 +359,16 @@ def _mint_child_conn(
     meta: dict[str, Any] = {"spawned_for_tick": stamp}
     if rec.get("executor"):
         meta["executor"] = rec["executor"]
+    # Carry job_type + params so a recurring whose executor runs a
+    # deterministic job_type (e.g. news_poll / briefing) spawns a child
+    # the dispatch pass can mint a *typed* job from. Without these the
+    # child would carry only `executor` and the executor would fail it
+    # ("missing meta.job_type"), so recurrings could only ever run
+    # agentic (claude-on-the-text) work, never an in-process pass.
+    if rec.get("job_type"):
+        meta["job_type"] = rec["job_type"]
+    if rec.get("params") is not None:
+        meta["params"] = rec["params"]
     child = store.insert_ref(
         kind="todo",
         slug=None,

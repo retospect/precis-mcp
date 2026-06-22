@@ -118,6 +118,20 @@ def _load_draft_export() -> JobTypeSpec:
     return draft_export.SPEC
 
 
+def _load_news_poll() -> JobTypeSpec:
+    # Deterministic RSS ingestion pass (runs via plugin dispatch).
+    from precis.workers.job_types import news_poll
+
+    return news_poll.SPEC
+
+
+def _load_briefing() -> JobTypeSpec:
+    # Deterministic morning-news digest (runs via plugin dispatch).
+    from precis.workers.job_types import briefing
+
+    return briefing.SPEC
+
+
 #: Name → spec. Populated lazily on first access so the import
 #: graph stays cheap for the MCP server.
 _REGISTRY: dict[str, JobTypeSpec] = {}
@@ -248,6 +262,12 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "draft_export":
         _REGISTRY["draft_export"] = _load_draft_export()
         return _REGISTRY["draft_export"]
+    if name == "news_poll":
+        _REGISTRY["news_poll"] = _load_news_poll()
+        return _REGISTRY["news_poll"]
+    if name == "briefing":
+        _REGISTRY["briefing"] = _load_briefing()
+        return _REGISTRY["briefing"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -260,7 +280,7 @@ def get_job_type(name: str) -> JobTypeSpec | None:
 
 def known_job_types() -> list[str]:
     """List of registered job_type names (for error messages)."""
-    builtins = ["fix_gripe", "plan_tick", "draft_export"]
+    builtins = ["fix_gripe", "plan_tick", "draft_export", "news_poll", "briefing"]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for
     # callers that have only ever seen the in-tree set.
