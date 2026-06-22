@@ -519,7 +519,34 @@ class DraftHandler(Handler):
             if len(gloss) > 200:
                 gloss = gloss[:199] + "…"
             lines.append(f"{'  ' * c.depth}¶{c.handle}  [{c.chunk_kind}] {gloss}")
+        lines.extend(self._work_lines(ref.id))
         return Response(body="\n".join(lines))
+
+    def _work_lines(self, ref_id: int) -> list[str]:
+        """Surface stuck / in-flight work on this draft (Fix A): the open
+        todos in the draft's project subtree that are blocked by a
+        failure-bubble or have a live/failed child job. Without this a
+        failed enrichment job parks the parent silently and never
+        registers when you look at the draft itself."""
+        try:
+            items = self.store.draft_attached_work(ref_id)
+        except Exception:
+            log.warning("draft: attached-work walk failed for %s", ref_id, exc_info=True)
+            return []
+        if not items:
+            return []
+        out = ["", "## Work in progress"]
+        for it in items:
+            mark = "⚠ blocked" if it.blocked else "⚙ in flight"
+            jobs = ", ".join(f"job:{jid} {st}" for jid, st in it.jobs)
+            suffix = f" — {jobs}" if jobs else ""
+            out.append(f"{mark}  todo:{it.todo_id}  {it.title}{suffix}")
+        out.append(
+            "\nNext: get(kind='todo', id=<id>) to inspect; a blocked todo "
+            "carries a child-failed:<job> bubble — retry, split, or drop it "
+            "(tag remove the bubble + STATUS:done) to unblock the parent."
+        )
+        return out
 
     def _render_chunk(self, addr: str) -> Response:
         m = _CHUNK_ADDR.match(addr)
@@ -550,7 +577,45 @@ class DraftHandler(Handler):
             f"¶{c.handle}  [{c.chunk_kind}]  sha:{content_sha(c.text)[:12]}\n{c.text}"
             for c in window
         ]
-        return Response(body="\n\n".join(blocks))
+        body = "\n\n".join(blocks)
+        body += self._dangling_finding_hint("\n\n".join(c.text for c in window))
+        return Response(body=body)
+
+    #: ``[finding #<slug>]`` / ``citation pending — finding #<slug>`` — the
+    #: author-written placeholder form. Note this is NOT draft markup
+    #: grammar (which addresses a finding as the bare ``finding:<pub_id>``
+    #: mention): a ``#<slug>`` label never autolinks and never exports.
+    _FINDING_MARKER = re.compile(r"finding\s+#(?P<slug>[A-Za-z][A-Za-z0-9-]+)")
+
+    def _dangling_finding_hint(self, text: str) -> str:
+        """Flag ``[finding #slug]`` markers that resolve to no finding ref
+        (Fix C). The author leaves these as 'citation pending' placeholders;
+        on a verbatim read they're indistinguishable from a real, linked
+        citation. Resolve each marker's slug against the finding store and
+        warn about the ones that don't land — so a reader can't mistake a
+        placeholder for a live citation."""
+        from precis.utils import mentions
+
+        seen: list[str] = []
+        dangling: list[str] = []
+        for m in self._FINDING_MARKER.finditer(text):
+            slug = m.group("slug")
+            if slug in seen:
+                continue
+            seen.append(slug)
+            ref = mentions.resolve_handle_ref(self.store, slug)
+            if ref is None or getattr(ref, "kind", None) != "finding":
+                dangling.append(slug)
+        if not dangling:
+            return ""
+        toks = ", ".join(f"#{s}" for s in dangling)
+        return (
+            f"\n\n⚠ unresolved finding reference(s): {toks}. These resolve to "
+            "no finding ref — they're 'citation pending' placeholders, not live "
+            "citations, and won't autolink or export. For each, either create "
+            "the finding (put(kind='finding', …)) and cite it by its handle "
+            "(finding:<pub_id>), or remove the marker."
+        )
 
     def _render_toc(
         self, *, ref: Any = None, root_handle: str | None = None

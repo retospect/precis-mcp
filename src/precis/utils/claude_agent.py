@@ -396,6 +396,32 @@ def stream_final_text(stdout: str) -> str:
     return stdout or ""
 
 
+def stream_terminal_reason(stdout: str) -> str | None:
+    """How an agent run ended, when it ended *abnormally*.
+
+    Returns ``'max_turns'`` when the agent hit ``--max-turns`` — a
+    *resumable* exhaustion, not a real error: the run was cut off
+    mid-flight, and a fresh invocation continues with a new turn
+    budget. (The CLI surfaces this as a trailing ``result`` event with
+    ``subtype='error_max_turns'`` and/or ``terminal_reason='max_turns'``,
+    ``is_error=true``, exit 1.) Returns the raw ``error_*`` subtype for
+    other abnormal terminations, and ``None`` for a clean run, a
+    non-error terminal reason, or stdout with no result event (text /
+    stub output)."""
+    ev = _last_result_event(stdout or "")
+    if ev is None:
+        return None
+    subtype = ev.get("subtype")
+    reason = ev.get("terminal_reason")
+    if subtype == "error_max_turns" or reason == "max_turns":
+        return "max_turns"
+    if isinstance(subtype, str) and subtype.startswith("error_"):
+        return subtype
+    if isinstance(reason, str) and reason not in ("", "end_turn", "stop"):
+        return reason
+    return None
+
+
 def _last_result_event(stdout: str) -> dict[str, Any] | None:
     """Find the trailing ``{"type":"result"}`` event in stream-json stdout.
 
@@ -452,4 +478,6 @@ __all__ = [
     "AgentResult",
     "ClaudeAgentError",
     "call_claude_agent",
+    "stream_final_text",
+    "stream_terminal_reason",
 ]

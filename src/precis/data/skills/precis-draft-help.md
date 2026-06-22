@@ -127,6 +127,16 @@ Navigate the **outline** first (cheap — one line per chunk), then pull
 **verbatim** only for the region you act on. `¶<handle>-B+A` is a
 reading window (B before, A after, in reading order).
 
+The outline ends with a **`## Work in progress`** block when todos are
+working on this draft and are stuck or in flight — walked
+draft → project → todo subtree. A `⚠ blocked` row carries a
+`child-failed:<job>` bubble (a child job failed and parked the parent
+out of the rotation); `⚙ in flight` is a live/queued job. Inspect with
+`get(kind='todo', id=<id>)`; unblock a stuck todo by retrying, splitting,
+or dropping it (`tag` off the `child-failed:` bubble + `STATUS:done`).
+This is how a failed enrichment job *registers on the draft* instead of
+silently stalling.
+
 ## Change a chunk's text
 
 ```python
@@ -231,6 +241,16 @@ terms win over auto-detected ones. **Thoughts** (memory / think / finding) are
 referenceable but **not citeable** — they get a `[[…]]` link only,
 never a bibliography entry. Math is `$…$` / `$$…$$` (LaTeX, rendered by
 KaTeX on the web).
+
+**Don't write `[finding #<name>]`.** A finding is addressed by its base32
+`pub_id` (`finding:<pub_id>` or `[[finding:<pub_id>]]`), **not** by a
+made-up `#slug`. A `[finding #amine-uptake]` /
+`[citation pending — finding #…]` marker resolves to **nothing** — it
+never autolinks, never exports, and on a verbatim read is flagged as an
+**⚠ unresolved finding reference**. If you mean to cite a finding,
+reference its real handle; if it doesn't exist yet, `put(kind='finding',
+…)` it first (and remember: a finding is a `[[…]]` link, not a `[§…]`
+citation). Don't leave dangling `#name` placeholders in the prose.
 
 **Formatting.** Prose is markdown: `**bold**` renders bold and
 `` `code` `` renders inline code. Reach for emphasis **sparingly** — a

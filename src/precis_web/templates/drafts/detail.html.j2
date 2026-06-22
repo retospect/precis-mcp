@@ -80,6 +80,31 @@
     </div>
   </div>
 
+  {# Work in progress — stuck / in-flight todos working on this draft
+     (walked draft→project→subtree). A failed enrichment job otherwise
+     parks its parent silently and never shows up against the draft. #}
+  {% if work %}
+  <div class="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
+    <div class="mb-1 font-semibold text-amber-800">Work in progress</div>
+    <ul class="space-y-0.5">
+      {% for w in work %}
+      <li class="flex flex-wrap items-center gap-2">
+        {% if w.blocked %}
+        <span class="rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-700">⚠ blocked</span>
+        {% else %}
+        <span class="rounded bg-sky-100 px-1.5 py-0.5 font-medium text-sky-700">⚙ in flight</span>
+        {% endif %}
+        <a href="/tasks/{{ w.todo_id }}" class="font-mono text-slate-500 hover:text-slate-800">todo:{{ w.todo_id }}</a>
+        <span class="text-slate-700">{{ w.title }}</span>
+        {% for j in w.jobs %}
+        <span class="font-mono text-slate-400">job:{{ j.id }} {{ j.status }}</span>
+        {% endfor %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
   {# In-draft find bar — verbatim (Ctrl-F over the prose, doc order) vs
      semantic (cosine-ranked over this draft's embeddings). ‹ › cycle the
      matches starting from whatever is currently in view; a hit in a

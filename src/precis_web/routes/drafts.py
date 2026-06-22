@@ -301,6 +301,27 @@ def _ref_view(ref: Any) -> dict[str, Any]:
     }
 
 
+def _work_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
+    """Stuck / in-flight work on this draft for the detail panel (Fix A):
+    blocked-or-in-flight open todos walked draft→project→subtree. Mirrors
+    the MCP outline's "Work in progress" block so a failed enrichment job
+    is visible from the draft in the browser too."""
+    try:
+        items = store.draft_attached_work(ref_id)
+    except Exception:  # pragma: no cover - defensive, never fail the page
+        log.warning("drafts: attached-work walk failed for %s", ref_id, exc_info=True)
+        return []
+    return [
+        {
+            "todo_id": it.todo_id,
+            "title": it.title,
+            "blocked": it.blocked,
+            "jobs": [{"id": jid, "status": st} for jid, st in it.jobs],
+        }
+        for it in items
+    ]
+
+
 @router.get("/drafts", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     store = get_store(request)
@@ -478,6 +499,7 @@ async def reader(request: Request, ident: str) -> Response:
             "active_tab": "drafts",
             "ref": _ref_view(ref),
             "rows": _rows_for(store, ref),
+            "work": _work_items(store, ref.id),
         },
     )
 

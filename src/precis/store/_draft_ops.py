@@ -58,6 +58,19 @@ class TocEntry:
     gist: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class DraftWorkItem:
+    """An open todo working on this draft (walked draft→project→subtree),
+    with the status of its child jobs and whether it is *blocked* by a
+    failure-bubble. Surfaces in the draft outline so a stuck enrichment
+    job is visible from the draft, not just buried in the task tree."""
+
+    todo_id: int
+    title: str
+    blocked: bool  # carries an OPEN:child-failed:* bubble
+    jobs: tuple[tuple[int, str], ...]  # (job_ref_id, status) for child jobs
+
+
 def _split_blocks(text: str) -> list[str]:
     """Split a multi-paragraph `put` at blank-line boundaries; trim.
     (Block elements like fenced code aren't special-cased yet.)"""
@@ -496,6 +509,91 @@ class DraftMixin:
         return None, (roots[-1].pos if roots else None), None
 
     # -- create / add --------------------------------------------------------
+
+    def draft_attached_work(
+        self, draft_ref_id: int, *, limit: int = 20
+    ) -> list[DraftWorkItem]:
+        """Open todos working on this draft, blocked-first, capped.
+
+        Walks ``draft → (draft-of) → project root → todo subtree`` and
+        returns the open todos that are *blocked* (carry an
+        ``OPEN:child-failed:*`` bubble) or have a non-succeeded child
+        job (running / queued / failed) — i.e. work that is stuck or in
+        flight. This is the edge the draft view follows so a failed
+        enrichment job registers on the draft, instead of silently
+        parking the task out of the rotation. Clean, fully-done work is
+        omitted (no signal to surface)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH RECURSIVE proj AS (
+                    SELECT dst_ref_id AS pid FROM links
+                     WHERE src_ref_id = %(draft)s AND relation = 'draft-of'
+                     LIMIT 1
+                ),
+                subtree AS (
+                    SELECT r.ref_id FROM refs r JOIN proj ON r.ref_id = proj.pid
+                    UNION ALL
+                    SELECT c.ref_id FROM refs c
+                      JOIN subtree s ON c.parent_id = s.ref_id
+                     WHERE c.kind = 'todo' AND c.deleted_at IS NULL
+                ),
+                open_todos AS (
+                    SELECT r.ref_id, r.title
+                      FROM refs r
+                      JOIN subtree s ON s.ref_id = r.ref_id
+                      JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                       AND t.namespace = 'STATUS' AND t.value = 'open'
+                ),
+                bubbles AS (
+                    SELECT rt.ref_id, count(*) AS n
+                      FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE t.namespace = 'OPEN' AND t.value LIKE 'child-failed:%%'
+                     GROUP BY rt.ref_id
+                ),
+                jobs AS (
+                    SELECT j.parent_id AS todo_id, j.ref_id AS job_id,
+                           COALESCE(t.value, 'queued') AS status
+                      FROM refs j
+                      LEFT JOIN ref_tags rt ON rt.ref_id = j.ref_id
+                      LEFT JOIN tags t
+                        ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
+                     WHERE j.kind = 'job' AND j.deleted_at IS NULL
+                )
+                SELECT o.ref_id, o.title,
+                       (b.n IS NOT NULL) AS blocked,
+                       COALESCE(
+                           jsonb_agg(
+                               jsonb_build_array(jb.job_id, jb.status)
+                               ORDER BY jb.job_id
+                           ) FILTER (WHERE jb.job_id IS NOT NULL),
+                           '[]'::jsonb
+                       ) AS jobs
+                  FROM open_todos o
+                  LEFT JOIN bubbles b ON b.ref_id = o.ref_id
+                  LEFT JOIN jobs jb ON jb.todo_id = o.ref_id
+                 GROUP BY o.ref_id, o.title, b.n
+                HAVING b.n IS NOT NULL
+                    OR bool_or(jb.status IN ('running', 'queued', 'failed'))
+                 ORDER BY (b.n IS NOT NULL) DESC, o.ref_id
+                 LIMIT %(limit)s
+                """,
+                {"draft": draft_ref_id, "limit": int(limit)},
+            ).fetchall()
+        items: list[DraftWorkItem] = []
+        for ref_id, title, blocked, jobs in rows:
+            first = (title or "").strip().splitlines()[0] if title else ""
+            items.append(
+                DraftWorkItem(
+                    todo_id=int(ref_id),
+                    title=first,
+                    blocked=bool(blocked),
+                    jobs=tuple((int(j[0]), str(j[1])) for j in (jobs or [])),
+                )
+            )
+        return items
 
     def create_draft(
         self,

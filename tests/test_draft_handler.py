@@ -447,3 +447,78 @@ def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
     out = rt.dispatch("link", {"kind": "draft", "id": "¶ABC", "target": "¶DEF"})
     assert "does not support link" in out
     assert "embed a markdown ref" in out or "[¶<target>]" in out
+
+
+# ── Fix A: the draft surfaces stuck / in-flight work on it ──────────
+
+
+def test_outline_surfaces_blocked_work(draft: DraftHandler, hub: Hub) -> None:
+    """A failed enrichment job parks its parent silently; the draft
+    outline now walks draft→project→subtree and shows it as blocked."""
+    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.store.types import Tag
+
+    store = hub.store
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+
+    child = store.insert_ref(
+        kind="todo", slug=None, title="Enrich CNT section", parent_id=proj
+    )
+    store.add_tag(
+        child.id, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
+    )
+    job = store.insert_ref(
+        kind="job", slug=None, title="plan_tick", parent_id=child.id, meta={}
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
+    )
+    bubble_job_failure(store, job.id)
+
+    out = draft.get(id="nt").body
+    assert "Work in progress" in out
+    assert f"todo:{child.id}" in out
+    assert "blocked" in out
+    assert f"job:{job.id} failed" in out
+
+
+def test_outline_clean_draft_has_no_work_section(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    assert "Work in progress" not in draft.get(id="nt").body
+
+
+# ── Fix C: dangling [finding #slug] markers are flagged on read ─────
+
+
+def test_dangling_finding_marker_flagged(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="See [finding #amdursky-azurin-review] and [finding #dahl-cytochrome].",
+        at={"after": "¶" + title_h},
+    )
+    para_h = _order(hub, "nt")[1].handle
+    out = draft.get(id=f"¶{para_h}").body
+    assert "unresolved finding reference" in out
+    assert "#amdursky-azurin-review" in out
+    assert "#dahl-cytochrome" in out
+
+
+def test_clean_chunk_has_no_finding_warning(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="Plain prose with no markers at all.",
+        at={"after": "¶" + title_h},
+    )
+    para_h = _order(hub, "nt")[1].handle
+    out = draft.get(id=f"¶{para_h}").body
+    assert "unresolved finding" not in out

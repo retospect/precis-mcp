@@ -8,6 +8,44 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-22 — draft-work visibility + resumable plan_tick + dangling-finding flag)
+
+From a prod transcript review of a stuck draft-enrichment todo (`#40577`
+on draft `test01`), three fixes so a failed enrichment job stops being
+invisible and self-perpetuating:
+
+- **A `plan_tick` that hits `--max-turns` now *resumes* instead of
+  bubbling.** A coroutine tick cut off at the 30-turn ceiling left work
+  unfinished but is **resumable** — the next tick continues with a fresh
+  budget. The executor now detects the `max_turns` terminal reason
+  (`utils/claude_agent.stream_terminal_reason`) and marks such a tick
+  succeeded-but-non-blocking (so `dispatch` re-mints a fresh tick next
+  sweep) rather than `STATUS:failed` + a `child-failed` bubble that parks
+  the parent. Bounded by a per-parent **streak cap**
+  (`meta.plan_tick_max_turns_streak`, default 3, env
+  `PRECIS_PLAN_TICK_MAX_TURNS_RESUMES`): a tick that runs out
+  *repeatedly* still bubbles as a real failure — the task genuinely needs
+  splitting. Any clean or non-max-turns tick resets the streak. The
+  `job_result` audit reads `resumed (max_turns; streak n/cap)` so the
+  forensics stay honest. (`workers/executors/claude_inproc.py`.) This is
+  what failed `#40579`: 31 turns, $1.36, minted nothing, then bubbled and
+  stalled the parent.
+- **The draft view surfaces the work being done on it.** `get(kind=
+  'draft', id=…)` (and the web reader) now end with a **`## Work in
+  progress`** block — open todos in the draft's project subtree that are
+  *blocked* (carry a `child-failed:*` bubble) or *in flight* (live /
+  queued / failed child job), walked `draft → (draft-of) → project →
+  subtree` (`store.draft_attached_work`). Previously a failed enrichment
+  job parked its parent silently and never registered against the draft.
+- **Dangling `[finding #<slug>]` markers are flagged on read.** The
+  placeholder `[finding #amine-uptake]` / `[citation pending — finding
+  #…]` form an author leaves in prose resolves to no finding ref (a
+  finding is addressed by its base32 `pub_id`, not a made-up slug) — it
+  never autolinks or exports. Reading a chunk now appends an **⚠
+  unresolved finding reference** warning listing the slugs that don't
+  resolve, so a reader can't mistake a placeholder for a live citation.
+  Skill `precis-draft-help` updated. (`handlers/draft.py`.)
+
 ### Added (2026-06-21 — asks dismiss + draft compact rows)
 
 - **Asks tab: dismiss with an ×.** Each ask row gains an X that closes
