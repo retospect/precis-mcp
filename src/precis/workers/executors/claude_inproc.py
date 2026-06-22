@@ -369,7 +369,7 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             bubble_job_failure(store, ref_id)
         return
 
-    from precis.utils.claude_agent import stream_final_text, stream_terminal_reason
+    from precis.utils.claude_agent import stream_final_text
     from precis.utils.tick_conclusion import parse as parse_tick_conclusion
 
     # ``outcome.stdout`` is now the full stream-json message stream (every
@@ -381,16 +381,14 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
     raw_stream = outcome.stdout or ""
     final_text = stream_final_text(raw_stream)
     conclusion = parse_tick_conclusion(final_text)
-    # A tick that exhausted its --max-turns budget is *resumable*, not
-    # failed: the coroutine was cut off mid-flight and a fresh tick
-    # continues with a new budget. Don't bubble it as a hard failure
-    # (which parks the parent out of the rotation); mark it terminal-
-    # but-non-blocking so dispatch re-mints a fresh tick next sweep —
-    # bounded by a per-parent streak cap so a tick that *always* runs
-    # out can't loop forever burning spend. See Fix B / CHANGELOG.
-    max_turns_hit = (
-        outcome.exit_code != 0 and stream_terminal_reason(raw_stream) == "max_turns"
-    )
+    # A tick cut off mid-flight by an *exhaustion* — the --max-turns
+    # ceiling or the wall-clock timeout — is *resumable*, not failed: a
+    # fresh tick continues with a new budget. Don't bubble it as a hard
+    # failure (which parks the parent out of the rotation); mark it
+    # terminal-but-non-blocking so dispatch re-mints a fresh tick next
+    # sweep — bounded by a per-parent streak cap so a tick that *always*
+    # runs out can't loop forever burning spend. See CHANGELOG.
+    resume_reason = _resume_reason(outcome, raw_stream)
 
     with store.pool.connection() as conn:
         _append_chunk(
@@ -417,14 +415,14 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
         # stdout, its verdict + one-paragraph summary go at the top of
         # this chunk so the parent re-tick reads the synth first.
         # Resolve the resume verdict before rendering the audit chunk so
-        # the job_result reads honestly ("resumed (max_turns)" vs
-        # "failed"). The streak read+write happens in this same tx.
-        cap = _max_turns_resume_cap()
-        if max_turns_hit:
-            streak = _bump_max_turns_streak(conn, parent_id)
+        # the job_result reads honestly ("resumed (timeout)" vs "failed").
+        # The streak read+write happens in this same tx.
+        cap = _resume_streak_cap()
+        if resume_reason is not None:
+            streak = _bump_resume_streak(conn, parent_id)
             resume = streak <= cap
         else:
-            _reset_max_turns_streak(conn, parent_id)
+            _reset_resume_streak(conn, parent_id)
             streak = 0
             resume = False
         result_text = _build_job_result_text(
@@ -435,7 +433,7 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             exit_code=outcome.exit_code,
             duration_s=outcome.duration_s,
             conclusion=conclusion,
-            max_turns_resume=(streak, cap) if max_turns_hit else None,
+            resume=(resume_reason, streak, cap) if resume_reason else None,
         )
         _append_chunk(store, ref_id, "job_result", result_text, conn=conn)
         if outcome.stderr:
@@ -448,36 +446,38 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             )
         _set_meta(conn, ref_id, wall_seconds=outcome.duration_s)
         if outcome.exit_code == 0 or resume:
-            # Clean tick, or a resumable max-turns tick under the cap:
-            # mark succeeded (terminal + non-blocking) so dispatch
-            # re-mints a fresh tick. child_job_succeeded is guarded for
-            # LLM:*-tagged parents, so this never auto-closes the parent.
+            # Clean tick, or a resumable exhaustion (max-turns / timeout)
+            # under the cap: mark succeeded (terminal + non-blocking) so
+            # dispatch re-mints a fresh tick. child_job_succeeded is
+            # guarded for LLM:*-tagged parents, so this never auto-closes
+            # the parent.
             if resume:
                 _set_meta(
                     conn,
                     ref_id,
-                    resumed_reason="max_turns",
-                    max_turns_streak=streak,
+                    resumed_reason=resume_reason,
+                    resume_streak=streak,
                 )
                 _append_chunk(
                     store,
                     ref_id,
                     _JOB_EVENT_KIND,
-                    f"runner: tick hit --max-turns (resumable, streak "
+                    f"runner: tick hit {resume_reason} (resumable, streak "
                     f"{streak}/{cap}); not bubbling — a fresh tick will "
                     f"continue next dispatch sweep.",
                     conn=conn,
                 )
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
         else:
-            # A real failure, or max-turns past the resume cap: bubble so
-            # the parent parks until the owner decides retry / split / drop.
-            if max_turns_hit:
+            # A real failure, or a resumable exhaustion past the cap:
+            # bubble so the parent parks until the owner decides retry /
+            # split / drop.
+            if resume_reason is not None:
                 _append_chunk(
                     store,
                     ref_id,
                     _JOB_EVENT_KIND,
-                    f"runner: tick hit --max-turns {streak} consecutive "
+                    f"runner: tick hit {resume_reason} {streak} consecutive "
                     f"times (cap {cap}) — bubbling as a real failure. The "
                     f"task likely needs splitting into smaller subtasks.",
                     conn=conn,
@@ -500,7 +500,7 @@ def _build_job_result_text(
     exit_code: int,
     duration_s: float,
     conclusion: Any = None,
-    max_turns_resume: tuple[int, int] | None = None,
+    resume: tuple[str, int, int] | None = None,
 ) -> str:
     """Render the structured ``chunk_kind='job_result'`` audit text.
 
@@ -599,16 +599,16 @@ def _build_job_result_text(
     )
     if exit_code == 0:
         lines.append("verdict (runner): succeeded")
-    elif max_turns_resume is not None:
-        streak, cap = max_turns_resume
+    elif resume is not None:
+        reason, streak, cap = resume
         if streak <= cap:
             lines.append(
-                f"verdict (runner): resumed (hit --max-turns; streak "
+                f"verdict (runner): resumed (hit {reason}; streak "
                 f"{streak}/{cap}) — a fresh tick continues next sweep"
             )
         else:
             lines.append(
-                f"verdict (runner): failed (hit --max-turns {streak} times, "
+                f"verdict (runner): failed (hit {reason} {streak} times, "
                 f"cap {cap}) — split this into smaller subtasks"
             )
     else:
@@ -633,46 +633,76 @@ def _parent_todo_id(store: Any, job_ref_id: int) -> int | None:
     return int(row[0]) if row else None
 
 
-def _max_turns_resume_cap() -> int:
-    """How many *consecutive* max-turns ticks to auto-resume before
-    bubbling as a real failure. Default 3 — enough to ride out a tick
-    that was simply mid-stride, low enough that a tick which can never
-    fit in one budget gets escalated (and split) instead of looping
-    and burning spend. Clamped to [1, 20]."""
+#: plan_tick's wall-clock timeout sentinel exit code (set by
+#: ``PlanTickOutcome`` on ``subprocess.TimeoutExpired``).
+_TIMEOUT_EXIT_CODE = 124
+
+
+def _resume_reason(outcome: Any, raw_stream: str) -> str | None:
+    """Classify a non-zero tick outcome as a *resumable exhaustion* — or
+    ``None`` for a clean tick / real error.
+
+    Two exhaustions are resumable (the coroutine was cut off mid-flight,
+    a fresh tick continues): the ``--max-turns`` ceiling (a trailing
+    ``error_max_turns`` result event) and the wall-clock timeout (the
+    process was killed, so there's no result event — detected by the
+    ``PlanTickOutcome`` timeout sentinel exit code)."""
+    from precis.utils.claude_agent import stream_terminal_reason
+
+    if outcome.exit_code == 0:
+        return None
+    if stream_terminal_reason(raw_stream) == "max_turns":
+        return "max_turns"
+    if outcome.exit_code == _TIMEOUT_EXIT_CODE:
+        return "timeout"
+    return None
+
+
+def _resume_streak_cap() -> int:
+    """How many *consecutive* resumable-exhaustion ticks (max-turns or
+    timeout) to auto-resume before bubbling as a real failure. Default
+    3 — enough to ride out a tick that was simply mid-stride, low enough
+    that a tick which can never fit in one budget gets escalated (and
+    split) instead of looping and burning spend. Clamped to [1, 20].
+    ``PRECIS_PLAN_TICK_MAX_TURNS_RESUMES`` is honoured as a back-compat
+    alias for the cap."""
+    raw = os.environ.get("PRECIS_PLAN_TICK_RESUME_CAP") or os.environ.get(
+        "PRECIS_PLAN_TICK_MAX_TURNS_RESUMES", "3"
+    )
     try:
-        n = int(os.environ.get("PRECIS_PLAN_TICK_MAX_TURNS_RESUMES", "3"))
+        n = int(raw)
     except ValueError:
         n = 3
     return max(1, min(20, n))
 
 
-def _bump_max_turns_streak(conn: Connection, parent_ref_id: int) -> int:
-    """Increment + return the parent's consecutive max-turns-resume
-    streak (``meta.plan_tick_max_turns_streak``). One job runs per
-    parent at a time (dispatch guarantees no live sibling job), so the
-    read-modify-write needs no extra locking."""
+def _bump_resume_streak(conn: Connection, parent_ref_id: int) -> int:
+    """Increment + return the parent's consecutive resume streak
+    (``meta.plan_tick_resume_streak``). One job runs per parent at a
+    time (dispatch guarantees no live sibling job), so the read-modify-
+    write needs no extra locking."""
     row = conn.execute(
-        "SELECT COALESCE((meta->>'plan_tick_max_turns_streak')::int, 0) "
+        "SELECT COALESCE((meta->>'plan_tick_resume_streak')::int, 0) "
         "FROM refs WHERE ref_id = %s",
         (parent_ref_id,),
     ).fetchone()
     streak = (int(row[0]) if row and row[0] is not None else 0) + 1
     conn.execute(
         "UPDATE refs SET meta = jsonb_set("
-        "COALESCE(meta, '{}'::jsonb), '{plan_tick_max_turns_streak}', "
+        "COALESCE(meta, '{}'::jsonb), '{plan_tick_resume_streak}', "
         "to_jsonb(%s::int)) WHERE ref_id = %s",
         (streak, parent_ref_id),
     )
     return streak
 
 
-def _reset_max_turns_streak(conn: Connection, parent_ref_id: int) -> None:
-    """Drop the parent's max-turns streak — any non-max-turns tick
-    (clean exit or a real error) ends the run of exhaustions."""
+def _reset_resume_streak(conn: Connection, parent_ref_id: int) -> None:
+    """Drop the parent's resume streak — any non-exhaustion tick (clean
+    exit or a real error) ends the run."""
     conn.execute(
         "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb) - "
-        "'plan_tick_max_turns_streak' WHERE ref_id = %s "
-        "AND meta ? 'plan_tick_max_turns_streak'",
+        "'plan_tick_resume_streak' WHERE ref_id = %s "
+        "AND meta ? 'plan_tick_resume_streak'",
         (parent_ref_id,),
     )
 

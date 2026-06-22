@@ -64,12 +64,13 @@ scheduling, execution, and review:
   auto-closes a parent that is `LLM:*`-tagged or still has a live
   child todo, and `dispatch` strips the spec when minting a
   self-resolving tick. Job lease is 90 min (covers a 60-min tick plus
-  post-processing). A tick that exhausts its `--max-turns` budget is
-  **resumable, not a failure**: the executor detects the `max_turns`
-  terminal reason and marks it succeeded-but-non-blocking so `dispatch`
-  re-mints a fresh tick, bounded by a per-parent streak cap
-  (`meta.plan_tick_max_turns_streak`, default 3) past which it bubbles
-  as a real failure (the task needs splitting).
+  post-processing). A tick cut off by an **exhaustion** — the
+  `--max-turns` ceiling *or* the wall-clock timeout (exit 124) — is
+  **resumable, not a failure**: the executor (`_resume_reason`) marks it
+  succeeded-but-non-blocking so `dispatch` re-mints a fresh tick, bounded
+  by a per-parent streak cap (`meta.plan_tick_resume_streak`, default 3,
+  env `PRECIS_PLAN_TICK_RESUME_CAP`) past which it bubbles as a real
+  failure (the task needs splitting).
 * **Views.** `view='tree'` walks `kind IN ('todo','job')` so child
   jobs render with a `⚙` marker; `view='attention'` unions
   `asking-reto` leaves + `child-failed` parents for asa-bot's preamble;

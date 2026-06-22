@@ -53,14 +53,14 @@ def test_stream_terminal_reason_other_error_passthrough() -> None:
 def test_streak_bump_and_reset(store: Store) -> None:
     parent = store.insert_ref(kind="todo", slug=None, title="P")
     with store.pool.connection() as conn:
-        assert ci._bump_max_turns_streak(conn, parent.id) == 1
-        assert ci._bump_max_turns_streak(conn, parent.id) == 2
+        assert ci._bump_resume_streak(conn, parent.id) == 1
+        assert ci._bump_resume_streak(conn, parent.id) == 2
         conn.commit()
     with store.pool.connection() as conn:
-        ci._reset_max_turns_streak(conn, parent.id)
+        ci._reset_resume_streak(conn, parent.id)
         conn.commit()
     with store.pool.connection() as conn:
-        assert ci._bump_max_turns_streak(conn, parent.id) == 1  # reset to 0, +1
+        assert ci._bump_resume_streak(conn, parent.id) == 1  # reset to 0, +1
         conn.commit()
 
 
@@ -130,7 +130,7 @@ def test_max_turns_resumes_without_bubbling(store: Store) -> None:
     assert not any(t.startswith("child-failed:") for t in parent_tags)
     with store.pool.connection() as conn:
         streak = conn.execute(
-            "SELECT (meta->>'plan_tick_max_turns_streak')::int FROM refs "
+            "SELECT (meta->>'plan_tick_resume_streak')::int FROM refs "
             "WHERE ref_id = %s",
             (parent_id,),
         ).fetchone()[0]
@@ -142,6 +142,28 @@ def test_max_turns_resumes_without_bubbling(store: Store) -> None:
             (job_id,),
         ).fetchall()
     assert any("resumed" in r[0] for r in results)
+
+
+def test_wall_clock_timeout_resumes_without_bubbling(store: Store) -> None:
+    """A wall-clock timeout (exit 124, no result event — the process was
+    killed) is also a resumable exhaustion: succeeded, no bubble, audit
+    reads 'resumed (hit timeout…)'."""
+    parent_id = _mk_parent(store)
+    job_id = _mk_job(store, parent_id)
+
+    # plan_tick.run returns exit_code=124 with no stream-json on timeout.
+    _run(store, job_id, stream="", exit_code=124)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:succeeded" in job_tags
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("child-failed:") for t in parent_tags)
+    with store.pool.connection() as conn:
+        results = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'job_result'",
+            (job_id,),
+        ).fetchall()
+    assert any("resumed (hit timeout" in r[0] for r in results)
 
 
 def test_repeated_max_turns_past_cap_bubbles(store: Store, monkeypatch) -> None:
@@ -178,7 +200,7 @@ def test_real_failure_still_bubbles_and_resets_streak(store: Store) -> None:
     assert f"child-failed:{job2}" in parent_tags
     with store.pool.connection() as conn:
         present = conn.execute(
-            "SELECT meta ? 'plan_tick_max_turns_streak' FROM refs WHERE ref_id = %s",
+            "SELECT meta ? 'plan_tick_resume_streak' FROM refs WHERE ref_id = %s",
             (parent_id,),
         ).fetchone()[0]
     assert present is False  # reset
@@ -193,7 +215,7 @@ def test_clean_tick_succeeds_and_resets_streak(store: Store) -> None:
     assert "STATUS:succeeded" in job_tags
     with store.pool.connection() as conn:
         present = conn.execute(
-            "SELECT meta ? 'plan_tick_max_turns_streak' FROM refs WHERE ref_id = %s",
+            "SELECT meta ? 'plan_tick_resume_streak' FROM refs WHERE ref_id = %s",
             (parent_id,),
         ).fetchone()[0]
     assert present is False

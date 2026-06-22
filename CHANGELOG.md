@@ -8,6 +8,20 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-22 — plan_tick resume also covers wall-clock timeout)
+
+- **A `plan_tick` wall-clock timeout now resumes, like `max_turns`.**
+  The resumable-exhaustion treatment (succeeded-but-non-blocking →
+  dispatch re-ticks, streak-capped) now triggers on the 30-min
+  `subprocess` timeout (exit 124, no result event) as well as the
+  `--max-turns` ceiling — both are "cut off mid-flight", both continue
+  on the next tick. Generalised `_resume_reason` in the executor;
+  streak meta renamed `plan_tick_max_turns_streak` →
+  `plan_tick_resume_streak`; cap env `PRECIS_PLAN_TICK_RESUME_CAP`
+  (old `PRECIS_PLAN_TICK_MAX_TURNS_RESUMES` honoured as an alias).
+  Surfaced by triaging prod's stuck-todo bubbles — one was a 1800s
+  timeout that bubbled where it should have resumed.
+
 ### Fixed (2026-06-22 — draft PDF export survives scientific Unicode)
 
 - **PDF export no longer hard-fails on Unicode like `MoS₂`.** Eyeballing
@@ -61,8 +75,8 @@ invisible and self-perpetuating:
   succeeded-but-non-blocking (so `dispatch` re-mints a fresh tick next
   sweep) rather than `STATUS:failed` + a `child-failed` bubble that parks
   the parent. Bounded by a per-parent **streak cap**
-  (`meta.plan_tick_max_turns_streak`, default 3, env
-  `PRECIS_PLAN_TICK_MAX_TURNS_RESUMES`): a tick that runs out
+  (`meta.plan_tick_resume_streak`, default 3, env
+  `PRECIS_PLAN_TICK_RESUME_CAP`): a tick that runs out
   *repeatedly* still bubbles as a real failure — the task genuinely needs
   splitting. Any clean or non-max-turns tick resets the streak. The
   `job_result` audit reads `resumed (max_turns; streak n/cap)` so the
