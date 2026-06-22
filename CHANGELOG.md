@@ -8,6 +8,28 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Added (2026-06-22 — dreamer over-weights drafts + draft PDF download)
+
+- **The dreamer over-weights drafts.** `select_dream_seed` now gives
+  `draft` chunks a due-ness boost (default 2 days, env
+  `PRECIS_DREAM_DRAFT_BOOST_DAYS`, `0` disables) so the dream rotation
+  favours the documents being actively written — a dream on a draft
+  lands where the operator is already looking. A "kinda" tilt, not a
+  takeover: the boost is a few days of due-ness, so a much-more-overdue
+  paper still out-scores a freshly-dreamt draft. Implemented as an
+  optional per-kind bias on the shared `select_salient` primitive
+  (`store/_blocks_ops.py`); every other actor keeps the pure `argmax`.
+- **Draft `download PDF` in the reader toolbar.** The reader gains a
+  *download PDF* link (`GET /drafts/<id>/pdf`) beside *download .docx* —
+  it compiles on the web host and serves the file, cached by the draft's
+  version token (always current, only the first hit per version is slow).
+  The existing async PDF button is relabelled *export →project* (it
+  persists the artifact into the project workspace for the task page).
+  Requires a TeX toolchain on the web host — the `precis_web` ansible role
+  now installs `mactex-no-gui` and the `[web,docx]` extra (latex2mathml,
+  so the .docx export's OMML math renders instead of degrading to italic
+  text), with `/Library/TeX/texbin` added to the daemon PATH.
+
 ### Changed (2026-06-22 — draft-work visibility + resumable plan_tick + dangling-finding flag)
 
 From a prod transcript review of a stuck draft-enrichment todo (`#40577`

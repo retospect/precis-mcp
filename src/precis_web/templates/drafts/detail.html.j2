@@ -68,13 +68,19 @@
       </button>
       <button @click="collapseAll()" class="text-slate-500 underline hover:text-slate-800">collapse all</button>
       <button @click="expandAll()" class="text-slate-500 underline hover:text-slate-800">expand all</button>
-      {# Export: .docx downloads synchronously (toolchain-free); PDF starts
-         a job (compiles can be slow) whose logs/result land on the
-         project task page. #}
+      {# Export. .docx downloads synchronously (toolchain-free, OMML math
+         + Word endnotes). "download PDF" compiles on the web host and
+         serves it, cached by the draft's version token — so it's always
+         current (recompiles only after an edit) and the only slow hit is
+         the first per version. "export →project" starts a background job
+         that persists the PDF into the project workspace for the task
+         page (durable artifact, not an ephemeral download). #}
       <a href="/drafts/{{ ref.ident }}/export.docx"
-         class="text-slate-500 underline hover:text-slate-800">export .docx</a>
+         class="text-slate-500 underline hover:text-slate-800">download .docx</a>
+      <a href="/drafts/{{ ref.ident }}/pdf"
+         class="text-slate-500 underline hover:text-slate-800">download PDF</a>
       <form method="post" action="/drafts/{{ ref.ident }}/export.pdf" class="inline">
-        <button type="submit" class="text-slate-500 underline hover:text-slate-800">export PDF</button>
+        <button type="submit" class="text-slate-500 underline hover:text-slate-800">export →project</button>
       </form>
       <a href="/drafts" class="text-slate-500 underline hover:text-slate-800">all drafts</a>
     </div>

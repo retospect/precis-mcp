@@ -187,3 +187,61 @@ def test_touch_last_dreamt_still_works_via_wrapper(store: Store) -> None:
     store.touch_last_dreamt([ca])
     assert store.select_dream_seed(kinds=("paper",)) == cb  # dream rotated to cb
     assert store.select_salient("watch", kinds=("paper",))[0] == ca  # watch untouched
+
+
+# ── draft over-weighting in the dream seed ─────────────────────────
+
+
+def _set_salience_secs(
+    store: Store, chunk_id: int, *, dreamt_secs_ago: float
+) -> None:
+    """Pin last_seen=now and last_dreamt=now-Δ so the due-ness score
+    (last_seen - last_dreamt) is exactly Δ seconds — deterministic."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET last_seen = now(), "
+            "last_dreamt = now() - make_interval(secs => %s) WHERE chunk_id = %s",
+            (float(dreamt_secs_ago), chunk_id),
+        )
+
+
+_DREAM_KINDS = ("paper", "memory", "draft")
+_DAY = 86_400.0
+
+
+def test_dream_seed_overweights_draft_within_boost(store: Store, monkeypatch) -> None:
+    """A draft only mildly more recently dreamt than a due paper still wins,
+    because the boost tips it over."""
+    monkeypatch.setenv("PRECIS_DREAM_DRAFT_BOOST_DAYS", "2")
+    pa = store.insert_ref(kind="paper", slug="ow-pa", title="A", meta={})
+    da = store.insert_ref(kind="draft", slug="ow-da", title="D", meta={})
+    cp = _mk_chunk(store, pa.id, 0, "paper body")
+    cd = _mk_chunk(store, da.id, 0, "draft body")
+    _set_salience_secs(store, cp, dreamt_secs_ago=1 * _DAY)  # score 1d
+    _set_salience_secs(store, cd, dreamt_secs_ago=0)  # score 0 → +2d boost
+    assert store.select_dream_seed(kinds=_DREAM_KINDS) == cd
+
+
+def test_dream_seed_paper_wins_when_far_overdue(store: Store, monkeypatch) -> None:
+    """The boost is 'kinda', not a takeover: a much-more-overdue paper out-
+    scores a freshly-dreamt draft."""
+    monkeypatch.setenv("PRECIS_DREAM_DRAFT_BOOST_DAYS", "2")
+    pa = store.insert_ref(kind="paper", slug="ow-pb", title="A", meta={})
+    da = store.insert_ref(kind="draft", slug="ow-db", title="D", meta={})
+    cp = _mk_chunk(store, pa.id, 0, "paper body")
+    cd = _mk_chunk(store, da.id, 0, "draft body")
+    _set_salience_secs(store, cp, dreamt_secs_ago=5 * _DAY)  # score 5d
+    _set_salience_secs(store, cd, dreamt_secs_ago=0)  # score 0 → +2d boost = 2d
+    assert store.select_dream_seed(kinds=_DREAM_KINDS) == cp
+
+
+def test_dream_seed_boost_disabled(store: Store, monkeypatch) -> None:
+    """PRECIS_DREAM_DRAFT_BOOST_DAYS=0 → pure argmax, no draft tilt."""
+    monkeypatch.setenv("PRECIS_DREAM_DRAFT_BOOST_DAYS", "0")
+    pa = store.insert_ref(kind="paper", slug="ow-pc", title="A", meta={})
+    da = store.insert_ref(kind="draft", slug="ow-dc", title="D", meta={})
+    cp = _mk_chunk(store, pa.id, 0, "paper body")
+    cd = _mk_chunk(store, da.id, 0, "draft body")
+    _set_salience_secs(store, cp, dreamt_secs_ago=1 * _DAY)  # score 1d
+    _set_salience_secs(store, cd, dreamt_secs_ago=0)  # score 0, no boost
+    assert store.select_dream_seed(kinds=_DREAM_KINDS) == cp

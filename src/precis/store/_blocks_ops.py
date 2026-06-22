@@ -37,6 +37,7 @@ Mixin assumes the concrete Store provides ``self.pool``.
 
 from __future__ import annotations
 
+import os
 import random
 from typing import Any
 
@@ -67,6 +68,29 @@ _ATTENTION_COLUMNS: dict[str, str] = {
     "dream": "last_dreamt",
     "watch": "last_watched",
 }
+
+#: Default draft over-weight for the dream seed — a draft sorts as if it
+#: were this many days more overdue (see :meth:`select_dream_seed`).
+#: "kinda" over-weight: large enough that drafts win when even mildly
+#: due, small enough that a weeks-overdue paper still out-scores a fresh
+#: draft. Tune / disable via ``PRECIS_DREAM_DRAFT_BOOST_DAYS``.
+_DREAM_DRAFT_BOOST_DAYS_DEFAULT = 2.0
+
+
+def _draft_dream_boost_seconds() -> float:
+    """Draft dream over-weight in seconds, from ``PRECIS_DREAM_DRAFT_BOOST_DAYS``
+    (float days; ``0`` disables). Garbage / negative → the default."""
+    raw = os.environ.get("PRECIS_DREAM_DRAFT_BOOST_DAYS")
+    if raw is None:
+        days = _DREAM_DRAFT_BOOST_DAYS_DEFAULT
+    else:
+        try:
+            days = float(raw)
+        except ValueError:
+            days = _DREAM_DRAFT_BOOST_DAYS_DEFAULT
+        if days < 0:
+            days = _DREAM_DRAFT_BOOST_DAYS_DEFAULT
+    return days * 86_400.0
 from precis.store._tag_filter import (
     build_tag_filter,
     is_speculative_tag,
@@ -1066,6 +1090,8 @@ class BlocksMixin:
         *,
         kinds: tuple[str, ...] = ("paper", "memory"),
         limit: int = 1,
+        boost_kind: str | None = None,
+        boost_seconds: float = 0.0,
     ) -> list[int]:
         """Most-due salient chunks for ``actor``: ``argmax(last_seen - last_<actor>)``.
 
@@ -1077,11 +1103,23 @@ class BlocksMixin:
         selection is deterministic and in-process testable. Returns up to
         ``limit`` chunk ids, most-due first (empty when the corpus has no
         target chunks).
+
+        ``boost_kind`` + ``boost_seconds`` add a per-kind due-ness bias:
+        a chunk of ``boost_kind`` sorts as if it were ``boost_seconds``
+        more overdue than it literally is. Used to **over-weight drafts**
+        in the dream rotation (a draft is what the operator is actively
+        looking at, so a dream on it lands where it'll be seen) without
+        starving the rest of the corpus — a long-overdue paper can still
+        out-score a freshly-dreamt draft. Default (no boost) preserves the
+        pure ``argmax`` for every other actor.
         """
         col = _ATTENTION_COLUMNS[actor]
         with self.pool.connection() as conn:
             rows = conn.execute(
                 # ``col`` is a whitelisted identifier, never caller input.
+                # The boost adds an interval to the due-ness score for
+                # rows of ``boost_kind`` (empty string matches nothing →
+                # no boost), keeping the ORDER BY param-stable.
                 f"""
                 SELECT c.chunk_id
                 FROM chunks c
@@ -1089,10 +1127,15 @@ class BlocksMixin:
                 WHERE r.deleted_at IS NULL
                   AND c.retired_at IS NULL
                   AND r.kind = ANY(%s)
-                ORDER BY (c.last_seen - c.{col}) DESC, c.chunk_id
+                ORDER BY (
+                    (c.last_seen - c.{col})
+                    + CASE WHEN r.kind = %s
+                           THEN make_interval(secs => %s)
+                           ELSE interval '0' END
+                ) DESC, c.chunk_id
                 LIMIT %s
                 """,
-                (list(kinds), limit),
+                (list(kinds), boost_kind or "", float(boost_seconds), limit),
             ).fetchall()
         return [int(r[0]) for r in rows]
 
@@ -1103,10 +1146,17 @@ class BlocksMixin:
     ) -> int | None:
         """Dream seed — single most-due chunk via :meth:`select_salient`.
 
-        Thin wrapper preserving the original signature/return shape for
-        the dream dispatch path and existing tests.
+        Over-weights ``draft`` chunks (when drafts are in scope) by
+        ``_draft_dream_boost_seconds()`` so the dreamer favours the
+        documents the operator is actively writing — a "kinda" tilt, not
+        a takeover (the boost is a few days of due-ness, so a much-more-
+        overdue paper still wins). Tune via ``PRECIS_DREAM_DRAFT_BOOST_DAYS``
+        (0 disables). Preserves the original signature for existing tests.
         """
-        ids = self.select_salient("dream", kinds=kinds, limit=1)
+        boost = _draft_dream_boost_seconds() if "draft" in kinds else 0.0
+        ids = self.select_salient(
+            "dream", kinds=kinds, limit=1, boost_kind="draft", boost_seconds=boost
+        )
         return ids[0] if ids else None
 
     def dreamable_region(
