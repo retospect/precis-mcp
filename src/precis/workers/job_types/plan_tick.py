@@ -159,6 +159,36 @@ def run(
     # perplexity research dive. Opus on something straightforward?
     # do it inline.
     subprocess_env["PRECIS_CURRENT_MODEL"] = model
+    # PRECIS_CURRENT_AGENTLOG: open a run-attribution record (kind=
+    # 'agentlog') carrying the full assembled prompt, and thread its id
+    # to the subprocess so the MCP server inside it attributes every
+    # draft chunk this tick writes/moves back to this run (a `touched`
+    # link). Same env back-door as PRECIS_CURRENT_TODO. Best-effort: a
+    # failure here must never abort the tick.
+    from precis import agentlog
+
+    agentlog_id: int | None = None
+    try:
+        agentlog_id = agentlog.open_log(
+            store,
+            source="plan_tick",
+            title=f"plan_tick #{parent_ref_id} ({model})",
+            model=model,
+            prompt=f"{prompts.system}\n\n──── USER ────\n\n{prompts.user}",
+            parent_ref_id=parent_ref_id,
+            job_ref_id=job_ref_id,
+        )
+        subprocess_env[agentlog.ENV_VAR] = str(agentlog_id)
+    except Exception:
+        log.warning("plan_tick: failed to open agentlog", exc_info=True)
+
+    def _finalize(status: str) -> None:
+        if agentlog_id is None:
+            return
+        try:
+            agentlog.finalize_log(store, log_id=agentlog_id, status=status)
+        except Exception:
+            log.warning("plan_tick: failed to finalize agentlog", exc_info=True)
 
     cmd: list[str] = [
         claude_bin,
@@ -210,6 +240,7 @@ def run(
             parent_ref_id,
             timeout_s,
         )
+        _finalize("timeout")
         return PlanTickOutcome(
             exit_code=124,
             stdout=(exc.stdout or "").decode(errors="replace")
@@ -219,6 +250,7 @@ def run(
             duration_s=duration,
         )
     duration = time.monotonic() - started
+    _finalize("ok" if proc.returncode == 0 else f"exit:{proc.returncode}")
     return PlanTickOutcome(
         exit_code=proc.returncode,
         stdout=proc.stdout,

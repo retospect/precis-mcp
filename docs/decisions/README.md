@@ -37,6 +37,9 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Host heartbeat telemetry (Status tab) | [0028](./0028-host-heartbeat-telemetry.md) | **accepted**; extends 0026 |
 | Multi-root corpus for PDF serving | [0029](./0029-multi-root-corpus-pdf.md) | **accepted**; `PRECIS_CORPUS_DIR` accepts a list of roots |
 | `job` / `finding` / `cron` stay separate from `todo` | [0030](./0030-job-finding-cron-stay-separate.md) | **accepted**; rejects collapsing the four kinds |
+| Drafts as editable chunk-native documents | [0033](./0033-draft-chunks-editable-document.md) | **accepted**; the `draft` kind |
+| Figure assets + data supplements + permission provenance | [0034](./0034-figure-assets-and-permission-provenance.md) | **draft/proposed**; figures as chunks, blobs in `chunk_blobs` |
+| Computed chunks (payload + recipe), sandboxed execution, recompute boundary | [0035](./0035-computed-chunks-recipes-and-the-recompute-boundary.md) | **draft/proposed**; refines 0034 §3 — data/render recipes, `plots` the only reactive edge |
 
 ## Supersession graph
 

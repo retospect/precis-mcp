@@ -155,9 +155,7 @@ class DraftHandler(Handler):
             limit=page_size,
             offset=offset,
         )
-        return self._render_search(
-            hits, q=q, where=where, headings_only=headings_only
-        )
+        return self._render_search(hits, q=q, where=where, headings_only=headings_only)
 
     def _render_search(
         self, hits: list[Any], *, q: str, where: str, headings_only: bool
@@ -225,6 +223,7 @@ class DraftHandler(Handler):
                 meta=meta,
             )
             self._sync_draft_links(ref.id)
+            self._attribute_touch([c.chunk_id for c in chunks])
             handles = " ".join(f"¶{c.handle}" for c in chunks)
             n = len(chunks)
             body = f"added {n} chunk{'' if n == 1 else 's'} to {slug}: {handles}"
@@ -278,6 +277,8 @@ class DraftHandler(Handler):
         handle = self._require_chunk_id(id, verb="edit")
         if move is not None:
             c = self.store.move_chunk(handle, move)
+            if c is not None:
+                self._attribute_touch([c.chunk_id])
             return Response(body=f"moved ¶{c.handle}")
         if text is not None:
             # Capture the prior text *before* the rewrite so the abbrev
@@ -289,11 +290,10 @@ class DraftHandler(Handler):
             body = f"edited ¶{c.handle}" if c else "edited"
             if c is not None:
                 self._sync_draft_links(c.ref_id)
+                self._attribute_touch([c.chunk_id])
                 ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
-                body += self._write_abbrev_hints(
-                    slug, c.ref_id, str(text), old_text
-                )
+                body += self._write_abbrev_hints(slug, c.ref_id, str(text), old_text)
                 body += self._citation_form_hint(str(text))
             return Response(body=body)
         raise BadInput(
@@ -477,6 +477,17 @@ class DraftHandler(Handler):
                 "draft: autolink mentions failed for ref %s", ref_id, exc_info=True
             )
 
+    def _attribute_touch(self, chunk_ids: list[int]) -> None:
+        """Attribute the just-written chunks to the current agent run.
+
+        A no-op unless ``PRECIS_CURRENT_AGENTLOG`` is set (the runner
+        threads it onto the ``claude -p`` subprocess); an operator console
+        edit or a test that didn't open a log just skips attribution.
+        Best-effort — never fails the write."""
+        from precis import agentlog
+
+        agentlog.touch_from_env(self.store, chunk_ids=chunk_ids)
+
     def _resolve_project(self, project: str | int) -> int:
         raw = str(project).strip()
         raw = raw.split(":", 1)[1] if raw.startswith("todo:") else raw
@@ -531,7 +542,9 @@ class DraftHandler(Handler):
         try:
             items = self.store.draft_attached_work(ref_id)
         except Exception:
-            log.warning("draft: attached-work walk failed for %s", ref_id, exc_info=True)
+            log.warning(
+                "draft: attached-work walk failed for %s", ref_id, exc_info=True
+            )
             return []
         if not items:
             return []

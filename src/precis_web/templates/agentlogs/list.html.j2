@@ -1,0 +1,58 @@
+{% extends "base.html.j2" %}
+{% block title %}Agent logs{% endblock %}
+{% block content %}
+
+<div class="flex items-center gap-3 mb-4">
+  <h1 class="text-lg font-semibold">Agent logs</h1>
+  <span class="text-sm text-slate-500">{{ total }} recent run{{ '' if total == 1 else 's' }}</span>
+</div>
+
+<p class="text-sm text-slate-500 mb-4">
+  One record per agentic run that touched the corpus — the assembled
+  prompt it was handed and every chunk it wrote or moved. Walk a
+  suspicious chunk back here to debug the run that produced it.
+  Records (and their touch links — never the chunks) are GC'd past the
+  retention window.
+</p>
+
+{% if not groups %}
+<p class="text-sm text-slate-500">No agent runs recorded yet.</p>
+{% endif %}
+
+{% for g in groups %}
+<section class="mb-5">
+  <h2 class="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+    <span class="font-mono">{{ g.source }}</span>
+    <span class="text-slate-400 font-normal">{{ g.count }}</span>
+  </h2>
+  <div class="overflow-hidden rounded-md border border-slate-200">
+    <table class="w-full text-sm">
+      <tbody>
+        {% for r in g.runs %}
+        <tr class="border-t border-slate-100 first:border-t-0 align-top">
+          <td class="px-3 py-2">
+            <div class="font-medium text-slate-800">
+              <a href="/agentlogs/{{ r.ref_id }}" class="hover:underline">{{ r.title }}</a>
+            </div>
+            <div class="text-[12px] text-slate-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+              {% if r.model %}<span class="font-mono">{{ r.model }}</span>{% endif %}
+              {% if r.status %}<span>status: {{ r.status }}</span>{% endif %}
+              <span>touched {{ r.touched }} chunk{{ '' if r.touched == 1 else 's' }}</span>
+              {% if r.parent_ref_id is not none %}
+              <a href="/tasks?focus={{ r.parent_ref_id }}" class="text-sky-700 hover:underline">todo #{{ r.parent_ref_id }}</a>
+              {% endif %}
+              {% if r.job_ref_id is not none %}
+              <a href="/tasks/{{ r.job_ref_id }}/transcript" class="text-sky-700 hover:underline">📜 transcript</a>
+              {% endif %}
+              <span>{{ r.created }}</span>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endfor %}
+
+{% endblock %}

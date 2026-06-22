@@ -254,4 +254,4 @@ class NewsHandler(CacheBackedHandler):
         return Response(body=resp.body + "\n" + footer, cost=resp.cost)
 
 
-__all__ = ["NewsHandler", "canonical_url", "article_blocks", "fetch_article"]
+__all__ = ["NewsHandler", "article_blocks", "canonical_url", "fetch_article"]

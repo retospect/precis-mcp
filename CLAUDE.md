@@ -211,6 +211,21 @@ Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
   `memory` (ops telemetry ≠ thought); the LLM reviewers stay on
   `memory`. Skill: `precis-alert-help`. Producer is generic — sweeper /
   quota / failed-pass detectors can adopt it next.
+- **`agentlog`** (migration `0034`) — run-attribution record, the
+  structural twin of `alert` (numeric, machine-produced, **not
+  embedded**). One per agentic run that touches the corpus, carrying the
+  full assembled prompt (`meta.prompt`) + model/source + a **`touched`
+  link to every chunk the run wrote/moved** (a new symmetric, no-inverse
+  link relation). Write side `precis.agentlog`
+  (`open_log`/`attach_touch`/`touch_from_env`/`finalize_log`/
+  `gc_stale_logs`); `plan_tick` opens the log and threads its id to the
+  `claude -p` subprocess via `PRECIS_CURRENT_AGENTLOG`, the
+  `DraftHandler` reads it and attributes each write. The **sweeper**
+  GCs logs past `PRECIS_AGENTLOG_RETENTION_DAYS` (default 30), dropping
+  the `touched` links but never the chunks. Read via `AgentLogHandler`
+  + the `/agentlogs` web tab (prompt + touched chunks + transcript
+  link); touched chunks also surface as a Connections chip on the draft
+  reader. Skill: `precis-agentlog-help`.
 - **`job` substrate** — `meta.job_type` + `meta.executor`,
   `STATUS:` tag, forensics as `chunk_kind='job_event'` (hidden) /
   `job_summary` (searchable) / `job_result` (structured per-tick

@@ -46,6 +46,8 @@ _NUMERIC_KINDS: frozenset[str] = frozenset(
         "flashcard",
         "cron",
         "message",
+        "alert",
+        "agentlog",
     }
 )
 
@@ -62,6 +64,7 @@ _NATIVE_URL: dict[str, str] = {
     "oracle": "/refs/oracle/{id}",
     "gripe": "/refs/gripe/{id}",
     "pres": "/refs/pres/{id}",
+    "agentlog": "/agentlogs/{id}",
 }
 
 #: ``~chunk`` suffix variants the resolver understands. Anything else

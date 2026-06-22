@@ -37,7 +37,7 @@
           </a>
           {% endfor %}
           <span class="mx-1 h-4 w-px bg-slate-700"></span>
-          {% set util_tabs = [('alerts','Alerts','/alerts'), ('console','Console','/console'), ('env','Env','/env'), ('status','Status','/status')] %}
+          {% set util_tabs = [('alerts','Alerts','/alerts'), ('agentlogs','Agent Logs','/agentlogs'), ('console','Console','/console'), ('env','Env','/env'), ('status','Status','/status')] %}
           {% for key, label, href in util_tabs %}
           <a href="{{ href }}"
              class="px-2 py-1 rounded text-xs font-medium transition

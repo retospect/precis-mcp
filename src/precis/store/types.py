@@ -64,6 +64,11 @@ Relation = Literal[
     "has-draft",
     "snapshot-of",
     "has-snapshot",
+    # Agentlog kind — migration 0034. `touched` binds an agent-run
+    # (kind='agentlog') ref to each chunk it wrote/moved. Symmetric, no
+    # inverse (like `related-to`) — one row per edge, surfaced from
+    # either end. Keep in sync with the `relations` seed in 0034.
+    "touched",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 

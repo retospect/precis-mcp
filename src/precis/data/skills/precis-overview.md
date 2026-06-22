@@ -49,6 +49,7 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 | `memory` | `47` (int) | Agent note / scratchpad | store |
 | `gripe` | `9` (int) | Annoyance / niggle | store |
 | `alert` | `38260` (int) | Machine-detected ops / health condition (spin loop, orphan, stalled recurring). Raised by background passes, deduped + auto-resolved; surfaced by the `/alerts` web tab, **not** semantic search. See `precis-alert-help`. | store |
+| `agentlog` | `38312` (int) | Run-attribution record — one per agentic run (plan_tick / operator / chat) that touched the corpus. Carries the assembled prompt + `touched` links to every chunk it wrote; walk a suspicious chunk back to its run. GC'd past a retention window; **not** semantic search. See `precis-agentlog-help`. | store |
 | `flashcard` | `204` (int) | Flashcard (SM-2 spaced rep) | store |
 | `citation` | `18` (int) | Verified claim → source quote | store |
 | `finding` | `73` (int) | Chain-of-evidence head over a citation chase | store |

@@ -129,6 +129,37 @@ invisible and self-perpetuating:
   resolve, so a reader can't mistake a placeholder for a live citation.
   Skill `precis-draft-help` updated. (`handlers/draft.py`.)
 
+### Added (2026-06-22 — agentlog kind: run attribution + touch graph)
+
+- **`kind='agentlog'` (migration 0034).** A run-attribution record —
+  one per agentic run (a `plan_tick` coroutine; operator / chat edits
+  over time) that touches the corpus. Carries the **full assembled
+  prompt** (`meta.prompt`), the model + source, and a **`touched` link
+  to every chunk the run wrote or moved**, so a chunk that "looks
+  wrong" walks back through `chunk_connections` to the exact run that
+  produced it. Structural twin of `alert`: numeric-id, machine-produced
+  (no `put`/`edit`), **not embedded**. The new `touched` link relation
+  is symmetric / no-inverse (like `related-to`) — one row per edge.
+  (`migrations/0034_agentlog_kind.sql`, `store/types.py`.)
+- **Write side — `precis.agentlog`** (peer to `precis.alerts`):
+  `open_log` / `attach_touch` / `touch_from_env` / `finalize_log` /
+  `gc_stale_logs` / `list_recent`. `plan_tick` opens a log carrying the
+  assembled prompt and threads its id to the `claude -p` subprocess via
+  **`PRECIS_CURRENT_AGENTLOG`** (same env back-door as
+  `PRECIS_CURRENT_TODO`); the `DraftHandler` reads it and attributes
+  every chunk it writes/moves — best-effort, never fails the edit.
+- **Read side — `AgentLogHandler`** (mirrors `AlertHandler`):
+  `get(id=N)`, `get(id='/recent')`, `search`, `tag`, `link`, `delete`.
+- **GC piggy-backs on the sweeper** (alongside the job-transcript reap):
+  `gc_stale_logs` soft-deletes agentlogs past
+  `PRECIS_AGENTLOG_RETENTION_DAYS` (default 30) and drops their
+  `touched` links — **never the chunks** they point at.
+- **Web `/agentlogs` tab** — recent runs grouped by source; a detail
+  page renders the assembled prompt + the chunks the run touched (each
+  linking back into the draft reader) + a link to the full transcript
+  on the run's job. Touched chunks also surface as an `agentlog:N`
+  Connections chip on the draft reader. Skill: `precis-agentlog-help`.
+
 ### Added (2026-06-21 — asks dismiss + draft compact rows)
 
 - **Asks tab: dismiss with an ×.** Each ask row gains an X that closes

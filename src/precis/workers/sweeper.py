@@ -110,11 +110,31 @@ def _gc_transcripts(store: Store) -> int:
         return cur.rowcount or 0
 
 
+def _agentlog_retention_days() -> int:
+    """Days to keep an agentlog (and its ``touched`` links) before GC.
+
+    Run-attribution records accumulate one per tick; we keep a debugging
+    window then reap them. ``PRECIS_AGENTLOG_RETENTION_DAYS`` (default
+    falls back to :data:`precis.agentlog.RETENTION_DAYS`). The GC drops
+    the ``touched`` links but never the chunks they point at."""
+    from precis.agentlog import RETENTION_DAYS
+
+    raw = os.environ.get("PRECIS_AGENTLOG_RETENTION_DAYS")
+    if not raw:
+        return RETENTION_DAYS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return RETENTION_DAYS
+
+
 def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     """Detect orphans, lock-and-transition each, return BatchResult.
 
     Also GCs stale LLM transcripts (``meta.transcript`` older than the
-    retention window) — a cheap piggy-back on the per-minute sweep.
+    retention window) and stale agentlogs (run-attribution records +
+    their ``touched`` links, never the chunks) — cheap piggy-backs on
+    the per-minute sweep.
 
     Counters:
 
@@ -126,6 +146,13 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     reaped = _gc_transcripts(store)
     if reaped:
         log.info("sweeper: GC'd %d stale job transcript(s)", reaped)
+    from precis import agentlog
+
+    reaped_logs = agentlog.gc_stale_logs(
+        store, older_than_days=_agentlog_retention_days()
+    )
+    if reaped_logs:
+        log.info("sweeper: GC'd %d stale agentlog(s)", reaped_logs)
     threshold_hours = _stuck_job_hours()
     candidates = _enumerate_orphans(store, threshold_hours, limit=limit)
     if not candidates:
