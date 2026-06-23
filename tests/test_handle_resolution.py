@@ -15,6 +15,7 @@ import pytest
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.utils import handle_registry
+from precis.workers import chunk_handles
 
 # The full-hub fixture (runtime_with_store) boots every handler, which needs
 # the [paper] extra (pysbd). Absent on host; present in the container gate.
@@ -87,3 +88,62 @@ def test_surface_get_by_handle_routes_like_explicit_kind(
         "get", {"kind": "memory", "id": str(ref.id)}
     )
     assert via_handle == via_explicit
+
+
+# --- chunk handles (ADR 0036 backfill pass + resolution) -----------------
+
+
+def _insert_chunk(store: Store, ref_id: int, *, ord_: int = 0) -> int:
+    with store.pool.connection() as c:
+        row = c.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+            "VALUES (%s, %s, 'paragraph', %s, '{}'::jsonb) RETURNING chunk_id",
+            (ref_id, ord_, "chunk body"),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _chunk_handle(store: Store, chunk_id: int) -> str | None:
+    with store.pool.connection() as c:
+        row = c.execute(
+            "SELECT handle FROM chunks WHERE chunk_id = %s", (chunk_id,)
+        ).fetchone()
+    return row[0] if row is not None else None
+
+
+def test_chunk_handle_mint_and_resolve(store: Store) -> None:
+    ref = store.insert_ref(kind="paper", slug="adr36-chunk-paper", title="p")
+    chunk_id = _insert_chunk(store, ref.id)
+    assert _chunk_handle(store, chunk_id) is None  # precondition
+    # Mint deterministically on this chunk (avoids the pass's chunk_id-ASC
+    # claim ordering, which wouldn't reach a freshly-inserted row).
+    with store.pool.connection() as c:
+        assert chunk_handles._mint_one(c, chunk_id, "paper") is True
+    h = _chunk_handle(store, chunk_id)
+    assert h is not None
+    assert handle_registry.is_well_formed(h)
+    assert h[:2] == handle_registry.CHUNK_CODES["paper"]  # 'pc'
+    resolved = store.resolve_handle(h)
+    assert resolved is not None
+    assert resolved.kind == "paper"
+    assert resolved.chunk_id == chunk_id
+    assert resolved.ref_id == ref.id
+    assert resolved.public_id == "adr36-chunk-paper"  # owning ref's slug
+
+
+def test_chunk_handles_pass_is_healthy(store: Store) -> None:
+    # Ensure there's at least one handle-less corpus chunk, then drain a
+    # batch; assert the pass succeeds (every claimed chunk minted). No
+    # assertion on *which* chunks — claim order is chunk_id ASC.
+    ref = store.insert_ref(kind="paper", slug="adr36-pass-health", title="p")
+    _insert_chunk(store, ref.id)
+    r = chunk_handles.run_chunk_handles_pass(store, batch_size=200)
+    assert r["failed"] == 0
+    assert r["ok"] == r["claimed"]
+
+
+def test_pass_excludes_draft() -> None:
+    # Drafts keep their ADR-0033 base-58 handle until the wipe.
+    assert "draft" not in chunk_handles._KINDS
+    assert "paper" in chunk_handles._KINDS

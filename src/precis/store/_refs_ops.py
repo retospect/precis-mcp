@@ -232,19 +232,21 @@ class RefsMixin:
     def resolve_handle(
         self, handle: str, *, conn: Connection | None = None
     ) -> ResolvedHandle | None:
-        """Resolve a universal handle (ADR 0036) to its ref.
+        """Resolve a universal handle (ADR 0036) to its ref or chunk.
 
-        Record handles only for now (chunk handles are reserved — not yet
-        minted). Returns ``None`` for an ill-formed, chunk, or
-        unknown/deleted handle, so the caller falls through to legacy id
-        resolution untouched.
+        Routes on the 2-char type code: a record code resolves to a ref, a
+        chunk code resolves to a chunk (``chunk_id`` set). Returns ``None``
+        for an ill-formed or unknown/deleted handle, so the caller falls
+        through to legacy id resolution untouched. (The legacy ADR-0033
+        draft base-58 chunk handles are 6-char, so they are not well-formed
+        under this scheme and never reach here — they keep the ``¶`` path.)
         """
         normalized = handle_registry.normalize(handle)
         if not handle_registry.is_well_formed(normalized):
             return None
         _kind, is_chunk = handle_registry.kind_for_code(normalized[:2])
         if is_chunk:
-            return None
+            return self._resolve_chunk_handle(normalized, conn=conn)
         sql = (
             "SELECT r.ref_id, r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
@@ -260,6 +262,39 @@ class RefsMixin:
             ref_id, kind, slug = int(row[0]), str(row[1]), row[2]
             public_id = slug if slug is not None else str(ref_id)
             return ResolvedHandle(ref_id=ref_id, kind=kind, public_id=public_id)
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def _resolve_chunk_handle(
+        self, normalized: str, *, conn: Connection | None = None
+    ) -> ResolvedHandle | None:
+        """Resolve a (well-formed) chunk handle to its chunk + owning ref."""
+        sql = (
+            "SELECT c.chunk_id, c.ref_id, r.kind, "
+            "(SELECT id_value FROM ref_identifiers ri "
+            " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
+            " LIMIT 1) AS slug "
+            "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+            "WHERE c.handle = %s AND r.deleted_at IS NULL"
+        )
+
+        def _do(c: Connection) -> ResolvedHandle | None:
+            row = c.execute(sql, (normalized,)).fetchone()
+            if row is None:
+                return None
+            chunk_id, ref_id, kind, slug = (
+                int(row[0]),
+                int(row[1]),
+                str(row[2]),
+                row[3],
+            )
+            public_id = slug if slug is not None else str(ref_id)
+            return ResolvedHandle(
+                ref_id=ref_id, kind=kind, public_id=public_id, chunk_id=chunk_id
+            )
 
         if conn is not None:
             return _do(conn)
