@@ -147,3 +147,20 @@ def test_pass_excludes_draft() -> None:
     # Drafts keep their ADR-0033 base-58 handle until the wipe.
     assert "draft" not in chunk_handles._KINDS
     assert "paper" in chunk_handles._KINDS
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_chunk_handle_routes_to_selector(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    ref = store.insert_ref(kind="paper", slug="adr36-chunk-surface", title="p")
+    chunk_id = _insert_chunk(store, ref.id, ord_=0)
+    with store.pool.connection() as c:
+        chunk_handles._mint_one(c, chunk_id, "paper")
+    h = _chunk_handle(store, chunk_id)
+    assert h is not None
+    # get(id='pc…') with no kind= → translated to the `slug~ord` selector,
+    # returning the chunk identically to the explicit selector.
+    via_handle = runtime_with_store.dispatch("get", {"id": h})
+    via_selector = runtime_with_store.dispatch("get", {"id": "adr36-chunk-surface~0"})
+    assert via_handle == via_selector

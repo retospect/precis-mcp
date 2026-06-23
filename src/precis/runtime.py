@@ -1747,15 +1747,19 @@ class PrecisRuntime:
         resolved = self.store.resolve_handle(normalized)
         if resolved is None:
             return False
-        if resolved.chunk_id is not None:
-            # Chunk handle: surface translation to a per-kind chunk selector
-            # (slug~pos / ¶handle) is a later slice. Routing to the ref's
-            # public_id here would wrongly return the whole ref, so fall
-            # through (a chunk handle has no slug match → natural NotFound).
-            return False
         explicit = args.get("kind")
         if explicit is not None and explicit != resolved.kind:
             return False
+        if resolved.chunk_id is not None:
+            # Chunk handle → per-kind chunk selector. Slug-document kinds take
+            # ``slug~ord`` (Block.pos == chunks.ord). Numeric-chunk kinds
+            # (gripe/message/…) have no ``~ord`` selector yet, so fall through
+            # (a chunk handle has no slug match → natural NotFound).
+            if resolved.chunk_ord is None or resolved.public_id == str(resolved.ref_id):
+                return False
+            args["kind"] = resolved.kind
+            args["id"] = f"{resolved.public_id}~{resolved.chunk_ord}"
+            return True
         args["kind"] = resolved.kind
         args["id"] = resolved.public_id
         return True

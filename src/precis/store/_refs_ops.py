@@ -273,7 +273,7 @@ class RefsMixin:
     ) -> ResolvedHandle | None:
         """Resolve a (well-formed) chunk handle to its chunk + owning ref."""
         sql = (
-            "SELECT c.chunk_id, c.ref_id, r.kind, "
+            "SELECT c.chunk_id, c.ref_id, c.ord, r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
             " LIMIT 1) AS slug "
@@ -285,15 +285,20 @@ class RefsMixin:
             row = c.execute(sql, (normalized,)).fetchone()
             if row is None:
                 return None
-            chunk_id, ref_id, kind, slug = (
+            chunk_id, ref_id, ord_, kind, slug = (
                 int(row[0]),
                 int(row[1]),
-                str(row[2]),
-                row[3],
+                int(row[2]),
+                str(row[3]),
+                row[4],
             )
             public_id = slug if slug is not None else str(ref_id)
             return ResolvedHandle(
-                ref_id=ref_id, kind=kind, public_id=public_id, chunk_id=chunk_id
+                ref_id=ref_id,
+                kind=kind,
+                public_id=public_id,
+                chunk_id=chunk_id,
+                chunk_ord=ord_,
             )
 
         if conn is not None:

@@ -193,13 +193,16 @@ class ResolvedHandle:
     ``public_id`` is the id the per-kind handler already understands
     (slug for slug kinds, ``str(ref_id)`` for numeric), so the runtime
     can translate a handle to ``(kind, id)`` with zero handler changes.
-    ``chunk_id`` is reserved for chunk handles (not yet minted).
+    For a chunk handle, ``chunk_id`` is set and ``chunk_ord`` carries the
+    chunk's ordinal (== ``Block.pos``), so the surface can build the
+    per-kind selector ``public_id~chunk_ord``.
     """
 
     ref_id: int
     kind: str
     public_id: str
     chunk_id: int | None = None
+    chunk_ord: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

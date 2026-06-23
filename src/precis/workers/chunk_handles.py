@@ -37,7 +37,9 @@ def _claim(conn: Connection, *, limit: int) -> list[tuple[int, str]]:
     rows = conn.execute(
         "SELECT c.chunk_id, r.kind "
         "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-        "WHERE c.handle IS NULL AND r.kind = ANY(%s) "
+        # ord >= 0: body chunks only — derived/card chunks (ord < 0) are
+        # regenerable (DELETE+INSERT) and not addressable, so no handle.
+        "WHERE c.handle IS NULL AND c.ord >= 0 AND r.kind = ANY(%s) "
         "ORDER BY c.chunk_id "
         "LIMIT %s "
         "FOR UPDATE OF c SKIP LOCKED",
