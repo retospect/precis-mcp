@@ -63,6 +63,27 @@ class DraftFakeStore(FakeStore):
                 chunk_id=3,
                 meta={"figure": {"origin": "original"}},
             ),
+            # a third-party figure with a permission paper-trail (badge
+            # hover popover + click-to-edit).
+            _chunk(
+                "FIGTPF",
+                "figure",
+                "Fig 2 (after Smith).",
+                0,
+                chunk_id=4,
+                meta={
+                    "figure": {
+                        "origin": "third_party",
+                        "permission": {
+                            "publisher": "Springer Nature",
+                            "permission_id": "SNCSC-2026-0451",
+                            "status": "granted",
+                            "granted_at": "2026-06-18",
+                            "source_paper": "smith19",
+                        },
+                    }
+                },
+            ),
         ]
         # draft-of → project todo 1; related-to → memory 20
         self._links = [
@@ -215,6 +236,48 @@ def test_blob_route_serves_bytes_with_mime(draft_client: TestClient) -> None:
 def test_blob_route_404_when_no_blob(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/blob/AAAAAA")  # a heading — no blob
     assert r.status_code == 404
+
+
+def test_figure_permission_popover_and_edit_form(draft_client: TestClient) -> None:
+    # The third-party figure's badge shows the paper-trail (hover popover)
+    # and a prefilled edit form posting to the permission edit route.
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    # provenance details visible (popover)
+    assert "Springer Nature" in r.text and "SNCSC-2026-0451" in r.text
+    assert "2026-06-18" in r.text and "smith19" in r.text
+    # click-to-edit form points at the edit route, prefilled
+    assert 'action="/drafts/nt/figure/FIGTPF/permission"' in r.text
+    assert 'value="SNCSC-2026-0451"' in r.text
+
+
+def test_upload_form_has_field_legends(draft_client: TestClient) -> None:
+    r = draft_client.get("/drafts/nt")
+    assert "Date requested" in r.text and "Date granted" in r.text
+    assert "Publisher permission" in r.text
+
+
+def test_edit_figure_permission_dispatches_edit(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    r = draft_client.post(
+        "/drafts/nt/figure/FIGTPF/permission",
+        data={
+            "origin": "third_party",
+            "publisher": "Elsevier",
+            "permission_id": "EL-999",
+            "status": "granted",
+            "source_paper": "jones20",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/drafts/nt#c-FIGTPF"
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "edit" and args["kind"] == "draft" and args["id"] == "¶FIGTPF"
+    assert args["origin"] == "third_party"
+    assert args["permission"]["publisher"] == "Elsevier"
+    assert args["permission"]["permission_id"] == "EL-999"
 
 
 def test_reader_has_add_figure_control(draft_client: TestClient) -> None:

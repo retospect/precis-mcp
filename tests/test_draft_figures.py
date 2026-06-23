@@ -100,6 +100,46 @@ def test_blob_row_count_and_size(store: Store) -> None:
     assert row == (len(_PNG), "image/png")
 
 
+# ── set_figure_provenance (edit) ─────────────────────────────────────
+
+
+def _events(store: Store, chunk_id: int) -> list[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT event_kind FROM chunk_events WHERE chunk_id=%s ORDER BY event_id",
+            (chunk_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def test_set_figure_provenance_updates_meta_and_logs(store: Store) -> None:
+    ref, title = _draft(store)
+    fig = store.add_figure(
+        ref_id=ref.id,
+        caption="c",
+        origin="original",
+        image=_PNG,
+        mime="image/png",
+        at={"after": title.handle},
+    )
+    upd = store.set_figure_provenance(
+        fig.handle, origin="third_party", permission=_PERM
+    )
+    assert upd.meta["figure"]["origin"] == "third_party"
+    assert upd.meta["figure"]["permission"]["permission_id"] == "SNCSC-2026-0451"
+    # bytes untouched, history shows the edit
+    assert store.get_chunk_blob(fig.handle)[0] == _PNG
+    assert _events(store, fig.chunk_id) == ["created", "edited"]
+
+
+def test_set_figure_provenance_rejects_non_figure(store: Store) -> None:
+    _ref, title = _draft(store)  # title is a heading, not a figure
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="not a figure"):
+        store.set_figure_provenance(title.handle, permission=_PERM)
+
+
 # ── handler put path ─────────────────────────────────────────────────
 
 
@@ -181,3 +221,22 @@ def test_mime_sniffed_when_omitted(draft: DraftHandler, hub: Hub) -> None:
     fig = _figures(hub, "nt")[0]
     _data, mime = hub.store.get_chunk_blob(fig.handle)
     assert mime == "image/png"
+
+
+def test_edit_permission_via_handler(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    draft.put(id="nt", chunk_kind="figure", text="c", image=_PNG_B64, origin="original")
+    fig = _figures(hub, "nt")[0]
+    r = draft.edit(id=f"¶{fig.handle}", origin="third_party", permission=_PERM)
+    assert "updated figure provenance" in r.body
+    upd = hub.store.get_draft_chunk(fig.handle)
+    assert upd.meta["figure"]["origin"] == "third_party"
+    assert upd.meta["figure"]["permission"]["permission_id"] == "SNCSC-2026-0451"
+
+
+def test_edit_bad_origin_rejected(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    draft.put(id="nt", chunk_kind="figure", text="c", image=_PNG_B64, origin="original")
+    fig = _figures(hub, "nt")[0]
+    with pytest.raises(BadInput, match="origin="):
+        draft.edit(id=f"¶{fig.handle}", origin="bogus")

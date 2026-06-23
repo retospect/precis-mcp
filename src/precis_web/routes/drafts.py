@@ -281,6 +281,7 @@ def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
                 # figure provenance for the origin chip + clearance badge
                 "figure_origin": fig.get("origin") if is_figure else None,
                 "figure_cleared": _figure_cleared(fig) if is_figure else None,
+                "figure_permission": fig.get("permission") if is_figure else None,
                 "blob_url": f"/drafts/blob/{c.handle}" if is_figure else None,
                 "ancestors": anc.get(c.handle, []),
                 "abbrevs": abbrevs,
@@ -868,6 +869,49 @@ async def add_figure(
             args["permission"] = perm
     return await redirect_or_error(
         request, "put", args, redirect=back, error_title="Add figure error"
+    )
+
+
+@router.post("/drafts/{ident}/figure/{handle}/permission")
+async def edit_figure_permission(
+    request: Request,
+    ident: str,
+    handle: str,
+    origin: str = Form("third_party"),
+    publisher: str = Form(""),
+    permission_id: str = Form(""),
+    status: str = Form(""),
+    requested_at: str = Form(""),
+    granted_at: str = Form(""),
+    expires_at: str = Form(""),
+    scope: str = Form(""),
+    required_credit: str = Form(""),
+    source_paper: str = Form(""),
+) -> Response:
+    """Edit an existing figure's provenance (ADR 0034) — the click-to-edit
+    behind the clearance badge. Routes through the ``edit`` verb so figure
+    validation stays single-sourced; only ``meta.figure`` changes (caption
+    and image bytes are untouched)."""
+    back = f"/drafts/{ident}#c-{handle}"
+    args: dict[str, Any] = {"kind": "draft", "id": f"¶{handle}", "origin": origin}
+    if origin == "third_party":
+        args["permission"] = {
+            k: v.strip()
+            for k, v in {
+                "publisher": publisher,
+                "permission_id": permission_id,
+                "status": status,
+                "requested_at": requested_at,
+                "granted_at": granted_at,
+                "expires_at": expires_at,
+                "scope": scope,
+                "required_credit": required_credit,
+                "source_paper": source_paper,
+            }.items()
+            if v.strip()
+        }
+    return await redirect_or_error(
+        request, "edit", args, redirect=back, error_title="Edit permission error"
     )
 
 

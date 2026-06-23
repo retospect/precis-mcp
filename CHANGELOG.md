@@ -8,6 +8,22 @@ context — see also `docs/phase*-plan.md` and `docs/design/v2-cutover.md`.
 
 ## Unreleased
 
+### Changed (2026-06-23 — figure permission UX: labelled form + editable badge)
+
+- The third-party **permission upload form** now carries a small legend
+  above every field (the two dates read **"Date requested"** /
+  **"Date granted"** instead of a bare picker), grouped under a
+  "Publisher permission" header.
+- The figure's **clearance badge is now interactive**: hover shows the
+  full paper-trail (publisher, permission #, status, dates, scope,
+  required credit, source paper) in a popover; **click opens a prefilled
+  edit form** that updates the provenance via a new
+  `POST /drafts/{ident}/figure/{handle}/permission` route → the draft
+  `edit` verb (`edit(kind='draft', id='¶<handle>', origin=…,
+  permission={…})`). Store op `Store.set_figure_provenance` updates
+  `meta.figure` in place (caption + bytes untouched → no re-embed) and
+  logs an `edited` event.
+
 ### Fixed (2026-06-22 — draft reader collapse was a silent no-op + floating toolbar)
 
 - **Heading collapse triangles / collapse-all / expand-all now actually

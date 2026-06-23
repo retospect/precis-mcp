@@ -368,6 +368,8 @@ class DraftHandler(Handler):
         move: dict[str, Any] | None = None,
         base_sha: str | None = None,
         not_abbrev: list[str] | str | None = None,
+        permission: dict[str, Any] | None = None,
+        origin: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``not_abbrev`` is a draft-level op (silence the undefined-abbrev
@@ -378,6 +380,17 @@ class DraftHandler(Handler):
             self.store.add_abbrev_ignore(ref.id, tokens)
             return Response(body=f"marked not-an-abbrev: {', '.join(tokens)}")
         handle = self._require_chunk_id(id, verb="edit")
+        if permission is not None or origin is not None:
+            # Edit a figure's provenance (ADR 0034) — caption/bytes untouched.
+            if origin is not None and origin not in _FIGURE_ORIGINS:
+                raise BadInput(
+                    f"figure origin= must be one of {list(_FIGURE_ORIGINS)}",
+                    next="origin='original' | 'own_graph' | 'third_party'",
+                )
+            c = self.store.set_figure_provenance(
+                handle, permission=permission, origin=origin
+            )
+            return Response(body=f"updated figure provenance ¶{c.handle}")
         if move is not None:
             c = self.store.move_chunk(handle, move)
             if c is not None:

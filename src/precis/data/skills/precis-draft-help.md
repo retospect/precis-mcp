@@ -156,7 +156,10 @@ chip + a ✓/✗ clearance badge, and serves the image at
 `/drafts/blob/<handle>`. In the **web reader** a per-block **"＋ figure"**
 control uploads an image file directly (multipart) — for a `third_party`
 image it reveals the permission form inline — so a human can drop in a
-figure without base64.
+figure without base64. The clearance badge under a rendered figure is
+**editable**: hover for the paper-trail, click to edit it. Programmatic
+edits use `edit(kind='draft', id='¶<handle>', origin='third_party',
+permission={…})` — caption and image bytes stay put.
 
 > Graph regeneration (the plot's data + code as `figure_code` /
 > `figure_data` chunks linked `derived-from`) and the export step that

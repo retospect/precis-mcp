@@ -729,6 +729,49 @@ class DraftMixin:
             return None
         return bytes(row[0]), row[1]
 
+    def set_figure_provenance(
+        self,
+        handle: str,
+        *,
+        permission: dict[str, Any] | None = None,
+        origin: str | None = None,
+        source: dict[str, Any] | None = None,
+    ) -> DraftChunk | None:
+        """Update a figure chunk's provenance meta in place (ADR 0034):
+        replace ``meta.figure.permission`` and/or ``meta.figure.origin``,
+        leaving the caption and image bytes untouched (no re-embed). Logs
+        an ``edited`` event so the change shows in the chunk's history."""
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT chunk_id, chunk_kind, meta, retired_at "
+                "FROM chunks WHERE handle = %s",
+                (_bare(handle),),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"unknown chunk handle {handle!r}")
+            chunk_id, chunk_kind, meta, retired = row
+            if chunk_kind != "figure":
+                raise BadInput(f"¶{_bare(handle)} is a {chunk_kind}, not a figure")
+            if retired is not None:
+                raise ValueError(f"chunk {handle!r} is retired")
+            meta = dict(meta or {})
+            fig = dict(meta.get("figure") or {})
+            if origin is not None:
+                fig["origin"] = origin
+            if permission is not None:
+                fig["permission"] = permission
+            meta["figure"] = fig
+            conn.execute(
+                "UPDATE chunks SET meta = %s WHERE chunk_id = %s",
+                (Jsonb(meta), chunk_id),
+            )
+            conn.execute(
+                "INSERT INTO chunk_events (chunk_id, event_kind, source) "
+                "VALUES (%s, 'edited', %s)",
+                (chunk_id, Jsonb({**(source or {}), "reason": "figure-provenance"})),
+            )
+        return self.get_draft_chunk(handle)
+
     # -- mutations -----------------------------------------------------------
 
     def _row(self, conn: psycopg.Connection, handle: str) -> tuple[Any, ...] | None:

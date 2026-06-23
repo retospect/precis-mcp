@@ -43,16 +43,100 @@
       <img src="{{ r.blob_url }}" alt="{{ r.text }}" loading="lazy"
            class="max-h-96 w-auto max-w-full rounded" />
       <figcaption class="mt-1.5 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs) }}</figcaption>
+      {% set p = r.figure_permission or {} %}
       <div class="mt-1 flex items-center gap-1.5">
         <span class="rounded px-1.5 py-0.5 text-[10px] font-mono uppercase
                      {% if r.figure_origin == 'third_party' %}bg-violet-100 text-violet-700
                      {% elif r.figure_origin == 'own_graph' %}bg-sky-100 text-sky-700
                      {% else %}bg-slate-100 text-slate-600{% endif %}">{{ r.figure_origin or 'figure' }}</span>
-        {% if r.figure_cleared %}
-        <span class="text-[10px] text-emerald-600" title="figure cleared">✓ cleared</span>
-        {% else %}
-        <span class="text-[10px] text-rose-600" title="permission missing or not granted">✗ uncleared</span>
-        {% endif %}
+        {# Clearance badge: hover → the paper-trail; click → edit it. #}
+        <div class="relative" x-data="{ pop: false, ed: false }">
+          <button type="button"
+                  @mouseenter="pop = true" @mouseleave="pop = false"
+                  @click="ed = !ed; pop = false"
+                  class="text-[10px] hover:underline {% if r.figure_cleared %}text-emerald-600{% else %}text-rose-600{% endif %}"
+                  title="hover for the provenance; click to edit">
+            {% if r.figure_cleared %}✓ cleared{% else %}✗ uncleared{% endif %} ✎</button>
+
+          {# hover popover — provenance at a glance #}
+          <div x-show="pop && !ed" x-cloak
+               class="absolute left-0 z-30 mt-1 w-64 rounded border border-slate-200 bg-white p-2 text-[11px] shadow-lg">
+            {% if r.figure_origin == 'third_party' %}
+            <div class="font-semibold text-slate-700">Publisher permission</div>
+            <dl class="mt-1 space-y-0.5 text-slate-600">
+              {% if p.publisher %}<div><span class="text-slate-400">publisher:</span> {{ p.publisher }}</div>{% endif %}
+              {% if p.permission_id %}<div><span class="text-slate-400">permission #:</span> {{ p.permission_id }}</div>{% endif %}
+              {% if p.status %}<div><span class="text-slate-400">status:</span> {{ p.status }}</div>{% endif %}
+              {% if p.requested_at %}<div><span class="text-slate-400">requested:</span> {{ p.requested_at }}</div>{% endif %}
+              {% if p.granted_at %}<div><span class="text-slate-400">granted:</span> {{ p.granted_at }}</div>{% endif %}
+              {% if p.expires_at %}<div><span class="text-slate-400">expires:</span> {{ p.expires_at }}</div>{% endif %}
+              {% if p.source_paper %}<div><span class="text-slate-400">source:</span> {{ p.source_paper }}</div>{% endif %}
+              {% if p.scope %}<div><span class="text-slate-400">scope:</span> {{ p.scope }}</div>{% endif %}
+              {% if p.required_credit %}<div class="mt-1 italic">“{{ p.required_credit }}”</div>{% endif %}
+              {% if not p %}<div class="text-rose-600">no permission recorded yet</div>{% endif %}
+            </dl>
+            {% elif r.figure_origin == 'own_graph' %}
+            <div class="text-slate-600">Our graph — generated from data (ships a data supplement).</div>
+            {% else %}
+            <div class="text-slate-600">Our own figure — no third-party permission needed.</div>
+            {% endif %}
+            <div class="mt-1 text-[10px] text-slate-400">click the badge to edit</div>
+          </div>
+
+          {# click → edit provenance, prefilled, posts to the edit route #}
+          <form x-show="ed" x-cloak method="post"
+                action="/drafts/{{ ref.ident }}/figure/{{ r.handle }}/permission"
+                x-data="{ org: '{{ r.figure_origin or 'third_party' }}' }"
+                class="absolute left-0 z-30 mt-1 w-64 space-y-1 rounded border border-slate-200 bg-white p-2 shadow-lg">
+            <label class="block">
+              <span class="text-[9px] text-slate-500">Origin</span>
+              <select name="origin" x-model="org"
+                      class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
+                <option value="original">original (ours)</option>
+                <option value="own_graph">own graph (from data)</option>
+                <option value="third_party">third-party (needs permission)</option>
+              </select>
+            </label>
+            <template x-if="org === 'third_party'">
+              <div class="space-y-1 border-l-2 border-violet-300 pl-1.5">
+                <label class="block"><span class="text-[9px] text-slate-500">Publisher</span>
+                  <input name="publisher" value="{{ p.publisher or '' }}"
+                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+                <label class="block"><span class="text-[9px] text-slate-500">Permission / licence #</span>
+                  <input name="permission_id" value="{{ p.permission_id or '' }}"
+                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+                <label class="block"><span class="text-[9px] text-slate-500">Status</span>
+                  <select name="status"
+                          class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
+                    {% for s in ['granted', 'requested', 'denied'] %}
+                    <option value="{{ s }}" {% if p.status == s %}selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                  </select></label>
+                <label class="block"><span class="text-[9px] text-slate-500">Source paper (cite-key)</span>
+                  <input name="source_paper" value="{{ p.source_paper or '' }}"
+                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+                <div class="flex gap-1">
+                  <label class="min-w-0 flex-1"><span class="text-[9px] text-slate-500">Date requested</span>
+                    <input name="requested_at" type="date" value="{{ p.requested_at or '' }}"
+                           class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" /></label>
+                  <label class="min-w-0 flex-1"><span class="text-[9px] text-slate-500">Date granted</span>
+                    <input name="granted_at" type="date" value="{{ p.granted_at or '' }}"
+                           class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" /></label>
+                </div>
+                <label class="block"><span class="text-[9px] text-slate-500">Required credit line</span>
+                  <input name="required_credit" value="{{ p.required_credit or '' }}"
+                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+                <label class="block"><span class="text-[9px] text-slate-500">Scope</span>
+                  <input name="scope" value="{{ p.scope or '' }}"
+                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+              </div>
+            </template>
+            <div class="flex items-center gap-2">
+              <button class="rounded bg-violet-600 px-2 py-0.5 text-[11px] text-white hover:bg-violet-700">save</button>
+              <button type="button" @click="ed = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+            </div>
+          </form>
+        </div>
       </div>
     </figure>
     {% else %}
@@ -204,29 +288,56 @@
          are removed from the DOM otherwise, so `required` doesn't block
          an original/own_graph upload. #}
       <template x-if="org === 'third_party'">
-        <div class="space-y-1 rounded border-l-2 border-violet-300 pl-1.5">
-          <input name="publisher" required placeholder="publisher"
-                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
-          <input name="permission_id" required placeholder="permission / licence #"
-                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
-          <select name="status" required
-                  class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
-            <option value="granted">granted</option>
-            <option value="requested">requested</option>
-            <option value="denied">denied</option>
-          </select>
-          <input name="source_paper" required placeholder="source cite-key (e.g. smith19)"
-                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+        {# Each field carries a small legend above it so the paper-trail is
+           self-explanatory (the two dates especially). #}
+        <div class="space-y-1.5 rounded border-l-2 border-violet-300 pl-1.5">
+          <p class="text-[10px] font-semibold uppercase tracking-wide text-violet-700">Publisher permission</p>
+          <label class="block">
+            <span class="text-[9px] text-slate-500">Publisher</span>
+            <input name="publisher" required placeholder="e.g. Springer Nature"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+          </label>
+          <label class="block">
+            <span class="text-[9px] text-slate-500">Permission / licence #</span>
+            <input name="permission_id" required placeholder="e.g. SNCSC-2026-0451"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+          </label>
+          <label class="block">
+            <span class="text-[9px] text-slate-500">Status</span>
+            <select name="status" required
+                    class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
+              <option value="granted">granted</option>
+              <option value="requested">requested</option>
+              <option value="denied">denied</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-[9px] text-slate-500">Source paper (cite-key)</span>
+            <input name="source_paper" required placeholder="e.g. smith19"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+          </label>
           <div class="flex gap-1">
-            <input name="requested_at" type="date" title="requested"
-                   class="min-w-0 flex-1 rounded border border-slate-200 px-1 py-0.5 text-[10px]" />
-            <input name="granted_at" type="date" title="granted"
-                   class="min-w-0 flex-1 rounded border border-slate-200 px-1 py-0.5 text-[10px]" />
+            <label class="min-w-0 flex-1">
+              <span class="text-[9px] text-slate-500">Date requested</span>
+              <input name="requested_at" type="date"
+                     class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" />
+            </label>
+            <label class="min-w-0 flex-1">
+              <span class="text-[9px] text-slate-500">Date granted</span>
+              <input name="granted_at" type="date"
+                     class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" />
+            </label>
           </div>
-          <input name="required_credit" placeholder="required credit line"
-                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
-          <input name="scope" placeholder="scope (e.g. print + electronic)"
-                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+          <label class="block">
+            <span class="text-[9px] text-slate-500">Required credit line</span>
+            <input name="required_credit" placeholder="“Reprinted by permission …”"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+          </label>
+          <label class="block">
+            <span class="text-[9px] text-slate-500">Scope</span>
+            <input name="scope" placeholder="e.g. print + electronic, worldwide"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+          </label>
         </div>
       </template>
       <button class="rounded bg-violet-600 px-2 py-0.5 text-[11px] text-white hover:bg-violet-700"
