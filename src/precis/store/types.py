@@ -187,6 +187,22 @@ class Ref:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedHandle:
+    """Result of resolving a universal handle (ADR 0036) to a ref.
+
+    ``public_id`` is the id the per-kind handler already understands
+    (slug for slug kinds, ``str(ref_id)`` for numeric), so the runtime
+    can translate a handle to ``(kind, id)`` with zero handler changes.
+    ``chunk_id`` is reserved for chunk handles (not yet minted).
+    """
+
+    ref_id: int
+    kind: str
+    public_id: str
+    chunk_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Block:
     """A block (chunk) row from the `blocks` table."""
 

@@ -1,6 +1,12 @@
 # ADR 0033 — Draft-as-chunks: an editable document kind
 
 - **Status**: accepted (2026-06-20)
+- **§1 partially superseded by**:
+  [ADR 0036 — Universal handles](./0036-universal-handles.md) — the chunk
+  handle becomes a flat type-prefixed Crockford handle (`dc…`); the `¶`/`§`
+  sigils, the `¶<handle>-B+A` window, and paper-only `~N..M` are retired in
+  favour of 0036's `+N/-N/^N/lo..hi` grammar. The rest of 0033 (the editable
+  chunk model, `content_sha`, `parent_chunk_id`/`pos`) stands.
 - **Deciders**: Reto + agent
 - **Builds on**:
   - [ADR 0006 — Tri-identifier scheme](./0006-tri-identifier-scheme.md)

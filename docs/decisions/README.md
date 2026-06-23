@@ -16,7 +16,7 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Dockerfile layout | [0004](./0004-multi-stage-dockerfile.md) → [0009](./0009-dockerfile-relocation-container-first.md) | 0009 relocated the file; 0004 still describes the stage layering |
 | Migration discipline (forward-only) | [0005](./0005-greenfield-migrations.md) | governs every `*.sql` edit |
 | Install path (baseline snapshot) | [0031](./0031-baseline-snapshot-dual-track.md) | fresh DBs load `migrations/baseline/schema.sql`; dual-track, not a greenfield (cf. [0019](./0019-second-greenfield.md)) |
-| Identifier scheme | [0008](./0008-drop-slug-identifier-normalisation.md) | extends 0006 (tri-id), which itself superseded 0002 §identifier |
+| Identifier scheme | [0036](./0036-universal-handles.md) | **draft/proposed**; one universal handle per record + chunk; supersedes 0006/0008 as the current address form, drops `pub_id`. Lineage: 0002 §id → 0006 → 0008 → 0036 |
 | Derived queue pattern | [0017](./0017-derived-queue-family.md) | extends 0007 (chunk-level → family registry) |
 | Database backend | [0010](./0010-postgres-pgvector-system-of-record.md) | |
 | Dev image (Claude Code + UID/GID) | [0011](./0011-claude-in-dev-image.md) | |
@@ -40,12 +40,14 @@ Per AGENTS.md: "sorted by number; never delete, only supersede".
 | Drafts as editable chunk-native documents | [0033](./0033-draft-chunks-editable-document.md) | **accepted**; the `draft` kind |
 | Figure assets + data supplements + permission provenance | [0034](./0034-figure-assets-and-permission-provenance.md) | **draft/proposed**; figures as chunks, blobs in `chunk_blobs` |
 | Computed chunks (payload + recipe), sandboxed execution, recompute boundary | [0035](./0035-computed-chunks-recipes-and-the-recompute-boundary.md) | **draft/proposed**; refines 0034 §3 — data/render recipes, `plots` the only reactive edge |
+| Universal handles (one address system for every record + chunk) | [0036](./0036-universal-handles.md) | **draft/proposed**; flat type-prefixed Crockford handles; partially supersedes 0033 §1 (draft handle/sigil) |
 
 ## Supersession graph
 
 ```
-0002 (identifier §)  ──→  0006  ──→  0008          # slug story
+0002 (identifier §)  ──→  0006  ──→  0008  ──→  0036   # slug → universal handles
 0002 (TOON §)         (in force)
+0033 §1 (draft handle/¶ sigil)  ──→  0036          # absorbed into universal handles
 0007  ──→  0017                                    # derived queue
 0007  ──┐
         ├──→  0018  ──→  F20 (CLAUDE.md, not an ADR)

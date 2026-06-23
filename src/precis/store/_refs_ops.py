@@ -39,6 +39,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from psycopg import Connection
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
@@ -50,7 +51,8 @@ from precis.store._mappers import (
     _row_to_ref,
 )
 from precis.store._tag_filter import build_tag_filter
-from precis.store.types import ActorSlug, Ref, Tag
+from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
+from precis.utils import handle_registry
 
 
 class RefsMixin:
@@ -184,6 +186,23 @@ class RefsMixin:
             row = c.execute(insert_sql, insert_params).fetchone()
             assert row is not None
             ref_id = int(row[0])
+            # ADR 0036: mint a universal handle for kinds that carry a type
+            # code (every persistent record kind does). Uniqueness is
+            # enforced by ``refs_handle_key``; retry under a savepoint on
+            # the (cosmically rare) 34-billion-space clash. A kind without
+            # a code just stays handle-NULL — additive, never fatal.
+            if kind in handle_registry.KIND_CODES:
+                for _ in range(8):
+                    candidate = handle_registry.mint(kind)
+                    try:
+                        with c.transaction():
+                            c.execute(
+                                "UPDATE refs SET handle = %s WHERE ref_id = %s",
+                                (candidate, ref_id),
+                            )
+                        break
+                    except UniqueViolation:
+                        continue
             if slug is not None:
                 # Routing decision (ADR 0008 + plan): every slug-addressed
                 # kind uses id_kind='cite_key' uniformly so the
@@ -204,6 +223,43 @@ class RefsMixin:
             ).fetchone()
             assert fresh is not None
             return _row_to_ref(fresh)
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def resolve_handle(
+        self, handle: str, *, conn: Connection | None = None
+    ) -> ResolvedHandle | None:
+        """Resolve a universal handle (ADR 0036) to its ref.
+
+        Record handles only for now (chunk handles are reserved — not yet
+        minted). Returns ``None`` for an ill-formed, chunk, or
+        unknown/deleted handle, so the caller falls through to legacy id
+        resolution untouched.
+        """
+        normalized = handle_registry.normalize(handle)
+        if not handle_registry.is_well_formed(normalized):
+            return None
+        _kind, is_chunk = handle_registry.kind_for_code(normalized[:2])
+        if is_chunk:
+            return None
+        sql = (
+            "SELECT r.ref_id, r.kind, "
+            "(SELECT id_value FROM ref_identifiers ri "
+            " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
+            " LIMIT 1) AS slug "
+            "FROM refs r WHERE r.handle = %s AND r.deleted_at IS NULL"
+        )
+
+        def _do(c: Connection) -> ResolvedHandle | None:
+            row = c.execute(sql, (normalized,)).fetchone()
+            if row is None:
+                return None
+            ref_id, kind, slug = int(row[0]), str(row[1]), row[2]
+            public_id = slug if slug is not None else str(ref_id)
+            return ResolvedHandle(ref_id=ref_id, kind=kind, public_id=public_id)
 
         if conn is not None:
             return _do(conn)

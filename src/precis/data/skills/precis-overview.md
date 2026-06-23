@@ -125,6 +125,16 @@ get(kind='skill')                            # list every active skill
 
 `precis-toc` is the long-form alias for `id='toc'`.
 
+## How are things addressed?
+
+Today: `id=` is a slug (papers, drafts, …) or a numeric id (memories, todos, …);
+content is found with `q=`. **Rolling out (ADR 0036):** one universal **handle** —
+a 9-char type-prefixed code (`pa4m8p1rz` a paper, `dc…` a draft chunk) — becomes
+the single address, with the 2-char prefix telling you the kind. See
+`get(kind='skill', id='precis-addressing-help')` for the handle format, the
+relative grammar (`+1`/`-1` sibling, `^` parent, `lo..hi` span), and the full
+2-char type-code table.
+
 ## The todo tree — task substrate (Slices 1–5)
 
 The todo tree is the unified surface for *intent*, *execution*,

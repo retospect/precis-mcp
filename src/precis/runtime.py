@@ -33,6 +33,7 @@ from precis.errors import (
 from precis.protocol import _ALL_VERBS, Handler, Verb
 from precis.response import Response
 from precis.store.types import Tag
+from precis.utils import handle_registry
 from precis.utils.search_merge import SearchHit, merge_and_render
 
 if TYPE_CHECKING:
@@ -1725,6 +1726,34 @@ class PrecisRuntime:
         if kind is not None and kind in live_kinds:
             args["kind"] = kind
 
+    def _maybe_infer_kind_from_handle(self, args: dict[str, Any], ident: str) -> bool:
+        """ADR 0036 surface dispatch: route a universal handle.
+
+        If ``ident`` is a well-formed, resolvable record handle, set
+        ``args['kind']`` from its 2-char type code and rewrite
+        ``args['id']`` to the per-kind public id (slug or ``str(ref_id)``)
+        — so the existing per-kind handler resolves it with no change.
+
+        Returns ``True`` if it routed the handle, ``False`` otherwise
+        (non-handle, unknown/chunk handle, or an explicit ``kind=`` that
+        disagrees — left for normal validation to flag), so the caller
+        falls through to bare-slug inference untouched.
+        """
+        if self.store is None:
+            return False
+        normalized = handle_registry.normalize(ident)
+        if not handle_registry.is_well_formed(normalized):
+            return False
+        resolved = self.store.resolve_handle(normalized)
+        if resolved is None:
+            return False
+        explicit = args.get("kind")
+        if explicit is not None and explicit != resolved.kind:
+            return False
+        args["kind"] = resolved.kind
+        args["id"] = resolved.public_id
+        return True
+
     def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
         """D1: extract a self-identifying kind from ``id=`` into ``args['kind']``.
 
@@ -1770,6 +1799,11 @@ class PrecisRuntime:
         if ident.startswith("/"):
             return
         if ":" not in ident:
+            # ADR 0036: a universal handle (type-prefixed, 9-char Crockford)
+            # self-identifies — resolve it to (kind, public_id) before the
+            # bare-slug fallback, so it isn't mis-read as a slug.
+            if self._maybe_infer_kind_from_handle(args, ident):
+                return
             # No ``kind:`` prefix and no sigil — try resolving a bare
             # slug (optionally with a ``~selector`` / ``/view``) to its
             # owning kind, so ``get(id='wu22c~312')`` self-identifies as
