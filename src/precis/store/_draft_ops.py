@@ -232,6 +232,16 @@ class DraftMixin:
             ).fetchall()
         return {int(r[0]): str(r[1]) for r in rows}
 
+    def draft_chunk_meta(self, handle: str) -> dict[str, Any]:
+        """The raw ``chunks.meta`` JSON for a draft chunk (``{}`` if none).
+        Not on :class:`DraftChunk` — read it when re-deriving a table's
+        markdown from its canonical ``meta.table`` (ADR 0035 §1)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta FROM chunks WHERE handle = %s", (_bare(handle),)
+            ).fetchone()
+        return dict(row[0]) if row and row[0] else {}
+
     def get_draft_chunk(self, handle: str) -> DraftChunk | None:
         """A single live-or-retired draft chunk by its address.
 
@@ -729,11 +739,16 @@ class DraftMixin:
         text: str,
         at: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
+        split: bool = True,
     ) -> list[DraftChunk]:
         """Add one or more chunks (a multi-paragraph `text` splits at blank
         lines). Returns the created chunks in order. ``meta`` (e.g. a
-        ``term``'s ``{short, long}``) is stamped on each created chunk."""
-        blocks = _split_blocks(text)
+        ``term``'s ``{short, long}``) is stamped on each created chunk.
+
+        ``split=False`` inserts ``text`` verbatim as a single chunk — used
+        by chunks whose text is a derived projection that must not
+        fragment (a ``table``'s markdown render, ADR 0035 §1)."""
+        blocks = _split_blocks(text) if split else [text]
         with self.tx() as conn:
             parent, lo, hi = self._resolve_at(conn, ref_id, at)
             keys = n_keys_between(lo, hi, len(blocks))
@@ -905,6 +920,7 @@ class DraftMixin:
         *,
         base_sha: str | None = None,
         source: dict[str, Any] | None = None,
+        meta_patch: dict[str, Any] | None = None,
     ) -> DraftChunk | None:
         """In-place text edit: bump `content_sha`, log an `edited` event with
         `prev_text`. The handle (and references to it) survive; derived data
@@ -914,6 +930,11 @@ class DraftMixin:
         caller saw when it read the chunk) to fail the edit if the chunk
         changed underneath it — so two agents editing the same chunk don't
         silently clobber each other. Omit it for a force-overwrite.
+
+        ``meta_patch`` shallow-merges into ``chunks.meta`` (``meta || patch``,
+        NULL-safe) in the same statement — used to update a ``table``'s
+        canonical ``meta.table`` alongside its re-derived markdown ``text``
+        atomically (ADR 0035 §1).
         """
         sha = content_sha(text)
         with self.tx() as conn:
@@ -945,10 +966,17 @@ class DraftMixin:
                             "current text + sha, then edit with the new base_sha="
                         ),
                     )
-            conn.execute(
-                "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
-                (text, sha, row[0]),
-            )
+            if meta_patch:
+                conn.execute(
+                    "UPDATE chunks SET text = %s, content_sha = %s, "
+                    "meta = meta || %s::jsonb WHERE chunk_id = %s",
+                    (text, sha, Jsonb(meta_patch), row[0]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
+                    (text, sha, row[0]),
+                )
             conn.execute(
                 """INSERT INTO chunk_events
                        (chunk_id, event_kind, content_sha, prev_text, source)

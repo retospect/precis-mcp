@@ -172,6 +172,39 @@ permission={…})` — caption and image bytes stay put.
 > `figure_data` chunks linked `derived-from`) and the export step that
 > writes images out to `pics/` are later phases.
 
+## Data / table chunks
+
+A `chunk_kind='table'` chunk holds **structured data, not prose**. Pass the
+canonical data as `table={header, rows}` — *not* `text=`. The markdown you
+read back is **derived** from that data (regenerated on every write, never
+hand-edited), so the numbers stay the single source of truth and stay
+searchable / numerics-indexable.
+
+```python
+put(kind='draft', id='nanotrans', chunk_kind='table',
+    table={'header': ['element', 'gap_eV'],
+           'rows': [['Si', 1.12], ['Ge', 0.67]]},
+    caption='Measured band gaps',          # the legend (optional)
+    regen={'source': 'dft', 'cmd': 'vasp relax'},  # how the data was made (optional, inert)
+    at={'last': True})
+```
+
+* **`caption=`** is the table's legend — it rides in the derived text so the
+  table is findable by it.
+* **`regen=`** records provenance / how to rebuild the data (a sim, a command,
+  an ingest pointer). It is **inert metadata** — recorded, never executed.
+* **Editing:** change the data, not the rendered text. `text=` is *rejected*
+  on a table chunk.
+
+  ```python
+  edit(kind='draft', id='¶aa1', table={'header': [...], 'rows': [...]})  # re-derives markdown
+  edit(kind='draft', id='¶aa1', caption='New legend')   # caption only; data kept
+  edit(kind='draft', id='¶aa1', regen={'source': 'manual'})  # provenance only
+  ```
+
+(Plots that render a table as a figure — `chunk_kind='figure'` with a render
+recipe + `plots` links — are a later build step; see ADR 0035.)
+
 ## Read the document
 
 ```python

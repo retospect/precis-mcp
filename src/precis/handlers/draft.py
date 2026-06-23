@@ -38,6 +38,7 @@ from precis.response import Response
 from precis.store._draft_ops import content_sha
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
+from precis.utils.table_data import normalize_table, table_to_markdown
 
 log = logging.getLogger(__name__)
 
@@ -239,6 +240,9 @@ class DraftHandler(Handler):
         mime: str | None = None,
         origin: str | None = None,
         permission: dict[str, Any] | None = None,
+        table: dict[str, Any] | None = None,
+        caption: str | None = None,
+        regen: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -263,6 +267,16 @@ class DraftHandler(Handler):
 
         if chunk_kind is not None or at is not None:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            if (chunk_kind or "paragraph") == "table" or table is not None:
+                return self._put_table(
+                    slug,
+                    ref,
+                    table=table,
+                    caption=caption,
+                    regen=regen,
+                    at=at,
+                    meta=meta,
+                )
             if text is None or not str(text).strip():
                 raise BadInput(
                     "adding a draft chunk requires text=",
@@ -387,6 +401,9 @@ class DraftHandler(Handler):
         not_abbrev: list[str] | str | None = None,
         permission: dict[str, Any] | None = None,
         origin: str | None = None,
+        table: dict[str, Any] | None = None,
+        caption: str | None = None,
+        regen: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         # ``not_abbrev`` is a draft-level op (silence the undefined-abbrev
@@ -419,6 +436,16 @@ class DraftHandler(Handler):
             if c is not None:
                 self._attribute_touch([c.chunk_id])
             return Response(body=f"moved {c.dc}")
+        is_table = _base.chunk_kind == "table"
+        if is_table or table is not None or regen is not None:
+            return self._edit_table(
+                handle,
+                _base,
+                table=table,
+                caption=caption,
+                regen=regen,
+                base_sha=base_sha,
+            )
         if text is not None:
             # Capture the prior text *before* the rewrite so the abbrev
             # hints fire only on what this edit introduced (not on
@@ -627,6 +654,110 @@ class DraftHandler(Handler):
         from precis import agentlog
 
         agentlog.touch_from_env(self.store, chunk_ids=chunk_ids)
+
+    # ── data/table chunks (ADR 0035 §1) ──────────────────────────────
+
+    def _put_table(
+        self,
+        slug: str,
+        ref: Any,
+        *,
+        table: dict[str, Any] | None,
+        caption: str | None,
+        regen: dict[str, Any] | None,
+        at: dict[str, Any] | None,
+        meta: dict[str, Any] | None,
+    ) -> Response:
+        """Add a ``chunk_kind='table'`` data chunk: canonical ``meta.table``
+        + derived markdown ``text``. ``meta.regen`` (provenance/how-to-rebuild)
+        and ``meta.caption`` (legend) are stamped verbatim — both inert, no
+        execution (ADR 0035 §1)."""
+        if table is None:
+            raise BadInput(
+                "a table chunk requires table={header, rows}",
+                next=(
+                    f"put(kind='draft', id={slug!r}, chunk_kind='table', "
+                    "table={'header': ['x','y'], 'rows': [[1,2],[3,4]]}, "
+                    "caption='…', at={'last': True})"
+                ),
+            )
+        norm = normalize_table(table)
+        cap = caption.strip() if caption and caption.strip() else None
+        md = table_to_markdown(norm, caption=cap)
+        chunk_meta = dict(meta or {})
+        chunk_meta["table"] = norm
+        if cap is not None:
+            chunk_meta["caption"] = cap
+        if regen is not None:
+            chunk_meta["regen"] = regen
+        chunks = self.store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="table",
+            text=md,
+            at=at,
+            meta=chunk_meta,
+            split=False,
+        )
+        self._sync_draft_links(ref.id)
+        self._attribute_touch([c.chunk_id for c in chunks])
+        c = chunks[0]
+        rows, cols = len(norm["rows"]), len(norm["header"])
+        return Response(
+            body=(
+                f"added table {c.dc} to {slug} ({rows} row"
+                f"{'' if rows == 1 else 's'} × {cols} col"
+                f"{'' if cols == 1 else 's'}); text is the derived markdown — "
+                f"edit table=/caption=/regen=, not text="
+            )
+        )
+
+    def _edit_table(
+        self,
+        handle: str,
+        chunk: Any,
+        *,
+        table: dict[str, Any] | None,
+        caption: str | None,
+        regen: dict[str, Any] | None,
+        base_sha: str | None,
+    ) -> Response:
+        """Re-derive a table chunk's markdown from new canonical data /
+        legend / provenance. ``text=`` is rejected — a table's text is
+        derived (ADR 0035 §1), never hand-edited."""
+        if chunk is None or chunk.chunk_kind != "table":
+            raise BadInput(
+                "table=/regen= apply only to a chunk_kind='table' chunk",
+                next="edit(kind='draft', id='dc<chunk_id>', table={…})",
+            )
+        if table is None and caption is None and regen is None:
+            raise BadInput(
+                "a table chunk's text is derived from its data — pass "
+                "table={header,rows}, caption=, or regen= (not text=)",
+                next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
+            )
+        cur = self.store.draft_chunk_meta(handle)
+        norm = normalize_table(table) if table is not None else cur.get("table")
+        if not norm:
+            raise BadInput(
+                "this table chunk has no stored data — pass table={header, rows}",
+                next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
+            )
+        cap = caption.strip() if caption else cur.get("caption")
+        cap = cap or None
+        md = table_to_markdown(norm, caption=cap)
+        patch: dict[str, Any] = {"table": norm}
+        if caption is not None:
+            patch["caption"] = caption.strip()
+        if regen is not None:
+            patch["regen"] = regen
+        c = self.store.edit_text(handle, md, base_sha=base_sha, meta_patch=patch)
+        if c is not None:
+            self._attribute_touch([c.chunk_id])
+            self._sync_draft_links(c.ref_id)
+        rows, cols = len(norm["rows"]), len(norm["header"])
+        return Response(
+            body=f"edited table {(c or chunk).dc} ({rows}×{cols}); markdown re-derived"
+        )
 
     def _resolve_project(self, project: str | int) -> int:
         raw = str(project).strip()

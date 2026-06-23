@@ -492,6 +492,12 @@ def put(
     # a chunk (chunk_kind=, text=) placed by at={first|last|into|before|after}.
     at: dict[str, Any] | None = None,
     project: str | int | None = None,
+    # draft data/table chunk (chunk_kind='table', ADR 0035): canonical data
+    # in table={header,rows}; the markdown text is derived. caption= is the
+    # legend; regen= records how the data was produced (provenance, inert).
+    table: dict[str, Any] | None = None,
+    caption: str | None = None,
+    regen: dict[str, Any] | None = None,
     # conversation (see precis-conv-help):
     author: str | None = None,
     msg_id: str | None = None,
@@ -513,16 +519,11 @@ def put(
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    `mode=` matrix:
-      - File kinds (`markdown`, `plaintext`, `tex`, `python`):
-        `mode='create'` (region edits live on `edit`,
-        whole-file deletes on `delete`).
-      - Paid-import kinds (`websearch`, `perplexity-reasoning`,
-        `perplexity-research`): `mode='import'` to ingest an existing
-        payload (e.g. a Perplexity report) without re-running the
-        upstream call.
-      - Numeric-ref kinds (`memory`, `todo`, `gripe`, `conv`, `flashcard`):
-        omit `mode=` to create.
+    `mode=`: file kinds (markdown/plaintext/tex/python) use 'create'
+    (region edits on `edit`, whole-file deletes on `delete`); paid-import
+    kinds (websearch, perplexity-*) use 'import' to ingest an existing
+    payload without re-running the call; numeric-ref kinds (memory, todo,
+    gripe, conv, flashcard) omit `mode=` to create.
     `tags=` adds, `untags=` removes. `link=`/`unlink=` use canonical
     `kind:identifier[~selector]` form; `rel=` defaults to `related-to`.
 
@@ -569,6 +570,9 @@ def put(
             "chunk_kind": chunk_kind,
             "at": at,
             "project": project,
+            "table": table,
+            "caption": caption,
+            "regen": regen,
             "author": author,
             "msg_id": msg_id,
             "target": target,
@@ -614,6 +618,12 @@ def edit(
     # draft abbreviations: mark token(s) as NOT an abbreviation (chem
     # formula, model name, …) to silence the undefined-abbrev write hint.
     not_abbrev: list[str] | None = None,
+    # draft data/table chunk (chunk_kind='table', ADR 0035): replace the
+    # canonical data (table={header,rows}) / legend (caption=) / provenance
+    # (regen=); the markdown text re-derives. text= is rejected on a table.
+    table: dict[str, Any] | None = None,
+    caption: str | None = None,
+    regen: dict[str, Any] | None = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -654,6 +664,9 @@ def edit(
         "move": move,
         "base_sha": base_sha,
         "not_abbrev": not_abbrev,
+        "table": table,
+        "caption": caption,
+        "regen": regen,
     }
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)
