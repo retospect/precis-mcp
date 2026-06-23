@@ -308,7 +308,7 @@ _REFS_COLS = (
     "retraction_url, retraction_checked_at, "
     "pdf_sha256, pdf_pages::text AS pdf_pages, pdf_role, "
     "auto_refresh_days, refreshed_at, "
-    "parent_id, prio"
+    "parent_id, prio, handle"
 )
 _REFS_COLS_ALIASED = (
     "r.ref_id AS id, "
@@ -322,13 +322,13 @@ _REFS_COLS_ALIASED = (
     "r.retraction_url, r.retraction_checked_at, "
     "r.pdf_sha256, r.pdf_pages::text AS pdf_pages, r.pdf_role, "
     "r.auto_refresh_days, r.refreshed_at, "
-    "r.parent_id, r.prio"
+    "r.parent_id, r.prio, r.handle"
 )
 #: Column count produced by ``_REFS_COLS`` / ``_REFS_COLS_ALIASED``.
 #: Joined-projection slicers (chunks ⋈ refs in ``_blocks_ops``)
 #: reference this so adding a column to the projection list above
 #: doesn't silently drift the downstream row layout.
-_REFS_COLS_LEN = 27
+_REFS_COLS_LEN = 28  # ADR 0036: + refs.handle appended at index 27
 
 
 def _row_to_ref(row: tuple) -> Ref:
@@ -395,6 +395,7 @@ def _row_to_ref(row: tuple) -> Ref:
         refreshed_at=row[24],
         parent_id=row[25],
         prio=row[26],
+        handle=row[27] if len(row) > 27 else None,
     )
 
 

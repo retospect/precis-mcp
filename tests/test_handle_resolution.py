@@ -149,9 +149,9 @@ def test_pass_excludes_draft() -> None:
     assert "paper" in chunk_handles._KINDS
 
 
-def test_dual_emit_render_shows_handle_alongside_legacy() -> None:
-    # Pure render test (no DB): a hit with a universal handle shows BOTH
-    # the legacy slug~pos AND the handle (dual-emit, ADR 0036).
+def test_render_emits_handle_replacing_legacy() -> None:
+    # Pure render test (no DB): a hit with a universal handle emits the
+    # handle and NOT the legacy slug~pos (ADR 0036 cutover).
     from precis.utils.search_merge import SearchHit, _render_hit
 
     hit = SearchHit(
@@ -164,8 +164,8 @@ def test_dual_emit_render_shows_handle_alongside_legacy() -> None:
         uhandle="pc4m8p1r2",
     )
     out = _render_hit(1, hit, show_label=False)
-    assert "miller23~4" in out  # legacy still present → existing tests pass
-    assert "pc4m8p1r2" in out  # universal handle now emitted
+    assert "pc4m8p1r2" in out  # universal handle emitted
+    assert "miller23~4" not in out  # legacy form removed from output
 
     # No handle yet (un-backfilled) → header is legacy-only, no appended handle.
     bare = _render_hit(

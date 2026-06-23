@@ -1297,8 +1297,15 @@ def test_search_error_path_survives_fastmcp_convert_result(
     import asyncio
 
     from precis import server
+    from precis.tools import core as _tools_core
 
     server._runtime = runtime_with_store
+    # The FastMCP tool path resolves its runtime via precis.tools.core's own
+    # lazy build_runtime() — NOT server._runtime — so without this it would
+    # run the search against the configured (prod) DB. Point it at the test
+    # runtime too. (ADR 0036 exposed this: the search now selects refs.handle.)
+    _saved_core_rt = _tools_core._runtime
+    _tools_core._runtime = runtime_with_store
     try:
         # 1) success path — known kind, even if no hits.  Must come back
         #    as a list of ContentBlock with the rendered text body.
@@ -1350,6 +1357,7 @@ def test_search_error_path_survives_fastmcp_convert_result(
         assert "nosuchkind" in body_err
     finally:
         server._runtime = None
+        _tools_core._runtime = _saved_core_rt
 
 
 # ── MAJOR (Apr 2026): searched-kind annotation must surface on errors ──

@@ -361,6 +361,28 @@ and the rule is **accept-old-on-input, emit-new-on-output**.
 - **The wipe resets operational state.** Watches/recurring/projects are
   re-created after; acceptable on test data, and the cost of a clean slate.
 
+## Cutover policy & guardrail (running note)
+
+> **Legacy address forms (`slug~pos`, bare `slug`, `#ref_id`, `kind:slug~pos`)
+> must not appear in any bot-facing output.** Handles are the only address the
+> bot should *see* emitted; the legacy forms remain valid on **input**
+> (resolution) only.
+
+- **Emit assumes the handle is present.** Emitters write the handle directly
+  (`block.handle` / `ref.handle`); the `handle or <legacy>` form keeps the
+  legacy branch only as a transition fallback for not-yet-backfilled rows. Once
+  the `chunk_handles` / ref backfill passes have run, the legacy branch is dead
+  in prod output. After backfill is guaranteed corpus-wide, the fallback can be
+  deleted outright (and emitters become `block.handle` with no `or`).
+- **Proposed guard — auto-gripe legacy leaks (transition, time-boxed).** A
+  response post-processor scans bot-facing output for a legacy-address regex
+  (`\b[a-z][a-z0-9-]{2,}~\d+\b`) and raises a deduped `gripe` when one slips
+  through — so a missed emitter is caught automatically instead of by manual
+  audit. Caveat: help text / examples legitimately contain `~N` / `~0`, so the
+  scan must exclude documented example tokens (or run env-gated + log-only at
+  first) to avoid false positives. Run it "for a bit" during the cutover, then
+  retire. This is the enforcement mechanism behind the policy above.
+
 ## Open questions
 
 1. **Paper-chunk stability across re-chunk** — mostly moot (ingest-once); the

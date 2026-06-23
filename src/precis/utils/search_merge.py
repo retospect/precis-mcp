@@ -368,7 +368,9 @@ def _render_toon_table(hits: list[SearchHit]) -> str:
     rows: list[dict[str, str]] = []
     for hit in hits:
         summary, remaining_words = _derive_toon_summary(hit)
-        if hit.slug:
+        if hit.uhandle:
+            ident = hit.uhandle  # ADR 0036: universal handle when backfilled
+        elif hit.slug:
             ident = f"{hit.slug}~{hit.pos}" if hit.pos is not None else hit.slug
         elif hit.ref_id is not None:
             ident = str(hit.ref_id)
@@ -405,7 +407,9 @@ def _render_keywords_table(hits: list[SearchHit]) -> str:
 
     rows: list[dict[str, str]] = []
     for hit in hits:
-        if hit.slug:
+        if hit.uhandle:
+            ident = hit.uhandle  # ADR 0036: universal handle when backfilled
+        elif hit.slug:
             ident = f"{hit.slug}~{hit.pos}" if hit.pos is not None else hit.slug
         elif hit.ref_id is not None:
             ident = str(hit.ref_id)
@@ -428,10 +432,10 @@ def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
         marker = hit.source or hit.kind
         if marker:
             label = f"  [{marker}]"
-    # ADR 0036 dual-emit: legacy handle first (keeps existing callers /
-    # tests that read `slug~pos`), the universal handle appended when known.
-    uh = f" · {hit.uhandle}" if hit.uhandle else ""
-    parts = [f"\n## {rank}. {hit.handle}{uh}{label}"]
+    # ADR 0036: emit the universal handle when known, else the legacy
+    # slug~pos / ref_id form (still resolves on input; un-backfilled rows).
+    ident = hit.uhandle or hit.handle
+    parts = [f"\n## {rank}. {ident}{label}"]
     if hit.title:
         parts.append(f"_{hit.title}_")
     parts.extend(hit.extra_lines)
@@ -589,6 +593,7 @@ def ref_hits_to_search_hits(
                 source=source,
                 ref_id=ref_id,
                 dedupe_key=dedupe,
+                uhandle=getattr(ref, "handle", None),
             )
         )
     return out
