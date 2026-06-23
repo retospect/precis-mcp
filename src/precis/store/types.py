@@ -225,6 +225,7 @@ class Block:
     # fixtures that construct Blocks by hand don't all need updates.
     chunk_kind: str = "paragraph"
     keywords: list[str] | None = None  # NULL until the chunk_keywords worker runs
+    handle: str | None = None  # ADR 0036 universal chunk handle; NULL until backfilled
 
 
 @dataclass(frozen=True, slots=True)

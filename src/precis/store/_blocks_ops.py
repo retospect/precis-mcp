@@ -1516,6 +1516,7 @@ class BlocksMixin:
                 "       NULL::vector AS embedding, NULL::text AS density, "
                 "       c.meta, c.created_at, c.created_at AS updated_at, "
                 "       c.section_path, c.chunk_kind, c.keywords, "
+                "       c.handle, "
                 f"       {_REFS_COLS_ALIASED} "
                 "FROM chunks c "
                 "JOIN refs r ON r.ref_id = c.ref_id "
@@ -1644,7 +1645,8 @@ _CHUNK_PROJ = (
     "   WHERE ct.chunk_id = c.chunk_id AND t.namespace = 'DENSITY' "
     "   LIMIT 1) AS density, "
     "c.meta, c.created_at, c.created_at AS updated_at, "
-    "c.section_path, c.chunk_kind, c.keywords"
+    "c.section_path, c.chunk_kind, c.keywords, "
+    "c.handle"
 )
 
 

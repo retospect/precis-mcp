@@ -127,6 +127,10 @@ class SearchHit:
     # means "no keywords for this hit" — surfaced as an empty cell in
     # ``view='keywords'``. See :func:`_render_keywords_table`.
     keywords: tuple[str, ...] = ()
+    # ADR 0036: the universal handle for this hit's chunk (or ref), shown
+    # alongside the legacy ``slug~pos`` in output (dual-emit). None until
+    # the chunk/ref is backfilled with a handle.
+    uhandle: str | None = None
 
     @property
     def handle(self) -> str:
@@ -424,7 +428,10 @@ def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
         marker = hit.source or hit.kind
         if marker:
             label = f"  [{marker}]"
-    parts = [f"\n## {rank}. {hit.handle}{label}"]
+    # ADR 0036 dual-emit: legacy handle first (keeps existing callers /
+    # tests that read `slug~pos`), the universal handle appended when known.
+    uh = f" · {hit.uhandle}" if hit.uhandle else ""
+    parts = [f"\n## {rank}. {hit.handle}{uh}{label}"]
     if hit.title:
         parts.append(f"_{hit.title}_")
     parts.extend(hit.extra_lines)
@@ -521,6 +528,7 @@ def block_hits_to_search_hits(
                 ref_id=getattr(ref, "id", None),
                 dedupe_key=dedupe,
                 keywords=tuple(kw) if kw else (),
+                uhandle=getattr(block, "handle", None),
             )
         )
     return out

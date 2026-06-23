@@ -149,6 +149,34 @@ def test_pass_excludes_draft() -> None:
     assert "paper" in chunk_handles._KINDS
 
 
+def test_dual_emit_render_shows_handle_alongside_legacy() -> None:
+    # Pure render test (no DB): a hit with a universal handle shows BOTH
+    # the legacy slug~pos AND the handle (dual-emit, ADR 0036).
+    from precis.utils.search_merge import SearchHit, _render_hit
+
+    hit = SearchHit(
+        score=1.0,
+        kind="paper",
+        title="t",
+        preview="p",
+        slug="miller23",
+        pos=4,
+        uhandle="pc4m8p1r2",
+    )
+    out = _render_hit(1, hit, show_label=False)
+    assert "miller23~4" in out  # legacy still present → existing tests pass
+    assert "pc4m8p1r2" in out  # universal handle now emitted
+
+    # No handle yet (un-backfilled) → header is legacy-only, no appended handle.
+    bare = _render_hit(
+        1,
+        SearchHit(score=1.0, kind="paper", title="t", preview="p", slug="x", pos=0),
+        show_label=False,
+    )
+    header = bare.strip().splitlines()[0]
+    assert header == "## 1. x~0"
+
+
 @_NEEDS_PAPER_EXTRA
 def test_surface_get_chunk_handle_routes_to_selector(
     runtime_with_store: PrecisRuntime, store: Store
