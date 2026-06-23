@@ -123,3 +123,17 @@ def test_briefing_dispatch_passes_lookback(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(briefing_pass, "run_briefing", _capture)
     briefing_jt._dispatch(_FakeCtx(params={"lookback_hours": 48}), briefing_jt.SPEC)
     assert seen == {"lookback_hours": 48}
+
+
+def test_briefing_dispatch_passes_deliver_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def _capture(store: Any, **kw: Any) -> dict:
+        seen.update(kw)
+        return {"articles": 1, "brief_chars": 10, "ref_id": 1}
+
+    monkeypatch.setattr(briefing_pass, "run_briefing", _capture)
+    briefing_jt._dispatch(
+        _FakeCtx(params={"deliver_to": "conv:discord/g/c/t"}), briefing_jt.SPEC
+    )
+    assert seen == {"deliver_to": "conv:discord/g/c/t"}

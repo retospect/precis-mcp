@@ -123,3 +123,85 @@ def test_entry_body_falls_back_to_summary() -> None:
 
 def test_entry_body_empty_when_no_fields() -> None:
     assert news_poll._entry_body(SimpleNamespace()) == ""
+
+
+# ── briefing delivery + help skill ─────────────────────────────────────
+
+
+class _FakeRef:
+    id = 99
+
+
+class _FakeConn:
+    def __init__(self, existing: tuple | None = None) -> None:
+        self.calls: list[tuple[str, tuple]] = []
+        self._existing = existing
+
+    def execute(self, sql: str, params: tuple = ()) -> _FakeConn:
+        self.calls.append((sql, params))
+        return self
+
+    def fetchone(self) -> tuple | None:
+        return self._existing
+
+
+class _FakeDeliverStore:
+    def __init__(self, existing: tuple | None = None) -> None:
+        self.conn = _FakeConn(existing)
+        self.inserted: list[dict] = []
+        self.blocks: list[tuple] = []
+
+    def tx(self):  # type: ignore[no-untyped-def]
+        import contextlib
+
+        @contextlib.contextmanager
+        def _cm():  # type: ignore[no-untyped-def]
+            yield self.conn
+
+        return _cm()
+
+    def insert_ref(self, **kw: object) -> _FakeRef:
+        self.inserted.append(kw)
+        return _FakeRef()
+
+    def insert_blocks(
+        self, ref_id: object, blocks: object, conn: object = None
+    ) -> None:
+        self.blocks.append((ref_id, blocks))
+
+
+def test_deliver_queues_message_and_notifies() -> None:
+    import json
+
+    store = _FakeDeliverStore()
+    briefing._deliver(store, "discord/1/2/2", "Brief text", "2026-06-23")  # type: ignore[arg-type]
+    # a message ref was created, targeted + date-stamped for idempotency
+    assert store.inserted and store.inserted[0]["kind"] == "message"
+    assert store.inserted[0]["meta"]["target"] == "discord/1/2/2"
+    assert store.inserted[0]["meta"]["briefing_date"] == "2026-06-23"
+    assert store.blocks, "expected a message_body block"
+    # and the precis.messages notify fired with the new ref id
+    notifies = [c for c in store.conn.calls if "precis.messages" in c[0]]
+    assert notifies, "expected a precis.messages pg_notify"
+    payload = json.loads(notifies[0][1][0])
+    assert payload == {"ref_id": 99, "target": "discord/1/2/2"}
+
+
+def test_deliver_idempotent_skips_when_already_sent() -> None:
+    # existence probe returns a row → today's brief already queued
+    store = _FakeDeliverStore(existing=(1,))
+    briefing._deliver(store, "discord/1/2/2", "Brief text", "2026-06-23")  # type: ignore[arg-type]
+    assert not store.inserted, "must not create a second delivery message"
+    assert not any("precis.messages" in c[0] for c in store.conn.calls)
+
+
+def test_news_help_skill_present_and_shaped() -> None:
+    import pathlib
+
+    import precis
+
+    p = pathlib.Path(precis.__file__).parent / "data" / "skills" / "precis-news-help.md"
+    assert p.exists(), "precis-news-help skill file missing"
+    text = p.read_text()
+    assert "id: precis-news-help" in text
+    assert "news_poll" in text and "briefing" in text

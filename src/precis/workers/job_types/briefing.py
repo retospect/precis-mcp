@@ -26,7 +26,15 @@ _PARAMS_SCHEMA: dict[str, Any] = {
             "type": "integer",
             "minimum": 1,
             "description": "News window to summarize (default 26h).",
-        }
+        },
+        "deliver_to": {
+            "type": "string",
+            "description": (
+                "Delivery target for the brief, e.g. 'conv:discord/<g>/<c>/<t>'. "
+                "Pushed via pg_notify('precis.cron') so asa_bot delivers it. "
+                "Omit to only persist the briefing ref."
+            ),
+        },
     },
     "additionalProperties": False,
 }
@@ -40,6 +48,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     kwargs: dict[str, Any] = {}
     if params.get("lookback_hours"):
         kwargs["lookback_hours"] = int(params["lookback_hours"])
+    if params.get("deliver_to"):
+        kwargs["deliver_to"] = str(params["deliver_to"])
     try:
         r = run_briefing(ctx.store, **kwargs)
     except Exception as exc:

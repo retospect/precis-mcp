@@ -53,6 +53,13 @@ _ABS_MAX_ITEMS = 200
 #: full-text content[] can run long; the block-splitter chunks this.
 _MAX_BODY_CHARS = 40_000
 
+#: Exponential-backoff schedule for failing feeds (minutes). A source with
+#: N consecutive errors waits ``_BACKOFF_BASE_MIN * 2^(N-1)`` before its
+#: next poll, capped at ``_BACKOFF_CAP_MIN`` (~1 day). Base ≈ the nominal
+#: 30-min poll cadence, so one error skips ~one tick, doubling thereafter.
+_BACKOFF_BASE_MIN = 30
+_BACKOFF_CAP_MIN = 1440
+
 FeedParser = Callable[[str], Any]
 #: Optional full-page fetcher (url -> FetchResult). When supplied, the
 #: poller fetches+extracts the article page instead of using the feed's
@@ -136,9 +143,20 @@ def _entry_tags(entry: Any, default_tags: list[str], source_slug: str) -> list[s
 
 
 def _enabled_sources(store: Store, limit: int | None) -> list[dict[str, Any]]:
+    # Exponential backoff for failing feeds: a source with N consecutive
+    # errors is skipped until `base * 2^(N-1)` minutes after its last poll
+    # (capped at _BACKOFF_CAP_MIN). A healthy feed (errors=0) is never
+    # held back. Keeps a broken/parked feed from being re-hit every tick
+    # while still self-healing once it recovers — no manual disable needed.
     sql = (
         "SELECT source_id, url, title, source_slug, default_tags, max_items "
-        "FROM news_sources WHERE enabled = true ORDER BY source_id"
+        "FROM news_sources "
+        "WHERE enabled = true "
+        "  AND (consecutive_errors = 0 OR last_polled_at IS NULL "
+        "       OR now() - last_polled_at >= make_interval(mins => "
+        f"            least({_BACKOFF_BASE_MIN} * power(2, consecutive_errors - 1), "
+        f"                  {_BACKOFF_CAP_MIN})::int)) "
+        "ORDER BY source_id"
     )
     if limit is not None:
         sql += f" LIMIT {int(limit)}"
@@ -234,10 +252,15 @@ def run_news_pass(
                 body_blocks = article_blocks(body, embedder=None)
                 extra_meta = {"url": key, "via": "rss"}
 
-            slug = slug_from_text(title, max_len=72) or slug_from_text(key, max_len=72)
+            # Slug from the canonical URL (the stable address), matching
+            # NewsHandler._slug_for — NOT the title, which collides across
+            # distinct articles sharing a headline and would clobber via
+            # put_cache_entry's (kind, slug) replace. The article's handle
+            # (ADR 0036) is its identity; the URL is metadata.
+            slug = slug_from_text(key, max_len=72) or "news-article"
             ref, _cache = store.put_cache_entry(
                 kind="news",
-                slug=slug or "news-article",
+                slug=slug,
                 title=title,
                 body_blocks=body_blocks,
                 provider="news",

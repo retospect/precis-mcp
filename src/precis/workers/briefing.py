@@ -10,10 +10,11 @@ table and a DB-stored prompt, it:
 3. asks the summarizer alias (the cluster litellm proxy, reusing
    :class:`precis.workers.llm_summarize.LlmClient`) for a tight brief;
 4. persists the brief itself as a pinned ``news`` ref slugged
-   ``briefing-<date>`` and tagged ``briefing`` — so it is searchable,
-   dated, and reread-able like any other ref. (Delivery to Discord via
-   asa_bot is an optional follow-up; pass a ``sink`` callback to push it
-   somewhere.)
+   ``briefing-<date>`` and tagged ``briefing`` — searchable, dated,
+   reread-able like any other ref;
+5. optionally **delivers** it to ``deliver_to`` (e.g. a Discord channel)
+   by queuing a ``message`` ref — asa_bot (the one process with a Discord
+   socket) posts it verbatim. Idempotent per brief-date.
 
 Run via ``precis worker --only briefing`` or a scheduled cron tick.
 """
@@ -29,6 +30,7 @@ from typing import Any
 
 from precis.handlers.news import article_blocks
 from precis.store import Store
+from precis.store.types import BlockInsert
 from precis.workers.llm_summarize import LlmClient, LlmConfig
 
 log = logging.getLogger(__name__)
@@ -71,15 +73,20 @@ def run_briefing(
     now: datetime | None = None,
     client: LlmClient | None = None,
     sink: Callable[[str], None] | None = None,
+    deliver_to: str | None = None,
 ) -> dict[str, Any]:
     """Generate (and persist) a morning briefing from recent news refs.
 
     Returns ``{articles, brief_chars, ref_id}``; ``articles == 0`` means
     no news in the window and no brief was written.
 
-    ``client``/``now``/``sink`` are injectable for tests. ``sink`` (if
-    given) receives the rendered brief text for external delivery
-    (e.g. posting to Discord via asa_bot).
+    ``deliver_to`` is a delivery target (e.g. ``discord/<g>/<c>/<t>``); when
+    set, the brief is queued as a ``message`` ref (which fires
+    ``pg_notify('precis.messages')``) so asa_bot posts it verbatim — the
+    worker needs no transport socket of its own. Delivery is idempotent
+    per brief-date, so a job retry can't double-post.
+    ``client``/``now``/``sink`` are injectable for tests; ``sink`` (if
+    given) also receives the brief text for custom delivery.
     """
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(hours=lookback_hours)
@@ -139,6 +146,8 @@ def run_briefing(
         untags=None,
     )
 
+    if deliver_to:
+        _deliver(store, deliver_to, brief, date_tag)
     if sink is not None:
         try:
             sink(brief)
@@ -147,6 +156,56 @@ def run_briefing(
 
     log.info("briefing: %d articles → %d-char brief (%s)", len(refs), len(brief), slug)
     return {"articles": len(refs), "brief_chars": len(brief), "ref_id": ref.id}
+
+
+def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
+    """Queue the brief as a ``message`` ref for verbatim delivery.
+
+    Mirrors ``MessageHandler.put``: insert a ``message`` ref + body chunk
+    and fire ``pg_notify('precis.messages', {ref_id, target})`` in the
+    same tx, so asa_bot (the one process holding a Discord socket) posts
+    it. The worker itself needs no socket — delivery is just a DB write.
+
+    Idempotent per brief-date: if a delivery message for ``date_tag``
+    already exists, skip — so a job retry (or a same-day re-run) can't
+    double-post. Best-effort: a failure is logged, never fatal (the brief
+    is persisted as a ``news`` ref regardless)."""
+    import json
+
+    try:
+        with store.tx() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM refs WHERE kind = 'message' "
+                "AND meta->>'briefing_date' = %s AND deleted_at IS NULL LIMIT 1",
+                (date_tag,),
+            ).fetchone()
+            if existing is not None:
+                log.info("briefing: %s already delivered — skipping", date_tag)
+                return
+            meta = {
+                "target": target,
+                "status": "queued",
+                "reason": f"briefing {date_tag}",
+                "briefing_date": date_tag,
+            }
+            ref = store.insert_ref(
+                kind="message",
+                slug=None,
+                title=f"Morning briefing — {date_tag}",
+                meta=meta,
+                conn=conn,
+            )
+            store.insert_blocks(
+                ref.id,
+                [BlockInsert(pos=0, text=brief, meta={"chunk_kind": "message_body"})],
+                conn=conn,
+            )
+            conn.execute(
+                "SELECT pg_notify('precis.messages', %s)",
+                (json.dumps({"ref_id": ref.id, "target": target}),),
+            )
+    except Exception as exc:
+        log.warning("briefing: delivery to %s failed: %s", target, exc)
 
 
 __all__ = ["run_briefing"]
