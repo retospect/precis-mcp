@@ -1725,7 +1725,13 @@ class PaperHandler(Handler):
             lines.append(banner)
             lines.append("")
         for b in blocks:
-            lines.append(f"# {ref.slug}~{b.pos}")
+            # ADR 0036: head each chunk with its computed handle (``pc<id>``);
+            # the legacy ``slug~pos`` stays only for a kind with no chunk code.
+            b_handle = (
+                handle_registry.try_format(ref.kind, b.id, chunk=True)
+                or f"{ref.slug}~{b.pos}"
+            )
+            lines.append(f"# {b_handle}")
             lines.append(_render_block_body(ref.slug or "???", b.pos, b.text))
             lines.append("")
 
@@ -1785,16 +1791,26 @@ class PaperHandler(Handler):
         # a small range usually has at most one section header — both
         # waste tokens in every chunk response.
         if hi + 1 < total:
-            nxt_lo = hi + 1
             span = 5 if single_block else (hi - lo + 1)
-            nxt_hi = min(total - 1, hi + span)
-            sel = f"~{nxt_lo}..{nxt_hi}" if nxt_hi > nxt_lo else f"~{nxt_lo}"
+            n_next = min(span, total - 1 - hi)
+            # ADR 0036: forward read via relative navigation off the last
+            # chunk's handle (``pc<id>+1..N``) — self-identifying, no kind=.
+            last = blocks[-1]
+            last_h = handle_registry.try_format(ref.kind, last.id, chunk=True)
+            if last_h is not None:
+                rel = f"+1..{n_next}" if n_next > 1 else "+1"
+                hint_id = f"{last_h}{rel}"
+            else:
+                nxt_lo, nxt_hi = hi + 1, hi + n_next
+                hint_id = (
+                    f"{ref.slug}~{nxt_lo}..{nxt_hi}"
+                    if nxt_hi > nxt_lo
+                    else f"{ref.slug}~{nxt_lo}"
+                )
             nav.append(
                 (
-                    f"get(kind='paper', id='{ref.slug}{sel}')",
-                    f"next {nxt_hi - nxt_lo + 1} chunks"
-                    if nxt_hi > nxt_lo
-                    else "next chunk",
+                    f"get(id='{hint_id}')",
+                    f"next {n_next} chunks" if n_next > 1 else "next chunk",
                 )
             )
         if not single_block:

@@ -413,14 +413,15 @@ class TestEmptyListTrailers:
 
 
 class TestDegenerateRangeTrailer:
-    def test_single_block_next_is_tilde_n(self, store: Store) -> None:
+    def test_single_block_next_is_single_step(self, store: Store) -> None:
         h = PaperHandler(hub=Hub(store=store))
         _seed_paper(store, n_blocks=4)
-        # Reading ~0..2 should suggest "~3" (degenerate single-block)
-        # rather than "~3..3".
+        # ADR 0036: reading ~0..2 leaves a single next block → the forward
+        # hint is a relative single step ``pc<id>+1``, not a degenerate
+        # ``+1..1`` range (the old footgun was ``~3..3`` over ``~3``).
         resp = h.get(id="wang2020state~0..2")
-        assert "~3..3" not in resp.body
-        assert "~3" in resp.body
+        assert "+1..1" not in resp.body
+        assert "+1" in resp.body
 
 
 # ── runtime fixture ─────────────────────────────────────────────

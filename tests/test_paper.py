@@ -425,20 +425,20 @@ class TestChunks:
     def test_single_chunk(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, blocks=["intro", "methods", "results"])
         resp = handler.get(id="wang2020state~1")
-        assert "wang2020state~1" in resp.body
+        assert chunk_handle(store, "wang2020state", ord=1) in resp.body
         assert "methods" in resp.body
         assert "intro" not in resp.body
 
     def test_chunk_range(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, blocks=["a", "b", "c", "d"])
         resp = handler.get(id="wang2020state~1..2")
-        # Block 1 + 2 contents are rendered with their headings.
-        assert "# wang2020state~1" in resp.body
-        assert "# wang2020state~2" in resp.body
+        # Block 1 + 2 contents are rendered with their (handle) headings.
+        assert f"# {chunk_handle(store, 'wang2020state', ord=1)}" in resp.body
+        assert f"# {chunk_handle(store, 'wang2020state', ord=2)}" in resp.body
         assert "b" in resp.body and "c" in resp.body
         # Block 3 is NOT rendered as a body chunk — only referenced in
-        # the Next: hint as the suggested next-range to read.
-        assert "# wang2020state~3" not in resp.body
+        # the Next: hint as the suggested next read.
+        assert f"# {chunk_handle(store, 'wang2020state', ord=3)}" not in resp.body
         # Trimmed trailer (2026-05-04 token-budget fix): forward
         # range + full TOC + BibTeX. ``previous chunk`` and
         # ``TOC of this range`` were dropped — the former is rarely
@@ -480,9 +480,10 @@ class TestChunks:
         )
         # Promoted: TOC.
         assert "view='toc'" in resp.body
-        # Forward read is a 5-block range, not bare ~4.
-        assert "~4..8" in resp.body
-        # And the bare-block hint is NOT the primary follow-up.
+        # Forward read is a 5-block span via relative nav (ADR 0036), not a
+        # bare next-block: ``pc<id>+1..5`` (5 chunks after the one just read).
+        assert "+1..5" in resp.body
+        # And the bare-block legacy hint is NOT the primary follow-up.
         assert "next chunk: get(kind='paper', id='wang2020state~4')" not in resp.body
 
     def test_chunk_out_of_range_404s(self, store: Store, handler: PaperHandler) -> None:
